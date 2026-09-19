@@ -852,6 +852,26 @@ describe('wave agent lifecycle counters (#1276)', () => {
     const record = makeV1Entry({ waves: [{ wave: 1, role: 'Implementation', ...counts }] });
     expect(waveCells(generateSessionNote(record)).map((cell) => cell.agents)).toEqual([expected]);
   });
+
+  // Nameable bug (TV-001): the de-underscored spelling is LIVE — session
+  // `main-2026-09-18-session-1` emits `agents_planned` / `agents_started` /
+  // `agents_completed` on all five of its waves and nothing else countable, so
+  // all 15 counts rendered `?` into the vault note beside a real number. No
+  // golden record carries these keys (the fixture was harvested 2026-08-19,
+  // before the spelling appeared), so the CI-binding half of the #1074 census
+  // is blind to it and only the host-only ledger test went red. Same cell
+  // grammar as the documented twins above — the spelling is the only variable.
+  it.each([
+    [{ agents_planned: 5, agents_started: 5, agents_completed: 5 }, '5'],
+    [{ agents_planned: 12, agents_started: 0, agents_completed: 0 }, '0'],
+    [{ agents_planned: 12, agents_completed: 6 }, '6 completed'],
+    [{ agents_planned: 12 }, '12 planned'],
+    // The documented spelling still wins when both are present.
+    [{ agent_count_started: 9, agents_started: 4 }, '9'],
+  ])('renders the de-underscored lifecycle spelling %j as %s', (counts, expected) => {
+    const record = makeV1Entry({ waves: [{ wave: 1, role: 'Implementation', ...counts }] });
+    expect(waveCells(generateSessionNote(record)).map((cell) => cell.agents)).toEqual([expected]);
+  });
 });
 
 describe('#1074 golden production records — the wave table reads real producer keys', () => {

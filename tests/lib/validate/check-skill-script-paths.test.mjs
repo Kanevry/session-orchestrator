@@ -57,6 +57,17 @@ describe('SCAN_DIRS', () => {
     // skills/commands/agents and stop catching dead citations in docs/*.md.
     expect(SCAN_DIRS).toContain('docs');
   });
+
+  it('includes the shipped corpora rules/ and output-styles/ (#1384 P3)', () => {
+    // Bug: both directories are in package.json `files[]` and therefore ship to
+    // every consumer, yet neither was scanned — which is how
+    // `output-styles/wave-summary.md` kept citing `hooks/on-stop.sh` for a file
+    // that is `.mjs`, and how four consumer-side example paths in
+    // rules/opt-in-stack/* stayed unannotated. Narrowing the scan back would
+    // restore that blind spot silently.
+    expect(SCAN_DIRS).toContain('rules');
+    expect(SCAN_DIRS).toContain('output-styles');
+  });
 });
 
 describe('scanSkillScriptPaths', () => {

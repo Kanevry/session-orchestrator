@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-18T14:46:18.736Z",
-  "head": "2f6252786a4512641fddaf34f948380d37958988",
+  "generated_at": "2026-09-18T18:53:21.845Z",
+  "head": "20a4cbffc5fda699696c8048d2ec2a3ca2e5ddab",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1517,6 +1517,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-subagent-discovery-validator.mjs",
         "subagent-telemetry.mjs"
       ]
     },

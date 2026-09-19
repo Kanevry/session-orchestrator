@@ -426,6 +426,95 @@ describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable f
       vi.doUnmock('node:child_process');
     }
   });
+
+  // -------------------------------------------------------------------------
+  // #1131 — the repo's own `.vault.yaml` slug outranks DERIVATION for the
+  // NAMESPACE SEGMENT (resolveRepoNamespace), never for the raw identity
+  // (deriveRepo), which still feeds `source-repo:` frontmatter (#725 D2/#732).
+  //
+  // The bug: the `40-learnings/<ns>/` + `50-sessions/<ns>/` segment came from
+  // the git remote, then the checkout directory name, never the canonical vault
+  // registration — and (unlike narrative-mirror) there is NO loose-slug healer
+  // here at all, so a repo whose vault slug differs from its remote/directory
+  // name silently opened a SECOND namespace.
+  //
+  // Each case therefore asserts on resolveRepoNamespace AND pins that
+  // deriveRepo's raw identity is UNCHANGED by the declared slug.
+  // -------------------------------------------------------------------------
+
+  /** Write a real-shaped `.vault.yaml` (see scripts/lib/vault-backfill/template.mjs). */
+  function writeVaultYaml(dir, slug) {
+    writeFileSync(
+      join(dir, '.vault.yaml'),
+      'apiVersion: vault.example/v1\nkind: Repository\n\nmetadata:\n' +
+        `  name: Acme Tool\n  slug: "${slug}"\n  tier: active\n`,
+    );
+  }
+
+  it('B1: the declared .vault.yaml slug decides the NAMESPACE, while deriveRepo keeps the raw git identity', async () => {
+    const repo = initRepo(join(makeDir('ns-vaultyaml-'), 'checkout-dir'));
+    git(['remote', 'add', 'origin', 'git@gitlab.example.com:acme-group/widget-service.git'], repo);
+    writeVaultYaml(repo, 'acme-tool');
+
+    process.chdir(repo);
+    const mod = await freshNamespaceModule();
+
+    // Falsification: without the fix this reads 'widget-service'.
+    expect(mod.resolveRepoNamespace({})).toBe('acme-tool');
+    expect(mod.resolveRepoNamespace({})).not.toBe(basename(repo));
+    // LOAD-BEARING (#725 D2 / #732): the raw identity is what lands in
+    // `source-repo:` frontmatter. If the declared slug leaked into deriveRepo,
+    // the next mirror run would rewrite that field in every existing note.
+    expect(mod.deriveRepo()).toBe('acme-group/widget-service');
+  });
+
+  it('B2: a declared slug that trips the owner-leakage guard is STILL redacted — the lookup sits ABOVE the guard, never around it', async () => {
+    // 'aiat-pmo-module' is a CP6 private slug (see the redaction block above);
+    // choosing the declared slug after the guard would have written it to the
+    // vault verbatim.
+    const dir = join(makeDir('ns-vaultyaml-leaky-'), 'plain-dir');
+    mkdirSync(dir);
+    writeVaultYaml(dir, 'aiat-pmo-module');
+
+    process.chdir(dir);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.resolveRepoNamespace({})).toBe('redacted-repo');
+  });
+
+  it('B3: an explicit vaultName override still wins over the declared slug', async () => {
+    const dir = join(makeDir('ns-vaultyaml-override-'), 'plain-dir');
+    mkdirSync(dir);
+    writeVaultYaml(dir, 'acme-tool');
+
+    process.chdir(dir);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.resolveRepoNamespace({ vaultName: 'configured-name' })).toBe('configured-name');
+  });
+
+  it('B4: a malformed .vault.yaml degrades to the pre-#1131 chain (no throw, no namespace change)', async () => {
+    const repo = initRepo(join(makeDir('ns-vaultyaml-broken-'), 'checkout-dir'));
+    git(['remote', 'add', 'origin', 'git@gitlab.example.com:acme-group/widget-service.git'], repo);
+    writeFileSync(join(repo, '.vault.yaml'), 'metadata: [slug: acme\n  : : :\n');
+
+    process.chdir(repo);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.deriveRepo()).toBe('acme-group/widget-service');
+    expect(mod.resolveRepoNamespace({})).toBe('widget-service');
+  });
+
+  it('B5: THIS repo still namespaces as "session-orchestrator" — the real vault folder is 40-learnings/session-orchestrator', async () => {
+    // Guards the one case with live data behind it: the repo root is the cwd
+    // every production caller runs in, and its tracked `.vault.yaml` declares
+    // `session-orchestrator`, which is also what the git remote derived before
+    // #1131. The namespace must not move.
+    process.chdir(ORIGINAL_CWD);
+    const mod = await freshNamespaceModule();
+
+    expect(mod.resolveRepoNamespace({})).toBe('session-orchestrator');
+  });
 });
 
 // ---------------------------------------------------------------------------

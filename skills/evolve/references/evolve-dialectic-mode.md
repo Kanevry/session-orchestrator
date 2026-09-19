@@ -70,15 +70,24 @@ const result = await runDialecticDeriver({
 - If dry-run (default): present diff inline; write to `.orchestrator/dialectic-pending.md` via `writeDialecticPending({ repoRoot, diff })` from `scripts/lib/auto-dialectic.mjs` (path constant `DIALECTIC_PENDING_PATH`; atomic tmp+rename). `runDialecticDeriver()` does NOT write this file itself — the dry-run branch returns the diff and the caller persists it. The body parameter is named `diff`, not `body`, and it is a Markdown **string**: `result.diff` is an OBJECT `{ user?, agent? }`, so serialize it first — passing the object throws `TypeError` (as does an empty string or a missing `repoRoot`). An empty `result.diff` (no target proposed) has nothing to review: write no sidecar. EXIT. Suggestion: "Re-run with `/evolve --dialectic --apply` to apply." <!-- path-check: example -->
 
   ```javascript
-  const FENCE = '`'.repeat(3);
-  const pendingBody = ['user', 'agent']
-    .filter((t) => typeof result.diff?.[t] === 'string')
-    .map((t) => [`${FENCE}diff`, `# target: ${t}`, result.diff[t].trimEnd(), FENCE].join('\n'))
-    .join('\n\n');
+  const pendingBody = renderPendingBody(result.diff); // scripts/lib/auto-dialectic.mjs
   if (pendingBody) {
     await writeDialecticPending({ repoRoot, diff: pendingBody, usage: result.usage, model });
   }
   ```
+
+  `renderPendingBody({ user?, agent? })` is the serializer that used to live here as a snippet (#1386). It is now code so the dry-run write and the apply-time drift check below build the body the SAME way — two hand-copied serializers would report drift that is only formatting. It returns `''` when neither target is a string: nothing to review, write no sidecar.
+- **Before `--apply` writes anything: show the operator what changed since he approved (#1386).** `--apply` re-derives from the model (`dispatchAgent` runs unconditionally in `scripts/dialectic-deriver.mjs`), so under variant (b) the apply still costs a SECOND model call and what would be applied is not necessarily what was read in `.orchestrator/dialectic-pending.md`. This step makes that drift VISIBLE; it does **not** make apply deterministic. Run it after the fresh derivation and BEFORE any `writePeerCard()` call: <!-- path-check: example -->
+
+  ```javascript
+  const fresh = renderPendingBody(result.diff);
+  const cmp = await comparePendingBody({ repoRoot, body: fresh }); // never throws
+  ```
+
+  - `cmp.sidecarAbsent === true` (no sidecar — the operator may never have run the dry-run) or `cmp.drifted === false`: apply SILENTLY. An `AskUserQuestion` that blocks nothing is a rule break (`.claude/rules/ask-via-tool.md` AUQ-001/AUQ-005).
+  - `cmp.drifted === true`: present BOTH bodies (`cmp.sidecarBody` = approved, `cmp.freshBody` = fresh) and ask via `AskUserQuestion` — two options, each description carrying reason + cost + consequence, and the drifted text in the option `preview` so the operator decides from the payload rather than from a file:
+    - **"Frischen Vorschlag anwenden (Recommended)"** — recommended because the fresh derivation saw the newest learnings and sessions, while the sidecar is a snapshot of an earlier run; cost: the peer cards get text the operator has not reviewed line by line; consequence: cards are written, `writeDialecticLastRun` + `consumeDialecticPending` run, the sidecar is archived.
+    - **"Verwerfen, Sidecar für eine weitere Prüfung behalten"** — when the delta is large enough to want a second read; cost: the second model call just spent is wasted and `--apply` must run again later; consequence: **nothing is written to the peer cards and the sidecar is NOT consumed** — skip both bookkeeping calls below so the `pending-sidecar` signal keeps the review due. EXIT.
 - If `--apply`: call **`mergeDerivedBody(existingBody, result.diff[target])`** from `scripts/lib/peer-cards/merger.mjs` for each card target, then `writePeerCard(repoRoot, 'user', mergedUserCard)` and `writePeerCard(repoRoot, 'agent', mergedAgentCard)` from `scripts/lib/peer-cards/writer.mjs`. Update the `updated:` frontmatter.
 
   **`writePeerCard` shape (#1303).** `writePeerCard(repoRoot, target, card)` takes `card = { frontmatter, body }`. `frontmatter.id` (kebab-case slug, 2..128 chars) is **required and never auto-filled**; `type: 'peer-card'`, `target`, `updated` (defaults to `new Date().toISOString()`) and `created` (defaults to `updated`) are filled by the writer. ISO timestamps may carry optional milliseconds (`scripts/lib/peer-cards/schema.mjs` `ISO_DATETIME_REGEX`). A missing `id` returns `{ ok: false, errors: [...] }` and leaves the target file untouched — it does **not** throw; branch on `result.ok`.
@@ -97,7 +106,7 @@ const result = await runDialecticDeriver({
   Existing names are read back out of the card rather than re-derived because the live names are not a pure function of their headings — measured 2026-09-11 in `.orchestrator/peers/AGENT.md`: `## Guard and protocol-migration discipline` → `guard-and-protocol-migration`. Re-slugifying would APPEND a duplicate section instead of replacing one.
 
   **Present `conflicts[]` before writing.** A non-empty `conflicts[]` (`duplicate-section`, `orphan-begin`, `unmapped-preamble`, `multi-heading-region`) is operator-visible content that the merge did not place — report it beside the delta line rather than writing silently.
-- **Close the loop — after a successful `--apply` AND after the operator explicitly discards a reviewed proposal** (never after a dry-run, a failure, or a skip): record the run and consume the sidecar, both from `scripts/lib/auto-dialectic.mjs`. Without these two calls the maintenance-due probe keeps `dialectic` (measured against `.orchestrator/dialectic-last-run`) and `pending-sidecar` (`.orchestrator/dialectic-pending.md` younger than 14 days) due forever — nothing else writes the one or deletes the other (#1380). Both return `{ ok, error? }` and never throw; log a failure and continue. <!-- path-check: example -->
+- **Close the loop — after a successful `--apply` AND after the operator explicitly discards a reviewed proposal** (never after a dry-run, a failure, a skip, or the drift-check's "keep the sidecar for another review" branch above): record the run and consume the sidecar, both from `scripts/lib/auto-dialectic.mjs`. Without these two calls the maintenance-due probe keeps `dialectic` (measured against `.orchestrator/dialectic-last-run`) and `pending-sidecar` (`.orchestrator/dialectic-pending.md` younger than 14 days) due forever — nothing else writes the one or moves the other (#1380). Both return `{ ok, error? }` and never throw; log a failure and continue. Since #1388 `consumeDialecticPending` MOVES the sidecar to `.orchestrator/consumed/<timestamp>-dialectic-pending.md` (newest 10 retained) instead of deleting it, so the reviewed text survives the apply; `archivedTo` on the result names the file. <!-- path-check: example -->
 
   ```javascript
   const lastRun = await writeDialecticLastRun({ repoRoot, isoTimestamp: new Date().toISOString() });

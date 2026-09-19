@@ -632,7 +632,16 @@ describe('the built-in registry', () => {
   // real git repo whose upstream differs from HEAD; the fake answers RED only
   // for the exact pushed SHA + repoRoot, so a follow-up that queries the wrong
   // commit (or none) cannot produce the expected line.
-  it('names the PUSHED commit\'s CI verdict on the no-pipeline branch when network probes are opted in (#1332)', async () => {
+  //
+  // The `pipeline-unmatched-ref` row (#857 HIGH-1b) is the same DARK outcome by
+  // a different route: pipelines exist for the sha but all sit on a foreign ref,
+  // so the reading stays `unknown` and the operator learns nothing about HEAD.
+  // Without it in `PUSHED_FOLLOW_UP_REASONS` the re-query never runs and a red
+  // pushed commit stays invisible on that branch too.
+  it.each([
+    { reason: 'no-pipeline-for-head-sha' },
+    { reason: 'pipeline-unmatched-ref' },
+  ])('names the PUSHED commit\'s CI verdict on the $reason branch when network probes are opted in (#1332)', async ({ reason }) => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     const dir = await mkTmp();
     const pushedSha = initRepoWithUpstream(dir, { ahead: true });
@@ -646,7 +655,7 @@ describe('the built-in registry', () => {
           return { status: 'red', ok: false, redCount: 1, details: { currentPipelineId: 9301, cliUsed: 'glab' } };
         }
         if (opts.sha !== undefined) return { status: 'green', ok: true, details: { currentPipelineId: 1, cliUsed: 'glab' } };
-        return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
+        return { status: 'unknown', ok: false, details: { reason: ${JSON.stringify(reason)}, currentPipelineId: null, cliUsed: 'glab' } };
       }`,
       {
         network: true,
@@ -663,7 +672,7 @@ describe('the built-in registry', () => {
     );
 
     expect(out.bannerLines).toEqual([
-      `🚨 ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${pushedSha.slice(0, 8)} — CI red (#9301)`,
+      `🚨 ci-status: CI status for HEAD could not be determined (${reason}) — last pushed: ${pushedSha.slice(0, 8)} — CI red (#9301)`,
     ]);
     // #1337: a red pushed commit is an alert, not a warning.
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-alert', severity: 'alert' });

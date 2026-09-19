@@ -43,6 +43,7 @@ import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { createSecretValueMasker } from '../secret-masker.mjs';
 import { expandTilde } from '../common.mjs';
+import { readVaultSlug } from '../vault-yaml.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned narrative files. */
 export const GENERATOR_MARKER = 'session-orchestrator-vault-status-narrative@1';
@@ -869,15 +870,29 @@ async function runNarrativeMirror(opts) {
 
   // Defense-in-depth: when the caller omits (or passes an empty) `repo`, derive
   // it from the operator-configured `vault-name` override (#660/#832) when set,
-  // else the repoRoot basename — never silently mis-file under 'unknown' (#675
-  // review). Precedence: explicit `repo` opt > `vault-name` > basename.
+  // else the `.vault.yaml` slug (#1131), else the repoRoot basename — never
+  // silently mis-file under 'unknown' (#675 review).
   const vaultNameOverride =
     typeof vaultIntegration['vault-name'] === 'string' && vaultIntegration['vault-name'].trim()
       ? vaultIntegration['vault-name'].trim()
       : null;
-  const repoName = (typeof repo === 'string' && repo.trim().length > 0)
+  const explicitName = (typeof repo === 'string' && repo.trim().length > 0)
     ? repo
-    : vaultNameOverride ?? path.basename(path.resolve(repoRoot));
+    : vaultNameOverride;
+
+  // #1131: with NO explicit override, the repo's own `.vault.yaml`
+  // `metadata.slug` — the CANONICAL vault registration — outranks the
+  // directory basename. Precedence: explicit `repo` opt > `vault-name` >
+  // `.vault.yaml` slug > basename.
+  //
+  // WHY the two overrides still win: both are things a CALLER/operator states
+  // for THIS call (`repo` is only ever passed to override the derived name —
+  // the sole production caller, `skills/session-end/session-metrics-write.md`,
+  // passes `repoRoot` alone), so honouring the file over them would make an
+  // explicit override unhonourable. The file wins over the basename, which is
+  // a guess nobody stated.
+  const vaultYamlSlug = explicitName ? null : readVaultSlug(repoRoot);
+  const repoName = explicitName ?? vaultYamlSlug ?? path.basename(path.resolve(repoRoot));
 
   const rawVaultDir = vaultIntegration['vault-dir'];
   if (!rawVaultDir || typeof rawVaultDir !== 'string') {
@@ -886,10 +901,19 @@ async function runNarrativeMirror(opts) {
 
   const vaultDir = path.resolve(expandTilde(rawVaultDir));
   const candidateSlug = subjectToSlug(repoName) || 'unknown';
-  // Loose-match against existing 01-projects/ folders before minting a new
-  // slug (issue #829 Finding 3) — see resolveLooseSlug for the ambiguity
+  // A declared `.vault.yaml` slug needs no healing — it IS the canonical folder
+  // name, so resolveLooseSlug is SKIPPED for it. Running the healer over it
+  // would re-open the bug this fixes: a vault that also carries an unhealed
+  // legacy folder (e.g. `foobarapp` beside the declared `foo-bar-app`) makes
+  // the loose match ambiguous, and ambiguity falls back to the candidate —
+  // which is how a duplicate pair, once created, keeps being written to.
+  //
+  // Otherwise: loose-match against existing 01-projects/ folders before minting
+  // a new slug (issue #829 Finding 3) — see resolveLooseSlug for the ambiguity
   // rules. Falls through to `candidateSlug` unchanged on any read failure.
-  const repoSlug = resolveLooseSlug(vaultDir, candidateSlug, { readdirSync: injectedFs?.readdirSync });
+  const repoSlug = vaultYamlSlug
+    ? candidateSlug
+    : resolveLooseSlug(vaultDir, candidateSlug, { readdirSync: injectedFs?.readdirSync });
   const outputPath = resolveNarrativePath(vaultDir, repoSlug);
 
   // Defense-in-depth: ensure the resolved file stays inside the vault root.

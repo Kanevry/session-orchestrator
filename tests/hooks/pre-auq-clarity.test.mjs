@@ -22,6 +22,9 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { expectDeny, expectAllow, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+// Die Schwellen-SSOT, nicht die gedruckte Zahl: der Deny-Text wird gegen die
+// Konstante geprüft, damit eine verschobene Schwelle den Satz mitzieht.
+import * as schemaModule from '../../scripts/lib/auq/schema.mjs';
 import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
 
 const REPO_ROOT = process.cwd();
@@ -306,6 +309,21 @@ describe('pre-auq-clarity — hard limits block', () => {
     // The operator-visible headline names WHICH limit broke, not a preamble
     // identical for every deny (`emitDeny` derives it from the first line).
     expect(env.systemMessage).toContain('H2');
+  });
+
+  it('renders the option cap from the threshold instead of spelling it out in words', () => {
+    // Bug caught: the deny sentence spelled the cap out — "zwei bis vier
+    // Optionen … mehr als vier" — which no numeric grep over the threshold can
+    // see. Move `THRESHOLDS.K6.optionsMax` and the hook blocks by the new
+    // number while telling the operator the old one, with the whole suite
+    // green. Asserted against the constant, never against the German sentence.
+    const { THRESHOLDS } = schemaModule;
+    const env = expectDeny(runHook(envelope([h2Question()])));
+    const reason = env.hookSpecificOutput.permissionDecisionReason;
+
+    expect(reason).toContain(`${THRESHOLDS.K6.optionsMin} bis ${THRESHOLDS.K6.optionsMax}`);
+    expect(reason).toContain(`mehr als ${THRESHOLDS.K6.optionsMax}`);
+    expect(reason).not.toContain('zwei bis vier');
   });
 
   it('does not claim the tool truncates long headers', () => {

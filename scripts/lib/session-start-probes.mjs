@@ -70,11 +70,22 @@ const local = (rel) => pathToFileURL(path.join(import.meta.dirname, rel)).href;
 const CI_UNKNOWN_HINT_DEFAULT = 'run `glab ci status` on demand';
 
 /**
- * `ci-status` "no data for HEAD" reasons after which the last PUSHED commit is
- * worth asking about: GitLab's `no-pipeline-for-head-sha` and GitHub's
- * `no-check-runs-for-head` (both emitted by `checkCiStatus`).
+ * `ci-status` "no usable reading for HEAD" reasons after which the last PUSHED
+ * commit is worth asking about: GitLab's `no-pipeline-for-head-sha`, GitHub's
+ * `no-check-runs-for-head`, and GitLab's `pipeline-unmatched-ref` (all emitted
+ * by `checkCiStatus`).
+ *
+ * `pipeline-unmatched-ref` (#857) is not a "no data" state — pipelines EXIST for
+ * the sha, they just all sit on a foreign ref, so the reading stays `unknown`.
+ * For this consumer that is the same DARK outcome: the operator learns nothing
+ * about HEAD. Routing it to the pushed-commit re-query at least yields the
+ * pushed sha's own verdict instead of an unactionable line.
  */
-const PUSHED_FOLLOW_UP_REASONS = new Set(['no-pipeline-for-head-sha', 'no-check-runs-for-head']);
+const PUSHED_FOLLOW_UP_REASONS = new Set([
+  'no-pipeline-for-head-sha',
+  'no-check-runs-for-head',
+  'pipeline-unmatched-ref',
+]);
 
 /**
  * Full SHAs for `refs`, in order, from ONE `git rev-parse` — or `null` when

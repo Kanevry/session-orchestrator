@@ -234,49 +234,15 @@ export const CRITERION_IDS = Object.freeze(Object.keys(CRITERIA));
 export const TOTAL_WEIGHT = CRITERION_IDS.reduce((sum, id) => sum + CRITERIA[id].weight, 0);
 
 // ---------------------------------------------------------------------------
-// Die zwei harten Hürden
-// ---------------------------------------------------------------------------
-
-/**
- * Hürden sind KEINE gewichteten Kriterien. Eine gerissene Hürde ergibt Note F,
- * unabhängig von der Punktzahl — deshalb stehen sie getrennt und werden in
- * `AuqScore.hurdlesBroken` geführt, nicht in `points` verrechnet.
- *
- * @type {Readonly<Record<'H1'|'H2', Readonly<{id:string,title:string,rule:string,criterion:string,evidence:string}>>>}
- */
-export const HURDLES = Object.freeze({
-  H1: Object.freeze({
-    id: 'H1',
-    title: 'Kopfzeile höchstens 12 Zeichen',
-    rule: 'codepointLength(header) <= 12',
-    criterion: 'K5',
-    evidence:
-      'Gemessen 2026-08-22: 26 von 42 Kopfzeilen-Literalen reißen diese Grenze (62 %), ' +
-      'Spitzenwert 54 Zeichen. Die 12 ist die Stilangabe der Tool-Beschreibung ' +
-      '(`max 12 chars`), KEINE erzwungene Grenze: im Bundle 2.1.268 steht die Zahl nur ' +
-      'in ebendieser Beschreibung, es gibt kein `.max(12)` im Zod-Schema und keinen ' +
-      'Render-Pfad, der sie liest — 125 längere Kopfzeilen wurden vom Tool angenommen ' +
-      'und beantwortet (gemessen 2026-09-11). Deshalb gilt H1 nur für VORLAGEN, wo ein ' +
-      'Autor kostenlos kürzen kann; zur Laufzeit meldet der Hook sie und blockt nicht ' +
-      '(siehe BLOCKING_HURDLES in hooks/pre-auq-clarity.mjs).',
-  }),
-  H2: Object.freeze({
-    id: 'H2',
-    title: '2–4 Optionen je Frage, genau eine Empfehlung auf Platz 1',
-    rule: 'options.length zwischen 2 und 4 JE FRAGE, und isRecommended nur bei index 0',
-    criterion: 'K6',
-    evidence:
-      'Pro Block gezählt meldet skills/plan/SKILL.md:137 fälschlich 14 Optionen — ' +
-      'es ist ein legaler Vierfragen-Block. Der Zähler zählt je Frage.',
-  }),
-});
-
-/** Stabile Reihenfolge. */
-export const HURDLE_IDS = Object.freeze(Object.keys(HURDLES));
-
-// ---------------------------------------------------------------------------
 // Schwellen — die einzige Stelle, an der eine Zahl steht
 // ---------------------------------------------------------------------------
+//
+// DEFINITIONSREIHENFOLGE IST TRAGEND: `HURDLES` weiter unten baut seine
+// operator-sichtbaren Sätze per Template-Literal aus `THRESHOLDS`, und ein
+// Template-Literal wird beim Laden des Moduls ausgewertet. Steht `THRESHOLDS`
+// wieder unter `HURDLES`, wirft der Import mit `ReferenceError` — auf einem
+// Modul, das `hooks/pre-auq-clarity.mjs` in JEDER Session lädt, ist das eine
+// host-weite Sperre, kein Testfehler.
 
 /**
  * Alle Schwellen, nach Kriterium gruppiert. clarity.mjs liest ausschließlich
@@ -355,6 +321,55 @@ export const THRESHOLDS = Object.freeze({
     proximityChars: 45,
   }),
 });
+
+// ---------------------------------------------------------------------------
+// Die zwei harten Hürden
+// ---------------------------------------------------------------------------
+
+/**
+ * Hürden sind KEINE gewichteten Kriterien. Eine gerissene Hürde ergibt Note F,
+ * unabhängig von der Punktzahl — deshalb stehen sie getrennt und werden in
+ * `AuqScore.hurdlesBroken` geführt, nicht in `points` verrechnet.
+ *
+ * `title` und `rule` werden dem Operator GEDRUCKT (check-auq-clarity.mjs,
+ * auq-audit.mjs, der Deny-Text von hooks/pre-auq-clarity.mjs). Deshalb steht
+ * keine Zahl darin, sondern die Schwelle selbst: eine verschobene Schwelle mit
+ * einem stehengebliebenen Satz daneben ist eine Zeile, die den Operator belügt.
+ *
+ * @type {Readonly<Record<'H1'|'H2', Readonly<{id:string,title:string,rule:string,criterion:string,evidence:string}>>>}
+ */
+export const HURDLES = Object.freeze({
+  H1: Object.freeze({
+    id: 'H1',
+    title: `Kopfzeile höchstens ${THRESHOLDS.K5.headerCharsFail} Zeichen`,
+    rule: `codepointLength(header) <= ${THRESHOLDS.K5.headerCharsFail}`,
+    criterion: 'K5',
+    // `evidence` zitiert die Tool-Beschreibung des Bundles wörtlich
+    // (`max 12 chars`, `.max(12)`). Diese 12 ist die Zahl DES BUNDLES, nicht
+    // unsere Schwelle — sie bleibt ein Literal, auch wenn K5 sich bewegt.
+    evidence:
+      'Gemessen 2026-08-22: 26 von 42 Kopfzeilen-Literalen reißen diese Grenze (62 %), ' +
+      'Spitzenwert 54 Zeichen. Die 12 ist die Stilangabe der Tool-Beschreibung ' +
+      '(`max 12 chars`), KEINE erzwungene Grenze: im Bundle 2.1.268 steht die Zahl nur ' +
+      'in ebendieser Beschreibung, es gibt kein `.max(12)` im Zod-Schema und keinen ' +
+      'Render-Pfad, der sie liest — 125 längere Kopfzeilen wurden vom Tool angenommen ' +
+      'und beantwortet (gemessen 2026-09-11). Deshalb gilt H1 nur für VORLAGEN, wo ein ' +
+      'Autor kostenlos kürzen kann; zur Laufzeit meldet der Hook sie und blockt nicht ' +
+      '(siehe BLOCKING_HURDLES in hooks/pre-auq-clarity.mjs).',
+  }),
+  H2: Object.freeze({
+    id: 'H2',
+    title: `${THRESHOLDS.K6.optionsMin}–${THRESHOLDS.K6.optionsMax} Optionen je Frage, genau eine Empfehlung auf Platz 1`,
+    rule: `options.length zwischen ${THRESHOLDS.K6.optionsMin} und ${THRESHOLDS.K6.optionsMax} JE FRAGE, und isRecommended nur bei index 0`,
+    criterion: 'K6',
+    evidence:
+      'Pro Block gezählt meldet skills/plan/SKILL.md:137 fälschlich 14 Optionen — ' +
+      'es ist ein legaler Vierfragen-Block. Der Zähler zählt je Frage.',
+  }),
+});
+
+/** Stabile Reihenfolge. */
+export const HURDLE_IDS = Object.freeze(Object.keys(HURDLES));
 
 /** Höchstlänge eines Zitats in einem Befund (Codepoints). */
 export const EXCERPT_MAX_CHARS = 80;

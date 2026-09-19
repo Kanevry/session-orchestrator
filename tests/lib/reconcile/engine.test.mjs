@@ -805,6 +805,61 @@ describe('runReconcile — on-disk dedupe against .claude/rules/ provenance (iss
   });
 });
 
+// ---------------------------------------------------------------------------
+// Issue #1387 — an EXPIRED rule file must stop deduping.
+//
+// TV-001 — the bug this catches that nothing above does: `rule-loader.mjs`
+// excludes an expired rule from injection, but the provenance reader kept
+// returning its markers, so the learning counted as materialized by a rule no
+// agent ever sees again — materialized forever, re-proposable never. Every
+// test above uses `expires-at: 2099-09-30`, so all of them stay green with the
+// guard removed.
+// ---------------------------------------------------------------------------
+
+/** A materialized rule document with a caller-chosen `expires-at` value. */
+function expiringRuleDoc(learningKey, expiresAt) {
+  return materializedRuleDoc(learningKey).replace('expires-at: 2099-09-30', `expires-at: ${expiresAt}`);
+}
+
+describe('runReconcile — expired rule files stop deduping their learnings (#1387)', () => {
+  it.each([
+    ['2020-01-01', 'past expiry → re-proposed', true],
+    ['2099-09-30', 'future expiry → stays materialized', false],
+    ['not-a-date', 'unparseable expiry → fail-open, stays materialized', false],
+  ])('expires-at %s: %s', async (expiresAt, _label, expectReproposed) => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-expired-rule-'));
+    try {
+      const rulesDir = join(repoRoot, '.claude', 'rules');
+      mkdirSync(rulesDir, { recursive: true });
+      writeFileSync(
+        join(rulesDir, 'fragile-pattern-expiry-case.md'),
+        expiringRuleDoc('fragile-pattern/expiry-case', expiresAt),
+        'utf8',
+      );
+
+      const merge = vi.fn(() => ({ merged: [], written: true }));
+      const result = await runReconcile(
+        { repoRoot, now: new Date('2026-06-25T00:00:00Z') },
+        {
+          learnings: [eligibleLearning({ subject: 'expiry-case' })],
+          merge,
+          // EMPTY sidecar — otherwise the `sidecarTerminal` half of
+          // partitionMaterialized would mask the on-disk assertion entirely.
+          loadCandidates: () => ({ records: [] }),
+        },
+      );
+
+      expect(result.summary.eligible).toBe(1);
+      expect(result.summary.alreadyMaterialized).toBe(expectReproposed ? 0 : 1);
+      expect(result.proposals.map((p) => p.learningKey)).toEqual(
+        expectReproposed ? ['fragile-pattern/expiry-case'] : [],
+      );
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
 /**
  * A CONSOLIDATED rule document: one file absorbing N learnings, the shape the
  * 2026-09-06 43→8 consolidation produced. Frontmatter `learning-key:` is a YAML

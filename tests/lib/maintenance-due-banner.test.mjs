@@ -288,6 +288,17 @@ describe('checkMaintenanceDue', () => {
     const after = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
     expect(after.due.map((d) => d.id)).not.toContain('dialectic');
     expect(after.due.map((d) => d.id)).not.toContain('pending-sidecar');
+
+    // BUG (#1388 P9): since the consume ARCHIVES the sidecar instead of deleting
+    // it, a fresh file now sits in `.orchestrator/consumed/`. If the probe ever
+    // widened from its explicit two-path list to a directory scan, that archive
+    // would re-raise `pending-sidecar` forever — the very signal the consume
+    // just cleared. Pins the archive as invisible to the probe.
+    expect(fs.existsSync(consumed.archivedTo)).toBe(true);
+    expect(path.dirname(consumed.archivedTo)).toBe(path.join(tmpRepo, '.orchestrator', 'consumed'));
+    expect(fs.readdirSync(path.join(tmpRepo, '.orchestrator', 'consumed'))).toHaveLength(1);
+    const withArchive = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(withArchive.due.map((d) => d.id)).not.toContain('pending-sidecar');
   });
 
   // BUG (HR-106): a constant `total: 6` reports a denominator the rule never

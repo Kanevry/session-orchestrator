@@ -1,6 +1,6 @@
 ---
 name: convergence-monitoring
-user-invocable: true
+user-invocable: false
 tags: [autoresearch, convergence, loop-control, wave-executor]
 model: haiku
 model-preference: sonnet

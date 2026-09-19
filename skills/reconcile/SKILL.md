@@ -394,6 +394,14 @@ consolidation survives the next `/reconcile`:
   regenerates that learning as a standalone file on the next run.
 - **A merged file's `expires-at` is the EARLIEST of its parts**, never the
   latest: it must not outlive its shortest-lived content.
+- **An EXPIRED file no longer dedupes** (#1387): the provenance reader skips it
+  whole, so its learnings become re-proposable — fail-open on an unparseable
+  date. Two known limits, measured 2026-09-18: this is the on-disk half only
+  (79 of this repo's 92 provenance keys are ALSO sidecar-terminal, so just 13
+  return), and a file the sweep cannot split (`no-1to1-mapping` &c. — none in
+  the live tree today, `skipped: []` over 7 files) that expires legitimately
+  re-proposes on every run with no mechanical exit. Detail:
+  `docs/rule-authoring.md` § Consolidated rules.
 - **A dropped learning must be STAMPED before deletion, or it regenerates.**
   `rm .claude/rules/<slug>.md` alone leaves `isProcessed()` false and no
   on-disk marker, so the engine re-proposes it. Stamp it terminal first with

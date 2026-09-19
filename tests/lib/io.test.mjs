@@ -927,6 +927,12 @@ switch (mode) {
   case 'bad-null': input = null; break;
   case 'bad-string': input = 'questions'; break;
   case 'bad-array': input = [{ question: 'q' }]; break;
+  case 'bad-date': input = new Date(0); break;
+  case 'bad-boxed-string': input = new String('questions'); break;
+  case 'bad-map': input = new Map([['questions', []]]); break;
+  case 'bad-class': { class ToolInput { constructor() { this.questions = []; } } input = new ToolInput(); break; }
+  case 'ok-empty-literal': input = {}; break;
+  case 'ok-null-proto': { const o = Object.create(null); o.questions = []; input = o; break; }
   case 'cycle': { const o = { questions: [] }; o.self = o; input = o; break; }
   case 'size': input = { questions: [{ question: 'Q'.repeat(Number(arg)) }] }; break;
   case 'closed-stdout':
@@ -1103,6 +1109,49 @@ process.exit(99);
       expect(status).toBe(0);
       expect(stdout).toBe('');
       expect(stderr).toContain(`emitRewrite was called with ${described}`);
+    });
+  }
+
+  // The bug: `typeof x === 'object'` admits every object WRAPPER, and each one
+  // serializes into something the AskUserQuestion schema rejects — `new Date()`
+  // and `new String('x')` into a JSON STRING, `new Map()` into `{}` (which looks
+  // valid and, per the module doc, deletes every field of the tool input). The
+  // bundle turns a schema-invalid `updatedInput` into `behavior: "deny"`, so the
+  // operator's question dies to save a rewrite. The null/array/string table
+  // above cannot catch any of them: all four pass `typeof === 'object'`.
+  for (const [mode, described] of [
+    ['bad-date', 'Date'],
+    ['bad-boxed-string', 'String'],
+    ['bad-map', 'Map'],
+    ['bad-class', 'ToolInput'],
+  ]) {
+    it(`no-ops on a ${described} instance, exactly as it does on an array`, () => {
+      const { stdout, stderr, status } = runChild(mode);
+
+      expect(status).toBe(0);
+      expect(stdout).toBe('');
+      expect(stderr).toContain(`emitRewrite was called with a non-plain object (${described})`);
+      expect(stderr).not.toContain('UNREACHABLE');
+    });
+  }
+
+  // The other side of the same guard: tightening it to "has at least one key"
+  // or to an `instanceof Object` test would refuse legitimate inputs. A literal
+  // and a null-prototype object are both plain and must still go out.
+  for (const [mode, described] of [
+    ['ok-empty-literal', 'an empty object literal'],
+    ['ok-null-proto', 'an Object.create(null) input'],
+  ]) {
+    it(`still emits the envelope for ${described}`, () => {
+      const { stdout, stderr, status } = runChild(mode);
+
+      expect(status).toBe(0);
+      expect(stderr).toBe('');
+      const { hookSpecificOutput } = JSON.parse(stdout.trim());
+      expect(hookSpecificOutput.hookEventName).toBe('PreToolUse');
+      expect(hookSpecificOutput.updatedInput).toEqual(
+        mode === 'ok-empty-literal' ? {} : { questions: [] },
+      );
     });
   }
 });

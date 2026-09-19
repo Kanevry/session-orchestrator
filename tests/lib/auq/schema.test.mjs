@@ -65,6 +65,7 @@ import {
   CRITERION_IDS,
   TOTAL_WEIGHT,
   HURDLES,
+  THRESHOLDS,
   SCOPES,
   SEVERITIES,
   MARKER_CLASSES,
@@ -213,6 +214,23 @@ describe('Kriterien-Registry — Gewichtssumme und Unveränderlichkeit (Fehler 3
     expect(CRITERIA.K6.hurdle).toBe('H2');
     expect(HURDLES.H1.criterion).toBe('K5');
     expect(HURDLES.H2.criterion).toBe('K6');
+  });
+
+  // Der Fehler, den das fängt: `title` und `rule` werden dem Operator GEDRUCKT
+  // (check-auq-clarity.mjs, auq-audit.mjs, der Deny-Text des Hooks). Standen die
+  // Zahlen dort als Literal — bis 2026-09-18 taten sie das —, dann meldet eine
+  // verschobene Schwelle nach der neuen Zahl und nennt dem Operator die alte.
+  // Kein bestehender Test vergleicht die beiden Orte; die ganze Suite bliebe
+  // grün. Deshalb je gedruckter Satz die Zahl, die er beschreibt.
+  it('hält die Kopfzeilen-Schwelle bei 12 — der Zahl, die H1s `evidence` wörtlich zitiert', () => {
+    // 12 ist das von der Tool-Beschreibung genannte Budget (`max 12 chars`,
+    // .claude/rules/ask-via-tool.md AUQ-006). `title` und `rule` werden aus
+    // dieser Konstante GEBAUT — sie gegen sie zu prüfen, geht für jeden Wert
+    // grün (Mutant 12→14 überlebte). Falsifizierbar ist nur das Literal selbst
+    // und die Prosa, die die Zahl des Bundles zitiert und daher NICHT
+    // mitwandert: verschiebt jemand die Schwelle, widerspricht `evidence` ihr.
+    expect(THRESHOLDS.K5.headerCharsFail).toBe(12);
+    expect(HURDLES.H1.evidence).toContain(`\`max ${THRESHOLDS.K5.headerCharsFail} chars\``);
   });
 
   it('ist eingefroren — ein Modul kann die Schwellen der beiden anderen nicht umschreiben', () => {

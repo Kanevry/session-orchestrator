@@ -659,6 +659,20 @@ export function decide(input, lib) {
   }
   const tail = omitted > 0 ? `\n(+${omitted} weitere Befund(e) nicht gezeigt)` : '';
 
+  // Die Optionsgrenze wird aus der Schwelle GERENDERT, nie danebengeschrieben.
+  // Ausgeschriebene Zahlwörter ("zwei bis vier") standen hier bis 2026-09-18
+  // und waren für jeden Zahlen-grep unsichtbar: verschiebt sich
+  // `THRESHOLDS.K6.optionsMax`, blockt der Hook nach der neuen Zahl und nennt
+  // dem Operator die alte. Fehlt die Schwelle (defektes Schema-Modul), entfällt
+  // der Satz — eine Lücke ist besser als eine erfundene Zahl.
+  const k6Limits = lib?.schema?.THRESHOLDS?.K6;
+  const limitSentence =
+    Number.isInteger(k6Limits?.optionsMin) && Number.isInteger(k6Limits?.optionsMax)
+      ? `Das ist keine Stilfrage: das Tool selbst nimmt nur ${k6Limits.optionsMin} bis ` +
+        `${k6Limits.optionsMax} Optionen je Frage an, und mehr als ${k6Limits.optionsMax} kann ` +
+        'niemand gegeneinander abwägen.\n\n'
+      : '';
+
   // The FIRST LINE names the concrete break, because `emitDeny` derives the
   // operator-visible headline from it. A general preamble first would put a
   // sentence that is identical for every deny in front of the human, and the
@@ -666,8 +680,7 @@ export function decide(input, lib) {
   const reason =
     `AskUserQuestion blockiert: harte Grenze ${groups.map(([id]) => id).join(' + ')} gerissen — ` +
     'so erreicht die Frage den Operator nicht.\n\n' +
-    'Das ist keine Stilfrage: das Tool selbst nimmt nur zwei bis vier Optionen je Frage an, ' +
-    'und mehr als vier kann niemand gegeneinander abwägen.\n\n' +
+    limitSentence +
     `${sections.join('\n\n')}${tail}`;
 
   const suggestion =

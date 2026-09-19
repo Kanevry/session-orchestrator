@@ -1042,6 +1042,9 @@ export async function backfillAbandonedSession({
  *   { action: 'skipped-not-completed', status }       — STATE.md status isn't 'completed'
  *   { action: 'skipped-no-session-id' }               — completed but no `session:` field
  *   { action: 'skipped-already-recorded', sessionId } — sessions.jsonl already has it
+ *   { action: 'skipped-key-occupied', sessionId }     — identity absent, but a canonical
+ *                                                       non-stub record of a DIFFERENT session
+ *                                                       already holds this key (#1388 P8)
  *   { action: 'skipped-marker-exists', sessionId }    — lost the TOCTOU claim
  *   { action: 'error', error, sessionId? }             — any failure, swallowed
  *
@@ -1136,7 +1139,11 @@ export async function backfillCompletedFromStateMd({
       if (existing.kind === 'absent'
         && canonicalizeSessions(readJsonlSafe(readFileSync, sessionsPath))
           .some((record) => record?.session_id === recordId && !isSupersedableStub(record))) {
-        return { action: 'skipped-already-recorded', sessionId: recordId };
+        // Distinct action (#1388 P8): `skipped-already-recorded` above means
+        // "this very session is already on file"; here identity said ABSENT and
+        // a DIFFERENT session's record occupies the key. Sharing one string made
+        // the two causes indistinguishable in the backfill_completed telemetry.
+        return { action: 'skipped-key-occupied', sessionId: recordId };
       }
       const supersedes = existing.kind === 'stub' ? existing.stubId : null;
       // Preserve a matched stub's key for its append-only replacement. Without

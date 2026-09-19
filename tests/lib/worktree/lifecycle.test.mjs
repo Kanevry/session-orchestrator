@@ -16,7 +16,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, existsSync, writeFileSync, symlinkSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +39,9 @@ vi.mock('zx', () => {
     const tagFn = vi.fn().mockImplementation(() => {
       const resp = mockGitResponses.shift();
       if (resp instanceof Error) return Promise.reject(resp);
+      // A function entry is evaluated at call time — lets a test model git's
+      // real behaviour (e.g. `worktree add` failing while the target exists).
+      if (typeof resp === 'function') return Promise.resolve().then(resp);
       return Promise.resolve(resp ?? { stdout: '', stderr: '' });
     });
     // Also make $`...` work (direct call without options)
@@ -211,6 +215,196 @@ describe('createWorktree', () => {
     // We need the second add to reject so the outer catch re-throws.
     // Adjust: mock nothrow to resolve (it swallows) and let $ provide sequential responses.
     await expect(createWorktree('double-fail')).rejects.toThrow('createWorktree:');
+  });
+
+  // -------------------------------------------------------------------------
+  // Orphan-directory retry (issue #984)
+  // -------------------------------------------------------------------------
+  //
+  // Bug caught: an UNREGISTERED directory at the target path (what an
+  // interrupted removeWorktree leaves behind) made every retry fail forever —
+  // `git worktree add` says "already exists", `git worktree remove --force`
+  // says "is not a working tree" (swallowed by nothrow). The Full Gate went
+  // red twice from exactly this state.
+
+  it('removes an unregistered orphan directory at the target path and succeeds on retry', async () => {
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+
+    const suffix = `orphan-${randomBytes(4).toString('hex')}`;
+    const wtPath = join(tmpdir(), 'so-worktrees', `so-worktree-${suffix}`);
+    // Pre-create the orphan: a plain directory git has no registration for.
+    mkdirSync(wtPath, { recursive: true });
+    writeFileSync(join(wtPath, 'leftover.txt'), 'stale', 'utf8');
+
+    try {
+      mockGitResponses = [
+        { stdout: 'sha\n' },                                  // rev-parse
+        new Error("fatal: '" + wtPath + "' already exists"),  // first add
+        new Error("fatal: '" + wtPath + "' is not a working tree"), // nothrow remove
+        new Error('error: branch not found'),                 // nothrow branch -D
+        // Second add models real git: it only succeeds once the path is gone.
+        () => {
+          if (existsSync(wtPath)) {
+            throw new mockProcessOutputClass("fatal: '" + wtPath + "' already exists");
+          }
+          return { stdout: '' };
+        },
+      ];
+
+      const result = await createWorktree(suffix);
+      expect(result).toBe(wtPath);
+      expect(existsSync(wtPath)).toBe(false);
+    } finally {
+      rmSync(wtPath, { recursive: true, force: true });
+    }
+  });
+
+  it('does not follow a symlink at the target path — the link target survives', async () => {
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+
+    // Bug caught: resolving the target path through a symlink would recursively
+    // delete whatever the link points at — outside the so-worktrees base.
+    const outside = join(sandbox, 'precious');
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, 'keep.txt'), 'do not delete', 'utf8');
+
+    const suffix = `symlink-${randomBytes(4).toString('hex')}`;
+    const wtPath = join(tmpdir(), 'so-worktrees', `so-worktree-${suffix}`);
+    mkdirSync(join(tmpdir(), 'so-worktrees'), { recursive: true });
+    symlinkSync(outside, wtPath);
+
+    try {
+      mockGitResponses = [
+        { stdout: 'sha\n' },                                        // rev-parse
+        new Error("fatal: '" + wtPath + "' already exists"),        // first add
+        new Error("fatal: '" + wtPath + "' is not a working tree"), // nothrow remove
+        new Error('error: branch not found'),                       // nothrow branch -D
+        () => {
+          if (existsSync(wtPath)) {
+            throw new mockProcessOutputClass("fatal: '" + wtPath + "' already exists");
+          }
+          return { stdout: '' };
+        },
+      ];
+
+      await expect(createWorktree(suffix)).rejects.toThrow('createWorktree:');
+      expect(existsSync(join(outside, 'keep.txt'))).toBe(true);
+    } finally {
+      rmSync(wtPath, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Orphan-delete guards — each test names the ONE guard it keeps honest.
+  //
+  // All three redirect os.tmpdir() via process.env.TMPDIR into the per-test
+  // sandbox, so the worktree BASE (`<os.tmpdir()>/so-worktrees`) is a fixture
+  // rather than the host-shared directory a peer session also writes into.
+  // -------------------------------------------------------------------------
+
+  /** Git responses that drive createWorktree into the orphan-delete retry. */
+  function retryResponses(wtPath) {
+    return [
+      { stdout: 'sha\n' },                                        // rev-parse
+      new Error("fatal: '" + wtPath + "' already exists"),        // first add
+      new Error("fatal: '" + wtPath + "' is not a working tree"), // nothrow remove
+      new Error('error: branch not found'),                       // nothrow branch -D
+      () => {
+        if (existsSync(wtPath)) {
+          throw new mockProcessOutputClass("fatal: '" + wtPath + "' already exists");
+        }
+        return { stdout: '' };
+      },
+    ];
+  }
+
+  it('refuses to delete a REGISTERED worktree at the target path (peer session in the shared namespace)', async () => {
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+
+    // Bug caught: dropping the registration probe (_isUnregisteredWorktreeDir)
+    // makes the retry delete a PEER session's LIVE worktree whenever both
+    // sessions pick the same suffix in the shared `so-worktrees` namespace.
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = sandbox;
+    try {
+      const suffix = `peer-${randomBytes(4).toString('hex')}`;
+      const wtPath = join(sandbox, 'so-worktrees', `so-worktree-${suffix}`);
+      mkdirSync(wtPath, { recursive: true });
+
+      // Registration built on disk exactly as _isUnregisteredWorktreeDir reads
+      // it: a `.git` FILE carrying `gitdir:` whose admin directory EXISTS.
+      const adminDir = join(sandbox, 'peer-repo', '.git', 'worktrees', `so-worktree-${suffix}`);
+      mkdirSync(adminDir, { recursive: true });
+      writeFileSync(join(wtPath, '.git'), `gitdir: ${adminDir}\n`, 'utf8');
+      writeFileSync(join(wtPath, 'peer-work.txt'), 'live peer work', 'utf8');
+
+      mockGitResponses = retryResponses(wtPath);
+
+      await expect(createWorktree(suffix)).rejects.toThrow('createWorktree:');
+      expect(existsSync(wtPath)).toBe(true);
+      expect(existsSync(join(wtPath, 'peer-work.txt'))).toBe(true);
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
+  });
+
+  it('refuses a symlink at the target path pointing INSIDE the base — the sibling worktree survives', async () => {
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+
+    // Bug caught: without the leaf lstat-symlink refusal, a link whose target
+    // lies inside the base passes containment and the delete lands on the
+    // SIBLING worktree it points at.
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = sandbox;
+    try {
+      const base = join(sandbox, 'so-worktrees');
+      mkdirSync(base, { recursive: true });
+      const victim = join(base, `so-worktree-victim-${randomBytes(4).toString('hex')}`);
+      mkdirSync(victim, { recursive: true });
+      writeFileSync(join(victim, 'keep.txt'), 'sibling work', 'utf8');
+
+      const suffix = `inside-link-${randomBytes(4).toString('hex')}`;
+      const wtPath = join(base, `so-worktree-${suffix}`);
+      symlinkSync(victim, wtPath);
+
+      mockGitResponses = retryResponses(wtPath);
+
+      await expect(createWorktree(suffix)).rejects.toThrow('createWorktree:');
+      expect(existsSync(victim)).toBe(true);
+      expect(existsSync(join(victim, 'keep.txt'))).toBe(true);
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
+  });
+
+  it('refuses when the BASE directory is itself a symlink to an outside directory', async () => {
+    const { createWorktree } = await import('@lib/worktree/lifecycle.mjs');
+
+    // Bug caught: resolving the base through a symlink a co-tenant pre-created
+    // on the shared /tmp makes the link target the delete root — any
+    // `so-worktree-*` directory outside tmpdir then qualifies.
+    const prevTmpdir = process.env.TMPDIR;
+    process.env.TMPDIR = sandbox;
+    try {
+      const outside = join(sandbox, 'co-tenant-outside');
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, join(sandbox, 'so-worktrees'));
+
+      const suffix = `base-link-${randomBytes(4).toString('hex')}`;
+      const wtPath = join(sandbox, 'so-worktrees', `so-worktree-${suffix}`);
+      mkdirSync(wtPath, { recursive: true });
+      writeFileSync(join(wtPath, 'not-ours.txt'), 'foreign data', 'utf8');
+
+      mockGitResponses = retryResponses(wtPath);
+
+      await expect(createWorktree(suffix)).rejects.toThrow('createWorktree:');
+      expect(existsSync(join(outside, `so-worktree-${suffix}`, 'not-ours.txt'))).toBe(true);
+    } finally {
+      if (prevTmpdir === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = prevTmpdir;
+    }
   });
 });
 

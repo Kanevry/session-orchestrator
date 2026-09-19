@@ -20,7 +20,9 @@
  *
  * So this module imports ONLY `node:*` plus light siblings that are themselves
  * free of write paths: `../learnings/kebab.mjs`, `../learnings/schema.mjs`,
- * `./eligibility.mjs` (pure partition) and `./idempotency.mjs` (its READ half —
+ * `./eligibility.mjs` (pure partition), `../rule-loader.mjs` (#1387 — zero
+ * relative imports and no write paths of its own, measured 2026-09-18) and
+ * `./idempotency.mjs` (its READ half —
  * `loadCandidates` / `isProcessed`; `mergeCandidates`, the only writer there, is
  * never referenced from here). It MUST NOT import `./engine.mjs`,
  * `./emitter.mjs`, `./renderer.mjs` or `./writer.mjs` — a future import of any
@@ -41,6 +43,7 @@ import { isAbsolute, join } from 'node:path';
 
 import { learningKeyOf } from '../learnings/kebab.mjs';
 import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
+import { isRuleExpired, parseGlobsFrontmatter } from '../rule-loader.mjs';
 import { filterEligible } from './eligibility.mjs';
 import { isProcessed, loadCandidates as realLoadCandidates } from './idempotency.mjs';
 
@@ -186,8 +189,21 @@ const BODY_LEARNING_ID_RE = /-\s*learning-id:\s*`([^`]+)`/g;
  * single-learning file still deduped correctly — pinned by the "fresh clone,
  * consolidated shape" test in `tests/lib/reconcile/engine.test.mjs`.
  *
- * `rule-loader.mjs` only EXCLUDES expired rules from injection; it never
- * deletes a file, so an expired rule keeps deduping through these markers.
+ * An EXPIRED rule file is skipped WHOLE — frontmatter key and body bullets
+ * alike (#1387). `rule-loader.mjs` already refuses to inject such a file, so
+ * counting its markers here declared a learning materialized by a rule that no
+ * longer reaches any agent: materialized forever, re-proposable never. The
+ * expiry verdict comes from `isRuleExpired` in `rule-loader.mjs` — the SAME
+ * predicate the injection gate uses, and fail-open the same way (an absent or
+ * unparseable `expires-at` is NOT expired; fail-closed would un-materialize the
+ * whole corpus on one typo).
+ *
+ * KNOWN LIMIT (measured 2026-09-18): this covers only the on-disk half of
+ * {@link partitionMaterialized} (`sidecarTerminal || onDisk`). 79 of this
+ * repo's 92 provenance keys are ALSO terminal in the idempotency sidecar, so
+ * only 13 actually become re-proposable; the sidecar half is left untouched on
+ * purpose because it carries operator DECLINES. See `docs/rule-authoring.md`
+ * § Consolidated rules.
  *
  * Gated the same way as {@link defaultLoadCandidatesForDedupe}: an absent
  * `repoRoot` yields empty sets rather than falling back to `process.cwd()`.
@@ -201,6 +217,10 @@ export function defaultReadMaterializedProvenance(repoRoot) {
   const ids = new Set();
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) return { keys, ids };
 
+  // One clock reading for the whole scan, so two files cannot be judged
+  // against two different "now"s. Positional-only signature by contract (the
+  // engine's DI seam types it as `(repoRoot) => …`), hence no injectable clock.
+  const nowMs = Date.now();
   const rulesDir = join(repoRoot, '.claude', 'rules');
   let entries;
   try {
@@ -217,6 +237,16 @@ export function defaultReadMaterializedProvenance(repoRoot) {
     } catch {
       continue; // unreadable file — skip it, do not fail the whole scan
     }
+    // #1387 — an expired rule no longer reaches any agent, so its markers must
+    // not keep their learnings materialized. Malformed frontmatter throws here
+    // and is treated as "no expiry" (fail-open, same direction as the gate).
+    let expiresAt;
+    try {
+      ({ 'expires-at': expiresAt } = parseGlobsFrontmatter(content).meta);
+    } catch {
+      expiresAt = undefined;
+    }
+    if (isRuleExpired(expiresAt, nowMs)) continue;
     for (const m of content.matchAll(FRONTMATTER_LEARNING_KEY_RE)) {
       const v = m[1].trim();
       if (v) keys.add(v);

@@ -204,6 +204,19 @@ describe('Falle 4 — Kommentar auf der Feldzeile', () => {
     expect(q.multiSelect).toBe(true);
   });
 
+  // DER FEHLER (#1388, gemessen 2026-09-18 @ 20a4cbff): der frühere
+  // handgeschriebene Stripper kannte kein Regex-Literal, also las er das `/*`
+  // in `/\/*$/` als Block-Kommentar-Anfang und tilgte alles bis zum nächsten
+  // `*` + `/` — inklusive eines darunter stehenden `(Recommended)`-Labels. Die
+  // Länge blieb erhalten, die Zeilennummern stimmten, und die Option verschwand
+  // trotzdem: ein STILLER FALSCH-NEGATIVER Befund in der Klarheitsmessung.
+  it('lässt ein Regex-Literal mit `/*` die Optionen darunter NICHT verschlucken', () => {
+    const src = 'const re = /\\/*$/;\nlabel: "X (Recommended)",\n';
+    const out = stripComments(src);
+    expect(out).toHaveLength(src.length);
+    expect(out).toContain('(Recommended)');
+  });
+
   it('stripComments ist längenerhaltend, damit Zeilennummern gültig bleiben', () => {
     const src = 'a: "x", // "y"\nb: 2';
     const out = stripComments(src);

@@ -14,6 +14,7 @@ import { mkdtemp, rm, writeFile, mkdir, access, realpath, readFile, stat } from 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 
 // ---------------------------------------------------------------------------
 // Skip gracefully when git is not available
@@ -21,6 +22,26 @@ import { spawnSync } from 'node:child_process';
 
 const gitCheck = spawnSync('git', ['--version'], { encoding: 'utf8' });
 const gitAvailable = gitCheck.status === 0;
+
+// ---------------------------------------------------------------------------
+// Per-run suffix namespace (issue #984)
+// ---------------------------------------------------------------------------
+//
+// createWorktree puts every worktree at `<os.tmpdir()>/so-worktrees/
+// so-worktree-<suffix>` — a HOST-SHARED namespace. Several Claude sessions run
+// `npm test` concurrently on this machine, so fixed literal suffixes made two
+// runs create and delete each other's worktrees mid-assertion. A per-run token
+// makes every path and branch unique to this process; it is NOT a pre-clean of
+// the shared base directory, which would delete other sessions' worktrees.
+const RUN = randomBytes(4).toString('hex');
+
+/**
+ * Namespace a suffix to this test run. Kept short (name + 8 hex chars) so the
+ * resulting path stays well inside platform path limits.
+ * @param {string} name
+ * @returns {string}
+ */
+const sfx = (name) => `${name}-${RUN}`;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -162,7 +183,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   // -------------------------------------------------------------------------
 
   it('createWorktree returns a path under os.tmpdir()', async () => {
-    const wtPath = await createWorktree('test-suffix');
+    const wtPath = await createWorktree(sfx('test-suffix'));
     try {
       expect(path.isAbsolute(wtPath)).toBe(true);
       expect(wtPath.startsWith(tmpdir())).toBe(true);
@@ -173,7 +194,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   }, 15000);
 
   it('createWorktree creates the directory on disk', async () => {
-    const wtPath = await createWorktree('disk-check');
+    const wtPath = await createWorktree(sfx('disk-check'));
     try {
       expect(await exists(wtPath)).toBe(true);
     } finally {
@@ -182,10 +203,10 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   }, 15000);
 
   it('createWorktree creates branch so-worktree-<suffix> visible in listWorktrees', async () => {
-    const wtPath = await createWorktree('listed');
+    const wtPath = await createWorktree(sfx('listed'));
     try {
       const wts = await listWorktrees();
-      const found = wts.some(wt => wt.branch === 'so-worktree-listed');
+      const found = wts.some(wt => wt.branch === `so-worktree-${sfx('listed')}`);
       expect(found).toBe(true);
     } finally {
       await removeWorktree(wtPath).catch(() => {});
@@ -193,11 +214,11 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   }, 15000);
 
   it('createWorktree twice with the same suffix succeeds via force-cleanup retry', async () => {
-    const wtPath1 = await createWorktree('retry-suffix');
+    const wtPath1 = await createWorktree(sfx('retry-suffix'));
     // Do not remove — this forces the second call to hit the catch + retry path.
     let wtPath2;
     try {
-      wtPath2 = await createWorktree('retry-suffix');
+      wtPath2 = await createWorktree(sfx('retry-suffix'));
       expect(await exists(wtPath2)).toBe(true);
     } finally {
       await removeWorktree(wtPath2 ?? wtPath1).catch(() => {});
@@ -221,7 +242,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
     // Direct pattern-resolution is unit-tested below in the applyWorktreeExcludes suite.
     let wtPath;
     try {
-      wtPath = await createWorktree('null-exclude');
+      wtPath = await createWorktree(sfx('null-exclude'));
       expect(await exists(wtPath)).toBe(true);
     } finally {
       if (wtPath) await removeWorktree(wtPath).catch(() => {});
@@ -235,16 +256,16 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   // -------------------------------------------------------------------------
 
   it('removeWorktree removes the directory from disk', async () => {
-    const wtPath = await createWorktree('to-remove');
+    const wtPath = await createWorktree(sfx('to-remove'));
     await removeWorktree(wtPath);
     expect(await exists(wtPath)).toBe(false);
   }, 15000);
 
   it('removeWorktree removes the so-worktree branch', async () => {
-    const wtPath = await createWorktree('branch-remove');
+    const wtPath = await createWorktree(sfx('branch-remove'));
     await removeWorktree(wtPath);
     const wts = await listWorktrees();
-    const found = wts.some(wt => wt.branch === 'so-worktree-branch-remove');
+    const found = wts.some(wt => wt.branch === `so-worktree-${sfx('branch-remove')}`);
     expect(found).toBe(false);
   }, 15000);
 
@@ -255,7 +276,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
 
   it('removeWorktree on a worktree with uncommitted changes still removes it', async () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    const wtPath = await createWorktree('dirty');
+    const wtPath = await createWorktree(sfx('dirty'));
     try {
       // Create an uncommitted file inside the worktree.
       await writeFile(path.join(wtPath, 'dirty.txt'), 'uncommitted content', 'utf8');
@@ -273,7 +294,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(msg => {
       errorMessages.push(msg);
     });
-    const wtPath = await createWorktree('dirty-warn');
+    const wtPath = await createWorktree(sfx('dirty-warn'));
     try {
       await writeFile(path.join(wtPath, 'dirty2.txt'), 'uncommitted', 'utf8');
       await removeWorktree(wtPath);
@@ -290,8 +311,8 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   // -------------------------------------------------------------------------
 
   it('cleanupAllWorktrees removes all so-worktree-* branches, leaving main intact', async () => {
-    const wt1 = await createWorktree('cleanup-a');
-    const wt2 = await createWorktree('cleanup-b');
+    const wt1 = await createWorktree(sfx('cleanup-a'));
+    const wt2 = await createWorktree(sfx('cleanup-b'));
 
     await cleanupAllWorktrees();
 
@@ -314,7 +335,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   // -------------------------------------------------------------------------
 
   it('createWorktree persists meta at metaPathFor(suffix) with required fields', async () => {
-    const suffix = 'meta-check';
+    const suffix = sfx('meta-check');
     const wtPath = await createWorktree(suffix, 'HEAD');
     try {
       const expectedMetaPath = metaPathFor(suffix);
@@ -336,7 +357,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
   }, 15000);
 
   it('removeWorktree cleans up the meta file after removal', async () => {
-    const suffix = 'meta-cleanup';
+    const suffix = sfx('meta-cleanup');
     const wtPath = await createWorktree(suffix, 'HEAD');
     const metaPath = metaPathFor(suffix);
 
@@ -367,7 +388,7 @@ describe.skipIf(!gitAvailable).sequential('worktree integration tests', () => {
       warnMessages.push(msg);
     });
 
-    const suffix = 'meta-write-fail';
+    const suffix = sfx('meta-write-fail');
     let wtPath;
     try {
       wtPath = await createWorktree(suffix, 'HEAD');
@@ -455,7 +476,7 @@ describe.skipIf(!gitAvailable).sequential('worktree hardening helpers (#219)', (
   }, 15000);
 
   it('resolveWorkspaceRoot returns the MAIN repo root when called from a linked worktree', async () => {
-    const wtPath = await createWorktree('rwsr-linked');
+    const wtPath = await createWorktree(sfx('rwsr-linked'));
     try {
       const wtPathReal = await realpath(wtPath);
       process.chdir(wtPathReal);
@@ -506,7 +527,7 @@ describe.skipIf(!gitAvailable).sequential('worktree hardening helpers (#219)', (
   }, 15000);
 
   it('restoreCoordinatorCwd restores CWD to workspace root when drifted into a linked worktree', async () => {
-    const wtPath = await createWorktree('rcc-drifted');
+    const wtPath = await createWorktree(sfx('rcc-drifted'));
     try {
       const wtPathReal = await realpath(wtPath);
       process.chdir(wtPathReal);

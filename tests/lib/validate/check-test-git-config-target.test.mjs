@@ -41,6 +41,7 @@ import {
   runCheckTestGitConfigTarget,
   tokenizeArgv,
   tokenizeShellCommand,
+  wrapperHasCwd,
 } from '@lib/validate/check-test-git-config-target.mjs';
 import { removeTree } from '../../_helpers/tmp-fixture.mjs';
 
@@ -251,6 +252,32 @@ describe('inspectTestGitConfigTarget — the negative twins', () => {
     const root = fixtureRoot("// execFileSync('git', ['config', 'user.email', 'x']); <- the bug\n");
 
     expect(inspectTestGitConfigTarget(root).findings).toEqual([]);
+  });
+});
+
+describe('wrapperHasCwd — the two shapes the shared lexer changed (#1388)', () => {
+  // THE BUG (measured 2026-09-18 @ 20a4cbff): the local comment stripper had
+  // no regex-literal branch, so the `/*` inside `/\/*$/` opened a block comment
+  // that swallowed the rest of the tail — including the very `cwd: dir` that
+  // makes this call targeted. The check then reported a call that names its
+  // destination: a FALSE ALARM.
+  it('sees a `cwd:` that sits after a regex literal containing `/*`', () => {
+    expect(wrapperHasCwd(', undefined, { env: /\\/*$/.source, cwd: dir }')).toBe(true);
+  });
+
+  // THE OTHER DIRECTION, opened BY the delegation: `maskSource` blanks a
+  // comment to SPACES where the old stripper collapsed it to one space, and
+  // `wrapperHasCwd` judges its second positional against `second !== ''`. A run
+  // of spaces is truthy, so a comment-only tail COULD read as "has a cwd" — a
+  // silent FALSE NEGATIVE in a check whose job is catching untargeted calls.
+  // Measured 2026-09-18: it does not, because the `^\s*,\s*` prefix is greedy
+  // and eats every blanked byte. This pins that interaction rather than the
+  // `.trim()` the brief assumed was needed — the guard is the greedy prefix.
+  it('reads a comment-only tail as NO cwd, not as a cwd made of blanked comment bytes', () => {
+    expect(wrapperHasCwd(', /* no cwd at all */')).toBe(false);
+    expect(wrapperHasCwd(', /* a */ /* b */')).toBe(false);
+    // The control: a REAL second positional behind the same comment IS a cwd.
+    expect(wrapperHasCwd(', /* here it is */ dir')).toBe(true);
   });
 });
 

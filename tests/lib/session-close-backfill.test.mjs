@@ -1044,7 +1044,10 @@ describe('backfillCompletedFromStateMd — #429', () => {
 
     const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
 
-    expect(res).toEqual({ action: 'skipped-already-recorded', sessionId: 'main-2026-05-27-session-1' });
+    // #1388 P8: this is the key-occupancy branch, not the same-identity dedupe
+    // above it — it reports its own action so the backfill telemetry can tell
+    // "already recorded" apart from "a different session holds this key".
+    expect(res).toEqual({ action: 'skipped-key-occupied', sessionId: 'main-2026-05-27-session-1' });
     expect(readSessions()).toHaveLength(1);
   });
 

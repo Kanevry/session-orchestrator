@@ -1,6 +1,4 @@
 ---
-globs:
-  - scripts/**
 paths:
   - scripts/**
 tier: wave-only

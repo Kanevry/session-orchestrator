@@ -72,7 +72,22 @@ describe('convergence-monitor classify — event-type gate (#966)', () => {
     ],
     ['wave.started', { event: 'orchestrator.wave.started', wave: 1 }, 1],
     ['agent.dispatched', { event_type: 'agent.dispatched', wave_number: 2 }, 2],
-    ['agent.stopped carrying wave', { event: 'orchestrator.agent.stopped', wave: 4 }, 4],
+    [
+      'agent.stopped carrying wave AND an agent name',
+      { event: 'orchestrator.agent.stopped', wave: 4, agent: 'code-implementer' },
+      4,
+    ],
+    // --- rejected: the #939/#949 phantom-stop class (bimodal on `agent`) ---
+    [
+      'agent.stopped with wave but NO agent field (phantom stop)',
+      { event: 'orchestrator.agent.stopped', wave: 4 },
+      null,
+    ],
+    [
+      'agent.stopped with wave and an EMPTY agent field (phantom stop)',
+      { event: 'orchestrator.agent.stopped', wave: 4, agent: '' },
+      null,
+    ],
     [
       'quality_gate.passed with counts + wave_number (#980 reader half)',
       {
@@ -143,12 +158,18 @@ describe('convergence-monitor classify — event-type gate (#966)', () => {
  * #980 reader half — the two signals `pass_rate_plateau` and `velocity_drop`
  * were structurally unfireable: `classify` read a flat `test.passed` key and an
  * `agent.dispatched` event type, and NEITHER is emitted by anything in this
- * repo. Measured 2026-09-05 over `.orchestrator/metrics/events.jsonl`:
+ * repo. Re-measured 2026-09-18 over `.orchestrator/metrics/events.jsonl` AND
+ * its rotation `.jsonl.1` — and the agent count is now the FILTERED one, since
+ * the raw `agent.stopped` total is dominated by the #939/#949 phantom class
+ * (`cat .orchestrator/metrics/events.jsonl .orchestrator/metrics/events.jsonl.1 | …`):
  *
- *   jq -c 'select(.event=="orchestrator.agent.stopped")' … | wc -l          → 11754
- *   jq -c 'select((.event//"")|startswith("orchestrator.quality_gate."))
- *          | select(.wave_number != null and (.counts|type)=="object")' … | wc -l →    33
- *   grep -c '"test.passed"' .orchestrator/metrics/events.jsonl              →     0
+ *   jq -s '[.[]|select(.event=="orchestrator.agent.stopped")]|length'        → 16438
+ *   … + select((.wave//.wave_number)!=null)                                  →  6553
+ *   … + select((.agent//"")=="")   (phantom — NOT counted)                   →  5930
+ *   … + select((.agent//"")!="")   (what the counter reads)                   →   623
+ *   jq -s '[.[]|select(((.event//"")|startswith("orchestrator.quality_gate."))
+ *          and .wave_number != null and (.counts|type)=="object")]|length'   →    65
+ *   grep -c '"test.passed"' .orchestrator/metrics/events.jsonl               →     0
  *
  * So the ONLY per-wave pass count and the ONLY per-wave agent count in the
  * ledger sit in records `classify` refused. Falsification: revert the gate-fold
@@ -170,9 +191,32 @@ describe('convergence-monitor — golden records harvested from events.jsonl (#9
     semantic_session_id: 'main-redacted-session-1',
   };
 
-  // Harvested via
-  //   jq -c 'select(.event=="orchestrator.agent.stopped")' … | head -1
+  // Harvested 2026-09-18 via
+  //   jq -c 'select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null)
+  //          and ((.agent//"")!=""))' .orchestrator/metrics/events.jsonl* | head -1
+  // session ids redacted; every other field kept byte-for-byte. The `agent`
+  // field is load-bearing — see GOLDEN_AGENT_STOPPED_PHANTOM below.
   const GOLDEN_AGENT_STOPPED = {
+    timestamp: '2026-09-18T18:37:35.470Z',
+    event: 'orchestrator.agent.stopped',
+    session_id: '00000000-0000-4000-8000-000000000000',
+    semantic_session_id: 'main-redacted-session-1',
+    wave: 3,
+    agent: 'general-purpose',
+    agent_id: 'a2342b5cfaae63d71',
+    transcript_found: true,
+    tool_use_id: 'toolu_013TgXVkQqZLBhchVat6ru2J',
+    agent_type_meta: 'general-purpose',
+    duration_ms: 216949,
+    duration_source: 'meta-birthtime',
+    status: 'done',
+    schema_version: 1,
+  };
+
+  // The #939/#949 phantom-stop class — same event type, no `agent`. Harvested
+  // 2026-09-18 by the same jq with `((.agent//"")=="")`: 5930 of the 6553
+  // wave-scoped stops (90.5%) have this shape.
+  const GOLDEN_AGENT_STOPPED_PHANTOM = {
     timestamp: '2026-09-02T05:22:38.020Z',
     event: 'orchestrator.agent.stopped',
     schema_version: 1,
@@ -195,6 +239,22 @@ describe('convergence-monitor — golden records harvested from events.jsonl (#9
     classify(GOLDEN_AGENT_STOPPED, state);
     classify(GOLDEN_AGENT_STOPPED, state);
     expect(state.get(3).agentDispatchCount).toBe(3);
+  });
+
+  it('does not count the phantom-stop class toward the wave agent count (#1379 P10)', () => {
+    // The bug: `isWaveScopedEvent` admitted `orchestrator.agent.stopped`
+    // unconditionally, so the 90.5% of wave-scoped stops carrying no `agent`
+    // were counted as dispatched agents — a ~10.5x inflation of the per-wave
+    // count and of the `velocity_drop` signal derived from it. Falsification:
+    // drop the `namesAnAgent` half of the gate and this goes red.
+    const state = new Map();
+    expect(classify(GOLDEN_AGENT_STOPPED_PHANTOM, state)).toBeNull();
+    expect(classify({ ...GOLDEN_AGENT_STOPPED_PHANTOM, agent: undefined }, state)).toBeNull();
+    // A phantom must not even instantiate a WaveSummary — that is what advances
+    // `latestWave` and burns the once-per-wave emit keys.
+    expect(state.size).toBe(0);
+    expect(classify(GOLDEN_AGENT_STOPPED, state)).toBe(3);
+    expect(state.get(3).agentDispatchCount).toBe(1);
   });
 });
 
@@ -224,8 +284,12 @@ describe('convergence-monitor — signal firing on the folded measurements (#980
 
   it('fires velocity_drop when fewer agent.stopped records land in the later wave', () => {
     const state = new Map();
-    for (let i = 0; i < 6; i += 1) classify({ event: 'orchestrator.agent.stopped', wave: 1 }, state);
-    for (let i = 0; i < 2; i += 1) classify({ event: 'orchestrator.agent.stopped', wave: 2 }, state);
+    for (let i = 0; i < 6; i += 1) {
+      classify({ event: 'orchestrator.agent.stopped', wave: 1, agent: `a${i}` }, state);
+    }
+    for (let i = 0; i < 2; i += 1) {
+      classify({ event: 'orchestrator.agent.stopped', wave: 2, agent: `b${i}` }, state);
+    }
     const signals = captureSignals(state, 2);
     const drop = signals.find((s) => s.event === 'velocity_drop');
     expect(drop).toBeDefined();

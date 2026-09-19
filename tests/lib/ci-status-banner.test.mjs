@@ -153,6 +153,14 @@ function gitRevParseResponse(sha) {
   return { cmd: 'git', args: ['rev-parse', 'HEAD'], stdout: sha + '\n' };
 }
 
+// #857: the branch HEAD sits on, used to tell THIS branch's pipelines from an
+// MR's or a foreign branch's. Deliberately absent from the pre-#857 fixtures
+// above — an unstubbed lookup rejects, which is the "branch unknown" path, and
+// that path must keep behaving exactly as it did before #857.
+function gitBranchResponse(branch) {
+  return { cmd: 'git', args: ['rev-parse', '--abbrev-ref', 'HEAD'], stdout: branch + '\n' };
+}
+
 const ghRepoViewResponse = {
   cmd: 'gh',
   args: ['repo', 'view', '--json', 'nameWithOwner'],
@@ -327,6 +335,371 @@ describe('checkCiStatus — GitLab red with last-green', () => {
     expect(result.failingJobName).toBe('lint');
     expect(result.details.cliUsed).toBe('glab');
     expect(result.details.currentPipelineId).toBe(104);
+  });
+});
+
+// ── Test 2b: #857 several pipelines for ONE commit ────────────────────────────
+//
+// Every fixture above gives a commit exactly one pipeline, which is the
+// assumption the module used to state outright ("pipelines are one-per-commit
+// on this project"). Measured on the live project 2026-09-18 that is false for
+// 14 of ~86 distinct shas in the last 100 pipelines, and on 7 of them the
+// statuses CONTRADICT (`canceled`+`success`, `failed`+`success`, …). The 15-row
+// window also mixes refs — `main`, `refs/merge-requests/39/head`, a `codex/…`
+// branch — with no ref filter at all, so `.find(p => p.sha === sha)` could hand
+// a foreign ref's verdict to the local HEAD.
+//
+// Fixtures below are the REAL shapes of those rows (`ref`, `source`, `status`).
+
+describe('checkCiStatus — #857 multiple pipelines per commit', () => {
+  const OLD_GREEN_SHA = 'aaa000bbb111ccc222ddd333eee444fff55566677';
+  const OTHER_SHA = 'bbb111ccc222ddd333eee444fff555000aaa66677';
+
+  // (a) Live shape of sha 81c9ffa7: one MR pipeline, one branch pipeline.
+  // Without the ref preference the MR row (first in `updated_at desc` order)
+  // becomes HEAD's verdict and the banner reports the branch red.
+  it('prefers the current branch ref over a merge-request pipeline for the same sha', async () => {
+    const pipelines = [
+      {
+        id: 402,
+        sha: HEAD_SHA,
+        ref: 'refs/merge-requests/39/head',
+        source: 'merge_request_event',
+        status: 'failed',
+        created_at: '2026-05-10T11:00:00Z',
+      },
+      {
+        id: 401,
+        sha: HEAD_SHA,
+        ref: 'main',
+        source: 'push',
+        status: 'success',
+        created_at: '2026-05-10T10:00:00Z',
+      },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(401, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('green');
+    expect(result.details.currentPipelineId).toBe(401);
+    expect(result.details.matchedRef).toBe('main');
+    // The MR row is not a candidate at all, so nothing is ambiguous here.
+    expect(result.details.ambiguous).toBeUndefined();
+    expect(result.details.candidateStatuses).toBeUndefined();
+  });
+
+  // (b) Live shape of sha 52ae12f1: SAME commit, SAME ref, contradicting
+  // statuses from different sources. Worst-status-wins keeps the verdict
+  // conservative; the disagreement itself is published beside it.
+  it('reports the WORST status and publishes the disagreement when same-ref pipelines contradict', async () => {
+    const pipelines = [
+      {
+        id: 502,
+        sha: HEAD_SHA,
+        ref: 'main',
+        source: 'push',
+        status: 'canceled',
+        created_at: '2026-05-10T11:00:00Z',
+      },
+      {
+        id: 501,
+        sha: HEAD_SHA,
+        ref: 'main',
+        source: 'api',
+        status: 'success',
+        created_at: '2026-05-10T10:00:00Z',
+      },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(502, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('red');
+    expect(result.details.currentPipelineId).toBe(502);
+    // The operator can tell WHY it reads red — and that a green sibling exists.
+    expect(result.details.reason).toBe('pipeline-canceled');
+    expect(result.details.ambiguous).toBe(true);
+    expect(result.details.candidateCount).toBe(2);
+    expect(result.details.candidateStatuses).toEqual(['canceled', 'success']);
+    expect(result.details.matchedRef).toBe('main');
+  });
+
+  // (c) The self-contradiction: the same commit named red AND named as its own
+  // `lastGreen`, because the look-back slice started one ROW after the chosen
+  // pipeline and the commit's other row was a `success`.
+  it('never names the queried commit as its own lastGreen', async () => {
+    const pipelines = [
+      { id: 602, sha: HEAD_SHA, ref: 'main', source: 'push', status: 'canceled', created_at: '2026-05-10T11:00:00Z' },
+      { id: 601, sha: HEAD_SHA, ref: 'main', source: 'api', status: 'success', created_at: '2026-05-10T10:30:00Z' },
+      { id: 600, sha: OTHER_SHA, ref: 'main', source: 'push', status: 'failed', created_at: '2026-05-09T10:00:00Z' },
+      { id: 599, sha: OLD_GREEN_SHA, ref: 'main', source: 'push', status: 'success', created_at: '2026-05-07T11:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(602, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('red');
+    expect(result.lastGreen.sha).not.toBe(HEAD_SHA);
+    expect(result.lastGreen.sha).toBe(OLD_GREEN_SHA);
+    expect(result.lastGreen.pipelineId).toBe(599);
+    // Two commits back, two red pipeline rows (the `success` duplicate of HEAD
+    // is excluded from the run, it is the same commit).
+    expect(result.lastGreen.ageCommits).toBe(2);
+    expect(result.lastGreen.agePipelines).toBe(2);
+    expect(result.redCount).toBe(2);
+  });
+
+  // (d) Live shape of sha 81c9ffa7 seen from a THIRD branch: pipelines exist for
+  // the commit, but every one of them belongs to someone else's BRANCH. Adopting
+  // one would publish a foreign verdict; claiming "no pipeline" would hide that
+  // runs exist. The finding is delivered as a REASON — the status vocabulary
+  // stays green|red|unknown.
+  //
+  // Both refs here are branch refs on purpose: an MR HEAD ref carrying the
+  // queried sha is NOT foreign (it is the same commit, only reached by another
+  // name) and is an accepted tier-3 candidate — see the MR-only test below.
+  it('reports unknown with `pipeline-unmatched-ref` when every pipeline for the sha is on a foreign ref', async () => {
+    const pipelines = [
+      {
+        id: 702,
+        sha: HEAD_SHA,
+        ref: 'release/1.x',
+        source: 'push',
+        status: 'success',
+        created_at: '2026-05-10T11:00:00Z',
+      },
+      {
+        id: 701,
+        sha: HEAD_SHA,
+        ref: 'codex/ecc-systematic-review',
+        source: 'push',
+        status: 'failed',
+        created_at: '2026-05-10T10:00:00Z',
+      },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('unknown');
+    expect(result.ok).toBe(false);
+    expect(result.details.reason).toBe('pipeline-unmatched-ref');
+    expect(result.details.currentPipelineId).toBeNull();
+    expect(result.details.candidateCount).toBe(2);
+    expect(result.details.candidateStatuses).toEqual(['success', 'failed']);
+  });
+
+  // (e) A cancellation printed `🚨 CI RED on HEAD` indistinguishably from a real
+  // failure. The status stays `red` (consumers key on that literal), the
+  // distinction arrives through the reason both renderers already interpolate.
+  it('names a cancellation as `pipeline-canceled` while keeping status red', async () => {
+    const pipelines = [
+      { id: 801, sha: HEAD_SHA, ref: 'main', source: 'push', status: 'canceled', created_at: '2026-05-10T11:00:00Z' },
+      { id: 800, sha: OLD_GREEN_SHA, ref: 'main', source: 'push', status: 'success', created_at: '2026-05-09T11:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(801, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('red');
+    expect(result.details.reason).toBe('pipeline-canceled');
+    // A single candidate is not ambiguous — the evidence fields stay absent so
+    // an ordinary reading is byte-identical to a pre-#857 one.
+    expect(result.details.ambiguous).toBeUndefined();
+    expect(result.details.candidateCount).toBeUndefined();
+  });
+
+  // (f) `ageCommits` used to be the ROW count under a comment asserting
+  // one-pipeline-per-commit. With a re-run in the window it overstated the
+  // distance to the last green.
+  it('counts ageCommits over DISTINCT shas and keeps the row count as agePipelines', async () => {
+    const pipelines = [
+      { id: 904, sha: HEAD_SHA, ref: 'main', source: 'push', status: 'failed', created_at: '2026-05-10T11:00:00Z' },
+      { id: 903, sha: OTHER_SHA, ref: 'main', source: 'api', status: 'failed', created_at: '2026-05-09T12:00:00Z' },
+      { id: 902, sha: OTHER_SHA, ref: 'main', source: 'push', status: 'failed', created_at: '2026-05-09T11:00:00Z' },
+      { id: 901, sha: OLD_GREEN_SHA, ref: 'main', source: 'push', status: 'success', created_at: '2026-05-07T11:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(904, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('red');
+    // Three red ROWS, but only TWO commits between HEAD and the last green.
+    expect(result.redCount).toBe(3);
+    expect(result.lastGreen.agePipelines).toBe(3);
+    expect(result.lastGreen.ageCommits).toBe(2);
+    expect(result.lastGreen.sha).toBe(OLD_GREEN_SHA);
+  });
+
+  // (g) BUG this catches (HIGH-1, repro'd 2026-09-18): a repo whose
+  // `workflow: rules:` admit only `$CI_PIPELINE_SOURCE == "merge_request_event"`
+  // produces NO branch pipeline for the sha — only a detached MR pipeline on
+  // `refs/merge-requests/<iid>/head`. Tiers 1-2 are then empty, and before the
+  // MR tier the whole repo read `unknown / pipeline-unmatched-ref` for a commit
+  // whose verdict was sitting right there (pre-#857 it read `green`). Sha
+  // equality is the correctness argument; the ref only names WHO spoke.
+  it('adopts a merge-request HEAD pipeline for the queried sha when no branch pipeline exists', async () => {
+    const pipelines = [
+      {
+        id: 1002,
+        sha: HEAD_SHA,
+        ref: 'refs/merge-requests/41/head',
+        source: 'merge_request_event',
+        status: 'success',
+        created_at: '2026-05-10T11:00:00Z',
+      },
+      { id: 1001, sha: OTHER_SHA, ref: 'main', source: 'push', status: 'success', created_at: '2026-05-09T11:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('feature/mr-only'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(1002, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('green');
+    expect(result.details.currentPipelineId).toBe(1002);
+    // The operator sees WHICH ref spoke for the verdict.
+    expect(result.details.matchedRef).toBe('refs/merge-requests/41/head');
+  });
+
+  // (h) BUG this catches (HIGH-2, vacuum-green proof): mutating
+  // `statusSeverity('failed')` to 1 or 0 left all 55 tests in this file green —
+  // no fixture paired a same-sha same-ref `failed` (older) with a `success`
+  // (newer). Under such a mutant the newer `success` wins and a genuinely failed
+  // commit reads green. Row order is the API's `updated_at desc`, so the
+  // `success` comes FIRST — which is exactly what makes the mutant survive.
+  it('reports red when an older same-ref `failed` contradicts a newer `success`', async () => {
+    const pipelines = [
+      { id: 1102, sha: HEAD_SHA, ref: 'main', source: 'api', status: 'success', created_at: '2026-05-10T11:00:00Z' },
+      { id: 1101, sha: HEAD_SHA, ref: 'main', source: 'push', status: 'failed', created_at: '2026-05-10T10:00:00Z' },
+      { id: 1100, sha: OLD_GREEN_SHA, ref: 'main', source: 'push', status: 'success', created_at: '2026-05-07T11:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(1101, [{ name: 'test', status: 'failed' }]),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('red');
+    expect(result.details.currentPipelineId).toBe(1101);
+    expect(result.details.ambiguous).toBe(true);
+    expect(result.details.candidateStatuses).toEqual(['success', 'failed']);
+    expect(result.failingJobName).toBe('test');
+  });
+
+  // (i) BUG this catches (MED-1, repro'd 2026-09-18): `skipped` and `manual` are
+  // TERMINAL non-failing states, but sat in the "unsettled" bucket above
+  // `success`. The ordinary `rules:`-gated shape (`success` + `skipped` for one
+  // commit) therefore read `unknown / unrecognised-status-skipped` where the
+  // pre-#857 reading was `green`. They must never beat a real reading in either
+  // direction — while a LONE `skipped` keeps today's `unknown`.
+  it.each([
+    { label: 'success beside skipped', second: 'skipped', expected: 'green' },
+    { label: 'success beside manual', second: 'manual', expected: 'green' },
+    { label: 'failed beside skipped', second: 'skipped', first: 'failed', expected: 'red' },
+    { label: 'skipped alone', first: 'skipped', expected: 'unknown' },
+  ])('resolves $label as $expected', async ({ first = 'success', second, expected }) => {
+    const pipelines = [
+      { id: 1202, sha: HEAD_SHA, ref: 'main', source: 'push', status: first, created_at: '2026-05-10T11:00:00Z' },
+      ...(second
+        ? [{ id: 1201, sha: HEAD_SHA, ref: 'main', source: 'api', status: second, created_at: '2026-05-10T10:00:00Z' }]
+        : []),
+      { id: 1200, sha: OLD_GREEN_SHA, ref: 'main', source: 'push', status: 'success', created_at: '2026-05-07T11:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse('main'),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(1202, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe(expected);
+    // The verdict always speaks for the pipeline that carries it, never for the
+    // terminal-but-silent sibling.
+    expect(result.details.currentPipelineId).toBe(1202);
   });
 });
 
@@ -556,6 +929,12 @@ describe('checkCiStatus — #1332 explicit sha', () => {
     });
     expect(mockExecFile.mock.calls.map(([cmd, args]) => [cmd, args])).toEqual([
       ['git', ['remote', '-v']],
+      // #857 branch lookup. It does NOT weaken the statement this test makes:
+      // `rev-parse --abbrev-ref HEAD` asks for the NAME of the ref HEAD is on
+      // (needed to tell this branch's pipelines from an MR's or a foreign
+      // branch's), never for HEAD's object id — which is what `opts.sha`
+      // replaces and what `rev-parse HEAD`, absent below, would have fetched.
+      ['git', ['rev-parse', '--abbrev-ref', 'HEAD']],
       [
         'glab',
         [
@@ -983,6 +1362,8 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
     expect(mockExecFile.mock.calls.map(([cmd, args]) => [cmd, args])).toEqual([
       ['git', ['remote', '-v']],
       ['git', ['rev-parse', 'HEAD']],
+      // #857: the ref-preference lookup (branch name, not object id).
+      ['git', ['rev-parse', '--abbrev-ref', 'HEAD']],
       [
         'glab',
         [

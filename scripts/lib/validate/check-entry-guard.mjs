@@ -76,7 +76,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { isMainModule } from '../is-main-module.mjs';
-import { maskSource } from './check-untracked-test-deps.mjs';
+import { maskSource } from '../js-mask.mjs';
 
 /**
  * Files whose `process.argv[1]` comparison the oracle flags but which are NOT

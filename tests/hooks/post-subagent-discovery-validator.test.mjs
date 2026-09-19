@@ -36,7 +36,15 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -44,6 +52,8 @@ import {
   dedupeViolations,
   findViolations,
   normalizeClaim,
+  readTranscriptTail,
+  TAIL_WINDOW_BYTES,
 } from '../../hooks/_lib/subagent-transcript.mjs';
 
 const HOOK = new URL('../../hooks/post-subagent-discovery-validator.mjs', import.meta.url).pathname;
@@ -415,7 +425,7 @@ describe('post-subagent-discovery-validator hook', () => {
     writeAgentTranscript(['The repo has 14 commits since the session-start ref.']);
     writeFileSync(
       join(tmp, SUBAGENTS_REL, `agent-${AGENT_ID}.meta.json`),
-      JSON.stringify({ agentType: 'general-purpose', description: 'W1 d5\nAudit' }),
+      JSON.stringify({ agentType: 'general-purpose', description: 'W1\x00d5\nAudit' }),
       'utf8',
     );
 
@@ -1550,5 +1560,57 @@ describe('#1198 claim normalisation and dedup', () => {
     // into one and silently lose a violation.
     const out = dedupeViolations(['14 commits since the ref', '15 commits since the ref']);
     expect(out).toHaveLength(2);
+  });
+});
+
+// #1388 P4 — readTranscriptTail reads a BOUNDED window, not the whole file
+// ---------------------------------------------------------------------------
+
+describe('#1388 readTranscriptTail bounded tail window', () => {
+  let box;
+
+  beforeEach(() => {
+    box = mkdtempSync(join(tmpdir(), 'so-tail-window-'));
+  });
+
+  afterEach(() => {
+    rmSync(box, { recursive: true, force: true });
+  });
+
+  it('returns the last 8 assistant records when the file exceeds the window', async () => {
+    // bug_caught: the window is sized below the span the last TAIL_RECORDS
+    // records really occupy, so the OLDEST of the eight is silently dropped —
+    // no error, no short read, just a shorter scan corpus than the whole-file
+    // reader delivered. The record sizes here are FIXED (180 KB each → ~1.44 MB
+    // for eight), deliberately not derived from TAIL_WINDOW_BYTES: a fixture
+    // that scales with the constant can never go red when the constant shrinks.
+    // 180 KB sits between the measured p99 span (322 KB for all eight) and the
+    // measured max (1.25 MB), so this pins the documented ceiling, and the
+    // leading oversized record makes the window's first line a severed
+    // fragment — the partial-line path readTailWindow reports via `cut`.
+    const RECORD_TEXT_BYTES = 180 * 1024;
+    const texts = Array.from(
+      { length: 10 },
+      (_, i) => `record ${i}: 4 of 4 callers opt in. ` + String(i).repeat(RECORD_TEXT_BYTES),
+    );
+    const records = ['x'.repeat(512 * 1024), ...texts].map((text) =>
+      JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text }] } }),
+    );
+    const file = join(box, 'transcript.jsonl');
+    writeFileSync(file, records.join('\n') + '\n', 'utf8');
+    expect(statSync(file).size).toBeGreaterThan(TAIL_WINDOW_BYTES);
+
+    const out = await readTranscriptTail(file);
+
+    expect(out).toBe(texts.slice(-8).join('\n'));
+  });
+
+  it('returns the empty string for a missing transcript', async () => {
+    // bug_caught: readTailWindow THROWS on fs errors where the former
+    // fs.readFile catch swallowed them. An unmapped throw propagates into
+    // hooks/post-subagent-discovery-validator.mjs, which has no transcript
+    // whenever the sidecar path is stale — turning a silent no-op into a
+    // crashing SubagentStop hook.
+    await expect(readTranscriptTail(join(box, 'does-not-exist.jsonl'))).resolves.toBe('');
   });
 });

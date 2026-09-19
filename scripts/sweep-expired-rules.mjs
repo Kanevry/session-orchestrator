@@ -115,15 +115,25 @@ export function parseArgs(argv) {
   return args;
 }
 
-/** Roll the plan up into the summary both output modes render. */
-function summarize(plan, args, applied) {
+/**
+ * Roll the plan up into the summary both output modes render.
+ *
+ * `header_raises` is additive (#1388 P7): a header-raise is an
+ * `action: 'rewrite'` plan carrying `reason: 'header-raise'`, so it was counted
+ * inside `rewrites` and invisible on the human stdout line although `--json`
+ * always carried `plans[].reason`. It is a SUBSET of `rewrites`, never a
+ * sibling category — the two are deliberately not disjoint.
+ */
+export function summarize(plan, args, applied) {
   const counts = { rewrite: 0, delete: 0, keep: 0 };
   for (const p of plan.plans) counts[p.action] = (counts[p.action] ?? 0) + 1;
+  const headerRaises = plan.plans.filter((p) => p.reason === 'header-raise').length;
   return {
     dry_run: args.dryRun,
     grace_days: args.graceDays,
     files_scanned: plan.plans.length,
     rewrites: counts.rewrite,
+    header_raises: headerRaises,
     deletes: counts.delete,
     keeps: counts.keep,
     expired_entries: plan.plans.reduce((n, p) => n + p.expiredPairIds.length, 0),
@@ -163,7 +173,8 @@ async function main(argv) {
   else {
     process.stdout.write(
       `sweep-expired-rules: ${args.dryRun ? 'dry-run' : 'applied'} — ` +
-        `${summary.files_scanned} generated rule file(s), ${summary.rewrites} rewrite(s), ` +
+        `${summary.files_scanned} generated rule file(s), ${summary.rewrites} rewrite(s) ` +
+        `(${summary.header_raises} header-raise(s)), ` +
         `${summary.deletes} delete(s), ${summary.expired_entries} expired entr(ies), ` +
         `${summary.unresolved_pairs} unresolved pair(s), ${summary.skipped.length} skipped, ` +
         `${summary.malformed_lines} malformed learnings line(s)\n`,

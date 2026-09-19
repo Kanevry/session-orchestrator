@@ -32,7 +32,7 @@ Only include if the plan changed:
 
 - One table row per agent — no nested details
 - Status is exactly one of: `done`, `partial`, `failed`
-- File lists use short relative paths (e.g., `hooks/on-stop.sh`)
+- File lists use short relative paths (e.g., `hooks/on-stop.mjs`)
 - Quality gates are pass/fail — no ambiguity
 - Adaptations only when deviating from plan — omit if on track
 - Keep under 20 lines total

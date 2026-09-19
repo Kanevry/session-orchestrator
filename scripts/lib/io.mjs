@@ -711,12 +711,33 @@ export function emitRewrite(updatedInput) {
     process.exit(0);
   };
 
-  if (updatedInput === null || typeof updatedInput !== 'object' || Array.isArray(updatedInput)) {
-    // `updatedInput` is a MAP in the bundle schema, so an array is as wrong as a
-    // string — and an array would serialize into a shape the harness cannot use.
-    bail(
-      `was called with ${Array.isArray(updatedInput) ? 'an array' : String(updatedInput === null ? 'null' : typeof updatedInput)}, not a tool-input object`,
-    );
+  // `updatedInput` is a MAP in the bundle schema, so an array is as wrong as a
+  // string — and an array would serialize into a shape the harness cannot use.
+  //
+  // PLAIN object only, and `typeof === 'object'` is not that test. An object
+  // WRAPPER passes it and then serializes to something else entirely:
+  // `new Date()` and `new String('x')` become JSON STRINGS (their `toJSON` /
+  // primitive form), `new Map([...])` becomes `{}` — which looks valid and,
+  // per the doc above, deletes every field of the tool input. Each of the three
+  // reaches the harness as a schema-invalid `updatedInput`, and the bundle
+  // turns that into `behavior: "deny"`: on the `AskUserQuestion` path the
+  // operator's question is destroyed to save a rewrite. A prototype of
+  // `Object.prototype` (a literal) or `null` (`Object.create(null)`) is the
+  // whole admissible set; everything else takes the same no-op-plus-stderr
+  // contract as `null`, an array or a string.
+  const proto =
+    updatedInput !== null && typeof updatedInput === 'object'
+      ? Object.getPrototypeOf(updatedInput)
+      : undefined;
+  const isPlainObject =
+    !Array.isArray(updatedInput) && (proto === Object.prototype || proto === null);
+  if (!isPlainObject) {
+    let described;
+    if (Array.isArray(updatedInput)) described = 'an array';
+    else if (updatedInput === null) described = 'null';
+    else if (typeof updatedInput !== 'object') described = String(typeof updatedInput);
+    else described = `a non-plain object (${proto?.constructor?.name ?? 'unknown prototype'})`;
+    bail(`was called with ${described}, not a tool-input object`);
   }
 
   let line;
@@ -731,11 +752,24 @@ export function emitRewrite(updatedInput) {
       },
     });
   } catch (err) {
-    // A cycle or a BigInt in the caller's object. JSON.stringify can also return
-    // undefined (a toJSON that yields undefined) — caught by the same guard.
+    // A cycle or a BigInt in the caller's object.
     bail(`could not serialize the tool input (${err?.message ?? String(err)})`);
   }
 
+  // `JSON.stringify` returns `undefined` only for a TOP-LEVEL value it drops —
+  // and `updatedInput` sits NESTED inside the envelope literal above, so at this
+  // call site it never can. Measured 2026-09-18 with
+  // `{ toJSON() { return undefined; } }` as `updatedInput`: stdout is
+  // `{"hookSpecificOutput":{"hookEventName":"PreToolUse"}}` (53 bytes) — the
+  // property is silently OMITTED, not undefined, and the guard below does not
+  // fire. That degraded state is the safe one (an envelope without
+  // `updatedInput` carries no rewrite, so the tool call runs with its original
+  // input — exactly what `bail` produces), which is why it is documented rather
+  // than checked: re-parsing up to REWRITE_ENVELOPE_MAX_BYTES on every rewrite
+  // to recover one stderr line is a poor trade. The guard stays because it is
+  // the envelope SHAPE that makes the case unreachable: hoist `updatedInput` to
+  // the top level, or hand the literal to a helper that returns it, and
+  // `undefined` becomes reachable again.
   if (typeof line !== 'string') {
     bail('serialized the tool input to undefined (a toJSON returning undefined?)');
   }

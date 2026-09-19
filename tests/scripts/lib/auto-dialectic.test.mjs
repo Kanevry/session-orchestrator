@@ -29,12 +29,17 @@ import {
   DEFAULT_CADENCE,
   DIALECTIC_LAST_RUN_PATH,
   DIALECTIC_PENDING_PATH,
+  DIALECTIC_CONSUMED_DIR,
+  DIALECTIC_CONSUMED_RETENTION,
   readDialecticLastRun,
   readDialecticSignals,
   shouldDispatchAutoDialectic,
   writeDialecticLastRun,
   writeDialecticPending,
   readDialecticPending,
+  consumeDialecticPending,
+  renderPendingBody,
+  comparePendingBody,
 } from '@lib/auto-dialectic.mjs';
 
 // ---------------------------------------------------------------------------
@@ -685,5 +690,128 @@ describe('readDialecticPending', () => {
     mkdirSync(join(repoRoot, '.orchestrator', 'dialectic-pending.md'), { recursive: true });
     const result = await readDialecticPending({ repoRoot });
     expect(result).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// renderPendingBody / comparePendingBody (#1386, variant b)
+// ---------------------------------------------------------------------------
+
+describe('renderPendingBody + comparePendingBody', () => {
+  // BUG: the serializer lived only as a snippet in skill prose, so the apply-time
+  // comparison would have re-implemented it — a formatting-only difference would
+  // then be reported as drift on every single apply.
+  it('round-trips: a sidecar written from renderPendingBody() is not drifted against the same body', async () => {
+    const repoRoot = tmp();
+    const body = renderPendingBody({ user: '-old\n+new\n', agent: '-a\n+b' });
+    expect(body).toContain('# target: user');
+    expect(body).toContain('# target: agent');
+
+    await writeDialecticPending({ repoRoot, diff: body });
+    const cmp = await comparePendingBody({ repoRoot, body });
+
+    expect(cmp).toMatchObject({ ok: true, drifted: false, sidecarAbsent: false });
+    expect(cmp.sidecarBody.trimEnd()).toBe(body.trimEnd());
+  });
+
+  // BUG (#1386): `--apply` re-derives, so the applied text can differ from the
+  // reviewed sidecar. Without this comparison the divergence is invisible.
+  it('reports drift and returns BOTH bodies when the fresh proposal differs', async () => {
+    const repoRoot = tmp();
+    const approved = renderPendingBody({ user: '-old\n+approved' });
+    const fresh = renderPendingBody({ user: '-old\n+fresh' });
+
+    await writeDialecticPending({ repoRoot, diff: approved });
+    const cmp = await comparePendingBody({ repoRoot, body: fresh });
+
+    expect(cmp.ok).toBe(true);
+    expect(cmp.drifted).toBe(true);
+    expect(cmp.sidecarAbsent).toBe(false);
+    expect(cmp.sidecarBody).toContain('+approved');
+    expect(cmp.freshBody).toContain('+fresh');
+  });
+
+  // BUG: a naive `split('---')` frontmatter strip truncates any body containing
+  // a `---` line — and diff bodies do. That would report drift on an identical
+  // proposal whose text happens to carry a horizontal rule.
+  it('strips only the leading frontmatter delimiters, so a body containing a `---` line is not drifted', async () => {
+    const repoRoot = tmp();
+    const body = renderPendingBody({ user: '-old\n---\n+new\n---\n+tail' });
+    expect(body).toContain('\n---\n');
+
+    await writeDialecticPending({ repoRoot, diff: body });
+    const cmp = await comparePendingBody({ repoRoot, body });
+
+    expect(cmp.drifted).toBe(false);
+    expect(cmp.sidecarBody).toContain('+tail');
+  });
+
+  // BUG: treating a missing sidecar as drift would raise an AUQ on every apply
+  // that skipped the dry-run — a prompt that blocks nothing (AUQ-001).
+  it('an absent sidecar is not drift', async () => {
+    const repoRoot = tmp();
+    const cmp = await comparePendingBody({ repoRoot, body: renderPendingBody({ user: '+x' }) });
+    expect(cmp).toEqual({ ok: true, drifted: false, sidecarAbsent: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// consumeDialecticPending — archive instead of unlink (#1388 P9)
+// ---------------------------------------------------------------------------
+
+describe('consumeDialecticPending', () => {
+  const consumedDir = (repoRoot) => join(repoRoot, DIALECTIC_CONSUMED_DIR);
+
+  // BUG (#1388 P9): the consume unlinked the sidecar, destroying the only copy
+  // of the proposal the operator had reviewed.
+  it('MOVES the sidecar into .orchestrator/consumed/ with identical content', async () => {
+    const repoRoot = tmp();
+    const body = renderPendingBody({ user: '-old\n+new' });
+    await writeDialecticPending({ repoRoot, diff: body });
+    const original = readFileSync(join(repoRoot, DIALECTIC_PENDING_PATH), 'utf8');
+
+    const result = await consumeDialecticPending({ repoRoot });
+
+    expect(result.ok).toBe(true);
+    expect(result.consumed).toBe(true);
+    expect(existsSync(join(repoRoot, DIALECTIC_PENDING_PATH))).toBe(false);
+    const archived = readdirSync(consumedDir(repoRoot));
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).not.toContain(':');
+    expect(readFileSync(join(consumedDir(repoRoot), archived[0]), 'utf8')).toBe(original);
+    expect(result.archivedTo).toBe(join(consumedDir(repoRoot), archived[0]));
+  });
+
+  // BUG: an unbounded archive of untracked `.orchestrator/**` files becomes a
+  // standing `checkStaleArtifacts` hygiene finding (project-hygiene.mjs).
+  it('prunes to the newest 10 archives — 11 consumes leave 10 files', async () => {
+    const repoRoot = tmp();
+    for (let i = 0; i < 11; i += 1) {
+      await writeDialecticPending({ repoRoot, diff: `# proposal ${i}\n` });
+      const res = await consumeDialecticPending({ repoRoot });
+      expect(res.ok).toBe(true);
+    }
+    // The literal, not the constant: asserting against
+    // DIALECTIC_CONSUMED_RETENTION passes for every retention value (mutant
+    // 10→9 survived), so the BV-004 ceiling this test's title names was
+    // unfalsifiable.
+    expect(readdirSync(consumedDir(repoRoot))).toHaveLength(10);
+  });
+
+  // BUG: the pruning above keeps whatever the constant says; a silent bump of
+  // the ceiling (say to 50) would leave the archive growing past the hygiene
+  // budget it was sized for, with the pruning test still green at its own
+  // literal. One line pins the ceiling itself.
+  it('declares the archive ceiling as 10', () => {
+    expect(DIALECTIC_CONSUMED_RETENTION).toBe(10);
+  });
+
+  // BUG: "already gone" must stay the desired end state — a throwing or
+  // ok:false consume would abort the Step 6.4 bookkeeping pair mid-way.
+  it('resolves cleanly with consumed:false when no sidecar exists', async () => {
+    const repoRoot = tmp();
+    const result = await consumeDialecticPending({ repoRoot });
+    expect(result).toMatchObject({ ok: true, consumed: false });
+    expect(existsSync(consumedDir(repoRoot))).toBe(false);
   });
 });

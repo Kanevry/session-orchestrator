@@ -316,7 +316,7 @@ Capture the exit code. If non-zero, parse the output for error count and file lo
 
 3. **Write the skill instructions.** Follow the principles in [Skill Anatomy](#skill-anatomy). Structure the skill in numbered phases or steps.
 
-4. **Add supporting files if needed.** Place them in the same directory (e.g., `skills/my-skill/templates.md`). Reference them from SKILL.md with instructions like "Read `templates.md` in this skill directory."
+4. **Add supporting files if needed.** Place them in the same directory (e.g., `skills/my-skill/templates.md` <!-- path-check: example -->). Reference them from SKILL.md with instructions like "Read `templates.md` in this skill directory."
 
 5. **If the skill should be a slash command, set `user-invocable: true` in the SKILL.md frontmatter** (plus `argument-hint` / `disable-model-invocation` where needed — see `skills/go/SKILL.md`). Do NOT add a `commands/<name>.md`: a command beside a same-named user-invocable skill claims one `/name` twice — `generate-pi-prompts.mjs` and `generate-cursor-adapter.mjs` abort on the collision, and `tests/commands/headless-bare-command-availability.test.mjs` forbids the twin (#1370).
 

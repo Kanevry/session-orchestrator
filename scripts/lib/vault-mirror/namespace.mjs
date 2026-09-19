@@ -47,6 +47,7 @@ import { isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs'
 import { loadPseudonymMap } from './pseudonym-map.mjs';
 import { loadHostPaths, resolveHostPath } from '../config/host-paths.mjs';
 import { isQueryFailure, resolvePreferredRemote } from '../vcs-repo-spec.mjs';
+import { readVaultSlug } from '../vault-yaml.mjs';
 
 // ── Lazy pseudonym-map path resolution (Epic #725 D5) ────────────────────────
 // The map path comes from env SO_NAMESPACE_MAP > owner.yaml paths.namespace-map-path
@@ -237,8 +238,9 @@ function lookupPseudonym(base, seg) {
  *
  * @param {object}  [opts]
  * @param {string|null} [opts.vaultName] - Optional override for the repo identifier.
- *   When non-empty and non-whitespace, used in place of the git-derived repo name.
- *   When absent, the namespace is derived from the git origin via deriveRepo().
+ *   When non-empty and non-whitespace, used in place of the declared/git-derived
+ *   repo name. When absent, the base is the repo's declared `.vault.yaml`
+ *   `metadata.slug` (#1131), else the git origin via deriveRepo().
  * @returns {string} A single kebab-slug path segment, e.g. 'session-orchestrator'.
  *   Special returns:
  *   - 'unknown-repo'  — slug derivation produced an empty string.
@@ -246,10 +248,35 @@ function lookupPseudonym(base, seg) {
  *     (CP1 personal home path / CP6 private slug / CP10 personal name in Projects path).
  */
 export function resolveRepoNamespace({ vaultName = null } = {}) {
-  // Choose the base identifier: explicit override first, then git-derived.
+  // Choose the base identifier. Precedence: explicit `vaultName` override >
+  // the repo's declared `.vault.yaml` `metadata.slug` (#1131) > git-derived.
+  //
+  // WHY the slug sits HERE and not in deriveRepo(): deriveRepo() is the RAW
+  // repo IDENTITY (`org/repo`) and has consumers that want exactly that and
+  // nothing else — `vault-relocation-rules.mjs`, `relocate-vault-corpus.mjs`,
+  // `named-vault-resolver.mjs` (which documents the `org/repo-name` format).
+  // #1131 concerns the vault FOLDER namespace, which is what THIS function
+  // decides, so the lookup belongs at this candidate-selection point.
+  //
+  // Note what this placement does NOT buy: the `source-repo:` frontmatter is
+  // this function's output, not deriveRepo()'s (#732; process.mjs deliberately
+  // shares ONE value between the write path and the rendered field), so a repo
+  // whose declared slug differs from its derived name gets a new `source-repo`
+  // either way. That is inherent to moving the folder, not a side effect of
+  // where the lookup lives.
+  //
+  // It sits BELOW `vaultName` (an explicit per-call/operator override must stay
+  // honourable) and ABOVE derivation (a declared registration beats a guess from
+  // the remote URL or the checkout directory: the remote answers "where does
+  // this code live?", the slug answers "which vault project IS this?", and a
+  // host-side rename legitimately diverges the two). It sits ABOVE the leak
+  // guard below deliberately — a declared slug is operator data flowing into a
+  // written path and is checked by CP1/CP6/CP10 and the pseudonym map exactly
+  // like any git-derived identifier.
+  const declaredSlug = readVaultSlug(process.cwd());
   const base = (vaultName && typeof vaultName === 'string' && vaultName.trim())
     ? vaultName.trim()
-    : deriveRepo();
+    : (declaredSlug ?? deriveRepo());
 
   // Sanitise: collapse to last path segment, lowercase, strip non-[a-z0-9-].
   const seg = subjectToSlug(base);

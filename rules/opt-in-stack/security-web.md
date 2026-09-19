@@ -67,7 +67,7 @@ CSRF, rate limiting, CSP, and transport security. Core security rules are in `se
 
 #### SEC-011: CSP single-source enforcement
 - Advisory rules are silent when they regress. Wire the single-source rule into a mechanical check so duplicates fail fast.
-- Canonical hook: `templates/shared/hooks/check-csp-single-source.sh`. Greps all TS/JS under the given paths for `Content-Security-Policy`, filters to `proxy.ts` / `middleware.ts` / `next.config.*`, fails if more than one file matches.
+- Canonical hook: `templates/shared/hooks/check-csp-single-source.sh`. Greps all TS/JS under the given paths for `Content-Security-Policy`, filters to `proxy.ts` / `middleware.ts` / `next.config.*`, fails if more than one file matches. <!-- path-check: example -->
 - **Wire into pre-push (Husky):**
   ```json
   // package.json
@@ -77,7 +77,7 @@ CSRF, rate limiting, CSP, and transport security. Core security rules are in `se
   # .husky/pre-push
   pnpm run hook:check-csp
   ```
-- **Wire into CI security stage:** copy the `check-csp-single-source` job from `templates/shared/hooks/README.md` into `.gitlab-ci.yml`. Runs on every merge request.
+- **Wire into CI security stage:** copy the `check-csp-single-source` job from `templates/shared/hooks/README.md` into `.gitlab-ci.yml`. Runs on every merge request. <!-- path-check: example -->
 - Exit codes: `0` pass, `1` duplicate CSP source (SEC-011 violation), `2` tool error.
 - Why: browsers receiving two `Content-Security-Policy` headers take the intersection — nonces and `strict-dynamic` break silently. Humans miss this in review; a grep doesn't.
 

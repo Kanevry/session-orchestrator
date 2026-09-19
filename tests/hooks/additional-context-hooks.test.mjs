@@ -242,8 +242,8 @@ describe('post-tool-failure-corrective-context.mjs additionalContext (#428 adjus
     },
     {
       name: 'ANSI escape bytes',
-      error: 'malicious [31mERROR[0m injection attempt',
-      forbidden: '',
+      error: 'malicious \x1b[31mERROR\x1b[0m injection attempt',
+      forbidden: '\x1b',
     },
   ])('strips $name from error before surfacing additionalContext (SEC-016)', ({ error, forbidden }) => {
     const result = runHook('hooks/post-tool-failure-corrective-context.mjs', {

@@ -537,6 +537,222 @@ async function ghApi(apiPath, repoRoot, deps = {}, expect = undefined) {
 }
 
 /**
+ * Look up the branch HEAD currently sits on, for pipeline-REF preference.
+ *
+ * **Never throws and never degrades the reading.** A missing branch is not a
+ * failure to report — it only costs the ref preference below, which then falls
+ * back to "every same-sha pipeline is an acceptable candidate", i.e. exactly the
+ * pre-#857 behaviour. Degrading here instead would turn a detached HEAD, a
+ * worktree oddity or a `git` hiccup into a dark banner on a repo whose CI state
+ * is perfectly readable.
+ *
+ * `HEAD` (detached) is reported as "unknown", not as a branch named HEAD.
+ *
+ * @param {string} repoRoot
+ * @param {{ execFile?: Function, timeoutMs?: number }} deps
+ * @returns {Promise<string|undefined>}
+ */
+async function getCurrentBranch(repoRoot, deps = {}) {
+  const gitTimeout = Math.min(2000, deps.timeoutMs ?? 2000);
+  try {
+    const result = await execWithTimeout(
+      'git',
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      { cwd: repoRoot, timeoutMs: gitTimeout, execFile: deps.execFile },
+    );
+    const branch = String(result?.stdout ?? '').trim();
+    if (branch === '' || branch === 'HEAD') return undefined;
+    return branch;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Does a pipeline's `ref` name the branch HEAD is on?
+ *
+ * GitLab reports a branch pipeline's ref as the bare branch name (`main`);
+ * `refs/heads/main` is accepted too because nothing in the API contract forbids
+ * the long form. An MR pipeline's ref is `refs/merge-requests/<iid>/head`,
+ * which matches no branch and is therefore never a confident match.
+ *
+ * @param {unknown} ref
+ * @param {string|undefined} branch
+ * @returns {boolean}
+ */
+function refMatchesBranch(ref, branch) {
+  if (!branch || typeof ref !== 'string' || ref === '') return false;
+  return ref === branch || ref === `refs/heads/${branch}`;
+}
+
+/**
+ * Does a pipeline's `ref` name a merge-request HEAD (`detached`) pipeline?
+ *
+ * GitLab spells it `refs/merge-requests/<iid>/head` — the DETACHED pipeline,
+ * which runs the MR source commit itself. The merged-results counterpart
+ * (`refs/merge-requests/<iid>/merge`) runs a synthetic merge commit whose sha is
+ * NOT the local HEAD, so it can never reach a same-sha candidate tier and is
+ * deliberately not matched here.
+ *
+ * @param {unknown} ref
+ * @returns {boolean}
+ */
+function isMergeRequestHeadRef(ref) {
+  return typeof ref === 'string' && /^refs\/merge-requests\/[^/]+\/head$/.test(ref);
+}
+
+/**
+ * Rank a GitLab pipeline status by how ALARMING it is (#857).
+ *
+ * Used only to pick ONE reading out of several pipelines for the SAME commit on
+ * the SAME ref, whose statuses contradict each other — measured on this project
+ * 2026-09-18: 14 of ~86 distinct shas in the last 100 pipelines carry 2-4
+ * pipelines, 7 of them with contradicting statuses (`canceled`+`success`,
+ * `failed`+`success`, …), produced by different `source`s (`push`, `api`,
+ * `merge_request_event`).
+ *
+ * Worst-status-wins is this module's stated fail-toward-visible posture (see
+ * {@link SILENT_QUERY_FAILURES}) applied to disagreement: a `success` beside a
+ * `failed` or a `canceled` cannot establish that the commit is green — the two
+ * runs may have executed different job sets, and which one is "the real one" is
+ * not derivable from the pipeline list. The disagreement itself is published as
+ * evidence (`details.ambiguous` + `details.candidateStatuses`), so the operator
+ * is never left guessing WHY the verdict reads the way it does.
+ *
+ * `failed` outranks `canceled` so a real failure can never be masked by a
+ * cancellation; everything UNSETTLED outranks `success`, because an in-flight
+ * sibling run means the commit's verdict is not settled.
+ *
+ * "Unsettled" is a category, not a leftover bucket. `skipped` and `manual` are
+ * TERMINAL non-failing states — the ordinary shape of a `rules:`-gated or
+ * manual-trigger pipeline — and lumping them in with `running`/`pending` turned
+ * the everyday `success` + `skipped` pair into `unknown /
+ * unrecognised-status-skipped`, where the pre-#857 reading was `green`. They
+ * therefore rank BELOW `success`: they never beat a real reading in either
+ * direction (`success` beside them → green, `failed` beside them → red), while
+ * a LONE `skipped`/`manual` still falls through `checkGitlab`'s tail to
+ * `unknown`, unchanged. Category separation, not a threshold tweak.
+ *
+ * @param {unknown} status
+ * @returns {number} Higher = more alarming
+ */
+function statusSeverity(status) {
+  if (status === 'failed') return 4;
+  if (status === 'canceled') return 3;
+  if (status === 'success') return 1;
+  // Terminal, non-failing, carries no verdict of its own.
+  if (status === 'skipped' || status === 'manual') return 0;
+  // running / pending / created / preparing / waiting_for_resource / scheduled
+  // — and anything unrecognised, which cannot be assumed settled.
+  return 2;
+}
+
+/**
+ * Split every pipeline carrying the queried sha into the candidate set this
+ * reading may speak for, and the foreign-ref remainder it must not (#857).
+ *
+ * Before this, `pipelines.find(p => p.sha === currentSha)` took the most
+ * recently updated row in a 15-row window that MIXES refs (`main`,
+ * `refs/merge-requests/39/head`, a `codex/…` branch — measured 2026-09-18), so
+ * a foreign branch's or an MR's pipeline could silently become the local HEAD's
+ * verdict.
+ *
+ * Preference, first non-empty tier wins:
+ *   1. pipelines whose `ref` names the current branch (the confident match);
+ *   2. pipelines whose ref cannot be judged — no `ref` field, or no branch
+ *      resolved (detached HEAD, `git` unavailable). Judging is impossible, so
+ *      this is the pre-#857 CANDIDATE SET, now resolved worst-status-wins like
+ *      every other tier (a ref-less `success` + `canceled` pair read green
+ *      before #857 and reads red now — the change is deliberate, see
+ *      {@link statusSeverity});
+ *   3. pipelines on an MR HEAD ref ({@link isMergeRequestHeadRef}) carrying the
+ *      queried sha. A repo whose `workflow: rules:` only admit
+ *      `merge_request_event` produces NO branch pipeline at all, so tiers 1-2
+ *      are empty and the pre-tier-3 code reported `pipeline-unmatched-ref` for a
+ *      commit whose verdict was sitting right there. SHA EQUALITY is the
+ *      correctness argument — the ref is only a tie-breaker, and a
+ *      merged-results pipeline runs a DIFFERENT sha, so it cannot reach this
+ *      tier at all. `matchedRef` is reported, so the operator sees which ref
+ *      spoke;
+ *   4. otherwise NOTHING is selected: every same-sha pipeline belongs to a
+ *      genuinely foreign ref (another branch), which the caller reports as
+ *      `unknown` with its own reason rather than adopting.
+ *
+ * @param {Array<any>} pipelines
+ * @param {string} sha
+ * @param {string|undefined} branch
+ * @returns {{ selected: Array<any>, foreign: Array<any> }}
+ */
+function selectShaPipelines(pipelines, sha, branch) {
+  const sameSha = pipelines.filter((p) => p && p.sha === sha);
+  if (sameSha.length === 0) return { selected: [], foreign: [] };
+
+  const onBranch = sameSha.filter((p) => refMatchesBranch(p.ref, branch));
+  if (onBranch.length > 0) return { selected: onBranch, foreign: [] };
+
+  const unjudgeable = sameSha.filter(
+    (p) => !branch || typeof p.ref !== 'string' || p.ref === '',
+  );
+  if (unjudgeable.length > 0) return { selected: unjudgeable, foreign: [] };
+
+  const mrHead = sameSha.filter((p) => isMergeRequestHeadRef(p.ref));
+  if (mrHead.length > 0) return { selected: mrHead, foreign: [] };
+
+  return { selected: [], foreign: sameSha };
+}
+
+/**
+ * Pick the pipeline a reading speaks for: the most alarming of the candidates,
+ * ties resolved by the API's own `updated_at desc` ordering (first wins).
+ *
+ * @param {Array<any>} candidates  Non-empty
+ * @returns {any}
+ */
+function worstPipeline(candidates) {
+  let worst = candidates[0];
+  for (const p of candidates) {
+    if (statusSeverity(p.status) > statusSeverity(worst.status)) worst = p;
+  }
+  return worst;
+}
+
+/**
+ * ADDITIVE evidence fields (#857) describing how a reading was chosen.
+ *
+ * Additive by hard constraint: the `status` vocabulary stays
+ * `green | red | unknown`, because `dispatcher/rank.mjs` and
+ * `autonomy/suitability.mjs` treat only the literal `'red'` as bad and the
+ * session-start renderer prints nothing for a status string it does not know.
+ * So ambiguity is published BESIDE the verdict, never as a new verdict.
+ *
+ *   - `matchedRef`       the chosen pipeline's ref (present whenever the API
+ *                        supplied one), so the operator can see WHICH ref the
+ *                        verdict speaks for.
+ *   - `candidateCount`   number of same-sha candidates — only when > 1, so an
+ *                        ordinary one-pipeline reading is byte-identical to
+ *                        before.
+ *   - `candidateStatuses` their statuses, in API order, same gate.
+ *   - `ambiguous`        `true` only when those statuses DISAGREE.
+ *
+ * @param {Array<any>} selected
+ * @param {any} chosen
+ * @returns {{ matchedRef?: string, candidateCount?: number, candidateStatuses?: string[], ambiguous?: true }}
+ */
+function candidateEvidence(selected, chosen) {
+  /** @type {any} */
+  const out = {};
+  if (typeof chosen?.ref === 'string' && chosen.ref !== '') {
+    out.matchedRef = sanitizeApiText(chosen.ref);
+  }
+  if (selected.length > 1) {
+    out.candidateCount = selected.length;
+    out.candidateStatuses = selected.map((p) => sanitizeApiText(p.status));
+    if (new Set(out.candidateStatuses).size > 1) out.ambiguous = true;
+  }
+  return out;
+}
+
+/**
  * Compute age in whole days between an ISO date string and `now`.
  *
  * @param {string} isoDate
@@ -577,6 +793,10 @@ async function checkGitlab(repoRoot, now, deps = {}) {
   // #1332: an explicit `deps.sha` (validated full hex SHA, see checkCiStatus)
   // replaces the local HEAD lookup — the caller asks about a NAMED commit.
   const currentSha = deps.sha ?? (await getHeadSha(repoRoot, deps));
+  // #857 ref preference — resolved alongside the sha, and best-effort: an
+  // unresolvable branch costs the preference, never the reading. See
+  // {@link getCurrentBranch}.
+  const branch = await getCurrentBranch(repoRoot, deps);
   const apiDeps = { ...deps, repoHost: project.host };
   const projectPath = `projects/${project.encodedProjectPath}`;
   // `'array'` is load-bearing, not decoration: before it, a `glab api` that
@@ -591,9 +811,32 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     'array',
   );
 
-  const currentPipeline = pipelines.find((p) => p.sha === currentSha);
+  // #857: the window mixes refs and carries duplicate pipelines per commit, so
+  // the reading is CHOSEN (ref preference, then worst-status-wins), never
+  // `.find()`-ed off the most recently updated row.
+  const { selected, foreign } = selectShaPipelines(pipelines, currentSha, branch);
 
-  if (!currentPipeline) {
+  if (selected.length === 0 && foreign.length > 0) {
+    // Pipelines EXIST for this commit, but every one of them belongs to a
+    // foreign ref (another branch, or `refs/merge-requests/<iid>/head`).
+    // Adopting one would let an MR's or a foreign branch's verdict stand in for
+    // the local HEAD's; claiming "no pipeline" would hide that runs exist. So:
+    // `unknown`, with a reason that names the actual situation. The status
+    // vocabulary is unchanged — the finding is delivered as a REASON.
+    return {
+      status: 'unknown',
+      ok: false,
+      details: {
+        currentPipelineId: null,
+        cliUsed: 'glab',
+        reason: 'pipeline-unmatched-ref',
+        candidateCount: foreign.length,
+        candidateStatuses: foreign.map((p) => sanitizeApiText(p.status)),
+      },
+    };
+  }
+
+  if (selected.length === 0) {
     return {
       status: 'unknown',
       ok: false,
@@ -605,6 +848,8 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     };
   }
 
+  const currentPipeline = worstPipeline(selected);
+  const evidence = candidateEvidence(selected, currentPipeline);
   const pipelineStatus = currentPipeline.status;
 
   if (pipelineStatus === 'success') {
@@ -638,6 +883,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       details: {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
+        ...evidence,
       },
     };
   }
@@ -650,32 +896,49 @@ async function checkGitlab(repoRoot, now, deps = {}) {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
         reason: `pipeline-${sanitizeApiText(pipelineStatus)}`,
+        ...evidence,
       },
     };
   }
 
   if (pipelineStatus === 'failed' || pipelineStatus === 'canceled') {
     // Find the last green pipeline in the history.
+    //
+    // #857: the look-back slice EXCLUDES every row carrying the queried sha, not
+    // just the chosen one. Pipelines are NOT one-per-commit on this project —
+    // measured 2026-09-18, 14 of ~86 distinct shas in the last 100 pipelines
+    // carry 2-4 — so a `success` duplicate of the very commit being reported red
+    // used to be found here and named as its own `lastGreen`. Reproduced on
+    // `52ae12f1` (a `canceled` push pipeline + a `success` api pipeline for the
+    // same commit): status `red`, `lastGreen.sha` === HEAD.
     const currentIdx = pipelines.indexOf(currentPipeline);
-    const rest = pipelines.slice(currentIdx + 1);
+    const rest = pipelines.slice(currentIdx + 1).filter((p) => p && p.sha !== currentSha);
     const lastGreenPipeline = rest.find((p) => p.status === 'success');
 
-    // Count consecutive non-success pipelines from current onwards.
-    let redCount = 1;
+    // The unbroken non-success run from the current pipeline back to the last
+    // green, as ROWS. Same meaning `redCount` always had.
+    const redRun = [currentPipeline];
     for (const p of rest) {
       if (p.status === 'success') break;
-      redCount++;
+      redRun.push(p);
     }
+    const redCount = redRun.length;
 
     let lastGreen;
     if (lastGreenPipeline) {
       const ageDays = ageDaysFrom(lastGreenPipeline.created_at, now);
-      // Approximate commit distance: redCount is the number of red pipelines
-      // before reaching the last green (pipelines are one-per-commit on this project).
       lastGreen = {
         sha: lastGreenPipeline.sha,
         pipelineId: lastGreenPipeline.id,
-        ageCommits: redCount,
+        // Commit distance, counted over DISTINCT shas in the red run. The old
+        // value was the ROW count under a comment asserting "pipelines are
+        // one-per-commit on this project" — measured false at 16%, so the
+        // distance was overstated whenever a commit had been re-run.
+        ageCommits: new Set(redRun.map((p) => p.sha)).size,
+        // The row count is kept under its own name rather than dropped: it is
+        // what `redCount` reports, and "3 red pipelines over 2 commits" is a
+        // different (and also useful) statement from either number alone.
+        agePipelines: redCount,
         ageDays,
       };
     }
@@ -706,6 +969,15 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       details: {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
+        // A user-cancelled pipeline printed `🚨 CI RED on HEAD` indistinguishably
+        // from a real failure. The STATUS stays `red` on purpose (no consumer
+        // churn — `dispatcher/rank.mjs` and `autonomy/suitability.mjs` key on the
+        // literal `'red'`), and the distinction is delivered through the reason
+        // both the banner and the release-preflight row already interpolate.
+        // Named like the `pipeline-running` / `pipeline-pending` reasons above;
+        // `failed` keeps carrying no reason — its detail is `failingJobName`.
+        ...(pipelineStatus === 'canceled' ? { reason: 'pipeline-canceled' } : {}),
+        ...evidence,
       },
     };
   }
@@ -718,6 +990,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       currentPipelineId: currentPipeline.id,
       cliUsed: 'glab',
       reason: `unrecognised-status-${sanitizeApiText(pipelineStatus)}`,
+      ...evidence,
     },
   };
 }
@@ -878,7 +1151,13 @@ async function checkGithub(repoRoot, deps = {}) {
  * } | {
  *   status: 'green'|'red'|'unknown',
  *   ok: boolean,
- *   lastGreen?: { sha: string, pipelineId: number, ageCommits: number, ageDays: number|null },
+ *   lastGreen?: {
+ *     sha: string,
+ *     pipelineId: number,
+ *     ageCommits: number,
+ *     agePipelines?: number,
+ *     ageDays: number|null,
+ *   },
  *   redCount?: number,
  *   failingJobName?: string,
  *   details: {
@@ -886,8 +1165,18 @@ async function checkGithub(repoRoot, deps = {}) {
  *     cliUsed: 'glab'|'gh',
  *     reason?: string,
  *     error?: string,
+ *     matchedRef?: string,
+ *     candidateCount?: number,
+ *     candidateStatuses?: string[],
+ *     ambiguous?: true,
  *   },
  * }>}
+ *
+ * The `status` vocabulary is FROZEN at `green | red | unknown` (#857/#856): the
+ * #857 "several contradicting pipelines" and "only foreign-ref pipelines"
+ * findings are delivered through ADDITIVE `details` fields and `details.reason`,
+ * never as a new status value — consumers fail open on an unknown status string
+ * and the session-start renderer prints nothing for one.
  */
 export async function checkCiStatus(opts = {}, deps = {}) {
   const {

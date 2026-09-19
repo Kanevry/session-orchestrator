@@ -139,7 +139,12 @@ export function renderPortfolio(summaries, opts) {
   // Frontmatter
   lines.push('---');
   lines.push(`_generator: ${GENERATOR_MARKER}`);
-  lines.push(`type: dashboard`);
+  // `id` + `type` satisfy the vault frontmatter schema (skills/vault-sync/validator.mjs).
+  // `type: dashboard` was not in its enum and `id` was missing, so the generated file
+  // failed the hard gate at /close (#1144). `board` is the enum member added for
+  // generated dashboards (#738) — same shape as vault-status/board-writer.mjs.
+  lines.push('id: portfolio');
+  lines.push('type: board');
   lines.push(`created: ${createdValue}`);
   lines.push(`updated: ${updatedValue}`);
   lines.push('---');

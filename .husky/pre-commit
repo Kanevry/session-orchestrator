@@ -8,7 +8,8 @@
 #      npm silently skip lifecycle hooks — a git-native hook is the only
 #      place this guard reliably fires before a commit lands. Cheapest check
 #      (Node-stdlib-only, no deps needed), so it runs first.
-#   2. nul-byte-guard (K7) — reject NUL bytes in staged TEXT files. Binary
+#   2. nul-byte-guard (K7) — reject C0 control bytes (all but TAB/LF/CR;
+#      widened 2026-09-18 from NUL-only) in staged TEXT files. Binary
 #      corruption of a source file survives BOTH vitest and eslint; git's
 #      "Bin" diff marker is the only cheap signal, so this gate reads the
 #      staged BLOBS (`git show :<path>`), never the worktree copies.
@@ -42,23 +43,56 @@ if [ -f scripts/check-package-manager.mjs ]; then
 fi
 
 # --- nul-byte-guard:begin (K7) ---
-# NUL bytes in a staged TEXT file mean silent binary corruption: it survives
-# vitest AND eslint, and only git's "Bin" diff marker hints at it. Block here.
+# C0 CONTROL BYTES in a staged TEXT file mean silent corruption: they survive
+# vitest AND eslint, and only git's "Bin" diff marker hints at them. Block here.
+# CAUGHT: every C0 byte EXCEPT TAB (0x09), LF (0x0a) and CR (0x0d) — i.e.
+# 0x00-0x08, 0x0b, 0x0c, 0x0e-0x1f. Widened 2026-09-18 from NUL-only: a literal
+# ESC (0x1b) in an ANSI-stripping code path and its test carried the same class
+# of defect as the NUL (`hooks/post-tool-failure-corrective-context.mjs`,
+# `tests/hooks/additional-context-hooks.test.mjs`) — write `\x1b` / `\x00`, an
+# escape that is byte-identical at runtime and keeps the file TEXT on disk.
+# DEL (0x7f) is deliberately NOT caught (out of scope).
 # SUBJECT = THE STAGED BLOB, never the worktree copy: `git show ":$f"` reads
 # the index, so `git add <corrupt>` followed by a worktree repair cannot smuggle
 # corruption past this gate, and an unrelated dirty worktree cannot false-block.
-# Portability: `tr -d '\000' | wc -c` is POSIX and works on BSD/macOS + GNU.
+# Portability: `tr -d '<octal-ranges>' | wc -c` is POSIX and works on BSD/macOS
+# + GNU — verified 2026-09-18 against /usr/bin/tr (BSD) and GNU coreutils 9.11:
+# both delete 0x01 and 0x1b from a fixture and keep TAB, LF and DEL.
 # `grep -P '\x00'` is GNU-only, `$'\x00'` is a bashism dash cannot parse, and
 # `cmp - <(git show ...)` is a bash process substitution — all three silently
 # degrade this gate to a no-op under `sh`. Do not "simplify" here.
 # The tests/husky/ suite EXECUTES this exact block between the markers.
-nul_hits=$(git diff --cached --name-only --diff-filter=ACM \
-  | grep -Ei '\.(mjs|cjs|js|mts|ts|md|json|ya?ml|sh|txt)$' \
+# QUOTING BYPASS (fixed 2026-09-18): `core.quotePath` defaults to TRUE, so git
+# prints any path carrying a byte >= 0x80, a control byte or a newline C-QUOTED
+# in double quotes — `"f\303\274nf.mjs"`. The old `grep -Ei '\.(mjs|…)$'`
+# extension filter therefore DROPPED such a path (it ends in `"`, not in the
+# extension) and `git show ":$f"` never ran: a `fünf.mjs` carrying a raw ESC
+# committed clean (exit 0) while an identical `plain.mjs` was blocked (exit 1).
+# Fix: `-c core.quotePath=false` prints paths RAW, and the extension test is a
+# POSIX `case` over the lowercased path — same set as the old `grep -Ei`
+# (mjs cjs js mts ts md json yml yaml sh txt), no re-quoting through grep.
+# KNOWN CEILING: a path containing a literal LF still splits across two `read`
+# iterations and is missed. The airtight fix is NUL-delimited enumeration
+# (`diff --cached -z` + `read -r -d ''`), but `read -d` is a BASHISM and this
+# hook is executed as `sh -e "$s"` by .husky/_/h — i.e. dash on the Linux CI
+# runner — so it is not available here. Named, not fixed: revisit if this repo
+# ever tracks a path containing a newline.
+nul_hits=$(git -c core.quotePath=false diff --cached --name-only --diff-filter=ACM \
   | while IFS= read -r f; do
-      # Allowlist — path-exact (NO globs) files whose NUL bytes are DELIBERATE.
-      # Verified 2026-07-29 as the complete set: the detection expression below,
-      # run over `git ls-files`, matches exactly these two. Both are TEST
-      # FIXTURES, where a raw NUL is the payload under test.
+      fl=$(printf '%s' "$f" | LC_ALL=C tr 'A-Z' 'a-z')
+      case "$fl" in
+        (*.mjs|*.cjs|*.js|*.mts|*.ts|*.md|*.json|*.yml|*.yaml|*.sh|*.txt) : ;;
+        (*) continue ;;
+      esac
+      # Allowlist — path-exact (NO globs) files whose control bytes would be
+      # DELIBERATE. Re-measured 2026-09-18 over `git ls-files` with the WIDENED
+      # detection expression below (all C0 except TAB/LF/CR): the tracked corpus
+      # now matches ZERO files, these two included — both switched to escaped
+      # payloads. They stay listed as a carve-out for the adversarial fixtures
+      # they carry, NOT as a census of what is on disk. The 2026-07-29 comment
+      # claiming this list was "the complete set" of NUL carriers was already
+      # false when it was written: tests/hooks/post-subagent-discovery-validator
+      # .test.mjs carried a raw NUL and was never listed (repaired 2026-09-18).
       #
       # PRODUCTION CODE IS DELIBERATELY NOT ALLOWLISTED — hooks/config-protection.mjs
       # was removed from this list on 2026-07-29. Its masking sentinel now uses the
@@ -83,11 +117,11 @@ nul_hits=$(git diff --cached --name-only --diff-filter=ACM \
         (tests/scripts/lib/frontend-detect/detect.test.mjs) continue ;;
       esac
       raw=$(git show ":$f" | wc -c | tr -cd '0-9')
-      stripped=$(git show ":$f" | LC_ALL=C tr -d '\000' | wc -c | tr -cd '0-9')
+      stripped=$(git show ":$f" | LC_ALL=C tr -d '\000-\010\013\014\016-\037' | wc -c | tr -cd '0-9')
       [ "$raw" = "$stripped" ] || printf '%s\n' "$f"
     done)
 if [ -n "$nul_hits" ]; then
-  echo "✗ nul-byte-guard: NUL byte(s) in staged text file(s). Commit blocked." >&2
+  echo "✗ nul-byte-guard: C0 control byte(s) in staged text file(s). Commit blocked." >&2
   printf '%s\n' "$nul_hits" | sed 's/^/    /' >&2
   echo "  Binary corruption survives vitest + eslint — recover the file with" >&2
   echo "  \`git show HEAD:<file> > <file>\` (NOT 'git checkout --', see PSA-003)," >&2

@@ -301,6 +301,18 @@ Cursor has no Skill tool. When the skill says to invoke another skill, Read \`sk
  *      (measured 2026-09-17) on no Cursor-side evidence, which is the one
  *      direction a guard fix must never move.
  *
+ * NAMED CEILING on ground 2 (BV-004). Whether Cursor reads
+ * `disable-model-invocation` at all is UNVERIFIED as of 2026-09-18: the key is
+ * documented here for Claude Code and Codex only, and `rg
+ * "disable-model-invocation" docs .claude .cursor/rules` returns zero Cursor
+ * citations. Ground 2 therefore stamps 24 wrappers on the ASSUMPTION that
+ * Cursor honours it — kept because stamping a restriction a reader ignores
+ * costs nothing, while dropping it would loosen 24 wrappers if the reader does
+ * honour it. REVISIT TRIGGER: Cursor documents the key (or a measured Cursor
+ * run shows it ignored) — then decide ground 2 on that evidence instead.
+ * Pinned by `tests/scripts/generate-cursor-adapter.test.mjs` ("stamps
+ * disable-model-invocation on ground 2 alone").
+ *
  * Truth table — both readings normalised by `isUserInvocableValue`, so every
  * form a YAML parser reads as `true` (`True`, `"true"`, `true # note`) counts
  * as `true` on BOTH axes. Ground 2 made that load-bearing rather than cosmetic:

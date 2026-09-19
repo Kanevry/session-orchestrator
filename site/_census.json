@@ -3,18 +3,18 @@
   "metrics": {
     "version": "5.2.0",
     "skills": "50",
-    "commands": "28",
+    "commands": "27",
     "agents": "14",
     "hooks": "28",
-    "tests": "688",
-    "sessions": "426",
-    "learnings": "251",
+    "tests": "692",
+    "sessions": "428",
+    "learnings": "254",
     "rules": "25",
     "rules-generated": "7",
     "blocked-commands": "15",
-    "npm-downloads-30d": "1423",
-    "github-stars": "51",
-    "counted-at": "2026-09-17",
-    "counted-sha": "a4e6d255"
+    "npm-downloads-30d": "1728",
+    "github-stars": "52",
+    "counted-at": "2026-09-18",
+    "counted-sha": "20a4cbff"
   }
 }

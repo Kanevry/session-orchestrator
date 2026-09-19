@@ -210,18 +210,70 @@ describe('check-validator-registration CLI — comment-stripped matching (HIGH, 
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('Results: 1 passed, 0 failed');
   });
+
+  // THE MOTIVATING DEFECT AT THE CONSUMER LEVEL (#1388). The unit case in the
+  // `stripComments` describe below survives a lexer whose regex branch is gone,
+  // because an UNTERMINATED `/*` is not treated as a comment. This fixture
+  // closes that: a `/\/*$/` regex ABOVE a real `runCheck(...)`, and a block
+  // comment BELOW it — so a lexer without the regex branch pairs the regex's
+  // `/*` with that `*/`, blanks the registration between them, and the checker
+  // reports a FALSE UNREGISTERED (exit 1) for a checker that is wired.
+  it('does not report UNREGISTERED when a `/\\/*$/` regex sits above the runCheck line', () => {
+    const root = makeFixture({
+      'check-foo.mjs': '// a checker\n',
+    }, {
+      validatePlugin: [
+        'const TRAILING_SLASH = /\\/*$/;',
+        "runCheck('check-foo.mjs');",
+        '/** A perfectly ordinary block comment further down the file. */',
+        'export { TRAILING_SLASH };',
+        '',
+      ].join('\n'),
+    });
+
+    const r = run(root);
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toContain('Results: 1 passed, 0 failed');
+  });
 });
 
 describe('stripComments — quote-aware `//`/`#`/`/* */` stripping', () => {
   const jsStyle = { lineComment: '//', blockComment: true, quoteChars: ['"', "'", '`'] };
   const shStyle = { lineComment: '#', blockComment: false, quoteChars: ['"', "'"] };
 
+  // The js style delegates to the shared lexer since #1388, which BLANKS a
+  // comment to spaces instead of deleting it (length-preserving). What the
+  // caller depends on is unchanged and is what these assert: the commented
+  // basename is no longer present in the text that gets substring-matched.
   it('drops everything after `//` on a js-style line', () => {
-    expect(stripComments("runCheck('a.mjs'); // runCheck('b.mjs')\n", jsStyle)).toBe("runCheck('a.mjs'); \n");
+    const src = "runCheck('a.mjs'); // runCheck('b.mjs')\n";
+    const out = stripComments(src, jsStyle);
+    expect(out).toHaveLength(src.length);
+    expect(out).toContain("runCheck('a.mjs');");
+    expect(out).not.toContain("b.mjs");
   });
 
   it('drops a `/* */` block comment spanning multiple lines', () => {
-    expect(stripComments("x();\n/*\nrunCheck('b.mjs');\n*/\ny();\n", jsStyle)).toBe('x();\n\ny();\n');
+    const src = "x();\n/*\nrunCheck('b.mjs');\n*/\ny();\n";
+    const out = stripComments(src, jsStyle);
+    expect(out).toHaveLength(src.length);
+    expect(out).toContain('x();');
+    expect(out).toContain('y();');
+    expect(out).not.toContain('b.mjs');
+  });
+
+  // THE BUG (#1388, measured 2026-09-18 @ 20a4cbff): the hand-rolled js
+  // stripper had no REGEX-LITERAL branch, so the `/*` inside `/\/*$/` opened a
+  // block comment that ran to the end of the surface text — every
+  // `runCheck('check-*.mjs')` below it vanished and those checkers reported a
+  // FALSE UNREGISTERED. The header's claim that the stripper "can never
+  // manufacture a false UNREGISTERED" was refuted by exactly this input.
+  it('does NOT let a regex literal containing `/*` swallow the registrations below it', () => {
+    const src = 'const re = /\\/*$/;\nrunCheck("check-foo.mjs");\n';
+    const out = stripComments(src, jsStyle);
+    expect(out).toHaveLength(src.length);
+    expect(out).toContain('check-foo.mjs');
   });
 
   it('drops everything after `#` on a shell-style line', () => {

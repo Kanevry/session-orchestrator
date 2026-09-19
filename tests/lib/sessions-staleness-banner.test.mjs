@@ -47,8 +47,9 @@ function eventLine(timestamp) {
  * `_backfill_source:'events-jsonl'`, `total_waves:0`, `total_agents:0`,
  * `effectiveness.carryover:null` — see `testing.md` § Fixtures Mirror
  * Production Data). `statusAbandoned`/`backfillSource` are independently
- * toggleable so a test can plant EITHER stub marker alone (isBackfillStub()
- * combines them with OR, not AND).
+ * toggleable so a test can plant EITHER stub marker alone (isNonAnchorStub()
+ * combines them with OR, not AND — unlike isSupersedableStub() in
+ * session-close-backfill.mjs, which demands BOTH).
  */
 function stubLine({ sessionId = 'main-stub', startedAt, completedAt, statusAbandoned = true, backfillSource = 'events-jsonl' }) {
   const record = {
@@ -317,7 +318,7 @@ describe('checkSessionsStaleness — additional coverage (F-G, W4 fix pass)', ()
   });
 });
 
-describe('checkSessionsStaleness — backfill-stub self-erasure fix (isBackfillStub / stub-fallback)', () => {
+describe('checkSessionsStaleness — backfill-stub self-erasure fix (isNonAnchorStub / stub-fallback)', () => {
   it('never anchors on a stub completed_at: a near-now stub for an OLDER session leaves the genuine anchor standing', () => {
     // Genuine record 10h before the foreign event (over WARN_THRESHOLD_HOURS=8).
     // A backfill stub sits AFTER it in the file (EOF-nearer, the real append

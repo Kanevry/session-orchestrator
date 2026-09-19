@@ -24,6 +24,14 @@
  *      carriers become uncommittable on their next edit
  *   7. production code gets (re-)allowlisted → hooks/config-protection.mjs goes
  *      binary again and drops out of every grep-based audit
+ *   8. the guard is narrowed back to NUL-only → a literal ESC (0x1b) commits
+ *      again; and symmetrically, widened to ALL C0 → every tab-indented or
+ *      CRLF file becomes uncommittable and the gate is bypassed as noise
+ *      (widened 2026-09-18 to all C0 except TAB/LF/CR)
+ *   9. the staged-path list is read through git's default `core.quotePath=true`
+ *      → any path with a byte >= 0x80 is printed C-QUOTED (`"f\303\274nf.mjs"`),
+ *      the extension filter drops it and the blob is never read: a corrupt file
+ *      with a non-ASCII NAME commits clean (full bypass, reproduced 2026-09-18)
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -178,21 +186,61 @@ describe('.husky/pre-commit — nul-byte-guard (K7)', () => {
     expect(res.stderr).toBe('');
   });
 
-  it('uses POSIX NUL detection, not GNU-only syntax', () => {
-    // The behavioural tests above run on the developer's macOS box where
-    // `grep -P` / `$'\x00'` degrade to a silent no-op — but they would stay
-    // GREEN on the Linux CI runner, where GNU grep accepts -P. This assertion
-    // is what makes the portability regression visible on BOTH platforms.
-    // Comment lines are stripped first: the block's own comments NAME the
-    // forbidden GNU-only forms as a warning, so asserting over raw text would
-    // fail on the documentation rather than on the executed command.
-    const code = extractGuardBlock()
-      .split('\n')
-      .filter((l) => !l.trimStart().startsWith('#'))
-      .join('\n');
+  it('blocks a staged .mjs containing a literal ESC byte', () => {
+    // bug_caught: the widened C0 range is reverted to NUL-only (or narrowed by
+    // a "simplification"), so a literal 0x1b pasted into an ANSI-stripping code
+    // path lands in a commit again. That is not hypothetical — it is exactly
+    // what hooks/post-tool-failure-corrective-context.mjs carried until
+    // 2026-09-18, where the escaped `\x1b` is byte-identical at runtime.
+    // The byte is BUILT here, never written as a literal in this source file.
+    const esc = Buffer.concat([
+      Buffer.from("const strip = (s) => s.split('"),
+      Buffer.from([0x1b]),
+      Buffer.from("').join(' ');\n"),
+    ]);
+    const res = runGuardWithStaged({ 'ansi.mjs': esc });
 
-    expect(code).toContain("tr -d '\\000'");
-    expect(code).not.toMatch(/grep\s+-\w*P/);
-    expect(code).not.toContain("$'\\x00'");
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('ansi.mjs');
+  });
+
+  it('passes a staged .mjs containing TAB, LF and CR', () => {
+    // bug_caught: the range is written too wide (e.g. `\000-\037`), so every
+    // tab-indented file and every CRLF file becomes uncommittable — the gate
+    // turns into noise and gets bypassed with --no-verify or deleted. TAB/LF/CR
+    // are the three C0 bytes that legitimately occur in text.
+    const whitespace = Buffer.concat([
+      Buffer.from('export const x = {'),
+      Buffer.from([0x0d, 0x0a, 0x09]),
+      Buffer.from('a: 1,'),
+      Buffer.from([0x0d, 0x0a]),
+      Buffer.from('};'),
+      Buffer.from([0x0a]),
+    ]);
+    const res = runGuardWithStaged({ 'crlf.mjs': whitespace });
+
+    expect(res.status).toBe(0);
+    expect(res.stderr).toBe('');
+  });
+
+  it('blocks a corrupt staged file whose NAME contains a non-ASCII character', () => {
+    // bug_caught: the staged-path list is enumerated under git's default
+    // `core.quotePath=true`, which C-QUOTES every path carrying a byte >= 0x80
+    // — `"f\303\274nf.mjs"`. An extension filter then sees a name ending in `"`,
+    // drops the path, and the staged blob is never read: a FULL bypass of this
+    // gate by renaming the file. Reproduced 2026-09-18 against the pre-fix
+    // block: identical ESC-carrying bytes gave exit 0 under the non-ASCII name
+    // and exit 1 under `plain.mjs`. Name and byte are both BUILT here, never
+    // written as literals in this source file.
+    const esc = Buffer.concat([
+      Buffer.from("const s = '"),
+      Buffer.from([0x1b]),
+      Buffer.from("';\n"),
+    ]);
+    const res = runGuardWithStaged({ ['fünf.mjs']: esc });
+
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('nul-byte-guard');
+    expect(res.stderr).toContain('fünf.mjs');
   });
 });

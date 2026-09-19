@@ -252,6 +252,45 @@ describe('generate-cursor-adapter.mjs', () => {
     }
   });
 
+  // Ground 2 of `disablesModelInvocation()` — the cell no other test covers:
+  // source flag ABSENT + `user-invocable: false` must still stamp the
+  // restriction. Cells 1 (source flag declared) and 2 (user-invocable truthy
+  // look-alikes stay unstamped) are pinned above. The nameable bug: someone
+  // drops `|| !userInvocable` reasoning "Cursor ignores the key anyway"
+  // (unverified as of 2026-09-18 — see the docblock's named ceiling) and 24 of
+  // 50 wrappers silently go permissive with nothing red.
+  it('stamps disable-model-invocation on ground 2 alone (no source flag, not user-invocable)', () => {
+    const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'generate-cursor-adapter-ground2-'));
+    try {
+      mkdirSync(path.join(fixtureRoot, 'commands'), { recursive: true });
+      mkdirSync(path.join(fixtureRoot, 'skills', 'libskill'), { recursive: true });
+      const generator = installGenerator(fixtureRoot);
+      writeFileSync(path.join(fixtureRoot, 'commands', 'session.md'), '---\ndescription: Source command\n---\n# Body\n');
+      // No `disable-model-invocation` anywhere in the source — ground 1 absent.
+      const source = '---\nname: libskill\ndescription: Library skill.\nuser-invocable: false\n---\n# Body\n';
+      writeFileSync(path.join(fixtureRoot, 'skills', 'libskill', 'SKILL.md'), source);
+      expect(source).not.toContain('disable-model-invocation');
+
+      const result = spawnSync(process.execPath, [generator], {
+        cwd: fixtureRoot,
+        encoding: 'utf8',
+        timeout: 10_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+
+      const wrapper = readFileSync(
+        path.join(fixtureRoot, '.cursor', 'skills', 'libskill', 'SKILL.md'),
+        'utf8',
+      );
+      expect(wrapper).toMatch(/^disable-model-invocation:\s*true\s*$/m);
+      // A library skill is not a slash command either — if it ever became one,
+      // the restriction would have to be re-argued rather than inherited.
+      expect(existsSync(path.join(fixtureRoot, '.cursor', 'commands', 'libskill.md'))).toBe(false);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it('fails loudly when one public name is claimed by both commands/ and a user-invocable skill', () => {
     const fixtureRoot = mkdtempSync(path.join(tmpdir(), 'generate-cursor-adapter-collision-'));
 

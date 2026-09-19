@@ -83,6 +83,7 @@ import {
   isRecommendedOption,
 } from './schema.mjs';
 import { scanFenceBlocks } from '../validate/markdown-fences.mjs';
+import { maskSource } from '../js-mask.mjs';
 
 // ---------------------------------------------------------------------------
 // Korpus-Abgrenzung
@@ -142,42 +143,22 @@ export function corpusKindOf(file) {
  * Anführungspaar, das jeder „nimm das letzte Literal der Zeile"-Ansatz als
  * Label extrahiert.
  *
+ * Seit #1388 delegiert das an den geteilten Lexer `maskSource`
+ * (`../js-mask.mjs`, Modus `keepLiterals`): gleiche Zusicherung (Länge und
+ * Zeilenumbrüche erhalten, Literal-Inhalte unangetastet), aber MIT
+ * Regex-Literal-Zweig. Die frühere handgeschriebene Fassung hatte keinen —
+ * gemessen 2026-09-18 verschluckte `const re = /\/*$/;` als vermeintlicher
+ * Block-Kommentar-Anfang alles bis zum nächsten `*` + `/`, sodass ein
+ * darunter stehendes `label: "X (Recommended)"` spurlos verschwand: ein
+ * STILLER FALSCH-NEGATIVER Befund in der Klarheitsmessung, längentreu und
+ * daher an keiner Zeilennummer erkennbar.
+ *
  * @param {string} text
  * @returns {string} gleiche Länge, Kommentarinhalt durch Leerzeichen ersetzt
  */
 export function stripComments(text) {
   if (typeof text !== 'string' || text === '') return '';
-  const out = [...text];
-  let i = 0;
-  while (i < out.length) {
-    const c = text[i];
-    if (c === '"' || c === "'" || c === '`') {
-      const lit = readStringLiteral(text, i);
-      i = lit ? lit.end : i + 1;
-      continue;
-    }
-    if (c === '/' && text[i + 1] === '/') {
-      while (i < out.length && text[i] !== '\n') out[i++] = ' ';
-      continue;
-    }
-    if (c === '/' && text[i + 1] === '*') {
-      out[i] = ' ';
-      out[i + 1] = ' ';
-      i += 2;
-      while (i < out.length && !(text[i] === '*' && text[i + 1] === '/')) {
-        if (text[i] !== '\n') out[i] = ' ';
-        i++;
-      }
-      if (i < out.length) {
-        out[i] = ' ';
-        out[i + 1] = ' ';
-        i += 2;
-      }
-      continue;
-    }
-    i++;
-  }
-  return out.join('');
+  return maskSource(text, { keepLiterals: true });
 }
 
 /**

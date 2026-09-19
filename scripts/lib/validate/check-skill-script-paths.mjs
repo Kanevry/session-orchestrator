@@ -127,12 +127,27 @@ import { isMainModule } from '../is-main-module.mjs';
  * and that surface SHIPS (npm tarball, symlinked into consumer repos by
  * `scripts/cursor-install.mjs`). Same widening, mirrored in
  * `check-skill-links.mjs` § SCAN_DIRS.
+ *
+ * `rules` and `output-styles` joined in #1384 P3 for the same reason one step
+ * further out: both are in `package.json` `files[]`, so both SHIP to every
+ * consumer, and neither had a gate. The census that motivated it (whole-repo
+ * probe, 2026-09-18 @ 20a4cbff) found 6 dangling citations across them —
+ * `output-styles/wave-summary.md` cited `hooks/on-stop.sh` for a file that has
+ * been `.mjs` for two migrations, and `rules/opt-in-stack/*` cited
+ * consumer-side example paths with no marker.
+ *
+ * `CHANGELOG.md` stays OUT, and root files are not a scan root at all: a
+ * changelog cites the paths a release TOUCHED, so a path deleted afterwards is
+ * still a correct historical statement — 88 such hits, all correct by
+ * construction. Annotating them would be noise on every future entry.
  */
 export const SCAN_DIRS = Object.freeze([
   'skills',
   'commands',
   'agents',
   'docs',
+  'rules',
+  'output-styles',
   '.claude/rules',
   '.cursor/rules',
 ]);

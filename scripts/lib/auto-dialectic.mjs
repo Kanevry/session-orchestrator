@@ -14,6 +14,10 @@
  *   - `writeDialecticPending` / `consumeDialecticPending` / `writeDialecticLastRun` —
  *     called by `/evolve dialectic` (Step 6.4 in
  *     `skills/evolve/references/evolve-dialectic-mode.md`), the only trigger today.
+ *   - `renderPendingBody` / `comparePendingBody` (#1386) — the same Step 6.4 builds
+ *     the sidecar body with the former on the dry-run path and, on `--apply`,
+ *     compares the freshly derived body against the reviewed sidecar with the
+ *     latter before writing any peer card.
  *   - Both sidecars are READ by the same `maintenance-due` probe.
  *
  * Decision inputs (PRD F2.5 acceptance criteria):
@@ -26,7 +30,7 @@
  * separate helpers. No external deps — Node 20+ stdlib only.
  */
 
-import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, mkdir, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -46,6 +50,20 @@ export const DIALECTIC_LAST_RUN_PATH = '.orchestrator/dialectic-last-run';
 /** Repo-relative path to the pending dialectic proposal sidecar. */
 export const DIALECTIC_PENDING_PATH = '.orchestrator/dialectic-pending.md';
 
+/** Repo-relative directory the consumed sidecars are archived into (#1388 P9). */
+export const DIALECTIC_CONSUMED_DIR = '.orchestrator/consumed';
+
+/**
+ * Retention ceiling for `.orchestrator/consumed/` — newest N archived sidecars
+ * survive a consume, older ones are pruned.
+ *
+ * Ceiling + revisit trigger (BV-004): newest 10; revisit if `checkStaleArtifacts`
+ * (`scripts/lib/project-hygiene.mjs`) ever reports a `consumed/` file. That probe
+ * counts every untracked `.orchestrator/**` file older than 30 days, so an
+ * unbounded archive would become a standing hygiene finding.
+ */
+export const DIALECTIC_CONSUMED_RETENTION = 10;
+
 // ---------------------------------------------------------------------------
 // Path helpers
 // ---------------------------------------------------------------------------
@@ -56,6 +74,10 @@ function lastRunPath(repoRoot) {
 
 function pendingPath(repoRoot) {
   return path.join(repoRoot, DIALECTIC_PENDING_PATH);
+}
+
+function consumedDirPath(repoRoot) {
+  return path.join(repoRoot, DIALECTIC_CONSUMED_DIR);
 }
 
 function sessionsJsonlPath(repoRoot) {
@@ -387,11 +409,62 @@ export async function writeDialecticPending({
 }
 
 /**
- * Consume (delete) `.orchestrator/dialectic-pending.md` once its proposal has
- * been applied or explicitly discarded. Mirrors auto-dream's `--apply-pending`,
- * which unlinks its sidecar on success: without this, the maintenance-due
- * `pending-sidecar` signal stays due for the sidecar's full 14-day window
- * after the proposal was already dealt with (#1380).
+ * Prune `.orchestrator/consumed/` to the newest `DIALECTIC_CONSUMED_RETENTION`
+ * entries. Best-effort: every failure degrades to "pruned nothing" — an archive
+ * that grew one file too long is never worth failing a consume over.
+ *
+ * "Newest" is mtime DESC with the filename as tiebreaker: the archive names
+ * carry an ISO timestamp, which sorts lexicographically, so the two orderings
+ * agree except inside one millisecond.
+ *
+ * @param {string} dir Absolute path to the consumed archive directory.
+ * @returns {Promise<number>} Number of files removed.
+ */
+async function pruneConsumedArchive(dir) {
+  let removed = 0;
+  try {
+    const entries = await readdir(dir, { withFileTypes: true });
+    const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+    if (files.length <= DIALECTIC_CONSUMED_RETENTION) return 0;
+
+    const dated = [];
+    for (const name of files) {
+      let mtimeMs = 0;
+      try {
+        mtimeMs = (await stat(path.join(dir, name))).mtimeMs;
+      } catch {
+        mtimeMs = 0; // unreadable → oldest, pruned first
+      }
+      dated.push({ name, mtimeMs });
+    }
+    dated.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? 1 : -1));
+
+    for (const { name } of dated.slice(DIALECTIC_CONSUMED_RETENTION)) {
+      try {
+        await unlink(path.join(dir, name));
+        removed += 1;
+      } catch {
+        /* best-effort */
+      }
+    }
+  } catch {
+    /* best-effort — a prune failure never fails the consume */
+  }
+  return removed;
+}
+
+/**
+ * Consume `.orchestrator/dialectic-pending.md` once its proposal has been
+ * applied or explicitly discarded: the file is MOVED into
+ * `.orchestrator/consumed/<ISO-timestamp>-dialectic-pending.md` rather than
+ * unlinked (#1388 P9 — the sidecar was the only copy of what the operator
+ * reviewed, and an unlink destroyed it). The maintenance-due probe reads an
+ * explicit two-path list (`PENDING_SIDECARS`,
+ * `scripts/lib/maintenance-due-banner.mjs`), so an archived file does not
+ * re-raise `pending-sidecar` (#1380 stays fixed).
+ *
+ * The archive is pruned to `DIALECTIC_CONSUMED_RETENTION` entries on every
+ * consume — see that constant for the ceiling and its revisit trigger.
  *
  * ENOENT is tolerated (`consumed: false`) — "already gone" is the desired end
  * state. Any other filesystem error returns `{ok: false, error}` rather than
@@ -399,20 +472,33 @@ export async function writeDialecticPending({
  *
  * @param {object} args
  * @param {string} args.repoRoot
- * @returns {Promise<{ok:boolean, consumed?:boolean, error?:string, path?:string}>}
+ * @returns {Promise<{ok:boolean, consumed?:boolean, error?:string, path?:string, archivedTo?:string, pruned?:number}>}
  */
 export async function consumeDialecticPending({ repoRoot } = {}) {
   if (!repoRoot) {
     return { ok: false, error: 'consumeDialecticPending: repoRoot is required' };
   }
   const target = pendingPath(repoRoot);
+  if (!existsSync(target)) return { ok: true, consumed: false, path: target };
+
+  const dir = consumedDirPath(repoRoot);
+  // Filesystem-safe stamp: `:` and `.` are illegal or awkward on several
+  // filesystems, and the ISO form still sorts lexicographically without them.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  // The random suffix separates two consumes landing in the SAME millisecond —
+  // without it the second rename would overwrite the first archive silently.
+  const archivedTo = path.join(dir, `${stamp}-${randomUUID().slice(0, 8)}-dialectic-pending.md`);
+
   try {
-    await unlink(target);
-    return { ok: true, consumed: true, path: target };
+    await mkdir(dir, { recursive: true });
+    await rename(target, archivedTo);
   } catch (err) {
     if (err?.code === 'ENOENT') return { ok: true, consumed: false, path: target };
     return { ok: false, error: err.message };
   }
+
+  const pruned = await pruneConsumedArchive(dir);
+  return { ok: true, consumed: true, path: target, archivedTo, pruned };
 }
 
 /**
@@ -437,4 +523,111 @@ export async function readDialecticPending({ repoRoot } = {}) {
   } catch {
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// pending body — serializer + drift comparison (#1386, variant b)
+// ---------------------------------------------------------------------------
+
+/**
+ * Serialize a deriver diff OBJECT (`result.diff = {user?, agent?}`) into the
+ * Markdown body `writeDialecticPending` persists.
+ *
+ * This lived as a JS snippet in `skills/evolve/references/evolve-dialectic-mode.md`
+ * Step 6.4 and is moved here VERBATIM so the dry-run write and the apply-time
+ * comparison build the body from the same code — two hand-copied serializers
+ * would report drift that is only formatting (#1386).
+ *
+ * Pure: no I/O, no throw. A non-object argument, or one with neither target as
+ * a string, yields `''` — the caller's "nothing to review, write no sidecar"
+ * branch.
+ *
+ * @param {{user?: string, agent?: string}} diff
+ * @returns {string} Fenced Markdown body, or `''` when nothing was proposed.
+ */
+export function renderPendingBody(diff) {
+  if (!diff || typeof diff !== 'object') return '';
+  const FENCE = '`'.repeat(3);
+  return ['user', 'agent']
+    .filter((t) => typeof diff[t] === 'string')
+    .map((t) => [`${FENCE}diff`, `# target: ${t}`, diff[t].trimEnd(), FENCE].join('\n'))
+    .join('\n\n');
+}
+
+/**
+ * Strip EXACTLY the leading frontmatter block `writeDialecticPending` wrote.
+ *
+ * The delimiters sit at fixed positions — line 0 and the next `---` LINE — so
+ * this splits on the first two delimiter LINES only. A naive `split('---')`
+ * breaks on a body containing a `---` line, and diff bodies do.
+ *
+ * @param {string} content
+ * @returns {string} The body, or the whole input when no frontmatter is present.
+ */
+function stripPendingFrontmatter(content) {
+  const lines = content.split('\n');
+  if (lines[0] !== '---') return content;
+  const end = lines.indexOf('---', 1);
+  if (end === -1) return content; // unterminated → nothing to strip
+  return lines.slice(end + 1).join('\n');
+}
+
+/**
+ * Whitespace normalisation for the drift comparison: exactly ONE trailing
+ * newline is removed from each side.
+ *
+ * `writeDialecticPending` appends a newline when the body lacks one, so the
+ * persisted body is the rendered body plus `\n` — without this normalisation a
+ * clean round-trip would always report drift. Nothing else is normalised (no
+ * trim, no line-ending or indentation folding): anything more would hide real
+ * drift in a diff body, where trailing whitespace is content.
+ */
+function normalizeTrailingNewline(text) {
+  return text.endsWith('\n') ? text.slice(0, -1) : text;
+}
+
+/**
+ * Compare a freshly derived pending body against the sidecar the operator
+ * reviewed (#1386, variant b).
+ *
+ * `/evolve dialectic --apply` re-derives from the model, so what gets applied
+ * is not necessarily what was approved in `.orchestrator/dialectic-pending.md`.
+ * This makes that divergence VISIBLE at apply time; it does not make apply
+ * deterministic.
+ *
+ * Never throws — every failure degrades to a result object, matching this
+ * module's other readers.
+ *
+ * @param {object} args
+ * @param {string} args.repoRoot
+ * @param {string} args.body Fresh body, typically from `renderPendingBody()`.
+ * @returns {Promise<{ok:boolean, drifted:boolean, sidecarAbsent:boolean, sidecarBody?:string, freshBody?:string, error?:string}>}
+ */
+export async function comparePendingBody({ repoRoot, body } = {}) {
+  if (!repoRoot) {
+    return {
+      ok: false,
+      drifted: false,
+      sidecarAbsent: false,
+      error: 'comparePendingBody: repoRoot is required',
+    };
+  }
+  if (typeof body !== 'string') {
+    return {
+      ok: false,
+      drifted: false,
+      sidecarAbsent: false,
+      error: 'comparePendingBody: body must be a string',
+    };
+  }
+
+  const raw = await readDialecticPending({ repoRoot });
+  // Applying without a sidecar is legitimate (the operator may never have run
+  // the dry-run) — that is NOT drift.
+  if (raw === null) return { ok: true, drifted: false, sidecarAbsent: true };
+
+  const sidecarBody = stripPendingFrontmatter(raw);
+  const drifted = normalizeTrailingNewline(sidecarBody) !== normalizeTrailingNewline(body);
+
+  return { ok: true, drifted, sidecarAbsent: false, sidecarBody, freshBody: body };
 }

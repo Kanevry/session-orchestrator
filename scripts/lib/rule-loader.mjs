@@ -367,6 +367,35 @@ function metaToEntryFields(meta) {
 }
 
 /**
+ * The expiry predicate, shared by the injection gate below and the `/reconcile`
+ * provenance reader (`scripts/lib/reconcile/backlog.mjs`) — one `Date.parse`
+ * for both, so "expired" can never mean two different things to the two
+ * consumers (#1387).
+ *
+ * FAIL-OPEN by design: an absent, empty or unparseable `expires-at` is NOT
+ * expired. Fail-closed here would un-inject (and, in the reconcile reader,
+ * un-materialize) the whole corpus on a single typo.
+ *
+ * Pure apart from the optional `onUnparseable` callback, which exists so the
+ * injection path can keep its stderr WARN while the reconcile reader stays
+ * silent.
+ *
+ * @param {unknown} rawExpiry - the raw `expires-at` frontmatter value (or undefined)
+ * @param {number} [now] - epoch ms; defaults to `Date.now()`
+ * @param {(raw: unknown) => void} [onUnparseable] - called when `expires-at` is present but unparseable
+ * @returns {boolean} true only when a PARSEABLE `expires-at` lies before `now`
+ */
+export function isRuleExpired(rawExpiry, now = Date.now(), onUnparseable) {
+  if (rawExpiry === undefined || rawExpiry === null) return false;
+  const ts = Date.parse(String(rawExpiry));
+  if (Number.isNaN(ts)) {
+    if (typeof onUnparseable === 'function') onUnparseable(rawExpiry);
+    return false;
+  }
+  return ts < now;
+}
+
+/**
  * Deterministic gating check (issue #694 + #692). Returns `{ excluded: boolean,
  * reason?: string }`. Applied to BOTH always-on and glob-matched rules.
  *
@@ -379,18 +408,17 @@ function metaToEntryFields(meta) {
  * @returns {{ excluded: boolean }}
  */
 function applyGates(meta, filePath, mode, hostClass, now, context = null) {
-  // Expiry gate — fail-open on a malformed `expires-at`.
+  // Expiry gate — fail-open on a malformed `expires-at` ({@link isRuleExpired}).
   if (Object.prototype.hasOwnProperty.call(meta, 'expires-at')) {
     const rawExpiry = meta['expires-at'];
-    const ts = Date.parse(String(rawExpiry));
-    if (Number.isNaN(ts)) {
-      process.stderr.write(
-        `[rule-loader] Rule ${filePath} has unparseable expires-at ${JSON.stringify(rawExpiry)} — ignoring expiry\n`,
-      );
-    } else if (ts < now) {
-      process.stderr.write(
-        `[rule-loader] Rule ${filePath} expired at ${rawExpiry} — excluded\n`,
-      );
+    if (
+      isRuleExpired(rawExpiry, now, (raw) =>
+        process.stderr.write(
+          `[rule-loader] Rule ${filePath} has unparseable expires-at ${JSON.stringify(raw)} — ignoring expiry\n`,
+        ),
+      )
+    ) {
+      process.stderr.write(`[rule-loader] Rule ${filePath} expired at ${rawExpiry} — excluded\n`);
       return { excluded: true };
     }
   }

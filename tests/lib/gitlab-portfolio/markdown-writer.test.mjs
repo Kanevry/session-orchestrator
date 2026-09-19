@@ -1,4 +1,9 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   GENERATOR_MARKER,
   renderPortfolio,
@@ -39,6 +44,17 @@ describe('renderPortfolio — frontmatter _generator sentinel', () => {
     const md = renderPortfolio(oneRepoSummaries(), { now: NOW });
 
     expect(md).toContain(`_generator: ${GENERATOR_MARKER}`);
+  });
+
+  // #1144: the generated file carried `type: dashboard` and no `id`, which the
+  // vault frontmatter schema rejects (`id: Required`, `type` enum miss) — under
+  // `vault-sync.mode: hard` that blocked /close.
+  it('emits id: portfolio and type: board (vault frontmatter schema)', () => {
+    const md = renderPortfolio(oneRepoSummaries(), { now: NOW });
+
+    expect(md).toContain('\nid: portfolio\n');
+    expect(md).toContain('\ntype: board\n');
+    expect(md).not.toContain('type: dashboard');
   });
 
   it('produces a frontmatter block enclosed in --- delimiters', () => {
@@ -239,5 +255,74 @@ describe('writePortfolio — existing file with different _generator', () => {
 
     expect(result.action).toBe('skipped-handwritten');
     expect(mockWriteFile).not.toHaveBeenCalled();
+  });
+});
+
+// ── #1144 — legacy frontmatter stays generator-owned ───────────────────────────
+
+describe('writePortfolio — existing file with the legacy type: dashboard frontmatter', () => {
+  // Ownership keys on `_generator` alone. If a future change ever keyed it on
+  // the frontmatter `type`, every pre-#1144 `_PORTFOLIO.md` would be misread as
+  // hand-authored and never repaired — the file would stay schema-invalid forever.
+  it('rewrites it instead of skipping it as hand-authored', () => {
+    const existingContent = `---\n_generator: ${GENERATOR_MARKER}\ntype: dashboard\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\n---\n# GitLab Portfolio\n`;
+    const mockWriteFile = vi.fn();
+
+    const result = writePortfolio({
+      outputPath: '/tmp/portfolio.md',
+      content: renderPortfolio(oneRepoSummaries(), { now: NOW }),
+      now: NOW,
+      dryRun: false,
+      fs: {
+        existsSync: vi.fn().mockReturnValue(true),
+        readFileSync: vi.fn().mockReturnValue(existingContent),
+        writeFileSync: mockWriteFile,
+        mkdirSync: vi.fn(),
+      },
+    });
+
+    expect(result.action).toBe('written');
+    expect(mockWriteFile).toHaveBeenCalledOnce();
+  });
+});
+
+// ── #1144 — wiring: the real vault validator accepts the rendered file ─────────
+
+describe('renderPortfolio — real vault-sync validator (wiring)', () => {
+  // The unit assertions above pin two frontmatter lines; only the real schema
+  // proves the file passes the hard gate that blocked /close.
+  it('validates clean under skills/vault-sync/validator.mjs', () => {
+    const vaultDir = mkdtempSync(join(tmpdir(), 'portfolio-vsync-'));
+    try {
+      mkdirSync(join(vaultDir, '_meta'), { recursive: true });
+      mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+      writeFileSync(
+        join(vaultDir, '01-projects', '_PORTFOLIO.md'),
+        renderPortfolio(oneRepoSummaries(), { now: NOW }),
+        'utf8',
+      );
+
+      const validator = join(
+        dirname(fileURLToPath(import.meta.url)), '..', '..', '..',
+        'skills', 'vault-sync', 'validator.mjs',
+      );
+      let stdout;
+      try {
+        stdout = execFileSync('node', [validator], {
+          encoding: 'utf8',
+          cwd: vaultDir,
+          env: { ...process.env, VAULT_DIR: vaultDir },
+          stdio: ['ignore', 'pipe', 'pipe'],
+        });
+      } catch (err) {
+        stdout = err.stdout?.toString() ?? '';
+      }
+
+      const payload = JSON.parse(stdout);
+      expect(payload.errors).toEqual([]);
+      expect(payload.status).toBe('ok');
+    } finally {
+      rmSync(vaultDir, { recursive: true, force: true });
+    }
   });
 });

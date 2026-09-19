@@ -165,7 +165,7 @@ Split api and worker into separate processes when any of these apply: queue-base
 - Named events (`event: <name>\n`) instead of untyped `data:` payloads, so client code reads `source.addEventListener('<name>', ...)` rather than switching on payload shape.
 - Naming: lowercase, dot-scoped, noun-verb. Examples: `draft.ready`, `classification.done`, `job.failed`, `stream.heartbeat`, `stream.end`.
 - Scope events by domain, not by endpoint. Two endpoints emitting `job.failed` is fine if the payload shape is identical.
-- Document the event catalog in the service's `CLAUDE.md` or `docs/api.md` — consumers need to know what to listen for without reading source.
+- Document the event catalog in the service's `CLAUDE.md` or `docs/api.md` — consumers need to know what to listen for without reading source. <!-- path-check: example -->
 
 ### Client reconnect pattern
 - `EventSource` reconnects automatically on network drop. Use the `Last-Event-ID` header to resume from the last received ID — set `id: <number>\n` on each server event for this to work.
@@ -285,7 +285,7 @@ Uses the canonical envelope from the [Canonical API Response Envelope](#canonica
 - **Reusable helper:** candidate for `@your-org/http-client` or a dedicated `@your-org/ringbuffer` package if demand grows past 2 consumer repos.
 
 ## Feature Flags
-- Use environment-variable-backed typed flags as default (see `docs/feature-flags.md`).
+- Use environment-variable-backed typed flags as default (see `docs/feature-flags.md`). <!-- path-check: example -->
 - Naming convention: `FF_<FEATURE_NAME>` in `.env`.
 - Every flag must have an expiry date. Remove within 30 days of full rollout.
 

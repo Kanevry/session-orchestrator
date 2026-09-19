@@ -111,6 +111,7 @@
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { isMainModule } from '../is-main-module.mjs';
+import { maskSource } from '../js-mask.mjs';
 
 /** Only this directory is scanned — a mutation in `scripts/` is production intent. */
 const SCAN_DIR = 'tests';
@@ -487,43 +488,24 @@ export function insideStringLiteral(body, index) {
  * "no cwd" measured as a cwd. `inCommentLine` cannot serve here: it answers a
  * question about a whole LINE, while this one runs inside a call expression.
  *
+ * Delegates to the shared lexer {@link maskSource} in `keepLiterals` mode
+ * (#1388). The hand-rolled walker this replaced had no REGEX-LITERAL branch,
+ * so a call tail carrying one — measured 2026-09-18:
+ * `wrapperHasCwd(", undefined, { env: /\/*$/.source, cwd: dir }")` — read the
+ * regex's `/*` as a block-comment opener, swallowed the rest of the tail and
+ * returned `false`: a false alarm from this check.
+ *
+ * One behavioural difference the callers must honour: `maskSource` blanks a
+ * comment to SPACES (length-preserving) where this function used to collapse
+ * it to a single space. {@link wrapperHasCwd} judges its second positional
+ * textually against `second !== ''`, so that difference was checked rather
+ * than assumed — see the measurement recorded at that test.
+ *
  * @param {string} text
- * @returns {string} same length semantics, comments blanked to one space
+ * @returns {string} same length, comment bytes blanked to spaces
  */
 export function stripComments(text) {
-  let out = '';
-  /** @type {string|null} */
-  let quote = null;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text[i];
-    if (quote !== null) {
-      out += ch;
-      if (ch === '\\') {
-        out += text[i + 1] ?? '';
-        i += 1;
-      } else if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === '`') {
-      quote = ch;
-      out += ch;
-      continue;
-    }
-    if (ch === '/' && text[i + 1] === '*') {
-      const end = text.indexOf('*/', i + 2);
-      i = end === -1 ? text.length : end + 1;
-      out += ' ';
-      continue;
-    }
-    if (ch === '/' && text[i + 1] === '/') {
-      const end = text.indexOf('\n', i);
-      i = end === -1 ? text.length : end - 1;
-      out += ' ';
-      continue;
-    }
-    out += ch;
-  }
-  return out;
+  return maskSource(text, { keepLiterals: true });
 }
 
 /**
@@ -549,6 +531,14 @@ export function wrapperHasCwd(tail) {
   const clean = stripComments(tail);
   const m = /^\s*,\s*/.exec(clean);
   if (m) {
+    // NO `.trim()` here, and that is measured rather than assumed (#1388): the
+    // shared lexer blanks a comment to SPACES where the local stripper used to
+    // delete it, so a comment-only tail LOOKS like it would arrive as truthy
+    // whitespace. It cannot — the `\s*` above is greedy and consumes every
+    // blanked byte, leaving `second === ''`. Measured 2026-09-18 over
+    // `, /* no cwd */`, `, /* a */ /* b */`, `,\n // note\n`,
+    // `, /* x */ undefined`, `, undefined /* y */`: all `false`, `, /* c */ dir`
+    // → `true`. A `.trim()` would be dead code; the case is pinned by a test.
     const second = clean.slice(m[0].length);
     if (second !== '' && !/^(?:undefined|null)\b/.test(second) && !/^,/.test(second)) return true;
   }

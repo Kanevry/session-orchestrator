@@ -96,6 +96,25 @@ describe('isUserInvocableValue — the single normaliser', () => {
     expect(warned[0]).toContain('disable-model-invocation: "yes"');
     expect(warned[0]).toContain('Write `disable-model-invocation: true`');
     expect(warned[0]).not.toContain('user-invocable:');
+    // #1388 P10: the NOUN must follow the key too. The hard-coded phrase told a
+    // `disable-model-invocation` author his value was "NOT a slash-command
+    // marker" — which it never was, and which sends him looking for the wrong
+    // defect. Red before the noun map.
+    expect(warned[0]).not.toContain('slash-command marker');
+    // The positive half: a noun map that resolved to the DEFAULT fallback
+    // ("a boolean marker") would satisfy the negative assertion above while
+    // still failing to name what the author actually got wrong. Only this
+    // pins the key's own noun.
+    expect(warned[0]).toContain('is NOT a model-invocation opt-out marker');
+  });
+
+  it('keeps the default noun for `user-invocable` (the four existing call sites)', () => {
+    // Guards the other direction: a noun map that changed the DEFAULT phrase
+    // would silently reword the WARN four generators emit.
+    expect(isUserInvocableValue('yes', 'skills/probe/SKILL.md')).toBe(false);
+    const warned = stderr.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('WARN'));
+    expect(warned.length).toBe(1);
+    expect(warned[0]).toContain('user-invocable: "yes" is NOT a slash-command marker');
   });
 });
 

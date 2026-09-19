@@ -3,8 +3,11 @@
  * Focus: deriveRepo, emitAction, processLearning, processSession
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import * as fs from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import YAML from 'js-yaml';
 
@@ -78,6 +81,34 @@ function captureStdout(fn) {
   spy.mockRestore();
   return { lines, value: result };
 }
+
+// ── Throwaway process cwd (#1131) ─────────────────────────────────────────────
+//
+// Every git double in this file mocks ONE remote (`o/r`, `org/repo`, …) and the
+// namespace assertions read `r` out of it. Since #1131 that premise holds only
+// while the process cwd carries NO `.vault.yaml`: `resolveRepoNamespace()` now
+// prefers the repo's DECLARED `metadata.slug` over the git-derived name, and
+// `readVaultSlug(process.cwd())` reads the file from disk on every call (no
+// cache). Run from this repo's root — which tracks a `.vault.yaml` declaring
+// `session-orchestrator` — the doubles were bypassed entirely and five tests
+// measured THIS repo's registration instead of the remote they mock.
+//
+// The chdir happens in `beforeAll`, i.e. before any `await import()` of the
+// module under test, so `deriveRepo()`'s per-module `_cachedRepo` (namespace.mjs)
+// is always populated from the throwaway cwd. vitest isolates files in separate
+// forked processes (`pool: 'forks'`, vitest.config.mjs:67), so the cwd change
+// cannot leak into namespace.test.mjs or any other file.
+const ORIGINAL_CWD = process.cwd();
+const TMP_CWD = mkdtempSync(join(tmpdir(), 'vault-mirror-process-cwd-'));
+
+beforeAll(() => {
+  process.chdir(TMP_CWD);
+});
+
+afterAll(() => {
+  process.chdir(ORIGINAL_CWD);
+  rmSync(TMP_CWD, { recursive: true, force: true });
+});
 
 // ── deriveRepo ────────────────────────────────────────────────────────────────
 
@@ -2024,7 +2055,20 @@ describe('processLearning #1028 residue 1: a leak in a non-canonical field must 
       .mockReturnValueOnce(true) // legacy-flat check operand: targetPath exists
       .mockReturnValueOnce(true) // explicit existsSync(targetPath): main slug file exists
       .mockReturnValueOnce(true); // disambig existsSync(targetPath): disambig file exists
-    readFileSyncSpy.mockReturnValueOnce(mainContent).mockReturnValueOnce(disambigContent);
+    // Path-keyed instead of an ordered `mockReturnValueOnce` queue (#1131):
+    // `resolveRepoNamespace()` now probes `<cwd>/.vault.yaml` through this very
+    // spy on every call, and an ordered queue silently hands that probe the
+    // note content meant for the main slug — shifting every later read by one.
+    // Keying on the path makes the fixture independent of how many unrelated
+    // reads the namespace resolution performs.
+    readFileSyncSpy.mockImplementation((p) => {
+      const target = String(p);
+      if (target.endsWith(`${disambigSlug}.md`)) return disambigContent;
+      if (target.endsWith(`${slug}.md`)) return mainContent;
+      // Everything else (notably `<cwd>/.vault.yaml`) behaves like the real fs
+      // on a directory that does not contain the file.
+      throw Object.assign(new Error(`ENOENT: no such file or directory, open '${target}'`), { code: 'ENOENT' });
+    });
 
     const { lines } = await captureStdout(() =>
       processLearning(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'learning', force: true }),

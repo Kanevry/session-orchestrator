@@ -159,6 +159,31 @@ const AGENT_STOPPED_EVENT = 'orchestrator.agent.stopped';
 const GATE_EVENT_PREFIX = 'orchestrator.quality_gate.';
 
 /**
+ * True when an `orchestrator.agent.stopped` record names the agent that stopped.
+ *
+ * The shape half of the type-and-shape gate for the agent counter: the event
+ * type is BIMODAL (#939/#949, documented at `hooks/on-stop.mjs:554-580`). Only
+ * the records carrying a non-empty `agent` describe a real dispatched agent;
+ * the rest are the phantom-stop class the coordinator's own `Stop` emits, and
+ * counting them inflates every per-wave agent count and the `velocity_drop`
+ * signal derived from it.
+ *
+ * Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl{,.1}`:
+ *   cat .orchestrator/metrics/events.jsonl .orchestrator/metrics/events.jsonl.1 | jq -s '{
+ *     total_stopped: [.[]|select(.event=="orchestrator.agent.stopped")]|length,
+ *     with_wave: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null))]|length,
+ *     with_wave_no_agent: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")==""))]|length }'
+ *   → { total_stopped: 16438, with_wave: 6553, with_wave_no_agent: 5930 }
+ * i.e. 90.5% of the wave-scoped stops carry no `agent` — a ~10.5x inflation.
+ *
+ * @param {Record<string, unknown>} rec
+ * @returns {boolean}
+ */
+function namesAnAgent(rec) {
+  return typeof rec.agent === 'string' && rec.agent.trim() !== '';
+}
+
+/**
  * True when a record carries a `counts` object this monitor can fold, i.e. a
  * plain object with a numeric `passed`. `counts: null`, an array, or a string
  * payload are all rejected — the shape half of the type-and-shape gate.
@@ -183,13 +208,18 @@ function hasFoldableCounts(rec) {
  * the real wave record arrives. Hence the discriminator: a gate record is
  * wave-scoped only when it has BOTH `wave_number` and a well-formed `counts`.
  *
+ * The same discriminator applies to `orchestrator.agent.stopped`: the type is
+ * bimodal, so a stop record is admitted only when it NAMES an agent — see
+ * `namesAnAgent`.
+ *
  * @param {string} evType
  * @param {Record<string, unknown>} rec
  * @returns {boolean}
  */
 function isWaveScopedEvent(evType, rec = {}) {
   if (evType.startsWith(WAVE_EVENT_PREFIX)) return true;
-  if (WAVE_EVENT_NAMES.has(evType) || evType === AGENT_STOPPED_EVENT) return true;
+  if (WAVE_EVENT_NAMES.has(evType)) return true;
+  if (evType === AGENT_STOPPED_EVENT) return namesAnAgent(rec);
   if (evType.startsWith(GATE_EVENT_PREFIX)) {
     return pickInt(rec.wave_number) !== null && hasFoldableCounts(rec);
   }
@@ -235,9 +265,16 @@ function isWaveScopedEvent(evType, rec = {}) {
  *
  * `orchestrator.agent.stopped` is counted per record toward the wave's agent
  * count, the same way `agent.dispatched` is — it is the only per-agent record
- * this repo actually emits with a wave number (11,754 records measured
- * 2026-09-05 in `.orchestrator/metrics/events.jsonl`, against 0 for
- * `agent.dispatched`).
+ * this repo actually emits with a wave number. But it is counted ONLY when the
+ * record NAMES its agent (`namesAnAgent`): the type is bimodal, and the
+ * unfiltered count is dominated by the #939/#949 phantom-stop class.
+ *
+ * Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl{,.1}` (same jq
+ * envelope quoted at `namesAnAgent`):
+ *   agent.stopped, any shape ................. 16438
+ *   ... carrying a wave number ...............  6553
+ *   ... of those, WITHOUT an `agent` field ...  5930  (90.5% — not counted)
+ *   ... of those, WITH a non-empty `agent` ...   623  (what this counter reads)
  *
  * @param {Record<string, unknown>} rec
  * @param {Map<number, WaveSummary>} state

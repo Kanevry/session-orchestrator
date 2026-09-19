@@ -757,6 +757,106 @@ describe('mirrorNarrative', () => {
   });
 
   // =========================================================================
+  // mirrorNarrative — canonical `.vault.yaml` slug (issue #1131)
+  //
+  // The bug: the slug came from the DIRECTORY name, and `.vault.yaml`'s
+  // `metadata.slug` — the repo's canonical vault registration — was read by
+  // nothing. resolveLooseSlug (#829) only heals case/punctuation drift, and it
+  // heals it INTO whatever single folder already exists — so once a decoy
+  // folder minted from the directory name sits beside the canonical one, every
+  // subsequent run keeps writing to the wrong one.
+  // Precedence: explicit `repo` opt > `vault-name` > `.vault.yaml` > basename.
+  // =========================================================================
+
+  describe('canonical .vault.yaml slug (#1131)', () => {
+    /** Write a real-shaped `.vault.yaml` (see scripts/lib/vault-backfill/template.mjs). */
+    function writeVaultYaml(repoRoot, slug) {
+      fs.writeFileSync(
+        path.join(repoRoot, '.vault.yaml'),
+        'apiVersion: vault.example/v1\nkind: Repository\n\nmetadata:\n' +
+          `  name: Foo Bar App\n  slug: "${slug}"\n  tier: active\n`,
+      );
+    }
+
+    it('FAKE-REGRESSION (the #1131 duplicate-folder bug): the declared slug wins over the basename AND over a decoy folder the basename would loose-match', async () => {
+      // Directory 'FooBarApp' → subjectToSlug → 'foobarapp', which EXACTLY
+      // matches the decoy folder below, so pre-#1131 resolveLooseSlug returned
+      // 'foobarapp' with full confidence and the canonical 'foo-bar-app' folder
+      // was never written to again.
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'FooBarApp' });
+      writeVaultYaml(repoRoot, 'foo-bar-app');
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'foo-bar-app'), { recursive: true });
+      fs.mkdirSync(path.join(vaultDir, '01-projects', 'foobarapp'), { recursive: true });
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'foo-bar-app'));
+      expect(result.path).not.toContain('/foobarapp/');
+    });
+
+    it('the declared slug wins over a LEXICALLY different basename (dir "acme-web", slug "acme")', async () => {
+      // No loose match is even possible here — 'acmeweb' !== 'acme' — so this
+      // divergence class was unreachable before #1131.
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'acme-web' });
+      writeVaultYaml(repoRoot, 'acme');
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'acme'));
+    });
+
+    it('a malformed .vault.yaml degrades to the basename chain — a broken registration must never block a narrative write', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'broken-yaml-repo' });
+      fs.writeFileSync(path.join(repoRoot, '.vault.yaml'), 'metadata: [slug: acme\n  : : :\n');
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'broken-yaml-repo'));
+    });
+
+    it('a traversal slug is rejected by the reader, so the write stays inside the vault', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'traversal-repo' });
+      writeVaultYaml(repoRoot, '../../evil');
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'traversal-repo'));
+      expect(result.path).not.toContain('evil');
+    });
+
+    it('precedence: an explicit `repo` opt still wins over the declared slug', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'explicit-over-vaultyaml' });
+      writeVaultYaml(repoRoot, 'declared-slug');
+
+      const result = await mirrorNarrative({
+        repoRoot,
+        repo: 'explicit-repo',
+        hostPaths: HERMETIC_HOST_PATHS,
+      });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'explicit-repo'));
+    });
+
+    it('precedence: a configured vault-name still wins over the declared slug', async () => {
+      const { repoRoot, vaultDir } = scaffold({
+        repoDirName: 'vaultname-over-vaultyaml',
+        vaultName: 'configured-name',
+      });
+      writeVaultYaml(repoRoot, 'declared-slug');
+
+      const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(result.action).toBe('written');
+      expect(result.path).toBe(resolveNarrativePath(vaultDir, 'configured-name'));
+    });
+  });
+
+  // =========================================================================
   // Symlinked vault root (#1033)
   //
   // THE BUG THIS CATCHES, NAMED: the SECOND mirror into a vault reached through

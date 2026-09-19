@@ -312,13 +312,22 @@ function parseJsonl(raw) {
  * Digest every per-agent scope file of one wave — shape (a) of the two scope
  * shapes (CLAUDE.md / AGENTS.md § allowedPaths).
  *
+ * A file that cannot be read or parsed is the FILE-side counterpart of a
+ * truncated ledger line: skipping it silently makes a wave whose scope files are
+ * corrupt indistinguishable from one that was never injected (`digest-unknown` /
+ * `injection-missing`). The count therefore rides back on the returned Map as
+ * `malformedFiles` — an additive own property, so every existing consumer that
+ * only iterates the entries is unaffected. (A file that parses to a non-array or
+ * to an empty scope stays a silent skip: an empty scope is legitimate.)
+ *
  * @param {string} stateDir
  * @param {number} wave
  * @param {{readDir?: typeof readdirSync, readFile?: typeof readFileSync}} [io]
- * @returns {Map<string, string[]>} digest → agent ids (file basenames)
+ * @returns {Map<string, string[]> & {malformedFiles: number}} digest → agent ids (file basenames)
  */
 export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFile = readFileSync } = {}) {
   const out = new Map();
+  out.malformedFiles = 0;
   const dir = resolve(String(stateDir), 'filescopes', `wave-${wave}`);
   let names;
   try {
@@ -332,7 +341,10 @@ export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFi
     let parsed;
     try {
       parsed = JSON.parse(readFile(join(dir, file), 'utf8'));
-    } catch { continue; }
+    } catch {
+      out.malformedFiles += 1; // unreadable or unparseable — not nothing
+      continue;
+    }
     if (!Array.isArray(parsed) || normalizeScopePaths(parsed).length === 0) continue;
     const digest = scopeDigest(parsed);
     const ids = out.get(digest) ?? [];
@@ -371,6 +383,12 @@ export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFi
  * both are measurements. A non-zero count means the join ran on INCOMPLETE
  * evidence — the counts and verdicts below are a floor, not a census — and the
  * human table says so beside them.
+ *
+ * `malformed_scope_files` is the same measurement on the FILE side (#1379 P2):
+ * a scope file that cannot be read or parsed was silently skipped, which made a
+ * corrupt wave yield `digest-unknown` / `injection-missing` verdicts
+ * indistinguishable from a genuinely missing injection. Always present,
+ * including as `0`.
  *
  * ## Transport degradation
  *
@@ -491,6 +509,7 @@ export function verifyWaveScope({
     injected,
     echoed,
     malformed_lines: malformedLines,
+    malformed_scope_files: fileIds.malformedFiles ?? 0,
     by_verdict: byVerdict,
     agents,
   };
@@ -506,6 +525,8 @@ export function verifyWaveScope({
  * including as `0` — it is the denominator's honesty check: without it a join
  * that silently dropped half the ledger is indistinguishable in the record from
  * a wave where nothing went wrong (`.claude/rules/host-resources.md` § HR-105).
+ * `malformed_scope_files` carries the same guarantee for the scope files the
+ * join reads (#1379 P2).
  *
  * @param {ReturnType<typeof verifyWaveScope>} report
  * @returns {Record<string, unknown>}
@@ -518,6 +539,7 @@ export function scopeVerifiedPayload(report) {
     injected: report.injected,
     echoed: report.echoed,
     malformed_lines: report.malformed_lines ?? 0,
+    malformed_scope_files: report.malformed_scope_files ?? 0,
     by_verdict: report.by_verdict,
     digests: report.agents.map((a) => a.digest),
   };
@@ -635,6 +657,12 @@ async function mainVerify(args) {
     ...(report.malformed_lines > 0
       ? [`  WARNING: ${report.malformed_lines} malformed ledger line(s) skipped — `
         + 'counts and verdicts below are a floor, not a census']
+      : []),
+    // Same honesty check on the FILE side: an unparseable scope file makes a
+    // corrupt wave look exactly like one that was never injected.
+    ...(report.malformed_scope_files > 0
+      ? [`  WARNING: ${report.malformed_scope_files} malformed scope file(s) skipped — `
+        + 'digest-unknown / injection-missing below may be corruption, not a missing injection']
       : []),
     ...report.agents.map((a) => `  ${a.digest}  ${a.verdict.padEnd(20)}  ${a.agent_id}`),
   ];

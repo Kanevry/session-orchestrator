@@ -1,6 +1,7 @@
 ---
 name: convergence-monitoring
 description: "Monitor iterative improvement loops for convergence. Three signals — shrinking diff, pass-rate plateau, velocity — drive a Stop/Continue/Investigate decision at each inter-wave checkpoint. Distinct from /evolve (retrospective) and session-reviewer (wave output review): convergence-monitoring answers \"are we making progress?\" not \"was the last wave correct?\". Primary consumer: /autoresearch loops and wave-executor inter-wave checkpoints."
+disable-model-invocation: true
 ---
 
 # convergence-monitoring

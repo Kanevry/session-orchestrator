@@ -476,14 +476,24 @@ export function generateSessionNote(entry, options = {}) {
       // #1276: lifecycle-only records omit every older count alias. Started
       // measures participation; completed/planned-only counts retain their
       // labels so a plan or a completion count never claims dispatch coverage.
-      const completedAgents = waveCount(w.agent_count_completed);
-      const plannedAgents = waveCount(w.agent_count_planned);
+      // The `agents_*` triple is the same lifecycle measurement under the
+      // de-underscored producer spelling: `metrics-collection.md` documents
+      // `agent_count_{planned,started,completed}`, but the live ledger carries
+      // one session (`main-2026-09-18-session-1`, 5 waves, measured 2026-09-18
+      // over `.orchestrator/metrics/sessions.jsonl`) whose waves emit only
+      // `agents_planned` / `agents_started` / `agents_completed` — every one of
+      // its 15 counts rendered `?` beside a real number, exactly the #1074 bug
+      // class. Each alias sits at the precedence of its documented twin, so no
+      // cell that already rendered a value can change.
+      const completedAgents = waveCount(w.agent_count_completed) ?? waveCount(w.agents_completed);
+      const plannedAgents = waveCount(w.agent_count_planned) ?? waveCount(w.agents_planned);
       const agentsCell =
         waveCount(w.agent_count) ??
         waveCount(w.agents) ??
         waveCount(w.agents_dispatched) ??
         waveCount(w.dispatched) ??
         waveCount(w.agent_count_started) ??
+        waveCount(w.agents_started) ??
         (completedAgents === undefined ? undefined : `${completedAgents} completed`) ??
         (plannedAgents === undefined ? MISSING_CELL : `${plannedAgents} planned`);
       const filesCell = waveCount(w.files_changed) ?? waveCount(w.files) ?? MISSING_CELL;

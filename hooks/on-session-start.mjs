@@ -764,8 +764,12 @@ async function main() {
   // v3.1.0 env-aware banner (opt-out via enable-host-banner: false in Session Config).
   // The ask-via-tool nudge rides the same opt-out flag — both are coordinator
   // reminders shown at session start; users who silence one expect silence.
+  // Hoisted because the cold-start DISPLAY below rides the same opt-out (#1133)
+  // and `bannerData` is not a usable proxy for it: `emitHostBanner()` returns
+  // null on its own error paths, which would silently re-open the nudge.
+  const hostBannerEnabled = await isHostBannerEnabled(projectRoot);
   let bannerData = null;
-  if (await isHostBannerEnabled(projectRoot)) {
+  if (hostBannerEnabled) {
     bannerData = await emitHostBanner(projectRoot);
     // Always-on nudge: a user decision has three legitimate forms and AUQ-001
     // routes between them in order — operator verb first (nothing is blocked
@@ -795,7 +799,14 @@ async function main() {
         enabled: coldStartCfg.enabled !== false,
       });
       if (decision.shouldEmit) {
-        pushBanner(decision.bannerLines.join('\n'));
+        // #1133 — the DISPLAY rides the enable-host-banner opt-out like every
+        // other start-of-session emitter ("users who silence one expect
+        // silence"). The one-shot marker consumption below does NOT: the
+        // opt-out silences the display, never the measurement or the state
+        // transition. Consuming it unconditionally is what keeps the nudge
+        // one-shot for an operator who has banners off — otherwise it re-arms
+        // on every start forever.
+        if (hostBannerEnabled) pushBanner(decision.bannerLines.join('\n'));
         if (decision.markerPath) {
           await consumeMarker(decision.markerPath).catch(() => false);
         }

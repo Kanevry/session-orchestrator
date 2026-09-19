@@ -285,7 +285,32 @@ them silently loses a learning or regenerates it:
    TTL past what its type registry granted it.) State the rule in the file
    itself, so the next editor does not "fix" it upward.
 
-   The expiry sweep (`node scripts/sweep-expired-rules.mjs`) maintains this in
+   Since #1387 an expired file also stops DEDUPING: the `/reconcile` provenance
+   reader (`scripts/lib/reconcile/backlog.mjs`
+   `defaultReadMaterializedProvenance`) skips an expired file whole —
+   frontmatter key and body bullets alike — through the same `isRuleExpired`
+   predicate the loader's injection gate uses, fail-open on an absent or
+   unparseable date. Two KNOWN LIMITS, both measured 2026-09-18 and both left
+   unsolved on purpose:
+
+   - **Only the on-disk half.** `partitionMaterialized` marks a learning
+     materialized on `sidecarTerminal || onDisk`; this covers `onDisk` only. On
+     this repo 79 of 92 provenance keys are ALSO terminal in
+     `.orchestrator/runtime/reconcile-candidates.jsonl`, so only 13 keys
+     actually become re-proposable. The sidecar half stays untouched because it
+     carries operator DECLINES — expiring a rule must not re-ask a question the
+     operator already answered.
+   - **A file the sweep cannot split re-proposes forever.** A file the sweep
+     skips (`no-1to1-mapping`, `no-provenance-block`, `unreadable`) that then
+     expires legitimately becomes re-proposable on EVERY run, with no
+     mechanical exit: the sweep will not rewrite it, so nothing retires its
+     markers. The live tree is currently clear of this —
+     `node scripts/sweep-expired-rules.mjs --dry-run --json` reported
+     `skipped: []` over 7 generated files (2026-09-18) — but the class has no
+     guard, so a future unsplittable file lands in it silently.
+
+   The expiry sweep (`node scripts/sweep-expired-rules.mjs`) maintains the
+   earliest-date rule in
    ONE direction: a header sitting EARLIER than the earliest absorbed date is
    RAISED to it — the raise is its own rewrite trigger (`action: "rewrite"`,
    `reason: "header-raise"`, visible in `--json` before `--apply`), and it
@@ -307,10 +332,14 @@ them silently loses a learning or regenerates it:
    (`parseGlobsFrontmatter`, issue #795) and `instruction-budget-guard.mjs`
    (`:960`) goes through that same parser, so a `paths:`-only file is
    glob-scoped for every reader in this repo and still counts under
-   `bySurface.pathScoped`. Measured 2026-09-16 over the live tree
+   `bySurface.pathScoped`. Measured 2026-09-18 over this repo's own
+   `.claude/rules/` (25 files; NOT the vendored `rules/` library, and not the
+   private baseline's `rules/` population `docs/baseline.md` counts separately)
    (`for f in .claude/rules/*.md; do awk '/^---$/{n++;next} n==1 && /^(paths|globs):/{print FILENAME": "$1}' "$f"; done`):
-   10 path-scoped rule files — 9 `paths:`-only, 1 (`cli-design.md`) carrying
-   both. `globs:` is canonical only for rules VENDORED OUT through the `rules/`
+   10 path-scoped rule files, ALL 10 `paths:`-only — 0 carry `globs:`, 0 carry
+   both (`grep -rn '^globs:' .claude/rules/` → no match, exit 1). Until this
+   session `cli-design.md` carried both; the duplicate `globs:` was removed
+   here. `globs:` is canonical only for rules VENDORED OUT through the `rules/`
    fleet library, where `validate-vendored-rules.mjs`'s `paths-frontmatter`
    probe enforces it (issue #742); that probe judges `rules/` sources only and
    never sees a consolidated file under `.claude/rules/`. Carrying both keys is

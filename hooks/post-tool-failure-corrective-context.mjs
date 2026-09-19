@@ -206,7 +206,7 @@ async function main() {
   // Strip control chars (newlines, ANSI escapes) before forwarding to additionalContext —
   // SEC-016 (Log Injection): tool errors may contain attacker-controlled bytes.
   const safeSummary = errorSummary
-    ? errorSummary.replace(/[\r\n]/g, ' ').split('').join(' ').slice(0, 120)
+    ? errorSummary.replace(/[\r\n]/g, ' ').split('\x1b').join(' ').slice(0, 120)
     : '';
   const summaryLabel = safeSummary ? ` Error: ${safeSummary}` : '';
   const additionalContext =

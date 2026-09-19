@@ -398,9 +398,31 @@ describe('--verify (the per-wave join)', () => {
       injected: 0,
       echoed: 0,
       malformed_lines: 0,
+      malformed_scope_files: 0,
       by_verdict: {},
       agents: [],
     });
+  });
+
+  it('counts an unparseable scope file instead of skipping it silently', () => {
+    // Catches (#1379 P2): a corrupt per-agent scope file was dropped in a bare
+    // `catch { continue }`, so its digest was never known and the wave reported
+    // `digest-unknown` / `injection-missing` — byte-identical to a wave whose
+    // injection genuinely never happened. The counter is the discriminator.
+    const { stateDir, events } = fixture({ scopes: { 'w2-a1': ['scripts/a.mjs'] } });
+    writeFileSync(join(stateDir, 'filescopes', 'wave-2', 'w2-a2.json'), '{"truncated', 'utf8');
+
+    const res = runRaw(
+      ['--verify', '--wave', '2', '--state-dir', stateDir, '--events', events, '--json'],
+      tmp,
+    );
+
+    expect(res.status).toBe(0);
+    const report = JSON.parse(res.stdout.trim());
+    expect(report.malformed_scope_files).toBe(1);
+    // ...and the valid sibling still digests (one agent row, not zero).
+    expect(report.agents).toHaveLength(1);
+    expect(report.agents[0].agent_id).toBe('w2-a1');
   });
 
   it('surfaces dropped ledger lines in the human table instead of printing a clean wave', () => {

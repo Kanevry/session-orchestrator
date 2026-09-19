@@ -25,7 +25,7 @@
  * @module hooks/_lib/subagent-transcript
  */
 
-import { promises as fs } from 'node:fs';
+import { readTailWindow } from '../../scripts/lib/tail-window.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -33,6 +33,20 @@ import { promises as fs } from 'node:fs';
 
 /** Number of trailing assistant records to scan. */
 export const TAIL_RECORDS = 8;
+/**
+ * Byte window `readTranscriptTail()` reads from the END of a transcript (#1388
+ * P4) — the ceiling on this deliberate simplification, per BV-004.
+ *
+ * Measured 2026-09-18 over 1016 real subagent transcripts: the byte span of the
+ * last TAIL_RECORDS assistant records was median 41 KB, p99 322 KB, max 1.25 MB
+ * (file size median 676 KB, max 8.2 MB). 2 MiB loses zero records in that
+ * sample; 1 MiB would already lose one.
+ *
+ * REVISIT TRIGGER: if TAIL_RECORDS grows, or a re-measurement puts the max span
+ * above ~1.5 MB, raise this window — a too-small window silently drops the
+ * OLDEST of the eight records rather than failing.
+ */
+export const TAIL_WINDOW_BYTES = 2 * 1024 * 1024;
 /** Proximity window (in lines) for an adjacent grep transcript. */
 export const GREP_PROXIMITY_LINES = 5;
 /** Max characters of claim text persisted to the event record. */
@@ -320,15 +334,27 @@ const LEADING_MARKER_RE = /^(?:\s*(?:[-*+•]|\d{1,3}[.)]|#{1,6}|>)\s+)+/;
 export async function readTranscriptTail(transcriptPath) {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return '';
   let raw;
+  let cut;
   try {
-    raw = await fs.readFile(transcriptPath, 'utf8');
+    // Bounded read (#1388 P4): the whole transcript used to be decoded and
+    // JSON-parsed line by line only to keep the last 8 assistant records.
+    ({ text: raw, cut } = readTailWindow(transcriptPath, TAIL_WINDOW_BYTES));
   } catch {
+    // Every fs error (ENOENT, /dev/null EACCES, …) maps to '' — readTailWindow
+    // THROWS where the former fs.readFile catch swallowed, and the caller
+    // (post-subagent-discovery-validator) relies on the '' contract.
     return '';
   }
   if (!raw.trim()) return '';
 
+  const lines = raw.split(/\r?\n/);
+  // `cut` means the window did not start at byte 0, so line 0 is (or may be) a
+  // record fragment, possibly severed mid-UTF-8. Drop it explicitly rather than
+  // leaning on the JSON.parse catch below: a truncated record can still parse.
+  if (cut) lines.shift();
+
   const assistantRecords = [];
-  for (const line of raw.split(/\r?\n/)) {
+  for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     let rec;

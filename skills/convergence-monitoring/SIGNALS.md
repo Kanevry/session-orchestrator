@@ -208,12 +208,28 @@ VEL_LINES_PRIOR=<read from events.jsonl for wave N-1>
 
 The `velocity_drop` NDJSON signal counts **one `orchestrator.agent.stopped`
 record per dispatched agent** (wave read from `wave` or `wave_number`) and fires
-when the later wave stopped fewer agents than the earlier one. Measured
-2026-09-05 over `.orchestrator/metrics/events.jsonl`: 11,754
-`orchestrator.agent.stopped` records versus **0** for the `agent.dispatched` type
-the reader also accepts — `agent.stopped` is the only per-agent record this repo
-actually emits with a wave number. The git-based `VEL_COMMITS` / `VEL_LINES`
-recipe above is the SKILL-level computation and is independent of the monitor.
+when the later wave stopped fewer agents than the earlier one. `agent.stopped`
+is the only per-agent record this repo actually emits with a wave number — but
+the type is BIMODAL (#939/#949), so only records carrying a **non-empty `agent`
+field** are counted; the rest are the phantom-stop class and counting them
+inflated every per-wave count ~10.5x (#1379 P10).
+
+Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl` plus its rotation
+`.jsonl.1`:
+
+```bash
+cat .orchestrator/metrics/events.jsonl .orchestrator/metrics/events.jsonl.1 | jq -s '{
+  total_stopped:      [.[]|select(.event=="orchestrator.agent.stopped")]|length,
+  with_wave:          [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null))]|length,
+  with_wave_no_agent: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")==""))]|length,
+  with_wave_and_agent:[.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")!=""))]|length }'
+# → { total_stopped: 16438, with_wave: 6553, with_wave_no_agent: 5930, with_wave_and_agent: 623 }
+```
+
+i.e. 5930 of 6553 wave-scoped stops (90.5%) are phantoms, against **0** records
+of the `agent.dispatched` type the reader also accepts. The git-based
+`VEL_COMMITS` / `VEL_LINES` recipe above is the SKILL-level computation and is
+independent of the monitor.
 
 ### Thresholds
 

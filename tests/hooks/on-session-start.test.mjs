@@ -1432,6 +1432,12 @@ describe('Phase 4 measurement probes', { timeout: 20000 }, () => {
     const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-probe-vault-'));
     tmpDirs.push(vault);
     await seedStaleBootstrapLock(dir);
+    // The migration-seed marker: its deletion is the one-shot state transition
+    // the cold-start nudge performs. #1133's second half — the marker MUST be
+    // consumed even when the display is silenced, or the nudge re-arms on every
+    // single start for an operator who will never see it.
+    const marker = path.join(dir, '.orchestrator', 'welcome-banner-pending');
+    await fs.writeFile(marker, '', 'utf8');
     await fs.writeFile(
       path.join(dir, 'CLAUDE.md'),
       '# Test\n\n## Session Config\n\nenable-host-banner: false\n',
@@ -1440,18 +1446,25 @@ describe('Phase 4 measurement probes', { timeout: 20000 }, () => {
 
     const result = await runHook({ projectDir: dir, env: { SO_VAULT_DIR: vault } });
 
-    // Assert on the PROBE line specifically, not on `systemMessage` as such:
-    // the cold-start nudge is a separate emitter that is NOT gated on
-    // enable-host-banner (pre-existing, out of scope here) and the aged
-    // bootstrap.lock this test seeds is exactly its trigger.
-    expect(result.stdout).not.toContain('bootstrap.lock');
-    expect(result.stdout).not.toMatch(/age=\d+d/);
+    // #1133: the opt-out silences EVERY start-of-session emitter, so nothing at
+    // all reaches the operator — not the probe line and not the cold-start
+    // nudge, which the aged bootstrap.lock seeded above is exactly the trigger
+    // for. Assert on the absence of a systemMessage as such, not on one string.
+    const envelopes = result.stdout
+      .split('\n')
+      .filter((l) => l.trim().startsWith('{'))
+      .map((l) => JSON.parse(l));
+    expect(envelopes.filter((o) => typeof o.systemMessage === 'string')).toEqual([]);
 
     // ...while the measurement itself happened and is on the record.
     const [evt] = await probeEvents(dir);
     expect(evt).toBeDefined();
     const byId = Object.fromEntries(evt.probes.map((p) => [p.id, p.outcome]));
     expect(byId['bootstrap-lock-freshness']).toBe('ran-alert');
+
+    // ...and so did the state transition: silence is a DISPLAY preference, it
+    // never suppresses the one-shot marker consumption.
+    await expect(fs.access(marker)).rejects.toThrow();
   });
 });
 

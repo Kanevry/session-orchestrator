@@ -330,8 +330,10 @@ for (const name of mdFiles.sort()) {
         '("rules without a paths field are loaded unconditionally and apply to all files" — ' +
         'code.claude.com/docs/en/memory § Path-specific rules). `globs:` is the Cursor field name, so this rule ' +
         'is scoped for rule-loader.mjs and Cursor but loads ALWAYS-ON in Claude Code — a silent instruction-budget ' +
-        'failure (#1108). Add a paths: key carrying the same patterns as globs: (keep globs: — it stays the ' +
-        'canonical form for vendored rules, validate-vendored-rules.mjs #742).',
+        'failure (#1108). Add a paths: key carrying the same patterns as globs:. Under .claude/rules/ paths: is ' +
+        'the canonical scope key (docs/rule-authoring.md) — keep globs: alongside it only if this rule is ALSO ' +
+        'vendored out through rules/, where globs: is the vendored form (#742); otherwise paths: alone is enough ' +
+        'and globs: can be dropped.',
     );
   } else if (!parity.ok && parity.kind === 'divergent') {
     fail(

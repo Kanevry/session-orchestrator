@@ -109,11 +109,23 @@ function normaliseScalar(text) {
  * yes` demotion reported `user-invocable: "yes"`, sending the operator to a
  * line that does not exist in that file.
  *
+ * The NOUN follows the key too (#1388 P10). Naming the key while hard-coding
+ * "is NOT a slash-command marker" told a `disable-model-invocation: yes` author
+ * that his value failed to be something it never was — a correct key with a
+ * wrong subject reads as a broken diagnostic. The default phrase is unchanged
+ * for `user-invocable`, so the four existing call sites see identical text.
+ *
  * @param {unknown} value the raw frontmatter value
  * @param {string} [file] path named in the WARN when a truthy-looking value is demoted
  * @param {string} [key] frontmatter key named in the WARN (default `user-invocable`)
  * @returns {boolean}
  */
+const MARKER_NOUN = Object.freeze({
+  'user-invocable': 'a slash-command marker',
+  'disable-model-invocation': 'a model-invocation opt-out marker',
+});
+const DEFAULT_MARKER_NOUN = 'a boolean marker';
+
 export function isUserInvocableValue(value, file, key = 'user-invocable') {
   if (value === true) return true;
   if (typeof value !== 'string') return false;
@@ -122,7 +134,7 @@ export function isUserInvocableValue(value, file, key = 'user-invocable') {
   if (TRUTHY_LOOKALIKE.test(token)) {
     const where = file ? `${file}: ` : '';
     process.stderr.write(
-      `WARN ${where}${key}: ${JSON.stringify(value)} is NOT a slash-command marker — `
+      `WARN ${where}${key}: ${JSON.stringify(value)} is NOT ${MARKER_NOUN[key] ?? DEFAULT_MARKER_NOUN} — `
         + `only \`true\` is (YAML 1.2 reads yes/on/1 as strings). Write \`${key}: true\`.\n`,
     );
   }

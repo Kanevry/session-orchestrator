@@ -51,15 +51,21 @@
  * skill body) and nowhere in the three RUN surfaces above still reports
  * UNREGISTERED — being documented is not being run. REVISIT if a fourth run
  * surface (a new CI job file, a different git hook) is ever added: extend
- * `RUN_SURFACES`, do not special-case it here. The comment stripper's own
- * quote-tracking is a single flat state — an escaped quote (`\"`) inside a
- * double-quoted string is not honoured, and a template-literal's `${...}`
- * interpolation is not walked separately. Both failure directions lean
- * toward treating MORE text as "inside a string" than a real parser would,
- * which can only make the stripper MISS a comment (false "still
- * registered"), never manufacture a false UNREGISTERED — the direction this
- * checker's own false-positive history (the paragraph above) already
- * measured as the live hazard.
+ * `RUN_SURFACES`, do not special-case it here.
+ *
+ * THE "NEVER A FALSE UNREGISTERED" CLAIM WAS FALSE (#1388, measured
+ * 2026-09-18 @ 20a4cbff). This header used to argue that the hand-rolled
+ * stripper could only ever MISS a comment, never manufacture a false
+ * UNREGISTERED. It had no regex-literal branch, so
+ * `const re = /\/*$/;` in `scripts/validate-plugin.mjs` opened a BLOCK
+ * COMMENT at the regex's `/*` and swallowed every `runCheck(...)` line below
+ * it — precisely a false UNREGISTERED, for every checker registered after
+ * that point. The `.mjs` surface is therefore lexed by the shared
+ * `maskSource` (`scripts/lib/js-mask.mjs`), which recognises regex literals;
+ * only the `#`-comment shell/YAML surfaces (`.husky/pre-commit`,
+ * `.gitlab-ci.yml`) still use the small local walker, whose flat
+ * quote-tracking ceiling (no `\"` escape handling, no `${...}` walk) is
+ * real but bounded to those two files.
  *
  * Usage: check-validator-registration.mjs <repo-root>
  * Output: `  PASS: …` / `  FAIL: …` lines (two leading spaces), then
@@ -74,6 +80,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { enumerateRepoFiles } from './enumerate-repo-files.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { maskSource } from '../js-mask.mjs';
 
 /** Marker line inside a checker's own header — declares deliberate CLI-only status. */
 export const STANDALONE_MARKER = /^\s*\/\/\s*registration:\s*standalone\b(?:\s+(.*))?$/m;
@@ -113,11 +120,28 @@ function commentStyleForSurface(rel) {
  * truncating the line early. See the header NAMED CEILING for what this
  * quote-tracking deliberately does not attempt.
  *
+ * The JS style (`//` + `/* *\/`) is delegated to the shared lexer
+ * {@link maskSource} in `keepLiterals` mode — it is the only one of the three
+ * RUN_SURFACES that can contain a REGEX LITERAL, and a stripper without a
+ * regex branch reads `/\/*$/` as a block-comment opener and swallows every
+ * registration below it (#1388, see the header). `maskSource` blanks comment
+ * bytes to SPACES rather than deleting them, which is strictly safer for the
+ * substring match below: deletion could splice two fragments into a basename
+ * that was never written. The `#` style stays local — `maskSource` models
+ * JavaScript, not sh/YAML.
+ *
  * @param {string} text
  * @param {{lineComment: string, blockComment: boolean, quoteChars: string[]}} style
- * @returns {string}
+ * @returns {string} TWO comment models behind one signature, and they differ in
+ * shape: the JS style (`//` + `/* *\/`, delegated to {@link maskSource})
+ * returns a string of the SAME LENGTH as `text`, with comment bytes blanked to
+ * spaces; the `#` style (sh/YAML, the local walker) returns a SHORTER string,
+ * with the comment text deleted to end-of-line (the newline itself is kept).
+ * Only the substring match below is common to both — do not rely on offsets
+ * surviving the `#` style.
  */
 export function stripComments(text, { lineComment, blockComment, quoteChars }) {
+  if (lineComment === '//' && blockComment) return maskSource(text, { keepLiterals: true });
   let out = '';
   let i = 0;
   let inQuote = null;

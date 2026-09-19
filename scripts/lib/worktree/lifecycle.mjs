@@ -47,14 +47,145 @@ async function _exists(p) {
 }
 
 /**
+ * The one directory session-orchestrator worktrees may live in.
+ * Host-shared: several sessions run concurrently against the same base.
+ * @returns {string}
+ */
+function _worktreeBaseDir() {
+  return path.join(os.tmpdir(), 'so-worktrees');
+}
+
+/**
  * Compute the standard branch name and tmp path for a given suffix.
  * @param {string} suffix
  * @returns {{ branch: string, wtPath: string }}
  */
 function _worktreeInfo(suffix) {
   const branch = `so-worktree-${suffix}`;
-  const wtPath = path.join(os.tmpdir(), 'so-worktrees', branch);
+  const wtPath = path.join(_worktreeBaseDir(), branch);
   return { branch, wtPath };
+}
+
+/**
+ * Resolve symlinks, returning null when the path does not exist.
+ * @param {string} p
+ * @returns {Promise<string|null>}
+ */
+async function _realpathOrNull(p) {
+  try {
+    return await fs.realpath(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * True when `wtPath` is NOT a live working tree of any repository — i.e. either
+ * it carries no `.git` entry at all, or its `.git` file points at an
+ * administrative directory that no longer exists (the registration was dropped).
+ *
+ * A directory whose registration is intact is never an orphan: `git worktree
+ * remove --force` handles that case, so this predicate is what keeps a live
+ * worktree — including one owned by a PEER session, or by another repository —
+ * out of the delete path below.
+ *
+ * @param {string} wtPath
+ * @returns {Promise<boolean>}
+ */
+async function _isUnregisteredWorktreeDir(wtPath) {
+  const dotGit = path.join(wtPath, '.git');
+  let st;
+  try {
+    st = await fs.lstat(dotGit);
+  } catch {
+    return true; // No .git entry — not a working tree of anything.
+  }
+  // A real .git DIRECTORY means a full repository lives here; never ours to delete.
+  if (!st.isFile()) return false;
+
+  const content = await fs.readFile(dotGit, 'utf8').catch(() => '');
+  const match = /^gitdir:\s*(.+)$/m.exec(content);
+  if (!match) return false; // Unparseable — treat as live, refuse.
+
+  const adminDir = path.resolve(wtPath, match[1].trim());
+  // Admin dir still present → git knows this worktree → not an orphan.
+  return !(await _exists(adminDir));
+}
+
+/**
+ * Remove an ORPHAN worktree directory (issue #984).
+ *
+ * An interrupted `removeWorktree` drops the git registration first and can die
+ * before the directory is gone. `git worktree add` then fails with
+ * "'…' already exists" while `git worktree remove --force` fails with
+ * "'…' is not a working tree" (swallowed by nothrow) — the retry loops on the
+ * same error until someone deletes the directory by hand.
+ *
+ * SAFETY — this is a recursive delete inside library code, so every condition
+ * below is asserted in code before `fs.rm` runs. Any failed condition returns
+ * false and leaves the directory alone (the retry then fails with git's own
+ * error, which is the pre-#984 behaviour):
+ *   1. `wtPath` itself is a real directory and NOT a symlink — the LEAF is never
+ *      followed. (A symlink one level up is covered by condition 2.)
+ *   2. The literal base `<os.tmpdir()>/so-worktrees` is itself a real directory
+ *      and NOT a symlink. The base lives on a host-shared /tmp where a co-tenant
+ *      can pre-create it; without this check the realpath of a planted base
+ *      symlink BECOMES the delete root, so a `so-worktree-*` directory anywhere
+ *      on the filesystem would qualify.
+ *   3. The REALPATH of `wtPath` is a DIRECT child of the REALPATH of that base
+ *      — both sides resolved, because macOS resolves /tmp → /private/tmp and
+ *      os.tmpdir() itself may be a symlinked path.
+ *   4. The resolved basename starts with `so-worktree-`.
+ *   5. It is not a live working tree of ANY repository (see above).
+ * Note what is NOT asserted: an intermediate component of `wtPath` other than
+ * the base cannot exist — the path is `<base>/so-worktree-<suffix>`, computed by
+ * `_worktreeInfo`, never caller-supplied.
+ * `git worktree prune` is deliberately NOT used: it is repo-global and would
+ * drop a peer session's stale registration.
+ *
+ * CEILING (BV-004): the delete is bounded to one directory directly under the
+ * fixed base `<os.tmpdir()>/so-worktrees` whose name carries the `so-worktree-`
+ * prefix. Revisit when worktree paths become caller-supplied (the
+ * `validateWorkspacePath` follow-up noted above) or move out of os.tmpdir() —
+ * at that point the containment base is no longer a constant and must be passed
+ * in and validated by the caller.
+ *
+ * @param {string} wtPath
+ * @returns {Promise<boolean>} true when a directory was actually removed.
+ */
+async function _removeOrphanWorktreeDir(wtPath) {
+  let lst;
+  try {
+    lst = await fs.lstat(wtPath);
+  } catch {
+    return false; // Nothing there.
+  }
+  if (lst.isSymbolicLink() || !lst.isDirectory()) return false;
+
+  // The containment BASE must be a real directory too: on a host-shared /tmp a
+  // co-tenant can pre-create `<os.tmpdir()>/so-worktrees` as a symlink, and a
+  // realpath-resolved base would then relocate the delete root off-tmpdir.
+  const baseDir = _worktreeBaseDir();
+  let baseLst;
+  try {
+    baseLst = await fs.lstat(baseDir);
+  } catch {
+    return false; // No base directory — nothing under it to remove.
+  }
+  if (baseLst.isSymbolicLink() || !baseLst.isDirectory()) return false;
+
+  const realWt = await _realpathOrNull(wtPath);
+  const realBase = await _realpathOrNull(baseDir);
+  if (!realWt || !realBase) return false;
+  if (!isPathInside(realWt, realBase)) return false;
+  // Direct child only — matches the CEILING below; no nested path qualifies.
+  if (path.dirname(realWt) !== realBase) return false;
+  if (!path.basename(realWt).startsWith('so-worktree-')) return false;
+
+  if (!(await _isUnregisteredWorktreeDir(realWt))) return false;
+
+  await fs.rm(realWt, { recursive: true, force: true });
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +266,13 @@ export async function createWorktree(suffix, baseRef = 'HEAD', options = {}) {
     // Branch or worktree may already exist from a previous failed run — force-cleanup and retry.
     await nothrow(git`git worktree remove ${wtPath} --force`);
     await nothrow(git`git branch -D ${branch}`);
+
+    // Still on disk after the remove attempt → git has no registration for it
+    // (issue #984). Delete the orphan directory under the guards documented on
+    // _removeOrphanWorktreeDir; a live/registered worktree never reaches here.
+    if (await _exists(wtPath)) {
+      await _removeOrphanWorktreeDir(wtPath);
+    }
 
     try {
       await git`git worktree add -b ${branch} ${wtPath} ${baseRef}`;
