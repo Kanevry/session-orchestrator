@@ -182,6 +182,8 @@ describe('eval E2E chain — evaluate → persist → report → offline re-veri
     // → both went RED against the real triage-block output; reverted to the
     // value below → GREEN again. Confirms the triage count/percentage is
     // read from the actual rendered HTML, not hardcoded independently of it.
-    expect(html).toContain('<strong>cannot-determine dimensions:</strong> 3 of 5 (60.0%)');
+    // Denominator 6 since rubric-v2 (#1037): guard-friction joined the five v1
+    // dimensions. The 3 abstaining dimensions are unchanged.
+    expect(html).toContain('<strong>cannot-determine dimensions:</strong> 3 of 6 (50.0%)');
   });
 });

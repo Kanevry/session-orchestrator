@@ -80,7 +80,8 @@ describe('eval-session CLI — evaluate + write', () => {
     expect(r.status).toBe(0);
     const rec = JSON.parse(r.stdout);
     expect(rec.record_kind).toBe('session-eval');
-    expect(rec.dimensions).toHaveLength(5);
+    // 6 since rubric-v2 (#1037): guard-friction joined the five v1 dimensions.
+    expect(rec.dimensions).toHaveLength(6);
     expect(existsSync(evalPath(fx.dir))).toBe(true);
   });
 

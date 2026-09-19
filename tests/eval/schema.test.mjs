@@ -429,3 +429,62 @@ describe('sink — appendEvalRecord / readEvalRecords', () => {
     expect(DEFAULT_EVAL_JSONL_PATH).toBe('.orchestrator/metrics/eval.jsonl');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-version readability (#1037 — rubric-v1 and rubric-v2 in one journal)
+// ---------------------------------------------------------------------------
+
+describe('cross-rubric-version readability (#1037)', () => {
+  let dir;
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  // BUG THIS CATCHES: minting rubric-v2 is only safe while the schema keeps
+  // `rubric_version` and `dimensions[].id` OPEN. If either is ever narrowed to
+  // a closed list of known values, every stored rubric-v1 record — the entire
+  // history — stops validating, and `--verify` / the report path can no longer
+  // read the journal they were written into. This test fails the moment such a
+  // whitelist appears.
+  it('validates a stored rubric-v1 record (5 dimensions) unchanged', () => {
+    const v1 = validRecord({
+      rubric_version: 'rubric-v1',
+      dimensions: [
+        { id: 'verification-evidence', method: 'deterministic', status: 'pass', evidence: 'gate exit 0' },
+        { id: 'plan-fidelity', method: 'deterministic', status: 'pass', evidence: 'rate 1', score: 1 },
+        { id: 'gate-health', method: 'deterministic', status: 'pass', evidence: 'last full-gate exit 0' },
+        // The v1 formula: blocked >= 1 was a FAIL. Stored verdicts keep it.
+        { id: 'process-safety', method: 'deterministic', status: 'fail', evidence: 'destructive_guard.blocked=6, agent_summary.spiral=0' },
+        { id: 'efficiency-kpis', method: 'deterministic', status: 'not-applicable', evidence: 'REPORTED, not graded.' },
+      ],
+    });
+    expect(() => validateEvalRecord(v1)).not.toThrow();
+    expect(validateEvalRecord(v1).dimensions).toHaveLength(5);
+  });
+
+  it('validates a rubric-v2 record (6 dimensions incl. guard-friction)', () => {
+    const v2 = validRecord({
+      rubric_version: 'rubric-v2',
+      dimensions: [
+        { id: 'verification-evidence', method: 'deterministic', status: 'pass', evidence: 'gate exit 0' },
+        { id: 'plan-fidelity', method: 'deterministic', status: 'pass', evidence: 'rate 1', score: 1 },
+        { id: 'gate-health', method: 'deterministic', status: 'pass', evidence: 'last full-gate exit 0' },
+        { id: 'process-safety', method: 'deterministic', status: 'pass', evidence: 'no adverse process signals (agent_summary.spiral=0).' },
+        { id: 'guard-friction', method: 'deterministic', status: 'not-applicable', evidence: 'REPORTED, not graded. destructive_guard.blocked=6' },
+        { id: 'efficiency-kpis', method: 'deterministic', status: 'not-applicable', evidence: 'REPORTED, not graded.' },
+      ],
+    });
+    expect(() => validateEvalRecord(v2)).not.toThrow();
+    expect(validateEvalRecord(v2).dimensions).toHaveLength(6);
+  });
+
+  it('holds both versions in ONE journal and reads them back in order', () => {
+    dir = mkdtempSync(path.join(tmpdir(), 'eval-xver-'));
+    const journal = path.join(dir, 'eval.jsonl');
+    appendEvalRecord(validRecord({ session_id: 'old', rubric_version: 'rubric-v1' }), { path: journal });
+    appendEvalRecord(validRecord({ session_id: 'new', rubric_version: 'rubric-v2' }), { path: journal });
+    const records = readEvalRecords(journal);
+    expect(records.map((r) => r.rubric_version)).toEqual(['rubric-v1', 'rubric-v2']);
+  });
+});
