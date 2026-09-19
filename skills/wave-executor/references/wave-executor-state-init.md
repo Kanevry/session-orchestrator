@@ -6,6 +6,8 @@
 
 ## Pre-Wave 1b: Initialize STATE.md
 
+Check [User-authorized housekeeping execution deviation](../../session-plan/SKILL.md#user-authorized-housekeeping-execution-deviation) before applying a default shape or mismatch prompt. When active, use the actual agreed plan's wave count and preserve its authorization record; the resolver's one-wave housekeeping result remains the audited default.
+
 > Skip this section entirely if `persistence: false`.
 
 Before dispatching Wave 1, write `<state-dir>/STATE.md` with YAML frontmatter and Markdown body:
@@ -61,8 +63,9 @@ node scripts/session-shape.mjs --repo-root "$PWD" \
 
 `--no-event` is used HERE because the plan-time run already recorded `orchestrator.session.shape_resolved` — this is a re-read, not a second resolution. Compare the printed number with the plan's wave count (the value just written to `total-waves`):
 
-- **Equal** → continue to Wave 1.
-- **Mismatch** → STOP. Surface it via `AskUserQuestion` per `.claude/rules/ask-via-tool.md`, with the shape's number and the plan's number both in the option descriptions: **re-plan to the shape (Recommended)** — rebuild the wave plan at the shape's wave count, the only outcome that keeps STATE.md, the ledger and the dispatch loop describing the same session — versus **proceed with a logged Deviation**, which requires appending the divergence to STATE.md `## Deviations` (`appendDeviationOnDisk()` from `scripts/lib/state-md.mjs`) before the first dispatch.
+- **User-authorized housekeeping deviation active** → before the first dispatch, persist the plan's execution-deviation record in STATE.md `## Deviations` via `appendDeviationOnDisk()` from `scripts/lib/state-md.mjs`, including the user request, default shape and actual plan/count. Validate `total-waves` against the actual plan, then continue with its normal scoped dispatch and review flow. Apply this branch even if both counts are one but the plan dispatches agents. Do not ask again to approve the same already-authorized shape, and do not rewrite the default-shape event to claim it describes the actual plan.
+- **No authorized deviation and equal** → continue to Wave 1.
+- **No authorized deviation and mismatch** → STOP. Surface it via `AskUserQuestion` per `.claude/rules/ask-via-tool.md`, with the shape's number and the plan's number both in the option descriptions: **re-plan to the shape (Recommended)** — rebuild the wave plan at the shape's wave count — versus **proceed with a logged Deviation**, which requires appending the divergence to STATE.md `## Deviations` (`appendDeviationOnDisk()` from `scripts/lib/state-md.mjs`) before the first dispatch.
 
 #### Pre-Wave 1b Extension: Docs Tasks Persistence (A3 / #230)
 
@@ -95,4 +98,3 @@ Each entry's `status` is initialized to `planned`. session-end Phase 3.2 (Docs V
 > **Consumer cross-reference:** session-end reads `STATE.md` frontmatter's `docs-tasks` field (if present) during Phase 3.2 Docs Verify — see `skills/session-end/SKILL.md`. The field is also readable by the docs-writer agent if it needs to know which tasks were planned for the current session.
 
 > **Ownership:** STATE.md is owned by the wave-executor. Only the wave-executor writes to it (initialization + post-wave updates). session-end reads it for metrics extraction and sets `status: completed`. session-start reads it only for continuity checks (Phase 0.5). No other skill should write to STATE.md.
-

@@ -1,15 +1,19 @@
 ---
 description: Start a development session (housekeeping, feature, deep; ultradeep = deep + profile)
-argument-hint: "[housekeeping|feature|deep|ultradeep]"
+argument-hint: "[housekeeping|feature|deep|ultradeep] [task context]"
 ---
 
 # Session Start
 
-You are beginning a new development session. The user has invoked `/session` with type: **$ARGUMENTS** (if empty, default to **`deep`**).
+You are beginning a new development session. The complete text following `/session` is **$ARGUMENTS**. Its first whitespace-delimited token selects the mode; the remaining text is the user's task context. Empty input defaults to **`deep`**.
 
 **Default rationale (measured, not assumed):** `deep` is the default because it is what operators actually run — 77.3 % of 489 recorded sessions across 5 repos, and 115 of 228 (50.4 %) in this repo's own `.orchestrator/metrics/sessions.jsonl`. The former `feature` default made the majority case the one that had to be typed out every time. A `deep` default costs a downgrade keystroke in the minority case; a `feature` default cost an upgrade keystroke in the majority case.
 
-**Argument validation:** Valid session types are `housekeeping`, `feature`, and `deep`. An explicit `$ARGUMENTS` value ALWAYS wins over the default — `/session housekeeping` and `/session feature` behave exactly as before. `ultradeep` is additionally accepted as an ARGUMENT ALIAS (see below); it is not a fourth type. If `$ARGUMENTS` is not empty and does not match any valid type or the alias, inform the user: "Invalid session type '$ARGUMENTS'. Valid types: housekeeping, feature, deep (alias: ultradeep)." Then fall back to `deep`. Once the type (and any profile) is settled, the resolved execution shape is recorded at plan time by `node scripts/session-shape.mjs` (event `orchestrator.session.shape_resolved`), so the ledger can answer "how many waves did this session actually run".
+**Resolve arguments before invoking session-start:** Run `node scripts/resolve-session-invocation.mjs --json` from the plugin root with the complete argument text on stdin. Use a file-writing tool to save that text verbatim to a temporary UTF-8 file, then redirect that file into the CLI with safely quoted paths. Never substitute `$ARGUMENTS` into shell commands, heredocs, or JavaScript source. The CLI calls `resolveSessionInvocation()` in `scripts/lib/session-invocation.mjs` and returns `sessionType`, `context`, an optional `profile`, and an optional `invalidMode`. Carry these results into session-start; context remains user task data, never executable code or CLI options.
+
+**Argument validation:** Valid session types are `housekeeping`, `feature`, and `deep`. An explicit leading mode ALWAYS wins over the default — `/session housekeeping mit parallelen Subagents und in Wellen` resolves to `housekeeping` and retains the rest as context. `ultradeep` is additionally accepted as an ARGUMENT ALIAS (see below); it is not a fourth type. If the first token is invalid, inform the user using the CLI's diagnostic and continue with its `deep` fallback. Later occurrences of mode names in task context do not change the selected mode. Once the type (and any profile) is settled, `node scripts/session-shape.mjs` records the default mode shape at plan time (event `orchestrator.session.shape_resolved`). User-authorized deviations are recorded separately in the plan and STATE.md; actual execution is recorded in wave history.
+
+**Explicit execution requests:** Ordinary housekeeping uses the coordinator-direct maintenance shape returned by `scripts/session-shape.mjs`. If the user explicitly requests parallel subagents or waves in the context, carry that request into the session plan as an override for this run, following [User-authorized housekeeping execution deviation](../skills/session-plan/SKILL.md#user-authorized-housekeeping-execution-deviation). Retain `session-type: housekeeping`, keep the resolver's default shape distinct from the actual plan, and preserve global Session Config and the user's model settings. The planning and execution skills apply this exception before their housekeeping shortcuts; the request does not implicitly authorize unrelated external actions.
 
 ### Argument alias: `ultradeep` (PRD `docs/prd/2026-09-06-ultradeep-session-profile.md`)
 

@@ -6,7 +6,7 @@
 
 ## Step 1.8: Task-to-Role Classification
 
-For each task from Step 1, assign exactly one role. Use these signal-to-role mappings:
+First apply [User-authorized housekeeping execution deviation](../SKILL.md#user-authorized-housekeeping-execution-deviation). If active, continue classification and Steps 2–4; the ordinary housekeeping short-circuit below does not apply. For each task from Step 1, assign exactly one role. Use these signal-to-role mappings:
 
 | Signal in task | Role | Examples |
 |---|---|---|
@@ -46,7 +46,7 @@ When `docs-orchestrator.enabled: true`, session-start Phase 2.5 emits a delimite
 
 **If the block is absent:** Do not fabricate Docs tasks. The Docs role remains empty; apply the empty-role rule from Step 2.
 
-- Housekeeping sessions: skip Steps 1.8, 2, and 3 — housekeeping is the **maintenance loop**, one coordinator-direct wave. `total-waves: 1` and the wave's `coordinatorDirect: true` come from the shape (`scripts/session-shape.mjs --session-type housekeeping`), not from this prose.
+- Ordinary housekeeping sessions **without the user-authorized execution deviation**: skip Steps 1.8, 2, and 3 — housekeeping is the **maintenance loop**, one coordinator-direct wave. `total-waves: 1` and the wave's `coordinatorDirect: true` come from the shape (`node scripts/session-shape.mjs --session-type housekeeping`), not from this prose.
   - No role classification — no wave-executor dispatch, no per-role agent sizing.
   - **Default scope, in this order:**
     1. drift-check — `node skills/claude-md-drift-check/checker.mjs --mode warn`

@@ -11,9 +11,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, symlinkSync, lstatSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import yaml from 'js-yaml';
 
 import {
@@ -22,6 +22,7 @@ import {
   agentsMdAliasState,
   PORTABLE_KEYS,
   DESCRIPTION_MAX,
+  listSourceSkills,
 } from '../../scripts/generate-agents-skills.mjs';
 
 /** @type {string} */
@@ -32,6 +33,15 @@ function writeSkill(name, frontmatter, body = 'canonical body') {
   const dir = join(root, 'skills', name);
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'SKILL.md'), `---\n${frontmatter.trim()}\n---\n\n${body}\n`, 'utf8');
+}
+
+function writeCommand(name, frontmatter, body = 'canonical command body') {
+  mkdirSync(join(root, 'commands'), { recursive: true });
+  writeFileSync(join(root, 'commands', `${name}.md`), `---\n${frontmatter.trim()}\n---\n\n${body}\n`);
+}
+
+function readPolicy(name) {
+  return yaml.load(readFileSync(join(root, '.agents', 'skills', name, 'agents', 'openai.yaml'), 'utf8')).policy;
 }
 
 /** Parse a generated mirror into `{ fm, body }`. */
@@ -172,15 +182,48 @@ describe('.agents/skills mirror body', () => {
     expect(raw).not.toContain('SECRET-CANONICAL-BODY-MARKER');
     expect(Buffer.byteLength(raw, 'utf8')).toBeLessThan(2048);
   });
+
+  it('discovers a command-only session and resolves its canonical source from the mirror', () => {
+    // BUG: session only exists in commands/, so the old skills-only surface
+    // omitted the public entrypoint entirely on portable harnesses.
+    writeCommand('session', 'description: Start a development session.\nargument-hint: "[type]"');
+    const result = generateAgentsSurface({ pluginRoot: root });
+    expect(result.skills).toEqual(['session']);
+    const { fm, body } = readMirror('session');
+    expect(fm).toMatchObject({ name: 'session', metadata: { 'argument-hint': '[type]' } });
+    const canonicalLink = /\]\(([^)]+)\)/.exec(body)[1];
+    expect(resolve(root, '.agents/skills/session', canonicalLink)).toBe(join(root, 'commands/session.md'));
+    // Preserve the exported helper's original skills-only contract.
+    expect(listSourceSkills(root)).toEqual([]);
+  });
+
+  it('uses command precedence and falls back to the skill after the command is removed', () => {
+    // BUG: same-named command and skill are distinct workflows; silently
+    // preferring the internal skill bypasses command prechecks.
+    writeSkill('session', 'description: Internal workflow.');
+    mkdirSync(join(root, 'skills/session/agents'));
+    writeFileSync(join(root, 'skills/session/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
+    writeCommand('session', 'description: Public entrypoint.');
+    expect(generateAgentsSurface({ pluginRoot: root }).skills).toEqual(['session']);
+    expect(readMirror('session').fm.description).toBe('Public entrypoint.');
+    expect(readPolicy('session')).toEqual({ allow_implicit_invocation: true });
+    rmSync(join(root, 'commands/session.md'));
+    expect(generateAgentsSurface({ pluginRoot: root, check: true }).drift).toContain('.agents/skills/session/SKILL.md is stale');
+    generateAgentsSurface({ pluginRoot: root });
+    expect(readMirror('session').fm.description).toBe('Internal workflow.');
+    expect(readPolicy('session')).toEqual({ allow_implicit_invocation: false });
+    const canonicalLink = /\]\(([^)]+)\)/.exec(readMirror('session').body)[1];
+    expect(resolve(root, '.agents/skills/session', canonicalLink)).toBe(join(root, 'skills/session/SKILL.md'));
+  });
 });
 
 describe('mirror lifecycle', () => {
-  it('removes an orphan mirror whose source skill is gone', () => {
+  it.each([['skill', writeSkill, 'skills/gone'], ['command', writeCommand, 'commands/gone.md']])('removes an orphan mirror whose source %s is gone', (_kind, writeSource, sourcePath) => {
     // BUG: a renamed/deleted skill leaves a mirror behind that advertises a
     // skill no harness can route to — a dead entry in the discovery surface.
-    writeSkill('gone', 'name: gone\ndescription: Temporary.');
+    writeSource('gone', 'name: gone\ndescription: Temporary.');
     generateAgentsSurface({ pluginRoot: root });
-    rmSync(join(root, 'skills', 'gone'), { recursive: true, force: true });
+    rmSync(join(root, sourcePath), { recursive: true, force: true });
 
     const check = generateAgentsSurface({ pluginRoot: root, check: true });
     expect(check.ok).toBe(false);
@@ -188,6 +231,16 @@ describe('mirror lifecycle', () => {
 
     const write = generateAgentsSurface({ pluginRoot: root });
     expect(write.written.join('\n')).toMatch(/removed \.agents\/skills\/gone/);
+  });
+
+  it('reports missing and stale command mirrors, then regenerates them idempotently', () => {
+    writeCommand('session', 'description: Start a session.');
+    expect(generateAgentsSurface({ pluginRoot: root, check: true }).drift).toContain('.agents/skills/session/SKILL.md is missing');
+    generateAgentsSurface({ pluginRoot: root });
+    writeCommand('session', 'description: Updated session.');
+    expect(generateAgentsSurface({ pluginRoot: root, check: true }).drift).toContain('.agents/skills/session/SKILL.md is stale');
+    generateAgentsSurface({ pluginRoot: root });
+    expect(generateAgentsSurface({ pluginRoot: root, check: true })).toMatchObject({ ok: true, drift: [] });
   });
 
   it('is idempotent — a second run reports no drift', () => {
@@ -206,6 +259,57 @@ describe('mirror lifecycle', () => {
     writeFileSync(join(root, 'skills', '_shared', 'notes.md'), 'fragment\n', 'utf8');
     const result = generateAgentsSurface({ pluginRoot: root });
     expect(result.skills).not.toContain('_shared');
+  });
+});
+
+describe('portable native invocation policy', () => {
+  it.each([['skill', writeSkill], ['command', writeCommand]])('keeps an explicit-only public %s explicit in Codex', (_kind, writeSource) => {
+    // BUG: metadata.disable-model-invocation is descriptive; Codex reads its
+    // native agents/openai.yaml policy to enforce explicit invocation.
+    writeSource('go', 'description: Execute waves.\nuser-invocable: true\ndisable-model-invocation: true');
+    generateAgentsSurface({ pluginRoot: root });
+    expect(readPolicy('go')).toEqual({ allow_implicit_invocation: false });
+  });
+
+  it('honors a skill native policy override, then removes obsolete generated policy', () => {
+    writeSkill('internal', 'description: Internal skill.\nuser-invocable: true');
+    mkdirSync(join(root, 'skills/internal/agents'));
+    writeFileSync(join(root, 'skills/internal/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
+    generateAgentsSurface({ pluginRoot: root });
+    expect(readPolicy('internal')).toEqual({ allow_implicit_invocation: false });
+    rmSync(join(root, 'skills/internal/agents/openai.yaml'));
+    writeSkill('internal', 'description: Internal skill.');
+    expect(generateAgentsSurface({ pluginRoot: root, check: true }).drift).toContain('.agents/skills/internal/agents/openai.yaml is obsolete');
+    generateAgentsSurface({ pluginRoot: root });
+    expect(existsSync(join(root, '.agents/skills/internal/agents/openai.yaml'))).toBe(false);
+  });
+
+  it('reports native policy drift instead of silently preserving stale invocation permissions', () => {
+    writeCommand('session', 'description: Start a session.');
+    generateAgentsSurface({ pluginRoot: root });
+    writeCommand('session', 'description: Start a session.\ndisable-model-invocation: true');
+    expect(generateAgentsSurface({ pluginRoot: root, check: true }).drift).toContain('.agents/skills/session/agents/openai.yaml is stale');
+    generateAgentsSurface({ pluginRoot: root });
+    expect(readPolicy('session')).toEqual({ allow_implicit_invocation: false });
+  });
+
+  it('rejects malformed native invocation policy instead of enabling implicit invocation', () => {
+    writeSkill('go', 'description: Execute waves.\nuser-invocable: true');
+    mkdirSync(join(root, 'skills/go/agents'));
+    writeFileSync(join(root, 'skills/go/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: "false"\n');
+    expect(() => generateAgentsSurface({ pluginRoot: root })).toThrow('policy.allow_implicit_invocation must be a boolean');
+    expect(existsSync(join(root, '.agents/skills/go/SKILL.md'))).toBe(false);
+  });
+
+  it('retains an unrelated native policy and reports the conflict', () => {
+    writeCommand('session', 'description: Start a session.');
+    mkdirSync(join(root, '.agents/skills/session/agents'), { recursive: true });
+    writeFileSync(join(root, '.agents/skills/session/agents/openai.yaml'), 'policy:\n  allow_implicit_invocation: false\n');
+    expect(generateAgentsSurface({ pluginRoot: root })).toMatchObject({
+      ok: false,
+      drift: ['.agents/skills/session/agents/openai.yaml conflicts with an unrelated native policy — retained'],
+    });
+    expect(readPolicy('session')).toEqual({ allow_implicit_invocation: false });
   });
 });
 
