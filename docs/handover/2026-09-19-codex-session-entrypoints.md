@@ -82,7 +82,7 @@ Use a disposable initialized project and a bounded harmless task; preserve the c
 | `housekeeping` with ordinary prose | Mode stays housekeeping; task text is preserved; ordinary one-wave shape remains. |
 | `housekeeping` with an explicit parallel/waves request | The real plan records the override and dispatches within available worker caps with scopes, reviews and checkpoints. |
 | `ultradeep` with task text | Deep mode plus ultradeep profile survives the lifecycle. |
-| Explicit `$session-orchestrator:go` and `:close` | No implicit execution; close verifies work, dispositions carryover, writes a validated ledger entry before completed STATE, releases only its own lock and leaves a clean handover. |
+| Explicit `$session-orchestrator:go` and `$session-orchestrator:close` | No implicit execution; close verifies work, dispositions carryover, writes a validated ledger entry before completed STATE, releases only its own lock and leaves a clean handover. |
 | Fresh Codex desktop picker | `go` and `close` are selectable. Track the separate visible confirmation in #1266. |
 | Claude Code, Cursor, Pi | Verify their actual entrypoint syntax, loading and lifecycle capabilities separately; do not infer native parallelism or hook enforcement from generated files. |
 
