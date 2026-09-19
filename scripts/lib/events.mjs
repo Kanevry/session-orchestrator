@@ -39,7 +39,8 @@
  * 0.0961 ms/call.
  */
 
-import { promises as fs, existsSync, readFileSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getProjectDir, SO_SHARED_DIR } from './platform.mjs';
 import { readLock } from './session-lock.mjs';
@@ -59,6 +60,67 @@ import {
 // ---------------------------------------------------------------------------
 
 /**
+ * Test seam (#1397 item 11): the absolute path of a sandbox ledger that the
+ * DEFAULT destination is redirected to whenever that default would land outside
+ * the OS temp root. Set by `tests/setup/events-ledger-guard.mjs` in every
+ * vitest worker, and inherited by every child process the suite spawns — which
+ * is the point: the default resolves via `SO_PROJECT_DIR` (env, else a walk up
+ * from the cwd), so a spawned script with `cwd = <repo>` otherwise appended
+ * synthetic records, stamped with the LIVE session id, to the real ledger.
+ * Nothing in production sets it.
+ */
+export const EVENTS_LEDGER_SANDBOX_ENV = 'SO_EVENTS_LEDGER_SANDBOX';
+
+/**
+ * OS temp root in both spellings (macOS `os.tmpdir()` is `/var/folders/…`, a
+ * symlink to `/private/var/folders/…`; `process.cwd()` inside it reports the
+ * canonical form). Only called while the sandbox variable is set.
+ * @returns {string[]}
+ */
+function tmpRoots() {
+  const raw = path.resolve(tmpdir());
+  let real = raw;
+  try { real = realpathSync(raw); } catch { /* keep the raw spelling */ }
+  return real === raw ? [raw] : [raw, real];
+}
+
+/** @param {string} p @param {string[]} roots @returns {boolean} */
+function isUnderAny(p, roots) {
+  const abs = path.resolve(p);
+  return roots.some((r) => abs === r || abs.startsWith(r + path.sep));
+}
+
+/**
+ * Apply the sandbox redirect to a DEFAULT-resolved ledger path.
+ *
+ * Rule: redirect only a default that would leave the temp root. A fixture
+ * project dir under tmp (`CLAUDE_PROJECT_DIR=<mkdtemp>`, or `cwd: <mkdtemp>`) is
+ * where a test EXPECTS its records — measured 2026-09-19 @ d92c2ca4, 38 test
+ * files set a project-dir env var and read `events.jsonl` back — so it is kept
+ * byte-identical. Keying on "outside tmp" rather than on "is this repo's ledger"
+ * is deliberate: an allow-list of protected roots fails open on the root it did
+ * not name (a sibling repo, a copied plugin tree), this invariant does not.
+ *
+ * Why the sandbox value must itself sit under the temp root: a stray or
+ * malformed export in an operator's shell must never be able to aim real
+ * telemetry at another tracked file. A value outside tmp, a relative value, or
+ * a whitespace-only value is IGNORED → production resolution, unchanged. What
+ * this cannot prevent (BV-004 ceiling): a stray export that DOES point under
+ * tmp diverts a real session's records there. The name marks it a test seam;
+ * revisit if it is ever found set outside a vitest process.
+ *
+ * @param {string} defaultPath
+ * @returns {string}
+ */
+function sandboxedDefault(defaultPath) {
+  const sandbox = (process.env[EVENTS_LEDGER_SANDBOX_ENV] || '').trim();
+  if (!sandbox || !path.isAbsolute(sandbox)) return defaultPath;
+  const roots = tmpRoots();
+  if (!isUnderAny(sandbox, roots) || isUnderAny(defaultPath, roots)) return defaultPath;
+  return path.resolve(sandbox);
+}
+
+/**
  * Returns the absolute path to `.orchestrator/metrics/events.jsonl` under `repoRoot`.
  *
  * `repoRoot` defaults to the module-level `SO_PROJECT_DIR` constant, so the
@@ -67,11 +129,17 @@ import {
  * CWD/env-resolved project — e.g. a unit test running the gate against a tmp
  * repo, which must NOT append synthetic records to the real fleet telemetry.
  *
+ * Only the zero-arg (default) form honours {@link EVENTS_LEDGER_SANDBOX_ENV};
+ * an explicit `repoRoot` is never redirected. Readers that resolve the default
+ * (session-start rotation) and raw writers that use it (the discovery-validator
+ * hook) therefore see the same sandbox `emitEvent()` writes to.
+ *
  * @param {string} [repoRoot=SO_PROJECT_DIR] — project root the events log lives under.
  * @returns {string}
  */
-export function eventsFilePath(repoRoot = getProjectDir()) {
-  return path.join(repoRoot, SO_SHARED_DIR, 'metrics', 'events.jsonl');
+export function eventsFilePath(repoRoot) {
+  if (repoRoot !== undefined) return path.join(repoRoot, SO_SHARED_DIR, 'metrics', 'events.jsonl');
+  return sandboxedDefault(path.join(getProjectDir(), SO_SHARED_DIR, 'metrics', 'events.jsonl'));
 }
 
 /**
@@ -352,8 +420,9 @@ export async function emitEvent(type, payload = {}, opts = {}) {
   //   1. explicit opts.filePath (a pre-resolved path — #611)
   //   2. opts.repoRoot → <repoRoot>/.orchestrator/metrics/events.jsonl (#941)
   //   3. the SO_PROJECT_DIR default (unchanged for 2-arg callers)
-  // eventsFilePath(undefined) falls through to its SO_PROJECT_DIR default param,
-  // so a caller passing neither behaves EXACTLY as before (additive).
+  // eventsFilePath(undefined) falls through to its SO_PROJECT_DIR default, so a
+  // caller passing neither behaves EXACTLY as before (additive) — except under
+  // the test-only EVENTS_LEDGER_SANDBOX_ENV seam, which only 3. honours.
   const filePath = opts.filePath ?? eventsFilePath(opts.repoRoot);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, 'utf8');

@@ -137,7 +137,7 @@ export function checkBudget(estimatedInput, budget) {
  * @param {object} record — the deterministic session-eval record.
  * @returns {{session_id: string|null, kpis: object, dimensions: Array<{id: *, status: *, evidence: *}>}}
  */
-function extractRecordSlice(record) {
+export function extractRecordSlice(record) {
   const dimensions = Array.isArray(record?.dimensions)
     ? record.dimensions.map((d) => ({ id: d?.id, status: d?.status, evidence: d?.evidence }))
     : [];

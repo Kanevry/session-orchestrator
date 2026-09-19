@@ -39,11 +39,18 @@ export default defineConfig({
     // SO_HOST_ALIAS_GUARD_ALLOW_REAL=1.
     // Native identity is isolated before test imports: ambient Codex/Claude
     // IDs must not conflict with fixture IDs or prove fixture lock ownership.
+    // events-ledger-guard sets SO_EVENTS_LEDGER_SANDBOX to a per-run tmp file.
+    // Without it every default-destination emitEvent — in-process or in a
+    // script spawned with `cwd: <repo root>` — appends to the REAL
+    // .orchestrator/metrics/events.jsonl with the live session id (#1397 item
+    // 11; measured 2026-09-19: 10 lines from two test files). Only defaults that
+    // would leave the temp root are redirected; tmp fixture roots are untouched.
     setupFiles: [
       './tests/setup/scrub-git-env.mjs',
       './tests/setup/scrub-session-env.mjs',
       './tests/setup/vault-guard.mjs',
       './tests/setup/host-alias-guard.mjs',
+      './tests/setup/events-ledger-guard.mjs',
     ],
     // skills/vault-sync/tests/schema-drift.test.mjs intentionally excluded:
     // it requires a sibling projects-baseline checkout (HAS_CANONICAL) and
