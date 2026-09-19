@@ -178,13 +178,20 @@ const GATE_EVENT_PREFIX = 'orchestrator.quality_gate.';
  * counting them inflates every per-wave agent count and the `velocity_drop`
  * signal derived from it.
  *
- * Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl{,.1}`:
- *   cat .orchestrator/metrics/events.jsonl .orchestrator/metrics/events.jsonl.1 | jq -s '{
- *     total_stopped: [.[]|select(.event=="orchestrator.agent.stopped")]|length,
- *     with_wave: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null))]|length,
- *     with_wave_no_agent: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")==""))]|length }'
+ * Measured 2026-09-18 over the then-active `.orchestrator/metrics/events.jsonl`
+ * plus the legacy `.jsonl.1` backup beside it (destroyed 2026-09-19):
  *   → { total_stopped: 16438, with_wave: 6553, with_wave_no_agent: 5930 }
  * i.e. 90.5% of the wave-scoped stops carry no `agent` — a ~10.5x inflation.
+ *
+ * To re-measure, read the ledger with `readEventsWithRotations(repoRoot)` from
+ * `scripts/lib/events.mjs` — it yields the active file plus every archive in
+ * time order and reports a rotation whose archive is gone as a `gaps` entry
+ * with `complete: false`, which a `cat` over rotation files cannot. Rotation
+ * writes `_archive/events-<firstTs>_<lastTs>.jsonl` and an
+ * `orchestrator.events.rotated` first line since #1401; the `.1`..`.N` ring is
+ * no longer written (see `events-rotation.mjs` § Why `_archive/<name>`).
+ * Recipe with the jq filter: `skills/convergence-monitoring/SIGNALS.md`
+ * § Live monitor input.
  *
  * @param {Record<string, unknown>} rec
  * @returns {boolean}

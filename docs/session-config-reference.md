@@ -1248,7 +1248,9 @@ Parsing is tolerant: `_parseGitlabPortfolio()` (`scripts/lib/config/gitlab-portf
 
 ## Events Rotation
 
-Size-based rotation for `.orchestrator/metrics/events.jsonl` (#251). Rotation fires at **session-start only** — per-append overhead is rejected design given typical growth of ~6 KiB/day. When the active log exceeds `max-size-mb`, it is renamed to `events.jsonl.1`, older backups shift down (`.1` → `.2`, …, `.N-1` → `.N`), and the oldest backup (`events.jsonl.{max-backups}`) is deleted. Rotation failure never blocks session-start; errors are logged to stderr and swallowed.
+Size-based rotation for `.orchestrator/metrics/events.jsonl` (#251). Rotation fires at **session-start only** — per-append overhead is rejected design given typical growth of ~6 KiB/day. When the active log exceeds `max-size-mb`, it is renamed into `.orchestrator/metrics/_archive/events-<firstTs>_<lastTs>.jsonl` (each stamp `YYYYMMDDTHHMMSSZ`, derived from the archived content; `unknown` for the first when no timestamp parsed, plus a `-<n>` suffix on a name collision), archives beyond `max-backups` are pruned oldest-first, and an `orchestrator.events.rotated` record naming the archive, its byte size, line count, timestamp range and any pruned files is appended as the **first line of the new active file**. That record is what lets a reader tell a rotation from a deletion. Rotation failure never blocks session-start; errors are logged to stderr and swallowed.
+
+**Reading across a rotation:** use `readEventsWithRotations(repoRoot, opts)` from `scripts/lib/events.mjs` — active file plus every archive in time order, `malformed_lines` counted, and a rotation whose `archived_as` target is missing reported in `gaps` with `complete: false`. It also still reads a legacy `events.jsonl.1`..`.N` ring left on disk by pre-#1401 versions; the writer never creates, shifts or prunes one any more. The ring was replaced because its shift step renamed every surviving backup on each rotation, which would have made the `archived_as` pointer stale one rotation after it was written.
 
 All fields live under a top-level `events-rotation` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
@@ -1263,9 +1265,9 @@ events-rotation:
 |-------|------|---------|-------------|
 | `events-rotation.enabled` | boolean | `true` | If false, rotation is skipped entirely and `events.jsonl` grows unbounded. |
 | `events-rotation.max-size-mb` | integer | `10` | Size threshold in MiB. When `events.jsonl` exceeds this, it is rotated at the next session-start. Bounds: `1..1024`; out-of-range values silently fall back to the default. |
-| `events-rotation.max-backups` | integer | `5` | Number of retained backup files (`events.jsonl.1` … `events.jsonl.N`). The oldest is deleted before shifting. Bounds: `1..20`; out-of-range values silently fall back to the default. |
+| `events-rotation.max-backups` | integer | `5` | Number of retained archives in `.orchestrator/metrics/_archive/`. After each rotation the excess is deleted oldest-first (by the leading timestamp in the filename) and the deletions are listed in the rotation record's `pruned` field. Only files matching the archive naming contract are eligible, so a hand-placed file in `_archive/` is never pruned. Bounds: `1..20`; out-of-range values silently fall back to the default. |
 
-**Rename safety (POSIX):** Atomic rename is safe with in-flight writers. Open file descriptors continue writing to the original inode (now `events.jsonl.1`); new writers open the new file on next append. Maximum observed line size is 220 bytes, well under the 4096-byte PIPE_BUF atomicity guarantee.
+**Rename safety (POSIX):** Atomic rename is safe with in-flight writers. Open file descriptors continue writing to the original inode (now the archive); new writers open the new file on next append. Maximum observed line size is 220 bytes, well under the 4096-byte PIPE_BUF atomicity guarantee.
 
 ## Test
 

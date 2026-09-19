@@ -561,8 +561,12 @@ export const EVIDENCE_PATTERNS = Object.freeze({
   'guard-friction': Object.freeze({
     /** scoreGuardFriction, counts branch. */
     blocked: /destructive_guard\.blocked=(\d+)/,
-    warned: /destructive_guard\.warned=(\d+)/,
-    loopWarning: /loop\.warning=(\d+)/,
+    // NOTE: `destructive_guard.warned=` and `loop.warning=` are written by the
+    // same template but have NO reader here on purpose. Neither is a
+    // `RecordFacts` field and no rubric-v2 decision rule names them, so a
+    // pattern for them would be a reader with zero consumers (BV-001.1). They
+    // were exactly that until 2026-09-19. Adding one back means adding the
+    // fact to the pre-registered list in `skills/eval/rubric-v2.md` first.
     /** attribution marker: session-id (preferred) vs the time-window fallback. */
     attributionSessionId: /attribution: session-id/,
     attributionTimeWindow: /attribution: time-window/,

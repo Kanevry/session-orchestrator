@@ -57,10 +57,17 @@ import {
   runEvalJudge,
   mergeJudgeDimensions,
 } from '@lib/eval/judge.mjs';
-import { evaluateSession } from '@lib/eval/engine.mjs';
+import { evaluateSession, EVIDENCE_PATTERNS } from '@lib/eval/engine.mjs';
 import { validateEvalRecord } from '@lib/eval/schema.mjs';
 import {
   scenarioCleanCompleted,
+  scenarioEventsMissing,
+  scenarioPeerOverlap,
+  scenarioFailingFullGate,
+  scenarioDestructiveBlocked,
+  scenarioLoopWarnOnly,
+  scenarioHousekeepingNoPlan,
+  scenarioSpiral,
   writeFixture,
   isoOffset,
 } from '../fixtures/eval/metrics-tree/build.mjs';
@@ -116,6 +123,45 @@ function scenarioRedRunsThenGreenFinish(base = Date.now()) {
       { timestamp: isoOffset(base, 2.8), event: 'orchestrator.quality_gate.failed', variant: 'incremental', exit_code: 1 },
       { timestamp: isoOffset(base, 2.4), event: 'orchestrator.quality_gate.failed', variant: 'full-gate', exit_code: 1 },
       { timestamp: isoOffset(base, 2.1), event: 'orchestrator.quality_gate.passed', variant: 'full-gate', exit_code: 0 },
+    ],
+  });
+}
+
+/**
+ * The #1068 dual stamp: events carry the RAW harness id in `session_id` AND the
+ * semantic id in `semantic_session_id`. That is the only shape for which
+ * `resolveRawSessionIds` returns anything, so it is the only shape that yields
+ * `attribution: session-id` instead of the time-window fallback.
+ *
+ * It exists here because the census below FOUND the gap: no shared fixture
+ * produced it, so `EVIDENCE_PATTERNS['guard-friction'].attributionSessionId`
+ * matched nothing anywhere in the suite.
+ */
+function scenarioGuardSessionIdAttribution(base = Date.now()) {
+  const start = isoOffset(base, 3);
+  const end = isoOffset(base, 2);
+  return writeFixture({
+    sessionId: 'sess-attributed',
+    sessions: [
+      {
+        schema_version: 1,
+        session_id: 'sess-attributed',
+        session_type: 'deep',
+        started_at: start,
+        completed_at: end,
+        status: 'completed',
+        total_waves: 2,
+        total_agents: 4,
+        total_files_changed: 3,
+        waves: [{ wave: 2, quality: 'pass' }],
+        agent_summary: { complete: 4, partial: 0, failed: 0, spiral: 0 },
+        effectiveness: { planned_issues: 2, completed: 2, carryover: 0, completion_rate: 1, carryover_ratio: 0 },
+      },
+    ],
+    events: [
+      { timestamp: start, event: 'orchestrator.session.started', session_id: 'uuid-attributed', semantic_session_id: 'sess-attributed' },
+      { timestamp: isoOffset(base, 2.5), event: 'orchestrator.quality_gate.passed', variant: 'full-gate', exit_code: 0 },
+      { timestamp: isoOffset(base, 2.4), event: 'orchestrator.destructive_guard.blocked', session_id: 'uuid-attributed', semantic_session_id: 'sess-attributed', rule: 'rm-rf-root' },
     ],
   });
 }
@@ -259,29 +305,84 @@ describe('computeRecordFacts', () => {
     expect(facts.parse_misses).toEqual([]);
   });
 
-  // BUG THIS CATCHES: a reworded evidence template silently turns a fact into
-  // `null`, and the judge then reads "no spiral" where the truth is "unknown" —
-  // absence of evidence served as evidence of absence. The miss must be NAMED.
-  it('reports a parse_miss (not a silent null) when an evidence template changed', () => {
-    const reworded = {
-      ...BASE_RECORD,
-      dimensions: BASE_RECORD.dimensions.map((d) =>
-        d.id === 'process-safety'
-          ? // the rubric-v1 wording: same dimension, no `agent_summary.spiral=` token
-            { ...d, evidence: 'no adverse process signals in window (0 blocked, 0 spiral, 0 loop.warning).' }
-          : d,
-      ),
-    };
+  // BUG THIS CATCHES (#1410): the reader knew only the rubric-v2
+  // `agent_summary.spiral=` token, so the rubric-v1 PROSE form ("0 spiral")
+  // reported a parse_miss — and decision rule 5 turns that into
+  // `cannot-determine`. Measured 2026-09-19 over the 40 stored records in
+  // `.orchestrator/metrics/eval.jsonl` (all v1): 8 hit this, i.e. the records
+  // with the CLEANEST process signals were the ones tipped to unreadable.
+  it('reads the rubric-v1 prose spiral form as a value, not as a parse_miss', () => {
+    const v1Worded = BASE_RECORD.dimensions.map((d) =>
+      d.id === 'process-safety'
+        ? // verbatim from a stored v1 record (7 of the 40 carry this exact shape)
+          { ...d, evidence: 'no adverse process signals in window (0 blocked, 0 spiral, 0 loop.warning).' }
+        : d,
+    );
 
-    const facts = computeRecordFacts(reworded.dimensions);
+    const facts = computeRecordFacts(v1Worded);
+
+    expect(facts.spiral).toBe(0);
+    expect(facts.parse_misses).toEqual([]);
+  });
+
+  // The other stored v1 shape (1 of the 40) — a different sentence, same fact.
+  it('reads the second stored rubric-v1 spiral wording too', () => {
+    const v1Worded = BASE_RECORD.dimensions.map((d) =>
+      d.id === 'process-safety'
+        ? { ...d, evidence: '0 destructive_guard.blocked, 0 spiral; 4 loop.warning in window (warn-only, non-blocking).' }
+        : d,
+    );
+
+    expect(computeRecordFacts(v1Worded).spiral).toBe(0);
+  });
+
+  // BUG THIS CATCHES: the counterpart direction — adding the legacy fallback
+  // must not make the parse_miss class disappear. A graded process-safety
+  // string carrying NEITHER spiral form is a reader that went blind, and it
+  // must still be NAMED rather than degrade to a silent `null` the judge reads
+  // as "no spiral".
+  it('still reports a parse_miss when a graded evidence string carries no spiral count at all', () => {
+    const reworded = BASE_RECORD.dimensions.map((d) =>
+      d.id === 'process-safety'
+        ? { ...d, evidence: 'process signals nominal; nothing adverse observed in the window.' }
+        : d,
+    );
+
+    const facts = computeRecordFacts(reworded);
 
     expect(facts.spiral).toBeNull();
     expect(facts.parse_misses).toEqual([
       {
         fact: 'spiral',
         dimension: 'process-safety',
-        reason: 'no agent_summary.spiral count in a graded process-safety evidence string',
+        reason:
+          'no spiral count in a graded process-safety evidence string — neither the rubric-v2 `agent_summary.spiral=` token nor the rubric-v1 prose form',
       },
+    ]);
+  });
+
+  // BUG THIS CATCHES: `events.jsonl` absent means the record states IN TWO
+  // DIMENSIONS that its signals are unmeasurable ("not zero: unmeasured") —
+  // and `verification-evidence`'s "0 quality_gate events in window" was
+  // nonetheless read as a measured zero, setting `changes_unverified: true`.
+  // That is rubric-v2 rule 6's named `fail` trigger, and rules 1-5 all miss, so
+  // the advisory verdict was `fail` for precisely the sessions whose ledger is
+  // damaged — a third state (source never readable) emitted as a positive
+  // measurement, the inversion the module docblock promises to prevent.
+  it('derives no gate count — least of all the fail trigger — from an events source the record calls unmeasurable', () => {
+    const record = evalFixture(scenarioEventsMissing());
+    const facts = computeRecordFacts(record.dimensions);
+
+    expect(facts.changes_unverified).toBeNull();
+    expect(facts.gate_runs_total).toBeNull();
+    expect(facts.gate_runs_failed).toBeNull();
+    expect(facts.full_gate_runs).toBeNull();
+    // No template changed — the file was simply not there.
+    expect(facts.parse_misses).toEqual([]);
+    // Nulling alone would let rule 6 fall through to `pass` on facts nobody
+    // measured, so the self-disagreement is named and rule 1 decides.
+    expect(facts.contradictions).toEqual([
+      'verification-evidence reports "0 quality_gate events in window" with files changed, but process-safety/guard-friction report events.jsonl absent or empty — the count is unmeasured, not zero',
     ]);
   });
 
@@ -315,6 +416,72 @@ describe('computeRecordFacts', () => {
     expect(facts.window_contaminated).toBe(true);
     // A branch that carries no count is NOT a broken reader.
     expect(facts.parse_misses).toEqual([]);
+  });
+
+  // BUG THIS CATCHES: `EVIDENCE_PATTERNS` had ZERO test references — the four
+  // fact tests above hand-write their evidence strings, so a reworded template
+  // (or a reader keyed on wording no scorer produces) broke nothing. The
+  // comment claiming co-location prevents drift described a convenience, not a
+  // mechanism. This is the mechanism: drive the REAL engine through every
+  // branch, then check both directions.
+  //
+  // Recipe in code, per `.claude/rules/measurement-discipline.md` § "A parity
+  // test with a hand-typed list under a census title is a green tick with no
+  // cover" — the pattern set is enumerated FROM the engine export, never typed
+  // out here, so a new key joins the census the moment it is added.
+  describe('EVIDENCE_PATTERNS census', () => {
+    /** One live engine record per scorer branch the patterns claim to read. */
+    const SCENARIOS = {
+      'clean-completed': scenarioCleanCompleted,
+      'events-missing': scenarioEventsMissing,
+      'peer-overlap': scenarioPeerOverlap,
+      'failing-full-gate': scenarioFailingFullGate,
+      'destructive-blocked': scenarioDestructiveBlocked,
+      'loop-warn-only': scenarioLoopWarnOnly,
+      'housekeeping-no-plan': scenarioHousekeepingNoPlan,
+      spiral: scenarioSpiral,
+      'red-runs-then-green-finish': scenarioRedRunsThenGreenFinish,
+      'guard-session-id-attribution': scenarioGuardSessionIdAttribution,
+    };
+
+    const RECORDS = Object.fromEntries(
+      Object.entries(SCENARIOS).map(([name, build]) => [name, evalFixture(build())]),
+    );
+
+    // (a) Every branch parses cleanly: a reworded template shows up HERE as a
+    // named miss instead of as a silent null in production.
+    it.each(Object.keys(SCENARIOS))('parses the %s branch with zero parse_misses', (name) => {
+      expect(computeRecordFacts(RECORDS[name].dimensions).parse_misses).toEqual([]);
+    });
+
+    // (b) Vacuum guard: a pattern whose producing branch was deleted (or which
+    // never had one) would otherwise sit in the registry matching nothing, and
+    // (a) alone would stay green over it — empty, not covered.
+    it('leaves no pattern unreachable from a live engine run', () => {
+      const unhit = [];
+      for (const [dimension, patterns] of Object.entries(EVIDENCE_PATTERNS)) {
+        for (const [key, re] of Object.entries(patterns)) {
+          const matched = Object.values(RECORDS).some((record) => {
+            const d = record.dimensions.find((x) => x && x.id === dimension);
+            return Boolean(d) && typeof d.evidence === 'string' && re.test(d.evidence);
+          });
+          unhit.push(...(matched ? [] : [`${dimension}.${key}`]));
+        }
+      }
+
+      expect(unhit).toEqual([]);
+    });
+
+    // (c) And the census must not be vacuous itself: an empty pattern registry
+    // would satisfy (b) trivially.
+    it('covers a non-empty pattern set across every scored dimension', () => {
+      const keys = Object.entries(EVIDENCE_PATTERNS).flatMap(([dim, p]) =>
+        Object.keys(p).map((k) => `${dim}.${k}`),
+      );
+
+      expect(keys.length).toBeGreaterThanOrEqual(15);
+      expect(Object.keys(EVIDENCE_PATTERNS).length).toBeGreaterThanOrEqual(6);
+    });
   });
 
   it('names a self-disagreement in contradictions rather than picking a side', () => {
@@ -630,5 +797,38 @@ describe('mergeJudgeDimensions', () => {
     expect(() => mergeJudgeDimensions(BASE_RECORD, brokenDimensions)).not.toThrow();
     const result = mergeJudgeDimensions(BASE_RECORD, brokenDimensions);
     expect(result).toEqual(BASE_RECORD);
+  });
+
+  // BUG THIS CATCHES: the `report-quality` asymmetry is DELIBERATE — the parser
+  // drops it (a live judge may not mint a retired dimension), the merger keeps
+  // it (stored rubric-v1 records legitimately carry it and must stay
+  // replayable). Only the drop half was pinned here; the keep half was pinned
+  // in a DIFFERENT file, under a comment explaining something else. A later
+  // "make the two consistent" edit would have gone green on this file while
+  // silently making every stored v1 record unreplayable. Both halves of one
+  // contract belong in one place — see the `mergeJudgeDimensions` docblock.
+  it('KEEPS a retired report-quality dimension that parseJudgeResponse DROPS (replay of stored rubric-v1 records)', () => {
+    const storedV1Judgment = [
+      { id: 'report-quality', status: 'pass', evidence: 'stored under rubric-v1, replayed' },
+    ];
+
+    const merged = mergeJudgeDimensions(BASE_RECORD, storedV1Judgment);
+    const appended = merged.dimensions.slice(BASE_RECORD.dimensions.length);
+
+    expect(appended).toEqual([
+      {
+        id: 'report-quality',
+        status: 'pass',
+        evidence: 'stored under rubric-v1, replayed',
+        method: 'judge',
+        advisory: true,
+        calibration_status: 'uncalibrated',
+      },
+    ]);
+
+    // …and the same id, arriving from a LIVE judge response, is dropped.
+    expect(
+      parseJudgeResponse('```json\n[{"id":"report-quality","status":"pass","evidence":"minted now"}]\n```'),
+    ).toEqual([]);
   });
 });

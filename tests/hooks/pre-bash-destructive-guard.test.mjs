@@ -157,9 +157,11 @@ const FIXTURE_POLICY = {
       // matcher, exactly as for `redirect-truncate` above.
       id: 'ledger-delete-protected',
       type: 'path-delete',
-      pattern: 'rm|mv|unlink .orchestrator/metrics/**',
+      pattern: 'rm|mv|unlink .orchestrator (state dir) or .orchestrator/metrics/**',
       severity: 'block',
-      'target-denylist': ['.orchestrator/metrics', '.orchestrator/metrics/**'],
+      // `.orchestrator` is EXACT, never a prefix — the `.orchestrator/tmp`
+      // allow-cases below are what keeps that honest.
+      'target-denylist': ['.orchestrator', '.orchestrator/metrics', '.orchestrator/metrics/**'],
       rationale: 'Deleting or renaming anything under .orchestrator/metrics/ destroys append-only session telemetry with no recovery path — #1401.',
     },
   ],
@@ -1873,6 +1875,12 @@ describe('#1401 — delete/rename of a ledger file under .orchestrator/metrics/'
     ['unlink', 'unlink .orchestrator/metrics/events.jsonl'],
     ['a non-jsonl ledger artefact', 'rm -f .orchestrator/metrics/.backfilled-x.marker'],
     ['end-of-options form', 'rm -f -- .orchestrator/metrics/events.jsonl'],
+    // The #1401 incident was an agent RE-SPELLING a blocked command, and these
+    // two spellings take the whole state dir — ledger included — while being
+    // shorter than the `rm -rf` the older rule catches. Measured ALLOW
+    // 2026-09-19 before `.orchestrator` entered the denylist.
+    ['the state dir, non-force recursive form', 'rm -r .orchestrator'],
+    ['the state dir renamed away', 'mv .orchestrator /tmp/x'],
   ])('blocks %s', async (_label, command) => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });

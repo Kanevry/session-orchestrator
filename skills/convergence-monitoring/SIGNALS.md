@@ -214,15 +214,36 @@ the type is BIMODAL (#939/#949), so only records carrying a **non-empty `agent`
 field** are counted; the rest are the phantom-stop class and counting them
 inflated every per-wave count ~10.5x (#1379 P10).
 
-Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl` plus its rotation
-`.jsonl.1`:
+Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl` plus the legacy
+`.jsonl.1` backup that then sat beside it — that backup was destroyed on
+2026-09-19, so the counts below are a record, not something this repo's ledger
+still reproduces.
+
+**Read the ledger through `readEventsWithRotations(repoRoot, opts)`**
+(`scripts/lib/events.mjs`), never by `cat`-ing rotation files together. It
+returns the active file plus every archive in time order, counts unreadable
+lines (`malformed_lines`), and — the reason it exists — reports a rotation
+whose archive is no longer on disk as an entry in `gaps` with `complete:
+false`, instead of silently returning a shorter history. Rotation itself no
+longer writes a `.1`..`.N` ring: since #1401 it renames the active file to
+`_archive/events-<firstTs>_<lastTs>.jsonl` and makes an
+`orchestrator.events.rotated` record naming that archive the first line of the
+new active file (`scripts/lib/events-rotation.mjs:230-258`); the reader still
+reads a legacy ring left on disk by older versions
+(`scripts/lib/events.mjs:512-539`).
 
 ```bash
-cat .orchestrator/metrics/events.jsonl .orchestrator/metrics/events.jsonl.1 | jq -s '{
+node --input-type=module -e '
+import { readEventsWithRotations } from "./scripts/lib/events.mjs";
+const r = readEventsWithRotations(process.cwd());
+console.error(JSON.stringify({ gaps: r.gaps, malformed_lines: r.malformed_lines, complete: r.complete }));
+for (const e of r.events) process.stdout.write(JSON.stringify(e) + "\n");
+' | jq -s '{
   total_stopped:      [.[]|select(.event=="orchestrator.agent.stopped")]|length,
   with_wave:          [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null))]|length,
   with_wave_no_agent: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")==""))]|length,
   with_wave_and_agent:[.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")!=""))]|length }'
+# 2026-09-18 (active + `.jsonl.1`):
 # → { total_stopped: 16438, with_wave: 6553, with_wave_no_agent: 5930, with_wave_and_agent: 623 }
 ```
 
@@ -230,6 +251,13 @@ i.e. 5930 of 6553 wave-scoped stops (90.5%) are phantoms, against **0** records
 of the `agent.dispatched` type the reader also accepts. The git-based
 `VEL_COMMITS` / `VEL_LINES` recipe above is the SKILL-level computation and is
 independent of the monitor.
+
+The `console.error` line is the honesty half of the reading and belongs in every
+re-measurement: a count taken from a ledger whose `gaps` is non-empty is a count
+over an unknown fraction of the history. Its blind spot is bounded and named —
+an archive deleted BEFORE #1401 left no tombstone and is undetectable by
+construction (`scripts/lib/events.mjs:556-561`), which is exactly how the
+53,896-line `.jsonl.1` vanished on 2026-09-19 without any analysis noticing.
 
 ### Thresholds
 

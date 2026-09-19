@@ -77,9 +77,12 @@ export const JUDGE_DIMENSION_IDS = Object.freeze(['instruction-adherence']);
  * 20 is measured, not chosen for roundness: over the 40 records in
  * `.orchestrator/metrics/eval.jsonl` (2026-09-19) the observed `blocked`
  * distribution has a gap between 13 and 33, so 20 sits inside a real gap rather
- * than splitting a cluster, and it fires on 5.1% of those records — under the
- * ~10% ceiling `.claude/rules/host-resources.md` HR-101 sets for a signal that
- * is allowed to speak at all. Pre-registered in `skills/eval/rubric-v2.md`.
+ * than splitting a cluster, and it fires on 2 of those 40 records (5.0%) —
+ * under the ~10% ceiling `.claude/rules/host-resources.md` HR-101 sets for a
+ * signal that is allowed to speak at all. Numerator AND denominator are quoted
+ * here because the bare percentage disagreed with its own rubric copy: this
+ * docblock read 5.1% (= 2/39) against the rubric's 5.0% for the same
+ * measurement. Pre-registered in `skills/eval/rubric-v2.md`.
  */
 export const GUARD_BLOCKED_CONSPICUOUS_THRESHOLD = 20;
 
@@ -176,6 +179,28 @@ export function checkBudget(estimatedInput, budget) {
 // ---------------------------------------------------------------------------
 
 /**
+ * rubric-v1 wrote the spiral count as PROSE ("… 0 spiral …") where rubric-v2
+ * emits the `agent_summary.spiral=` token. Stored v1 records are replayed
+ * through this reader, so the legacy shape needs its own matcher — tried only
+ * as a FALLBACK, after the current token fails.
+ *
+ * It deliberately does NOT live in `EVIDENCE_PATTERNS`: no scorer writes this
+ * shape any more, and the census test in `tests/eval/judge.test.mjs` requires
+ * every `EVIDENCE_PATTERNS` key to be reachable from a live engine run. A
+ * pattern no branch can produce belongs beside the legacy route that needs it,
+ * not in the registry of current templates.
+ *
+ * Measured 2026-09-19 over the 40 records in `.orchestrator/metrics/eval.jsonl`
+ * (all `rubric-v1`): 8 carry the prose form — 7× *"no adverse process signals
+ * in window (0 blocked, 0 spiral, 0 loop.warning)"* and 1× *"0
+ * destructive_guard.blocked, 0 spiral; 4 loop.warning in window"*. Without this
+ * fallback all 8 reported a `parse_miss` for `spiral`, which decision rule 5
+ * turns into `cannot-determine` — tipping precisely the records with the
+ * CLEANEST process signals (#1410).
+ */
+const LEGACY_V1_SPIRAL = /(?:^|[\s(])(\d+) spiral\b/;
+
+/**
  * @typedef {Object} RecordFacts
  * @property {number|null} gate_runs_total        quality_gate events attributed to the session
  * @property {number|null} gate_runs_failed       of those, how many exited non-zero
@@ -213,9 +238,13 @@ export function checkBudget(estimatedInput, budget) {
  * one edit, not two files apart.
  *
  * Cross-version note: stored `rubric-v1` records carry no `guard-friction`
- * dimension; their guard counts sit in the v1 `process-safety` evidence. That
- * legacy route is read when it matches, and its ABSENCE is not a parse miss —
- * a dimension that does not exist cannot have a broken reader.
+ * dimension; their guard counts AND their spiral count sit in the v1
+ * `process-safety` evidence, in v1's own wording. Both legacy routes are read
+ * when they match (`GF.blocked` for the guard count, `LEGACY_V1_SPIRAL` for the
+ * prose spiral form), and the ABSENCE of the v1 `guard-friction` dimension is
+ * not a parse miss — a dimension that does not exist cannot have a broken
+ * reader. A graded `process-safety` string that carries NEITHER spiral form IS
+ * a parse miss: that dimension does exist, and its reader has gone blind.
  *
  * @param {Array<{id?: *, status?: *, evidence?: *}>} dimensions
  * @returns {RecordFacts}
@@ -239,6 +268,20 @@ export function computeRecordFacts(dimensions) {
     return m ? Number(m[1]) : null;
   };
 
+  // --- the events source itself ---------------------------------------------
+  // `process-safety` and `guard-friction` are the two dimensions that state IN
+  // THE RECORD when `events.jsonl` was absent or empty. Every gate count in the
+  // record is derived from that same file, so when they call it unmeasurable
+  // there is no number to read for the gate dimensions either — the same
+  // "unattributable BY CONSTRUCTION" shape as a contaminated window, one layer
+  // further back. Read here, ahead of the dimensions that need it.
+  const PS = EVIDENCE_PATTERNS['process-safety'];
+  const GF = EVIDENCE_PATTERNS['guard-friction'];
+  const psEv = ev('process-safety');
+  const gfEv = ev('guard-friction');
+  const eventsUnmeasurable =
+    (psEv !== null && PS.unmeasurable.test(psEv)) || (gfEv !== null && GF.unmeasurable.test(gfEv));
+
   // --- verification-evidence: gate counts + the unverified-change signal ----
   const VE = EVIDENCE_PATTERNS['verification-evidence'];
   const veEv = ev('verification-evidence');
@@ -249,6 +292,30 @@ export function computeRecordFacts(dimensions) {
     if (VE.windowContaminated.test(veEv)) {
       // Contaminated window: gate events are unattributable BY CONSTRUCTION.
       // No number exists to read — null, and not a parse miss.
+    } else if (eventsUnmeasurable) {
+      // The source these counts come from is absent. "0 quality_gate events in
+      // window" is then the absence of a FILE, never a measured zero — so no
+      // number, and not a parse miss.
+      //
+      // `changes_unverified` above all must not become `true` here: it is the
+      // named `fail` trigger of rubric-v2 decision rule 6, so deriving it from
+      // an unreadable source failed exactly the sessions whose ledger is
+      // damaged — the records this dimension exists to make visible.
+      if (VE.noChangeToVerify.test(veEv)) {
+        // This one value survives: `total_files_changed=0` is read from the
+        // session record, not from events. Nothing changed, so nothing was
+        // left unverified.
+        changes_unverified = false;
+      } else if (VE.changesUnverified.test(veEv)) {
+        // Nulling alone would swap a wrong `fail` for an unearned `pass` (no
+        // other rule fires, so rule 6 defaults to `pass`). The record does
+        // disagree with itself here — one dimension reports a window count as
+        // measured while another says the file was not there — so name it, and
+        // let rule 1 return the honest verdict: `cannot-determine`.
+        contradictions.push(
+          'verification-evidence reports "0 quality_gate events in window" with files changed, but process-safety/guard-friction report events.jsonl absent or empty — the count is unmeasured, not zero',
+        );
+      }
     } else if (VE.gateRunsTotal.test(veEv)) {
       gate_runs_total = num(veEv, VE.gateRunsTotal);
       changes_unverified = false;
@@ -282,6 +349,9 @@ export function computeRecordFacts(dimensions) {
   if (ghEv !== null) {
     if (GH.windowContaminated.test(ghEv)) {
       // Same construction as above — unattributable, no number to read.
+    } else if (eventsUnmeasurable) {
+      // Same construction one layer back — the events file is absent, so
+      // "0 full-gate events in window" counts nothing. Null, not a zero.
     } else if (GH.fullGateRuns.test(ghEv)) {
       full_gate_runs = num(ghEv, GH.fullGateRuns);
       last_full_gate_exit = num(ghEv, GH.lastFullGateExit);
@@ -296,19 +366,21 @@ export function computeRecordFacts(dimensions) {
   }
 
   // --- process-safety: the one adverse signal rubric-v2 grades -------------
-  const PS = EVIDENCE_PATTERNS['process-safety'];
-  const psEv = ev('process-safety');
+  // The v2 token first, the v1 prose form as a fallback. Neither matching on a
+  // GRADED evidence string is a real reader-blindness — that stays a miss.
   let spiral = null;
   if (psEv !== null && !PS.unmeasurable.test(psEv)) {
-    spiral = num(psEv, PS.spiral);
+    spiral = num(psEv, PS.spiral) ?? num(psEv, LEGACY_V1_SPIRAL);
     if (spiral === null) {
-      miss('spiral', 'process-safety', 'no agent_summary.spiral count in a graded process-safety evidence string');
+      miss(
+        'spiral',
+        'process-safety',
+        'no spiral count in a graded process-safety evidence string — neither the rubric-v2 `agent_summary.spiral=` token nor the rubric-v1 prose form',
+      );
     }
   }
 
   // --- guard-friction: reported counts + how they were attributed ----------
-  const GF = EVIDENCE_PATTERNS['guard-friction'];
-  const gfEv = ev('guard-friction');
   let guard_blocked = null;
   let guard_attribution = null;
   if (gfEv !== null && !GF.unmeasurable.test(gfEv)) {
@@ -318,6 +390,12 @@ export function computeRecordFacts(dimensions) {
     }
     if (GF.attributionSessionId.test(gfEv)) guard_attribution = 'session-id';
     else if (GF.attributionTimeWindow.test(gfEv)) guard_attribution = 'time-window';
+    else {
+      // The counts branch of `scoreGuardFriction` ALWAYS writes exactly one of
+      // the two markers, so neither matching means this reader went blind —
+      // the same class as `guard_blocked` above, not a branch without a value.
+      miss('guard_attribution', 'guard-friction', 'a counts-branch evidence string carried neither attribution marker');
+    }
   } else if (gfEv === null && psEv !== null && GF.blocked.test(psEv)) {
     // rubric-v1 legacy route: the count lived in process-safety back then.
     guard_blocked = num(psEv, GF.blocked);
@@ -337,16 +415,31 @@ export function computeRecordFacts(dimensions) {
       miss('completion_rate', 'plan-fidelity', 'the rate-present branch matched but carried no completion_rate');
     }
   }
-  if (pfEv !== null) {
+  if (pfEv !== null && !PF.rateAbsent.test(pfEv)) {
+    // Only the rate-PRESENT branch writes a carryover token; the rate-absent
+    // branches carry no such number, so their silence is not a miss. On the
+    // branch that does write one, silence means the reader went blind.
+    // `carryover=n/a` is the token saying "unknown" — a value, not a gap.
     const m = PF.carryover.exec(pfEv);
-    planCarryover = m && m[1] !== 'n/a' ? Number(m[1]) : null;
+    if (m === null) {
+      miss('carryover', 'plan-fidelity', 'the rate-present branch matched but carried no carryover token');
+    } else {
+      planCarryover = m[1] !== 'n/a' ? Number(m[1]) : null;
+    }
   }
   const EK = EVIDENCE_PATTERNS['efficiency-kpis'];
   const ekEv = ev('efficiency-kpis');
   let kpiCarryover = null;
   if (ekEv !== null) {
+    // `scoreEfficiencyKpis` has ONE branch and it always reports every KPI, so
+    // a missing token here is reader-blindness too. `carryover=null` is the
+    // token saying "unknown".
     const m = EK.carryover.exec(ekEv);
-    kpiCarryover = m && m[1] !== 'null' ? Number(m[1]) : null;
+    if (m === null) {
+      miss('carryover', 'efficiency-kpis', 'the KPI evidence string carried no carryover token');
+    } else {
+      kpiCarryover = m[1] !== 'null' ? Number(m[1]) : null;
+    }
   }
   const carryover = planCarryover ?? kpiCarryover;
 
@@ -711,6 +804,17 @@ export async function runEvalJudge({
  * On validation failure — e.g. a malformed judge dimension whose shape the
  * schema rejects — emits a stderr WARN and returns the ORIGINAL record
  * unchanged, so a bad judge merge can never corrupt what gets persisted.
+ *
+ * DELIBERATE ASYMMETRY WITH `parseJudgeResponse` — do not "fix" it. The parser
+ * DROPS a `report-quality` entry (its id is outside `JUDGE_DIMENSION_IDS`,
+ * retired in rubric-v2); this merger lets one THROUGH. The two serve different
+ * directions: the parser guards what a LIVE judge may mint now, the merger
+ * re-assembles records that were already written under rubric-v1, where
+ * `report-quality` was one of the two pre-registered dimensions. Filtering here
+ * too would make every stored v1 record unreplayable — the dimension would
+ * silently vanish from a record that legitimately carries it. Pinned on both
+ * sides in `tests/eval/judge.test.mjs` (parser drops / merger keeps), so the
+ * contract cannot be half-changed.
  *
  * @param {object} record — the deterministic (or already judge-merged) session-eval record.
  * @param {Array<object>} dimensions — judge dimensions to append (typically `runEvalJudge(...).dimensions`).

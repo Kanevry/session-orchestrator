@@ -398,23 +398,72 @@ const DENIED_ABSOLUTE_TOP_SEGMENTS = new Set([
 ]);
 
 /**
+ * Case-fold a single path segment for comparison against the segment sets in
+ * this file (#1398/#1402 follow-up).
+ *
+ * Every segment comparison here MUST go through this: the classification is a
+ * proxy for what the FILESYSTEM will resolve, and the two default filesystems
+ * this repo runs on (APFS on macOS, NTFS on Windows) are case-INSENSITIVE while
+ * neither `path.posix.normalize` nor `fs.realpath()` corrects the spelling.
+ * Measured 2026-09-19 on this host: `/Users/<u>/.ssh` and `/users/<u>/.ssh`
+ * report the SAME inode (3042401), as do `/Users/<u>/Library/Keychains` and
+ * `/users/<u>/library/Keychains` (266102), and
+ * `fs.realpathSync('/users/<u>/library/Keychains')` returns the lowercase
+ * spelling verbatim. Before this fold, `/Users/<u>/library/**` was a WARN while
+ * the identical `/Users/<u>/Library/**` was an ERROR, and Gate 5b honoured both
+ * (`pathMatchesPattern('/Users/<u>/library/Keychains/login.keychain-db',
+ * '/Users/<u>/library/**') === true`).
+ *
+ * Named ceiling (BV-004): folding makes the classification strictly STRICTER on
+ * a case-SENSITIVE filesystem (ext4, or APFS formatted case-sensitive), where
+ * `/library` really is a different directory from `/Library`. That is deliberate
+ * — a wave-scope grant whose top segment differs from a system directory only in
+ * case is refused there rather than graded. Revisit trigger: the first legitimate
+ * grant refused for that reason (none exists today; the live manifest and the
+ * whole test corpus are unaffected — see the ERROR/WARNING census in the tests).
+ *
+ * `'en-US'` is pinned explicitly: the host locale must not decide a security
+ * verdict (a Turkish default locale folds `I` to `ı`, which would take `LIBRARY`
+ * out of the match).
+ * @param {string} segment
+ * @returns {string}
+ */
+function foldSegment(segment) {
+  return segment.toLocaleLowerCase('en-US');
+}
+
+/**
  * The top-level path segment of an absolute POSIX-style entry (the segment
  * immediately after the leading "/"), if it is on the denylist above.
+ * Compared case-folded (see {@link foldSegment}) — `/ETC/**` resolves to the
+ * same directory as `/etc/**` on this host and must grade the same.
  * @param {string} entry
  * @returns {string|null}
  */
 function deniedTopSegment(entry) {
   const first = entry.split('/').filter(Boolean)[0];
-  return first && DENIED_ABSOLUTE_TOP_SEGMENTS.has(first) ? first : null;
+  return first && DENIED_ABSOLUTE_TOP_SEGMENTS_FOLDED.has(foldSegment(first)) ? first : null;
 }
+
+/**
+ * {@link DENIED_ABSOLUTE_TOP_SEGMENTS}, case-folded once at module load so the
+ * lookup in {@link deniedTopSegment} cannot drift from the authored list above.
+ * @type {ReadonlySet<string>}
+ */
+const DENIED_ABSOLUTE_TOP_SEGMENTS_FOLDED = new Set(
+  [...DENIED_ABSOLUTE_TOP_SEGMENTS].map(foldSegment),
+);
 
 /**
  * Top-level segments that open a HOME directory rather than a system one —
  * macOS (`/Users/<user>`) and Linux (`/home/<user>`). Graded by
  * {@link classifyHomeGrant}, never by {@link DENIED_ABSOLUTE_TOP_SEGMENTS}.
+ * Stored FOLDED and compared through {@link foldSegment}: `/users/<u>/**` was
+ * not recognised as a home grant at all before the fold, so it skipped the
+ * depth AND the sensitivity check and left `~/.ssh` behind a bare WARNING.
  * @type {ReadonlySet<string>}
  */
-const HOME_TOP_SEGMENTS = new Set(['Users', 'home']);
+const HOME_TOP_SEGMENTS = new Set(['users', 'home']);
 
 /**
  * How many LITERAL segments a home grant must name before its first wildcard:
@@ -436,7 +485,7 @@ const HOME_MIN_LITERAL_SEGMENTS = 3;
  * @returns {boolean}
  */
 function isSensitiveHomeSegment(segment) {
-  return segment.startsWith('.') || segment === 'Library';
+  return segment.startsWith('.') || foldSegment(segment) === 'library';
 }
 
 /**
@@ -469,7 +518,7 @@ function isSensitiveHomeSegment(segment) {
  */
 function classifyHomeGrant(normalizedEntry) {
   const segments = normalizedEntry.split('/').filter(Boolean);
-  if (segments.length === 0 || !HOME_TOP_SEGMENTS.has(segments[0])) return null;
+  if (segments.length === 0 || !HOME_TOP_SEGMENTS.has(foldSegment(segments[0]))) return null;
 
   /** Literal prefix: the segments before the first one carrying a wildcard. */
   const literal = [];

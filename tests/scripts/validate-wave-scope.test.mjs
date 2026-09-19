@@ -399,6 +399,50 @@ describe('validate-wave-scope.mjs — home-directory grants (#1398 / #1402)', ()
     expect(r.stderr).toMatch(/ERROR:.*sensitive home subdirectory/);
   });
 
+  // #1398/#1402 follow-up — the classification compared segments BYTE-EXACT
+  // (`segment === 'Library'`, `HOME_TOP_SEGMENTS.has('Users')`) while the
+  // filesystem underneath is case-insensitive and `fs.realpath()` does NOT
+  // correct the spelling. Measured on this host 2026-09-19 (all five WARN,
+  // exit 0, before the fold; `stat -f %i` reports the SAME inode for
+  // `/Users/<u>/.ssh` and `/users/<u>/.ssh`, and for
+  // `/Users/<u>/Library/Keychains` and `/users/<u>/library/Keychains`):
+  //   /Users/<u>/library/**  → WARNING   (correct spelling → ERROR)
+  //   /Users/<u>/LIBRARY/**  → WARNING
+  //   /users/<u>/**          → WARNING   (not recognised as a home grant at all)
+  //   /USERS/<u>/.ssh/**     → WARNING
+  //   /HOME/<u>/.ssh/**      → WARNING
+  // Gate 5b honours the mis-cased entry unchanged — measured the same day:
+  // pathMatchesPattern('/Users/<u>/library/Keychains/login.keychain-db',
+  // '/Users/<u>/library/**') === true — so a WARNING here was a live grant on
+  // ~/Library/LaunchAgents, ~/Library/Keychains, ~/.ssh and ~/.claude.
+  it.each([
+    ['lowercased Library', '/Users/alice/library/**', /sensitive home subdirectory/],
+    ['uppercased LIBRARY', '/Users/alice/LIBRARY/**', /sensitive home subdirectory/],
+    ['lowercased home root', '/users/alice/**', /home directory at or above the user level/],
+    ['uppercased home root + dotdir', '/USERS/alice/.ssh/**', /sensitive home subdirectory/],
+    ['uppercased Linux home root', '/HOME/alice/.ssh/**', /sensitive home subdirectory/],
+    // Same defect, third site in the same file: the flat system denylist was
+    // compared byte-exact too, so `/ETC/**` (same directory as `/etc/**` here)
+    // was a WARNING while `/etc/**` was an ERROR.
+    ['mis-cased system root', '/ETC/**', /system\/home directory/],
+  ])('rejects a case-variant grant (%s): %s', (_label, entry, message) => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: [entry] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(new RegExp(`ERROR:.*${message.source}`));
+  });
+
+  // Counter-direction: the fold must not turn a legitimate grant into a
+  // rejection. Both spellings of the #1398 reference case stay a WARN with
+  // exit 0 — three literal segments, first below the home is a project dir.
+  it.each(['/Users/alice/Projects/vault/**', '/users/alice/Projects/vault/**'])(
+    'keeps a legitimate project grant at WARN under the fold: %s',
+    (entry) => {
+      const r = run(JSON.stringify({ ...VALID, allowedPaths: [entry] }));
+      expect(r.status).toBe(0);
+      expect(r.stderr).toMatch(/WARNING.*home-directory grant honoured by Gate 5b/);
+    },
+  );
+
   it('accepts a concrete home FILE grant with a WARN: /Users/alice/Projects/vault/x.md', () => {
     // Bug caught: the #1402 flip must survive the home path too — a concrete
     // file is the narrowest grant there is (Gate 5b matches it exactly,
