@@ -22,7 +22,12 @@
  *      `findViolations()` — the whole matcher (claim patterns, negative-context
  *      guards, evidence proximity, normalisation, dedup) lives there so it can
  *      be measured against a claim corpus without spawning this hook. It
- *      returns DEDUPLICATED `{claim, normalized, occurrences}` records.
+ *      returns DEDUPLICATED `{claim, normalized, occurrences, kind}` records in
+ *      TWO classes: `distributional` (#567/#908 — "4 of 4 callers") and
+ *      `gate-verdict` (w4-1 — "STATUS: done" / "alles grün" with no run
+ *      receipt anywhere in the report). `kind` reaches both the ledger record
+ *      and the WARN; its ABSENCE on a record means `distributional`, since no
+ *      pre-w4-1 record could be anything else.
  *   6. Attribute the claim: `agent` + `agent_source` (`payload`|`meta`|`none`)
  *      + `agent_description`, and — on `none` — the sorted stdin `payload_keys`
  *      the harness DID send, so a gap is diagnosable from the ledger.
@@ -457,6 +462,13 @@ async function main() {
       ...(sessionId !== null ? { session_id: sessionId } : {}),
       claim_text: violation.claim,
       occurrences: violation.occurrences,
+      // Claim CLASS (w4-1): `distributional` (the #567/#908 patterns) or
+      // `gate-verdict` (a done/green assertion with no run receipt). A new
+      // field rather than an overloaded old one — a ledger reader triaging
+      // 3,000 records must be able to separate the two without re-parsing
+      // `claim_text`, and every pre-w4-1 record is `distributional` by
+      // construction (the field's absence means exactly that).
+      kind: violation.kind ?? 'distributional',
     });
     written++;
   }
@@ -473,10 +485,21 @@ async function main() {
     ? ` ${violations.length - written} already recorded earlier in this session.`
     : '';
 
+  // Two claim CLASSES, counted separately in the WARN (w4-1): they fail
+  // different rules and want different corrections — a distributional claim
+  // needs its grep transcript, a gate verdict needs a run receipt.
+  const gateCount = violations.filter((v) => v.kind === 'gate-verdict').length;
+  const distCount = violations.length - gateCount;
+  const classNote = gateCount === 0
+    ? ''
+    : ` ${gateCount} of them ${gateCount === 1 ? 'is a' : 'are'} DONE/GATE verdict(s) with no run ` +
+      `receipt (no test count, no exit code) anywhere in the report; ` +
+      `${distCount} repo-state/distributional.`;
+
   const warnText =
-    `⚠ PSA-006: ${violations.length} distinct repo-state/distributional claim(s) from agent ` +
-    `"${agent}" (source: ${attribution.source}) lack an adjacent measurement transcript ` +
-    `(grep/rg/find/git/wc/jq/ls/node/npm) (non-blocking).` +
+    `⚠ PSA-006: ${violations.length} distinct claim(s) from agent ` +
+    `"${agent}" (source: ${attribution.source}) lack measurement evidence ` +
+    `(grep/rg/find/git/wc/jq/ls/node/npm) (non-blocking).${classNote}` +
     `${suppressedNote}${undatedNote} ` +
     `See .claude/rules/parallel-sessions.md § PSA-006.`;
   process.stderr.write(warnText + '\n');

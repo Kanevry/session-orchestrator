@@ -476,6 +476,66 @@ describe('post-subagent-discovery-validator hook', () => {
     expect(typeof events[0].timestamp).toBe('string');
   });
 
+  // w4-1: the gate-verdict claim class end-to-end. The MATCHER cases live in
+  // tests/hooks/_lib/subagent-transcript.test.mjs (pure, no spawn); what this
+  // pair proves is the part only the hook can prove — the `kind` discriminator
+  // reaching the ledger record, and the non-blocking contract surviving a
+  // violation of the NEW class.
+  it('ENABLED + a "STATUS: done" with no run receipt → exit 0, violation with kind "gate-verdict"', () => {
+    // bug_caught: measured 2026-09-19 over the 130-case labelled done-claim
+    // corpus, findViolations() answered "no violation" on 128 of 130 (accuracy
+    // 30.2%, Cohen κ 0.007) because GATE_SUMMARY_LINE_RE exempted every
+    // `STATUS:` line before any pattern ran. Pre-w4-1 this transcript produced
+    // an EMPTY events.jsonl.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      'Reworked the resolver so the fallback path no longer swallows the error.\nSTATUS: done',
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    const events = readEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('discovery_validator_violation');
+    expect(events[0].kind).toBe('gate-verdict');
+    expect(events[0].claim_text).toBe('STATUS: done');
+    // Non-blocking contract: informational stdout only, never a decision.
+    expect(result.stdout).toContain('PSA-006');
+    expect(result.stdout).not.toContain('"decision"');
+  });
+
+  it('ENABLED + "STATUS: done" after a quoted npm test run → exit 0, NO violation', () => {
+    // bug_caught: the false-positive direction, which is the expensive one —
+    // this hook runs on every SubagentStop, and a validator that flags honest
+    // reports gets switched off (the #1198 lesson, 46.5% of a 400-event
+    // sample). The receipt here sits outside the ±5-line adjacency window on
+    // purpose: a done verdict is about the whole report, so its receipt counts
+    // report-wide.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeTranscript([
+      [
+        '```',
+        '$ npm test',
+        ' Test Files  612 passed (612)',
+        '      Tests  15419 passed | 11 skipped (15430)',
+        '```',
+        'filler a',
+        'filler b',
+        'filler c',
+        'filler d',
+        'filler e',
+        'filler f',
+        'STATUS: done',
+      ].join('\n'),
+    ]);
+
+    const result = runHook(stopPayload(transcript));
+
+    expect(result.status).toBe(0);
+    expect(readEvents()).toEqual([]);
+  });
+
   it('ENABLED + a grep block exactly 5 lines from the claim → OK (within ±5 boundary)', () => {
     writeClaudeMd(CLAUDE_MD_ENABLED);
     // grep block's closing fence is on a line, claim is exactly 5 lines below it.

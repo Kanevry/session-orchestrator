@@ -213,6 +213,93 @@ const GATE_SUMMARY_LINE_RE =
   /\b\d+\s+passed\s*\/\s*\d+\s+failed\b|^\s*STATUS:\s*(?:done|partial|failed)\b|\bFull Gate\b|\bGate:\s*(?:typecheck|grün|gruen|rot)\b|\bGate \d[\d.]*\/\d+\b|\b\d+\s+Wellen?,\s*\d+\s+Agents?\b|\bArbeitsbaum leer\b|\bmit Nachweis geschlossen\b/i;
 
 /**
+ * GATE/DONE-VERDICT claim (#1397 w4-1) — the second claim class, and the one
+ * the exemption above structurally hid.
+ *
+ * `GATE_SUMMARY_LINE_RE` is CORRECT for what it was built for: it keeps the
+ * DISTRIBUTIONAL patterns off the harness's own completion output, where a
+ * number is a field value rather than an assertion (186/400 = 46.5% of sampled
+ * violations, #1198 D8). What it did NOT do is look at those lines for a claim
+ * of a DIFFERENT kind — so `STATUS: done` and "alles grün" were the two line
+ * shapes the scanner could never flag, which is precisely where "done" and
+ * "green" get claimed.
+ *
+ * Measured 2026-09-19 over a 130-case labelled done-claim corpus
+ * (`~/.cache/jev-eval/so/tasks/s2-done-claim.json`, gold `qid: "support"`):
+ * `findViolations()` answered `supported` on 128 of 130 cases — accuracy 30.2%,
+ * Cohen κ 0.007, statistically indistinguishable from guessing. Independent
+ * evidence from the same build: of 50 done/partial reports carrying neither a
+ * test count nor `exit 0`, 3 carry a bare gate-verdict claim with no command
+ * anywhere in the report.
+ *
+ * TWO separate triggers, both deliberately gap-free (no `[^\n]{0,N}` bridge) so
+ * a number or a verb between the noun and the verdict word breaks the match —
+ * "The gate ran green on 2026-07-29" and "CI-Pipeline #6995 grün" are prose
+ * about a past run, not a verdict being asserted now.
+ */
+const DONE_STATUS_RE =
+  /^\s*(?:[-*+>]\s+|#{1,6}\s+)*\**\s*STATUS\**\s*[:=]\s*\**\s*(?:done|partial|complete|abgeschlossen|fertig)\b/i;
+
+const GATE_GREEN_RE = new RegExp(
+  [
+    // English verdicts
+    '\\b(?:all\\s+)?tests?\\s+(?:now\\s+)?pass(?:es|ed|ing)?\\b',
+    '\\b(?:suite|gate|build|pipeline|ci)\\s+(?:is\\s+|are\\s+)?green\\b',
+    '\\bgreen\\s+(?:gate|suite|build|pipeline)\\b',
+    '\\b(?:typecheck|lint|build|gate|suite)\\s+(?:is\\s+)?(?:clean|passes|passing)\\b',
+    '\\beverything\\s+(?:passes|is\\s+green)\\b',
+    // "<gate>: PASS|clean|green|OK" — the shape the code-implementer report
+    // template itself prescribes ("Verification — Typecheck: pass").
+    '\\b(?:tests?|typecheck|lint|gate|build|suite)\\s*:\\s*\\**\\s*(?:pass|passed|clean|green|ok)\\b',
+    // German verdicts
+    '\\balles\\s+gr(?:ü|ue)n\\b',
+    '\\balle\\s+Tests?\\s+gr(?:ü|ue)n\\b',
+    '\\bgr(?:ü|ue)ne(?:[rsn]|nes)?\\s+(?:Gate|Suite|Lauf)\\b',
+    '\\b(?:Full\\s+Gate|Gate|Suite)\\s*:?\\s*\\**\\s*(?:ist\\s+)?gr(?:ü|ue)n',
+  ].join('|'),
+  'i'
+);
+
+/**
+ * A RUN RECEIPT — the counted result PSA-006 item 1-3 asks a gate claim to
+ * carry: a pass/fail count, a typecheck file count, an exit code, or a
+ * numerator/denominator green ratio. German forms alongside the English ones.
+ *
+ * Scope is the WHOLE scanned text, not the ±GREP_PROXIMITY_LINES window the
+ * distributional class uses, and that asymmetry is the point: a distributional
+ * claim is about ONE measurement and needs its transcript adjacent, while a
+ * done/gate verdict is about the whole report's work — a report that quotes
+ * `npm test` at the top and writes `STATUS: done` forty lines later IS
+ * evidenced. The window still applies to the command half via
+ * `nearIndex(measurementLines, …)`; this is the counted-result half.
+ *
+ * Deliberately LENIENT in the false-positive-safe direction: any exit code (not
+ * only `0`) counts, because the question this class asks is "was anything run
+ * at all?", never "did it pass?". A quoted `exit 1` means a run happened; the
+ * verdict's truth is the coordinator's judgement, not a regex's.
+ *
+ * `(?<![A-Za-z])exit` rather than `\bexit`: the shells here emit `LINT_EXIT=0`
+ * / `TYPECHECK_EXIT=0` / `VITEST_EXIT=0`, where `_` is a word character and
+ * `\b` would therefore NOT match.
+ *
+ * All quantifiers bounded ({0,20}) — linear-time, ReDoS-safe.
+ */
+const RUN_RECEIPT_RE = new RegExp(
+  [
+    '\\b\\d+\\s+(?:passed|failed|bestanden|fehlgeschlagen|skipped)\\b',
+    '\\b\\d+\\s+file(?:\\(s\\)|s)?\\s+OK\\b',
+    '(?<![A-Za-z])exit(?:\\s*code)?\\s*[=:]?\\s*\\d+',
+    '\\b\\d+\\s*/\\s*\\d+\\b[^\\n]{0,20}?\\b(?:passed|green|gr(?:ü|ue)n|tests?)\\b',
+    '\\b(?:passed|failed)\\s*[=:]\\s*\\d+',
+  ].join('|'),
+  'i'
+);
+
+/** Claim-class discriminators carried on every violation record. */
+export const KIND_DISTRIBUTIONAL = 'distributional';
+export const KIND_GATE_VERDICT = 'gate-verdict';
+
+/**
  * NON-PROSE structural lines (#1218 negative-context guard). A PSA-006 claim is
  * an ASSERTION in prose; these four shapes are not prose at all, and every one
  * of them was measured as a live false-positive class.
@@ -250,6 +337,20 @@ const PLAN_INTENT_RE =
 
 const NON_PROSE_LINE_RE = new RegExp(
   `(${TABLE_ROW_RE.source})|(${TABLE_SEPARATOR_RE.source})|(${HEADING_RE.source})|(${PLAN_INTENT_RE.source})`,
+  'i'
+);
+
+/**
+ * The same guard MINUS the heading rule, for the gate/done-verdict class. The
+ * #1218 heading exemption was measured on DISTRIBUTIONAL claims, where a
+ * heading labels a section and the claim is restated in the body below. A gate
+ * verdict is the opposite: `### Tests: PASS` and `## Wave 3 Complete — Gate: …`
+ * ARE the verdict, and nothing restates them. Table rows, separators and
+ * plan/intent items stay excluded for both classes — a task-list `- [ ] make
+ * the suite green` is intent, and a status-matrix cell is structured data.
+ */
+const NON_PROSE_NO_HEADING_RE = new RegExp(
+  `(${TABLE_ROW_RE.source})|(${TABLE_SEPARATOR_RE.source})|(${PLAN_INTENT_RE.source})`,
   'i'
 );
 
@@ -520,21 +621,30 @@ export function normalizeClaim(text) {
 }
 
 /**
- * Collapse repeated claims into one entry per distinct normalized key,
+ * Collapse repeated claims into one entry per distinct (kind, normalized key),
  * preserving first-seen order and counting `occurrences` (#1198).
  *
- * @param {string[]} claims — raw claim strings in encounter order
- * @returns {{claim: string, normalized: string, occurrences: number}[]}
+ * Accepts a bare string (kind defaults to `distributional`) or a
+ * `{claim, kind}` record — the two claim classes never merge into one entry
+ * even when they land on the identical line, because a coordinator triaging
+ * the ledger needs to know WHICH rule the line broke.
+ *
+ * @param {(string|{claim: string, kind?: string})[]} claims — in encounter order
+ * @returns {{claim: string, normalized: string, occurrences: number, kind: string}[]}
  */
 export function dedupeViolations(claims) {
-  /** @type {Map<string, {claim: string, normalized: string, occurrences: number}>} */
+  /** @type {Map<string, {claim: string, normalized: string, occurrences: number, kind: string}>} */
   const byKey = new Map();
-  for (const claim of claims) {
+  for (const entry of claims) {
+    const claim = typeof entry === 'string' ? entry : entry?.claim;
+    const kind = (typeof entry === 'string' ? undefined : entry?.kind) ?? KIND_DISTRIBUTIONAL;
+    if (typeof claim !== 'string') continue;
     const normalized = normalizeClaim(claim);
     if (!normalized) continue;
-    const hit = byKey.get(normalized);
+    const key = `${kind}\u0000${normalized}`;
+    const hit = byKey.get(key);
     if (hit) { hit.occurrences += 1; continue; }
-    byKey.set(normalized, { claim, normalized, occurrences: 1 });
+    byKey.set(key, { claim, normalized, occurrences: 1, kind });
   }
   return [...byKey.values()];
 }
@@ -543,34 +653,59 @@ export function dedupeViolations(claims) {
  * Scan concatenated transcript text for claims lacking an adjacent measurement
  * block (within ±GREP_PROXIMITY_LINES).
  *
+ * TWO claim classes, reported through one list and told apart by `kind`:
+ *   - `distributional` (#567/#908/#1211) — "4 of 4 callers", "14 commits".
+ *     Evidence must be ADJACENT (±GREP_PROXIMITY_LINES).
+ *   - `gate-verdict` (w4-1) — "STATUS: done", "alles grün", "Tests: PASS".
+ *     Evidence is an adjacent measurement command OR a RUN RECEIPT anywhere in
+ *     the report (see RUN_RECEIPT_RE for why the scopes differ).
+ *
  * @param {string} text
- * @returns {{ violations: {claim: string, normalized: string, occurrences: number}[], undatedVerified: number }}
+ * @returns {{ violations: {claim: string, normalized: string, occurrences: number, kind: string}[], undatedVerified: number }}
  *   `violations` — deduplicated, truncated claim snippets with an occurrence
- *   count; `undatedVerified` — count of claims that ARE verified but carry no
- *   measurement timestamp (advisory).
+ *   count and a claim-class `kind`; `undatedVerified` — count of DISTRIBUTIONAL
+ *   claims that ARE verified but carry no measurement timestamp (advisory).
  */
 export function findViolations(text) {
   if (!text) return { violations: [], undatedVerified: 0 };
   const lines = text.split(/\r?\n/);
   const { measurementLines, fencedLines } = scanFences(lines);
   const configLines = scanConfigBlocks(lines);
+  // Report-wide, computed ONCE: the counted-result half of the gate class's
+  // evidence test. Costs one regex pass over the tail, not one per line.
+  const hasRunReceipt = RUN_RECEIPT_RE.test(text);
   const raw = [];
   let undatedVerified = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // #1198 FIX 2: gate-summary/STATUS lines are tool OUTPUT, not a claim —
-    // skipped before any pattern runs (see GATE_SUMMARY_LINE_RE header).
+    // #1198 FIX 3 (masking-order bug): mask inline-code spans ONCE, then test
+    // every pattern against the masked text, so a claim quoted entirely inside
+    // backticks (evidence or example text, not an assertion) cannot trip one.
+    const masked = line.replace(INLINE_CODE_RE, ' ');
+
+    // --- gate/done-verdict class -------------------------------------------
+    // Runs BEFORE the GATE_SUMMARY_LINE_RE skip BY DESIGN: that skip exists to
+    // keep the DISTRIBUTIONAL patterns off harness gate output, and the two
+    // line shapes it exempts are exactly the ones this class must see.
+    if (
+      !fencedLines.has(i) &&
+      !NON_PROSE_NO_HEADING_RE.test(line) &&
+      (DONE_STATUS_RE.test(masked) || GATE_GREEN_RE.test(masked)) &&
+      !hasRunReceipt &&
+      !nearIndex(measurementLines, i)
+    ) {
+      raw.push({ claim: line.trim().slice(0, CLAIM_TEXT_MAX), kind: KIND_GATE_VERDICT });
+    }
+
+    // --- distributional class (unchanged) ----------------------------------
+    // #1198 FIX 2: gate-summary/STATUS lines are tool OUTPUT, not a
+    // distributional claim — skipped before any pattern runs.
     if (GATE_SUMMARY_LINE_RE.test(line)) continue;
     // #1218: table rows, headings and plan/intent items are not prose
     // assertions at all — skipped before any pattern runs.
     if (NON_PROSE_LINE_RE.test(line)) continue;
 
-    // #1198 FIX 3 (masking-order bug): mask inline-code spans ONCE, then test
-    // BOTH the CLAIM_PATTERNS and the cardinal/ratio patterns against the
-    // masked text, so a claim quoted entirely inside backticks (evidence or
-    // example text, not an assertion) cannot trip a pattern.
-    const masked = line.replace(INLINE_CODE_RE, ' ');
     let matched = CLAIM_PATTERNS.some((re) => re.test(masked));
     if (!matched && !fencedLines.has(i) && !configLines.has(i)) {
       matched = CARDINAL_PATTERN.test(masked) || CARDINAL_RATIO_PATTERN.test(masked);
@@ -582,7 +717,7 @@ export function findViolations(text) {
       continue;
     }
 
-    raw.push(line.trim().slice(0, CLAIM_TEXT_MAX));
+    raw.push({ claim: line.trim().slice(0, CLAIM_TEXT_MAX), kind: KIND_DISTRIBUTIONAL });
   }
   return { violations: dedupeViolations(raw), undatedVerified };
 }
