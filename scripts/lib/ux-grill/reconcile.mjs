@@ -37,12 +37,16 @@
  * mistaken import away from filing issues nobody asked for.
  *
  * Exports:
- *   UX_GRILL_LABELS, buildIssueTitle, buildIssueBody, reconcileFindings
+ *   UX_GRILL_LABELS, buildIssueTitle, buildUxGrillIssueBody, reconcileFindings
+ *   buildIssueBody — @deprecated alias of buildUxGrillIssueBody (5.2.0 name),
+ *     removed in 6.0.0
  */
 
 import {
   createFinding as defaultCreateFinding,
+  fingerprintSentinelLine,
   listExistingFindings as defaultListExisting,
+  neutralizeFingerprintSentinel,
   triageDecision,
   updateFinding as defaultUpdateFinding,
 } from '../test-runner/issue-reconcile.mjs';
@@ -69,31 +73,22 @@ const TITLE_MAX_LENGTH = 100;
 const AUTO_SEVERITIES = Object.freeze(['critical', 'high']);
 
 /**
- * Neutralise a fingerprint-sentinel literal in free text (#388 SEC-IR-MED-1).
+ * Neutralise fingerprint-sentinel literals (#388 SEC-IR-MED-1) and strip the
+ * characters `createFinding` rejects at the argv boundary, so a multi-line page
+ * title in a finding message cannot turn into a VALIDATION failure for the whole
+ * reconcile pass.
  *
- * `issue-reconcile.mjs` applies this to `recommendation` only, inside
- * `reconcileFinding` — a body built HERE and handed to `createFinding` is not
- * sanitised by anything, so a finding `message` echoing page text could forge
- * the authoritative `**Fingerprint:**` line and make the next run's
+ * The neutralisation is the SHARED one from `issue-reconcile.mjs` (#1339 P6): a
+ * body built HERE and handed to `createFinding` is not sanitised by anything
+ * else, so a finding `message` echoing page text could otherwise forge the
+ * authoritative `**Fingerprint:**` line and make the next run's
  * `triageDecision` dedup against the wrong issue.
  *
  * @param {unknown} text
  * @returns {string}
  */
-function sanitizeSentinel(text) {
-  return String(text ?? '').replace(/\*\*Fingerprint:\*\*/gi, '__Fingerprint__');
-}
-
-/**
- * Strip the characters `createFinding` rejects at the argv boundary, so a
- * multi-line page title in a finding message cannot turn into a VALIDATION
- * failure for the whole reconcile pass.
- *
- * @param {unknown} text
- * @returns {string}
- */
 function oneLine(text) {
-  return sanitizeSentinel(text).replace(/[\n\r\0]+/g, ' ').trim();
+  return neutralizeFingerprintSentinel(text).replace(/[\n\r\0]+/g, ' ').trim();
 }
 
 /**
@@ -144,7 +139,7 @@ export function buildIssueTitle(finding) {
  * @param {string} [context.rubricHash]
  * @returns {string}
  */
-export function buildIssueBody(finding, { runId, rubricHash } = {}) {
+export function buildUxGrillIssueBody(finding, { runId, rubricHash } = {}) {
   const evidence = finding?.evidence ?? {};
   const evidenceLines = Object.entries(evidence)
     .filter(([, value]) => typeof value === 'string' || Array.isArray(value))
@@ -153,7 +148,7 @@ export function buildIssueBody(finding, { runId, rubricHash } = {}) {
   return [
     oneLine(finding?.message) || `${oneLine(finding?.checkId)} at ${oneLine(finding?.locator)}`,
     '',
-    `**Fingerprint:** \`${oneLine(finding?.fingerprint)}\``,
+    fingerprintSentinelLine(oneLine(finding?.fingerprint)),
     `**Severity:** ${oneLine(finding?.severity)}`,
     `**Check:** ${oneLine(finding?.checkId)}`,
     `**Locator:** \`${oneLine(finding?.locator)}\``,
@@ -166,6 +161,37 @@ export function buildIssueBody(finding, { runId, rubricHash } = {}) {
   ]
     .filter((line) => line !== null)
     .join('\n');
+}
+
+/** One stderr line per process for the deprecated alias below, not one per call. */
+let buildIssueBodyDeprecationWarned = false;
+
+/**
+ * Deprecated alias of {@link buildUxGrillIssueBody}, shipped under this name in
+ * 5.2.0.
+ *
+ * @deprecated since 5.3.0 — use buildUxGrillIssueBody; removed in 6.0.0.
+ * Kept one minor cycle (`.claude/rules/development.md` § Package Lifecycle &
+ * Versioning) because `package.json` carries no `exports` map: every packed
+ * `scripts/lib/` export is a public deep-import, and a consumer calling this
+ * name would otherwise get a runtime TypeError, not a compile error. It
+ * delegates to the LOCAL ux-grill body builder — never to the unrelated
+ * `buildIssueBody(finding, fp)` of `test-runner/issue-reconcile.mjs`, whose
+ * finding shape and second argument differ.
+ *
+ * @param {object} finding - a `makeFinding` record
+ * @param {object} [context] - same as {@link buildUxGrillIssueBody}
+ * @returns {string}
+ */
+export function buildIssueBody(finding, context) {
+  if (!buildIssueBodyDeprecationWarned) {
+    buildIssueBodyDeprecationWarned = true;
+    console.warn(
+      '[deprecated] buildIssueBody from scripts/lib/ux-grill/reconcile.mjs is deprecated since 5.3.0 ' +
+        'and will be removed in 6.0.0 — use buildUxGrillIssueBody instead.',
+    );
+  }
+  return buildUxGrillIssueBody(finding, context);
 }
 
 /**
@@ -296,7 +322,7 @@ export async function reconcileFindings({
     }
 
     const title = buildIssueTitle(finding);
-    const body = buildIssueBody(finding, { runId, rubricHash });
+    const body = buildUxGrillIssueBody(finding, { runId, rubricHash });
     const decision = triageDecision({ fingerprint: finding?.fingerprint, title }, candidates);
 
     if (decision.action === 'ignore') {

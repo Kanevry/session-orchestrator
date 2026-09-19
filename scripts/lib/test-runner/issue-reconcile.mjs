@@ -22,10 +22,17 @@
  *   triageDecision(finding, candidates)
  *     → {action: 'create'|'update'|'ignore', target?, reason: string, confidence: number}
  *
+ *   buildIssueBody(finding, fp) → string
+ *
+ *   neutralizeFingerprintSentinel(text) → string
+ *   fingerprintSentinelLine(fp) → string
+ *     The one shared sentinel writer + neutraliser, also used by
+ *     ux-grill/reconcile.mjs (#1339 P6).
+ *
  *   ReconcileError
  *
  * Security:
- *   - #388 (SEC-IR-MED-1): sentinel injection hardening — sanitizeRecommendation()
+ *   - #388 (SEC-IR-MED-1): sentinel injection hardening — neutralizeFingerprintSentinel()
  *     strips **Fingerprint:** literals from free-text fields before they are
  *     embedded in the body (before the authoritative sentinel line is appended).
  *   - #389 (SEC-IR-LOW-1): maxBuffer set to 4 MB on every execFile call;
@@ -126,39 +133,64 @@ function validateFinding(finding) {
 // ---------------------------------------------------------------------------
 
 /**
- * Sanitize free-text recommendation fields before embedding in the issue body.
- * Replaces any literal `**Fingerprint:**` with `__Fingerprint__` to prevent
- * a crafted recommendation from spoofing the authoritative fingerprint sentinel
- * line that is appended by buildIssueBody().
+ * Neutralise every `**Fingerprint:**` literal in untrusted text by rewriting it
+ * to `__Fingerprint__`. The ONE copy of this neutralisation: this module's
+ * {@link buildIssueBody} and `ux-grill/reconcile.mjs` both route free text
+ * through it (#1339 P6), so a hardening added here reaches both producers.
  *
- * Context: glab parses issue bodies as Markdown. If `recommendation` contained
+ * Context: glab parses issue bodies as Markdown. If a free-text field contained
  * `**Fingerprint:** <attacker-hash>`, a grep for the fingerprint sentinel in
  * listExistingFindings() would match the spoofed value instead of the real one,
  * bypassing dedup. Replacing the literal prevents the attack without altering
- * the semantic meaning of the recommendation text.
+ * the semantic meaning of the text.
+ *
+ * @param {unknown} text - coerced with `String(text ?? '')`
+ * @returns {string}
+ */
+export function neutralizeFingerprintSentinel(text) {
+  // gi flag: case-insensitive match so **fingerprint:** and **FINGERPRINT:** variants
+  // are also neutralized. Sanitizer is intentionally broader than the case-sensitive
+  // extractor regex — this is the correct asymmetry (#388 SEC-IR-MED-1).
+  return String(text ?? '').replace(/\*\*Fingerprint:\*\*/gi, '__Fingerprint__');
+}
+
+/**
+ * The authoritative dedup sentinel line, in the exact shape
+ * {@link extractFingerprintFromBody} reads. The caller passes an
+ * already-trusted value; this function does not sanitise it.
+ *
+ * @param {string} fp - 16-char hex fingerprint
+ * @returns {string}
+ */
+export function fingerprintSentinelLine(fp) {
+  return `**Fingerprint:** \`${fp}\``;
+}
+
+/**
+ * Sanitize free-text recommendation fields before embedding in the issue body
+ * (#388 SEC-IR-MED-1) — {@link neutralizeFingerprintSentinel} for a non-empty
+ * string, anything else returned unchanged (a `null` description is dropped by
+ * buildIssueBody's line filter rather than rendered as an empty line).
  *
  * @param {string|undefined|null} text
  * @returns {string|undefined|null}
  */
 function sanitizeRecommendation(text) {
   if (!text || typeof text !== 'string') return text;
-  // gi flag: case-insensitive match so **fingerprint:** and **FINGERPRINT:** variants
-  // are also neutralized. Sanitizer is intentionally broader than the case-sensitive
-  // extractor regex — this is the correct asymmetry (#388 SEC-IR-MED-1).
-  return text.replace(/\*\*Fingerprint:\*\*/gi, '__Fingerprint__');
+  return neutralizeFingerprintSentinel(text);
 }
 
 /**
  * Render untrusted text as the content of ONE inline Markdown code span:
- * sentinel literals neutralised (sanitizeRecommendation), line breaks and NUL
- * folded to a space, backticks turned into `'` — so a page-controlled locator
- * can neither close its code span nor start a new body line.
+ * sentinel literals neutralised, line breaks and NUL folded to a space,
+ * backticks turned into `'` — so a page-controlled locator can neither close
+ * its code span nor start a new body line.
  *
  * @param {unknown} text
  * @returns {string}
  */
 function codeSpanContent(text) {
-  return sanitizeRecommendation(String(text ?? ''))
+  return neutralizeFingerprintSentinel(text)
     .replace(/[\r\n\0]+/g, ' ')
     .replace(/`/g, "'");
 }
@@ -218,7 +250,7 @@ export function buildIssueBody(finding, fp) {
     '',
     safeRecommendation ? `**Recommendation:** ${safeRecommendation}` : null,
     '',
-    `**Fingerprint:** \`${fp}\``,
+    fingerprintSentinelLine(fp),
     `**Severity:** ${finding.severity}`,
     `**Check:** ${finding.checkId}`,
     `**Locator:** \`${codeSpanContent(finding.locator)}\``,

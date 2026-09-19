@@ -399,6 +399,29 @@ export function countSessionsInJsonl(raw) {
  * is skipped rather than aborting the whole read (same posture as the readers
  * in `session-close-backfill.mjs` and `backfill-abandoned-sessions.mjs`).
  *
+ * NOT EVERY RAW READ OF `sessions.jsonl` IS A GAP TO CLOSE (#1221 P2). Five
+ * more readers bypass this module's collapse on purpose — verified via
+ * `rg -n "sessions.jsonl|SESSIONS"` against each file — and none of them
+ * should be "migrated" to `readCanonicalSessions`:
+ *   - `scripts/lib/sessions-integrity-banner.mjs` reads every raw line
+ *     (`readJsonlLines`) because it EXISTS to count malformed/mirror-invalid
+ *     records; canonicalizing first would hide the corruption it reports on.
+ *   - `scripts/lib/session-record-repair.mjs` is the repair tool itself — it
+ *     must see every raw record, malformed and duplicate alike, to fix them;
+ *     a canonical read would collapse or drop the very rows it needs to repair.
+ *   - `scripts/migrate-sessions-jsonl.mjs` rewrites legacy-shaped records one
+ *     raw line at a time; a canonicalized read could silently skip a
+ *     superseded or duplicate legacy record before the migration ever sees it.
+ *   - `scripts/gc-stale-worktrees.mjs` (`loadRecentSessionRefs`) scans every
+ *     raw line's string content for worktree references within a 7-day
+ *     window; a canonical read could drop a duplicate/superseded stub that
+ *     still names a worktree, making a live worktree look unreferenced and
+ *     eligible for garbage collection.
+ *   - `readTailSession()` in `scripts/autopilot.mjs` parses only the LAST raw
+ *     line to project the record this run's own session just appended,
+ *     verbatim; canonicalizing could return a different record than the tail
+ *     line if a collapse rule folded it away.
+ *
  * @param {object} [args]
  * @param {string} [args.repoRoot] project root; the ledger is resolved as
  *   `<repoRoot>/.orchestrator/metrics/sessions.jsonl`. Defaults to

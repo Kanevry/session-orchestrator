@@ -16,7 +16,6 @@ import {
   extractCitations,
   isPlaceholderCitation,
   scanSkillScriptPaths,
-  SCAN_DIRS,
 } from '../../../scripts/lib/validate/check-skill-script-paths.mjs';
 import { fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 
@@ -24,16 +23,17 @@ const repoRoot = process.cwd();
 const checkScript = path.join(repoRoot, 'scripts/lib/validate/check-skill-script-paths.mjs');
 
 /**
- * A throwaway plugin root holding one skill doc plus the script files named.
+ * A throwaway plugin root holding one doc plus the script files named.
  *
- * @param {string} body markdown for `skills/demo/SKILL.md`
+ * @param {string} body markdown for the doc at `docPath`
  * @param {string[]} [existingScripts] repo-relative script paths to create
+ * @param {string} [docPath] repo-relative path the doc is written to
  * @returns {string} absolute fixture root
  */
-function fixtureRoot(body, existingScripts = []) {
+function fixtureRoot(body, existingScripts = [], docPath = 'skills/demo/SKILL.md') {
   const root = makeTmpDir('skill-script-paths-');
-  mkdirSync(path.join(root, 'skills/demo'), { recursive: true });
-  writeFileSync(path.join(root, 'skills/demo/SKILL.md'), body);
+  mkdirSync(path.join(root, path.dirname(docPath)), { recursive: true });
+  writeFileSync(path.join(root, docPath), body);
   for (const relative of existingScripts) {
     mkdirSync(path.join(root, path.dirname(relative)), { recursive: true });
     writeFileSync(path.join(root, relative), 'export const x = 1;\n');
@@ -52,22 +52,36 @@ function scanFixture(body, scripts = [], opts = {}) {
 }
 
 describe('SCAN_DIRS', () => {
-  it('includes docs (#1208 — the checker now scans ADR/reference prose too)', () => {
-    // Pins the flip: a regression here would silently narrow the scan back to
-    // skills/commands/agents and stop catching dead citations in docs/*.md.
-    expect(SCAN_DIRS).toContain('docs');
-  });
-
-  it('includes the shipped corpora rules/ and output-styles/ (#1384 P3)', () => {
-    // Bug: both directories are in package.json `files[]` and therefore ship to
-    // every consumer, yet neither was scanned — which is how
-    // `output-styles/wave-summary.md` kept citing `hooks/on-stop.sh` for a file
-    // that is `.mjs`, and how four consumer-side example paths in
-    // rules/opt-in-stack/* stayed unannotated. Narrowing the scan back would
-    // restore that blind spot silently.
-    expect(SCAN_DIRS).toContain('rules');
-    expect(SCAN_DIRS).toContain('output-styles');
-  });
+  // Bug (#1390 P9): a refactor that stops scanning a corpus — drops it from the
+  // default `dirs`, stops descending into a nested directory such as
+  // rules/opt-in-stack/, or filters its files out — silently un-checks every
+  // citation there. docs/ carried 22 dead paths when it joined (#1208); rules/
+  // and output-styles/ SHIP (package.json `files[]`), and the #1384 P3 census
+  // found real dead citations in both (`output-styles/wave-summary.md` citing
+  // `hooks/on-stop.sh`). Asserting that SCAN_DIRS CONTAINS a name stays green
+  // through every one of those refactors but the first — measured: a filter on
+  // the default `dirs` left that assertion green and turned this one red. Only
+  // a planted dead citation proves the directory is actually READ.
+  it.each(['docs/adr/demo.md', 'rules/opt-in-stack/demo.md', 'output-styles/demo.md'])(
+    'reports a dead script citation planted in %s',
+    (docPath) => {
+      const root = fixtureRoot('Run `scripts/lib/ghost.mjs` first.\n', [], docPath);
+      try {
+        const result = scanSkillScriptPaths({ pluginRoot: root });
+        expect(result.ok).toBe(false);
+        expect(result.findings).toHaveLength(1);
+        expect(result.findings[0]).toMatchObject({
+          kind: 'missing-path',
+          file: docPath,
+          line: 1,
+          path: 'scripts/lib/ghost.mjs',
+          severity: 'fail',
+        });
+      } finally {
+        removeTree(root);
+      }
+    },
+  );
 });
 
 describe('scanSkillScriptPaths', () => {

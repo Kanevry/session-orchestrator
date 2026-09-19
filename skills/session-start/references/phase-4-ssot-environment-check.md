@@ -44,7 +44,8 @@
    - **Red** (`status === 'red'`): `"🚨 CI RED on HEAD (pipeline #<currentPipelineId>) — last green: #<lastGreen.pipelineId> (commit <SHA-7>, <redCount> pipelines ago). Failing job: <failingJobName>"`
    - **Green with soft failures** (`status === 'green'` AND `result.allowFailureJobs` is present): `"⚠ CI green on HEAD, but <N> allow_failure job(s) FAILED: <names>. A pipeline reports success regardless of these — a job red on every run stays invisible at the pipeline level."` Render this even though the pipeline passed: the whole point is that pipeline status cannot express it.
    - **Degraded** (`result.degraded` present): `"⚠ ci-status: CI status for HEAD could not be determined (<reason>) — state UNKNOWN, not \"green\"."` — the probe builds this message itself; render it verbatim.
-   - **Green** (no `allowFailureJobs`) or **unknown**: silent (no banner) — informational only.
+   - **Unknown** (`status === 'unknown'` — HEAD carries no pipeline, e.g. unpushed local commits; #1337): NOT silent — `"<mark> ci-status: CI status for HEAD could not be determined (<reason>) — <hint>"`, where `<mark>` is `🚨` when the last PUSHED commit's pipeline verdict is `red` (severity `alert`) and `⚠` otherwise (severity `warn`). Silence here would read as green when the pushed commit may actually be red.
+   - **Green** (no `allowFailureJobs`): silent (no banner) — informational only.
 
    The banner is non-blocking — display in the Session Overview, do not halt the session. If `ci-status-banner.mjs` is absent (pre-#369 plugin install), skip silently.
 

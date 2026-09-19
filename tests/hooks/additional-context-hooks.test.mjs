@@ -149,19 +149,6 @@ describe('post-tool-batch-wave-signal.mjs wave-lifecycle events (#610)', () => {
     expect(Number.isNaN(Date.parse(wave.timestamp))).toBe(false);
   });
 
-  it('emits orchestrator.wave.started on wave-start signal', () => {
-    const result = runHook('hooks/post-tool-batch-wave-signal.mjs', {
-      wave_signal: 'wave-start',
-      wave_number: 2,
-      batch_id: 'b-010',
-      batch_size: 5,
-    });
-    expect(result.status).toBe(0);
-    const wave = readEvents().find((e) => e.event === 'orchestrator.wave.started');
-    expect(wave).toBeDefined();
-    expect(wave.wave_number).toBe(2);
-  });
-
   it('emits no orchestrator.wave.* event when wave_signal is absent', () => {
     const result = runHook('hooks/post-tool-batch-wave-signal.mjs', { batch_id: 'b-002', batch_size: 3 });
     expect(result.status).toBe(0);

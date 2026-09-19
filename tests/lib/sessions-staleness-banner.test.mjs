@@ -234,6 +234,83 @@ describe('checkSessionsStaleness — self-exclusion (the core test)', () => {
     expect(result.lastForeignEventAt).toBe('2026-01-01T09:00:00.000Z');
     expect(result.deltaHours).toBe(9);
   });
+
+  it('pulls the cutoff back to the first own lock.acquired after a same-id re-acquire moved started_at (compact)', () => {
+    writeSessions(tmpRepo, [sessionLine('2026-01-01T00:00:00.000Z')]);
+    // First acquired 12:00, re-acquired 20:00 — the session's own 19:00 event
+    // (no session_id, like secret_masker.applied) sits BEFORE started_at.
+    writeLock(tmpRepo, '2026-01-01T20:00:00.000Z');
+    writeEvents(tmpRepo, [
+      eventLine('2026-01-01T09:00:00.000Z'), // genuine foreign event
+      JSON.stringify({ event: 'orchestrator.session.lock.acquired', timestamp: '2026-01-01T12:00:00.000Z', session_id: 'test-session-id' }),
+      eventLine('2026-01-01T19:00:00.000Z'),
+    ]);
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo });
+    expect(result).not.toBe(null);
+    expect(result.lastForeignEventAt).toBe('2026-01-01T09:00:00.000Z');
+    expect(result.deltaHours).toBe(9);
+  });
+});
+
+describe('checkSessionsStaleness — a previous session\'s own teardown output is not foreign activity', () => {
+  /** One events.jsonl line of the given type, payload shaped like its real emitter's. */
+  function typedEventLine(event, timestamp, payload) {
+    return JSON.stringify({ timestamp, event, ...payload });
+  }
+
+  // Live 2026-09-19: the ledger record was written at /close (T0); the terminal
+  // stayed open overnight, and the SessionEnd hook's session.ended +
+  // telemetry.flush at exit (T0+9h) were read as a 9.6h close-through gap.
+  // One row per CLOSING_DIAGNOSTIC_EVENTS entry, each ALONE after the ledger:
+  // dropping any single entry from the map (or its `emitted_by` key) brings
+  // the false warning back, and only that entry's row goes red. Payloads are
+  // shaped like hooks/on-session-end.mjs's own emits.
+  it.each([
+    ['orchestrator.session.ended', {
+      session_id: 'raw-uuid-prev', semantic_session_id: 'main-test-session', reason: 'prompt_input_exit', duration_ms: 1000,
+    }],
+    ['orchestrator.telemetry.flush', { outcome: 'skipped', reason: 'persistence-disabled' }],
+    ['orchestrator.session.backfill_completed', {
+      kind: 'abandoned', action: 'appended', session_id: 'raw-uuid-prev', semantic_session_id: 'main-test-session',
+    }],
+    ['orchestrator.session.lock.released', {
+      session_id: 'raw-uuid-prev', lock_session_id: 'main-test-session', end_reason: 'prompt_input_exit',
+      caller: 'on-session-end', outcome: 'deleted', verified: true,
+    }],
+    ['orchestrator.session.lock.release_failed', { session_id: 'raw-uuid-prev', reason: 'fs-error', caller: 'on-session-end' }],
+    ['orchestrator.session.lock.read_anomaly', { session_id: 'raw-uuid-prev', status: 'unreadable', error: 'EACCES' }],
+    ['orchestrator.wave.completed', {
+      session_id: 'raw-uuid-prev', wave_number: 3, reason: 'session-end', emitted_by: 'on-session-end',
+    }],
+    ['orchestrator.wave.final_refused', {
+      session_id: 'raw-uuid-prev', reason: 'already-completed', wave_number: 3, emitted_by: 'on-session-end',
+    }],
+  ])('stays silent when the only post-ledger event is the SessionEnd diagnostic %s', (event, payload) => {
+    writeSessions(tmpRepo, [sessionLine('2026-01-01T00:00:00.000Z')]);
+    writeEvents(tmpRepo, [typedEventLine(event, '2026-01-01T09:00:00.000Z', payload)]);
+    writeLock(tmpRepo, '2026-01-01T09:00:02.000Z');
+    expect(checkSessionsStaleness({ repoRoot: tmpRepo })).toBe(null);
+  });
+
+  // The companions: real activity at the same instant must still warn — a
+  // process killed by OOM / kill -9 leaves only these, never a SessionEnd.
+  it.each([
+    ['orchestrator.turn.stopped (end of a turn — hooks/on-stop.mjs)', 'orchestrator.turn.stopped', {
+      session_id: 'raw-uuid-prev', semantic_session_id: 'main-test-session', wave: 2, duration_ms: 1000, duration_source: 'session-lock',
+    }],
+    ['a MID-session orchestrator.wave.completed (hooks/post-tool-batch-wave-signal.mjs, no emitted_by)', 'orchestrator.wave.completed', {
+      wave_number: 2,
+    }],
+  ])('still warns when the post-ledger event is %s', (_label, event, payload) => {
+    writeSessions(tmpRepo, [sessionLine('2026-01-01T00:00:00.000Z')]);
+    writeEvents(tmpRepo, [typedEventLine(event, '2026-01-01T09:00:00.000Z', payload)]);
+    writeLock(tmpRepo, '2026-01-01T09:00:02.000Z');
+    const result = checkSessionsStaleness({ repoRoot: tmpRepo });
+    expect(result).not.toBe(null);
+    expect(result.severity).toBe('warn');
+    expect(result.lastForeignEventAt).toBe('2026-01-01T09:00:00.000Z');
+    expect(result.deltaHours).toBe(9);
+  });
 });
 
 describe('checkSessionsStaleness — no lock readable, cutoff=now fallback', () => {
@@ -291,7 +368,7 @@ describe('checkSessionsStaleness — additional coverage (F-G, W4 fix pass)', ()
   it('falls back to now-cutoff when session.lock exists but started_at is malformed', () => {
     writeSessions(tmpRepo, [sessionLine('2020-01-01T00:00:00.000Z')]);
     // The lock EXISTS (unlike the "no lock readable" case above) but its
-    // started_at is not a parseable timestamp — resolveCutoffMs's
+    // started_at is not a parseable timestamp — resolveCutoff()'s
     // `Number.isFinite(parsed)` guard must still fall back to `nowMs`,
     // identically to the no-lock-at-all case.
     writeLock(tmpRepo, 'not-a-real-date');

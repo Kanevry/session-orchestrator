@@ -21,6 +21,8 @@ import {
   existsSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
+  utimesSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -813,5 +815,60 @@ describe('consumeDialecticPending', () => {
     const result = await consumeDialecticPending({ repoRoot });
     expect(result).toMatchObject({ ok: true, consumed: false });
     expect(existsSync(consumedDir(repoRoot))).toBe(false);
+  });
+
+  /** Write `names` into `dir`, all with the given mtime (epoch seconds). */
+  function seedFiles(dir, names, mtimeSec) {
+    mkdirSync(dir, { recursive: true });
+    for (const name of names) {
+      writeFileSync(join(dir, name), 'foreign\n', 'utf8');
+      utimesSync(join(dir, name), mtimeSec, mtimeSec);
+    }
+  }
+
+  // BUG (#1390 P6, data loss): the prune kept the newest 10 FILES of any name,
+  // so anything else stored in consumed/ was unlinked once it aged out — including
+  // a name that merely ENDS like an archive (a loose-suffix filter would still
+  // delete `operator-dialectic-pending.md`).
+  it('prunes only its own archive names — foreign files in consumed/ survive', async () => {
+    const repoRoot = tmp();
+    const dir = consumedDir(repoRoot);
+    const foreign = ['notes.txt', 'operator-dialectic-pending.md', 'report.json'];
+    seedFiles(dir, foreign, 1_700_000_000); // oldest in the directory
+    seedFiles(
+      dir,
+      ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'].map(
+        (i) => `2026-01-01T00-00-0${i}-000Z-a1b2c3d${i}-dialectic-pending.md`,
+      ),
+      1_760_000_000,
+    );
+    await writeDialecticPending({ repoRoot, diff: '# proposal\n' });
+
+    const result = await consumeDialecticPending({ repoRoot });
+
+    expect(result).toMatchObject({ ok: true, consumed: true, pruned: 1 });
+    const left = readdirSync(dir);
+    expect(left.filter((n) => foreign.includes(n)).sort()).toEqual(foreign);
+    expect(left).toHaveLength(13);
+    expect(left).not.toContain('2026-01-01T00-00-00-000Z-a1b2c3d0-dialectic-pending.md');
+  });
+
+  // BUG (#1390 P6, data loss): a symlinked consumed/ was followed — the sidecar
+  // moved into the link target and the prune unlinked the target's own files.
+  it('refuses a symlinked consumed/ — ok:false, target untouched, sidecar stays', async () => {
+    const repoRoot = tmp();
+    const outside = tmp();
+    const outsideFiles = Array.from({ length: 12 }, (_, i) => `operator-file-${i + 1}.txt`);
+    seedFiles(outside, outsideFiles, 1_700_000_000);
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    symlinkSync(outside, consumedDir(repoRoot));
+    await writeDialecticPending({ repoRoot, diff: '# proposal\n' });
+
+    const result = await consumeDialecticPending({ repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/symlink/);
+    expect(readdirSync(outside).sort()).toEqual([...outsideFiles].sort());
+    expect(existsSync(join(repoRoot, DIALECTIC_PENDING_PATH))).toBe(true);
   });
 });

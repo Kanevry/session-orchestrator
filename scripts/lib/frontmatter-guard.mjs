@@ -12,6 +12,7 @@
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { resolveHostPath } from './config/host-paths.mjs';
+import { maskSource } from './js-mask.mjs';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -117,25 +118,34 @@ let _warnedFallback = false;
  */
 const _cache = { mtime: null, result: null };
 
+/** One quoted string literal — its interior in group 2. */
+const STRING_LITERAL_RE = /(['"`])((?:\\.|(?!\1)[^\\\n])*)\1/g;
+
 /**
- * Parse the type-enum values out of a Zod `z.enum([...])` call in source text.
+ * Parse the enum values out of a Zod `z.enum([...])` call in source text.
  *
- * @param {string} text
+ * `codeText` must be the source with its COMMENTS blanked
+ * (`maskSource(text, { keepLiterals: true })`): the values are the quoted
+ * literals of the enum body and nothing else. Splitting the raw body on commas
+ * rendered comment prose between the literals as enum values — 6 of 16
+ * `statusEnum` entries against the real baseline schema, one fused onto
+ * `'maintenance'` (#1298) — and every one reached agent prompts as an allowed
+ * `status`. Masking via the shared lexer also keeps a `//` inside a literal
+ * intact and a `]` inside a comment from ending the body early.
+ *
+ * @param {string} codeText - comment-masked source
  * @param {string} exportName - e.g. 'vaultNoteTypeSchema'
  * @returns {string[]}
  */
-function _extractEnum(text, exportName) {
+function _extractEnum(codeText, exportName) {
   // Match: export const <name> = z.enum([ ...values... ]);
   const re = new RegExp(
     `export\\s+const\\s+${exportName}\\s*=\\s*z\\.enum\\(\\s*\\[([^\\]]+)\\]`,
     's',
   );
-  const match = text.match(re);
+  const match = codeText.match(re);
   if (!match) return [];
-  return match[1]
-    .split(',')
-    .map((s) => s.trim().replace(/^['"]|['"]$/g, ''))
-    .filter(Boolean);
+  return [...match[1].matchAll(STRING_LITERAL_RE)].map((m) => m[2]).filter(Boolean);
 }
 
 /**
@@ -145,8 +155,9 @@ function _extractEnum(text, exportName) {
  * @returns {{ typeEnum: string[], statusEnum: string[], requiredFields: string[], idRegex: string, tagsRegex: string, schemaText: string }}
  */
 function _parseSchema(text) {
-  const typeEnum = _extractEnum(text, 'vaultNoteTypeSchema');
-  const statusEnum = _extractEnum(text, 'vaultNoteStatusSchema');
+  const codeText = maskSource(text, { keepLiterals: true });
+  const typeEnum = _extractEnum(codeText, 'vaultNoteTypeSchema');
+  const statusEnum = _extractEnum(codeText, 'vaultNoteStatusSchema');
 
   // Required fields are id, type, created, updated — stable; extracted
   // from the schema object declaration (non-optional fields).

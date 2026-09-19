@@ -188,6 +188,25 @@ describe('emit-session.mjs CLI', () => {
 // #321 — pre-validation repair integration (clamp + alias)
 // ---------------------------------------------------------------------------
 
+// #1390 P1 — the producer never normalized per-wave key aliases, so a record
+// composed with `agents_completed` landed on disk without the canonical
+// `agent_count_completed` every consumer except the vault renderer reads.
+describe('emit-session.mjs CLI — #1390 per-wave alias at write time', () => {
+  it('writes agent_count_completed for a wave that carries only agents_completed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'emit-session-1390-'));
+    try {
+      const targetFile = join(tmp, 'sessions.jsonl');
+      const entry = validEntry({ waves: [{ wave: 1, role: 'Impl', agents_completed: 3 }] });
+      const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+      expect(r.status).toBe(0);
+      const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+      expect(written.waves[0].agent_count_completed).toBe(3);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('emit-session.mjs CLI — #321 pre-validation repair', () => {
   let tmp;
   let targetFile;
@@ -370,9 +389,10 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
 
   // `owner` is the STATE.md frontmatter `session:` — the session that OWNS the
   // document, which is not necessarily the session a record describes.
-  function writeStateMd(profile, owner = 'main-2026-09-13-1') {
+  function writeStateMd(profile, owner = 'main-2026-09-13-1', startRef = null) {
     const lines = ['---', `session: ${owner}`, 'session-type: deep'];
     if (profile !== null) lines.push(`session-profile: ${profile}`);
+    if (startRef !== null) lines.push(`session-start-ref: ${startRef}`);
     lines.push('---', '');
     writeFileSync(join(stateDir, 'STATE.md'), lines.join('\n'), 'utf8');
   }
@@ -416,8 +436,10 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
   // STATE.md, session B is a plain `deep` and closes — B's record was stamped
   // `session_profile: "ultradeep"` and its waves filed under the ultradeep
   // sizing row. Exactly the cross-contamination #1247 exists to remove.
-  it('omits session_profile when STATE.md belongs to a DIFFERENT session', () => {
-    writeStateMd('ultradeep', 'main-2026-09-13-session-A');
+  // The start ref shares the ownership check: a refactor that adopts it
+  // outside that check files session A's commit range under session B.
+  it('omits session_profile and session_start_ref when STATE.md belongs to a DIFFERENT session', () => {
+    writeStateMd('ultradeep', 'main-2026-09-13-session-A', '8f6ac02277d889413bed283f9ab6c747f841ac03');
     const entry = validEntry({ session_id: 'main-2026-09-13-session-B' });
     const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)], null, {
       env: { SO_STATE_DIR: stateDir },
@@ -425,6 +447,7 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
     expect(r.status).toBe(0);
     const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
     expect('session_profile' in written).toBe(false);
+    expect('session_start_ref' in written).toBe(false);
     expect(r.stderr).toContain('main-2026-09-13-session-A');
   });
 
@@ -443,6 +466,44 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
     expect(r.status).toBe(0);
     const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
     expect('session_profile' in written).toBe(false);
+  });
+
+  // #1339 P8 — bug: no producer copied STATE.md `session-start-ref` into the
+  // record (4 of the last 25 real records carried it, all hand-composed), so
+  // `/evolve analyze` fell back to a time window that attributes a parallel
+  // session's commits to this one.
+  //
+  // Rows 2-3, bug: only a FULL hex sha makes a range — `HEAD` or a short sha
+  // copied verbatim hands `/evolve analyze` a moving or ambiguous endpoint.
+  // Rows 4-5, bug: an EXPLICIT key on the record (even `null`) must win —
+  // overwriting it from STATE.md discards the coordinator's own assertion.
+  it.each([
+    ['a full sha: copied', '8f6ac02277d889413bed283f9ab6c747f841ac03', {}, true,
+      '8f6ac02277d889413bed283f9ab6c747f841ac03', ''],
+    ['HEAD: omitted with a WARN', 'HEAD', {}, false, undefined,
+      'emit-session: WARN STATE.md session-start-ref=HEAD is not a full hex sha; omitting session_start_ref\n'],
+    ['an 8-hex short sha: omitted with a WARN', '8f6ac022', {}, false, undefined,
+      'emit-session: WARN STATE.md session-start-ref=8f6ac022 is not a full hex sha; omitting session_start_ref\n'],
+    ['a full sha, but the entry carries its own sha: the entry wins', '8f6ac02277d889413bed283f9ab6c747f841ac03',
+      { session_start_ref: 'a4e6d2550000000000000000000000000000beef' }, true,
+      'a4e6d2550000000000000000000000000000beef', ''],
+    ['a full sha, but the entry carries an explicit null: the null wins', '8f6ac02277d889413bed283f9ab6c747f841ac03',
+      { session_start_ref: null }, true, null, ''],
+  ])('STATE.md session-start-ref is %s', (_label, stateRef, entryOverrides, expectPresent, expectRef, expectStderr) => {
+    writeFileSync(
+      join(stateDir, 'STATE.md'),
+      ['---', 'session: start-ref-fill', `session-start-ref: ${stateRef}`, '---', ''].join('\n'),
+      'utf8'
+    );
+    const entry = validEntry({ session_id: 'start-ref-fill', ...entryOverrides });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)], null, {
+      env: { SO_STATE_DIR: stateDir },
+    });
+    expect(r.status).toBe(0);
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect('session_start_ref' in written).toBe(expectPresent);
+    expect(written.session_start_ref).toBe(expectRef);
+    expect(r.stderr).toBe(expectStderr);
   });
 
   // Bug: the readFileSync was guarded by existsSync only, so any read error

@@ -535,7 +535,20 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     });
   });
 
-  it('EARS unknown model: throws Error (does NOT return an unknown-model status)', async () => {
+  /** The `orchestrator.dialectic.completed` records the run wrote into the tmp repo's ledger. */
+  function readDialecticRecords() {
+    const ledgerPath = join(repo, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(ledgerPath)) return [];
+    return readFileSync(ledgerPath, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l))
+      .filter((r) => r.event === 'orchestrator.dialectic.completed');
+  }
+
+  it('EARS unknown model: rethrows the validateModel error AND records exactly one aborted: "unknown-model" (#1221)', async () => {
+    // Bug pinned: the throw left runDialecticDeriver() before any record, so
+    // this outcome existed in the ledger only if skill prose remembered it.
     const dispatchAgent = vi.fn();
     await expect(
       runDialecticDeriver({
@@ -543,8 +556,26 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
         repoRoot: repo,
         model: 'gpt-4',
       }),
-    ).rejects.toThrow(Error);
+    ).rejects.toThrow(`dialectic.model must be one of ["haiku","sonnet","opus"], got 'gpt-4'`);
     expect(dispatchAgent).not.toHaveBeenCalled();
+    const records = readDialecticRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].aborted).toBe('unknown-model');
+    expect(typeof records[0].duration_ms).toBe('number');
+  });
+
+  it('subagent crash: rethrows the SAME error object AND records exactly one aborted: "subagent-crash" (#1221)', async () => {
+    seedLearnings([{ id: 'L1', confidence: 0.9, text: 'learning' }]);
+    const crash = new Error('agent transport died');
+    const dispatchAgent = vi.fn().mockRejectedValue(crash);
+
+    await expect(runDialecticDeriver({ dispatchAgent, repoRoot: repo })).rejects.toBe(crash);
+
+    expect(dispatchAgent).toHaveBeenCalledTimes(1);
+    const records = readDialecticRecords();
+    expect(records).toHaveLength(1);
+    expect(records[0].aborted).toBe('subagent-crash');
+    expect(typeof records[0].duration_ms).toBe('number');
   });
 
   it('EARS would-empty-card: allowEmptying=false blocks empty user-card diff', async () => {
@@ -738,13 +769,7 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
 
     await runDialecticDeriver({ dispatchAgent, repoRoot: repo });
 
-    const ledgerPath = join(repo, '.orchestrator', 'metrics', 'events.jsonl');
-    expect(existsSync(ledgerPath)).toBe(true);
-    const records = readFileSync(ledgerPath, 'utf8')
-      .split('\n')
-      .filter((l) => l.trim() !== '')
-      .map((l) => JSON.parse(l))
-      .filter((r) => r.event === 'orchestrator.dialectic.completed');
+    const records = readDialecticRecords();
     expect(records).toHaveLength(1);
     expect(records[0].aborted).toBe('empty-input');
   });

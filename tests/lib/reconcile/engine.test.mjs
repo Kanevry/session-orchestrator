@@ -13,7 +13,7 @@
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -1243,6 +1243,58 @@ describe('runReconcile — telemetry (orchestrator.reconcile.completed)', () => 
       expect(rec.reason).toContain('boom');
       expect(rec.reason.length).toBeLessThanOrEqual(300);
     } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // NAMED BUG (#1202 §8b): the abort `reason` was the raw error message clamped
+  // to 300 chars. An fs error embeds the absolute path it failed on, so the
+  // ledger (and the optional webhook) received the repo root and
+  // `/Users/<name>/…`, cut mid-path — sibling payloads never carry the root.
+  it('the abort reason carries <repo>/~ placeholders, never the absolute repo root or home dir', async () => {
+    const repoRoot = tmpRepo([]);
+    try {
+      const tail = 'nested/'.repeat(60);
+      await runReconcile(
+        { repoRoot, now: NOW, trigger: 'skill' },
+        {
+          loadLearnings: () => {
+            throw new Error(
+              `EACCES: permission denied, open '${homedir()}/.config/x' via '${repoRoot}/${tail}learnings.jsonl'`,
+            );
+          },
+        },
+      );
+      const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
+      expect(rec.reason).toMatch(/^EACCES: permission denied, open '~\/\.config\/x' via '<repo>\/nested\//);
+      expect(rec.reason).not.toContain(repoRoot);
+      expect(rec.reason).not.toContain(homedir());
+      expect(rec.reason).toHaveLength(300);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Bug: redacting home BEFORE the repo root turns a repo under $HOME — the
+  // normal layout — into `~/<name>/…` instead of `<repo>/…`. The test above
+  // cannot see the order: its repoRoot sits under tmpdir(), not under home.
+  // os.homedir() reads $HOME on POSIX, so HOME is pointed at the repo's parent.
+  it('redacts the repo root before home when the repo lives under $HOME', async () => {
+    const repoRoot = tmpRepo([]);
+    vi.stubEnv('HOME', dirname(repoRoot));
+    try {
+      await runReconcile(
+        { repoRoot, now: NOW, trigger: 'skill' },
+        {
+          loadLearnings: () => {
+            throw new Error(`EACCES: permission denied, open '${repoRoot}/nested/learnings.jsonl'`);
+          },
+        },
+      );
+      const rec = ledger(repoRoot).filter((r) => r.event === EVENT).at(-1);
+      expect(rec.reason).toBe("EACCES: permission denied, open '<repo>/nested/learnings.jsonl'");
+    } finally {
+      vi.unstubAllEnvs();
       rmSync(repoRoot, { recursive: true, force: true });
     }
   });

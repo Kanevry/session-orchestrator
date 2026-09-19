@@ -104,6 +104,7 @@
  * @property {string} [error]  - present only when the never-throws top-level guard fired.
  */
 
+import { homedir } from 'node:os';
 import { isAbsolute } from 'node:path';
 
 import { expandTilde } from '../common.mjs';
@@ -719,6 +720,35 @@ export function assertKnownTrigger(trigger) {
 /** Clamp for the `reason` string on the abort path — a message can be long. */
 const REASON_MAX_CHARS = 300;
 
+/**
+ * Replace the repo root and the home directory inside a free-text error message
+ * with the stable placeholders `<repo>` and `~`.
+ *
+ * An `fs` error message embeds the absolute path it failed on, so the abort
+ * `reason` otherwise carried `/Users/<name>/…` into the ledger and the optional
+ * webhook — sibling payloads never carry the absolute root (`docs/events-schema.md`).
+ * Runs BEFORE the clamp, so the 300 chars are spent on the tail, not on a prefix
+ * cut mid-path. The repo root goes first because it usually sits under home.
+ *
+ * Named ceiling (BV-004): only the two literal spellings are replaced. A path the
+ * OS reports in a different spelling — a symlink-resolved `/private/var/…` for a
+ * `/var/…` repo root — keeps its non-home prefix. REVISIT TRIGGER: a ledger
+ * `reason` carrying an absolute path outside both placeholders.
+ *
+ * @param {string} message
+ * @param {string|undefined} repoRoot
+ * @returns {string}
+ */
+function redactLocalPaths(message, repoRoot) {
+  let out = message;
+  // A relative or bare-`/` root would match arbitrary substrings — absolute only.
+  const root = typeof repoRoot === 'string' ? repoRoot.trim().replace(/\/+$/, '') : '';
+  if (root !== '' && isAbsolute(root)) out = out.split(root).join('<repo>');
+  const home = homedir().replace(/\/+$/, '');
+  if (home !== '' && isAbsolute(home)) out = out.split(home).join('~');
+  return out;
+}
+
 /** The closed target enum `resolveEffectiveTargets` recognises. */
 const KNOWN_TARGETS = ['repo-local', 'baseline'];
 
@@ -741,7 +771,7 @@ const KNOWN_TARGETS = ['repo-local', 'baseline'];
  * same boolean until 2027-03-13 (#1315).
  *
  * @param {ReconcileResult} result
- * @param {{ trigger?: string, targets?: string[], dryRun?: boolean, durationMs: number }} ctx
+ * @param {{ repoRoot?: string, trigger?: string, targets?: string[], dryRun?: boolean, durationMs: number }} ctx
  * @returns {Record<string, unknown>}
  */
 function buildReconcilePayload(result, ctx) {
@@ -782,7 +812,7 @@ function buildReconcilePayload(result, ctx) {
   if (typeof summary.skipped === 'number') payload.store_records_dropped = summary.skipped;
   if (typeof result?.error === 'string' && result.error !== '') {
     payload.aborted = 'engine-error';
-    payload.reason = result.error.slice(0, REASON_MAX_CHARS);
+    payload.reason = redactLocalPaths(result.error, ctx.repoRoot).slice(0, REASON_MAX_CHARS);
   }
   return payload;
 }

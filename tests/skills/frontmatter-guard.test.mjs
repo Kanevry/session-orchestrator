@@ -12,9 +12,14 @@
  *                          non-vault paths return false
  */
 
-import { describe, it, expect } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, it, expect, vi } from 'vitest';
 import {
   readVaultSchema,
+  resolveSchemaSourcePath,
   computeSchemaHash,
   generateFrontmatterSnippet,
   detectVaultTaskScope,
@@ -89,6 +94,51 @@ describe('readVaultSchema', () => {
     const result = readVaultSchema();
     if (result === null) return;
     expect(result.statusEnum.length).toBeGreaterThanOrEqual(5);
+  });
+
+  // NAMED BUG (#1298 / #1202 §2): `_extractEnum` split the raw `z.enum([...])`
+  // body on commas, so comment prose between the literals became enum values —
+  // 6 of 16 `statusEnum` entries against the real baseline schema, one fused
+  // onto `'maintenance'` — and `generateFrontmatterSnippet` rendered every one
+  // into agent prompts as an allowed `status`. Synthetic source in a tmp
+  // baseline via SO_BASELINE_PATH; never the operator's real checkout.
+  it('enum values are exactly the quoted literals — comments never become values', () => {
+    const base = mkdtempSync(join(tmpdir(), 'frontmatter-guard-schema-'));
+    const srcDir = join(base, 'packages', 'zod-schemas', 'src');
+    mkdirSync(srcDir, { recursive: true });
+    writeFileSync(
+      join(srcDir, 'vault-frontmatter.ts'),
+      [
+        'export const vaultNoteTypeSchema = z.enum([',
+        "  'note',",
+        "  'a//b', // a // inside a literal is data, not a comment",
+        ']);',
+        '',
+        'export const vaultNoteStatusSchema = z.enum([',
+        "  'draft',",
+        "  // Mirror of the registry values, don't drop one, or the gate fails.",
+        "  /* block, comment */ 'active',",
+        // The real baseline comment quotes values in backticks — a literal
+        // scan over UNMASKED text would read `paused` below as a value.
+        '  // a comment quoting `paused`, glued by the comma split onto the next literal',
+        "  'maintenance',",
+        "  'dead', // trailing, comment [x] after the last literal",
+        ']);',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    vi.stubEnv('SO_BASELINE_PATH', base);
+    try {
+      resolveSchemaSourcePath({ refresh: true });
+      const result = readVaultSchema();
+      expect(result.statusEnum).toEqual(['draft', 'active', 'maintenance', 'dead']);
+      expect(result.typeEnum).toEqual(['note', 'a//b']);
+    } finally {
+      vi.unstubAllEnvs();
+      resolveSchemaSourcePath({ refresh: true });
+      rmSync(base, { recursive: true, force: true });
+    }
   });
 });
 

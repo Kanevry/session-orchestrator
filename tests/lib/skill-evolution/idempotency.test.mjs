@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -164,7 +164,13 @@ describe('read-side shape guard (#955 finding 3)', () => {
   // unattributably — WITHOUT rejecting anything the real producer mints.
   it('keeps every candidate-intake record, drops and counts the foreign lines', () => {
     // N = 2 legitimate candidates, minted by the REAL producer path (one per feeder).
+    // The learning's target must resolve inside repoRoot (candidate intake is
+    // fail-closed on unresolvable targets), so the fixture file lives in tmpDir —
+    // never the live repo.
+    mkdirSync(join(tmpDir, 'scripts/lib'), { recursive: true });
+    writeFileSync(join(tmpDir, 'scripts/lib/foo.mjs'), '');
     const real = extractCandidates({
+      repoRoot: tmpDir,
       learnings: [
         {
           id: 'learn-1',

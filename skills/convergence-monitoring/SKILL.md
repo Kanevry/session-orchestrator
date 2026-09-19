@@ -32,9 +32,17 @@ For harness < 2.1.105 (no monitor support), the skill's manual probes documented
 
 ## When to Invoke
 
-**Explicit invocation (`/convergence-monitoring`):** Standalone assessment — reads wave
-history from `.orchestrator/metrics/events.jsonl`, computes all three signals, reports
-verdict + recovery options.
+This skill is `user-invocable: false` — there is no `/convergence-monitoring` slash
+command. It is reached two ways:
+
+**Platform-native monitor (primary path, CC 2.1.105+):** the background watcher below
+auto-starts on `wave-executor` invocation and streams verdicts as it tails
+`events.jsonl` — no explicit call needed.
+
+**Direct/model invocation (fallback, harness < 2.1.105, or a standalone assessment):**
+the model dispatches this skill by name — reads wave history from
+`.orchestrator/metrics/events.jsonl`, computes all three signals, reports verdict +
+recovery options.
 
 **Embedded (loop context):** `/autoresearch` and `wave-executor` invoke this skill after
 each Impl-Core or Impl-Polish wave when `convergence-monitoring: true` is set in Session
@@ -48,9 +56,10 @@ toward done or oscillating/stalling.
 
 ## Phase 0: Activation Gate
 
-### 0.1 Explicit Invocation
+### 0.1 Direct Invocation
 
-If invoked via `/convergence-monitoring`, skip to Phase 1 unconditionally.
+If invoked directly (not embedded from `wave-executor` or `/autoresearch`), skip to
+Phase 1 unconditionally.
 
 ### 0.2 Embedded Invocation
 

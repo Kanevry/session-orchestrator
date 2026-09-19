@@ -30,14 +30,20 @@
  *                           newest-across-all, not genuine-first" for why the
  *                           two kinds are maxed rather than ranked.
  *   - `cutoff`            = the CURRENT session's `session.lock`
- *                           `started_at` (via `readLock()`); when no lock is
- *                           readable, `cutoff = now` (all events count).
+ *                           `started_at` (via `readLock()`), pulled back to
+ *                           that lock id's FIRST `lock.acquired` event
+ *                           (`ownGenesisMs()`, a compact re-acquire rewrites
+ *                           `started_at`); when no lock is readable,
+ *                           `cutoff = now` (all events count).
  *   - `lastForeignEventAt`= the NEWEST `events.jsonl` line whose `timestamp`
  *                           is STRICTLY BEFORE `cutoff` — this structurally
  *                           excludes the current session's own events without
  *                           needing a `session_id` filter (most event lines
  *                           don't carry one; see the mission-log sample in
- *                           `.orchestrator/metrics/events.jsonl`).
+ *                           `.orchestrator/metrics/events.jsonl`). A previous
+ *                           session's own teardown events are skipped
+ *                           (`CLOSING_DIAGNOSTIC_EVENTS`): they postdate its
+ *                           ledger record by construction.
  *   - `deltaHours`        = (lastForeignEventAt − lastLedgerAt) / 1h, only
  *                           meaningful when > 0 (foreign activity happened
  *                           AFTER the last ledger entry).
@@ -152,6 +158,64 @@ export const WARN_THRESHOLD_HOURS = DEFAULT_TTL_HOURS * 2;
 
 /** alert threshold: a full day behind is a strong close-through signal. */
 export const ALERT_THRESHOLD_HOURS = 24;
+
+/**
+ * A session's own CLOSING diagnostics — events emitted at teardown, i.e. AFTER
+ * that session's `/close` has already written its ledger record. They measure
+ * when the process exited, not when work happened, so they are never "foreign
+ * activity": counting them turned every terminal left open after `/close` into
+ * a close-through warning (live 2026-09-19: a 9.6h warn whose only post-ledger
+ * events were one SessionEnd's `wave.final_refused`, `session.ended`,
+ * `session.backfill_completed` and `telemetry.flush`, while
+ * `backfill-abandoned-sessions.mjs --dry-run` found 0 sessions to backfill).
+ * Map value = the `emitted_by` an event must carry to be
+ * skipped; `null` = skipped from every emitter.
+ *
+ * Deliberately NOT listed, and still counted: `orchestrator.turn.stopped`, its
+ * deprecated alias `orchestrator.session.stopped`, `orchestrator.agent.stopped`
+ * and every other event. A process killed by OOM or `kill -9` never runs its
+ * SessionEnd hook but has left those behind — that is the close-through gap
+ * this probe exists to catch. Skipping teardown events loses nothing there:
+ * a session that exits WITHOUT `/close` still leaves its turn/agent events,
+ * and only the idle tail between its last turn and the exit goes uncounted.
+ */
+const CLOSING_DIAGNOSTIC_EVENTS = new Map([
+  // Only emitter: hooks/on-session-end.mjs — the SessionEnd breadcrumb itself.
+  ['orchestrator.session.ended', null],
+  // Only emitter: hooks/on-session-end.mjs — the outcome of the exit-time telemetry flush.
+  ['orchestrator.telemetry.flush', null],
+  // hooks/on-session-end.mjs + scripts/backfill-abandoned-sessions.mjs — a backfill run
+  // is only ever ABOUT an already-dead session, and writes that session's ledger stub itself.
+  ['orchestrator.session.backfill_completed', null],
+  // Lock-teardown breadcrumbs. Every emitter is a session teardown: hooks/on-session-end.mjs,
+  // scripts/lib/session-transition.mjs (#1069 process boundary), and
+  // scripts/lib/autopilot/worktree-pipeline.mjs (release_failed/released only).
+  ['orchestrator.session.lock.released', null],
+  ['orchestrator.session.lock.release_failed', null],
+  // Only emitter: hooks/on-session-end.mjs — reading the lock during teardown.
+  ['orchestrator.session.lock.read_anomaly', null],
+  // Wave lifecycle: hooks/post-tool-batch-wave-signal.mjs emits wave.completed MID-session
+  // (real activity, still counted); only the SessionEnd final-wave stamp is a closing
+  // diagnostic. final_refused has on-session-end as its sole emitter today, keyed the
+  // same way so a future mid-session emitter stays counted by default.
+  ['orchestrator.wave.completed', 'on-session-end'],
+  ['orchestrator.wave.final_refused', 'on-session-end'],
+]);
+
+/**
+ * True when an events.jsonl record is one of the session's own closing
+ * diagnostics (`CLOSING_DIAGNOSTIC_EVENTS`). An unknown or missing `event`
+ * counts as activity — the failure direction stays "warn", never "silence".
+ * Caller guarantees `record` is already a non-null object.
+ *
+ * @param {object} record
+ * @returns {boolean}
+ */
+function isClosingDiagnostic(record) {
+  if (typeof record.event !== 'string' || !CLOSING_DIAGNOSTIC_EVENTS.has(record.event)) return false;
+  const requiredEmitter = CLOSING_DIAGNOSTIC_EVENTS.get(record.event);
+  return requiredEmitter === null || record.emitted_by === requiredEmitter;
+}
 
 /**
  * Read a JSONL file's non-empty lines. Returns `null` when the file is
@@ -310,7 +374,23 @@ function lastLedgerEntry(records) {
  * current session's own events (all >= cutoff, since cutoff is this
  * session's lock `started_at`) are structurally excluded without needing a
  * `session_id` filter. Malformed lines and lines with a missing/invalid
- * `timestamp` are skipped.
+ * `timestamp` are skipped, and so is a previous session's own teardown output
+ * (`isClosingDiagnostic()`), which postdates that session's ledger record by
+ * construction.
+ *
+ * Known ceiling (BV-004) — post-close TURNS still count: a session that keeps
+ * talking after its `/close` wrote the ledger record emits
+ * `orchestrator.turn.stopped` (and the deprecated `orchestrator.session.stopped`)
+ * at the end of every further turn, so a post-close conversation spanning more
+ * than `WARN_THRESHOLD_HOURS` warns although that session IS recorded. Kept on
+ * purpose: those same events are the only trace an OOM-/`kill -9`-ended session
+ * leaves. Size (W1 census 2026-09-19 over this repo's events.jsonl(.1), not
+ * re-measured here): 4 of 10 resolvable firings were this class. Revisit trigger: the HR-105 firing-rate
+ * audit shows this class alone above ~10% of sessions that ran the probe
+ * (HR-101) — then skip a stop event whose `semantic_session_id` matches a
+ * GENUINE ledger record (that session is recorded, so its post-close turns are
+ * not a close-through gap), which needs `newestForeignEvent` to receive the
+ * canonical records.
  *
  * @param {string[]} lines
  * @param {number} cutoffMs
@@ -329,6 +409,7 @@ function newestForeignEvent(lines, cutoffMs) {
     const ms = Date.parse(record.timestamp);
     if (!Number.isFinite(ms)) continue;
     if (ms >= cutoffMs) continue; // not "foreign" — belongs to (or postdates) the current session
+    if (isClosingDiagnostic(record)) continue; // a previous session's teardown, not activity
     if (best === null || ms > best.ms) best = { iso: record.timestamp, ms };
   }
   return best;
@@ -351,18 +432,53 @@ function newestForeignEvent(lines, cutoffMs) {
  *
  * @param {string} repoRoot
  * @param {number} nowMs
- * @returns {number}
+ * @returns {{cutoffMs: number, ownSessionId: string|null}}
  */
-function resolveCutoffMs(repoRoot, nowMs) {
+function resolveCutoff(repoRoot, nowMs) {
   let lock;
   try {
     lock = readLock({ repoRoot });
   } catch {
-    return nowMs;
+    return { cutoffMs: nowMs, ownSessionId: null };
   }
-  if (!lock || typeof lock.started_at !== 'string') return nowMs;
-  const parsed = Date.parse(lock.started_at);
-  return Number.isFinite(parsed) ? parsed : nowMs;
+  if (!lock) return { cutoffMs: nowMs, ownSessionId: null };
+  const ownSessionId = typeof lock.session_id === 'string' && lock.session_id !== '' ? lock.session_id : null;
+  const parsed = typeof lock.started_at === 'string' ? Date.parse(lock.started_at) : NaN;
+  return { cutoffMs: Number.isFinite(parsed) ? parsed : nowMs, ownSessionId };
+}
+
+/**
+ * Pull the cutoff back to the FIRST `orchestrator.session.lock.acquired` event
+ * carrying the current lock's raw `session_id`. A re-acquire under the same id
+ * (the SessionStart hook on a context compact) rewrites `started_at`, which
+ * moved the cutoff past the session's own earlier events — and not all of them
+ * carry a `session_id` to filter on (`secret_masker.applied` does not).
+ * Measured 2026-09-19: a 2h15m session warned "11.9h behind" about itself on
+ * compact. Raw id only, never the semantic label (two sessions can mint the
+ * same label, #1066). Linear scan over events.jsonl — the same pass
+ * `newestForeignEvent()` already makes.
+ *
+ * @param {string[]} lines
+ * @param {string|null} ownSessionId
+ * @param {number} cutoffMs
+ * @returns {number}
+ */
+function ownGenesisMs(lines, ownSessionId, cutoffMs) {
+  if (ownSessionId === null) return cutoffMs;
+  let genesis = cutoffMs;
+  for (const line of lines) {
+    if (!line.includes(ownSessionId)) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.event !== 'orchestrator.session.lock.acquired' || record.session_id !== ownSessionId) continue;
+    const ms = Date.parse(record.timestamp);
+    if (Number.isFinite(ms) && ms < genesis) genesis = ms;
+  }
+  return genesis;
 }
 
 /**
@@ -412,9 +528,9 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
     const eventLines = readJsonlLines(path.join(repoRoot, EVENTS_PATH));
     if (eventLines === null || eventLines.length === 0) return null;
 
-    const cutoffMs = resolveCutoffMs(repoRoot, nowMs);
+    const { cutoffMs, ownSessionId } = resolveCutoff(repoRoot, nowMs);
 
-    const foreign = newestForeignEvent(eventLines, cutoffMs);
+    const foreign = newestForeignEvent(eventLines, ownGenesisMs(eventLines, ownSessionId, cutoffMs));
     if (foreign === null) return null;
 
     const deltaMs = foreign.ms - ledger.ms;

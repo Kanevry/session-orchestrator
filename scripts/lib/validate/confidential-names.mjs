@@ -177,6 +177,16 @@ export function inspectConfidentialNames({ namesPath, deps = {} } = {}) {
   // Unconfigured → no list, no noise. This is the normal case for public repos
   // and for any host that has not opted into confidential-name scanning.
   if (typeof namesPath !== 'string' || namesPath.trim() === '') {
+    // UNREACHABLE from the one production caller today (#1273 P1):
+    // `check-owner-leakage.mjs` resolves `namesPath` via `resolveHostPath()`
+    // and returns its own early `disabledReason` on an empty/non-string path
+    // BEFORE ever calling `inspectConfidentialNames` — so in production this
+    // branch never runs. It is reachable only for a direct caller (or a test)
+    // that skips that pre-filter. Kept regardless: `status` is part of the
+    // documented public contract every deep importer may switch on, and
+    // 'unconfigured' is the correct answer for exactly this input shape.
+    // REVISIT TRIGGER (BV-004): the production caller stops pre-filtering an
+    // empty/non-string `namesPath` before calling `inspectConfidentialNames`.
     return { status: 'unconfigured', names: [] };
   }
 

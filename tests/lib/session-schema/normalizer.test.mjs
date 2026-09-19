@@ -272,3 +272,25 @@ describe('normalizeSession — express_path canonical form', () => {
     expect('_express_path_detail' in out).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Per-wave aliases (#1390 P1)
+// ---------------------------------------------------------------------------
+
+describe('normalizeSession — per-wave agent-count aliases', () => {
+  // Bug: SESSION_KEY_ALIASES reached top-level keys only, so a wave written as
+  // `agents_completed` (main-2026-09-18-session-1, 5 waves) reached every
+  // consumer with `agent_count_completed === undefined`.
+  it('aliases agents_* onto agent_count_* per wave, never clobbering a canonical value or mutating the input', () => {
+    const input = {
+      session_id: 's',
+      waves: [{ wave: 1, role: 'Impl', agents_completed: 3, agents_started: 5, agents_planned: 4, agent_count_planned: 9 }],
+    };
+    const out = normalizeSession(input);
+    expect(out.waves[0].agent_count_completed).toBe(3);
+    expect(out.waves[0].agents_completed).toBe(3); // original preserved
+    expect(out.waves[0].agent_count_started).toBe(5); // 1 real record uses agents_started
+    expect(out.waves[0].agent_count_planned).toBe(9); // canonical wins
+    expect('agent_count_completed' in input.waves[0]).toBe(false); // caller's wave untouched
+  });
+});

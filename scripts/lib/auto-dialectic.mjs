@@ -30,7 +30,7 @@
  * separate helpers. No external deps — Node 20+ stdlib only.
  */
 
-import { readFile, writeFile, rename, unlink, mkdir, readdir, stat } from 'node:fs/promises';
+import { readFile, writeFile, rename, unlink, mkdir, readdir, stat, lstat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
@@ -409,8 +409,33 @@ export async function writeDialecticPending({
 }
 
 /**
+ * Archive file name for a consumed sidecar: `<ISO-stamp>-<8 hex>-dialectic-pending.md`.
+ * The stamp is `toISOString()` with `:` and `.` replaced by `-` — both are
+ * illegal or awkward on several filesystems, and the form still sorts
+ * lexicographically. The random suffix separates two consumes landing in the
+ * SAME millisecond — without it the second rename would overwrite the first
+ * archive silently.
+ *
+ * @returns {string}
+ */
+function archiveFileName() {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${stamp}-${randomUUID().slice(0, 8)}-dialectic-pending.md`;
+}
+
+/**
+ * Exactly the names {@link archiveFileName} produces. The prune touches nothing
+ * else in the directory (#1390 P6): a loose suffix match would still delete an
+ * unrelated `operator-dialectic-pending.md`.
+ */
+const ARCHIVE_NAME_RE =
+  /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}-dialectic-pending\.md$/;
+
+/**
  * Prune `.orchestrator/consumed/` to the newest `DIALECTIC_CONSUMED_RETENTION`
- * entries. Best-effort: every failure degrades to "pruned nothing" — an archive
+ * archives. Only regular files whose name matches {@link ARCHIVE_NAME_RE} are
+ * counted or removed — anything else in the directory is not this module's to
+ * delete. Best-effort: every failure degrades to "pruned nothing" — an archive
  * that grew one file too long is never worth failing a consume over.
  *
  * "Newest" is mtime DESC with the filename as tiebreaker: the archive names
@@ -424,7 +449,9 @@ async function pruneConsumedArchive(dir) {
   let removed = 0;
   try {
     const entries = await readdir(dir, { withFileTypes: true });
-    const files = entries.filter((e) => e.isFile()).map((e) => e.name);
+    const files = entries
+      .filter((e) => e.isFile() && ARCHIVE_NAME_RE.test(e.name))
+      .map((e) => e.name);
     if (files.length <= DIALECTIC_CONSUMED_RETENTION) return 0;
 
     const dated = [];
@@ -470,6 +497,18 @@ async function pruneConsumedArchive(dir) {
  * state. Any other filesystem error returns `{ok: false, error}` rather than
  * throwing, matching `writeDialecticLastRun`.
  *
+ * Symlink (#1390 P6, measured 2026-09-19): a pre-existing `.orchestrator/consumed`
+ * symlink used to be followed — `mkdir` was a no-op on it, `rename` moved the
+ * sidecar into its target, and the retention prune unlinked that target's
+ * regular files beyond the newest 10 (a tmp repro deleted 3 of 12). The consume
+ * now `lstat`s the directory first and REFUSES a symlink: it returns
+ * `{ok: false, error}`, moves nothing and prunes nothing, so the pending
+ * sidecar stays where it is for the caller to report. The prune additionally
+ * only ever removes names this module writes (see `ARCHIVE_NAME_RE`). Ceiling:
+ * the `lstat` → `rename` window is not atomic — a process swapping in a symlink
+ * inside it wins; revisit if the consumed directory ever becomes writable by a
+ * less-trusted uid than the operator's.
+ *
  * @param {object} args
  * @param {string} args.repoRoot
  * @returns {Promise<{ok:boolean, consumed?:boolean, error?:string, path?:string, archivedTo?:string, pruned?:number}>}
@@ -482,14 +521,22 @@ export async function consumeDialecticPending({ repoRoot } = {}) {
   if (!existsSync(target)) return { ok: true, consumed: false, path: target };
 
   const dir = consumedDirPath(repoRoot);
-  // Filesystem-safe stamp: `:` and `.` are illegal or awkward on several
-  // filesystems, and the ISO form still sorts lexicographically without them.
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  // The random suffix separates two consumes landing in the SAME millisecond —
-  // without it the second rename would overwrite the first archive silently.
-  const archivedTo = path.join(dir, `${stamp}-${randomUUID().slice(0, 8)}-dialectic-pending.md`);
+  const archivedTo = path.join(dir, archiveFileName());
 
   try {
+    let dirStat = null;
+    try {
+      dirStat = await lstat(dir);
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+    }
+    if (dirStat?.isSymbolicLink()) {
+      return {
+        ok: false,
+        path: target,
+        error: `consumeDialecticPending: ${DIALECTIC_CONSUMED_DIR} is a symlink — refusing to archive or prune through it`,
+      };
+    }
     await mkdir(dir, { recursive: true });
     await rename(target, archivedTo);
   } catch (err) {

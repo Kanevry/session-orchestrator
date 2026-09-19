@@ -54,6 +54,7 @@ import { detectColdStart, consumeMarker } from '../scripts/lib/cold-start-detect
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { readTelemetryState, resolveConsent, isCiEnv } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 // SSOT for the "is this a re-entry into the same logical session?" question
 // (#1091). Defined in the lock-bootstrap leaf module, which this hook already
 // loads, so the preservation branch below and the lock force-refresh gate can
@@ -453,8 +454,10 @@ async function resolveSessionId(input, projectRoot) {
     // observe. A naive full overwrite of current-session.json drops the
     // `last_wave` / `last_batch` markers written mid-session by
     // post-tool-batch-wave-signal.mjs, which makes the next PostToolBatch
-    // re-read last_wave as absent→0 and re-emit a duplicate
-    // orchestrator.wave.started{N} with no intervening wave.completed.
+    // re-read last_wave as absent→0 and RE-OPEN wave N mid-wave, re-stamping
+    // wave_start_sha and so moving the #980 files_changed start point. (Until
+    // 2026-09-19 it also re-emitted a duplicate wave.started{N}; that event
+    // has since been removed.)
     //
     // Three cases, exactly one of which preserves nothing:
     //   'raw-id'   — same-logical-session source AND the recorded raw
@@ -1256,7 +1259,15 @@ async function main() {
 // flushBanner() runs here too so a throw partway through main() still surfaces
 // whatever was already collected; it is idempotent, so the normal path (which
 // flushes at the end of main) does not double-emit.
-main().catch(() => {}).finally(() => {
-  flushBanner();
-  process.exit(0);
-});
+//
+// Entry guard (#1298 P7): every harness execs this file as the node script
+// (`sh run-node.sh <this file>` → `exec node "$@"`), so argv[1] IS this module
+// on every real path. A bare `import()` — a probe, a test, a curious agent —
+// must not run main() against the live repo: incident W4-FX1 overwrote
+// `.orchestrator/current-session.json` exactly that way.
+if (isMainModule(import.meta.url)) {
+  main().catch(() => {}).finally(() => {
+    flushBanner();
+    process.exit(0);
+  });
+}

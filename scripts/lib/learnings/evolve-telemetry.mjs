@@ -11,13 +11,17 @@
  * a CODE call site instead: `emitEvolveCompleted()` is invoked from
  * `scripts/sweep-expired-learnings.mjs`'s `--prune` exit path (the ONE store
  * write `/evolve analyze` already performs), and `recordDialecticRun()` is
- * invoked from `scripts/dialectic-deriver.mjs::runDialecticDeriver()` for the
- * three abort statuses it can determine on its own, plus dry-run success —
- * see that module's header for why APPLY-mode success and the two
- * throw-based abort classes (`unknown-model`, `subagent-crash`) still call
- * `recordDialecticRun()` from `skills/evolve/SKILL.md` prose (the merge and
- * the dispatch-agent try/catch both happen one layer up, outside this pure
- * pipeline).
+ * invoked from `scripts/dialectic-deriver.mjs::runDialecticDeriver()` for
+ * every outcome that pipeline can determine on its own: the `ok`/abort
+ * returns (`empty-input`, `budget-exceeded`, `would-empty-card`, dry-run
+ * success) AND the two throw-based abort classes (`unknown-model`,
+ * `subagent-crash`), the latter via that module's `recordThrownAbort()`
+ * helper which records at the throw point before the original error is
+ * rethrown. Only APPLY-mode success still calls `recordDialecticRun()` from
+ * `skills/evolve/SKILL.md` prose (Step 6.4 of
+ * `skills/evolve/references/evolve-dialectic-mode.md`) — the merge
+ * (`mergePeerCard()`) happens one layer up, outside this pure pipeline, so the
+ * real merge-stats deltas are not knowable inside `runDialecticDeriver()`.
  *
  * Both emitters are best-effort and try/catch-wrapped — same posture as
  * `emitReconcileCompleted` in `scripts/lib/reconcile/engine.mjs` — because

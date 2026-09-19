@@ -53,6 +53,11 @@ Thumbs.db
 
 # Per-project session metrics (local-only observability data)
 .orchestrator/metrics/*.jsonl
+# Size-based rotation backups (scripts/lib/events-rotation.mjs maybeRotate()):
+# events.jsonl -> .1 -> .2 -> ... -> .maxBackups (integer 1..20). `*.jsonl`
+# above only matches a name ENDING in `.jsonl`, so a rotated `events.jsonl.1`
+# was untracked but NOT ignored until this line.
+.orchestrator/metrics/*.jsonl.[0-9]*
 .orchestrator/metrics/*.jsonl.bak-*
 .orchestrator/metrics/*.jsonl.bak.*
 .orchestrator/metrics/*.jsonl.archive-*

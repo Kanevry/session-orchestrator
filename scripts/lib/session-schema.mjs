@@ -59,7 +59,7 @@
  *                                   SESSION_KEY_ALIASES, VALID_SESSION_TYPES,
  *                                   REQUIRED_FIELDS, AGENT_SUMMARY_FIELDS
  *   session-schema/validator.mjs  — ValidationError, validateSession
- *   session-schema/normalizer.mjs — normalizeSession
+ *   session-schema/normalizer.mjs — normalizeSession, normalizeWaveKeys
  *   session-schema/timestamps.mjs — clampTimestampsMonotonic
  *   session-schema/aliases.mjs    — aliasLegacyEndedAt
  */
@@ -67,7 +67,12 @@
 export { CURRENT_SESSION_SCHEMA_VERSION, SESSION_KEY_ALIASES } from './session-schema/constants.mjs';
 export { ValidationError, validateSession } from './session-schema/validator.mjs';
 export { serializeSessionLineChecked } from './session-schema/serializer.mjs';
-export { normalizeSession } from './session-schema/normalizer.mjs';
+export { normalizeSession, normalizeWaveKeys } from './session-schema/normalizer.mjs';
 export { clampTimestampsMonotonic } from './session-schema/timestamps.mjs';
 export { aliasLegacyEndedAt } from './session-schema/aliases.mjs';
-export { isRealSession, filterRealSessions, tailRealSessions } from './session-schema/filters.mjs';
+export {
+  isRealSession,
+  filterRealSessions,
+  tailRealSessions,
+  isCoordinatorDirectHousekeeping,
+} from './session-schema/filters.mjs';

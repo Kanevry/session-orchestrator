@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-18T18:53:21.845Z",
-  "head": "20a4cbffc5fda699696c8048d2ec2a3ca2e5ddab",
+  "generated_at": "2026-09-19T06:56:53.305Z",
+  "head": "8f6ac02277d889413bed283f9ab6c747f841ac03",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1004,6 +1004,7 @@
         "enforce-scope.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
+        "on-stop.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]

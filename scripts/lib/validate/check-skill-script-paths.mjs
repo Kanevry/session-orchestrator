@@ -170,8 +170,35 @@ export const MD_EXTENSIONS = Object.freeze(['.md', '.mdc']);
  * `hooks/**.sh`. `hooks/**.mjs` is deliberately NOT part of this grammar —
  * the `.mjs` half of the citation surface stays exactly `scripts/`, matching
  * every existing annotation and fence-skip test unchanged.
+ *
+ * Ceiling (BV-004, #1390 P2): the match is UNANCHORED on the left, so a path
+ * NESTED under another directory is read from its `scripts/` / `hooks/`
+ * segment onward. `templates/shared/hooks/check-csp-single-source.sh` is judged
+ * as `hooks/check-csp-single-source.sh` — a path nobody cited. That cuts both
+ * ways: a finding names the truncated tail (fail-closed noise), and a nested
+ * path whose tail HAPPENS to exist at the repo root passes although the cited
+ * file is missing (fail-open).
+ *
+ * A lookbehind cannot tell the two readings apart, because the character
+ * before the tail is `/` in both: `templates/shared/hooks/…` is a real
+ * subdirectory, while `$PLUGIN_ROOT/scripts/…`, `${CLAUDE_PLUGIN_ROOT}/…`,
+ * `../../scripts/…` and `…/blob/main/hooks/…` all resolve to the plugin root,
+ * so their tail IS the right repo-rooted path. Only the prefix token's meaning
+ * differs, and the regex cannot evaluate a variable. Measured 2026-09-19 @
+ * 8f6ac022 (prose lines of every SCAN_DIRS file, fences skipped — `forEachLine`
+ * + this regex, the character before each hit): 1505 hits in 351 files, 42
+ * preceded by `/` — 16 variable-rooted, 21 relative, 5 literal, and of those
+ * five exactly ONE is a genuine nested directory (the CSP hook above, in
+ * `rules/opt-in-stack/security-web.md`). A `(?<![\w./}-])` guard would drop 37
+ * correctly-judged citations to fix one.
+ *
+ * Escape hatch until then: the nested citation carries
+ * `<!-- path-check: example -->` (or `planned #<iid>`), which the one live
+ * occurrence already does. Revisit when a second real nested-path citation
+ * appears that the annotation cannot reasonably cover — then the grammar needs
+ * a list of known plugin-root prefixes, not a lookbehind.
  */
-const CITATION_RE = /scripts\/[a-zA-Z0-9_/-]*\.(?:mjs|sh)|hooks\/[a-zA-Z0-9_/-]*\.sh/g;
+const CITATION_RE =/scripts\/[a-zA-Z0-9_/-]*\.(?:mjs|sh)|hooks\/[a-zA-Z0-9_/-]*\.sh/g;
 
 /**
  * A complete inline-code span, including spans delimited by multiple backticks.

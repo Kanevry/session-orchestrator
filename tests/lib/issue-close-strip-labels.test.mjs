@@ -11,7 +11,11 @@
  *     in the module under test route through the configured mock.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { chmodSync, writeFileSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Mock node:child_process BEFORE importing the module under test.
@@ -27,7 +31,12 @@ vi.mock('node:child_process', () => ({
 }));
 
 const { execFileSync } = await import('node:child_process');
-const { stripStatusLabels: stripStatusLabelsReal } = await import('@lib/issue-close-strip-labels.mjs');
+// The CLI suite needs a REAL child process; the module-level mock above only
+// replaces execFileSync, so the unmocked spawnSync comes from importActual.
+const { spawnSync: realSpawnSync } = await vi.importActual('node:child_process');
+const { stripStatusLabels: stripStatusLabelsReal, closeIssues } = await import(
+  '@lib/issue-close-strip-labels.mjs'
+);
 
 // ---------------------------------------------------------------------------
 // #839 host-pinning shim
@@ -400,5 +409,166 @@ describe('stripStatusLabels — #839 graceful degradation (no remote resolves)',
       expect(args).not.toContain('-R');
       expect(args).not.toContain('--repo');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// closeIssues — the session-end Phase 5 CLI path
+//
+// Bug this pins: the close step reports success while the issue stays open.
+// `glab issue close` can exit 0 against a wrong project or a silent 404 and
+// close nothing, so only a re-read of the issue after the close may set
+// `closed: true`. The mock models that platform: `close` on #1387 exits 0 but
+// never changes its state.
+// ---------------------------------------------------------------------------
+
+describe('closeIssues — strip → close → verify', () => {
+  it('runs strip, close, verify in that order and reports closed:false when the re-read still says opened', async () => {
+    const spec = 'example-group/example-project';
+    const labels = { 1388: ['status:in-progress', 'priority::low'], 1387: ['type:chore'] };
+    const closedOnPlatform = new Set();
+    const calls = [];
+    const execFile = vi.fn((cmd, args) => {
+      calls.push(`${cmd} ${args.join(' ')}`);
+      const [, verb, id] = args;
+      if (verb === 'view') {
+        const state = closedOnPlatform.has(id) ? 'closed' : 'opened';
+        return JSON.stringify({ iid: Number(id), labels: labels[id], state });
+      }
+      if (verb === 'close' && id === '1388') closedOnPlatform.add(id);
+      return ''; // update and close both exit 0
+    });
+
+    const results = await closeIssues({ ids: [1388, '#1387'], vcs: 'gitlab', repo: spec, execFile });
+
+    expect(results).toEqual([
+      { id: '1388', stripped: ['status:in-progress'], closed: true, state: 'closed' },
+      {
+        id: '1387',
+        stripped: [],
+        closed: false,
+        state: 'opened',
+        error: 'verify: issue state is opened, not closed',
+      },
+    ]);
+    expect(calls).toEqual([
+      `glab issue view 1388 --output json -R ${spec}`,
+      `glab issue update 1388 --unlabel status:in-progress -R ${spec}`,
+      `glab issue close 1388 -R ${spec}`,
+      `glab issue view 1388 --output json -R ${spec}`,
+      `glab issue view 1387 --output json -R ${spec}`,
+      `glab issue close 1387 -R ${spec}`,
+      `glab issue view 1387 --output json -R ${spec}`,
+    ]);
+    // Every call went through the injected executor, never the module default.
+    expect(execFileSync).not.toHaveBeenCalled();
+  });
+
+  // gh reports the state UPPER-case; a case-sensitive compare turns every
+  // GitHub close into `closed: false` and the CLI into exit 1.
+  it('reports closed:true on github when the re-read says CLOSED, reading only the requested --json field', async () => {
+    const spec = 'example-org/example-repo';
+    const closedOnPlatform = new Set();
+    const calls = [];
+    const execFile = vi.fn((cmd, args) => {
+      calls.push(`${cmd} ${args.join(' ')}`);
+      const [, verb, id, , fields] = args;
+      if (verb === 'view' && fields === 'labels') {
+        return JSON.stringify({ labels: [{ name: 'status:ready' }, { name: 'priority:low' }] });
+      }
+      if (verb === 'view' && fields === 'state') {
+        return JSON.stringify({ state: closedOnPlatform.has(id) ? 'CLOSED' : 'OPEN' });
+      }
+      if (verb === 'close') closedOnPlatform.add(id);
+      return '';
+    });
+
+    const results = await closeIssues({ ids: [5], vcs: 'github', repo: spec, execFile });
+
+    expect(results).toEqual([{ id: '5', stripped: ['status:ready'], closed: true, state: 'CLOSED' }]);
+    expect(calls).toEqual([
+      `gh issue view 5 --json labels -R ${spec}`,
+      `gh issue edit 5 --remove-label status:ready -R ${spec}`,
+      `gh issue close 5 -R ${spec}`,
+      `gh issue view 5 --json state -R ${spec}`,
+    ]);
+  });
+
+  // A value starting with `-` would reach glab/gh as a FLAG, and a comma list
+  // would be read as one id; neither may cause a single CLI call.
+  it('rejects a non-numeric id without any CLI call', async () => {
+    const execFile = vi.fn(() => '');
+
+    const results = await closeIssues({
+      ids: ['-R', '1388,1387'],
+      vcs: 'gitlab',
+      repo: 'example-group/example-project',
+      execFile,
+    });
+
+    expect(results).toEqual([
+      { id: '-R', stripped: [], closed: false, state: null, error: 'invalid issue id' },
+      { id: '1388,1387', stripped: [], closed: false, state: null, error: 'invalid issue id' },
+    ]);
+    expect(execFile).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CLI — the exit code is what session-end Phase 5 reads. A real `node` child
+// runs the module's own main(); `glab` is a fake on PATH that reports the
+// state from FAKE_GLAB_STATE, so no real GitLab call can happen.
+// ---------------------------------------------------------------------------
+
+describe('issue-close-strip-labels CLI (--close)', () => {
+  const SCRIPT = fileURLToPath(new URL('../../scripts/lib/issue-close-strip-labels.mjs', import.meta.url));
+  let binDir;
+
+  beforeAll(() => {
+    binDir = makeTmpDir('so-issue-close-cli-');
+    writeFileSync(
+      join(binDir, 'glab'),
+      [
+        '#!/bin/sh',
+        'if [ "$2" = "view" ]; then',
+        '  printf \'{"iid":%s,"labels":[],"state":"%s"}\' "$3" "$FAKE_GLAB_STATE"',
+        'fi',
+        'exit 0',
+        '',
+      ].join('\n'),
+    );
+    chmodSync(join(binDir, 'glab'), 0o755);
+  });
+
+  afterAll(() => {
+    removeTree(binDir);
+  });
+
+  it.each([
+    [
+      'opened',
+      1,
+      {
+        id: '7',
+        stripped: [],
+        closed: false,
+        state: 'opened',
+        error: 'verify: issue state is opened, not closed',
+      },
+    ],
+    ['closed', 0, { id: '7', stripped: [], closed: true, state: 'closed' }],
+  ])('exits by the re-read state: %s → %i', (state, expectedExit, expectedLine) => {
+    const res = realSpawnSync(
+      process.execPath,
+      [SCRIPT, '--close', '--vcs', 'gitlab', '-R', 'example-group/example-project', '7'],
+      {
+        encoding: 'utf8',
+        env: { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}`, FAKE_GLAB_STATE: state },
+        timeout: 8000,
+      },
+    );
+
+    expect(JSON.parse(res.stdout)).toEqual(expectedLine);
+    expect(res.status).toBe(expectedExit);
   });
 });

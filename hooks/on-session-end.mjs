@@ -47,6 +47,7 @@ import {
   OWNER_PROOF_RELPATH,
 } from '../scripts/lib/session-lock.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { deregisterSelf, logSweepEvent } from '../scripts/lib/session-registry.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { flush } from '../scripts/lib/telemetry/sync.mjs';
@@ -830,6 +831,11 @@ async function main() {
 }
 
 // Exit 0 always — informational hook must never block session teardown.
-main()
-  .catch(() => {})
-  .finally(() => process.exit(0));
+// Entry guard (#1298 P7): run only as the node script every harness execs
+// (`sh run-node.sh <this file>`); a bare `import()` must not tear down the
+// live repo's session state.
+if (isMainModule(import.meta.url)) {
+  main()
+    .catch(() => {})
+    .finally(() => process.exit(0));
+}

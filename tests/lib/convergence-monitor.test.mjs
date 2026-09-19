@@ -21,9 +21,9 @@
  */
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import { classify, _evaluateSignals } from '@lib/convergence-monitor.mjs';
 
@@ -64,13 +64,15 @@ describe('convergence-monitor classify — event-type gate (#966)', () => {
       null,
     ],
     ['untyped record with wave_number', { wave_number: 9 }, null],
+    // Carries no measurement, and a started{N+1} sharing a tail tick with
+    // completed{N} masked the (N-1, N) pair — see the same-tick test below.
+    ['wave.started (no measurement)', { event: 'orchestrator.wave.started', wave: 1 }, null],
     // --- accepted: the records this monitor exists to compare ---
     [
       'wave.completed carrying files_changed',
       { event: 'orchestrator.wave.completed', wave_number: 3, files_changed: 7 },
       3,
     ],
-    ['wave.started', { event: 'orchestrator.wave.started', wave: 1 }, 1],
     ['agent.dispatched', { event_type: 'agent.dispatched', wave_number: 2 }, 2],
     [
       'agent.stopped carrying wave AND an agent name',
@@ -295,4 +297,58 @@ describe('convergence-monitor — signal firing on the folded measurements (#980
     expect(drop).toBeDefined();
     expect(drop.details).toEqual({ wave: 2, previousAgents: 6, currentAgents: 2, delta: -4 });
   });
+});
+
+describe('convergence-monitor — tail tick evaluation (live binary)', () => {
+  it('fires shrinking_diff when completed{N} shares its tail tick with started{N+1}', () => {
+    // The bug (architect-reviewer, 2026-09-19): the batch hook wrote completed{N}
+    // and started{N+1} in the same millisecond — all three wave transitions of
+    // session main-2026-09-19-session-1 did (06:40:05.562/.562, 06:52:15.620/.620,
+    // 07:05:50.302/.304) — so both always landed in ONE tail tick. The tick
+    // evaluates only its highest wave, and started{N+1}, admitted by the old
+    // `orchestrator.wave.` prefix although it carries no measurement, made that
+    // wave N+1 with an empty summary: the (N-1, N) pair was never compared and
+    // 40 -> 10 files emitted nothing. Hermetic: CLAUDE_PLUGIN_ROOT is a tmpdir.
+    // Falsification: re-admit `orchestrator.wave.started` in isWaveScopedEvent
+    // and no shrinking_diff line arrives before the deadline.
+    const repo = mkdtempSync(join(tmpdir(), 'cm-tick-'));
+    const eventsPath = join(repo, '.orchestrator', 'metrics', 'events.jsonl');
+    mkdirSync(dirname(eventsPath), { recursive: true });
+    writeFileSync(eventsPath, '');
+    const records = [
+      { event: 'orchestrator.wave.completed', wave_number: 1, files_changed: 40, files_changed_source: 'worktree-vs-wave-start-sha' },
+      { event: 'orchestrator.wave.started', wave_number: 2 },
+      { event: 'orchestrator.wave.completed', wave_number: 2, files_changed: 10, files_changed_source: 'worktree-vs-wave-start-sha' },
+      { event: 'orchestrator.wave.started', wave_number: 3 },
+    ].map((r) => `${JSON.stringify({ timestamp: '2026-09-19T06:40:05.562Z', ...r })}\n`).join('');
+
+    const child = spawn(
+      process.execPath,
+      [join(import.meta.dirname, '../../scripts/lib/convergence-monitor.mjs'), '--tail', '--interval=0.1'],
+      { env: { ...process.env, CLAUDE_PLUGIN_ROOT: repo }, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    const signals = [];
+    return new Promise((resolve) => {
+      const deadline = setTimeout(resolve, 4000);
+      let buf = '';
+      child.stdout.on('data', (chunk) => {
+        buf += chunk;
+        for (let nl = buf.indexOf('\n'); nl !== -1; nl = buf.indexOf('\n')) {
+          const rec = JSON.parse(buf.slice(0, nl));
+          buf = buf.slice(nl + 1);
+          // ONE append after startup, so every record lands in the same tick.
+          if (rec.event === 'tail.started') appendFileSync(eventsPath, records);
+          if (rec.event === 'shrinking_diff') {
+            signals.push(rec.details);
+            clearTimeout(deadline);
+            resolve();
+          }
+        }
+      });
+    })
+      .then(() => {
+        expect(signals).toEqual([{ wave: 2, previousFilesChanged: 40, currentFilesChanged: 10, delta: -30 }]);
+      })
+      .finally(() => { child.kill('SIGKILL'); });
+  }, 15_000);
 });
