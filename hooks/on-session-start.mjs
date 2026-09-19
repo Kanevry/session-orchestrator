@@ -1233,6 +1233,14 @@ async function main() {
   // Size-based rotation of events.jsonl (#251). Session-start is the single
   // rotation trigger — per-append overhead is rejected design. Any failure
   // is swallowed: rotation must NEVER block the hook.
+  //
+  // #1401 — the DURABLE record of a rotation is no longer this block. Until
+  // 2026-09-19 the only evidence a rotation had happened was the `console.error`
+  // below, and this hook's stderr is discarded by the harness: a rotation and a
+  // DELETED archive were byte-identical from outside. `maybeRotate()` now writes
+  // an `orchestrator.events.rotated` record as the first line of the new active
+  // file, so the ledger carries its own break whatever happens to this stderr
+  // line. The line stays as an operator convenience only — never as the record.
   try {
     let rotCfg = { enabled: true, 'max-size-mb': 10, 'max-backups': 5 };
     try {
@@ -1248,7 +1256,13 @@ async function main() {
       enabled: rotCfg.enabled !== false,
     });
     if (result.rotated) {
-      console.error(`events-rotation: archived ${result.archivedAs} (${result.sizeBefore} bytes)`);
+      const pruned = result.pruned?.length ? `, pruned ${result.pruned.length}` : '';
+      const ledger = result.recordWritten ? '' : ' [WARN: rotation record NOT written]';
+      console.error(
+        `events-rotation: archived ${result.archivedAs} ` +
+          `(${result.sizeBefore} bytes, ${result.lines ?? '?'} lines, ` +
+          `${result.firstTs ?? 'unknown'} → ${result.lastTs ?? 'unknown'}${pruned})${ledger}`,
+      );
     }
   } catch (err) {
     console.error(`events-rotation: skipped (${err?.message ?? err})`);

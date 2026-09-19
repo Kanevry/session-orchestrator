@@ -1674,3 +1674,79 @@ describe('#1388 readTranscriptTail bounded tail window', () => {
     await expect(readTranscriptTail(join(box, 'does-not-exist.jsonl'))).resolves.toBe('');
   });
 });
+
+describe('#1385 R1 claim-mismatch reaches the ledger', () => {
+  /**
+   * Write a subagent transcript that mixes the agent's REPORT (assistant text)
+   * with the RUN it actually made (a Bash `tool_use` plus its `tool_result`).
+   * The module tests cover the matcher; this one exists because the two halves
+   * are read by two DIFFERENT readers in the hook, and a wiring that reads
+   * only the report half produces zero findings while looking healthy.
+   */
+  function writeMixedTranscript({ command, output, report }) {
+    const records = [
+      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'tu1', name: 'Bash', input: { command } }] } },
+      // Golden-record shape: `content` is a plain string on real Bash results
+      // (measured 2026-09-19 on this host's own sidecars).
+      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'tu1', is_error: false, content: output }] } },
+      { type: 'assistant', message: { content: [{ type: 'text', text: report }] } },
+    ];
+    const dir = join(tmp, SUBAGENTS_REL);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, `agent-${AGENT_ID}.jsonl`),
+      records.map((r) => JSON.stringify(r)).join('\n') + '\n',
+      'utf8'
+    );
+    return join(tmp, TRANSCRIPT_REL);
+  }
+
+  it('records kind/mismatch/claimed/observed for an invented test count — and no raw command', () => {
+    // bug_caught: THE INVERSION. `RUN_RECEIPT_RE` is report-wide and matches
+    // `\d+ passed`, so before R1 this exact report produced ZERO findings —
+    // the invented 5129 was accepted as its own run receipt, while an honest
+    // "alles grün" with no number was flagged twice. Measured 2026-09-19.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeMixedTranscript({
+      command: 'npx vitest run tests/ > /tmp/run.log 2>&1; tail -5 /tmp/run.log',
+      output: ' Test Files  611 passed | 1 failed (612)\n      Tests  2 failed | 5127 passed (5129)\n',
+      report: 'Tests pass: 5129 passed / 0 failed.',
+    });
+
+    const res = runHook(stopPayload(transcript));
+
+    expect(res.status).toBe(0);
+    const hits = readEvents().filter((e) => e.kind === 'claim-mismatch');
+    expect(hits).toHaveLength(1);
+    expect(hits[0].mismatch).toBe('count');
+    expect(hits[0].claimed).toEqual({ passed: 5129, failed: 0 });
+    expect(hits[0].observed).toEqual([{ passed: 5127, failed: 2, total: 5129 }]);
+    expect(hits[0].observed_n).toBe(1);
+    // No raw command text in the record — precedent 8f15f77b (`command_hash`
+    // instead of the raw command). A command line carries paths, flags and
+    // occasionally a host-local directory; the finding needs none of them.
+    expect(JSON.stringify(hits[0])).not.toContain('vitest run');
+    expect(JSON.stringify(hits[0])).not.toContain('/tmp/run.log');
+    // The correction this class asks for is named in the WARN, because it is
+    // not the one the other two ask for.
+    expect(res.stderr).toContain('COUNT MISMATCH');
+    expect(res.stderr).toContain('claimed 5129 passed, observed 5127 passed');
+  });
+
+  it('stays silent when the report quotes the count the run actually produced', () => {
+    // bug_caught: the expensive direction. This hook fires on every
+    // SubagentStop; a class that flags honest reports is switched off, and
+    // then the inversion above is back with extra steps.
+    writeClaudeMd(CLAUDE_MD_ENABLED);
+    const transcript = writeMixedTranscript({
+      command: 'npm test',
+      output: '      Tests  5127 passed | 2 failed (5129)\n',
+      report: 'Tests: 5127 passed / 2 failed — two pre-existing failures, unrelated to this diff.',
+    });
+
+    const res = runHook(stopPayload(transcript));
+
+    expect(res.status).toBe(0);
+    expect(readEvents().filter((e) => e.kind === 'claim-mismatch')).toEqual([]);
+  });
+});

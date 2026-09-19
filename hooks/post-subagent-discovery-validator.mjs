@@ -22,12 +22,24 @@
  *      `findViolations()` — the whole matcher (claim patterns, negative-context
  *      guards, evidence proximity, normalisation, dedup) lives there so it can
  *      be measured against a claim corpus without spawning this hook. It
- *      returns DEDUPLICATED `{claim, normalized, occurrences, kind}` records in
- *      TWO classes: `distributional` (#567/#908 — "4 of 4 callers") and
- *      `gate-verdict` (w4-1 — "STATUS: done" / "alles grün" with no run
- *      receipt anywhere in the report). `kind` reaches both the ledger record
- *      and the WARN; its ABSENCE on a record means `distributional`, since no
- *      pre-w4-1 record could be anything else.
+ *      returns DEDUPLICATED `{claim, normalized, occurrences, kind, detail?}`
+ *      records in THREE classes: `distributional` (#567/#908 — "4 of 4
+ *      callers"), `gate-verdict` (w4-1 — "STATUS: done" / "alles grün" with
+ *      no run receipt anywhere in the report), and `claim-mismatch` (#1385 R1
+ *      — a claimed test count that NO observed vitest run carries). `kind`
+ *      reaches both the ledger record and the WARN; its ABSENCE on a record
+ *      means `distributional`, since no pre-w4-1 record could be anything
+ *      else.
+ *   5b. The `claim-mismatch` class needs the OTHER side of the transcript, so
+ *      `readTranscriptObservations()` reads the vitest summaries out of the
+ *      `tool_result` blocks in the same window and passes them in. It closes
+ *      an INVERSION: `RUN_RECEIPT_RE` is report-wide and matches
+ *      `\d+\s+passed`, so before R1 an INVENTED number was its own receipt
+ *      while an honest report with no number was flagged (measured
+ *      2026-09-19: `'STATUS: done\nTests pass: 5129 passed / 0 failed.'` → no
+ *      violation; `'STATUS: done\nAlles grün.'` → two). No observations in
+ *      the window ⇒ no `claim-mismatch` finding: evidence ABSENCE is
+ *      `gate-verdict`'s job.
  *   6. Attribute the claim: `agent` + `agent_source` (`payload`|`meta`|`none`)
  *      + `agent_description`, and — on `none` — the sorted stdin `payload_keys`
  *      the harness DID send, so a gap is diagnosable from the ledger.
@@ -76,7 +88,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
-import { findViolations, readTranscriptTail } from './_lib/subagent-transcript.mjs';
+import {
+  findViolations,
+  readTranscriptObservations,
+  readTranscriptTail,
+} from './_lib/subagent-transcript.mjs';
 import { appendJsonl } from '../scripts/lib/common.mjs';
 import { eventsFilePath } from '../scripts/lib/events.mjs';
 import { getProjectDir } from '../scripts/lib/platform.mjs';
@@ -398,7 +414,11 @@ async function main() {
   if (sidecar === null) return;
 
   const text = await readTranscriptTail(sidecar.transcript);
-  const { violations, undatedVerified } = findViolations(text);
+  // The `tool_result` side of the SAME window (#1385 R1) — what the agent
+  // actually RAN, against which its claimed test counts are compared. An
+  // empty list disables the `claim-mismatch` class; it never creates one.
+  const observations = await readTranscriptObservations(sidecar.transcript);
+  const { violations, undatedVerified } = findViolations(text, { observations });
   if (violations.length === 0) return;
 
   const attribution = await resolveAgentAttribution(input, sidecar.meta);
@@ -448,7 +468,15 @@ async function main() {
       }
       if (seen) continue;
     }
-    await appendJsonl(filePath, {
+    // AWAITED **and** CAUGHT. A telemetry write added to a guard silently
+    // disarms it unless both hold: without the await the process can exit
+    // before the append lands, and without the catch one failed write aborts
+    // the remaining violations AND the stderr WARN below — the coordinator's
+    // only copy of the finding. This hook never denies, so the failure is a
+    // lost finding rather than a lost block; it is still a loss, and a full
+    // disk must not be able to silence the scanner.
+    try {
+      await appendJsonl(filePath, {
       event: 'discovery_validator_violation',
       timestamp: new Date().toISOString(),
       agent,
@@ -462,15 +490,25 @@ async function main() {
       ...(sessionId !== null ? { session_id: sessionId } : {}),
       claim_text: violation.claim,
       occurrences: violation.occurrences,
-      // Claim CLASS (w4-1): `distributional` (the #567/#908 patterns) or
-      // `gate-verdict` (a done/green assertion with no run receipt). A new
-      // field rather than an overloaded old one — a ledger reader triaging
-      // 3,000 records must be able to separate the two without re-parsing
-      // `claim_text`, and every pre-w4-1 record is `distributional` by
-      // construction (the field's absence means exactly that).
+      // Claim CLASS (w4-1, #1385 R1): `distributional` (the #567/#908
+      // patterns), `gate-verdict` (a done/green assertion with no run
+      // receipt), or `claim-mismatch` (a test count no observed run carries).
+      // A new field rather than an overloaded old one — a ledger reader
+      // triaging 3,000 records must be able to separate them without
+      // re-parsing `claim_text`, and every pre-w4-1 record is
+      // `distributional` by construction (the field's absence means that).
       kind: violation.kind ?? 'distributional',
-    });
-    written++;
+      // `claim-mismatch` only: `{mismatch, claimed, observed, observed_n}`.
+      // Numbers, never the command text that produced them (precedent
+      // `8f15f77b` — `command_hash` instead of the raw command); `observed`
+      // is capped at the last 3 runs by findViolations().
+      ...(violation.detail ?? {}),
+      });
+      written++;
+    } catch {
+      // Write failed — keep going. The WARN below still reaches the
+      // coordinator, which is the channel PSA-006 actually depends on.
+    }
   }
 
   // Advisory only (#908 item 4) — never promoted to a violation in v1.
@@ -485,21 +523,39 @@ async function main() {
     ? ` ${violations.length - written} already recorded earlier in this session.`
     : '';
 
-  // Two claim CLASSES, counted separately in the WARN (w4-1): they fail
-  // different rules and want different corrections — a distributional claim
-  // needs its grep transcript, a gate verdict needs a run receipt.
+  // THREE claim CLASSES, counted separately in the WARN (w4-1, #1385 R1):
+  // they fail different rules and want different corrections — a
+  // distributional claim needs its grep transcript, a gate verdict needs a
+  // run receipt, and a count mismatch needs the run repeated or the number
+  // corrected. One aggregate count would leave the coordinator guessing which.
   const gateCount = violations.filter((v) => v.kind === 'gate-verdict').length;
-  const distCount = violations.length - gateCount;
+  const mismatchCount = violations.filter((v) => v.kind === 'claim-mismatch').length;
+  const distCount = violations.length - gateCount - mismatchCount;
   const classNote = gateCount === 0
     ? ''
     : ` ${gateCount} of them ${gateCount === 1 ? 'is a' : 'are'} DONE/GATE verdict(s) with no run ` +
       `receipt (no test count, no exit code) anywhere in the report; ` +
       `${distCount} repo-state/distributional.`;
 
+  // The correction this class asks for is named, because it is NOT the one
+  // the other two ask for: no amount of added grep evidence fixes a number
+  // that contradicts every run in the window.
+  const mismatchNote = mismatchCount === 0
+    ? ''
+    : ` ${mismatchCount} ${mismatchCount === 1 ? 'is a' : 'are'} COUNT MISMATCH: ` +
+      violations
+        .filter((v) => v.kind === 'claim-mismatch')
+        .map((v) => {
+          const observed = (v.detail?.observed ?? []).map((o) => `${o.passed} passed`).join(', ');
+          return `claimed ${v.detail?.claimed?.passed} passed, observed ${observed || 'none'}`;
+        })
+        .join('; ') +
+      ` — re-run the suite or correct the number.`;
+
   const warnText =
     `⚠ PSA-006: ${violations.length} distinct claim(s) from agent ` +
     `"${agent}" (source: ${attribution.source}) lack measurement evidence ` +
-    `(grep/rg/find/git/wc/jq/ls/node/npm) (non-blocking).${classNote}` +
+    `(grep/rg/find/git/wc/jq/ls/node/npm) (non-blocking).${classNote}${mismatchNote}` +
     `${suppressedNote}${undatedNote} ` +
     `See .claude/rules/parallel-sessions.md § PSA-006.`;
   process.stderr.write(warnText + '\n');

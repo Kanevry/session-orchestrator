@@ -6,6 +6,7 @@
  *   - evaluate → append → --json run_id capture
  *   - --verify <run-id> on an untouched journal → MATCH, exit 0
  *   - --verify after a tampered stored record → DRIFT, exit 1 + per-dimension diff
+ *   - --verify on a record scored under an older rubric → VERSION-MISMATCH, exit 3 (#1400)
  *   - --verify unknown run-id → exit 1
  *   - session-not-found (abandoned-only tree) → exit 1
  *   - events-missing tree still exits 0 (FA3 Gherkin 2, non-blocking)
@@ -194,6 +195,68 @@ describe('eval-session CLI — --verify with judge-merged records (Finding 1, qa
     expect(verify.status).toBe(1);
     expect(verify.stdout).toContain('DRIFT');
     expect(verify.stdout).toContain('verification-evidence.status');
+  });
+});
+
+describe('eval-session CLI — --verify across a rubric version change (#1400)', () => {
+  // Bug class: a PLANNED rubric change is reported as tampering. Since rubric-v2
+  // (a29f5f28) every one of the 40 stored records is rubric-v1, and re-scoring
+  // them with the v2 engine exits 1 with `DRIFT` — the same verdict a forged
+  // record gets. The inverse failure is just as bad: reporting exit 0 would sell
+  // a cross-rubric comparison as a reproducibility proof.
+
+  /** Write a record, then rewrite it into the shape a rubric-v1 engine produced. */
+  function storeV1Record(fx) {
+    const write = runCli(['--metrics-dir', fx.dir, '--rubric', fx.rubricPath, '--model-id', 'm', '--json']);
+    expect(write.status).toBe(0);
+    const runId = JSON.parse(write.stdout).run_id;
+
+    const stored = JSON.parse(readFileSync(evalPath(fx.dir), 'utf8').trim());
+    expect(stored.rubric_version).toBe('rubric-v2');
+    expect(stored.dimensions.some((d) => d.id === 'guard-friction')).toBe(true);
+    stored.rubric_version = 'rubric-v1';
+    stored.dimensions = stored.dimensions.filter((d) => d.id !== 'guard-friction');
+    writeFileSync(evalPath(fx.dir), `${JSON.stringify(stored)}\n`, 'utf8');
+    return runId;
+  }
+
+  it('reports VERSION-MISMATCH (exit 3) instead of DRIFT', () => {
+    const fx = scenarioCleanCompleted();
+    dirsToClean.push(fx.dir);
+    const runId = storeV1Record(fx);
+
+    const verify = runCli(['--verify', runId, '--metrics-dir', fx.dir, '--rubric', fx.rubricPath]);
+    expect(verify.status).toBe(3);
+    expect(verify.stdout).toContain('VERSION-MISMATCH');
+    expect(verify.stdout).toContain('rubric-v1');
+    expect(verify.stdout).not.toContain('DRIFT');
+  });
+
+  it('emits verdict:"version-mismatch" with both rubric versions in --json', () => {
+    const fx = scenarioCleanCompleted();
+    dirsToClean.push(fx.dir);
+    const runId = storeV1Record(fx);
+
+    const verify = runCli(['--verify', runId, '--metrics-dir', fx.dir, '--rubric', fx.rubricPath, '--json']);
+    expect(verify.status).toBe(3);
+    expect(JSON.parse(verify.stdout)).toEqual({
+      run_id: runId,
+      match: false,
+      verdict: 'version-mismatch',
+      stored_rubric_version: 'rubric-v1',
+      engine_rubric_version: 'rubric-v2',
+    });
+  });
+
+  it('carries verdict:"match" on a same-version record, so the field discriminates', () => {
+    const fx = scenarioCleanCompleted();
+    dirsToClean.push(fx.dir);
+    const write = runCli(['--metrics-dir', fx.dir, '--rubric', fx.rubricPath, '--model-id', 'm', '--json']);
+    const runId = JSON.parse(write.stdout).run_id;
+
+    const verify = runCli(['--verify', runId, '--metrics-dir', fx.dir, '--rubric', fx.rubricPath, '--json']);
+    expect(verify.status).toBe(0);
+    expect(JSON.parse(verify.stdout).verdict).toBe('match');
   });
 });
 

@@ -32,13 +32,19 @@
  *   (d) the existing distributional behaviour, unchanged (regression).
  */
 
-import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, it, expect, afterEach } from 'vitest';
 
 import {
+  KIND_CLAIM_MISMATCH,
   KIND_DISTRIBUTIONAL,
   KIND_GATE_VERDICT,
   dedupeViolations,
   findViolations,
+  readTranscriptObservations,
 } from '../../../hooks/_lib/subagent-transcript.mjs';
 
 describe('findViolations — gate-verdict claim class (w4-1)', () => {
@@ -194,5 +200,211 @@ describe('dedupeViolations — kind carried through', () => {
       [KIND_GATE_VERDICT, 2],
       [KIND_DISTRIBUTIONAL, 1],
     ]);
+  });
+
+  it('carries a claim-mismatch detail payload through to the deduped entry', () => {
+    // bug_caught: dedupeViolations rebuilt each entry from four named fields,
+    // so a `detail` added upstream was silently dropped and every
+    // claim-mismatch record reached events.jsonl with no numbers in it — a
+    // finding the coordinator cannot act on, and indistinguishable from a
+    // working one in the ledger.
+    const detail = { mismatch: 'count', claimed: { passed: 5129, failed: 0 }, observed: [], observed_n: 0 };
+
+    expect(dedupeViolations([{ claim: '5129 passed', kind: KIND_CLAIM_MISMATCH, detail }])).toEqual([
+      { claim: '5129 passed', normalized: '5129 passed', occurrences: 1, kind: KIND_CLAIM_MISMATCH, detail },
+    ]);
+  });
+});
+
+/**
+ * #1385 R1 — the claim-mismatch class.
+ *
+ * THE NAMED BUG (TV-001), measured 2026-09-19 on this module at HEAD before
+ * the change, is an INVERSION rather than a gap:
+ *
+ *   'STATUS: done\nTests pass: 5129 passed / 0 failed.'  ->  []
+ *   'STATUS: done\nAlles grün.'                          ->  ['gate-verdict','gate-verdict']
+ *
+ * `RUN_RECEIPT_RE` is report-wide and matches `\d+\s+passed`, so the number an
+ * agent asserts counts as its own evidence: inventing one DISARMS the scanner
+ * while reporting honestly without one gets flagged. No existing test could
+ * catch it — the whole suite had no notion of what the agent actually ran.
+ */
+describe('findViolations — claim-mismatch (count) class (#1385 R1)', () => {
+  const OBS = [{ passed: 5127, failed: 2, total: 5129 }];
+
+  it('flags a claimed pass count that NO observed run carries', () => {
+    // bug_caught: the inversion above. `5129 passed` satisfied RUN_RECEIPT_RE
+    // with its own digits while the only run in the window reported 5127
+    // passed and 2 failed.
+    const { violations } = findViolations('Tests pass: 5129 passed / 0 failed.', { observations: OBS });
+
+    expect(violations).toHaveLength(1);
+    expect(violations[0].kind).toBe(KIND_CLAIM_MISMATCH);
+    expect(violations[0].detail).toEqual({
+      mismatch: 'count',
+      claimed: { passed: 5129, failed: 0 },
+      observed: [{ passed: 5127, failed: 2, total: 5129 }],
+      observed_n: 1,
+    });
+  });
+
+  it('does NOT flag the honest number the run actually reported', () => {
+    expect(findViolations('Tests: 5127 passed / 2 failed.', { observations: OBS }).violations).toEqual([]);
+  });
+
+  it('does NOT flag a total that is the SUM of two partial runs', () => {
+    // bug_caught: splitting a suite over two `npx vitest run <files>` calls
+    // and reporting the total is normal here; a per-run-only comparison would
+    // flag every one of them.
+    const observations = [
+      { passed: 5000, failed: 0, total: 5000 },
+      { passed: 127, failed: 0, total: 127 },
+    ];
+
+    expect(findViolations('Insgesamt 5127 passed.', { observations }).violations).toEqual([]);
+  });
+
+  it('does NOT flag when the window holds NO observation at all', () => {
+    // bug_caught: evidence ABSENCE is the gate-verdict class's job. Treating
+    // "nothing observed" as a mismatch would fire on every agent that reports
+    // a count it ran before the 2 MiB window — the opposite of a measurement.
+    expect(findViolations('Tests pass: 5129 passed / 0 failed.', { observations: [] }).violations).toEqual([]);
+  });
+
+  it('defaults to disabled when no observations option is passed at all', () => {
+    // bug_caught: every pre-R1 caller (and the #1218 precision corpus below)
+    // calls findViolations(text) with one argument. A required-by-accident
+    // second parameter would make the class fire on all of them.
+    expect(findViolations('Tests pass: 5129 passed / 0 failed.').violations).toEqual([]);
+  });
+
+  it.each([
+    // The four false-alarm forms w1-3 measured over 1037 transcripts…
+    ['another instrument, same word shape (vitest file tally)', 'Test Files  612 passed (612)'],
+    ['another instrument, named (validate-plugin)', 'validate-plugin: 229 passed, 0 failed'],
+    ['another instrument, named (check-rules)', 'check-rules → 41 passed, 0 failed'],
+    ['a QUOTED foreign assertion', 'The reviewer claimed 9999 passed; I could not reproduce it.'],
+    ['a RED-before-fix count', 'Rot vor dem Fix: 4711 passed, 3 failed; nach dem Fix grün.'],
+    ['a RED-proof count naming a mutation', 'RED proof: mutated the loader — 2 failed, 0 passed.'],
+    // …plus three more this repo's own 1044-transcript corpus produced.
+    ['a JSON key line (a field value, not an assertion)', '  "passed": 8888,'],
+    ['a file tally in prose word order', 'Focused run: **2 passed files; 5127 tests passed**'],
+    ['"passed" used as an ordinary verb after a line number', 'the 8 call sites at lines 715 and 1080 passed bodies'],
+  ])('does NOT raise a claim-mismatch for %s', (_label, benign) => {
+    // Scoped to THIS class on purpose: `2 passed files` legitimately trips the
+    // pre-existing #908 bare-cardinal pattern ("2 … files" with no measurement
+    // beside it), and asserting an empty violations list would make this case
+    // a test of the distributional matcher instead of the new one.
+    const { violations } = findViolations(benign, { observations: OBS });
+
+    expect(violations.filter((v) => v.kind === KIND_CLAIM_MISMATCH)).toEqual([]);
+  });
+
+  it('reads a thousands-separated claim as one number, not as its last group', () => {
+    // bug_caught: `14,340 passed` parsed as `340` under a bare \d{1,9}, which
+    // manufactured a mismatch out of a parse error — 3 of the first 12 corpus
+    // hits. Here 14340 IS observed, so the honest report must stay silent.
+    const observations = [{ passed: 14340, failed: 0, total: 14351 }];
+
+    expect(findViolations('Full suite — `npm test` completed with 14,340 passed / 0 failed.', { observations }).violations).toEqual([]);
+  });
+
+  it('does NOT flag a run summary quoted inside a fenced block', () => {
+    // bug_caught: a pasted summary is quoted tool output, not an assertion.
+    // Scanning it would flag the honest report that quotes a run older than
+    // the window — the expensive direction for a hook on every SubagentStop.
+    const text = ['```', 'Tests  9999 passed (9999)', '```'].join('\n');
+
+    expect(findViolations(text, { observations: OBS }).violations).toEqual([]);
+  });
+
+  it('REGRESSION: the distributional and gate-verdict classes are unchanged', () => {
+    // bug_caught: the new class is inserted BEFORE the GATE_SUMMARY_LINE_RE
+    // skip, beside the gate class. A restructuring error there would disarm
+    // the two older classes, and the failure would look like a quieter hook.
+    expect(findViolations('All 4 callers of resolveSubagentSidecar() pass an agentId.').violations.map((v) => v.kind))
+      .toEqual([KIND_DISTRIBUTIONAL]);
+    expect(findViolations('STATUS: done').violations.map((v) => v.kind)).toEqual([KIND_GATE_VERDICT]);
+  });
+});
+
+describe('readTranscriptObservations — the run side of the window (#1385 R1)', () => {
+  let box;
+
+  afterEach(() => {
+    if (box) rmSync(box, { recursive: true, force: true });
+    box = undefined;
+  });
+
+  /** Write a transcript of raw records and return its path. */
+  function writeRecords(records) {
+    box = mkdtempSync(join(tmpdir(), 'subagent-observations-'));
+    const file = join(box, 'transcript.jsonl');
+    writeFileSync(file, records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+    return file;
+  }
+
+  const bashUse = (id, command) => ({
+    type: 'assistant',
+    message: { content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] },
+  });
+  // Golden-record shape (testing.md § Fixtures Mirror Production Data):
+  // measured 2026-09-19 on real sidecars, `content` is a plain STRING.
+  const result = (id, content) => ({
+    type: 'user',
+    message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content }] },
+  });
+
+  it('extracts the vitest summary from a Bash tool_result', async () => {
+    const file = writeRecords([
+      bashUse('t1', 'npx vitest run tests/lib/ > /tmp/r.log 2>&1; tail -5 /tmp/r.log'),
+      result('t1', ' Test Files  612 passed (612)\n      Tests  2 failed | 5127 passed (5129)\n'),
+    ]);
+
+    // Only the `Tests` line is an observation — `Test Files` is a FILE count,
+    // and reading it as a test count puts a wrong number into the comparison.
+    await expect(readTranscriptObservations(file)).resolves.toEqual([
+      { passed: 5127, failed: 2, total: 5129 },
+    ]);
+  });
+
+  it('ignores a Bash result whose command is not a test run', async () => {
+    // bug_caught: without the tool_use→tool_result join on the COMMAND, a
+    // `git log` output containing the word "passed" becomes an observation
+    // and silently clears (or contradicts) an unrelated claim.
+    const file = writeRecords([
+      bashUse('t1', 'git log --oneline -5'),
+      result('t1', '      Tests  999 passed (999)\n'),
+    ]);
+
+    await expect(readTranscriptObservations(file)).resolves.toEqual([]);
+  });
+
+  it('reads a summary carrying a grep/Read line-number prefix', async () => {
+    // bug_caught: the dominant local idiom is `npm test > run.log` followed
+    // by `grep -n`/`Read` on the log, which prepends `30:`. The line-start
+    // anchor missed those receipts, and 2 of 9 residual firings measured
+    // 2026-09-19 were honest reports flagged for exactly that reason.
+    const file = writeRecords([
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'tool_use', id: 't1', name: 'Read', input: { file_path: '/tmp/run.log' } }] },
+      },
+      result('t1', '30:      Tests  1 failed | 1338 passed (1339)\n'),
+    ]);
+
+    await expect(readTranscriptObservations(file)).resolves.toEqual([
+      { passed: 1338, failed: 1, total: 1339 },
+    ]);
+  });
+
+  it('returns [] for a missing transcript rather than throwing', async () => {
+    // bug_caught: readTailWindow THROWS on fs errors. An unmapped throw here
+    // reaches the SubagentStop hook, which then records nothing at all —
+    // including the two OTHER claim classes that have nothing to do with it.
+    box = mkdtempSync(join(tmpdir(), 'subagent-observations-'));
+
+    await expect(readTranscriptObservations(join(box, 'nope.jsonl'))).resolves.toEqual([]);
   });
 });

@@ -367,12 +367,21 @@ function isFilesystemRootLiteral(entry) {
  * hallucinated/mis-copied wave-scope entry could plausibly land on is
  * predictable, auditable in a one-line diff, and does not touch legitimate
  * deep grants under any other root.
+ *
+ * `Users` and `home` deliberately LEFT this list in #1398/#1402. They are the
+ * only two roots under which a legitimate grant is routine (a vault study
+ * folder, an out-of-repo scratch project), and denying them flat made the
+ * validator contradict the very hook it validates for: Gate 5b
+ * (`hooks/enforce-scope.mjs` `matchesAbsoluteAllowlist`) honours
+ * `/Users/<user>/Projects/vault/**` with no denylist and no depth check
+ * (measured 2026-09-19 against `pathMatchesPattern`). A wave that legitimately
+ * writes outside the repo therefore could not validate its manifest at all.
+ * Those two roots are graded by {@link classifyHomeGrant} instead, which
+ * refuses the dangerous SHAPES rather than the whole root.
  * @type {ReadonlySet<string>}
  */
 const DENIED_ABSOLUTE_TOP_SEGMENTS = new Set([
   'etc',
-  'Users',
-  'home',
   'root',
   'bin',
   'sbin',
@@ -400,11 +409,113 @@ function deniedTopSegment(entry) {
 }
 
 /**
+ * Top-level segments that open a HOME directory rather than a system one —
+ * macOS (`/Users/<user>`) and Linux (`/home/<user>`). Graded by
+ * {@link classifyHomeGrant}, never by {@link DENIED_ABSOLUTE_TOP_SEGMENTS}.
+ * @type {ReadonlySet<string>}
+ */
+const HOME_TOP_SEGMENTS = new Set(['Users', 'home']);
+
+/**
+ * How many LITERAL segments a home grant must name before its first wildcard:
+ * `<home-root>` / `<user>` / `<one directory>` = 3. Two is the bare home
+ * itself, and a wildcard anywhere inside those three widens the grant to a
+ * whole home (or to every account on the host).
+ */
+const HOME_MIN_LITERAL_SEGMENTS = 3;
+
+/**
+ * Home subdirectories that carry credentials, tokens, or the agent guards
+ * themselves. ONE predicate rather than a list, because the list is open-ended
+ * and every omission is a live credential store: any dot-prefixed directory
+ * (`.ssh`, `.aws`, `.gnupg`, `.config` — which holds tokens AND `owner.yaml` —
+ * `.claude`, `.codex`, `.cursor`, `.docker`, `.npmrc`, `.netrc`) plus macOS
+ * `Library` (whose `Keychains` subtree carries no leading dot). Granting
+ * `.claude/**` in particular would let a wave rewrite the guards that bound it.
+ * @param {string} segment
+ * @returns {boolean}
+ */
+function isSensitiveHomeSegment(segment) {
+  return segment.startsWith('.') || segment === 'Library';
+}
+
+/**
+ * Grade an absolute entry whose top-level segment is a home root
+ * (`/Users/...`, `/home/...`).
+ *
+ * The rule is SHAPE-based, not identity-based, because the hook grants by
+ * shape: Gate 5b feeds the entry straight to `pathMatchesPattern`, where a
+ * wildcard in an early segment silently widens the grant. Measured 2026-09-19
+ * against `scripts/lib/scope-gate.mjs`: `/Users/alice/**` matches
+ * `/Users/alice/.ssh/authorized_keys`, and a bare `*` as the third segment
+ * matches `/Users/alice/.ssh/id` — a wildcard there reaches dot-directories.
+ * So the depth is counted over the LITERAL prefix (the segments before the
+ * first `*`), never over the raw segment count.
+ *
+ * Named ceiling (BV-004): only the FIRST directory below the home is checked
+ * for sensitivity. A dot-directory DEEPER in the tree — `…/vault/.git/hooks/**`,
+ * or the `.claude/settings.json` of a foreign repo under `~/Projects/` — stays
+ * ungated, because at that depth the grant is already scoped to one project the
+ * operator named explicitly, and enumerating every dot-directory below it would
+ * refuse ordinary work (a repo's own `.gitlab-ci.yml` sibling tooling). Revisit
+ * trigger: the first time a wave legitimately needs a grant INTO a foreign repo
+ * — at that point the third segment stops identifying the owner of the subtree.
+ *
+ * @param {string} normalizedEntry — the entry with `.` segments collapsed
+ *   (`path.posix.normalize`), so a `/Users/./alice/.ssh` cannot shift the
+ *   literal prefix and hide a dot-directory at index 2.
+ * @returns {{verdict: 'error'|'warn', reason: string}|null} null when the entry
+ *   is not a home grant at all (caller falls through to its other checks).
+ */
+function classifyHomeGrant(normalizedEntry) {
+  const segments = normalizedEntry.split('/').filter(Boolean);
+  if (segments.length === 0 || !HOME_TOP_SEGMENTS.has(segments[0])) return null;
+
+  /** Literal prefix: the segments before the first one carrying a wildcard. */
+  const literal = [];
+  for (const segment of segments) {
+    if (segment.includes('*')) break;
+    literal.push(segment);
+  }
+
+  if (literal.length < HOME_MIN_LITERAL_SEGMENTS) {
+    return {
+      verdict: 'error',
+      reason:
+        `grants a home directory at or above the user level — a home grant must name at least ` +
+        `${HOME_MIN_LITERAL_SEGMENTS} literal path segments before its first wildcard ` +
+        `(e.g. /Users/<user>/<project>/**); this one names ${literal.length}, so Gate 5b would ` +
+        `honour it across the whole home (measured: /Users/<user>/** matches ~/.ssh/authorized_keys)`,
+    };
+  }
+
+  const firstBelowHome = literal[HOME_MIN_LITERAL_SEGMENTS - 1];
+  if (isSensitiveHomeSegment(firstBelowHome)) {
+    return {
+      verdict: 'error',
+      reason:
+        `grants a sensitive home subdirectory ("${firstBelowHome}") — dot-directories and Library ` +
+        `hold credentials, tokens, owner.yaml and the agent guards themselves; scope a project ` +
+        `directory instead`,
+    };
+  }
+
+  return { verdict: 'warn', reason: 'home-directory grant honoured by Gate 5b' };
+}
+
+/**
  * Does this entry contain a glob wildcard? Mirrors this codebase's own glob
  * convention (`isGlobScopeEntry` in scripts/lib/scope-gate.mjs / #796): `*`
  * is the sole wildcard metachar used in allowedPaths/fileScope entries
  * throughout this repo (no `?`/`[]`/`{}` glob syntax is supported or tested
  * anywhere else in scope-gate.mjs or enforce-scope.mjs).
+ *
+ * KNOWN DIVERGENCE (#1402, not repaired here — scope-gate.mjs is out of this
+ * change's file scope): `isGlobScopeEntry` ALSO counts a trailing `/` as a
+ * glob, and `pathMatchesPattern` honours that directory-prefix form. This
+ * predicate does not, so `/private/tmp/x/` reads as "no wildcard" here. Since
+ * #1402 both branches only WARN, the divergence costs one wrong sentence on
+ * stderr and no verdict — which is why it is reported rather than patched.
  * @param {string} entry
  * @returns {boolean}
  */
@@ -479,14 +590,33 @@ function validateAllowedPaths(obj, errors, warnings) {
           `allowedPaths grants the entire filesystem root: ${entry} — refused unconditionally, this can never be a valid wave scope`,
         );
       } else {
-        const denied = deniedTopSegment(entry);
+        // `.` segments are collapsed BEFORE any classification (#1398): without
+        // this, `/Users/./alice/.ssh/**` has a literal prefix of
+        // [Users, ".", alice, ".ssh"] whose third element is "alice", so the
+        // dot-directory sits at index 3 and the sensitivity check misses it.
+        // `..` needs no handling here — the unconditional traversal check below
+        // rejects any entry containing `../`, whatever else it is.
+        const normalizedEntry = path.posix.normalize(entry);
+        const denied = deniedTopSegment(normalizedEntry);
+        const home = denied ? null : classifyHomeGrant(normalizedEntry);
         if (denied) {
           errors.push(
             `allowedPaths contains a well-known system/home directory grant: ${entry} (top-level segment "${denied}" is denylisted) — refused, scope a narrower path instead`,
           );
+        } else if (home?.verdict === 'error') {
+          errors.push(`allowedPaths ${home.reason}: ${entry}`);
+        } else if (home) {
+          warnings.push(
+            `allowedPaths contains an absolute (out-of-repo) path: ${entry} — ${home.reason}; verify this grant is intentional`,
+          );
         } else if (!hasWildcard(entry)) {
-          errors.push(
-            `allowedPaths contains a bare absolute file grant with no wildcard: ${entry} — a single concrete out-of-repo file has no established legitimate use in this codebase; scope a glob instead`,
+          // #1402: WARN, not ERROR. A concrete absolute file path is the
+          // NARROWER grant, not the wider one — Gate 5b matches it exactly
+          // (measured 2026-09-19: `pathMatchesPattern(p, p) === true` for a
+          // wildcard-free absolute p), so refusing it while honouring the `/**`
+          // one directory above it inverted the risk ordering.
+          warnings.push(
+            `allowedPaths contains a bare absolute file grant with no wildcard: ${entry} — honoured by hooks/enforce-scope.mjs Gate 5b as an exact-path match (the narrowest possible grant); verify this grant is intentional`,
           );
         } else {
           warnings.push(

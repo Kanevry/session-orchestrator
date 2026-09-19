@@ -212,6 +212,12 @@ function countAttributedEvents(ctx, eventName) {
 
 // ---------------------------------------------------------------------------
 // Dimension scorers — each is a pure function of (ctx) [+ precomputed kpis].
+//
+// EVERY evidence template written below has a READER in `EVIDENCE_PATTERNS`
+// (declared immediately after the scorers). Reword a template and you MUST
+// update its pattern in the same edit — otherwise the judge's fact extraction
+// silently stops parsing that number (#1381). The patterns live in this file,
+// not in the reader, precisely so the two cannot drift apart unnoticed.
 // ---------------------------------------------------------------------------
 
 /**
@@ -491,6 +497,85 @@ function scoreEfficiencyKpis(kpis) {
     evidence: `REPORTED, not graded. duration_seconds=${fmt(kpis.duration_seconds)} (${kpis._duration_source}), total_waves=${fmt(kpis.total_waves)}, total_agents=${fmt(kpis.total_agents)}, token_input=${fmt(kpis.token_input)}, token_output=${fmt(kpis.token_output)}, carryover=${fmt(kpis.carryover)}.`,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Evidence-template readers (#1381)
+// ---------------------------------------------------------------------------
+
+/**
+ * Regex readers for the evidence strings the scorers above produce, keyed by
+ * the dimension whose scorer owns the template.
+ *
+ * WHY HERE. `scripts/lib/eval/judge.mjs` pre-computes the facts the judge may
+ * not infer for itself (gate counts, spiral, guard counts) by parsing exactly
+ * these strings. Keeping the readers beside the templates makes a reword a
+ * one-file edit; keeping them in the reader made template and reader drift the
+ * moment anyone touched an evidence sentence.
+ *
+ * Each pattern names the scorer branch it reads. A pattern is deliberately
+ * ANCHORED ON A TOKEN (`agent_summary.spiral=`, `all exit_code=0`) rather than
+ * on whole-sentence wording, so cosmetic prose edits do not break it while a
+ * REAL shape change (a dropped number, a renamed field) does — and the reader
+ * then reports a `parse_miss` instead of a silent `null`.
+ *
+ * @type {Readonly<Record<string, Readonly<Record<string, RegExp>>>>}
+ */
+export const EVIDENCE_PATTERNS = Object.freeze({
+  'verification-evidence': Object.freeze({
+    /** scoreVerificationEvidence, contaminated branch. */
+    windowContaminated: /window contaminated by (\d+) overlapping session\(s\)/,
+    /** ≥1-gate branches ("N quality_gate event(s) in window…"). */
+    gateRunsTotal: /(\d+) quality_gate event\(s\) in window/,
+    /** ≥1-gate, all-green branch. */
+    gateAllGreen: /quality_gate event\(s\) in window, all exit_code=0/,
+    /** ≥1-gate, some-red branch ("…; N with non-zero exit_code."). */
+    gateRunsFailed: /(\d+) with non-zero exit_code/,
+    /** 0-gate, nothing changed → not-applicable branch. */
+    noChangeToVerify: /0 quality_gate events in window and total_files_changed=0/,
+    /** 0-gate, files changed → cannot-determine branch. */
+    changesUnverified: /0 quality_gate events in window but total_files_changed=(\d+|n\/a)/,
+  }),
+  'plan-fidelity': Object.freeze({
+    /** scorePlanFidelity, rate-present branch ("completion_rate=<n> (v1 threshold…"). */
+    completionRate: /completion_rate=([0-9]+(?:\.[0-9]+)?)/,
+    /** rate-absent branches (not-applicable / cannot-determine). */
+    rateAbsent: /no completion_rate and no planned_issues|completion_rate is missing/,
+    /** evidence context on the rate-present branch. */
+    carryover: /carryover=(\d+|n\/a)/,
+  }),
+  'gate-health': Object.freeze({
+    /** scoreGateHealth, contaminated branch. */
+    windowContaminated: /window contaminated by (\d+) overlapping session\(s\)/,
+    /** ≥1-full-gate branch ("N full-gate event(s) in window; last exit_code=X."). */
+    fullGateRuns: /(\d+) full-gate event\(s\) in window/,
+    lastFullGateExit: /last exit_code=(-?\d+)/,
+    /** 0-full-gate branches (not-applicable / cannot-determine). */
+    fullGateZero: /0 full-gate events (?:in window|and no waves ran)/,
+  }),
+  'process-safety': Object.freeze({
+    /** scoreProcessSafety, both graded branches carry the spiral count. */
+    spiral: /agent_summary\.spiral=(\d+)/,
+    /** unmeasurable branch — no count exists to read. */
+    unmeasurable: /events\.jsonl absent or empty/,
+  }),
+  'guard-friction': Object.freeze({
+    /** scoreGuardFriction, counts branch. */
+    blocked: /destructive_guard\.blocked=(\d+)/,
+    warned: /destructive_guard\.warned=(\d+)/,
+    loopWarning: /loop\.warning=(\d+)/,
+    /** attribution marker: session-id (preferred) vs the time-window fallback. */
+    attributionSessionId: /attribution: session-id/,
+    attributionTimeWindow: /attribution: time-window/,
+    /** time-window fallback contamination note (different wording to the gate dims). */
+    windowContaminated: /window overlaps (\d+) peer session\(s\)/,
+    /** unmeasurable branch — counts unavailable, explicitly NOT zero. */
+    unmeasurable: /events\.jsonl absent or empty/,
+  }),
+  'efficiency-kpis': Object.freeze({
+    /** scoreEfficiencyKpis reports every KPI; carryover is the one the judge needs. */
+    carryover: /carryover=(\d+|null)/,
+  }),
+});
 
 // ---------------------------------------------------------------------------
 // KPI extraction (schema kpis{} block)

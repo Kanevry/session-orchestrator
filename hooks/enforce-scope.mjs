@@ -433,6 +433,13 @@ async function main() {
   // out-of-repo path before allowedPaths is ever consulted. Honour such grants
   // here — matching ONLY absolute entries against the fully realpath-resolved
   // candidate, so relative entries can never be used to escape the repo (REQ-09).
+  //
+  // Pre-flight asymmetry (#1398/#1402): this gate applies NO denylist and NO
+  // depth check — it honours any syntactically-absolute entry the manifest
+  // carries. `scripts/validate-wave-scope.mjs` is the only place those grants
+  // are graded (system-root denylist, home-grant depth + sensitive-subdirectory
+  // rule) and it runs BEFORE dispatch, not here. A manifest that never went
+  // through the validator reaches this gate ungraded.
   if (matchesAbsoluteAllowlist(resolvedPath, allowedPaths)) return emitAllow();
 
   // Gate 6: path must be inside the project root
@@ -777,6 +784,12 @@ function isCoordinatorCarveout(normalizedRel, projectRoot, scopePath) {
  * returns false and the caller falls through to Gate 6 unchanged (inert pre-gate).
  * An absolute entry matches only its own literal (canonical/realpath) subtree;
  * the operator is responsible for supplying a canonical absolute path.
+ *
+ * GRADING LIVES IN THE VALIDATOR, NOT HERE (#1398/#1402). This helper is
+ * deliberately shape-blind: `/Users/<u>/**` and `/Users/<u>/.ssh/**` match
+ * exactly like `/Users/<u>/Projects/vault/**`. `classifyHomeGrant` in
+ * `scripts/validate-wave-scope.mjs` refuses the first two pre-dispatch and
+ * WARNs on the third. Keep the two in step.
  *
  * @param {string} resolvedPath — fully realpath-resolved candidate (absolute)
  * @param {string[]} allowedPaths — raw allowedPaths array from wave-scope.json

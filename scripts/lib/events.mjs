@@ -39,7 +39,7 @@
  * 0.0961 ms/call.
  */
 
-import { promises as fs, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { promises as fs, existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getProjectDir, SO_SHARED_DIR } from './platform.mjs';
@@ -50,8 +50,14 @@ import {
   readProcessLocalSessionIds,
 } from './session-identity/own-session.mjs';
 import {
+  ARCHIVE_DIR_NAME,
+  ARCHIVE_NAME_RE,
   EventValidationError,
+  LEGACY_RING_MAX,
+  ROTATION_EVENT,
+  parseEventLines,
   stampEventSchemaVersion,
+  summarizeEventRecords,
   validateEventRecord,
 } from './events-schema.mjs';
 
@@ -447,4 +453,209 @@ export async function emitEvent(type, payload = {}, opts = {}) {
       signal: AbortSignal.timeout(3000),
     }).catch(() => {});
   }
+}
+
+// ---------------------------------------------------------------------------
+// Rotation-aware reading (#1401)
+// ---------------------------------------------------------------------------
+
+/**
+ * Read one JSONL source into a descriptor — never throws.
+ *
+ * @param {string} filePath
+ * @param {'active'|'archive'|'legacy-ring'} kind
+ * @returns {{path: string, kind: string, readable: boolean, records: object[],
+ *            malformed_lines: number, first_ts: string|null, last_ts: string|null,
+ *            error?: string}}
+ */
+function readEventSource(filePath, kind) {
+  let text;
+  try {
+    text = readFileSync(filePath, 'utf8');
+  } catch (err) {
+    return {
+      path: filePath,
+      kind,
+      readable: false,
+      records: [],
+      malformed_lines: 0,
+      first_ts: null,
+      last_ts: null,
+      error: err?.message ?? String(err),
+    };
+  }
+  const { records, malformedLines } = parseEventLines(text);
+  const { firstTs, lastTs } = summarizeEventRecords(records);
+  return {
+    path: filePath,
+    kind,
+    readable: true,
+    records,
+    malformed_lines: malformedLines,
+    first_ts: firstTs,
+    last_ts: lastTs,
+  };
+}
+
+/**
+ * Every archive belonging to `logPath`, in BOTH schemes.
+ *
+ * Reading the legacy `.1`..`.N` ring is not politeness towards old code — it is
+ * a live requirement: measured 2026-09-19, two fleet repos hold a ~10 MB
+ * `events.jsonl.1` written before #1401 switched the writer to `_archive/`. A
+ * reader that saw only the new scheme would drop that history and call the
+ * result complete.
+ *
+ * @param {string} logPath — absolute path of the ACTIVE log.
+ * @returns {{archives: string[], legacy: string[], ringHoles: number[]}}
+ */
+function discoverArchives(logPath) {
+  const dir = path.dirname(logPath);
+
+  const archives = [];
+  const archiveDir = path.join(dir, ARCHIVE_DIR_NAME);
+  try {
+    for (const name of readdirSync(archiveDir).sort()) {
+      if (ARCHIVE_NAME_RE.test(name)) archives.push(path.join(archiveDir, name));
+    }
+  } catch {
+    /* no archive directory yet — not a gap, just nothing rotated here */
+  }
+
+  // The ring was contiguous BY CONSTRUCTION (each rotation shifted every slot
+  // up by one), so a hole between two present slots can only mean a backup was
+  // removed out of band. Slots above the highest present one are simply
+  // "not rotated that many times" and are not holes.
+  const present = [];
+  for (let i = 1; i <= LEGACY_RING_MAX; i += 1) {
+    if (existsSync(`${logPath}.${i}`)) present.push(i);
+  }
+  const highest = present.length > 0 ? present[present.length - 1] : 0;
+  const ringHoles = [];
+  for (let i = 1; i < highest; i += 1) {
+    if (!present.includes(i)) ringHoles.push(i);
+  }
+  return { archives, legacy: present.map((i) => `${logPath}.${i}`), ringHoles };
+}
+
+/**
+ * Read the events ledger ACROSS rotation boundaries — active file plus every
+ * archive still on disk — in time order, reporting what is missing instead of
+ * silently returning less.
+ *
+ * ## Why this exists (#1401)
+ *
+ * Before it, nothing in `scripts/` or `hooks/` read a rotated backup at all
+ * (census 2026-09-19 @ `8f15f77b`: `rg -n 'jsonl\.1|jsonl\.[0-9]' scripts/ hooks/`
+ * excluding tests → zero code hits). Every window analysis therefore lost its
+ * whole history at each rotation, silently — which is what reduced the #1037
+ * guard-attribution join to 2 of 38 sessions.
+ *
+ * ## The three honesty rules
+ *
+ * 1. **A missing archive is a FINDING, not an empty result.** When a record in
+ *    a later file names `archived_as: X` and X is not on disk, that appears in
+ *    `gaps` with the range X covered, and `complete` is `false`. This is the
+ *    exact shape of the 2026-09-19 loss, and it is detectable only because the
+ *    rotation writes that pointer (see `events-rotation.mjs`) — an archive
+ *    deleted before #1401 left no trace and is undetectable by construction.
+ * 2. **Unreadable lines are COUNTED** (`malformed_lines`, per source and total).
+ *    A silently skipping JSONL parser turns a partial result into a clean
+ *    verdict.
+ * 3. **Order is by measured time, not by filename.** Sources are sorted on
+ *    their earliest parseable timestamp; records within a source keep file
+ *    (append) order. A source with no parseable timestamp sorts last rather
+ *    than being dropped.
+ *
+ * CEILING (BV-004): every source is read fully into memory — at the default
+ * `max-size-mb: 10` / `max-backups: 5` that is up to ~60 MB transient. There is
+ * no windowing parameter because no caller has asked for one; revisit when a
+ * consumer needs a `since` filter or `max-size-mb` is raised past ~100.
+ *
+ * @param {string} [repoRoot] — project root; defaults exactly as
+ *   {@link eventsFilePath} does (and only the default form honours the test
+ *   sandbox seam).
+ * @param {object} [opts={}]
+ * @param {string} [opts.filePath] — override the active-log path outright.
+ * @returns {{events: object[], sources: object[], malformed_lines: number,
+ *            gaps: object[], complete: boolean, active_path: string}}
+ */
+export function readEventsWithRotations(repoRoot, opts = {}) {
+  const activePath = opts.filePath ?? eventsFilePath(repoRoot);
+  const { archives, legacy, ringHoles } = discoverArchives(activePath);
+
+  const sources = [
+    ...archives.map((p) => readEventSource(p, 'archive')),
+    ...legacy.map((p) => readEventSource(p, 'legacy-ring')),
+  ];
+  if (existsSync(activePath)) sources.push(readEventSource(activePath, 'active'));
+
+  // Time order across sources; undatable sources last, stable by path.
+  sources.sort((a, b) => {
+    const am = a.first_ts ? Date.parse(a.first_ts) : Infinity;
+    const bm = b.first_ts ? Date.parse(b.first_ts) : Infinity;
+    if (am !== bm) return am - bm;
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  });
+
+  const gaps = [];
+  const onDisk = new Set(sources.map((s) => s.path));
+
+  // Rule 1 — every rotation tombstone must still point at a file.
+  for (const source of sources) {
+    for (const record of source.records) {
+      if (record?.event !== ROTATION_EVENT) continue;
+      const target = record.archived_as;
+      if (typeof target !== 'string' || target.length === 0) continue;
+      if (onDisk.has(target) || existsSync(target)) continue;
+      gaps.push({
+        kind: 'missing-archive',
+        archived_as: target,
+        first_ts: record.first_ts ?? null,
+        last_ts: record.last_ts ?? null,
+        lines: record.lines ?? null,
+        size_before: record.size_before ?? null,
+        reported_by: source.path,
+        rotated_at: record.timestamp ?? null,
+      });
+    }
+  }
+
+  for (const slot of ringHoles) {
+    gaps.push({
+      kind: 'ring-hole',
+      archived_as: `${activePath}.${slot}`,
+      first_ts: null,
+      last_ts: null,
+      reported_by: activePath,
+    });
+  }
+
+  for (const source of sources) {
+    if (source.readable) continue;
+    gaps.push({
+      kind: 'unreadable-source',
+      archived_as: source.path,
+      first_ts: null,
+      last_ts: null,
+      reported_by: source.path,
+      error: source.error ?? null,
+    });
+  }
+
+  const events = [];
+  let malformed = 0;
+  for (const source of sources) {
+    events.push(...source.records);
+    malformed += source.malformed_lines;
+  }
+
+  return {
+    events,
+    sources: sources.map(({ records, ...rest }) => ({ ...rest, records: records.length })),
+    malformed_lines: malformed,
+    gaps,
+    complete: gaps.length === 0,
+    active_path: activePath,
+  };
 }

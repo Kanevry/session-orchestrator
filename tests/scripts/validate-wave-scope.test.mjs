@@ -229,10 +229,14 @@ describe('validate-wave-scope.mjs — catastrophic absolute grant rejection (#87
     expect(r.stderr).toMatch(/ERROR:.*system\/home directory/);
   });
 
-  it('rejects a denylisted home-directory glob: /Users/**', () => {
+  // #1398/#1402: `Users`/`home` left the flat denylist and are judged by the
+  // home-grant depth rule instead. `/Users/**` must STAY an error — it hands the
+  // whole of every user's home to the wave — but the message now names the depth
+  // rule rather than the denylist, so the assertion follows the rule that rejects it.
+  it('rejects a home-directory glob at the root level: /Users/**', () => {
     const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/**'] }));
     expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/ERROR:.*system\/home directory/);
+    expect(r.stderr).toMatch(/ERROR:.*home directory at or above the user level/);
   });
 
   it('rejects a bare absolute file grant with no wildcard: /etc/passwd', () => {
@@ -243,12 +247,18 @@ describe('validate-wave-scope.mjs — catastrophic absolute grant rejection (#87
     expect(r.stderr).toMatch(/ERROR:.*system\/home directory|ERROR:.*no wildcard/);
   });
 
-  it('rejects a bare absolute file grant with no wildcard OUTSIDE the denylist', () => {
+  // #1402 (second point): a CONCRETE absolute file path is the NARROWER grant,
+  // not the wider one — hooks/enforce-scope.mjs Gate 5b matches it exactly
+  // (measured 2026-09-19: pathMatchesPattern('/Users/alice/Projects/vault/x.md',
+  // '/Users/alice/Projects/vault/x.md') === true). Rejecting it while honouring
+  // the `/**` glob above it inverted the risk ordering and is the bug this flip
+  // catches: the validator forbade exactly the one shape that grants least.
+  it('accepts a bare absolute file grant with no wildcard OUTSIDE the denylist with a WARN (#1402)', () => {
     const r = run(
       JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/so-session-example/notes.txt'] }),
     );
-    expect(r.status).toBe(1);
-    expect(r.stderr).toMatch(/ERROR:.*no wildcard/);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING.*no wildcard/);
   });
 
   it('rejects the Windows literal root forms "\\\\" and "C:\\\\"', () => {
@@ -288,6 +298,129 @@ describe('validate-wave-scope.mjs — catastrophic absolute grant rejection (#87
     const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/x/../../etc/shadow'] }));
     expect(r.status).toBe(1);
     expect(r.stderr).toMatch(/path traversal/);
+  });
+});
+
+describe('validate-wave-scope.mjs — home-directory grants (#1398 / #1402)', () => {
+  // The defect these tests pin: `Users` and `home` sat on the flat
+  // DENIED_ABSOLUTE_TOP_SEGMENTS denylist, so EVERY path under any home
+  // directory was a hard ERROR — while hooks/enforce-scope.mjs Gate 5b
+  // (matchesAbsoluteAllowlist) honours the very same entries without any
+  // denylist or depth check. Validator and hook contradicted each other, and a
+  // wave that legitimately writes outside the repo (a vault study folder) could
+  // not validate its manifest — which happened live on 2026-09-19 and forced a
+  // wave onto `enforcement: warn`.
+  //
+  // Hook truth re-measured 2026-09-19 against scripts/lib/scope-gate.mjs
+  // `pathMatchesPattern` (the matcher Gate 5b calls):
+  //   '/Users/alice/Projects/vault/**' ← '/Users/alice/Projects/vault/notes/x.md'  true
+  //   '/Users/alice/**'                ← '/Users/alice/.ssh/authorized_keys'       true
+  //   '/Users/alice/*/id'              ← '/Users/alice/.ssh/id'                    true
+  // i.e. the hook grants everything the validator now has to grade itself.
+
+  it('accepts a legitimate home-directory project grant with a WARN: /Users/alice/Projects/vault/**', () => {
+    // Bug caught: the live #1398 blocker — a vault grant the hook honours
+    // (measured true above) that the validator refused, leaving the coordinator
+    // no way to validate a manifest it had to dispatch anyway.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/Projects/vault/**'] }));
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING.*home-directory grant honoured by Gate 5b/);
+  });
+
+  it('rejects a bare home directory: /Users/alice', () => {
+    // Bug caught: a depth rule that counts the ENTRY rather than its literal
+    // prefix would read three segments here ("/Users/alice" plus nothing) or
+    // treat a wildcard-free entry as the narrow case and let the whole home
+    // through as a WARN.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*home directory at or above the user level/);
+  });
+
+  it('rejects a whole-home glob: /Users/alice/**', () => {
+    // Bug caught: this grant reaches ~/.ssh/authorized_keys — measured true
+    // against the hook matcher above. A home check keyed only on the FIRST
+    // segment ("is it /Users?") would have to reject the vault case too; one
+    // keyed only on "does a dotfile appear in the pattern" passes this.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*home directory at or above the user level/);
+  });
+
+  it('rejects a wildcard in the user segment: /Users/*/Projects/**', () => {
+    // Bug caught: counting SEGMENTS instead of LITERAL segments scores this 4
+    // and lets it pass, although it spans every account on the host.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/*/Projects/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*home directory at or above the user level/);
+  });
+
+  it('rejects a wildcard in the first segment below the home: /Users/alice/*/x', () => {
+    // Bug caught: a `*` in segment 3 reaches dot-directories — measured:
+    // '/Users/alice/*/id' matches '/Users/alice/.ssh/id'. A dotfile check that
+    // only inspects LITERAL text would see no leading dot here and allow it.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/*/x'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*home directory at or above the user level/);
+  });
+
+  it('rejects a dotfile directory under the home: /Users/alice/.ssh/**', () => {
+    // Bug caught: depth alone (3 literal segments) is satisfied here, so a
+    // depth-only rule would WARN and hand the wave the host's SSH keys.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/.ssh/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*sensitive home subdirectory/);
+  });
+
+  it('rejects the macOS Library directory under the home: /Users/alice/Library/**', () => {
+    // Bug caught: Library/Keychains carries no leading dot, so a dotfile-only
+    // rule misses the single biggest credential store on macOS.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/Library/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*sensitive home subdirectory/);
+  });
+
+  it('rejects a Linux-home dotfile grant with no wildcard: /home/alice/.config/x', () => {
+    // Bug caught (two at once): `home` must be graded like `Users`, and the
+    // #1402 no-wildcard WARN must not become a bypass for a sensitive
+    // subdirectory — ~/.config holds tokens and owner.yaml.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/home/alice/.config/x'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*sensitive home subdirectory/);
+  });
+
+  it('rejects a dotfile grant hidden behind a "." segment: /Users/./alice/.ssh/**', () => {
+    // Bug caught: without path.posix.normalize() the literal prefix reads
+    // [Users, ".", alice, ".ssh"], whose third element is "alice" — not a
+    // dotfile — so the entry classifies as an ordinary project grant and WARNS.
+    // Normalised it reads [Users, alice, ".ssh"] and rejects.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/./alice/.ssh/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*sensitive home subdirectory/);
+  });
+
+  it('accepts a concrete home FILE grant with a WARN: /Users/alice/Projects/vault/x.md', () => {
+    // Bug caught: the #1402 flip must survive the home path too — a concrete
+    // file is the narrowest grant there is (Gate 5b matches it exactly,
+    // measured true above), so neither the home rule nor the no-wildcard rule
+    // may reject it.
+    const r = run(
+      JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/Projects/vault/x.md'] }),
+    );
+    expect(r.status).toBe(0);
+    expect(r.stderr).toMatch(/WARNING.*home-directory grant honoured by Gate 5b/);
+  });
+
+  it('keeps the non-home denylist intact: /root/** and /var/** still ERROR', () => {
+    // Bug caught: removing `Users`/`home` from DENIED_ABSOLUTE_TOP_SEGMENTS must
+    // not remove the other 14 segments with them.
+    const r1 = run(JSON.stringify({ ...VALID, allowedPaths: ['/root/**'] }));
+    expect(r1.status).toBe(1);
+    expect(r1.stderr).toMatch(/ERROR:.*system\/home directory/);
+
+    const r2 = run(JSON.stringify({ ...VALID, allowedPaths: ['/var/**'] }));
+    expect(r2.status).toBe(1);
+    expect(r2.stderr).toMatch(/ERROR:.*system\/home directory/);
   });
 });
 

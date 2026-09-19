@@ -1812,6 +1812,32 @@ export function redirectRuleMatches(rule, command, opts = {}) {
   // an existing repo-relative rule, and a repo-relative entry still cannot
   // escape the root. An unexpandable `~` (no usable `home`) matches NOTHING —
   // fail-closed for the new class, since an unexpanded `~` names no file.
+  const compiled = compileTargetDenylist(denylist, home);
+  if (compiled.relRegexes.length === 0 && compiled.absRegexes.length === 0) return false;
+
+  for (const entry of extractRedirectTargets(command)) {
+    if (entry.unresolved) continue;
+    if (!modes.has(entry.mode)) continue;
+    if (targetMatchesDenylist(entry.target, compiled, repoRoot, home)) return true;
+  }
+  return false;
+}
+
+/**
+ * Compile a rule's `target-denylist` into the two glob classes described in
+ * `redirectRuleMatches` (#1362): repo-relative entries and home-anchored (`~/…`)
+ * entries. Extracted so a SECOND rule class can reuse the exact same compilation
+ * instead of growing a third copy of the glob logic (#1401) — the file already
+ * carries that warning at `findMatchedRedirectEntry` in the consuming hook.
+ *
+ * An unexpandable `~` (no usable `home`) contributes NOTHING — fail-closed for
+ * the home-anchored class, since an unexpanded `~` names no file.
+ *
+ * @param {string[]} denylist
+ * @param {string|undefined} home
+ * @returns {{ relRegexes: RegExp[], absRegexes: RegExp[] }}
+ */
+function compileTargetDenylist(denylist, home) {
   const relRegexes = [];
   const absRegexes = [];
   for (const pattern of denylist) {
@@ -1824,38 +1850,48 @@ export function redirectRuleMatches(rule, command, opts = {}) {
       relRegexes.push(redirectGlobToRegExp(text));
     }
   }
-  if (relRegexes.length === 0 && absRegexes.length === 0) return false;
+  return { relRegexes, absRegexes };
+}
 
-  for (const entry of extractRedirectTargets(command)) {
-    if (entry.unresolved) continue;
-    if (!modes.has(entry.mode)) continue;
+/**
+ * Test ONE resolved target text against a compiled denylist.
+ *
+ * A RELATIVE target is repo-root-relative in BOTH classes, exactly as the
+ * repo-relative class already treats it (#994 R1) — otherwise
+ * `../../.claude/projects/<enc>/memory/MEMORY.md` from the repo root names the
+ * very file the `~` spelling blocks, and only the spelling would be denied
+ * (measured 2026-09-13: relative `>`/`>>` ALLOW vs tilde/absolute BLOCK on one
+ * and the same resolved path). This resolves TARGETS, never ENTRIES: a
+ * repo-relative denylist entry still goes through `repoRelativeRedirectTarget`
+ * and still cannot reach out of the root.
+ *
+ * @param {string} rawTarget — resolved target text (quotes already stripped)
+ * @param {{ relRegexes: RegExp[], absRegexes: RegExp[] }} compiled
+ * @param {string|null} repoRoot
+ * @param {string|undefined} home
+ * @returns {boolean}
+ */
+function targetMatchesDenylist(rawTarget, compiled, repoRoot, home) {
+  const { relRegexes, absRegexes } = compiled;
 
-    if (absRegexes.length > 0) {
-      // A RELATIVE target is repo-root-relative here, exactly as the repo-relative
-      // class already treats it (#994 R1) — otherwise `> ../../.claude/projects/
-      // <enc>/memory/MEMORY.md` from the repo root names the very file the `~`
-      // spelling blocks, and only the spelling would be denied (measured
-      // 2026-09-13: relative `>`/`>>` ALLOW vs tilde/absolute BLOCK on one and
-      // the same resolved path). This resolves TARGETS, never ENTRIES: a
-      // repo-relative denylist entry keeps going through
-      // `repoRelativeRedirectTarget` below and still cannot reach out of the root.
-      const expandedTarget = expandLeadingHome(entry.target, home);
-      const absTarget = path.isAbsolute(expandedTarget)
-        ? expandedTarget
-        : repoRoot && path.isAbsolute(repoRoot)
-          ? path.resolve(repoRoot, expandedTarget)
-          : null;
-      if (absTarget !== null) {
-        const folded = foldAbsoluteTarget(absTarget);
-        if (absRegexes.some((re) => re.test(folded))) return true;
-      }
-    }
-
-    if (relRegexes.length > 0) {
-      const target = repoRelativeRedirectTarget(entry.target, repoRoot, home);
-      if (target !== null && relRegexes.some((re) => re.test(target))) return true;
+  if (absRegexes.length > 0) {
+    const expandedTarget = expandLeadingHome(rawTarget, home);
+    const absTarget = path.isAbsolute(expandedTarget)
+      ? expandedTarget
+      : repoRoot && path.isAbsolute(repoRoot)
+        ? path.resolve(repoRoot, expandedTarget)
+        : null;
+    if (absTarget !== null) {
+      const folded = foldAbsoluteTarget(absTarget);
+      if (absRegexes.some((re) => re.test(folded))) return true;
     }
   }
+
+  if (relRegexes.length > 0) {
+    const target = repoRelativeRedirectTarget(rawTarget, repoRoot, home);
+    if (target !== null && relRegexes.some((re) => re.test(target))) return true;
+  }
+
   return false;
 }
 
@@ -1873,6 +1909,217 @@ function foldAbsoluteTarget(abs) {
   return stripPathAliases(path.posix.normalize(String(abs).replace(/\\/g, '/'))).toLocaleLowerCase(
     'en-US',
   );
+}
+
+/**
+ * Verbs that REMOVE or RELOCATE a file named as a bare operand (#1401).
+ *
+ * `mv` is here for BOTH of its operand roles: the SOURCE disappears from its
+ * path, and the DESTINATION is overwritten when it already exists — either one
+ * loses the file that was there. So every operand of these verbs is a candidate,
+ * with no source/destination distinction to get wrong.
+ *
+ * NAMED CEILING (BV-004) — measured 2026-09-19 against `splitChainSegments` +
+ * `resolveSegmentVerb`. COVERED, because the verb resolves through the existing
+ * machinery: bare `rm`/`mv`/`unlink`; `env X=1 rm …`, `sudo rm …`, `timeout 5 rm
+ * …`, `nohup`/`nice`/`stdbuf`/`command`/`exec` (WRAPPER_UNWRAP); every chain
+ * position (`;`, `&&`, `||`, `|`, `&`, newline) and compound-statement head
+ * (`do rm …`, `{ rm …; }` — COMMAND_POSITION_KEYWORDS); and the literal payload
+ * of `bash -c '…'` / `env -S '…'` / `eval '…'` via the shared payload recursion.
+ *
+ * NOT covered, deliberately, because the deleted path is not lexically an
+ * operand of a resolvable verb:
+ *   - `find … -delete` / `find … -exec rm {} \;` — the verb is `find`; its path
+ *     operand is a SEARCH ROOT, and treating a search root as a delete target
+ *     would also flag a pure `find … -print` over the same directory.
+ *   - `… | xargs rm` — the targets arrive on stdin and do not exist as command
+ *     text at hook time. `xargs` is deliberately NOT in WRAPPER_UNWRAP (see
+ *     there: unwrapping it could only LOOSEN the guard).
+ *   - `git rm <path>` — the verb is `git`; a git-subverb grammar is a separate
+ *     table. PSA-007 already bans `git rm` for dispatched subagents.
+ *   - in-process deletion (`node -e 'fs.unlinkSync(…)'`) — not redirect- or
+ *     operand-shaped; same class boundary the `redirect-harness-memory`
+ *     rationale draws for `tee -a` and `fs.appendFileSync`.
+ * REVISIT TRIGGER: any of those four shapes showing up in a real deletion
+ * incident or a transcript census — extend this set or add the sibling grammar,
+ * never special-case one command.
+ */
+const PATH_DESTRUCTIVE_VERBS = new Set(['rm', 'mv', 'unlink']);
+
+/**
+ * Recursive collector behind {@link extractDeleteTargets}. Mirrors
+ * collectRedirectTargets' structure — same segment walk, same dual-reading
+ * union, same depth/budget caps and the same fail-VISIBLE cut-off markers.
+ *
+ * @param {Array<Array<{ text: string, quoted: boolean, redirect?: object }>>} segments
+ * @param {Array<object>} out — accumulator
+ * @param {number} depth
+ * @param {{ remaining: number }} budget
+ */
+function collectDeleteTargets(segments, out, depth, budget) {
+  for (const segment of segments) {
+    const resolved = resolveSegmentVerb(segment);
+
+    // BOTH readings of an ambiguous unknown WRAPPER flag contribute (#1000),
+    // unioned and never replaced: `env -Q x rm .orchestrator/metrics/events.jsonl`
+    // resolves to the non-destructive verb `x` in parse A and to `rm` in parse B,
+    // while `sudo -n rm <file>` is the mirror case (parse B swallows `rm` as
+    // `-n`'s operand). Picking either reading alone drops one of the two.
+    const readings = resolved.alt ? [resolved, resolved.alt] : [resolved];
+    const seen = new Set();
+
+    for (const reading of readings) {
+      if (!reading.verb || reading.index < 0) continue;
+      if (!PATH_DESTRUCTIVE_VERBS.has(reading.verb)) continue;
+      // A verb that only exists inside a quoted token is inert literal text for
+      // this segment — same rule commandHasRecursiveForceRm applies. An
+      // interpreter's quoted payload is reached through the recursion below
+      // instead, where it is re-tokenized as the command it really is.
+      if (segment[reading.index].quoted) continue;
+
+      let seenDashDash = false;
+      for (let i = reading.index + 1; i < segment.length; i++) {
+        const tok = segment[i];
+        // A redirect operand is a filename the SHELL consumes, not an operand of
+        // the verb — `rm -f x > out.log` deletes `x`, it does not delete
+        // `out.log` (the redirect surface judges that one).
+        if (tok.redirect) { i = redirectSpanEnd(segment, i); continue; }
+        if (!seenDashDash && tok.text === '--') { seenDashDash = true; continue; }
+        // FLAG SKIPPING, and why this is the UNION of both flag readings rather
+        // than a pick (#1000 applied to the VERB's own options): an option table
+        // cannot enumerate every flag `rm`/`mv` may grow, and the two possible
+        // readings of an unknown one are "boolean" (the next word is an operand)
+        // and "value-taking" (the next word is the flag's value). The
+        // value-taking reading is a strict SUBSET of the boolean one here — it
+        // can only HIDE a word, never reveal one — so collecting under the
+        // boolean reading yields exactly the union of both. That is also the
+        // fail-closed direction: `mv -t .orchestrator/metrics/ x` reports the
+        // `-t` operand as a candidate (it IS a destination that can overwrite),
+        // where a value-taking reading would have swallowed it silently.
+        if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') continue;
+
+        const key = `${reading.verb}\u0000${tok.text}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        if (/[$`]/.test(tok.text)) {
+          // Variable indirection (`rm -f "$LEDGER"`) or command substitution:
+          // fail-visible, never guess (#983 rule, same direction).
+          out.push({
+            target: null, verb: reading.verb, unresolved: true, reason: 'variable/substitution',
+          });
+          continue;
+        }
+        out.push({ target: tok.text, verb: reading.verb });
+      }
+    }
+
+    // Literal `-c` / `env -S` / `eval` payload recursion — the same deduped
+    // union helper and the same shared budget the match and redirect surfaces
+    // use, so this traversal cannot be starved any differently than those.
+    const payloads = dedupedSegmentPayloads(segment, resolved);
+    if (payloads.length === 0) continue;
+
+    // A cap that drops payloads SILENTLY is a bypass, not a cap (#988 T2) —
+    // emit a marker so the consuming hook can surface it.
+    if (depth >= MAX_PAYLOAD_DEPTH) {
+      out.push({ target: null, verb: null, unresolved: true, reason: 'depth-exceeded' });
+      continue;
+    }
+    for (const payload of payloads) {
+      if (budget.remaining <= 0) {
+        out.push({ target: null, verb: null, unresolved: true, reason: 'budget-exhausted' });
+        break;
+      }
+      budget.remaining -= 1;
+      const subTokens = tokenizeCommand(
+        normalizeShellWhitespaceExpansions(payload, { expandSingleQuoted: true }),
+      );
+      collectDeleteTargets(splitSegments(subTokens), out, depth + 1, budget);
+    }
+  }
+}
+
+/**
+ * Extract every path a command names as an operand of a file-destroying verb
+ * (`rm`, `mv`, `unlink` — see {@link PATH_DESTRUCTIVE_VERBS} for the covered and
+ * uncovered shapes), across all chain segments and literal shell payloads (#1401).
+ *
+ * This is the DELETE/RENAME sibling of `extractRedirectTargets`: that one answers
+ * "which file does this command WRITE", this one "which file does it REMOVE or
+ * MOVE". They are separate surfaces because a redirect target and a verb operand
+ * are different grammar positions — `rm -f x > out.log` names one of each, and
+ * the guard's 53,896-line telemetry loss (#1401) happened because only the write
+ * surface was ever consulted.
+ *
+ * Entry shapes:
+ *   - `{ target: string, verb: 'rm'|'mv'|'unlink' }` — resolved operand, quotes
+ *     stripped by the tokenizer.
+ *   - `{ target: null, verb, unresolved: true, reason: 'variable/substitution' }`
+ *     — the operand carries a variable or a command substitution. Reported
+ *     fail-visible; never a match candidate (#641 FP class).
+ *   - `{ target: null, verb: null, unresolved: true,
+ *      reason: 'budget-exhausted'|'depth-exceeded' }` — a payload subtree was NOT
+ *     traversed because a recursion cap cut it off (#988 T2).
+ *
+ * @param {string} command
+ * @returns {Array<{ target: string|null, verb: string|null, unresolved?: boolean, reason?: string }>}
+ */
+export function extractDeleteTargets(command) {
+  if (typeof command !== 'string' || command.length === 0) return [];
+  const out = [];
+  const segments = splitSegments(tokenizeCommand(normalizeShellWhitespaceExpansions(command)));
+  collectDeleteTargets(segments, out, 0, { remaining: MAX_PAYLOAD_EVALUATIONS });
+  return out;
+}
+
+/**
+ * Return the FIRST collected delete/rename target a `path-delete` policy rule's
+ * `target-denylist` matches, or `null` when none does (#1401).
+ *
+ * Returns the ENTRY, not a boolean, so the consuming hook can name the verb and
+ * the target in its deny reason without re-probing through a boolean matcher —
+ * the workaround `findMatchedRedirectEntry` needs, and which its own docblock
+ * flags as one copy too many.
+ *
+ * Takes pre-collected `entries` rather than the raw command so the hook
+ * tokenizes ONCE (it needs the same array for the unresolved-marker notices).
+ *
+ * PER-TARGET, never per-command: every entry is judged on its own, so a sibling
+ * operand that is NOT on the denylist can never lift the verdict for one that
+ * is. `rm -f .orchestrator/tmp/ok .orchestrator/metrics/events.jsonl` matches on
+ * the second operand — the exemption is the ABSENCE of a denylist entry for
+ * `.orchestrator/tmp/**`, never a whole-command escape clause. That shape is the
+ * #1106 hole (`guard-design.md` § "Widening a matcher without narrowing its
+ * bypass"), where an appended exempt statement lifted the verdict for the whole
+ * command; it is structurally unreachable here.
+ *
+ * Denylist semantics (globs, the two classes, `~` handling, case-folding,
+ * repo-root relativization) are IDENTICAL to `redirectRuleMatches` — both call
+ * `compileTargetDenylist` / `targetMatchesDenylist`, so the two rule classes can
+ * never drift apart on what a pattern means.
+ *
+ * @param {{ 'target-denylist'?: string[] }} rule
+ * @param {Array<{ target: string|null, verb: string|null, unresolved?: boolean }>} entries
+ * @param {{ repoRoot?: string|null, home?: string|undefined }} [opts]
+ * @returns {{ target: string, verb: string }|null}
+ */
+export function firstDeniedDeleteTarget(rule, entries, opts = {}) {
+  const { repoRoot = null, home = process.env.HOME } = opts;
+  if (!rule || !Array.isArray(entries) || entries.length === 0) return null;
+  const denylist = Array.isArray(rule['target-denylist']) ? rule['target-denylist'] : [];
+  if (denylist.length === 0) return null;
+
+  const compiled = compileTargetDenylist(denylist, home);
+  if (compiled.relRegexes.length === 0 && compiled.absRegexes.length === 0) return null;
+
+  for (const entry of entries) {
+    if (entry.unresolved || typeof entry.target !== 'string') continue;
+    if (targetMatchesDenylist(entry.target, compiled, repoRoot, home)) {
+      return { target: entry.target, verb: entry.verb };
+    }
+  }
+  return null;
 }
 
 /**

@@ -31,6 +31,7 @@
  *  - estimateInputTokens(str)          — char-count/4 heuristic
  *  - checkBudget(estimated, budget)    — verdict for the budget gate
  *  - buildJudgePrompt(skills, tail, nonce) — pure prompt assembly (untrusted-data fence)
+ *  - evidenceBudgetChars(skills, budget)   — characters left for evidence after the prompt frame
  *  - parseJudgeResponse(text)          — extract one fenced ```json block, validate, drop malformed
  */
 
@@ -53,6 +54,9 @@ export const DEFAULT_BUDGET = Object.freeze({ input: 8000, output: 4000 });
 
 /** Industry-standard heuristic: ~4 chars per token for English prose. */
 const CHARS_PER_TOKEN = 4;
+
+/** Hex length of the per-call untrusted-data nonce (`randomBytes(16)` → 32 hex). */
+const NONCE_HEX_LENGTH = 32;
 
 // ---------------------------------------------------------------------------
 // Pure-function gates
@@ -183,6 +187,25 @@ export function buildJudgePrompt(selectedSkills, transcriptTail, nonce) {
 }
 
 /**
+ * How many characters of evidence fit inside `budget.input` for THIS judged set.
+ *
+ * The caller must not have to guess: the prompt frame is MEASURED by building
+ * the very prompt that will be sent with an empty fence, so the answer tracks
+ * every future edit to `buildJudgePrompt` automatically. The nonce is
+ * length-accurate (`NONCE_HEX_LENGTH`) rather than the real random value, since
+ * only its length affects the frame.
+ *
+ * @param {string[]} selectedSkills — the judged set (its JSON is part of the frame)
+ * @param {{input?: number}} [budget]
+ * @returns {number} characters available for `evidence.text` (never negative)
+ */
+export function evidenceBudgetChars(selectedSkills = [], budget = DEFAULT_BUDGET) {
+  const maxInput = typeof budget?.input === 'number' ? budget.input : DEFAULT_BUDGET.input;
+  const frame = buildJudgePrompt(selectedSkills, '', 'f'.repeat(NONCE_HEX_LENGTH)).length;
+  return Math.max(0, maxInput * CHARS_PER_TOKEN - frame);
+}
+
+/**
  * Parse the judge response into validated judgment records. Extracts the FIRST
  * fenced ```json block, JSON.parses it, and validates each entry against
  * skill-judgments-schema (stamping event/timestamp/advisory/model-agnostic
@@ -253,7 +276,7 @@ export function parseJudgeResponse(text) {
 
 /**
  * @typedef {Object} JudgeResult
- * @property {'ok' | 'empty-input' | 'budget-exceeded'} status
+ * @property {'ok' | 'empty-input' | 'no-evidence' | 'budget-exceeded'} status
  * @property {Array<{skill: string, applied: string, completed: string, confidence: number}>} judgments
  * @property {{input_tokens?: number, output_tokens?: number, estimated_input?: number}} [usage]
  * @property {string} [skipped_reason]
@@ -269,6 +292,7 @@ export function parseJudgeResponse(text) {
  *
  * Control flow (matches the ratified #645 L3 contract):
  *   - empty selectedSkills → {status:'empty-input', judgments:[]} (no dispatch).
+ *   - empty evidence text  → {status:'no-evidence', judgments:[]} (no dispatch, #1399).
  *   - budget exceeded     → {status:'budget-exceeded', judgments:[]} (no dispatch,
  *                            NOT truncated — mirrors dialectic-deriver).
  *   - else → dispatch → parse → {status:'ok', judgments, usage}.
@@ -277,7 +301,8 @@ export function parseJudgeResponse(text) {
  * @param {(args: {model: string, prompt: string, maxTokens: number}) => Promise<{text: string, usage?: {input_tokens?: number, output_tokens?: number}}>} opts.dispatchAgent — REQUIRED, injected DI boundary
  * @param {string} [opts.repoRoot]
  * @param {string|null} [opts.sessionId]
- * @param {string} [opts.transcriptTail]
+ * @param {{text?: string}} [opts.evidence] — preferred input; `buildSkillEvidence()` output (#1399)
+ * @param {string} [opts.transcriptTail] — legacy raw-string input; used when `evidence` is absent
  * @param {string[]} [opts.selectedSkills]
  * @param {'haiku'|'sonnet'|'opus'} [opts.model='haiku']
  * @param {{input: number, output: number}} [opts.budget]
@@ -293,6 +318,7 @@ export async function runSkillJudge({
   // `_`-prefixed names so the contract keys stay documented without tripping no-unused-vars.
   repoRoot: _repoRoot,
   sessionId: _sessionId,
+  evidence,
   transcriptTail = '',
   selectedSkills = [],
   model = 'haiku',
@@ -313,8 +339,24 @@ export async function runSkillJudge({
     return { status: 'empty-input', judgments: [], skipped_reason: 'no-selected-skills' };
   }
 
+  // Gate 2b (#1399): empty evidence — do NOT dispatch. Measured 2026-09-19 at
+  // `8f15f77b`: a prompt whose fence is empty is 1387 chars = 346 estimated
+  // tokens, so the budget gate below waves it through and the judge is asked to
+  // rule on a transcript it was never shown. An advisory verdict from no
+  // evidence is worse than no verdict — it looks exactly like a real one in
+  // `skill-judgments.jsonl`.
+  const evidenceText =
+    typeof evidence?.text === 'string' && evidence.text.trim()
+      ? evidence.text
+      : typeof transcriptTail === 'string'
+        ? transcriptTail
+        : '';
+  if (!evidenceText.trim()) {
+    return { status: 'no-evidence', judgments: [], skipped_reason: 'empty-transcript-evidence' };
+  }
+
   const nonce = randomNonce();
-  const prompt = buildJudgePrompt(skills, transcriptTail, nonce);
+  const prompt = buildJudgePrompt(skills, evidenceText, nonce);
 
   // Gate 3: budget — fail-fast BEFORE dispatch when the prompt would exceed it.
   const estimatedInput = estimateInputTokens(prompt);
