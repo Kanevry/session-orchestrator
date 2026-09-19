@@ -31,9 +31,42 @@
  */
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+
+/**
+ * sha256(command), auf 16 Hex-Zeichen gekuerzt.
+ *
+ * WORTGLEICH zu `hashCommand()` in `hooks/pre-bash-destructive-guard.mjs:245`
+ * (das seinerseits `loop-guard.mjs` hashArgs() spiegelt). Bewusst dupliziert
+ * statt geteilt: ein Hook darf beim Start nicht an einem weiteren Modul
+ * haengen, das fehlen kann — die drei Zeilen sind billiger als ein
+ * Ladefehler auf dem PreToolUse-Pfad.
+ *
+ * WARUM ES DEN HELFER HIER BRAUCHT (2026-09-19, EventDrop #1140):
+ * Die `foreign_session_ignored`-Nutzlast dieses Hooks trug bis heute das
+ * ROHE Kommando. Gemessen in EventDrop.at: 3.816 Zeilen in der getrackten
+ * `.orchestrator/metrics/events.jsonl` mit rohem `command`, darin 24
+ * distinkte ECHTE Produktions-Share-Codes aus 17 fremden Kundenkonten und
+ * ein protokollierter `select access_pin_hash`. Bei 23 dieser Events ist
+ * der Share-Code die vollstaendige Capability — `/event/<code>` oeffnet das
+ * Album ohne Anmeldung. Das Journal ist getrackt und geht bei jedem Klon mit.
+ * Der Geschwisterhook `pre-bash-destructive-guard.mjs` machte es von Anfang
+ * an richtig und sagt es im eigenen Kopf: „Payload never includes the raw
+ * command — only a truncated sha256 command_hash."
+ *
+ * Der Hash haelt das Ereignis ZAEHLBAR und GRUPPIERBAR — genau die
+ * Eigenschaft, fuer die es laut `docs/scope-collision-guard.md` existiert.
+ * Das rohe Kommando wurde von keinem Konsumenten gelesen.
+ *
+ * @param {string} command
+ * @returns {string}
+ */
+function hashCommand(command) {
+  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
+}
 // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
 if (!shouldRunHook('enforce-commands')) process.exit(0);
 
+import crypto from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -298,7 +331,7 @@ async function main() {
             manifest_session: manifestIds,
             own_session: [...ownIds],
             wave: scope.wave,
-            command,
+            command_hash: hashCommand(command),
           },
           { repoRoot: projectRoot },
         );
