@@ -262,7 +262,7 @@ der Mindestabstand seit dem letzten Scan verstrichen ist.
   `spawnSync` den Event Loop blockiert und `child.pid` erst nach Prozessende liefert.
 - `scripts/run-quality-gate.mjs` — Timeout ergänzen.
 - `scripts/lib/gates/gate-helpers.mjs` — `execSync` → deckelbarer Aufruf.
-- `scripts/lib/orphan-reaper.mjs` — **neu**, nach dem `resolveDeps()`-Muster aus
+- `scripts/lib/orphan-reaper.mjs` — **neu**, nach dem `resolveDeps()`-Muster aus <!-- path-check: planned #1430 -->
   `lock-reaper.mjs:77-100`, mit neuem Slot `deps.killProcess`.
 - `scripts/lib/resource-probe/probe-platform.mjs` — `ps`-Spalten um `ppid`, `rss`, `args`
   erweitern (eigener Aufruf, um `probe()` nicht zu verteuern).
