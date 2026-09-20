@@ -504,7 +504,7 @@ export function renderEvidence(records, located, opts = {}) {
     const errored = anchors.some((a) => a.errored);
     const header =
       `### ${skill} — ${info.invocations} invocation(s), kinds: ` +
-      `${[...new Set(anchors.map((a) => a.kind))].join(',')}` +
+      `${[...new Set(anchors.map((a) => a.kind))].join(', ')}` +
       `${errored ? ', at least one call errored' : ''}`;
     sections.push(`${header}\n${body.text}`);
     perSkill.push({
