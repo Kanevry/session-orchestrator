@@ -3,6 +3,7 @@
 **Date:** 2026-09-20
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
 **Status:** Draft
+**Epic:** #1425
 **Appetite:** Stufe 1 zuerst, Stufe 2 als Option danach (Reihenfolge zählt, nicht Kalenderzeit)
 **Parent Project:** session-orchestrator
 
