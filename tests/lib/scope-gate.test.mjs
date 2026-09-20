@@ -490,6 +490,41 @@ describe('gradeScopeEntry — canonical spelling decides what Gate 5b reaches (#
     expect(gradeScopeEntry('/tmp/x/**')).toMatchObject({ verdict: 'warn' });
   });
 
+  it('refuses the macOS alias spellings WITHOUT a resolver — the shape the hook calls', () => {
+    // The bug, named: `/private/etc/**` is the spelling Gate 5b ACTUALLY
+    // matches (it matches the realpath-resolved candidate, and realpath('/etc')
+    // is '/private/etc' on this platform), so it is the spelling that grants
+    // everything under /etc — and the resolver-free caller stayed SILENT on it
+    // while warning about `/etc/**`, which reaches nothing there. Measured
+    // 2026-09-20 @ 7e110a2a: hook `warn/absolute`, validator
+    // `error/denied-system-dir`, for both entries. The notice was inert on the
+    // only platform that mints these spellings.
+    expect(gradeScopeEntry('/private/etc/**')).toMatchObject({
+      verdict: 'error',
+      code: 'denied-system-dir',
+    });
+    expect(gradeScopeEntry('/private/var/**')).toMatchObject({
+      verdict: 'error',
+      code: 'denied-system-dir',
+    });
+
+    // The property that failed is AGREEMENT, not severity: one predicate, two
+    // argument shapes. Full-object equality, so a divergence in the message the
+    // operator reads fails here too.
+    expect(gradeScopeEntry('/private/etc/**')).toEqual(
+      gradeScopeEntry('/private/etc/**', { resolve: fakeResolve }),
+    );
+
+    // Counter-direction — the omission of `private/tmp` from the alias list is
+    // load-bearing: `tmp` is not denylisted either, because this IS the #792
+    // sanctioned scratchpad grant. A list that swept it up would refuse the one
+    // out-of-repo grant the mechanism exists to permit.
+    expect(gradeScopeEntry('/private/tmp/so-session-abc/scratchpad/**')).toMatchObject({
+      verdict: 'warn',
+      code: 'absolute',
+    });
+  });
+
   it('degrades to the literal spelling when the resolver throws', () => {
     const boom = () => { throw new Error('ENOENT'); };
     expect(gradeScopeEntry('/private/tmp/x/**', { resolve: boom })).toMatchObject({ verdict: 'warn' });

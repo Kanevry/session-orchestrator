@@ -119,6 +119,29 @@ const GIT_ADD_VALUE_FLAGS = new Set(['--chmod']);
 /** `git add` long flags that stage a set no path operand names. */
 const GIT_ADD_ALL_FLAGS = new Set(['--all', '--no-ignore-removal', '--update']);
 
+/**
+ * Shells whose `-c <payload>` operand is a command line the shell EXECUTES, so
+ * a `git add` inside it stages this working copy for real.
+ *
+ * DELIBERATE DUPLICATE of `DASH_C_SHELLS` in scripts/lib/command-blocker.mjs —
+ * that module does not export it (nor its `dashCPayloads`), and #1404's own
+ * rule for this hook is to consume the tokenizer, not to edit it (5 other
+ * consumers). Change one, change both.
+ */
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
+
+/**
+ * Payload recursion depth for {@link scanForStagedPaths}. ONE level: it covers
+ * `bash -c "git add x"` and `xargs -I{} sh -c "git add x"`, which is the whole
+ * measured regression class (2026-09-20), and keeps a hook that runs on EVERY
+ * Bash call from re-tokenizing an arbitrarily nested string.
+ *
+ * NAMED CEILING (BV-004): `bash -c "bash -c 'git add x'"` is not recorded.
+ * REVISIT TRIGGER: raise to 2 if a doubly-nested staging command is ever
+ * observed in a wave transcript.
+ */
+const MAX_PAYLOAD_DEPTH = 1;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -184,26 +207,116 @@ function normalizeStagedPath(raw) {
  *  - A command the tokenizer resolves to no `git add` statement (`echo "git
  *    add x"` — G3's documented, tolerated false positive) yields an EMPTY
  *    list, never the marker: over-reporting here would turn a log line into a
- *    blocked commit, which the hook's fail-safe posture forbids.
+ *    blocked commit, which the hook's fail-safe posture forbids. This is also
+ *    why a blanket "pre-filter hit but nothing resolved → `paths: ['*']`"
+ *    floor was REJECTED at the 2026-09-20 fix: `git commit -m "add x"` matches
+ *    {@link GIT_ADD_REGEX}, and the marker overlaps EVERY staged path, so that
+ *    floor manufactures a collision for a command that stages nothing.
+ *  - A staging command a shell never executes locally is not recorded, and
+ *    should not be: `ssh host 'git add x'` stages a REMOTE index, and
+ *    `git submodule foreach "git add x"` stages the SUBMODULE's — neither can
+ *    collide with a sibling agent in this working copy.
+ *    REVISIT TRIGGER: if the commit-guard ever reconciles submodule indexes.
  *
  * @param {string} command
  * @returns {Promise<{ recognised: boolean, paths: string[] }>}
  */
 async function extractStagedPaths(command) {
-  let tokenizeCommand, splitChainSegments, resolveSegmentVerb, segments;
+  let lib;
   try {
-    ({ tokenizeCommand, splitChainSegments, resolveSegmentVerb } =
-      await import('../scripts/lib/command-blocker.mjs'));
-    segments = splitChainSegments(tokenizeCommand(command));
+    lib = await import('../scripts/lib/command-blocker.mjs');
   } catch {
     return { recognised: false, paths: [] };
   }
 
   const paths = new Set();
-  let recognised = false;
+  const state = { recognised: false };
+  scanForStagedPaths(command, lib, paths, state, 0);
+  return { recognised: state.recognised, paths: [...paths] };
+}
+
+/**
+ * Collect the command lines a shell nested in this segment will EXECUTE.
+ *
+ * Two sources, unioned:
+ *  - wrapper payloads `resolveSegmentVerb` already reports (`env -S '…'`),
+ *    across both readings of an ambiguous dual parse (#1000);
+ *  - a `-c`-style operand following a {@link DASH_C_SHELLS} token ANYWHERE in
+ *    the segment, not only in resolved-verb position. The wider scan is what
+ *    covers `xargs -I{} sh -c "git add x"` and `find … -exec sh -c "…" \;`,
+ *    whose resolved verb is `xargs`/`find`; keying on the shell TOKEN instead
+ *    of the verb also keeps `grep -c <pattern>` out, because `grep` is not a
+ *    shell name.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {{ payloads: string[], alt?: { payloads: string[] } }} resolved
+ * @returns {string[]} distinct payload strings
+ */
+function nestedShellPayloads(segment, resolved) {
+  const out = new Set();
+  for (const reading of [resolved, resolved.alt]) {
+    if (!reading) continue;
+    for (const p of reading.payloads) out.add(p);
+  }
+  for (let i = 0; i < segment.length - 1; i++) {
+    const tok = segment[i];
+    if (tok.quoted || !DASH_C_SHELLS.has(path.basename(tok.text))) continue;
+    for (let j = i + 1; j < segment.length - 1; j++) {
+      if (/^-[A-Za-z]*c$/.test(segment[j].text)) {
+        out.add(segment[j + 1].text);
+        break;
+      }
+    }
+  }
+  return [...out];
+}
+
+/**
+ * One tokenize + per-segment pass of {@link extractStagedPaths}, re-entered
+ * once per nested shell payload (bounded by {@link MAX_PAYLOAD_DEPTH}).
+ *
+ * Accumulates into the caller's `paths` set and `state.recognised` flag rather
+ * than returning, so a nested hit and a top-level hit compose:
+ * `git add a && bash -c "git add b"` records BOTH.
+ *
+ * @param {string} command
+ * @param {{ tokenizeCommand: Function, splitChainSegments: Function,
+ *           resolveSegmentVerb: Function }} lib
+ * @param {Set<string>} paths - OUT
+ * @param {{ recognised: boolean }} state - OUT
+ * @param {number} depth
+ * @returns {void}
+ */
+function scanForStagedPaths(command, lib, paths, state, depth) {
+  let segments;
+  try {
+    segments = lib.splitChainSegments(lib.tokenizeCommand(command));
+  } catch {
+    return;
+  }
 
   for (const segment of segments) {
-    const { verb, index } = resolveSegmentVerb(segment);
+    const resolved = lib.resolveSegmentVerb(segment);
+
+    // A staging command nested in `bash -c "…"` resolves to the verb `bash`,
+    // so the loop below never sees it. Before #1404 the raw-text regex matched
+    // it INSIDE the quotes and the reader's path regex found the collision;
+    // the tokenizer rewrite dropped the whole class silently (measured
+    // 2026-09-20: `bash -c "git add src/foo.ts"` → no fence file at all). The
+    // fence is cross-agent collision detection, so a miss is silent in BOTH
+    // directions — re-enter the same extraction on the payload.
+    if (depth < MAX_PAYLOAD_DEPTH) {
+      for (const payload of nestedShellPayloads(segment, resolved)) {
+        // The G3 pre-filter again, on the payload: same cheap question, same
+        // tolerated false positives, and it keeps an unrelated `-c` operand
+        // from paying for a second tokenize.
+        if (typeof payload === 'string' && GIT_ADD_REGEX.test(payload)) {
+          scanForStagedPaths(payload, lib, paths, state, depth + 1);
+        }
+      }
+    }
+
+    const { verb, index } = resolved;
     if (verb !== 'git' || index < 0) continue;
 
     let i = index + 1;
@@ -222,7 +335,7 @@ async function extractStagedPaths(command) {
     }
 
     if (i >= segment.length || segment[i].quoted || segment[i].text !== 'add') continue;
-    recognised = true;
+    state.recognised = true;
     i += 1;
 
     let endOfFlags = false;
@@ -255,8 +368,6 @@ async function extractStagedPaths(command) {
 
     if (stagesAll) paths.add(ALL_PATHS_MARKER);
   }
-
-  return { recognised, paths: [...paths] };
 }
 
 /**

@@ -261,6 +261,34 @@ describe('validate-wave-scope.mjs — catastrophic absolute grant rejection (#87
     expect(r.stderr).toMatch(/WARNING.*no wildcard/);
   });
 
+  // The root check was LITERAL while the thing that grants the root is a GLOB.
+  // Measured 2026-09-20 @ 7e110a2a: `/` → error/filesystem-root and `/etc/**` →
+  // error/denied-system-dir, but `/**` → warn/absolute — and `/**` matches every
+  // path through pathMatchesPattern at Gate 5b, i.e. it is strictly WIDER than
+  // both hard errors beside it. A single hallucinated entry in that spelling
+  // handed the wave the whole host with a stderr line instead of an exit 1.
+  it.each([
+    ['POSIX root + recursive glob', '/**'],
+    ['POSIX root + single-segment glob', '/*'],
+    ['doubled separator', '//**'],
+    ['Windows drive + glob, backslash', 'C:\\**'],
+    ['Windows drive + glob, forward slash', 'C:/**'],
+  ])('rejects a root-wide glob grant — %s: %s', (_label, entry) => {
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: [entry] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*filesystem root/);
+  });
+
+  // Counter-direction: the widened predicate must not swallow a DEEP glob. A
+  // literal segment after the root narrows the grant, so these keep their own
+  // (non-root) verdicts — `/**/x` is not the filesystem, and `/Users/<u>/<p>/**`
+  // is the #792 happy path.
+  it('does NOT read a deep glob as a root grant', () => {
+    const deep = run(JSON.stringify({ ...VALID, allowedPaths: ['/private/tmp/so-x/**/notes'] }));
+    expect(deep.status).toBe(0);
+    expect(deep.stderr).not.toMatch(/filesystem root/);
+  });
+
   it('rejects the Windows literal root forms "\\\\" and "C:\\\\"', () => {
     const r1 = run(JSON.stringify({ ...VALID, allowedPaths: ['\\'] }));
     expect(r1.status).toBe(1);

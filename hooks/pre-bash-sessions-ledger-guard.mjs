@@ -247,6 +247,22 @@
  *     are covered — see "Interpreter eval payloads" below for the exact bound.
  *   - A here-doc-fed interpreter (`node <<'EOF' … EOF`): here-doc BODIES are
  *     skipped as the data they are, so the payload never reaches the matcher.
+ *   - A shell `-c` payload the segment does not NAME a shell for. Since
+ *     2026-09-20 a `-c` operand following a `bash`/`sh`/`zsh`/`dash`/`ksh`/`su`
+ *     TOKEN is re-entered by the same matcher (`bash -c '… >> …/sessions.jsonl'`
+ *     and `xargs -I{} sh -c '…'` both deny), but three shapes stay out:
+ *     `ssh host '… >> …/sessions.jsonl'` (a REMOTE ledger — not this repo's
+ *     file, so out of scope by nature, not by omission); a payload whose shell
+ *     is only reachable through expansion (`"$SHELL" -c …`, `eval "$CMD"`);
+ *     and a payload nested past MAX_PAYLOAD_DEPTH (2) — that cut is marked, not
+ *     silent, when the dropped payload mentions the ledger (#998 item 2).
+ *     This bullet REPLACES the one #1408 deleted (it named
+ *     `bash -c '… >> …/sessions.jsonl'` as uncovered, which was true, and the
+ *     replacement bullet narrowed the claim to script files and here-docs while
+ *     the hole stayed open — a guard may have limits, it may not misstate them).
+ *     REVISIT TRIGGER: re-run the transcript census for interpreter one-liners
+ *     naming the ledger; widen only if one of these three shapes appears in a
+ *     REAL transcript.
  *   - Obfuscation: `eval`, `base64 -d | sh`, a here-doc-fed shell. Here-doc
  *     BODIES are skipped as the data they are — `bash <<EOF … EOF` therefore
  *     hides its payload from this matcher by construction.
@@ -1150,6 +1166,51 @@ function findInterpreterLedgerWrite(verb, args) {
 }
 
 /**
+ * Shells whose `-c <payload>` operand is a command line the shell EXECUTES.
+ *
+ * DELIBERATE DUPLICATE of `DASH_C_SHELLS` in scripts/lib/command-blocker.mjs,
+ * which does not export it (nor its `dashCPayloads`). Change one, change both.
+ */
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
+
+/**
+ * Collect the command lines a shell nested in this segment will EXECUTE, so
+ * {@link findWriteVerbTarget} can re-enter the SAME matcher on them.
+ *
+ * `resolveSegmentVerb` reports WRAPPER payloads (`env -S '…'`) and this hook
+ * has recursed on those since #982 — but a `bash -c` payload is not a wrapper
+ * payload, and command-blocker's own `dedupedSegmentPayloads` (the piece that
+ * adds them) is internal to that module. So the guard saw `bash -c` as the
+ * verb `bash` with an inert quoted operand and ALLOWED, while the identical
+ * unwrapped command DENIED — one word of bypass, measured 2026-09-20.
+ *
+ * Keyed on a shell TOKEN anywhere in the segment rather than on the resolved
+ * verb: that is what reaches `xargs -I{} sh -c "…"` (verb `xargs`) and
+ * `find … -exec sh -c "…" \;`, and it keeps `grep -c <pattern>` out, because
+ * `grep` is not a shell name. Recursion is bounded by MAX_PAYLOAD_DEPTH, and a
+ * payload that carries no write intent still ALLOWs — the false-positive floor
+ * (`bash -c "jq . <ledger>"`, `bash -c "tail -1 <ledger> | jq ."`) is judged by
+ * the same matcher as its unwrapped form, not by a second, weaker one.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {string[]} distinct payload strings
+ */
+function dashCShellPayloads(segment) {
+  const out = new Set();
+  for (let i = 0; i < segment.length - 1; i++) {
+    const tok = segment[i];
+    if (tok.quoted || !DASH_C_SHELLS.has(path.basename(tok.text))) continue;
+    for (let j = i + 1; j < segment.length - 1; j++) {
+      if (/^-[A-Za-z]*c$/.test(segment[j].text)) {
+        out.add(segment[j + 1].text);
+        break;
+      }
+    }
+  }
+  return [...out];
+}
+
+/**
  * Find a non-redirect write verb (`tee`, `dd of=`, `cp`/`mv` destination)
  * whose target is the ledger.
  *
@@ -1212,6 +1273,12 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
         if (typeof wa.value === 'string' && refersToLedger(wa.value)) return wa.value;
       }
     }
+
+    // A shell `-c` payload is a command line too, and until 2026-09-20 it was
+    // the guard's one-word bypass: `bash -c "echo x >> <ledger>"` ALLOWED while
+    // `echo x >> <ledger>` DENIED. See dashCShellPayloads for why this is keyed
+    // on a shell token rather than the resolved verb.
+    for (const p of dashCShellPayloads(segment)) payloadSet.add(p);
 
     // `env -S 'tee -a <ledger>'` hides a whole command line in one operand.
     // Recurse on the payload with the SAME matcher rather than a second,

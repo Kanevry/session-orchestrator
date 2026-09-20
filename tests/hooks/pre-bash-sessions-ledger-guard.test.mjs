@@ -645,6 +645,17 @@ describe('#1408 — interpreter eval payloads', () => {
     // the predicate sits inside splitChainSegments, so it is judged on its own.
     ['a chained second statement', `jq -c . rec.json && node -e "require('fs').appendFileSync('${LEDGER}','x')"`, 'deny'],
 
+    // ---- 2026-09-20 — an interpreter append to the ledger wrapped in `bash -c`
+    // is allowed. `payloadSet` was built from `resolved.payloads` (WRAPPER
+    // payloads like `env -S`) only, never from the shell `-c` operand, so one
+    // word turned every deny below into a silent allow.
+    ['a bash -c interpreter append', `bash -c "node -e \\"require('fs').appendFileSync('${LEDGER}','x')\\""`, 'deny'],
+    ['a bash -c redirect', `bash -c "echo x >> ${LEDGER}"`, 'deny'],
+    ['a sh -c redirect', `sh -c 'echo x >> ${LEDGER}'`, 'deny'],
+    // Verb is `xargs`, not a shell — this is why the payload scan is keyed on a
+    // shell TOKEN anywhere in the segment rather than on the resolved verb.
+    ['an xargs sh -c redirect', `xargs -I{} sh -c "echo x >> ${LEDGER}"`, 'deny'],
+
     // ---- the measured ALLOW shapes. 148 of the 438 ledger-naming commands are
     // plain jq reads; the 3 interpreter one-liners that contain a write verb at
     // all are ALL ledger reads that write somewhere else.
@@ -662,6 +673,10 @@ describe('#1408 — interpreter eval payloads', () => {
     // Per-STATEMENT scoping, allow direction: a read statement followed by an
     // unrelated one must not inherit a deny from anywhere.
     ['a read statement followed by echo', `node -e "require('fs').readFileSync('${LEDGER}')" ; echo ok`, 'allow'],
+    // The false-positive floor rides the SAME matcher once wrapped — a read
+    // payload must stay allowed, or the deny rows above cost the 148 jq reads.
+    ['a bash -c jq read', `bash -c "jq . ${LEDGER}"`, 'allow'],
+    ['a bash -c tail-into-jq read', `bash -c "tail -1 ${LEDGER} | jq ."`, 'allow'],
   ])('%s', (_label, command, decision) => {
     decisionAssertions[decision](runHook({ command }));
   });

@@ -779,7 +779,20 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
    * from the canonical path or it can never match.
    */
   async function mkVault() {
-    const v = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-vault-')));
+    // The vault stands in for a SANCTIONED out-of-repo grant (#792), so it must
+    // be built under a root the grading predicate actually sanctions. On macOS
+    // `os.tmpdir()` is `/var/folders/<user>/T`, whose realpath is
+    // `/private/var/folders/…` — and `var` is on the system denylist, so the
+    // fs-backed validator grades ANY grant there `error/denied-system-dir`
+    // (measured 2026-09-20 @ 7e110a2a, i.e. before this session's change: a
+    // grant of a live `mkdtemp(os.tmpdir())` path → error). A fixture in that
+    // shape is an unfaithful double: it is labelled "clean grant" while naming
+    // the one spelling pre-dispatch validation refuses. `/tmp` → `/private/tmp`
+    // is the documented sanctioned root (see DENIED_ABSOLUTE_TOP_SEGMENTS: `tmp`
+    // is deliberately absent for exactly this reason) and is the shape
+    // `tests/scripts/validate-wave-scope.test.mjs` pins as the #792 happy path.
+    const vaultRoot = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+    const v = await fs.realpath(await fs.mkdtemp(path.join(vaultRoot, 'hook-scope-vault-')));
     tmpDirs.push(v);
     return v;
   }

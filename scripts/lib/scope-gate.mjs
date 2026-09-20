@@ -1729,9 +1729,20 @@ function clockAgeMs(file, field, now) {
 //     provably never matches because the home itself is a symlink.
 //   - With NO `resolve` the grader is PURE and grades the literal spelling only,
 //     which is what the hook does. It keeps every literal-spelling verdict
-//     (`/etc/**`, `/Users/<u>/.ssh/**`, `/Users/<u>/**`) and loses only the two
-//     canonical-alias classes above. Revisit trigger: a measurement showing the
-//     ~14 `realpathSync` calls are cheap enough for a PreToolUse hot path.
+//     (`/etc/**`, `/Users/<u>/.ssh/**`, `/Users/<u>/**`). Since #1418 it ALSO
+//     reaches the first canonical-alias class, because the two spellings macOS
+//     actually mints (`/private/etc`, `/private/var`) are on
+//     DENIED_ABSOLUTE_ALIAS_ROOTS as literals — the paragraph above stands as
+//     the reason canonicalisation is the ROOT fix, but a resolver-free caller
+//     that grades those two `warn` while the validator refuses them is not a
+//     ceiling, it is a hole on the platform this repo runs on (measured
+//     2026-09-20 @ 7e110a2a). What a resolver-free caller still cannot reach is
+//     the SECOND class, `non-canonical` (`/tmp/x/**`): proving a literal prefix
+//     resolves elsewhere IS the realpath call, and no literal list substitutes
+//     for it. That residual costs a missing NOTICE, never a wider allow — the
+//     grant matches nothing at Gate 5b either way. Revisit trigger: a
+//     measurement showing the ~14 `realpathSync` calls are cheap enough for a
+//     PreToolUse hot path.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1766,6 +1777,33 @@ const DENIED_ABSOLUTE_TOP_SEGMENTS = Object.freeze([
 ]);
 
 /**
+ * macOS symlink ALIASES of the denylisted roots above, spelled literally.
+ *
+ * `fs.realpathSync('/etc')` is `/private/etc` and `/var` → `/private/var` on
+ * this platform, and Gate 5b matches the REALPATH-RESOLVED write candidate — so
+ * `/private/etc/**` is the spelling that actually reaches everything under
+ * `/etc`, while `/etc/**` reaches nothing there. {@link gradeScopeEntry}'s
+ * canonical rung catches both, but ONLY when a resolver is passed, and
+ * `hooks/enforce-scope.mjs` passes none (PreToolUse hot path). Listing the two
+ * aliases literally gives the resolver-free caller the same verdict at ZERO
+ * syscalls. Measured 2026-09-20 @ 7e110a2a, before: hook `warn/absolute` vs.
+ * validator `error/denied-system-dir` for both entries — the feature was inert
+ * on the only platform that mints these spellings.
+ *
+ * `private/tmp` is deliberately ABSENT, and the omission is load-bearing: `tmp`
+ * is not on the denylist either, because `/private/tmp/<session>/scratchpad/**`
+ * is the #792 SANCTIONED grant. Aliasing it would refuse the one out-of-repo
+ * grant this file exists to permit.
+ *
+ * Named ceiling (BV-004): a literal list covers the two aliases this platform
+ * mints and nothing else — a host whose `/usr` is a symlink still needs the
+ * resolver to be graded. Revisit trigger: the first denylisted root that gains
+ * a symlink alias on any platform the fleet runs on.
+ * @type {ReadonlyArray<string>}
+ */
+const DENIED_ABSOLUTE_ALIAS_ROOTS = Object.freeze(['private/etc', 'private/var']);
+
+/**
  * Case-fold a path or path segment for comparison against the sets below.
  *
  * Every comparison here MUST go through this: the classification is a proxy for
@@ -1790,19 +1828,40 @@ function foldPath(value) {
   return value.toLocaleLowerCase('en-US');
 }
 
-/** Literal filesystem-root forms — POSIX "/" plus the Windows "\" and "C:\". */
-const FILESYSTEM_ROOT_LITERALS = new Set(['/', '\\']);
-const WINDOWS_DRIVE_ROOT_RE = /^[A-Za-z]:\\+$/;
+/**
+ * A root followed by a separator, used to split a root-wide grant from its tail.
+ * The optional drive designator is what makes this independent of
+ * `path.isAbsolute()`, which is platform-native: on a POSIX host it never
+ * reports `C:\…` as absolute, so a Windows root grant would slip past ungraded.
+ */
+const FILESYSTEM_ROOT_PREFIX_RE = /^(?:[A-Za-z]:)?[\\/]+/;
 
 /**
- * Is this entry a bare filesystem root? Checked independently of
- * `path.isAbsolute()`, which is platform-native: on a POSIX host it never
- * reports `C:\` as absolute, so a Windows-literal root would slip past.
+ * Does this entry grant the WHOLE filesystem — the bare root, or any spelling
+ * that differs from it only by wildcard segments?
+ *
+ * The literal-only predecessor was the wrong way round (measured 2026-09-20 @
+ * 7e110a2a): `gradeScopeEntry('/')` → `error/filesystem-root` and `/etc/**` →
+ * `error/denied-system-dir`, while `/**` — which `pathMatchesPattern` matches
+ * for EVERY path at Gate 5b, i.e. strictly wider than both — graded
+ * `warn/absolute`. The check that refused the root was literal; the thing that
+ * granted the root was a glob.
+ *
+ * NOT root-wide, and deliberately so: any entry naming a literal segment after
+ * the root (`/etc/**`, `/Users/<u>/**`, or a leading `**` followed by a literal
+ * segment). Those are deep globs and keep their own, narrower verdicts.
+ *
  * @param {string} entry
  * @returns {boolean}
  */
-function isFilesystemRootLiteral(entry) {
-  return FILESYSTEM_ROOT_LITERALS.has(entry) || WINDOWS_DRIVE_ROOT_RE.test(entry);
+function isFilesystemRootGrant(entry) {
+  const root = FILESYSTEM_ROOT_PREFIX_RE.exec(entry);
+  if (root === null) return false;
+  const tail = entry.slice(root[0].length);
+  if (tail.length === 0) return true;
+  // An empty segment comes from a doubled or trailing separator ("//**", "/**/"),
+  // which widens nothing; any other non-wildcard segment narrows the grant.
+  return tail.split(/[\\/]+/).every((seg) => seg === '' || seg === '*' || seg === '**');
 }
 
 /**
@@ -1871,13 +1930,22 @@ function isUnderRoot(candidate, root) {
  * denylist having to spell out a second, platform-specific alias for every
  * entry. With the identity resolver this is the plain literal check.
  *
+ * The {@link DENIED_ABSOLUTE_ALIAS_ROOTS} pass is NOT routed through
+ * `resolveRoot`: those entries are already the canonical spelling, so resolving
+ * them buys nothing and would spend the syscall the resolver-free caller exists
+ * to avoid.
+ *
  * @param {string} prefix — an absolute, `.`-normalized literal path prefix
  * @param {(p: string) => string} resolveRoot
- * @returns {string|null} the denylisted segment (canonical casing) that matched
+ * @returns {string|null} the denylisted root (canonical casing, no leading `/`)
+ *   that matched
  */
 function deniedRootFor(prefix, resolveRoot) {
   for (const segment of DENIED_ABSOLUTE_TOP_SEGMENTS) {
     if (isUnderRoot(prefix, resolveRoot(`/${segment}`))) return segment;
+  }
+  for (const alias of DENIED_ABSOLUTE_ALIAS_ROOTS) {
+    if (isUnderRoot(prefix, `/${alias}`)) return alias;
   }
   return null;
 }
@@ -1976,8 +2044,10 @@ function classifyHomeGrant(normalizedEntry) {
  * Verdict order — each rung is load-bearing:
  *   1. a tilde entry (`~/…`) — NOTHING in the scope chain expands it (#1405.3),
  *      so it grants nothing while reading like a grant;
- *   2. a bare filesystem root — `pathMatchesPattern(p, '/')` is `true` for every
- *      path (the `dir/` prefix branch), i.e. the whole host;
+ *   2. a filesystem-root grant — the bare root, where `pathMatchesPattern(p, '/')`
+ *      is `true` for every path (the `dir/` prefix branch), AND every spelling
+ *      that adds only wildcards to it (`/**`, `/*`, `C:\**`), which reaches the
+ *      same set through the glob branch;
  *   3. non-absolute entries are not ours to grade → `null`;
  *   4. the denylisted system roots, LITERAL spelling;
  *   5. home grants, by shape — these RETURN, see the ceiling above;
@@ -2022,13 +2092,14 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
-  if (isFilesystemRootLiteral(entry)) {
+  if (isFilesystemRootGrant(entry)) {
     return {
       verdict: 'error',
       code: 'filesystem-root',
       message:
         `grants the entire filesystem root: ${entry} — refused unconditionally, this can never ` +
-        `be a valid wave scope`,
+        `be a valid wave scope (a root followed only by wildcards reaches every path Gate 5b ` +
+        `can see, exactly as the bare root does)`,
     };
   }
 
@@ -2049,7 +2120,7 @@ export function gradeScopeEntry(entry, opts = {}) {
       code: 'denied-system-dir',
       message:
         `contains a well-known system/home directory grant: ${entry} ` +
-        `(top-level segment "${deniedLiteral}" is denylisted) — refused, scope a narrower path instead`,
+        `(denylisted system root "/${deniedLiteral}") — refused, scope a narrower path instead`,
     };
   }
 

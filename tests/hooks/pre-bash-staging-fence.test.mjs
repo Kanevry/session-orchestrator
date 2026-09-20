@@ -113,6 +113,14 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
     'git add -- foo.ts',
     'cd subdir && git add foo.ts',
     'GIT_COMMITTER_NAME=foo git add .',
+    // 2026-09-20 regression: a staging command nested in `bash -c` is never
+    // fenced, so a cross-agent collision goes undetected. The #1404 tokenizer
+    // resolves the SEGMENT verb (`bash`/`sh`/`xargs`), found no `git add`
+    // statement, and wrote NO FILE AT ALL — and the reader has no entry to
+    // fall back to, so the miss is silent in both directions.
+    'bash -c "git add foo.ts"',
+    "sh -c 'git add foo.ts'",
+    'xargs -I{} sh -c "git add foo.ts"',
   ])('G3 match: %s writes a fence file', (command) => {
     const result = runHook({
       command,
@@ -271,6 +279,18 @@ describe('pre-bash-staging-fence — #1404 path operands instead of raw command'
 
   // Bug: the pre-filter's own false positives used to be logged with their
   // raw text. The tokenizer, not the regex, decides — so they write nothing.
+  it('a nested staging command records its OPERANDS, and composes with a top-level one', () => {
+    // A fence file with the WRONG paths is as silent a miss as no file at all,
+    // so the file-exists table above is not enough: assert the operands.
+    const result = runHook({
+      command: 'git add top.ts && bash -c "git add nested.ts"',
+      env: { SO_WAVE_AGENT: '1' },
+      projectDir,
+    });
+    expectAllow(result);
+    expect([...onlyEntry().entry.paths].sort()).toEqual(['nested.ts', 'top.ts']);
+  });
+
   it.each([
     'git commit -m "add feature"',
     'echo "git add not-a-real-stage"',

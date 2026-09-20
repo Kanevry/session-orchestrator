@@ -826,9 +826,26 @@ function isCoordinatorCarveout(normalizedRel, projectRoot, scopePath) {
  * changed is that the CALLER now runs the ONE grading predicate —
  * `gradeScopeEntry` in `scripts/lib/scope-gate.mjs`, the same function
  * `scripts/validate-wave-scope.mjs` turns into an exit-1 refusal — over the grant
- * this helper returns, and WARNS when it grades `error`. The two can no longer
- * drift, because there is only one of them; what differs is the CONSEQUENCE
- * (refuse before dispatch vs. allow-with-notice at write time), never the rule.
+ * this helper returns, and WARNS when it grades `error`.
+ *
+ * ONE PREDICATE, TWO ARGUMENT SHAPES — SO THE VERDICTS CAN STILL DIFFER. The
+ * function is shared; the CALL is not. The validator passes an fs-backed
+ * `resolve`, this hook passes none (see the Gate 5b call site), and the grader's
+ * canonical rungs only run when a resolver is present. So the CONSEQUENCE
+ * differs (refuse before dispatch vs. allow-with-notice at write time) AND, on
+ * exactly those rungs, the VERDICT can too. Measured 2026-09-20 @ 7e110a2a,
+ * hook shape vs. CLI shape on this host:
+ *   - `/private/etc/**`, `/private/var/**` — the macOS realpaths of the
+ *     denylisted `/etc` and `/var`, i.e. the spellings Gate 5b ACTUALLY matches
+ *     (it matches the realpath-resolved candidate): hook `warn`, validator
+ *     `error`. The notice fired on `/etc/**`, which reaches nothing here, and
+ *     stayed silent on the spelling that reaches everything. CLOSED by listing
+ *     the two aliases literally (`DENIED_ABSOLUTE_ALIAS_ROOTS` in
+ *     `scripts/lib/scope-gate.mjs`), at zero syscalls.
+ *   - `/tmp/x/**` — hook `warn`, validator `error/non-canonical`. STILL OPEN,
+ *     and not closable without a resolver: proving a literal prefix resolves
+ *     elsewhere IS the realpath call. The residual costs a missing NOTICE, never
+ *     a wider allow — that grant matches nothing at Gate 5b either way.
  *
  * Returns the MATCHED PATTERN rather than a boolean precisely so the caller has
  * something to grade: with a bare `true` the grant that opened the gate is
