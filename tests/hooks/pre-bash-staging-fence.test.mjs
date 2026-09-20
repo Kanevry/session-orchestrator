@@ -170,7 +170,10 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
     expect(typeof body.started_at).toBe('string');
     expect(Array.isArray(body.staged_paths)).toBe(true);
     expect(body.staged_paths).toHaveLength(1);
-    expect(body.staged_paths[0].command).toBe('git add src/foo.ts');
+    // #1404: path operands + a command hash, never the command text.
+    expect(body.staged_paths[0].paths).toEqual(['src/foo.ts']);
+    expect(body.staged_paths[0].command_hash).toBe('76102da17af8b17d');
+    expect(body.staged_paths[0].command).toBeUndefined();
     expect(typeof body.staged_paths[0].timestamp).toBe('string');
   });
 
@@ -192,6 +195,87 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
       env: { SO_WAVE_AGENT: '1', ...env },
       projectDir,
     });
+    expectAllow(result);
+    expect(fenceFiles(projectDir)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1404 — the fence records PATH OPERANDS, not command text
+// ---------------------------------------------------------------------------
+
+describe('pre-bash-staging-fence — #1404 path operands instead of raw command', { timeout: 15000 }, () => {
+  /** Read the single fence file's first staged_paths entry. */
+  function onlyEntry() {
+    const files = fenceFiles(projectDir);
+    expect(files).toHaveLength(1);
+    const raw = readFileSync(
+      join(projectDir, '.orchestrator', 'staging-fence', files[0]),
+      'utf8',
+    );
+    return { raw, entry: JSON.parse(raw).staged_paths[0] };
+  }
+
+  // Bug the suite missed: the fence persisted `command.slice(0, 512)`, so a
+  // secret carried in a leading env assignment landed verbatim on disk.
+  it('a secret in the staging command never reaches the fence file', () => {
+    const result = runHook({
+      command: 'GIT_TOKEN=abc123fake git add src/secret-path.mjs',
+      env: { SO_WAVE_AGENT: '1' },
+      projectDir,
+    });
+    expectAllow(result);
+    const { raw, entry } = onlyEntry();
+    expect(raw).not.toContain('abc123fake');
+    expect(raw).not.toContain('GIT_TOKEN');
+    expect(entry.paths).toEqual(['src/secret-path.mjs']);
+    expect(entry.command_hash).toBe('772e78debf64e10a');
+  });
+
+  // Bug: `git add -A` carries NO path text, so the reader's raw-command regex
+  // could never match it — the widest staging command of all fenced nothing.
+  it.each(['git add -A', 'git add --all', 'git add .', 'git add -u'])(
+    '%s records the overlaps-everything marker',
+    (command) => {
+      const result = runHook({ command, env: { SO_WAVE_AGENT: '1' }, projectDir });
+      expectAllow(result);
+      expect(onlyEntry().entry.paths).toEqual(['*']);
+    },
+  );
+
+  // Bug: the old `\bgit\s+add\b` pre-filter never matched a global flag
+  // between `git` and `add`, so this staging command was not fenced at all.
+  it('git -C <dir> add <path> is fenced, with the operand anchored on -C', () => {
+    const result = runHook({
+      command: 'git -C sub add x.mjs',
+      env: { SO_WAVE_AGENT: '1' },
+      projectDir,
+    });
+    expectAllow(result);
+    const { entry } = onlyEntry();
+    expect(entry.paths).toEqual(['sub/x.mjs']);
+    expect(entry.command_hash).toBe('9f7aa35a3c0dfc04');
+  });
+
+  // Bug: a quoted operand containing a space was one blob of command text; a
+  // regex reader split it on whitespace and matched neither half.
+  it('a quoted operand with a space is recorded as one path', () => {
+    const result = runHook({
+      command: 'git add -- "my file.ts" b.ts',
+      env: { SO_WAVE_AGENT: '1' },
+      projectDir,
+    });
+    expectAllow(result);
+    expect(onlyEntry().entry.paths).toEqual(['my file.ts', 'b.ts']);
+  });
+
+  // Bug: the pre-filter's own false positives used to be logged with their
+  // raw text. The tokenizer, not the regex, decides — so they write nothing.
+  it.each([
+    'git commit -m "add feature"',
+    'echo "git add not-a-real-stage"',
+  ])('pre-filter false positive %s writes no fence file', (command) => {
+    const result = runHook({ command, env: { SO_WAVE_AGENT: '1' }, projectDir });
     expectAllow(result);
     expect(fenceFiles(projectDir)).toHaveLength(0);
   });

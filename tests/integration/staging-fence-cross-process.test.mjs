@@ -125,6 +125,27 @@ function writeFence(agentId, paths) {
     host: 'test',
     started_at: new Date().toISOString(),
     staged_paths: paths.map((p) => ({
+      paths: [p],
+      command_hash: 'deadbeefdeadbeef',
+      timestamp: new Date().toISOString(),
+    })),
+  };
+  writeFileSync(fenceFile, JSON.stringify(body, null, 2));
+}
+
+/**
+ * Write a fence file in the PRE-#1404 shape (`{ command, timestamp }`, no
+ * `paths`). Such files exist on disk in sessions that were already running
+ * when the hook was upgraded; the reader must still detect their overlaps.
+ */
+function writeLegacyFence(agentId, paths) {
+  const fenceFile = join(repoRoot, '.orchestrator', 'staging-fence', `${agentId}.json`);
+  const body = {
+    agent_id: agentId,
+    pid: 12345,
+    host: 'test',
+    started_at: new Date().toISOString(),
+    staged_paths: paths.map((p) => ({
       command: `git add ${p}`,
       timestamp: new Date().toISOString(),
     })),
@@ -342,10 +363,83 @@ describe('staging-fence cross-process race (PSA-004 sub-mode C, #552)', () => {
     expect(fenceJson.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
     expect(Number.isFinite(Date.parse(fenceJson.started_at))).toBe(true);
 
-    // staged_paths: must contain exactly one entry matching the issued command.
+    // staged_paths: one entry carrying the PATH OPERANDS of the issued
+    // command plus its hash — never the command text itself (#1404).
     expect(Array.isArray(fenceJson.staged_paths)).toBe(true);
     expect(fenceJson.staged_paths).toHaveLength(1);
-    expect(fenceJson.staged_paths[0].command).toBe(command);
+    expect(fenceJson.staged_paths[0].paths).toEqual(['src/foo.ts']);
+    expect(fenceJson.staged_paths[0].command_hash).toBe('76102da17af8b17d');
+    expect(fenceJson.staged_paths[0].command).toBeUndefined();
     expect(fenceJson.staged_paths[0].timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
   }, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// #1404 — overlap detection on path LISTS
+// ---------------------------------------------------------------------------
+
+describe('staging-fence overlap on path lists (#1404)', { timeout: 20000 }, () => {
+  // Bug: a sibling's `git add -A` was recorded as the literal text "git add
+  // -A", which contains no path — so `pathRegex(ours).test(cmd)` was false and
+  // the widest staging command of all produced NO overlap.
+  it('a sibling that staged everything (marker "*") overlaps any staged path', async () => {
+    writeFence('sibling-add-all', ['*']);
+    stageFile('src/unrelated-name.ts');
+
+    const result = await runHook(repoRoot);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('staging-fence: cross-agent overlap');
+    expect(result.stderr).toContain('src/unrelated-name.ts');
+  });
+
+  // Bug: a fence file written before the upgrade has no `paths` key. Dropping
+  // such entries reads as "no overlap" — silently weaker than before.
+  it('a pre-#1404 legacy entry is still detected via the command fallback', async () => {
+    writeLegacyFence('sibling-legacy', ['src/foo.ts']);
+    stageFile('src/foo.ts');
+
+    const result = await runHook(repoRoot);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('staging-fence: cross-agent overlap');
+    expect(result.stderr).toContain('legacy entry, pre-#1404');
+    // The fallback READS the command text but must never PRINT it.
+    expect(result.stderr).not.toContain('git add src/foo.ts');
+  });
+
+  // Bug: a directory operand (`git add src`) stages every file beneath it; an
+  // equality-only comparison would miss src/foo.ts.
+  it('a directory entry overlaps a staged file beneath it', async () => {
+    writeFence('sibling-dir', ['src']);
+    stageFile('src/foo.ts');
+
+    const result = await runHook(repoRoot);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('src/foo.ts');
+  });
+
+  it('the deny text names the overlapping path and the hash, never command text', async () => {
+    writeFence('sibling-agent', ['src/foo.ts']);
+    stageFile('src/foo.ts');
+
+    const result = await runHook(repoRoot);
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('deadbeefdeadbeef');
+    expect(result.stderr).toContain('sibling agent sibling-agent recorded src/foo.ts');
+    expect(result.stderr).not.toContain('git add ');
+  });
+
+  // Distinct path, no marker, no directory prefix → the guard must NOT fire,
+  // or every commit in a wave would be blocked.
+  it('a sibling entry for a different path does not block the commit', async () => {
+    writeFence('sibling-other', ['src/other.ts']);
+    stageFile('src/foo.ts');
+
+    const result = await runHook(repoRoot);
+
+    expect(result.code).toBe(0);
+  });
 });

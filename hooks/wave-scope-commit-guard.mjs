@@ -106,10 +106,19 @@ if (!existsSync(fenceDir) || stagedFiles.length === 0) {
 const ownAgentId = process.env.SO_WAVE_AGENT_ID ?? null;
 
 /**
+ * Recorded by the writer when a staging command stages a set no path operand
+ * names (`git add -A`, `git add .`, `git add -u`). Overlaps everything.
+ * Mirrors ALL_PATHS_MARKER in hooks/pre-bash-staging-fence.mjs.
+ */
+const ALL_PATHS_MARKER = '*';
+
+/**
  * Build a regex that finds a staged path inside a `git add` command string.
  * Word-boundary on both sides so `src/foo.ts` does not match `src/foo.ts.bak`.
  * The path is escaped so glob metacharacters (`*`, `?`) and shell metas
  * cannot be reinterpreted.
+ *
+ * LEGACY PATH ONLY since #1404 — see the fallback branch in findOverlaps.
  */
 function pathRegex(p) {
   const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -117,8 +126,56 @@ function pathRegex(p) {
 }
 
 /**
- * Walk a single sibling fence file and return the staged paths whose path
- * pattern matches any of our staged files.
+ * Normalise a path token so reader and writer compare the same spelling.
+ *
+ * DELIBERATE DUPLICATE of the identically-named function in
+ * hooks/pre-bash-staging-fence.mjs: this guard is a husky pre-commit hook
+ * outside the Claude-Code hook import set, and the two sides must agree byte
+ * for byte. Change one, change both.
+ *
+ * @param {string} raw
+ * @returns {string}
+ */
+function normalizeStagedPath(raw) {
+  let p = String(raw).trim();
+  while (p.startsWith('./')) p = p.slice(2);
+  p = p.replace(/\/{2,}/g, '/');
+  while (p.length > 1 && p.endsWith('/')) p = p.slice(0, -1);
+  return p;
+}
+
+/**
+ * Does a path a sibling recorded overlap one of OUR staged files? Both sides
+ * arrive already normalised. A DIRECTORY entry overlaps every file beneath it
+ * (`src` overlaps `src/foo.ts`); the marker overlaps everything.
+ *
+ * @param {string} fencePath
+ * @param {string} ourPath
+ * @returns {boolean}
+ */
+function pathsOverlap(fencePath, ourPath) {
+  if (fencePath === ALL_PATHS_MARKER) return true;
+  if (fencePath === ourPath) return true;
+  return ourPath.startsWith(`${fencePath}/`);
+}
+
+/**
+ * Walk a single sibling fence file and return the staged paths a sibling
+ * agent also recorded an intent to stage.
+ *
+ * Two entry shapes are accepted:
+ *  - #1404 shape `{ paths, command_hash, timestamp }` — path LISTS compared
+ *    against our staged set.
+ *  - LEGACY shape `{ command, timestamp }` — a fence file written by a
+ *    pre-#1404 hook version. Live sessions on this host may hold such files
+ *    RIGHT NOW, and dropping them would read as "no overlap" — silently
+ *    weaker than before the change. So the old raw-command regex still runs
+ *    for an entry that has `command` and no `paths`.
+ *    NAMED CEILING (BV-004): this fallback exists only to span the sessions
+ *    running across the upgrade. REVISIT TRIGGER — remove it one minor
+ *    release after 5.3.0 (i.e. in 5.4.0), by which point no process started
+ *    before the upgrade can still be writing fence files. The command text it
+ *    reads is never PRINTED (issue #1404) — only the fact of the match is.
  */
 function findOverlaps(fenceJsonPath, ourStaged) {
   let body;
@@ -131,13 +188,33 @@ function findOverlaps(fenceJsonPath, ourStaged) {
   if (!Array.isArray(body.staged_paths)) return [];
   if (ownAgentId && body.agent_id === ownAgentId) return []; // skip self
 
+  const siblingAgent = body.agent_id ?? '<unknown>';
   const matches = [];
   for (const entry of body.staged_paths) {
+    if (Array.isArray(entry?.paths)) {
+      const hash = typeof entry.command_hash === 'string' ? entry.command_hash : '<no-hash>';
+      for (const raw of entry.paths) {
+        if (typeof raw !== 'string') continue;
+        const fencePath = normalizeStagedPath(raw);
+        for (const ours of ourStaged) {
+          if (pathsOverlap(fencePath, normalizeStagedPath(ours))) {
+            matches.push({ ourPath: ours, siblingAgent, fencePath, hash });
+          }
+        }
+      }
+      continue;
+    }
+
     const cmd = entry?.command;
     if (typeof cmd !== 'string') continue;
     for (const ours of ourStaged) {
       if (pathRegex(ours).test(cmd)) {
-        matches.push({ ourPath: ours, siblingAgent: body.agent_id ?? '<unknown>', cmd });
+        matches.push({
+          ourPath: ours,
+          siblingAgent,
+          fencePath: '<legacy entry, pre-#1404>',
+          hash: '<legacy entry, pre-#1404>',
+        });
       }
     }
   }
@@ -178,7 +255,9 @@ try {
 if (overlaps.length > 0) {
   process.stderr.write('✗ wave-scope-commit-guard: staging-fence: cross-agent overlap detected:\n');
   for (const o of overlaps) {
-    process.stderr.write(`  - ${o.ourPath} (also staged by sibling agent ${o.siblingAgent})\n`);
+    process.stderr.write(
+      `  - ${o.ourPath} (sibling agent ${o.siblingAgent} recorded ${o.fencePath}, command ${o.hash})\n`,
+    );
   }
   process.stderr.write('\nAnother wave-agent recorded a `git add` for one or more of your staged paths.\n');
   process.stderr.write('To proceed:\n');

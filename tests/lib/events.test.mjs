@@ -473,6 +473,78 @@ describe('readEventsWithRotations', () => {
     expect(result.events).toHaveLength(2);
   });
 
+  it('resolves a MOVED checkout tombstone against the sibling _archive/ instead of reporting a phantom gap', async () => {
+    // BUG THIS CATCHES (#1411): `archived_as` is an ABSOLUTE host path and the
+    // reader compared it exactly, so renaming the repo, cloning it, or reading
+    // the ledger from a sibling git worktree — routine here — reported
+    // `missing-archive` for EVERY rotation while the archive sat right beside
+    // the active file. A `complete: false` that fires on a move teaches the
+    // reader to ignore the signal #1401 was built to raise (HR-101).
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const name = 'events-20260412T063301Z_20260918T191402Z.jsonl';
+    const here = archivePath(name);
+    // The tombstone still names the archive under the checkout's OLD root.
+    const oldRootPath = path.join('/nonexistent-old-checkout/.orchestrator/metrics', ARCHIVE_DIR_NAME, name);
+
+    writeFileSync(here, line('2026-04-12T06:33:01.123Z') + line('2026-09-18T19:14:02Z'));
+    writeFileSync(
+      active,
+      rotationLine('2026-09-19T07:00:00Z', oldRootPath, {
+        first: '2026-04-12T06:33:01.123Z',
+        last: '2026-09-18T19:14:02Z',
+      }) + line('2026-09-19T08:00:00Z'),
+    );
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.gaps).toEqual([]);
+    expect(result.complete).toBe(true);
+    expect(result.events.map((e) => e.timestamp)).toEqual([
+      '2026-04-12T06:33:01.123Z',
+      '2026-09-18T19:14:02Z',
+      '2026-09-19T07:00:00Z',
+      '2026-09-19T08:00:00Z',
+    ]);
+  });
+
+  it('reports missing-archive when only a FOREIGN checkout still holds a file of that name', async () => {
+    // BUG THIS CATCHES (#1411, second order): `existsSync(target)` on the
+    // absolute tombstone value answers YES from a still-present OLD checkout,
+    // so THIS ledger was validated against a FOREIGN repo's archive — a silent
+    // false negative, worse than the phantom gap it hid behind.
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const foreignRoot = await mkdtemp(path.join(tmpdir(), 'events-foreign-'));
+    try {
+      const name = 'events-20260412T063301Z_20260918T191402Z.jsonl';
+      const foreignArchive = path.join(foreignRoot, ARCHIVE_DIR_NAME, name);
+      mkdirSync(path.dirname(foreignArchive), { recursive: true });
+      writeFileSync(foreignArchive, line('2001-01-01T00:00:00Z'));
+      // This ledger's own `_archive/` exists but holds NO file of that basename.
+      mkdirSync(path.join(dir, ARCHIVE_DIR_NAME), { recursive: true });
+
+      const active = path.join(dir, 'events.jsonl');
+      writeFileSync(
+        active,
+        rotationLine('2026-09-19T07:00:00Z', foreignArchive, {
+          first: '2026-04-12T06:33:01.123Z',
+          last: '2026-09-18T19:14:02Z',
+        }) + line('2026-09-19T08:00:00Z'),
+      );
+
+      const result = readEventsWithRotations(undefined, { filePath: active });
+
+      expect(result.complete).toBe(false);
+      expect(result.gaps).toEqual([
+        expect.objectContaining({ kind: 'missing-archive', archived_as: foreignArchive }),
+      ]);
+      // The foreign checkout's records are never folded into this ledger.
+      expect(result.events).toHaveLength(2);
+    } finally {
+      await rm(foreignRoot, { recursive: true, force: true });
+    }
+  });
+
   it('counts unreadable lines in malformed_lines, per source and in total', async () => {
     const { readEventsWithRotations } = await importEventsWithDir(dir);
     const active = path.join(dir, 'events.jsonl');

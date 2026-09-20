@@ -256,21 +256,44 @@ async function readPersistence(projectRoot) {
 }
 
 /**
- * Reduce a `flush()` result to the two-field breadcrumb the event carries.
+ * Characters kept from `flush()`'s raw `reason` in the event record.
  *
- * `reason` is normalised to its head token because `flush()` may return
- * `build-error: <message>`, and a raw error message is unbounded free text in a
- * stream whose whole purpose is aggregation by class.
+ * NAMED CEILING (BV-004): `flush()` may return `build-error: <message>`, i.e.
+ * unbounded free text, into a stream whose purpose is aggregation. 200 mirrors
+ * the sibling bound in `scripts/lib/session-start-probes.mjs`; the banner
+ * re-bounds to 120 and strips control bytes on its own side, because the ledger
+ * is an untrusted string source for anything that renders it.
+ * REVISIT TRIGGER: a legitimate `flush()` reason longer than 200 characters.
+ */
+const FLUSH_REASON_MAX_CHARS = 200;
+
+/**
+ * Reduce a `flush()` result to the three-field breadcrumb the event carries.
+ *
+ * `reason` is the FULL reason (length-bounded, see FLUSH_REASON_MAX_CHARS) and
+ * `reason_class` is its head token — the part before the first `:` — so an
+ * aggregation by class stays possible without destroying the detail.
+ *
+ * #1392, the defect this shape replaces: `reason` used to BE the head token
+ * (`String(res?.reason ?? 'unknown').split(':')[0]`). All five sandbox
+ * refusals `scripts/lib/telemetry/sync.mjs` produces (`sandbox:temp-root`,
+ * `sandbox:probe-failed`, …) were therefore written as bare `sandbox`, while
+ * the one reader — `scripts/lib/telemetry-flush-health-banner.mjs` — requires
+ * `reason.startsWith('sandbox:')`. The banner could not fire on any record this
+ * emitter ever wrote, and a mute instrument looks exactly like a healthy
+ * channel (HR-105). The cut is irrecoverable at the reader, so the fix belongs
+ * here: persist the full reason, carry the class beside it.
  *
  * @param {{sent?: boolean, queued?: boolean, reason?: string}|null|undefined} res
- * @returns {{outcome: 'sent'|'queued'|'gated'|'skipped', reason: string}}
+ * @returns {{outcome: 'sent'|'queued'|'gated'|'skipped', reason: string, reason_class: string}}
  */
-function classifyFlush(res) {
-  const reason = String(res?.reason ?? 'unknown').split(':')[0];
-  if (res?.sent === true) return { outcome: 'sent', reason };
-  if (res?.queued === true) return { outcome: 'queued', reason };
-  if (reason === 'gated') return { outcome: 'gated', reason };
-  return { outcome: 'skipped', reason };
+export function classifyFlush(res) {
+  const reason = String(res?.reason ?? 'unknown').slice(0, FLUSH_REASON_MAX_CHARS);
+  const reasonClass = reason.split(':')[0];
+  if (res?.sent === true) return { outcome: 'sent', reason, reason_class: reasonClass };
+  if (res?.queued === true) return { outcome: 'queued', reason, reason_class: reasonClass };
+  if (reasonClass === 'gated') return { outcome: 'gated', reason, reason_class: reasonClass };
+  return { outcome: 'skipped', reason, reason_class: reasonClass };
 }
 
 /**
@@ -288,8 +311,9 @@ function classifyFlush(res) {
  * statement) — this function deliberately does not re-implement it, so there is
  * exactly one place where "may we send?" is decided.
  *
- * Always emits `orchestrator.telemetry.flush` with `{ outcome, reason }` and
- * NOTHING else — no payload, no anon_id. Per `.claude/rules/host-resources.md`
+ * Always emits `orchestrator.telemetry.flush` with `{ outcome, reason,
+ * reason_class }` and NOTHING else — no payload, no anon_id. Per
+ * `.claude/rules/host-resources.md`
  * HR-105, a mechanism whose firing rate nothing records cannot be falsified;
  * this event is what makes the flush rate measurable next time.
  *
@@ -306,13 +330,17 @@ async function flushTelemetry(projectRoot) {
       }))
       // `persistence: false` means this session leaves no durable local trace;
       // a telemetry ping is a durable record too, so it honours the same switch.
-      : { outcome: 'skipped', reason: 'persistence-disabled' };
+      // `reason_class` is spelled out on BOTH non-flush() branches so every
+      // record of this event carries the same three keys — a consumer grouping
+      // by class must not have to treat "absent" as a fourth class.
+      : { outcome: 'skipped', reason: 'persistence-disabled', reason_class: 'persistence-disabled' };
   } catch {
-    result = { outcome: 'skipped', reason: 'error' };
+    result = { outcome: 'skipped', reason: 'error', reason_class: 'error' };
   }
 
-  // `result` is passed through verbatim: it holds EXACTLY {outcome, reason}, so
-  // no payload field can leak into the event by accident.
+  // `result` is passed through verbatim: it holds EXACTLY
+  // {outcome, reason, reason_class}, so no payload field can leak into the
+  // event by accident.
   try {
     await emitEvent('orchestrator.telemetry.flush', result);
   } catch { /* observability is best-effort */ }

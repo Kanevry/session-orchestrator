@@ -600,6 +600,9 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
 
   const gaps = [];
   const onDisk = new Set(sources.map((s) => s.path));
+  // Same construction `discoverArchives` uses, so its unresolved entries in
+  // `onDisk` still match by string.
+  const ownArchiveDir = path.join(path.dirname(activePath), ARCHIVE_DIR_NAME);
 
   // Rule 1 — every rotation tombstone must still point at a file.
   for (const source of sources) {
@@ -607,7 +610,27 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
       if (record?.event !== ROTATION_EVENT) continue;
       const target = record.archived_as;
       if (typeof target !== 'string' || target.length === 0) continue;
-      if (onDisk.has(target) || existsSync(target)) continue;
+      // #1411 — resolve the tombstone against THIS ledger's own `_archive/`,
+      // by BASENAME, and never against the absolute value it stores.
+      //
+      // The writer keeps `archived_as` absolute (`events-rotation.mjs` joins
+      // the repo root) and that value stays in the record as PROVENANCE. It is
+      // not a lookup key: a moved checkout, a clone, or a sibling git worktree
+      // — routine here — makes every tombstone name a path that does not exist
+      // in THIS tree, so the old exact comparison reported a phantom
+      // `missing-archive` for an archive sitting right beside the active file.
+      // Basename, not `realpath`: realpath cannot resolve a path that no longer
+      // exists, which IS the failure mode.
+      //
+      // ORDER (why the absolute value has no second chance): the sibling answer
+      // is consulted first, and an absolute hit would only be trustworthy while
+      // it pointed INSIDE this ledger's own archive dir — but any such path
+      // resolves to exactly the sibling path already tested, so once the
+      // sibling misses, an absolute hit can ONLY be a still-present OLD
+      // checkout. Honouring it would validate THIS ledger against a FOREIGN
+      // repo's archive: a silent false negative, worse than the phantom gap.
+      const sibling = path.join(ownArchiveDir, path.basename(target));
+      if (onDisk.has(sibling) || existsSync(sibling)) continue;
       gaps.push({
         kind: 'missing-archive',
         archived_as: target,

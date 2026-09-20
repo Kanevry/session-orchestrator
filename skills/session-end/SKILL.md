@@ -151,23 +151,20 @@ discipline as `createSpiralCarryoverIssue`).
 
 > Gate: Only run if `persistence` is `true` in Session Config. Skip silently otherwise.
 
-After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendations are written (Phase 3.7a), release the distributed session-lock so the next session can acquire it cleanly:
+After STATE.md is finalized with `status: completed` (Phase 3.4) and Recommendations are written (Phase 3.7a), release the distributed session-lock with ONE verifying command:
 
-```javascript
-import { release } from 'scripts/lib/session-lock.mjs';
-// sessionId is the physical raw value established by session-start Phase 1.2
-// and stored in .orchestrator/session.lock `session_id`. It is not STATE.md
-// `session:` or `semantic_session_id`, both of which are attribution labels.
-const rawSessionId = sessionId;
-const result = release({ sessionId: rawSessionId, repoRoot: process.cwd() });
-// result.ok is always true unless a filesystem error occurred.
-// result.deleted === true  → lock file removed successfully.
-// result.deleted === false → lock was absent or had a different raw session_id.
+```bash
+node scripts/release-session-lock.mjs --session-id "<raw session_id>" --json
 ```
 
-If `result.deleted === false`, log `info: session-lock not released — already absent or raw session_id mismatch` and continue. An active lock whose raw id differs is ambiguous: do **not** retry release with an equal `semantic_session_id`, STATE.md `session`, or owner proof. Leave that live lock for its TTL/Reaper lifecycle.
+`--session-id` is the PHYSICAL raw value established by session-start Phase 1.2 and stored in `.orchestrator/session.lock` `session_id` — never STATE.md `session:` and never `semantic_session_id`, both of which are attribution labels.
 
-If `result.ok === false` (rare filesystem error), log `⚠ session-lock: release failed — <result.reason>` and continue. Do NOT block the close for a lock-release failure — the TTL provides automatic expiry for the next session.
+The command releases the lock only when that raw id owns it, emits the terminal `orchestrator.session.lock.released` breadcrumb, and then RE-READS the lock path: **exit 0 means the lock is provably gone.** It replaces the hand-executed `release()` this phase used to prescribe, which deleted the lock silently — the SessionEnd hook then found `status: 'absent'` and emitted nothing either, so a lock lifecycle ended with no terminal event at all (#1395: 5 `lock.acquired` against 0 `lock.released` in this repo). `outcome: "absent"` is a normal exit-0 result (idempotent re-run; nothing was released, so no event is written).
+
+A non-zero exit is a WARN, never a blocker — log `⚠ session-lock: <outcome>` and continue; the TTL provides automatic expiry for the next session:
+
+- **exit 1** — the lock is owned by a different raw session id, so nothing was touched. That is ambiguous by design: do **not** retry with an equal `semantic_session_id`, STATE.md `session`, or owner proof. Leave that live lock for its TTL/Reaper lifecycle.
+- **exit 2** — system error (unreadable/corrupt lock, owner-proof mismatch, the lock still present after release, or the breadcrumb could not be written).
 
 The lock is released here — AFTER all STATE.md writes are complete and BEFORE the commit is staged in Phase 4.1. This ordering ensures a clean handover when the current raw owner releases it: the lock file is absent from the working tree when the commit is assembled, so it is not accidentally staged.
 

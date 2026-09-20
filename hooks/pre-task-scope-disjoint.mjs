@@ -289,6 +289,21 @@ const SHAPE_NONE = 'none';
 const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
 
 /**
+ * The worktree-base observability record (#1413).
+ *
+ * Same `wave_dispatch` domain and same `_checked` verb as `SCOPE_EVENT`, and
+ * written for BOTH outcomes (`stale: true` and `stale: false`) rather than only
+ * the alarming one. That is HR-105 applied at the source: a numerator-only
+ * stream cannot tell "genuinely rare" from "silently broken", and the firing
+ * rate this warning must stay under is then unfalsifiable. With both outcomes in
+ * one stream the rate is `stale:true / all records of this name`.
+ */
+const WORKTREE_BASE_EVENT = 'orchestrator.wave_dispatch.worktree_base_checked';
+
+/** State-dir candidates, in the same order `waveKeyOf()` probes them. */
+const STATE_DIR_CANDIDATES = ['.pi', '.cursor', '.codex', '.claude'];
+
+/**
  * The receive-side instruction line `renderScopeEchoInstruction()` renders and
  * the coordinator appends immediately after the fenced block
  * (`wave-loop-dispatch.md` § Pre-Dispatch: File-Scope Injection).
@@ -981,6 +996,122 @@ export function listTrackedFiles(cwd) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Stale worktree base (#1413) — a WARNING, never a decision
+//
+// `isolation: "worktree"` makes the HARNESS create `<repo>/.claude/worktrees/
+// agent-<hex>`; no code in this repo creates it and the `Agent` payload carries
+// no base-ref field (the 147-dispatch key census in the module docblock). The
+// base is the SESSION-START commit, and it does not follow a mid-session commit:
+// measured 2026-09-19 (session s18), worktrees created 25 minutes AFTER commit
+// `240efda6` still stood on its parent `8f15f77b`. A fix agent then silently
+// edits the OLD code, and its test run is structurally red on top — `validate-
+// plugin` is vitest's globalSetup and `check-guard-requires-parity.mjs` compares
+// against `git show HEAD:` inside the stale worktree.
+//
+// We have no lever on the base, so the only available fix is to be LOUD. This
+// never touches the verdict: the two functions below are TOTAL (every failure
+// resolves to silence), and the caller ignores their result for the decision.
+// ---------------------------------------------------------------------------
+
+/**
+ * Facts for the worktree-base check, or `null` when the question cannot be
+ * answered HONESTLY — which is the common case and deliberately silent.
+ *
+ * IDENTITY GATE (`.claude/rules/identity-and-locks.md`): `session-start-ref`
+ * lives in STATE.md, a SHARED working-copy artefact that routinely belongs to a
+ * peer session. It is read only when STATE.md's own `session-id` equals this
+ * process's raw id (hook payload `session_id`, else `CLAUDE_CODE_SESSION_ID`) —
+ * a process-local witness REPLACES the shared one, never unions with it. On
+ * mismatch, absence or any read failure this returns `null`: a confident warning
+ * about somebody else's session is worse than no warning at all.
+ *
+ * `parseStateMd` is imported DYNAMICALLY and only on the rare `worktree` branch
+ * (14 of 147 measured dispatches carried `isolation` at all): it is a leaf module
+ * with zero imports and already inside the committed hook-import closure, so
+ * reuse costs no new edge, and binding it late keeps a load failure catchable
+ * instead of disarming the guard at ESM link time (§ #993 late-bound deps).
+ *
+ * @param {{tool_input?: unknown}} input — the raw hook payload
+ * @param {string} projectDir
+ * @param {string} sessionId — `input.session_id`, or `'no-session'`
+ * @returns {Promise<{head: string, session_start_ref: string, stale: boolean,
+ *   subagent_type?: string}|null>}
+ */
+async function worktreeBaseFacts(input, projectDir, sessionId) {
+  try {
+    const toolInput = input?.tool_input;
+    if (toolInput === null || typeof toolInput !== 'object') return null;
+    if (toolInput.isolation !== 'worktree') return null;
+
+    const ownId = sessionId && sessionId !== 'no-session'
+      ? sessionId
+      : (process.env.CLAUDE_CODE_SESSION_ID || '');
+    if (!ownId) return null;
+
+    const { parseStateMd } = await import(
+      pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'state-md', 'yaml-parser.mjs')).href
+    );
+
+    let frontmatter = null;
+    for (const dir of STATE_DIR_CANDIDATES) {
+      try {
+        const parsed = parseStateMd(readFileSync(path.join(projectDir, dir, 'STATE.md'), 'utf8'));
+        if (parsed?.frontmatter) { frontmatter = parsed.frontmatter; break; }
+      } catch { /* try the next state dir */ }
+    }
+    if (frontmatter === null) return null;
+    if (frontmatter['session-id'] !== ownId) return null;
+
+    const startRef = typeof frontmatter['session-start-ref'] === 'string'
+      ? frontmatter['session-start-ref'].trim()
+      : '';
+    if (startRef === '') return null;
+
+    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: projectDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    if (head === '') return null;
+
+    const facts = { head, session_start_ref: startRef, stale: head !== startRef };
+    if (typeof toolInput.subagent_type === 'string' && toolInput.subagent_type !== '') {
+      facts.subagent_type = toolInput.subagent_type;
+    }
+    return facts;
+  } catch {
+    // Total by construction: no STATE.md, no git, no parser — no warning.
+    return null;
+  }
+}
+
+/**
+ * The operator-facing warning. It names the ACTION, not just the condition —
+ * a warning the coordinator cannot act on is noise (HR-106).
+ *
+ * @param {{head: string, session_start_ref: string}} facts
+ * @returns {string}
+ */
+function staleWorktreeWarning(facts) {
+  const head = facts.head.slice(0, 12);
+  const base = facts.session_start_ref.slice(0, 12);
+  return [
+    `⚠ ${HOOK_NAME}: STALE WORKTREE BASE (#1413) — this dispatch uses `
+      + `isolation: "worktree", but HEAD (${head}) has moved past this session's `
+      + `session-start-ref (${base}).`,
+    '  The harness bases a new agent worktree on the SESSION-START commit and offers',
+    '  no base-ref field, so the agent will silently get the OLDER code — and its test',
+    '  run is structurally red on top (check-guard-requires-parity compares against',
+    '  `git show HEAD:`, and validate-plugin is vitest\'s globalSetup).',
+    '  DO ONE OF: dispatch this wave IN-PLACE (omit `isolation`) — or verify the base',
+    '  before trusting the agent\'s result:',
+    '    git worktree list --porcelain | awk -v h="$(git rev-parse HEAD)" '
+      + '\'/^worktree /{w=$2} /^HEAD /{if (w ~ /\\.claude\\/worktrees\\/agent-/ && $2 != h) '
+      + 'print "STALE " substr($2,1,12) " " w}\'',
+  ].join('\n');
+}
+
 /**
  * Clip a path for the deny reason without losing the discriminating tail.
  *
@@ -1435,6 +1566,29 @@ async function main() {
       await emitEvent(
         SCOPE_EVENT,
         { hook: HOOK_NAME, ...verdict.telemetry, ...sessionAttribution(projectDir) },
+        { repoRoot: projectDir }
+      );
+    } catch { /* observability is best-effort — it never blocks the decision */ }
+  }
+
+  // #1413 — the stale-worktree-base warning, also awaited BEFORE the terminal
+  // emit for the same process.exit() reason as the block above. It reads
+  // `verdict` not at all: it can never turn an allow into a deny, and a git or
+  // STATE.md failure resolves to silence rather than to a wrong accusation.
+  const worktreeBase = await worktreeBaseFacts(input, projectDir, sessionId);
+  if (worktreeBase !== null) {
+    if (worktreeBase.stale) {
+      try {
+        console.error(staleWorktreeWarning(worktreeBase));
+      } catch { /* stderr may be closed — a warning that cannot be printed is not a block */ }
+    }
+    try {
+      const { emitEvent, sessionAttribution } = await import(
+        pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
+      );
+      await emitEvent(
+        WORKTREE_BASE_EVENT,
+        { hook: HOOK_NAME, ...worktreeBase, ...sessionAttribution(projectDir) },
         { repoRoot: projectDir }
       );
     } catch { /* observability is best-effort — it never blocks the decision */ }

@@ -609,6 +609,99 @@ describe('#385 — canonical repair-apply exact-match exception', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// #1408 — a write performed INSIDE an interpreter eval payload
+//
+// The guard matched SHELL write intent only, and named that bound in its own
+// docblock. Measured over 58 transcripts of this repo: 438 Bash commands mention
+// the ledger, the shell shapes the guard matches occurred **0 times**, 46 are
+// interpreter one-liners. On 2026-09-19 a coordinator appended its session record
+// with `node --input-type=module -e "… appendFileSync('<ledger>', …)"`, landing a
+// record with `ended_at` instead of `completed_at` and four required fields
+// missing — `emit-session.mjs` never ran. Every DENY row below was measured ALLOW
+// (empty stdout, exit 0 — "no decision") against the pre-#1408 hook.
+//
+// The ALLOW rows are the false-positive proof, and they are not hypothetical:
+// all three interpreter one-liners that actually occur in the transcripts READ
+// the ledger and write `.orchestrator/tmp/session-entry.json`. A matcher keyed on
+// co-occurrence of a write verb and the ledger basename — rather than on the
+// write call's FIRST ARGUMENT — denies all three.
+// ---------------------------------------------------------------------------
+describe('#1408 — interpreter eval payloads', () => {
+  it.each([
+    // ---- the measured accident and its near neighbours
+    ['the #1408 shape — node -e appendFileSync', `node -e "require('fs').appendFileSync('${LEDGER}', JSON.stringify(rec) + '\\n')"`,
+      'deny'],
+    ['the record-session concatenation form', `node -e "fs.appendFileSync(R+'/${LEDGER}', line)"`, 'deny'],
+    ['--input-type=module with writeFileSync', `node --input-type=module -e "import fs from 'node:fs'; fs.writeFileSync('/tmp/r/${LEDGER}', s)"`,
+      'deny'],
+    ['the attached -e spelling', `node -e'require("fs").appendFileSync("${LEDGER}","x")'`, 'deny'],
+    ['the =-joined --eval spelling', `node --eval="require('fs').appendFileSync('${LEDGER}','x')"`, 'deny'],
+    ['createWriteStream onto the ledger', `node -e "require('fs').createWriteStream('${LEDGER}',{flags:'a'}).write(l)"`, 'deny'],
+    ["python3 -c open(…,'a')", `python3 -c "open('${LEDGER}','a').write(line)"`, 'deny'],
+    ['perl three-arg open for append', `perl -e "open(my \\$fh, '>>', '${LEDGER}');"`, 'deny'],
+    ['ruby File.write', `ruby -e "File.write('${LEDGER}', line, mode: 'a')"`, 'deny'],
+    // Per-STATEMENT scoping: the write is the SECOND statement of a chain, and
+    // the predicate sits inside splitChainSegments, so it is judged on its own.
+    ['a chained second statement', `jq -c . rec.json && node -e "require('fs').appendFileSync('${LEDGER}','x')"`, 'deny'],
+
+    // ---- the measured ALLOW shapes. 148 of the 438 ledger-naming commands are
+    // plain jq reads; the 3 interpreter one-liners that contain a write verb at
+    // all are ALL ledger reads that write somewhere else.
+    ['a jq read', `jq -c 'select(.session_id=="x")' ${LEDGER}`, 'allow'],
+    ['a node -e readFileSync of the ledger', `node -e "JSON.parse(require('fs').readFileSync('${LEDGER}','utf8').trim().split('\\n').pop())"`,
+      'allow'],
+    ['the measured read-then-write-ELSEWHERE one-liner', `node -e "const fs=require('fs');const r=fs.readFileSync('${LEDGER}','utf8');fs.writeFileSync('.orchestrator/tmp/session-entry.json', r)"`,
+      'allow'],
+    ['wc -l', `wc -l ${LEDGER}`, 'allow'],
+    ['tail', `tail -3 ${LEDGER}`, 'allow'],
+    ['grep', `grep -c session_id ${LEDGER}`, 'allow'],
+    ['python3 -c with no mode operand (a READ)', `python3 -c "print(open('${LEDGER}').read())"`, 'allow'],
+    ["python3 -c open(…,'r')", `python3 -c "print(open('${LEDGER}','r').read())"`, 'allow'],
+    ['perl open for READ (no > in any operand)', `perl -e "open(my \\$fh, '<', '${LEDGER}');"`, 'allow'],
+    // Per-STATEMENT scoping, allow direction: a read statement followed by an
+    // unrelated one must not inherit a deny from anywhere.
+    ['a read statement followed by echo', `node -e "require('fs').readFileSync('${LEDGER}')" ; echo ok`, 'allow'],
+  ])('%s', (_label, command, decision) => {
+    decisionAssertions[decision](runHook({ command }));
+  });
+
+  it('routes the operator to the validating writer instead of just blocking', () => {
+    // Bug: a deny with no route is what a hurried agent reads as a crash and
+    // works around — which is how the prose prohibition failed in the first place.
+    const denial = expectDeny(
+      runHook({ command: `node -e "require('fs').appendFileSync('${LEDGER}','x')"` }),
+      'emit-session.mjs',
+    );
+    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain(LEDGER);
+    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain('appendFileSync');
+  });
+
+  it('does NOT let a second statement ride the #385 exact-match bypass', () => {
+    // Bug this catches: the guard's ONE bypass (REPAIR_APPLY_CANONICAL_COMMAND)
+    // is a WHOLE-command comparison. Widening a matcher without narrowing its
+    // bypass opens a hole — so the canonical repair command with an interpreter
+    // append chained after it must not be waved through by the exact match.
+    // Reported target is the FIRST offending statement (the repair marker), which
+    // is itself the proof: the whole-command exact match did not fire, so the
+    // chain fell through to the normal per-segment deny logic.
+    expectDeny(
+      runHook({
+        command: `node scripts/repair-invalid-sessions.mjs --apply; node -e "require('fs').appendFileSync('${LEDGER}','x')"`,
+      }),
+      'repair-invalid-sessions.mjs --apply',
+    );
+    // Reversed order: the interpreter write is the statement that hits first, so
+    // the new predicate — not the pre-existing repair rule — carries this deny.
+    expectDeny(
+      runHook({
+        command: `node -e "require('fs').appendFileSync('${LEDGER}','x')"; node scripts/repair-invalid-sessions.mjs --apply`,
+      }),
+      'appendFileSync',
+    );
+  });
+});
+
 describe('#1005 — unavailable Node grammar denies repair apply', () => {
   it.each([
     [

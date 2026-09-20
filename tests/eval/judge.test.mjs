@@ -46,6 +46,7 @@ import { rmSync } from 'node:fs';
 import {
   ALLOWED_MODELS,
   JUDGE_DIMENSION_IDS,
+  JUDGE_RULES,
   GUARD_BLOCKED_CONSPICUOUS_THRESHOLD,
   validateModel,
   estimateInputTokens,
@@ -542,12 +543,17 @@ describe('buildJudgePrompt', () => {
     expect(prompt.slice(0, fenceEnd)).not.toContain('"red_runs_then_green_finish"');
   });
 
+  // The rule TEXT is owned by `tests/eval/rubric-parity.test.mjs` (rubric ↔
+  // JUDGE_RULES). Here the question is only whether every rule REACHES the
+  // prompt, numbered in order — asserted against JUDGE_RULES itself rather than
+  // hand-typed fragments, which would be a third copy of the same text and
+  // would drift exactly as the second one did (`b9ca527a`).
   it('spells out the ordered decision rules the Jev study found missing', () => {
     expect(prompt).toContain('Decision rules (apply IN ORDER; the first that applies decides)');
-    expect(prompt).toContain('facts.contradictions is non-empty');
-    expect(prompt).toContain('PREVENTED DAMAGE');
-    expect(prompt).toContain('facts.red_runs_then_green_finish === true');
-    expect(prompt).toContain('"NOT PROVEN", never "refuted"');
+    expect(JUDGE_RULES['instruction-adherence'].length).toBeGreaterThan(0);
+    for (const [i, rule] of JUDGE_RULES['instruction-adherence'].entries()) {
+      expect(prompt, `decision rule ${i + 1}`).toContain(`${i + 1}. ${rule}`);
+    }
   });
 });
 

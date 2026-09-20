@@ -1678,6 +1678,449 @@ function clockAgeMs(file, field, now) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Absolute-grant grading (#1398 cond. 4, #1405, #1406)
+// ---------------------------------------------------------------------------
+//
+// ONE grading predicate, TWO consumers (BV-003). It lived in
+// `scripts/validate-wave-scope.mjs` as four module-local helpers, where only the
+// pre-dispatch CLI could reach it — so `hooks/enforce-scope.mjs` Gate 5b honoured
+// grants the validator would have refused, and a manifest that never went through
+// the CLI was never graded at all. Both now call {@link gradeScopeEntry}:
+//
+//   - the VALIDATOR turns an `error` verdict into exit 1 (pre-dispatch refusal),
+//     passing an fs-backed `resolve` so the canonicalisation below is real;
+//   - the HOOK keeps ALLOWING exactly what it allows today and emits ONE WARN
+//     when the grant it just matched grades `error`. It passes NO resolver — see
+//     the ceiling on `opts.resolve`.
+//
+// ## Why canonicalisation is the ROOT fix, not two more denylist strings (#1405)
+//
+// Gate 5b matches the REALPATH-RESOLVED write candidate (enforce-scope.mjs
+// SECURITY-REQ-03) against the raw allowedPaths entry. So the set of files a
+// grant reaches is decided by the CANONICAL spelling, while the validator graded
+// the LITERAL one. Measured on this host 2026-09-20 (`fs.realpathSync`):
+// `/etc` → `/private/etc`, `/var` → `/private/var`, `/tmp` → `/private/tmp`.
+// Two opposite defects followed from that one gap:
+//
+//   - `/private/etc/**` and `/private/var/**` passed with a WARN although they
+//     grant exactly what the denylisted `/etc/**` and `/var/**` grant, because
+//     the denylist only ever saw the top segment `private`;
+//   - `/tmp/x/**` passed and was advertised as "honoured by Gate 5b" although the
+//     hook can never match it — the candidate arrives as `/private/tmp/x/a.md`
+//     and `pathMatchesPattern('/private/tmp/x/a.md', '/tmp/x/**') === false`. A
+//     grant that matches nothing is not a safe grant, it is a silent no-op that
+//     reads as permission.
+//
+// Adding `private/etc` and `private/var` to the denylist would have fixed the
+// first pair on macOS only, and nothing at all of the second. Resolving the
+// grant's literal prefix the same direction the hook resolves candidates fixes
+// both, and degrades to today's behaviour wherever a prefix does not exist.
+//
+// ## Named ceilings (BV-004)
+//
+//   - HOME grants (`/Users/…`, `/home/…`) are graded by SHAPE and RETURN before
+//     canonicalisation. Deliberate: that is the one root where a legitimate
+//     out-of-repo grant is routine, and the shape rule must not become
+//     platform-dependent (on macOS `fs.realpathSync('/home')` is
+//     `/System/Volumes/Data/home`, whose top segment is denylisted — grading a
+//     Linux-home grant against that would refuse it on a macOS coordinator and
+//     accept it on a Linux one). Revisit trigger: the first home grant Gate 5b
+//     provably never matches because the home itself is a symlink.
+//   - With NO `resolve` the grader is PURE and grades the literal spelling only,
+//     which is what the hook does. It keeps every literal-spelling verdict
+//     (`/etc/**`, `/Users/<u>/.ssh/**`, `/Users/<u>/**`) and loses only the two
+//     canonical-alias classes above. Revisit trigger: a measurement showing the
+//     ~14 `realpathSync` calls are cheap enough for a PreToolUse hot path.
+// ---------------------------------------------------------------------------
+
+/**
+ * Well-known top-level system directories a wave scope may never grant.
+ *
+ * A FIXED DENYLIST, not a segment-count threshold: the #792 legitimate grant
+ * (`/private/tmp/<session>/scratchpad/**`) is itself a shallow grant under an
+ * unusual root ("private"), so any depth heuristic tight enough to catch
+ * `/etc/**` would catch that too.
+ *
+ * `Users` and `home` are deliberately ABSENT (#1398/#1402): they are the only two
+ * roots under which a legitimate grant is routine, and denying them flat made the
+ * validator contradict the hook it validates for. {@link classifyHomeGrant}
+ * grades them by shape instead.
+ * @type {ReadonlyArray<string>}
+ */
+const DENIED_ABSOLUTE_TOP_SEGMENTS = Object.freeze([
+  'etc',
+  'root',
+  'bin',
+  'sbin',
+  'usr',
+  'System',
+  'var',
+  'boot',
+  'dev',
+  'proc',
+  'sys',
+  'Library',
+  'Applications',
+  'Windows',
+]);
+
+/**
+ * Case-fold a path or path segment for comparison against the sets below.
+ *
+ * Every comparison here MUST go through this: the classification is a proxy for
+ * what the FILESYSTEM will resolve, and the two default filesystems this repo
+ * runs on (APFS on macOS, NTFS on Windows) are case-INSENSITIVE while neither
+ * `path.posix.normalize` nor `fs.realpath()` corrects the spelling. Measured
+ * 2026-09-19: `/Users/<u>/.ssh` and `/users/<u>/.ssh` report the SAME inode, as
+ * do `/Users/<u>/Library/Keychains` and `/users/<u>/library/Keychains`.
+ *
+ * `'en-US'` is pinned explicitly: the host locale must not decide a security
+ * verdict (a Turkish default locale folds `I` to `ı`, taking `LIBRARY` out of
+ * the match).
+ *
+ * Named ceiling (BV-004): folding is strictly STRICTER on a case-SENSITIVE
+ * filesystem, where `/library` really is a different directory from `/Library`.
+ * Revisit trigger: the first legitimate grant refused for that reason.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function foldPath(value) {
+  return value.toLocaleLowerCase('en-US');
+}
+
+/** Literal filesystem-root forms — POSIX "/" plus the Windows "\" and "C:\". */
+const FILESYSTEM_ROOT_LITERALS = new Set(['/', '\\']);
+const WINDOWS_DRIVE_ROOT_RE = /^[A-Za-z]:\\+$/;
+
+/**
+ * Is this entry a bare filesystem root? Checked independently of
+ * `path.isAbsolute()`, which is platform-native: on a POSIX host it never
+ * reports `C:\` as absolute, so a Windows-literal root would slip past.
+ * @param {string} entry
+ * @returns {boolean}
+ */
+function isFilesystemRootLiteral(entry) {
+  return FILESYSTEM_ROOT_LITERALS.has(entry) || WINDOWS_DRIVE_ROOT_RE.test(entry);
+}
+
+/**
+ * Top-level segments that open a HOME directory rather than a system one —
+ * macOS (`/Users/<user>`) and Linux (`/home/<user>`). Stored FOLDED.
+ * @type {ReadonlySet<string>}
+ */
+const HOME_TOP_SEGMENTS = new Set(['users', 'home']);
+
+/**
+ * How many LITERAL segments a home grant must name before its first wildcard:
+ * `<home-root>` / `<user>` / `<one directory>` = 3. Two is the bare home itself,
+ * and a wildcard inside those three widens the grant to a whole home.
+ */
+const HOME_MIN_LITERAL_SEGMENTS = 3;
+
+/**
+ * The ONE dot-directory carve-out (#1406) and the depth that buys it.
+ *
+ * `~/.cache/<project>/…` is where a study contract keeps its data and where the
+ * hook honours the path today; `~/.cache/**` itself is not — it is every tool's
+ * cache on the host, including credential caches. Four literal segments
+ * (`/Users` / `<user>` / `.cache` / `<project>`) is the narrowest rule that
+ * separates the two. Every OTHER dot-directory and `Library` stay refused at any
+ * depth: `.ssh`, `.aws`, `.gnupg`, `.config`, `.claude`, `.codex` carry
+ * credentials or the agent guards themselves at their FIRST level, so no depth
+ * makes them safe.
+ */
+const CACHE_CARVEOUT_SEGMENT = '.cache';
+const CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS = 4;
+
+/**
+ * Home subdirectories that carry credentials, tokens, or the agent guards
+ * themselves. ONE predicate rather than a list, because the list is open-ended
+ * and every omission is a live credential store: any dot-prefixed directory
+ * (`.ssh`, `.aws`, `.gnupg`, `.config` — which holds tokens AND `owner.yaml` —
+ * `.claude`, `.codex`, `.cursor`, `.docker`, `.npmrc`, `.netrc`) plus macOS
+ * `Library` (whose `Keychains` subtree carries no leading dot).
+ * @param {string} segment
+ * @returns {boolean}
+ */
+function isSensitiveHomeSegment(segment) {
+  return segment.startsWith('.') || foldPath(segment) === 'library';
+}
+
+/**
+ * Is `candidate` the directory `root` itself, or below it? Fold-compared, and
+ * anchored on a `/` boundary so `/system-backup` is not read as being under
+ * `/system`.
+ * @param {string} candidate
+ * @param {string} root
+ * @returns {boolean}
+ */
+function isUnderRoot(candidate, root) {
+  const c = foldPath(candidate);
+  const r = foldPath(root);
+  if (r === '/') return c.startsWith('/');
+  return c === r || c.startsWith(`${r}/`);
+}
+
+/**
+ * The denylisted system directory this prefix sits under, or `null`.
+ *
+ * `resolveRoot` is applied to each denied root before the comparison, so the
+ * CANONICAL pass catches `/private/etc` (= `realpath('/etc')`) without the
+ * denylist having to spell out a second, platform-specific alias for every
+ * entry. With the identity resolver this is the plain literal check.
+ *
+ * @param {string} prefix — an absolute, `.`-normalized literal path prefix
+ * @param {(p: string) => string} resolveRoot
+ * @returns {string|null} the denylisted segment (canonical casing) that matched
+ */
+function deniedRootFor(prefix, resolveRoot) {
+  for (const segment of DENIED_ABSOLUTE_TOP_SEGMENTS) {
+    if (isUnderRoot(prefix, resolveRoot(`/${segment}`))) return segment;
+  }
+  return null;
+}
+
+/**
+ * The LITERAL prefix of an absolute grant — everything before its first segment
+ * carrying a `*` (`/private/tmp/x/**` → `/private/tmp/x`, `/Users/*\/p/**` →
+ * `/Users`, `/etc/passwd` → `/etc/passwd`). `/` when the first segment already
+ * globs. This, never the raw entry, is what gets canonicalised: the wildcard
+ * part has no filesystem identity.
+ * @param {string} normalizedEntry
+ * @returns {string}
+ */
+function literalGrantPrefix(normalizedEntry) {
+  const kept = [];
+  for (const segment of normalizedEntry.split('/')) {
+    if (segment.includes('*')) break;
+    kept.push(segment);
+  }
+  const prefix = kept.join('/');
+  return prefix.length === 0 ? '/' : prefix;
+}
+
+/**
+ * Grade an absolute entry whose top-level segment is a home root.
+ *
+ * The rule is SHAPE-based, not identity-based, because the hook grants by shape:
+ * Gate 5b feeds the entry straight to {@link pathMatchesPattern}, where a
+ * wildcard in an early segment silently widens the grant. Measured 2026-09-19:
+ * `/Users/alice/**` matches `/Users/alice/.ssh/authorized_keys`, and a bare `*`
+ * as the third segment matches `/Users/alice/.ssh/id` — a wildcard there reaches
+ * dot-directories. So the depth is counted over the LITERAL prefix, never over
+ * the raw segment count.
+ *
+ * Named ceiling (BV-004): only the FIRST directory below the home is checked for
+ * sensitivity. A dot-directory DEEPER in the tree (`…/vault/.git/hooks/**`) stays
+ * ungated, because at that depth the grant is already scoped to one project the
+ * operator named explicitly. Revisit trigger: the first time a wave legitimately
+ * needs a grant INTO a foreign repo.
+ *
+ * @param {string} normalizedEntry — the entry with `.` segments collapsed, so a
+ *   `/Users/./alice/.ssh` cannot shift the literal prefix and hide a
+ *   dot-directory at index 2.
+ * @returns {{verdict: 'error'|'warn', reason: string}|null} null when the entry
+ *   is not a home grant at all.
+ */
+function classifyHomeGrant(normalizedEntry) {
+  const segments = normalizedEntry.split('/').filter(Boolean);
+  if (segments.length === 0 || !HOME_TOP_SEGMENTS.has(foldPath(segments[0]))) return null;
+
+  /** Literal prefix: the segments before the first one carrying a wildcard. */
+  const literal = [];
+  for (const segment of segments) {
+    if (segment.includes('*')) break;
+    literal.push(segment);
+  }
+
+  if (literal.length < HOME_MIN_LITERAL_SEGMENTS) {
+    return {
+      verdict: 'error',
+      reason:
+        `grants a home directory at or above the user level — a home grant must name at least ` +
+        `${HOME_MIN_LITERAL_SEGMENTS} literal path segments before its first wildcard ` +
+        `(e.g. /Users/<user>/<project>/**); this one names ${literal.length}, so Gate 5b would ` +
+        `honour it across the whole home (measured: /Users/<user>/** matches ~/.ssh/authorized_keys)`,
+    };
+  }
+
+  const firstBelowHome = literal[HOME_MIN_LITERAL_SEGMENTS - 1];
+  // #1406 — the one carve-out, and it is a DEPTH rule, not a name on a list:
+  // `~/.cache/**` stays refused, `~/.cache/<project>/…` is honoured.
+  const cacheCarveout =
+    foldPath(firstBelowHome) === CACHE_CARVEOUT_SEGMENT &&
+    literal.length >= CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS;
+  if (!cacheCarveout && isSensitiveHomeSegment(firstBelowHome)) {
+    return {
+      verdict: 'error',
+      reason:
+        `grants a sensitive home subdirectory ("${firstBelowHome}") — dot-directories and Library ` +
+        `hold credentials, tokens, owner.yaml and the agent guards themselves; scope a project ` +
+        `directory instead (the sole exception is ~/.cache/<project>/…, which must name at least ` +
+        `${CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS} literal segments — #1406)`,
+    };
+  }
+
+  return { verdict: 'warn', reason: 'home-directory grant honoured by Gate 5b' };
+}
+
+/**
+ * Grade ONE `allowedPaths` / fileScope entry as a Gate 5b grant.
+ *
+ * The single grading predicate shared by `scripts/validate-wave-scope.mjs`
+ * (refuses `error` before dispatch) and `hooks/enforce-scope.mjs` Gate 5b (WARNs
+ * on `error`, never denies). See the section block above for the design.
+ *
+ * Verdict order — each rung is load-bearing:
+ *   1. a tilde entry (`~/…`) — NOTHING in the scope chain expands it (#1405.3),
+ *      so it grants nothing while reading like a grant;
+ *   2. a bare filesystem root — `pathMatchesPattern(p, '/')` is `true` for every
+ *      path (the `dir/` prefix branch), i.e. the whole host;
+ *   3. non-absolute entries are not ours to grade → `null`;
+ *   4. the denylisted system roots, LITERAL spelling;
+ *   5. home grants, by shape — these RETURN, see the ceiling above;
+ *   6. the denylisted system roots, CANONICAL spelling (#1405.1);
+ *   7. a literal prefix that is not canonical — Gate 5b can never match it
+ *      (#1405.2);
+ *   8. otherwise a WARN, split only so the narrowest shape (a concrete absolute
+ *      file) says so.
+ *
+ * Pure with no `opts.resolve`; never throws (a throwing resolver degrades to the
+ * literal spelling). Returns `null` for every ordinary relative entry.
+ *
+ * @param {string} entry
+ * @param {{resolve?: (absPath: string) => string}} [opts] — canonicaliser for an
+ *   absolute path; MUST tolerate a non-existent path (resolve the nearest
+ *   existing ancestor, or return the input unchanged).
+ * @returns {{verdict: 'error'|'warn', code: string, message: string}|null}
+ */
+export function gradeScopeEntry(entry, opts = {}) {
+  if (typeof entry !== 'string' || entry.length === 0) return null;
+  const bag = opts !== null && typeof opts === 'object' ? opts : {};
+  const resolver = typeof bag.resolve === 'function' ? bag.resolve : null;
+  /** @param {string} p @returns {string} */
+  const canonicalize = (p) => {
+    if (resolver === null) return p;
+    try {
+      const resolved = resolver(p);
+      return typeof resolved === 'string' && resolved.length > 0 ? resolved : p;
+    } catch {
+      return p;
+    }
+  };
+
+  if (entry === '~' || entry.startsWith('~/')) {
+    return {
+      verdict: 'error',
+      code: 'tilde',
+      message:
+        `contains a tilde path: ${entry} — the tilde is NOT expanded by hooks/enforce-scope.mjs ` +
+        `Gate 5b, nor anywhere else in the scope chain, so this entry matches nothing while ` +
+        `reading like a grant; write the expanded absolute path instead`,
+    };
+  }
+
+  if (isFilesystemRootLiteral(entry)) {
+    return {
+      verdict: 'error',
+      code: 'filesystem-root',
+      message:
+        `grants the entire filesystem root: ${entry} — refused unconditionally, this can never ` +
+        `be a valid wave scope`,
+    };
+  }
+
+  if (!path.isAbsolute(entry)) return null;
+
+  // `.` segments are collapsed BEFORE any classification (#1398): without it,
+  // `/Users/./alice/.ssh/**` has a literal prefix whose third element is
+  // "alice", so the dot-directory sits at index 3 and the sensitivity check
+  // misses it. `..` needs no handling — the caller's traversal check rejects
+  // any entry containing `../`, whatever else it is.
+  const normalized = path.posix.normalize(entry);
+  const literalPrefix = literalGrantPrefix(normalized);
+
+  const deniedLiteral = deniedRootFor(literalPrefix, (p) => p);
+  if (deniedLiteral !== null) {
+    return {
+      verdict: 'error',
+      code: 'denied-system-dir',
+      message:
+        `contains a well-known system/home directory grant: ${entry} ` +
+        `(top-level segment "${deniedLiteral}" is denylisted) — refused, scope a narrower path instead`,
+    };
+  }
+
+  const home = classifyHomeGrant(normalized);
+  if (home !== null) {
+    return home.verdict === 'error'
+      ? { verdict: 'error', code: 'home-grant', message: `${home.reason}: ${entry}` }
+      : {
+          verdict: 'warn',
+          code: 'home-grant',
+          message:
+            `contains an absolute (out-of-repo) path: ${entry} — ${home.reason}; ` +
+            `verify this grant is intentional`,
+        };
+  }
+
+  const canonicalPrefix = canonicalize(literalPrefix);
+
+  const deniedCanonical = deniedRootFor(canonicalPrefix, canonicalize);
+  if (deniedCanonical !== null) {
+    return {
+      verdict: 'error',
+      code: 'denied-system-dir',
+      message:
+        `contains a well-known system/home directory grant: ${entry} — its literal prefix ` +
+        `"${literalPrefix}" resolves to "${canonicalPrefix}", inside the denylisted system ` +
+        `directory "${deniedCanonical}"; Gate 5b matches the REALPATH-resolved write candidate, ` +
+        `so this spelling grants exactly what "/${deniedCanonical}/**" grants — refused, scope a ` +
+        `narrower path instead`,
+    };
+  }
+
+  if (canonicalPrefix !== literalPrefix) {
+    return {
+      verdict: 'error',
+      code: 'non-canonical',
+      message:
+        `contains a non-canonical absolute path: ${entry} — hooks/enforce-scope.mjs Gate 5b ` +
+        `matches the REALPATH-resolved write candidate, which never carries this spelling ` +
+        `("${literalPrefix}" resolves to "${canonicalPrefix}"), so this grant can match NOTHING; ` +
+        `write ${canonicalPrefix}${normalized.slice(literalPrefix.length)} instead`,
+    };
+  }
+
+  // KNOWN DIVERGENCE, carried over from #1402 and still message-only: `*` is the
+  // sole wildcard this check knows, while {@link isGlobScopeEntry} ALSO counts a
+  // trailing `/` and {@link pathMatchesPattern} honours that directory-prefix
+  // form. So `/private/tmp/x/` reads as "no wildcard" here and is described as an
+  // exact-path match although it grants a whole subtree. Both branches only WARN,
+  // so the cost is one wrong sentence on stderr and no verdict — which is why it
+  // is reported rather than patched. Revisit if either branch ever hard-rejects.
+  if (!entry.includes('*')) {
+    return {
+      verdict: 'warn',
+      code: 'bare-absolute-file',
+      message:
+        `contains a bare absolute file grant with no wildcard: ${entry} — honoured by ` +
+        `hooks/enforce-scope.mjs Gate 5b as an exact-path match (the narrowest possible grant); ` +
+        `verify this grant is intentional`,
+    };
+  }
+
+  return {
+    verdict: 'warn',
+    code: 'absolute',
+    message:
+      `contains an absolute (out-of-repo) path: ${entry} — honoured by hooks/enforce-scope.mjs ` +
+      `Gate 5b; verify this grant is intentional`,
+  };
+}
+
 /**
  * Absolute epoch-ms at which this session started, or `null` when no clock is
  * readable — the value {@link classifyEmptyScope} compares a manifest's mtime

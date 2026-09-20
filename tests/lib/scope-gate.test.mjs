@@ -23,6 +23,7 @@ import {
   extractBashWriteTargets,
   suggestForEmptyScope,
   EMPTY_SCOPE_REASONS,
+  gradeScopeEntry,
 } from '@lib/scope-gate.mjs';
 
 let tmpDir;
@@ -424,6 +425,104 @@ describe('assertTestSiblingCoverage (#970 fail-closed wiring)', () => {
       ok: false,
       missing: [],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gradeScopeEntry — the ONE grading predicate (#1398 cond. 4, #1405, #1406)
+// ---------------------------------------------------------------------------
+//
+// The canonicalisation cases are driven by an INJECTED resolver, never by this
+// host's symlinks: `/etc → /private/etc` is macOS-only, so a test that reads the
+// real filesystem would assert nothing on Linux CI while looking identical. The
+// map below is the pure mapping the fs-backed resolver in
+// `scripts/validate-wave-scope.mjs` produces on macOS (measured 2026-09-20 with
+// `fs.realpathSync`); the CLI suite proves the wiring separately, gated on a
+// runtime probe.
+// ---------------------------------------------------------------------------
+
+/** The macOS `/etc`→`/private/etc` class of symlink, as a pure mapping. */
+const FAKE_SYMLINKS = Object.freeze({ '/etc': '/private/etc', '/var': '/private/var', '/tmp': '/private/tmp' });
+
+/** @param {string} p @returns {string} */
+function fakeResolve(p) {
+  for (const [from, to] of Object.entries(FAKE_SYMLINKS)) {
+    if (p === from) return to;
+    if (p.startsWith(`${from}/`)) return `${to}${p.slice(from.length)}`;
+  }
+  return p;
+}
+
+describe('gradeScopeEntry — canonical spelling decides what Gate 5b reaches (#1405)', () => {
+  it.each([
+    // #1405.1 — the denylist graded the LITERAL top segment ("private"), so the
+    // symlink alias of a denylisted root passed with a WARN while granting
+    // exactly what the refused spelling grants.
+    ['canonical alias of /etc', '/private/etc/**', 'error', 'denied-system-dir'],
+    ['canonical alias of /var', '/private/var/**', 'error', 'denied-system-dir'],
+    // …and the literal spelling must keep its own verdict, unchanged.
+    ['literal denylisted root', '/etc/**', 'error', 'denied-system-dir'],
+    // #1405.2 — a grant the hook can NEVER match: the candidate arrives
+    // realpath-resolved as /private/tmp/x/a.md, so this entry is a silent no-op
+    // that reads as permission. It used to WARN "honoured by Gate 5b".
+    ['non-canonical prefix', '/tmp/x/**', 'error', 'non-canonical'],
+    // The canonical spelling of the SAME grant is the #792 sanctioned case.
+    ['canonical scratchpad grant', '/private/tmp/x/**', 'warn', 'absolute'],
+    // #1405.3 — nothing in the scope chain expands a tilde, so this granted
+    // nothing and reported nothing at all.
+    ['tilde grant', '~/Projects/vault/**', 'error', 'tilde'],
+  ])('%s: %s', (_label, entry, verdict, code) => {
+    const grade = gradeScopeEntry(entry, { resolve: fakeResolve });
+    expect(grade).toMatchObject({ verdict, code });
+  });
+
+  it('names the canonical spelling to write instead of the dead one', () => {
+    // The finding is only actionable if it carries the replacement — the whole
+    // point is that the author believed the grant worked.
+    const grade = gradeScopeEntry('/tmp/x/**', { resolve: fakeResolve });
+    expect(grade.message).toContain('/private/tmp/x/**');
+  });
+
+  it('is PURE without a resolver — the contract hooks/enforce-scope.mjs relies on', () => {
+    // Gate 5b grades on a hot path and passes no resolver. It must still reach
+    // every literal-spelling verdict, and must not invent the canonical ones.
+    expect(gradeScopeEntry('/etc/**')).toMatchObject({ verdict: 'error', code: 'denied-system-dir' });
+    expect(gradeScopeEntry('/tmp/x/**')).toMatchObject({ verdict: 'warn' });
+  });
+
+  it('degrades to the literal spelling when the resolver throws', () => {
+    const boom = () => { throw new Error('ENOENT'); };
+    expect(gradeScopeEntry('/private/tmp/x/**', { resolve: boom })).toMatchObject({ verdict: 'warn' });
+  });
+
+  it('returns null for an ordinary relative entry', () => {
+    expect(gradeScopeEntry('scripts/lib/scope-gate.mjs')).toBe(null);
+    expect(gradeScopeEntry('tests/**')).toBe(null);
+  });
+});
+
+describe('gradeScopeEntry — the ~/.cache carve-out is a DEPTH rule (#1406)', () => {
+  it.each([
+    // The live case: a study contract keeps its data here and the hook honours
+    // the path, but `segment.startsWith('.')` refused it outright.
+    ['project under .cache', '/Users/alice/.cache/jev-eval/so/**', 'warn'],
+    ['exactly 4 literal segments', '/Users/alice/.cache/jev-eval/**', 'warn'],
+    // …and the carve-out must not become a hole: the bare cache is every tool's
+    // cache on the host.
+    ['bare .cache', '/Users/alice/.cache/**', 'error'],
+    ['bare .cache, no wildcard', '/Users/alice/.cache', 'error'],
+    // Depth rescues NOTHING else — these carry credentials at their first level.
+    ['deep .ssh', '/Users/alice/.ssh/keys/prod/**', 'error'],
+    ['deep .config', '/Users/alice/.config/gh/hosts/**', 'error'],
+    ['deep Library', '/Users/alice/Library/Keychains/x/**', 'error'],
+  ])('%s: %s', (_label, entry, verdict) => {
+    expect(gradeScopeEntry(entry)).toMatchObject({ verdict });
+  });
+
+  it('folds the carve-out segment like every other segment', () => {
+    // The filesystem is case-insensitive here; a byte-exact carve-out would
+    // refuse /.Cache/ while the hook honoured it.
+    expect(gradeScopeEntry('/Users/alice/.Cache/jev-eval/so/**')).toMatchObject({ verdict: 'warn' });
   });
 });
 

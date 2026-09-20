@@ -1013,3 +1013,176 @@ describe('pre-task-scope-disjoint — per-dispatch scope_checked event (#1092)',
     expect(readFileSync(path.join(dir, '.orchestrator', 'metrics'), 'utf8')).toBe('not a directory');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Stale worktree base (#1413)
+//
+// The bug every `it` here names: a dispatch with `isolation: "worktree"` made
+// AFTER a mid-session commit passes SILENTLY, and the agent edits the
+// session-start code. Measured 2026-09-19 (s18): worktrees created 25 minutes
+// after commit `240efda6` still stood on its parent `8f15f77b`.
+//
+// Identity is the sharp edge here, not the git comparison: `session-start-ref`
+// lives in STATE.md, a shared working-copy artefact that routinely belongs to a
+// PEER session (`.claude/rules/identity-and-locks.md`). A warning derived from a
+// peer's STATE.md is worse than no warning, so three of the five cases below are
+// SILENCE controls.
+// ---------------------------------------------------------------------------
+describe('stale worktree base (#1413)', () => {
+  /** A disposable git repo with two commits, plus `.orchestrator/`. */
+  function makeGitRepo() {
+    const dir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-'));
+    mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
+    const git = (...args) => execFileSync('git', args, {
+      cwd: dir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org',
+        GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org',
+      },
+    });
+    git('init', '-q', '-b', 'main');
+    writeFileSync(path.join(dir, 'a.txt'), 'one\n');
+    git('add', 'a.txt');
+    git('commit', '-q', '-m', 'first');
+    const first = git('rev-parse', 'HEAD').trim();
+    writeFileSync(path.join(dir, 'a.txt'), 'two\n');
+    git('add', 'a.txt');
+    git('commit', '-q', '-m', 'second');
+    const head = git('rev-parse', 'HEAD').trim();
+    return { dir, first, head };
+  }
+
+  /** Write `<dir>/.claude/STATE.md` with the two fields the check reads. */
+  function writeStateMd(dir, { sessionId, startRef }) {
+    mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    writeFileSync(
+      path.join(dir, '.claude', 'STATE.md'),
+      `---\nschema-version: 1\nsession: main-2026-09-20-session-3\n`
+        + `session-id: ${sessionId}\nsession-start-ref: ${startRef}\n---\n\n## Current Wave\n\nWave 2.\n`,
+    );
+  }
+
+  /** A dispatch payload with (or without) the `isolation` key. */
+  function worktreePayload(dir, { sessionId = 'sess-own', isolation = 'worktree' } = {}) {
+    return JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Agent',
+      session_id: sessionId,
+      cwd: dir,
+      tool_input: {
+        description: 'w4-f2 fix',
+        model: 'opus',
+        prompt: 'Repariere den Commit.',
+        subagent_type: 'code-implementer',
+        ...(isolation === null ? {} : { isolation }),
+      },
+    });
+  }
+
+  /** Every `worktree_base_checked` record written into `dir`. */
+  function baseEvents(dir) {
+    const file = path.join(dir, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(file)) return [];
+    return readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line))
+      .filter((rec) => rec.event === 'orchestrator.wave_dispatch.worktree_base_checked');
+  }
+
+  it('WARNS on stderr — and still ALLOWS — when a worktree dispatch follows a mid-session commit', () => {
+    // Bug caught: the s18 incident. HEAD has moved past session-start-ref, the
+    // harness will base the agent's worktree on session-start, and before this
+    // check the dispatch produced no signal of any kind.
+    const { dir, first, head } = makeGitRepo();
+    writeStateMd(dir, { sessionId: 'sess-own', startRef: first });
+
+    const res = runHook(worktreePayload(dir), { cwd: dir });
+
+    // The decision is untouched — this is a warning, never a block. stdout stays
+    // EMPTY (the allow contract), the notice lives on stderr.
+    expectAllow(res);
+    expect(res.stderr).toContain('STALE WORKTREE BASE (#1413)');
+    expect(res.stderr).toContain(head.slice(0, 12));
+    expect(res.stderr).toContain(first.slice(0, 12));
+    // It must say what to DO, not only what is wrong (HR-106).
+    expect(res.stderr).toContain('omit `isolation`');
+    expect(res.stderr).toContain('git worktree list --porcelain');
+
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].stale).toBe(true);
+    expect(events[0].head).toBe(head);
+    expect(events[0].session_start_ref).toBe(first);
+    expect(events[0].subagent_type).toBe('code-implementer');
+  });
+
+  it('stays silent for an in-place dispatch — no `isolation` key, no warning', () => {
+    // Bug caught: warning on EVERY dispatch after the first commit would fire on
+    // ~every wave of every session (HR-101: a class above ~10% is a broken
+    // instrument). The `isolation` key is the whole population.
+    const { dir, first } = makeGitRepo();
+    writeStateMd(dir, { sessionId: 'sess-own', startRef: first });
+
+    const res = runHook(worktreePayload(dir, { isolation: null }), { cwd: dir });
+
+    expectAllow(res);
+    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
+    expect(baseEvents(dir)).toEqual([]);
+  });
+
+  it('records `stale: false` without warning when HEAD still equals session-start-ref', () => {
+    // Bug caught (HR-105): a numerator-only stream makes the firing rate
+    // unfalsifiable — "never fired" and "silently broken" look identical. The
+    // quiet case must leave a record, and must NOT warn.
+    const { dir, head } = makeGitRepo();
+    writeStateMd(dir, { sessionId: 'sess-own', startRef: head });
+
+    const res = runHook(worktreePayload(dir), { cwd: dir });
+
+    expectAllow(res);
+    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].stale).toBe(false);
+  });
+
+  it('stays silent when STATE.md belongs to a PEER session', () => {
+    // Bug caught: STATE.md is a shared working-copy artefact. Reading a peer's
+    // `session-start-ref` would produce a confident warning about a ref that was
+    // never this session's start — the identity trap in
+    // `.claude/rules/identity-and-locks.md`. Refs differ here, so ONLY the
+    // identity gate can produce the silence.
+    const { dir, first } = makeGitRepo();
+    writeStateMd(dir, { sessionId: 'sess-PEER', startRef: first });
+
+    const res = runHook(worktreePayload(dir, { sessionId: 'sess-own' }), { cwd: dir });
+
+    expectAllow(res);
+    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
+    expect(baseEvents(dir)).toEqual([]);
+  });
+
+  it('stays silent — and never throws — when STATE.md is absent or unparseable', () => {
+    // Bug caught: this check runs on the hot dispatch path of every session on
+    // the host. A throw past the decision would hit `main().catch` (matrix row
+    // 12), and the FAIL-OPEN house rule means the guard stops denying real
+    // collisions. No STATE.md, then a byte-garbage one — both must be silent.
+    const { dir } = makeGitRepo();
+
+    const noFile = runHook(worktreePayload(dir), { cwd: dir });
+    expectAllow(noFile);
+    expect(noFile.stderr).not.toContain('STALE WORKTREE BASE');
+
+    mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    writeFileSync(path.join(dir, '.claude', 'STATE.md'), '\u0000not frontmatter at all');
+    const garbage = runHook(worktreePayload(dir), { cwd: dir });
+    expectAllow(garbage);
+    expect(garbage.stderr).not.toContain('STALE WORKTREE BASE');
+
+    expect(baseEvents(dir)).toEqual([]);
+  });
+});

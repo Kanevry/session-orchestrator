@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-19T06:56:53.305Z",
-  "head": "8f6ac02277d889413bed283f9ab6c747f841ac03",
+  "generated_at": "2026-09-20T06:48:33.205Z",
+  "head": "2ffe78c43106138947292284cf9c14399a0ec5a3",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -307,6 +307,7 @@
         "post-tool-batch-wave-signal.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs"
       ]
     },
@@ -844,7 +845,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -866,7 +868,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1273,7 +1276,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {

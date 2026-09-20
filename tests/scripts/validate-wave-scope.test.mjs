@@ -11,7 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -466,6 +466,66 @@ describe('validate-wave-scope.mjs — home-directory grants (#1398 / #1402)', ()
     expect(r2.status).toBe(1);
     expect(r2.stderr).toMatch(/ERROR:.*system\/home directory/);
   });
+});
+
+describe('validate-wave-scope.mjs — grading reaches the CLI (#1405 / #1406)', () => {
+  // The grading predicate itself is unit-tested with an injected resolver in
+  // tests/lib/scope-gate.test.mjs. What is proved HERE is the wiring: that this
+  // CLI calls it, and that the exit code follows the verdict.
+
+  it('rejects a tilde grant — nothing in the scope chain expands it (#1405.3)', () => {
+    // Bug caught: this entry exited 0 with NO finding at all — not even a WARN.
+    // It matches nothing (Gate 5b filters on path.isAbsolute, and '~/…' is not),
+    // so the coordinator read silence as a granted vault path.
+    const r = run(JSON.stringify({ ...VALID, allowedPaths: ['~/Projects/vault/**'] }));
+    expect(r.status).toBe(1);
+    expect(r.stderr).toMatch(/ERROR:.*tilde/);
+  });
+
+  it('accepts a ~/.cache PROJECT grant with a WARN while the bare cache stays refused (#1406)', () => {
+    // Bug caught: `segment.startsWith('.')` refused /Users/<u>/.cache/<project>/**
+    // although a study contract keeps its data exactly there and Gate 5b honours
+    // it — while a carve-out written as a NAME rather than a DEPTH would have
+    // opened the whole of ~/.cache with it.
+    const ok = run(
+      JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/.cache/jev-eval/so/**'] }),
+    );
+    expect(ok.status).toBe(0);
+    expect(ok.stderr).toMatch(/WARNING.*home-directory grant honoured by Gate 5b/);
+
+    const bare = run(JSON.stringify({ ...VALID, allowedPaths: ['/Users/alice/.cache/**'] }));
+    expect(bare.status).toBe(1);
+    expect(bare.stderr).toMatch(/ERROR:.*sensitive home subdirectory/);
+  });
+
+  // The canonicalisation wiring can only be observed where a symlinked system
+  // root EXISTS. `/etc → /private/etc` is macOS; on Linux the two spellings are
+  // different directories and the verdicts below would be wrong, not missing.
+  // Probed at runtime rather than keyed on `process.platform` — the question is
+  // whether this host has the symlink, not what it is called.
+  const etcIsSymlinked = (() => {
+    try { return realpathSync('/etc') !== '/etc'; } catch { return false; }
+  })();
+
+  it.skipIf(!etcIsSymlinked)(
+    'resolves the grant prefix the same direction the hook resolves candidates (#1405.1/.2)',
+    () => {
+      // Bug caught (both directions of ONE gap): the validator graded the LITERAL
+      // spelling while Gate 5b matches the REALPATH-resolved candidate. So
+      // /private/etc/** passed with a WARN although it grants what the refused
+      // /etc/** grants, and /tmp/x/** passed as "honoured by Gate 5b" although
+      // the hook can never match it.
+      const alias = run(JSON.stringify({ ...VALID, allowedPaths: ['/private/etc/**'] }));
+      expect(alias.status).toBe(1);
+      expect(alias.stderr).toMatch(/ERROR:.*system\/home directory/);
+
+      const dead = run(JSON.stringify({ ...VALID, allowedPaths: ['/tmp/x/**'] }));
+      expect(dead.status).toBe(1);
+      expect(dead.stderr).toMatch(/ERROR:.*non-canonical/);
+      // Actionable or worthless: the finding must name the spelling to write.
+      expect(dead.stderr).toContain('/private/tmp/x/**');
+    },
+  );
 });
 
 describe('validate-wave-scope.mjs — gates shape', () => {
