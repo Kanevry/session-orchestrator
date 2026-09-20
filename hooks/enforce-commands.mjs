@@ -31,6 +31,11 @@
  */
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+// Static for the SAME reason profile-gate.mjs is (#993, see the late-binding
+// block below): a leaf predicate with ZERO repo imports (node:fs + node:url
+// only) that decides whether this hook runs at all. Everything carrying a
+// transitive repo graph stays late-bound inside bootstrap().
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 /**
  * sha256(command), auf 16 Hex-Zeichen gekuerzt.
@@ -63,9 +68,6 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 function hashCommand(command) {
   return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
 }
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('enforce-commands')) process.exit(0);
-
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -463,26 +465,38 @@ function targetInWaveScope(target, allowedPaths, projectRoot) {
 //      guard armed and then tripped over a specific command; that fails CLOSED
 //      via emitDeny (SECURITY-REQ-01). The two paths MUST stay separate.
 // ---------------------------------------------------------------------------
-try {
-  await bootstrap();
-} catch (loadError) {
-  try {
-    const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
-    // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
-    emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
-  } catch {
-    // Last resort: even the banner helper failed to load. Emit unconditionally —
-    // repeated noise beats a silent disarm.
-    process.stderr.write(
-      '🚨 enforce-commands: GUARD INACTIVE — module load failed ' +
-        `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
-        'Blocked Bash commands are NOT being screened. See issue #993.\n'
-    );
-  }
-  process.exit(0); // fail-open, but no longer fail-silent
-}
+// Entry guard (#1393): run only when this file IS the script node was invoked
+// with — every harness path execs it (`sh run-node.sh <this file>`). A bare
+// `import()` (a probe, a test, a curious agent) must neither run main() nor
+// tear the importing process down. The profile gate sits INSIDE the guard for
+// that second reason: at module top level its `process.exit(0)` exited every
+// process that merely imported this hook. bootstrap() is inside too — loading
+// the guard sources is work a disabled hook and a bare importer must not do.
+if (isMainModule(import.meta.url)) {
+  // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+  if (!shouldRunHook('enforce-commands')) process.exit(0);
 
-// SECURITY-REQ-01 (F-03): top-level try/catch — never let exit 1 leak.
-main().catch((e) => {
-  emitDeny('Internal hook error — request blocked for safety', `${e?.message || e}`);
-});
+  try {
+    await bootstrap();
+  } catch (loadError) {
+    try {
+      const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
+      // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
+      emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
+    } catch {
+      // Last resort: even the banner helper failed to load. Emit unconditionally —
+      // repeated noise beats a silent disarm.
+      process.stderr.write(
+        '🚨 enforce-commands: GUARD INACTIVE — module load failed ' +
+          `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
+          'Blocked Bash commands are NOT being screened. See issue #993.\n'
+      );
+    }
+    process.exit(0); // fail-open, but no longer fail-silent
+  }
+
+  // SECURITY-REQ-01 (F-03): top-level try/catch — never let exit 1 leak.
+  main().catch((e) => {
+    emitDeny('Internal hook error — request blocked for safety', `${e?.message || e}`);
+  });
+}

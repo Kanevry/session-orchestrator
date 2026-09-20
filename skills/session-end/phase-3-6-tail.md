@@ -219,6 +219,7 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
      sessionId: rawSessionId,            // RAW UUID — it names the transcript FILE
      skills: selectedSkills,
      budgetChars: evidenceBudgetChars(selectedSkills, budget),
+     includeSubagents: true,             // #1412 — see the note below
    });
 
    // VERIFY before dispatching — these three numbers are the receipt for this step.
@@ -244,6 +245,8 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
    - `evidence.status` is `no-transcript` (no file for this session id) or `no-evidence` (file read, no invocation anchor found) or `ok`. On the first two the evidence text is `''` and `runSkillJudge` returns `status: 'no-evidence'` **without dispatching** — log and continue, never fabricate a tail to get past it.
    - `evidence.source.malformed_lines > 0` means the window is a PARTIAL read of the transcript. Log it beside the judgment; a clean verdict over an incompletely-read input is the failure this field exists to expose.
    - `evidence.truncated === true` or a non-empty `evidence.skipped` means some judged skill got no excerpt — the judge will correctly answer `unknown` for it.
+   - **`includeSubagents: true` is set HERE, not in the library (#1412).** `buildSkillEvidence`'s own default stays `false`, so every other caller keeps the fail-closed behaviour and this one choice is greppable. Without it, a skill dispatched INSIDE a subagent (`<uuid>/subagents/agent-*.jsonl`) has no anchor in the main transcript, the phase reports `no-evidence`, and the reach limit is invisible — `runSkillJudge` correctly does not dispatch, so nothing is mis-judged, but nothing is ever judged either. Cost measured 2026-09-20 over the 3 most recent sessions carrying a `subagents/` dir: records 4.2-5.0x, read time 22 → 175 ms, window size still far under budget.
+   - The extra records are bounded two ways, both inside `renderEvidence`: subagent-only skills share at most `DEFAULT_SUBAGENT_POOL_SHARE` (0.25) of the per-skill pool whenever coordinator-anchored skills are also present, and the shared `### session closing` excerpt is taken from the MAIN transcript's tail (`mainRecordCount`), never from the last subagent file that happens to sit at the end of the concatenated array. Anything that still does not fit is reported in `evidence.skipped` with `truncated: true` — never silently shortened.
    - **Claude Code path:** `dispatchAgent` wraps the real `Agent({ subagent_type: 'skill-applied-judge', model: 'haiku', … })`. The agent is `sandbox-tier: read-only` and RETURNS one fenced ```json block — it never writes files.
    - **Codex / Cursor path:** there is no subagent type. Wire `dispatchAgent` as a coordinator-inline call (the coordinator itself reasons over the prompt and returns `{ text }`), keeping the identical `runSkillJudge` signature. Same DI seam, no harness subagent.
 

@@ -143,8 +143,6 @@
  */
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// Exit 0 immediately (silent no-op) when disabled via profile/env (#211).
-if (!shouldRunHook('post-bash-write-verify')) process.exit(0);
 
 import path from 'node:path';
 import os from 'node:os';
@@ -1136,6 +1134,9 @@ function invokedAsScript() {
 }
 const isMain = invokedAsScript();
 if (isMain) {
+  // #1393: the profile gate sits INSIDE the entry guard — at module top level
+  // its `process.exit(0)` exited every process that merely imported this hook.
+  if (!shouldRunHook('post-bash-write-verify')) process.exit(0);
   // Advisory hook: never block, never surface an error to the tool call.
   main().catch(() => {}).finally(() => process.exit(0));
 }

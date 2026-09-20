@@ -33,7 +33,8 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { rmSync } from 'node:fs';
+import { rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import path from 'node:path';
 
 import { evaluateSession, diffDimensions } from '@lib/eval/engine.mjs';
 import { resolveSession, findPeerOverlap, SessionResolutionError } from '@lib/eval/session-resolve.mjs';
@@ -582,6 +583,154 @@ describe('findPeerOverlap', () => {
     const { count, peers } = findPeerOverlap(records, resolved);
     expect(count).toBe(1);
     expect(peers).toEqual(['peer']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1407 — rotation-aware ledger read
+// ---------------------------------------------------------------------------
+
+/** `2026-07-16T12:00:00.000Z` → `20260716T120000Z` (the ARCHIVE_NAME_RE stamp). */
+function archiveStamp(iso) {
+  return iso.replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * A session whose window predates the last rotation: the deciding full-gate
+ * event lives in `_archive/`, the active events.jsonl holds only what came
+ * after. Rotation has never fired in this repo (`grep -c
+ * "orchestrator.events.rotated" .orchestrator/metrics/events.jsonl` → 0,
+ * re-measured 2026-09-20 @ 9b118cf6), so there is no real archive to lean on —
+ * the fixture builds one.
+ *
+ * @param {object} opts
+ * @param {object[]} [opts.archiveEvents] — records written into `_archive/`.
+ * @param {string|null} [opts.archiveRaw] — raw archive body (for malformed lines).
+ * @param {object[]} [opts.extraActive] — extra records appended to the active file.
+ */
+function scenarioRotatedLedger(
+  { archiveEvents = [], archiveRaw = null, extraActive = [] } = {},
+  base = Date.now(),
+) {
+  const start = isoOffset(base, 3);
+  const end = isoOffset(base, 2);
+  const fx = writeFixture({
+    sessionId: 'sess-rotated',
+    sessions: [
+      {
+        schema_version: 2,
+        session_id: 'sess-rotated',
+        session_type: 'deep',
+        started_at: start,
+        completed_at: end,
+        status: 'completed',
+        total_waves: 2,
+        total_agents: 4,
+        total_files_changed: 7,
+        waves: [{ wave: 1, quality: 'skipped' }, { wave: 2, quality: 'pass' }],
+        agent_summary: { complete: 4, partial: 0, failed: 0, spiral: 0 },
+        effectiveness: { planned_issues: 2, completed: 2, carryover: 0, completion_rate: 1 },
+      },
+    ],
+    // The active file starts AFTER the window — exactly what a rotation leaves
+    // behind. Never empty: an events.jsonl that is absent/empty is a different
+    // branch (scenarioEventsMissing) and would not prove the archive was read.
+    events: [
+      { timestamp: isoOffset(base, 0.5), event: 'orchestrator.session.started', session_id: 'uuid-later' },
+      ...extraActive,
+    ],
+  });
+  if (archiveEvents.length > 0 || archiveRaw !== null) {
+    const archiveDir = path.join(fx.dir, '_archive');
+    mkdirSync(archiveDir, { recursive: true });
+    const name = `events-${archiveStamp(start)}_${archiveStamp(end)}.jsonl`;
+    const body = archiveRaw ?? `${archiveEvents.map((e) => JSON.stringify(e)).join('\n')}\n`;
+    writeFileSync(path.join(archiveDir, name), body, 'utf8');
+  }
+  return fx;
+}
+
+describe('#1407 — the eval window reads ACROSS the rotation boundary', () => {
+  it('scores a window whose quality_gate events live in _archive/, not in the active file', () => {
+    const base = Date.now();
+    const { record } = evalFixture(
+      scenarioRotatedLedger(
+        {
+          archiveEvents: [
+            { timestamp: isoOffset(base, 2.9), event: 'orchestrator.session.started', session_id: 'uuid-rot' },
+            { timestamp: isoOffset(base, 2.6), event: 'orchestrator.quality_gate.passed', variant: 'baseline', exit_code: 0 },
+            { timestamp: isoOffset(base, 2.1), event: 'orchestrator.quality_gate.passed', variant: 'full-gate', exit_code: 0 },
+          ],
+        },
+        base,
+      ),
+    );
+    // The bug: reading only the active events.jsonl loses every pre-rotation
+    // event, so this window scored cannot-determine ("0 quality_gate events in
+    // window but total_files_changed=7") over data that was on disk all along.
+    expect(byId(record, 'verification-evidence').status).toBe('pass');
+    expect(byId(record, 'verification-evidence').evidence).toContain('2 quality_gate event(s) in window');
+    expect(byId(record, 'gate-health').status).toBe('pass');
+  });
+
+  it('names a MISSING archive as a gap instead of reporting an empty window', () => {
+    const base = Date.now();
+    const { record } = evalFixture(
+      scenarioRotatedLedger(
+        {
+          // A tombstone naming an archive that is NOT on disk — the exact shape
+          // of a deleted backup. No archive file is written for it.
+          extraActive: [
+            {
+              timestamp: isoOffset(base, 1),
+              event: 'orchestrator.events.rotated',
+              archived_as: '/somewhere/_archive/events-20260101T000000Z_20260102T000000Z.jsonl',
+              first_ts: isoOffset(base, 3),
+              last_ts: isoOffset(base, 2),
+              lines: 900,
+            },
+          ],
+        },
+        base,
+      ),
+    );
+    const ve = byId(record, 'verification-evidence');
+    // The bug: "0 quality_gate events in window" read as a measurement when it
+    // was a truncated read — a gap and a quiet window were indistinguishable.
+    expect(ve.status).toBe('cannot-determine');
+    expect(ve.evidence).toContain('LEDGER INCOMPLETE: 1 gap(s) [missing-archive×1]');
+    expect(ve.evidence).toContain('may be unmeasured rather than absent');
+    // Every event-derived dimension carries it; the record-only ones do not.
+    for (const id of ['gate-health', 'process-safety', 'guard-friction']) {
+      expect(byId(record, id).evidence).toContain('LEDGER INCOMPLETE');
+    }
+    for (const id of ['plan-fidelity', 'efficiency-kpis']) {
+      expect(byId(record, id).evidence).not.toContain('LEDGER INCOMPLETE');
+    }
+    // EVIDENCE ONLY — no pre-registered rubric-v2 formula reads the flag, so no
+    // status may move because of it (that would be a rubric change, #1407 AC-3).
+    expect(byId(record, 'process-safety').status).toBe('pass');
+    expect(byId(record, 'guard-friction').status).toBe('not-applicable');
+  });
+
+  it('counts an unreadable line instead of skipping it into a clean verdict', () => {
+    const base = Date.now();
+    const { record } = evalFixture(
+      scenarioRotatedLedger(
+        {
+          // Second line truncated mid-record, as a crash leaves it behind.
+          archiveRaw: `${JSON.stringify({ timestamp: isoOffset(base, 2.1), event: 'orchestrator.quality_gate.passed', variant: 'full-gate', exit_code: 0 })}\n{"timestamp":"${isoOffset(base, 2.05)}","event":"orchestrator.destructive_g\n`,
+        },
+        base,
+      ),
+    );
+    const gf = byId(record, 'guard-friction');
+    // The bug: a silently skipped line turns a partial count into a clean one —
+    // `destructive_guard.blocked=0` read as measured when it was unmeasured.
+    expect(gf.evidence).toContain('destructive_guard.blocked=0');
+    expect(gf.evidence).toContain('LEDGER INCOMPLETE: 1 unreadable line(s)');
+    // The readable line on the same source is still scored.
+    expect(byId(record, 'gate-health').status).toBe('pass');
   });
 });
 

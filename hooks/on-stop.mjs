@@ -41,8 +41,6 @@ import {
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('on-stop')) process.exit(0);
 
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { detectPlatform, getProjectDir } from '../scripts/lib/platform.mjs';
@@ -852,6 +850,9 @@ function buildTerminalSequenceJson(platform) {
 // (`sh run-node.sh <this file>`); a bare `import()` must not run the Stop
 // handler against the live repo.
 if (isMainModule(import.meta.url)) {
+  // #1393: the profile gate sits INSIDE the entry guard — at module top level
+  // its `process.exit(0)` exited every process that merely imported this hook.
+  if (!shouldRunHook('on-stop')) process.exit(0);
   main()
     .catch(() => {})
     .finally(() => process.exit(0));

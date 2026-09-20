@@ -36,8 +36,6 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('on-session-start')) process.exit(0);
 
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
 import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
@@ -1280,6 +1278,9 @@ async function main() {
 // must not run main() against the live repo: incident W4-FX1 overwrote
 // `.orchestrator/current-session.json` exactly that way.
 if (isMainModule(import.meta.url)) {
+  // #1393: the profile gate sits INSIDE the entry guard — at module top level
+  // its `process.exit(0)` exited every process that merely imported this hook.
+  if (!shouldRunHook('on-session-start')) process.exit(0);
   main().catch(() => {}).finally(() => {
     flushBanner();
     process.exit(0);

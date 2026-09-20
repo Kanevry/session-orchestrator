@@ -79,8 +79,7 @@
  */
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
-if (!shouldRunHook('post-subagent-discovery-validator')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
@@ -605,5 +604,12 @@ async function main() {
   }));
 }
 
-// Exit 0 always — informational hook must never block Claude (#567 v1).
-main().catch(() => {}).finally(() => process.exit(0));
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
+  if (!shouldRunHook('post-subagent-discovery-validator')) process.exit(0);
+
+  // Exit 0 always — informational hook must never block Claude (#567 v1).
+  main().catch(() => {}).finally(() => process.exit(0));
+}

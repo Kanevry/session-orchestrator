@@ -73,8 +73,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { stableHostname } from '../scripts/lib/host-identity.mjs';
-if (!shouldRunHook('pre-bash-staging-fence')) process.exit(0);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -403,12 +403,18 @@ async function main() {
   return emitAllow();
 }
 
-// Top-level error handler — never let exit 1 leak. Fail-open on internal
-// errors to avoid blocking legitimate work (mirrors the destructive-guard
-// posture).
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-staging-fence: internal error — ${e?.message || e}\n`,
-  );
-  process.exit(0);
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  if (!shouldRunHook('pre-bash-staging-fence')) process.exit(0);
+
+  // Top-level error handler — never let exit 1 leak. Fail-open on internal
+  // errors to avoid blocking legitimate work (mirrors the destructive-guard
+  // posture).
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-staging-fence: internal error — ${e?.message || e}\n`,
+    );
+    process.exit(0);
+  });
+}

@@ -152,6 +152,30 @@ function threePairFixture() {
 const readRule = (name = 'fixture.md') =>
   readFileSync(join(repoRoot, '.claude', 'rules', name), 'utf8');
 
+/**
+ * Swap the rendered ENGLISH counter sentence for another spelling.
+ *
+ * Throws when the sentence is not found, so a fixture can never go silently
+ * inert if `renderRuleFile` changes its wording — an unfaithful double here
+ * would make every counter-sentence test below vacuously green.
+ *
+ * @param {string} content
+ * @param {string} sentence the replacement line
+ */
+function withCounterSentence(content, sentence) {
+  const out = content.replace(/^\*\*`expires-at`.*$/m, sentence);
+  if (out === content) throw new Error('fixture: English counter sentence not found to replace');
+  return out;
+}
+
+/** The German spelling a consumer corpus ships (GH#70). */
+const GERMAN_COUNTER = (date, n) =>
+  `**\`expires-at\` ${date} = das FRUEHESTE der ${n} aufgenommenen Daten** — eine Sammeldatei darf ihren kurzlebigsten Inhalt nicht ueberleben.`;
+
+/** A spelling no form in COUNTER_FORMS recognises — the "next language" case. */
+const UNKNOWN_COUNTER = (date, n) =>
+  `**\`expires-at\` ${date} = le PLUS TOT des ${n} dates absorbees** — contrat de fusion.`;
+
 /** Marker sets exactly as `engine.mjs`'s dedupe scan reads them. */
 function markerSets() {
   const dir = join(repoRoot, '.claude', 'rules');
@@ -179,6 +203,23 @@ describe('parseConsolidatedRule', () => {
     ]);
     expect(parsed.pairs.map((p) => p.id)).toEqual(['id-alpha', 'id-beta', 'id-gamma']);
     expect(parsed.pairs.every((p) => p.markersOnly === false)).toBe(true);
+  });
+
+  it('reads the German counter sentence in both its ASCII and its umlaut spelling (bug: an English-only COUNTER_RE reports counterLine -1 for a German consolidated file, so the header moves and the body sentence stays — GH#70, reported from EventDrop.at 2026-09-20)', () => {
+    const base = renderRuleFile({
+      expiresAt: '2026-01-01',
+      entries: [{ key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha' }],
+    });
+    for (const spelling of ['FRUEHESTE', 'FRÜHESTE']) {
+      const parsed = parseConsolidatedRule(
+        withCounterSentence(
+          base,
+          `**\`expires-at\` 2026-01-01 = das ${spelling} der 1 aufgenommenen Daten**`,
+        ),
+      );
+      expect(parsed.counterDate).toBe('2026-01-01');
+      expect(parsed.counterCount).toBe(1);
+    }
   });
 });
 
@@ -496,6 +537,121 @@ describe('planRuleExpirySweep + applyRuleExpirySweep', () => {
     // atomicWriteWithBackup with `backup: false` (our call shape) documents
     // exactly one artefact: the renamed target. No `.bak-<ISO>`, no tmp.
     expect(readdirSync(join(repoRoot, '.claude', 'rules'))).toEqual(['fixture.md']);
+  });
+
+  it('T14 — a GERMAN counter sentence is raised IN GERMAN alongside its header (bug: an English-only regex left the body sentence at the old date while the header moved, so the file shipped a header contradicting the very sentence that forbids correcting it upward — a consumer saw header 2026-11-01 beside a body claiming 2026-10-19; GH#70, source: peer session eventdrop-at, 2026-09-20)', async () => {
+    const entries = [
+      { key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha holds' },
+      { key: 'proven-pattern/gamma', id: 'id-gamma', heading: 'Gamma holds' },
+    ];
+    // Same shape as T13: header 2026-10-01, earliest absorbed date 2026-10-16.
+    writeFileSync(
+      join(repoRoot, '.claude', 'rules', 'fixture.md'),
+      withCounterSentence(
+        renderRuleFile({ expiresAt: '2026-10-01', entries }),
+        GERMAN_COUNTER('2026-10-01', 2),
+      ),
+      'utf8',
+    );
+    writeLearnings([
+      learning('id-alpha', 'anti-pattern/alpha', '2026-10-16T00:00:00.000Z'),
+      learning('id-gamma', 'proven-pattern/gamma', '2026-11-20T00:00:00.000Z'),
+    ]);
+
+    const before = readRule();
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    expect(plan.skipped).toEqual([]);
+    expect(plan.plans[0].reason).toBe('header-raise');
+    expect(plan.plans[0].newExpiresAt).toBe('2026-10-16');
+
+    const res = applyRuleExpirySweep(plan, { repoRoot, now: NOW });
+    expect(res.errors).toEqual([]);
+
+    const after = readRule();
+    const parsed = parseConsolidatedRule(after);
+    expect(parsed.expiresAt).toBe('2026-10-16');
+    // The BODY moved with the header — the whole point of the finding.
+    expect(parsed.counterDate).toBe('2026-10-16');
+    expect(parsed.counterCount).toBe(2);
+    // …and it is still German: a template-based rewrite would translate it.
+    expect(after).toContain('das FRUEHESTE der 2 aufgenommenen Daten');
+    expect(after).not.toContain('EARLIEST');
+    expect(after).toContain('eine Sammeldatei darf ihren kurzlebigsten Inhalt nicht ueberleben.');
+
+    // Exactly two lines differ: the frontmatter scalar and the sentence.
+    const beforeLines = before.split('\n');
+    const afterLines = after.split('\n');
+    expect(afterLines).toHaveLength(beforeLines.length);
+    expect(
+      beforeLines.map((l, i) => (l === afterLines[i] ? -1 : i)).filter((i) => i >= 0),
+    ).toEqual([
+      parseConsolidatedRule(before).expiresAtLine,
+      parseConsolidatedRule(before).counterLine,
+    ]);
+  });
+
+  it('T15 — a counter sentence in NO recognised spelling refuses the header raise and leaves the file byte-identical (bug: a second regex only moves the defect to the third language; without the fail-closed skip the header still moves alone)', async () => {
+    const entries = [
+      { key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha holds' },
+      { key: 'proven-pattern/gamma', id: 'id-gamma', heading: 'Gamma holds' },
+    ];
+    writeFileSync(
+      join(repoRoot, '.claude', 'rules', 'fixture.md'),
+      withCounterSentence(
+        renderRuleFile({ expiresAt: '2026-10-01', entries }),
+        UNKNOWN_COUNTER('2026-10-01', 2),
+      ),
+      'utf8',
+    );
+    writeLearnings([
+      learning('id-alpha', 'anti-pattern/alpha', '2026-10-16T00:00:00.000Z'),
+      learning('id-gamma', 'proven-pattern/gamma', '2026-11-20T00:00:00.000Z'),
+    ]);
+
+    const before = readRule();
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    expect(plan.skipped).toEqual([{ file: 'fixture.md', reason: 'no-counter-sentence' }]);
+    expect(plan.plans[0].action).toBe('keep');
+    expect(plan.plans[0].reason).toBeUndefined();
+    // The discrepancy is still REPORTED — refusing to write is not refusing to see.
+    expect(plan.plans[0].advisory).toBe(
+      'header expires-at 2026-10-01 != earliest resolvable absorbed date 2026-10-16',
+    );
+
+    const res = applyRuleExpirySweep(plan, { repoRoot, now: NOW });
+    expect(res.rewritten).toEqual([]);
+    expect(res.errors).toEqual([]);
+    expect(readRule()).toBe(before);
+  });
+
+  it('T16 — a file whose every entry expired is NOT deleted when its counter sentence is unrecognised (bug: the fail-closed skip guarded only the rewrite paths, so the most destructive action stayed reachable on a file shape the sweep cannot read)', async () => {
+    const entries = [
+      { key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha' },
+      { key: 'anti-pattern/beta', id: 'id-beta', heading: 'Beta' },
+    ];
+    writeFileSync(
+      join(repoRoot, '.claude', 'rules', 'fixture.md'),
+      withCounterSentence(
+        renderRuleFile({ expiresAt: '2026-01-01', entries }),
+        UNKNOWN_COUNTER('2026-01-01', 2),
+      ),
+      'utf8',
+    );
+    writeLearnings([
+      learning('id-alpha', 'anti-pattern/alpha', PAST),
+      learning('id-beta', 'anti-pattern/beta', PAST),
+    ]);
+
+    const before = readRule();
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    expect(plan.skipped).toEqual([{ file: 'fixture.md', reason: 'no-counter-sentence' }]);
+    expect(plan.plans[0].action).toBe('keep');
+
+    const res = applyRuleExpirySweep(plan, { repoRoot, now: NOW });
+    expect(res.deleted).toEqual([]);
+    expect(res.stamped).toBe(0);
+    expect(existsSync(join(repoRoot, '.claude', 'rules', 'fixture.md'))).toBe(true);
+    expect(readRule()).toBe(before);
   });
 
   it('refuses a missing repoRoot rather than sweeping the operator\'s live checkout via process.cwd() (bug: an ambient-cwd default makes a test run rewrite .claude/rules)', async () => {

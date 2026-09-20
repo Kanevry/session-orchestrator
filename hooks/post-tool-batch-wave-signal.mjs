@@ -71,8 +71,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
-if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
@@ -566,5 +565,12 @@ async function main() {
   }
 }
 
-// Exit 0 always — informational hook must never block Claude.
-main().catch(() => {}).finally(() => process.exit(0));
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
+  if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
+
+  // Exit 0 always — informational hook must never block Claude.
+  main().catch(() => {}).finally(() => process.exit(0));
+}

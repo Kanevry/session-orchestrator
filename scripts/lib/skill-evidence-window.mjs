@@ -67,6 +67,27 @@ export const DEFAULT_CLOSING_CHARS = 3000;
 /** A skill rendered with less than this is not worth rendering — report instead. */
 export const DEFAULT_MIN_PER_SKILL_CHARS = 1500;
 
+/**
+ * Share of the per-skill pool that SUBAGENT-ONLY skills may take when
+ * coordinator-anchored skills are also present (#1412).
+ *
+ * Why a cap at all: with `includeSubagents: true` the record count grows ~4.4x
+ * (measured 2026-09-20 over 3 sessions) and admits a second class of judged
+ * skill. Under ONE shared pool that class both shrinks every coordinator
+ * skill's excerpt and can push one out over the `minPerSkillChars` floor —
+ * purely by its position in the requested-skills array. The cap plus the
+ * coordinator-first ordering below bound that: coordinator skills keep at
+ * least 1 - this share of the pool, and whatever does not fit is the NEWLY
+ * admitted material, reported in `skipped` with `truncated: true`.
+ *
+ * Ceiling: 0.25 is a proportion, not a measurement — the whole pool is 27,500
+ * characters by default and the largest window measured to date is 6,021, so
+ * the cap binds only under a caller-shrunk budget or a large judged set.
+ * Revisit if a real session ever reports a subagent-only skill skipped as
+ * `budget-insufficient` while the coordinator sections sit far under budget.
+ */
+export const DEFAULT_SUBAGENT_POOL_SHARE = 0.25;
+
 /** Cap for a single `tool_use` input / `tool_result` payload inside an excerpt. */
 export const DEFAULT_TOOL_TEXT_MAX = 1500;
 
@@ -168,6 +189,19 @@ function firstHeading(text) {
   return '(empty body)';
 }
 
+/**
+ * Is this record a SUBAGENT record? `_subagent` is stamped by
+ * `readTranscriptRecords` for `<uuid>/subagents/agent-*.jsonl`; `isSidechain`
+ * is stamped by the harness itself. ONE definition, because two consumers read
+ * it: the anchor classifier below and the budget split in `renderEvidence`.
+ *
+ * @param {unknown} rec
+ * @returns {boolean}
+ */
+function isSubagentRecord(rec) {
+  return rec?._subagent === true || rec?.isSidechain === true;
+}
+
 /** `<command-name>/session-orchestrator:close</command-name>` → the name. */
 function commandNames(text) {
   const out = [];
@@ -225,7 +259,7 @@ export function locateSkillAnchors(records, skills) {
   for (let i = 0; i < records.length; i += 1) {
     const rec = records[i];
     if (!rec || typeof rec !== 'object') continue;
-    const isSubagent = rec._subagent === true || rec.isSidechain === true;
+    const isSubagent = isSubagentRecord(rec);
 
     for (const block of contentBlocks(rec)) {
       if (block?.type === 'tool_use' && block.name === 'Skill') {
@@ -432,9 +466,22 @@ function renderWindows(records, windows, { toolTextMax, budget, bodyIndexes }) {
  * with reason `budget-insufficient` and `truncated` is set, so the caller can
  * see that the judge is reasoning over a partial set.
  *
+ * SOURCE SPLIT (#1412): once subagent transcripts are read in, the found set
+ * carries two classes. Skills with at least one COORDINATOR anchor are
+ * allotted first and from their own pool; SUBAGENT-ONLY skills share at most
+ * `DEFAULT_SUBAGENT_POOL_SHARE` of the pool — unless there are no coordinator
+ * skills at all, in which case they get all of it (the whole point of #1412 is
+ * that a subagent-only skill must be judgeable). With no subagent-only skill
+ * present the split is a no-op and the numbers are identical to before.
+ *
+ * `mainRecordCount` bounds the shared closing excerpt to the MAIN transcript.
+ * Subagent records are CONCATENATED after it, so without the bound the section
+ * headed "session closing" renders the tail of the last subagent file instead
+ * — mislabelled evidence, which is worse for a judge than none.
+ *
  * @param {Array<Record<string, unknown>>} records
  * @param {Record<string, SkillLocation>} located
- * @param {{budgetChars?: number, closingChars?: number, minPerSkillChars?: number, toolTextMax?: number}} [opts]
+ * @param {{budgetChars?: number, closingChars?: number, minPerSkillChars?: number, toolTextMax?: number, subagentPoolShare?: number, mainRecordCount?: number}} [opts]
  * @returns {EvidenceRender}
  */
 export function renderEvidence(records, located, opts = {}) {
@@ -446,8 +493,14 @@ export function renderEvidence(records, located, opts = {}) {
     ? opts.minPerSkillChars
     : DEFAULT_MIN_PER_SKILL_CHARS;
   const toolTextMax = Number.isFinite(opts.toolTextMax) ? opts.toolTextMax : DEFAULT_TOOL_TEXT_MAX;
+  const subagentPoolShare = Number.isFinite(opts.subagentPoolShare)
+    ? Math.min(1, Math.max(0, opts.subagentPoolShare))
+    : DEFAULT_SUBAGENT_POOL_SHARE;
 
   const recs = Array.isArray(records) ? records : [];
+  const mainRecordCount = Number.isFinite(opts.mainRecordCount)
+    ? Math.min(recs.length, Math.max(0, opts.mainRecordCount))
+    : recs.length;
   const loc = located && typeof located === 'object' ? located : {};
   const skills = Object.keys(loc);
 
@@ -469,22 +522,47 @@ export function renderEvidence(records, located, opts = {}) {
 
   const closingBudget = recs.length > 0 ? Math.max(0, Math.min(closingChars, budgetChars)) : 0;
   const perSkillPool = Math.max(0, budgetChars - closingBudget);
-  const capacity =
-    minPerSkillChars > 0 ? Math.floor(perSkillPool / minPerSkillChars) : foundSkills.length;
+
+  // Source split — coordinator-anchored skills first, subagent-only after.
+  const coordinatorSkills = [];
+  const subagentOnlySkills = [];
+  for (const skill of foundSkills) {
+    const anchors = loc[skill].anchors;
+    if (anchors.some((a) => !isSubagentRecord(recs[a.recordIndex]))) coordinatorSkills.push(skill);
+    else subagentOnlySkills.push(skill);
+  }
+  let subagentPool = 0;
+  if (subagentOnlySkills.length > 0) {
+    subagentPool =
+      coordinatorSkills.length === 0
+        ? perSkillPool
+        : Math.floor(perSkillPool * subagentPoolShare);
+  }
+  const coordinatorPool = perSkillPool - subagentPool;
 
   let truncated = false;
-  const rendered = foundSkills.slice(0, Math.max(0, capacity));
-  for (const skill of foundSkills.slice(Math.max(0, capacity))) {
-    skipped.push({ skill, reason: 'budget-insufficient' });
-    truncated = true;
-  }
-  const perSkillBudget = rendered.length > 0 ? Math.floor(perSkillPool / rendered.length) : 0;
+  /** Allot `pool` over `list`; overflow past the floor is reported, never squeezed. */
+  const allot = (list, pool) => {
+    const capacity = minPerSkillChars > 0 ? Math.floor(pool / minPerSkillChars) : list.length;
+    const take = Math.max(0, capacity);
+    for (const skill of list.slice(take)) {
+      skipped.push({ skill, reason: 'budget-insufficient' });
+      truncated = true;
+    }
+    const kept = list.slice(0, take);
+    const budget = kept.length > 0 ? Math.floor(pool / kept.length) : 0;
+    return kept.map((skill) => ({ skill, budget }));
+  };
+  const rendered = [
+    ...allot(coordinatorSkills, coordinatorPool),
+    ...allot(subagentOnlySkills, subagentPool),
+  ];
 
   const sections = [];
   /** @type {EvidenceRender['perSkill']} */
   const perSkill = [];
 
-  for (const skill of rendered) {
+  for (const { skill, budget: perSkillBudget } of rendered) {
     const info = loc[skill];
     const anchors = info.anchors;
     const picks = [anchors[0], anchors[anchors.length - 1]].filter(Boolean);
@@ -530,10 +608,10 @@ export function renderEvidence(records, located, opts = {}) {
   // never evidence on its own. With no skill rendered there is nothing to attach
   // it to, and emitting it alone would hand the judge a non-empty fence that
   // contains no invocation — the #1399 defect in a new costume.
-  if (closingBudget > 0 && rendered.length > 0) {
+  if (closingBudget > 0 && rendered.length > 0 && mainRecordCount > 0) {
     const closing = renderWindowFromEnd(
       recs,
-      { start: Math.max(0, recs.length - CLOSING_RECORDS), end: recs.length - 1 },
+      { start: Math.max(0, mainRecordCount - CLOSING_RECORDS), end: mainRecordCount - 1 },
       { toolTextMax, budget: closingBudget, bodyIndexes },
     );
     if (closing.truncated) truncated = true;
@@ -731,6 +809,10 @@ export async function buildSkillEvidence({
     return empty('no-transcript', path);
   }
   const records = main.records;
+  // Captured BEFORE the subagent records are concatenated — it is the boundary
+  // `renderEvidence` needs to keep the "session closing" excerpt on the MAIN
+  // transcript instead of on the last subagent file.
+  const mainRecordCount = records.length;
   let malformed = main.malformed_lines;
   let bytes = main.bytes;
 
@@ -758,7 +840,7 @@ export async function buildSkillEvidence({
 
   const source = { path, bytes, records: records.length, malformed_lines: malformed };
   const located = locateSkillAnchors(records, wanted);
-  const render = renderEvidence(records, located, { budgetChars });
+  const render = renderEvidence(records, located, { budgetChars, mainRecordCount });
 
   if (!render.text) {
     return {

@@ -25,8 +25,7 @@
  */
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
-if (!shouldRunHook('loop-guard')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
@@ -257,4 +256,13 @@ async function main() {
 }
 
 // Exit 0 always — informational hook must never block Claude (#619).
-main().catch(() => {}).finally(() => process.exit(0));
+// Entry guard (#1393): run only when this file IS the script node was invoked
+// with — every harness path execs it (`sh run-node.sh <this file>`). A bare
+// `import()` (a probe, a test, a curious agent) must neither run main() nor
+// tear the importing process down. The profile gate sits INSIDE the guard for
+// that second reason: at module top level its `process.exit(0)` exited every
+// process that merely imported this hook.
+if (isMainModule(import.meta.url)) {
+  if (!shouldRunHook('loop-guard')) process.exit(0);
+  main().catch(() => {}).finally(() => process.exit(0));
+}

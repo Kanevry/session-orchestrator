@@ -37,6 +37,15 @@
  *   1. **Unresolvable id → the entry is KEPT** and counted in
  *      `unresolvedPairIds`. A sweep that guessed would delete prose on no
  *      evidence, and a file with any unresolved pair is never deleted.
+ *   1b. **Unrecognised counter sentence → `action: 'keep'` + a `skipped`
+ *      record (`no-counter-sentence`), and NO write of any kind** — not a
+ *      rewrite, not a raise, not a delete. Every write here moves the
+ *      frontmatter `expires-at` and the body sentence that restates it; when
+ *      only the header moves, the file ships a header contradicting a body
+ *      sentence that forbids exactly that correction (GH#70, reported from a
+ *      German-language consumer corpus 2026-09-20). Recognising a second
+ *      spelling ({@link COUNTER_FORMS}) is the narrow half of that fix; the
+ *      refusal is the half that holds for the third language too.
  *   2. **Ambiguous file → `action: 'keep'` + a `skipped` record.** The
  *      entry↔pair mapping is POSITIONAL: the k-th `### ` heading belongs to the
  *      k-th non-`markers only` pair. That 1:1 mapping holds in only 3 of the 7
@@ -160,10 +169,76 @@ const MS_PER_DAY = 86_400_000;
 
 const PAIR_KEY_RE = /^- learning-key:\s*`([^`]+)`/;
 const PAIR_ID_RE = /^- learning-id:\s*`([^`]+)`(.*)$/;
-const COUNTER_RE = /^\*\*`expires-at` (\S+) = the EARLIEST of the (\d+) absorbed dates\*\*/;
+
+/**
+ * The recognised spellings of the body counter sentence, each with the date as
+ * capture 1 and the absorbed-pair count as capture 2, in that order.
+ *
+ * The `d` flag is load-bearing: {@link spliceCounterLine} rewrites the line by
+ * replacing exactly the two captured SPANS, so every other byte — the wording,
+ * the language, any trailing clause — survives a rewrite untouched. That is why
+ * a second language costs one entry here and no re-templating anywhere: a
+ * template would silently translate a German sentence into English on the first
+ * header raise.
+ *
+ * English is this repo's own form (all 7 live consolidated files, measured
+ * 2026-09-20 @ 9b118cf6: `grep -n 'EARLIEST of the' .claude/rules/*.md` → 7
+ * hits, `grep -rn 'FRUEHESTE\|FRÜHESTE' .claude/rules/` → 0). German is the
+ * consumer-side form reported from EventDrop.at (GH#70, 2026-09-20), where a
+ * raise lifted the frontmatter and left the body sentence claiming the older
+ * date — the sentence that literally forbids correcting it upward.
+ *
+ * @type {readonly RegExp[]}
+ */
+const COUNTER_FORMS = Object.freeze([
+  /^\*\*`expires-at` (\S+) = the EARLIEST of the (\d+) absorbed dates\*\*/d,
+  /^\*\*`expires-at` (\S+) = das FR(?:UE|Ü)HESTE der (\d+) aufgenommenen Daten\*\*/d,
+]);
+
 const HEADING_PREFIX = '### ';
 const PROVENANCE_HEADING = '## Provenance';
 const UNTRUSTED_END = '<!-- untrusted-content:end -->';
+
+/**
+ * Match one line against every recognised counter-sentence form.
+ *
+ * @param {string} line
+ * @returns {{date: string, count: number, match: RegExpExecArray}|null}
+ */
+function matchCounterLine(line) {
+  for (const form of COUNTER_FORMS) {
+    const m = form.exec(line);
+    if (m) return { date: m[1], count: Number(m[2]), match: m };
+  }
+  return null;
+}
+
+/**
+ * Rewrite a counter-sentence line to a new date and count by splicing the two
+ * captured spans, leaving every other byte — wording, language, trailing text —
+ * exactly as authored.
+ *
+ * Splices BACK-TO-FRONT (count before date) so the earlier capture's indices
+ * stay valid while the later text is replaced.
+ *
+ * @param {string} line   the line as it stands in the file
+ * @param {string} date   `YYYY-MM-DD` to write
+ * @param {number} count  the absorbed-pair count to write
+ * @returns {string} the rewritten line, or `line` unchanged when no form matches
+ */
+function spliceCounterLine(line, date, count) {
+  const hit = matchCounterLine(line);
+  if (!hit) return line;
+  const [dateStart, dateEnd] = hit.match.indices[1];
+  const [countStart, countEnd] = hit.match.indices[2];
+  return (
+    line.slice(0, dateStart) +
+    date +
+    line.slice(dateEnd, countStart) +
+    String(count) +
+    line.slice(countEnd)
+  );
+}
 
 /**
  * Parse a consolidated machine-generated rule file into its editable parts.
@@ -219,11 +294,11 @@ export function parseConsolidatedRule(content) {
   const bodyStart = frontmatterEnd >= 0 ? frontmatterEnd + 1 : 0;
   for (let i = bodyStart; i < lines.length; i += 1) {
     if (counterLine === -1) {
-      const m = COUNTER_RE.exec(lines[i]);
-      if (m) {
+      const hit = matchCounterLine(lines[i]);
+      if (hit) {
         counterLine = i;
-        counterDate = m[1];
-        counterCount = Number(m[2]);
+        counterDate = hit.date;
+        counterCount = hit.count;
         continue;
       }
     }
@@ -402,9 +477,10 @@ function rewriteHeaderOnly(parsed, target) {
   const lines = [...parsed.lines];
   if (parsed.expiresAtLine >= 0) lines[parsed.expiresAtLine] = `expires-at: ${target}`;
   if (parsed.counterLine >= 0) {
-    lines[parsed.counterLine] = lines[parsed.counterLine].replace(
-      COUNTER_RE,
-      `**\`expires-at\` ${target} = the EARLIEST of the ${parsed.pairs.length} absorbed dates**`,
+    lines[parsed.counterLine] = spliceCounterLine(
+      lines[parsed.counterLine],
+      target,
+      parsed.pairs.length,
     );
   }
   return lines.join('\n');
@@ -513,6 +589,42 @@ export async function planRuleExpirySweep(opts = {}) {
     // where 6 of 7 have the discrepancy.
     const advisory = headerAdvisory(parsed, expiryById);
     const raiseTo = headerRaiseTarget(parsed, expiryById);
+
+    if (parsed.counterLine === -1) {
+      // FAIL-CLOSED (GH#70). Every write this module performs moves the
+      // frontmatter `expires-at` AND the body sentence that restates it. When
+      // the sentence is in a spelling {@link COUNTER_FORMS} does not recognise,
+      // the header still moves and the sentence does not — and that sentence
+      // literally says the date must not be corrected upward, so the file ships
+      // a header contradicting its own body to every agent that loads it
+      // (measured on a consumer's corpus: header 2026-11-01 beside a body
+      // claiming 2026-10-19). A second regex alone only moves the defect to the
+      // next language; refusing to write is what holds for ALL of them.
+      //
+      // The refusal covers `delete` too, not only the two rewrite triggers: the
+      // counter sentence is part of the consolidated-rule contract
+      // (`docs/rule-authoring.md` § Consolidated rules point 2), so a file
+      // without a recognised one is a shape this sweep does not understand, and
+      // `delete` is its most destructive action. Report it, touch nothing.
+      skipped.push({ file: rule.file, reason: 'no-counter-sentence' });
+      plans.push(
+        keepOrRaisePlan(
+          {
+            file: rule.file,
+            expiredPairIds: [],
+            keptPairIds: substantive.map((p) => p.id),
+            unresolvedPairIds: substantive.filter((p) => !expiryById.has(p.id)).map((p) => p.id),
+            bytesBefore: Buffer.byteLength(content, 'utf8'),
+            headings: parsed.entries.length,
+            substantivePairs: substantive.length,
+          },
+          parsed,
+          advisory,
+          null, // never raise: the body sentence cannot be kept in agreement
+        ),
+      );
+      continue;
+    }
 
     if (parsed.entries.length !== substantive.length) {
       // FAIL-OPEN (decision 3): report, never guess — the PROSE sweep touches
@@ -630,9 +742,10 @@ function rewriteContent({ parsed, expired, earliest, nowMs }) {
   if (earliest !== null) {
     if (parsed.expiresAtLine >= 0) lines[parsed.expiresAtLine] = `expires-at: ${earliest}`;
     if (parsed.counterLine >= 0) {
-      lines[parsed.counterLine] = lines[parsed.counterLine].replace(
-        COUNTER_RE,
-        `**\`expires-at\` ${earliest} = the EARLIEST of the ${parsed.pairs.length} absorbed dates**`,
+      lines[parsed.counterLine] = spliceCounterLine(
+        lines[parsed.counterLine],
+        earliest,
+        parsed.pairs.length,
       );
     }
   }

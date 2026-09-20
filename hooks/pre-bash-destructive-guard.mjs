@@ -52,8 +52,7 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // #992 — late-bound repo dependencies
@@ -1047,10 +1046,19 @@ try {
   process.exit(0); // fail-open, but no longer fail-silent
 }
 
-// Top-level error handler — never let exit 1 leak
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-destructive-guard: internal error — ${e?.message || e}\n`
-  );
-  process.exit(0); // fail-open on internal errors to avoid blocking legitimate work
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+// Placed strictly AFTER all decision logic: it gates whether main() is invoked,
+// never what main() decides, so no deny path can be short-circuited by it.
+if (isMainModule(import.meta.url)) {
+  // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+  if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
+
+  // Top-level error handler — never let exit 1 leak
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-destructive-guard: internal error — ${e?.message || e}\n`
+    );
+    process.exit(0); // fail-open on internal errors to avoid blocking legitimate work
+  });
+}

@@ -1093,7 +1093,7 @@ describe('stale worktree base (#1413)', () => {
       .filter((rec) => rec.event === 'orchestrator.wave_dispatch.worktree_base_checked');
   }
 
-  it('WARNS on stderr — and still ALLOWS — when a worktree dispatch follows a mid-session commit', () => {
+  it('WARNS VISIBLY — and still ALLOWS — when a worktree dispatch follows a mid-session commit', () => {
     // Bug caught: the s18 incident. HEAD has moved past session-start-ref, the
     // harness will base the agent's worktree on session-start, and before this
     // check the dispatch produced no signal of any kind.
@@ -1102,9 +1102,16 @@ describe('stale worktree base (#1413)', () => {
 
     const res = runHook(worktreePayload(dir), { cwd: dir });
 
-    // The decision is untouched — this is a warning, never a block. stdout stays
-    // EMPTY (the allow contract), the notice lives on stderr.
-    expectAllow(res);
+    // SECOND bug caught (w3-5): a stderr-only notice reaches nobody. Under the
+    // exit-0 PreToolUse protocol stderr is the debug channel
+    // (`scripts/lib/io.mjs:545` — "Invisible under exit 0"), so the first cut of
+    // this check announced the incident class to a log and to no operator.
+    // `expectWarn` pins the visible channel AND its exclusivity: the top-level
+    // key set must be EXACTLY `['systemMessage']`, so routing this through
+    // `emitDeny` — i.e. turning the notice into a BLOCK on the hot dispatch path
+    // of every session on the host — fails here instead of passing silently.
+    expectWarn(res, ['STALE WORKTREE BASE (#1413)', 'omit `isolation`']);
+    // stderr parity is retained by `emitWarn` for log/CI capture.
     expect(res.stderr).toContain('STALE WORKTREE BASE (#1413)');
     expect(res.stderr).toContain(head.slice(0, 12));
     expect(res.stderr).toContain(first.slice(0, 12));

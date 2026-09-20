@@ -30,7 +30,7 @@
  * `isMeta: true` body record, and the optional `attributionSkill` string.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -306,6 +306,134 @@ describe('buildSkillEvidence', () => {
     expect(evidence.status).toBe('no-transcript');
     expect(evidence.text).toBe('');
     expect(evidence.skipped).toEqual([{ skill: SKILL, reason: 'no-transcript' }]);
+  });
+
+  /**
+   * A session dir shaped like the real one: `<projects>/<sessionId>.jsonl` plus
+   * `<projects>/<sessionId>/subagents/agent-<n>.jsonl`. Synthetic on purpose —
+   * the operator's own transcripts are neither reproducible nor ours to read.
+   */
+  function sessionDir({ mainRecords, subagentFiles = {} }) {
+    const dir = tmp();
+    const sid = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+    const jsonl = (recs) => recs.map((r) => JSON.stringify(r)).join('\n');
+    writeFileSync(join(dir, `${sid}.jsonl`), jsonl(mainRecords), 'utf8');
+    const subDir = join(dir, sid, 'subagents');
+    mkdirSync(subDir, { recursive: true });
+    for (const [name, recs] of Object.entries(subagentFiles)) {
+      writeFileSync(join(subDir, name), jsonl(recs), 'utf8');
+    }
+    return { projectsDir: dir, sessionId: sid };
+  }
+
+  // Bug this catches (#1412): a skill invoked ONLY inside a subagent leaves no
+  // anchor in the main transcript, so the evidence window comes back empty and
+  // `runSkillJudge` never dispatches — the skill is structurally unjudgeable
+  // and the gap is invisible, because `no-evidence` reads exactly like "this
+  // session did not use the skill".
+  it('reaches a subagent-only skill ONLY with includeSubagents — no-evidence without it', async () => {
+    const { projectsDir, sessionId } = sessionDir({
+      mainRecords: [
+        ...Array.from({ length: 8 }, (_, i) => assistantText(`coordinator line ${i}`)),
+      ],
+      subagentFiles: {
+        'agent-w3-3.jsonl': [
+          assistantText('subagent preamble'),
+          skillCall(SKILL, 'call_sub'),
+          toolResult('call_sub'),
+          bodyRecord('# Session Start Skill\n\nbody inside the subagent'),
+        ],
+      },
+    });
+
+    const off = await buildSkillEvidence({
+      repoRoot: '/repo',
+      sessionId,
+      projectsDir,
+      skills: [SKILL],
+    });
+    expect(off.status).toBe('no-evidence');
+    expect(off.text).toBe('');
+    expect(off.source.records).toBe(8);
+
+    const on = await buildSkillEvidence({
+      repoRoot: '/repo',
+      sessionId,
+      projectsDir,
+      skills: [SKILL],
+      includeSubagents: true,
+    });
+    expect(on.status).toBe('ok');
+    expect(on.source.records).toBe(12);
+    expect(on.text).toContain(`"skill":"${SKILL}"`);
+    expect(on.perSkill).toEqual([
+      expect.objectContaining({ skill: SKILL, found: true, invocations: 1 }),
+    ]);
+  });
+
+  // Bug this catches (#1412 budget guard): the newly admitted subagent-only
+  // skill takes an equal share of ONE shared pool, pushing a coordinator skill
+  // that was rendered before the flag flip past the `minPerSkillChars` floor —
+  // decided purely by its position in the requested-skills array.
+  it('never lets a subagent-only skill displace a coordinator skill, and says so', async () => {
+    const { projectsDir, sessionId } = sessionDir({
+      mainRecords: [skillCall('session-orchestrator:coord', 'c1'), toolResult('c1')],
+      subagentFiles: {
+        'agent-1.jsonl': [skillCall('session-orchestrator:subonly', 's1'), toolResult('s1')],
+      },
+    });
+    const skills = ['session-orchestrator:subonly', 'session-orchestrator:coord'];
+
+    // Pool after the closing reservation = 2000 → room for exactly ONE skill at
+    // the 1500-character floor. `subonly` is FIRST in the requested array.
+    const evidence = await buildSkillEvidence({
+      repoRoot: '/repo',
+      sessionId,
+      projectsDir,
+      skills,
+      includeSubagents: true,
+      budgetChars: DEFAULT_CLOSING_CHARS + 2 * DEFAULT_MIN_PER_SKILL_CHARS - 1000,
+    });
+
+    expect(evidence.status).toBe('ok');
+    expect(evidence.text).toContain('### session-orchestrator:coord');
+    expect(evidence.text).not.toContain('### session-orchestrator:subonly');
+    // The shortfall stays VISIBLE — a silently shortened window is the failure.
+    expect(evidence.truncated).toBe(true);
+    expect(evidence.skipped).toEqual([
+      { skill: 'session-orchestrator:subonly', reason: 'budget-insufficient' },
+    ]);
+  });
+
+  // Bug this catches (#1412): subagent records are CONCATENATED after the main
+  // ones, so a closing excerpt taken from the end of the joined array renders
+  // the tail of the last subagent file under the heading "session closing" —
+  // mislabelled evidence, which is worse for a judge than none.
+  it('takes the session-closing excerpt from the MAIN transcript, not the last subagent file', async () => {
+    const { projectsDir, sessionId } = sessionDir({
+      mainRecords: [
+        skillCall(SKILL, 'call_main'),
+        toolResult('call_main'),
+        ...Array.from({ length: 14 }, (_, i) => assistantText(`main closing line ${i}`)),
+      ],
+      subagentFiles: {
+        'agent-1.jsonl': Array.from({ length: 14 }, (_, i) =>
+          assistantText(`subagent tail line ${i}`),
+        ),
+      },
+    });
+
+    const evidence = await buildSkillEvidence({
+      repoRoot: '/repo',
+      sessionId,
+      projectsDir,
+      skills: [SKILL],
+      includeSubagents: true,
+    });
+
+    const closing = evidence.text.slice(evidence.text.indexOf('### session closing'));
+    expect(closing).toContain('main closing line 13');
+    expect(closing).not.toContain('subagent tail line');
   });
 
   it('returns no-evidence — not a closing-only window — when no anchor is found', async () => {

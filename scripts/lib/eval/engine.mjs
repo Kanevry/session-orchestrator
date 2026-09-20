@@ -2,7 +2,9 @@
  * eval/engine.mjs — deterministic session-eval engine for the aiat-llm-eval
  * standard (Epic #803, S3). Scores ONE completed orchestrator session against
  * the rubric-v2 dimensions using ONLY local metrics files
- * (sessions.jsonl + events.jsonl). Missing source data ⇒ `cannot-determine`
+ * (sessions.jsonl + events.jsonl AND its rotated `_archive/`, #1407 — the
+ * scored window is a PAST one and may predate the last rotation). Missing
+ * source data ⇒ `cannot-determine`
  * with an honest reason in evidence. It NEVER guesses, and it produces NO
  * global score (the schema forbids one by construction).
  *
@@ -50,7 +52,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { resolvePluginRoot } from '../common.mjs';
-import { readJsonlFile } from '../io.mjs';
+import { readEventsWithRotations } from '../events.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { isCoordinatorDirectHousekeeping } from '../session-schema/filters.mjs';
 import { buildRunId, CURRENT_STANDARD_VERSION, VALID_MODEL_SOURCES } from './schema.mjs';
@@ -499,6 +501,70 @@ function scoreEfficiencyKpis(kpis) {
 }
 
 // ---------------------------------------------------------------------------
+// Ledger-completeness note (#1407 acceptance criterion 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * The dimensions whose evidence is derived from events.jsonl. ONLY these can
+ * mistake an incomplete ledger read for a quiet one — `plan-fidelity` and
+ * `efficiency-kpis` read the session record alone and never touch an event.
+ */
+const EVENT_DERIVED_DIMENSIONS = new Set([
+  'verification-evidence',
+  'gate-health',
+  'process-safety',
+  'guard-friction',
+]);
+
+/**
+ * One sentence naming what the ledger read could NOT see — or `''` when it saw
+ * everything.
+ *
+ * WHY (#1407 AC-3): a gap must not look like an empty window. `computeWindow`
+ * resolves ONE PAST session's `[started_at, completed_at]`, arbitrarily old, so
+ * for an older session the deciding events may sit in an archive. When an
+ * archive a rotation tombstone names is GONE, every event-derived zero above
+ * ("0 quality_gate events in window", "events.jsonl absent or empty",
+ * "blocked=0") is a lower bound rather than a measurement, and the two readings
+ * are otherwise indistinguishable. Malformed lines are named for the same
+ * reason (`readEventsWithRotations` honesty rule 2): a silently skipped line
+ * turns a partial result into a clean verdict.
+ *
+ * NOT A RUBRIC CHANGE — and deliberately so. This appends to `evidence` and
+ * touches no `status`: no pre-registered formula in `skills/eval/rubric-v2.md`
+ * reads it, and no dimension can flip verdict because of it. Measured
+ * 2026-09-20 over the 40 records in `.orchestrator/metrics/eval.jsonl`: the
+ * live ledger reads `complete: true`, `gaps: []`, `malformed_lines: 0`
+ * (5063 events, identical to the pre-#1407 plain read), so the note is `''` and
+ * all 40 keep byte-identical dimensions. Surfacing it as a STATUS (a new
+ * `cannot-determine`) WOULD be a rubric change and needs a version bump —
+ * see the report on this issue.
+ *
+ * @param {{complete?: boolean, gaps?: object[], malformed_lines?: number}} ledger
+ * @returns {string} '' when the read was complete and clean, else a leading-space sentence.
+ */
+function ledgerGapNote(ledger) {
+  if (!isPlainObject(ledger)) return '';
+  const gaps = Array.isArray(ledger.gaps) ? ledger.gaps : [];
+  const malformed = Number.isInteger(ledger.malformed_lines) ? ledger.malformed_lines : 0;
+  if (gaps.length === 0 && malformed === 0) return '';
+
+  const parts = [];
+  if (gaps.length > 0) {
+    const byKind = new Map();
+    for (const gap of gaps) {
+      const kind = isPlainObject(gap) && isNonEmptyString(gap.kind) ? gap.kind : 'unknown';
+      byKind.set(kind, (byKind.get(kind) ?? 0) + 1);
+    }
+    const kinds = [...byKind.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    parts.push(`${gaps.length} gap(s) [${kinds.map(([k, n]) => `${k}×${n}`).join(', ')}]`);
+  }
+  if (malformed > 0) parts.push(`${malformed} unreadable line(s)`);
+
+  return ` LEDGER INCOMPLETE: ${parts.join(', ')} — counts above are LOWER BOUNDS and a zero here may be unmeasured rather than absent.`;
+}
+
+// ---------------------------------------------------------------------------
 // Evidence-template readers (#1381)
 // ---------------------------------------------------------------------------
 
@@ -771,7 +837,20 @@ export function evaluateSession(opts = {}) {
   // session_id, #1068 double-stub collapse, supersede removal) — see
   // session-resolve.mjs for how that simplifies both callers below.
   const records = readCanonicalSessions({ filePath: sessionsPath });
-  const events = readJsonlFile(eventsPath, { skipInvalid: true });
+  // #1407: read ACROSS rotation boundaries, not just the active file. The
+  // window being scored belongs to ONE PAST session and is arbitrarily old
+  // (computeWindow, session-resolve.mjs), so for any session older than the
+  // last rotation the deciding events sit in `_archive/` — a plain read scored
+  // them over a silently truncated window, and a missing archive was
+  // indistinguishable from a quiet one.
+  //
+  // CEILING (BV-004): every source is read fully into memory — up to ~60 MB
+  // transient at the default `max-size-mb: 10` × `max-backups: 5`. Acceptable
+  // because /eval is a COLD CLI path (one hand-run scoring pass per session,
+  // never a hook, never in a wave). Revisit if the engine gains a hot-path
+  // caller or `events-rotation.max-size-mb` is raised past ~100.
+  const ledger = readEventsWithRotations(undefined, { filePath: eventsPath });
+  const events = ledger.events;
 
   const { record: session, resolvedVia } = resolveSession(records, sessionId);
   const window = computeWindow(session);
@@ -781,6 +860,13 @@ export function evaluateSession(opts = {}) {
   const ctx = { record: session, events, window, peer, rawSessionIds };
   const kpisFull = extractKpis(session);
 
+  // Appended CENTRALLY, never per branch: every zero an event-derived scorer
+  // can report — in any of its branches, including the ones not yet written —
+  // is a lower bound under an incomplete read. A per-branch note would have to
+  // be remembered at each new branch; this one cannot be forgotten. It is `''`
+  // whenever the read was complete and clean, so the normal path stays
+  // byte-identical (determinism contract, top of file).
+  const ledgerNote = ledgerGapNote(ledger);
   const dimensions = [
     scoreVerificationEvidence(ctx),
     scorePlanFidelity(ctx),
@@ -788,7 +874,11 @@ export function evaluateSession(opts = {}) {
     scoreProcessSafety(ctx),
     scoreGuardFriction(ctx),
     scoreEfficiencyKpis(kpisFull),
-  ];
+  ].map((d) =>
+    ledgerNote && EVENT_DERIVED_DIMENSIONS.has(d.id)
+      ? { ...d, evidence: `${d.evidence}${ledgerNote}` }
+      : d,
+  );
 
   // Strip the internal marker from the persisted KPI block.
   const { _duration_source, ...kpis } = kpisFull;

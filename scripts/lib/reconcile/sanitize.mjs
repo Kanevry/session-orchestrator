@@ -198,8 +198,27 @@ export const LEARNING_KEY_RE = /^[a-z0-9/-]+$/;
 /** `expires-at:` — YYYY-MM-DD. A garbage value makes the loader's expiry gate FAIL OPEN. */
 export const EXPIRES_AT_RE = /^\d{4}-\d{2}-\d{2}$/;
 
-/** `learning-id` / `source-session` — rendered inside backticks, which an interior backtick would close. */
-export const PROVENANCE_TOKEN_RE = /^[A-Za-z0-9._:-]+$/;
+/**
+ * `learning-id` / `source-session` — rendered inside backticks, which an
+ * interior backtick would close.
+ *
+ * `/` is admitted since GH#71. A semantic session id is DERIVED FROM A BRANCH
+ * NAME, and branch names carry slashes — so the narrower class did not reject
+ * hostile text, it rejected a whole legitimate id family. The damage is silent
+ * and unbounded: `engine.mjs` degrades the throw to an audited rejection, so
+ * every learning from such a session is proposed on every run and rejected on
+ * every run, forever. Measured in THIS repo 2026-09-20 @ `9b118cf6`:
+ * `jq -r 'select(.session_id != null) | .session_id'
+ * .orchestrator/metrics/sessions.jsonl | grep -c '/'` → **3**, all of the
+ * `feat/operator-surface-2026-08-08-…` family; `git branch -a --format=…
+ * | grep -c '/'` → **6**. It hit two usable learnings in the reporting
+ * consumer's run (source: peer session eventdrop-at, 2026-09-20).
+ *
+ * Widening a SANITISER is only safe against a census of what the new character
+ * makes expressible at the call sites — see {@link assertNoPathEscape} for the
+ * one hazard `/` adds and for the four it does not.
+ */
+export const PROVENANCE_TOKEN_RE = /^[A-Za-z0-9._:/-]+$/;
 
 // The Unicode Control category (C0 + DEL + C1). Deliberately expressed as
 // `\p{Cc}` rather than a hand-written character class: an escape-written class
@@ -276,13 +295,59 @@ function rejection(field, why, value) {
 }
 
 /**
+ * Reject the ONE hazard a `/` adds to a machine token: a path shape.
+ *
+ * Derived from the call sites, not from caution. Both slash-bearing patterns —
+ * {@link PROVENANCE_TOKEN_RE} and {@link LEARNING_KEY_RE} — route through
+ * {@link assertMachineToken}, so the guard lives in that ONE shared function
+ * rather than at each caller: one guard beats one-guard-per-call-site, and it
+ * covers the next caller of an EXPORTED assert by construction
+ * (`.claude/rules/build-value.md` BV-003).
+ *
+ * **What `/` does NOT make expressible**, so this guard deliberately does not
+ * re-check it (each is already structurally impossible in every pattern that
+ * admits a slash):
+ *
+ *   1. *Inline-code break-out.* Both provenance values render inside a backtick
+ *      span (`renderer.mjs:469-470`); a backtick is in no slash-bearing class.
+ *   2. *Frontmatter escape.* A newline would open a sibling top-level key — but
+ *      JS `$` without the `m` flag does not match before a trailing newline
+ *      (measured 2026-09-20: `/^[A-Za-z0-9._:-]+$/.test("abc\n")` → `false`),
+ *      so a trailing newline was and stays rejected.
+ *   3. *Wrapper forgery.* Every literal in {@link WRAPPER_FORGERY_LITERALS}
+ *      needs `<`, `>`, `#`, a space or `(` — none of them in these classes.
+ *   4. *Dangerous invisibles.* Cf code points are outside these classes too.
+ *
+ * Gated on a literal `/` being present, which makes the guard a provable no-op
+ * for every token shape accepted BEFORE the widening: without a separator there
+ * is no traversal to express, and `..` alone in a backtick span is inert text.
+ * Census over the live store 2026-09-20 @ `9b118cf6`: 0 of 263 learning-keys and
+ * 0 learning ids carry `..` or a leading `/`, so nothing legitimate is caught.
+ *
+ * @param {string} value  a value that already matched its pattern
+ * @param {string} field
+ * @returns {void}
+ * @throws {Error} on a leading `/` (absolute path) or any `..` (traversal)
+ */
+function assertNoPathEscape(value, field) {
+  if (!value.includes('/')) return;
+  if (value.startsWith('/')) {
+    throw rejection(field, 'must not start with "/" (absolute path)', value);
+  }
+  if (value.includes('..')) {
+    throw rejection(field, 'must not contain ".." (path traversal)', value);
+  }
+}
+
+/**
  * Assert that a machine value is a non-empty string matching `pattern`.
  * REJECTS (throws) rather than repairing — see the module doc's dividing line.
  *
  * @param {unknown} value
  * @param {{ field: string, pattern: RegExp }} opts
  * @returns {string} the value, unchanged, when it passes
- * @throws {Error} when the value is not a string or does not match `pattern`
+ * @throws {Error} when the value is not a string, does not match `pattern`, or
+ *   carries a path escape (see {@link assertNoPathEscape})
  */
 export function assertMachineToken(value, { field, pattern }) {
   if (typeof value !== 'string' || value === '') {
@@ -291,6 +356,7 @@ export function assertMachineToken(value, { field, pattern }) {
   if (!pattern.test(value)) {
     throw rejection(field, `must match ${pattern.source}`, value);
   }
+  assertNoPathEscape(value, field);
   return value;
 }
 

@@ -1090,6 +1090,10 @@ async function worktreeBaseFacts(input, projectDir, sessionId) {
  * The operator-facing warning. It names the ACTION, not just the condition —
  * a warning the coordinator cannot act on is noise (HR-106).
  *
+ * NO `⚠ ` PREFIX HERE: this text is handed to `emitWarn`, which prefixes it on
+ * both channels it writes (stderr and the `systemMessage` payload). Prefixing
+ * here too produced `⚠ ⚠ …`.
+ *
  * @param {{head: string, session_start_ref: string}} facts
  * @returns {string}
  */
@@ -1097,7 +1101,7 @@ function staleWorktreeWarning(facts) {
   const head = facts.head.slice(0, 12);
   const base = facts.session_start_ref.slice(0, 12);
   return [
-    `⚠ ${HOOK_NAME}: STALE WORKTREE BASE (#1413) — this dispatch uses `
+    `${HOOK_NAME}: STALE WORKTREE BASE (#1413) — this dispatch uses `
       + `isolation: "worktree", but HEAD (${head}) has moved past this session's `
       + `session-start-ref (${base}).`,
     '  The harness bases a new agent worktree on the SESSION-START commit and offers',
@@ -1575,13 +1579,24 @@ async function main() {
   // emit for the same process.exit() reason as the block above. It reads
   // `verdict` not at all: it can never turn an allow into a deny, and a git or
   // STATE.md failure resolves to silence rather than to a wrong accusation.
+  //
+  // ROUTED TO THE OPERATOR, not to stderr alone (w3-5): under the exit-0
+  // PreToolUse protocol stderr goes nowhere — `io.mjs:545` calls it the "Debug
+  // channel … Invisible under exit 0" — so the first cut of this check announced
+  // the s18 incident class to a log and to nobody. The visible channel is the
+  // top-level `systemMessage`, i.e. `emitWarn`, which carries NO
+  // `permissionDecision` and therefore still means ALLOW (io.mjs § "which is
+  // precisely what keeps warn non-blocking").
+  //
+  // The note is CARRIED to the single terminal emit below rather than emitted
+  // here, because `emitWarn` calls `process.exit(0)` and never returns — warning
+  // inline would terminate the process before a collision DENY could be emitted,
+  // flipping a block into an allow (§ stdout discipline, the same reason
+  // `decide()` is pure).
   const worktreeBase = await worktreeBaseFacts(input, projectDir, sessionId);
+  let staleNote = null;
   if (worktreeBase !== null) {
-    if (worktreeBase.stale) {
-      try {
-        console.error(staleWorktreeWarning(worktreeBase));
-      } catch { /* stderr may be closed — a warning that cannot be printed is not a block */ }
-    }
+    if (worktreeBase.stale) staleNote = staleWorktreeWarning(worktreeBase);
     try {
       const { emitEvent, sessionAttribution } = await import(
         pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
@@ -1594,8 +1609,20 @@ async function main() {
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }
 
-  if (verdict.action === 'deny') return emitDeny(verdict.reason, verdict.suggestion);
-  if (verdict.action === 'warn') return emitWarn(verdict.note);
+  // ONE terminal emit, with the #1413 note folded in where a visible channel is
+  // free. On DENY the dispatch does not happen and `systemMessage` already
+  // carries the ⛔ headline, so the note stays on the debug channel — a stale
+  // base is moot for a dispatch that was just blocked.
+  if (verdict.action === 'deny') {
+    if (staleNote !== null) {
+      try { console.error(`⚠ ${staleNote}`); } catch { /* stderr may be closed */ }
+    }
+    return emitDeny(verdict.reason, verdict.suggestion);
+  }
+  if (verdict.action === 'warn') {
+    return emitWarn(staleNote === null ? verdict.note : `${verdict.note}\n\n${staleNote}`);
+  }
+  if (staleNote !== null) return emitWarn(staleNote);
   return emitAllow();
 }
 

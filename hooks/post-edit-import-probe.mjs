@@ -37,8 +37,7 @@
  */
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
-if (!shouldRunHook('post-edit-import-probe')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import path from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
@@ -335,10 +334,19 @@ async function main() {
 // Exit 0 always — a hook that guards against hook breakage must never block.
 // The catch stays silent towards the TOOL CALL but not towards the operator:
 // a probe whose own breakage is invisible is a probe nobody can trust.
-main()
-  .catch((err) => {
-    try {
-      process.stderr.write(`post-edit-import-probe: ${err?.message ?? String(err)}\n`);
-    } catch { /* stderr gone — nothing left to report to */ }
-  })
-  .finally(() => process.exit(0));
+// Entry guard (#1393): run only when this file IS the script node was invoked
+// with — every harness path execs it (`sh run-node.sh <this file>`). A bare
+// `import()` (a probe, a test, a curious agent) must neither run main() nor
+// tear the importing process down. The profile gate sits INSIDE the guard for
+// that second reason: at module top level its `process.exit(0)` exited every
+// process that merely imported this hook.
+if (isMainModule(import.meta.url)) {
+  if (!shouldRunHook('post-edit-import-probe')) process.exit(0);
+  main()
+    .catch((err) => {
+      try {
+        process.stderr.write(`post-edit-import-probe: ${err?.message ?? String(err)}\n`);
+      } catch { /* stderr gone — nothing left to report to */ }
+    })
+    .finally(() => process.exit(0));
+}

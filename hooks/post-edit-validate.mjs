@@ -32,8 +32,7 @@ import { spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('post-edit-validate')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { readStdin } from '../scripts/lib/io.mjs';
 import { resolveProjectDir } from '../scripts/lib/platform.mjs';
@@ -220,6 +219,15 @@ async function main() {
 }
 
 // REQ-01: top-level catch — PostToolUse must never block; always exit 0
-main().catch(() => {
-  process.exit(0);
-});
+// Entry guard (#1393): run only when this file IS the script node was invoked
+// with — every harness path execs it (`sh run-node.sh <this file>`). A bare
+// `import()` (a probe, a test, a curious agent) must neither run main() nor
+// tear the importing process down. The profile gate sits INSIDE the guard for
+// that second reason: at module top level its `process.exit(0)` exited every
+// process that merely imported this hook.
+if (isMainModule(import.meta.url)) {
+  if (!shouldRunHook('post-edit-validate')) process.exit(0);
+  main().catch(() => {
+    process.exit(0);
+  });
+}
