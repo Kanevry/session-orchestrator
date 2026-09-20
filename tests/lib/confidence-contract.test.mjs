@@ -15,11 +15,14 @@ import { _parseDispatcherAutonomy } from '@lib/config/dispatcher-autonomy.mjs';
  * the producer's ceiling sinks below the shipped default. In 19 recorded
  * autopilot runs the default was never reached, and no test went red.
  *
- * Bugs this catches that the rest of the suite does not:
- *  - a bonus in scoring.mjs is removed or shrunk → an executable mode can no
- *    longer reach the autopilot default, autopilot silently never iterates;
- *  - a consumer default is raised above what the producer can emit;
- *  - a new mode is added without deciding whether autopilot can ever run it.
+ * What this catches that the rest of the suite does not (measured by mutation
+ * against the 214 mode-selector + autopilot tests at 307ca800):
+ *  - a consumer default raised above what the producer can emit — the old
+ *    suite stays 214/214 green, because no test reads both sides;
+ *  - a new mode added without deciding whether autopilot can ever run it.
+ * Shrinking a bonus in scoring.mjs already turns unit tests red (6–8 of 214);
+ * what those cannot say is that the change takes an executable mode below a
+ * shipped threshold. The ceiling cases here state that consequence.
  *
  * Only thresholds that live in code are registered. session-start's 0.5 banner
  * cut-off exists solely as prose in skills/session-start/ and cannot be bound
