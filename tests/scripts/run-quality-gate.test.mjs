@@ -141,6 +141,10 @@ describe('run-quality-gate.mjs — help flag', () => {
     const r = run(['--help']);
     expect(r.status).toBe(0);
     expect(r.stdout).toContain('Exit codes');
+    // Bug: 124 (gate killed on the wall-clock ceiling, Epic #1425 A3) is a
+    // NON-STANDARD exit code — `cli-design.md` § Exit Codes requires every one
+    // of those to be documented in `--help`, or a caller reads it as a crash.
+    expect(r.stdout).toContain('124');
   });
 });
 
@@ -619,5 +623,78 @@ describe('run-quality-gate.mjs — npm loglevel is pinned, not inherited', () =>
     const captured = JSON.stringify(parsed);
     expect(captured).toContain('loglevel=[notice]');
     expect(captured).not.toContain('loglevel=[silent]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Wall-clock ceiling on gate commands (Epic #1425 A3)
+// ---------------------------------------------------------------------------
+
+describe('run-quality-gate.mjs — gate commands are capped and their group is killed', () => {
+  // THE BUG, measured at ed3c062d: NEITHER process on path B had a timeout —
+  // `scripts/run-quality-gate.mjs` spawned the gate with `spawnSync(…)` carrying
+  // only `maxBuffer`, and `gate-helpers.mjs::runCheck` ran `execSync(cmd, …)`
+  // the same way. A gate command that never returns therefore ran forever, and
+  // its grandchildren outlived it at PPID 1 (2026-09-20: four `tsgo --noEmit`
+  // orphans, up to 8.0 GB RSS each, host at 13 % free memory).
+  //
+  // This is the END-TO-END proof through the real CLI: a `sleep 30` test
+  // command under a 300 ms ceiling must come back in under a second as a NAMED
+  // failure, never as a hang and never as a silent `fail`.
+  it('kills a command that outlives the ceiling and reports it as a named failure', () => {
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': "sh -c 'sleep 30'",
+      'lint-command': 'skip',
+    });
+    const started = Date.now();
+    const r = run(['--variant', 'full-gate', '--config', config], { SO_GATE_TIMEOUT_MS: '300' });
+    const elapsed = Date.now() - started;
+
+    // The gate BLOCKS (exit 2), it does not hang and it does not pass.
+    expect(r.status).toBe(2);
+    // Generous, but far below the 30 s the command asked for: without the cap
+    // this assertion is the one that cannot pass.
+    expect(elapsed).toBeLessThan(20_000);
+
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.test.status).toBe('fail');
+    // A timeout is reported AS a timeout — the raw-output disclosure carries the
+    // ceiling, the process group and the signal ladder.
+    expect(r.stderr).toContain('gate: TIMEOUT after 300 ms');
+    expect(r.stderr).toContain('process group ');
+  });
+
+  // Bug: an envelope with `test: {total: 0, passed: 0}` from a KILLED run would
+  // be admitted as a measurement of zero. `admitSuiteCounts` rejects `total <= 0`,
+  // so the event must carry no `counts` key at all — absent, never a zero triple.
+  it('emits a failed gate event with no fabricated counts when a command is killed', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'qg-timeout-'));
+    try {
+      const config = JSON.stringify({
+        'typecheck-command': 'skip',
+        'test-command': "sh -c 'sleep 30'",
+        'lint-command': 'skip',
+      });
+      const r = run(
+        ['--variant', 'full-gate', '--config', config],
+        { SO_GATE_TIMEOUT_MS: '300', CLAUDE_PROJECT_DIR: tmp },
+      );
+      expect(r.status).toBe(2);
+
+      const eventsPath = join(tmp, '.orchestrator', 'metrics', 'events.jsonl');
+      expect(existsSync(eventsPath)).toBe(true);
+      const ev = readFileSync(eventsPath, 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .find((e) => e.event === 'orchestrator.quality_gate.failed');
+      expect(ev).toBeDefined();
+      expect(ev.exit_code).toBe(2);
+      expect(Object.keys(ev)).not.toContain('counts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

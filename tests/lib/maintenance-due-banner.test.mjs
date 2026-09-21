@@ -212,6 +212,39 @@ describe('checkMaintenanceDue', () => {
     expect(computed.undeterminable).toEqual([]);
   });
 
+  // BUG (#1414): the probe read ONLY the active events.jsonl. After a rotation
+  // the single `orchestrator.evolve.completed` record on the host sits in
+  // `_archive/`, so a repo that HAS run /evolve was reported as "never" and
+  // nagged at every session start — the HR-101 failure mode this module exists
+  // to prevent, caused by the reader rather than by the threshold.
+  it('finds an evolve record that rotation moved into _archive/', async () => {
+    writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5);
+    const archiveDir = path.join(metricsDir(), '_archive');
+    fs.mkdirSync(archiveDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(archiveDir, 'events-20260101T000000Z_20260201T000000Z.jsonl'),
+      JSON.stringify({
+        event: 'orchestrator.evolve.completed',
+        timestamp: '2026-01-15T10:00:00.000Z',
+      }) + '\n',
+      'utf8',
+    );
+    // The ACTIVE file carries no evolve record at all — only the tombstone and
+    // ordinary traffic, exactly as it looks after a rotation.
+    writeMetrics('events.jsonl', [
+      JSON.stringify({
+        event: 'orchestrator.events.rotated',
+        timestamp: '2026-02-01T00:00:00.000Z',
+        archived_as: path.join(archiveDir, 'events-20260101T000000Z_20260201T000000Z.jsonl'),
+      }),
+      JSON.stringify({ event: 'subagent_stop', timestamp: '2026-09-02T00:00:00.000Z' }),
+    ]);
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(computed.due.map((d) => d.id)).not.toContain('evolve');
+    expect(computed.undeterminable).toEqual([]);
+  });
+
   // BUG (#1290 item 2): the ledger is now read BACKWARDS in TAIL_CHUNK_BYTES
   // chunks. A chunked reader that parses the partial line at the front of each
   // chunk sees a record split across the boundary as two halves, neither of

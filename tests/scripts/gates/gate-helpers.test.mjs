@@ -4,7 +4,9 @@
  * Unit tests for scripts/lib/gates/gate-helpers.mjs
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import {
   admitSuiteCounts,
   csvToJsonArray,
@@ -12,11 +14,15 @@ import {
   extractTestCounts,
   extractFailedTestFiles,
   extractErrorLinesJson,
+  gateTimeoutEnvelope,
+  resolveGateTimeoutMs,
   runCheck,
   findChangedFiles,
   findChangedTestFiles,
   resolveTestFiles,
+  GATE_TIMEOUT_ENV,
 } from '@lib/gates/gate-helpers.mjs';
+import { DEFAULT_GATE_TIMEOUT_MS } from '@lib/process-group.mjs';
 
 // ---------------------------------------------------------------------------
 // csvToJsonArray
@@ -306,35 +312,35 @@ describe('extractErrorLinesJson', () => {
 // ---------------------------------------------------------------------------
 
 describe('runCheck', () => {
-  it('returns status=skip and empty output when cmd is "skip"', () => {
-    const result = runCheck('skip');
+  it('returns status=skip and empty output when cmd is "skip"', async () => {
+    const result = await runCheck('skip');
     expect(result.status).toBe('skip');
     expect(result.output).toBe('');
     expect(result.exitCode).toBe(0);
   });
 
-  it('returns status=skip and empty output when cmd is empty string', () => {
-    const result = runCheck('');
+  it('returns status=skip and empty output when cmd is empty string', async () => {
+    const result = await runCheck('');
     expect(result.status).toBe('skip');
     expect(result.output).toBe('');
     expect(result.exitCode).toBe(0);
   });
 
-  it('returns status=skip when cmd is null', () => {
-    const result = runCheck(null);
+  it('returns status=skip when cmd is null', async () => {
+    const result = await runCheck(null);
     expect(result.status).toBe('skip');
   });
 
-  it('returns status=pass and output for a succeeding command', () => {
+  it('returns status=pass and output for a succeeding command', async () => {
     // Use a real shell command that is not an echo stub (echo stubs are short-circuited).
-    const result = runCheck('node -e "process.stdout.write(\'hi\')"');
+    const result = await runCheck('node -e "process.stdout.write(\'hi\')"');
     expect(result.status).toBe('pass');
     expect(result.output).toContain('hi');
     expect(result.exitCode).toBe(0);
   });
 
-  it('returns status=pass for a succeeding command with large output', () => {
-    const result = runCheck(
+  it('returns status=pass for a succeeding command with large output', async () => {
+    const result = await runCheck(
       'node -e "process.stdout.write(\'x\'.repeat(2 * 1024 * 1024)); process.stdout.write(\'\\\\n42 passed\\\\n\')"',
     );
     expect(result.status).toBe('pass');
@@ -342,8 +348,8 @@ describe('runCheck', () => {
     expect(result.exitCode).toBe(0);
   });
 
-  it('stub short-circuit: echo stub returns stubbed echo result without executing', () => {
-    const result = runCheck('echo "stub"');
+  it('stub short-circuit: echo stub returns stubbed echo result without executing', async () => {
+    const result = await runCheck('echo "stub"');
     expect(result).toEqual({
       status: 'pass',
       output: '(stubbed: echo)',
@@ -353,8 +359,8 @@ describe('runCheck', () => {
     });
   });
 
-  it('stub short-circuit: noop stub ":" returns stubbed noop result without executing', () => {
-    const result = runCheck(':');
+  it('stub short-circuit: noop stub ":" returns stubbed noop result without executing', async () => {
+    const result = await runCheck(':');
     expect(result).toEqual({
       status: 'pass',
       output: '(stubbed: noop)',
@@ -364,14 +370,14 @@ describe('runCheck', () => {
     });
   });
 
-  it('returns status=fail for a failing command', () => {
-    const result = runCheck('node -e "process.exit(1)"');
+  it('returns status=fail for a failing command', async () => {
+    const result = await runCheck('node -e "process.exit(1)"');
     expect(result.status).toBe('fail');
     expect(result.exitCode).toBe(1);
   });
 
-  it('returns status=skip for a command-not-found (exit 127)', () => {
-    const result = runCheck('this_command_definitely_does_not_exist_xyz123');
+  it('returns status=skip for a command-not-found (exit 127)', async () => {
+    const result = await runCheck('this_command_definitely_does_not_exist_xyz123');
     expect(result.status).toBe('skip');
     expect(result.output).toBe('command not found');
   });
@@ -478,16 +484,16 @@ describe('runCheck fullOutput', () => {
     'exit 1',
   ].join('; ');
 
-  it('keeps the whole captured text in fullOutput while output stays a bounded tail', () => {
-    const res = runCheck(`sh -c '${script}'`);
+  it('keeps the whole captured text in fullOutput while output stays a bounded tail', async () => {
+    const res = await runCheck(`sh -c '${script}'`);
     expect(res.status).toBe('fail');
     expect(res.fullOutput).toContain('14357 passed');
     expect(res.output).not.toContain('14357 passed');
     expect(res.output.split('\n').length).toBeLessThanOrEqual(5);
   });
 
-  it('lets extractTestCounts recover the real counts from fullOutput, not from the tail', () => {
-    const res = runCheck(`sh -c '${script}'`);
+  it('lets extractTestCounts recover the real counts from fullOutput, not from the tail', async () => {
+    const res = await runCheck(`sh -c '${script}'`);
     expect(extractTestCounts(res.fullOutput)).toEqual({
       passed: 14357,
       failed: 1,
@@ -503,8 +509,8 @@ describe('runCheck fullOutput', () => {
     });
   });
 
-  it('reports fullOutput on the success path too', () => {
-    const res = runCheck(`sh -c 'echo "${SUMMARY}"; echo trailing'`);
+  it('reports fullOutput on the success path too', async () => {
+    const res = await runCheck(`sh -c 'echo "${SUMMARY}"; echo trailing'`);
     expect(res.status).toBe('pass');
     expect(res.fullOutput).toContain('14357 passed');
   });
@@ -589,5 +595,168 @@ describe('extractFailedTestFiles', () => {
   it('returns [] for empty or non-string input', () => {
     expect(extractFailedTestFiles('')).toEqual([]);
     expect(extractFailedTestFiles(null)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runCheck — the wall-clock ceiling (Epic #1425 A3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A child that NEVER closes on its own and whose grandchildren ignore SIGTERM —
+ * the measured shape of the 2026-09-20 incident. `killFn` is injected in every
+ * case below, so no real signal is ever sent.
+ */
+function wedgedChild(pid) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  return child;
+}
+
+/** SIGTERM is ignored; only SIGKILL to the group ends the fake child. */
+function sigtermIgnoringKill(child, state) {
+  const calls = [];
+  const fn = (target, signal) => {
+    calls.push({ target, signal });
+    if (signal === 'SIGKILL') {
+      state.alive = false;
+      child.emit('close', null, 'SIGKILL');
+    }
+    return true;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+describe('runCheck timeout', () => {
+  // THE BUG (Epic #1425 A3): `runCheck` was `execSync(cmd, { maxBuffer })` with
+  // NO timeout — `grep -n timeout scripts/lib/gates/gate-helpers.mjs` at
+  // ed3c062d returned nothing. A wedged `tsgo --noEmit` therefore ran until the
+  // host ran out of memory (2026-09-20: 4 orphans, up to 8.0 GB RSS each, 13 %
+  // free). No existing case in this file spawns a command that does not exit,
+  // so the whole class was untested by construction.
+  it('kills the process GROUP and reports a named failure when the ceiling fires', async () => {
+    const child = wedgedChild(7171);
+    const state = { alive: true };
+    const killFn = sigtermIgnoringKill(child, state);
+
+    const res = await runCheck('pretend-wedged-gate', {
+      spawnFn: () => child,
+      killFn,
+      isAliveFn: () => state.alive,
+      timeoutMs: 50,
+      killGraceMs: 10,
+      verifyWaitMs: 5,
+      // No ledger write from a unit test: `onRegister` replaces the default
+      // sink, so nothing touches this working copy.
+      onRegister: () => {},
+    });
+
+    expect(res.timedOut).toBe(true);
+    expect(res.status).toBe('fail');
+    expect(res.exitCode).toBe(124);
+    // A timeout must never read as a silent `fail`: the line names the ceiling,
+    // the GROUP (negated pgid is what was signalled) and the ladder.
+    expect(res.output).toContain('gate: TIMEOUT after 50 ms');
+    expect(res.output).toContain('process group 7171');
+    expect(res.fullOutput).toContain('SIGTERM\u2192SIGKILL');
+    expect(res.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(res.survivors).toEqual([]);
+    expect(killFn.calls.map((c) => c.target)).toEqual([-7171, -7171]);
+  });
+
+  // Bug: a survivor of SIGKILL (a grandchild that `setsid`-ed out of the group)
+  // reported as a clean kill is exactly the false green PRD B6 forbids — "signal
+  // sent" is not "process gone".
+  it('names survivors in the TIMEOUT line when something outlives SIGKILL', async () => {
+    const child = wedgedChild(7272);
+    const res = await runCheck('pretend-immortal-gate', {
+      spawnFn: () => child,
+      killFn: () => true,
+      isAliveFn: () => true,
+      sleepFn: async () => {},
+      timeoutMs: 20,
+      killGraceMs: 1,
+      verifyWaitMs: 1,
+      onRegister: () => {},
+    });
+
+    expect(res.timedOut).toBe(true);
+    expect(res.survivors).toEqual([7272]);
+    expect(res.output).toContain('survivors: [7272]');
+  });
+
+  // Bug: a skipped or stubbed command spawned nothing, so a `timedOut: false`
+  // on it would be an UNMEASURED false — the same "absent is not zero" defect
+  // `admitSuiteCounts` and the `files` triple exist to prevent.
+  it.each([
+    ['skip', 'skip'],
+    ['empty', ''],
+    ['stub', 'echo "stub"'],
+  ])('publishes no timeout fields for a %s command (absent, never a measured false)', async (_name, cmd) => {
+    const res = await runCheck(cmd);
+    expect(Object.keys(res)).not.toContain('timedOut');
+    expect(Object.keys(res)).not.toContain('killSignals');
+    expect(Object.keys(res)).not.toContain('survivors');
+  });
+});
+
+describe('resolveGateTimeoutMs', () => {
+  const previous = process.env[GATE_TIMEOUT_ENV];
+  afterEach(() => {
+    if (previous === undefined) delete process.env[GATE_TIMEOUT_ENV];
+    else process.env[GATE_TIMEOUT_ENV] = previous;
+  });
+
+  // Bug: reading the override at MODULE LOAD makes it unsettable by any caller
+  // that imports the module first (every gate script does); and honouring a
+  // non-numeric or non-positive value would DISABLE the cap this whole change
+  // adds — `Number('') === 0` and `timeoutMs <= 0` turns the clock off in
+  // `spawnInGroup`.
+  it.each([
+    ['unset', undefined, DEFAULT_GATE_TIMEOUT_MS],
+    ['a positive number', '1234', 1234],
+    ['whitespace-padded', '  2500  ', 2500],
+    ['empty', '', DEFAULT_GATE_TIMEOUT_MS],
+    ['whitespace only', '   ', DEFAULT_GATE_TIMEOUT_MS],
+    ['non-numeric', 'soon', DEFAULT_GATE_TIMEOUT_MS],
+    ['zero', '0', DEFAULT_GATE_TIMEOUT_MS],
+    ['negative', '-1', DEFAULT_GATE_TIMEOUT_MS],
+  ])('resolves %s to the expected ceiling', (_name, value, expected) => {
+    if (value === undefined) delete process.env[GATE_TIMEOUT_ENV];
+    else process.env[GATE_TIMEOUT_ENV] = value;
+    expect(resolveGateTimeoutMs()).toBe(expected);
+  });
+
+  it('defaults to the 15 min ceiling path A already had', () => {
+    expect(DEFAULT_GATE_TIMEOUT_MS).toBe(900_000);
+  });
+});
+
+describe('gateTimeoutEnvelope', () => {
+  // Bug: publishing a `test`/`typecheck` object on a timed-out run would make
+  // `suiteCountsFromGateStdout` admit counts nobody measured — a killed gate
+  // measured NOTHING. The envelope must carry the failure and no numbers.
+  it('is a complete, count-free JSON document naming the timeout', () => {
+    const env = gateTimeoutEnvelope({
+      variant: 'full-gate',
+      timeoutMs: 960_000,
+      run: { pgid: 4242, durationMs: 960_123, killSignals: ['SIGTERM', 'SIGKILL'], survivors: [] },
+    });
+    expect(env).toEqual({
+      variant: 'full-gate',
+      error: 'gate-timeout',
+      timeout_ms: 960_000,
+      duration_ms: 960_123,
+      pgid: 4242,
+      kill_signals: ['SIGTERM', 'SIGKILL'],
+      survivors: [],
+    });
+    expect(Object.keys(env)).not.toContain('test');
+    // Must survive JSON.stringify/parse as ONE document — it replaces the gate's
+    // own envelope on stdout, which every consumer parses as exactly one line.
+    expect(JSON.parse(JSON.stringify(env)).error).toBe('gate-timeout');
   });
 });

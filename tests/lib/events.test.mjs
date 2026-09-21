@@ -601,6 +601,73 @@ describe('readEventsWithRotations', () => {
 
     expect(result.events.map((e) => e.timestamp)).toEqual(['2026-09-19T08:00:00Z']);
     expect(result.sources.map((s) => s.path)).toEqual([active]);
+    // BUG THIS CATCHES (#1423): the exclusion was SILENT. This repo's own
+    // `_archive/` holds exactly such a file (80 records) and the reader still
+    // answered `complete: true, gaps: 0` — a file it never read, nowhere named.
+    // It is a NOTICE, not a gap: making it a gap would pin this repo at
+    // `complete: false` forever and teach the operator to ignore the flag
+    // (HR-101).
+    expect(result.notices).toEqual([
+      { kind: 'unindexed-archive-file', path: foreign },
+    ]);
+    expect(result.complete).toBe(true);
+  });
+
+  it('reports a tombstoned archive that EXISTS but was never read as an unindexed-archive gap', async () => {
+    // BUG THIS CATCHES (#1423): `existsSync(sibling)` counted as "was read".
+    // It is not: `discoverArchives` only ever reads names matching
+    // ARCHIVE_NAME_RE, so a tombstone whose archive has been RENAMED out of
+    // that shape silenced itself — `complete: true, gaps: []` while its records
+    // were absent from `events`. Existence is not reading.
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    // The archive is ON DISK, under a basename outside ARCHIVE_NAME_RE — so
+    // `discoverArchives` never reads it, while the tombstone names it.
+    const renamed = archivePath('events-rotated-by-hand-20260412.jsonl');
+    const tombstoned = path.join(
+      '/nonexistent-old-checkout/.orchestrator/metrics',
+      ARCHIVE_DIR_NAME,
+      'events-rotated-by-hand-20260412.jsonl',
+    );
+
+    writeFileSync(renamed, line('2026-04-12T06:33:01.123Z'));
+    writeFileSync(
+      active,
+      rotationLine('2026-09-19T07:00:00Z', tombstoned, {
+        first: '2026-04-12T06:33:01.123Z',
+        last: '2026-09-18T19:14:02Z',
+      }) + line('2026-09-19T08:00:00Z'),
+    );
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.complete).toBe(false);
+    expect(result.gaps).toEqual([
+      expect.objectContaining({ kind: 'unindexed-archive', archived_as: tombstoned, path: renamed }),
+    ]);
+    // The same file is ALSO reported as a notice — it was seen and not read.
+    expect(result.notices).toEqual([{ kind: 'unindexed-archive-file', path: renamed }]);
+    // Its records really are absent — the gap is not cosmetic.
+    expect(result.events.map((e) => e.timestamp)).toEqual([
+      '2026-09-19T07:00:00Z',
+      '2026-09-19T08:00:00Z',
+    ]);
+  });
+
+  it('reports complete: null — not true — when NO source exists at all', async () => {
+    // BUG THIS CATCHES (#1423 F3): a repo with no ledger answered
+    // `{complete: true, gaps: 0, events: 0}` — byte-identical to a verified,
+    // whole read. Three states collapsed onto two, so "not measured" was
+    // indistinguishable from "measured zero".
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.complete).toBe(null);
+    expect(result.sources).toEqual([]);
+    expect(result.events).toEqual([]);
+    expect(result.gaps).toEqual([]);
   });
 
   it('end-to-end: a real maybeRotate run leaves an archive the reader finds', async () => {
@@ -628,5 +695,180 @@ describe('readEventsWithRotations', () => {
     expect(result.events.at(0).timestamp).toBe('2026-04-12T06:33:01.123Z');
     expect(result.events.at(-1).timestamp).toBe('2026-09-19T09:00:00Z');
     expect(result.events.find((e) => e.event === ROTATION_EVENT).archived_as).toBe(rot.archivedAs);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listEventSourcesNewestFirst + scanEventsBackwards — streaming reads (#1414)
+// ---------------------------------------------------------------------------
+
+describe('streaming reads across rotations', () => {
+  let dir;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'events-scan-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const rec = (timestamp, event = 'orchestrator.auq_clarity.allowed') =>
+    `${JSON.stringify({ timestamp, event, schema_version: 1 })}\n`;
+
+  function archiveFile(name, body) {
+    mkdirSync(path.join(dir, ARCHIVE_DIR_NAME), { recursive: true });
+    const abs = path.join(dir, ARCHIVE_DIR_NAME, name);
+    writeFileSync(abs, body);
+    return abs;
+  }
+
+  it('orders the sources NEWEST first: active, archives descending, legacy ring ascending', async () => {
+    // BUG THIS CATCHES (#1414): the two hot-path readers answered "never
+    // happened" from the active file alone. A backwards walk is only correct if
+    // the source order is newest-first — the wrong order returns an OLD hit as
+    // the most recent one, which is worse than no answer.
+    const { listEventSourcesNewestFirst } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    writeFileSync(active, rec('2026-09-20T00:00:00Z'));
+    const older = archiveFile('events-20260101T000000Z_20260201T000000Z.jsonl', rec('2026-01-01T00:00:00Z'));
+    const newer = archiveFile('events-20260301T000000Z_20260401T000000Z.jsonl', rec('2026-03-01T00:00:00Z'));
+    // A hand-placed file is NOT a source (one definition of "this ledger").
+    archiveFile('events-worktree-analysis-2026-08-17.jsonl', rec('2026-08-17T00:00:00Z'));
+    writeFileSync(`${active}.1`, rec('2025-12-01T00:00:00Z'));
+    writeFileSync(`${active}.2`, rec('2025-11-01T00:00:00Z'));
+
+    const sources = listEventSourcesNewestFirst({ filePath: active });
+
+    expect(sources).toEqual([
+      { path: active, kind: 'active' },
+      { path: newer, kind: 'archive' },
+      { path: older, kind: 'archive' },
+      { path: `${active}.1`, kind: 'legacy-ring' },
+      { path: `${active}.2`, kind: 'legacy-ring' },
+    ]);
+  });
+
+  it('omits a source that does not exist — an absent ledger yields no sources', async () => {
+    const { listEventSourcesNewestFirst } = await importEventsWithDir(dir);
+    expect(listEventSourcesNewestFirst({ filePath: path.join(dir, 'events.jsonl') })).toEqual([]);
+  });
+
+  it('walks BACKWARDS across the archive boundary and stops at the first accepted record', async () => {
+    // BUG THIS CATCHES (#1414): the only `orchestrator.evolve.completed` record
+    // on a rotated host sits in `_archive/`, so the single-file reader reported
+    // "never ran" for a repo that HAS run it — and nagged it every session
+    // start (HR-101). The stop-at-first-hit is what keeps the walk cheap.
+    const { scanEventsBackwards } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    archiveFile(
+      'events-20260101T000000Z_20260201T000000Z.jsonl',
+      rec('2026-01-01T00:00:00Z') +
+        rec('2026-01-05T00:00:00Z', 'orchestrator.evolve.completed') +
+        rec('2026-01-09T00:00:00Z', 'orchestrator.evolve.completed') +
+        rec('2026-01-10T00:00:00Z'),
+    );
+    writeFileSync(active, rec('2026-09-20T00:00:00Z') + rec('2026-09-21T00:00:00Z'));
+
+    const seen = [];
+    const hits = [];
+    const result = scanEventsBackwards({
+      filePath: active,
+      onRecord: (record, source) => {
+        seen.push([record.timestamp, source.kind]);
+        if (record.event !== 'orchestrator.evolve.completed') return false;
+        hits.push(record.timestamp);
+        return true;
+      },
+    });
+
+    expect(result.stopped).toBe(true);
+    expect(result.truncated).toBe(false);
+    // The NEWEST evolve record, not the oldest — the walk runs backwards.
+    expect(hits).toEqual(['2026-01-09T00:00:00Z']);
+    // Newest-first, and nothing older than the hit was ever parsed.
+    expect(seen.map(([ts]) => ts)).toEqual([
+      '2026-09-21T00:00:00Z',
+      '2026-09-20T00:00:00Z',
+      '2026-01-10T00:00:00Z',
+      '2026-01-09T00:00:00Z',
+    ]);
+    expect(seen.map(([, kind]) => kind)).toEqual(['active', 'active', 'archive', 'archive']);
+  });
+
+  it('carries a record split across a chunk boundary instead of losing it', async () => {
+    // BUG THIS CATCHES: a chunked backwards reader that parses the partial line
+    // at the front of each chunk sees the split record as two invalid halves —
+    // a repo that HAS the record is reported as "never". Same defect class the
+    // #1290 hand-rolled scan was fixed for; it must not return via the shared
+    // reader.
+    const { scanEventsBackwards } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const target = rec('2026-05-05T00:00:00Z', 'orchestrator.evolve.completed');
+    // chunkBytes is tiny, so the target line is guaranteed to straddle one.
+    writeFileSync(active, rec('2026-01-01T00:00:00Z') + target + rec('2026-09-01T00:00:00Z'));
+
+    const hits = [];
+    const result = scanEventsBackwards({
+      filePath: active,
+      chunkBytes: 16,
+      onRecord: (record) => {
+        if (record.event !== 'orchestrator.evolve.completed') return false;
+        hits.push(record.timestamp);
+        return true;
+      },
+    });
+
+    expect(hits).toEqual(['2026-05-05T00:00:00Z']);
+    expect(result.malformed_lines).toBe(0);
+  });
+
+  it('reports truncated — never a clean "not found" — when the budget runs out', async () => {
+    // BUG THIS CATCHES (#1414): an unbounded walk on a 2 s session-start probe
+    // must be able to give up, and giving up must NOT read as "never happened".
+    // `truncated: true` with `stopped: false` is the undeterminable state.
+    const { scanEventsBackwards } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    writeFileSync(active, rec('2026-09-20T00:00:00Z').repeat(50));
+
+    const result = scanEventsBackwards({
+      filePath: active,
+      budgetMs: -1, // already expired when the walk starts
+      onRecord: () => false,
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.stopped).toBe(false);
+    expect(result.sources).toEqual([]);
+  });
+
+  it('names an unreadable source instead of reporting an empty walk', async () => {
+    const { scanEventsBackwards } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    mkdirSync(active); // a DIRECTORY where the ledger should be: EISDIR on read
+
+    const result = scanEventsBackwards({ filePath: active, onRecord: () => true });
+
+    expect(result.unreadable).toEqual([active]);
+    expect(result.stopped).toBe(false);
+  });
+
+  it('counts an unreadable line among the matching ones instead of skipping it silently', async () => {
+    const { scanEventsBackwards } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    writeFileSync(
+      active,
+      `{"event":"orchestrator.evolve.completed","timestamp":"2026-05-0\n` +
+        rec('2026-09-01T00:00:00Z'),
+    );
+
+    const result = scanEventsBackwards({
+      filePath: active,
+      filter: 'orchestrator.evolve.completed',
+      onRecord: () => true,
+    });
+
+    expect(result.stopped).toBe(false);
+    expect(result.malformed_lines).toBe(1);
   });
 });

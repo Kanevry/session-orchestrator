@@ -115,9 +115,12 @@ let readJson;
 let classifyEmptyScope;
 let suggestForEmptyScope;
 let sessionStartedAtMs;
-// #1398 cond. 4 — THE shared grading predicate for an absolute Gate 5b grant.
-// The hook WARNS on an `error` verdict and never denies on it; see Gate 5b.
+// #1398 cond. 4 — THE shared grading predicate for an absolute Gate 5b grant,
+// plus the resolver it takes. The hook WARNS on an `error` verdict and never
+// denies on it; see Gate 5b. Both come from the module already bound below —
+// no new module edge, so `hooks/_lib/hook-import-set.json` is unchanged.
 let gradeScopeEntry;
+let canonicalizeGrantPrefix;
 // #1123 — "is this manifest even mine?" (G3b). Process-local identity only
 // (#1194): the repo-global `session.lock` tier is shared by every session in the
 // checkout and would classify a peer's manifest as ours.
@@ -197,8 +200,13 @@ async function bootstrap() {
   ({ resolveProjectDir } = modules.platform);
   ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
-  ({ classifyEmptyScope, suggestForEmptyScope, sessionStartedAtMs, gradeScopeEntry } =
-    modules.scopeGate);
+  ({
+    classifyEmptyScope,
+    suggestForEmptyScope,
+    sessionStartedAtMs,
+    gradeScopeEntry,
+    canonicalizeGrantPrefix,
+  } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
 }
 
@@ -460,13 +468,26 @@ async function main() {
   // is before dispatch. `emitWarn` is an ALLOW that carries a notice (exit 0,
   // `systemMessage` only) — see `scripts/lib/io.mjs`.
   //
-  // NO `resolve` is passed: canonicalisation costs one `realpathSync` per
-  // denylist root and this is a PreToolUse hot path, so the hook grades the
-  // LITERAL grant it already matched (see gradeScopeEntry § Named ceilings for
-  // exactly which two classes that gives up).
+  // THE SAME `resolve` THE VALIDATOR PASSES (#1398 cond. 4, closed 2026-09-21).
+  // It was omitted here on the assumption that canonicalisation is too expensive
+  // for a PreToolUse hot path; measuring it refuted that, and the omission was
+  // the last source of a verdict divergence between the two callers of one
+  // predicate (`/tmp/x/**`: `warn` here, `error/non-canonical` there — silent on
+  // exactly the grant that matches nothing at this gate).
+  //
+  // MEASURED 2026-09-21, A/B in one process, 200 repetitions, median:
+  //   - this call site grades ONE grant per Gate 5b hit, never the manifest:
+  //     +0.067 ms, 15 `realpathSync` — 75× under the 5 ms decision threshold;
+  //   - a Gate 5b hit requires an out-of-repo write AND an absolute grant that
+  //     matches it. The live 64-entry manifest of that session carried 0
+  //     absolute entries and therefore cost 0 syscalls: an ordinary in-repo
+  //     write never reaches this line at all.
+  // `canonicalizeGrantPrefix` memoizes per process and never throws (see its
+  // docblock); `gradeScopeEntry` additionally degrades a throwing resolver to
+  // the literal spelling, so the worst case is today's verdict.
   const matchedGrant = matchedAbsoluteGrant(resolvedPath, allowedPaths);
   if (matchedGrant !== null) {
-    const grade = gradeScopeEntry(matchedGrant);
+    const grade = gradeScopeEntry(matchedGrant, { resolve: canonicalizeGrantPrefix });
     if (grade?.verdict === 'error') {
       return emitWarn(
         `Gate 5b honoured an out-of-repo grant that scripts/validate-wave-scope.mjs would REFUSE ` +
@@ -828,24 +849,28 @@ function isCoordinatorCarveout(normalizedRel, projectRoot, scopePath) {
  * `scripts/validate-wave-scope.mjs` turns into an exit-1 refusal — over the grant
  * this helper returns, and WARNS when it grades `error`.
  *
- * ONE PREDICATE, TWO ARGUMENT SHAPES — SO THE VERDICTS CAN STILL DIFFER. The
- * function is shared; the CALL is not. The validator passes an fs-backed
- * `resolve`, this hook passes none (see the Gate 5b call site), and the grader's
- * canonical rungs only run when a resolver is present. So the CONSEQUENCE
- * differs (refuse before dispatch vs. allow-with-notice at write time) AND, on
- * exactly those rungs, the VERDICT can too. Measured 2026-09-20 @ 7e110a2a,
- * hook shape vs. CLI shape on this host:
+ * ONE PREDICATE, ONE ARGUMENT SHAPE — THE VERDICTS NO LONGER DIFFER (#1398
+ * cond. 4, closed 2026-09-21). Both callers now pass the SAME fs-backed
+ * `resolve` (`canonicalizeGrantPrefix`, exported from
+ * `scripts/lib/scope-gate.mjs`), so only the CONSEQUENCE is asymmetric: the
+ * validator refuses an `error` before dispatch, this gate allows it with a
+ * notice at write time. The history, because the asymmetry was load-bearing for
+ * two fixes, measured 2026-09-20 @ 7e110a2a with the resolver-free call:
  *   - `/private/etc/**`, `/private/var/**` — the macOS realpaths of the
  *     denylisted `/etc` and `/var`, i.e. the spellings Gate 5b ACTUALLY matches
  *     (it matches the realpath-resolved candidate): hook `warn`, validator
  *     `error`. The notice fired on `/etc/**`, which reaches nothing here, and
  *     stayed silent on the spelling that reaches everything. CLOSED by listing
- *     the two aliases literally (`DENIED_ABSOLUTE_ALIAS_ROOTS` in
- *     `scripts/lib/scope-gate.mjs`), at zero syscalls.
- *   - `/tmp/x/**` — hook `warn`, validator `error/non-canonical`. STILL OPEN,
- *     and not closable without a resolver: proving a literal prefix resolves
- *     elsewhere IS the realpath call. The residual costs a missing NOTICE, never
- *     a wider allow — that grant matches nothing at Gate 5b either way.
+ *     the two aliases literally (`DENIED_ABSOLUTE_ALIAS_ROOTS`), at zero
+ *     syscalls — they still cost nothing and stay.
+ *   - `/tmp/x/**` — hook `warn`, validator `error/non-canonical`: the last
+ *     divergence, 1 of 9 probes, and not closable by any literal list, because
+ *     proving a literal prefix resolves elsewhere IS the realpath call. CLOSED
+ *     by passing the resolver here too, once its cost was measured instead of
+ *     assumed (+0.067 ms per Gate 5b hit; see the call site).
+ * The parity of the two verdict tables is pinned by
+ * `tests/lib/scope-gate.test.mjs` § "hook / validator grading parity", so a NEW
+ * divergence is a red test rather than a comment someone has to notice.
  *
  * Returns the MATCHED PATTERN rather than a boolean precisely so the caller has
  * something to grade: with a bare `true` the grant that opened the gate is

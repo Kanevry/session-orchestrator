@@ -34,7 +34,7 @@ if (!lintCmd) {
 const startTime = Date.now();
 
 // --- Typecheck ---
-const tcResult = runCheck(typecheckCmd);
+const tcResult = await runCheck(typecheckCmd);
 const tcErrorCount =
   tcResult.status === 'fail'
     ? extractCount(tcResult.fullOutput ?? tcResult.output, /error TS\d+/)
@@ -44,7 +44,7 @@ const tcErrorCount =
 // NOTE: `testCounts`, NOT `failed` — a local `failed` is already bound near
 // the bottom of this file and drives `process.exit(failed ? 2 : 0)`.
 // Shadowing it would corrupt the gate's exit code.
-const testResult = runCheck(testCmd);
+const testResult = await runCheck(testCmd);
 const testCounts =
   testResult.status !== 'skip'
     ? extractTestCounts(testResult.fullOutput ?? testResult.output)
@@ -98,7 +98,7 @@ const fileFields = testCounts.files
   : {};
 
 // --- Lint ---
-const lintResult = runCheck(lintCmd);
+const lintResult = await runCheck(lintCmd);
 const lintWarnings =
   lintResult.status !== 'skip'
     ? extractCount(lintResult.fullOutput ?? lintResult.output, /warning/i)

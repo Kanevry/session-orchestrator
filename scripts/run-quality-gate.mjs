@@ -23,9 +23,15 @@
  *   0 — pass (or informational; non-blocking variants always exit 0)
  *   1 — script error (bad arguments, missing dependencies)
  *   2 — gate failed (full-gate only: typecheck/test/lint errors)
+ * 124 — the gate sub-script exceeded the wall-clock ceiling and its whole
+ *       process GROUP was killed (SIGTERM→SIGKILL). Same value coreutils
+ *       `timeout(1)` uses. Applies to EVERY variant, including the otherwise
+ *       non-blocking ones: a killed gate measured nothing, so reporting it as
+ *       0 would be a false green (Epic #1425 A3).
  *
  * The gate sub-scripts in scripts/lib/gates/ are NOT reimplemented here; they are
- * invoked via child_process.spawn('bash', [path, ...]) with the required env vars.
+ * invoked via spawnInGroup() — a detached, process-group-leading shell — with the
+ * required env vars.
  *
  * References:
  *   scripts/run-quality-gate.sh                  — original shell orchestrator
@@ -37,12 +43,17 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
 import { die, warn } from './lib/common.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-policy.mjs';
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
-import { admitSuiteCounts } from './lib/gates/gate-helpers.mjs';
+import {
+  admitSuiteCounts,
+  gateTimeoutEnvelope,
+  resolveGateTimeoutMs,
+} from './lib/gates/gate-helpers.mjs';
+import { buildCommandSignature, spawnInGroup } from './lib/process-group.mjs';
 import { findScopeFile } from './lib/scope-gate.mjs';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +72,24 @@ const VALID_VARIANTS = ['baseline', 'incremental', 'full-gate', 'per-file'];
  * mid-write by the default 1 MiB spawnSync cap.
  */
 const GATE_STDOUT_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Head-room between the ceiling the gate's OWN commands run under
+ * (`resolveGateTimeoutMs()`, applied per command inside `runCheck`) and the one
+ * this wrapper applies to the gate sub-script as a whole.
+ *
+ * The inner cap must fire FIRST: it kills exactly the wedged command and still
+ * lets the gate print its JSON envelope, name the failing check on stderr and
+ * exit 2. This outer cap is the backstop for the case the inner one cannot
+ * reach — a gate wedged outside `runCheck`, or a kill ladder that left a
+ * survivor holding the pipe open.
+ *
+ * Named ceiling (BV-004): 60 s. It only has to cover one full SIGTERM→grace→
+ * SIGKILL→verify ladder (`DEFAULT_KILL_GRACE_MS` 10 s + 0.5 s verify + 1 s
+ * deadline slack ≈ 11.5 s) plus the gate's own JSON write. Revisit if the grace
+ * period is ever raised past ~45 s.
+ */
+const GATE_OUTER_TIMEOUT_RESERVE_MS = 60_000;
 
 const DEFAULT_TEST_CMD = 'npm test';
 const DEFAULT_TYPECHECK_CMD = 'npm run typecheck';
@@ -88,7 +117,8 @@ if (argv.includes('-h') || argv.includes('--help')) {
     'Exit codes:\n' +
     '  0 — pass (non-blocking variants always exit 0)\n' +
     '  1 — script error (bad arguments, missing dependencies)\n' +
-    '  2 — gate failed (full-gate only)\n',
+    '  2 — gate failed (full-gate only)\n' +
+    '  124 — gate timed out; its process group was killed (SIGTERM→SIGKILL)\n',
   );
   process.exit(0);
 }
@@ -355,6 +385,11 @@ if (!existsSync(gatePath)) {
   die(`Gate script not found: ${gatePath}`);
 }
 
+// Resolved BEFORE the spawn (it used to sit beside the telemetry block below):
+// the gate-process ledger the spawn writes is pinned to the same root as the
+// event, for the same reason — see the spawn's `repoRoot` comment.
+const ledgerRoot = resolveLedgerRoot(ledgerRootArg);
+
 // `npm_config_loglevel` is INHERITED by every descendant, and the pre-push hook
 // invokes this script as `npm run --silent quality-gate` — which sets it to
 // `silent`. That level then reached the gate's own children: `npm pack
@@ -378,25 +413,78 @@ const env = {
   SESSION_START_REF: sessionStartRef,
 };
 
+/**
+ * POSIX single-quote one argument for the shell `spawnInGroup` runs the command
+ * through. The gate path is derived from `import.meta.url`, so it carries
+ * whatever the checkout path carries — a space in it must not split the command.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, "'\\''")}'`;
+}
+
+// The gate sub-script runs as the LEADER OF ITS OWN PROCESS GROUP under a
+// wall-clock ceiling (Epic #1425 A3). Before this, `spawnSync('node', [gatePath])`
+// had NO timeout at all and no group semantics: a wedged `tsgo` or vitest worker
+// two levels down was reparented to PPID 1 and kept its memory (2026-09-20: four
+// such orphans, up to 8.0 GB RSS each, host at 13 % free).
+//
 // stdout is PIPED (not inherited) so the suite counts the gate already computed
 // can be lifted straight off its JSON envelope into telemetry (#954) instead of
 // travelling as prose through the STATE.md header. The envelope is re-emitted
 // verbatim below, so the stdout contract is unchanged — a gate sub-script writes
 // exactly one JSON line at the very end (its own child commands are captured by
-// `runCheck`), so nothing streamed before and nothing streams now. stderr stays
-// inherited, keeping warnings live.
-const result = spawnSync('node', [gatePath], {
+// `runCheck`), so nothing streamed before and nothing streams now.
+//
+// stderr stays INHERITED, and that is why `spawnFn` is overridden here rather
+// than left at its default: `spawnInGroup` merges stdout and stderr into one
+// capture, which would interleave the gate's failure disclosure (hundreds of
+// lines, #1149) into the single JSON document every consumer parses off stdout.
+// Handing it a child with `stderr: 'inherit'` leaves `child.stderr` null, the
+// module's own `child.stderr?.on(…)` a no-op, and the gate's warnings live on
+// the operator's terminal exactly as before.
+const gateCommand = `node ${shellQuote(gatePath)}`;
+const gateTimeoutMs = resolveGateTimeoutMs() + GATE_OUTER_TIMEOUT_RESERVE_MS;
+const result = await spawnInGroup(gateCommand, {
+  cwd: repoRoot,
   env,
-  stdio: ['inherit', 'pipe', 'inherit'],
-  encoding: 'utf8',
-  maxBuffer: GATE_STDOUT_MAX_BUFFER_BYTES,
+  timeoutMs: gateTimeoutMs,
+  maxOutputBytes: GATE_STDOUT_MAX_BUFFER_BYTES,
+  // The ledger is what the orphan reaper (#1425 B) reads to tell its OWN gate
+  // processes from every other `node` on the host, so it is pinned to the same
+  // root the telemetry is — under the pre-push hook the tree the gate runs in
+  // is deleted seconds later, and the record with it.
+  repoRoot: ledgerRoot ?? repoRoot,
+  commandSignature: buildCommandSignature(gateCommand),
+  spawnFn: (command, options) => spawn(command, { ...options, stdio: ['inherit', 'pipe', 'inherit'] }),
 });
 
-const gateStdout = typeof result.stdout === 'string' ? result.stdout : '';
-if (gateStdout) process.stdout.write(gateStdout);
+// `pid: -1` is `spawnInGroup`'s spawn-failure channel (it never rejects).
+if (result.pid === -1) {
+  die(`Failed to run gate script: ${result.fullOutput.trim()}`);
+}
 
-if (result.error && typeof result.status !== 'number') {
-  die(`Failed to run gate script: ${result.error.message}`);
+// On timeout the child was KILLED before it could write its envelope, so its
+// capture is at best a partial JSON document. Publishing that would hand every
+// stdout consumer a parse error where a named failure belongs; publishing the
+// partial text AND an envelope would break the one-document contract. So the
+// capture goes to stderr, where the operator can still read it, and stdout
+// carries a complete `gate-timeout` envelope instead.
+const gateStdout = result.timedOut ? '' : result.fullOutput;
+if (result.timedOut) {
+  if (result.fullOutput.trim()) {
+    process.stderr.write(`\n──── gate TIMED OUT — captured output before the kill ────\n${result.fullOutput}\n──── end ────\n`);
+  }
+  process.stdout.write(
+    JSON.stringify(gateTimeoutEnvelope({ variant, timeoutMs: gateTimeoutMs, run: result })) + '\n',
+  );
+  if (result.survivors.length > 0) {
+    warn(`gate process group ${result.pgid} left survivors after SIGKILL: ${result.survivors.join(', ')}`);
+  }
+} else if (gateStdout) {
+  process.stdout.write(gateStdout);
 }
 
 // Quality-gate telemetry — one canonical event per gate run via emitEvent
@@ -433,8 +521,7 @@ if (result.error && typeof result.status !== 'number') {
 //
 // Best-effort: a telemetry failure must NEVER alter the gate's authoritative
 // exit code — which is why the counts parse also lives inside this try.
-const exitCode = result.status ?? 1;
-const ledgerRoot = resolveLedgerRoot(ledgerRootArg);
+const exitCode = result.exitCode;
 try {
   const counts = suiteCountsFromGateStdout(gateStdout);
   // The names behind `counts.failed`. Absent, never `[]` — see

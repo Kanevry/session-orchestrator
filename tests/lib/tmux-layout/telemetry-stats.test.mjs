@@ -109,4 +109,37 @@ describe('telemetry-stats reads across rotation boundaries', () => {
     // The surviving records are still returned — a gap is a finding, not a throw.
     expect(envelope.events).toHaveLength(1);
   });
+
+  it('separates "no ledger at all" (null) from "measured and whole" (true)', () => {
+    // BUG THIS CATCHES (#1423 F3): with no events source on disk the envelope
+    // said `complete: true` — the same verdict as a verified whole read — so
+    // `invocations: 0` and `meetsPromotionGate: false` rested on a measurement
+    // that never happened, and no consumer could tell the two apart.
+    const missing = readTmuxEventsEnvelope(path.join(dir, 'events.jsonl'));
+    expect(missing.complete).toBe(null);
+    expect(missing.events).toEqual([]);
+    expect(computeStats(missing.events).meetsPromotionGate).toBe(false);
+
+    const active = path.join(dir, 'events.jsonl');
+    writeFileSync(active, evt('tmux-layout.invoked', '2026-09-19T08:00:00.000Z'));
+    expect(readTmuxEventsEnvelope(active).complete).toBe(true);
+  });
+
+  it('names a hand-placed _archive/ file as a notice, never as a gap', () => {
+    // BUG THIS CATCHES (#1423): the reader skipped any file outside
+    // ARCHIVE_NAME_RE SILENTLY. Naming it a gap instead would be the other
+    // failure: this repo's own `_archive/` holds such a file permanently, so
+    // the promotion gate would read `complete:false` forever (HR-101).
+    const active = path.join(dir, 'events.jsonl');
+    const handPlaced = archivePath('events-worktree-vault-session-analysis-2026-08-17.jsonl');
+    writeFileSync(handPlaced, evt('tmux-layout.invoked', '2026-08-17T10:00:00.000Z'));
+    writeFileSync(active, evt('tmux-layout.invoked', '2026-09-19T08:00:00.000Z'));
+
+    const envelope = readTmuxEventsEnvelope(active);
+
+    expect(envelope.complete).toBe(true);
+    expect(envelope.gaps).toEqual([]);
+    expect(envelope.notices).toEqual([{ kind: 'unindexed-archive-file', path: handPlaced }]);
+    expect(envelope.events).toHaveLength(1);
+  });
 });

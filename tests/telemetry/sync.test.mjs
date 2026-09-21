@@ -938,13 +938,94 @@ describe('session facts survive a missing sessions.jsonl (deriveSessionFromEvent
     });
   });
 
-  it('reports `absent` — never a fabricated type — when events.jsonl does not exist', () => {
+  // BUG THIS CATCHES (#1423): a ledger that does not exist reported
+  // `ledger_complete: true` — "measured, and whole" — over a read that had no
+  // source at all. That is the house failure class "a missing measurement looks
+  // like zero": the same value as a genuinely complete read, so no consumer
+  // could tell a fresh repo from a verified one. The pre-#1423 expectation here
+  // PINNED that lie, which is why the suite stayed green; `null` is the third
+  // state (not measured).
+  it('reports ledger_complete null — not true — when no events source exists at all', () => {
     expect(deriveSessionFromEvents(join(tmpDir, 'nope'))).toEqual({
       session: {},
       source: 'absent',
-      ledger_complete: true,
+      ledger_complete: null,
       ledger_gaps: [],
     });
+  });
+
+  it('separates the three states: measured-whole, measured-with-gap, not-measured', () => {
+    // The discriminating triple in one case, because the bug was that two of
+    // the three collapsed onto one value.
+    const empty = deriveSessionFromEvents(join(tmpDir, 'nope'));
+
+    const wholeDir = mkdtempSync(join(tmpdir(), 'sync-ledger-whole-'));
+    writeEvents(wholeDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep' },
+    ]);
+
+    const gapDir = mkdtempSync(join(tmpdir(), 'sync-ledger-gap-'));
+    writeEvents(gapDir, [
+      {
+        timestamp: '2026-09-06T09:00:00.000Z',
+        event: ROTATION_EVENT,
+        archived_as: join(gapDir, ARCHIVE_DIR_NAME, 'events-20260906T080000Z_20260906T090000Z.jsonl'),
+        first_ts: '2026-09-06T08:00:00.000Z',
+        last_ts: '2026-09-06T09:00:00.000Z',
+        lines: 12,
+      },
+    ]);
+
+    try {
+      expect(empty.ledger_complete).toBe(null);
+      expect(deriveSessionFromEvents(wholeDir).ledger_complete).toBe(true);
+      expect(deriveSessionFromEvents(gapDir).ledger_complete).toBe(false);
+    } finally {
+      rmSync(wholeDir, { recursive: true, force: true });
+      rmSync(gapDir, { recursive: true, force: true });
+    }
+  });
+
+  it('writes ONE stderr line naming the gap kinds when the ledger is incomplete', () => {
+    // BUG THIS CATCHES (#1423 §2): `ledger_complete` had ZERO production
+    // consumers — the gap was measured, returned, and reached nobody, so the
+    // cost of measuring it bought nothing. Silence on a `false` verdict is the
+    // built-but-not-wired shape; a `true` verdict must stay silent (HR-101).
+    const gapDir = mkdtempSync(join(tmpdir(), 'sync-ledger-warn-'));
+    writeEvents(gapDir, [
+      {
+        timestamp: '2026-09-06T09:00:00.000Z',
+        event: ROTATION_EVENT,
+        archived_as: join(gapDir, ARCHIVE_DIR_NAME, 'events-20260906T080000Z_20260906T090000Z.jsonl'),
+        first_ts: '2026-09-06T08:00:00.000Z',
+        last_ts: '2026-09-06T09:00:00.000Z',
+        lines: 12,
+      },
+    ]);
+    const cleanDir = mkdtempSync(join(tmpdir(), 'sync-ledger-clean-'));
+    writeEvents(cleanDir, [
+      { timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep' },
+    ]);
+
+    const lines = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      lines.push(String(chunk));
+      return true;
+    });
+    try {
+      deriveSessionFromEvents(gapDir);
+      deriveSessionFromEvents(cleanDir);
+      deriveSessionFromEvents(join(tmpDir, 'nope'));
+    } finally {
+      spy.mockRestore();
+      rmSync(gapDir, { recursive: true, force: true });
+      rmSync(cleanDir, { recursive: true, force: true });
+    }
+
+    const warns = lines.filter((l) => l.includes('events ledger INCOMPLETE'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain('missing-archive');
+    expect(warns[0].endsWith('\n')).toBe(true);
   });
 
   it('reads the session start back across a rotation boundary (#1407)', () => {

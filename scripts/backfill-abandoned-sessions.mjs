@@ -2,7 +2,8 @@
 /**
  * backfill-abandoned-sessions.mjs — one-time historical migration CLI (#724 C1).
  *
- * Scans `.orchestrator/metrics/events.jsonl` for every distinct
+ * Scans `.orchestrator/metrics/events.jsonl` — and every rotated archive
+ * beside it (#1414) — for every distinct
  * `orchestrator.session.started` UUID that has no counterpart in
  * `.orchestrator/metrics/sessions.jsonl`, bridges each to its semantic id via
  * `orchestrator.session.lock.acquired` where available, and synthesizes a
@@ -41,7 +42,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
-import { emitEvent } from './lib/events.mjs';
+import { SCAN_CHUNK_BYTES, emitEvent, listEventSourcesNewestFirst } from './lib/events.mjs';
 import { getProjectDir } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { isLockLive, readLock } from './lib/session-lock.mjs';
@@ -125,7 +126,7 @@ function readJsonl(filePath) {
  * @returns {Array<{ sessionId: string, semanticSessionId: string|null }>}
  */
 export function planSessions({ repoRoot }) {
-  const events = readJsonl(path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl'));
+  const eventsPath = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
 
   // Two independent UUID -> semantic bridges (#1167). `lock.acquired` is the
   // original one, but a session that LOST the lock-acquire race never emits it;
@@ -137,27 +138,128 @@ export function planSessions({ repoRoot }) {
   // lock.acquired keeps precedence — it is the older, mode-carrying attestation.
   const semanticFromLock = new Map();
   const semanticFromEnded = new Map();
-  for (const ev of events) {
-    if (typeof ev.session_id !== 'string' || typeof ev.semantic_session_id !== 'string') continue;
-    if (ev.event === LOCK_ACQUIRED) semanticFromLock.set(ev.session_id, ev.semantic_session_id);
-    else if (ev.event === SESSION_ENDED) semanticFromEnded.set(ev.session_id, ev.semantic_session_id);
+  const seen = new Set();
+  /** Distinct `session.started` ids in FIRST-SEEN (chronological) order. */
+  const startedIds = [];
+
+  // #1414 — the whole history, OLDEST SOURCE FIRST, streamed line by line. The
+  // previous `readJsonl` of the active file alone missed every session whose
+  // `session.started` had been rotated into `_archive/`; reading the same
+  // sources through `readEventsWithRotations` instead would have loaded up to
+  // ~60 MB into memory on a path that runs at SESSION START
+  // (`hooks/on-session-start.mjs` → `backfillOnSessionStart`). Reversing the
+  // newest-first source list keeps first-seen order chronological, exactly as
+  // the single-file read produced it.
+  for (const source of [...listEventSourcesNewestFirst({ filePath: eventsPath })].reverse()) {
+    forEachJsonlRecord(source.path, (ev) => {
+      if (!ev || typeof ev !== 'object') return;
+      if (typeof ev.session_id === 'string' && typeof ev.semantic_session_id === 'string') {
+        if (ev.event === LOCK_ACQUIRED) semanticFromLock.set(ev.session_id, ev.semantic_session_id);
+        else if (ev.event === SESSION_ENDED) {
+          semanticFromEnded.set(ev.session_id, ev.semantic_session_id);
+        }
+      }
+      if (ev.event !== SESSION_STARTED || typeof ev.session_id !== 'string') return;
+      if (seen.has(ev.session_id)) return;
+      seen.add(ev.session_id);
+      startedIds.push(ev.session_id);
+    });
   }
+
+  // Resolved AFTER the pass, never during it: a `lock.acquired` / `session.ended`
+  // bridge may sit later in the stream (or in a later source) than the
+  // `session.started` it names, and deciding mid-stream would mint a synthetic
+  // id for a session whose semantic id was two lines further on.
   const semanticByUuid = new Map([...semanticFromEnded, ...semanticFromLock]);
 
   const runningIds = readRunningSessionIds(repoRoot);
 
-  const seen = new Set();
   const plan = [];
-  for (const ev of events) {
-    if (ev.event !== SESSION_STARTED || typeof ev.session_id !== 'string') continue;
-    if (seen.has(ev.session_id)) continue;
-    seen.add(ev.session_id);
-    const semanticSessionId = semanticByUuid.get(ev.session_id) ?? null;
-    if (runningIds.has(ev.session_id)
+  for (const sessionId of startedIds) {
+    const semanticSessionId = semanticByUuid.get(sessionId) ?? null;
+    if (runningIds.has(sessionId)
       || (semanticSessionId !== null && runningIds.has(semanticSessionId))) continue;
-    plan.push({ sessionId: ev.session_id, semanticSessionId });
+    plan.push({ sessionId, semanticSessionId });
   }
   return plan;
+}
+
+/**
+ * Stream one JSONL file, handing every PARSED record to `onRecord` in file
+ * order — without ever holding the file in memory (#1414).
+ *
+ * MISSING (ENOENT) → silent no-op; UNREADABLE → a stderr WARN, same split as
+ * {@link readJsonl} (#1188: a missing ledger is the fresh-repo case, an
+ * unreadable one used to read as "no records" and made every count below
+ * silently wrong). Malformed lines are skipped, as in the full-read path.
+ *
+ * A line split across a chunk boundary is CARRIED as a BUFFER, so neither a
+ * record nor a multibyte character is ever cut in half — the 0x0A byte cannot
+ * occur inside a UTF-8 continuation sequence.
+ *
+ * @param {string} filePath
+ * @param {(record: object) => void} onRecord
+ */
+function forEachJsonlRecord(filePath, onRecord) {
+  const emit = (buf) => {
+    const text = buf.toString('utf8').trim();
+    if (!text) return;
+    try {
+      onRecord(JSON.parse(text));
+    } catch {
+      /* skip malformed */
+    }
+  };
+
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+  } catch (err) {
+    if (!err || err.code !== 'ENOENT') {
+      process.stderr.write(
+        `⚠ backfill-abandoned-sessions: cannot read ${filePath} ` +
+          `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+          'treating as EMPTY, counts below are floors\n',
+      );
+    }
+    return;
+  }
+  try {
+    const size = fs.fstatSync(fd).size;
+    const buf = Buffer.alloc(SCAN_CHUNK_BYTES);
+    let pos = 0;
+    let carry = Buffer.alloc(0);
+    while (pos < size) {
+      const n = fs.readSync(fd, buf, 0, SCAN_CHUNK_BYTES, pos);
+      if (n <= 0) break;
+      pos += n;
+      const block =
+        carry.length > 0
+          ? Buffer.concat([carry, buf.subarray(0, n)])
+          : Buffer.from(buf.subarray(0, n));
+      let start = 0;
+      let idx = block.indexOf(0x0a, start);
+      while (idx !== -1) {
+        emit(block.subarray(start, idx));
+        start = idx + 1;
+        idx = block.indexOf(0x0a, start);
+      }
+      carry = block.subarray(start);
+    }
+    if (carry.length > 0) emit(carry);
+  } catch (err) {
+    process.stderr.write(
+      `⚠ backfill-abandoned-sessions: cannot read ${filePath} ` +
+        `(${err?.code ?? '?'}: ${err?.message ?? String(err)}) — ` +
+        'treating as EMPTY, counts below are floors\n',
+    );
+  } finally {
+    try {
+      fs.closeSync(fd);
+    } catch {
+      /* best-effort */
+    }
+  }
 }
 
 /**

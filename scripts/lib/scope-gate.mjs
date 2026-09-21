@@ -11,7 +11,7 @@
  * invariant for all exports below — see #554 A2.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
@@ -1727,22 +1727,31 @@ function clockAgeMs(file, field, now) {
 //     Linux-home grant against that would refuse it on a macOS coordinator and
 //     accept it on a Linux one). Revisit trigger: the first home grant Gate 5b
 //     provably never matches because the home itself is a symlink.
-//   - With NO `resolve` the grader is PURE and grades the literal spelling only,
-//     which is what the hook does. It keeps every literal-spelling verdict
-//     (`/etc/**`, `/Users/<u>/.ssh/**`, `/Users/<u>/**`). Since #1418 it ALSO
-//     reaches the first canonical-alias class, because the two spellings macOS
-//     actually mints (`/private/etc`, `/private/var`) are on
-//     DENIED_ABSOLUTE_ALIAS_ROOTS as literals — the paragraph above stands as
-//     the reason canonicalisation is the ROOT fix, but a resolver-free caller
-//     that grades those two `warn` while the validator refuses them is not a
-//     ceiling, it is a hole on the platform this repo runs on (measured
-//     2026-09-20 @ 7e110a2a). What a resolver-free caller still cannot reach is
-//     the SECOND class, `non-canonical` (`/tmp/x/**`): proving a literal prefix
-//     resolves elsewhere IS the realpath call, and no literal list substitutes
-//     for it. That residual costs a missing NOTICE, never a wider allow — the
-//     grant matches nothing at Gate 5b either way. Revisit trigger: a
-//     measurement showing the ~14 `realpathSync` calls are cheap enough for a
-//     PreToolUse hot path.
+//   - With NO `resolve` the grader is PURE and grades the literal spelling only.
+//     NO PRODUCTION CALLER IS IN THAT SHAPE ANY MORE (#1398 cond. 4, closed
+//     2026-09-21): `hooks/enforce-scope.mjs` Gate 5b was the one resolver-free
+//     caller, and it now passes {@link canonicalizeGrantPrefix} — the same
+//     function `scripts/validate-wave-scope.mjs` passes — because the revisit
+//     trigger below was MET. Measured A/B in one process, 200 repetitions,
+//     median: the hook grades ONE grant per Gate 5b hit, +0.067 ms and 15
+//     `realpathSync` calls, against a 5 ms decision threshold; the live 64-entry
+//     manifest cost 0 syscalls (0 absolute entries — only an absolute grant
+//     reaches the resolver at all). That closed the last verdict divergence,
+//     `/tmp/x/**` (1 of the 9 #1398 probes), which no literal list could reach.
+//     The resolver-free shape remains SUPPORTED and tested — it is what a
+//     caller with no filesystem gets — and it keeps every literal-spelling
+//     verdict (`/etc/**`, `/Users/<u>/.ssh/**`, `/Users/<u>/**`). Since #1418 it
+//     ALSO reaches the first canonical-alias class, because the two spellings
+//     macOS actually mints (`/private/etc`, `/private/var`) are on
+//     DENIED_ABSOLUTE_ALIAS_ROOTS as literals. Those entries STAY: they cost
+//     zero syscalls and they are the only thing standing between a
+//     hypothetical future resolver-free caller and a hole on this platform
+//     (measured 2026-09-20 @ 7e110a2a). What such a caller still cannot reach is
+//     the SECOND class, `non-canonical` (`/tmp/x/**`) — no literal list
+//     substitutes for the realpath call — which is why the hook now makes it.
+//     Revisit trigger: a caller that CANNOT supply a resolver (no filesystem, or
+//     a hot path measured expensive on its own host) — it is back to the
+//     residual above, one missing NOTICE, never a wider allow.
 // ---------------------------------------------------------------------------
 
 /**
@@ -2032,6 +2041,87 @@ function classifyHomeGrant(normalizedEntry) {
   }
 
   return { verdict: 'warn', reason: 'home-directory grant honoured by Gate 5b' };
+}
+
+/**
+ * One process resolves the same ~14 denylist roots for every absolute grant it
+ * grades; the cache keeps that at one `realpathSync` per distinct path.
+ *
+ * Named ceiling (BV-004): process-lifetime, never invalidated. Both real callers
+ * are one-shot processes (a PreToolUse hook, a CLI run), where a mount changing
+ * mid-process is not a case. Revisit trigger: the first long-running consumer —
+ * it needs a fresh map per call, not this one.
+ * @type {Map<string, string>}
+ */
+const CANONICAL_PREFIX_CACHE = new Map();
+
+/**
+ * Memoized canonicaliser for the LITERAL prefix of an absolute grant — the
+ * `resolve` injection {@link gradeScopeEntry} needs (#1405).
+ *
+ * THE DIRECTION MATTERS: `hooks/enforce-scope.mjs` Gate 5b matches the
+ * REALPATH-RESOLVED write candidate (SECURITY-REQ-03) against the raw
+ * allowedPaths entry, so the files a grant actually reaches are decided by the
+ * canonical spelling. Grading the literal one let `/private/etc/**` pass while
+ * `/etc/**` was refused (same directory on macOS — `realpath('/etc')` is
+ * `/private/etc`), and let `/tmp/x/**` pass while the hook could never match it.
+ * Resolving HERE, the same direction the hook resolves candidates, is the root
+ * fix; adding two more denylist strings would have been neither.
+ *
+ * WHY IT LIVES IN THE HOOK-SAFE MODULE (#1398 cond. 4). It was kept in the CLI
+ * layer on the assumption that ~14 `realpathSync` calls are too expensive for a
+ * PreToolUse hot path. Measured 2026-09-21 on this host (A/B in one process, 200
+ * repetitions, median) that assumption does not hold, and the split it bought
+ * was a live verdict divergence:
+ *   - the hook grades exactly ONE grant per Gate 5b hit (the entry that matched
+ *     the write candidate), not the whole manifest: **+0.067 ms**, 15
+ *     `realpathSync` calls — 75× under the 5 ms decision threshold;
+ *   - the whole 9-grant probe set of #1398: **+0.154 ms**;
+ *   - the live 64-entry manifest of this session: **0** `realpathSync` calls,
+ *     because 0 of its entries are absolute. Only an absolute grant reaches the
+ *     resolver at all, and Gate 5b only runs for an out-of-repo write.
+ * The module header's "no I/O at import time" is untouched: this is I/O inside a
+ * function, exactly as {@link findScopeFile} already does with `existsSync`.
+ *
+ * PURE ENOUGH FOR LINUX CI: a prefix that does not exist never throws — the walk
+ * climbs to the nearest existing ancestor and re-attaches the missing suffix (the
+ * same strategy `hooks/enforce-scope.mjs` uses for a Write to a not-yet-existing
+ * file), and a wholly unresolvable path returns the input unchanged. On Linux
+ * `/etc` and `/var` are not symlinks, so the canonical pass is a no-op there and
+ * the literal verdicts carry the whole load.
+ *
+ * @param {string} absPath
+ * @returns {string}
+ */
+export function canonicalizeGrantPrefix(absPath) {
+  const cached = CANONICAL_PREFIX_CACHE.get(absPath);
+  if (cached !== undefined) return cached;
+
+  // Assigned on BOTH loop exits (resolved, or nothing on this branch resolves);
+  // an initializer here would be dead — see the eslint `no-useless-assignment`
+  // rule, which is on in this repo.
+  let result;
+  let current = absPath;
+  const missing = [];
+  for (;;) {
+    try {
+      const real = realpathSync(current).split(path.sep).join('/');
+      const suffix = [...missing].reverse().join('/');
+      result = suffix.length === 0 ? real : `${real === '/' ? '' : real}/${suffix}`;
+      break;
+    } catch {
+      const parent = path.posix.dirname(current);
+      if (parent === current) {
+        result = absPath; // nothing on this branch resolves — keep the literal
+        break;
+      }
+      missing.push(path.posix.basename(current));
+      current = parent;
+    }
+  }
+
+  CANONICAL_PREFIX_CACHE.set(absPath, result);
+  return result;
 }
 
 /**

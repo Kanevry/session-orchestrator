@@ -13,7 +13,8 @@
  *   G3 — regex match /\bnode\b.*\bmemory-propose\.mjs\b/i (no match → exit 0)
  *   G4 — resolve session_id (from stdin payload or .orchestrator/current-session.json)
  *   G5 — resolve wave (from the active wave-scope.json `wave` field, default 0)
- *   G6 — redact argv: strip --insight/--subject/--evidence/--content/--reason values
+ *   G6 — derive a NON-REVERSIBLE argv summary: sha256 command_hash + known flag
+ *        NAMES + raw length. The command text itself never leaves this process.
  *   G7 — append event JSON line to .orchestrator/metrics/events.jsonl
  *   Always: exit 0 (never block)
  *
@@ -22,6 +23,7 @@
  */
 
 import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
+import crypto from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -47,59 +49,78 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 const MEMORY_PROPOSE_REGEX = /\bnode\b.*\bmemory-propose\.mjs\b/i;
 
 /**
- * Flags whose VALUES are privacy-sensitive and must be redacted from the log.
- * The flag name itself is preserved; only the value is replaced with [REDACTED].
+ * The flag NAMES `scripts/memory-propose.mjs` accepts (its `parseArgs` options
+ * block, plus `--help`). CLOSED LIST BY DESIGN: `flags_present` is built by
+ * intersecting the command with this constant, never by scraping `--\S+` tokens
+ * out of the command. A scrape would re-open the leak this file just closed —
+ * `--insight --my-secret-value` would publish the value as if it were a flag.
  *
- * Matches both forms:
- *   --insight=value            → --insight=[REDACTED]
- *   --insight "quoted value"   → --insight [REDACTED]
- *   --insight unquoted         → --insight [REDACTED]
+ * A flag the CLI does not know is simply not reported. That is the correct
+ * trade: the field exists to say WHICH of the audited CLI's switches were used,
+ * not to mirror the command line.
  */
-// CAVEAT (#554 A3, low severity): The regex operates on the unparsed Bash
-// tool_input.command string. Exotic shell forms bypass redaction by hiding
-// the value behind shell expansion the regex cannot see:
-//   --insight=$VAR           (env-var indirection)
-//   --insight=$(cat secret)  (command substitution)
-//   --insight <<<heredoc     (here-string)
-// The literal token (e.g. `$VAR`) is logged, NOT the resolved value — so an
-// audit-trail leak requires the resolved value to also appear literally
-// elsewhere in the command. Acceptable per the project's local-trust model.
-//
-// Issue #546: `\S+` would match an opening quote `"` or `'` (non-whitespace),
-// and on malformed inputs (e.g. unbalanced or shell-already-unescaped values)
-// could partial-match the value, leaving the tail unredacted. The negative
-// lookahead `(?!["'])` forces `\S+` to be tried only on values that do not
-// start with a quote, preserving the quoted-alt as the sole path for quoted
-// values and preventing tail-leaks on malformed inputs.
-const SENSITIVE_FLAGS_REGEX = /--(?:insight|subject|evidence|content|reason)(?:=("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?!["'])\S+)|\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|(?!["'])\S+))/g;
+const KNOWN_FLAGS = Object.freeze([
+  'type',
+  'subject',
+  'insight',
+  'evidence',
+  'confidence',
+  'dry-run',
+  'file-paths',
+  'help',
+]);
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 /**
- * Redact values of privacy-sensitive flags from a command string.
- * Preserves flag names; replaces values with [REDACTED].
+ * sha256(command), truncated to 16 hex characters.
+ *
+ * WORD-FOR-WORD the `hashCommand()` of `hooks/enforce-commands.mjs:69` (itself
+ * taken from `hooks/pre-bash-destructive-guard.mjs:253`, which mirrors
+ * `loop-guard.mjs` `hashArgs()`). Deliberately duplicated rather than shared:
+ * a PreToolUse hook must not gain another loadable module that can fail at
+ * start — three lines are cheaper than a load error on the hot path. Verified
+ * before duplicating that no helper is EXPORTED at any of those sites.
+ *
+ * WHY THE HASH IS HERE (#1415, 2026-09-21): until today this hook wrote a
+ * merely flag-redacted `argv_truncated` (512 chars of command text) into
+ * `orchestrator.memory.propose_invoked` — a TRACKED `events.jsonl` line and,
+ * with the webhook configured, a network payload. Redaction covered only the
+ * five `--insight/--subject/--evidence/--content/--reason` values and said so
+ * in its own caveat: `$VAR`, `$(cat secret)` and any value written elsewhere
+ * on the line passed through. This was the THIRD and last open site of the
+ * class closed by `8f15f77b` (enforce-commands) and #1404 (staging-fence).
+ *
+ * The hash keeps the event COUNTABLE and GROUPABLE — repeat invocations of the
+ * same command still collapse to one key — which is the only property any
+ * consumer needed. Measured 2026-09-21 (`rg argv_truncated` over `scripts/
+ * hooks/ skills/ docs/`): ZERO production readers, the field's only consumers
+ * were this hook's own tests.
  *
  * @param {string} command
  * @returns {string}
  */
-function redactArgv(command) {
-  return command.replace(SENSITIVE_FLAGS_REGEX, (match, eqValue, spaceValue) => {
-    if (eqValue !== undefined) {
-      // --insight=value form: preserve up to and including '=', replace value
-      const eqIndex = match.indexOf('=');
-      return match.slice(0, eqIndex + 1) + '[REDACTED]';
-    }
-    if (spaceValue !== undefined) {
-      // --insight value form: preserve flag + whitespace, replace value
-      const valueIndex = match.lastIndexOf(spaceValue);
-      return match.slice(0, valueIndex) + '[REDACTED]';
-    }
-    // Fallback: keep flag name, drop value
-    const flagMatch = match.match(/^(--[\w-]+)/);
-    return flagMatch ? flagMatch[1] + ' [REDACTED]' : match;
-  });
+function hashCommand(command) {
+  return crypto.createHash('sha256').update(command).digest('hex').slice(0, 16);
+}
+
+/**
+ * The subset of KNOWN_FLAGS that appears in the command, in KNOWN_FLAGS order.
+ *
+ * Names only — a value can never reach this array, because the array is built
+ * from the constant above and the command is only ever TESTED against it. Both
+ * spellings count (`--insight=x` and `--insight x`); the trailing boundary
+ * `(?![\w-])` keeps `--insightful` from reporting `insight`.
+ *
+ * @param {string} command
+ * @returns {string[]}
+ */
+function flagsPresent(command) {
+  return KNOWN_FLAGS.filter((flag) =>
+    new RegExp(`--${flag}(?![\\w-])`).test(command),
+  );
 }
 
 /**
@@ -179,8 +200,11 @@ async function main() {
   // G5 — resolve wave
   const wave = await resolveWave(projectDir);
 
-  // G6 — redact argv: strip sensitive flag values, keep flag names
-  const argvRedacted = redactArgv(command);
+  // G6 — derive the non-reversible argv summary (#1415). Nothing downstream
+  // ever sees the command text: hash for grouping, known flag NAMES for
+  // shape, raw length for size — no operands, no paths, no values.
+  const commandHash = hashCommand(command);
+  const flags = flagsPresent(command);
 
   // G7 — emit canonical event via emitEvent (single emission path: schema + webhook,
   // replacing the local hand-rolled appendFileSync bypass).
@@ -192,7 +216,9 @@ async function main() {
     await emitEvent('orchestrator.memory.propose_invoked', {
       session_id: sessionId,
       wave,
-      argv_truncated: argvRedacted.slice(0, 512),
+      command_hash: commandHash,
+      flags_present: flags,
+      argv_length: command.length,
       cwd: process.cwd(),
       exit_code: null,
     });

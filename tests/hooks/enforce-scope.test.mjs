@@ -908,6 +908,72 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
     expectWarn(result, ['validate-wave-scope.mjs would REFUSE', 'filesystem root', 'ALLOWED']);
   });
 
+  // -------------------------------------------------------------------------
+  // #1398 cond. 4 — the WIRING, on an absolute HOME sub-path grant
+  // -------------------------------------------------------------------------
+  //
+  // The two tests above drive the gate with `/` (filesystem-root). That class is
+  // caught by a literal shape check, so it proves the emitWarn plumbing and
+  // nothing about the GRADING the issue is about: home grants are the one class
+  // where a legitimate out-of-repo grant is routine, and where refusing flat was
+  // the original #1398 defect. These two drive the real hook with a home
+  // sub-path grant in both directions.
+  //
+  // NOTHING IS WRITTEN and no real home is touched: the candidate names a user
+  // that does not exist, the hook only DECIDES, and `canonicalizeGrantPrefix`
+  // climbs to the nearest existing ancestor (`/Users` on macOS, `/` on Linux)
+  // and re-attaches the missing suffix — so the candidate keeps its literal
+  // spelling on both platforms and matches the grant either way.
+  //
+  // `CLAUDE_CODE_SESSION_ID` is set EXPLICITLY: `spawn` inherits the operator's
+  // real session id by default, which makes the G3b manifest-ownership branch
+  // depend on whose machine runs the suite.
+  // -------------------------------------------------------------------------
+
+  // Both home roots the grader knows; pick the one this platform actually uses,
+  // so the grant is the shape an operator here would really write. Skipped on
+  // Windows, where `path.isAbsolute('/Users/…')` is false and the gate never
+  // considers the entry at all.
+  const AC4_FAKE_HOME = os.homedir().startsWith('/home')
+    ? '/home/ac4-no-such-user'
+    : '/Users/ac4-no-such-user';
+
+  it.skipIf(process.platform === 'win32')('WARNS (and still ALLOWS) an absolute grant into a credential directory under a home', async () => {
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/', `${AC4_FAKE_HOME}/.ssh/**`],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(`${AC4_FAKE_HOME}/.ssh/authorized_keys`),
+      env: { CLAUDE_CODE_SESSION_ID: 'ac4-wiring-test-session' },
+    });
+    // The grant grades `error/home-grant` in the validator; at this gate that is
+    // an ALLOW carrying one notice — never a deny (a live session must not break
+    // on a pre-flight rule).
+    expectWarn(result, [
+      'validate-wave-scope.mjs would REFUSE',
+      'sensitive home subdirectory',
+      'ALLOWED',
+    ]);
+  });
+
+  it.skipIf(process.platform === 'win32')('stays SILENT for a project directory under the same home — the #1398 grant that must work', async () => {
+    // The counter-direction, and the whole reason the denylist stopped naming
+    // `Users`/`home`: a vault path below a home is the routine legitimate grant.
+    // expectAllow asserts stdout is EMPTY, so a notice here fails.
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/', `${AC4_FAKE_HOME}/Projects/vault/**`],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(`${AC4_FAKE_HOME}/Projects/vault/05-business/note.md`),
+      env: { CLAUDE_CODE_SESSION_ID: 'ac4-wiring-test-session' },
+    });
+    expectAllow(result);
+  });
+
   it('stays SILENT for a clean grant — the notice must not fire on the #792 happy path', async () => {
     // Counter-direction: a WARN on every legitimate out-of-repo grant would be
     // noise the operator learns to ignore, which is how a real notice gets lost.

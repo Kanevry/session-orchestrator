@@ -31,9 +31,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import { runQualityGateWithRetry } from '@lib/quality-gate.mjs';
 import { validateEventRecord } from '@lib/events-schema.mjs';
@@ -1294,5 +1296,109 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
     // After fixer creates the flag, the gate passes — ok: true on the retry.
     expect(result.ok).toBe(true);
     expect(result.attempts).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Group J: process-group timeout + kill ladder (#1427 A1/A2)
+//
+// The pre-#1427 gate ran `spawnSync(cmd, { shell: true, timeout })`, so Node's
+// timeout signalled the SHELL alone and every grandchild was reparented to
+// PID 1 — the 2026-09-20 incident (four orphaned `tsgo`, up to 8.0 GB RSS
+// each). Group E says in its own comment that the timeout path was never
+// covered. These two cases cover it, through `runQualityGateWithRetry`'s
+// public surface, with a fake child so no real OS process is ever signalled.
+//
+// Safety: `killFn` is injected in BOTH cases; no `ps` output is ever a target.
+// ---------------------------------------------------------------------------
+
+/**
+ * A fake child that never closes on its own — the shape a wedged gate has, and
+ * the only shape for which the kill ladder is the exit path at all.
+ *
+ * @param {number} pid
+ */
+function wedgedChild(pid) {
+  const child = new EventEmitter();
+  child.pid = pid;
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  return child;
+}
+
+describe('W2-2 Group J — gate timeout kills the process GROUP (#1427 A1/A2)', () => {
+  it('J1: a gate whose child ignores SIGTERM is escalated to SIGKILL on the NEGATED pgid and reports exit 124', async () => {
+    // Bug this catches: signalling the child (`child.kill()`, or a POSITIVE
+    // pid) reaches the shell only, so `tsgo`/vitest grandchildren survive on
+    // PPID 1. Also catches the exit-code half: the old `timedOut` detector read
+    // `result.signal === 'SIGTERM' && result.error.code === 'ETIMEDOUT'`, which
+    // does not exist on async `spawn` — a timed-out gate would report exit 1
+    // (an ordinary failure) instead of 124.
+    const child = wedgedChild(4242);
+    /** @type {Array<{target: number, signal: string}>} */
+    const killCalls = [];
+
+    const result = await runQualityGateWithRetry({
+      repoRoot,
+      maxRetries: 0,
+      commands: { lint: 'sleep 999', typecheck: PASS, test: PASS },
+      gateTimeoutMs: 5,
+      _processSeams: {
+        spawnFn: () => child,
+        killFn: (target, signal) => {
+          killCalls.push({ target, signal });
+          // Models the measured macOS behaviour: a grandchild with
+          // `trap "" TERM` ignores SIGTERM; only SIGKILL to the group ends it.
+          if (signal === 'SIGKILL') child.emit('close', null, 'SIGKILL');
+          return true;
+        },
+        sleepFn: async () => {},
+        isAliveFn: () => false,
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.finalFailure).toMatchObject({ gate: 'lint', exitCode: 124 });
+    expect(killCalls.map((c) => c.signal)).toEqual(['SIGTERM', 'SIGKILL']);
+    // The negation is the whole fix — a positive target signals the shell only.
+    expect(killCalls.every((c) => c.target === -4242)).toBe(true);
+
+    // `timedOut` must reach the diagnostics bundle, not just the exit code:
+    // the bundle is what an operator triages after an exhausted retry budget.
+    const bundle = JSON.parse(readFileSync(result.diagnosticsBundlePath, 'utf8'));
+    expect(bundle.finalError.timedOut).toBe(true);
+
+    // A4: the gate process was recorded in the descendancy ledger, which is
+    // what lets the orphan-reaper tell OUR descendant from a foreign process.
+    const ledger = readFileSync(
+      join(repoRoot, '.orchestrator', 'runtime', 'gate-processes.jsonl'),
+      'utf8',
+    ).trim().split('\n').map((l) => JSON.parse(l));
+    expect(ledger).toHaveLength(1);
+    expect(ledger[0]).toMatchObject({ pid: 4242, pgid: 4242 });
+    expect(ledger[0].commandSignature.startsWith('sleep:')).toBe(true);
+  });
+
+  it('J2: a process surviving SIGKILL is named in the gate output and never booked as success', async () => {
+    // Bug this catches: a survivor (one that `setsid`-ed out of the group)
+    // reported as a clean kill. "Signal sent" and "exit code" prove nothing
+    // (PRD B6) — the 2026-09-20 cleanup routine got this exactly backwards.
+    const child = wedgedChild(4343);
+
+    const result = await runQualityGateWithRetry({
+      repoRoot,
+      maxRetries: 0,
+      commands: { lint: 'sleep 999', typecheck: PASS, test: PASS },
+      gateTimeoutMs: 5,
+      _processSeams: {
+        spawnFn: () => child,
+        killFn: () => true,        // every signal "succeeds" …
+        isAliveFn: () => true,     // … and the process is still there afterwards
+        sleepFn: async () => {},
+      },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.finalFailure.output).toContain('1 process(es) survived SIGKILL: 4343');
   });
 });

@@ -533,6 +533,77 @@ describe('backfill-abandoned-sessions — planSessions excludes THIS process (#1
   });
 });
 
+describe('backfill-abandoned-sessions — reads across rotation boundaries (#1414)', () => {
+  /** Write records into a rotation archive beside the active ledger. */
+  function seedArchive(name, records) {
+    mkdirSync(join(tmp, '.orchestrator', 'metrics', '_archive'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.orchestrator', 'metrics', '_archive', name),
+      records.map((r) => JSON.stringify(r)).join('\n') + '\n',
+      'utf8',
+    );
+  }
+
+  it('plans a candidate whose session.started was rotated out of the active ledger', async () => {
+    // BUG THIS CATCHES (#1414): `planSessions` full-read the ACTIVE file only,
+    // so every session older than the last rotation was invisible to the
+    // reconstruction — the abandoned-session backfill silently stopped seeing
+    // exactly the history it exists to repair.
+    seedArchive('events-20260701T000000Z_20260702T120000Z.jsonl', TWO_ABANDONED_EVENTS);
+    seedEvents([
+      { timestamp: '2026-07-03T09:00:00.000Z', event: 'orchestrator.agent.stopped' },
+    ]);
+
+    const { planSessions } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    expect(planSessions({ repoRoot: tmp })).toEqual([
+      { sessionId: UUID_1, semanticSessionId: SEM_1 },
+      { sessionId: UUID_2, semanticSessionId: SEM_2 },
+    ]);
+  });
+
+  it('writes NO record when the lock.acquired bridge sits in the archive and the session is already recorded', () => {
+    // BUG THIS CATCHES (#1414 × #1167): with the bridge rotated away, the
+    // candidate resolved semantic=null, the core minted a SYNTHETIC id, and a
+    // duplicate stub landed beside the record the SessionEnd hook had already
+    // written under the real semantic id. Reading the archive resolves SEM_1,
+    // the cheap dedupe recognises it, and nothing is written.
+    seedArchive('events-20260701T000000Z_20260702T100000Z.jsonl', [
+      {
+        timestamp: '2026-07-02T09:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID_1,
+        semantic_session_id: SEM_1,
+        mode: 'deep',
+      },
+    ]);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID_1, branch: 'main' },
+    ]);
+    mkdirSync(join(tmp, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(
+      metricsFile('sessions.jsonl'),
+      JSON.stringify({
+        session_id: SEM_1,
+        session_type: 'deep',
+        started_at: STARTED_AT,
+        completed_at: '2026-07-02T12:00:00.000Z',
+        status: 'completed',
+      }) + '\n',
+      'utf8',
+    );
+
+    const r = runCli(['--repo-root', tmp, '--apply', '--json']);
+
+    expect(r.status).toBe(0);
+    const records = readSessions();
+    expect(records).toHaveLength(1);
+    expect(records[0].session_id).toBe(SEM_1);
+    expect(records.some((x) => x.status === 'abandoned')).toBe(false);
+    expect(records.some((x) => x._synthetic_session_id !== undefined)).toBe(false);
+  });
+});
+
 describe('backfill-abandoned-sessions — #1167 duplicate-stub root cause', () => {
   it('planSessions resolves the semantic id from session.ended when no lock.acquired exists', async () => {
     seedEvents(ENDED_BRIDGE_EVENTS);

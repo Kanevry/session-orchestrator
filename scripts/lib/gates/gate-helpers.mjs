@@ -8,9 +8,120 @@
 
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
+
+import {
+  DEFAULT_GATE_TIMEOUT_MS,
+  buildCommandSignature,
+  spawnInGroup,
+} from '../process-group.mjs';
 import { detectStubCommand } from './echo-stub-detect.mjs';
 
 const RUN_CHECK_MAX_BUFFER_BYTES = 64 * 1024 * 1024;
+
+/** Lines of captured output kept in the human-facing `output` tail. */
+const OUTPUT_TAIL_LINES = 5;
+
+/**
+ * Name of the per-invocation override for the gate wall-clock ceiling.
+ *
+ * Read at CALL time, never at module load, so a test (or a caller that sets it
+ * for one child) is not defeated by import order.
+ *
+ * Named ceiling (BV-004): this is an ENV var, and an env var is inherited by
+ * every descendant — the exact shape that made `SO_GATE_LEDGER_ROOT` reach
+ * every vitest worker on 2026-09-06 (`scripts/run-quality-gate.mjs`, the
+ * `--ledger-root` block). It is acceptable here only because the value is a
+ * CEILING every descendant should honour anyway. A future Session-Config
+ * wiring of `gate.timeout-path-b-ms` should prefer the explicit `timeoutMs`
+ * option below — which reaches exactly one call — over exporting this name.
+ */
+export const GATE_TIMEOUT_ENV = 'SO_GATE_TIMEOUT_MS';
+
+/**
+ * The wall-clock ceiling one gate command is allowed, in ms.
+ *
+ * Precedence: `process.env.SO_GATE_TIMEOUT_MS` when set to a finite positive
+ * number, else {@link DEFAULT_GATE_TIMEOUT_MS} (900_000 — the PRD's
+ * `gate.timeout-path-b-ms`, deliberately the same 15 min the synchronous
+ * path A already had, so both gate paths are allowed exactly as long).
+ *
+ * A non-numeric or non-positive value is IGNORED rather than honoured: a typo
+ * that parsed as 0 would disable the cap, which is the failure this whole
+ * change exists to remove.
+ *
+ * @returns {number} positive milliseconds
+ */
+export function resolveGateTimeoutMs() {
+  const raw = (process.env[GATE_TIMEOUT_ENV] || '').trim();
+  if (!raw) return DEFAULT_GATE_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_GATE_TIMEOUT_MS;
+  return parsed;
+}
+
+/**
+ * Last {@link OUTPUT_TAIL_LINES} lines of a captured text, trimmed.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function tailOf(text) {
+  return String(text ?? '').split('\n').slice(-OUTPUT_TAIL_LINES).join('\n').trim();
+}
+
+/**
+ * The one line a timed-out gate command MUST carry.
+ *
+ * A timeout is a FAILURE with a name, never a silent `fail`: without this line
+ * a killed command is indistinguishable in the envelope from a command that
+ * exited non-zero on its own, and the operator has nothing to act on. It names
+ * the ceiling that fired, the process GROUP that was signalled, the ladder that
+ * ran, and — the part an exit code can never carry — anything that SURVIVED
+ * SIGKILL (PRD B6: a sent signal proves nothing).
+ *
+ * @param {number} timeoutMs
+ * @param {{pgid: number, killSignals: string[], survivors: number[]}} run
+ * @returns {string}
+ */
+function timeoutLine(timeoutMs, run) {
+  const ladder = (run.killSignals ?? []).join('\u2192') || 'no signal sent';
+  return `gate: TIMEOUT after ${timeoutMs} ms \u2014 process group ${run.pgid} ${ladder}, `
+    + `survivors: [${(run.survivors ?? []).join(', ')}]`;
+}
+
+/**
+ * The stdout envelope `scripts/run-quality-gate.mjs` publishes when the GATE
+ * SUB-SCRIPT itself was killed on the wall-clock ceiling.
+ *
+ * Lives here, beside the other envelope helpers, because the CLI that consumes
+ * it is a top-level script with no exports — a pure function there would be
+ * untestable without executing the CLI.
+ *
+ * Deliberately carries no `test`/`typecheck`/`lint` object: a killed gate
+ * measured nothing, and `suiteCountsFromGateStdout` must return `null` for it
+ * (absent is not zero). `error: 'gate-timeout'` is the machine-readable
+ * discriminator; the exit code is 124, the same value `spawnInGroup` reports
+ * and the same one coreutils `timeout(1)` uses.
+ *
+ * @param {object} args
+ * @param {string} args.variant  The `--variant` value the run was started with.
+ * @param {number} args.timeoutMs  Ceiling that fired.
+ * @param {{pgid: number, durationMs: number, killSignals: string[], survivors: number[]}} args.run
+ *   The {@link spawnInGroup} result.
+ * @returns {{variant: string, error: 'gate-timeout', timeout_ms: number, duration_ms: number,
+ *   pgid: number, kill_signals: string[], survivors: number[]}}
+ */
+export function gateTimeoutEnvelope({ variant, timeoutMs, run }) {
+  return {
+    variant,
+    error: 'gate-timeout',
+    timeout_ms: timeoutMs,
+    duration_ms: run?.durationMs ?? 0,
+    pgid: run?.pgid ?? -1,
+    kill_signals: run?.killSignals ?? [],
+    survivors: run?.survivors ?? [],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Internal pattern helpers
@@ -39,7 +150,8 @@ function isTestFile(filePath) {
 // ---------------------------------------------------------------------------
 
 /**
- * Execute a shell command and return a structured result.
+ * Execute a shell command as the LEADER OF ITS OWN PROCESS GROUP, under a
+ * wall-clock ceiling, and return a structured result.
  *
  * `output` is a bounded TAIL for humans. `fullOutput` is the complete captured
  * text and is what every COUNT parse must read.
@@ -52,10 +164,47 @@ function isTestFile(filePath) {
  * "the runner never produced results" and hides WHICH test failed. An hour was
  * spent chasing that phantom before the real cause (one red test) was found.
  *
+ * ## Why a process group, and why a timeout (Epic #1425 A3)
+ *
+ * This used to be `execSync(cmd, { maxBuffer })` — no timeout at all, and the
+ * shell as the only signalled process. On 2026-09-20 four `tsgo --noEmit`
+ * grandchildren of gate runs outlived their parents at PPID 1 with up to 8.0 GB
+ * RSS each and took the host to 13 % free memory. {@link spawnInGroup} spawns
+ * `detached`, so `process.kill(-pgid, …)` reaches every descendant, and it runs
+ * the SIGTERM→grace→SIGKILL ladder with a read-back verification.
+ *
+ * ## What changed for callers
+ *
+ * 1. It is ASYNC. Every call site must `await`.
+ * 2. `fullOutput` now interleaves stdout AND stderr on the PASS path too
+ *    (`execSync` discarded stderr when the command succeeded). A runner that
+ *    prints its summary to stderr is therefore no longer invisible to
+ *    {@link extractTestCounts}.
+ * 3. Three fields are added — `timedOut`, `killSignals`, `survivors` — and they
+ *    are present ONLY when a process actually ran. A skipped or stubbed command
+ *    spawned nothing, so it carries no `timedOut: false`: absent is not a
+ *    measured false, the same contract `counts` and `files` already keep.
+ *
+ * A timeout is a REPORTED failure: `status: 'fail'`, `exitCode: 124`, and a
+ * `gate: TIMEOUT after …` line appended to `output`/`fullOutput` naming the
+ * ceiling, the group, the signal ladder and any survivor. It is never a silent
+ * `fail`.
+ *
  * @param {string} cmd - Shell command to run, or `"skip"` / empty to skip.
- * @returns {{ status: 'pass'|'fail'|'skip', output: string, fullOutput: string, exitCode: number, stubbed?: { kind: 'echo'|'noop' } }}
+ * @param {object} [opts] - Forwarded verbatim to {@link spawnInGroup}, and it
+ *   OVERRIDES the defaults below (`timeoutMs`, `maxOutputBytes`, `repoRoot`,
+ *   `commandSignature`). This is also the seam tests inject `spawnFn` /
+ *   `killFn` / `isAliveFn` through.
+ * @param {number|null} [opts.timeoutMs] - Wall-clock ceiling; defaults to
+ *   {@link resolveGateTimeoutMs} (`SO_GATE_TIMEOUT_MS` or 900_000). `null`
+ *   disables the clock — the byte cap still applies.
+ * @param {string} [opts.repoRoot] - Root whose gate-process ledger the spawn is
+ *   recorded in; defaults to `process.cwd()`, which is the tree under test.
+ * @returns {Promise<{ status: 'pass'|'fail'|'skip', output: string, fullOutput: string,
+ *   exitCode: number, timedOut?: boolean, killSignals?: string[], survivors?: number[],
+ *   stubbed?: { kind: 'echo'|'noop' } }>}
  */
-export function runCheck(cmd) {
+export async function runCheck(cmd, opts = {}) {
   if (!cmd || cmd === 'skip') {
     return { status: 'skip', output: '', fullOutput: '', exitCode: 0 };
   }
@@ -65,26 +214,44 @@ export function runCheck(cmd) {
     return { status: 'pass', output: `(stubbed: ${stub.kind})`, fullOutput: `(stubbed: ${stub.kind})`, exitCode: 0, stubbed: { kind: stub.kind } };
   }
 
-  try {
-    const raw = execSync(cmd, {
-      encoding: 'utf8',
-      stdio: ['pipe', 'pipe', 'pipe'],
-      maxBuffer: RUN_CHECK_MAX_BUFFER_BYTES,
-    });
-    const output = raw.split('\n').slice(-5).join('\n').trim();
-    return { status: 'pass', output, fullOutput: raw, exitCode: 0 };
-  } catch (err) {
-    const exitCode = typeof err.status === 'number' ? err.status : 1;
+  const timeoutMs = opts.timeoutMs === undefined ? resolveGateTimeoutMs() : opts.timeoutMs;
+  const run = await spawnInGroup(cmd, {
+    maxOutputBytes: RUN_CHECK_MAX_BUFFER_BYTES,
+    repoRoot: process.cwd(),
+    commandSignature: buildCommandSignature(cmd),
+    ...opts,
+    timeoutMs,
+  });
 
-    // Exit code 127 means command not found — treat as skip.
-    if (exitCode === 127) {
-      return { status: 'skip', output: 'command not found', fullOutput: '', exitCode };
-    }
+  // Reported in every returned shape below, so a consumer never has to ask a
+  // second question to learn whether the group is actually gone.
+  const groupFields = { killSignals: run.killSignals, survivors: run.survivors };
 
-    const combined = [err.stdout ?? '', err.stderr ?? ''].join('\n');
-    const output = combined.split('\n').slice(-5).join('\n').trim();
-    return { status: 'fail', output, fullOutput: combined, exitCode };
+  if (run.timedOut) {
+    const fullOutput = `${run.fullOutput}\n${timeoutLine(timeoutMs, run)}\n`;
+    return {
+      status: 'fail',
+      output: tailOf(fullOutput),
+      fullOutput,
+      exitCode: run.exitCode,
+      timedOut: true,
+      ...groupFields,
+    };
   }
+
+  // Exit code 127 means command not found — treat as skip.
+  if (run.exitCode === 127) {
+    return { status: 'skip', output: 'command not found', fullOutput: '', exitCode: 127, timedOut: false, ...groupFields };
+  }
+
+  return {
+    status: run.exitCode === 0 ? 'pass' : 'fail',
+    output: tailOf(run.fullOutput),
+    fullOutput: run.fullOutput,
+    exitCode: run.exitCode,
+    timedOut: false,
+    ...groupFields,
+  };
 }
 
 /**

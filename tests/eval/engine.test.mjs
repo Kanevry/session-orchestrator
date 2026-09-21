@@ -713,6 +713,25 @@ describe('#1407 — the eval window reads ACROSS the rotation boundary', () => {
     expect(byId(record, 'guard-friction').status).toBe('not-applicable');
   });
 
+  it('says LEDGER ABSENT — not INCOMPLETE — when there is no events source at all', () => {
+    // BUG THIS CATCHES (#1423 F3): with no events.jsonl the reader answered
+    // `complete: true, gaps: []`, so this scorer appended NOTHING and every
+    // event-derived zero read as measured. Calling it INCOMPLETE would be the
+    // opposite error — naming a gap nobody found. The three states must produce
+    // three different sentences.
+    const { record } = evalFixture(scenarioEventsMissing());
+
+    const ve = byId(record, 'verification-evidence');
+    expect(ve.evidence).toContain('LEDGER ABSENT');
+    expect(ve.evidence).toContain('UNMEASURED rather than zero');
+    expect(ve.evidence).not.toContain('LEDGER INCOMPLETE');
+    // Same appending rule as the gap note: event-derived dimensions only, and
+    // EVIDENCE ONLY — no status may move (that would be a rubric change).
+    expect(byId(record, 'gate-health').evidence).toContain('LEDGER ABSENT');
+    expect(byId(record, 'plan-fidelity').evidence).not.toContain('LEDGER ABSENT');
+    expect(byId(record, 'plan-fidelity').status).toBe('pass');
+  });
+
   it('counts an unreadable line instead of skipping it into a clean verdict', () => {
     const base = Date.now();
     const { record } = evalFixture(

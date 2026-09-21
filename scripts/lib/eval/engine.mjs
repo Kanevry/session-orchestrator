@@ -540,11 +540,21 @@ const EVENT_DERIVED_DIMENSIONS = new Set([
  * `cannot-determine`) WOULD be a rubric change and needs a version bump —
  * see the report on this issue.
  *
- * @param {{complete?: boolean, gaps?: object[], malformed_lines?: number}} ledger
+ * @param {{complete?: boolean|null, gaps?: object[], malformed_lines?: number}} ledger
  * @returns {string} '' when the read was complete and clean, else a leading-space sentence.
  */
 function ledgerGapNote(ledger) {
   if (!isPlainObject(ledger)) return '';
+  // THREE states, not two (#1423): `null` means the read found NO source at
+  // all — no active file, no archive, no legacy ring. Every event-derived zero
+  // below is then UNMEASURED, which is a different sentence from "measured, and
+  // an archive is missing"; calling it INCOMPLETE would name a gap nobody found.
+  if (ledger.complete === null) {
+    return (
+      ' LEDGER ABSENT: no events source was readable (no active file, no archive) —' +
+      ' counts above are UNMEASURED rather than zero.'
+    );
+  }
   const gaps = Array.isArray(ledger.gaps) ? ledger.gaps : [];
   const malformed = Number.isInteger(ledger.malformed_lines) ? ledger.malformed_lines : 0;
   if (gaps.length === 0 && malformed === 0) return '';

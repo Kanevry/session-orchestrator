@@ -70,9 +70,10 @@
  * @module scripts/lib/maintenance-due-banner
  */
 
-import { closeSync, existsSync, fstatSync, openSync, readSync, statSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+import { SCAN_CHUNK_BYTES, scanEventsBackwards } from './events.mjs';
 import { computeReconcileNudge } from './reconcile-nudge-banner.mjs';
 import { sweepExpiredLearnings } from './learnings/expiry-sweep.mjs';
 import { shouldDispatchAutoDialectic } from './auto-dialectic.mjs';
@@ -152,104 +153,64 @@ function isoDay(ts) {
 }
 
 /**
- * Backwards-scan chunk size (#1290 item 2).
- *
- * NAMED CEILING: 256 KiB is ~800 records in this repo's ledger, so the common
- * case — a repo that ran /evolve within its recent history — answers after a
- * handful of reads instead of loading the whole 7.9 MB file. The scan is
- * UNBOUNDED in the worst case ON PURPOSE: "never ran" is a claim about every
- * line and cannot be made from a tail, so a repo with no `evolve.completed`
- * record still walks the file to its start — just in chunks, never all at once
- * in one string.
- *
- * REVISIT TRIGGER: the maintenance probe's median passes 1000 ms (half
- * `PROBE_BUDGET_MS`), or one repo's `events.jsonl` passes 50 MB. Either means
- * the "never ran" walk has become the cost that matters and the answer needs an
- * index rather than a scan.
+ * Backwards-scan chunk size (#1290 item 2) — the shared reader's constant, kept
+ * under this module's own name because it is the number this probe's cost is
+ * reasoned about in. NAMED CEILING + revisit trigger live at
+ * {@link SCAN_CHUNK_BYTES}.
  */
-export const TAIL_CHUNK_BYTES = 256 * 1024;
+export const TAIL_CHUNK_BYTES = SCAN_CHUNK_BYTES;
 
 /**
- * Scan a buffer of COMPLETE lines backwards for the newest evolve record.
+ * Wall-clock budget for the "did /evolve ever run?" walk (#1414).
  *
- * @param {Buffer} buf
- * @returns {{lastAt: string|null}|null} null ⇒ no record in this buffer
+ * NAMED CEILING (BV-004): 1000 ms is half of `PROBE_BUDGET_MS` (2000 ms in
+ * `session-start-probes.mjs`), which this probe shares with six other signals.
+ * The walk is UNBOUNDED in principle — "never ran" is a claim about every line
+ * of every source — so it needs an own limit now that it spans the archives
+ * too, and running out must report `truncated`, never a clean "never".
+ *
+ * REVISIT TRIGGER: a repo where this reports `truncated` more than rarely. That
+ * means the answer needs an index rather than a scan, not a bigger budget
+ * (HR-101).
  */
-function scanEvolveLines(buf) {
-  if (buf.length === 0) return null;
-  const lines = buf.toString('utf8').split('\n');
-  for (let i = lines.length - 1; i >= 0; i -= 1) {
-    const line = lines[i];
-    if (!line || !line.includes(EVOLVE_EVENT)) continue; // cheap pre-filter before JSON.parse
-    try {
-      const rec = JSON.parse(line);
-      if (rec?.event !== EVOLVE_EVENT) continue;
-      return { lastAt: typeof rec.timestamp === 'string' ? rec.timestamp : null };
-    } catch {
-      continue; // a malformed line is not evidence either way — keep scanning
-    }
-  }
-  return null;
-}
+export const EVOLVE_SCAN_BUDGET_MS = 1000;
 
 /**
- * Find the most recent `orchestrator.evolve.completed` record.
+ * Find the most recent `orchestrator.evolve.completed` record — across ROTATION
+ * boundaries (#1414).
  *
- * Reads the ledger BACKWARDS in {@link TAIL_CHUNK_BYTES} chunks and stops at
- * the first hit, because the interesting answer is the LAST occurrence. The
- * former implementation `readFileSync`-ed the whole file (7.9 MB here, 30–44 ms)
- * to answer a question the last few kilobytes usually settle.
- *
- * The one bug a naive chunked scan introduces is a record SPLIT across a chunk
- * boundary: the bytes before the first newline of a chunk are the tail of a line
- * whose head is in the chunk not read yet, so they are CARRIED, never parsed
- * here. Splitting on the 0x0A byte is safe on UTF-8 — no continuation byte can
- * equal a newline — so a multibyte character never splits a line either.
+ * Walks the ledger backwards through every source, newest first, and stops at
+ * the first hit, because the interesting answer is the LAST occurrence. Reading
+ * the active file alone was the bug: "never ran" is a claim about EVERY line
+ * ever written, and after a rotation the only `evolve.completed` record on the
+ * host can sit in `_archive/` — the probe then nags a repo that has run
+ * /evolve, which is the HR-101 failure mode this module exists to avoid.
  *
  * @param {string} repoRoot
- * @returns {{ok: boolean, lastAt: string|null}} `ok: false` ⇒ the ledger exists
- *   but could not be read — the caller must record `undeterminable`, never clean.
+ * @returns {{ok: boolean, lastAt: string|null, truncated: boolean}} `ok: false`
+ *   ⇒ a source exists but could not be read; `truncated: true` ⇒ the budget ran
+ *   out before the walk finished. In BOTH cases the caller must record
+ *   `undeterminable`, never clean — a walk that did not finish has not proven
+ *   "never".
  */
 function readLastEvolveRun(repoRoot) {
   const file = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
-  if (!existsSync(file)) return { ok: true, lastAt: null }; // fresh repo: genuinely never
-  let fd;
-  try {
-    fd = openSync(file, 'r');
-    let pos = fstatSync(fd).size;
-    /** Partial line at the FRONT of everything read so far. */
-    let carry = Buffer.alloc(0);
-
-    while (pos > 0) {
-      const length = Math.min(TAIL_CHUNK_BYTES, pos);
-      pos -= length;
-      const buf = Buffer.alloc(length);
-      readSync(fd, buf, 0, length, pos);
-      const block = carry.length > 0 ? Buffer.concat([buf, carry]) : buf;
-      const firstNewline = block.indexOf(0x0a);
-      if (firstNewline === -1) {
-        carry = block; // no complete line yet — a line longer than one chunk
-        continue;
-      }
-      const hit = scanEvolveLines(block.subarray(firstNewline + 1));
-      if (hit) return { ok: true, lastAt: hit.lastAt };
-      carry = block.subarray(0, firstNewline);
-    }
-
-    // pos === 0: the carry is the file's FIRST line, complete by construction.
-    const hit = scanEvolveLines(carry);
-    return { ok: true, lastAt: hit ? hit.lastAt : null };
-  } catch {
-    return { ok: false, lastAt: null };
-  } finally {
-    if (fd !== undefined) {
-      try {
-        closeSync(fd);
-      } catch {
-        /* best-effort */
-      }
-    }
-  }
+  let lastAt = null;
+  const scan = scanEventsBackwards({
+    filePath: file,
+    chunkBytes: TAIL_CHUNK_BYTES,
+    budgetMs: EVOLVE_SCAN_BUDGET_MS,
+    // Cheap substring pre-filter before JSON.parse — the property the previous
+    // hand-rolled scan was written for, kept here rather than re-derived.
+    filter: EVOLVE_EVENT,
+    onRecord: (rec) => {
+      if (rec?.event !== EVOLVE_EVENT) return false;
+      lastAt = typeof rec.timestamp === 'string' ? rec.timestamp : null;
+      return true;
+    },
+  });
+  if (scan.unreadable.length > 0) return { ok: false, lastAt: null, truncated: false };
+  return { ok: true, lastAt, truncated: scan.truncated };
 }
 
 /**
@@ -335,7 +296,9 @@ export async function computeMaintenanceDue(opts = {}) {
   } else {
     // --- evolve (S1) -------------------------------------------------------
     const evolve = readLastEvolveRun(repoRoot);
-    if (!evolve.ok) {
+    // `truncated` is NOT "not found": a walk that ran out of budget proves
+    // nothing about the lines it never reached (#1414).
+    if (!evolve.ok || evolve.truncated) {
       undeterminable.push('evolve');
     } else if (evolve.lastAt === null && nudge.activeLearnings >= MAINTENANCE_MIN_LEARNINGS) {
       markDue('evolve', `never, ${nudge.activeLearnings} active learnings`);

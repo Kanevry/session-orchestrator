@@ -31,6 +31,37 @@ export function parseEtimeToMinutes(etime) {
 }
 
 /**
+ * Parse a `ps` etime field (`[[DD-]HH:]MM:SS`) into whole SECONDS.
+ *
+ * Twin of {@link parseEtimeToMinutes}, which drops the seconds field because
+ * minute resolution is all the zombie counter needs. The orphan reaper
+ * (`scripts/lib/orphan-reaper.mjs`) cannot use that: its minimum age is 300
+ * seconds and its identity check reconstructs a start time as
+ * `now - etimeSeconds * 1000`, where a discarded seconds field would be a
+ * systematic error of up to 59 s against a 2 s tolerance.
+ *
+ * Deliberately a sibling rather than a refactor of the twin: `parseEtimeToMinutes`
+ * has live callers (`countZombieProcesses`) whose behaviour must not shift.
+ *
+ * Returns null when the format is unrecognised. Pure function.
+ * @param {string} etime
+ * @returns {number|null}
+ */
+export function parseEtimeToSeconds(etime) {
+  if (typeof etime !== 'string') return null;
+  const s = etime.trim();
+  // Same shape as parseEtimeToMinutes: optional "DD-", optional "HH:", then "MM:SS".
+  const m = /^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)$/.exec(s);
+  if (!m) return null;
+  const days = parseInt(m[1] ?? '0', 10);
+  const hours = parseInt(m[2] ?? '0', 10);
+  const mins = parseInt(m[3], 10);
+  const secs = parseInt(m[4], 10);
+  if ([days, hours, mins, secs].some(Number.isNaN)) return null;
+  return days * 86400 + hours * 3600 + mins * 60 + secs;
+}
+
+/**
  * Parse the detailed ps output and count Claude/Node zombie candidates.
  * A zombie candidate is a process matching "claude" or "node" that:
  *   - has been running longer than `thresholdMin` minutes, AND

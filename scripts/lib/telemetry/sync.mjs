@@ -342,7 +342,12 @@ export function readSessionProfileForMetricsDir(metricsDir) {
  * @returns {{ session: object, source: 'derived'|'absent',
  *             ledger_complete: boolean|null, ledger_gaps: object[] }}
  *   `ledger_complete` is `null` — never `false` — when the read produced no
- *   verdict at all: an undetermined ledger is not a proven gap.
+ *   verdict at all: an undetermined ledger is not a proven gap. TWO paths reach
+ *   that third state (#1423): this function throwing, and the reader finding NO
+ *   source (no active file, no archive, no legacy ring) — in the latter case
+ *   `events: []` is the absence of a ledger, not a measured quiet window.
+ *   `ledger_complete === false` additionally writes ONE stderr line naming the
+ *   gap kinds, because a verdict nothing surfaces is a verdict nobody acts on.
  */
 export function deriveSessionFromEvents(metricsDir) {
   try {
@@ -367,6 +372,18 @@ export function deriveSessionFromEvents(metricsDir) {
     // on EVERY return below, including the empty ones — that is precisely where
     // a deleted archive and a quiet period are otherwise indistinguishable.
     const ledgerVerdict = { ledger_complete: ledger.complete, ledger_gaps: ledger.gaps };
+    // Visibility (#1423): the field had ZERO production consumers — a measured
+    // gap reached nobody. ONE stderr line, at the single point the verdict is
+    // formed, so every return below is covered by construction. Diagnostics on
+    // stderr, never stdout (cli-design.md); no new event, because the gap is a
+    // property of the LEDGER and an event about it would land in the same file.
+    if (ledger.complete === false) {
+      const kinds = [...new Set((ledger.gaps ?? []).map((g) => g?.kind ?? 'unknown'))].sort();
+      process.stderr.write(
+        `⚠ telemetry: events ledger INCOMPLETE — ${ledger.gaps.length} gap(s) ` +
+          `[${kinds.join(', ')}]; the session facts below are reconstructed from a PARTIAL read\n`,
+      );
+    }
     if (!Array.isArray(events) || events.length === 0) {
       return { session: {}, source: 'absent', ...ledgerVerdict };
     }

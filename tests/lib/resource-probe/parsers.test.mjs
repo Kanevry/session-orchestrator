@@ -17,6 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   parseEtimeToMinutes,
+  parseEtimeToSeconds,
   countZombieProcesses,
   countProcessMatches,
   parseSwapUsageOutput,
@@ -390,5 +391,29 @@ describe('parseVmStatAvailableGb', () => {
 
   it('returns null for an empty string', () => {
     expect(parseVmStatAvailableGb('')).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseEtimeToSeconds (#1430 B2 — the orphan reaper's age source)
+// ---------------------------------------------------------------------------
+
+describe('parseEtimeToSeconds', () => {
+  it('keeps the seconds field its twin discards — a 300 s minimum age computed from parseEtimeToMinutes would be off by up to 59 s', () => {
+    expect(parseEtimeToSeconds('07:12')).toBe(432);
+    expect(parseEtimeToMinutes('07:12')).toBe(7);
+  });
+
+  it('parses all three ps etime shapes, including the DD-HH:MM:SS form real long-lived daemons carry', () => {
+    expect(parseEtimeToSeconds('00:30')).toBe(30);
+    expect(parseEtimeToSeconds('01:00:00')).toBe(3600);
+    // Captured 2026-09-21 from `ps -Aww -o etime=` for /sbin/launchd.
+    expect(parseEtimeToSeconds('09-11:05:54')).toBe(9 * 86400 + 11 * 3600 + 5 * 60 + 54);
+  });
+
+  it('returns null for an unrecognised format rather than a plausible number', () => {
+    expect(parseEtimeToSeconds('42')).toBe(null);
+    expect(parseEtimeToSeconds('')).toBe(null);
+    expect(parseEtimeToSeconds(null)).toBe(null);
   });
 });

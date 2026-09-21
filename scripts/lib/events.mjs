@@ -39,7 +39,17 @@
  * 0.0961 ms/call.
  */
 
-import { promises as fs, existsSync, readFileSync, readdirSync, realpathSync } from 'node:fs';
+import {
+  promises as fs,
+  closeSync,
+  existsSync,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getProjectDir, SO_SHARED_DIR } from './platform.mjs';
@@ -506,17 +516,28 @@ function readEventSource(filePath, kind) {
  * reader that saw only the new scheme would drop that history and call the
  * result complete.
  *
+ * `unindexed` (#1423) names every OTHER `.jsonl` in that directory — a file the
+ * reader will NOT fold into the timeline because rotation did not write it.
+ * Reporting it is not the same as counting it as missing: this repo's own
+ * `_archive/` holds a hand-placed `events-worktree-vault-session-analysis-…`
+ * (80 records), and calling that a GAP would pin the ledger at
+ * `complete: false` forever, which is the instrument HR-101 calls broken. It is
+ * a NOTICE — visible, never a verdict.
+ *
  * @param {string} logPath — absolute path of the ACTIVE log.
- * @returns {{archives: string[], legacy: string[], ringHoles: number[]}}
+ * @returns {{archives: string[], legacy: string[], ringHoles: number[], unindexed: string[]}}
  */
 function discoverArchives(logPath) {
   const dir = path.dirname(logPath);
 
   const archives = [];
+  const unindexed = [];
   const archiveDir = path.join(dir, ARCHIVE_DIR_NAME);
   try {
     for (const name of readdirSync(archiveDir).sort()) {
-      if (ARCHIVE_NAME_RE.test(name)) archives.push(path.join(archiveDir, name));
+      const abs = path.join(archiveDir, name);
+      if (ARCHIVE_NAME_RE.test(name)) archives.push(abs);
+      else if (name.endsWith('.jsonl')) unindexed.push(abs);
     }
   } catch {
     /* no archive directory yet — not a gap, just nothing rotated here */
@@ -535,7 +556,7 @@ function discoverArchives(logPath) {
   for (let i = 1; i < highest; i += 1) {
     if (!present.includes(i)) ringHoles.push(i);
   }
-  return { archives, legacy: present.map((i) => `${logPath}.${i}`), ringHoles };
+  return { archives, legacy: present.map((i) => `${logPath}.${i}`), ringHoles, unindexed };
 }
 
 /**
@@ -559,6 +580,11 @@ function discoverArchives(logPath) {
  *    exact shape of the 2026-09-19 loss, and it is detectable only because the
  *    rotation writes that pointer (see `events-rotation.mjs`) — an archive
  *    deleted before #1401 left no trace and is undetectable by construction.
+ *    EXISTENCE IS NOT READING (#1423): the sibling counts only when it was an
+ *    actual SOURCE of this read. A file that exists beside the active log but
+ *    whose name misses `ARCHIVE_NAME_RE` is never read, so treating
+ *    `existsSync` as proof silenced the tombstone while its records stayed
+ *    out — that case is its own gap kind, `unindexed-archive`.
  * 2. **Unreadable lines are COUNTED** (`malformed_lines`, per source and total).
  *    A silently skipping JSONL parser turns a partial result into a clean
  *    verdict.
@@ -566,6 +592,16 @@ function discoverArchives(logPath) {
  *    their earliest parseable timestamp; records within a source keep file
  *    (append) order. A source with no parseable timestamp sorts last rather
  *    than being dropped.
+ * 4. **`complete` has THREE states, because the answer does (#1423).** `true` =
+ *    measured and whole, `false` = measured with a named gap, `null` = NOT
+ *    MEASURED: no source existed at all (no active file, no archive, no legacy
+ *    ring), so `events: []` is the absence of a ledger and not the absence of
+ *    events. `complete: true` on a repo with no ledger is the house failure
+ *    class "a missing measurement looks like zero".
+ *
+ * Separate from `gaps`, `notices` carries what was SEEN but deliberately not
+ * read — today only `unindexed-archive-file` (see {@link discoverArchives}).
+ * A notice never moves `complete`.
  *
  * CEILING (BV-004): every source is read fully into memory — at the default
  * `max-size-mb: 10` / `max-backups: 5` that is up to ~60 MB transient. There is
@@ -578,11 +614,12 @@ function discoverArchives(logPath) {
  * @param {object} [opts={}]
  * @param {string} [opts.filePath] — override the active-log path outright.
  * @returns {{events: object[], sources: object[], malformed_lines: number,
- *            gaps: object[], complete: boolean, active_path: string}}
+ *            gaps: object[], notices: object[], complete: boolean|null,
+ *            active_path: string}}
  */
 export function readEventsWithRotations(repoRoot, opts = {}) {
   const activePath = opts.filePath ?? eventsFilePath(repoRoot);
-  const { archives, legacy, ringHoles } = discoverArchives(activePath);
+  const { archives, legacy, ringHoles, unindexed } = discoverArchives(activePath);
 
   const sources = [
     ...archives.map((p) => readEventSource(p, 'archive')),
@@ -630,9 +667,15 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
       // checkout. Honouring it would validate THIS ledger against a FOREIGN
       // repo's archive: a silent false negative, worse than the phantom gap.
       const sibling = path.join(ownArchiveDir, path.basename(target));
-      if (onDisk.has(sibling) || existsSync(sibling)) continue;
+      if (onDisk.has(sibling)) continue;
       gaps.push({
-        kind: 'missing-archive',
+        // #1423 — THREE outcomes, not two: read (above), present-but-unread
+        // (here), gone (below). The middle one used to be silently folded into
+        // the first by `existsSync`, so a tombstone whose archive had been
+        // RENAMED out of `ARCHIVE_NAME_RE` reported `complete: true` while its
+        // records were absent from `events`.
+        kind: existsSync(sibling) ? 'unindexed-archive' : 'missing-archive',
+        path: sibling,
         archived_as: target,
         first_ts: record.first_ts ?? null,
         last_ts: record.last_ts ?? null,
@@ -678,7 +721,180 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
     sources: sources.map(({ records, ...rest }) => ({ ...rest, records: records.length })),
     malformed_lines: malformed,
     gaps,
-    complete: gaps.length === 0,
+    notices: unindexed.map((p) => ({ kind: 'unindexed-archive-file', path: p })),
+    // Honesty rule 4: no source at all ⇒ NOT MEASURED (`null`), never a clean
+    // `true` over an empty read.
+    complete: sources.length === 0 ? null : gaps.length === 0,
     active_path: activePath,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Streaming reads across rotations (#1414)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default chunk for the streaming readers — 256 KiB, ~800 records in this
+ * repo's ledger.
+ *
+ * NAMED CEILING (BV-004): a line LONGER than one chunk is carried, never
+ * dropped, so the constant bounds memory and not correctness. REVISIT when one
+ * repo's `events.jsonl` passes 50 MB — at that size the backwards "never
+ * happened" walk needs an index rather than a scan.
+ */
+export const SCAN_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * Every source of this ledger that EXISTS, NEWEST FIRST — without reading one
+ * byte of their contents (#1414).
+ *
+ * Order: the active file, then `_archive/` archives by name DESCENDING (the
+ * name encodes `first_ts`/`last_ts`, so lexical order is chronological), then
+ * the legacy ring ASCENDING (`.1` is the most recent backup, `.N` the oldest).
+ * Reverse the result for an oldest-first pass.
+ *
+ * Hand-placed files in `_archive/` that rotation did not write are NOT sources
+ * here, exactly as in {@link readEventsWithRotations} — one definition of "what
+ * belongs to this ledger", not two.
+ *
+ * @param {object} [opts={}]
+ * @param {string} [opts.filePath] — the ACTIVE log path; defaults as {@link eventsFilePath}.
+ * @param {string} [opts.repoRoot] — used only when `filePath` is absent.
+ * @returns {Array<{path: string, kind: 'active'|'archive'|'legacy-ring'}>}
+ */
+export function listEventSourcesNewestFirst(opts = {}) {
+  const activePath = opts.filePath ?? eventsFilePath(opts.repoRoot);
+  const { archives, legacy } = discoverArchives(activePath);
+  const out = [];
+  if (existsSync(activePath)) out.push({ path: activePath, kind: 'active' });
+  for (const p of [...archives].reverse()) out.push({ path: p, kind: 'archive' });
+  for (const p of legacy) out.push({ path: p, kind: 'legacy-ring' });
+  return out;
+}
+
+/**
+ * Walk the ledger BACKWARDS across rotation boundaries, newest record first,
+ * stopping at the first record the caller accepts (#1414).
+ *
+ * ## Why this exists
+ *
+ * `readEventsWithRotations` loads every source fully — up to ~60 MB transient
+ * at the default `max-size-mb: 10` × `max-backups: 5`. That is the right shape
+ * for a cold analysis and the wrong one for a session-start probe, so the two
+ * HOT-PATH readers (`maintenance-due-banner.mjs`, `backfill-abandoned-sessions.mjs`)
+ * stayed single-file and answered "never happened" from the active file alone.
+ * This reader gives them the whole history at a bounded memory cost.
+ *
+ * A record SPLIT across a chunk boundary is CARRIED, never parsed twice or
+ * dropped: the bytes before a chunk's first newline are the tail of a line
+ * whose head sits in the chunk not read yet. Splitting on the 0x0A byte is safe
+ * on UTF-8 (no continuation byte equals a newline), and the carry is joined as
+ * a BUFFER, so a multibyte character never splits either.
+ *
+ * @param {object} opts
+ * @param {string} [opts.filePath] — the ACTIVE log path; defaults as {@link eventsFilePath}.
+ * @param {string} [opts.repoRoot] — used only when `filePath` is absent.
+ * @param {number} [opts.chunkBytes={@link SCAN_CHUNK_BYTES}]
+ * @param {(record: object, source: {path: string, kind: string}) => boolean} opts.onRecord —
+ *   called with each PARSED record, newest first; returning `true` stops the walk.
+ * @param {string} [opts.filter] — cheap substring pre-filter applied to the RAW
+ *   line before `JSON.parse`. The measured reason it exists: the caller that
+ *   this replaced pre-filtered on the event name, and parsing every line of a
+ *   7.9 MB ledger to answer one question is the cost that made it do so.
+ *   NOTE: with a filter set, `malformed_lines` counts only unreadable lines
+ *   AMONG THE MATCHING ones — the rest are never parsed.
+ * @param {number} [opts.budgetMs] — wall-clock budget. When it runs out before
+ *   a stop, the walk ends with `truncated: true` — which is NOT "not found":
+ *   the caller must report undeterminable, never a clean negative.
+ * @returns {{stopped: boolean, truncated: boolean, malformed_lines: number,
+ *            sources: string[], unreadable: string[]}}
+ */
+export function scanEventsBackwards(opts = {}) {
+  const { onRecord, filter, budgetMs } = opts;
+  if (typeof onRecord !== 'function') {
+    throw new TypeError('scanEventsBackwards: opts.onRecord must be a function');
+  }
+  const chunkBytes =
+    Number.isInteger(opts.chunkBytes) && opts.chunkBytes > 0 ? opts.chunkBytes : SCAN_CHUNK_BYTES;
+  const deadline = Number.isFinite(budgetMs) ? Date.now() + budgetMs : null;
+  const outOfTime = () => deadline !== null && Date.now() > deadline;
+
+  const scanned = [];
+  const unreadable = [];
+  let malformed = 0;
+  let stopped = false;
+  let truncated = false;
+
+  /** @returns {boolean} true ⇒ the caller accepted a record; stop everything. */
+  const consume = (block, source) => {
+    const lines = block.toString('utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i];
+      if (!line) continue;
+      if (typeof filter === 'string' && !line.includes(filter)) continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        malformed += 1; // counted, never silently skipped (honesty rule 2)
+        continue;
+      }
+      if (onRecord(record, source) === true) return true;
+    }
+    return false;
+  };
+
+  for (const source of listEventSourcesNewestFirst(opts)) {
+    if (stopped || truncated) break;
+    if (outOfTime()) {
+      truncated = true;
+      break;
+    }
+    scanned.push(source.path);
+    let fd;
+    try {
+      fd = openSync(source.path, 'r');
+      let pos = fstatSync(fd).size;
+      /** Partial line at the FRONT of everything read from THIS source so far. */
+      let carry = Buffer.alloc(0);
+      while (pos > 0) {
+        if (outOfTime()) {
+          truncated = true;
+          break;
+        }
+        const length = Math.min(chunkBytes, pos);
+        pos -= length;
+        const buf = Buffer.alloc(length);
+        readSync(fd, buf, 0, length, pos);
+        const block = carry.length > 0 ? Buffer.concat([buf, carry]) : buf;
+        const firstNewline = block.indexOf(0x0a);
+        if (firstNewline === -1) {
+          carry = block; // a line longer than one chunk — no complete line yet
+          continue;
+        }
+        if (consume(block.subarray(firstNewline + 1), source)) {
+          stopped = true;
+          break;
+        }
+        carry = block.subarray(0, firstNewline);
+      }
+      // pos === 0: the carry is this source's FIRST line, complete by construction.
+      if (!stopped && !truncated && consume(carry, source)) stopped = true;
+    } catch (err) {
+      // An unreadable source is a FINDING, not an empty one: it is exactly the
+      // case where "no record found" must not be reported as "never happened".
+      unreadable.push(source.path);
+      void err;
+    } finally {
+      if (fd !== undefined) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* best-effort */
+        }
+      }
+    }
+  }
+
+  return { stopped, truncated, malformed_lines: malformed, sources: scanned, unreadable };
 }

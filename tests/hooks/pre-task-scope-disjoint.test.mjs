@@ -1055,11 +1055,18 @@ describe('stale worktree base (#1413)', () => {
     return { dir, first, head };
   }
 
-  /** Write `<dir>/.claude/STATE.md` with the two fields the check reads. */
-  function writeStateMd(dir, { sessionId, startRef }) {
-    mkdirSync(path.join(dir, '.claude'), { recursive: true });
+  /**
+   * Write `<dir>/<stateDir>/STATE.md` with the two fields the check reads.
+   *
+   * `stateDir` defaults to `.claude` but is a PARAMETER since #1424: the hook
+   * probes `['.pi', '.cursor', '.codex', '.claude']` in that order, and until
+   * #1424 no case here wrote a second one — which is why a loop that broke at
+   * the first PARSEABLE file instead of the first MATCHING one passed all five.
+   */
+  function writeStateMd(dir, { sessionId, startRef, stateDir = '.claude' }) {
+    mkdirSync(path.join(dir, stateDir), { recursive: true });
     writeFileSync(
-      path.join(dir, '.claude', 'STATE.md'),
+      path.join(dir, stateDir, 'STATE.md'),
       `---\nschema-version: 1\nsession: main-2026-09-20-session-3\n`
         + `session-id: ${sessionId}\nsession-start-ref: ${startRef}\n---\n\n## Current Wave\n\nWave 2.\n`,
     );
@@ -1157,12 +1164,18 @@ describe('stale worktree base (#1413)', () => {
     expect(events[0].stale).toBe(false);
   });
 
-  it('stays silent when STATE.md belongs to a PEER session', () => {
+  it('warns NOT AT ALL when STATE.md belongs to a PEER session — but records the skip', () => {
     // Bug caught: STATE.md is a shared working-copy artefact. Reading a peer's
     // `session-start-ref` would produce a confident warning about a ref that was
     // never this session's start — the identity trap in
     // `.claude/rules/identity-and-locks.md`. Refs differ here, so ONLY the
     // identity gate can produce the silence.
+    //
+    // SECOND bug caught (#1424): that silence used to extend to the LEDGER. A
+    // peer STATE.md produced 0 records, 0 output, rc 0 — indistinguishable from
+    // a check that had been disarmed, which is the exact ambiguity HR-105 and
+    // this event's own docblock claim to have closed. The operator-visible
+    // channel stays quiet; the denominator does not.
     const { dir, first } = makeGitRepo();
     writeStateMd(dir, { sessionId: 'sess-PEER', startRef: first });
 
@@ -1170,7 +1183,58 @@ describe('stale worktree base (#1413)', () => {
 
     expectAllow(res);
     expect(res.stderr).not.toContain('STALE WORKTREE BASE');
-    expect(baseEvents(dir)).toEqual([]);
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].stale).toBe(null);
+    expect(events[0].skipped).toBe('identity-mismatch');
+    // A skip carries no accusation: never a ref, never a head.
+    expect(events[0].session_start_ref).toBeUndefined();
+  });
+
+  it('reads PAST a foreign `.pi/STATE.md` to the OWN `.claude/STATE.md`', () => {
+    // Bug caught (#1424, the disarming one): the candidate loop broke at the
+    // first PARSEABLE STATE.md and tested `session-id` only afterwards. `.pi`
+    // sorts before `.claude` in STATE_DIR_CANDIDATES, so ONE left-over Pi,
+    // Cursor or Codex STATE.md switched the whole #1413 check off for the
+    // session — 0 records, no warning — while a perfectly good, matching
+    // `.claude/STATE.md` sat right beside it. Reproduced in a temp repo
+    // 2026-09-20; without the `.pi` file the same dispatch warned.
+    const { dir, first, head } = makeGitRepo();
+    writeStateMd(dir, { sessionId: 'sess-OTHER-777', startRef: head, stateDir: '.pi' });
+    writeStateMd(dir, { sessionId: 'sess-own', startRef: first, stateDir: '.claude' });
+
+    const res = runHook(worktreePayload(dir, { sessionId: 'sess-own' }), { cwd: dir });
+
+    expectWarn(res, ['STALE WORKTREE BASE (#1413)']);
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].stale).toBe(true);
+    // The identity came from `.claude`, not from the file that sorts first:
+    // `.pi` carries `startRef: head`, which would have measured `stale: false`.
+    expect(events[0].session_start_ref).toBe(first);
+    expect(events[0].head).toBe(head);
+  });
+
+  it('records `skipped: "no-start-ref"` when the OWN STATE.md carries no session-start-ref', () => {
+    // Bug caught (#1424): a STATE.md that is mine but has no `session-start-ref`
+    // yet — the state of every session between its first STATE.md write and its
+    // start-ref write — fell through the same silent `return null`. It is a
+    // non-measurement, not a non-event.
+    const { dir } = makeGitRepo();
+    mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    writeFileSync(
+      path.join(dir, '.claude', 'STATE.md'),
+      '---\nschema-version: 1\nsession-id: sess-own\n---\n\n## Current Wave\n\nWave 1.\n',
+    );
+
+    const res = runHook(worktreePayload(dir, { sessionId: 'sess-own' }), { cwd: dir });
+
+    expectAllow(res);
+    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].stale).toBe(null);
+    expect(events[0].skipped).toBe('no-start-ref');
   });
 
   it('stays silent — and never throws — when STATE.md is absent or unparseable', () => {
@@ -1190,6 +1254,12 @@ describe('stale worktree base (#1413)', () => {
     expectAllow(garbage);
     expect(garbage.stderr).not.toContain('STALE WORKTREE BASE');
 
-    expect(baseEvents(dir)).toEqual([]);
+    // #1424: both runs are non-measurements, and a non-measurement is recorded
+    // rather than swallowed — otherwise the firing rate's denominator counts
+    // only the dispatches that happened to succeed.
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(2);
+    expect(events.map((rec) => rec.skipped)).toEqual(['no-state-md', 'no-state-md']);
+    expect(events.every((rec) => rec.stale === null)).toBe(true);
   });
 });

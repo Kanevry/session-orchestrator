@@ -26,7 +26,9 @@
  *   - Output collection: each gate captures the last ~50 lines of combined
  *     stdout+stderr (vs. `gate-helpers.mjs::runCheck` which truncates to 5).
  *     The longer tail flows into the diagnostics bundle and the fixer's
- *     failureContext.
+ *     failureContext. Since #1427 the tail is cut by `process-group.mjs`'s own
+ *     `OUTPUT_TAIL_LINES`, which is the same 50, and the full capture is
+ *     byte-capped there instead of by `spawnSync`'s `maxBuffer`.
  *
  *   - `last-green-sha.txt` lives at `.orchestrator/runtime/last-green-sha.txt`
  *     and is updated atomically after every successful gate. `changedFiles` is
@@ -67,6 +69,11 @@ import { fileURLToPath } from 'node:url';
 import { emitEvent, sessionAttribution } from './events.mjs';
 import { parsePorcelainZ } from './git-porcelain.mjs';
 import { admitSuiteCounts, extractTestCounts } from './gates/gate-helpers.mjs';
+import {
+  DEFAULT_GATE_TIMEOUT_MS,
+  buildCommandSignature,
+  spawnInGroup,
+} from './process-group.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 
@@ -86,17 +93,20 @@ const DEFAULT_COMMANDS = {
   test: 'npm test',
 };
 
-/** Max lines of combined stdout+stderr retained per failure. */
-const OUTPUT_TAIL_LINES = 50;
-
 /** Max corrective_context entries forwarded to the fixer (most-recent). */
 const CORRECTIVE_CONTEXT_TAIL = 5;
 
 /** Hard ceiling on retries — defensive coercion. */
 const MAX_RETRIES_HARD_CAP = 10;
 
-/** Per-gate command timeout (15 min). Wave gates can be long; never infinite. */
-const GATE_TIMEOUT_MS = 15 * 60 * 1000;
+/**
+ * Per-gate command timeout (15 min). Wave gates can be long; never infinite.
+ *
+ * Re-exported from `process-group.mjs` rather than re-spelled here: both gate
+ * paths are allowed exactly as long (PRD parameter `gate.timeout-path-b-ms`),
+ * and a second literal would drift from it silently.
+ */
+const GATE_TIMEOUT_MS = DEFAULT_GATE_TIMEOUT_MS;
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -274,29 +284,48 @@ function resolveCommands(override, repoRoot) {
 }
 
 /**
- * Run a shell command, capture stdout+stderr, return last ~50 lines plus exit code.
+ * Run a gate command as the leader of its OWN process group, capture
+ * stdout+stderr, return the last ~50 lines plus the exit code.
  *
- * Does NOT throw — failures are encoded in the return value. Honours
- * GATE_TIMEOUT_MS as a hard ceiling.
+ * ASYNC since #1427 A1/A2, and that is the point rather than an incidental
+ * refactor. The previous `spawnSync(cmd, { shell: true, timeout })` made the
+ * SHELL the child, so Node's timeout signalled the shell alone and every
+ * grandchild — `tsgo --noEmit`, Vitest workers — was reparented to PID 1 and
+ * kept running. That is the 2026-09-20 incident: four orphaned `tsgo`
+ * processes, two at PPID 1, up to 8.0 GB RSS each, host at 13% free memory.
+ * {@link spawnInGroup} spawns `detached: true` (the child becomes a process-GROUP
+ * leader) and signals `-pgid` along the SIGTERM → grace → SIGKILL → verify
+ * ladder, so the whole group is gone when this resolves — or reported as a
+ * survivor, never booked as success (PRD B6).
+ *
+ * Does NOT throw — failures are encoded in the return value. The three fields
+ * the pre-#1427 contract carried (`exitCode`, `output`, `timedOut`) are
+ * unchanged; `overflow`, `killSignals`, `survivors` and `pgid` are additive.
+ *
+ * Exit-code contract, preserved verbatim from the synchronous path:
+ *   - timeout → `124`
+ *   - output over the byte cap → `1` (what `spawnSync`'s ENOBUFS produced)
+ *   - otherwise the child's own code.
  *
  * @param {string} cmd
  * @param {string} cwd
- * @returns {{ exitCode: number, output: string, timedOut: boolean }}
+ * @param {object} [opts]
+ * @param {number} [opts.timeoutMs]   — wall-clock ceiling. Defaults to GATE_TIMEOUT_MS.
+ * @param {string|null} [opts.sessionId] — owner recorded in the gate-process ledger.
+ * @param {object} [opts.seams]       — forwarded verbatim to {@link spawnInGroup}
+ *   (`spawnFn`, `killFn`, `isAliveFn`, `sleepFn`, `killGraceMs`, `verifyWaitMs`).
+ *   Test seam only; production passes nothing and gets the module defaults.
+ * @returns {Promise<{ exitCode: number, output: string, timedOut: boolean,
+ *   overflow: boolean, killSignals: string[], survivors: number[], pgid: number }>}
  */
-function runGate(cmd, cwd) {
+async function runGate(cmd, cwd, opts = {}) {
   try {
     // Gate commands are executable configuration from the caller or local
     // Session Config, not data interpolated into a command template. Shell
     // syntax is intentional; callers must trust both command sources (including
     // uncommitted config). See security.md: Session Config Command Trust.
-    // nosemgrep: unsafe-shell-spawn
-    const result = spawnSync(cmd, {
+    const result = await spawnInGroup(cmd, {
       cwd,
-      shell: true,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: GATE_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024, // 16 MiB cap
       // #1360: gate runs are where worker over-subscription was measured to
       // cause timeout failures (integration fixtures spawn their own Node/npm/
       // git children on top of Vitest's workers). `vitest.config.mjs` reads this
@@ -305,19 +334,40 @@ function runGate(cmd, cwd) {
       // Inherited by every gate subprocess, not only the test one — typecheck
       // and lint ignore it, so setting it unconditionally costs nothing.
       env: { ...process.env, SO_BOUNDED_WORKERS: '1' },
+      timeoutMs: typeof opts.timeoutMs === 'number' ? opts.timeoutMs : GATE_TIMEOUT_MS,
+      // The ledger (A4) is what lets the orphan-reaper tell a descendant of OUR
+      // gate from a foreign process before it signals anything.
+      repoRoot: cwd,
+      commandSignature: buildCommandSignature(cmd),
+      sessionId: opts.sessionId ?? null,
+      ...(opts.seams ?? {}),
     });
-    const combined = (result.stdout ?? '') + (result.stderr ?? '');
-    const tail = combined.split('\n').slice(-OUTPUT_TAIL_LINES).join('\n').trim();
-    const timedOut = result.signal === 'SIGTERM' && result.error?.code === 'ETIMEDOUT';
-    const exitCode = typeof result.status === 'number'
-      ? result.status
-      : (timedOut ? 124 : 1);
-    return { exitCode, output: tail, timedOut };
+
+    // A process that outlived SIGKILL (one that `setsid`-ed out of the group) is
+    // SAID OUT LOUD on the channel the operator and the diagnostics bundle both
+    // read. Silence here would be the exact failure the ladder exists to expose.
+    const output = result.survivors.length > 0
+      ? `${result.output}\ngate: ${result.survivors.length} process(es) survived SIGKILL: ${result.survivors.join(', ')}`.trim()
+      : result.output;
+
+    return {
+      exitCode: result.exitCode,
+      output,
+      timedOut: result.timedOut,
+      overflow: result.overflow,
+      killSignals: result.killSignals,
+      survivors: result.survivors,
+      pgid: result.pgid,
+    };
   } catch (err) {
     return {
       exitCode: 1,
       output: `quality-gate: failed to spawn command "${cmd}": ${err?.message ?? String(err)}`,
       timedOut: false,
+      overflow: false,
+      killSignals: [],
+      survivors: [],
+      pgid: -1,
     };
   }
 }
@@ -783,7 +833,7 @@ function coerceMaxRetries(n) {
  * wrote it.
  *
  * Extraction margin: {@link suiteCountsFromOutput} sees only the
- * `OUTPUT_TAIL_LINES` (50) tail `runCheck` retains. Measured on `npm test`
+ * 50-line tail `process-group.mjs` retains (`OUTPUT_TAIL_LINES` there). Measured on `npm test`
  * (vitest 2026-07-31), the `Tests` summary line sits 5 lines from the end — 45
  * lines of headroom. A runner epilogue longer than that (coverage table, long
  * unhandled-error dump) pushes the summary out of the window; `counts` is then
@@ -833,6 +883,14 @@ async function emitGateEvent(repoRoot, ok, attempts, gate, counts) {
  * @param {string} [opts.repoRoot]        — defaults to process.cwd().
  * @param {{lint?: string, typecheck?: string, test?: string}} [opts.commands]
  *                                          — override individual gate commands.
+ * @param {number} [opts.gateTimeoutMs]   — per-gate wall-clock ceiling. Defaults to
+ *                                          GATE_TIMEOUT_MS (15 min). On expiry the gate's
+ *                                          whole process GROUP gets SIGTERM → grace →
+ *                                          SIGKILL and the gate reports exit 124.
+ * @param {object} [opts._processSeams]   — TEST SEAM, forwarded verbatim to
+ *                                          `spawnInGroup` (`spawnFn`, `killFn`,
+ *                                          `isAliveFn`, `sleepFn`, `killGraceMs`,
+ *                                          `verifyWaitMs`). Production passes nothing.
  *
  * @returns {Promise<{
  *   ok: boolean,
@@ -851,6 +909,24 @@ export async function runQualityGateWithRetry(opts) {
     : async () => {};
   const repoRoot = resolveRepoRoot(safeOpts.repoRoot);
   const commands = resolveCommands(safeOpts.commands, repoRoot);
+  /**
+   * Per-gate spawn options, resolved ONCE per call.
+   *
+   * `sessionId` comes from the PROCESS-LOCAL witness only
+   * ({@link readOwnSessionIds} → `CLAUDE_CODE_SESSION_ID`), never from
+   * `.orchestrator/session.lock`: the lock is a repo-GLOBAL artefact any
+   * session in this working copy may hold, so reading it here would stamp a
+   * PEER's id onto our own gate processes and point the reaper at the wrong
+   * owner (`.claude/rules/identity-and-locks.md` — rank witnesses, never union
+   * them). No witness → `null`, which the ledger records as "owner unknown".
+   */
+  const gateOpts = {
+    timeoutMs: typeof safeOpts.gateTimeoutMs === 'number' ? safeOpts.gateTimeoutMs : undefined,
+    sessionId: [...readOwnSessionIds()][0] ?? null,
+    seams: (typeof safeOpts._processSeams === 'object' && safeOpts._processSeams !== null)
+      ? safeOpts._processSeams
+      : undefined,
+  };
 
   // Accumulate per-attempt failure info for the diagnostics bundle.
   const allFailures = [];
@@ -889,7 +965,10 @@ export async function runQualityGateWithRetry(opts) {
 
     for (const gate of GATE_ORDER) {
       const cmd = commands[gate];
-      const result = runGate(cmd, repoRoot);
+      // `await` inside `for…of` is deliberate: the gates are fail-fast and
+      // SEQUENTIAL (lint → typecheck → test), exactly as the synchronous path
+      // ran them. Parallelising them would change the contract, not the plumbing.
+      const result = await runGate(cmd, repoRoot, gateOpts);
       if (gate === 'test') {
         // The numbers are in hand right here — capture them at the seam rather
         // than letting them travel as prose (#954).

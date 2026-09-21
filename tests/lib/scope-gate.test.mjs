@@ -24,6 +24,7 @@ import {
   suggestForEmptyScope,
   EMPTY_SCOPE_REASONS,
   gradeScopeEntry,
+  canonicalizeGrantPrefix,
 } from '@lib/scope-gate.mjs';
 
 let tmpDir;
@@ -558,6 +559,108 @@ describe('gradeScopeEntry — the ~/.cache carve-out is a DEPTH rule (#1406)', (
     // The filesystem is case-insensitive here; a byte-exact carve-out would
     // refuse /.Cache/ while the hook honoured it.
     expect(gradeScopeEntry('/Users/alice/.Cache/jev-eval/so/**')).toMatchObject({ verdict: 'warn' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hook / validator grading parity (#1398 acceptance condition 4)
+// ---------------------------------------------------------------------------
+//
+// THE NAMED GAP this block closes: `gradeScopeEntry` has been the shared
+// predicate since #1405, and every test above exercises ONE call shape at a
+// time — so nothing ever put the hook's verdict table and the validator's side
+// by side for the SAME grants. The divergence that AC4 is about was therefore
+// invisible to a green suite: measured 2026-09-20 @ 7e110a2a, 3 of these 9
+// grants graded differently in the two callers; two were closed by
+// `DENIED_ABSOLUTE_ALIAS_ROOTS` (#1418) and the last, `/tmp/x/**`, by giving the
+// hook the resolver (2026-09-21, after measuring +0.067 ms per Gate 5b hit).
+//
+// WHY THIS IS NOT A TAUTOLOGY. Both shapes below pass the same resolver, so the
+// table alone would only prove that one function is deterministic. What makes
+// it a catcher is the SOURCE PIN at the end: it reads the two real call sites
+// and asserts each passes the resolver. Drop the resolver from either file and
+// the pin goes red, which is exactly the regression AC4 names.
+// ---------------------------------------------------------------------------
+
+/** The 9 probes of the AC4 issue comment, plus the class each one stands for. */
+const AC4_PARITY_GRANTS = Object.freeze([
+  ['literal denylisted root', '/etc/**'],
+  ['macOS alias of /etc', '/private/etc/**'],
+  ['macOS alias of /var', '/private/var/**'],
+  ['non-canonical prefix', '/tmp/x/**'],
+  ['tilde (expanded by nothing)', '~/Projects/vault/**'],
+  ['whole home', '/Users/ac4-probe/**'],
+  ['credential dir under home', '/Users/ac4-probe/.ssh/**'],
+  ['vault path under home', '/Users/ac4-probe/Projects/vault/05-business/run.mjs'],
+  ['#792 sanctioned scratchpad', '/private/tmp/ac4-session/scratchpad/**'],
+]);
+
+/**
+ * Grants allowed to grade differently in the two callers — EMPTY since
+ * 2026-09-21, and that is the assertion.
+ *
+ * Kept as a named, empty set rather than deleted: a future caller that provably
+ * cannot supply a resolver (no filesystem, or a hot path measured expensive on
+ * its own host) re-opens the `non-canonical` class, and this is where that
+ * decision must be written down with its measurement. An entry added without one
+ * is the thing this test exists to make visible.
+ * @type {ReadonlySet<string>}
+ */
+const AC4_ALLOWED_DIVERGENCES = new Set();
+
+/** The shape `hooks/enforce-scope.mjs` Gate 5b calls — pinned by the source test. */
+const hookShape = (entry) => gradeScopeEntry(entry, { resolve: canonicalizeGrantPrefix });
+/** The shape `scripts/validate-wave-scope.mjs` calls — pinned by the source test. */
+const validatorShape = (entry) => gradeScopeEntry(entry, { resolve: canonicalizeGrantPrefix });
+
+/** `verdict/code`, or `null` for an entry neither caller grades. */
+const verdictOf = (grade) => (grade === null ? 'null' : `${grade.verdict}/${grade.code}`);
+
+describe('gradeScopeEntry — hook / validator grading parity (#1398 cond. 4)', () => {
+  it.each(AC4_PARITY_GRANTS)('%s agrees in both callers: %s', (_label, entry) => {
+    const hook = verdictOf(hookShape(entry));
+    const validator = verdictOf(validatorShape(entry));
+    if (AC4_ALLOWED_DIVERGENCES.has(entry)) {
+      expect(hook).not.toBe(validator);
+      return;
+    }
+    expect(`${entry} → ${hook}`).toBe(`${entry} → ${validator}`);
+  });
+
+  it('agrees on the MESSAGE too, not only the severity', () => {
+    // The operator reads the message; two callers that agree on `error` while
+    // describing it differently still contradict each other in the only channel
+    // a human sees. Full-object equality over every probe.
+    for (const [, entry] of AC4_PARITY_GRANTS) {
+      if (AC4_ALLOWED_DIVERGENCES.has(entry)) continue;
+      expect(hookShape(entry)).toEqual(validatorShape(entry));
+    }
+  });
+
+  it('pins the ARGUMENT SHAPE of both real call sites — without this the table is a tautology', () => {
+    // The parity above is a property of ONE function called twice. What can
+    // still diverge is how each file calls it, which is precisely what diverged
+    // for two months. Read the call sites, not a description of them.
+    const repoRoot = path.resolve(import.meta.dirname, '../..');
+    const callSites = [
+      ['hooks/enforce-scope.mjs', /gradeScopeEntry\(\s*matchedGrant\s*,\s*\{\s*resolve:\s*canonicalizeGrantPrefix\s*\}\s*\)/],
+      ['scripts/validate-wave-scope.mjs', /gradeScopeEntry\(\s*entry\s*,\s*\{\s*resolve:\s*canonicalizeGrantPrefix\s*\}\s*\)/],
+    ];
+    for (const [file, shape] of callSites) {
+      const source = fs.readFileSync(path.join(repoRoot, file), 'utf8');
+      // Vacuum guard: the file must actually call the predicate, so a rename
+      // that removes the call cannot pass as "no divergence".
+      expect(source, `${file} calls gradeScopeEntry`).toMatch(/gradeScopeEntry\(/);
+      expect(source, `${file} passes canonicalizeGrantPrefix as resolve`).toMatch(shape);
+    }
+  });
+
+  it('canonicalizeGrantPrefix never throws on a path that cannot exist', () => {
+    // The hook calls this on a PreToolUse hot path inside a gate that must not
+    // fail; the grader's own try/catch is the second line, not the first.
+    const ghost = '/ac4-no-such-root/ac4-no-such-dir/file.md';
+    expect(() => canonicalizeGrantPrefix(ghost)).not.toThrow();
+    expect(canonicalizeGrantPrefix(ghost)).toBe(ghost);
   });
 });
 

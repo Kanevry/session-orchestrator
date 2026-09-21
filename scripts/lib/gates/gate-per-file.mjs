@@ -33,14 +33,14 @@ if (files.length === 0) {
 }
 
 // Typecheck runs on the whole project, not per-file
-const tcResult = runCheck(typecheckCmd);
+const tcResult = await runCheck(typecheckCmd);
 const tcStatus = tcResult.status;
 
 let testStatus = 'skip';
 
 if (testCmd !== 'skip' && files.length > 0) {
   const fileArgs = files.join(' ');
-  const testResult = runCheck(`${testCmd} -- ${fileArgs}`);
+  const testResult = await runCheck(`${testCmd} -- ${fileArgs}`);
   testStatus = testResult.status;
 }
 

@@ -33,6 +33,12 @@ const TMUX_EVENT_PREFIX = 'tmux-layout.';
  * identical to a quiet week. `complete === false` says which of the two it is;
  * the CLI prints it and never computes over a partial set in silence.
  *
+ * THREE states (#1423): `complete === null` is a THIRD reading — no source
+ * existed at all, so `invocations: 0` is UNMEASURED, not a measured zero, and
+ * `meetsPromotionGate: false` below rests on nothing. The CLI names that case
+ * separately; folding it into `false` would report a gap nobody found, folding
+ * it into `true` would report a measurement nobody took.
+ *
  * CEILING (BV-004): `readEventsWithRotations` loads the active file and every
  * archive fully into memory — up to ~60 MB transient at the default
  * `max-size-mb: 10` / `max-backups: 5`. Acceptable here because this is a COLD
@@ -41,16 +47,20 @@ const TMUX_EVENT_PREFIX = 'tmux-layout.';
  * `max-size-mb` is raised past ~100.
  *
  * @param {string} [eventsPath=.orchestrator/metrics/events.jsonl]
- * @returns {{events: Array<object>, complete: boolean, gaps: Array<object>}}
+ * @returns {{events: Array<object>, complete: boolean|null, gaps: Array<object>,
+ *            notices: Array<object>}}
  */
 export function readTmuxEventsEnvelope(eventsPath = EVENTS_PATH) {
-  const { events, gaps, complete } = readEventsWithRotations(undefined, { filePath: eventsPath });
+  const { events, gaps, complete, notices } = readEventsWithRotations(undefined, {
+    filePath: eventsPath,
+  });
   return {
     events: events.filter(
       (rec) => rec && typeof rec.event === 'string' && rec.event.startsWith(TMUX_EVENT_PREFIX),
     ),
     complete,
     gaps,
+    notices: notices ?? [],
   };
 }
 
@@ -130,7 +140,13 @@ export function computeStats(events) {
 if (isMainModule(import.meta.url)) {
   const { events, complete, gaps } = readTmuxEventsEnvelope();
   const stats = computeStats(events);
-  if (!complete) {
+  if (complete === null) {
+    // NOT MEASURED — a different sentence from "incomplete" (#1423): no active
+    // file and no archive means the zeros below were never observed.
+    console.error(
+      'WARN: no events source was readable (no active file, no archive) — the stats below are UNMEASURED, not zero',
+    );
+  } else if (!complete) {
     // A gap, never an empty window: diagnostics on stderr (cli-design.md),
     // the machine-readable verdict in the JSON below.
     const detail = gaps

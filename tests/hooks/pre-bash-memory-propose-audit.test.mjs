@@ -7,10 +7,12 @@
  * appended events.jsonl file from a tmp project root, and assert exit code +
  * event-record shape per behavior.
  *
- * Coverage targets the G1–G7 gate ladder + redactArgv branches per the
- * #543 H1 spec. Hardcoded literals per `.claude/rules/test-quality.md`.
+ * Coverage targets the G1–G7 gate ladder + the #1415 argv-summary contract
+ * (`command_hash` / `flags_present` / `argv_length`, which replaced the
+ * flag-redacted `argv_truncated` on 2026-09-21). Hardcoded literals per
+ * `.claude/rules/test-quality.md`.
  *
- * Issue: #543 H1
+ * Issues: #543 H1, #1415
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -113,54 +115,91 @@ async function mkProjectTracked() {
 }
 
 // ---------------------------------------------------------------------------
-// redactArgv branch coverage
+// G6 — argv summary (#1415): command_hash / flags_present / argv_length
+//
+// Until 2026-09-21 this block pinned `argv_truncated`, a merely flag-redacted
+// copy of the Bash command, written into a TRACKED events.jsonl line and — with
+// the webhook configured — onto the network. The redaction covered five flag
+// VALUES and no more: `$VAR`, `$(cat secret)` and any secret written elsewhere
+// on the line went out verbatim. The field had ZERO production readers.
+// The replacement is non-reversible by construction, and these tests pin it in
+// BOTH directions: the summary fields are present AND the raw text is gone.
 // ---------------------------------------------------------------------------
 
-describe('redactArgv', { timeout: 15000 }, () => {
-  it.each([
-    {
-      form: 'equals',
-      command: 'node scripts/memory-propose.mjs --type general --insight=secret-text',
-      expected: 'node scripts/memory-propose.mjs --type general --insight=[REDACTED]',
-    },
-    {
-      form: 'double-quoted',
-      command: 'node scripts/memory-propose.mjs --insight "private body"',
-      expected: 'node scripts/memory-propose.mjs --insight [REDACTED]',
-    },
-    {
-      form: 'unquoted',
-      command: 'node scripts/memory-propose.mjs --insight unquotedvalue --confidence 0.8',
-      expected: 'node scripts/memory-propose.mjs --insight [REDACTED] --confidence 0.8',
-    },
-  ])('redacts --insight $form values', async ({ command, expected }) => {
+/** The hook's own recipe, restated independently: sha256(command), 16 hex. */
+const HASH_RE = /^[0-9a-f]{16}$/;
+
+describe('G6 — command_hash', { timeout: 15000 }, () => {
+  it('emits a 16-hex-character hash and no raw command field', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload(command, { session_id: 'sess-1' }),
+      stdin: bashPayload(
+        'node scripts/memory-propose.mjs --type general --insight=secret-text',
+        { session_id: 'sess-1' },
+      ),
     });
     expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(expected);
+    expect(events[0].command_hash).toMatch(HASH_RE);
+    // Both directions, per 8f15f77b: hash present AND no raw-text field put back
+    // beside it. Without the second half someone could restore `argv_truncated`
+    // (or a `command`) next to the hash and no suite would go red.
+    expect(events[0].argv_truncated).toBeUndefined();
+    expect(events[0].command).toBeUndefined();
   });
 
-  it('redacts the entire quoted value when it contains escaped quotes (issue #546)', async () => {
-    // Input on the wire: --evidence "he said \"hi\""  (literal backslash-quote)
-    // Post-fix (issue #546): the quoted-string alt matches the full "...\"...\"..." region;
-    // the \S+ alt is gated by `(?!["'])` so it never pre-empts the quoted-alt, and the
-    // tail after the inner escaped quote does not leak.
+  it('is deterministic for the same command', async () => {
+    const cmd = 'node scripts/memory-propose.mjs --type general --subject abc';
+    const dirA = await mkProjectTracked();
+    const dirB = await mkProjectTracked();
+    expectAllow(
+      await runHook({ projectDir: dirA, stdin: bashPayload(cmd, { session_id: 'sess-1' }) }),
+    );
+    expectAllow(
+      await runHook({ projectDir: dirB, stdin: bashPayload(cmd, { session_id: 'sess-2' }) }),
+    );
+    const [a] = await readEvents(dirA);
+    const [b] = await readEvents(dirB);
+    expect(a.command_hash).toBe(b.command_hash);
+    // Hardcoded literal, NOT recomputed in the test (tautological-computation
+    // ban, `.claude/rules/testing.md`): this is sha256 of the exact command
+    // string above, first 16 hex chars.
+    expect(a.command_hash).toBe('74310a9eb69d00cd');
+  });
+
+  it('differs for a command that differs by one character', async () => {
+    const dirA = await mkProjectTracked();
+    const dirB = await mkProjectTracked();
+    expectAllow(
+      await runHook({
+        projectDir: dirA,
+        stdin: bashPayload('node scripts/memory-propose.mjs --type general', {
+          session_id: 'sess-1',
+        }),
+      }),
+    );
+    expectAllow(
+      await runHook({
+        projectDir: dirB,
+        stdin: bashPayload('node scripts/memory-propose.mjs --type generaL', {
+          session_id: 'sess-1',
+        }),
+      }),
+    );
+    const [a] = await readEvents(dirA);
+    const [b] = await readEvents(dirB);
+    expect(a.command_hash).not.toBe(b.command_hash);
+  });
+});
+
+describe('G6 — flags_present', { timeout: 15000 }, () => {
+  it('reports the known flag NAMES only, never their values', async () => {
     const dir = await mkProjectTracked();
     const cmd =
-      'node scripts/memory-propose.mjs --evidence ' +
-      DQ +
-      'he said ' +
-      BS +
-      DQ +
-      'hi' +
-      BS +
-      DQ +
-      DQ;
+      'node scripts/memory-propose.mjs --type general --subject b --insight c ' +
+      '--evidence d --confidence 0.8 --dry-run --file-paths hooks/x.mjs';
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
@@ -168,82 +207,90 @@ describe('redactArgv', { timeout: 15000 }, () => {
     expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --evidence [REDACTED]',
-    );
-    // No plaintext fragment of the value may survive — neither the visible words
-    // nor the inner escaped-quote markers.
-    expect(events[0].argv_truncated.includes('he said')).toBe(false);
-    expect(events[0].argv_truncated.includes('hi')).toBe(false);
-    expect(events[0].argv_truncated.includes(DQ)).toBe(false);
-    expect(events[0].argv_truncated.includes(BS)).toBe(false);
+    expect(events[0].flags_present).toEqual([
+      'type',
+      'subject',
+      'insight',
+      'evidence',
+      'confidence',
+      'dry-run',
+      'file-paths',
+    ]);
   });
 
-
-  it('handles malformed unclosed-quote input without leaking the value (issue #546 actual leak surface, Q2 G-H1)', async () => {
-    // Pre-fix scenario: --insight "unclosed text  — the opening quote has no closing match.
-    // Under the UNFIXED regex (bare \S+ fallback), `\S+` would match `"unclosed` greedily up
-    // to the first whitespace, then the engine would also try `text` as a separate match
-    // (only redacting `"unclosed` and leaving `text` plaintext in the audit log).
-    // Under the FIXED regex `(?!["'])\S+`, the unquoted-token alt is forbidden from
-    // matching anything starting with a quote — so the quoted-string alt is the ONLY
-    // candidate. Since the quoted-string alt requires a closing quote that is not present,
-    // the FLAG ALTERNATION FAILS for this token: no match is produced and the leftover
-    // `--insight "unclosed text` flows through to argv_truncated VERBATIM (NOT redacted).
-    // This test pins that "fail-closed" behavior — the value is NOT redacted, BUT the
-    // important guarantee is that NO PARTIAL LEAK occurs (no `text` orphan in a redacted
-    // output line). A future hardening could fail the hook outright on this shape; for
-    // now we lock in the structural invariant that the regex does not partial-redact.
+  it('is empty when the command carries no known flag', async () => {
     const dir = await mkProjectTracked();
-    const cmd = 'node scripts/memory-propose.mjs --insight ' + DQ + 'unclosed text --confidence 0.8';
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload(cmd, { session_id: 'sess-1' }),
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1' }),
     });
     expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    // Falsification: under the unfixed regex this assertion would FAIL because the
-    // recorded string would be `--insight [REDACTED] text --confidence [REDACTED]`
-    // (partial-redact with `text` leaking). Under the fixed regex the full token sequence
-    // flows through un-redacted as a single unit OR --confidence is independently redacted
-    // — but `text` never appears in isolation outside the unclosed-quote context.
-    // The contract is: NO PARTIAL LEAK. Either everything-redacted or everything-verbatim.
-    const argv = events[0].argv_truncated;
-    // The opening quote MUST still be present (proves the redactor did NOT engage on the
-    // malformed token — preventing partial leak as `text` orphan).
-    expect(argv.includes(DQ + 'unclosed text')).toBe(true);
-    // No `[REDACTED]` placeholder for the malformed --insight token (would indicate partial
-    // redact + tail-leak).
-    expect(argv).not.toMatch(/--insight\s+\[REDACTED\]\s+text/);
+    expect(events[0].flags_present).toEqual([]);
   });
 
-  it('redacts all 5 sensitive flag names', async () => {
+  it('does not report a flag-shaped VALUE as a flag', async () => {
+    // The leak a `--\S+` scrape would re-open: the value itself looks like a
+    // flag. The closed KNOWN_FLAGS list makes it structurally unreportable.
     const dir = await mkProjectTracked();
-    const cmd =
-      'node scripts/memory-propose.mjs --insight a --subject b --evidence c --content d --reason e';
     const result = await runHook({
       projectDir: dir,
-      stdin: bashPayload(cmd, { session_id: 'sess-1' }),
+      stdin: bashPayload(
+        'node scripts/memory-propose.mjs --insight --my-secret-token-value',
+        { session_id: 'sess-1' },
+      ),
     });
     expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --insight [REDACTED] --subject [REDACTED] --evidence [REDACTED] --content [REDACTED] --reason [REDACTED]',
-    );
-    // Strict literal: none of the plaintext values appear as standalone tokens.
-    expect(events[0].argv_truncated.includes(' a ')).toBe(false);
-    expect(events[0].argv_truncated.includes(' b ')).toBe(false);
-    expect(events[0].argv_truncated.includes(' c ')).toBe(false);
-    expect(events[0].argv_truncated.includes(' d ')).toBe(false);
-    expect(events[0].argv_truncated.endsWith(' e')).toBe(false);
+    expect(events[0].flags_present).toEqual(['insight']);
+    expect(JSON.stringify(events[0]).includes('my-secret-token-value')).toBe(false);
   });
 
-  it('does not match prefix collision --insightful', async () => {
+  it('does not report the prefix collision --insightful as --insight', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('node scripts/memory-propose.mjs --insightful keep-me', {
+        session_id: 'sess-1',
+      }),
+    });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].flags_present).toEqual([]);
+  });
+
+  it('reports the --flag=value spelling too', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(
+        'node scripts/memory-propose.mjs --type=general --insight=secret-text',
+        { session_id: 'sess-1' },
+      ),
+    });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].flags_present).toEqual(['type', 'insight']);
+  });
+});
+
+describe('G6 — no raw value reaches the event (#1415 negative test)', { timeout: 15000 }, () => {
+  it('leaks no --insight/--subject/--evidence/--file-paths value anywhere in the record', async () => {
+    // Every shape the OLD redactor let through is represented here: shell
+    // expansion (`$VAR`, `$(cat …)`), a here-string, a quoted value with an
+    // escaped inner quote, an unknown flag carrying a secret, and a repo path.
     const dir = await mkProjectTracked();
     const cmd =
-      'node scripts/memory-propose.mjs --insightful keep-me --insight redact-me';
+      'node scripts/memory-propose.mjs ' +
+      '--subject subject-sentinel-aaa ' +
+      '--insight ' + DQ + 'insight sentinel ' + BS + DQ + 'bbb' + BS + DQ + DQ + ' ' +
+      '--evidence=$(cat evidence-sentinel-ccc) ' +
+      '--file-paths hooks/path-sentinel-ddd.mjs ' +
+      '--unknown-flag unknown-sentinel-eee';
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload(cmd, { session_id: 'sess-1' }),
@@ -251,11 +298,22 @@ describe('redactArgv', { timeout: 15000 }, () => {
     expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated).toBe(
-      'node scripts/memory-propose.mjs --insightful keep-me --insight [REDACTED]',
-    );
-    expect(events[0].argv_truncated.includes('keep-me')).toBe(true);
-    expect(events[0].argv_truncated.includes('redact-me')).toBe(false);
+    // String search over the SERIALIZED record — no field may carry any of them.
+    const serialized = JSON.stringify(events[0]);
+    expect(serialized.includes('subject-sentinel-aaa')).toBe(false);
+    expect(serialized.includes('insight sentinel')).toBe(false);
+    expect(serialized.includes('bbb')).toBe(false);
+    expect(serialized.includes('evidence-sentinel-ccc')).toBe(false);
+    expect(serialized.includes('path-sentinel-ddd')).toBe(false);
+    expect(serialized.includes('unknown-sentinel-eee')).toBe(false);
+    // …and the record is still useful: the invocation is countable + shaped.
+    expect(events[0].command_hash).toMatch(HASH_RE);
+    expect(events[0].flags_present).toEqual([
+      'subject',
+      'insight',
+      'evidence',
+      'file-paths',
+    ]);
   });
 });
 
@@ -485,13 +543,16 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
 
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    // All 8 keys exactly per the hook's event shape (#1177 added the
-    // producer-owned schema_version alongside timestamp + event).
+    // All 10 keys exactly per the hook's event shape (#1177 added the
+    // producer-owned schema_version alongside timestamp + event; #1415
+    // replaced the single `argv_truncated` with the three summary fields).
     expect(Object.keys(events[0]).sort()).toEqual([
-      'argv_truncated',
+      'argv_length',
+      'command_hash',
       'cwd',
       'event',
       'exit_code',
+      'flags_present',
       'schema_version',
       'session_id',
       'timestamp',
@@ -499,9 +560,8 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
     ]);
   });
 
-  it('G7 truncates argv to 512 chars', async () => {
+  it('G7 records argv_length for an oversized command without growing the record', async () => {
     const dir = await mkProjectTracked();
-    // Long non-sensitive arg so redaction does NOT shrink the string.
     const longArg = 'a'.repeat(2000);
     const cmd = 'node scripts/memory-propose.mjs --type general ' + longArg;
     const result = await runHook({
@@ -511,7 +571,12 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
     expectAllow(result);
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].argv_truncated.length).toBe(512);
+    // 47 chars of prefix + 2000 'a' — the LENGTH is reported, the text is not.
+    // (The predecessor field capped at 512 chars of command TEXT; the cap is
+    // gone because the text is gone.)
+    expect(events[0].argv_length).toBe(2047);
+    expect(events[0].command_hash).toMatch(HASH_RE);
+    expect(JSON.stringify(events[0]).includes('aaaaaaaaaa')).toBe(false);
   });
 
   it('G7 sets exit_code to null', async () => {

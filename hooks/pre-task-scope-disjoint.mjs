@@ -292,11 +292,19 @@ const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
  * The worktree-base observability record (#1413).
  *
  * Same `wave_dispatch` domain and same `_checked` verb as `SCOPE_EVENT`, and
- * written for BOTH outcomes (`stale: true` and `stale: false`) rather than only
- * the alarming one. That is HR-105 applied at the source: a numerator-only
- * stream cannot tell "genuinely rare" from "silently broken", and the firing
- * rate this warning must stay under is then unfalsifiable. With both outcomes in
- * one stream the rate is `stale:true / all records of this name`.
+ * written for EVERY `isolation: "worktree"` dispatch rather than only the
+ * alarming one. That is HR-105 applied at the source: a numerator-only stream
+ * cannot tell "genuinely rare" from "silently broken", and the firing rate this
+ * warning must stay under is then unfalsifiable. With every outcome in one
+ * stream the rate is `stale:true / all records of this name`.
+ *
+ * #1424 widened "every outcome" from two to three: the `stale: true|false`
+ * split was already covered, but each NON-measurement (peer STATE.md, no
+ * STATE.md, no `session-start-ref`, a git failure) returned early and emitted
+ * nothing — so the gate in front of the split reproduced exactly the
+ * zero-records ambiguity the split had removed. Those now carry
+ * `stale: null` plus a `skipped` reason, and only `isolation !== "worktree"`
+ * stays silent (HR-101: it is ~90% of all dispatches).
  */
 const WORKTREE_BASE_EVENT = 'orchestrator.wave_dispatch.worktree_base_checked';
 
@@ -1015,16 +1023,29 @@ export function listTrackedFiles(cwd) {
 // ---------------------------------------------------------------------------
 
 /**
- * Facts for the worktree-base check, or `null` when the question cannot be
- * answered HONESTLY — which is the common case and deliberately silent.
+ * Facts for the worktree-base check, as a DISCRIMINATED record with three
+ * outcomes rather than two (#1424):
+ *
+ *   - `{stale: true|false, head, session_start_ref, subagent_type?}` — measured.
+ *   - `{stale: null, skipped: <reason>}` — the dispatch WAS on the `worktree`
+ *     branch, but the question could not be answered honestly. Still emitted,
+ *     because HR-105 needs the denominator: while every such case returned bare
+ *     `null` and the caller emitted nothing, "the check never had anything to
+ *     say" and "the check was silently disarmed" both read as zero records —
+ *     precisely the shape this event exists to close.
+ *   - `null` — `isolation !== 'worktree'`. SILENT by construction, and the one
+ *     outcome that must stay so: `isolation` appeared in 14 of 147 measured
+ *     dispatches, so recording the other ~90% would put the denominator on the
+ *     whole hot dispatch path (HR-101).
  *
  * IDENTITY GATE (`.claude/rules/identity-and-locks.md`): `session-start-ref`
  * lives in STATE.md, a SHARED working-copy artefact that routinely belongs to a
  * peer session. It is read only when STATE.md's own `session-id` equals this
  * process's raw id (hook payload `session_id`, else `CLAUDE_CODE_SESSION_ID`) —
  * a process-local witness REPLACES the shared one, never unions with it. On
- * mismatch, absence or any read failure this returns `null`: a confident warning
- * about somebody else's session is worse than no warning at all.
+ * mismatch, absence or any read failure this reports `stale: null`: a confident
+ * warning about somebody else's session is worse than no warning at all. The
+ * test runs PER CANDIDATE (`continue`, not `break`) — see the loop below.
  *
  * `parseStateMd` is imported DYNAMICALLY and only on the rare `worktree` branch
  * (14 of 147 measured dispatches carried `isolation` at all): it is a leaf module
@@ -1036,44 +1057,65 @@ export function listTrackedFiles(cwd) {
  * @param {string} projectDir
  * @param {string} sessionId — `input.session_id`, or `'no-session'`
  * @returns {Promise<{head: string, session_start_ref: string, stale: boolean,
- *   subagent_type?: string}|null>}
+ *   subagent_type?: string}|{stale: null, skipped: string}|null>}
  */
 async function worktreeBaseFacts(input, projectDir, sessionId) {
-  try {
-    const toolInput = input?.tool_input;
-    if (toolInput === null || typeof toolInput !== 'object') return null;
-    if (toolInput.isolation !== 'worktree') return null;
+  // The applicability gate sits OUTSIDE the try on purpose: everything below it
+  // resolves to a `skipped` RECORD, so a throw here must not be able to mint one
+  // for a dispatch that was never on the `worktree` branch at all.
+  const toolInput = input?.tool_input;
+  if (toolInput === null || typeof toolInput !== 'object') return null;
+  if (toolInput.isolation !== 'worktree') return null;
 
+  try {
     const ownId = sessionId && sessionId !== 'no-session'
       ? sessionId
       : (process.env.CLAUDE_CODE_SESSION_ID || '');
-    if (!ownId) return null;
+    if (!ownId) return { stale: null, skipped: 'no-own-id' };
 
     const { parseStateMd } = await import(
       pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'state-md', 'yaml-parser.mjs')).href
     );
 
+    // #1424: the identity test lives INSIDE the loop. Breaking at the first
+    // PARSEABLE STATE.md and testing `session-id` afterwards meant a single
+    // left-over `.pi/STATE.md` — `.pi` sorts before `.claude` in
+    // STATE_DIR_CANDIDATES — disarmed the check for a session whose own
+    // `.claude/STATE.md` sat right there, readable and matching. `sawStateMd`
+    // keeps the two silences apart afterwards: "nothing to read" is a different
+    // fact from "read, and none of it was mine".
     let frontmatter = null;
+    let sawStateMd = false;
     for (const dir of STATE_DIR_CANDIDATES) {
       try {
         const parsed = parseStateMd(readFileSync(path.join(projectDir, dir, 'STATE.md'), 'utf8'));
-        if (parsed?.frontmatter) { frontmatter = parsed.frontmatter; break; }
+        if (!parsed?.frontmatter) continue;
+        sawStateMd = true;
+        if (parsed.frontmatter['session-id'] !== ownId) continue;
+        frontmatter = parsed.frontmatter;
+        break;
       } catch { /* try the next state dir */ }
     }
-    if (frontmatter === null) return null;
-    if (frontmatter['session-id'] !== ownId) return null;
+    if (frontmatter === null) {
+      return { stale: null, skipped: sawStateMd ? 'identity-mismatch' : 'no-state-md' };
+    }
 
     const startRef = typeof frontmatter['session-start-ref'] === 'string'
       ? frontmatter['session-start-ref'].trim()
       : '';
-    if (startRef === '') return null;
+    if (startRef === '') return { stale: null, skipped: 'no-start-ref' };
 
-    const head = execFileSync('git', ['rev-parse', 'HEAD'], {
-      cwd: projectDir,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    if (head === '') return null;
+    let head = '';
+    try {
+      head = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: projectDir,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    } catch {
+      return { stale: null, skipped: 'git-error' };
+    }
+    if (head === '') return { stale: null, skipped: 'git-error' };
 
     const facts = { head, session_start_ref: startRef, stale: head !== startRef };
     if (typeof toolInput.subagent_type === 'string' && toolInput.subagent_type !== '') {
@@ -1081,8 +1123,11 @@ async function worktreeBaseFacts(input, projectDir, sessionId) {
     }
     return facts;
   } catch {
-    // Total by construction: no STATE.md, no git, no parser — no warning.
-    return null;
+    // Total by construction: no parser, an unreadable state dir, anything else.
+    // Still a RECORD rather than silence — the dispatch WAS on the `worktree`
+    // branch, and a broken probe that emits nothing is indistinguishable from a
+    // probe that had nothing to report (#1424 / HR-105).
+    return { stale: null, skipped: 'probe-error' };
   }
 }
 
@@ -1593,10 +1638,15 @@ async function main() {
   // inline would terminate the process before a collision DENY could be emitted,
   // flipping a block into an allow (§ stdout discipline, the same reason
   // `decide()` is pure).
+  //
+  // `null` here means "not a worktree dispatch" and stays silent; ANY other
+  // shape is emitted, including the `{stale: null, skipped: …}` non-measurements
+  // (#1424). The warning still fires on `stale === true` alone — a skipped probe
+  // accuses nobody.
   const worktreeBase = await worktreeBaseFacts(input, projectDir, sessionId);
   let staleNote = null;
   if (worktreeBase !== null) {
-    if (worktreeBase.stale) staleNote = staleWorktreeWarning(worktreeBase);
+    if (worktreeBase.stale === true) staleNote = staleWorktreeWarning(worktreeBase);
     try {
       const { emitEvent, sessionAttribution } = await import(
         pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
