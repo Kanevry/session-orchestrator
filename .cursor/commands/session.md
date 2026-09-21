@@ -1,6 +1,6 @@
 ---
 description: "Start a development session (housekeeping, feature, deep; ultradeep = deep + profile)"
-argument-hint: "[housekeeping|feature|deep|ultradeep]"
+argument-hint: "[housekeeping|feature|deep|ultradeep] [task context]"
 ---
 
 # /session

@@ -41,6 +41,11 @@ function writeSource(name) {
   writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: Source.\n---\n\nbody\n`, 'utf8');
 }
 
+function writeCommand(name) {
+  mkdirSync(join(root, 'commands'), { recursive: true });
+  writeFileSync(join(root, 'commands', `${name}.md`), '---\ndescription: Start a session.\n---\n\nCommand body.\n');
+}
+
 /** A minimal, VALID fixture repo: everything green before each test mutates one thing. */
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'check-agents-skills-'));
@@ -142,6 +147,29 @@ describe('Check B — root plugin.json', () => {
 });
 
 describe('Check C — .agents/skills mirror', () => {
+  it('accepts a command-only entrypoint with its canonical command pointer', () => {
+    // BUG: the old checker classified a correctly generated session mirror as
+    // an orphan because it searched only the skills/ source tree.
+    writeCommand('session');
+    writeMirror('session', 'name: session\ndescription: Start a session.', '[command](../../../commands/session.md)');
+    const result = run();
+    expect(result.status, result.stdout).toBe(0);
+  });
+
+  it('detects a missing command-only entrypoint mirror', () => {
+    writeCommand('session');
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/have no mirror: session/);
+  });
+
+  it('requires command precedence when both a command and skill share the public name', () => {
+    writeCommand('alpha');
+    const result = run();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toMatch(/does not cite the canonical commands\/alpha\.md/);
+  });
+
   it('fails on a non-spec frontmatter key', () => {
     // BUG: agentskills.io permits six fields outside Claude Code. Our source
     // skills carry 8 undocumented keys and 7 spell `tools:` instead of
@@ -196,8 +224,8 @@ describe('Check C — .agents/skills mirror', () => {
     writeMirror('ghost', 'name: ghost\ndescription: Ghost.');
     const r = run();
     expect(r.status).toBe(1);
-    expect(r.stdout).toMatch(/1 source skill\(s\) have no mirror: beta/);
-    expect(r.stdout).toMatch(/1 orphan mirror\(s\) with no source skill: ghost/);
+    expect(r.stdout).toMatch(/1 source entry\(s\) have no mirror: beta/);
+    expect(r.stdout).toMatch(/1 orphan mirror\(s\) with no skill or command source: ghost/);
   });
 
   it('fails on unparseable mirror frontmatter', () => {

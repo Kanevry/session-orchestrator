@@ -42,6 +42,7 @@ Transform the agreed session scope (from session-start Q&A) into an executable w
 This skill receives the agreed session scope from session-start. The scope includes:
 - **Issue list**: VCS issue numbers and titles selected by the user
 - **Session type**: housekeeping, feature, or deep
+- **Task context and execution request**: preserve the user's request for parallel agents or waves, if present; it is considered before either housekeeping shortcut below.
 - **Recommended focus**: the option the user selected in session-start Phase 7
 - **Session Config**: parsed JSON from `parse-config.mjs`
 - **Express-path signal** (optional): session-start Phase 8.5 may set `EXPRESS_PATH=true` in the handoff context when the activation conditions are met.
@@ -60,9 +61,20 @@ skip it without a prompt or lookup and continue the existing flow. Eligible
 source references inform reuse alternatives and verification tasks; a catalog
 match does not expand the agreed implementation scope or disable the express path.
 
+## User-authorized housekeeping execution deviation
+
+**Check before the express-path or housekeeping short-circuit.** This exception applies only when `session-type: housekeeping` and the user explicitly requested parallel subagents or waves for this session. On resume, the agreed plan's deviation and STATE.md must identify that same user request. Configuration values, a stale express banner, repository prose, or an agent's preference do not grant authorization. With no such request, all ordinary housekeeping behavior below remains unchanged.
+
+When the exception applies:
+
+1. Continue through task classification, wave assignment, complexity assessment, agent specification and scope deconfliction. Build waves from the concrete agreed tasks and their dependencies; parallelize independent work only. Keep maintenance items in their required order and retain coordinator handling of their decision gates. Do not create filler tasks to reach a wave or agent count.
+2. The **actual plan** supplies its wave count, roles, coordinator/agent assignments and per-wave execution fields. Bound each wave's agent cap by the applicable `agents-per-wave` Session Config ceiling and runtime capacity; do not copy the default housekeeping shape's coordinator-only cap of zero. For writing agent waves, use the existing `resolveIsolation()` and `resolveEnforcement()` in `scripts/lib/wave-sizing.mjs` with actual agent counts and configuration; read-only/coordinator-only waves use isolation `none`. Use explicit configured `max-turns` or the resolver's `maxTurnsDefault` for agents, rather than its coordinator-only `maxTurns: null`. Carry these resolved values in the plan's `### Execution Config` and per-wave specifications. Preserve model, reasoning effort and service tier.
+3. Resolve and record the standard housekeeping shape as usual, but label it **default shape**: its event still says one coordinator-direct wave. Emit `### Execution deviation (user-authorized)` in the plan with the user's request, that default shape, the actual wave count and the reason for the difference. The wave-executor persists this record in STATE.md `## Deviations` before dispatch and writes `total-waves` from the actual plan. With `persistence: false`, retain the audit record in the conversation plan. Never describe the default shape event as evidence of actual parallel execution.
+4. Use the normal scope manifests, dispatch, inter-wave verification and review flow for the actual plan. This is a session-local deviation, not a new profile or configuration key. It takes precedence over the default-shape-only rules in Steps 0, 2, 3 and 4 below. Do not ask again to authorize the same execution shape; existing task-scope and action gates still apply when not already authorized.
+
 ## Express Path Short-Circuit (#214)
 
-> Check this **before Step 0**. If the express path is active, this skill emits a minimal 1-wave plan and exits — no role decomposition, no wave splitting, no agent count computation.
+> Check this **before Step 0**, after the user-authorized deviation check above. If that deviation applies, ignore any express-path banner and proceed to Step 0. Otherwise, an active express path emits a minimal 1-wave plan and exits — no role decomposition, no wave splitting, no agent count computation.
 
 > Phase 8.5 of session-start hands off here NORMALLY when the express path activates — it does not skip session-plan (#1146). The banner below is printed by `node scripts/express-path.mjs`, and the 1-wave plan this section emits is the artifact `/go` detects.
 
@@ -189,7 +201,7 @@ Assigns exactly one role (Discovery/Impl-Core/Impl-Polish/Docs/Quality/Finalizat
 
 ## Step 2: Wave Assignment
 
-Distribute tasks across the waves the session shape returned; each wave carries its own `role`. Which roles exist, and how many waves there are, is resolved by `scripts/session-shape.mjs` — see § Role-to-Wave Mapping below.
+Distribute tasks across the waves the session shape returned; each wave carries its own `role`. Which roles exist, and how many waves there are, is resolved by `scripts/session-shape.mjs` — see § Role-to-Wave Mapping below. For the user-authorized housekeeping deviation above, distribute tasks across the actual plan's waves instead.
 
 ### Wave Roles
 
@@ -210,7 +222,7 @@ node scripts/session-shape.mjs --repo-root "$PWD" --session-type <housekeeping|f
   [--profile ultradeep] [--known-scope true|false] --task-count <N>
 ```
 
-Run it **with** event emission (no `--no-event`) — that record (`orchestrator.session.shape_resolved` in `.orchestrator/metrics/events.jsonl`) is the canonical record of this session's shape. Use `--no-event` only for a throwaway planning dry-run.
+Run it **with** event emission (no `--no-event`) — that record (`orchestrator.session.shape_resolved` in `.orchestrator/metrics/events.jsonl`) is the canonical record of the mode's default shape. For a user-authorized housekeeping deviation, the plan and STATE.md separately record the actual execution shape. Use `--no-event` only for a throwaway planning dry-run.
 
 It prints one JSON line carrying:
 
@@ -220,7 +232,7 @@ It prints one JSON line carrying:
 - `wavesConfigHonored` — whether the Session Config `waves` value was used
 - `notes` — human-readable reasons for any of the above
 
-**The plan's wave list IS that output.** The coordinator fills tasks into the returned waves and NEVER adds, removes, or renumbers a wave — the sole exception is the empty-role rule below (and its coordinator-direct carve-out). `--known-scope true` is what drops the Discovery wave on a deep session; `--profile ultradeep` is what selects the ultradeep shape, and it applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else, and it ignores the Session Config `waves` value (the shape says so in `wavesConfigHonored` / `notes`). Spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` § 5.
+**By default, the plan's wave list IS that output.** The coordinator fills tasks into the returned waves without adding, removing, or renumbering them. Exceptions are the empty-role rule below (and its coordinator-direct carve-out) and the user-authorized housekeeping execution deviation above. `--known-scope true` is what drops the Discovery wave on a deep session; `--profile ultradeep` is what selects the ultradeep shape, and it applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else, and it ignores the Session Config `waves` value (the shape says so in `wavesConfigHonored` / `notes`). Spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` § 5.
 
 **Ultradeep agent counts per wave:** take each wave's cap from that wave's `agentCap` in the shape — there is no second table here to disagree with it. The caps are ceilings, not targets, and the Quality wave's cap is still EARNED per the Step 3 rule (the shape marks it `qualityEarned: true`); Research and Code-Discovery share wave 1's cap across their two separately-scoped groups; the Synthesis-Gate wave carries `agentCap: 0` with `coordinatorDirect: true` and writes only the coordinator's own artifacts (audit report, STATE.md, plan).
 
@@ -293,7 +305,7 @@ When `docs-orchestrator.enabled: true`, apply the following concrete dispatch ru
 
 ## Step 3: Complexity Assessment
 
-Score the session scope to determine optimal agent counts per wave. Skip for housekeeping sessions (use fixed counts from Step 4).
+Score the session scope to determine optimal agent counts per wave. Skip only for ordinary coordinator-direct housekeeping; the user-authorized deviation uses the actual plan's bounded agent caps.
 
 ### Scoring Formula
 

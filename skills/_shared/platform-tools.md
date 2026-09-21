@@ -8,15 +8,17 @@ The current platform is determined by the `scripts/lib/platform.mjs` library:
 - `$SO_PLATFORM` = `claude` | `codex` | `cursor` | `pi`
 - Environment: `$CLAUDE_PLUGIN_ROOT` (Claude Code), `$CODEX_PLUGIN_ROOT` (Codex CLI), `$CURSOR_RULES_DIR` (Cursor IDE), or `$PI_PLUGIN_ROOT` (Pi)
 
-## Identical Tools (no mapping needed)
+## File and Shell Tool Adaptation
 
-These tools have the same name and behavior on all platforms. Cursor IDE uses equivalent built-in tools for file operations and terminal commands.
-- **Read** — read file contents
-- **Write** — create/overwrite files
-- **Edit** — string replacement in files
-- **Bash** — execute shell commands
-- **Glob** — file pattern matching
-- **Grep** — content search (ripgrep)
+Skill bodies use Claude Code names as operations, not as a requirement that every
+harness expose those exact tools. Use the current runtime's available tools.
+Measured in Codex Desktop 0.153.4 on 2026-09-19: `exec_command` runs shell
+commands (`cat`, `rg`, `rg --files` for Read/Grep/Glob); `apply_patch` performs
+file edits. These may be exposed through a `functions.exec` tools namespace.
+Never call an unavailable `Read`, `Bash`, or `Skill` tool by name. An instruction
+to invoke `session-orchestrator:<name>` means read and follow the canonical
+`skills/<name>/SKILL.md` relative to the plugin root when no Skill tool exists.
+Keep the user's project as the working directory for project operations.
 
 ## Platform-Specific Tool Mapping
 
@@ -24,7 +26,7 @@ These tools have the same name and behavior on all platforms. Cursor IDE uses eq
 
 | Function | Claude Code | Codex CLI | Cursor IDE | Pi |
 |----------|------------|-----------|------------|----|
-| Present choices to user | `AskUserQuestion` tool with structured options | Numbered Markdown list as plain text, wait for user reply | Numbered Markdown list (same as Codex) | Numbered Markdown list v1; native UI adapter planned |
+| Present choices to user | `AskUserQuestion` tool with structured options | Available native user-input tool, respecting its mode restrictions; plain-text fallback when unavailable | Available native choice tool or numbered Markdown list | Numbered Markdown list v1; native UI adapter planned |
 | Dispatch subagent | `Agent({ description, prompt, subagent_type })` | Native multi-agent collaboration namespace: `spawn_agent`, `list_agents`, `wait_agent`, `send_message`, `followup_task`, `interrupt_agent`, `close_agent`. Measured 2026-08-25 on `codex-cli 0.141.0` — `codex features list` → `multi_agent  stable  true`. | No native in-session Agent tool. Coordinator-side foreign dispatch via the headless `cursor-agent` CLI exists (`scripts/lib/wave-executor/foreign-dispatch.mjs`, #1150) — measured 2026-08-25 on `cursor-agent 2026.08.11-e8db854`. | Sequential execution v1. Do not assume native subagents until the Pi SDK dispatcher exists. |
 | Track tasks | `TaskCreate` / `TaskUpdate` / `TaskList` | Plain-text checklist in response context | Plain-text checklist (same as Codex) | Plain-text checklist (same as Codex) |
 | Enter plan mode | `EnterPlanMode` / `ExitPlanMode` tools | `/plan` slash command (prompt-level, not tool-based) | Instruction-based: "Focus on analysis and planning. Do not modify files until the user approves." | `/plan` prompt template; use instruction-based planning when tool mode is unavailable |
@@ -37,7 +39,13 @@ When a skill instructs "Use the AskUserQuestion tool", apply this pattern:
 
 **On Claude Code:** Use the AskUserQuestion tool with structured options as documented.
 
-**On Codex CLI / Cursor IDE / Pi:** Present the same choices as a numbered Markdown list and ask the user to respond:
+**On Codex:** Prefer the available native user-input tool. In the measured Desktop
+0.153.4 runtime (2026-09-19), `request_user_input_async` allows a question while
+independent work continues; `request_user_input` has mode restrictions. Follow
+the live tool contract. Existing user authorization remains valid; do not ask
+again merely because a workflow names `AskUserQuestion`.
+
+**When no suitable native tool is available (including Cursor IDE / Pi):** Present the same choices as a numbered Markdown list and ask the user to respond:
 ```
 Choose one:
 1. Option A — description
@@ -84,6 +92,10 @@ No Session Orchestrator Pi subagent dispatcher exists in v1. Execute wave tasks 
 | haiku | gpt-5.4-mini | claude-sonnet-4-6 | active Pi model | Simple lookups, fast checks |
 
 Skills use `model-preference` (Claude), `model-preference-codex` (Codex), `model-preference-cursor` (Cursor), and active-model fallback on Pi in YAML frontmatter.
+
+These are preferences, not authority to replace a user's selected model,
+reasoning effort, or service tier. Preserve the current settings unless the user
+requests a change; inherit them for native subagents.
 
 ## State Directory
 

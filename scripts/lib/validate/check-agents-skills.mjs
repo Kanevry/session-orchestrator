@@ -11,16 +11,16 @@
  *      inode, or byte-identical).
  *   B. root `plugin.json` — the agent-plugins.org 1.0.0 manifest; its `version`
  *      must equal `package.json`'s and the two existing plugin manifests'.
- *   C. `.agents/skills/<name>/SKILL.md` — one spec-legal mirror per source
- *      skill, no orphans, agentskills.io field list only, description ≤ 1024.
+ *   C. `.agents/skills/<name>/SKILL.md` — one spec-legal mirror per skill or
+ *      command, no orphans, agentskills.io field list only, description ≤ 1024.
  *
  * INDEPENDENCE (load-bearing). This checker deliberately imports NOTHING from
  * `scripts/generate-agents-skills.mjs` and re-derives the spec field list, the
  * 1024 cap and the alias rule from the spec, not from the generator. A
  * generator-vs-generator check only proves the generator is self-consistent —
  * that is how the Cursor `argument-hint` defect survived. The oracles here are
- * the repository's own filesystem (`skills/`, `CLAUDE.md`, `package.json`) and
- * the published field list.
+ * the repository's own filesystem (`skills/`, `commands/`, `CLAUDE.md`,
+ * `package.json`) and the published field list.
  *
  * Usage: node scripts/lib/validate/check-agents-skills.mjs <plugin-root>
  * Exit codes: 0 — all checks passed · 1 — one or more failures.
@@ -195,6 +195,7 @@ console.log('');
 console.log('--- Check C: .agents/skills/ portable mirror ---');
 {
   const skillsDir = join(pluginRoot, 'skills');
+  const commandsDir = join(pluginRoot, 'commands');
   const mirrorDir = join(pluginRoot, '.agents', 'skills');
 
   const sourceSkills = existsSync(skillsDir) && statSync(skillsDir).isDirectory()
@@ -204,12 +205,21 @@ console.log('--- Check C: .agents/skills/ portable mirror ---');
       .filter((n) => existsSync(join(skillsDir, n, 'SKILL.md')))
       .sort()
     : [];
+  const sources = new Map(sourceSkills.map((name) => [name, `skills/${name}/SKILL.md`]));
+  if (existsSync(commandsDir) && statSync(commandsDir).isDirectory()) {
+    for (const entry of readdirSync(commandsDir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.md') || /^[._]/.test(entry.name)) continue;
+      // Commands own public names when an internal skill has the same name.
+      sources.set(entry.name.slice(0, -3), `commands/${entry.name}`);
+    }
+  }
+  const sourceNames = [...sources.keys()].sort();
 
   if (!existsSync(mirrorDir)) {
-    if (sourceSkills.length === 0) {
-      pass('no skills/ and no .agents/skills/ — nothing to mirror');
+    if (sourceNames.length === 0) {
+      pass('no skill or command sources and no .agents/skills/ — nothing to mirror');
     } else {
-      fail(`.agents/skills/ is missing but ${sourceSkills.length} source skill(s) exist `
+      fail(`.agents/skills/ is missing but ${sourceNames.length} source entry(s) exist `
         + '(remedy: node scripts/generate-agents-skills.mjs)');
     }
   } else {
@@ -218,12 +228,12 @@ console.log('--- Check C: .agents/skills/ portable mirror ---');
       .map((e) => e.name)
       .sort();
 
-    const missing = sourceSkills.filter((n) => !mirrored.includes(n));
-    const orphans = mirrored.filter((n) => !sourceSkills.includes(n));
-    if (missing.length === 0) pass(`every source skill has a mirror (${sourceSkills.length})`);
-    else fail(`${missing.length} source skill(s) have no mirror: ${missing.join(', ')}`);
+    const missing = sourceNames.filter((n) => !mirrored.includes(n));
+    const orphans = mirrored.filter((n) => !sources.has(n));
+    if (missing.length === 0) pass(`every source entry has a mirror (${sourceNames.length})`);
+    else fail(`${missing.length} source entry(s) have no mirror: ${missing.join(', ')}`);
     if (orphans.length === 0) pass('no orphan mirrors');
-    else fail(`${orphans.length} orphan mirror(s) with no source skill: ${orphans.join(', ')}`);
+    else fail(`${orphans.length} orphan mirror(s) with no skill or command source: ${orphans.join(', ')}`);
 
     let fmFail = 0;
     let keyFail = 0;
@@ -303,8 +313,9 @@ console.log('--- Check C: .agents/skills/ portable mirror ---');
         }
       }
 
-      if (!body.includes(`skills/${name}/SKILL.md`)) {
-        fail(`.agents/skills/${name}/SKILL.md body does not cite the canonical skills/${name}/SKILL.md `
+      const canonical = sources.get(name);
+      if (canonical && !body.includes(canonical)) {
+        fail(`.agents/skills/${name}/SKILL.md body does not cite the canonical ${canonical} `
           + '— the mirror is a pointer, and a pointer with no target is dead weight');
         pointerFail += 1;
       }
@@ -314,7 +325,7 @@ console.log('--- Check C: .agents/skills/ portable mirror ---');
     if (keyFail === 0 && mirrored.length > 0) pass('all mirrors use only agentskills.io spec fields');
     if (descFail === 0 && mirrored.length > 0) pass(`all mirror descriptions are non-empty and ≤ ${DESCRIPTION_MAX} chars`);
     if (sizeFail === 0 && mirrored.length > 0) pass(`all mirrors ≤ ${MIRROR_MAX_BYTES} bytes (total ${totalBytes} bytes)`);
-    if (pointerFail === 0 && mirrored.length > 0) pass('all mirrors cite their canonical SKILL.md');
+    if (pointerFail === 0 && mirrored.length > 0) pass('all mirrors cite their canonical source');
   }
 }
 

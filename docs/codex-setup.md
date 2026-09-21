@@ -94,7 +94,7 @@ After either refresh path, confirm the installed version with `codex plugin list
 
 **Cause:** Codex caches a plugin snapshot at install time; in our 0.153.x probes, running `codex plugin update` alone did not refresh `.codex-plugin/skills/`.
 
-**Fix:** remove the plugin, then re-add it (the refresh steps above); verify with `codex plugin list --json` that the installed version is ≥ 4.0.1 and carries 51 skill entries. 4.0.1+ ships the generated entrypoints (`scripts/generate-codex-skills.mjs`).
+**Check before reinstalling:** verify with `codex plugin list --json` that the plugin is installed and enabled, then inspect the skill picker for `session`, `go`, and `close`. A native `skills/list` probe with `forceReload: true` distinguishes a missing entry from a stale picker. The generated surface changes over time; verify the required names rather than a fixed total count. If those entries really are missing from an old installed bundle, refresh it using the commands above. 4.0.1+ ships the generated entrypoints (`scripts/generate-codex-skills.mjs`).
 
 The tracked Codex manifest uses a version such as `3.14.0+codex.20260717175716`. The base must match `package.json`; the `+codex.<YYYYMMDDHHmmss>` UTC suffix is the repository's explicit invalidation marker. When a shipped bundle needs a new cache identity, maintainers commit a new timestamp in `.codex-plugin/plugin.json`. The installer validates that committed value and never mutates the tracked manifest.
 
@@ -189,7 +189,9 @@ An empty `PreToolUse` or `SubagentStart` array means the event belongs to the va
 After installation or refresh, start a fresh task. In the desktop composer, open the skill picker, search for `go` or `close`, and select the matching **Session Orchestrator** entry. In Codex CLI or the IDE extension, use `/skills` or mention the namespaced skill directly in your prompt. [OpenAI skill invocation](https://learn.chatgpt.com/docs/build-skills)
 
 ```text
-$session-orchestrator:session feature   # start a session (housekeeping, feature or deep)
+$session-orchestrator:session           # start with the deep default
+$session-orchestrator:session housekeeping  # maintenance session
+$session-orchestrator:session deep      # explicit deep session
 $session-orchestrator:go                # execute the agreed plan
 $session-orchestrator:close             # verify and close the session
 $session-orchestrator:plan feature      # plan a project or feature (new, feature or retro)
@@ -198,6 +200,16 @@ $session-orchestrator:evolve analyze    # manage learnings (analyze, review or l
 ```
 
 These are skill invocations in the Codex prompt, not shell commands. Invoking `go` reads the full canonical `skills/go/SKILL.md`, including its Express Path and prechecks; invoking `close` reads `skills/close/SKILL.md`, including its state and ledger checks before the session-end workflow. Codex's native `/goal` is a separate feature. Typing `/go` or `/close` alone is not a portable invocation contract; select the skill or use its explicit namespaced form.
+
+### Start, modes, and free-text instructions
+
+The public start entry is named **`session`**. There is no separate `start`, `housekeeping`, or `deep` skill: the latter two are arguments to `session`. `session-start` is the internal workflow and bypasses the public entry's argument resolution when invoked directly. Use `session` for the normal start → go → close flow. Claude Code exposes `/session-orchestrator:session housekeeping`; Codex exposes the skill invocation shown above. [Official skill invocation guidance](https://learn.chatgpt.com/docs/build-skills)
+
+An empty argument selects `deep`; this is a command default, not a missing setting in `config.toml`. `auto-skill-dispatch` controls optional implicit routing and does not register commands or change the default. An explicit mode is the first token; the remaining text supplies task context, for example `$session-orchestrator:session housekeeping mit parallelen Subagents in Wellen`. `ultradeep` resolves to `deep` with the `ultradeep` profile.
+
+Ordinary housekeeping resolves to one coordinator-direct maintenance wave. An explicit request for parallel agents or multiple waves overrides that execution shape for the current run; record the deviation and actual plan instead of silently changing the mode or global configuration. Native parallel execution is available in Codex and Claude Code; Cursor and Pi retain their documented execution limits in [the platform tool reference](../skills/_shared/platform-tools.md).
+
+Measured on macOS with Codex Desktop/CLI **0.153.4**, 2026-09-19: the enabled installed plugin returned `session`, `go`, and `close` through native `skills/list`, with no loading errors. The repository-local `.agents/skills/` surface omitted the command-only `session` entry before the portable generator repair. This is distinct from an installation failure. The portable generator now includes command-only entries and carries native invocation policy in `agents/openai.yaml`; `go` and `close` remain explicitly invoked workflows. Native discovery verifies loading, not the completion of an entire session or the live desktop picker's cached state.
 
 ### Manifest Compatibility
 

@@ -30,6 +30,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { VALID_SESSION_TYPES } from '@lib/session-schema/constants.mjs';
 import { readSessionProfile, setSessionProfile, parseStateMd } from '@lib/state-md.mjs';
+import { resolveSessionInvocation } from '@lib/session-invocation.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '../..');
 const COMMAND_DOC = path.join(REPO_ROOT, 'commands', 'session.md');
@@ -78,6 +79,11 @@ describe('/session ultradeep — argument alias (PRD 2026-09-06)', () => {
       'session-type': 'deep',
       'session-profile': ALIAS,
     });
+    const resolved = resolveSessionInvocation(`${ALIAS} investigate startup`);
+    expect(aliasResolutionBlock(text)).toEqual({
+      'session-type': resolved.sessionType,
+      'session-profile': resolved.profile,
+    });
   });
 
   it('the resolved session-type is a real member of the closed enum', () => {
@@ -92,7 +98,15 @@ describe('/session ultradeep — argument alias (PRD 2026-09-06)', () => {
 
   it('the documented resolution survives a real STATE.md write', () => {
     const resolution = aliasResolutionBlock(text);
-    const doc = ['---', 'session: s-1', `session-type: ${resolution['session-type']}`, '---', '', '## Current Wave', ''].join('\n');
+    const doc = [
+      '---',
+      'session: s-1',
+      `session-type: ${resolution['session-type']}`,
+      '---',
+      '',
+      '## Current Wave',
+      '',
+    ].join('\n');
     const written = setSessionProfile(doc, resolution['session-profile']);
 
     expect(readSessionProfile(written)).toBe(ALIAS);
@@ -102,7 +116,15 @@ describe('/session ultradeep — argument alias (PRD 2026-09-06)', () => {
   it('a plain deep session carries no profile at all', () => {
     // The counterfactual half: without it, a reader that always returns
     // 'ultradeep' would pass every assertion above.
-    const plainDeep = ['---', 'session: s-2', 'session-type: deep', '---', '', '## Current Wave', ''].join('\n');
+    const plainDeep = [
+      '---',
+      'session: s-2',
+      'session-type: deep',
+      '---',
+      '',
+      '## Current Wave',
+      '',
+    ].join('\n');
     expect(readSessionProfile(plainDeep)).toBeNull();
   });
 });

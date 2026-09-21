@@ -78,6 +78,8 @@ For session-end specifically: the preamble is DETECTION-ONLY. The lock-release p
 
 ## Pre-Execution Check
 
+Before any express-path or housekeeping shortcut, check [User-authorized housekeeping execution deviation](../session-plan/SKILL.md#user-authorized-housekeeping-execution-deviation). If active, use the actual agreed plan's counts and execution fields, retain `session-type: housekeeping`, and follow the normal scope, dispatch, verification and review flow. Do not apply the coordinator-only default's zero agent cap or serial shortcut. Confirm that the plan records the original user request; reuse that authorization rather than asking again about the same shape.
+
 Before starting the first wave (Discovery role):
 1. `git status --short` — ensure clean working directory (commit or stash if needed)
 2. Verify no parallel session conflicts (unexpected modified files)
@@ -87,7 +89,7 @@ Before starting the first wave (Discovery role):
    - `persistence` (default: true), `enforcement` (default: warn), `isolation` (default: auto)
    - `agents-per-wave` (default: 6), `max-turns` (default: auto), `pencil` (default: null)
    
-   **Neither `agents-per-wave` nor `max-turns` carries its own default here.** The per-wave `agentCap` and `maxTurns` come from the RESOLVED SHAPE (`node scripts/session-shape.mjs --repo-root "$PWD" --session-type <session-type> [--profile <session-profile>] [--known-scope true|false]`, module `scripts/lib/session-shape.mjs`) — that is the one place a session mode becomes an execution shape. Session Config's `agents-per-wave` (with its per-type override, e.g. `6 (deep: 18)`) CLAMPS the shape's `agentCap`; `max-turns: auto` is expanded per type inside the shape, not in this file.
+   **Neither `agents-per-wave` nor `max-turns` carries its own default here.** Ordinarily the per-wave `agentCap` and `maxTurns` come from the RESOLVED SHAPE (`node scripts/session-shape.mjs --repo-root "$PWD" --session-type <session-type> [--profile <session-profile>] [--known-scope true|false]`, module `scripts/lib/session-shape.mjs`). Session Config's `agents-per-wave` (with its per-type override, e.g. `6 (deep: 18)`) CLAMPS the shape's `agentCap`; `max-turns: auto` is expanded per type inside the shape. For the user-authorized housekeeping deviation, use the actual plan's bounded execution fields resolved by the linked planning procedure instead.
    
    **Execution Config shortcut:** If the session-plan output contains an `### Execution Config` section, its execution-level fields (waves, agents-per-wave, isolation, enforcement, max-turns) take precedence over `$CONFIG`. Session-level fields (persistence, pencil) always come from `$CONFIG`. If the Execution Config section is missing, use `$CONFIG` alone.
 6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
@@ -245,7 +247,9 @@ Cross-reference: PRD F2.1 / issue #501 / `docs/memory-proposal-flow.md` (coordin
 
 ### Housekeeping Sessions — the Maintenance Loop
 
-A housekeeping session is **ONE coordinator-direct wave**, not a shrunken multi-wave run: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --no-event` resolves to `totalWaves: 1` with that wave's `coordinatorDirect: true` and `writes: true`. "Coordinator-direct" means **no wave-executor dispatch loop** — it does not mean zero subagents (`/evolve dialectic` dispatches the read-only `dialectic-deriver`).
+**Check the user-authorized execution deviation before entering this shortcut.** When active, initialize STATE.md with the actual plan's `total-waves`, record the deviation per [STATE initialization](references/wave-executor-state-init.md), materialize the normal per-agent and aggregate wave scopes (including the coordinator), and run the normal dispatch, inter-wave checks and review process. Keep the maintenance order and its coordinator-owned decisions below; skip the serial-only mechanics list. Do not skip reviews merely because `session-type` remains `housekeeping`.
+
+Ordinary housekeeping is **ONE coordinator-direct wave**: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type housekeeping --no-event` resolves to `totalWaves: 1` with that wave's `coordinatorDirect: true` and `writes: true`. "Coordinator-direct" means **no wave-executor dispatch loop** — it does not mean zero subagents (`/evolve dialectic` dispatches the read-only `dialectic-deriver`).
 
 **Ordered default scope — the maintenance loop.** Run it in this order, before the session's selected issues:
 
@@ -263,7 +267,7 @@ Row 3 runs directly after row 2 because its evidence comes from row 2's corpus: 
 
 The session-start probe `maintenance-due` (`scripts/lib/maintenance-due-banner.mjs`) says which of these are DUE for this repo; a run that is not due may be skipped, and the skip is reported. An AUQ-gated run the operator declines is reported as declined — never as done. **Absence of the artefact event is the only evidence that counts**: a run claimed in prose without its event is not a run (`.claude/rules/verification-before-completion.md`).
 
-Then the mechanics:
+Then the mechanics **for ordinary housekeeping without the user-authorized deviation**:
 
 1. Initialize STATE.md as normal (`session-type: housekeeping`, `total-waves: 1`)
 2. Do NOT create `wave-scope.json` — there is no agent fan-out to constrain; the coordinator's own edits stay governed by its `coordinator.json` record
