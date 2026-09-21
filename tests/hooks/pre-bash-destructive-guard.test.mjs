@@ -48,7 +48,7 @@ const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
 const HOOK_PLUGIN_ROOT = path.resolve(import.meta.dirname, '../..');
 const HAS_GIT = existsSync(path.join(HOOK_PLUGIN_ROOT, '.git'));
 
-/** Minimal policy fixture used by most tests (14 rules mirroring the spec). */
+/** Minimal policy fixture used by most tests (15 rules mirroring the spec). */
 const FIXTURE_POLICY = {
   version: 1,
   rules: [
@@ -150,6 +150,19 @@ const FIXTURE_POLICY = {
       ],
       modes: ['truncate'],
       rationale: 'Truncating redirect (>, &>, N>) onto protected artefacts silently destroys them — #983. Append (>>) stays allowed.',
+    },
+    {
+      // Mirrors the live rule 16 (#1401). `pattern` is a human-readable LABEL:
+      // the hook must never route this rule class through the generic pattern
+      // matcher, exactly as for `redirect-truncate` above.
+      id: 'ledger-delete-protected',
+      type: 'path-delete',
+      pattern: 'rm|mv|unlink .orchestrator (state dir) or .orchestrator/metrics/**',
+      severity: 'block',
+      // `.orchestrator` is EXACT, never a prefix — the `.orchestrator/tmp`
+      // allow-cases below are what keeps that honest.
+      'target-denylist': ['.orchestrator', '.orchestrator/metrics', '.orchestrator/metrics/**'],
+      rationale: 'Deleting or renaming anything under .orchestrator/metrics/ destroys append-only session telemetry with no recovery path — #1401.',
     },
   ],
 };
@@ -1816,5 +1829,144 @@ describe('#992 hardening — banner-marker forgeability', { timeout: 30000 }, ()
     expect(result.stderr).toContain('GUARD INACTIVE');
     expect(result.stderr).not.toContain('DEGRADED');
     expect(result.stderr).not.toContain('is not a function');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1401 — ledger deletion (`path-delete` rule class)
+//
+// The incident, 2026-09-19T07:02:10Z: a wave subagent ran
+//   touch .orchestrator/metrics/events.jsonl.1
+//   git check-ignore -v .orchestrator/metrics/events.jsonl.1
+//   rm -f .orchestrator/metrics/events.jsonl.1
+// The `touch` ADOPTED the existing rotated ledger instead of creating a probe
+// file, and the `rm -f` then destroyed 53,896 lines / 10 MB of telemetry
+// spanning 2026-04-12 → 2026-09-18. The guard was armed and said NOTHING, for
+// two independent reasons this block pins:
+//
+//   1. `rm` was only ever matched as the literal pattern `rm -rf` (plus the
+//      recursive+force flag walker) — `rm -f` has no recursive flag, so no rule
+//      looked at the target at all. Measured before the fix against the live
+//      15-rule policy: ALLOW for `rm -f`, `mv` and `unlink` on the live ledger.
+//   2. The only path denylist in the policy (`redirect-truncate-protected`)
+//      covered `.orchestrator/metrics/*.jsonl`, which does NOT match
+//      `events.jsonl.1` — the same suffix blind spot the old .gitignore line
+//      had, and `events-rotation.mjs` produces exactly those `.1`/`.2` names.
+//
+// Every case below was ALLOWED before the fix and is a DENY after it.
+// ---------------------------------------------------------------------------
+describe('#1401 — delete/rename of a ledger file under .orchestrator/metrics/', { timeout: 30000 }, () => {
+  it('blocks the incident command verbatim: rm -f on a ROTATED ledger generation', async () => {
+    // The regression this file exists for. `.jsonl.1` is the exact spelling the
+    // pre-fix `*.jsonl` glob missed, so a rule that only widened the verb set
+    // without widening the suffix would still be red here.
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -f .orchestrator/metrics/events.jsonl.1'),
+    });
+    expectDeny(result, 'ledger-delete-protected');
+  });
+
+  it.each([
+    ['rm on the live ledger', 'rm -f .orchestrator/metrics/events.jsonl'],
+    ['mv away (source vanishes)', 'mv .orchestrator/metrics/events.jsonl /tmp/x'],
+    ['mv onto (destination overwritten)', 'mv /tmp/junk .orchestrator/metrics/events.jsonl'],
+    ['unlink', 'unlink .orchestrator/metrics/events.jsonl'],
+    ['a non-jsonl ledger artefact', 'rm -f .orchestrator/metrics/.backfilled-x.marker'],
+    ['end-of-options form', 'rm -f -- .orchestrator/metrics/events.jsonl'],
+    // The #1401 incident was an agent RE-SPELLING a blocked command, and these
+    // two spellings take the whole state dir — ledger included — while being
+    // shorter than the `rm -rf` the older rule catches. Measured ALLOW
+    // 2026-09-19 before `.orchestrator` entered the denylist.
+    ['the state dir, non-force recursive form', 'rm -r .orchestrator'],
+    ['the state dir renamed away', 'mv .orchestrator /tmp/x'],
+  ])('blocks %s', async (_label, command) => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectDeny(result, 'ledger-delete-protected');
+  });
+
+  it.each([
+    ['transparent wrapper (sudo)', 'sudo rm -f .orchestrator/metrics/events.jsonl'],
+    ['env assignment prefix', 'env FOO=1 rm -f .orchestrator/metrics/events.jsonl'],
+    ['chain position', 'echo hi; rm -f .orchestrator/metrics/events.jsonl'],
+    ['compound-statement head', 'for f in a; do rm -f .orchestrator/metrics/events.jsonl; done'],
+    ['literal -c payload', 'bash -c "rm -f .orchestrator/metrics/events.jsonl"'],
+    ['literal eval payload', 'eval "rm -f .orchestrator/metrics/events.jsonl"'],
+  ])('blocks through %s', async (_label, command) => {
+    // Command POSITION, not just the bare verb: a segmenter that split only on
+    // `; && || | &` would miss every one of these.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectDeny(result, 'ledger-delete-protected');
+  });
+
+  it('blocks the absolute spelling of the same file', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload(`rm -f ${path.join(dir, '.orchestrator/metrics/events.jsonl')}`),
+    });
+    expectDeny(result, 'ledger-delete-protected');
+  });
+
+  it('judges PER TARGET — an allowed sibling operand cannot lift the verdict', async () => {
+    // The #1106 hole in its delete-class form (`guard-design.md` § "Widening a
+    // matcher without narrowing its bypass"): if the rule asked "does this
+    // COMMAND mention an exempt path" instead of "is THIS target denied", the
+    // .orchestrator/tmp operand below would wave the ledger deletion through.
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('rm -f .orchestrator/tmp/ok.json .orchestrator/metrics/events.jsonl'),
+    });
+    expectDeny(result, 'ledger-delete-protected');
+  });
+
+  it.each([
+    ['.orchestrator/tmp — the named exception', 'rm -f .orchestrator/tmp/foo.json'],
+    ['.orchestrator/tmp recursively', 'rm -rf .orchestrator/tmp/foo'],
+    ['node_modules', 'rm -rf node_modules'],
+    ['a /tmp scratch file', 'rm -f /tmp/vitest-result-3.json'],
+    ['a mv that never touches metrics', 'mv /tmp/bin/glab /usr/local/bin/glab'],
+    ['reading the ledger', 'cat .orchestrator/metrics/events.jsonl'],
+    ['copying the ledger', 'cp .orchestrator/metrics/events.jsonl /tmp/backup.jsonl'],
+    ['naming the path without a destructive verb', 'echo .orchestrator/metrics/events.jsonl'],
+  ])('still allows %s', async (_label, command) => {
+    // False alarms are expensive here — this hook gates EVERY Bash call of every
+    // session on the host. These are the shapes the repo's own CI, husky hooks
+    // and bootstrap templates actually run.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload(command) });
+    expectAllow(result);
+  });
+
+  it('never blocks on a guess — a variable operand is not matched', async () => {
+    // `rm -f "$LEDGER"` is the ordinary spelling of a scripted cleanup. Blocking
+    // it would mean guessing at the variable's value (#641 FP class), and
+    // NOTIFYING on it would fire on a large share of benign commands (HR-101) —
+    // so it is fail-visible on stderr only, and the decision stays a silent allow.
+    //
+    // The non-recursive form is deliberate: `rm -rf "$WORK"` is already denied by
+    // the OLDER `rm-rf-destructive` rule (an unresolvable operand cannot clear
+    // its path-allowlist), so it would prove nothing about THIS rule.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('rm -f "$LEDGER"') });
+    expectAllow(result);
+    expect(result.stderr).toContain('variable/substitution');
+  });
+
+  it('the rule class never routes through the generic pattern matcher', async () => {
+    // Its `pattern` is a human-readable label. If the hook fell through to
+    // `commandMatchesBlocked(command, pattern)` the label would either match
+    // nothing (silent disarm) or — with a bare `rm` pattern — every rm on the
+    // host. A pattern-path fall-through would deny this harmless echo.
+    const dir = await mkProjectTracked();
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('echo "rm|mv|unlink .orchestrator/metrics/**"'),
+    });
+    expectAllow(result);
   });
 });

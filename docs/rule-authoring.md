@@ -106,6 +106,8 @@ globs:
 
 `rule-loader.mjs`'s frontmatter parser (`parseGlobsFrontmatter`) tolerates a leading run of blank lines and/or single-line HTML comments before the opening `---`, so a vendored rule's provenance header does not defeat its `globs:` scoping — the header line is skipped, then frontmatter parses exactly as it would without the header. This tolerance is header-agnostic (it accepts any single-line HTML comment, not only the plugin's own), so a hand-authored rule that happens to start with a one-line comment is unaffected.
 
+This convention binds only files that are actual sync SOURCES — the entries `syncRules()` resolves from `rules/_index.md` (`join(pluginRoot, 'rules', '_index.md')`, the manifest it reads before writing anything into a consumer's `.claude/rules/`). `rules/README.md` and `rules/_index.md` itself are never entries in that manifest, so they are never sync targets and carry no provenance header by construction — not an oversight to fix.
+
 ### Vendoring validation (issue #722)
 
 Before `syncRules()` writes a source file into a consumer repo's `.claude/rules/`, it runs a pre-write gate via `validateRuleContent()` (`scripts/lib/validate-vendored-rules.mjs`). Five probes:

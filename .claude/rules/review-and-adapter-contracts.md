@@ -86,6 +86,9 @@ Without an independent reviewer between two waves on one guard surface, the inva
 
 `isolation: worktree` erzeugt den Worktree aus HEAD. Solange die Wellen-Ergebnisse uncommittet im Hauptbaum liegen (Normalfall: der Koordinator committet erst im `/close`), sieht ein dort dispatchter Reviewer oder Fix-Agent NICHTS von der Arbeit, die er pruefen soll — und meldet folgerichtig keine Befunde. Read-only-Review- und Fix-Pass-Wellen gehoeren deshalb in-place (`isolation: none`), auch wenn die Shape `worktree` vorgibt.
 
+Das gilt auch NACH einem Mid-Session-Commit: die Base ist der Session-Start-Stand, nicht HEAD — gemessen 2026-09-19 (s18) standen Worktrees, 25 Minuten nach Commit `240efda6` erzeugt, weiter auf dessen Elternteil `8f15f77b`, sodass ein FIX-Agent still den alten Code repariert. Sein Testlauf ist dann strukturell rot, weil `check-guard-requires-parity.mjs` gegen `git show HEAD:` im veralteten Worktree vergleicht und `validate-plugin` vitest' globalSetup ist. Vor dem Vertrauen in ein Worktree-Ergebnis die Base pruefen (der Dispatch-Hook warnt seit #1413 auf stderr):
+`git worktree list --porcelain | awk -v h="$(git rev-parse HEAD)" '/^worktree /{w=$2} /^HEAD /{if (w ~ /\.claude\/worktrees\/agent-/ && $2 != h) print "STALE " substr($2,1,12) " " w}'`
+
 **Evidence** — Session `main-2026-09-12-session-26`: das W4-Manifest zeigte alle 8 Agent-Worktrees auf Base `c99970af`, waehrend 27 geaenderte Dateien uncommittet im Hauptbaum lagen; in-place nachdispatched fand dasselbe Panel 6 MED.
 
 <!-- untrusted-content:end -->

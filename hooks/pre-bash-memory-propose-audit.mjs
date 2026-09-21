@@ -29,8 +29,7 @@ import { emitEvent } from '../scripts/lib/events.mjs';
 import { findScopeFile } from '../scripts/lib/hardening.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// exit 0 immediately when this hook is disabled via profile/env
-if (!shouldRunHook('pre-bash-memory-propose-audit')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -203,10 +202,17 @@ async function main() {
   return emitAllow();
 }
 
-// Top-level error handler — never let exit 1 leak
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-memory-propose-audit: internal error — ${e?.message || e}\n`,
-  );
-  process.exit(0); // fail-open on internal errors
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // exit 0 immediately when this hook is disabled via profile/env
+  if (!shouldRunHook('pre-bash-memory-propose-audit')) process.exit(0);
+
+  // Top-level error handler — never let exit 1 leak
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-memory-propose-audit: internal error — ${e?.message || e}\n`,
+    );
+    process.exit(0); // fail-open on internal errors
+  });
+}

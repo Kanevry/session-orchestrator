@@ -512,6 +512,26 @@ async function readSteering(repoRoot) {
  */
 
 /**
+ * Record a THROWN abort (`unknown-model`, `subagent-crash`) before the caller
+ * rethrows the original error (#1221). The record is guarded on its own:
+ * `recordDialecticRun()` is best-effort today, but the rethrow contract must
+ * not depend on that staying true — a telemetry failure never replaces the
+ * error the caller is about to rethrow.
+ *
+ * @param {string} repoRoot
+ * @param {'unknown-model' | 'subagent-crash'} status
+ * @param {number} t0 — `Date.now()` at run start
+ * @returns {Promise<void>}
+ */
+async function recordThrownAbort(repoRoot, status, t0) {
+  try {
+    await recordDialecticRun({ repoRoot, status, durationMs: Date.now() - t0 });
+  } catch {
+    /* swallowed on purpose — see docblock */
+  }
+}
+
+/**
  * Run the deriver loop: load inputs → build payload → check budget → dispatch
  * agent → parse response → guard empty-card. Returns a structured verdict.
  *
@@ -552,15 +572,20 @@ export async function runDialecticDeriver({
 
   // #1206 — telemetry start marker for the mechanical `orchestrator.dialectic.
   // completed` emits below. Mechanical (measured), not the coordinator's own
-  // typed DURATION_MS placeholder — covers every return path THIS function
-  // can determine on its own; see the module header for the two abort classes
-  // (`unknown-model`, thrown above; `subagent-crash`) and APPLY-mode success
-  // that only the skill-prose caller can record (merge + Agent() dispatch
-  // both happen one layer up, outside this pure pipeline).
+  // typed DURATION_MS placeholder — covers every outcome THIS function can
+  // see: the returns, and since #1221 the two THROWN aborts (`unknown-model`,
+  // `subagent-crash`), recorded at the throw point before the original error
+  // is rethrown. Only APPLY-mode success stays with the skill-prose caller —
+  // the merge happens one layer up, outside this pure pipeline.
   const t0 = Date.now();
 
   // Gate 1: model fail-fast. Throws Error with the canonical message.
-  validateModel(model);
+  try {
+    validateModel(model);
+  } catch (err) {
+    await recordThrownAbort(repoRoot, 'unknown-model', t0);
+    throw err;
+  }
 
   // Load inputs (best-effort, never throws on missing).
   const [learnings, sessions, peerCardsResult, steering] = await Promise.all([
@@ -617,7 +642,13 @@ export async function runDialecticDeriver({
 
   // Dispatch — DI boundary. Caller wires the real Agent({...}) wrapper or a mock.
   const maxTokens = typeof budget?.output === 'number' ? budget.output : DEFAULT_BUDGET.output;
-  const response = await dispatchAgent({ model, prompt, maxTokens });
+  let response;
+  try {
+    response = await dispatchAgent({ model, prompt, maxTokens });
+  } catch (err) {
+    await recordThrownAbort(repoRoot, 'subagent-crash', t0);
+    throw err;
+  }
 
   const text = typeof response?.text === 'string' ? response.text : '';
   const { diff } = parseResponse(text);

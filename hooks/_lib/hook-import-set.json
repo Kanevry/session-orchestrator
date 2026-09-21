@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-18T18:53:21.845Z",
-  "head": "20a4cbffc5fda699696c8048d2ec2a3ca2e5ddab",
+  "generated_at": "2026-09-20T07:31:00.985Z",
+  "head": "9b118cf63fdd5ab3a7b6bbe36a657c230295783a",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -307,6 +307,7 @@
         "post-tool-batch-wave-signal.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs"
       ]
     },
@@ -844,7 +845,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -866,7 +868,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {
@@ -1001,11 +1004,31 @@
     {
       "file": "scripts/lib/is-main-module.mjs",
       "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
         "enforce-scope.mjs",
+        "loop-guard.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
+        "on-stop.mjs",
+        "operator-steer.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-bash-destructive-guard.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1272,7 +1295,8 @@
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {

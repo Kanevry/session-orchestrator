@@ -678,6 +678,14 @@ function statusSeverity(status) {
  *      genuinely foreign ref (another branch), which the caller reports as
  *      `unknown` with its own reason rather than adopting.
  *
+ * `foreign` is EVERY same-sha row outside the selected tier — on every branch,
+ * not only on tier 4 (#1390). It used to be `[]` whenever a tier matched, so a
+ * same-sha `failed` on another ref vanished with no trace behind a `green`
+ * reading. The ref preference still decides the verdict; the rows it set aside
+ * are handed back so the caller can publish them as evidence
+ * ({@link candidateEvidence} `droppedStatuses`). Linear `includes` scan over
+ * at most the 15-row API window — revisit if `per_page` grows past ~200.
+ *
  * @param {Array<any>} pipelines
  * @param {string} sha
  * @param {string|undefined} branch
@@ -685,20 +693,23 @@ function statusSeverity(status) {
  */
 function selectShaPipelines(pipelines, sha, branch) {
   const sameSha = pipelines.filter((p) => p && p.sha === sha);
-  if (sameSha.length === 0) return { selected: [], foreign: [] };
+  const split = (selected) => ({
+    selected,
+    foreign: sameSha.filter((p) => !selected.includes(p)),
+  });
 
   const onBranch = sameSha.filter((p) => refMatchesBranch(p.ref, branch));
-  if (onBranch.length > 0) return { selected: onBranch, foreign: [] };
+  if (onBranch.length > 0) return split(onBranch);
 
   const unjudgeable = sameSha.filter(
     (p) => !branch || typeof p.ref !== 'string' || p.ref === '',
   );
-  if (unjudgeable.length > 0) return { selected: unjudgeable, foreign: [] };
+  if (unjudgeable.length > 0) return split(unjudgeable);
 
   const mrHead = sameSha.filter((p) => isMergeRequestHeadRef(p.ref));
-  if (mrHead.length > 0) return { selected: mrHead, foreign: [] };
+  if (mrHead.length > 0) return split(mrHead);
 
-  return { selected: [], foreign: sameSha };
+  return split([]);
 }
 
 /**
@@ -733,12 +744,21 @@ function worstPipeline(candidates) {
  *                        before.
  *   - `candidateStatuses` their statuses, in API order, same gate.
  *   - `ambiguous`        `true` only when those statuses DISAGREE.
+ *   - `droppedCount`     number of same-sha pipelines the ref preference SET
+ *                        ASIDE (another branch, an MR HEAD beside a branch
+ *                        match, a ref-less row beside a judged one) — only when
+ *                        > 0 (#1390). Without it a `failed` run of the very
+ *                        commit on another ref disappeared behind a `green`.
+ *   - `droppedStatuses`  their statuses, in API order, same gate. Evidence
+ *                        only: they never enter the verdict or `ambiguous`,
+ *                        which stay the #857 ref-preference result.
  *
  * @param {Array<any>} selected
  * @param {any} chosen
- * @returns {{ matchedRef?: string, candidateCount?: number, candidateStatuses?: string[], ambiguous?: true }}
+ * @param {Array<any>} dropped  Same-sha rows outside the selected tier
+ * @returns {{ matchedRef?: string, candidateCount?: number, candidateStatuses?: string[], ambiguous?: true, droppedCount?: number, droppedStatuses?: string[] }}
  */
-function candidateEvidence(selected, chosen) {
+function candidateEvidence(selected, chosen, dropped) {
   /** @type {any} */
   const out = {};
   if (typeof chosen?.ref === 'string' && chosen.ref !== '') {
@@ -748,6 +768,10 @@ function candidateEvidence(selected, chosen) {
     out.candidateCount = selected.length;
     out.candidateStatuses = selected.map((p) => sanitizeApiText(p.status));
     if (new Set(out.candidateStatuses).size > 1) out.ambiguous = true;
+  }
+  if (dropped.length > 0) {
+    out.droppedCount = dropped.length;
+    out.droppedStatuses = dropped.map((p) => sanitizeApiText(p.status));
   }
   return out;
 }
@@ -849,7 +873,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
   }
 
   const currentPipeline = worstPipeline(selected);
-  const evidence = candidateEvidence(selected, currentPipeline);
+  const evidence = candidateEvidence(selected, currentPipeline, foreign);
   const pipelineStatus = currentPipeline.status;
 
   if (pipelineStatus === 'success') {
@@ -1169,12 +1193,16 @@ async function checkGithub(repoRoot, deps = {}) {
  *     candidateCount?: number,
  *     candidateStatuses?: string[],
  *     ambiguous?: true,
+ *     droppedCount?: number,
+ *     droppedStatuses?: string[],
  *   },
  * }>}
  *
  * The `status` vocabulary is FROZEN at `green | red | unknown` (#857/#856): the
  * #857 "several contradicting pipelines" and "only foreign-ref pipelines"
- * findings are delivered through ADDITIVE `details` fields and `details.reason`,
+ * findings — and the #1390 "same-sha rows the ref preference set aside"
+ * (`droppedCount`/`droppedStatuses`) — are delivered through ADDITIVE `details`
+ * fields and `details.reason`,
  * never as a new status value — consumers fail open on an unknown status string
  * and the session-start renderer prints nothing for one.
  */

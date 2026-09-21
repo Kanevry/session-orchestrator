@@ -178,29 +178,75 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
 
 1. Read `config['skill-evolution'].judge` (default `false`), `config['skill-evolution']['judge-budget-tokens']` (default 8000), and `persistence`. Apply the two skip gates above.
 
-2. Determine the **judged set** — only THIS session's selected skills. Read `.orchestrator/metrics/skill-invocations.jsonl` and collect the distinct `skill` values whose `session_id` matches the current session id. If the judged set is empty, `runSkillJudge` returns `status: 'empty-input'` (no dispatch) — log and continue.
+2. Determine the **judged set** — only THIS session's selected skills.
 
-3. Invoke `runSkillJudge` from `scripts/lib/skill-judge.mjs`, wiring the real dispatch via the DI seam:
+   > **Join on the RAW UUID, never on the semantic session id.** The writer is the `PreToolUse` hook `hooks/skill-invocation-telemetry.mjs`, which stamps `session_id` straight from the hook payload (`:190`) — that is the harness UUID. Measured 2026-09-19 over `.orchestrator/metrics/skill-invocations.jsonl` (841 lines): **767 raw UUIDs, 55 semantic ids, 17 null**. Joining on `main-<date>-session-N` therefore matches ~0 rows for a current session, the judged set comes back empty, and the phase reports `empty-input` — a silent no-op indistinguishable from "this session used no skills". The raw id is `process.env.CLAUDE_CODE_SESSION_ID` (or `session_id` of a live `.orchestrator/session.lock`); it is also the id that names the transcript file in step 3.
 
    ```javascript
-   import { runSkillJudge } from '${PLUGIN_ROOT}/scripts/lib/skill-judge.mjs';
+   import { readFileSync } from 'node:fs';
+   import { readLock } from '${PLUGIN_ROOT}/scripts/lib/session-lock.mjs';
+
+   const rawSessionId =
+     (process.env.CLAUDE_CODE_SESSION_ID || '').trim() ||
+     (readLock({ repoRoot: process.cwd() })?.session_id || '').trim();
+
+   const selectedSkills = [...new Set(
+     readFileSync('.orchestrator/metrics/skill-invocations.jsonl', 'utf8')
+       .split('\n').filter(Boolean)
+       .flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })
+       .filter((r) => r.session_id === rawSessionId && typeof r.skill === 'string')
+       .map((r) => r.skill),
+   )];
+   ```
+
+   If the judged set is empty, `runSkillJudge` returns `status: 'empty-input'` (no dispatch) — log and continue.
+
+3. **Build the evidence window, then invoke `runSkillJudge`.** This is ONE verifying call, not a prose instruction: before #1399 this step named a free variable `transcriptTail` that nothing in the tree produced, so the judge was dispatched with an EMPTY `<untrusted-data-…>` fence. Measured 2026-09-19 at `8f15f77b`: such a prompt is 1387 characters = 346 estimated tokens, well under the 8000-token budget, so the budget gate never caught it — the judge ruled on a transcript it had never seen.
+
+   ```javascript
+   import { buildSkillEvidence } from '${PLUGIN_ROOT}/scripts/lib/skill-evidence-window.mjs';
+   import { runSkillJudge, evidenceBudgetChars } from '${PLUGIN_ROOT}/scripts/lib/skill-judge.mjs';
    import { appendSkillJudgment } from '${PLUGIN_ROOT}/scripts/lib/skill-judgments-schema.mjs';
    import path from 'node:path';
 
    const budgetTokens = config['skill-evolution']['judge-budget-tokens'] ?? 8000;
+   const budget = { input: budgetTokens, output: 4000 };
+
+   // `buildSkillEvidence` resolves ~/.claude/projects/<encoded-repo>/<rawSessionId>.jsonl,
+   // locates each skill's invocation anchors and renders bounded excerpts. Never throws.
+   const evidence = await buildSkillEvidence({
+     repoRoot: process.cwd(),
+     sessionId: rawSessionId,            // RAW UUID — it names the transcript FILE
+     skills: selectedSkills,
+     budgetChars: evidenceBudgetChars(selectedSkills, budget),
+     includeSubagents: true,             // #1412 — see the note below
+   });
+
+   // VERIFY before dispatching — these three numbers are the receipt for this step.
+   console.error(
+     `skill-judge: evidence ${evidence.status} — ${evidence.chars} chars from ` +
+     `${evidence.source.records} records (${evidence.source.malformed_lines} malformed), ` +
+     `skipped: ${JSON.stringify(evidence.skipped)}`,
+   );
+
    const result = await runSkillJudge({
      // Claude Code path: wire the real read-only haiku subagent as dispatchAgent.
      dispatchAgent: ({ model, prompt, maxTokens }) =>
        Agent({ subagent_type: 'skill-applied-judge', model: 'haiku', prompt, max_tokens: maxTokens }),
      repoRoot: process.cwd(),
-     sessionId,
-     transcriptTail,                 // recent session transcript excerpt (UNTRUSTED — fenced by the lib)
+     sessionId: rawSessionId,
+     evidence,                       // UNTRUSTED excerpts — fenced by the lib
      selectedSkills,                 // distinct skills from step 2
      model: 'haiku',
-     budget: { input: budgetTokens, output: 4000 },
+     budget,
    });
    ```
 
+   - `evidence.status` is `no-transcript` (no file for this session id) or `no-evidence` (file read, no invocation anchor found) or `ok`. On the first two the evidence text is `''` and `runSkillJudge` returns `status: 'no-evidence'` **without dispatching** — log and continue, never fabricate a tail to get past it.
+   - `evidence.source.malformed_lines > 0` means the window is a PARTIAL read of the transcript. Log it beside the judgment; a clean verdict over an incompletely-read input is the failure this field exists to expose.
+   - `evidence.truncated === true` or a non-empty `evidence.skipped` means some judged skill got no excerpt — the judge will correctly answer `unknown` for it.
+   - **`includeSubagents: true` is set HERE, not in the library (#1412).** `buildSkillEvidence`'s own default stays `false`, so every other caller keeps the fail-closed behaviour and this one choice is greppable. Without it, a skill dispatched INSIDE a subagent (`<uuid>/subagents/agent-*.jsonl`) has no anchor in the main transcript, the phase reports `no-evidence`, and the reach limit is invisible — `runSkillJudge` correctly does not dispatch, so nothing is mis-judged, but nothing is ever judged either. Cost measured 2026-09-20 over the 3 most recent sessions carrying a `subagents/` dir: records 4.2-5.0x, read time 22 → 175 ms, window size still far under budget.
+   - The extra records are bounded two ways, both inside `renderEvidence`: subagent-only skills share at most `DEFAULT_SUBAGENT_POOL_SHARE` (0.25) of the per-skill pool whenever coordinator-anchored skills are also present, and the shared `### session closing` excerpt is taken from the MAIN transcript's tail (`mainRecordCount`), never from the last subagent file that happens to sit at the end of the concatenated array. Anything that still does not fit is reported in `evidence.skipped` with `truncated: true` — never silently shortened.
    - **Claude Code path:** `dispatchAgent` wraps the real `Agent({ subagent_type: 'skill-applied-judge', model: 'haiku', … })`. The agent is `sandbox-tier: read-only` and RETURNS one fenced ```json block — it never writes files.
    - **Codex / Cursor path:** there is no subagent type. Wire `dispatchAgent` as a coordinator-inline call (the coordinator itself reasons over the prompt and returns `{ text }`), keeping the identical `runSkillJudge` signature. Same DI seam, no harness subagent.
 
@@ -221,11 +267,11 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
 
    `appendSkillJudgment` re-validates each record; `advisory !== true` is schema-rejected, so a tampered record can never be persisted.
 
-5. On `result.status === 'empty-input'` or `'budget-exceeded'`: log the status (e.g. `skill-judge: skipped (budget-exceeded used=N budget=M)`) and continue. No sidecar write on either non-ok status.
+5. On `result.status === 'empty-input'`, `'no-evidence'` or `'budget-exceeded'`: log the status (e.g. `skill-judge: skipped (budget-exceeded used=N budget=M)`, `skill-judge: skipped (no-evidence — ${result.skipped_reason})`) and continue. No sidecar write on any non-ok status, and no dispatch happened on any of them.
 
 6. **Failures are non-fatal.** Any error from the dispatch or write is logged to `.orchestrator/metrics/sweep.log` and the close continues — same posture as Phase 3.6.7. The judge is advisory; a failed judgment must never block session close.
 
-Cross-reference: PRD §A L3 acceptance criteria (#645, epic #643); `scripts/lib/skill-judge.mjs` API (`runSkillJudge`, `validateModel`, `estimateInputTokens`, `checkBudget`, `buildJudgePrompt`, `parseJudgeResponse`); `scripts/lib/skill-judgments-schema.mjs` (`appendSkillJudgment`, `readSkillJudgments`, `validateSkillJudgment`); agent `agents/skill-applied-judge.md`.
+Cross-reference: PRD §A L3 acceptance criteria (#645, epic #643); issue #1399 (the evidence producer + the raw-UUID join); `scripts/lib/skill-evidence-window.mjs` API (`buildSkillEvidence`, `locateSkillAnchors`, `renderEvidence`, `readTranscriptRecords`, `resolveRawSessionId`); `scripts/lib/skill-judge.mjs` API (`runSkillJudge`, `validateModel`, `estimateInputTokens`, `checkBudget`, `buildJudgePrompt`, `evidenceBudgetChars`, `parseJudgeResponse`); `scripts/lib/skill-judgments-schema.mjs` (`appendSkillJudgment`, `readSkillJudgments`, `validateSkillJudgment`); agent `agents/skill-applied-judge.md`.
 
 ### 3.6.7 Auto-Dialectic Dispatch (#506, F2.5) — RETIRED
 

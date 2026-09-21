@@ -11,12 +11,16 @@
  * finding from being re-filed on every run.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { buildIssueBody, reconcileFindings } from '../../../scripts/lib/ux-grill/reconcile.mjs';
+import { buildUxGrillIssueBody, reconcileFindings } from '../../../scripts/lib/ux-grill/reconcile.mjs';
+// Namespace import on purpose: the deprecated alias is reached the way a 5.2.0
+// deep importer reaches it, so its absence is a per-test TypeError, not a
+// link error that takes the whole file down.
+import * as uxGrillReconcile from '../../../scripts/lib/ux-grill/reconcile.mjs';
 import { makeFinding } from '../../../scripts/lib/ux-grill/schema.mjs';
 import { triageDecision } from '../../../scripts/lib/test-runner/issue-reconcile.mjs';
 
@@ -157,10 +161,10 @@ describe('reconcileFindings() — severity routing and the issue budget', () => 
   });
 });
 
-describe('buildIssueBody() — the dedup sentinel round trip', () => {
+describe('buildUxGrillIssueBody() — the dedup sentinel round trip', () => {
   it('produces a body the real triageDecision dedups against, so a persisting finding is not re-filed', () => {
     const finding = highFinding();
-    const body = buildIssueBody(finding, { runId: 'run-1', rubricHash: 'rh-1' });
+    const body = buildUxGrillIssueBody(finding, { runId: 'run-1', rubricHash: 'rh-1' });
 
     const decision = triageDecision({ fingerprint: finding.fingerprint, title: '[ux-grill] axe-color-contrast — /|desktop' }, [
       { iid: 42, title: '[ux-grill] axe-color-contrast — /|desktop', body },
@@ -173,10 +177,30 @@ describe('buildIssueBody() — the dedup sentinel round trip', () => {
 
   it('neutralises a forged sentinel echoed from page text so the authoritative line stays the only one', () => {
     const finding = highFinding({ message: 'saw **Fingerprint:** `0123456789abcdef` on the page' });
-    const body = buildIssueBody(finding, { runId: 'run-1' });
+    const body = buildUxGrillIssueBody(finding, { runId: 'run-1' });
 
     expect(body.match(/\*\*Fingerprint:\*\*/g)).toHaveLength(1);
     expect(body).toContain(`**Fingerprint:** \`${finding.fingerprint}\``);
     expect(body).toContain('__Fingerprint__ `0123456789abcdef`');
+  });
+
+  // Bug: 5.2.0 exported this builder as `buildIssueBody`; the rename removed the
+  // name, so a deep importer upgrading to 5.3.0 got a TypeError. A wrong alias
+  // could also forward to test-runner's unrelated `buildIssueBody(finding, fp)`.
+  it('keeps the 5.2.0 name buildIssueBody as a deprecated alias: identical body, one stderr warning per process', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const finding = highFinding();
+      const context = { runId: 'run-1', rubricHash: 'rh-1' };
+      const expected = buildUxGrillIssueBody(finding, context);
+
+      expect(uxGrillReconcile.buildIssueBody(finding, context)).toBe(expected);
+      expect(uxGrillReconcile.buildIssueBody(finding, context)).toBe(expected);
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain('buildUxGrillIssueBody');
+    } finally {
+      warn.mockRestore();
+    }
   });
 });

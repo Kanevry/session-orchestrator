@@ -11,11 +11,18 @@
  * (string in, findings out); the hook keeps stdin, config gate, sidecar
  * resolution, sentinels and the three output channels.
  *
- * Three responsibilities, in the order the hook uses them:
+ * Four responsibilities, in the order the hook uses them:
  *   1. `readTranscriptTail()` — the last N assistant records of ONE transcript
- *      JSONL, text blocks concatenated.
+ *      JSONL, text blocks concatenated. This is the HOOK'S VIEW: what the
+ *      agent SAID.
+ *   1b. `readTranscriptObservations()` — the vitest run summaries found in the
+ *      `tool_result` blocks of the SAME byte window. This is what the agent
+ *      actually RAN. A second reader rather than a second pattern, because
+ *      `readTranscriptTail` collects assistant `text` blocks only and a
+ *      `tool_result` lives in a `user` record.
  *   2. `findViolations()` — distributional/repo-state claims that carry no
- *      adjacent measurement evidence.
+ *      adjacent measurement evidence, gate verdicts that carry no run receipt,
+ *      and (R1) a claimed test count that contradicts every run observed.
  *   3. `normalizeClaim()` / `dedupeViolations()` — one record per distinct
  *      claim, with an `occurrences` count (#1198: the fleet's worst repo held
  *      3,360 records over 205 distinct `claim_text` values = duplication
@@ -213,6 +220,276 @@ const GATE_SUMMARY_LINE_RE =
   /\b\d+\s+passed\s*\/\s*\d+\s+failed\b|^\s*STATUS:\s*(?:done|partial|failed)\b|\bFull Gate\b|\bGate:\s*(?:typecheck|grün|gruen|rot)\b|\bGate \d[\d.]*\/\d+\b|\b\d+\s+Wellen?,\s*\d+\s+Agents?\b|\bArbeitsbaum leer\b|\bmit Nachweis geschlossen\b/i;
 
 /**
+ * GATE/DONE-VERDICT claim (#1397 w4-1) — the second claim class, and the one
+ * the exemption above structurally hid.
+ *
+ * `GATE_SUMMARY_LINE_RE` is CORRECT for what it was built for: it keeps the
+ * DISTRIBUTIONAL patterns off the harness's own completion output, where a
+ * number is a field value rather than an assertion (186/400 = 46.5% of sampled
+ * violations, #1198 D8). What it did NOT do is look at those lines for a claim
+ * of a DIFFERENT kind — so `STATUS: done` and "alles grün" were the two line
+ * shapes the scanner could never flag, which is precisely where "done" and
+ * "green" get claimed.
+ *
+ * Measured 2026-09-19 over a 130-case labelled done-claim corpus
+ * (`~/.cache/jev-eval/so/tasks/s2-done-claim.json`, gold `qid: "support"`):
+ * `findViolations()` answered `supported` on 128 of 130 cases — accuracy 30.2%,
+ * Cohen κ 0.007, statistically indistinguishable from guessing. Independent
+ * evidence from the same build: of 50 done/partial reports carrying neither a
+ * test count nor `exit 0`, 3 carry a bare gate-verdict claim with no command
+ * anywhere in the report.
+ *
+ * TWO separate triggers, both deliberately gap-free (no `[^\n]{0,N}` bridge) so
+ * a number or a verb between the noun and the verdict word breaks the match —
+ * "The gate ran green on 2026-07-29" and "CI-Pipeline #6995 grün" are prose
+ * about a past run, not a verdict being asserted now.
+ */
+const DONE_STATUS_RE =
+  /^\s*(?:[-*+>]\s+|#{1,6}\s+)*\**\s*STATUS\**\s*[:=]\s*\**\s*(?:done|partial|complete|abgeschlossen|fertig)\b/i;
+
+const GATE_GREEN_RE = new RegExp(
+  [
+    // English verdicts
+    '\\b(?:all\\s+)?tests?\\s+(?:now\\s+)?pass(?:es|ed|ing)?\\b',
+    '\\b(?:suite|gate|build|pipeline|ci)\\s+(?:is\\s+|are\\s+)?green\\b',
+    '\\bgreen\\s+(?:gate|suite|build|pipeline)\\b',
+    '\\b(?:typecheck|lint|build|gate|suite)\\s+(?:is\\s+)?(?:clean|passes|passing)\\b',
+    '\\beverything\\s+(?:passes|is\\s+green)\\b',
+    // "<gate>: PASS|clean|green|OK" — the shape the code-implementer report
+    // template itself prescribes ("Verification — Typecheck: pass").
+    '\\b(?:tests?|typecheck|lint|gate|build|suite)\\s*:\\s*\\**\\s*(?:pass|passed|clean|green|ok)\\b',
+    // German verdicts
+    '\\balles\\s+gr(?:ü|ue)n\\b',
+    '\\balle\\s+Tests?\\s+gr(?:ü|ue)n\\b',
+    '\\bgr(?:ü|ue)ne(?:[rsn]|nes)?\\s+(?:Gate|Suite|Lauf)\\b',
+    '\\b(?:Full\\s+Gate|Gate|Suite)\\s*:?\\s*\\**\\s*(?:ist\\s+)?gr(?:ü|ue)n',
+  ].join('|'),
+  'i'
+);
+
+/**
+ * A RUN RECEIPT — the counted result PSA-006 item 1-3 asks a gate claim to
+ * carry: a pass/fail count, a typecheck file count, an exit code, or a
+ * numerator/denominator green ratio. German forms alongside the English ones.
+ *
+ * Scope is the WHOLE scanned text, not the ±GREP_PROXIMITY_LINES window the
+ * distributional class uses, and that asymmetry is the point: a distributional
+ * claim is about ONE measurement and needs its transcript adjacent, while a
+ * done/gate verdict is about the whole report's work — a report that quotes
+ * `npm test` at the top and writes `STATUS: done` forty lines later IS
+ * evidenced. The window still applies to the command half via
+ * `nearIndex(measurementLines, …)`; this is the counted-result half.
+ *
+ * Deliberately LENIENT in the false-positive-safe direction: any exit code (not
+ * only `0`) counts, because the question this class asks is "was anything run
+ * at all?", never "did it pass?". A quoted `exit 1` means a run happened; the
+ * verdict's truth is the coordinator's judgement, not a regex's.
+ *
+ * `(?<![A-Za-z])exit` rather than `\bexit`: the shells here emit `LINT_EXIT=0`
+ * / `TYPECHECK_EXIT=0` / `VITEST_EXIT=0`, where `_` is a word character and
+ * `\b` would therefore NOT match.
+ *
+ * All quantifiers bounded ({0,20}) — linear-time, ReDoS-safe.
+ */
+const RUN_RECEIPT_RE = new RegExp(
+  [
+    '\\b\\d+\\s+(?:passed|failed|bestanden|fehlgeschlagen|skipped)\\b',
+    '\\b\\d+\\s+file(?:\\(s\\)|s)?\\s+OK\\b',
+    '(?<![A-Za-z])exit(?:\\s*code)?\\s*[=:]?\\s*\\d+',
+    '\\b\\d+\\s*/\\s*\\d+\\b[^\\n]{0,20}?\\b(?:passed|green|gr(?:ü|ue)n|tests?)\\b',
+    '\\b(?:passed|failed)\\s*[=:]\\s*\\d+',
+  ].join('|'),
+  'i'
+);
+
+/** Claim-class discriminators carried on every violation record. */
+export const KIND_DISTRIBUTIONAL = 'distributional';
+export const KIND_GATE_VERDICT = 'gate-verdict';
+/**
+ * CLAIM-MISMATCH (#1385 R1) — the third class, and the one that closes an
+ * INVERSION the other two leave standing.
+ *
+ * `RUN_RECEIPT_RE` is report-wide and knows `\d+\s+passed`, so the number an
+ * agent asserts is accepted as its own receipt. Measured on this module at
+ * HEAD before this change:
+ *
+ *   'STATUS: done\nTests pass: 5129 passed / 0 failed.'  ->  []
+ *   'STATUS: done\nAlles grün.'                          ->  ['gate-verdict','gate-verdict']
+ *
+ * An invented number therefore DISARMS the guard, while an honest report with
+ * no number is flagged. This class reads the `tool_result` side of the same
+ * window and compares: the claim is only a violation when runs WERE observed
+ * and NONE of them carries the asserted pass count.
+ *
+ * Deliberately NOT built (BV-001.1): the SHA-claim check. Measured 2026-09-19
+ * by w1-3 over 1037 real subagent transcripts — 244 carried a SHA claim, 103
+ * distinct tokens, 5 unresolvable in-repo, and all 5 were cross-repo
+ * artefacts, 0 hallucinations. A check there produces only false alarms.
+ */
+export const KIND_CLAIM_MISMATCH = 'claim-mismatch';
+/** `mismatch` sub-kind: a claimed test COUNT no observed run carries. */
+export const MISMATCH_COUNT = 'count';
+
+/**
+ * Commands whose `tool_result` may carry a vitest run summary. Restricted to
+ * vitest ON PURPOSE: `validate-plugin`'s own tally ("229 passed, 0 failed")
+ * supplied 5 of the 12 false-alarm candidates in w1-3's pre-measurement, and
+ * admitting a second counter means two number vocabularies in one comparison.
+ *
+ * Structurally reinforced by OBSERVED_SUMMARY_RE below, which demands vitest's
+ * `Tests  N passed (M)` shape — validate-plugin's comma form cannot match it
+ * even when it prints inside a `npx vitest` invocation (it is the suite's
+ * globalSetup).
+ */
+const VITEST_CMD_RE = /\b(?:npm\s+(?:run\s+)?test|pnpm\s+(?:run\s+)?test|npx\s+vitest|vitest\s+run)\b/;
+
+/**
+ * Tools whose `tool_result` may carry a run summary even though the tool is
+ * not the runner. Measured 2026-09-19 over 1044 real subagent transcripts:
+ * the dominant local idiom is `npm test > run.log 2>&1` followed by a SEPARATE
+ * step that surfaces the log — `Read` on the log file (2 of 9 residual
+ * firings) or `BashOutput` on a backgrounded run (1 of 9). Keyed on the TOOL
+ * NAME because neither carries the runner command in its own input.
+ *
+ * Admitting these can only ever CLEAR a claim, never raise one — an extra
+ * observation adds a number the claim may match. NAMED CEILING (BV-004): an
+ * agent that WRITES a file containing a fabricated `Tests N passed (N)` line
+ * and then `Read`s it back manufactures its own observation. Accepted: that
+ * is a deliberate two-step forgery, where the class's target is the ordinary
+ * one-step invented number. REVISIT TRIGGER: one observed case of a claim
+ * cleared by a self-authored file.
+ */
+const RECEIPT_BEARING_TOOLS = new Set(['BashOutput', 'Read']);
+
+/**
+ * A vitest run summary line: `Tests  15419 passed | 11 skipped (15430)`.
+ *
+ * Anchored at line start so `Test Files  612 passed (612)` (a FILE count, not
+ * a test count) and vitest's `⎯⎯ Failed Tests 1 ⎯⎯` banner cannot match — the
+ * former because `Tests` is not followed by whitespace there, the latter
+ * because the line does not begin with it.
+ *
+ * The optional `30:` / `  30→` prefix is NOT cosmetic: the log-reading idiom
+ * above surfaces the summary through `grep -n`, `cat -n` or `Read`, all of
+ * which prepend a line number. Without it the anchor missed a real receipt
+ * that sat in the window — 2 of the 9 residual firings measured 2026-09-19
+ * read `"30:      Tests  1 failed | 1338 passed (1339)"` verbatim.
+ *
+ * All quantifiers bounded — linear-time, ReDoS-safe.
+ */
+const OBSERVED_SUMMARY_RE =
+  /^[^\S\n]{0,16}(?:\d{1,7}[:|→\t][^\S\n]{0,8})?Tests[^\S\n]{1,8}([^\n(]{0,120}?)[^\S\n]{0,8}\((\d{1,9})\)[^\S\n]{0,8}$/gm;
+const PASSED_COUNT_RE = /(\d{1,9})\s+passed\b/i;
+const FAILED_COUNT_RE = /(\d{1,9})\s+failed\b/i;
+
+/** ANSI SGR sequences, stripped before a summary line is matched. */
+// eslint-disable-next-line no-control-regex
+const ANSI_SGR_RE = /\u001b\[[0-9;]{0,16}m/g;
+
+/**
+ * Digit-group separators admitted in a claimed count and stripped before it is
+ * parsed: ASCII dot/comma plus NO-BREAK SPACE (U+00A0) and NARROW NO-BREAK
+ * SPACE (U+202F), the two `toLocaleString` emits for de-AT / fr grouping.
+ *
+ * Written as ESCAPES inside a plain string, never as the literal characters.
+ * Both forms behave identically at runtime and only one survives review: the
+ * literal pair tripped `no-irregular-whitespace` AND is invisible on the page,
+ * the same property that makes `validate-plugin`'s dangerous-invisible check
+ * reject a U+200B. Defined ABOVE its first use — `CLAIMED_COUNT_RE` reads it
+ * at module-evaluation time, and a `const` referenced from above is a TDZ
+ * ReferenceError that `node --check` does not catch (only an import probe
+ * does; see `.claude/rules/toolchain-and-build.md`).
+ */
+const THOUSANDS_SEP_CLASS = '[.,\\u00a0\\u202f]';
+
+/**
+ * A CLAIMED pass count in the agent's own prose: `Tests pass: 5129 passed`,
+ * `51 tests passed`, `14,340 passed`. Global — a line routinely names SEVERAL
+ * (`2 passed files; 70 tests passed`), and treating only the first as "the"
+ * claim is what produced most of the measured false alarms (below).
+ *
+ * Three shapes the corpus forced, each measured 2026-09-19 over 1044 real
+ * subagent transcripts (`~/.claude/projects/<slug>/<session>/subagents/`):
+ *
+ *   1. THOUSANDS SEPARATORS. `14,340 passed` read as `340` under a bare
+ *      `\d{1,9}`, inventing a mismatch out of a parse error — 3 of the first
+ *      12 samples. The group admits `1.091` / `14,340` / `14 340` and the
+ *      separators are stripped before `Number()`.
+ *   2. AN INTERVENING NOUN. `51 tests passed` hid the only number on the line
+ *      that WAS observed.
+ *   3. `passed` AS AN ORDINARY VERB. "the 8 test call sites at lines 715 …
+ *      and 1080 passed bodies" is not a test result at all — `1080` is a line
+ *      number and `passed` takes an object. The trailing lookahead therefore
+ *      requires a RESULT context after the word: end of line, punctuation, a
+ *      digit, or a short connector. The same lookahead subsumes the file
+ *      tally (`2 passed files`), whose column-header form `Test Files` is
+ *      caught by COUNT_CLAIM_EXCLUSION_RES.
+ *
+ * All quantifiers bounded — linear-time, ReDoS-safe.
+ */
+const CLAIMED_COUNT_RE = new RegExp(
+  String.raw`(\d{1,3}(?:${THOUSANDS_SEP_CLASS}\d{3})+|\d{1,9})\s{1,4}(?:tests?\s{1,4})?passed\b` +
+    String.raw`(?=\s{0,4}(?:$|[,.;:/|)*\]!—-]|\d|(?:and|und|in|with|on|at|after|before|for|across|under|exit)\b))`,
+  'gi'
+);
+const THOUSANDS_SEP_RE = new RegExp(THOUSANDS_SEP_CLASS, 'g');
+
+/**
+ * Every pass count asserted on one line, in encounter order.
+ *
+ * @param {string} line
+ * @returns {number[]}
+ */
+function extractClaimedCounts(line) {
+  const out = [];
+  CLAIMED_COUNT_RE.lastIndex = 0;
+  for (const m of line.matchAll(CLAIMED_COUNT_RE)) {
+    const n = Number(m[1].replace(THOUSANDS_SEP_RE, ''));
+    if (Number.isFinite(n)) out.push(n);
+  }
+  return out;
+}
+
+/**
+ * Lines that carry `N passed` WITHOUT asserting this run's test count. Each
+ * entry is one of the four false-alarm forms w1-3 measured; a fifth would go
+ * here rather than into a widened threshold (HR-101 / development.md §
+ * Guard & Threshold Design — category separation, never a looser number).
+ *
+ *   1. A DIFFERENT instrument with the same word shape — vitest's own file
+ *      tally, `validate-plugin`, the `check-rules`/`check-skills`/`check-docs`
+ *      validators, a `Results:` summary line.
+ *   2. A QUOTED foreign assertion — "the reviewer claimed 5129 passed".
+ *   3. A RED-BEFORE-FIX number — the fake-regression proof a bugfix owes
+ *      (`.claude/rules/testing.md` § Negative-Assertion Fake-Regression
+ *      Check) names a count that deliberately does NOT match the green run.
+ *      The marker list is wider than the briefed four because the corpus said
+ *      so: the first real hit read "RED proof: mutated peer-discovery loader
+ *      — 2 failed, 0 passed", which `mutation` and `red before` both miss.
+ *   4. A JSON key line — a field value, not an assertion (same reasoning as
+ *      CONFIG_KEY_LINE_RE above, narrowed to the quoted-key form).
+ */
+const COUNT_CLAIM_EXCLUSION_RES = [
+  /Test\s+Files/i,
+  /validate[-_]plugin/i,
+  /check[-_](?:rules|skills|docs)/i,
+  /Results:/i,
+  /^\s*"[^"\n]{1,64}"\s*:/,
+  /\b(?:red before|red proof|rot vor|vor dem Fix|before the fix|mutat(?:e|ed|es|ing|ion)|Fake-Regression|baseline|Rot-Lauf|Rot-Beweis)\b/i,
+  /\b(?:claimed|stated|behauptet|laut)\b/i,
+];
+
+/**
+ * Cap on observations carried into the pair-sum search below.
+ *
+ * NAMED CEILING (BV-004): the partial-run match is O(n²) over this list. 50
+ * keeps the worst case at 1,225 additions — free beside the regex passes this
+ * module already makes. REVISIT TRIGGER: a transcript whose window holds more
+ * than 50 vitest summaries AND a claim that only the dropped ones explain.
+ */
+const MAX_OBSERVATIONS = 50;
+
+/**
  * NON-PROSE structural lines (#1218 negative-context guard). A PSA-006 claim is
  * an ASSERTION in prose; these four shapes are not prose at all, and every one
  * of them was measured as a live false-positive class.
@@ -250,6 +527,20 @@ const PLAN_INTENT_RE =
 
 const NON_PROSE_LINE_RE = new RegExp(
   `(${TABLE_ROW_RE.source})|(${TABLE_SEPARATOR_RE.source})|(${HEADING_RE.source})|(${PLAN_INTENT_RE.source})`,
+  'i'
+);
+
+/**
+ * The same guard MINUS the heading rule, for the gate/done-verdict class. The
+ * #1218 heading exemption was measured on DISTRIBUTIONAL claims, where a
+ * heading labels a section and the claim is restated in the body below. A gate
+ * verdict is the opposite: `### Tests: PASS` and `## Wave 3 Complete — Gate: …`
+ * ARE the verdict, and nothing restates them. Table rows, separators and
+ * plan/intent items stay excluded for both classes — a task-list `- [ ] make
+ * the suite green` is intent, and a status-matrix cell is structured data.
+ */
+const NON_PROSE_NO_HEADING_RE = new RegExp(
+  `(${TABLE_ROW_RE.source})|(${TABLE_SEPARATOR_RE.source})|(${PLAN_INTENT_RE.source})`,
   'i'
 );
 
@@ -331,8 +622,18 @@ const LEADING_MARKER_RE = /^(?:\s*(?:[-*+•]|\d{1,3}[.)]|#{1,6}|>)\s+)+/;
  * @param {string} transcriptPath
  * @returns {Promise<string>}
  */
-export async function readTranscriptTail(transcriptPath) {
-  if (typeof transcriptPath !== 'string' || !transcriptPath) return '';
+/**
+ * Parse the bounded tail window of `transcriptPath` into JSONL records.
+ *
+ * Shared by both readers below; each still performs its own window read, so a
+ * hook that wants both pays two ≤2 MiB reads. Accepted (BV-004): the hook runs
+ * once per SubagentStop and the page cache serves the second read.
+ *
+ * @param {string} transcriptPath
+ * @returns {object[]} parsed records, oldest first; `[]` on any failure
+ */
+function readTailRecords(transcriptPath) {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return [];
   let raw;
   let cut;
   try {
@@ -340,12 +641,12 @@ export async function readTranscriptTail(transcriptPath) {
     // JSON-parsed line by line only to keep the last 8 assistant records.
     ({ text: raw, cut } = readTailWindow(transcriptPath, TAIL_WINDOW_BYTES));
   } catch {
-    // Every fs error (ENOENT, /dev/null EACCES, …) maps to '' — readTailWindow
-    // THROWS where the former fs.readFile catch swallowed, and the caller
-    // (post-subagent-discovery-validator) relies on the '' contract.
-    return '';
+    // Every fs error (ENOENT, /dev/null EACCES, …) maps to empty —
+    // readTailWindow THROWS where the former fs.readFile catch swallowed, and
+    // the callers (post-subagent-discovery-validator) rely on that contract.
+    return [];
   }
-  if (!raw.trim()) return '';
+  if (!raw.trim()) return [];
 
   const lines = raw.split(/\r?\n/);
   // `cut` means the window did not start at byte 0, so line 0 is (or may be) a
@@ -353,14 +654,20 @@ export async function readTranscriptTail(transcriptPath) {
   // leaning on the JSON.parse catch below: a truncated record can still parse.
   if (cut) lines.shift();
 
-  const assistantRecords = [];
+  const records = [];
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     let rec;
     try { rec = JSON.parse(trimmed); } catch { continue; }
-    if (rec && rec.type === 'assistant') assistantRecords.push(rec);
+    if (rec) records.push(rec);
   }
+  return records;
+}
+
+export async function readTranscriptTail(transcriptPath) {
+  const assistantRecords = readTailRecords(transcriptPath).filter((r) => r.type === 'assistant');
+  if (assistantRecords.length === 0) return '';
 
   const tail = assistantRecords.slice(-TAIL_RECORDS);
   const textBlocks = [];
@@ -374,6 +681,91 @@ export async function readTranscriptTail(transcriptPath) {
     }
   }
   return textBlocks.join('\n');
+}
+
+/**
+ * Flatten a `tool_result` block's content to text. Measured on a real
+ * transcript (2026-09-19, `~/.claude/projects/<slug>/<session>/subagents/`):
+ * `content` is a plain STRING on the Bash results sampled, and the array-of-
+ * blocks form is the documented alternative — both are handled, because a
+ * reader that knows only one shape silently observes nothing and every claim
+ * then reads as unobserved (the fail-OPEN direction is correct here, but a
+ * shape gap would make this whole class inert without saying so).
+ *
+ * @param {*} content
+ * @returns {string}
+ */
+function toolResultText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const parts = [];
+  for (const block of content) {
+    if (typeof block === 'string') parts.push(block);
+    else if (block && block.type === 'text' && typeof block.text === 'string') parts.push(block.text);
+  }
+  return parts.join('\n');
+}
+
+/**
+ * Read the vitest run summaries the agent ACTUALLY produced inside the same
+ * bounded tail window `readTranscriptTail()` reads.
+ *
+ * A second reader rather than a second pattern: `readTranscriptTail()`
+ * collects assistant `text` blocks, and a `tool_result` lives in a `user`
+ * record — the two never meet. The `tool_use` → `tool_result` join is by
+ * `tool_use_id`, so only the results of a vitest Bash command (or of the
+ * receipt-bearing tools above) are read; a `git log` result that happens to
+ * contain the word "passed" is not an observation.
+ *
+ * Returns at most `MAX_OBSERVATIONS` entries, newest last.
+ *
+ * @param {string} transcriptPath
+ * @returns {Promise<{passed: number, failed: number, total: number}[]>}
+ */
+export async function readTranscriptObservations(transcriptPath) {
+  const records = readTailRecords(transcriptPath);
+  if (records.length === 0) return [];
+
+  /** @type {Set<string>} tool_use ids whose result may carry a run summary */
+  const receiptToolUseIds = new Set();
+  for (const rec of records) {
+    const content = rec?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || block.type !== 'tool_use') continue;
+      if (typeof block.id !== 'string' || !block.id) continue;
+      if (RECEIPT_BEARING_TOOLS.has(block.name)) { receiptToolUseIds.add(block.id); continue; }
+      if (block.name !== 'Bash') continue;
+      const cmd = block?.input?.command;
+      if (typeof cmd === 'string' && VITEST_CMD_RE.test(cmd)) receiptToolUseIds.add(block.id);
+    }
+  }
+  if (receiptToolUseIds.size === 0) return [];
+
+  const observations = [];
+  for (const rec of records) {
+    const content = rec?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || block.type !== 'tool_result') continue;
+      if (!receiptToolUseIds.has(block.tool_use_id)) continue;
+      const text = toolResultText(block.content).replace(ANSI_SGR_RE, '');
+      if (!text) continue;
+      OBSERVED_SUMMARY_RE.lastIndex = 0;
+      for (const m of text.matchAll(OBSERVED_SUMMARY_RE)) {
+        const body = m[1] ?? '';
+        const passedMatch = PASSED_COUNT_RE.exec(body);
+        if (!passedMatch) continue; // `Tests  no tests (0)` and friends
+        const failedMatch = FAILED_COUNT_RE.exec(body);
+        observations.push({
+          passed: Number(passedMatch[1]),
+          failed: failedMatch ? Number(failedMatch[1]) : 0,
+          total: Number(m[2]),
+        });
+      }
+    }
+  }
+  return observations.slice(-MAX_OBSERVATIONS);
 }
 
 // ---------------------------------------------------------------------------
@@ -520,57 +912,190 @@ export function normalizeClaim(text) {
 }
 
 /**
- * Collapse repeated claims into one entry per distinct normalized key,
+ * Collapse repeated claims into one entry per distinct (kind, normalized key),
  * preserving first-seen order and counting `occurrences` (#1198).
  *
- * @param {string[]} claims — raw claim strings in encounter order
- * @returns {{claim: string, normalized: string, occurrences: number}[]}
+ * Accepts a bare string (kind defaults to `distributional`) or a
+ * `{claim, kind, detail?}` record — the claim classes never merge into one
+ * entry even when they land on the identical line, because a coordinator
+ * triaging the ledger needs to know WHICH rule the line broke.
+ *
+ * `detail` (the `claim-mismatch` class's `{mismatch, claimed, observed,
+ * observed_n}` payload) rides along FIRST-SEEN-WINS: a repeat of the same
+ * normalized line was compared against the same observation set, so a second
+ * copy would carry identical numbers.
+ *
+ * @param {(string|{claim: string, kind?: string, detail?: object})[]} claims — in encounter order
+ * @returns {{claim: string, normalized: string, occurrences: number, kind: string, detail?: object}[]}
  */
 export function dedupeViolations(claims) {
-  /** @type {Map<string, {claim: string, normalized: string, occurrences: number}>} */
+  /** @type {Map<string, {claim: string, normalized: string, occurrences: number, kind: string, detail?: object}>} */
   const byKey = new Map();
-  for (const claim of claims) {
+  for (const entry of claims) {
+    const claim = typeof entry === 'string' ? entry : entry?.claim;
+    const kind = (typeof entry === 'string' ? undefined : entry?.kind) ?? KIND_DISTRIBUTIONAL;
+    const detail = typeof entry === 'string' ? undefined : entry?.detail;
+    if (typeof claim !== 'string') continue;
     const normalized = normalizeClaim(claim);
     if (!normalized) continue;
-    const hit = byKey.get(normalized);
+    const key = `${kind}\u0000${normalized}`;
+    const hit = byKey.get(key);
     if (hit) { hit.occurrences += 1; continue; }
-    byKey.set(normalized, { claim, normalized, occurrences: 1 });
+    byKey.set(key, {
+      claim,
+      normalized,
+      occurrences: 1,
+      kind,
+      ...(detail !== undefined ? { detail } : {}),
+    });
   }
   return [...byKey.values()];
+}
+
+/**
+ * ANY-MATCH test for a claimed pass count against the observed runs (R1).
+ *
+ * "Any" is the whole design: a report legitimately quotes ONE of several runs
+ * it made, so a claim is evidenced the moment a single observation carries its
+ * number. Only a claim that matches NONE of them is a mismatch.
+ *
+ * PARTIAL RUNS: two observations may be summed, because splitting a suite over
+ * two `npx vitest run <files>` invocations and reporting the total is normal
+ * here. NAMED CEILING (BV-004): PAIRS ONLY — three-way sums are not searched,
+ * since admitting them makes almost any number reachable from a handful of
+ * runs and the class stops discriminating. REVISIT TRIGGER: one documented
+ * report whose honest total is the sum of three separate runs.
+ *
+ * @param {number} claimedPassed
+ * @param {{passed: number}[]} observations
+ * @returns {boolean} true when some observation (or observation PAIR) carries it
+ */
+function observationsCarryCount(claimedPassed, observations) {
+  for (const o of observations) {
+    if (o.passed === claimedPassed) return true;
+  }
+  for (let i = 0; i < observations.length; i++) {
+    for (let j = i + 1; j < observations.length; j++) {
+      if (observations[i].passed + observations[j].passed === claimedPassed) return true;
+    }
+  }
+  return false;
 }
 
 /**
  * Scan concatenated transcript text for claims lacking an adjacent measurement
  * block (within ±GREP_PROXIMITY_LINES).
  *
+ * THREE claim classes, reported through one list and told apart by `kind`:
+ *   - `distributional` (#567/#908/#1211) — "4 of 4 callers", "14 commits".
+ *     Evidence must be ADJACENT (±GREP_PROXIMITY_LINES).
+ *   - `gate-verdict` (w4-1) — "STATUS: done", "alles grün", "Tests: PASS".
+ *     Evidence is an adjacent measurement command OR a RUN RECEIPT anywhere in
+ *     the report (see RUN_RECEIPT_RE for why the scopes differ).
+ *   - `claim-mismatch` (#1385 R1) — "5129 passed" where every vitest run in
+ *     the window reported a different count. Evidence is the `tool_result`
+ *     side of the transcript, supplied by the caller as `observations`.
+ *
  * @param {string} text
- * @returns {{ violations: {claim: string, normalized: string, occurrences: number}[], undatedVerified: number }}
+ * @param {object} [opts]
+ * @param {{passed: number, failed: number, total: number}[]} [opts.observations]
+ *   vitest run summaries from `readTranscriptObservations()`. DEFAULT EMPTY,
+ *   and an empty list disables the `claim-mismatch` class entirely — absence
+ *   of evidence is `gate-verdict`'s job, never this one's. (Measured
+ *   2026-09-19: 488 of 503 transcripts carrying a count claim had at least one
+ *   vitest summary in the window, so the disabled case is the rare one.)
+ * @returns {{ violations: {claim: string, normalized: string, occurrences: number, kind: string, detail?: object}[], undatedVerified: number }}
  *   `violations` — deduplicated, truncated claim snippets with an occurrence
- *   count; `undatedVerified` — count of claims that ARE verified but carry no
- *   measurement timestamp (advisory).
+ *   count and a claim-class `kind`; `undatedVerified` — count of DISTRIBUTIONAL
+ *   claims that ARE verified but carry no measurement timestamp (advisory).
  */
-export function findViolations(text) {
+export function findViolations(text, opts = {}) {
   if (!text) return { violations: [], undatedVerified: 0 };
+  const observations = Array.isArray(opts.observations) ? opts.observations : [];
   const lines = text.split(/\r?\n/);
   const { measurementLines, fencedLines } = scanFences(lines);
   const configLines = scanConfigBlocks(lines);
+  // Report-wide, computed ONCE: the counted-result half of the gate class's
+  // evidence test. Costs one regex pass over the tail, not one per line.
+  const hasRunReceipt = RUN_RECEIPT_RE.test(text);
   const raw = [];
   let undatedVerified = 0;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    // #1198 FIX 2: gate-summary/STATUS lines are tool OUTPUT, not a claim —
-    // skipped before any pattern runs (see GATE_SUMMARY_LINE_RE header).
+    // #1198 FIX 3 (masking-order bug): mask inline-code spans ONCE, then test
+    // every pattern against the masked text, so a claim quoted entirely inside
+    // backticks (evidence or example text, not an assertion) cannot trip one.
+    const masked = line.replace(INLINE_CODE_RE, ' ');
+
+    // --- gate/done-verdict class -------------------------------------------
+    // Runs BEFORE the GATE_SUMMARY_LINE_RE skip BY DESIGN: that skip exists to
+    // keep the DISTRIBUTIONAL patterns off harness gate output, and the two
+    // line shapes it exempts are exactly the ones this class must see.
+    if (
+      !fencedLines.has(i) &&
+      !NON_PROSE_NO_HEADING_RE.test(line) &&
+      (DONE_STATUS_RE.test(masked) || GATE_GREEN_RE.test(masked)) &&
+      !hasRunReceipt &&
+      !nearIndex(measurementLines, i)
+    ) {
+      raw.push({ claim: line.trim().slice(0, CLAIM_TEXT_MAX), kind: KIND_GATE_VERDICT });
+    }
+
+    // --- claim-mismatch class (#1385 R1) -----------------------------------
+    // Also BEFORE the GATE_SUMMARY_LINE_RE skip, and for the same reason the
+    // gate class is: that skip exempts exactly the `N passed / M failed` line
+    // shape this class must read. The distributional patterns keep the skip
+    // untouched (#1198 — 46.5% of a 400-event false-positive sample).
+    //
+    // FENCED LINES ARE NOT CLAIMS: a pasted run summary inside ``` is quoted
+    // tool output. Scanning it would flag the honest report that quotes a run
+    // older than the window, which is the expensive direction.
+    if (
+      observations.length > 0 &&
+      !fencedLines.has(i) &&
+      !NON_PROSE_NO_HEADING_RE.test(line) &&
+      !COUNT_CLAIM_EXCLUSION_RES.some((re) => re.test(line))
+    ) {
+      // ANY-MATCH ON BOTH SIDES. A line names several counts routinely
+      // (`2 passed files; 70 tests passed`, `40 passed (40) / Tests 1091
+      // passed (1091)`), and treating the FIRST as "the" claim flagged
+      // reports whose observed number sat later on the same line — 5 of the
+      // first 12 corpus hits. The line is a mismatch only when NOT ONE of the
+      // counts it names is carried by any observed run.
+      const claimedCounts = extractClaimedCounts(masked);
+      if (claimedCounts.length > 0) {
+        if (!claimedCounts.some((n) => observationsCarryCount(n, observations))) {
+          const failedMatch = FAILED_COUNT_RE.exec(masked);
+          raw.push({
+            claim: line.trim().slice(0, CLAIM_TEXT_MAX),
+            kind: KIND_CLAIM_MISMATCH,
+            detail: {
+              mismatch: MISMATCH_COUNT,
+              claimed: {
+                passed: claimedCounts[0],
+                failed: failedMatch ? Number(failedMatch[1]) : null,
+              },
+              // The three most recent runs — enough for the coordinator to see
+              // WHAT was actually measured without copying the whole window
+              // into the ledger. NO raw command text: precedent is `8f15f77b`
+              // (`command_hash` instead of the raw command).
+              observed: observations.slice(-3),
+              observed_n: observations.length,
+            },
+          });
+        }
+      }
+    }
+
+    // --- distributional class (unchanged) ----------------------------------
+    // #1198 FIX 2: gate-summary/STATUS lines are tool OUTPUT, not a
+    // distributional claim — skipped before any pattern runs.
     if (GATE_SUMMARY_LINE_RE.test(line)) continue;
     // #1218: table rows, headings and plan/intent items are not prose
     // assertions at all — skipped before any pattern runs.
     if (NON_PROSE_LINE_RE.test(line)) continue;
 
-    // #1198 FIX 3 (masking-order bug): mask inline-code spans ONCE, then test
-    // BOTH the CLAIM_PATTERNS and the cardinal/ratio patterns against the
-    // masked text, so a claim quoted entirely inside backticks (evidence or
-    // example text, not an assertion) cannot trip a pattern.
-    const masked = line.replace(INLINE_CODE_RE, ' ');
     let matched = CLAIM_PATTERNS.some((re) => re.test(masked));
     if (!matched && !fencedLines.has(i) && !configLines.has(i)) {
       matched = CARDINAL_PATTERN.test(masked) || CARDINAL_RATIO_PATTERN.test(masked);
@@ -582,7 +1107,7 @@ export function findViolations(text) {
       continue;
     }
 
-    raw.push(line.trim().slice(0, CLAIM_TEXT_MAX));
+    raw.push({ claim: line.trim().slice(0, CLAIM_TEXT_MAX), kind: KIND_DISTRIBUTIONAL });
   }
   return { violations: dedupeViolations(raw), undatedVerified };
 }

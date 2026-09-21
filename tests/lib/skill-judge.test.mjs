@@ -15,16 +15,21 @@
  * Main entry runSkillJudge (the injected dispatchAgent is a legitimate DI seam —
  * assertions verify runSkillJudge's OWN gating/dispatch behavior, not the mock):
  *   - empty selectedSkills → status:'empty-input', dispatch NOT called.
+ *   - empty evidence       → status:'no-evidence', dispatch NOT called (#1399).
  *   - budget exceeded      → status:'budget-exceeded', dispatch NOT called.
  *   - happy path           → status:'ok' with parsed judgments, dispatch called
  *                            once with the built prompt.
+ *
+ * evidenceBudgetChars (#1399): the caller must not guess the prompt frame.
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  DEFAULT_BUDGET,
   estimateInputTokens,
   checkBudget,
   buildJudgePrompt,
+  evidenceBudgetChars,
   parseJudgeResponse,
   runSkillJudge,
 } from '@lib/skill-judge.mjs';
@@ -86,6 +91,23 @@ describe('buildJudgePrompt', () => {
   });
 });
 
+describe('evidenceBudgetChars', () => {
+  // Bug this catches: a caller GUESSING how much evidence fits. Overshoot the
+  // frame and every judge run ends in `budget-exceeded` — the phase then skips
+  // silently and looks exactly like a session that used no skills.
+  it('leaves room for the measured prompt frame, so a full-size evidence text still passes checkBudget', () => {
+    const skills = ['session-orchestrator:session-start', 'session-orchestrator:wave-executor'];
+    const available = evidenceBudgetChars(skills, DEFAULT_BUDGET);
+
+    const prompt = buildJudgePrompt(skills, 'e'.repeat(available), 'f'.repeat(32));
+    expect(checkBudget(estimateInputTokens(prompt), DEFAULT_BUDGET)).toEqual({ ok: true });
+
+    // One character more is over the line — the budget is TIGHT, not slack.
+    const over = buildJudgePrompt(skills, 'e'.repeat(available + 4), 'f'.repeat(32));
+    expect(checkBudget(estimateInputTokens(over), DEFAULT_BUDGET).ok).toBe(false);
+  });
+});
+
 describe('parseJudgeResponse', () => {
   it('extracts judgments from a single fenced json block', () => {
     const text = [
@@ -139,6 +161,46 @@ describe('runSkillJudge', () => {
     expect(result.status).toBe('empty-input');
     expect(result.judgments).toEqual([]);
     expect(dispatchAgent).not.toHaveBeenCalled();
+  });
+
+  // #1399 — the live defect. `transcriptTail` defaulted to '' and nothing in
+  // the tree produced it, so the judge was dispatched with an EMPTY
+  // <untrusted-data-…> fence. Measured 2026-09-19 at 8f15f77b: that prompt is
+  // 1387 chars = 346 estimated tokens, far under the 8000-token budget, so the
+  // budget gate below could never catch it.
+  it.each([
+    ['omitted entirely', {}],
+    ['an empty transcriptTail', { transcriptTail: '' }],
+    ['a whitespace-only transcriptTail', { transcriptTail: '   \n\t ' }],
+    ['an evidence envelope with no text', { evidence: { status: 'no-transcript', text: '' } }],
+  ])('returns no-evidence and does NOT dispatch when the evidence is %s', async (_label, input) => {
+    const result = await runSkillJudge({
+      dispatchAgent,
+      selectedSkills: ['session-orchestrator:session-start'],
+      ...input,
+    });
+
+    expect(result).toEqual({
+      status: 'no-evidence',
+      judgments: [],
+      skipped_reason: 'empty-transcript-evidence',
+    });
+    expect(dispatchAgent).not.toHaveBeenCalled();
+  });
+
+  it('fences evidence.text in preference to the legacy transcriptTail', async () => {
+    dispatchAgent.mockResolvedValue({ text: '```json\n[]\n```' });
+
+    await runSkillJudge({
+      dispatchAgent,
+      selectedSkills: ['discovery'],
+      evidence: { status: 'ok', text: 'EVIDENCE-WINDOW-MARKER' },
+      transcriptTail: 'LEGACY-TAIL-MARKER',
+    });
+
+    const prompt = dispatchAgent.mock.calls[0][0].prompt;
+    expect(prompt).toContain('EVIDENCE-WINDOW-MARKER');
+    expect(prompt).not.toContain('LEGACY-TAIL-MARKER');
   });
 
   it('returns budget-exceeded and does NOT dispatch when the prompt blows the budget', async () => {

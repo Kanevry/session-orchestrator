@@ -68,12 +68,13 @@ import {
 } from '../scripts/lib/issue-budget.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 
 // Opt-out per session via SO_DISABLED_HOOKS=post-bash-issue-budget-refund; the
-// "minimal"/"off" profiles disable it like every other non-core hook.
-if (!shouldRunHook('post-bash-issue-budget-refund')) process.exit(0);
+// "minimal"/"off" profiles disable it like every other non-core hook — the gate
+// itself runs inside the entry guard at the bottom of this file (#1393).
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -367,9 +368,18 @@ async function main() {
 }
 
 // Top-level error handler — fail open, same posture as the sibling hooks.
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ post-bash-issue-budget-refund: internal error — ${e?.message || e}\n`,
-  );
-  process.exit(0);
-});
+// Entry guard (#1393): run only when this file IS the script node was invoked
+// with — every harness path execs it (`sh run-node.sh <this file>`). A bare
+// `import()` (a probe, a test, a curious agent) must neither run main() nor
+// tear the importing process down. The profile gate sits INSIDE the guard for
+// that second reason: at module top level its `process.exit(0)` exited every
+// process that merely imported this hook.
+if (isMainModule(import.meta.url)) {
+  if (!shouldRunHook('post-bash-issue-budget-refund')) process.exit(0);
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ post-bash-issue-budget-refund: internal error — ${e?.message || e}\n`,
+    );
+    process.exit(0);
+  });
+}

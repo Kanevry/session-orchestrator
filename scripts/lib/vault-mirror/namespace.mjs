@@ -5,10 +5,18 @@
  * vault writes under `40-learnings/<repoNs>/` and `50-sessions/<repoNs>/`.
  *
  * Contract:
- *   resolveRepoNamespace({ vaultName?, cwd? }) → string
+ *   resolveRepoNamespace({ vaultName?, repoRoot? }) → string
  *
- *   - Pure + deterministic (given the same git remote / cwd / vaultName input,
- *     and the same host-local pseudonym map).
+ *   - Pure + deterministic (given the same vaultName, the same `.vault.yaml`
+ *     under `repoRoot`, the same git remote, and the same host-local pseudonym
+ *     map).
+ *   - `repoRoot` (#1389) selects the directory whose `.vault.yaml` is read;
+ *     it defaults to `process.cwd()`. Named limit: it scopes ONLY that lookup —
+ *     the {@link deriveRepo} fallback still resolves from the process cwd and
+ *     is cached per process, so a `repoRoot` that differs from the cwd AND has
+ *     no declared slug falls back to the cwd's git identity. Every production
+ *     caller passes its own cwd today; revisit if a caller ever mirrors a repo
+ *     other than the one it runs in.
  *   - Returns a lowercase kebab slug safe for use as a filesystem path segment.
  *   - Host-local pseudonym mapping (Epic #725 D5): consulted ONLY at the redaction
  *     site (only when a segment is owner-leaky). If such a repo (raw or sanitised)
@@ -241,13 +249,16 @@ function lookupPseudonym(base, seg) {
  *   When non-empty and non-whitespace, used in place of the declared/git-derived
  *   repo name. When absent, the base is the repo's declared `.vault.yaml`
  *   `metadata.slug` (#1131), else the git origin via deriveRepo().
+ * @param {string|null} [opts.repoRoot] - Directory whose `.vault.yaml` supplies
+ *   the declared slug (#1389). `undefined`/`null` → `process.cwd()`. Does NOT
+ *   redirect the deriveRepo() fallback (see the module header's named limit).
  * @returns {string} A single kebab-slug path segment, e.g. 'session-orchestrator'.
  *   Special returns:
  *   - 'unknown-repo'  — slug derivation produced an empty string.
  *   - 'redacted-repo' — the raw or slugified value matched an owner-leakage pattern
  *     (CP1 personal home path / CP6 private slug / CP10 personal name in Projects path).
  */
-export function resolveRepoNamespace({ vaultName = null } = {}) {
+export function resolveRepoNamespace({ vaultName = null, repoRoot = null } = {}) {
   // Choose the base identifier. Precedence: explicit `vaultName` override >
   // the repo's declared `.vault.yaml` `metadata.slug` (#1131) > git-derived.
   //
@@ -273,7 +284,7 @@ export function resolveRepoNamespace({ vaultName = null } = {}) {
   // guard below deliberately — a declared slug is operator data flowing into a
   // written path and is checked by CP1/CP6/CP10 and the pseudonym map exactly
   // like any git-derived identifier.
-  const declaredSlug = readVaultSlug(process.cwd());
+  const declaredSlug = readVaultSlug(repoRoot ?? process.cwd());
   const base = (vaultName && typeof vaultName === 'string' && vaultName.trim())
     ? vaultName.trim()
     : (declaredSlug ?? deriveRepo());

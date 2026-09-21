@@ -29,6 +29,7 @@ import {
   TELEMETRY_ENDPOINT,
   POST_TIMEOUT_MS,
 } from '@lib/telemetry/sync.mjs';
+import { ARCHIVE_DIR_NAME, ROTATION_EVENT } from '@lib/events-schema.mjs';
 import { TELEMETRY_DIR } from '@lib/telemetry/paths.mjs';
 import { readTelemetryState } from '@lib/telemetry/consent.mjs';
 import { enqueue, queueStats, peekAll } from '@lib/telemetry/queue.mjs';
@@ -932,11 +933,90 @@ describe('session facts survive a missing sessions.jsonl (deriveSessionFromEvent
         completed_at: '2026-09-06T11:30:00.000Z',
       },
       source: 'derived',
+      ledger_complete: true,
+      ledger_gaps: [],
     });
   });
 
   it('reports `absent` — never a fabricated type — when events.jsonl does not exist', () => {
-    expect(deriveSessionFromEvents(join(tmpDir, 'nope'))).toEqual({ session: {}, source: 'absent' });
+    expect(deriveSessionFromEvents(join(tmpDir, 'nope'))).toEqual({
+      session: {},
+      source: 'absent',
+      ledger_complete: true,
+      ledger_gaps: [],
+    });
+  });
+
+  it('reads the session start back across a rotation boundary (#1407)', () => {
+    // BUG THIS CATCHES: the reconstruction read only the ACTIVE events.jsonl.
+    // Its sibling window is DAILY_FLUSH_MS (24 h), so a rotation between a
+    // session's start and its flush dropped `orchestrator.session.started`
+    // entirely — `session_type` fell back to 'unknown' and the duration bucket
+    // was derived from a window that never began.
+    mkdirSync(join(tmpDir, ARCHIVE_DIR_NAME), { recursive: true });
+    const archived = join(tmpDir, ARCHIVE_DIR_NAME, 'events-20260906T080000Z_20260906T090000Z.jsonl');
+    writeFileSync(
+      archived,
+      JSON.stringify({
+        timestamp: '2026-09-06T08:00:00.000Z',
+        event: 'orchestrator.session.started',
+        mode: 'deep',
+      }) + '\n',
+    );
+    writeEvents(tmpDir, [
+      {
+        timestamp: '2026-09-06T09:00:00.000Z',
+        event: ROTATION_EVENT,
+        archived_as: archived,
+        first_ts: '2026-09-06T08:00:00.000Z',
+        last_ts: '2026-09-06T09:00:00.000Z',
+        lines: 1,
+      },
+      { timestamp: '2026-09-06T11:30:00.000Z', event: 'orchestrator.agent.stopped' },
+    ]);
+
+    expect(deriveSessionFromEvents(tmpDir)).toEqual({
+      session: {
+        session_type: 'deep',
+        started_at: '2026-09-06T08:00:00.000Z',
+        completed_at: '2026-09-06T11:30:00.000Z',
+      },
+      source: 'derived',
+      ledger_complete: true,
+      ledger_gaps: [],
+    });
+  });
+
+  it('surfaces a DELETED archive as a gap instead of a silently shorter window (#1407 AC-3)', () => {
+    // BUG THIS CATCHES: with a bare array return, a deleted archive and a quiet
+    // period are the same observation. `ledger_complete: false` plus the
+    // tombstone's range is the only thing that tells them apart — and it must
+    // survive onto the `absent` return too, which is exactly where the two
+    // cases are otherwise indistinguishable.
+    const vanished = join(tmpDir, ARCHIVE_DIR_NAME, 'events-20260906T080000Z_20260906T090000Z.jsonl');
+    writeEvents(tmpDir, [
+      {
+        timestamp: '2026-09-06T09:00:00.000Z',
+        event: ROTATION_EVENT,
+        archived_as: vanished,
+        first_ts: '2026-09-06T08:00:00.000Z',
+        last_ts: '2026-09-06T09:00:00.000Z',
+        lines: 4711,
+      },
+    ]);
+
+    const result = deriveSessionFromEvents(tmpDir);
+
+    expect(result.source).toBe('absent');
+    expect(result.ledger_complete).toBe(false);
+    expect(result.ledger_gaps).toEqual([
+      expect.objectContaining({
+        kind: 'missing-archive',
+        archived_as: vanished,
+        first_ts: '2026-09-06T08:00:00.000Z',
+        last_ts: '2026-09-06T09:00:00.000Z',
+      }),
+    ]);
   });
 
   it('a started event with NO mode yields a window but no type (never invents one)', () => {
@@ -977,6 +1057,8 @@ describe('deriveSessionFromEvents prefers shape_resolved (D4 Task B)', () => {
         completed_at: '2026-09-06T11:30:00.000Z',
       },
       source: 'derived',
+      ledger_complete: true,
+      ledger_gaps: [],
     });
   });
 

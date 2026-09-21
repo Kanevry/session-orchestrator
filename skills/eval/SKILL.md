@@ -15,7 +15,7 @@ args-schema:
   - flag: --verify
     description: "Re-evaluate a stored run-id and diff per-dimension for scoring drift (exit 1 on drift)"
 description: >
-  Use this skill to run an honest session-process evaluation (Standard v1, aiat-llm-eval/1.0) — score the last completed orchestrator session against the pre-registered rubric-v1 dimensions, run /eval, evaluate this session, produce an eval report, or re-verify a stored eval run for reproducibility. Deterministic-first with an optional advisory LLM judge; never produces a global score.
+  Use this skill to run an honest session-process evaluation (Standard v1, aiat-llm-eval/1.0) — score the last completed orchestrator session against the pre-registered rubric-v2 dimensions, run /eval, evaluate this session, produce an eval report, or re-verify a stored eval run for reproducibility. Deterministic-first with an optional advisory LLM judge; never produces a global score.
 ---
 
 > **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics + the eval journal live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
@@ -23,14 +23,17 @@ description: >
 # Eval Skill — Session-Process Evaluation (aiat-llm-eval/1.0)
 
 On-demand, honest measurement of ONE completed orchestrator session against the
-pre-registered **rubric-v1** check set. The deterministic engine
+pre-registered **rubric-v2** check set. The deterministic engine
 (`scripts/eval-session.mjs` → `scripts/lib/eval/engine.mjs`) reads only local
-metrics files (`sessions.jsonl` + `events.jsonl`), scores the five deterministic
+metrics files (`sessions.jsonl` + `events.jsonl`), scores the six deterministic
 dimensions, appends a `session-eval` record to the journal, and optionally
-renders an HTML report. An opt-in LLM judge overlays two advisory dimensions.
+renders an HTML report. An opt-in LLM judge overlays ONE advisory dimension
+(`instruction-adherence`; `report-quality` was retired in rubric-v2, #1381).
 
 The standard this skill implements is [`docs/eval/aiat-llm-eval-v1.md`](../../docs/eval/aiat-llm-eval-v1.md);
-the frozen, content-hashed check set is [`skills/eval/rubric-v1.md`](./rubric-v1.md).
+the frozen, content-hashed check set is [`skills/eval/rubric-v2.md`](./rubric-v2.md)
+(stored records written before 2026-09-19 carry `rubric-v1` and are read against
+[`rubric-v1.md`](./rubric-v1.md), which is never edited again).
 
 ## Invocation
 
@@ -43,7 +46,7 @@ Invoked as `/eval [--session <id>] [--no-write] [--verify <run-id>]` with argume
 
 **On-demand `/eval` runs regardless of `eval.enabled`** — that flag gates only the automatic session-end eval phase (see Phase 1.1).
 
-**Seams used:** `scripts/eval-session.mjs` (deterministic CLI) · `runEvalJudge` / `mergeJudgeDimensions` (`scripts/lib/eval/judge.mjs`, opt-in) · `writeEvalReport` (`scripts/lib/eval/report.mjs`) · `appendEvalRecord` (`scripts/lib/eval/sink.mjs`) · the `eval` config block · [`skills/eval/rubric-v1.md`](./rubric-v1.md) (frozen check set).
+**Seams used:** `scripts/eval-session.mjs` (deterministic CLI) · `runEvalJudge` / `mergeJudgeDimensions` (`scripts/lib/eval/judge.mjs`, opt-in) · `writeEvalReport` (`scripts/lib/eval/report.mjs`) · `appendEvalRecord` (`scripts/lib/eval/sink.mjs`) · the `eval` config block · [`skills/eval/rubric-v2.md`](./rubric-v2.md) (frozen check set).
 
 ## Posture Contract (load-bearing — read before executing)
 
@@ -52,9 +55,9 @@ Invoked as `/eval [--session <id>] [--no-write] [--verify <run-id>]` with argume
 - **Never guess.** Missing source data yields `cannot-determine` (a first-class,
   non-error verdict) with an honest reason — never a fabricated `pass`/`fail`.
   Do NOT "fill in" a missing KPI or infer a gate result the events do not show.
-- **Deterministic before judge.** The five deterministic dimensions are complete
-  on their own. The judge (Phase 3) is opt-in, ADVISORY, and `uncalibrated` in
-  v1 — never blend a judge verdict into the deterministic tally.
+- **Deterministic before judge.** The six deterministic dimensions are complete
+  on their own. The judge (Phase 3) is opt-in, ADVISORY, and `uncalibrated` —
+  never blend a judge verdict into the deterministic tally.
 - **Journal is SSOT; the report is a derived view.** The append-only
   `.orchestrator/metrics/eval.jsonl` is authoritative. The HTML report is
   rebuildable from any stored record and is never authoritative over the journal.
@@ -148,10 +151,13 @@ node scripts/eval-session.mjs [--session <id>] --json \
   On exit `1` (e.g. "no completed session found"), surface the message and stop —
   do not retry with fabricated inputs.
 
-Parse the emitted JSON record. It carries `dimensions[]` (5 deterministic
-entries), `kpis{}`, `provenance.rubric_sha256` (non-null once `rubric-v1.md`
-exists), `model`, `harness`, and `run_id`. Unless `--no-write` was passed, the
-record is already appended to `.orchestrator/metrics/eval.jsonl` by the CLI.
+Parse the emitted JSON record. It carries `dimensions[]` (6 deterministic
+entries — the two reported-only ones, `guard-friction` and `efficiency-kpis`,
+are always `not-applicable`), `kpis{}`, `provenance.rubric_sha256` (the sha256
+of `rubric-v2.md`; `null` means the rubric file was not found and the append
+will fail validation), `model`, `harness`, and `run_id`. Unless `--no-write` was
+passed, the record is already appended to `.orchestrator/metrics/eval.jsonl` by
+the CLI.
 
 **Contamination check:** if the human-render/summary reports a peer-overlapped
 window, note it — `verification-evidence` and `gate-health` will read
@@ -187,9 +193,13 @@ const merged = mergeJudgeDimensions(record, dimensions);
 appendEvalRecord(merged, { path: '.orchestrator/metrics/eval.jsonl' });
 ```
 
-- Every judge dimension arrives `advisory: true` + `calibration_status:
-  "uncalibrated"` (the schema firewall rejects any other shape). Keep them
-  visibly separated from the deterministic five in the summary.
+- The judge dimension arrives `advisory: true` + `calibration_status:
+  "uncalibrated"` (the schema firewall rejects any other shape). Keep it
+  visibly separated from the deterministic six in the summary.
+- `runEvalJudge` pre-computes a `facts` block (`computeRecordFacts`) from the
+  deterministic evidence strings and hands it to the judge OUTSIDE the
+  untrusted-data fence — anything countable is counted in code, never inferred
+  by the model. Do not reimplement that here.
 - If `runEvalJudge` returns a non-ok `status` (e.g. dispatch failed), keep the
   deterministic record as-is and note the judge was unavailable — the
   deterministic evaluation is complete without it.
@@ -226,20 +236,20 @@ const res = writeEvalReport(record, { generatedAt: new Date().toISOString() });
 Emit a compact, honest per-dimension summary. Status lines only — no global score.
 
 ```
-## /eval — <session_id>  (self-evaluation, aiat-llm-eval/1.0 · rubric-v1 · n=1, no CI)
+## /eval — <session_id>  (self-evaluation, aiat-llm-eval/1.0 · rubric-v2 · n=1, no CI)
 
 Deterministic:
   verification-evidence   PASS   <one-line evidence>
   plan-fidelity           PASS   completion_rate=1.0 (score)
   gate-health             PASS   <one-line evidence>
-  process-safety          PASS   <one-line evidence + guard-emission disclosure>
+  process-safety          PASS   <one-line evidence + both guard disclosures>
+  guard-friction          N/A    (reported: blocked=… warned=… loop.warning=… <attribution>)
   efficiency-kpis         N/A    (reported: duration=…s waves=… agents=… tok_in=… tok_out=… carryover=…)
 
 Judge (advisory, uncalibrated)  [only when eval.judge != off]:
-  instruction-adherence   <verdict>   advisory
-  report-quality          <verdict>   advisory
+  instruction-adherence   <verdict>   advisory   (rule <n> applied)
 
-cannot-determine: <k> of 5 deterministic dimensions (<reasons>)
+cannot-determine: <k> of 6 deterministic dimensions (<reasons>)
 Report:  .orchestrator/eval/reports/<run_id>.html
 Journal: .orchestrator/metrics/eval.jsonl  (appended: <yes|--no-write>)
 Re-verify: node scripts/eval-session.mjs --verify <run_id>
@@ -266,6 +276,11 @@ node scripts/eval-session.mjs --verify <run-id> --json
   changed since the record was written — investigate, do not overwrite.
 - `--verify` reproduces the stored model + timestamp verbatim (no env override),
   so a MATCH is a real reproducibility proof of the scoring, not of model output.
+- **A cross-version DRIFT is not a defect.** A stored `rubric-v1` record
+  re-scored by today's rubric-v2 engine necessarily differs on `process-safety`
+  and reports `present-in-fresh-only: guard-friction`. Read the record's
+  `rubric_version` before treating a diff as a regression (#1400 replaces that
+  report with an explicit version verdict).
 
 ---
 
@@ -282,9 +297,9 @@ platform. Only the judge phase needs harness-specific tooling.
   `skills/_shared/platform-tools.md` § Agent Dispatch Pattern.
 - **`harness.platform`** on the record is resolved from `$SO_PLATFORM`
   (falls back to `claude-code`) inside the engine — no skill action needed.
-- The deterministic five dimensions + the HTML report + `--verify` are fully
-  available on all platforms; the judge overlay is a Claude-Code-only enrichment
-  in v1.
+- The deterministic six dimensions + the HTML report + `--verify` are fully
+  available on all platforms; the judge overlay is a Claude-Code-only
+  enrichment.
 
 ---
 

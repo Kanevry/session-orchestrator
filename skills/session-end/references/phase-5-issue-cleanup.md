@@ -6,22 +6,17 @@
 
 > **VCS Reference:** Use CLI commands per the "Common CLI Commands" section of the gitlab-ops skill.
 
-1. **Close resolved issues**: Before closing each issue, strip `status:*` workflow labels using `stripStatusLabels` from `scripts/lib/issue-close-strip-labels.mjs` (#308). A closed issue carrying `status:in-progress` or `status:ready` skews dashboard filters and discovery heuristics. Then close and add a note using the issue close and note commands per the "Common CLI Commands" section of the gitlab-ops skill. Note: some VCS platforms require separate note and close commands.
+1. **Close resolved issues — one command strips, closes and verifies (#308):** run the CLI ONCE with every resolved issue ID, `--vcs` taken from Session Config:
 
-   ```js
-   import { stripStatusLabels } from '${PLUGIN_ROOT}/scripts/lib/issue-close-strip-labels.mjs';
-
-   // For each resolved issue IID:
-   const { stripped, error } = await stripStatusLabels({ issueId: iid, vcs: '<from Session Config>' });
-   if (error) {
-     console.warn(`⚠ label strip failed for #${iid}: ${error} — proceeding with close`);
-   } else if (stripped.length) {
-     console.log(`Stripped ${stripped.join(', ')} from #${iid}`);
-   }
-   // then: glab issue close <iid> / gh issue close <iid>
+   ```bash
+   node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close --vcs <gitlab|github> <iid> [<iid> ...]
    ```
 
-   The call is idempotent: if the issue has no `status:*` labels, no update CLI call is made. Failures from `stripStatusLabels` are non-fatal — log and proceed with close.
+   For each ID, in this order, it strips every `status:*` label (a closed issue carrying `status:in-progress` or `status:ready` skews dashboard filters and discovery heuristics), closes the issue, then re-reads it. It prints one JSON line per ID — `{"id","stripped","closed","state"}`, plus `stripError` / `error` when a step failed — and exits 1 when any ID did not verify as closed. Pass `-R <spec>` only to override the repo; without it the repo resolves from the git remotes (#839). Do not hand-roll `stripStatusLabels` + `glab issue close` instead: that two-step prose path was skipped often enough that 339 closed issues still carried `status:in-progress` (measured 2026-09-19).
+
+   **Read the JSON, not just the exit code.** `closed: true` means the platform itself reported `state: closed` on the re-read. Every line with `closed: false` is a finding for the Phase 6 Final Report, quoting its `error`. Never report that issue as done. Stripping is non-fatal: a failed strip is printed to stderr, recorded as `stripError`, and the close still runs. List those IDs in the Final Report so the label can be removed by hand. Stripping is idempotent: an issue without `status:*` labels gets no update call.
+
+   Then add the closing note per issue with the note command from the "Common CLI Commands" section of the gitlab-ops skill (the CLI posts no notes).
 
 2. **Update in-progress issues**: ensure labels reflect actual state using the issue update command
 3. **Create carryover issues — from the Phase 1.65 gate's carry-list ONLY (#769):** file an issue for each item on the carry-list produced by the Handover Alignment Gate — i.e. the non-deselectable **auto-carry** class (`priority::critical|high`, SPIRAL/FAILED, or no-origin-issue candidates) PLUS the middle-band items the operator LEFT SELECTED in triage. Do NOT file anything the gate dropped, and do NOT file directly from Phase 1.2/1.3/1.4/1.6 — those phases only collected candidates.

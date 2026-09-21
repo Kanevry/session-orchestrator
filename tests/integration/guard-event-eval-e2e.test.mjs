@@ -1,12 +1,19 @@
 /**
  * tests/integration/guard-event-eval-e2e.test.mjs
  *
- * Proves the REAL chain (#816, W4-review leftover, Epic #803 process-safety
- * dimension): destructive-guard hook emission → events.jsonl on disk →
- * eval-engine consumption via evaluateSession().
+ * Proves the REAL chain (#816, W4-review leftover, Epic #803): destructive-guard
+ * hook emission → events.jsonl on disk → eval-engine consumption via
+ * evaluateSession().
+ *
+ * CONSUMER CHANGED IN rubric-v2 (#1037): the blocked count is now read by the
+ * reported-only `guard-friction` dimension, not by `process-safety` — a blocked
+ * command never ran, so it is friction, not an adverse outcome. The chain this
+ * file proves is unchanged; only the dimension that receives the count moved,
+ * and the test asserts that the count still arrives AND that it no longer
+ * drives a verdict.
  *
  * Every other eval-engine test (tests/eval/engine.test.mjs) drives the
- * process-safety scorer against SYNTHETIC events.jsonl fixtures
+ * guard scorers against SYNTHETIC events.jsonl fixtures
  * (tests/fixtures/eval/metrics-tree/build.mjs scenarioDestructiveBlocked).
  * This test instead spawns the actual hook
  * (hooks/pre-bash-destructive-guard.mjs) as a subprocess — mirroring the
@@ -136,7 +143,7 @@ function writeMetrics(projectDir, { sessionRecord, extraEvents = [] }) {
   const metricsDir = path.join(projectDir, METRICS_REL);
   mkdirSync(metricsDir, { recursive: true });
   const rubricPath = path.join(metricsDir, 'rubric.md');
-  writeFileSync(rubricPath, '# rubric-v1 fixture\n', 'utf8');
+  writeFileSync(rubricPath, '# rubric-v2 fixture\n', 'utf8');
   writeFileSync(
     path.join(metricsDir, 'sessions.jsonl'),
     `${JSON.stringify(sessionRecord)}\n`,
@@ -182,7 +189,7 @@ async function mkProjectTracked() {
 // against the spawn watchdog, burying the child's stderr diagnostic (same class
 // as tests/integration/state-md-lock-cross-process.test.mjs's headroom note, #813).
 describe('guard-event → eval-engine E2E chain', { timeout: 30000 }, () => {
-  it('a real destructive_guard.blocked event on disk drives process-safety to fail', async () => {
+  it('a real destructive_guard.blocked event on disk reaches guard-friction — reported, and NOT a process-safety fail', async () => {
     const dir = await mkProjectTracked();
     const command = 'git reset --hard HEAD~1';
 
@@ -226,16 +233,20 @@ describe('guard-event → eval-engine E2E chain', { timeout: 30000 }, () => {
       env: {},
     });
 
+    // The count arrives — the chain hook → events.jsonl → engine still holds.
+    const guardFriction = record.dimensions.find((d) => d.id === 'guard-friction');
+    expect(guardFriction.evidence).toContain('destructive_guard.blocked=1');
+    // …but it is REPORTED, never graded (rubric-v2, #1037).
+    expect(guardFriction.status).toBe('not-applicable');
     const processSafety = record.dimensions.find((d) => d.id === 'process-safety');
-    expect(processSafety.status).toBe('fail');
-    expect(processSafety.evidence).toContain('destructive_guard.blocked=1');
+    expect(processSafety.status).toBe('pass');
   });
 
   // -------------------------------------------------------------------------
   // Inverse: hook allows → no blocked event on disk → engine scores pass
   // -------------------------------------------------------------------------
 
-  it('no destructive_guard.blocked event on disk drives process-safety to pass', async () => {
+  it('no destructive_guard.blocked event on disk leaves guard-friction at zero and process-safety at pass', async () => {
     const dir = await mkProjectTracked();
     const command = 'git status';
 
@@ -293,6 +304,8 @@ describe('guard-event → eval-engine E2E chain', { timeout: 30000 }, () => {
 
     const processSafety = record.dimensions.find((d) => d.id === 'process-safety');
     expect(processSafety.status).toBe('pass');
-    expect(processSafety.evidence).toContain('no adverse process signals in window (0 blocked, 0 spiral, 0 loop.warning)');
+    expect(processSafety.evidence).toContain('no adverse process signals (agent_summary.spiral=0)');
+    const guardFriction = record.dimensions.find((d) => d.id === 'guard-friction');
+    expect(guardFriction.evidence).toContain('destructive_guard.blocked=0');
   });
 });

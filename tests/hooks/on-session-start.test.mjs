@@ -14,6 +14,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { isRoot } from '../_helpers/perms.mjs';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
@@ -31,10 +32,13 @@ const EVENTS_RELPATH = path.join('.orchestrator', 'metrics', 'events.jsonl');
 
 /**
  * Spawn the hook with the given environment overrides and collect result.
- * @param {{ projectDir: string, env?: Record<string,string>, execArgv?: string[] }} opts
+ * `argv` replaces the whole node argument list (default: `[...execArgv, HOOK]`)
+ * for the one case that must NOT run the hook as the node script — see the
+ * entry-guard test below.
+ * @param {{ projectDir: string, env?: Record<string,string>, execArgv?: string[], argv?: string[] }} opts
  * @returns {Promise<{ code: number|null, stdout: string, stderr: string, pid: number|undefined }>}
  */
-async function runHook({ projectDir, env = {}, stdin = null, registryDir = null, useCwd = false, execArgv = [] }) {
+async function runHook({ projectDir, env = {}, stdin = null, registryDir = null, useCwd = false, execArgv = [], argv = null }) {
   return new Promise((resolve) => {
     const spawnOpts = {
       env: {
@@ -76,7 +80,7 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
     // runner's own repository worktrees. Opt-in keeps the
     // "nonexistent-project-dir graceful fallback" test working.
     if (useCwd) spawnOpts.cwd = projectDir;
-    const child = spawn(process.execPath, [...execArgv, HOOK], spawnOpts);
+    const child = spawn(process.execPath, argv ?? [...execArgv, HOOK], spawnOpts);
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
@@ -178,6 +182,58 @@ async function mkProjectTracked() {
   tmpDirs.push(dir);
   return dir;
 }
+
+// ---------------------------------------------------------------------------
+// Entry guard (#1298 P7)
+// ---------------------------------------------------------------------------
+
+describe('entry guard (#1298 P7)', { timeout: 15000 }, () => {
+  // One row per lifecycle hook that ends in a guarded `main()`. Until
+  // 2026-09-19 only on-session-start's guard was pinned: a QA mutation run
+  // deleted the guard from on-stop.mjs, then from on-session-end.mjs, and every
+  // test stayed green.
+  it.each([['on-session-start'], ['on-stop'], ['on-session-end']])(
+    'a bare import() of %s.mjs leaves the project state untouched',
+    async (hookName) => {
+    // The bug: the file ended in an UNCONDITIONAL `main()`, so any import — a
+    // probe, a test, a curious agent — ran the lifecycle handler against
+    // whatever project dir it resolved (incident W4-FX1 overwrote the live
+    // repo's current-session.json that way). Under `node -e` argv[1] is
+    // undefined, so the guarded hook must load and do nothing.
+    // Non-vacuous only under an ENABLED profile: on-stop.mjs and
+    // on-session-end.mjs `process.exit(0)` at TOP LEVEL when shouldRunHook()
+    // says no, before the guard is reached — an inherited SO_HOOK_PROFILE /
+    // SO_DISABLED_HOOKS that disables them would pass a row with the guard
+    // deleted. Hence the explicit env below. registryDir keeps a guard
+    // regression from deregistering against the host's real registry.
+    // The guard must not silence the REAL path either; that half is covered by
+    // every other test here (they spawn `node <hook>`, e.g. 'persists the
+    // generated UUID source to .orchestrator/current-session.json') plus
+    // tests/hooks/run-node-shim.test.mjs 'passes argv, stdout, stderr, and exit
+    // code through unchanged' — run-node.sh execs node with the hook as argv[1].
+    const hookPath = path.resolve(import.meta.dirname, '../../hooks', `${hookName}.mjs`);
+    const dir = await mkProjectTracked();
+    const registryDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-entry-guard-registry-'));
+    tmpDirs.push(registryDir);
+    const sentinelPath = path.join(dir, '.orchestrator', 'current-session.json');
+    const sentinel = '{"session_id":"sentinel-must-survive"}\n';
+    await fs.mkdir(path.dirname(sentinelPath), { recursive: true });
+    await fs.writeFile(sentinelPath, sentinel);
+
+    const res = await runHook({
+      projectDir: dir,
+      registryDir,
+      useCwd: true,
+      env: { SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
+      argv: ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(hookPath).href)});`],
+    });
+
+    expect(res.code).toBe(0);
+    expect(await fs.readFile(sentinelPath, 'utf8')).toBe(sentinel);
+    await expect(fs.access(path.join(dir, EVENTS_RELPATH))).rejects.toThrow();
+    },
+  );
+});
 
 // ---------------------------------------------------------------------------
 // Missing project directory — graceful fallback
@@ -633,7 +689,8 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
 // last_wave / last_batch high-water marks (written mid-session by
 // post-tool-batch-wave-signal.mjs) when the prior current-session.json carries
 // the SAME semantic_session_id — otherwise a full overwrite drops last_wave,
-// and the next PostToolBatch re-emits a duplicate orchestrator.wave.started{N}.
+// and the next PostToolBatch re-opens wave N mid-wave (re-stamping
+// wave_start_sha; until 2026-09-19 it also re-emitted a duplicate wave.started{N}).
 // For a genuinely NEW logical session (different/absent semantic id) the marks
 // are RESET (current behaviour).
 
@@ -695,7 +752,7 @@ describe('high-water-mark preservation across SessionStart (#612)', { timeout: 1
   it('preserves ALL four high-water marks when the prior session file carries the SAME semantic_session_id (#612/#980/#1193)', async () => {
     // Catches, in one spawn, three distinct escapes that share one branch:
     //   #612  — a dropped last_wave/last_batch makes the next PostToolBatch
-    //           re-emit a duplicate orchestrator.wave.started{N}.
+    //           re-open wave N (pre-2026-09-19: a duplicate wave.started{N}).
     //   #1193 — a dropped last_wave_completed re-arms a duplicate SessionEnd
     //           orchestrator.wave.completed for a wave already closed.
     //   #980  — a dropped wave_start_sha leaves the running wave with no start
@@ -1998,7 +2055,7 @@ describe('resume_linkage across a native resume (#1091 F1)', { timeout: 20000 },
     // session's OWN lock/registry entry. The preservation branch keys on the
     // semantic id, so it went FALSE and last_wave / last_batch /
     // last_wave_completed / wave_start_sha were dropped, re-arming #612
-    // (duplicate wave.started), #1193 (duplicate wave.completed) and #980
+    // (wave re-opened mid-wave), #1193 (duplicate wave.completed) and #980
     // (files_changed omitted) on a path the hook previously never saw.
     // Deliberately does NOT clear the n-counter memories: the whole point is
     // that the linkage holds while the mint counter advances.

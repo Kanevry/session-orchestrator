@@ -82,15 +82,13 @@ const UNDOCUMENTED_EVENT_ALLOWLIST = new Set([
   'orchestrator.learnings.index.injected',
   'orchestrator.loop.warning',
   'orchestrator.memory.cleanup_completed',
-  'orchestrator.session.lock.read_anomaly',
-  'orchestrator.telemetry.flush',
 ]);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const EMITTED_ORCHESTRATOR_EVENTS = censusEmittedEventNames(REPO_ROOT);
 
 /**
- * The catalog lists sibling verbs in shorthand — `orchestrator.wave.started` / `.completed`
+ * The catalog may list sibling verbs in shorthand — `orchestrator.<domain>.<verb>` / `.<verb2>`
  * on one row. A plain substring test therefore under-reports; this accepts either the
  * full name or the `.verb` shorthand on a line that also names the domain.
  */

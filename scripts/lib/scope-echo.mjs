@@ -21,6 +21,13 @@
  * when the platform exposes a stable prompt-assembly boundary; at that point the
  * digest can be computed against the real assembled prompt instead of echoed.
  *
+ * CALLERS (#1298): the CLI modes run only from prose — `--instruction` in
+ * `skills/wave-executor/references/wave-loop-dispatch.md`, `--emit` and `--verify`
+ * in `wave-loop-review.md`. Ceiling: `check-unwired-features` S4 cannot notice both
+ * dropping that citation — it judges modules, not CLI modes, and reads this one wired
+ * as a CLI entrypoint AND via its hook importer (`scopeDigest`). Revisit on a third
+ * prose caller, or when the census learns to track prose-invoked CLI entrypoints.
+ *
  * Pure + stdlib only. Nothing here throws on malformed input — a broken echo
  * check must never change a wave's outcome.
  *
@@ -34,6 +41,8 @@
  *   node scripts/lib/scope-echo.mjs --scope-file <path> --instruction
  *   node scripts/lib/scope-echo.mjs --scope-file <path> --report-file <path> \
  *        [--wave N --agent-id ID --emit]
+ *   node scripts/lib/scope-echo.mjs --verify --wave <N> --state-dir <dir> \
+ *        [--session <id> --events <path> --json --emit]
  *   node scripts/lib/scope-echo.mjs --help
  */
 

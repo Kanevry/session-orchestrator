@@ -44,13 +44,9 @@ import { hasReadInSession } from './_lib/transcript-history.mjs';
 import { resolveHost, matchesBypass } from './_lib/vcs-create-matcher.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { existsSync, readdirSync, lstatSync } from 'node:fs';
 import path from 'node:path';
-
-// #519: opt-in via profile/env. Default profile "full" enables this hook;
-// minimal/off disable. SO_DISABLED_HOOKS=pre-bash-templates-first opts out
-// per session.
-if (!shouldRunHook('pre-bash-templates-first')) process.exit(0);
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -426,12 +422,21 @@ async function main() {
   });
 }
 
-// Top-level error handler — never let exit 1 leak. Same posture as
-// pre-bash-destructive-guard.mjs: fail-open on internal errors to avoid
-// blocking legitimate work.
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-templates-first: internal error — ${e?.message || e}\n`,
-  );
-  process.exit(0);
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // #519: opt-in via profile/env. Default profile "full" enables this hook;
+  // minimal/off disable. SO_DISABLED_HOOKS=pre-bash-templates-first opts out
+  // per session.
+  if (!shouldRunHook('pre-bash-templates-first')) process.exit(0);
+
+  // Top-level error handler — never let exit 1 leak. Same posture as
+  // pre-bash-destructive-guard.mjs: fail-open on internal errors to avoid
+  // blocking legitimate work.
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-templates-first: internal error — ${e?.message || e}\n`,
+    );
+    process.exit(0);
+  });
+}

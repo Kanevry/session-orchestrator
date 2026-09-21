@@ -666,8 +666,12 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     });
   }
 
-  // #660: namespace new writes under a per-repo subdirectory.
-  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
+  // #660: namespace new writes under a per-repo subdirectory. #1389: `ctx.repoRoot`
+  // is optional — absent, resolveRepoNamespace falls back to process.cwd().
+  const repoNs = resolveRepoNamespace({
+    vaultName: ctx?.vaultName ?? null,
+    repoRoot: ctx?.repoRoot ?? null,
+  });
   // #725 D2: thread the resolved repo namespace into the learning frontmatter as
   // `source-repo` for cross-repo attribution. repoNs is already sanitised +
   // leak-guarded by resolveRepoNamespace, so it is safe to interpolate as-is. The
@@ -898,7 +902,10 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // owner-leaky repo's real name reached the vault through the session-note
   // frontmatter even though the directory AND the learning `source-repo` field
   // were already pseudonym-mapped/redacted (#732 leak-guard bypass).
-  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null });
+  const repoNs = resolveRepoNamespace({
+    vaultName: ctx?.vaultName ?? null,
+    repoRoot: ctx?.repoRoot ?? null,
+  });
 
   // Quality gate (PRD F1.2): skip sessions whose rendered narrative is too short.
   // Measure on the rendered markdown body so the check is schema-agnostic across

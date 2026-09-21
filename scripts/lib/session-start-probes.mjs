@@ -202,6 +202,22 @@ function pushedVerdictText(v) {
 }
 
 /**
+ * On-demand command listing every CI run of ONE commit, in the CLI that read
+ * CI — a glab command cannot answer in a GitHub repo (#1339 P1).
+ *
+ * Takes the FULL sha. Measured 2026-09-19, glab 1.117.0: `glab ci status` has
+ * no `--ref` flag ("Unknown flag: --ref.", exit 1), and `glab ci list --sha`
+ * matches exactly, so a short sha lists nothing.
+ *
+ * @param {boolean} gh  The reading came from the gh CLI
+ * @param {string} sha  Full commit sha
+ * @returns {string}
+ */
+function commitRunsCommand(gh, sha) {
+  return gh ? `gh run list --commit ${sha}` : `glab ci list --sha ${sha}`;
+}
+
+/**
  * Hint text for a `status: 'unknown'` ci-status reading.
  *
  * @param {object} result   The probe result (possibly carrying `pushed` from
@@ -223,8 +239,7 @@ function ciUnknownHint(result, ctx) {
   if (pushed?.sameAsHead) return `last pushed: ${short} = HEAD — ${onDemand}`;
   const verdict = pushedVerdictText(pushed?.verdict);
   if (verdict) return `last pushed: ${short} — ${verdict}`;
-  const check = gh ? `gh run list --commit ${sha}` : `glab ci status --ref ${short}`;
-  return `last pushed: ${short} (pipeline not checked; run \`${check}\`)`;
+  return `last pushed: ${short} (pipeline not checked; run \`${commitRunsCommand(gh, sha)}\`)`;
 }
 
 /**
@@ -238,6 +253,53 @@ function ciUnknownHint(result, ctx) {
  */
 function hasFailedAllowFailureJobs(r) {
   return Array.isArray(r?.allowFailureJobs) && r.allowFailureJobs.length > 0;
+}
+
+/**
+ * How many same-commit pipelines the ref preference SET ASIDE ended `failed`
+ * (#1390 P5) — the ONE predicate the `ci-status` renderer and its `severityOf`
+ * share, for the reason {@link hasFailedAllowFailureJobs} records (#1333).
+ * Only `failed` counts: a set-aside `canceled`/`skipped` run says nothing about
+ * the commit, and a line that fires on those would teach the operator to skip
+ * the banner (HR-101).
+ *
+ * @param {*} r
+ * @returns {number}
+ */
+function droppedFailedCount(r) {
+  const statuses = r?.details?.droppedStatuses;
+  return Array.isArray(statuses) ? statuses.filter((s) => s === 'failed').length : 0;
+}
+
+/**
+ * Banner line for a `green` reading beside a FAILED pipeline of the same
+ * commit that the ref preference set aside (#1390 P5). The verdict stays the
+ * #857 ref-preference result; this only stops the failure from vanishing
+ * behind a silent green.
+ *
+ * NAMED CEILING (BV-004): one `git rev-parse HEAD` (2s timeout), run only on
+ * this branch — a green reading WITH a set-aside `failed` run, behind the
+ * network opt-in. The reading carries no sha, and the GitLab path read the
+ * local HEAD, so HEAD is the commit it spoke for. REVISIT TRIGGER: once
+ * `checkCiStatus` publishes the sha it read, take it from the reading.
+ *
+ * Only the GitLab path publishes `droppedStatuses` today (`candidateEvidence`
+ * is called from `checkGitlab` alone); the gh form exists so a GitHub producer
+ * can never print a glab command (#1339 P1 class) — see {@link commitRunsCommand}.
+ *
+ * @param {*} r  A green reading with `droppedFailedCount(r) > 0`
+ * @param {{repoRoot?: string}} [ctx]
+ * @returns {string}
+ */
+function droppedFailedLine(r, ctx) {
+  const sha = revParseShas(ctx?.repoRoot, ['HEAD'])?.[0] ?? null;
+  const gh = r.details.cliUsed === 'gh';
+  let check;
+  if (sha) check = commitRunsCommand(gh, sha);
+  else check = gh ? 'gh run list' : 'glab ci list --status=failed';
+  const ref = r.details.matchedRef ?? 'HEAD';
+  const on = sha ? `${ref} for ${sha.slice(0, 8)}` : ref;
+  return `⚠ CI green on ${on}, but ${droppedFailedCount(r)} other pipeline(s) for the same commit FAILED (set-aside statuses: ${r.details.droppedStatuses.join(', ')}) — check \`${check}\``;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,9 +549,17 @@ export const PROBES = [
         const job = r.failingJobName ? ` Failing job: ${r.failingJobName}` : '';
         return `🚨 CI RED on HEAD (pipeline #${pid})${green}.${job}`;
       }
-      if (r.status === 'green' && hasFailedAllowFailureJobs(r)) {
-        const names = r.allowFailureJobs.map((j) => j?.name ?? String(j)).join(', ');
-        return `⚠ CI green on HEAD, but ${r.allowFailureJobs.length} allow_failure job(s) FAILED: ${names}. A pipeline reports success regardless of these.`;
+      if (r.status === 'green') {
+        const lines = [];
+        if (hasFailedAllowFailureJobs(r)) {
+          const names = r.allowFailureJobs.map((j) => j?.name ?? String(j)).join(', ');
+          lines.push(`⚠ CI green on HEAD, but ${r.allowFailureJobs.length} allow_failure job(s) FAILED: ${names}. A pipeline reports success regardless of these.`);
+        }
+        // #1390 P5: a failed same-commit pipeline the ref preference set aside.
+        if (droppedFailedCount(r) > 0) lines.push(droppedFailedLine(r, ctx));
+        // Both findings can hold at once; `pushBanner` takes a multi-line
+        // string verbatim, so neither swallows the other.
+        return lines.length > 0 ? lines.join('\n') : null;
       }
       return null;
     },
@@ -504,7 +574,11 @@ export const PROBES = [
       if (!r || typeof r !== 'object') return 'ok';
       if (r.degraded) return 'warn';
       if (r.status === 'red') return 'alert';
-      if (r.status === 'green') return hasFailedAllowFailureJobs(r) ? 'warn' : 'ok';
+      // A set-aside failed run (#1390 P5) is `warn`, never `alert`: the reading
+      // itself is green, and `alert` is what a red pipeline scores.
+      if (r.status === 'green') {
+        return hasFailedAllowFailureJobs(r) || droppedFailedCount(r) > 0 ? 'warn' : 'ok';
+      }
       // #1337: HEAD undetermined but the pushed commit's pipeline is red —
       // the code on origin is broken, so this is an alert, not a warning.
       if (r.pushed?.verdict?.status === 'red') return 'alert';

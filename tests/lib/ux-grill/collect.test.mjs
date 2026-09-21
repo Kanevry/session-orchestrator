@@ -502,6 +502,42 @@ describe('collect() — persona credentials', () => {
     const fill = exec.calls.find((args) => args[0] === 'fill' && args[1] === '#pw');
     expect(fill?.[2]).toBe(`${PASSWORD}|${PASSWORD}`);
   });
+
+  // Bug (#1339 P4): substitution must stay SINGLE-pass. Re-scanning its own
+  // output would turn a mis-set email holding `${LOGIN_PASSWORD}` into the live
+  // password inside the EMAIL field's argv — a substring, which the exact-element
+  // `args.includes(PASSWORD)` check above cannot see.
+  it('never re-substitutes a placeholder that arrives inside a credential value', async () => {
+    const repoRoot = makeRepo();
+    const PASSWORD = 'hunter2-SINGLE-PASS-7c21d4';
+    const EMAIL = 'before${LOGIN_PASSWORD}after';
+    const manifest = makeManifest({
+      personas: [{ name: 'shopper', 'login-env-email': 'LOGIN_EMAIL', 'login-env-password': 'LOGIN_PASSWORD' }],
+      journeys: [
+        {
+          name: 'login',
+          start: '/login',
+          'max-steps': 2,
+          success: 'dashboard',
+          persona: 'shopper',
+          steps: ['fill #email ${LOGIN_EMAIL}', 'fill #pw ${LOGIN_PASSWORD}'],
+        },
+      ],
+    });
+    const exec = makeExec({ journeyUrl: () => `${BASE_URL}/login` });
+
+    await run(repoRoot, manifest, exec, {
+      envMap: new Map([
+        ['LOGIN_EMAIL', EMAIL],
+        ['LOGIN_PASSWORD', PASSWORD],
+      ]),
+    });
+
+    const emailFill = exec.calls.find((args) => args[0] === 'fill' && args[1] === '#email');
+    expect(emailFill?.[2]).toBe(EMAIL);
+    const withSecret = exec.calls.filter((args) => args.some((arg) => String(arg).includes(PASSWORD)));
+    expect(withSecret.map((args) => args.slice(0, 2))).toEqual([['fill', '#pw']]);
+  });
 });
 
 // ---------------------------------------------------------------------------

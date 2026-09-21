@@ -71,8 +71,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
-if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
@@ -205,7 +204,7 @@ async function ownsSessionFile(input, sessionFile) {
  * previous hard-coded `.claude/` path made this hook's whole wave-lifecycle
  * fallback structurally dead on Codex CLI, Cursor and pi: the manifest exists,
  * it just is not under `.claude/`, so every batch read 0 and no
- * `orchestrator.wave.started`/`completed` event was ever emitted there.
+ * wave-lifecycle event was ever emitted there.
  *
  * @param {string} projectDir
  * @returns {Promise<number>}
@@ -378,9 +377,13 @@ async function main() {
     }
   } catch { /* best effort — hook must remain non-blocking */ }
 
-  // Emit wave-lifecycle events via the canonical stream when the orchestrator
-  // populates wave_signal ('wave-start' | 'wave-complete'). Mechanical seam —
-  // see docs/events-schema.md. Best-effort; never blocks the hook.
+  // Emit the wave-completion event via the canonical stream when the
+  // orchestrator populates wave_signal 'wave-complete'. Mechanical seam — see
+  // docs/events-schema.md. Best-effort; never blocks the hook. A 'wave-start'
+  // signal is still ACCEPTED — it keeps suppressing the fallback below, as
+  // before — but emits nothing: the `started` sibling event was removed
+  // 2026-09-19, having no reader once the convergence monitor stopped
+  // admitting it.
   //
   // Live path today: the `wave_signal === null` branch below provides the
   // mechanical wave-lifecycle fallback (#612). It fires live by diffing
@@ -388,19 +391,14 @@ async function main() {
   // payload injection required. This explicit-signal branch remains as the
   // preferred path for whenever the harness DOES inject `wave_signal` into the
   // batch payload (it takes precedence over the fallback when present).
-  if (waveSignal === 'wave-start' || waveSignal === 'wave-complete') {
+  if (waveSignal === 'wave-complete') {
     try {
-      await emitEvent(
-        waveSignal === 'wave-start'
-          ? 'orchestrator.wave.started'
-          : 'orchestrator.wave.completed',
-        {
-          ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
-          ...(nextWaveRole !== null ? { next_wave_role: nextWaveRole } : {}),
-          ...(batchId !== null ? { batch_id: batchId } : {}),
-          ...(batchSize !== null ? { batch_size: batchSize } : {}),
-        },
-      );
+      await emitEvent('orchestrator.wave.completed', {
+        ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
+        ...(nextWaveRole !== null ? { next_wave_role: nextWaveRole } : {}),
+        ...(batchId !== null ? { batch_id: batchId } : {}),
+        ...(batchSize !== null ? { batch_size: batchSize } : {}),
+      });
       // #1193 review F2 — this branch is a SECOND emitter of
       // `wave.completed`, so it must feed the same high-water mark the other
       // two read; otherwise SessionEnd (and the fallback below) would close the
@@ -413,8 +411,7 @@ async function main() {
       // and walked the marker BACKWARDS to 4. Both keys go through maxWave().
       // W4c Q1-MED — and neither is written into a PEER's record.
       if (
-        waveSignal === 'wave-complete'
-        && typeof waveNumber === 'number'
+        typeof waveNumber === 'number'
         && waveNumber > 0
         && await ownsSessionFile(input, sessionFile)
       ) {
@@ -498,24 +495,31 @@ async function main() {
               ...(batchSize !== null ? { batch_size: batchSize } : {}),
             });
           }
-          // Open the new wave.
-          await emitEvent('orchestrator.wave.started', {
-            wave_number: wave,
-            ...(nextWaveRole !== null ? { next_wave_role: nextWaveRole } : {}),
-            ...(batchId !== null ? { batch_id: batchId } : {}),
-            ...(batchSize !== null ? { batch_size: batchSize } : {}),
-          });
-          // Persist the high-water marks so the next batch does not re-emit,
-          // and so SessionEnd can tell whether the prior wave was already
-          // closed here (#1193). `last_wave_completed` is only advanced when a
-          // `completed` was actually emitted above (lastWave > 0).
+          // Open the new wave. There is no event for this (the `started`
+          // sibling was removed 2026-09-19); opening IS the high-water marks
+          // persisted below, so the next batch does not re-close the prior
+          // wave, and SessionEnd can tell whether it was already closed here
+          // (#1193). `last_wave_completed` is only advanced when a `completed`
+          // was actually emitted above (lastWave > 0).
           // W4c Q1-MED — never stamp these into a PEER session's record. The
-          // events above are still emitted (they carry THIS session's
+          // event above is still emitted (it carries THIS session's
           // attribution via emitEvent); only the shared-file claim is withheld.
           // NAMED CEILING: for a non-owning session the marks therefore never
-          // advance, so this branch re-emits started{wave} once per batch until
-          // that session's own SessionStart takes over the file. Revisit if the
-          // ledger shows repeated started{N} for one wave in a shared checkout.
+          // advance, so each of its batches re-emits completed{lastWave} while
+          // the file's `last_wave` is ahead of its `last_wave_completed`, until
+          // that session's own SessionStart takes over the file. The revisit
+          // trigger (repeated emissions for one wave) HAS FIRED — measured
+          // 2026-09-19 @ 8f6ac022 over this repo's
+          // `.orchestrator/metrics/events.jsonl{.1,}`, timestamps >= 2026-09-12,
+          // grouped by (session_id, wave_number) with jq:
+          //   started   — 1936 emissions / 48 groups, 19 duplicated, max 274
+          //   completed —  650 emissions / 28 groups,  2 duplicated, max 579
+          // The `started` half is GONE (#1202 §11): its only reader,
+          // `scripts/lib/convergence-monitor.mjs`, no longer admits it — it
+          // carried no measurement and, sharing a tail tick with completed{N},
+          // masked the (N-1, N) shrinking_diff pair. The `completed` half is
+          // OPEN: that event has readers, so the fix is a mark a non-owning
+          // session can keep for itself, not a removal.
           if (await ownsSessionFile(input, sessionFile)) {
             // #980 — the OPEN half: stamp the sha this new wave starts from.
             // Written as null (not omitted) when git is unreadable, so the
@@ -561,5 +565,12 @@ async function main() {
   }
 }
 
-// Exit 0 always — informational hook must never block Claude.
-main().catch(() => {}).finally(() => process.exit(0));
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // Exit 0 immediately when disabled via SO_HOOK_PROFILE / SO_DISABLED_HOOKS.
+  if (!shouldRunHook('post-tool-batch-wave-signal')) process.exit(0);
+
+  // Exit 0 always — informational hook must never block Claude.
+  main().catch(() => {}).finally(() => process.exit(0));
+}

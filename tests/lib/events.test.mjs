@@ -13,9 +13,10 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, readFile, rm, access } from 'node:fs/promises';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { validateEventRecord } from '@lib/events-schema.mjs';
+import { ARCHIVE_DIR_NAME, ROTATION_EVENT, validateEventRecord } from '@lib/events-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -362,5 +363,270 @@ describe('emitEvent — schema_version + validation (#1177)', () => {
     const body = JSON.parse(init.body);
     expect(body.payload).toEqual({ session_id: 's1' });
     expect(Object.keys(body).sort()).toEqual(['event_type', 'payload', 'source']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readEventsWithRotations — reading across rotation boundaries (#1401)
+// ---------------------------------------------------------------------------
+
+describe('readEventsWithRotations', () => {
+  let dir;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), 'events-read-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  /** One ledger line in the live record shape (harvested 2026-09-19). */
+  const line = (timestamp, extra = {}) =>
+    `${JSON.stringify({
+      timestamp,
+      event: 'orchestrator.auq_clarity.allowed',
+      session_id: 'c8eeea77-cbd5-4fd1-81d4-89ba549d8fdb',
+      schema_version: 1,
+      ...extra,
+    })}\n`;
+
+  const rotationLine = (timestamp, archivedAs, range) =>
+    `${JSON.stringify({
+      timestamp,
+      event: ROTATION_EVENT,
+      archived_as: archivedAs,
+      size_before: 10485760,
+      lines: 53896,
+      first_ts: range.first,
+      last_ts: range.last,
+      malformed_lines: 0,
+      schema_version: 1,
+    })}\n`;
+
+  function archivePath(name) {
+    mkdirSync(path.join(dir, ARCHIVE_DIR_NAME), { recursive: true });
+    return path.join(dir, ARCHIVE_DIR_NAME, name);
+  }
+
+  it('returns events across the rotation boundary in time order', async () => {
+    // BUG THIS CATCHES: every window analysis silently lost its whole history
+    // at each rotation — census 2026-09-19 @ 8f15f77b found ZERO code readers
+    // of any rotated backup, which is how the #1037 guard attribution ended up
+    // computable for only 2 of 38 sessions.
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const archived = archivePath('events-20260412T063301Z_20260918T191402Z.jsonl');
+
+    writeFileSync(archived, line('2026-04-12T06:33:01.123Z') + line('2026-09-18T19:14:02Z'));
+    writeFileSync(
+      active,
+      rotationLine('2026-09-19T07:00:00Z', archived, {
+        first: '2026-04-12T06:33:01.123Z',
+        last: '2026-09-18T19:14:02Z',
+      }) + line('2026-09-19T08:00:00Z'),
+    );
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.events.map((e) => e.timestamp)).toEqual([
+      '2026-04-12T06:33:01.123Z',
+      '2026-09-18T19:14:02Z',
+      '2026-09-19T07:00:00Z',
+      '2026-09-19T08:00:00Z',
+    ]);
+    expect(result.complete).toBe(true);
+    expect(result.gaps).toEqual([]);
+  });
+
+  it('reports a MISSING archive as a gap instead of silently returning a shorter history', async () => {
+    // BUG THIS CATCHES: the 2026-09-19 loss itself. A subagent's
+    // `touch <path> && rm -f <path>` ignore-probe adopted and destroyed a
+    // 10 MB archive; with no tombstone the shortened ledger was indistinguishable
+    // from one that had simply never rotated.
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const vanished = archivePath('events-20260412T063301Z_20260918T191402Z.jsonl');
+
+    writeFileSync(
+      active,
+      rotationLine('2026-09-19T07:00:00Z', vanished, {
+        first: '2026-04-12T06:33:01.123Z',
+        last: '2026-09-18T19:14:02Z',
+      }) + line('2026-09-19T08:00:00Z'),
+    );
+    // `vanished` is deliberately never created — the tombstone points at nothing.
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.complete).toBe(false);
+    expect(result.gaps).toHaveLength(1);
+    expect(result.gaps[0]).toMatchObject({
+      kind: 'missing-archive',
+      archived_as: vanished,
+      first_ts: '2026-04-12T06:33:01.123Z',
+      last_ts: '2026-09-18T19:14:02Z',
+      lines: 53896,
+      reported_by: active,
+    });
+    // The surviving records are still returned — a gap is a finding, not a throw.
+    expect(result.events).toHaveLength(2);
+  });
+
+  it('resolves a MOVED checkout tombstone against the sibling _archive/ instead of reporting a phantom gap', async () => {
+    // BUG THIS CATCHES (#1411): `archived_as` is an ABSOLUTE host path and the
+    // reader compared it exactly, so renaming the repo, cloning it, or reading
+    // the ledger from a sibling git worktree — routine here — reported
+    // `missing-archive` for EVERY rotation while the archive sat right beside
+    // the active file. A `complete: false` that fires on a move teaches the
+    // reader to ignore the signal #1401 was built to raise (HR-101).
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const name = 'events-20260412T063301Z_20260918T191402Z.jsonl';
+    const here = archivePath(name);
+    // The tombstone still names the archive under the checkout's OLD root.
+    const oldRootPath = path.join('/nonexistent-old-checkout/.orchestrator/metrics', ARCHIVE_DIR_NAME, name);
+
+    writeFileSync(here, line('2026-04-12T06:33:01.123Z') + line('2026-09-18T19:14:02Z'));
+    writeFileSync(
+      active,
+      rotationLine('2026-09-19T07:00:00Z', oldRootPath, {
+        first: '2026-04-12T06:33:01.123Z',
+        last: '2026-09-18T19:14:02Z',
+      }) + line('2026-09-19T08:00:00Z'),
+    );
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.gaps).toEqual([]);
+    expect(result.complete).toBe(true);
+    expect(result.events.map((e) => e.timestamp)).toEqual([
+      '2026-04-12T06:33:01.123Z',
+      '2026-09-18T19:14:02Z',
+      '2026-09-19T07:00:00Z',
+      '2026-09-19T08:00:00Z',
+    ]);
+  });
+
+  it('reports missing-archive when only a FOREIGN checkout still holds a file of that name', async () => {
+    // BUG THIS CATCHES (#1411, second order): `existsSync(target)` on the
+    // absolute tombstone value answers YES from a still-present OLD checkout,
+    // so THIS ledger was validated against a FOREIGN repo's archive — a silent
+    // false negative, worse than the phantom gap it hid behind.
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const foreignRoot = await mkdtemp(path.join(tmpdir(), 'events-foreign-'));
+    try {
+      const name = 'events-20260412T063301Z_20260918T191402Z.jsonl';
+      const foreignArchive = path.join(foreignRoot, ARCHIVE_DIR_NAME, name);
+      mkdirSync(path.dirname(foreignArchive), { recursive: true });
+      writeFileSync(foreignArchive, line('2001-01-01T00:00:00Z'));
+      // This ledger's own `_archive/` exists but holds NO file of that basename.
+      mkdirSync(path.join(dir, ARCHIVE_DIR_NAME), { recursive: true });
+
+      const active = path.join(dir, 'events.jsonl');
+      writeFileSync(
+        active,
+        rotationLine('2026-09-19T07:00:00Z', foreignArchive, {
+          first: '2026-04-12T06:33:01.123Z',
+          last: '2026-09-18T19:14:02Z',
+        }) + line('2026-09-19T08:00:00Z'),
+      );
+
+      const result = readEventsWithRotations(undefined, { filePath: active });
+
+      expect(result.complete).toBe(false);
+      expect(result.gaps).toEqual([
+        expect.objectContaining({ kind: 'missing-archive', archived_as: foreignArchive }),
+      ]);
+      // The foreign checkout's records are never folded into this ledger.
+      expect(result.events).toHaveLength(2);
+    } finally {
+      await rm(foreignRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('counts unreadable lines in malformed_lines, per source and in total', async () => {
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const archived = archivePath('events-20260412T063301Z_20260501T000000Z.jsonl');
+
+    writeFileSync(archived, line('2026-04-12T06:33:01.123Z') + '{"timestamp":"2026-05-0\n');
+    writeFileSync(active, line('2026-09-19T08:00:00Z') + '[1,2,3]\nnot json at all\n');
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.malformed_lines).toBe(3);
+    const bySource = Object.fromEntries(result.sources.map((s) => [s.path, s.malformed_lines]));
+    expect(bySource[archived]).toBe(1);
+    expect(bySource[active]).toBe(2);
+    // The readable records survive the malformed ones.
+    expect(result.events).toHaveLength(2);
+  });
+
+  it('reads a legacy .1 ring backup and reports a hole in the ring as a gap', async () => {
+    // Two live fleet repos still carry a pre-#1401 `events.jsonl.1` (measured
+    // 2026-09-19). A reader blind to the ring would drop that history and call
+    // the result complete.
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+
+    writeFileSync(`${active}.1`, line('2026-08-01T00:00:00Z'));
+    // `.2` deliberately absent while `.3` exists — the ring was contiguous by
+    // construction, so the hole proves an out-of-band deletion.
+    writeFileSync(`${active}.3`, line('2026-06-01T00:00:00Z'));
+    writeFileSync(active, line('2026-09-19T08:00:00Z'));
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.events.map((e) => e.timestamp)).toEqual([
+      '2026-06-01T00:00:00Z',
+      '2026-08-01T00:00:00Z',
+      '2026-09-19T08:00:00Z',
+    ]);
+    expect(result.gaps).toEqual([
+      expect.objectContaining({ kind: 'ring-hole', archived_as: `${active}.2` }),
+    ]);
+    expect(result.complete).toBe(false);
+  });
+
+  it('ignores a hand-placed file in _archive/ that rotation did not write', async () => {
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const foreign = archivePath('events-worktree-vault-session-analysis-2026-08-17.jsonl');
+
+    writeFileSync(foreign, line('2001-01-01T00:00:00Z'));
+    writeFileSync(active, line('2026-09-19T08:00:00Z'));
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.events.map((e) => e.timestamp)).toEqual(['2026-09-19T08:00:00Z']);
+    expect(result.sources.map((s) => s.path)).toEqual([active]);
+  });
+
+  it('end-to-end: a real maybeRotate run leaves an archive the reader finds', async () => {
+    const { readEventsWithRotations } = await importEventsWithDir(dir);
+    const { maybeRotate } = await import('@lib/events-rotation.mjs');
+    const active = path.join(dir, 'events.jsonl');
+
+    let body = line('2026-04-12T06:33:01.123Z');
+    while (body.length < 1024 * 1024) body += line('2026-09-18T19:14:02Z');
+    writeFileSync(active, body);
+
+    const rot = maybeRotate({ logPath: active, maxSizeMb: 1, maxBackups: 5, enabled: true });
+    expect(rot.rotated).toBe(true);
+    expect(rot.recordWritten).toBe(true);
+
+    // Post-rotation appends land in the new active file.
+    writeFileSync(active, readFileSync(active, 'utf8') + line('2026-09-19T09:00:00Z'));
+
+    const result = readEventsWithRotations(undefined, { filePath: active });
+
+    expect(result.complete).toBe(true);
+    expect(result.malformed_lines).toBe(0);
+    expect(result.sources.map((s) => s.kind)).toEqual(['archive', 'active']);
+    expect(result.events).toHaveLength(rot.lines + 2); // archive + tombstone + new append
+    expect(result.events.at(0).timestamp).toBe('2026-04-12T06:33:01.123Z');
+    expect(result.events.at(-1).timestamp).toBe('2026-09-19T09:00:00Z');
+    expect(result.events.find((e) => e.event === ROTATION_EVENT).archived_as).toBe(rot.archivedAs);
   });
 });

@@ -144,16 +144,26 @@ function tailRead(absPath, prevOffset) {
  * Event types this monitor is meant to classify. Anything else is ignored even
  * when it carries a wave number.
  *
- * The allowlist is a wave-LIFECYCLE prefix, the agent-dispatch/-stop counters,
- * and the quality-gate envelope — i.e. exactly the records that can carry the
- * three measurements `evaluateSignals` compares (`files_changed`, the test
- * pass count, the per-wave agent count). It is deliberately fail-CLOSED: a new
- * event type that gains a `wave_number` field must be added here consciously.
+ * The allowlist is the wave-COMPLETION record, the agent-dispatch/-stop
+ * counters, and the quality-gate envelope — i.e. exactly the records that can
+ * carry the three measurements `evaluateSignals` compares (`files_changed`, the
+ * test pass count, the per-wave agent count). It is deliberately fail-CLOSED: a
+ * new event type that gains a `wave_number` field must be added here consciously.
  *
  * The gate admission is a TYPE-AND-SHAPE gate, never a bare prefix widening —
  * see `isWaveScopedEvent` for why.
+ *
+ * `orchestrator.wave.completed` is admitted by its EXACT name. The
+ * `orchestrator.wave.` prefix that stood here until 2026-09-19 also admitted
+ * `wave.started` (and `wave.final_refused`), neither of which carries a
+ * measurement — and it cost the one signal the diff keys
+ * exist for: the batch hook wrote completed{N} and started{N+1} in the same
+ * millisecond, so they shared a tail tick, started{N+1} instantiated an EMPTY
+ * summary for N+1, the tick's highest wave became N+1, and the (N-1, N)
+ * `shrinking_diff` pair was never compared (architect-reviewer repro,
+ * 40 -> 10 -> 5 files: same tick `[]`, split ticks `shrinking_diff:2` and `:3`).
  */
-const WAVE_EVENT_PREFIX = 'orchestrator.wave.';
+const WAVE_COMPLETED_EVENT = 'orchestrator.wave.completed';
 const WAVE_EVENT_NAMES = new Set(['agent.dispatched', 'orchestrator.agent.dispatched']);
 const AGENT_STOPPED_EVENT = 'orchestrator.agent.stopped';
 const GATE_EVENT_PREFIX = 'orchestrator.quality_gate.';
@@ -168,13 +178,20 @@ const GATE_EVENT_PREFIX = 'orchestrator.quality_gate.';
  * counting them inflates every per-wave agent count and the `velocity_drop`
  * signal derived from it.
  *
- * Measured 2026-09-18 over `.orchestrator/metrics/events.jsonl{,.1}`:
- *   cat .orchestrator/metrics/events.jsonl .orchestrator/metrics/events.jsonl.1 | jq -s '{
- *     total_stopped: [.[]|select(.event=="orchestrator.agent.stopped")]|length,
- *     with_wave: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null))]|length,
- *     with_wave_no_agent: [.[]|select(.event=="orchestrator.agent.stopped" and ((.wave//.wave_number)!=null) and ((.agent//"")==""))]|length }'
+ * Measured 2026-09-18 over the then-active `.orchestrator/metrics/events.jsonl`
+ * plus the legacy `.jsonl.1` backup beside it (destroyed 2026-09-19):
  *   → { total_stopped: 16438, with_wave: 6553, with_wave_no_agent: 5930 }
  * i.e. 90.5% of the wave-scoped stops carry no `agent` — a ~10.5x inflation.
+ *
+ * To re-measure, read the ledger with `readEventsWithRotations(repoRoot)` from
+ * `scripts/lib/events.mjs` — it yields the active file plus every archive in
+ * time order and reports a rotation whose archive is gone as a `gaps` entry
+ * with `complete: false`, which a `cat` over rotation files cannot. Rotation
+ * writes `_archive/events-<firstTs>_<lastTs>.jsonl` and an
+ * `orchestrator.events.rotated` first line since #1401; the `.1`..`.N` ring is
+ * no longer written (see `events-rotation.mjs` § Why `_archive/<name>`).
+ * Recipe with the jq filter: `skills/convergence-monitoring/SIGNALS.md`
+ * § Live monitor input.
  *
  * @param {Record<string, unknown>} rec
  * @returns {boolean}
@@ -217,7 +234,7 @@ function hasFoldableCounts(rec) {
  * @returns {boolean}
  */
 function isWaveScopedEvent(evType, rec = {}) {
-  if (evType.startsWith(WAVE_EVENT_PREFIX)) return true;
+  if (evType === WAVE_COMPLETED_EVENT) return true;
   if (WAVE_EVENT_NAMES.has(evType)) return true;
   if (evType === AGENT_STOPPED_EVENT) return namesAnAgent(rec);
   if (evType.startsWith(GATE_EVENT_PREFIX)) {
@@ -468,6 +485,15 @@ async function tailLoop(intervalS) {
       continue;
     }
     offset = tick.offset;
+    // Only the HIGHEST wave this tick touched is evaluated. NAMED CEILING
+    // (BV-004): a wave-(N+1) record that DOES carry a measurement (a named
+    // agent.dispatched/-stopped, a gated quality_gate envelope) landing in the
+    // same tick as completed{N} still masks the (N-1, N) pair. Evaluating every
+    // touched wave would close that, but the first tick reads the whole ledger
+    // from offset 0 and wave numbers are not session-scoped, so one stale
+    // startup evaluation would become one per wave number in history. Revisit
+    // if the ledger shows such a record within one poll interval of a
+    // completed{N}.
     let latestWave = -1;
     for (const line of tick.lines) {
       /** @type {Record<string, unknown> | null} */

@@ -883,7 +883,9 @@ function mentionedModuleTokens(lines) {
  *    switched off. Revisit if a real module-resolver (import-specifier resolution
  *    relative to the importing file) becomes cheap, or if a collided basename is
  *    ever confirmed to mask a true positive. The `coordinator-invoked-module`
- *    DOWNGRADE is exempt, and since #1293 so is the CLUSTER-ROOT filter: in both
+ *    DOWNGRADE is exempt, and since #1293 so is the CLUSTER-ROOT filter (since
+ *    #1298 its predicate also drives the "drags N" count, which had collapsed
+ *    two dragged `index.mjs` into one): in both
  *    a colliding basename must be named with its `dirname/base` suffix, because
  *    those matches move a module OUT of the reportable class and would otherwise
  *    hide a true unreachable sibling. Measured cost of leaving the root filter
@@ -1014,24 +1016,41 @@ export function collectUnreachableLibraryModules(pluginRoot) {
   const basenameCount = new Map();
   for (const module of modules) basenameCount.set(module.base, (basenameCount.get(module.base) ?? 0) + 1);
 
-  const roots = unreachable.filter((module) => {
-    // A bare-basename mention only suppresses when the basename is UNIQUE
-    // (see the census above). When it collides, the mentioning module must name
-    // the `dirname/base` form in its body — otherwise ONE unreachable module
-    // mentioning bare `index.mjs` masks EVERY differently-pathed `index.mjs`
-    // root at once (#1293: `locks/index.mjs` + `worktree/index.mjs` were masked
-    // by a third unreachable module until that module was deleted for an
-    // unrelated reason).
-    const ambiguous = (basenameCount.get(module.base) ?? 0) > 1;
-    const qualified = module.relative.split(path.sep).slice(-2).join('/');
-    const qualifiedRe = ambiguous ? tokenMatcher(qualified) : null;
-    return !unreachable.some(
-      (other) =>
-        other.relative !== module.relative &&
-        other.mentions.has(module.base) &&
-        (qualifiedRe === null || qualifiedRe.test(other.rawBody)),
-    );
-  });
+  // One `dirname/base` matcher per unreachable module whose basename collides,
+  // built once: `references` below runs per (mentioner, target) pair.
+  /** @type {Map<string, RegExp>} */
+  const qualifiedMatchers = new Map();
+  for (const module of unreachable) {
+    if ((basenameCount.get(module.base) ?? 0) < 2) continue;
+    qualifiedMatchers.set(module.relative, tokenMatcher(module.relative.split(path.sep).slice(-2).join('/')));
+  }
+  /**
+   * Does `mentioner` reference the unreachable module `target`? A bare-basename
+   * mention only counts when the basename is UNIQUE (see the census above).
+   * When it collides, the mentioning module must name the `dirname/base` form
+   * in its body — otherwise ONE unreachable module mentioning bare `index.mjs`
+   * references EVERY differently-pathed `index.mjs` at once (#1293:
+   * `locks/index.mjs` + `worktree/index.mjs` were masked as roots by a third
+   * unreachable module until that module was deleted for an unrelated reason).
+   *
+   * The ONE predicate for both consumers — the cluster-root filter and the drag
+   * count of the finding message — so the two cannot disagree about who
+   * references whom. They did (#1298): the drag count compared bare basenames,
+   * so a root importing `a/index.mjs` AND `b/index.mjs` read "drags 1".
+   *
+   * @param {(typeof modules)[number]} mentioner
+   * @param {(typeof modules)[number]} target an `unreachable` module
+   * @returns {boolean}
+   */
+  const references = (mentioner, target) => {
+    if (!mentioner.mentions.has(target.base)) return false;
+    const qualifiedRe = qualifiedMatchers.get(target.relative);
+    return qualifiedRe === undefined || qualifiedRe.test(mentioner.rawBody);
+  };
+
+  const roots = unreachable.filter(
+    (module) => !unreachable.some((other) => other.relative !== module.relative && references(other, module)),
+  );
 
   // A pure `export *` barrel enters the population above so it can HEAD its own
   // cluster, but reporting it needs one more condition. S3 already exempts this
@@ -1106,9 +1125,10 @@ export function collectUnreachableLibraryModules(pluginRoot) {
           'architecture. Re-check only if that instruction is ever removed',
       });
     }
-    const dragged = [...module.mentions].filter(
-      (token) => token !== module.base && [...unreachableSet].some((rel) => path.basename(rel) === token),
-    );
+    // Counted per MODULE through the root filter's own predicate, never per
+    // basename token: `mentions` is a Set of basenames, so two dragged
+    // `index.mjs` files would collapse into one (#1298).
+    const dragged = unreachable.filter((other) => other.relative !== module.relative && references(module, other));
     const tail = dragged.length > 0 ? `, and drags ${dragged.length} further unreachable module(s)` : '';
     // A pure barrel reports its re-export surface; naming "0 symbol(s)" there
     // would read as a checker bug rather than as the barrel it is.

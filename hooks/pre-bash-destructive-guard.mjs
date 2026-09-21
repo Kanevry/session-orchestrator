@@ -29,6 +29,12 @@
  *          generic pattern path — its `pattern: ">"` would FP-match nearly
  *          every redirect. Unresolved targets (variable/substitution) warn
  *          on stderr (fail-visible) and never block.
+ *        rule.type === 'path-delete' (#1401): decided by the DELETE/RENAME
+ *          operand via firstDeniedDeleteTarget (same target-denylist globs,
+ *          same compiler), likewise shadowing the generic pattern path. The
+ *          redirect class answers "what does this command WRITE"; nothing
+ *          answered "what does it REMOVE", so `rm -f <ledger>` was allowed
+ *          while `> <ledger>` was denied — 53,896 lines of telemetry lost.
  *   G6 no match → exit 0
  *
  * Telemetry (Epic #803 process-safety dimension): best-effort
@@ -46,8 +52,7 @@ import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // #992 — late-bound repo dependencies
@@ -179,6 +184,8 @@ async function bootstrap() {
           'redirectSpanEnd',
           'resolveSegmentVerb',
           'splitChainSegments',
+          'extractDeleteTargets',
+          'firstDeniedDeleteTarget',
         ],
       },
     },
@@ -877,6 +884,61 @@ async function main() {
       continue; // unreachable (blockCommand never returns) — kept for clarity
     }
 
+    // #1401 — path-delete rules are decided by the DELETE/RENAME operand via
+    // firstDeniedDeleteTarget, never by the generic pattern path below (same
+    // full-shadow contract as redirect-truncate above: this rule's `pattern` is
+    // a human-readable label, and routing it through commandMatchesBlocked
+    // would match either nothing or every `rm`).
+    //
+    // Why a second surface at all: the redirect rule answers "what does this
+    // command WRITE". Nothing answered "what does it REMOVE" — so `rm -f
+    // .orchestrator/metrics/events.jsonl.1` was ALLOWED while `> ` on the same
+    // file was DENIED (measured 2026-09-19, #1401: 53,896 ledger lines lost).
+    if (rule.type === 'path-delete') {
+      const collected = blocker.extractDeleteTargets(command);
+      const cutOff = collected.filter(
+        (e) => e.unresolved && (e.reason === 'budget-exhausted' || e.reason === 'depth-exceeded')
+      );
+      if (cutOff.length > 0) {
+        // A recursion cap that drops payloads silently is a bypass, not a cap
+        // (#988 T2) — surface it on the VISIBLE channel (#995).
+        //
+        // Deliberately NARROWER than the redirect branch above, which also
+        // surfaces `variable/substitution` operands: `rm -rf "$WORK"` is the
+        // ORDINARY spelling of a temp cleanup, so notifying on it would fire on
+        // a large share of benign commands and train the operator to ignore the
+        // channel (host-resources.md § HR-101 — a signal may only warn if it is
+        // rare). A cut-off marker, by contrast, needs 32+ payload segments or
+        // 3 levels of nesting: pathological by construction. Unresolved
+        // operands stay fail-visible on stderr below; neither class ever blocks.
+        const reasons = [...new Set(cutOff.map((e) => e.reason))].join(', ');
+        const msg = `pre-bash-destructive-guard: delete-target traversal cut off (${reasons}) — not matched (fail-visible)`;
+        process.stderr.write(`⚠ ${msg}\n`);
+        notices.push(msg);
+      }
+      const unresolvedOperands = collected.filter(
+        (e) => e.unresolved && e.reason === 'variable/substitution'
+      );
+      if (unresolvedOperands.length > 0) {
+        process.stderr.write(
+          `ℹ pre-bash-destructive-guard: ${unresolvedOperands.length} delete target(s) carry a variable/substitution — not matched (rule: ${id})\n`
+        );
+      }
+      const hit = blocker.firstDeniedDeleteTarget(rule, collected, { repoRoot: projectDir });
+      if (!hit) continue;
+      if (severity !== 'block') {
+        const msg = `pre-bash-destructive-guard: protected delete target matched (rule: ${id}) — ${rationale}`;
+        process.stderr.write(`⚠ ${msg}\n`);
+        notices.push(msg);
+        continue;
+      }
+      // Reason stays short (stdout-budget): verb + target, never the command.
+      // The policy `rationale` is long by design (it carries the measurement
+      // trail); blockCommand puts only its first line in the systemMessage.
+      await blockCommand(`${hit.verb} ${hit.target}`, id, rationale, command, sessionId);
+      continue; // unreachable (blockCommand never returns) — kept for clarity
+    }
+
     // The rm-rf-destructive rule also fires for recursive+force rm flag variants
     // the literal "rm -rf" pattern misses (`rm -r -f`, `rm -fr`) — #641 gap closure.
     const matched = id === 'rm-rf-destructive'
@@ -984,10 +1046,19 @@ try {
   process.exit(0); // fail-open, but no longer fail-silent
 }
 
-// Top-level error handler — never let exit 1 leak
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-destructive-guard: internal error — ${e?.message || e}\n`
-  );
-  process.exit(0); // fail-open on internal errors to avoid blocking legitimate work
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+// Placed strictly AFTER all decision logic: it gates whether main() is invoked,
+// never what main() decides, so no deny path can be short-circuited by it.
+if (isMainModule(import.meta.url)) {
+  // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+  if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
+
+  // Top-level error handler — never let exit 1 leak
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-destructive-guard: internal error — ${e?.message || e}\n`
+    );
+    process.exit(0); // fail-open on internal errors to avoid blocking legitimate work
+  });
+}

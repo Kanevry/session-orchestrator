@@ -173,6 +173,53 @@
  * confused" as a bypass strategy. This is the one place the guard is closed
  * rather than open, and it is closed because the alternative is a silent skip.
  *
+ * ## Interpreter eval payloads (GitLab #1408)
+ *
+ * The blind spot this file used to NAME became the habitual shape. On
+ * 2026-09-19 a coordinator appended its own `sessions.jsonl` record with
+ * `node --input-type=module -e "… appendFileSync('.orchestrator/metrics/
+ * sessions.jsonl', JSON.stringify(rec) + '\n')"`; `emit-session.mjs` never ran
+ * that session, and the record landed with `ended_at` instead of `completed_at`
+ * and four required fields missing. Measured over 58 transcripts of this repo:
+ * 438 Bash commands mention the ledger, the SHELL write shapes above occurred
+ * **0 times**, and 46 are interpreter one-liners. Fleet-wide: 40 interpreter
+ * write calls, 38 with the ledger path as the FIRST argument. The guard was
+ * aimed at a shape nobody uses.
+ *
+ * What is covered now: ONE predicate (`findInterpreterLedgerWrite`), hung off
+ * the SAME per-segment loop as every other matcher here, so scoping is per
+ * STATEMENT — `node -e '<read>' ; echo ok` allows, `cmd && node -e '<append>'`
+ * denies on the second statement alone. It takes the eval-flag operand
+ * (`-e`/`--eval`/`-p`/`--print`, `python -c`, `perl -e`, `ruby -e`,
+ * `deno eval`, in separated / attached / `=`-joined spelling) and denies iff a
+ * write call from a CLOSED list (`appendFile(Sync)`, `writeFile(Sync)`,
+ * `createWriteStream`; Python `open(…, 'a'|'w'|'x'|…)`; Ruby `File.write` /
+ * `IO.write` / `File.open`; Perl's two `open` forms) has the literal basename
+ * `sessions.jsonl` in its FIRST ARGUMENT TEXT.
+ *
+ * The first-argument scoping is load-bearing, not an optimisation: keying on
+ * mere co-occurrence denies all three of the ledger READS measured in this
+ * repo's transcripts (each reads the ledger and writes
+ * `.orchestrator/tmp/session-entry.json` before piping into
+ * `emit-session.mjs`), and denies `readFileSync('…/sessions.jsonl')` +
+ * `writeFileSync('/tmp/x')` in one one-liner.
+ *
+ * KNOWN LIMITS — these stay limits, deliberately (BV-004):
+ *   - The path held in a VARIABLE: `const p = '…/sessions.jsonl';
+ *     appendFileSync(p, …)`. No constant propagation here; the first-argument
+ *     text carries no basename.
+ *   - A here-doc-fed interpreter (`node <<'EOF' … EOF`) — the body is skipped
+ *     upstream by `scanCommand`, so no payload reaches this predicate.
+ *   - An invoked SCRIPT FILE (`node tools/append.mjs`) — the ledger name is not
+ *     in the command string at all.
+ *   - A write API outside the closed list (`fs.open` + `write`, a stream from a
+ *     helper, `Deno.writeTextFile`), and Python kwargs-only `open(file=…,
+ *     mode='a')`.
+ *   REVISIT TRIGGER: re-run the transcript census (`rg` for interpreter
+ *   one-liners naming the ledger). If a shape from the four bullets above
+ *   appears in ANY real transcript, widen the predicate then — not before. A
+ *   guard widened against imagined shapes buys false positives at full price.
+ *
  * ## What this does NOT catch (stated plainly — the bounds are the contract)
  *
  *   - Indirection through a variable: `>> "$LEDGER"`, `tee "$LEDGER"`,
@@ -193,12 +240,29 @@
  *     buried in a quoted substitution is not the accident shape this guard is
  *     for — it is the "determined circumvention" line below.
  *   - In-place editors: `sed -i`, `perl -i`, `ed`, an interactive editor.
- *   - A write performed inside an interpreter: `node -e`, `python -c`,
- *     `bash -c '… >> …/sessions.jsonl'`, or any script the command invokes that
- *     appends the ledger itself. The one exception is a WRAPPER payload —
- *     `env -S 'tee -a …/sessions.jsonl'` — which `resolveSegmentVerb` reports
- *     as a payload and which this matcher re-enters (to MAX_PAYLOAD_DEPTH).
- *     Interpreter `-c` payloads are a larger surface and stay out of scope.
+ *   - A write performed by a SCRIPT FILE the command invokes
+ *     (`node tools/append.mjs`) — the ledger name never appears in the command
+ *     string at all, so nothing here can see it. Interpreter EVAL payloads
+ *     (`node -e`, `python3 -c`) used to sit in this bullet too; since #1408 they
+ *     are covered — see "Interpreter eval payloads" below for the exact bound.
+ *   - A here-doc-fed interpreter (`node <<'EOF' … EOF`): here-doc BODIES are
+ *     skipped as the data they are, so the payload never reaches the matcher.
+ *   - A shell `-c` payload the segment does not NAME a shell for. Since
+ *     2026-09-20 a `-c` operand following a `bash`/`sh`/`zsh`/`dash`/`ksh`/`su`
+ *     TOKEN is re-entered by the same matcher (`bash -c '… >> …/sessions.jsonl'`
+ *     and `xargs -I{} sh -c '…'` both deny), but three shapes stay out:
+ *     `ssh host '… >> …/sessions.jsonl'` (a REMOTE ledger — not this repo's
+ *     file, so out of scope by nature, not by omission); a payload whose shell
+ *     is only reachable through expansion (`"$SHELL" -c …`, `eval "$CMD"`);
+ *     and a payload nested past MAX_PAYLOAD_DEPTH (2) — that cut is marked, not
+ *     silent, when the dropped payload mentions the ledger (#998 item 2).
+ *     This bullet REPLACES the one #1408 deleted (it named
+ *     `bash -c '… >> …/sessions.jsonl'` as uncovered, which was true, and the
+ *     replacement bullet narrowed the claim to script files and here-docs while
+ *     the hole stayed open — a guard may have limits, it may not misstate them).
+ *     REVISIT TRIGGER: re-run the transcript census for interpreter one-liners
+ *     naming the ledger; widen only if one of these three shapes appears in a
+ *     REAL transcript.
  *   - Obfuscation: `eval`, `base64 -d | sh`, a here-doc-fed shell. Here-doc
  *     BODIES are skipped as the data they are — `bash <<EOF … EOF` therefore
  *     hides its payload from this matcher by construction.
@@ -249,8 +313,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('pre-bash-sessions-ledger-guard')) process.exit(0);
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // #993 — late-bound repo dependencies
@@ -324,8 +387,9 @@ const GUARD_CONSEQUENCE = {
     '    COMMITTED (HEAD) command lexer — any uncommitted change to that file is NOT in effect.',
   ],
   inactive: [
-    '    Consequence: a direct shell write into .orchestrator/metrics/sessions.jsonl',
-    '    (>, >>, tee, dd of=, cp/mv destination) is NOT being blocked. This hook is a',
+    '    Consequence: a direct write into .orchestrator/metrics/sessions.jsonl',
+    '    (>, >>, tee, dd of=, cp/mv destination, or an interpreter payload such as',
+    '    node -e / python -c — #1408) is NOT being blocked. This hook is a',
     '    fail-open nudge, not a security boundary — but repair it so the #958 corruption',
     '    class stays caught.',
   ],
@@ -859,6 +923,293 @@ function scanCommand(command) {
   return { targets, sanitized: out, balanced: true };
 }
 
+// ---------------------------------------------------------------------------
+// Interpreter eval payloads (#1408)
+//
+// ONE predicate, hung off the EXISTING per-segment loop in findWriteVerbTarget.
+// Deliberately NOT a Bash parser and deliberately NOT in command-blocker.mjs:
+// that module has five other consumers, and a JS payload re-entered by its SHELL
+// matcher would be misread as shell.
+// ---------------------------------------------------------------------------
+
+/**
+ * Interpreter verbs whose eval payload is read, mapped to the DIALECT its code
+ * is judged in. `node`/`bun`/`deno` share the `fs` API surface, so one dialect
+ * covers all three.
+ */
+const INTERPRETER_FAMILY = new Map([
+  ['node', 'js'],
+  ['nodejs', 'js'],
+  ['bun', 'js'],
+  ['deno', 'js'],
+  ['python', 'python'],
+  ['python2', 'python'],
+  ['python3', 'python'],
+  ['perl', 'perl'],
+  ['ruby', 'ruby'],
+]);
+
+/** Flags whose operand is CODE, not a script path — per dialect. */
+const INTERPRETER_EVAL_FLAGS = {
+  js: new Set(['-e', '--eval', '-p', '--print']),
+  python: new Set(['-c']),
+  perl: new Set(['-e', '-E']),
+  ruby: new Set(['-e']),
+};
+
+/**
+ * CLOSED list of write calls per dialect. Nothing outside it is matched — a
+ * matcher keyed on "the payload mentions the ledger AND writes something" was
+ * measured to false-positive on all three real read one-liners in this repo's
+ * transcripts (they read the ledger and write `.orchestrator/tmp/…`).
+ */
+const INTERPRETER_WRITE_CALLS = {
+  js: ['appendFileSync', 'appendFile', 'writeFileSync', 'writeFile', 'createWriteStream'],
+  python: ['open'],
+  perl: ['open'],
+  ruby: ['File.write', 'IO.write', 'File.open'],
+};
+
+/**
+ * Collect the eval-payload operands of one interpreter invocation.
+ *
+ * `deno` is the odd one: its eval mode is a SUBCOMMAND (`deno eval '<code>'`),
+ * not a flag. Everything else takes `-e`/`-c`-style flags in three spellings —
+ * separated (`-e '<code>'`), attached (`-e'<code>'`) and `=`-joined
+ * (`--eval='<code>'`).
+ *
+ * A QUOTED `-e` token is still treated as the flag: bash passes `'-e'` and `-e`
+ * identically, so skipping the quoted spelling would be a one-character bypass.
+ *
+ * @param {string} verb
+ * @param {string} family
+ * @param {Array<{ text: string, quoted: boolean }>} args - tokens after the verb
+ * @returns {string[]}
+ */
+function collectCodeOperands(verb, family, args) {
+  const operands = [];
+  if (verb === 'deno') {
+    const at = args.findIndex((a) => a.text === 'eval');
+    if (at === -1) return operands;
+    for (const a of args.slice(at + 1)) {
+      if (!a.quoted && a.text.startsWith('-')) continue;
+      operands.push(a.text);
+      break;
+    }
+    return operands;
+  }
+
+  const flags = INTERPRETER_EVAL_FLAGS[family];
+  if (!flags) return operands;
+  for (let i = 0; i < args.length; i++) {
+    const text = args[i].text;
+    const eq = text.indexOf('=');
+    if (eq > 0 && flags.has(text.slice(0, eq))) { operands.push(text.slice(eq + 1)); continue; }
+    if (flags.has(text)) {
+      if (i + 1 < args.length) { operands.push(args[i + 1].text); i++; }
+      continue;
+    }
+    for (const flag of flags) {
+      if (flag.length === 2 && !text.startsWith('--') && text.length > 2 && text.startsWith(flag)) {
+        operands.push(text.slice(2));
+        break;
+      }
+    }
+  }
+  return operands;
+}
+
+/**
+ * Indices of the `(` that OPENS a call to `name` in `code`.
+ *
+ * Identifier-boundary aware on the left, so `appendFile` does not match inside
+ * `appendFileSync` (which is a separate list entry) and `myWriteFile` is not a
+ * `writeFile`. A receiver prefix is fine — `.` is not an identifier char, so
+ * `fs.appendFileSync` and `require('fs').appendFileSync` both resolve.
+ *
+ * @param {string} code
+ * @param {string} name
+ * @returns {number[]}
+ */
+function findCallOpenings(code, name) {
+  const out = [];
+  for (let from = 0; ;) {
+    const idx = code.indexOf(name, from);
+    if (idx === -1) return out;
+    from = idx + name.length;
+    const before = idx > 0 ? code[idx - 1] : '';
+    if (before && /[A-Za-z0-9_$]/.test(before)) continue;
+    let j = from;
+    while (j < code.length && (code[j] === ' ' || code[j] === '\t' || code[j] === '\n')) j++;
+    if (code[j] === '(') out.push(j);
+  }
+}
+
+/**
+ * Split the argument list opening at `open` on TOP-LEVEL commas.
+ *
+ * Quote- and nesting-aware, single pass, no backtracking regex — this runs on
+ * every Bash call of every session, and a path that can throw or hang reads as
+ * NO decision under the exit-0 protocol, i.e. fail-OPEN in the wrong direction.
+ * Returns `null` when the list never closes (judged as "no hit", never a throw).
+ *
+ * @param {string} code
+ * @param {number} open - index of the opening `(`
+ * @returns {string[]|null}
+ */
+function splitCallArgs(code, open) {
+  const args = [];
+  let cur = '';
+  let depth = 0;
+  let quote = null;
+  for (let i = open; i < code.length; i++) {
+    const ch = code[i];
+    if (quote !== null) {
+      if (ch === '\\' && i + 1 < code.length) { cur += ch + code[i + 1]; i++; continue; }
+      if (ch === quote) quote = null;
+      cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') { quote = ch; cur += ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') {
+      depth++;
+      if (depth > 1) cur += ch;
+      continue;
+    }
+    if (ch === ')' || ch === ']' || ch === '}') {
+      depth--;
+      if (depth === 0) { args.push(cur); return args; }
+      cur += ch;
+      continue;
+    }
+    if (ch === ',' && depth === 1) { args.push(cur); cur = ''; continue; }
+    cur += ch;
+  }
+  return null;
+}
+
+/**
+ * Does any operand after the first name a WRITE mode?
+ *
+ * `open(p, 'a')` / `open(p, mode='w')` / `File.open(p, 'a')` write; `open(p)`
+ * and `open(p, 'r')` read. `+` counts (`'r+'` writes).
+ *
+ * @param {string[]} args
+ * @returns {boolean}
+ */
+function hasWriteModeOperand(args) {
+  for (let i = 1; i < args.length; i++) {
+    const m = /^\s*(?:mode\s*=\s*)?(['"])([^'"]*)\1\s*$/.exec(args[i]);
+    if (m && /[awx+]/.test(m[2])) return true;
+  }
+  return false;
+}
+
+/**
+ * Judge ONE resolved write call. The FIRST-ARGUMENT scoping is load-bearing:
+ * keying on mere co-occurrence of a write verb and the ledger basename anywhere
+ * in the payload denies `readFileSync('…/sessions.jsonl')` +
+ * `writeFileSync('/tmp/x')` in one one-liner — the shape all three measured
+ * ledger READS in this repo's transcripts actually have.
+ *
+ * Perl is the exception, by its own grammar: `open(FH, '>>', $p)` puts the path
+ * THIRD and `open(FH, ">>$p")` glues mode to path. A read open never carries a
+ * `>`, so "the ledger is an operand AND some operand carries `>`" is exact
+ * rather than a guess.
+ *
+ * @param {string} family
+ * @param {string} name
+ * @param {string[]} args
+ * @returns {string|null} the offending argument text, or null
+ */
+function judgeInterpreterCall(family, name, args) {
+  if (args.length === 0) return null;
+  if (family === 'perl') {
+    const hit = args.find((a) => a.includes(LEDGER_BASENAME));
+    if (!hit) return null;
+    return args.some((a) => a.includes('>')) ? hit : null;
+  }
+  if (!args[0].includes(LEDGER_BASENAME)) return null;
+  if (family === 'python' || name === 'File.open') {
+    return hasWriteModeOperand(args) ? args[0] : null;
+  }
+  return args[0];
+}
+
+/**
+ * The #1408 predicate: does this interpreter invocation write the ledger from
+ * INSIDE its eval payload?
+ *
+ * Called from the per-segment loop of {@link findWriteVerbTarget}, so scoping is
+ * per STATEMENT: `node -e '<read>' ; echo ok` is judged on the statement that
+ * hit, and `cmd && node -e '<append>'` denies on the second one alone.
+ *
+ * @param {string} verb - resolved segment verb (basename, wrappers already peeled)
+ * @param {Array<{ text: string, quoted: boolean }>} args - tokens after the verb
+ * @returns {string|null} the offending target, or null
+ */
+function findInterpreterLedgerWrite(verb, args) {
+  const family = INTERPRETER_FAMILY.get(verb);
+  if (!family) return null;
+  for (const code of collectCodeOperands(verb, family, args)) {
+    if (typeof code !== 'string' || !code.includes(LEDGER_BASENAME)) continue;
+    for (const name of INTERPRETER_WRITE_CALLS[family]) {
+      for (const open of findCallOpenings(code, name)) {
+        const callArgs = splitCallArgs(code, open);
+        if (!callArgs) continue;
+        const hit = judgeInterpreterCall(family, name, callArgs);
+        if (hit) return `${hit.trim()} (${name}(…) inside a ${verb} eval payload)`;
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Shells whose `-c <payload>` operand is a command line the shell EXECUTES.
+ *
+ * DELIBERATE DUPLICATE of `DASH_C_SHELLS` in scripts/lib/command-blocker.mjs,
+ * which does not export it (nor its `dashCPayloads`). Change one, change both.
+ */
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'su']);
+
+/**
+ * Collect the command lines a shell nested in this segment will EXECUTE, so
+ * {@link findWriteVerbTarget} can re-enter the SAME matcher on them.
+ *
+ * `resolveSegmentVerb` reports WRAPPER payloads (`env -S '…'`) and this hook
+ * has recursed on those since #982 — but a `bash -c` payload is not a wrapper
+ * payload, and command-blocker's own `dedupedSegmentPayloads` (the piece that
+ * adds them) is internal to that module. So the guard saw `bash -c` as the
+ * verb `bash` with an inert quoted operand and ALLOWED, while the identical
+ * unwrapped command DENIED — one word of bypass, measured 2026-09-20.
+ *
+ * Keyed on a shell TOKEN anywhere in the segment rather than on the resolved
+ * verb: that is what reaches `xargs -I{} sh -c "…"` (verb `xargs`) and
+ * `find … -exec sh -c "…" \;`, and it keeps `grep -c <pattern>` out, because
+ * `grep` is not a shell name. Recursion is bounded by MAX_PAYLOAD_DEPTH, and a
+ * payload that carries no write intent still ALLOWs — the false-positive floor
+ * (`bash -c "jq . <ledger>"`, `bash -c "tail -1 <ledger> | jq ."`) is judged by
+ * the same matcher as its unwrapped form, not by a second, weaker one.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {string[]} distinct payload strings
+ */
+function dashCShellPayloads(segment) {
+  const out = new Set();
+  for (let i = 0; i < segment.length - 1; i++) {
+    const tok = segment[i];
+    if (tok.quoted || !DASH_C_SHELLS.has(path.basename(tok.text))) continue;
+    for (let j = i + 1; j < segment.length - 1; j++) {
+      if (/^-[A-Za-z]*c$/.test(segment[j].text)) {
+        out.add(segment[j + 1].text);
+        break;
+      }
+    }
+  }
+  return [...out];
+}
+
 /**
  * Find a non-redirect write verb (`tee`, `dd of=`, `cp`/`mv` destination)
  * whose target is the ledger.
@@ -923,6 +1274,12 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
       }
     }
 
+    // A shell `-c` payload is a command line too, and until 2026-09-20 it was
+    // the guard's one-word bypass: `bash -c "echo x >> <ledger>"` ALLOWED while
+    // `echo x >> <ledger>` DENIED. See dashCShellPayloads for why this is keyed
+    // on a shell token rather than the resolved verb.
+    for (const p of dashCShellPayloads(segment)) payloadSet.add(p);
+
     // `env -S 'tee -a <ledger>'` hides a whole command line in one operand.
     // Recurse on the payload with the SAME matcher rather than a second,
     // weaker one — bounded by MAX_PAYLOAD_DEPTH. Kept BEFORE the verb dispatch
@@ -950,6 +1307,12 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
       // `index` is the verb position OF THIS READING — never mix it with the
       // other's (the lib docblock's positional-walk caveat).
       const args = segment.slice(index + 1);
+
+      // #1408 — the write happens INSIDE an interpreter payload (`node -e`,
+      // `python3 -c`, …), where there is no shell write intent to resolve. One
+      // predicate, judged on THIS statement; see findInterpreterLedgerWrite.
+      const interpreterTarget = findInterpreterLedgerWrite(verb, args);
+      if (interpreterTarget) return interpreterTarget;
 
       // The repair CLI mutates the ledger from inside Node, so there is no
       // redirect target for the structural matcher to see. Match only its
@@ -1163,8 +1526,9 @@ async function main() {
       `Direct write to the sessions ledger blocked: '${shown}'`,
       `The ledger is append-only through its validating writer:`,
       `  node scripts/emit-session.mjs --entry '<json>'    (or pipe the JSON on stdin)`,
-      `Hand-composing a record and appending it with a shell redirect skips schema`,
-      `validation — that is exactly how the malformed record in GitLab #958 landed.`,
+      `Hand-composing a record and appending it — with a shell redirect, or from`,
+      `inside an interpreter (node -e / python -c) — skips schema validation. That is`,
+      `exactly how the malformed records in GitLab #958 and #1408 landed.`,
       `Override (intentional maintenance only): run the session with`,
       `SO_DISABLED_HOOKS=pre-bash-sessions-ledger-guard`,
       `See: GitLab #958, skills/session-end/session-metrics-write.md`,
@@ -1203,11 +1567,18 @@ try {
   process.exit(0); // fail-open, but no longer fail-silent
 }
 
-// Top-level error handler — fail-OPEN (see the module docblock). Never let a
-// non-zero exit leak: on this protocol exit 0 + empty stdout is "no decision".
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-sessions-ledger-guard: internal error — ${e?.message || e}\n`,
-  );
-  process.exit(0);
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+  if (!shouldRunHook('pre-bash-sessions-ledger-guard')) process.exit(0);
+
+  // Top-level error handler — fail-OPEN (see the module docblock). Never let a
+  // non-zero exit leak: on this protocol exit 0 + empty stdout is "no decision".
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-sessions-ledger-guard: internal error — ${e?.message || e}\n`,
+    );
+    process.exit(0);
+  });
+}

@@ -17,6 +17,9 @@
  */
 
 import { describe, it, test, expect, vi, beforeEach } from 'vitest';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { runRepairEngine } from '@lib/skill-evolution/engine.mjs';
 
 const REPO_ROOT = '/tmp/repo';
@@ -210,6 +213,11 @@ describe('runRepairEngine — acceptance gherkins', () => {
     expect(seams.applyConfigRepair).toHaveBeenCalledTimes(1);
     expect(seams.markProcessed).toHaveBeenCalledTimes(1);
     expect(seams.markProcessed).toHaveBeenCalledWith({ id: 'cand-1', repoRoot: REPO_ROOT });
+    // Intake resolves learning targets against repoRoot (default: process.cwd()),
+    // so the engine must forward its own root, not let intake fall back.
+    expect(seams.extractCandidates).toHaveBeenCalledWith(
+      expect.objectContaining({ repoRoot: REPO_ROOT }),
+    );
   });
 
   // G3: autonomous-gated + local-config + gate FAIL → open-mr (no apply, no stamp).
@@ -332,6 +340,30 @@ describe('runRepairEngine — invariants', () => {
     expect(result.summary.autonomousApplied).toBe(1);
     expect(seams.applyConfigRepair).not.toHaveBeenCalled();
     expect(seams.markProcessed).not.toHaveBeenCalled();
+  });
+
+  // BUG: a dry run persisted every intake candidate into the repair-candidate
+  // store (a coordinator dry run left 12 records in the live store). Runs the
+  // REAL mergeCandidates against a tmp repoRoot, so the store is a real file.
+  it('dryRun does not create the candidate store', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'engine-dryrun-'));
+    try {
+      const seams = makeSeams({
+        extractCandidates: vi.fn(() => [candidate({ source: 'drift-check' })]),
+      });
+      delete seams.mergeCandidates; // fall through to the real store writer
+
+      const result = await runRepairEngine(
+        { repoRoot, config: configFor('advisory'), learnings: [{}], dryRun: true },
+        seams,
+      );
+
+      expect(result.summary.total).toBe(1);
+      const store = join(repoRoot, '.orchestrator/runtime/repair-candidates.jsonl');
+      expect(existsSync(store)).toBe(false);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
   });
 });
 

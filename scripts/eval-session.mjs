@@ -8,7 +8,8 @@
  * Follows .claude/rules/cli-design.md:
  *   - `--json` for machine output; human-readable by default.
  *   - Data → stdout, diagnostics → stderr.
- *   - Exit codes: 0 success/match · 1 user-error/drift · 2 system error.
+ *   - Exit codes: 0 success/match · 1 user-error/drift · 2 system error ·
+ *     3 verify version-mismatch (non-standard, documented in --help).
  *
  * ## Append failures are NOT exit 0 (GitLab #969)
  *
@@ -40,6 +41,17 @@
  * Session-end Phase 3.7d remains advisory and MUST NOT gate on this exit code —
  * it catches a non-zero exit and logs a WARN (skills/session-end/SKILL.md).
  *
+ * ## A rubric change is not scoring drift (GitLab #1400)
+ *
+ * `--verify` re-scores a stored record with the CURRENT engine. When the stored
+ * `rubric_version` differs from `RUBRIC_VERSION`, the two sides answer different
+ * pre-registered check sets, so neither MATCH nor DRIFT is true: the run exits
+ * `3` with `verdict: "version-mismatch"` and re-scores nothing. Exit `0` would
+ * sell a cross-rubric comparison as a reproducibility proof; exit `1` would put
+ * a planned rubric bump in the same bucket as a forged record. Measured
+ * 2026-09-19: all 40 records in this repo's journal are `rubric-v1` and every
+ * one of them exited 1 as DRIFT under the rubric-v2 engine.
+ *
  * Usage:
  *   eval-session.mjs [--session <id>] [--json] [--no-write]
  *                    [--metrics-dir <path>] [--rubric <path>]
@@ -68,6 +80,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const EXIT_OK = 0;
 const EXIT_USER = 1;
 const EXIT_SYSTEM = 2;
+/** Non-standard, `--verify` only: the stored record predates the current rubric (#1400). */
+const EXIT_VERSION_MISMATCH = 3;
 
 function readPkgVersion() {
   try {
@@ -103,6 +117,9 @@ EXIT CODES
   1  user error (session not found, unknown run-id, record failed validation)
      / verify drift
   2  system error (could not append the record to the eval journal)
+  3  verify version-mismatch: the stored record was scored under a different
+     rubric than ${RUBRIC_VERSION}, so it is not re-verifiable with this engine
+     (non-standard code — neither a match nor drift)
 `;
 
 function fail(exitCode, message) {
@@ -211,6 +228,49 @@ function runVerify(runId, values) {
     fail(EXIT_USER, `--verify: run-id not found in eval journal: ${runId}`);
   }
 
+  // #1400 — check the rubric BEFORE re-scoring. A record scored under another
+  // rubric answers a different pre-registered check set, so re-running the
+  // current engine over it produces a comparison nobody asked for. A record
+  // with no `rubric_version` at all is unattributable and counts as a mismatch.
+  const storedRubric = typeof stored.rubric_version === 'string' && stored.rubric_version
+    ? stored.rubric_version
+    : null;
+  if (storedRubric !== RUBRIC_VERSION) {
+    // Deliberately NO diff of the dimensions the two rubrics share. Such a diff
+    // is technically possible but would carry almost no signal here. Measured
+    // 2026-09-19 over this repo's 40-record journal, replaying every record
+    // through `evaluateSession` + `diffDimensions`: all 40 differ on
+    // `process-safety` (its formula IS the v2 change) and all 40 gain a
+    // `present-in-fresh-only` `guard-friction`; restricted to the
+    // formula-unchanged dimensions, only 4 of 40 are byte-identical and the
+    // other 36 differ on `verification-evidence` / `gate-health` because the
+    // events they were scored from predate this journal's `events.jsonl`. So a
+    // "common dimensions" diff would re-report 90% of the journal as drift under
+    // a new name — the same misdirection in another shape (HR-101: a class that
+    // fires on ~90% of samples is a broken instrument, not a signal).
+    // Ceiling: holds while a rubric bump coincides with truncated evidence.
+    // Revisit-Trigger: the next rubric bump where every stored record's source
+    // events are still present — then a common-dimension diff carries signal.
+    if (values.json) {
+      writeStdoutLineSync(
+        JSON.stringify({
+          run_id: runId,
+          match: false,
+          verdict: 'version-mismatch',
+          stored_rubric_version: storedRubric,
+          engine_rubric_version: RUBRIC_VERSION,
+        }),
+      );
+    } else {
+      writeStdoutLineSync(
+        `VERSION-MISMATCH: ${runId} was scored under ${storedRubric ?? '(no rubric_version)'}; ` +
+          `this engine scores ${RUBRIC_VERSION} — not re-verifiable with this engine ` +
+          '(not drift, not a match).',
+      );
+    }
+    process.exit(EXIT_VERSION_MISMATCH);
+  }
+
   let fresh;
   try {
     fresh = evaluateSession({
@@ -236,7 +296,9 @@ function runVerify(runId, values) {
 
   if (diffs.length === 0) {
     if (values.json) {
-      writeStdoutLineSync(JSON.stringify({ run_id: runId, match: true, dimensions: fresh.dimensions.length }));
+      writeStdoutLineSync(
+        JSON.stringify({ run_id: runId, match: true, verdict: 'match', dimensions: fresh.dimensions.length }),
+      );
     } else {
       writeStdoutLineSync(`MATCH: ${runId} re-evaluates identically across ${fresh.dimensions.length} dimension(s).`);
     }
@@ -244,7 +306,7 @@ function runVerify(runId, values) {
   }
 
   if (values.json) {
-    writeStdoutLineSync(JSON.stringify({ run_id: runId, match: false, diffs }));
+    writeStdoutLineSync(JSON.stringify({ run_id: runId, match: false, verdict: 'drift', diffs }));
   } else {
     const out = [`DRIFT: ${runId} re-evaluation differs from the stored record:`];
     for (const d of diffs) {

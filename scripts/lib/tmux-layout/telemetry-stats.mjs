@@ -2,7 +2,8 @@
  * scripts/lib/tmux-layout/telemetry-stats.mjs
  *
  * Aggregator stub for /tmux-layout telemetry promotion gate (#563).
- * Reads .orchestrator/metrics/events.jsonl and computes:
+ * Reads the events ledger — active file AND every rotated archive (#1407) —
+ * and computes:
  *   - invocation count (total + per layout)
  *   - completion rate (completed / invoked) — promotion gate threshold 80%
  *   - top-K degradation reasons
@@ -13,26 +14,58 @@
  *   - CLI: `node scripts/lib/tmux-layout/telemetry-stats.mjs` (emits JSON to stdout)
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import path from 'node:path';
+import { readEventsWithRotations } from '../events.mjs';
 import { isMainModule } from '../is-main-module.mjs';
 
 const EVENTS_PATH = '.orchestrator/metrics/events.jsonl';
 
+/** Every event this module reports on carries this prefix. */
+const TMUX_EVENT_PREFIX = 'tmux-layout.';
+
 /**
- * Read events.jsonl and return tmux-layout-related events.
+ * Read the tmux-layout events ACROSS rotation boundaries, together with the
+ * honesty verdict of that read.
+ *
+ * WHY THE ENVELOPE (#1407 acceptance criterion 3): the stats below are an
+ * ALL-TIME rate. Reading only the active file silently redefines "all time" as
+ * "since the last rotation", and a genuinely missing archive would then look
+ * identical to a quiet week. `complete === false` says which of the two it is;
+ * the CLI prints it and never computes over a partial set in silence.
+ *
+ * CEILING (BV-004): `readEventsWithRotations` loads the active file and every
+ * archive fully into memory — up to ~60 MB transient at the default
+ * `max-size-mb: 10` / `max-backups: 5`. Acceptable here because this is a COLD
+ * ops path: a hand-run CLI / promotion-gate check, never a hook and never on
+ * the session path. Revisit if this module gains a hot-path caller or if
+ * `max-size-mb` is raised past ~100.
+ *
+ * @param {string} [eventsPath=.orchestrator/metrics/events.jsonl]
+ * @returns {{events: Array<object>, complete: boolean, gaps: Array<object>}}
+ */
+export function readTmuxEventsEnvelope(eventsPath = EVENTS_PATH) {
+  const { events, gaps, complete } = readEventsWithRotations(undefined, { filePath: eventsPath });
+  return {
+    events: events.filter(
+      (rec) => rec && typeof rec.event === 'string' && rec.event.startsWith(TMUX_EVENT_PREFIX),
+    ),
+    complete,
+    gaps,
+  };
+}
+
+/**
+ * Read the events ledger and return tmux-layout-related events.
+ *
+ * Thin array-returning view of {@link readTmuxEventsEnvelope} — the shape every
+ * existing caller expects. Use the envelope when the completeness of the read
+ * matters to the answer.
  *
  * @param {string} [eventsPath=.orchestrator/metrics/events.jsonl]
  * @returns {Array<object>}  parsed event records (filtered to tmux-layout.* events)
  */
 export function readTmuxEvents(eventsPath = EVENTS_PATH) {
-  if (!existsSync(eventsPath)) return [];
-  const raw = readFileSync(eventsPath, 'utf-8');
-  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-  return lines
-    .map((l) => {
-      try { return JSON.parse(l); } catch { return null; }
-    })
-    .filter((rec) => rec && typeof rec.event === 'string' && rec.event.startsWith('tmux-layout.'));
+  return readTmuxEventsEnvelope(eventsPath).events;
 }
 
 /**
@@ -95,7 +128,17 @@ export function computeStats(events) {
 
 // CLI entry-point — emit stats as JSON to stdout when run directly
 if (isMainModule(import.meta.url)) {
-  const events = readTmuxEvents();
+  const { events, complete, gaps } = readTmuxEventsEnvelope();
   const stats = computeStats(events);
-  console.log(JSON.stringify(stats, null, 2));
+  if (!complete) {
+    // A gap, never an empty window: diagnostics on stderr (cli-design.md),
+    // the machine-readable verdict in the JSON below.
+    const detail = gaps
+      .map((g) => `${g.kind}:${path.basename(String(g.archived_as ?? 'unknown'))}`)
+      .join(', ');
+    console.error(
+      `WARN: events ledger incomplete — the all-time rate below is computed over a PARTIAL set (${gaps.length} gap(s): ${detail})`,
+    );
+  }
+  console.log(JSON.stringify({ ...stats, ledgerComplete: complete, ledgerGaps: gaps }, null, 2));
 }

@@ -6,10 +6,18 @@
  *   1. `/evolve` learnings (`.orchestrator/metrics/learnings.jsonl` records)
  *   2. `claude-md-drift-check` output (`driftResult.errors[]`)
  *
- * This module is a PURE transform: it performs NO I/O. It never reads or writes
- * any file. Persistence and the `processed_at` / `superseded_by` lifecycle are
- * OWNED BY the sibling `idempotency.mjs` module — this module only emits the
- * raw candidates with those fields nulled out.
+ * This module WRITES nothing. Its only read is target resolution for the
+ * learnings feeder: at most one `git ls-files` per `extractCandidates` call
+ * (lazy — only when a learning survives the cheaper filters), plus a
+ * `realpathSync` containment check that applies with or without git. A
+ * learning becomes a candidate only when its extracted path resolves — symlinks
+ * followed — to a regular file inside the realpath of `repoRoot` that is also
+ * the ONE tracked file it names (tracking is skipped when git is unavailable);
+ * the kept `target_path` is the repo-relative form of that resolved file, so a
+ * bare basename becomes its full path and `scripts/../x.mjs` becomes `x.mjs`. Persistence and
+ * the `processed_at` / `superseded_by` lifecycle are OWNED BY the sibling
+ * `idempotency.mjs` module — this module only emits the raw candidates with
+ * those fields nulled out.
  *
  * The `id` field is a deterministic short hash of (source, target_path,
  * fingerprint), so the same input always yields the same id. That determinism
@@ -18,7 +26,10 @@
  * Part of Epic #643 → issue #647 (C2 auto-repair engine).
  */
 
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { realpathSync, statSync } from 'node:fs';
+import path from 'node:path';
 
 /**
  * @typedef {Object} RepairCandidate
@@ -97,6 +108,104 @@ function extractPath(text) {
 }
 
 /**
+ * Build the target resolver for ONE extraction run. `PATH_RE` also admits bare
+ * basenames (`engine.mjs`, `mcp.json`) that exist nowhere at the repo root, so
+ * an extracted path is a claim, not a target, until it resolves here.
+ *
+ * Resolution is fail-closed — `null` drops the candidate. In BOTH modes the
+ * path is resolved with `realpathSync` (every symlink followed) and must land
+ * on a regular file inside `realpathSync(repoRoot)`; any resolution error
+ * drops it. The kept `target_path` is the repo-relative POSIX form of that
+ * RESOLVED path, so `scripts/../CLAUDE.md` and `CLAUDE.md` name one target
+ * (and mint one id). Containment follows `classifyTarget` in
+ * `blast-radius-classifier.mjs`, plus the realpath of the target itself.
+ *
+ * With git, the resolved path must additionally be a tracked file:
+ *   - a path containing `/` is resolved as given;
+ *   - a bare basename must match exactly ONE tracked file (zero = unresolvable,
+ *     two or more = ambiguous) and is resolved from that file's full path.
+ * A tracked symlink whose target lies outside the repo is therefore dropped.
+ *
+ * The tracked-file index is read lazily and at most once per resolver
+ * (`git ls-files -z` in `repoRoot`), so a run without a qualifying learning
+ * never spawns git. Without git (binary missing, not a repository) only the
+ * realpath containment applies — a bare basename then resolves only at the
+ * root, since nothing enumerates the tree.
+ *
+ * @param {string} repoRoot
+ * @returns {(extracted: string) => string|null}
+ */
+function makeTargetResolver(repoRoot) {
+  /** @type {{ tracked: Set<string>, byBasename: Map<string, string[]> }|null|undefined} */
+  let index; // undefined = not read yet, null = git unavailable
+
+  // Canonicalise the root once, as blast-radius-classifier does: a symlinked
+  // repoRoot (macOS /var → /private/var) must still anchor the escape check.
+  let root;
+  try {
+    root = realpathSync(path.resolve(repoRoot));
+  } catch {
+    root = path.resolve(repoRoot);
+  }
+
+  function readIndex() {
+    try {
+      const out = execFileSync('git', ['ls-files', '-z'], {
+        cwd: repoRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        maxBuffer: 64 * 1024 * 1024,
+      });
+      const tracked = new Set(out.split('\0').filter(Boolean));
+      /** @type {Map<string, string[]>} */
+      const byBasename = new Map();
+      for (const file of tracked) {
+        const base = file.slice(file.lastIndexOf('/') + 1);
+        const list = byBasename.get(base);
+        if (list) list.push(file);
+        else byBasename.set(base, [file]);
+      }
+      return { tracked, byBasename };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Realpath-resolve `rel` against the canonical root.
+   * @param {string} rel
+   * @returns {string|null} repo-relative POSIX path of the regular file it
+   *   resolves to, or null when it escapes the root, is not a regular file, or
+   *   does not resolve at all.
+   */
+  function resolveInsideRoot(rel) {
+    let real;
+    try {
+      real = realpathSync(path.resolve(root, rel));
+      if (!statSync(real).isFile()) return null;
+    } catch {
+      return null;
+    }
+    const back = path.relative(root, real);
+    if (back === '' || back.startsWith('..') || path.isAbsolute(back)) return null;
+    return back.split(path.sep).join('/');
+  }
+
+  return (extracted) => {
+    if (index === undefined) index = readIndex();
+    if (index === null) return resolveInsideRoot(extracted);
+    let candidate = extracted;
+    if (!extracted.includes('/')) {
+      const matches = index.byBasename.get(extracted) ?? [];
+      if (matches.length !== 1) return null;
+      candidate = matches[0];
+    }
+    const resolved = resolveInsideRoot(candidate);
+    return resolved !== null && index.tracked.has(resolved) ? resolved : null;
+  };
+}
+
+/**
  * Map a single learning record to a RepairCandidate, or null when it fails any
  * actionable filter. learnings.jsonl records are NOT uniform — only `confidence`
  * and `created_at` are guaranteed — so id/subject/insight/evidence are handled
@@ -104,9 +213,10 @@ function extractPath(text) {
  * @param {Record<string, unknown>} learning
  * @param {number} evidenceFloor
  * @param {string} nowIso
+ * @param {(extracted: string) => string|null} resolveTarget
  * @returns {RepairCandidate|null}
  */
-function learningToCandidate(learning, evidenceFloor, nowIso) {
+function learningToCandidate(learning, evidenceFloor, nowIso, resolveTarget) {
   if (!learning || typeof learning !== 'object') return null;
 
   // Filter 1: confidence gate.
@@ -123,12 +233,17 @@ function learningToCandidate(learning, evidenceFloor, nowIso) {
   const subject = typeof learning.subject === 'string' ? learning.subject : '';
   const insight = typeof learning.insight === 'string' ? learning.insight : '';
 
-  // Filter 2: resolvable target path from subject OR insight.
-  const targetPath = extractPath(subject) ?? extractPath(insight);
-  if (!targetPath) return null;
+  // Filter 2: a path-shaped token in subject OR insight.
+  const extracted = extractPath(subject) ?? extractPath(insight);
+  if (!extracted) return null;
 
   // Filter 3: insight must be prescriptive.
   if (!PRESCRIPTIVE_RE.test(insight)) return null;
+
+  // Filter 5: the token resolves to exactly one tracked file (last — it is the
+  // only filter that may spawn git).
+  const targetPath = resolveTarget(extracted);
+  if (!targetPath) return null;
 
   const source = 'evolve-learning';
   const sourceRef = typeof learning.id === 'string' && learning.id.length > 0
@@ -218,7 +333,9 @@ function driftErrorToCandidate(err, nowIso) {
 
 /**
  * Ingest the two repair-candidate feeders and return a normalised
- * `RepairCandidate[]`. Pure transform — performs no I/O.
+ * `RepairCandidate[]`. Writes nothing; learnings are resolved against the files
+ * tracked in `repoRoot` (see `makeTargetResolver`). Drift errors pass through
+ * unresolved — the checker reported them from a file it read.
  *
  * @param {Object} params
  * @param {Array<Record<string, unknown>>} [params.learnings] - `/evolve` learning records.
@@ -226,7 +343,10 @@ function driftErrorToCandidate(err, nowIso) {
  *        claude-md-drift-check output. Only `errors[]` are mapped; `warnings[]`
  *        are skipped. A null result, or a status of `skipped`/`skipped-mode-off`/
  *        undefined, emits zero drift candidates.
- * @param {string} [params.repoRoot] - repo root (accepted for caller symmetry; unused in the pure transform).
+ * @param {string} [params.repoRoot] - repo root learning targets must resolve in
+ *        (default `process.cwd()`). A learning is dropped unless its extracted
+ *        path realpath-resolves to a regular file inside this root that is
+ *        exactly one tracked file there (tracking skipped without git).
  * @param {number} [params.evidenceFloor=0.5] - minimum learning confidence to qualify.
  * @param {string} [params.now] - ISO timestamp for `created_at` + expiry checks (test determinism).
  * @returns {RepairCandidate[]}
@@ -234,13 +354,14 @@ function driftErrorToCandidate(err, nowIso) {
 export function extractCandidates({
   learnings,
   driftResult,
-  // eslint-disable-next-line no-unused-vars -- accepted for caller symmetry; pure transform does no path resolution
   repoRoot,
   evidenceFloor = 0.5,
   now,
 } = {}) {
   const nowIso = typeof now === 'string' && now.length > 0 ? now : new Date().toISOString();
   const floor = Number.isFinite(evidenceFloor) ? evidenceFloor : 0.5;
+  const root = typeof repoRoot === 'string' && repoRoot.length > 0 ? repoRoot : process.cwd();
+  const resolveTarget = makeTargetResolver(root);
 
   /** @type {RepairCandidate[]} */
   const candidates = [];
@@ -248,7 +369,7 @@ export function extractCandidates({
   // Feeder 1: /evolve learnings.
   if (Array.isArray(learnings)) {
     for (const learning of learnings) {
-      const candidate = learningToCandidate(learning, floor, nowIso);
+      const candidate = learningToCandidate(learning, floor, nowIso, resolveTarget);
       if (candidate) candidates.push(candidate);
     }
   }

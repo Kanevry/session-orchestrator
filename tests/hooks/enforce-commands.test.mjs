@@ -822,7 +822,14 @@ describe('foreign-session manifest (#1153 P1)', { timeout: 15000 }, () => {
     expect(events[0].manifest_session).toEqual(['PEER-UUID-1111', 'main-2026-01-01-session-9']);
     expect(events[0].own_session).toEqual(['OWN-UUID-2222']);
     expect(events[0].wave).toBe(4);
-    expect(events[0].command).toBe('npm test');
+    // Das ROHE Kommando stand hier bis 2026-09-19 als Vertrag — und war der
+    // Leck-Kanal (EventDrop.at #1140): 3.816 getrackte Journalzeilen mit rohem
+    // `command`, darin 24 echte Produktions-Share-Codes aus 17 fremden
+    // Kundenkonten. Gepinnt wird jetzt BEIDES — der Hash ist da, und das
+    // Rohfeld ist WEG. Ohne die zweite Zusicherung koennte jemand `command`
+    // neben den Hash zuruecklegen, ohne dass eine Suite rot wird.
+    expect(events[0].command_hash).toBe('328e123c63857fd8'); // sha256('npm test').slice(0, 16)
+    expect(events[0].command).toBeUndefined();
   });
 
   it('still denies when the manifest names THIS session — enforcement unchanged', async () => {

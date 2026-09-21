@@ -21,7 +21,10 @@
  *       matches the fully realpath-resolved candidate → allow, BEFORE G6.
  *       Runs before G6 so a deliberate out-of-repo grant (e.g. a vault path)
  *       is reachable at all — G6 would otherwise deny every out-of-repo path
- *       without ever consulting allowedPaths. See matchesAbsoluteAllowlist.
+ *       without ever consulting allowedPaths. See matchedAbsoluteGrant.
+ *       (#1398 cond. 4) The matched grant is GRADED through the shared
+ *       `gradeScopeEntry` predicate; an `error` verdict emits ONE WARN and the
+ *       write is still ALLOWED — this gate never denies on a grading verdict.
  *   G5c (#1295) out-of-root carveout for THIS repo's Claude Code auto-memory
  *       directory (`~/.claude/projects/<encoded-repo-path>/memory/`). Harness-
  *       owned, lives outside the working copy, cannot collide with any wave
@@ -68,8 +71,11 @@ import { promises as fs } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
-// #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
-if (!shouldRunHook('enforce-scope')) process.exit(0);
+// Static for the SAME reason profile-gate.mjs is (#993, see the late-binding
+// block below): a leaf predicate with ZERO repo imports (node:fs + node:url
+// only) that decides whether this hook runs at all. Everything carrying a
+// transitive repo graph stays late-bound inside bootstrap().
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // #993 — late-bound repo dependencies
@@ -109,6 +115,9 @@ let readJson;
 let classifyEmptyScope;
 let suggestForEmptyScope;
 let sessionStartedAtMs;
+// #1398 cond. 4 — THE shared grading predicate for an absolute Gate 5b grant.
+// The hook WARNS on an `error` verdict and never denies on it; see Gate 5b.
+let gradeScopeEntry;
 // #1123 — "is this manifest even mine?" (G3b). Process-local identity only
 // (#1194): the repo-global `session.lock` tier is shared by every session in the
 // checkout and would classify a peer's manifest as ours.
@@ -188,7 +197,8 @@ async function bootstrap() {
   ({ resolveProjectDir } = modules.platform);
   ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
-  ({ classifyEmptyScope, suggestForEmptyScope, sessionStartedAtMs } = modules.scopeGate);
+  ({ classifyEmptyScope, suggestForEmptyScope, sessionStartedAtMs, gradeScopeEntry } =
+    modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
 }
 
@@ -433,7 +443,39 @@ async function main() {
   // out-of-repo path before allowedPaths is ever consulted. Honour such grants
   // here — matching ONLY absolute entries against the fully realpath-resolved
   // candidate, so relative entries can never be used to escape the repo (REQ-09).
-  if (matchesAbsoluteAllowlist(resolvedPath, allowedPaths)) return emitAllow();
+  //
+  // GRADING (#1398 acceptance condition 4): this gate ALLOWS exactly what it
+  // allowed before — the verdict below is a WARN, never a deny. Until now the
+  // asymmetry was silent: `scripts/validate-wave-scope.mjs` graded these grants
+  // (system-root denylist, home depth + sensitive-subdirectory rule) and NOTHING
+  // called it from code — four prose steps in `skills/wave-executor/` were the
+  // only thing between a manifest and this gate, so a manifest that skipped them
+  // reached here ungraded and the operator never learned that it had.
+  //
+  // Now the same predicate runs HERE, on the grant that actually matched, and an
+  // `error` verdict surfaces as one operator-visible notice. Deliberately not a
+  // deny: this hook runs in every repo on the host, the grant is the
+  // coordinator's own artefact, and turning a live allow into a block on a
+  // pre-flight rule would break working sessions to enforce a policy whose place
+  // is before dispatch. `emitWarn` is an ALLOW that carries a notice (exit 0,
+  // `systemMessage` only) — see `scripts/lib/io.mjs`.
+  //
+  // NO `resolve` is passed: canonicalisation costs one `realpathSync` per
+  // denylist root and this is a PreToolUse hot path, so the hook grades the
+  // LITERAL grant it already matched (see gradeScopeEntry § Named ceilings for
+  // exactly which two classes that gives up).
+  const matchedGrant = matchedAbsoluteGrant(resolvedPath, allowedPaths);
+  if (matchedGrant !== null) {
+    const grade = gradeScopeEntry(matchedGrant);
+    if (grade?.verdict === 'error') {
+      return emitWarn(
+        `Gate 5b honoured an out-of-repo grant that scripts/validate-wave-scope.mjs would REFUSE ` +
+          `before dispatch — allowedPaths ${grade.message}. The write to '${resolvedPath}' is ` +
+          `ALLOWED (this gate never denies on a grading verdict); re-validate the manifest.`,
+      );
+    }
+    return emitAllow();
+  }
 
   // Gate 6: path must be inside the project root
   if (!isPathInside(resolvedPath, projectRoot)) {
@@ -774,19 +816,50 @@ function isCoordinatorCarveout(normalizedRel, projectRoot, scopePath) {
  * SECURITY (REQ-09): matches ONLY entries that are themselves absolute, against
  * the fully realpath-resolved candidate — so RELATIVE entries (`**`, `../**`)
  * can NEVER be used to escape the repo. When no absolute entry exists the helper
- * returns false and the caller falls through to Gate 6 unchanged (inert pre-gate).
+ * returns null and the caller falls through to Gate 6 unchanged (inert pre-gate).
  * An absolute entry matches only its own literal (canonical/realpath) subtree;
  * the operator is responsible for supplying a canonical absolute path.
  *
+ * MATCHING IS SHAPE-BLIND HERE; GRADING IS SHARED (#1398 cond. 4). This helper
+ * still decides nothing about whether a grant SHOULD exist: `/Users/<u>/**` and
+ * `/Users/<u>/.ssh/**` match exactly like `/Users/<u>/Projects/vault/**`. What
+ * changed is that the CALLER now runs the ONE grading predicate —
+ * `gradeScopeEntry` in `scripts/lib/scope-gate.mjs`, the same function
+ * `scripts/validate-wave-scope.mjs` turns into an exit-1 refusal — over the grant
+ * this helper returns, and WARNS when it grades `error`.
+ *
+ * ONE PREDICATE, TWO ARGUMENT SHAPES — SO THE VERDICTS CAN STILL DIFFER. The
+ * function is shared; the CALL is not. The validator passes an fs-backed
+ * `resolve`, this hook passes none (see the Gate 5b call site), and the grader's
+ * canonical rungs only run when a resolver is present. So the CONSEQUENCE
+ * differs (refuse before dispatch vs. allow-with-notice at write time) AND, on
+ * exactly those rungs, the VERDICT can too. Measured 2026-09-20 @ 7e110a2a,
+ * hook shape vs. CLI shape on this host:
+ *   - `/private/etc/**`, `/private/var/**` — the macOS realpaths of the
+ *     denylisted `/etc` and `/var`, i.e. the spellings Gate 5b ACTUALLY matches
+ *     (it matches the realpath-resolved candidate): hook `warn`, validator
+ *     `error`. The notice fired on `/etc/**`, which reaches nothing here, and
+ *     stayed silent on the spelling that reaches everything. CLOSED by listing
+ *     the two aliases literally (`DENIED_ABSOLUTE_ALIAS_ROOTS` in
+ *     `scripts/lib/scope-gate.mjs`), at zero syscalls.
+ *   - `/tmp/x/**` — hook `warn`, validator `error/non-canonical`. STILL OPEN,
+ *     and not closable without a resolver: proving a literal prefix resolves
+ *     elsewhere IS the realpath call. The residual costs a missing NOTICE, never
+ *     a wider allow — that grant matches nothing at Gate 5b either way.
+ *
+ * Returns the MATCHED PATTERN rather than a boolean precisely so the caller has
+ * something to grade: with a bare `true` the grant that opened the gate is
+ * unknowable at the call site, and any notice would have to re-derive it.
+ *
  * @param {string} resolvedPath — fully realpath-resolved candidate (absolute)
  * @param {string[]} allowedPaths — raw allowedPaths array from wave-scope.json
- * @returns {boolean}
+ * @returns {string|null} the first matching absolute entry, or null
  */
-function matchesAbsoluteAllowlist(resolvedPath, allowedPaths) {
+function matchedAbsoluteGrant(resolvedPath, allowedPaths) {
   const abs = allowedPaths.filter((p) => typeof p === 'string' && path.isAbsolute(p));
-  if (abs.length === 0) return false;
+  if (abs.length === 0) return null;
   const normalizedAbs = resolvedPath.split(path.sep).join('/');
-  return abs.some((pat) => pathMatchesPattern(normalizedAbs, pat.split(path.sep).join('/')));
+  return abs.find((pat) => pathMatchesPattern(normalizedAbs, pat.split(path.sep).join('/'))) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -804,29 +877,41 @@ function matchesAbsoluteAllowlist(resolvedPath, allowedPaths) {
 //      guard armed and then tripped over a specific path; that fails CLOSED via
 //      emitDeny (SECURITY-REQ-01). The two paths MUST stay separate.
 // ---------------------------------------------------------------------------
-try {
-  await bootstrap();
-} catch (loadError) {
-  try {
-    const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
-    // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
-    emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
-  } catch {
-    // Last resort: even the banner helper failed to load. Emit unconditionally —
-    // repeated noise beats a silent disarm.
-    process.stderr.write(
-      '🚨 enforce-scope: GUARD INACTIVE — module load failed ' +
-        `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
-        'Edit/Write/MultiEdit scope enforcement is OFF. See issue #993.\n'
-    );
-  }
-  process.exit(0); // fail-open, but no longer fail-silent
-}
+// Entry guard (#1393): run only when this file IS the script node was invoked
+// with — every harness path execs it (`sh run-node.sh <this file>`). A bare
+// `import()` (a probe, a test, a curious agent) must neither run main() nor
+// tear the importing process down. The profile gate sits INSIDE the guard for
+// that second reason: at module top level its `process.exit(0)` exited every
+// process that merely imported this hook. bootstrap() is inside too — loading
+// the guard sources is work a disabled hook and a bare importer must not do.
+if (isMainModule(import.meta.url)) {
+  // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
+  if (!shouldRunHook('enforce-scope')) process.exit(0);
 
-// SECURITY-REQ-01 (fail-closed): any unhandled rejection → structured deny, never bare exit 1
-main().catch((e) => {
-  emitDeny(
-    'Internal hook error — request blocked for safety',
-    `${e?.message ?? String(e)}`,
-  );
-});
+  try {
+    await bootstrap();
+  } catch (loadError) {
+    try {
+      const { emitGuardInactiveBanner } = await import('./_lib/guard-source-loader.mjs');
+      // hookName is threaded explicitly (#993 — no hard-wired literal in the loader).
+      emitGuardInactiveBanner({ hookName: HOOK_NAME, error: loadError, consequence: GUARD_CONSEQUENCE });
+    } catch {
+      // Last resort: even the banner helper failed to load. Emit unconditionally —
+      // repeated noise beats a silent disarm.
+      process.stderr.write(
+        '🚨 enforce-scope: GUARD INACTIVE — module load failed ' +
+          `(${String(loadError?.message || loadError).split('\n')[0]}). ` +
+          'Edit/Write/MultiEdit scope enforcement is OFF. See issue #993.\n'
+      );
+    }
+    process.exit(0); // fail-open, but no longer fail-silent
+  }
+
+  // SECURITY-REQ-01 (fail-closed): any unhandled rejection → structured deny, never bare exit 1
+  main().catch((e) => {
+    emitDeny(
+      'Internal hook error — request blocked for safety',
+      `${e?.message ?? String(e)}`,
+    );
+  });
+}

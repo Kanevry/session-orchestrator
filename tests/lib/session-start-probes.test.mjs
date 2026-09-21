@@ -625,6 +625,73 @@ describe('the built-in registry', () => {
     expect(out.bannerLines).toEqual([]);
   });
 
+  // BUG this catches (#1390 P5): `checkCiStatus` publishes the same-commit
+  // pipelines its ref preference set aside as `details.droppedStatuses`, but a
+  // `green` reading rendered nothing and scored `ok` — a FAILED run of the very
+  // commit on another ref never reached the operator. The command must match
+  // the CLI that read CI (a glab command cannot answer in a GitHub repo, the
+  // #1339 P1 class), and the allow_failure line must not swallow the new one.
+  // Fixtures mirror the real green shapes of `checkGitlab` / `checkGithub`.
+  it.each([
+    {
+      label: 'GitLab',
+      reading: { status: 'green', ok: true, details: { currentPipelineId: 42, cliUsed: 'glab', matchedRef: 'main', droppedCount: 2, droppedStatuses: ['failed', 'canceled'] } },
+      lines: (sha) => [
+        `⚠ CI green on main for ${sha.slice(0, 8)}, but 1 other pipeline(s) for the same commit FAILED (set-aside statuses: failed, canceled) — check \`glab ci list --sha ${sha}\``,
+      ],
+    },
+    {
+      label: 'GitHub',
+      reading: { status: 'green', ok: true, details: { cliUsed: 'gh', droppedCount: 1, droppedStatuses: ['failed'] } },
+      lines: (sha) => [
+        `⚠ CI green on HEAD for ${sha.slice(0, 8)}, but 1 other pipeline(s) for the same commit FAILED (set-aside statuses: failed) — check \`gh run list --commit ${sha}\``,
+      ],
+    },
+    {
+      label: 'GitLab reading that also has failed allow_failure jobs',
+      reading: { status: 'green', ok: true, allowFailureJobs: ['lint'], details: { currentPipelineId: 42, cliUsed: 'glab', matchedRef: 'main', droppedCount: 2, droppedStatuses: ['failed', 'failed'] } },
+      lines: (sha) => [
+        `⚠ CI green on HEAD, but 1 allow_failure job(s) FAILED: lint. A pipeline reports success regardless of these.\n⚠ CI green on main for ${sha.slice(0, 8)}, but 2 other pipeline(s) for the same commit FAILED (set-aside statuses: failed, failed) — check \`glab ci list --sha ${sha}\``,
+      ],
+    },
+  ])('names a failed same-commit pipeline beside a green $label reading as a warning (#1390 P5)', async ({ reading, lines }) => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const headSha = initRepoWithUpstream(dir, { ahead: false });
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return ${JSON.stringify(reading)}; }`,
+      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.bannerLines).toEqual(lines(headSha));
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
+  });
+
+  // BUG this catches (#1390 P5): the set-aside line fires on `failed` only. A
+  // canceled or skipped run on another ref says nothing about the commit, so a
+  // green reading beside one must stay silent and clean (HR-101).
+  it('keeps a green reading silent when the set-aside same-commit pipelines did not fail (#1390 P5)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return { status: 'green', ok: true, details: { currentPipelineId: 42, cliUsed: 'glab', matchedRef: 'main', droppedCount: 2, droppedStatuses: ['canceled', 'skipped'] } }; }`,
+      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+
+    expect(out.bannerLines).toEqual([]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-clean', severity: 'ok' });
+  });
+
   // BUG this catches (TV-001, #1332): on `no-pipeline-for-head-sha` the banner
   // named the pushed SHA and a command to run, but never that SHA's VERDICT —
   // so a red pipeline on the last pushed commit still did not reach the
@@ -707,9 +774,12 @@ describe('the built-in registry', () => {
       { probes: [fake], emit },
     );
 
+    // The glab command takes the FULL sha: `glab ci status` has no `--ref` flag
+    // ("Unknown flag: --ref.", exit 1, glab 1.117.0), and `glab ci list --sha`
+    // finds nothing for a short one — this line once pinned the broken form.
     const short = pushedSha.slice(0, 8);
     expect(out.bannerLines).toEqual([
-      `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${short} (pipeline not checked; run \`glab ci status --ref ${short}\`)`,
+      `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${short} (pipeline not checked; run \`glab ci list --sha ${pushedSha}\`)`,
     ]);
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn', followUp: 'budget-exceeded' });
     expect(calls[0].payload.timed_out).toBe(0);
@@ -818,6 +888,84 @@ describe('the built-in registry', () => {
     ]);
     // #1337: a red pushed commit is an alert, not a warning.
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-alert', severity: 'alert' });
+  });
+
+  // BUG this catches (#1339 P1): `ciUnknownHint` switches to the gh CLI when
+  // `details.cliUsed === 'gh'`, but no test rendered that text, so a fall-back
+  // to the glab default would tell a GitHub-hosted repo's operator to run
+  // `glab ci status`, which cannot answer there. Real registry follow-up in a
+  // directory with no upstream (not a git repo), so `pushed.sha` is null.
+  it('names the gh CLI in the on-demand hint of a GitHub repo without an upstream (#1339 P1)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe() { return { status: 'unknown', ok: false, details: { cliUsed: 'gh', reason: 'no-check-runs-for-head' } }; }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' } },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      '⚠ ci-status: CI status for HEAD could not be determined (no-check-runs-for-head) — run `gh run list` on demand',
+    ]);
+  });
+
+  // BUGS these catch (#1339 P1/P2): the two remaining pushed-commit hint
+  // branches no test rendered. (P1) a GitHub pushed-sha requery that yields no
+  // verdict must name `gh run list --commit <full sha>`, not the glab
+  // command. (P2) a DEGRADED requery (transient API failure)
+  // must read `CI state unknown (<reason>)`; without the `v.degraded` branch it
+  // fell through to "pipeline not checked", which hides that the check ran and
+  // failed. The degraded fixture is `degradedResult`'s exact output shape.
+  it.each([
+    {
+      label: 'gh requery without a verdict',
+      head: { cliUsed: 'gh', reason: 'no-check-runs-for-head' },
+      requery: null,
+      hint: (sha) => `last pushed: ${sha.slice(0, 8)} (pipeline not checked; run \`gh run list --commit ${sha}\`)`,
+    },
+    {
+      label: 'degraded requery',
+      head: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' },
+      requery: {
+        severity: 'warn',
+        ok: false,
+        message: '⚠ ci-status: CI status for HEAD could not be determined (query-failed) — state UNKNOWN, not "green". — Command failed: glab api projects/org%2Frepo/pipelines',
+        degraded: 'query-failed',
+        detail: 'Command failed: glab api projects/org%2Frepo/pipelines',
+      },
+      hint: (sha) => `last pushed: ${sha.slice(0, 8)} — CI state unknown (query-failed)`,
+    },
+  ])('renders the pushed-commit hint for a $label (#1339)', async ({ head, requery, hint }) => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const pushedSha = initRepoWithUpstream(dir, { ahead: true });
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export function probe(opts) {
+        if (opts.sha === ${JSON.stringify(pushedSha)}) return ${JSON.stringify(requery)};
+        return { status: 'unknown', ok: false, details: ${JSON.stringify(head)} };
+      }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' } },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      `⚠ ci-status: CI status for HEAD could not be determined (${head.reason}) — ${hint(pushedSha)}`,
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn' });
   });
 
   // BUG this catches (TV-001, #1255): the `telemetry-flush-health` entry was

@@ -1,7 +1,7 @@
 /**
  * namespace.test.mjs — Unit tests for scripts/lib/vault-mirror/namespace.mjs
  *
- * Tests resolveRepoNamespace({ vaultName?, cwd? }) → string contract:
+ * Tests resolveRepoNamespace({ vaultName?, repoRoot? }) → string contract:
  *  - vaultName override → sanitised slug (deterministic)
  *  - Leak redaction: CP1 (personal home path), CP6 (private slug), CP10 (personal Projects path)
  *  - Degenerate input (all special chars) → 'unknown-repo'
@@ -514,6 +514,23 @@ describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable f
     const mod = await freshNamespaceModule();
 
     expect(mod.resolveRepoNamespace({})).toBe('session-orchestrator');
+  });
+
+  it('B6 (#1389): an explicit repoRoot decides which .vault.yaml is read — WITHOUT a chdir', () => {
+    // Every other .vault.yaml case above chdirs into the fixture, so a fix that
+    // accepts `repoRoot` but still reads `process.cwd()` internally passes all of
+    // them. Here the cwd stays at the real repo root (slug
+    // 'session-orchestrator'), and two roots with DIFFERENT slugs rule out a
+    // coincidental match.
+    const dirA = join(makeDir('ns-reporoot-a-'), 'plain-dir');
+    const dirB = join(makeDir('ns-reporoot-b-'), 'plain-dir');
+    mkdirSync(dirA);
+    mkdirSync(dirB);
+    writeVaultYaml(dirA, 'acme-tool');
+    writeVaultYaml(dirB, 'beta-tool');
+
+    expect(resolveRepoNamespace({ repoRoot: dirA })).toBe('acme-tool');
+    expect(resolveRepoNamespace({ repoRoot: dirB })).toBe('beta-tool');
   });
 });
 

@@ -701,6 +701,42 @@ describe('checkCiStatus — #857 multiple pipelines per commit', () => {
     // terminal-but-silent sibling.
     expect(result.details.currentPipelineId).toBe(1202);
   });
+
+  // (j) BUG this catches (#1390 P5, repro'd 2026-09-19): whenever a preference
+  // tier matched, `selectShaPipelines` returned `foreign: []`, so a same-sha
+  // `failed` pipeline on another ref was dropped with no trace — the reading
+  // below was `{status:'green', details:{currentPipelineId:901, cliUsed:'glab'}}`
+  // and pipeline 900 appeared nowhere. The ref preference itself is deliberate
+  // (#857) and the verdict must NOT flip; the dropped rows are published BESIDE
+  // it. One row per tier, because each tier returned its own `foreign: []`.
+  it.each([
+    { tier: '1 (branch match)', branch: 'main', keptRef: 'main' },
+    { tier: '2 (ref-less, unjudgeable)', branch: 'main', keptRef: undefined },
+    { tier: '3 (MR HEAD)', branch: 'feature/x', keptRef: 'refs/merge-requests/41/head' },
+  ])('keeps the tier-$tier verdict but publishes a dropped same-sha foreign `failed`', async ({ branch, keptRef }) => {
+    const pipelines = [
+      { id: 900, sha: HEAD_SHA, ref: 'someone-elses-branch', source: 'push', status: 'failed', created_at: '2026-05-10T11:00:00Z' },
+      { id: 901, sha: HEAD_SHA, ...(keptRef ? { ref: keptRef } : {}), source: 'push', status: 'success', created_at: '2026-05-10T10:00:00Z' },
+    ];
+
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
+      gitBranchResponse(branch),
+      glabPipelinesResponse(pipelines),
+      glabJobsResponse(901, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.status).toBe('green');
+    expect(result.details.currentPipelineId).toBe(901);
+    expect(result.details.droppedCount).toBe(1);
+    expect(result.details.droppedStatuses).toEqual(['failed']);
+  });
 });
 
 // ── Test 3: glab missing (ENOENT) ─────────────────────────────────────────────
@@ -987,6 +1023,35 @@ describe('checkCiStatus — #1332 explicit sha', () => {
 
     expectDegraded(result, 'query-failed');
     expect(mockExecFile).not.toHaveBeenCalled();
+  });
+
+  // BUG this catches (#1339 P3): the row above fails on non-hex characters
+  // alone, so it stays green if the LENGTH bound is loosened (e.g. to
+  // `{7,64}`). A caller passing `git rev-parse --short` output would then match
+  // no GitLab pipeline (they carry full shas) and read a wrong/empty verdict
+  // instead of being refused. Accepted rows run a full reading (4 spawns);
+  // refused rows spawn nothing.
+  it.each([
+    { label: '8-hex (a --short sha)', sha: 'abc1234d', degraded: 'query-failed', status: undefined, spawns: 0 },
+    { label: '63-hex', sha: `${HEAD_SHA}${'f'.repeat(23)}`, degraded: 'query-failed', status: undefined, spawns: 0 },
+    { label: '40-hex (SHA-1)', sha: HEAD_SHA, degraded: undefined, status: 'green', spawns: 4 },
+    { label: '64-hex (SHA-256)', sha: `${HEAD_SHA}${'f'.repeat(24)}`, degraded: undefined, status: 'green', spawns: 4 },
+  ])('bounds the sha length exactly: $label', async ({ sha, degraded, status, spawns }) => {
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITLAB_ORIGIN),
+      gitBranchResponse('main'),
+      glabPipelinesResponse([{ id: 310, sha, ref: 'main', status: 'success', created_at: '2026-05-10T10:00:00Z' }]),
+      glabJobsResponse(310, []),
+    ]);
+
+    const result = await checkCiStatus(
+      { repoRoot: '/fake/repo', now: NOW, sha },
+      { execFile: mockExecFile },
+    );
+
+    expect(result.degraded).toBe(degraded);
+    expect(result.status).toBe(status);
+    expect(mockExecFile).toHaveBeenCalledTimes(spawns);
   });
 });
 

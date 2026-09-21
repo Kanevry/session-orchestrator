@@ -9,7 +9,7 @@
  * Each test gets an isolated tmp project dir so parallel runs cannot interfere.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -18,6 +18,9 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import { permsEnforced } from '../_helpers/perms.mjs';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
+import { flush } from '../../scripts/lib/telemetry/sync.mjs';
+import { emitEvent } from '../../scripts/lib/events.mjs';
+import { checkTelemetryFlushHealth } from '../../scripts/lib/telemetry-flush-health-banner.mjs';
 
 /**
  * Deterministic, RFC-9562-shaped UUID for a readable fixture label.
@@ -1379,7 +1382,7 @@ describe('on-session-end.mjs — mechanical telemetry flush (#1138)', { timeout:
     ]);
   });
 
-  it('carries no telemetry payload on the observability event — exactly {outcome, reason}', async () => {
+  it('carries no telemetry payload on the observability event — exactly {outcome, reason, reason_class}', async () => {
     const dir = await mkProject();
     const home = await mkFakeHome();
 
@@ -1391,11 +1394,15 @@ describe('on-session-end.mjs — mechanical telemetry flush (#1138)', { timeout:
 
     const [ev] = await flushEvents(dir);
     // timestamp + event + schema_version come from emitEvent (#1177 added the
-    // third producer key); the hook adds exactly two of its own.
+    // third producer key); the hook adds exactly three of its own — `reason` is
+    // the FULL reason and `reason_class` its head token since #1392 (the cut
+    // that used to produce the head token in `reason` itself made the
+    // flush-health banner unreachable). Still no queue payload, no anon_id.
     expect(Object.keys(ev).sort()).toEqual([
       'event',
       'outcome',
       'reason',
+      'reason_class',
       'schema_version',
       'timestamp',
     ]);
@@ -1613,5 +1620,77 @@ describe('on-session-end.mjs — backfill outcome events (#1068 AC2)', { timeout
     // The STATE.md path has no STATE.md in this fixture — a real, reportable
     // outcome rather than silence.
     expect(outcomes[1].action).toBe('skipped-no-state-md');
+  });
+});
+
+/**
+ * Import `classifyFlush` from the hook module.
+ *
+ * The hook exits the PROCESS at import time when the profile gate is closed
+ * (`if (!shouldRunHook('on-session-end')) process.exit(0)` is a TOP-LEVEL
+ * statement, evaluated before the `isMainModule` guard further down). Pinning
+ * the gate open first means an operator's ambient `SO_HOOK_PROFILE=off` cannot
+ * silently kill this vitest worker mid-file.
+ *
+ * @returns {Promise<Function>}
+ */
+async function importClassifyFlush() {
+  vi.stubEnv('SO_HOOK_PROFILE', 'full');
+  vi.stubEnv('SO_DISABLED_HOOKS', '');
+  try {
+    return (await import('../../hooks/on-session-end.mjs')).classifyFlush;
+  } finally {
+    vi.unstubAllEnvs();
+  }
+}
+
+describe('telemetry-flush breadcrumb → flush-health banner (wiring, #1392)', { timeout: 15000 }, () => {
+  // BUG (#1392): `classifyFlush` cut the reason at its first `:`, so every one
+  // of the five `sandbox:*` refusals sync.mjs produces was written as a bare
+  // `sandbox` — while the ONE reader, checkTelemetryFlushHealth, requires
+  // `reason.startsWith('sandbox:')`. The banner could not fire on a record this
+  // emitter ever wrote, and every existing banner test passed because it
+  // hand-built `reason: 'sandbox:probe-failed'`, a shape the writer never
+  // produced. Only a test that runs the REAL producer chain end to end —
+  // flush() → classifyFlush() → emitEvent() → checkTelemetryFlushHealth() —
+  // can fail on that mismatch, which is why nothing here is hand-shaped.
+  //
+  // Fleet data: 344 of 344 recorded flushes are `sent`, so no live record will
+  // ever exercise this path; this wiring test is the only falsification the
+  // banner gets (TV-005).
+  it('a REAL sandbox-refused flush reaches the banner through the real writer', async () => {
+    const repo = await mkProject();
+    const sandboxDir = await mkProject();
+
+    // A REAL `flush()` refusal, produced hermetically: consent is granted via
+    // the injected env (so the outermost gate passes), and the sandbox guard
+    // then refuses on its config-home-split condition because the declared
+    // config home does not contain the telemetry state path. No network, no
+    // write, and nothing read from the operator's real config — `ownerConfig`
+    // is injected so `loadOwnerConfig()` is never called.
+    const res = await flush({
+      env: { SO_TELEMETRY: '1', SO_CONFIG_HOME: path.join(sandboxDir, 'declared') },
+      statePath: path.join(sandboxDir, 'state', 'telemetry.json'),
+      ownerConfig: {},
+    });
+    expect(res.sent).toBe(false);
+    expect(res.reason).toBe('sandbox:config-home-split');
+
+    // The REAL writer classification, and the REAL emit the hook performs.
+    const classifyFlush = await importClassifyFlush();
+    const record = classifyFlush(res);
+    expect(record).toEqual({
+      outcome: 'skipped',
+      reason: 'sandbox:config-home-split',
+      reason_class: 'sandbox',
+    });
+    await emitEvent('orchestrator.telemetry.flush', record, { repoRoot: repo });
+
+    // The REAL reader, over the record the writer just wrote.
+    const banner = checkTelemetryFlushHealth({ repoRoot: repo });
+    expect(banner).not.toBeNull();
+    expect(banner.severity).toBe('warn');
+    expect(banner.reason).toBe('sandbox:config-home-split');
+    expect(banner.message).toContain('refused by the sandbox guard');
   });
 });

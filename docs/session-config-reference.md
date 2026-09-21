@@ -1059,6 +1059,10 @@ eval:
 
 **Parser gotcha (learning confidence 0.9 — mirrors `custom-phases:` and every other block-shaped key):** the `eval:` key-line itself MUST NOT carry an inline comment. The block-open scan uses the shared `matchBlockHeader(line, 'eval')` (`scripts/lib/config/block-header.mjs`) — it tolerates the bold-bullet `- **eval:**` rendering (#830) but a trailing `# comment` on the header line still fails the match, so the parser never enters the block and ALL fields silently fall back to their defaults — no error, no warning surfaces anywhere. Sub-key lines (`enabled:`, `mode:`, …) tolerate inline comments without issue. See § Parser Gotcha: No-Inline-Comment Block Headers (top of this file) for the general contract this key shares with 36 other block-shaped keys.
 
+**Rubric version is NOT a Session Config key (#1037).** No key here selects the check set. The engine pins it as a constant — `RUBRIC_VERSION` in `scripts/lib/eval/engine.mjs` — because the rubric is *pre-registered*: a changed check mints a new version and a new file, it is never a per-repo dial. Current value: **`rubric-v2`** (`skills/eval/rubric-v2.md`, 2026-09-19), which supersedes `rubric-v1` (2026-07-16) for every newly written record. The two changes: `process-safety` no longer fails on `destructive_guard.blocked` (measured 2026-09-19 @ `d92c2ca4`: 32 of 40 records `fail`, all 32 solely from `blocked`, spiral `0` in all 40 — `.claude/rules/host-resources.md` HR-101), and the guard counts moved to a new reported-only `guard-friction` dimension. Stored records keep the `rubric_version` they were scored under and stay readable: neither `scripts/lib/eval/schema.mjs` nor `scripts/lib/eval/report.mjs` enumerates a fixed dimension set. `--verify` in `scripts/eval-session.mjs` used to re-score every stored record with the current engine and therefore reported `DRIFT` on all 40 `rubric-v1` records (measured 2026-09-19); since #1400 it compares only at matching `rubric_version` and otherwise returns its own verdict `version-mismatch` with exit code **3** — a planned rubric change is no longer indistinguishable from a forged record.
+
+Neither `eval.enabled` nor `eval.judge` changed in v2 — the harness runs exactly where it ran before.
+
 **Used by:** `scripts/lib/config/eval.mjs` (`_parseEval`), `scripts/lib/config.mjs`. Skill consumer (`skills/eval/SKILL.md`) is a follow-up wave of Epic #803 — not yet implemented as of this parser.
 
 ## Vault Staleness
@@ -1244,7 +1248,9 @@ Parsing is tolerant: `_parseGitlabPortfolio()` (`scripts/lib/config/gitlab-portf
 
 ## Events Rotation
 
-Size-based rotation for `.orchestrator/metrics/events.jsonl` (#251). Rotation fires at **session-start only** — per-append overhead is rejected design given typical growth of ~6 KiB/day. When the active log exceeds `max-size-mb`, it is renamed to `events.jsonl.1`, older backups shift down (`.1` → `.2`, …, `.N-1` → `.N`), and the oldest backup (`events.jsonl.{max-backups}`) is deleted. Rotation failure never blocks session-start; errors are logged to stderr and swallowed.
+Size-based rotation for `.orchestrator/metrics/events.jsonl` (#251). Rotation fires at **session-start only** — per-append overhead is rejected design given typical growth of ~6 KiB/day. When the active log exceeds `max-size-mb`, it is renamed into `.orchestrator/metrics/_archive/events-<firstTs>_<lastTs>.jsonl` (each stamp `YYYYMMDDTHHMMSSZ`, derived from the archived content; `unknown` for the first when no timestamp parsed, plus a `-<n>` suffix on a name collision), archives beyond `max-backups` are pruned oldest-first, and an `orchestrator.events.rotated` record naming the archive, its byte size, line count, timestamp range and any pruned files is appended as the **first line of the new active file**. That record is what lets a reader tell a rotation from a deletion. Rotation failure never blocks session-start; errors are logged to stderr and swallowed.
+
+**Reading across a rotation:** use `readEventsWithRotations(repoRoot, opts)` from `scripts/lib/events.mjs` — active file plus every archive in time order, `malformed_lines` counted, and a rotation whose `archived_as` target is missing reported in `gaps` with `complete: false`. It also still reads a legacy `events.jsonl.1`..`.N` ring left on disk by pre-#1401 versions; the writer never creates, shifts or prunes one any more. The ring was replaced because its shift step renamed every surviving backup on each rotation, which would have made the `archived_as` pointer stale one rotation after it was written.
 
 All fields live under a top-level `events-rotation` object in your Session Config host file (`CLAUDE.md` or `AGENTS.md`), for example:
 
@@ -1259,9 +1265,9 @@ events-rotation:
 |-------|------|---------|-------------|
 | `events-rotation.enabled` | boolean | `true` | If false, rotation is skipped entirely and `events.jsonl` grows unbounded. |
 | `events-rotation.max-size-mb` | integer | `10` | Size threshold in MiB. When `events.jsonl` exceeds this, it is rotated at the next session-start. Bounds: `1..1024`; out-of-range values silently fall back to the default. |
-| `events-rotation.max-backups` | integer | `5` | Number of retained backup files (`events.jsonl.1` … `events.jsonl.N`). The oldest is deleted before shifting. Bounds: `1..20`; out-of-range values silently fall back to the default. |
+| `events-rotation.max-backups` | integer | `5` | Number of retained archives in `.orchestrator/metrics/_archive/`. After each rotation the excess is deleted oldest-first (by the leading timestamp in the filename) and the deletions are listed in the rotation record's `pruned` field. Only files matching the archive naming contract are eligible, so a hand-placed file in `_archive/` is never pruned. Bounds: `1..20`; out-of-range values silently fall back to the default. |
 
-**Rename safety (POSIX):** Atomic rename is safe with in-flight writers. Open file descriptors continue writing to the original inode (now `events.jsonl.1`); new writers open the new file on next append. Maximum observed line size is 220 bytes, well under the 4096-byte PIPE_BUF atomicity guarantee.
+**Rename safety (POSIX):** Atomic rename is safe with in-flight writers. Open file descriptors continue writing to the original inode (now the archive); new writers open the new file on next append. Maximum observed line size is 220 bytes, well under the 4096-byte PIPE_BUF atomicity guarantee.
 
 ## Test
 

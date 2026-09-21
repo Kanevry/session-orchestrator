@@ -70,7 +70,7 @@
  */
 
 import path from 'node:path';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { warn } from './lib/common.mjs';
 import { MANIFEST_SESSION_KEYS } from './lib/session-identity/own-session.mjs';
@@ -86,6 +86,12 @@ import {
   // which roles are allowed to grant zero paths.
   isReadOnlyWaveRole,
   READ_ONLY_WAVE_ROLES,
+  // #1398 cond. 4 / #1405 / #1406 — THE grading predicate for an absolute Gate 5b
+  // grant. Lives in scope-gate.mjs so this CLI and `hooks/enforce-scope.mjs`
+  // grade one and the same way (BV-003): before the move, only this CLI could
+  // grade at all, so the hook honoured grants the CLI would have refused and a
+  // manifest that skipped the CLI was never graded.
+  gradeScopeEntry,
   // Aliased: `expandTestSiblings` is ALSO the name of the pre-existing
   // boolean parameter threaded through validate()/assertSubsetOrDie for the
   // #970 flag. Aliasing the import avoids shadowing that parameter rather than
@@ -339,78 +345,72 @@ function validateSessionBinding(obj, errors, warnings) {
 }
 
 /**
- * Literal filesystem-root forms — POSIX "/" and the Windows equivalents "\"
- * and a bare drive root ("C:\", "C:\\", ...). Checked independently of
- * `path.isAbsolute()` because that primitive is platform-native: on a POSIX
- * host (this repo's dev/CI hosts) it never reports `C:\` as absolute, so a
- * Windows-literal-root entry would otherwise slip past every check below.
- * @type {ReadonlySet<string>}
+ * Memoized canonicaliser for the LITERAL prefix of an absolute grant — the
+ * `resolve` injection {@link gradeScopeEntry} needs (#1405).
+ *
+ * THE DIRECTION MATTERS: `hooks/enforce-scope.mjs` Gate 5b matches the
+ * REALPATH-RESOLVED write candidate (SECURITY-REQ-03) against the raw
+ * allowedPaths entry, so the files a grant actually reaches are decided by the
+ * canonical spelling. Grading the literal one let `/private/etc/**` pass while
+ * `/etc/**` was refused (same directory on macOS — `realpath('/etc')` is
+ * `/private/etc`), and let `/tmp/x/**` pass while the hook could never match it.
+ * Resolving HERE, the same direction the hook resolves candidates, is the root
+ * fix; adding two more denylist strings would have been neither.
+ *
+ * Kept OUT of `scripts/lib/scope-gate.mjs` on purpose: that module is hook-safe
+ * (pure, no I/O at import, reached by `hooks/enforce-scope.mjs` on a hot path),
+ * so the filesystem call is injected by the CLI layer exactly as
+ * {@link knownRepoFiles} injects `git ls-files`.
+ *
+ * PURE ENOUGH FOR LINUX CI: a prefix that does not exist never throws — the walk
+ * climbs to the nearest existing ancestor and re-attaches the missing suffix (the
+ * same strategy `hooks/enforce-scope.mjs` uses for a Write to a not-yet-existing
+ * file), and a wholly unresolvable path returns the input unchanged. On Linux
+ * `/etc` and `/var` are not symlinks, so the canonical pass is a no-op there and
+ * the literal verdicts carry the whole load.
+ *
+ * @param {string} absPath
+ * @returns {string}
  */
-const FILESYSTEM_ROOT_LITERALS = new Set(['/', '\\']);
-const WINDOWS_DRIVE_ROOT_RE = /^[A-Za-z]:\\+$/;
+function canonicalizeGrantPrefix(absPath) {
+  const cached = CANONICAL_PREFIX_CACHE.get(absPath);
+  if (cached !== undefined) return cached;
 
-/**
- * @param {string} entry
- * @returns {boolean}
- */
-function isFilesystemRootLiteral(entry) {
-  return FILESYSTEM_ROOT_LITERALS.has(entry) || WINDOWS_DRIVE_ROOT_RE.test(entry);
+  // Assigned on BOTH loop exits (resolved, or nothing on this branch resolves);
+  // an initializer here would be dead — see the eslint `no-useless-assignment`
+  // rule, which is on in this repo.
+  let result;
+  let current = absPath;
+  const missing = [];
+  for (;;) {
+    try {
+      const real = realpathSync(current).split(path.sep).join('/');
+      const suffix = [...missing].reverse().join('/');
+      result = suffix.length === 0 ? real : `${real === '/' ? '' : real}/${suffix}`;
+      break;
+    } catch {
+      const parent = path.posix.dirname(current);
+      if (parent === current) {
+        result = absPath; // nothing on this branch resolves — keep the literal
+        break;
+      }
+      missing.push(path.posix.basename(current));
+      current = parent;
+    }
+  }
+
+  CANONICAL_PREFIX_CACHE.set(absPath, result);
+  return result;
 }
 
 /**
- * Well-known top-level system/home directories. A FIXED DENYLIST (not a
- * segment-count threshold): the #792 legitimate grant
- * (`/private/tmp/<session>/scratchpad/**`) is itself a single-segment-deep
- * grant under an unusual root ("private"), so any segment-count heuristic
- * tight enough to catch `/etc/**` risks catching that too, or must be tuned
- * loosely enough to leave a gap. A fixed list of the directories a
- * hallucinated/mis-copied wave-scope entry could plausibly land on is
- * predictable, auditable in a one-line diff, and does not touch legitimate
- * deep grants under any other root.
- * @type {ReadonlySet<string>}
+ * One CLI run resolves the same ~14 denylist roots for every allowedPaths entry;
+ * the cache keeps that at one `realpathSync` per distinct path. Process-lifetime
+ * only — this is a short-lived CLI, and a long-running consumer would want a
+ * fresh map per call instead.
+ * @type {Map<string, string>}
  */
-const DENIED_ABSOLUTE_TOP_SEGMENTS = new Set([
-  'etc',
-  'Users',
-  'home',
-  'root',
-  'bin',
-  'sbin',
-  'usr',
-  'System',
-  'var',
-  'boot',
-  'dev',
-  'proc',
-  'sys',
-  'Library',
-  'Applications',
-  'Windows',
-]);
-
-/**
- * The top-level path segment of an absolute POSIX-style entry (the segment
- * immediately after the leading "/"), if it is on the denylist above.
- * @param {string} entry
- * @returns {string|null}
- */
-function deniedTopSegment(entry) {
-  const first = entry.split('/').filter(Boolean)[0];
-  return first && DENIED_ABSOLUTE_TOP_SEGMENTS.has(first) ? first : null;
-}
-
-/**
- * Does this entry contain a glob wildcard? Mirrors this codebase's own glob
- * convention (`isGlobScopeEntry` in scripts/lib/scope-gate.mjs / #796): `*`
- * is the sole wildcard metachar used in allowedPaths/fileScope entries
- * throughout this repo (no `?`/`[]`/`{}` glob syntax is supported or tested
- * anywhere else in scope-gate.mjs or enforce-scope.mjs).
- * @param {string} entry
- * @returns {boolean}
- */
-function hasWildcard(entry) {
-  return entry.includes('*');
-}
+const CANONICAL_PREFIX_CACHE = new Map();
 
 /**
  * Validate allowedPaths array: must exist, be an array of non-empty strings,
@@ -463,37 +463,23 @@ function validateAllowedPaths(obj, errors, warnings) {
       errors.push('allowedPaths contains empty string');
       continue;
     }
-    // #870: an explicit absolute entry is a SANCTIONED out-of-repo grant — mirrors
-    // hooks/enforce-scope.mjs Gate 5b (matchesAbsoluteAllowlist), which honours ANY
-    // syntactically-absolute allowedPaths entry (path.isAbsolute) against the
-    // realpath-resolved write candidate. Using `path.isAbsolute` (not a hand-rolled
-    // `startsWith('/')`) keeps the same platform-native semantics Gate 5b uses.
-    // WARN, not reject — the validator must not contradict the hook it validates
-    // for (#792 / #870) — EXCEPT for the narrow catastrophic subclass below
-    // (#870-followup), which hard-rejects regardless of what Gate 5b would do
-    // with it: pre-flight validation exists precisely to catch a grant this bad
-    // before the hook is ever consulted.
-    if (path.isAbsolute(entry) || isFilesystemRootLiteral(entry)) {
-      if (isFilesystemRootLiteral(entry)) {
-        errors.push(
-          `allowedPaths grants the entire filesystem root: ${entry} — refused unconditionally, this can never be a valid wave scope`,
-        );
-      } else {
-        const denied = deniedTopSegment(entry);
-        if (denied) {
-          errors.push(
-            `allowedPaths contains a well-known system/home directory grant: ${entry} (top-level segment "${denied}" is denylisted) — refused, scope a narrower path instead`,
-          );
-        } else if (!hasWildcard(entry)) {
-          errors.push(
-            `allowedPaths contains a bare absolute file grant with no wildcard: ${entry} — a single concrete out-of-repo file has no established legitimate use in this codebase; scope a glob instead`,
-          );
-        } else {
-          warnings.push(
-            `allowedPaths contains an absolute (out-of-repo) path: ${entry} — honoured by hooks/enforce-scope.mjs Gate 5b; verify this grant is intentional`,
-          );
-        }
-      }
+    // #870 / #1398 / #1405 / #1406 — grade the entry as a Gate 5b grant through
+    // the SHARED predicate (`scripts/lib/scope-gate.mjs` gradeScopeEntry), the
+    // same one `hooks/enforce-scope.mjs` Gate 5b calls. Most absolute entries are
+    // a SANCTIONED out-of-repo grant and only WARN — the validator must not
+    // contradict the hook it validates for (#792/#870) — while the catastrophic
+    // subclasses (filesystem root, denylisted system directory in either its
+    // literal or its canonical spelling, a home grant at or above the user level
+    // or into a credential directory, a tilde that nothing expands, and a
+    // non-canonical prefix Gate 5b can never match) hard-reject here, BEFORE the
+    // hook is ever consulted. `null` = an ordinary relative entry, nothing to say.
+    //
+    // The resolver is injected rather than imported by the library: see
+    // {@link canonicalizeGrantPrefix} for why the filesystem call belongs to this
+    // CLI layer and not to the hook-safe module.
+    const grade = gradeScopeEntry(entry, { resolve: canonicalizeGrantPrefix });
+    if (grade !== null) {
+      (grade.verdict === 'error' ? errors : warnings).push(`allowedPaths ${grade.message}`);
     }
     // Reject path traversal: any `../` segment. INDEPENDENT of the absolute checks
     // above — an absolute entry that ALSO contains `../` must still be rejected

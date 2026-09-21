@@ -8,7 +8,7 @@
  * — the matrix is the load-bearing deliverable, not the file-write mechanics.
  *
  * COMPOSITION (the five siblings, all DI-injectable via `opts`):
- *   - candidate-intake.mjs       → extractCandidates    (pure transform)
+ *   - candidate-intake.mjs       → extractCandidates    (no writes; resolves targets against repoRoot)
  *   - idempotency.mjs            → mergeCandidates / markProcessed / isProcessed
  *                                   / loadCandidates    (store I/O + supersession)
  *   - blast-radius-classifier.mjs→ classifyTarget       (R5 posture/gate triple)
@@ -17,7 +17,7 @@
  *
  * PIPELINE:
  *   extractCandidates(learnings, driftResult)
- *     → mergeCandidates (persist + supersede)
+ *     → mergeCandidates (persist + supersede; skipped under dryRun)
  *     → for each NON-processed candidate:
  *         classify → decide per matrix → act
  *
@@ -583,7 +583,8 @@ async function finishOpenMr({ candidate, candidateId, targetPath, targetType, re
  * @param {Array<Record<string, unknown>>} [params.learnings] — `/evolve` learning records.
  * @param {{ status?: string, errors?: Array<Record<string, unknown>> }|null} [params.driftResult]
  *        claude-md-drift-check output.
- * @param {boolean} [params.dryRun=false] — when true, no mutation/MR/stamp; previews only.
+ * @param {boolean} [params.dryRun=false] — when true, no mutation/MR/stamp and no
+ *        candidate-store write (the skip is logged via `opts.log`); previews only.
  * @param {Object} [opts] — DI seams (all default to the real sibling functions).
  * @param {typeof realExtractCandidates} [opts.extractCandidates]
  * @param {typeof realMergeCandidates} [opts.mergeCandidates]
@@ -629,7 +630,7 @@ export async function runRepairEngine(
   const outcomes = [];
   const summary = { autonomousApplied: 0, mrsOpened: 0, advisories: 0, blocked: 0, total: 0 };
 
-  // --- Pipeline step 1 — intake (pure transform) ---------------------------
+  // --- Pipeline step 1 — intake (no writes; repoRoot anchors target resolution)
   let candidates;
   try {
     candidates = seams.extractCandidates({
@@ -650,11 +651,19 @@ export async function runRepairEngine(
   }
 
   // --- Pipeline step 2 — merge (persist + supersede) -----------------------
-  try {
-    seams.mergeCandidates({ candidates, repoRoot });
-  } catch (err) {
-    seams.log('error', `engine: mergeCandidates threw — ${err?.message ?? err}`);
-    // Persistence failure is non-fatal: continue with the in-memory candidates.
+  // A dry run previews from the in-memory candidates and never writes the store.
+  if (dryRun === true) {
+    seams.log(
+      'info',
+      `engine: dry-run — candidate store write skipped (${candidates.length} candidate(s) not persisted)`,
+    );
+  } else {
+    try {
+      seams.mergeCandidates({ candidates, repoRoot });
+    } catch (err) {
+      seams.log('error', `engine: mergeCandidates threw — ${err?.message ?? err}`);
+      // Persistence failure is non-fatal: continue with the in-memory candidates.
+    }
   }
 
   // --- Pipeline step 3 — per-candidate classify → decide → act -------------

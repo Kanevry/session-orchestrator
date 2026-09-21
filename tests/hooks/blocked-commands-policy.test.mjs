@@ -177,13 +177,18 @@ describe('production policy file structure', () => {
     expect(rule.modes).toEqual(['truncate']);
   });
 
-  it('target-denylist appears ONLY on redirect-truncate rules — a DIFFERENT field than path-allowlist (#983)', () => {
-    // Denylist polarity is exclusive to the redirect rule class: a
-    // target-denylist leaking onto a pattern rule would silently change its
-    // matching semantics (the guard rule-loop dispatches on rule.type).
+  it('target-denylist appears ONLY on TYPED target rules — a DIFFERENT field than path-allowlist (#983)', () => {
+    // Denylist polarity belongs to the rule classes the guard dispatches on
+    // `rule.type`: a target-denylist leaking onto a PATTERN rule would silently
+    // change its matching semantics. The property is "the rule is typed and
+    // dispatched", not "the type is spelled redirect-truncate" — #1401 added
+    // `path-delete` (ledger deletions) behind the SAME compiler
+    // (compileTargetDenylist / targetMatchesDenylist), so pinning the single
+    // literal spelling made a correctly-typed rule red in a file no wave scope
+    // contains. Keep this list in step with the guard's rule-loop dispatch.
     for (const rule of policy.rules) {
       if (rule['target-denylist'] !== undefined) {
-        expect(rule.type).toBe('redirect-truncate');
+        expect(['redirect-truncate', 'path-delete']).toContain(rule.type);
         expect(rule['path-allowlist']).toBeUndefined();
       }
     }

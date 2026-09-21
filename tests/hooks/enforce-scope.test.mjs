@@ -779,7 +779,20 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
    * from the canonical path or it can never match.
    */
   async function mkVault() {
-    const v = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-vault-')));
+    // The vault stands in for a SANCTIONED out-of-repo grant (#792), so it must
+    // be built under a root the grading predicate actually sanctions. On macOS
+    // `os.tmpdir()` is `/var/folders/<user>/T`, whose realpath is
+    // `/private/var/folders/…` — and `var` is on the system denylist, so the
+    // fs-backed validator grades ANY grant there `error/denied-system-dir`
+    // (measured 2026-09-20 @ 7e110a2a, i.e. before this session's change: a
+    // grant of a live `mkdtemp(os.tmpdir())` path → error). A fixture in that
+    // shape is an unfaithful double: it is labelled "clean grant" while naming
+    // the one spelling pre-dispatch validation refuses. `/tmp` → `/private/tmp`
+    // is the documented sanctioned root (see DENIED_ABSOLUTE_TOP_SEGMENTS: `tmp`
+    // is deliberately absent for exactly this reason) and is the shape
+    // `tests/scripts/validate-wave-scope.test.mjs` pins as the #792 happy path.
+    const vaultRoot = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+    const v = await fs.realpath(await fs.mkdtemp(path.join(vaultRoot, 'hook-scope-vault-')));
     tmpDirs.push(v);
     return v;
   }
@@ -864,6 +877,51 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
       stdin: editPayload(path.join(dir, 'tests', 'unit.test.ts')),
     });
     expectDeny(result, { reasonContains: 'not in allowed paths' });
+  });
+
+  // -------------------------------------------------------------------------
+  // #1398 acceptance condition 4 — Gate 5b WARNS, it does not deny
+  // -------------------------------------------------------------------------
+  //
+  // Until now the grading of an absolute grant lived ONLY in
+  // `scripts/validate-wave-scope.mjs`, and no code path called that script —
+  // four prose steps in `skills/wave-executor/` were the whole mechanism. A
+  // manifest that skipped them reached Gate 5b ungraded and the operator never
+  // learned that it had. The operator decision (2026-09-20) is that this gate
+  // keeps ALLOWING exactly what it allows today and says so instead.
+  // -------------------------------------------------------------------------
+
+  it('WARNS (and still ALLOWS) when the matched grant is one the validator would refuse', async () => {
+    // `/` is the reachable catastrophic grant, not a hypothetical one:
+    // pathMatchesPattern's `dir/` prefix branch makes it match EVERY absolute
+    // candidate, so a single hallucinated entry hands the wave the whole host —
+    // and before this change that passed through Gate 5b in total silence.
+    const vault = await mkVault();
+    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['/'] });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(vault, 'note.md')),
+    });
+    // exit 0 + systemMessage only = ALLOW WITH NOTICE. `expectWarn` pins the
+    // top-level key set exactly, so a regression that routed this through
+    // emitDeny — turning a working session into a blocked one — fails here.
+    expectWarn(result, ['validate-wave-scope.mjs would REFUSE', 'filesystem root', 'ALLOWED']);
+  });
+
+  it('stays SILENT for a clean grant — the notice must not fire on the #792 happy path', async () => {
+    // Counter-direction: a WARN on every legitimate out-of-repo grant would be
+    // noise the operator learns to ignore, which is how a real notice gets lost.
+    // expectAllow asserts stdout is EMPTY, so any stray notice fails here.
+    const vault = await mkVault();
+    const dir = await mkProjectTracked({
+      enforcement: 'strict',
+      allowedPaths: ['src/', `${vault}/**`],
+    });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(vault, 'note.md')),
+    });
+    expectAllow(result);
   });
 
   it.skipIf(process.platform === 'win32')(

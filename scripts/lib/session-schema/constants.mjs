@@ -5,8 +5,8 @@
  * Leaf module — no imports from siblings or parent.
  *
  * Exports: CURRENT_SESSION_SCHEMA_VERSION, SESSION_KEY_ALIASES,
- *          VALID_SESSION_TYPES, VALID_SESSION_PROFILES, REQUIRED_FIELDS,
- *          AGENT_SUMMARY_FIELDS
+ *          WAVE_KEY_ALIASES, VALID_SESSION_TYPES, VALID_SESSION_PROFILES,
+ *          REQUIRED_FIELDS, AGENT_SUMMARY_FIELDS, OPTIONAL_FIELDS
  */
 
 // ---------------------------------------------------------------------------
@@ -51,6 +51,24 @@ export const SESSION_KEY_ALIASES = Object.freeze({
   waves_completed: 'total_waves',
   head_ref: 'branch',
   isolation_override: 'isolation',
+});
+
+/**
+ * Safe per-wave key aliases (legacy -> canonical) — the `waves[]` counterpart of
+ * SESSION_KEY_ALIASES, same-shape renames only. Applied by normalizeWaveKeys
+ * (normalizer.mjs) on read AND by scripts/emit-session.mjs on write (#1390 P1).
+ *
+ * The canonical spelling is `agent_count_*` (skills/session-end/
+ * metrics-collection.md). The ledger carried 23 sessions in that spelling and
+ * exactly one, `main-2026-09-18-session-1` (5 waves), in the de-underscored
+ * `agents_*` spelling (measured 2026-09-19 @ 8f6ac022 over
+ * .orchestrator/metrics/sessions.jsonl) — a consumer reading
+ * `w.agent_count_completed` got `undefined` for every one of its waves.
+ */
+export const WAVE_KEY_ALIASES = Object.freeze({
+  agents_planned: 'agent_count_planned',
+  agents_started: 'agent_count_started',
+  agents_completed: 'agent_count_completed',
 });
 
 // ---------------------------------------------------------------------------
@@ -198,4 +216,14 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // lacking the field validates unchanged. Value set + the full rationale for
   // why it is NOT a VALID_SESSION_TYPES member: VALID_SESSION_PROFILES above.
   'session_profile',
+  // #1339 P8 — HEAD sha at session start. Gives `/evolve analyze` an
+  // attributable commit range instead of a time window that also catches
+  // parallel sessions' commits. Absent = not measured. NOT guaranteed to be a
+  // full sha: scripts/emit-session.mjs adopts STATE.md `session-start-ref`
+  // only when it is a full 40/64-hex sha, but an explicit key already on the
+  // record wins unchecked (even `null`), and every record before that
+  // derivation was hand-composed — 19 with a 40-char and 9 with a 7-char
+  // value (measured 2026-09-19 @ 8f6ac022, jq over sessions.jsonl).
+  // Consumers must accept a short sha or `null`, never assume a full one.
+  'session_start_ref',
 ]);

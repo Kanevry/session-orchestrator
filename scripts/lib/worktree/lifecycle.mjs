@@ -184,6 +184,20 @@ async function _removeOrphanWorktreeDir(wtPath) {
 
   if (!(await _isUnregisteredWorktreeDir(realWt))) return false;
 
+  // RACE WINDOW (accepted, #1390 P7): `_isUnregisteredWorktreeDir` above and
+  // `fs.rm` below are two separate syscalls, not one atomic check-then-act.
+  // Both plausible racers here are session-orchestrator sessions on the SAME
+  // host, contending over the same `<os.tmpdir()>/so-worktrees` base: one
+  // could register (`git worktree add`) or delete `realWt` in the gap between
+  // the two calls. No lock primitive guards this sub-millisecond window
+  // between our own sessions — the worst case is a benign retry (the caller's
+  // `git worktree add` above already retries once on failure), never data
+  // loss, because neither racer ever touches a path outside its own
+  // `so-worktree-*` name.
+  // REVISIT TRIGGER (BV-004): an UNRELATED process gains the ability to
+  // create or delete `so-worktree-*` directories under this base — at that
+  // point the race is no longer bounded to our own retry semantics and this
+  // window needs an actual lock, not an accepted gap.
   await fs.rm(realWt, { recursive: true, force: true });
   return true;
 }

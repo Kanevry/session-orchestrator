@@ -120,6 +120,28 @@
      echo "ERROR: last sessions.jsonl line is not valid JSON — manual fix required" >&2; exit 1;
    }
    ```
+
+4a. **Verify the record SCHEMA, not just its JSON syntax (#1408)** — step 4 only proves the line parses. The #1408 record parsed fine and was still invalid (`ended_at` instead of `completed_at`, four required fields missing, wave objects keyed `n` instead of `wave`); `vault-mirror` dropped it as `skipped-invalid`, so that session got no vault note and nobody was told until the NEXT session-start banner. Run the same check `/close`'s successor would run, now:
+
+   ```bash
+   SESSION_ID="$SESSION_ID" node --input-type=module -e "
+     import { checkSessionsIntegrity } from '$PLUGIN_ROOT/scripts/lib/sessions-integrity-banner.mjs';
+     const r = checkSessionsIntegrity({ repoRoot: process.cwd() });
+     if (!r) process.exit(0);
+     process.stderr.write(r.message + '\n');
+     const mine = [...r.schemaInvalid, ...r.mirrorSkipped]
+       .filter((x) => x.sessionId === process.env.SESSION_ID);
+     if (mine.length === 0) process.exit(0);
+     process.stderr.write('ERROR: the record just written (' + process.env.SESSION_ID +
+       ') is schema-invalid or will be dropped by vault-mirror. Re-emit it via scripts/emit-session.mjs.\n');
+     process.exit(1);
+   " || exit 1
+   ```
+
+   **Exit contract:** 0 = this session's record validates and mirrors. 1 = THIS session's record is broken — block the close and re-emit. Pre-existing invalid records from earlier sessions are printed (the banner text on stderr) but never block: they are not this close's to fix, and failing on them would make every close red until someone ran `node scripts/repair-invalid-sessions.mjs --apply`. Identity (`sessionId`), not tail POSITION, is the filter — a parallel session may append between step 2 and here.
+
+   <!-- path-check: planned #1408 -->
+   > `checkSessionsIntegrity` has **no CLI entry point** — `scripts/repair-invalid-sessions.mjs` is a repair path whose `--dry-run` exit code reports repairability, not tail validity. Hence the inline one-liner. See the OPEN-QUESTIONS note in GitLab #1408: a thin `scripts/check-sessions-integrity.mjs` would replace this block with one command.
 5. **Vault Mirror** — mirror the session entry to the Obsidian vault (if configured):
 
    ```bash

@@ -299,3 +299,69 @@ describe('assertMachineToken — shapes the live corpus already ships', () => {
     ).toThrow(/expires-at must match/);
   });
 });
+
+describe('assertMachineToken — a branch-derived session id carries slashes (GH#71)', () => {
+  // Bug: `PROVENANCE_TOKEN_RE` had no `/`, but a semantic session id is derived
+  // from a BRANCH NAME. `engine.mjs` degrades the throw to an audited
+  // rejection, so every learning from such a session was proposed on every run
+  // and rejected on every run, forever — silently. Measured in THIS repo
+  // 2026-09-20 @ `9b118cf6`: 3 of the session ids in
+  // `.orchestrator/metrics/sessions.jsonl` carry a slash.
+  // (source: peer session eventdrop-at, 2026-09-20 — re-verified here.)
+  it.each([
+    // A GOLDEN RECORD: harvested verbatim from this repo's sessions.jsonl.
+    ['feat/operator-surface-2026-08-08-2026-08-08-session-1'],
+    // The shape the reporting consumer carried.
+    ['redesign/v6-2026-08-30-session-1'],
+  ])('accepts the branch-derived session id %s', (token) => {
+    expect(
+      assertMachineToken(token, { field: 'source-session', pattern: PROVENANCE_TOKEN_RE }),
+    ).toBe(token);
+  });
+
+  it('rejects a path traversal now that `/` is expressible', () => {
+    // The ONE hazard the widening adds: `.` was already in the class, so `/`
+    // completes `../`. Nothing renders this token as a path today — the guard
+    // is on the exported shared assert so the next caller inherits it.
+    expect(() =>
+      assertMachineToken('feat/../../etc/passwd', {
+        field: 'source-session',
+        pattern: PROVENANCE_TOKEN_RE,
+      }),
+    ).toThrow(/must not contain "\.\." \(path traversal\)/);
+  });
+
+  it('rejects a leading slash (absolute path)', () => {
+    expect(() =>
+      assertMachineToken('/etc/passwd', {
+        field: 'source-session',
+        pattern: PROVENANCE_TOKEN_RE,
+      }),
+    ).toThrow(/must not start with "\/" \(absolute path\)/);
+  });
+
+  it.each([
+    // Closes the inline-code span the renderer wraps this value in.
+    ['feat/x`  **bold**'],
+    // A newline opens a sibling frontmatter key; JS `$` does not match before
+    // a trailing newline, so this stayed rejected across the widening.
+    ['feat/x\ntier: always'],
+    // Wrapper forgery needs `<`/`>` — still outside the class.
+    ['</APPLICABLE-RULES>'],
+    // Unicode Tag block: text to a model, invisible to a reviewer.
+    ['feat/x\u{E0041}'],
+    // Backslash is the other path separator; never admitted.
+    ['feat\\..\\..\\windows'],
+  ])('still rejects the hostile shape %j after the widening', (token) => {
+    expect(() =>
+      assertMachineToken(token, { field: 'source-session', pattern: PROVENANCE_TOKEN_RE }),
+    ).toThrow(/reconcile-sanitize: rejecting record/);
+  });
+
+  it('leaves a slash-FREE token that was accepted before untouched (bug: a path guard applied unconditionally would newly reject dotted ids the corpus already ships, turning a widening into a narrowing)', () => {
+    // No separator → no traversal to express, so the guard must not fire.
+    expect(
+      assertMachineToken('lrn-a..b', { field: 'learning-id', pattern: PROVENANCE_TOKEN_RE }),
+    ).toBe('lrn-a..b');
+  });
+});

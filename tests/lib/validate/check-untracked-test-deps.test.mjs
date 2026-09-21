@@ -43,6 +43,46 @@ const CHECK = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-untracked-tes
 /** The store pattern this repo actually ships (`.gitignore:40`). */
 const GITIGNORE = '.orchestrator/metrics/*.jsonl\n';
 
+// ---------------------------------------------------------------------------
+// Per-test timeouts for the two WHOLE-CORPUS scans in this file (#w3-5)
+//
+// What they do that no other test here does: walk EVERY `*.test.mjs` under
+// `tests/` (694 files on 2026-09-20), read each one, lex it, extract candidates,
+// and run a git-backed untracked oracle over the union — one `git ls-files`
+// plus one `git check-ignore` subprocess class on top of the I/O. Cost scales
+// with the corpus and with subprocess latency, so it is the one shape in this
+// file that a loaded runner can push past a blanket wall.
+//
+// It DID, and that is why these exist. Measured from the GitLab job logs
+// 2026-09-20 — green job 112597 @ `8f15f77b` vs red 112869/112929 @ `3b587a4d`:
+// the coverage job went 322 s → 742 s, vitest setup 56 s → 141 s (×2.52) and
+// transform 15.5 s → 38 s (×2.45) — stages that contain NO test code, so the
+// delta is runner load, not a code regression. Under it the R3 test went from
+// 7.8 s to past the blanket `testTimeout` (30 s on CI, `vitest.config.mjs`) and
+// took the pipeline red.
+//
+// The fix is CATEGORY SEPARATION, not a higher blanket value
+// (`.claude/rules/development.md` § Guard & Threshold Design: raising a shared
+// threshold weakens detection for the class it was built to catch — here, a
+// genuine hang in the other ~690 test files). `vitest.config.mjs` is therefore
+// untouched; only these two tests opt out.
+//
+// ONE rule, two numbers: **33 × the test's own measured local `--coverage`
+// cost**. That factor is itself measured, not chosen — ×2.85 local→CI-green
+// (R3: 2.73 s local under `--coverage` vs 7.8 s in the green CI job), ×3.85 for
+// the red run's degradation on THIS shape (its observed ≥30 s lower bound
+// against the same 7.8 s; the 2.4-2.5× the test-free stages showed does not
+// cover it, because the git-subprocess tail degrades harder than the average
+// stage), and ×3 headroom on top.
+//
+// Named ceiling + revisit trigger (BV-004): a true hang now surfaces in 90 s
+// instead of 30 s, which is noise against a 742 s coverage job — but only while
+// these stay per-test. Revisit when the `tests/` corpus passes ~1400 files
+// (double today's 694), or when a red CI run shows either test above ~30 s
+// again: at that point the scan needs a cheaper oracle, not a bigger number.
+const CORPUS_SCAN_TIMEOUT_MS = 90_000;   // R3 corpus test: 2.73 s local --coverage
+const LIVE_TREE_SCAN_TIMEOUT_MS = 60_000; // live-tree scan: 1.84 s local --coverage
+
 const tmpDirs = [];
 afterAll(() => {
   for (const d of tmpDirs) removeTree(d);
@@ -502,7 +542,7 @@ describe('false-positive regression over the live corpus', () => {
 
     // Under R3 this would be corpus.length; under R2+R4 it is a small handful.
     expect(flaggedInCorpus.length * 4).toBeLessThan(corpus.length);
-  });
+  }, CORPUS_SCAN_TIMEOUT_MS);
 });
 
 describe('validate-plugin output contract', () => {
@@ -563,5 +603,5 @@ describe('this repo, named', () => {
     // Bounded, not pinned: the two known accommodations may take the ignore
     // marker at any time, and a third genuine instance must be visible.
     expect(files.length).toBeLessThanOrEqual(3);
-  });
+  }, LIVE_TREE_SCAN_TIMEOUT_MS);
 });

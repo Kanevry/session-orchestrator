@@ -41,6 +41,7 @@ import { ensureAnonId } from './anon-id.mjs';
 import { peekAll, enqueue, clear, queueStats } from './queue.mjs';
 import { loadOwnerConfig } from '../owner-yaml.mjs';
 import { readJsonlFile } from '../io.mjs';
+import { readEventsWithRotations } from '../events.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { resolvePrivateConfigDir } from '../config/private-config-dir.mjs';
 import { readSessionProfile } from '../state-md.mjs';
@@ -338,12 +339,37 @@ export function readSessionProfileForMetricsDir(metricsDir) {
  * Never throws.
  *
  * @param {string} metricsDir
- * @returns {{ session: object, source: 'derived'|'absent' }}
+ * @returns {{ session: object, source: 'derived'|'absent',
+ *             ledger_complete: boolean|null, ledger_gaps: object[] }}
+ *   `ledger_complete` is `null` — never `false` — when the read produced no
+ *   verdict at all: an undetermined ledger is not a proven gap.
  */
 export function deriveSessionFromEvents(metricsDir) {
   try {
-    const events = readJsonlFile(path.join(metricsDir, 'events.jsonl'), { skipInvalid: true });
-    if (!Array.isArray(events) || events.length === 0) return { session: {}, source: 'absent' };
+    // #1407: read ACROSS rotation boundaries. This reconstruction is the ONLY
+    // source of session facts whenever `sessions.jsonl` has no usable record,
+    // and its sibling window is `DAILY_FLUSH_MS` (24 h) — so a rotation between
+    // a session's start and its flush silently truncated it.
+    //
+    // CEILING (BV-004): the reader loads the active file AND every archive
+    // fully into memory — up to ~60 MB transient at the default
+    // `max-size-mb: 10` / `max-backups: 5`. Measured 2026-09-20 A/B in ONE
+    // process on exactly that worst case (60 MB / 6 sources / 293,994 records,
+    // host loadavg 11.2): median 25.5 ms → 215.8 ms, i.e. +190 ms, which is
+    // 6.4 % of this path's `POST_TIMEOUT_MS` (3000). Acceptable for a
+    // once-per-flush cold read. Revisit if `max-size-mb` is raised past ~100,
+    // if `max-backups` grows, or if the flush budget drops below ~1 s.
+    const ledger = readEventsWithRotations(undefined, {
+      filePath: path.join(metricsDir, 'events.jsonl'),
+    });
+    const events = ledger.events;
+    // A missing archive is a GAP, never an empty window (#1407 AC-3). Carried
+    // on EVERY return below, including the empty ones — that is precisely where
+    // a deleted archive and a quiet period are otherwise indistinguishable.
+    const ledgerVerdict = { ledger_complete: ledger.complete, ledger_gaps: ledger.gaps };
+    if (!Array.isArray(events) || events.length === 0) {
+      return { session: {}, source: 'absent', ...ledgerVerdict };
+    }
 
     let startedAt = null;
     let sessionType = null;
@@ -412,7 +438,9 @@ export function deriveSessionFromEvents(metricsDir) {
       profile = undatedShapeProfile;
     }
 
-    if (startedAt === null && sessionType === null && profile === null) return { session: {}, source: 'absent' };
+    if (startedAt === null && sessionType === null && profile === null) {
+      return { session: {}, source: 'absent', ...ledgerVerdict };
+    }
 
     const session = {};
     if (sessionType !== null) session.session_type = sessionType;
@@ -422,9 +450,11 @@ export function deriveSessionFromEvents(metricsDir) {
     // omit-never-fabricate contract session-close-backfill.mjs uses (#914 R1).
     if (lastTs !== null && startedAt !== null && lastTs >= startedAt) session.completed_at = lastTs;
 
-    return { session, source: 'derived' };
+    return { session, source: 'derived', ...ledgerVerdict };
   } catch {
-    return { session: {}, source: 'absent' };
+    // No verdict was ever produced — `null`, not `false`: a measurement that
+    // did not happen is not a measured zero.
+    return { session: {}, source: 'absent', ledger_complete: null, ledger_gaps: [] };
   }
 }
 

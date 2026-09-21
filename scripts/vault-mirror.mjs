@@ -485,6 +485,10 @@ async function main() {
     kind,
     force,
     vaultName,
+    // #1389: the repo whose `.vault.yaml` declares the namespace slug. This CLI
+    // has no repo-root flag, so it is the invocation cwd — bound ONCE here and
+    // shared by every processor call and the auto-commit below.
+    repoRoot: process.cwd(),
     qualityMinNarrativeChars,
     qualityMinConfidence,
   };
@@ -693,7 +697,11 @@ async function main() {
   // Opt-in: triggers only when --session-id is provided. Callers (session-end, evolve)
   // pass it explicitly; bare invocations stay quiet to preserve legacy behaviour.
   if (!dryRun && !noCommit && sessionIdArg) {
-    autoCommitVaultMirror(resolve(vaultDir), sessionIdArg, resolveRepoNamespace({ vaultName }));
+    autoCommitVaultMirror(
+      resolve(vaultDir),
+      sessionIdArg,
+      resolveRepoNamespace({ vaultName, repoRoot: ctx.repoRoot }),
+    );
   }
 }
 

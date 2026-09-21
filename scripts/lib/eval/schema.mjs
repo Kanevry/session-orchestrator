@@ -24,7 +24,16 @@
  *                     no Date.now (determinism is load-bearing for --verify).
  *   session_id        string (non-empty) — the session being evaluated.
  *   standard_version  string — CURRENT_STANDARD_VERSION ('aiat-llm-eval/1.0').
- *   rubric_version    string (non-empty) — e.g. 'rubric-v1'.
+ *   rubric_version    string (non-empty) — e.g. 'rubric-v1', 'rubric-v2'.
+ *                     DELIBERATELY open: the validator checks the SHAPE, never
+ *                     an enum of known versions, and `dimensions[].id` is
+ *                     likewise any non-empty string with no fixed set. That is
+ *                     what lets a journal hold records from several rubric
+ *                     versions side by side — `rubric-v1` records (5
+ *                     dimensions) and `rubric-v2` records (6, `guard-friction`
+ *                     added, #1037) both validate and both render. Never
+ *                     narrow either to a closed list: a reader that rejects an
+ *                     unknown version cannot read its own history.
  *   provenance        { rubric_sha256: string, engine_commit: string|null }
  *                     Hash-bound drift detection. The ENGINE computes the hash
  *                     and the commit; this module only validates their shape.

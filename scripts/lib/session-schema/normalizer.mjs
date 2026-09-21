@@ -5,12 +5,12 @@
  * Imports: constants.mjs. No imports from siblings (validator, timestamps,
  * aliases) or parent barrel.
  *
- * Exports: normalizeSession
+ * Exports: normalizeSession, normalizeWaveKeys
  * Module-private: _warnedMissingSchemaVersion (Set, per-process dedupe),
- *   isPlainObject, _canonicalizeExpressPath
+ *   isPlainObject, _canonicalizeExpressPath, _aliasWaves
  */
 
-import { SESSION_KEY_ALIASES } from './constants.mjs';
+import { SESSION_KEY_ALIASES, WAVE_KEY_ALIASES } from './constants.mjs';
 
 // ---------------------------------------------------------------------------
 // Module-level state
@@ -79,12 +79,61 @@ function _canonicalizeExpressPath(next) {
   next.express_path = raw.activated;
 }
 
+/**
+ * Apply WAVE_KEY_ALIASES to every plain-object wave, mirroring the top-level
+ * SESSION_KEY_ALIASES rule: the legacy key is preserved, and an existing
+ * canonical key is never clobbered. Copy-on-write — the caller's wave objects
+ * are never mutated (normalizeSession's `{ ...entry }` is shallow, so `waves`
+ * is still the caller's array).
+ *
+ * @param {any[]} waves
+ * @returns {any[]} the same array reference when no wave needed an alias
+ */
+function _aliasWaves(waves) {
+  let changed = false;
+  const out = waves.map((w) => {
+    if (!isPlainObject(w)) return w;
+    let copy = null;
+    for (const [oldKey, newKey] of Object.entries(WAVE_KEY_ALIASES)) {
+      if (oldKey in w && !(newKey in w)) {
+        copy ??= { ...w };
+        copy[newKey] = w[oldKey];
+      }
+    }
+    if (copy === null) return w;
+    changed = true;
+    return copy;
+  });
+  return changed ? out : waves;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Normalize a session entry read from disk. Applies SAFE key aliases, collapses
+ * Apply ONLY the per-wave key aliases (WAVE_KEY_ALIASES) to a session entry —
+ * the subset of normalizeSession that is safe on the WRITE path
+ * (scripts/emit-session.mjs, #1390 P1). The rest of normalizeSession is not:
+ * it tags a missing `schema_version` as 0 where validateSession stamps the
+ * current version, and applies top-level aliases the write-path contract
+ * explicitly excludes.
+ *
+ * Never throws. Non-objects and entries without a `waves` array are returned
+ * unchanged; so is an entry none of whose waves needs an alias (same reference).
+ *
+ * @param {any} entry
+ * @returns {any} a new entry with aliased waves, or the input unchanged
+ */
+export function normalizeWaveKeys(entry) {
+  if (!isPlainObject(entry) || !Array.isArray(entry.waves)) return entry;
+  const waves = _aliasWaves(entry.waves);
+  return waves === entry.waves ? entry : { ...entry, waves };
+}
+
+/**
+ * Normalize a session entry read from disk. Applies SAFE key aliases (top-level
+ * SESSION_KEY_ALIASES and per-wave WAVE_KEY_ALIASES), collapses
  * the legacy object form of `express_path` onto its canonical boolean, and tags
  * legacy entries without `schema_version` as 0 (distinct from
  * CURRENT_SESSION_SCHEMA_VERSION=2 which is stamped on new writes; bumped
@@ -111,6 +160,9 @@ export function normalizeSession(entry) {
       next[newKey] = next[oldKey];
     }
   }
+
+  // Per-wave aliases (#1390 P1) — same non-clobber rule, one level down.
+  if (Array.isArray(next.waves)) next.waves = _aliasWaves(next.waves);
 
   // express_path — same key, two shapes. Collapse onto the canonical boolean.
   _canonicalizeExpressPath(next);

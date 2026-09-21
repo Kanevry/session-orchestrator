@@ -19,7 +19,14 @@ Implemented from spec since upstream skill not yet published as of 2026-04-30.
 
 ## Invocation
 
-**Explicit:** `/convergence-monitoring` — standalone assessment from current session history.
+`user-invocable: false` — there is no `/convergence-monitoring` slash command.
+
+**Platform-native (primary, CC 2.1.105+):** registered as a plugin monitor
+(`monitors/monitors.json`); auto-starts in the background on `wave-executor`
+invocation and tails `.orchestrator/metrics/events.jsonl` for convergence signals.
+
+**Direct/model invocation:** the model dispatches this skill by name for a
+standalone assessment from current session history (fallback for harness < 2.1.105).
 
 **Embedded:** Set `convergence-monitoring: true` in Session Config. `wave-executor` and
 `/autoresearch` will call this skill automatically after each Impl-Core/Impl-Polish wave.

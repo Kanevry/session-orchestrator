@@ -647,6 +647,29 @@ describe('check-unwired-features — S4 unreachable-library-module census', () =
     }
   });
 
+  it('counts two dragged modules that share a basename as two, not one', () => {
+    // THE BUG (#1298): the "drags N" tail counted basename TOKENS from the
+    // `mentions` Set, so a root importing `a/index.mjs` AND `b/index.mjs`
+    // collapsed both into one `index.mjs` and read "drags 1" — while the root
+    // filter (#1293), judging the same pair per module, suppressed both.
+    const root = makeGraphFixture({
+      modules: {
+        'a/index.mjs': 'export function fromA() {\n  return 1;\n}\n',
+        'b/index.mjs': 'export function fromB() {\n  return 2;\n}\n',
+        'owner.mjs':
+          "import { fromA } from './a/index.mjs';\nimport { fromB } from './b/index.mjs';\n" +
+          'export function top() {\n  return fromA() + fromB();\n}\n',
+      },
+    });
+    try {
+      const findings = collectUnreachableLibraryModules(root).findings;
+      expect(findings.map((f) => f.key)).toEqual([join('scripts', 'lib', 'owner.mjs')]);
+      expect(findings[0].message).toContain(', and drags 2 further unreachable module(s).');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // THE BUG (#1293 remainder): a PURE `export *` barrel has zero NAMED exports,
   // so the S4 population predicate (`exports.length > 0`) dropped it entirely.
   // That did not merely hide the barrel — it removed the barrel as the CLUSTER

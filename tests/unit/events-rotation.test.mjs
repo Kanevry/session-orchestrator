@@ -8,6 +8,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   mkdtempSync,
+  mkdirSync,
+  readdirSync,
   rmSync,
   writeFileSync,
   existsSync,
@@ -19,6 +21,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { maybeRotate } from '@lib/events-rotation.mjs';
+import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE } from '@lib/events-schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -117,53 +120,65 @@ describe('maybeRotate — early returns', () => {
 // ---------------------------------------------------------------------------
 
 describe('maybeRotate — rotation', () => {
-  it('rotates active log to .1 when above threshold', () => {
+  it('rotates active log into _archive/ when above threshold', () => {
     // Use maxSizeMb=1 so we only need 1 MiB of data.
     const p = writeFile('events.jsonl', 1 * 1024 * 1024 + 10);
     const r = maybeRotate({ logPath: p, maxSizeMb: 1, maxBackups: 5, enabled: true });
 
     expect(r.rotated).toBe(true);
-    expect(r.archivedAs).toBe(`${p}.1`);
+    expect(r.archivedAs).toBe(
+      join(tmpDir, ARCHIVE_DIR_NAME, r.archivedAs.split('/').pop()),
+    );
+    expect(ARCHIVE_NAME_RE.test(r.archivedAs.split('/').pop())).toBe(true);
     expect(r.sizeBefore).toBe(1 * 1024 * 1024 + 10);
     expect(r.maxBackups).toBe(5);
 
-    // Active file is gone; caller re-creates on next append.
-    expect(existsSync(p)).toBe(false);
-    expect(existsSync(`${p}.1`)).toBe(true);
-    expect(statSync(`${p}.1`).size).toBe(1 * 1024 * 1024 + 10);
+    // Active file is re-created carrying ONLY the rotation record.
+    expect(readFileSync(p, 'utf8').trimEnd().split('\n')).toHaveLength(1);
+    expect(existsSync(r.archivedAs)).toBe(true);
+    expect(statSync(r.archivedAs).size).toBe(1 * 1024 * 1024 + 10);
+    // The pre-#1401 ring slot is never created.
+    expect(existsSync(`${p}.1`)).toBe(false);
   });
 
-  it('shifts existing backups: .1 → .2, .2 → .3, etc.', () => {
-    const p = writeFile('events.jsonl', 1 * 1024 * 1024 + 10);
-    writeFileSync(`${p}.1`, 'B1');
-    writeFileSync(`${p}.2`, 'B2');
+  it('keeps every archive under its own stable name — no shift on the next rotation', () => {
+    // BUG THIS CATCHES: the pre-#1401 ring RENAMED each surviving backup on
+    // every rotation, which is why the `archived_as` pointer the reader uses to
+    // detect a missing archive could not be durable.
+    const archiveDir = join(tmpDir, ARCHIVE_DIR_NAME);
+    mkdirSync(archiveDir, { recursive: true });
+    const existing = join(archiveDir, 'events-20260101T000000Z_20260201T000000Z.jsonl');
+    writeFileSync(existing, 'B1');
 
+    const p = writeFile('events.jsonl', 1 * 1024 * 1024 + 10);
     const r = maybeRotate({ logPath: p, maxSizeMb: 1, maxBackups: 5, enabled: true });
 
     expect(r.rotated).toBe(true);
-    // Previous .2 is now .3, previous .1 is now .2, active is now .1.
-    expect(readFileSync(`${p}.3`, 'utf8')).toBe('B2');
-    expect(readFileSync(`${p}.2`, 'utf8')).toBe('B1');
-    expect(statSync(`${p}.1`).size).toBe(1 * 1024 * 1024 + 10);
-    expect(existsSync(p)).toBe(false);
+    expect(readFileSync(existing, 'utf8')).toBe('B1');
+    expect(readdirSync(archiveDir).sort()).toEqual(
+      [existing, r.archivedAs].map((f) => f.split('/').pop()).sort(),
+    );
   });
 
-  it('drops the oldest backup when at max-backups', () => {
-    const p = writeFile('events.jsonl', 1 * 1024 * 1024 + 10);
-    // Populate .1 through .3 with maxBackups=3 (so .3 is the oldest → will be deleted).
-    writeFileSync(`${p}.1`, 'B1');
-    writeFileSync(`${p}.2`, 'B2');
-    writeFileSync(`${p}.3`, 'B3-oldest');
+  it('drops the oldest archive when at max-backups', () => {
+    const archiveDir = join(tmpDir, ARCHIVE_DIR_NAME);
+    mkdirSync(archiveDir, { recursive: true });
+    const oldest = join(archiveDir, 'events-20260101T000000Z_20260201T000000Z.jsonl');
+    const middle = join(archiveDir, 'events-20260201T000000Z_20260301T000000Z.jsonl');
+    const newest = join(archiveDir, 'events-20260301T000000Z_20260401T000000Z.jsonl');
+    writeFileSync(oldest, 'B3-oldest');
+    writeFileSync(middle, 'B2');
+    writeFileSync(newest, 'B1');
 
+    const p = writeFile('events.jsonl', 1 * 1024 * 1024 + 10);
     const r = maybeRotate({ logPath: p, maxSizeMb: 1, maxBackups: 3, enabled: true });
 
     expect(r.rotated).toBe(true);
-    // B3 was dropped; B2 shifted to .3; B1 shifted to .2; active → .1.
-    expect(readFileSync(`${p}.3`, 'utf8')).toBe('B2');
-    expect(readFileSync(`${p}.2`, 'utf8')).toBe('B1');
-    expect(statSync(`${p}.1`).size).toBe(1 * 1024 * 1024 + 10);
-    // .4 never existed and must not be created.
-    expect(existsSync(`${p}.4`)).toBe(false);
+    expect(r.pruned).toEqual([oldest]);
+    expect(existsSync(oldest)).toBe(false);
+    expect(readFileSync(middle, 'utf8')).toBe('B2');
+    expect(readFileSync(newest, 'utf8')).toBe('B1');
+    expect(readdirSync(archiveDir)).toHaveLength(3);
   });
 
   it('threshold boundary: exactly maxSizeMb bytes rotates (contract: size < threshold skips, else rotate)', () => {

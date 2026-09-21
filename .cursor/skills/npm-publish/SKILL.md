@@ -1,6 +1,7 @@
 ---
 name: npm-publish
 description: "Use when publishing this package to npm — a version release (npm publish), verifying the registry/pi.dev listing, or diagnosing npm auth failures (E403 2FA/token errors). Token-based flow via NPM_TOKEN in .env.local with a temp userconfig, the leakage gate before every publish, post-publish verification and marker/badge upkeep. Trigger on \"publish to npm\", \"npm release\", \"E403 publish error\"."
+disable-model-invocation: true
 ---
 
 # npm-publish

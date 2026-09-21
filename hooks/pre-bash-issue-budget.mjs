@@ -67,12 +67,9 @@ import {
 } from '../scripts/lib/issue-budget.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-
-// Opt-out per session via SO_DISABLED_HOOKS=pre-bash-issue-budget; the
-// "minimal"/"off" profiles disable it like every other non-core hook.
-if (!shouldRunHook('pre-bash-issue-budget')) process.exit(0);
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -500,10 +497,18 @@ async function main() {
   return emitAllow();
 }
 
-// Top-level error handler — fail open, same posture as the sibling hooks.
-main().catch((e) => {
-  process.stderr.write(
-    `⚠ pre-bash-issue-budget: internal error — ${e?.message || e}\n`,
-  );
-  process.exit(0);
-});
+// Entry guard (#1393): run only as the node script the harness execs — a bare
+// `import()` must run no handler and must not exit the importing process.
+if (isMainModule(import.meta.url)) {
+  // Opt-out per session via SO_DISABLED_HOOKS=pre-bash-issue-budget; the
+  // "minimal"/"off" profiles disable it like every other non-core hook.
+  if (!shouldRunHook('pre-bash-issue-budget')) process.exit(0);
+
+  // Top-level error handler — fail open, same posture as the sibling hooks.
+  main().catch((e) => {
+    process.stderr.write(
+      `⚠ pre-bash-issue-budget: internal error — ${e?.message || e}\n`,
+    );
+    process.exit(0);
+  });
+}

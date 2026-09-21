@@ -8,7 +8,7 @@
 
 Single-pass LLM derivation of USER.md + AGENT.md (peer cards from #503) updates from current learnings + sessions + steering files. Dry-run-default per #506 EARS contract.
 
-**Telemetry start marker (#1200):** note the current wall-clock time at Phase 6 entry (`DURATION_MS` in the Step 6.4/6.5 emits below is the elapsed milliseconds since this marker) — same placeholder convention as `skills/session-end/SKILL.md`'s `orchestrator.handover.gated` emits.
+**Telemetry start marker (#1200):** note the current wall-clock time at Phase 6 entry (`DURATION_MS` in the Step 6.4 apply emit below is the elapsed milliseconds since this marker) — same placeholder convention as `skills/session-end/SKILL.md`'s `orchestrator.handover.gated` emits.
 
 ### Step 6.0: Argument Parsing
 
@@ -150,22 +150,11 @@ await recordDialecticRun({
 - `status: 'empty-input'` → exit clean with message "dialectic: skipped (no input)"
 - subagent crash → log ⚠, exit cleanly (do NOT write to `.orchestrator/dialectic-pending.md`) <!-- path-check: example -->
 
-**Telemetry (#1200, #1206) — emitted by `scripts/dialectic-deriver.mjs` for THREE of the five
-outcomes.** `budget-exceeded`, `would-empty-card`, and `empty-input` are `runDialecticDeriver()`
-RETURN values, so the module records them itself, mechanically, at the exact return point —
-nothing to do here for those three. The remaining two are THROWN, not returned, and can only be
-caught one layer up:
-
-- `unknown-model` — `validateModel()` throws synchronously before `runDialecticDeriver()` can
-  record anything about the call.
-- `subagent-crash` — a `dispatchAgent`/`Agent()` failure propagates out of
-  `runDialecticDeriver()` uncaught (it has no status of its own for this case).
-
-Catch both here and call the SAME `recordDialecticRun()` used in Step 6.4's apply branch,
-passing the literal slug as `status` (the abort form: `{aborted: status, duration_ms}`):
-
-```javascript
-await recordDialecticRun({ repoRoot, status: 'unknown-model' /* or 'subagent-crash' */, durationMs: DURATION_MS });
-```
+**Telemetry (#1200, #1206, #1221) — all five outcomes are emitted by `scripts/dialectic-deriver.mjs`;
+do NOT call `recordDialecticRun()` for any of them here.** `budget-exceeded`, `would-empty-card` and
+`empty-input` are recorded at their return point; `unknown-model` and `subagent-crash` are recorded
+at the throw point, and the original error is then rethrown unchanged — so catch it for the ⚠ log
+above, but a second record here would double-count the run. The only caller-side emit left is
+apply-mode success (Step 6.4).
 
 Cross-reference: PRD #506 AC1-AC4 + EARS gates. Vault Integration: dialectic does NOT mirror to vault (#506 scope — peer cards are repo-local by design; vault mirror is for cross-repo sessions/learnings).
