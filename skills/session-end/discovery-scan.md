@@ -27,7 +27,7 @@ Agent({
   run_in_background: false
 })
 ```
-On Codex CLI / Cursor IDE: execute probes sequentially within the current context (no Agent dispatch).
+Use the native delegation tools actually exposed by the current runtime, following [Platform Tool Adaptation](../_shared/platform-tools.md). If the runtime exposes no suitable delegation tool, execute the probes sequentially within the current context.
 - Collect verified findings from the discovery output
 - Parse the discovery output for the **findings** array and **stats** object (see Parsing callout below)
 - Store the stats object for Phase 1.7 metrics collection (`discovery_stats` field)
