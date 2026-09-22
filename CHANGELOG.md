@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.3.0] - 2026-09-22
+
 ### Added
 
 - `scripts/lib/tail-window.mjs` (`readTailWindow(file, maxBytes)` → `{ text, cut, size }`) — the ONE bounded tail-window reader for append-only JSONL ledgers and transcripts, replacing five private copies of the same byte-window primitive: `hooks/on-stop.mjs`, `hooks/subagent-telemetry.mjs`, `scripts/lib/agent-status.mjs`, `scripts/lib/session-id.mjs` and `scripts/lib/telemetry-flush-health-banner.mjs` (#1272). Each caller keeps its own error mapping (`null` / `[]` / discriminated result / throw); the module owns only the window, loops until it is filled, and reports `cut` so a caller can drop the partial first line. Named ceiling (BV-004): the window is held in memory in one piece — fine for the 64 KiB..1 MiB windows in use, revisit above ~16 MiB. New suite `tests/lib/tail-window.test.mjs`; `hooks/_lib/hook-import-set.json` regenerated (the module is reachable from four hook entry files).

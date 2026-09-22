@@ -384,7 +384,10 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // September 10 campaign snapshot: inputs and receipt reproduce the dated 4.3-planned
 // render made while 4.2.0 was current. Exact files only; neighboring marketing
 // remains checked. Do not bump receipt props without a newly reviewed render.
-export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
+// `scripts/lib/locks/index.mjs` is the one-cycle deprecation shim (5.2.0 CHANGELOG, Changed): its
+// runtime warning names the version it was deprecated IN, so it legitimately carries the previous
+// release literal until its 6.0.0 removal — version history by construction, not drift.
+export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|scripts\/lib\/locks\/index\.mjs|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */
 export function checkLeakage(lines) {
