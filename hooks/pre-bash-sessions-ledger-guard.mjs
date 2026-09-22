@@ -1526,6 +1526,8 @@ async function main() {
       `Direct write to the sessions ledger blocked: '${shown}'`,
       `The ledger is append-only through its validating writer:`,
       `  node scripts/emit-session.mjs --entry '<json>'    (or pipe the JSON on stdin)`,
+      `After the writer succeeds, verify the record (read-only; does not repair):`,
+      `  node scripts/check-sessions-integrity.mjs --session-id '<semantic-id>'`,
       `Hand-composing a record and appending it — with a shell redirect, or from`,
       `inside an interpreter (node -e / python -c) — skips schema validation. That is`,
       `exactly how the malformed records in GitLab #958 and #1408 landed.`,

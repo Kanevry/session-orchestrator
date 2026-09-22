@@ -11,10 +11,10 @@
 | Path | Purpose |
 |------|---------|
 | `skills/` | 50 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 2 command files (`/session`, `/templates-ack`). The other 26 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker) |
+| `commands/` | 2 command files (`/session`, `/templates-ack`). The other 24 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-09-22 (census below) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
 | `hooks/` | Hook event matchers + handlers (18 matcher entries / 27 plugin-wired handler files [28 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
-| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (15 rules — 11 `severity: block`, 4 `severity: warn`) |
+| `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (16 rules — 12 `severity: block`, 4 `severity: warn`); measured 2026-09-22 (census below) |
 | `.orchestrator/steering/` | This directory — persistent stable context docs |
 | `.orchestrator/metrics/` | Runtime JSONL telemetry: sessions, learnings, autopilot, events, subagents |
 | `.claude/rules/` | 25 always-on rule files loaded by Claude Code |
@@ -38,14 +38,14 @@
 ## Inventory (canonical)
 
 - **Skills:** 50 user-facing — measured 2026-09-16 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
-- **Slash commands:** 28 — measured 2026-09-16 (`{ ls commands/*.md; grep -l '^user-invocable: true' skills/*/SKILL.md; } | wc -l`): 2 command files (`/session`, `/templates-ack`) + 26 user-invocable skills (`/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/convergence-monitoring`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/npm-publish`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/ux-grill`)
+- **Slash commands:** 26 — measured 2026-09-22 (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): 2 command files (`/session`, `/templates-ack`) + 24 user-invocable skills (`/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/ux-grill`)
 - **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
 - **Hook event matchers / handlers:** 18 matcher entries / 27 plugin-wired handler files (28 on-disk) — measured 2026-09-16 (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
 - **Rules:** 25 always-on files — measured 2026-09-16 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.
 - **Validators:** 39 `scripts/lib/validate/check-*.mjs` modules — measured 2026-09-16 (`ls scripts/lib/validate/check-*.mjs | wc -l`).
 - **ADRs:** 18 — measured 2026-09-06 (`ls docs/adr/*.md | wc -l`).
 - **Tests:** 685 test files — measured 2026-09-16 (`find tests -name '*.test.mjs' | wc -l`). The runtime test-case total is only knowable from a `npm test` run; the static floor is 14,598 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
-- **Destructive-command policy:** 15 rules, 11 blocking and 4 warning — measured 2026-09-16 (`node -e "…require('./.orchestrator/policy/blocked-commands.json')…"`). "15 rules" alone is ambiguous: only 11 of them block.
+- **Destructive-command policy:** 16 rules, 12 blocking and 4 warning — measured 2026-09-22 (`jq '[.rules[].severity] | group_by(.) | map({(.[0]): length}) | add' .orchestrator/policy/blocked-commands.json`). The total includes both blocking and warning rules.
 
 ## Key Skills (frequently referenced)
 
@@ -71,7 +71,7 @@
 
 | Event | Matcher | Handler file(s) |
 |-------|---------|-----------------|
-| SessionStart | `startup\|clear\|compact` | `hooks/on-session-start.mjs` |
+| SessionStart | `startup\|resume\|clear\|compact` | `hooks/on-session-start.mjs` |
 | SessionEnd | `""` | `hooks/on-session-end.mjs` |
 | PreToolUse | `Skill` | `hooks/skill-invocation-telemetry.mjs` |
 | PreToolUse | `Edit\|Write\|MultiEdit` | `hooks/enforce-scope.mjs` + `hooks/config-protection.mjs` |
@@ -84,10 +84,10 @@
 | PostToolUse | `*` | `hooks/loop-guard.mjs` |
 | Stop | `""` | `hooks/on-stop.mjs` |
 | SubagentStop | `""` | `hooks/on-stop.mjs` + `hooks/subagent-telemetry.mjs` + `hooks/post-subagent-discovery-validator.mjs` |
-| PostToolUseFailure | `""` | `hooks/post-tool-failure-corrective-context.mjs` |
+| PostToolUseFailure | `""` | `hooks/post-tool-failure-corrective-context.mjs` + `hooks/post-bash-issue-budget-refund.mjs` |
 | PostToolBatch | `""` | `hooks/post-tool-batch-wave-signal.mjs` |
 | PostToolBatch | `""` | `hooks/operator-steer.mjs` |
 | SubagentStart | `""` | `hooks/subagent-telemetry.mjs` |
 | CwdChanged | `""` | `hooks/cwd-change-restore.mjs` |
 
-> Table is exhaustive: one row per matcher entry — **18 matcher entries / 26 plugin-wired handler files** across 10 distinct events — see `hooks/hooks.json` (SSOT). Measured 2026-09-06.
+> Table is exhaustive: one row per matcher entry — **18 matcher entries / 27 plugin-wired handler files** across 10 distinct events — see `hooks/hooks.json` (SSOT). Measured 2026-09-22 with the hook census commands above.
