@@ -823,6 +823,58 @@ describe('streaming reads across rotations', () => {
     expect(result.malformed_lines).toBe(0);
   });
 
+  it('rejoins a 2-byte character split by the chunk boundary instead of booking the record as malformed', async () => {
+    // BUG THIS CATCHES (LOW-2): the carry is a Buffer today
+    // (`scripts/lib/events.mjs` — `Buffer.concat([buf, carry])`). A refactor to
+    // String concatenation decodes each chunk on its own, so a character
+    // straddling the boundary is destroyed. MEASURED on a $TMPDIR copy of
+    // events.mjs whose carry was string-joined: the same fixture yielded
+    // `Wellenpl\uFFFD\uFFFDne für Gäste` — the record is still DELIVERED and
+    // `malformed_lines` still 0, so only an assertion on the VALUE catches it.
+    // Every other fixture in this file is ASCII and never enters that path.
+    const { scanEventsBackwards } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+
+    const head = rec('2026-01-01T00:00:00Z');
+    // The target line carries the multibyte character; everything else is ASCII.
+    const target = `${JSON.stringify({
+      timestamp: '2026-05-05T00:00:00Z',
+      event: 'orchestrator.evolve.completed',
+      schema_version: 1,
+      note: 'Wellenpläne für Gäste',
+    })}\n`;
+    const tail = rec('2026-09-01T00:00:00Z');
+    const body = head + target + tail;
+    writeFileSync(active, body);
+
+    // Aim the FIRST backwards chunk boundary at the continuation byte of the
+    // first "ä": the reader starts at EOF and steps back by `chunkBytes`, so the
+    // boundary sits at `size - chunkBytes`.
+    const bytes = Buffer.from(body, 'utf8');
+    const aStart = bytes.indexOf(Buffer.from('ä', 'utf8'));
+    const boundary = aStart + 1;
+    const chunkBytes = bytes.length - boundary;
+    // The boundary really is INSIDE the character: 0xc3 0xa4 is UTF-8 "ä".
+    expect(bytes[boundary - 1]).toBe(0xc3);
+    expect(bytes[boundary]).toBe(0xa4);
+    expect(chunkBytes).toBeGreaterThan(0);
+
+    const hits = [];
+    const result = scanEventsBackwards({
+      filePath: active,
+      chunkBytes,
+      onRecord: (record) => {
+        if (record.event !== 'orchestrator.evolve.completed') return false;
+        hits.push(record.note);
+        return true;
+      },
+    });
+
+    expect(hits).toEqual(['Wellenpläne für Gäste']);
+    expect(result.malformed_lines).toBe(0);
+    expect(result.stopped).toBe(true);
+  });
+
   it('reports truncated — never a clean "not found" — when the budget runs out', async () => {
     // BUG THIS CATCHES (#1414): an unbounded walk on a 2 s session-start probe
     // must be able to give up, and giving up must NOT read as "never happened".

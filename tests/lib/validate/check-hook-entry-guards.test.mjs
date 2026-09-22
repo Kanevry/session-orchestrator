@@ -252,6 +252,38 @@ describe('population and vacuum guard', () => {
     expect(r.stdout).toContain('registered but unreadable');
   });
 
+  it('exits 2 when a registered hook does not PARSE — an unreadable top level must never count as guarded', () => {
+    // THE BUG THIS CATCHES (q-6b): `scanHookEntryGuards` wraps `analyzeHookSource`
+    // in a try/catch that pushes `parse failed: …` into `toolErrors` and `continue`s
+    // (check-hook-entry-guards.mjs:520-523). Flip that catch to the obvious-looking
+    // `return { findings: [] }` — the same "be tolerant" refactor that reads as
+    // harmless — and the file falls into the `guarded += 1` branch: the census
+    // reports PASS N/N for a hook whose top level NOBODY could read. That is the
+    // #1393 class itself (a top-level handler that exits the importing process,
+    // host-wide lock) shipping behind a green gate. The sibling branches are
+    // pinned (:247 registered-but-not-on-disk → 2, empty census → 2); the parse
+    // branch was not.
+    //
+    // The load-bearing assertion is `guarded`, not the exit code: a lenient catch
+    // that still counted the file would keep exit 2 only by accident.
+    const root = makeFixture({ 'broken.mjs': 'const x = ;\n', 'demo.mjs': GUARDED });
+
+    const { toolErrors, registered, guarded, findings } = scanHookEntryGuards(root);
+    expect(registered).toEqual(['hooks/broken.mjs', 'hooks/demo.mjs']);
+    expect(guarded).toBe(1);
+    expect(toolErrors).toHaveLength(1);
+    expect(toolErrors[0].file).toBe('hooks/broken.mjs');
+    expect(toolErrors[0].message).toContain('parse failed');
+    // Not a finding either — a file we could not read is a TOOL error, so it can
+    // never be silenced by the baseline mechanism.
+    expect(findings).toEqual([]);
+
+    const r = run(root);
+    expect(r.status).toBe(2);
+    expect(r.stdout).toContain('hooks/broken.mjs');
+    expect(r.stdout).toContain('Results: 0 passed, 1 failed');
+  });
+
   it('anchors on a whole `hooks` path segment — `subhooks/x.mjs` is not a registration', () => {
     const root = makeFixture(
       { 'demo.mjs': GUARDED },

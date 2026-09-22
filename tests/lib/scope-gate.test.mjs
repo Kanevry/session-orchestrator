@@ -662,6 +662,41 @@ describe('gradeScopeEntry — hook / validator grading parity (#1398 cond. 4)', 
     expect(() => canonicalizeGrantPrefix(ghost)).not.toThrow();
     expect(canonicalizeGrantPrefix(ghost)).toBe(ghost);
   });
+
+  // THE BUG THIS CATCHES (#1398 AC4, q-6b): every test above either injects
+  // `fakeResolve` or pins the negative path (a prefix that cannot exist →
+  // literal, unchanged). So `canonicalizeGrantPrefix = (p) => p` — a no-op —
+  // survives the ENTIRE suite green, including the parity table above, which
+  // feeds the SAME function into `hookShape` and `validatorShape` and therefore
+  // agrees with itself whatever the resolver does. With the no-op,
+  // `gradeScopeEntry('/tmp/…/x', { resolve: canonicalizeGrantPrefix })` returns
+  // `warn/absolute` instead of `error/non-canonical`: the validator stops
+  // refusing a DEAD grant before dispatch and Gate 5b stops warning about it,
+  // while the author reads it as permission. Measured 2026-09-22 on this host:
+  // real → `error/non-canonical`, no-op → `warn/absolute`.
+  //
+  // Skipped (never silently green) where `/tmp` is not a symlink — Linux CI has
+  // no alias spelling to mint, and there the literal verdicts carry the load.
+  const TMP_IS_ALIASED = fs.realpathSync('/tmp') !== '/tmp';
+
+  it.skipIf(!TMP_IS_ALIASED)('canonicalizeGrantPrefix actually RESOLVES the alias — a no-op resolver dies here', () => {
+    const real = fs.realpathSync('/tmp');
+    // (a) the resolver does work: literal in, canonical out.
+    expect(canonicalizeGrantPrefix('/tmp/q6b-probe/x')).toBe(`${real}/q6b-probe/x`);
+    expect(canonicalizeGrantPrefix('/tmp/q6b-probe/x')).not.toBe('/tmp/q6b-probe/x');
+  });
+
+  it.skipIf(!TMP_IS_ALIASED)('the REAL resolver makes a dead /tmp grant an error, not a warn — the no-op reads it as permission', () => {
+    // (b) the same grant through the predicate, in the exact shape both real
+    // call sites use. `warn` here means a dead grant shipped as an allowance.
+    expect(gradeScopeEntry('/tmp/q6b-probe/**', { resolve: canonicalizeGrantPrefix })).toMatchObject({
+      verdict: 'error',
+      code: 'non-canonical',
+    });
+    // …and the finding names the spelling that would work, so it is actionable.
+    expect(gradeScopeEntry('/tmp/q6b-probe/**', { resolve: canonicalizeGrantPrefix }).message)
+      .toContain(`${fs.realpathSync('/tmp')}/q6b-probe/**`);
+  });
 });
 
 // ---------------------------------------------------------------------------

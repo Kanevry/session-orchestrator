@@ -12,7 +12,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { appendFileSync, mkdtempSync, readFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -632,5 +633,171 @@ describe('integration (real processes)', () => {
       expect(probeCode).toBe('ESRCH');
     },
     15_000,
+  );
+});
+
+describe('exit-time group cleanup (#1425 A1 — installExitHandler)', () => {
+  /**
+   * The module under test, addressed as an absolute `file://` URL so the probe
+   * script can live in an `mkdtemp` directory and still import the REAL file
+   * (its own relative imports then resolve inside the repo, not in $TMPDIR).
+   */
+  const MODULE_URL = new URL('../../scripts/lib/process-group.mjs', import.meta.url).href;
+
+  /** Directories this block created, removed in afterEach. */
+  let probeDir;
+  /** Groups this block spawned, SIGKILLed in afterEach. Never a `ps` result. */
+  let ownGroups;
+  /** Probe node processes this block spawned. */
+  let ownProbes;
+
+  beforeEach(async () => {
+    probeDir = await mkdtemp(path.join(os.tmpdir(), 'process-group-exit-'));
+    ownGroups = [];
+    ownProbes = [];
+  });
+
+  afterEach(async () => {
+    for (const pgid of ownGroups) {
+      try {
+        process.kill(-pgid, 'SIGKILL');
+      } catch {
+        /* already gone — the expected case when the handler did its job */
+      }
+    }
+    for (const child of ownProbes) {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* already exited */
+      }
+    }
+    await rm(probeDir, { recursive: true, force: true });
+  });
+
+  /**
+   * Write the probe: a node process that registers ONE real detached group
+   * (`sleep 30`) through `spawnInGroup`, prints the registration record, and
+   * then either exits by itself or waits to be signalled by the test.
+   *
+   * @param {'exit'|'signal'} mode
+   * @returns {string} absolute path of the probe script
+   */
+  function writeProbe(mode) {
+    const file = path.join(probeDir, `probe-${mode}.mjs`);
+    writeFileSync(
+      file,
+      [
+        `import { spawnInGroup } from ${JSON.stringify(MODULE_URL)};`,
+        `const mode = ${JSON.stringify(mode)};`,
+        `spawnInGroup('sleep 30', {`,
+        `  timeoutMs: null,`,
+        `  onRegister: (r) => {`,
+        `    process.stdout.write(JSON.stringify({ pid: r.pid, pgid: r.pgid }) + '\\n');`,
+        `    if (mode === 'exit') setTimeout(() => process.exit(0), 400);`,
+        `  },`,
+        `});`,
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    return file;
+  }
+
+  /**
+   * Spawn the probe and resolve with its registration record.
+   *
+   * @param {'exit'|'signal'} mode
+   * @returns {Promise<{child: import('node:child_process').ChildProcess, pgid: number}>}
+   */
+  function startProbe(mode) {
+    const child = spawn(process.execPath, [writeProbe(mode)], {
+      cwd: probeDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    ownProbes.push(child);
+    return new Promise((resolve, reject) => {
+      let buf = '';
+      let stderr = '';
+      const timer = setTimeout(
+        () => reject(new Error(`probe never registered a group; stderr=${stderr}`)),
+        10_000,
+      );
+      child.stderr.on('data', (d) => {
+        stderr += String(d);
+      });
+      child.stdout.on('data', (d) => {
+        buf += String(d);
+        const nl = buf.indexOf('\n');
+        if (nl === -1) return;
+        clearTimeout(timer);
+        const record = JSON.parse(buf.slice(0, nl));
+        ownGroups.push(record.pgid);
+        resolve({ child, pgid: record.pgid });
+      });
+    });
+  }
+
+  /**
+   * Poll the group LEADER with signal 0 until it is gone, then report what the
+   * last probe said. `'ESRCH'` = gone from the process table; `'alive'` = the
+   * grandchild outlived its parent, which is the 2026-09-20 orphan incident.
+   *
+   * @param {number} pgid
+   * @returns {Promise<string>}
+   */
+  async function settleAndProbe(pgid) {
+    const deadline = Date.now() + 5000;
+    // Never read the state back immediately: a probe taken right after a kill
+    // reported "still alive" for dead processes on 2026-09-20.
+    await new Promise((r) => setTimeout(r, 700));
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pgid, 0);
+      } catch (err) {
+        return err?.code ?? 'unknown';
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return 'alive';
+  }
+
+  it.skipIf(process.platform === 'win32')(
+    'kills a still-registered group when the owning process calls process.exit',
+    async () => {
+      // Bug: without `installExitHandler()` running at exit time, the detached
+      // `sleep 30` survives its parent on PPID 1 — exactly the 2026-09-20
+      // incident (4 orphaned `tsgo`, up to 8 GB RSS each). Deleting the
+      // `installExitHandler()` call from `spawnInGroup` left the whole rest of
+      // this file green, because nothing else here reaches a real process exit.
+      const { child, pgid } = await startProbe('exit');
+      const exitCode = await new Promise((resolve) => child.once('exit', resolve));
+      expect(exitCode).toBe(0);
+
+      expect(await settleAndProbe(pgid)).toBe('ESRCH');
+    },
+    20_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'kills a still-registered group when the owning process is SIGTERMed',
+    async () => {
+      // Bug: the `exit` listener does NOT fire on a terminating signal, so the
+      // SIGINT/SIGTERM/SIGHUP listeners are a SEPARATE defence — a coordinator
+      // or gate process killed by the operator (or by a CI cap) would otherwise
+      // leave the whole group behind. This case is the only one that enters the
+      // signal branch, including its re-raise of the default disposition.
+      const { child, pgid } = await startProbe('signal');
+      child.kill('SIGTERM');
+      const [, signal] = await new Promise((resolve) =>
+        child.once('exit', (code, sig) => resolve([code, sig])),
+      );
+      // Proof the probe died FROM the signal (handler re-raised the default),
+      // not from an orderly exit path that would also run the `exit` listener.
+      expect(signal).toBe('SIGTERM');
+
+      expect(await settleAndProbe(pgid)).toBe('ESRCH');
+    },
+    20_000,
   );
 });

@@ -239,6 +239,36 @@ describe('decideReapCandidates', () => {
     expect(out.reported[0].args).toBeUndefined();
   });
 
+  it('reports a foreign LIVE session even when its command is also NOT read-only — step 4 outranks step 5, so the report reaches the OWNER', () => {
+    // THE BUG THIS CATCHES (q-6b): the two reporting branches are only ever hit
+    // one at a time — the foreign-live test above uses the read-only `gateRow()`,
+    // the not-read-only test above uses `ownSessionId`. A row satisfying BOTH has
+    // never been decided, so swapping the two blocks in
+    // `decideReapCandidates` (orphan-reaper.mjs:365-384) leaves the suite green
+    // while contradicting the docblock's promise at :271-273 ("reported for its
+    // OWNER, whether or not it also happens to be read-only"). The observable
+    // damage: a peer session's `next dev` would be audited as an anonymous
+    // `not-read-only` row — and `not-read-only` deliberately drops BOTH `args`
+    // and, being a self-owned-shape report, the `sessionId` is the only handle
+    // the operator has to reach the session that owns the process.
+    const args = 'node ./node_modules/.bin/next dev --port 3000';
+    const snapshot = parsePsSnapshot(makeOutput(gateRow({ args })));
+    const records = [ledgerRecord({ sessionId: 'peer-session', signature: buildCommandSignature(args) })];
+
+    const out = decideReapCandidates(snapshot, records, NOW, {
+      ownSessionId: 'own-session',
+      livePeerSessionIds: ['peer-session'],
+    });
+
+    expect(out.candidates).toEqual([]);
+    expect(out.reported).toHaveLength(1);
+    expect(out.reported[0].reason).toBe('foreign-live-session');
+    expect(out.reported[0].sessionId).toBe('peer-session');
+    // The foreign-live branch RETAINS args (the not-read-only branch drops them),
+    // so this is the second, independent witness of which block decided.
+    expect(out.reported[0].args).toBe(args);
+  });
+
   it('rejects a recycled PID whose elapsed time contradicts the ledger start time — the PID-recycling guard, FA3', () => {
     // Same PID, but the process on it is 12 s old while the ledger says 432 s.
     const snapshot = parsePsSnapshot(makeOutput(gateRow({ etime: '10:00' })));
