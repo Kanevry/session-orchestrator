@@ -65,6 +65,8 @@ import { _parseHealthEndpoints, _parseEcosystemHealthBlockEnabled } from './conf
 import { _parseBrokenWindow } from './config/broken-window.mjs';
 import { _parseSlopcheck } from './config/slopcheck.mjs';
 import { _parseDiscoveryValidator } from './config/discovery-validator.mjs';
+import { _parseReaper } from './config/reaper.mjs';
+import { _parseGate } from './config/gate.mjs';
 import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
@@ -417,6 +419,16 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // discovery-validator: parsed from full content (PSA-006 enforcement / issue #567)
   const discoveryValidator = _parseDiscoveryValidator(mdContent);
 
+  // reaper: orphan-process watchdog, default OFF (PRD 2026-09-20 Prozessgruppen-Kill
+  // und Waisen-Wächter, Epic #1425 / #1432 B4). Consumed by the two hooks that
+  // trigger the detached scan — post-tool-batch-wave-signal.mjs and on-stop.mjs.
+  const reaper = _parseReaper(mdContent);
+
+  // gate: wall-clock ceiling for gate path B (run-quality-gate.mjs →
+  // gate-*.mjs), which had no timeout at all before #1425 A3. The operator
+  // override SO_GATE_TIMEOUT_MS still wins over this committed value.
+  const gate = _parseGate(mdContent);
+
   // templates-first: parsed from full content (PRD gsd Pattern 3 / issues #517, #519)
   const templatesFirst = _parseTemplatesFirst(mdContent);
 
@@ -555,6 +567,8 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'skill-evolution': skillEvolution,
     'dispatcher-autonomy': dispatcherAutonomy,
     'discovery-validator': discoveryValidator,
+    'reaper': reaper,
+    'gate': gate,
     'templates-first': templatesFirst,
     'verification-auto-fix': verificationAutoFix,
     'dialectic': dialectic,

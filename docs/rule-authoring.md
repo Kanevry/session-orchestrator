@@ -303,7 +303,8 @@ them silently loses a learning or regenerates it:
      carries operator DECLINES — expiring a rule must not re-ask a question the
      operator already answered.
    - **A file the sweep cannot split re-proposes forever.** A file the sweep
-     skips (`no-1to1-mapping`, `no-provenance-block`, `unreadable`) that then
+     skips (`no-1to1-mapping`, `no-provenance-block`, `unreadable`,
+     `no-counter-sentence`) that then
      expires legitimately becomes re-proposable on EVERY run, with no
      mechanical exit: the sweep will not rewrite it, so nothing retires its
      markers. The live tree is currently clear of this —
@@ -397,7 +398,7 @@ under four contracts, all of them consequences of the four merge rules above:
    learning look unmaterialized and `/reconcile` would regenerate it. **A pair
    is never deleted while its file survives.**
 
-2. **Two fail-open cases, both reported rather than guessed.** An entry carries
+2. **Three fail-open cases, all reported rather than guessed.** An entry carries
    no date of its own; its date is recoverable only via `learning-id` →
    `.orchestrator/metrics/learnings.jsonl` `expires_at` (measured 2026-09-17 @
    `9e8146b4`: 87 of 92 unique ids resolve, 5 do not). An **unresolvable id**
@@ -407,8 +408,16 @@ under four contracts, all of them consequences of the four merge rules above:
    plus a `skipped` record with reason `no-1to1-mapping`. Measured the same day,
    the 1:1 mapping held in 3 of the 7 live files
    (`measurement-discipline` 12/12, `process-contracts` 6/6,
-   `toolchain-and-build` 10/10) and failed in the other 4. Malformed
-   `learnings.jsonl` lines are COUNTED (`malformedLines`), never skipped.
+   `toolchain-and-build` 10/10) and failed in the other 4. The third case is an
+   **unrecognised counter sentence** (GH#70, 2026-09-20): when the body sentence
+   restating `expires-at` is in no spelling `COUNTER_FORMS` knows, the file gets
+   `action: 'keep'` plus a `skipped` record with reason `no-counter-sentence`
+   and NO write of any kind — not a rewrite, not a raise, and not a delete
+   either, because a shape the sweep cannot read is the last shape whose most
+   destructive action should run. Moving only the header would ship a
+   frontmatter date contradicting a body sentence that forbids exactly that
+   correction. Malformed `learnings.jsonl` lines are COUNTED
+   (`malformedLines`), never skipped.
 
 3. **Deleting a whole file obeys the stamp-before-delete rule above.** A file is
    deleted only when it has zero kept AND zero unresolved pairs, and EVERY pair

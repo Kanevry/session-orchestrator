@@ -30,9 +30,10 @@
  * `isMeta: true` body record, and the optional `attributionSkill` string.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { afterAll, describe, expect, it } from 'vitest';
 import {
@@ -179,6 +180,44 @@ describe('locateSkillAnchors', () => {
     expect(located[SKILL].anchors[0].kind).toBe('subagent-skill-call');
   });
 
+  // Bug this catches (#1421): with subagent records concatenated after the main
+  // ones, the LAST `attributionSkill` hit of a coordinator-dispatched skill lands
+  // inside a subagent file, so the skill's span end — and with it the third
+  // rendered window — jumps out of the main transcript. Measured on session
+  // 58f82af0: `wave-executor` moved from record 357 to record 7449, and that
+  // single jump was 100 % of the character difference between the flag off and
+  // on. `spanEndIndexMain` is the main-transcript-only twin the renderer uses
+  // for coordinator-anchored skills.
+  it('tracks a MAIN-transcript span end separately from the subagent one', () => {
+    const records = [
+      skillCall(SKILL, 'call_main'),
+      toolResult('call_main'),
+      assistantText('coordinator wrap-up', { attributionSkill: SKILL }), // index 2
+      { ...assistantText('subagent wrap-up', { attributionSkill: SKILL }), _subagent: true }, // 3
+    ];
+
+    const loc = locateSkillAnchors(records, [SKILL])[SKILL];
+
+    expect(loc.spanEndIndex).toBe(3);
+    expect(loc.spanEndIndexMain).toBe(2);
+  });
+
+  // The other half of the same guarantee: with NO subagent records present —
+  // the library default `includeSubagents: false` — the two fields are equal, so
+  // #1421 changes nothing for every caller that never opted in.
+  it('keeps both span-end fields identical when no subagent record is present', () => {
+    const records = [
+      skillCall(SKILL, 'call_main'),
+      toolResult('call_main'),
+      assistantText('coordinator wrap-up', { attributionSkill: SKILL }),
+    ];
+
+    const loc = locateSkillAnchors(records, [SKILL])[SKILL];
+
+    expect(loc.spanEndIndex).toBe(2);
+    expect(loc.spanEndIndexMain).toBe(loc.spanEndIndex);
+  });
+
   it('reports a skill with no invocation as not-found instead of inventing an anchor', () => {
     const located = locateSkillAnchors([assistantText('nothing here')], [SKILL]);
     expect(located[SKILL]).toEqual({
@@ -186,6 +225,7 @@ describe('locateSkillAnchors', () => {
       anchors: [],
       invocations: 0,
       spanEndIndex: null,
+      spanEndIndexMain: null,
     });
   });
 });
@@ -436,6 +476,47 @@ describe('buildSkillEvidence', () => {
     expect(closing).not.toContain('subagent tail line');
   });
 
+  // Bug this catches (#1421): a COORDINATOR-dispatched skill whose work also
+  // carries `attributionSkill` inside a subagent file ends its evidence window
+  // in that subagent file, because the subagent records are concatenated after
+  // the main ones and the last hit wins. The renderer then hands the judge a
+  // third window from a transcript the coordinator never wrote. Measured on
+  // session 58f82af0: `wave-executor`'s span end moved 357 → 7449 and accounted
+  // for 100 % of the character difference between the flag off and on.
+  it('ends a coordinator-anchored skill window in the MAIN transcript, not in a subagent file', async () => {
+    const SUBAGENT_SPAN_SENTINEL = 'SUBAGENT-SPAN-END-SENTINEL-1421';
+    const { projectsDir, sessionId } = sessionDir({
+      mainRecords: [
+        skillCall(SKILL, 'call_main'),
+        toolResult('call_main'),
+        ...Array.from({ length: 6 }, (_, i) => assistantText(`main line ${i}`)),
+        assistantText('coordinator span end', { attributionSkill: SKILL }),
+      ],
+      subagentFiles: {
+        'agent-1.jsonl': [
+          assistantText('subagent line 0'),
+          assistantText('subagent line 1'),
+          assistantText(SUBAGENT_SPAN_SENTINEL, { attributionSkill: SKILL }),
+          assistantText('subagent line 3'),
+        ],
+      },
+    });
+
+    const evidence = await buildSkillEvidence({
+      repoRoot: '/repo',
+      sessionId,
+      projectsDir,
+      skills: [SKILL],
+      includeSubagents: true,
+    });
+
+    expect(evidence.status).toBe('ok');
+    // The skill is coordinator-anchored — its own section must stay on the
+    // coordinator's transcript.
+    expect(evidence.text).toContain('coordinator span end');
+    expect(evidence.text).not.toContain(SUBAGENT_SPAN_SENTINEL);
+  });
+
   it('returns no-evidence — not a closing-only window — when no anchor is found', async () => {
     const dir = tmp();
     const path = join(dir, 'session.jsonl');
@@ -455,5 +536,65 @@ describe('buildSkillEvidence', () => {
     expect(evidence.status).toBe('no-evidence');
     expect(evidence.text).toBe('');
     expect(evidence.source.records).toBe(20);
+  });
+});
+
+/**
+ * The library default `includeSubagents: false` is deliberate (fail-closed for
+ * every caller), and the ONE production caller opts in explicitly. Both halves
+ * are load-bearing and neither lives in a `.mjs` file: the caller is prose in
+ * `skills/session-end/phase-3-6-tail.md`, so no import graph, no typechecker and
+ * no test in this suite would notice it losing the flag.
+ *
+ * The default half is pinned behaviourally above by "reaches a subagent-only
+ * skill ONLY with includeSubagents". This block pins the other half — the CALL,
+ * not the prose around it (TV-002c: asserting a sentence is present pins prose;
+ * this extracts the argument object of the `buildSkillEvidence({ … })`
+ * invocation and asserts what it passes). Same shape as
+ * `scripts/lib/validate/check-validator-registration.mjs`, which pins validator
+ * basenames at their run surfaces rather than in documentation about them.
+ */
+describe('production wiring pin — skills/session-end/phase-3-6-tail.md', () => {
+  const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const TAIL_DOC = join(REPO_ROOT, 'skills', 'session-end', 'phase-3-6-tail.md');
+
+  /** Every `buildSkillEvidence({ … })` argument object in `text`, brace-balanced. */
+  function extractCalls(text) {
+    const marker = 'buildSkillEvidence({';
+    const calls = [];
+    for (let from = 0; ; ) {
+      const at = text.indexOf(marker, from);
+      if (at === -1) break;
+      let depth = 0;
+      let end = -1;
+      for (let i = at + marker.length - 1; i < text.length; i += 1) {
+        if (text[i] === '{') depth += 1;
+        else if (text[i] === '}') {
+          depth -= 1;
+          if (depth === 0) {
+            end = i;
+            break;
+          }
+        }
+      }
+      if (end === -1) break;
+      calls.push(text.slice(at, end + 1));
+      from = end + 1;
+    }
+    return calls;
+  }
+
+  // Bug this catches (#1412): the single production call silently falls back to
+  // the library default `false`. Nothing breaks, nothing errors — the phase just
+  // reports `no-evidence` for every subagent-dispatched skill, which reads
+  // exactly like "this session did not use the skill" (#1399 blindness). Measured
+  // over the 94 base pairs of the s9 manifest: 71/83 positives found with the
+  // default, 83/83 with the flag — the 12 misses are exactly the
+  // `status: subagent-only` pairs.
+  it('passes includeSubagents: true at the ONE production call site', () => {
+    const calls = extractCalls(readFileSync(TAIL_DOC, 'utf8'));
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatch(/includeSubagents:\s*true/);
   });
 });

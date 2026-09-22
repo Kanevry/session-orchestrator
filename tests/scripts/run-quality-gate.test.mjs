@@ -698,3 +698,77 @@ describe('run-quality-gate.mjs — gate commands are capped and their group is k
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// gate.timeout-path-b-ms → GATE_TIMEOUT_MS (#1425 A3 / #1432)
+// ---------------------------------------------------------------------------
+
+describe('gate timeout propagation to the gate sub-script', () => {
+  let gtmTmp;
+  let probePath;
+  let outPath;
+
+  beforeEach(() => {
+    gtmTmp = mkdtempSync(join(tmpdir(), 'qg-timeout-'));
+    probePath = join(gtmTmp, 'probe.mjs');
+    outPath = join(gtmTmp, 'gtm.txt');
+    writeFileSync(
+      probePath,
+      "import { writeFileSync } from 'node:fs';\n"
+      + "writeFileSync(process.env.GTM_OUT, String(process.env.GATE_TIMEOUT_MS ?? 'unset'));\n",
+      'utf8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(gtmTmp, { recursive: true, force: true });
+  });
+
+  /**
+   * Run the baseline gate with `test-command` pointing at the probe, and return
+   * whatever the probe observed as GATE_TIMEOUT_MS inside the gate child.
+   *
+   * @param {object} configExtra  merged into the --config JSON
+   * @param {Record<string,string>} [extraEnv]
+   * @returns {string}
+   */
+  function observedTimeout(configExtra, extraEnv = {}) {
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': `node ${probePath}`,
+      'lint-command': 'skip',
+      ...configExtra,
+    });
+    const res = run(
+      ['--variant', 'baseline', '--config', config, '--ledger-root', gtmTmp],
+      { GTM_OUT: outPath, ...extraEnv },
+    );
+    expect(res.status, res.stderr).toBe(0);
+    return readFileSync(outPath, 'utf8');
+  }
+
+  it('publishes the configured gate.timeout-path-b-ms as GATE_TIMEOUT_MS', () => {
+    // Bug: the committed ceiling parsed into the config object but never
+    // reaching the process that actually runs the commands — a config key only
+    // its parser knows (see .claude/rules/guard-design.md § Config-Key).
+    expect(observedTimeout({ gate: { 'timeout-path-b-ms': 123456 } })).toBe('123456');
+  });
+
+  it('falls back to the 900 000 ms default when no gate block is configured', () => {
+    expect(observedTimeout({})).toBe('900000');
+  });
+
+  it('lets the SO_GATE_TIMEOUT_MS operator override win over the committed value', () => {
+    // Bug: a committed default silently overruling the operator's per-run cap.
+    expect(observedTimeout(
+      { gate: { 'timeout-path-b-ms': 123456 } },
+      { SO_GATE_TIMEOUT_MS: '77000' },
+    )).toBe('77000');
+  });
+
+  it('ignores a non-positive committed ceiling', () => {
+    // Bug: a 0 ms ceiling would kill every gate command instantly — worse than
+    // the uncapped state the key exists to fix.
+    expect(observedTimeout({ gate: { 'timeout-path-b-ms': 0 } })).toBe('900000');
+  });
+});

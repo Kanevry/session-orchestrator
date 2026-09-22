@@ -110,7 +110,8 @@ export function preIterationKillSwitch(args) {
  * @param {object | null | undefined} sessionResult
  * @param {object} opts
  * @param {number} opts.carryoverThreshold
- * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler input
+ * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler fallback marker
+ * @param {string} [opts.sessionLockPath] — STALL_TIMEOUT sampler primary marker
  * @param {number} [opts.stallTimeoutSeconds] — STALL_TIMEOUT threshold (default 600)
  * @param {() => number} [opts.nowMs] — wall-clock supplier (DI seam for tests)
  * @returns {{kill: string, detail: string} | null}
@@ -120,12 +121,14 @@ export function postSessionKillSwitch(sessionResult, opts) {
   const { carryoverThreshold } = opts;
 
   // STALL_TIMEOUT (ADR-364 §3, issue #371) — one-strike v1.
-  // Sampler reads autopilot.jsonl mtime; missing file → stallSeconds=0 → no kill
-  // (documented contract: missing file is NOT a kill condition).
+  // Sampler prefers the session.lock heartbeat and falls back to autopilot.jsonl
+  // mtime; missing marker → stallSeconds=0 → no kill (documented contract:
+  // a missing file is NOT a kill condition).
   // Events route to autopilot.jsonl, NOT failures.jsonl (ADR-364 cross-connections rule 4).
   const stallTimeoutSeconds = opts.stallTimeoutSeconds ?? 600;
   const stallSample = sampleProgress({
     autopilotJsonlPath: opts.autopilotJsonlPath,
+    sessionLockPath: opts.sessionLockPath,
     stallTimeoutSeconds,
     nowMs: opts.nowMs,
   });

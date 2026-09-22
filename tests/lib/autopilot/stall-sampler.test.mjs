@@ -125,3 +125,96 @@ describe('SAMPLE_CADENCE_MS', () => {
     expect(SAMPLE_CADENCE_MS).toBe(30_000);
   });
 });
+
+
+// ---------------------------------------------------------------------------
+// session.lock heartbeat marker (MR2)
+//
+// `autopilot.jsonl` is written ONCE per /autopilot invocation, AFTER the loop
+// (telemetry.mjs "Writes ONE record per /autopilot run"; loop.mjs :151 dry-run
+// and :299 post-loop). Its mtime therefore describes the PREVIOUS run, not this
+// one. The session.lock heartbeat is refreshed while a session is alive
+// (hooks/on-stop.mjs, hooks/post-tool-batch-wave-signal.mjs) and takes
+// precedence; the mtime stays as the fallback.
+// ---------------------------------------------------------------------------
+
+describe('sampleProgress — session.lock heartbeat takes precedence over mtime', () => {
+  const NOW = 2_000_000_000_000;
+  const nowMs = () => NOW;
+
+  function writeLock(dir, body) {
+    const p = path.join(dir, 'session.lock');
+    writeFileSync(p, typeof body === 'string' ? body : JSON.stringify(body), 'utf8');
+    return p;
+  }
+
+  function staleJsonl(dir) {
+    const p = path.join(dir, 'autopilot.jsonl');
+    writeFileSync(p, '{"marker":"previous run"}\n', 'utf8');
+    const old = new Date(NOW - 5_000_000);
+    utimesSync(p, old, old);
+    return p;
+  }
+
+  it('a fresh heartbeat REPLACES a stale autopilot.jsonl mtime — no stall', () => {
+    const jsonl = staleJsonl(tmp);
+    const lock = writeLock(tmp, {
+      session_id: 'abc',
+      started_at: new Date(NOW - 5_000_000).toISOString(),
+      last_heartbeat: new Date(NOW - 2_000).toISOString(),
+    });
+
+    const result = sampleProgress({ autopilotJsonlPath: jsonl, sessionLockPath: lock, nowMs });
+
+    expect(result.marker).toBe('session.lock:last_heartbeat');
+    expect(result.progressed).toBe(true);
+    expect(result.stallSeconds).toBe(2);
+  });
+
+  it('a STALE heartbeat still reports the stall — the switch is not disarmed', () => {
+    const jsonl = staleJsonl(tmp);
+    const lock = writeLock(tmp, {
+      session_id: 'abc',
+      started_at: new Date(NOW - 900_000).toISOString(),
+      last_heartbeat: new Date(NOW - 900_000).toISOString(),
+    });
+
+    const result = sampleProgress({ autopilotJsonlPath: jsonl, sessionLockPath: lock, nowMs });
+
+    expect(result.marker).toBe('session.lock:last_heartbeat');
+    expect(result.progressed).toBe(false);
+    expect(result.stallSeconds).toBe(900);
+  });
+
+  it('a schema-v1 lock without last_heartbeat falls back to started_at', () => {
+    const lock = writeLock(tmp, { session_id: 'abc', started_at: new Date(NOW - 10_000).toISOString() });
+    const result = sampleProgress({ autopilotJsonlPath: staleJsonl(tmp), sessionLockPath: lock, nowMs });
+    expect(result.marker).toBe('session.lock:last_heartbeat');
+    expect(result.stallSeconds).toBe(10);
+  });
+
+  it.each([
+    ['corrupt JSON', 'not json at all'],
+    ['no timestamp field', JSON.stringify({ session_id: 'abc' })],
+    ['unparsable timestamp', JSON.stringify({ last_heartbeat: 'whenever' })],
+  ])('falls back to the mtime marker when the lock is unusable (%s)', (_label, body) => {
+    const jsonl = staleJsonl(tmp);
+    const lock = writeLock(tmp, body);
+    const result = sampleProgress({ autopilotJsonlPath: jsonl, sessionLockPath: lock, nowMs });
+    // The unreadable lock must NOT be read as "no progress since epoch": it is a
+    // missing measurement, and the mtime is what is left to measure with.
+    expect(result.marker).toBe('autopilot.jsonl:mtime');
+    expect(result.stallSeconds).toBe(5000);
+  });
+
+  it('an absent lock file leaves the legacy mtime behaviour untouched', () => {
+    const jsonl = staleJsonl(tmp);
+    const result = sampleProgress({
+      autopilotJsonlPath: jsonl,
+      sessionLockPath: path.join(tmp, 'nope', 'session.lock'),
+      nowMs,
+    });
+    expect(result.marker).toBe('autopilot.jsonl:mtime');
+    expect(result.progressed).toBe(false);
+  });
+});

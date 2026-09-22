@@ -801,9 +801,17 @@ function checkK5(q, at) {
         severity: 'fail',
         target: 'header',
         ...at,
+        // Der Text sagte bis hierher "Das Tool zeigt nur 12 — den Rest sieht der
+        // Operator nie". Das ist widerlegt: die 12 steht allein in der Prosa des
+        // Schemas (kein `.max(12)`, kein kuerzender Render-Pfad in Bundle
+        // 2.1.268), und 125 laengere Kopfzeilen wurden angenommen und beantwortet
+        // (ask-via-tool.md AUQ-006). H1 blockt deshalb nicht (BLOCKING_HURDLES =
+        // ['H2']) — die Meldung ist ein Hinweis, keine Abweisung, und darf keine
+        // Kuerzung begruenden, die es nicht braucht.
         message:
-          `Die Kopfzeile "${header}" hat ${literal} Zeichen. Das Tool zeigt nur ` +
-          `${THRESHOLDS.K5.headerCharsFail} — den Rest sieht der Operator nie.`,
+          `Die Kopfzeile "${header}" hat ${literal} Zeichen; Ziel sind ` +
+          `${THRESHOLDS.K5.headerCharsFail} Codepoints. Das Tool schneidet nicht ab — ` +
+          `Kuerzen ist optional.`,
         measured: literal,
         threshold: THRESHOLDS.K5.headerCharsFail,
         hurdle: HURDLES.H1.id,

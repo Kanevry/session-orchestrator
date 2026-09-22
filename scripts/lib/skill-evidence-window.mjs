@@ -229,6 +229,9 @@ function commandNames(text) {
  * @property {SkillAnchor[]} anchors
  * @property {number} invocations
  * @property {number|null} spanEndIndex — last record with `attributionSkill === skill`
+ * @property {number|null} spanEndIndexMain — same, but restricted to MAIN-transcript
+ *   records (`!isSubagentRecord`). Identical to `spanEndIndex` whenever no subagent
+ *   records are in `records` at all; diverges only under `includeSubagents: true`. #1421.
  */
 
 /**
@@ -249,7 +252,13 @@ export function locateSkillAnchors(records, skills) {
     ? skills.filter((s) => typeof s === 'string' && s.trim())
     : [];
   for (const skill of wanted) {
-    out[skill] = { found: false, anchors: [], invocations: 0, spanEndIndex: null };
+    out[skill] = {
+      found: false,
+      anchors: [],
+      invocations: 0,
+      spanEndIndex: null,
+      spanEndIndexMain: null,
+    };
   }
   if (!Array.isArray(records) || wanted.length === 0) return out;
 
@@ -305,9 +314,16 @@ export function locateSkillAnchors(records, skills) {
     }
 
     // (f) attributionSkill — the END of the skill's section, never the anchor.
+    // Tracked TWICE: over every record, and over MAIN-transcript records only.
+    // Under `includeSubagents: true` the subagent files are concatenated after
+    // the main ones, so a coordinator-dispatched skill whose work continues
+    // inside a subagent would otherwise take its span end from that subagent
+    // file (#1421: `wave-executor` in session 58f82af0 moved 357 → 7449).
     if (typeof rec.attributionSkill === 'string') {
       for (const skill of wanted) {
-        if (skillMatches(rec.attributionSkill, skill)) out[skill].spanEndIndex = i;
+        if (!skillMatches(rec.attributionSkill, skill)) continue;
+        out[skill].spanEndIndex = i;
+        if (!isSubagent) out[skill].spanEndIndexMain = i;
       }
     }
   }
@@ -531,6 +547,7 @@ export function renderEvidence(records, located, opts = {}) {
     if (anchors.some((a) => !isSubagentRecord(recs[a.recordIndex]))) coordinatorSkills.push(skill);
     else subagentOnlySkills.push(skill);
   }
+  const coordinatorAnchored = new Set(coordinatorSkills);
   let subagentPool = 0;
   if (subagentOnlySkills.length > 0) {
     subagentPool =
@@ -570,8 +587,16 @@ export function renderEvidence(records, located, opts = {}) {
       start: a.recordIndex - CONTEXT_BEFORE,
       end: Math.max(a.recordIndex + CONTEXT_AFTER, a.bodyRecordIndex ?? -1),
     }));
-    if (typeof info.spanEndIndex === 'number') {
-      windows.push({ start: info.spanEndIndex - CONTEXT_BEFORE, end: info.spanEndIndex });
+    // Span end (#1421). A COORDINATOR-anchored skill takes its span end from the
+    // MAIN transcript only: the skill was dispatched by the coordinator, so its
+    // window must not end inside a subagent file that merely carries the same
+    // `attributionSkill`. A subagent-only skill has no main-transcript span end
+    // by construction and keeps the unrestricted one. Both fields are equal
+    // whenever the caller passed no subagent records (the library default
+    // `includeSubagents: false`), so this is a no-op for every other caller.
+    const spanEnd = coordinatorAnchored.has(skill) ? info.spanEndIndexMain : info.spanEndIndex;
+    if (typeof spanEnd === 'number') {
+      windows.push({ start: spanEnd - CONTEXT_BEFORE, end: spanEnd });
     }
     const body = renderWindows(recs, mergeWindows(windows), {
       toolTextMax,

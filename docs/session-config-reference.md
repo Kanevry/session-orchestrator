@@ -1546,6 +1546,56 @@ loop-guard:
 
 **Used by:** `hooks/loop-guard.mjs`, `scripts/lib/config/loop-guard.mjs` (`_parseLoopGuard`). Issue #619.
 
+## Orphan Reaper (#1425 / #1432)
+
+Watchdog against orphaned descendants of quality-gate commands. On **2026-09-20** four orphaned `tsgo --noEmit` processes from another repo on the same host — two with PPID 1, 86–588 % CPU, up to 8.0 GB RSS each — drove the machine to 13 % free memory and a 67.4 load average. Part A of the PRD stops them at the source (process-group kill in the gate); this block configures part B, the net that catches what still escapes.
+
+The scan itself lives in `scripts/lib/orphan-reaper.mjs`. Two hooks TRIGGER it — `hooks/post-tool-batch-wave-signal.mjs` (PostToolBatch, the only hook with measurably high frequency *during* a wave) and `hooks/on-stop.mjs` (Stop + SubagentStop, which lands exactly when gate children have just finished). Neither runs the scan inline: one `ps` round-trip out of Node was measured at ~47 ms, which alone would exceed `max-hook-latency-ms`. The hook does one config read plus one `stat` of the throttle marker (`.orchestrator/tmp/reaper-last-scan`, shared by both hooks and gitignored), then hands the work to a DETACHED, `unref()`-ed child that owns the kill, the audit and the event.
+
+**Default OFF, and deliberately so.** Unlike `loop-guard`, this signal can send signals to processes, so it ships inert. `.claude/rules/host-resources.md` HR-101 binds it: a warning class above ~10 % is a broken instrument to be re-aimed, not obeyed — measure the firing rate over `false-alarm-window` decisions in the JSONL audit BEFORE arming `mode: kill`. HR-105 binds the other half: a rate nothing records is unfalsifiable, which is why every decision (including a withdrawn one) is appended to `.orchestrator/metrics/reaper-audit.jsonl`.
+
+```yaml
+reaper:
+  enabled: false                       # default OFF; only an explicit `true` arms the watchdog
+  mode: report                         # report (decide + audit only) | kill (send signals)
+  min-age-seconds: 300
+  min-scan-interval-seconds: 30
+  kill-grace-ms: 10000
+  verify-wait-ms: 500
+  max-hook-latency-ms: 50
+  false-alarm-window: 50
+```
+
+| Field | Type | Default | Provenance / Description |
+|-------|------|---------|--------------------------|
+| `reaper.enabled` | boolean | `false` | Master toggle. Only an explicit `enabled: true` arms it; `false` means the hooks do no `stat` and no spawn at all. |
+| `reaper.mode` | `report` \| `kill` | `report` | `report` runs the scan in dry-run (decide + audit, no signal); `kill` arms the signal path (PRD Stufe 2, after calibration). An unrecognised value falls back to `report` — never to `kill`. |
+| `reaper.min-age-seconds` | integer (≥ 0) | `300` | DevWatchdog's hard limit for `tsgo`; the 2026-09-20 orphans were 7–17 min old, well above it. Self-healing clamp: a value below `min-scan-interval-seconds` is widened to it, because a process younger than one scan period can be born and reaped between two scans. |
+| `reaper.min-scan-interval-seconds` | integer (≥ 1) | `30` | DevWatchdog's normal scan cadence. The throttle that keeps a `PostToolBatch` storm from taxing every tool call. |
+| `reaper.kill-grace-ms` | integer (≥ 0) | `10000` | `DEFAULT_KILL_GRACE_MS` from `dispatch-common.mjs:61` — repo convention, not newly invented. SIGTERM → grace → SIGKILL. |
+| `reaper.verify-wait-ms` | integer (≥ 0) | `500` | Wait before reading the effect back. Without it the 2026-09-20 check falsely reported "still alive" measuring immediately after `kill -9` (PRD B6: a sent signal proves nothing). |
+| `reaper.max-hook-latency-ms` | integer (≥ 1) | `50` | Ceiling a scan may delay a hook by. The hooks stay inside it by spawning detached rather than scanning inline. |
+| `reaper.false-alarm-window` | integer (≥ 1) | `50` | Rolling window of audit decisions the HR-101 10 % false-alarm rate is judged over — a window in DECISIONS, not calendar time, so the rate has a population on quiet hosts too. |
+
+**Used by:** `hooks/post-tool-batch-wave-signal.mjs`, `hooks/on-stop.mjs` (both via `maybeTriggerOrphanScan()`), `scripts/lib/orphan-reaper.mjs`, `scripts/lib/config/reaper.mjs` (`_parseReaper`). PRD `docs/prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md`, Epic #1425, issue #1432.
+
+## Gate Timeout — Path B (#1425 A3)
+
+The quality gate has two execution paths. Path A (`scripts/lib/quality-gate.mjs`) has always had a 900 000 ms cap. Path B — `scripts/run-quality-gate.mjs` → `scripts/lib/gates/gate-{baseline,incremental,full,per-file}.mjs` — had **no timeout at all**, which is how a wedged `tsgo` two levels down could run unbounded and be reparented to PPID 1. This block sets the committed ceiling for path B so both paths may run equally long.
+
+```yaml
+gate:
+  timeout-path-b-ms: 900000            # 15 min; same cap as GATE_TIMEOUT_MS on path A
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `gate.timeout-path-b-ms` | integer (> 0) | `900000` | Per-command wall-clock ceiling for gate path B. A zero or negative value falls back to the default rather than being honoured — an instant-kill ceiling is worse than the uncapped state this key exists to fix. |
+
+**Precedence, highest first:** `SO_GATE_TIMEOUT_MS` (operator override, per run) > `gate.timeout-path-b-ms` (committed) > `900000`. `run-quality-gate.mjs` resolves the three and publishes the ANSWER to the gate sub-script as the distinct env var `GATE_TIMEOUT_MS` — writing it back into `SO_GATE_TIMEOUT_MS` would make a committed default indistinguishable from an operator decision for every process further down the tree. The gate's own outer wrapper ceiling is derived from the same resolved number plus a 60 s reserve, so the inner per-command kill always fires first and the gate can still print its JSON envelope.
+
+**Used by:** `scripts/run-quality-gate.mjs`, `scripts/lib/gates/gate-{baseline,incremental,full,per-file}.mjs`, `scripts/lib/config/gate.mjs` (`_parseGate`). PRD §4 A3, Epic #1425, issue #1432.
+
 ## Config Protection (#622)
 
 `PreToolUse` `Edit`/`Write` guard that intercepts edits to a small allow-list of quality-gate config files (eslint, vitest, tsconfig, prettier, commitlint, gitleaks) and warns — or, in `strict` mode, blocks — when an edit LOOSENS a gate (a threshold lowered, a disable/ignore directive added, a rule removed, a gitleaks allowlist widened, tsconfig strictness relaxed). The edit-tool analogue of the test-the-mock gate-cheating anti-pattern (see `.claude/rules/testing.md`). First-time file creation, tightening edits, and neutral edits are always allowed regardless of mode.

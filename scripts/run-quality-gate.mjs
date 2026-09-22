@@ -403,12 +403,38 @@ const ledgerRoot = resolveLedgerRoot(ledgerRootArg);
 // independent of how the gate itself was invoked. `--silent` still does its real
 // job — keeping THIS process's stdout to the single JSON envelope — because the
 // children's output is captured by `runCheck`, never streamed.
+/**
+ * Per-command wall-clock ceiling for PATH B (#1425 A3 / #1432).
+ *
+ * Precedence, highest first:
+ *   1. `SO_GATE_TIMEOUT_MS` — the OPERATOR override. It is inherited by every
+ *      descendant, so a gate child that re-derives the ceiling gets the same
+ *      answer; `resolveGateTimeoutMs()` already reads it.
+ *   2. Session Config `gate.timeout-path-b-ms` — the COMMITTED default.
+ *   3. `DEFAULT_GATE_TIMEOUT_MS` (900 000), via `resolveGateTimeoutMs()`.
+ *
+ * Published to the gate sub-script as `GATE_TIMEOUT_MS` — a DIFFERENT name from
+ * the operator override on purpose: writing the resolved value back into
+ * `SO_GATE_TIMEOUT_MS` would make a committed default indistinguishable from an
+ * operator decision for every process further down the tree.
+ */
+const configuredGateTimeoutMs = (() => {
+  const block = configJson !== null && typeof configJson === 'object' ? configJson.gate : null;
+  const raw = block && typeof block === 'object' ? block['timeout-path-b-ms'] : undefined;
+  return Number.isFinite(raw) && raw > 0 ? raw : null;
+})();
+const operatorTimeoutOverride = (process.env.SO_GATE_TIMEOUT_MS || '').trim() !== '';
+const commandTimeoutMs = operatorTimeoutOverride || configuredGateTimeoutMs === null
+  ? resolveGateTimeoutMs()
+  : configuredGateTimeoutMs;
+
 const env = {
   ...process.env,
   npm_config_loglevel: 'notice',
   TYPECHECK_CMD,
   TEST_CMD,
   LINT_CMD,
+  GATE_TIMEOUT_MS: String(commandTimeoutMs),
   FILES: files,
   SESSION_START_REF: sessionStartRef,
 };
@@ -446,7 +472,13 @@ function shellQuote(value) {
 // module's own `child.stderr?.on(…)` a no-op, and the gate's warnings live on
 // the operator's terminal exactly as before.
 const gateCommand = `node ${shellQuote(gatePath)}`;
-const gateTimeoutMs = resolveGateTimeoutMs() + GATE_OUTER_TIMEOUT_RESERVE_MS;
+// Derived from the SAME resolved per-command ceiling published as
+// `GATE_TIMEOUT_MS` above — not from `resolveGateTimeoutMs()` a second time.
+// The outer cap must stay strictly ABOVE the inner one so the inner kill fires
+// first and the gate can still print its envelope; re-deriving here would leave
+// the outer cap at the 900 000 default while a committed
+// `gate.timeout-path-b-ms` above it made the inner cap the later of the two.
+const gateTimeoutMs = commandTimeoutMs + GATE_OUTER_TIMEOUT_RESERVE_MS;
 const result = await spawnInGroup(gateCommand, {
   cwd: repoRoot,
   env,

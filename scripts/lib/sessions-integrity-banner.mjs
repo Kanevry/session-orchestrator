@@ -103,7 +103,13 @@ import {
 } from './vault-mirror/render-sessions.mjs';
 
 /** Repo-relative path to the session ledger (one record per closed session). */
-const SESSIONS_PATH = '.orchestrator/metrics/sessions.jsonl';
+/**
+ * Ledger path, relative to the repo root. EXPORTED (#1417) so the CLI front-end
+ * `scripts/check-sessions-integrity.mjs` addresses the same file this banner
+ * judges instead of re-typing the literal — two spellings of one path is how a
+ * guard ends up measuring a file nobody writes.
+ */
+export const SESSIONS_PATH = '.orchestrator/metrics/sessions.jsonl';
 
 /** Max session_ids listed inline before the message collapses to "+N more". */
 export const MAX_LISTED_IDS = 5;

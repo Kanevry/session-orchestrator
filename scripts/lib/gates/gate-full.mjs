@@ -18,6 +18,22 @@ const testCmd = process.env.TEST_CMD;
 const lintCmd = process.env.LINT_CMD;
 const sessionStartRef = process.env.SESSION_START_REF ?? '';
 
+/**
+ * Per-command wall-clock ceiling, published by `scripts/run-quality-gate.mjs`
+ * as `GATE_TIMEOUT_MS` (#1425 A3 / #1432). It carries the ALREADY-RESOLVED
+ * value — operator override `SO_GATE_TIMEOUT_MS` > Session Config
+ * `gate.timeout-path-b-ms` > 900 000 — so this script only has to read it.
+ *
+ * Absent or non-numeric (this gate invoked directly, not through the wrapper)
+ * → the option is OMITTED, and `runCheck` falls back to `resolveGateTimeoutMs()`
+ * exactly as before. An empty object is deliberate: passing `timeoutMs:
+ * undefined` would NOT trigger that fallback in every spread order.
+ */
+const CHECK_OPTS = (() => {
+  const raw = Number((process.env.GATE_TIMEOUT_MS || '').trim());
+  return Number.isFinite(raw) && raw > 0 ? { timeoutMs: raw } : {};
+})();
+
 if (!typecheckCmd) {
   process.stderr.write('TYPECHECK_CMD must be set\n');
   process.exit(1);
@@ -34,7 +50,7 @@ if (!lintCmd) {
 const startTime = Date.now();
 
 // --- Typecheck ---
-const tcResult = await runCheck(typecheckCmd);
+const tcResult = await runCheck(typecheckCmd, CHECK_OPTS);
 const tcErrorCount =
   tcResult.status === 'fail'
     ? extractCount(tcResult.fullOutput ?? tcResult.output, /error TS\d+/)
@@ -44,7 +60,7 @@ const tcErrorCount =
 // NOTE: `testCounts`, NOT `failed` — a local `failed` is already bound near
 // the bottom of this file and drives `process.exit(failed ? 2 : 0)`.
 // Shadowing it would corrupt the gate's exit code.
-const testResult = await runCheck(testCmd);
+const testResult = await runCheck(testCmd, CHECK_OPTS);
 const testCounts =
   testResult.status !== 'skip'
     ? extractTestCounts(testResult.fullOutput ?? testResult.output)
@@ -98,7 +114,7 @@ const fileFields = testCounts.files
   : {};
 
 // --- Lint ---
-const lintResult = await runCheck(lintCmd);
+const lintResult = await runCheck(lintCmd, CHECK_OPTS);
 const lintWarnings =
   lintResult.status !== 'skip'
     ? extractCount(lintResult.fullOutput ?? lintResult.output, /warning/i)

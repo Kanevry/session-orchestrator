@@ -78,6 +78,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { scanEventsBackwards } from './events.mjs';
 import { loadApplicableRules, parseGlobsFrontmatter } from './rule-loader.mjs';
 
 /** Default directive ceiling (operator-chosen growth ratchet just above the ~457 baseline). */
@@ -442,6 +443,35 @@ export const DEFAULT_GENERATED_BYTE_CEILING = 95000;
  * `computeInstructionBudget({repoRoot}).bySurface.pathScoped`.
  */
 export const DEFAULT_PATH_SCOPED_BYTE_CEILING = 124000;
+
+/**
+ * Share of {@link DEFAULT_PATH_SCOPED_BYTE_CEILING} at which the banner warns
+ * BEFORE the writer refuses (#1419).
+ *
+ * The defect #1419 records is not the ceiling but its TIMING: it becomes
+ * visible only inside `writeApprovedRules`, after the operator has already
+ * decided. Measured on that case (2026-09-20, /reconcile run): 117,973 of
+ * 124,000 B = 95.1 % — ~6 kB of headroom holding back `capped: 91`
+ * candidates, and `overPathScopedBudget` (a HARD `bytes > ceiling` test) did
+ * not fire, so nothing warned.
+ *
+ * 90 % is the distance of ~4 materialised rules: 10 % of 124,000 B = 12,400 B
+ * against the ~1.5 kB a generated rule file occupied on the #1419 tree — i.e.
+ * roughly four more accepted learnings until the hard break. A fixed fraction,
+ * deliberately not a per-repo calibration: it cannot know how large THIS
+ * repo's next rule is, and a second calibrated number would need its own
+ * falsification record.
+ *
+ * BV-004 ceiling + revisit trigger (HR-105): measure this line's firing rate
+ * after ~20 sessions from the probe records in
+ * `.orchestrator/metrics/events.jsonl`
+ * (`jq -c 'select(.event=="orchestrator.probes.completed")
+ * | .probes[] | select(.id=="instruction-budget")' …` — count `ran-warn`
+ * against the record total).
+ * Above ~10 % the instrument is RE-AIMED per HR-101 — neither lowered nor
+ * silenced; below it, leave it alone.
+ */
+export const PATH_SCOPED_NEAR_THRESHOLD = 0.9;
 
 /**
  * Read the `instruction-budget:` nested block from the `## Session Config`
@@ -1244,6 +1274,83 @@ export function computeInstructionBudget(opts = {}) {
   };
 }
 
+/** Ledger event the backlog number below is read from (`reconcile/engine.mjs`). */
+const RECONCILE_EVENT = 'orchestrator.reconcile.completed';
+
+/**
+ * Wall-clock budget for the backwards ledger walk. Deliberately small: this
+ * runs inside a session-start probe whose own budget is 2 s, and the number it
+ * fetches is DECORATION on a line that is already actionable without it.
+ */
+const RECONCILE_SCAN_BUDGET_MS = 150;
+
+/**
+ * `capped` from the most recent `orchestrator.reconcile.completed` record —
+ * how many rule-eligible learnings the last /reconcile run held back.
+ *
+ * Three-state on purpose (`feedback_missing_measurement_looks_like_zero`):
+ * `null` means NOT MEASURED (no ledger, no such record, unreadable source, or
+ * the walk ran out of budget), which the caller must render as ABSENCE — never
+ * as `0`, which is a measured "nothing waiting".
+ *
+ * @param {string|undefined} repoRoot
+ * @returns {number|null}
+ */
+function readLastReconcileCapped(repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot === '') return null;
+  const filePath = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+  let capped = null;
+  let scan;
+  try {
+    scan = scanEventsBackwards({
+      filePath,
+      budgetMs: RECONCILE_SCAN_BUDGET_MS,
+      // Cheap raw-line pre-filter before JSON.parse — same reason as
+      // `maintenance-due-banner.mjs`: parsing every line of a multi-MB ledger
+      // to answer one question is the cost this option exists to avoid.
+      filter: RECONCILE_EVENT,
+      onRecord: (rec) => {
+        if (rec?.event !== RECONCILE_EVENT) return false;
+        capped = Number.isFinite(rec.capped) ? rec.capped : null;
+        return true; // newest record wins; stop the walk
+      },
+    });
+  } catch {
+    return null; // never throw out of the banner wrapper
+  }
+  // A walk that did not finish has not proven anything about the backlog.
+  if (scan.truncated || scan.unreadable.length > 0) return null;
+  return capped;
+}
+
+/**
+ * The #1419 early-warning line: the path-scoped ceiling is close, not broken.
+ *
+ * Reports the numbers the RULE judged (HR-106) — the same `pathScoped.bytes`
+ * and ceiling `writeApprovedRules` will compare later — plus, when the ledger
+ * carries one, how many learnings the last /reconcile run already held back.
+ * The percentage is formatted locale-free so the same corpus renders the same
+ * string on every host.
+ *
+ * @param {ReturnType<typeof computeInstructionBudget>} budget
+ * @param {string|undefined} repoRoot
+ * @returns {string}
+ */
+function formatNearPathScopedLine(budget, repoRoot) {
+  const used = budget.bySurface.pathScoped.bytes;
+  const ceiling = budget.pathScopedByteCeiling;
+  const pct = ((used / ceiling) * 100).toFixed(1);
+  const capped = readLastReconcileCapped(repoRoot);
+  // Only a POSITIVE measured backlog is worth a clause; `0` and `null` both
+  // add nothing the operator can act on, and printing `0` for `null` would be
+  // the false-negative this helper's three-state contract exists to prevent.
+  const backlog = typeof capped === 'number' && capped > 0 ? ` — ${capped} Learnings warten` : '';
+  return (
+    `path-scoped Regel-Decke zu ${pct} % belegt (${used}/${ceiling} B)${backlog} — ` +
+    '/reconcile wird Learnings zurueckhalten'
+  );
+}
+
 /**
  * Banner wrapper — session-start Phase 4 convention.
  *
@@ -1268,10 +1375,15 @@ export function computeInstructionBudget(opts = {}) {
  * @param {number} [opts.byteCeiling] explicit byte-ceiling override (wins over config).
  * @param {number} [opts.pathScopedByteCeiling] explicit path-scoped-ceiling override.
  * @returns {{ severity: 'warn', message: string } | null}
- *   null when disabled / off / every axis at-or-under its ceiling OR on any
- *   read failure. Since #1316 each of the four axes — directives, bytes,
+ *   null when disabled / off / every axis comfortably under its ceiling OR on
+ *   any read failure. Since #1316 each of the four axes — directives, bytes,
  *   generated, path-scoped — raises the banner on its own (see
- *   DEFAULT_PATH_SCOPED_BYTE_CEILING).
+ *   DEFAULT_PATH_SCOPED_BYTE_CEILING). Since #1419 the path-scoped axis ALSO
+ *   raises it at {@link PATH_SCOPED_NEAR_THRESHOLD} of its ceiling, before the
+ *   breach: that band used to be silent, and the ceiling then surfaced only
+ *   inside `writeApprovedRules` — after the operator had approved rules it
+ *   refused to write. The RETURN SHAPE is unchanged (`{severity:'warn',
+ *   message}` | null), so `session-start-probes.mjs` needs no new vocabulary.
  */
 export function checkInstructionBudget(opts = {}) {
   let cfg;
@@ -1331,7 +1443,33 @@ export function checkInstructionBudget(opts = {}) {
     return null; // never throw out of the banner wrapper
   }
 
-  if (!budget || !budget.overBudget) return null;
+  if (!budget) return null;
+
+  // #1419 near-threshold stage. Strictly BELOW the hard test (a breach is
+  // reported as a breach, never twice), and computed before the early return
+  // so a corpus at 90–100 % of the path-scoped ceiling stops being silent —
+  // that silence is the defect: the ceiling used to surface only inside
+  // `writeApprovedRules`, after the operator had already approved rules.
+  const nearPathScoped =
+    !budget.overPathScopedBudget &&
+    budget.pathScopedByteCeiling > 0 &&
+    budget.bySurface.pathScoped.bytes >= budget.pathScopedByteCeiling * PATH_SCOPED_NEAR_THRESHOLD;
+
+  if (!budget.overBudget && !nearPathScoped) return null;
+
+  const nearLine = nearPathScoped ? formatNearPathScopedLine(budget, opts.repoRoot) : null;
+
+  // Near-threshold and nothing breached: a one-finding banner, carrying the
+  // same remedy as the breach clause below (consolidate — never raise).
+  if (!budget.overBudget) {
+    return {
+      severity: 'warn',
+      message: [
+        `⚠ ${nearLine}.`,
+        '  Consolidate generated rules per docs/rule-authoring.md § Consolidated rules; never raise the ceiling.',
+      ].join('\n'),
+    };
+  }
 
   // Name only the breached axes — listing a healthy axis would pad the line
   // without telling the operator anything they must act on.
@@ -1377,8 +1515,12 @@ export function checkInstructionBudget(opts = {}) {
     .map((f) => `${f.file} (${f.count} dir, ${f.bytes} B)`)
     .join(', ');
 
+  // The near-threshold line rides ALONGSIDE the breach line rather than inside
+  // `axes`: the path-scoped axis is not over, and folding a healthy-but-close
+  // axis into a sentence that says "over" would misreport which ceiling broke.
   const message = [
     `⚠ Instruction budget over — ${axes.join(' · ')} across ${budget.perFile.length} always-on rules.`,
+    ...(nearLine ? [`  ${nearLine}.`] : []),
     `  Top files: ${top}`,
     '  See the instruction-budget audit (#687; archived in the private Meta-Vault) for the prune/demote list.',
   ].join('\n');

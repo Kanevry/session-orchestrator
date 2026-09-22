@@ -920,6 +920,23 @@ function writeEvents(dir, records) {
   writeFileSync(join(dir, 'events.jsonl'), records.map((r) => JSON.stringify(r)).join('\n') + '\n');
 }
 
+/**
+ * A rotation record pointing at an archive that is NOT on disk — the shape the
+ * reader reports as a MEASURED gap (`complete: false`), as opposed to a quiet
+ * window. Shared by the three-state suite and the #1416 ping-field tests.
+ * @param {string} dir metrics dir the archive would live under
+ */
+function rotationEventWithMissingArchive(dir) {
+  return {
+    timestamp: '2026-09-06T09:00:00.000Z',
+    event: ROTATION_EVENT,
+    archived_as: join(dir, ARCHIVE_DIR_NAME, 'events-20260906T080000Z_20260906T090000Z.jsonl'),
+    first_ts: '2026-09-06T08:00:00.000Z',
+    last_ts: '2026-09-06T09:00:00.000Z',
+    lines: 12,
+  };
+}
+
 describe('session facts survive a missing sessions.jsonl (deriveSessionFromEvents)', () => {
   it('derives type + window from orchestrator.session.started', () => {
     writeEvents(tmpDir, [
@@ -1296,5 +1313,54 @@ describe('buildBatch marks the provenance of every ping', () => {
     const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
     expect(record.session_record).toBe('derived');
     expect('session_profile' in record).toBe(false);
+  });
+
+  // ── #1416: the ledger-completeness verdict reaches the wire ────────────────
+  // NAMED GAP THIS CLOSES: `deriveSessionFromEvents` has returned a three-state
+  // `ledger_complete` on every path since W2-5, and `buildBatch` dropped it on
+  // the floor — so a reconstruction from a HOLEY ledger was byte-identical to
+  // one from a whole ledger. Without these three, any future change that loses
+  // the field between derivation and ping stays green.
+  it('a derived ping from a WHOLE events ledger carries ledger_complete: true', () => {
+    const dir = join(tmpDir, 'mlc-whole');
+    writeEvents(dir, [{ timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep' }]);
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.session_record).toBe('derived');
+    expect(record.ledger_complete).toBe(true);
+  });
+
+  it('a MEASURED gap survives to the ping as ledger_complete: false', () => {
+    const dir = join(tmpDir, 'mlc-gap');
+    // A rotation event whose archive is NOT on disk is the measured-gap shape
+    // (same fixture form as the deriveSessionFromEvents suite above).
+    writeEvents(dir, [rotationEventWithMissingArchive(dir), {
+      timestamp: '2026-09-06T08:00:00.000Z', event: 'orchestrator.session.started', mode: 'deep',
+    }]);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true); // the #1423 gap WARN
+    expect(deriveSessionFromEvents(dir).ledger_complete).toBe(false);
+    const { record } = buildBatch({ ...common, metricsDir: dir, statePath: grantedStatePath() });
+    expect(record.ledger_complete).toBe(false);
+  });
+
+  it('OMITS ledger_complete when nothing was measured — no events source, and the ledger path', () => {
+    // (a) no events source at all → derivation reports `null`, ping omits the key.
+    const none = join(tmpDir, 'mlc-none');
+    mkdirSync(none, { recursive: true });
+    expect(deriveSessionFromEvents(none).ledger_complete).toBe(null);
+    const absent = buildBatch({ ...common, metricsDir: none, statePath: grantedStatePath() }).record;
+    expect(absent.session_record).toBe('absent');
+    expect('ledger_complete' in absent).toBe(false);
+
+    // (b) a ledger-sourced ping never opens events.jsonl, so it has no verdict —
+    // even with a demonstrably holey events file sitting right beside it.
+    const ledgerDir = join(tmpDir, 'mlc-ledger');
+    writeEvents(ledgerDir, [rotationEventWithMissingArchive(ledgerDir)]);
+    writeFileSync(join(ledgerDir, 'sessions.jsonl'), JSON.stringify({
+      session_id: 's1', session_type: 'feature',
+      started_at: '2026-09-06T08:00:00.000Z', completed_at: '2026-09-06T09:00:00.000Z',
+    }) + '\n');
+    const fromLedger = buildBatch({ ...common, metricsDir: ledgerDir, statePath: grantedStatePath() }).record;
+    expect(fromLedger.session_record).toBe('ledger');
+    expect('ledger_complete' in fromLedger).toBe(false);
   });
 });

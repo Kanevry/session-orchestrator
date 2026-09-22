@@ -14,6 +14,7 @@
  *   --max-sessions=N            Max iterations (1..50, default 5).
  *   --max-hours=H               Max wall-clock hours (0.5..24.0, default 4.0).
  *   --confidence-threshold=0.X  Mode confidence gate (0.0..1.0, default 0.85).
+ *   --max-tokens=N              Cumulative output-token budget (0..10000000, default 500000; 0 disables).
  *   --dry-run                   Emit a single record without spawning sessions.
  *   --verbose                   Pipe child process stdio (instead of inherit).
  *
@@ -35,6 +36,7 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync, spawn } from 'node:child_process';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   runLoop,
@@ -55,6 +57,14 @@ import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 
 const argv = process.argv.slice(2);
 
+/**
+ * Plugin root, resolved from THIS file's own location (`<root>/scripts/autopilot.mjs`
+ * → `<root>`) and never from an env var. The driver is spawned unattended from an
+ * arbitrary cwd, so `--plugin-dir` must name the plugin that owns this very file;
+ * an env-var read would point wherever the operator's shell last happened to point.
+ */
+const PLUGIN_ROOT = resolve(fileURLToPath(new URL('.', import.meta.url)), '..');
+
 const hasHeadless = argv.includes('--headless');
 const hasVerbose = argv.includes('--verbose');
 
@@ -69,7 +79,7 @@ const flagsForParse = argv.filter(
   (a) => a !== '--headless' && a !== '--verbose'
 );
 
-const { maxSessions, maxHours, confidenceThreshold, dryRun } = parseFlags(flagsForParse);
+const { maxSessions, maxHours, confidenceThreshold, maxTokens, dryRun } = parseFlags(flagsForParse);
 
 // ---------------------------------------------------------------------------
 // Session Config (parsed once, shared by thresholds + decay readers)
@@ -269,9 +279,14 @@ async function sessionRunner({ mode, autopilotRunId }) {
       ? ['ignore', 'pipe', 'pipe']
       : ['ignore', 'inherit', 'inherit'];
 
+    // `session` is a RESERVED terminal-only built-in name under `claude -p`: the
+    // bare `/session <mode>` form answers "/session isn't available in this
+    // environment." and the child exits having done nothing (measured 2026-09-16,
+    // claude 2.1.273 — `commands/session.md` § Headless). Only the namespaced form
+    // resolves, and only when the plugin that defines it is on `--plugin-dir`.
     const child = spawn(
       'claude',
-      ['-p', `/session ${mode}`],
+      ['-p', `/session-orchestrator:session ${mode}`, '--plugin-dir', PLUGIN_ROOT],
       {
         env: { ...process.env, AUTOPILOT_RUN_ID: autopilotRunId },
         stdio: childStdio,
@@ -372,12 +387,18 @@ async function main() {
     maxSessions,
     maxHours,
     confidenceThreshold,
+    maxTokens,
     dryRun,
     modeSelector,
     sessionRunner,
     resourceEvaluator,
     peerCounter,
     abortSignal: controller.signal,
+    // STALL_TIMEOUT progress marker. `autopilot.jsonl` is written ONCE per
+    // invocation (after the loop), so its mtime belongs to the PREVIOUS run and
+    // fired the kill-switch after iteration 1; the session.lock heartbeat is
+    // refreshed while a session is alive. See stall-sampler.mjs § PRECEDENCE.
+    sessionLockPath: resolve('.orchestrator/session.lock'),
     runId: autopilotRunId,
     branch: branch ?? undefined,
   });

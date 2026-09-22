@@ -232,6 +232,22 @@ function killAllLiveGroupsSync() {
  *  - `EPERM` — a foreign process sits in the group and refused our signal. Stop
  *    signal, never a retry: `ok: false`, `error: 'EPERM'`, `survivors: [pgid]`.
  *
+ * ## `beforeSignal` — the ladder is ABORTABLE, and that is load-bearing
+ *
+ * The ladder sleeps `killGraceMs` (10 s by default) between the two signals, and
+ * a promise cannot be un-awaited. Without a gate consulted IMMEDIATELY BEFORE
+ * each signal, the escalation fires ~10 s after the caller has moved on — at a
+ * pgid the caller has already deregistered and the kernel may have recycled onto
+ * a stranger. Two callers need exactly that gate, for the same reason:
+ *  - {@link spawnInGroup} passes `() => !settled`, so a child that closed during
+ *    the grace window never draws a late group-wide SIGKILL.
+ *  - the orphan-reaper passes a fresh identity re-check (PRD B3), so a PID
+ *    recycled between SIGTERM and SIGKILL is never escalated against.
+ *
+ * It may be async; a throw counts as REFUSAL (fail-closed — an unmeasurable gate
+ * must never read as permission). An abort returns `aborted: '<signal>'`,
+ * `ok: false`, and `signalsSent` carries only the signals actually attempted.
+ *
  * @param {number} pgid  Process-group id (positive; the negation happens here).
  * @param {object} [opts]
  * @param {(target: number, signal: string) => unknown} [opts.killFn]  Signal seam. Tests ALWAYS inject.
@@ -239,7 +255,10 @@ function killAllLiveGroupsSync() {
  * @param {number} [opts.verifyWaitMs]
  * @param {(pid: number) => boolean} [opts.isAliveFn]  Liveness probe on the group leader.
  * @param {(ms: number) => Promise<void>} [opts.sleepFn]
- * @returns {Promise<{ok: boolean, signalsSent: string[], survivors: number[], error: 'ESRCH'|'EPERM'|null}>}
+ * @param {((signal: string) => boolean|Promise<boolean>)|null} [opts.beforeSignal]  Consulted
+ *   immediately before EVERY signal. Anything but `true` aborts the rest of the ladder.
+ * @returns {Promise<{ok: boolean, signalsSent: string[], survivors: number[],
+ *   error: 'ESRCH'|'EPERM'|null, aborted: string|null}>}
  *   `signalsSent` records ATTEMPTS in order, including one that threw.
  */
 export async function killProcessGroup(pgid, {
@@ -248,9 +267,25 @@ export async function killProcessGroup(pgid, {
   verifyWaitMs = DEFAULT_VERIFY_WAIT_MS,
   isAliveFn = defaultIsAlive,
   sleepFn = defaultSleep,
+  beforeSignal = null,
 } = {}) {
   /** @type {string[]} */
   const signalsSent = [];
+
+  /** Fail-closed gate: only an explicit `true` permits the signal. */
+  const permitted = async (signal) => {
+    if (typeof beforeSignal !== 'function') return true;
+    try {
+      return (await beforeSignal(signal)) === true;
+    } catch {
+      return false;
+    }
+  };
+  const aborted = (signal) => ({
+    ok: false, signalsSent, survivors: [], error: null, aborted: signal,
+  });
+
+  if (!(await permitted('SIGTERM'))) return aborted('SIGTERM');
 
   signalsSent.push('SIGTERM');
   try {
@@ -258,9 +293,11 @@ export async function killProcessGroup(pgid, {
   } catch (err) {
     const code = err?.code ?? null;
     if (code === 'ESRCH') {
-      return { ok: true, signalsSent, survivors: [], error: 'ESRCH' };
+      return { ok: true, signalsSent, survivors: [], error: 'ESRCH', aborted: null };
     }
-    return { ok: false, signalsSent, survivors: [pgid], error: code === 'EPERM' ? 'EPERM' : null };
+    return {
+      ok: false, signalsSent, survivors: [pgid], error: code === 'EPERM' ? 'EPERM' : null, aborted: null,
+    };
   }
 
   await sleepFn(killGraceMs);
@@ -268,6 +305,11 @@ export async function killProcessGroup(pgid, {
   // Escalate unconditionally: SIGTERM is a REQUEST and a grandchild with a
   // TERM trap ignores it (measured). SIGKILL on an already-dead group throws
   // ESRCH, which is the cheapest possible proof that the ladder worked.
+  // "Unconditionally" means "regardless of what SIGTERM appeared to achieve" —
+  // never "regardless of whether this pgid is still the process we targeted",
+  // which is what `beforeSignal` re-decides here.
+  if (!(await permitted('SIGKILL'))) return aborted('SIGKILL');
+
   signalsSent.push('SIGKILL');
   let escalationEsrch = false;
   try {
@@ -277,12 +319,14 @@ export async function killProcessGroup(pgid, {
     if (code === 'ESRCH') {
       escalationEsrch = true;
     } else {
-      return { ok: false, signalsSent, survivors: [pgid], error: code === 'EPERM' ? 'EPERM' : null };
+      return {
+        ok: false, signalsSent, survivors: [pgid], error: code === 'EPERM' ? 'EPERM' : null, aborted: null,
+      };
     }
   }
 
   if (escalationEsrch) {
-    return { ok: true, signalsSent, survivors: [], error: null };
+    return { ok: true, signalsSent, survivors: [], error: null, aborted: null };
   }
 
   await sleepFn(verifyWaitMs);
@@ -292,6 +336,7 @@ export async function killProcessGroup(pgid, {
     signalsSent,
     survivors: alive ? [pgid] : [],
     error: null,
+    aborted: null,
   };
 }
 
@@ -547,6 +592,12 @@ export function pruneGateProcessLedger(repoRoot, {
  * kill ladder. Without that deadline one `setsid`-escaped grandchild hangs the
  * gate forever, which is the failure the whole module exists to prevent.
  *
+ * The converse holds too: once this promise HAS settled, the ladder is
+ * cancelled (`beforeSignal` in {@link killProcessGroup}). A cooperative child
+ * that closes on SIGTERM would otherwise still draw a SIGKILL `killGraceMs`
+ * later, at a pgid `finish()` already deregistered — the exact late signal at a
+ * possibly-recycled group id this module exists to prevent.
+ *
  * @param {string} cmd  Full shell command. Executable configuration, not data —
  *   see `.claude/rules/security.md` § Session Config Command Trust.
  * @param {object} [opts]
@@ -702,7 +753,18 @@ export function spawnInGroup(cmd, {
       }, killGraceMs + verifyWaitMs + 1000);
       deadlineTimer.unref?.();
 
-      killProcessGroup(pgid, { killFn: trackingKill, killGraceMs, verifyWaitMs, isAliveFn, sleepFn })
+      killProcessGroup(pgid, {
+        killFn: trackingKill,
+        killGraceMs,
+        verifyWaitMs,
+        isAliveFn,
+        sleepFn,
+        // Cancel the ladder the moment this promise settles. `finish()` has by
+        // then deleted the pgid from LIVE_GROUPS, so a SIGKILL arriving
+        // `killGraceMs` later would be aimed at an id nobody here owns any more
+        // — and the kernel may have recycled it onto a foreign group.
+        beforeSignal: () => !settled,
+      })
         .then((res) => {
           survivors = res.survivors;
           if (!res.ok) finish(null);

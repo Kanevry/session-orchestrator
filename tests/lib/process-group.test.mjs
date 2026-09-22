@@ -178,6 +178,40 @@ describe('spawnInGroup — kill ladder', () => {
     expect(_liveGroupPgids()).not.toContain(6161);
   });
 
+  it('sends NO further signal after the promise settled — the late SIGKILL would hit a deregistered, possibly recycled pgid', async () => {
+    // Bug (w2-2, verified 2026-09-21): on the timeout/overflow path `finish()`
+    // resolves as soon as the child closes, but the ladder is still parked in
+    // `sleepFn(killGraceMs)`. Ten seconds later it fired `SIGKILL -pgid` at an
+    // id `finish()` had already removed from LIVE_GROUPS — and which the kernel
+    // may have handed to a stranger by then. Reverting `beforeSignal` in
+    // `spawnInGroup` makes this case red with a second call: {target:-8181,
+    // signal:'SIGKILL'} (measured).
+    const child = fakeChild(8181);
+    const killFn = vi.fn(() => true); // models a child that obeys SIGTERM itself
+
+    const promise = spawnInGroup('cooperative-gate', {
+      spawnFn: () => child,
+      killFn,
+      isAliveFn: () => false,
+      timeoutMs: 100,
+      killGraceMs: 10_000,
+      verifyWaitMs: 500,
+    });
+
+    await vi.advanceTimersByTimeAsync(100); // timeout → SIGTERM
+    expect(killFn.mock.calls).toEqual([[-8181, 'SIGTERM']]);
+
+    child.emit('close', 143, 'SIGTERM'); // the child took the hint and left
+    const res = await promise;
+    expect(res.timedOut).toBe(true);
+    const callsAtSettle = killFn.mock.calls.length;
+
+    // Walk past the whole grace + verify window the ladder was sleeping through.
+    await vi.advanceTimersByTimeAsync(10_000 + 500 + 2_000);
+    expect(killFn.mock.calls.length).toBe(callsAtSettle);
+    expect(killFn.mock.calls.some((c) => c[1] === 'SIGKILL')).toBe(false);
+  });
+
   it('returns exitCode 1 without throwing when the spawn itself fails', async () => {
     // Bug: a throwing spawnFn (ENOENT) inside the Promise executor would reject
     // a promise the gate only ever awaits for a value.
@@ -274,6 +308,72 @@ describe('killProcessGroup', () => {
     // The verify-wait must actually happen before reading liveness back: on
     // 2026-09-20 a probe with no wait reported "still alive" for dead processes.
     expect(waits).toEqual([10, 500]);
+  });
+});
+
+describe('killProcessGroup — beforeSignal gate', () => {
+  it('sends nothing at all when the gate refuses the FIRST signal', async () => {
+    // Bug (PRD B3): the reaper's identity re-check must be able to withdraw a
+    // candidate between decision and signal. A gate consulted only after the
+    // first signal would already have shot the bystander.
+    const killFn = vi.fn(() => true);
+    const res = await killProcessGroup(DEAD_PID, {
+      killFn,
+      sleepFn: async () => {},
+      isAliveFn: () => true,
+      beforeSignal: () => false,
+    });
+    expect(killFn).not.toHaveBeenCalled();
+    expect(res.signalsSent).toEqual([]);
+    expect(res.aborted).toBe('SIGTERM');
+    expect(res.ok).toBe(false);
+  });
+
+  it('stops before the ESCALATION when the gate refuses mid-ladder', async () => {
+    // Bug: the pid may be recycled DURING the 10 s grace, so "already checked
+    // before SIGTERM" is not a licence to escalate — the second signal needs its
+    // own fresh verdict.
+    const signals = [];
+    const res = await killProcessGroup(DEAD_PID, {
+      killFn: (_t, sig) => {
+        signals.push(sig);
+        return true;
+      },
+      sleepFn: async () => {},
+      isAliveFn: () => true,
+      beforeSignal: (sig) => sig === 'SIGTERM',
+    });
+    expect(signals).toEqual(['SIGTERM']);
+    expect(res.signalsSent).toEqual(['SIGTERM']);
+    expect(res.aborted).toBe('SIGKILL');
+  });
+
+  it('treats a THROWING gate as refusal, never as permission', async () => {
+    // Bug: an identity probe that fails (ps timed out, file unreadable) is an
+    // ABSENT measurement. Fail-open there would signal on no evidence at all.
+    const killFn = vi.fn(() => true);
+    const res = await killProcessGroup(DEAD_PID, {
+      killFn,
+      sleepFn: async () => {},
+      isAliveFn: () => true,
+      beforeSignal: () => { throw new Error('ps unreachable'); },
+    });
+    expect(killFn).not.toHaveBeenCalled();
+    expect(res.aborted).toBe('SIGTERM');
+  });
+
+  it('awaits an ASYNC gate before signalling', async () => {
+    // The reaper's gate runs a targeted `ps`, so it is a promise. A gate whose
+    // return value is not awaited is truthy ALWAYS (a pending Promise object).
+    const killFn = vi.fn(() => true);
+    const res = await killProcessGroup(DEAD_PID, {
+      killFn,
+      sleepFn: async () => {},
+      isAliveFn: () => true,
+      beforeSignal: async () => false,
+    });
+    expect(killFn).not.toHaveBeenCalled();
+    expect(res.aborted).toBe('SIGTERM');
   });
 });
 

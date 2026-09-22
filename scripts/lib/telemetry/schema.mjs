@@ -93,6 +93,7 @@ export const USAGE_PING_OPTIONAL_FIELDS = Object.freeze([
   'fleet_self_declared',
   'session_record',
   'session_profile',
+  'ledger_complete',
 ]);
 
 /**
@@ -116,6 +117,29 @@ const USAGE_PING_PROJECTED_FIELDS = Object.freeze([...USAGE_PING_FIELDS, ...USAG
  * a genuinely-measured `other` / `<15m` session — 32 such pings on the server.
  */
 export const SESSION_RECORD_SOURCES = Object.freeze(['ledger', 'derived', 'absent']);
+
+/*
+ * `ledger_complete` — a SECOND, ORTHOGONAL axis beside `session_record`
+ * (GitLab #1416), deliberately NOT a fourth provenance token.
+ *
+ * `deriveSessionFromEvents` (telemetry/sync.mjs) returns a three-state verdict on
+ * the events ledger it read FROM: `true` (every rotation archive present),
+ * `false` (at least one measured gap — a deleted/missing archive), and `null`
+ * (no verdict was produced at all: the read threw, or there was no source). That
+ * verdict decided nothing on the wire, so a derived record reconstructed from a
+ * holey ledger was indistinguishable from one reconstructed from a whole one.
+ *
+ * Why a boolean and not a `derived-partial` token: `SESSION_RECORD_SOURCES` is a
+ * frozen enum mirrored in prose and in the server's `raw_json` consumers, and
+ * completeness is a property of the SOURCE READ, not of WHICH source was used —
+ * widening the provenance enum would make the two facts inseparable and force
+ * every reader of `session_record === 'derived'` to learn a second spelling.
+ *
+ * THE THIRD STATE IS OMISSION: only a real boolean is written. `null` (nothing
+ * measured) omits the key, exactly like `session_profile` — "we did not look" is
+ * never sent as a measured `false`. On the `ledger` branch the field is not set
+ * at ALL: that path never reads the events ledger, so it has no verdict to give.
+ */
 
 /** Exact duration-bucket tokens (ASCII, stable wire values). */
 export const DURATION_BUCKETS = Object.freeze(['<15m', '15-60m', '1-3h', '>3h']);
@@ -541,6 +565,7 @@ export function buildUsagePing({
   consentState,
   sessionRecordSource,
   sessionProfile,
+  ledgerComplete,
 } = {}) {
   const session = isPlainObject(sessionRecord) ? sessionRecord : {};
   const invocations = Array.isArray(skillInvocations) ? skillInvocations : [];
@@ -637,6 +662,11 @@ export function buildUsagePing({
     session_record: SESSION_RECORD_SOURCES.includes(sessionRecordSource)
       ? sessionRecordSource
       : 'absent',
+    // ONLY a real boolean travels (#1416). `null`/`undefined` — the read never
+    // happened, or this path never read the events ledger at all — OMITS the
+    // key, the same absent-is-not-empty contract `session_profile` uses above.
+    // Writing `false` there would turn "we did not look" into a measured gap.
+    ...(typeof ledgerComplete === 'boolean' ? { ledger_complete: ledgerComplete } : {}),
     skills: filterRosterNames(skillNames, rosterSkills),
     commands: filterRosterNames(commandNames, rosterCommands),
   };

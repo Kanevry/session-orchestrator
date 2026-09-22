@@ -58,6 +58,7 @@ projection unit test enforces the drop of any non-whitelisted input field.
 | `fleet_self_declared` | Boolean, optional — the client's own claim that this send came from an operator host. **Self-declared, and the name says so on purpose:** the authoritative classification is server-side (see below). Derived from the *resolved consent state* (`enabled-fleet` from an `owner.yaml` opt-in, or `enabled-env` from `SO_TELEMETRY=1`), no longer from a raw `owner.yaml` read. |
 | `session_profile` | Optional — the STATE.md frontmatter `session-profile`, and **whitelisted profile names only** (today exactly `ultradeep`). Anything else — a value your repo invented, a client name, a typo — is **omitted from the ping entirely**: never sent verbatim, and never flattened to `other` either. A SECOND axis beside `session_type`, never a substitute for it: an ultradeep session is `session_type: "deep"` PLUS `session_profile: "ultradeep"`. **Absent when no profile is set or the profile is not on the whitelist** (the key is omitted, never `null`), including on derived pings, which never invent one. The whitelist is enforced twice — client-side before the send, and again server-side, which rejects a record carrying an unlisted profile rather than storing it. |
 | `session_record` | Optional — WHICH source the session facts in this ping came from: `ledger` (a matching `sessions.jsonl` record), `derived` (reconstructed from `events.jsonl`), `absent` (neither). When `absent`, `session_type` is `unknown` and `duration_bucket` is **not a measurement**. |
+| `ledger_complete` | Optional boolean — whether the `events.jsonl` read behind a reconstruction saw every rotation archive (`true`) or measured at least one gap (`false`, e.g. a deleted archive). A SECOND axis beside `session_record`, never a fourth provenance token: it says how whole the SOURCE was, not which source was used. **Absent when nothing was measured** — no read happened, the read threw, or the facts came straight from the ledger (that path never opens `events.jsonl`). The key is omitted, never `null` and never a stand-in `false`. |
 | `session_type` | One of `housekeeping`, `feature`, `deep`, `other`, `unknown`. `other` means MEASURED but not one of the three modes; `unknown` means NOT MEASURED. Before 2026-09-06 both collapsed to `other`. |
 | `duration_bucket` | One of `<15m`, `15-60m`, `1-3h`, `>3h` — a coarse bucket, never an exact duration. |
 | `skills[]` | Names of invoked skills, filtered against the shipped plugin roster — any name not in that roster becomes `"other"`. |
@@ -359,6 +360,7 @@ generation, then drop the old one.
 | `fleet` | deprecated alias, same value | **2027-03-06** |
 | `session_record` | new (`ledger` \| `derived` \| `absent`) | — |
 | `session_profile` | new (STATE.md `session-profile`, whitelisted names only; omitted when unset or unlisted) | — |
+| `ledger_complete` | new 2026-09-21 (boolean; omitted when nothing was measured, incl. every `ledger`-sourced ping) | — |
 
 Client-side the frozen whitelist is split in two: `USAGE_PING_FIELDS` (the
 REQUIRED v1 contract, which `tests/telemetry/parity.test.mjs` asserts the

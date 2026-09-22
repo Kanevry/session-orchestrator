@@ -28,6 +28,7 @@ import {
   USAGE_PING_SCHEMA_VERSION,
   USAGE_PING_FIELDS,
   USAGE_PING_OPTIONAL_FIELDS,
+  SESSION_RECORD_SOURCES,
   DURATION_BUCKETS,
   projectUsagePing,
   deriveDurationBucket,
@@ -591,6 +592,38 @@ describe('session_profile is a SECOND axis, never a session_type value', () => {
 
   // The ledger-less counterpart ("a derived ping carries NO profile rather than
   // an invented one") lives with buildBatch in sync.test.mjs.
+});
+
+describe('ledger_complete — the events-ledger completeness verdict (#1416)', () => {
+  const base = { skillInvocations: [], ownerConfig: {}, env: {}, now: '2026-09-21T10:00:00.000Z', roster: { skills: new Set(), commands: new Set() } };
+
+  it('carries a real boolean through verbatim, both ways', () => {
+    for (const value of [true, false]) {
+      const ping = buildUsagePing({ ...base, sessionRecord: { session_type: 'deep' }, ledgerComplete: value });
+      expect(ping.ledger_complete).toBe(value);
+    }
+  });
+
+  // BUG THIS CATCHES: `null` means "no verdict was produced" (the read threw, or
+  // there was no events source at all). Coercing it — to `false`, or to a `null`
+  // on the wire — would report an unmeasured ledger as a measured gap.
+  it('OMITS the key for every non-boolean, never writing null or a stand-in false', () => {
+    for (const ledgerComplete of [undefined, null, 'true', 0, 1, {}]) {
+      const ping = buildUsagePing({ ...base, sessionRecord: { session_type: 'deep' }, ledgerComplete });
+      expect('ledger_complete' in ping).toBe(false);
+    }
+  });
+
+  it('survives the whitelist projection (it is on USAGE_PING_OPTIONAL_FIELDS)', () => {
+    expect(USAGE_PING_OPTIONAL_FIELDS).toContain('ledger_complete');
+    expect(projectUsagePing({ ledger_complete: false }).ledger_complete).toBe(false);
+  });
+
+  // It is an ORTHOGONAL axis, not a fourth provenance token: widening the frozen
+  // enum instead would make "which source" and "how whole was it" inseparable.
+  it('does not widen the frozen SESSION_RECORD_SOURCES enum', () => {
+    expect(SESSION_RECORD_SOURCES).toEqual(['ledger', 'derived', 'absent']);
+  });
 });
 
 describe('the projection whitelist is the UNION of the required and optional lists', () => {

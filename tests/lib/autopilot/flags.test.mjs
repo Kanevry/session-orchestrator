@@ -77,6 +77,7 @@ describe('parseFlags — default values on empty argv', () => {
       maxSessions: 5,
       maxHours: 4.0,
       confidenceThreshold: 0.85,
+      maxTokens: 500_000,
       dryRun: false,
     });
   });
@@ -86,6 +87,7 @@ describe('parseFlags — default values on empty argv', () => {
       maxSessions: 5,
       maxHours: 4.0,
       confidenceThreshold: 0.85,
+      maxTokens: 500_000,
       dryRun: false,
     });
   });
@@ -212,7 +214,47 @@ describe('parseFlags — mixed valid + clamped flags', () => {
       maxSessions: 3,
       maxHours: 24.0,
       confidenceThreshold: 0.85,
+      maxTokens: 500_000,
       dryRun: true,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseFlags — --max-tokens
+//
+// The bug: FLAG_BOUNDS.maxTokens existed and kill-switches.mjs guarded on
+// `args.maxTokens > 0`, but parseFlags read only four flags. `--max-tokens=N`
+// was therefore silently ignored — an operator who capped the token budget got
+// the 500_000 default and no diagnostic. These tests fail without the parse arm.
+// ---------------------------------------------------------------------------
+
+describe('parseFlags — --max-tokens', () => {
+  it('reads --max-tokens=N', () => {
+    expect(parseFlags(['--max-tokens=120000']).maxTokens).toBe(120_000);
+  });
+
+  it('defaults to FLAG_BOUNDS.maxTokens.default when the flag is absent', () => {
+    expect(parseFlags([]).maxTokens).toBe(FLAG_BOUNDS.maxTokens.default);
+  });
+
+  it('accepts 0 — the documented "switch disabled" value, not a clamp to 1', () => {
+    expect(parseFlags(['--max-tokens=0']).maxTokens).toBe(0);
+  });
+
+  it('clamps above the ceiling to FLAG_BOUNDS.maxTokens.max', () => {
+    expect(parseFlags(['--max-tokens=99999999']).maxTokens).toBe(FLAG_BOUNDS.maxTokens.max);
+  });
+
+  it('clamps a negative value to the floor 0', () => {
+    expect(parseFlags(['--max-tokens=-5']).maxTokens).toBe(FLAG_BOUNDS.maxTokens.min);
+  });
+
+  it('floors a fractional value — the counter it gates is an integer', () => {
+    expect(parseFlags(['--max-tokens=1234.9']).maxTokens).toBe(1234);
+  });
+
+  it('non-numeric falls back to the default', () => {
+    expect(parseFlags(['--max-tokens=lots']).maxTokens).toBe(FLAG_BOUNDS.maxTokens.default);
   });
 });

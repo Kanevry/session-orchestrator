@@ -226,8 +226,12 @@ function countAttributedEvents(ctx, eventName) {
  * verification-evidence: ≥1 quality_gate event in the clean window ∧ all
  * exit_code==0 → pass; any exit_code≠0 → fail; 0 events ∧ total_files_changed==0
  * → not-applicable; 0 events otherwise / peer-contaminated window → cannot-determine.
+ *
+ * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
+ * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * contract: signature, arguments and return shape may change with the rubric.
  */
-function scoreVerificationEvidence(ctx) {
+export function scoreVerificationEvidence(ctx) {
   const id = 'verification-evidence';
   const method = 'deterministic';
 
@@ -284,8 +288,12 @@ function scoreVerificationEvidence(ctx) {
  * threshold); else fail. completion_rate absent + no planned_issues →
  * not-applicable (housekeeping / unplanned); completion_rate absent WITH planned
  * work → cannot-determine. score = completion_rate (informative).
+ *
+ * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
+ * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * contract: signature, arguments and return shape may change with the rubric.
  */
-function scorePlanFidelity(ctx) {
+export function scorePlanFidelity(ctx) {
   const id = 'plan-fidelity';
   const method = 'deterministic';
 
@@ -329,8 +337,12 @@ function scorePlanFidelity(ctx) {
  * pass = the LAST full-gate in the clean window has exit_code==0, else fail.
  * 0 full-gate events → not-applicable when no waves ran (housekeeping), else
  * cannot-determine. Peer-contaminated window → cannot-determine.
+ *
+ * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
+ * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * contract: signature, arguments and return shape may change with the rubric.
  */
-function scoreGateHealth(ctx) {
+export function scoreGateHealth(ctx) {
   const id = 'gate-health';
   const method = 'deterministic';
 
@@ -406,8 +418,12 @@ function scoreGateHealth(ctx) {
  * reported-only `guard-friction` dimension where it stays visible without
  * driving a verdict. What remains here are genuinely adverse signals — and of
  * those only `spiral` is emitted at all, which the evidence discloses.
+ *
+ * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
+ * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * contract: signature, arguments and return shape may change with the rubric.
  */
-function scoreProcessSafety(ctx) {
+export function scoreProcessSafety(ctx) {
   const id = 'process-safety';
   const method = 'deterministic';
 
@@ -447,8 +463,12 @@ function scoreProcessSafety(ctx) {
  *
  * Attribution prefers the event's own `session_id` and falls back to the time
  * window — see `countAttributedEvents`.
+ *
+ * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
+ * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * contract: signature, arguments and return shape may change with the rubric.
  */
-function scoreGuardFriction(ctx) {
+export function scoreGuardFriction(ctx) {
   const id = 'guard-friction';
   const method = 'deterministic';
 
@@ -487,8 +507,12 @@ function scoreGuardFriction(ctx) {
  * efficiency-kpis: REPORTED, never graded — status is ALWAYS not-applicable.
  * The numbers live in the record's kpis{} block; evidence summarises them.
  * Missing values are null ("don't fake perfect"), never guessed.
+ *
+ * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
+ * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * contract: signature, arguments and return shape may change with the rubric.
  */
-function scoreEfficiencyKpis(kpis) {
+export function scoreEfficiencyKpis(kpis) {
   const id = 'efficiency-kpis';
   const method = 'deterministic';
   const fmt = (v) => (v === null || v === undefined ? 'null' : String(v));
@@ -499,6 +523,30 @@ function scoreEfficiencyKpis(kpis) {
     evidence: `REPORTED, not graded. duration_seconds=${fmt(kpis.duration_seconds)} (${kpis._duration_source}), total_waves=${fmt(kpis.total_waves)}, total_agents=${fmt(kpis.total_agents)}, token_input=${fmt(kpis.token_input)}, token_output=${fmt(kpis.token_output)}, carryover=${fmt(kpis.carryover)}.`,
   };
 }
+
+/**
+ * Dimension id → its scorer, in the canonical `RUBRIC_DIMENSION_IDS` order.
+ *
+ * Exists so the rubric parity test resolves a scorer from the dimension ANCHOR
+ * it parsed out of `skills/eval/rubric-v2.md` instead of retyping six function
+ * names — a hand-typed list under a census title is a green tick with no cover
+ * (`.claude/rules/measurement-discipline.md`). NOT a public contract; the
+ * callable values are the same test-only exports as above.
+ *
+ * NOTE the argument asymmetry, which is the code's shape and not an oversight:
+ * five scorers take the evaluation context `{record, events, window, peer,
+ * rawSessionIds}`, while `scoreEfficiencyKpis` takes the pre-extracted `kpis`
+ * block. `efficiency-kpis` pre-registers no condition table (it is always
+ * `not-applicable`), so no row-driven caller passes it a context.
+ */
+export const RUBRIC_SCORERS = Object.freeze({
+  'verification-evidence': scoreVerificationEvidence,
+  'plan-fidelity': scorePlanFidelity,
+  'gate-health': scoreGateHealth,
+  'process-safety': scoreProcessSafety,
+  'guard-friction': scoreGuardFriction,
+  'efficiency-kpis': scoreEfficiencyKpis,
+});
 
 // ---------------------------------------------------------------------------
 // Ledger-completeness note (#1407 acceptance criterion 3)

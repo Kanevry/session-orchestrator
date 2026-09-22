@@ -433,6 +433,18 @@ if (runCheck('check-dead-bridge.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 if (runCheck('check-entry-guard.mjs') !== 0) checkFailed = 1;
 
+// BLOCKING (#1422), the complement of the check above: `check-entry-guard`
+// judges the FORM of a guard that already exists, so a registered hook with NO
+// guard at all passes it trivially — the #1393 regression class exactly. This
+// one asks the other half of the question over the union of the four platform
+// manifests: does every registered hook run its entry only under
+// `isMainModule(import.meta.url)` / `invokedAsScript()`, and does no profile
+// gate sit at module top level where its `process.exit(0)` kills a mere
+// importer. Blocking honestly: 27/27 registered hooks were guarded at the
+// moment it landed, because #1393 drained the backlog first.
+process.stdout.write('\n');
+if (runCheck('check-hook-entry-guards.mjs') !== 0) checkFailed = 1;
+
 // FAIL-capable, unlike the WARN-only censuses below: R2+R4 were measured at
 // 1 hit / 1 TP / 0 FP each against the full test corpus, so this check cannot be
 // red on arrival for anything but a real instance of the class. The alternatives

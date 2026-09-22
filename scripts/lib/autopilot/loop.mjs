@@ -59,7 +59,11 @@ function clampNumber(value, { min, max, fallback }) {
  * @param {string} [opts.jsonlPath] @param {string} [opts.runId] @param {string} [opts.branch]
  * @param {string} [opts.hostJsonPath] @param {number} [opts.peerAbortThreshold]
  * @param {number} [opts.carryoverThreshold] @param {number} [opts.maxTokens]
- * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler input (defaults to jsonlPath)
+ * @param {string} [opts.autopilotJsonlPath] — STALL_TIMEOUT sampler fallback marker (defaults to jsonlPath)
+ * @param {string} [opts.sessionLockPath] — STALL_TIMEOUT sampler PRIMARY marker (`session.lock`
+ *   `last_heartbeat`). Deliberately undefaulted: the default would be cwd-relative, which in a
+ *   test run resolves to the LIVE repo lock and would silently decide the sampler's branch. The
+ *   CLI driver (`scripts/autopilot.mjs`) supplies it; omitting it keeps the legacy mtime marker.
  * @param {number} [opts.stallTimeoutSeconds] — STALL_TIMEOUT threshold seconds (default 600)
  * @param {string} [opts.worktreePath] @param {string} [opts.parentRunId]
  * @param {number} [opts.blockedByIssue] — Phase D (#341) forward-compat: issue number this loop is waiting on (OPEN-4 commit-deps); callers may omit, defaults to null
@@ -125,6 +129,14 @@ export async function runLoop(opts = {}) {
     max_sessions: maxSessions,
     max_hours: maxHours,
     confidence_threshold: confidenceThreshold,
+    // Persisted for the same reason as the three above (HR-105): a switch whose
+    // input is never recorded cannot be falsified afterwards. `0` = disabled.
+    // CEILING: reaching a NON-zero value here does not make TOKEN_BUDGET_EXCEEDED
+    // live under the headless driver — `readTailSession()` in scripts/autopilot.mjs
+    // returns no `usage`, and sessions.jsonl carries no token field to build one
+    // from, so `total_tokens_used` stays 0. Revisit when a session record gains
+    // token counts.
+    max_tokens: opts.maxTokens ?? 0,
     iterations_completed: 0,
     kill_switch: null,
     kill_switch_detail: null,
@@ -275,6 +287,7 @@ export async function runLoop(opts = {}) {
     const postCheck = postSessionKillSwitch(sessionResult, {
       carryoverThreshold,
       autopilotJsonlPath: opts.autopilotJsonlPath ?? jsonlPath,
+      sessionLockPath: opts.sessionLockPath,
       stallTimeoutSeconds: opts.stallTimeoutSeconds ?? 600,
       nowMs: opts.nowMs,
     });

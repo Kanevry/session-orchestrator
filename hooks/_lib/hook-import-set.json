@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-20T07:31:00.985Z",
-  "head": "9b118cf63fdd5ab3a7b6bbe36a657c230295783a",
+  "generated_at": "2026-09-21T17:22:59.446Z",
+  "head": "98d0659810031ab26dc9612a8e829cd806b41ebf",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -320,6 +320,7 @@
         "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-templates-first.mjs"
       ]
@@ -524,6 +525,14 @@
       ]
     },
     {
+      "file": "scripts/lib/config/gate.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/config/gitlab-portfolio.mjs",
       "reachable_from": [
         "on-session-end.mjs",
@@ -626,6 +635,16 @@
         "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/reaper.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-edit-validate.mjs",
+        "post-tool-batch-wave-signal.mjs"
       ]
     },
     {
@@ -1126,6 +1145,13 @@
       ]
     },
     {
+      "file": "scripts/lib/orphan-reaper.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "post-tool-batch-wave-signal.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/owner-yaml.mjs",
       "reachable_from": [
         "on-session-end.mjs",
@@ -1217,6 +1243,13 @@
       ]
     },
     {
+      "file": "scripts/lib/process-group.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "post-tool-batch-wave-signal.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/resource-probe.mjs",
       "reachable_from": [
         "on-session-start.mjs"
@@ -1231,7 +1264,9 @@
     {
       "file": "scripts/lib/resource-probe/parsers.mjs",
       "reachable_from": [
-        "on-session-start.mjs"
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-tool-batch-wave-signal.mjs"
       ]
     },
     {
@@ -1352,7 +1387,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "on-stop.mjs"
+        "on-stop.mjs",
+        "post-tool-batch-wave-signal.mjs"
       ]
     },
     {
@@ -1605,6 +1641,13 @@
       "file": "scripts/lib/wave-context.mjs",
       "reachable_from": [
         "pre-bash-staging-fence.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/wave-executor/dispatch-common.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "post-tool-batch-wave-signal.mjs"
       ]
     },
     {

@@ -17,6 +17,7 @@ import {
   rmSync,
   chmodSync,
   existsSync,
+  utimesSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -79,12 +80,13 @@ function createTmpLayout(tmp) {
 // Helper: spawn scripts/autopilot.mjs
 // ---------------------------------------------------------------------------
 
-function runAutopilot(args, { tmp, env = {} } = {}) {
+function runAutopilot(args, { tmp, env = {}, pathPrefix = null } = {}) {
   const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
   const spawnEnv = {
     ...process.env,
-    // Override PATH so stub claude is found first
-    PATH: `${FIXTURES_DIR}:${process.env.PATH}`,
+    // Override PATH so stub claude is found first. `pathPrefix` lets a single
+    // test put its OWN stub ahead of the shared fixture (used to record argv).
+    PATH: `${pathPrefix ? `${pathPrefix}:` : ''}${FIXTURES_DIR}:${process.env.PATH}`,
     // Required by stub
     STUB_SESSIONS_JSONL: sessionsJsonl,
     // Disable any real resource probing side-effects in CI
@@ -314,5 +316,123 @@ describe('scripts/autopilot.mjs integration', () => {
     expect(result.status).toBe(2);
     expect(rec.kill_switch).toBe('failed-wave');
     expect(rec.iterations_completed).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 6 — the spawned command line (MR1)
+  //
+  // `session` is a RESERVED terminal-only built-in under `claude -p`: the bare
+  // `/session <mode>` form answers "/session isn't available in this
+  // environment." and the child does nothing, which in an unattended run reads
+  // as a session that produced no work rather than as a broken invocation
+  // (commands/session.md § Headless, measured 2026-09-16 / claude 2.1.273).
+  // Pin the whole argv, not just the command string: without `--plugin-dir` the
+  // namespaced name does not resolve either.
+  // -------------------------------------------------------------------------
+
+  it('spawns the NAMESPACED command with --plugin-dir pointing at the real plugin root', () => {
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+
+    // A stub that records its own argv, then delegates to the shared fixture
+    // stub so the loop still gets its sessions.jsonl record.
+    const binDir = join(tmp, 'argv-bin');
+    mkdirSync(binDir, { recursive: true });
+    const argvLog = join(tmp, 'argv.json');
+    const recorder = join(binDir, 'claude');
+    // One argument per line — the driver passes no argument containing a newline,
+    // and this avoids a second quoting layer inside the stub.
+    writeFileSync(
+      recorder,
+      '#!/usr/bin/env bash\n' +
+      'printf \'%s\\n\' "$@" > "$ARGV_LOG"\n' +
+      `exec "${STUB_CLAUDE}" "$@"\n`,
+      'utf8'
+    );
+    chmodSync(recorder, 0o755);
+
+    const result = runAutopilot(
+      ['--headless', '--max-sessions=1', '--confidence-threshold=0.4'],
+      { tmp, pathPrefix: binDir, env: { ARGV_LOG: argvLog } }
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(argvLog)).toBe(true);
+    const argv = readFileSync(argvLog, 'utf8').split('\n').filter((l) => l.length > 0);
+
+    expect(argv[0]).toBe('-p');
+    expect(argv[1]).toBe('/session-orchestrator:session deep');
+    expect(argv[1]).not.toMatch(/^\/session /);
+    expect(argv[2]).toBe('--plugin-dir');
+
+    // The plugin root must be THIS checkout, proven by a file only it has —
+    // an existsSync on the directory alone would also pass for any stray path.
+    expect(existsSync(join(argv[3], 'commands', 'session.md'))).toBe(true);
+    expect(argv).toHaveLength(4);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 7 — STALL_TIMEOUT does not fire on the previous run's record (MR2)
+  //
+  // Production defaults the sampler to `autopilot.jsonl`, which telemetry.mjs
+  // writes ONCE per invocation AFTER the loop. So at the post-session check of
+  // iteration 1 the mtime belonged to the PREVIOUS autopilot run — hours or days
+  // old — and the loop killed itself with `stall-timeout` after a single
+  // successful session. Seed exactly that state: a day-old autopilot.jsonl plus
+  // a live session.lock heartbeat.
+  // -------------------------------------------------------------------------
+
+  it('does not fire stall-timeout when a PREVIOUS run left a day-old autopilot.jsonl', () => {
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+
+    const prevRun = join(tmp, '.orchestrator', 'metrics', 'autopilot.jsonl');
+    writeFileSync(prevRun, JSON.stringify({ autopilot_run_id: 'yesterday' }) + '\n', 'utf8');
+    const dayAgo = new Date(Date.now() - 24 * 3600 * 1000);
+    utimesSync(prevRun, dayAgo, dayAgo);
+
+    // A live session: the lock heartbeat is what hooks/on-stop.mjs refreshes.
+    writeFileSync(
+      join(tmp, '.orchestrator', 'session.lock'),
+      JSON.stringify({
+        session_id: 'live-session',
+        started_at: new Date(Date.now() - 3600 * 1000).toISOString(),
+        last_heartbeat: new Date().toISOString(),
+      }),
+      'utf8'
+    );
+
+    const result = runAutopilot(
+      ['--headless', '--max-sessions=1', '--confidence-threshold=0.4'],
+      { tmp }
+    );
+
+    expect(result.status).toBe(0);
+    const records = readAutopilotJsonl(tmp);
+    const last = records[records.length - 1];
+    expect(last.iterations_completed).toBe(1);
+    expect(last.kill_switch).toBe('max-sessions-reached');
+    expect(last.stall_recovery_count).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 8 — --max-tokens reaches the loop (MR3)
+  //
+  // parseFlags ignored the flag entirely, so the value never reached runLoop and
+  // `max_tokens` could only ever be the 500_000 default. The observable proof at
+  // the CLI boundary is the clamp: a value above the ceiling comes back as the
+  // ceiling, which the default can never produce.
+  // -------------------------------------------------------------------------
+
+  it('forwards --max-tokens to runLoop (clamped), instead of silently ignoring it', () => {
+    const result = runAutopilot(
+      ['--headless', '--dry-run', '--max-tokens=99999999'],
+      { tmp }
+    );
+
+    expect(result.status).toBe(0);
+    const [rec] = readAutopilotJsonl(tmp);
+    expect(rec.dry_run).toBe(true);
+    // parseFlags clamps 99999999 down to the FLAG_BOUNDS ceiling; a dropped flag
+    // would leave runLoop's own `?? 0` fallback and this would read 0.
+    expect(rec.max_tokens).toBe(10_000_000);
   });
 });

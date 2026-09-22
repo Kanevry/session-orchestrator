@@ -25,6 +25,7 @@ import {
   checkInstructionBudget,
   DEFAULT_GENERATED_BYTE_CEILING,
   DEFAULT_PATH_SCOPED_BYTE_CEILING,
+  PATH_SCOPED_NEAR_THRESHOLD,
   loadInstructionBudgetConfig,
   _parseInstructionBudget,
   countDirectives,
@@ -1598,5 +1599,160 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
     expect(result.pathScopedByteCeiling).toBe(DEFAULT_PATH_SCOPED_BYTE_CEILING);
     expect(DEFAULT_PATH_SCOPED_BYTE_CEILING).toBeGreaterThan(10_000);
     expect(result.overPathScopedBudget).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1419 — the near-threshold stage on the path-scoped axis.
+//
+// THE BUG THESE CATCH, which no case above can: `overPathScopedBudget` is a
+// HARD `bytes > ceiling` test, so the whole band below the break was silent.
+// Measured on the #1419 case (2026-09-20): 117,973 of 124,000 B = 95.1 %, with
+// `capped: 91` learnings already held back — and the banner said nothing. The
+// operator first learned of the ceiling inside `writeApprovedRules`, after
+// approving rules it then refused to write.
+// ---------------------------------------------------------------------------
+describe('checkInstructionBudget — path-scoped near-threshold warning (#1419)', () => {
+  /** A `globs:`-scoped (= path-scoped), non-generated corpus of a known size. */
+  function makePathScopedFixture() {
+    const dir = mkdtempSync(join(tmpdir(), 'instr-budget-near-'));
+    tmpDirs.push(dir);
+    writeFileSync(join(dir, 'always-on.md'), '# Always\n\n- one directive\n');
+    writeFileSync(
+      join(dir, 'scoped.md'),
+      ['---', 'globs:', '  - "tests/**"', '---', '', 'y'.repeat(4000), ''].join('\n'),
+    );
+    return dir;
+  }
+
+  /** An empty repo root — no CLAUDE.md, so the config falls back to defaults. */
+  function makeRepoRoot(events) {
+    const root = mkdtempSync(join(tmpdir(), 'instr-budget-near-root-'));
+    tmpDirs.push(root);
+    if (events !== undefined) {
+      mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+      writeFileSync(
+        join(root, '.orchestrator', 'metrics', 'events.jsonl'),
+        events.map((e) => JSON.stringify(e)).join('\n') + '\n',
+      );
+    }
+    return root;
+  }
+
+  /** Bytes the module itself measures for this corpus — the number the rule judges. */
+  function pathScopedBytes(rulesDir) {
+    return computeInstructionBudget({ rulesDir }).bySurface.pathScoped.bytes;
+  }
+
+  it('warns while still UNDER the ceiling, naming occupancy, both numbers and the consequence', () => {
+    const rulesDir = makePathScopedFixture();
+    const bytes = pathScopedBytes(rulesDir);
+    // ~95 % occupied — the #1419 state exactly, and silent before this change.
+    const ceiling = Math.round(bytes / 0.95);
+
+    const banner = checkInstructionBudget({
+      repoRoot: makeRepoRoot(),
+      rulesDir,
+      pathScopedByteCeiling: ceiling,
+    });
+
+    expect(banner).not.toBeNull();
+    expect(banner.severity).toBe('warn');
+    expect(banner.message).toContain('path-scoped Regel-Decke');
+    // HR-106 — the banner reports the numbers the rule judged, with the unit.
+    expect(banner.message).toContain(`(${bytes}/${ceiling} B)`);
+    expect(banner.message).toMatch(/zu 9\d\.\d % belegt/);
+    expect(banner.message).toContain('/reconcile wird Learnings zurueckhalten');
+    // Nothing is over — the breach sentence must not appear.
+    expect(banner.message).not.toContain('Instruction budget over');
+    expect(banner.message).not.toContain('path-scoped rules');
+  });
+
+  it('fires at exactly the threshold and stays silent one step below it', () => {
+    const rulesDir = makePathScopedFixture();
+    const bytes = pathScopedBytes(rulesDir);
+
+    // floor ⇒ bytes/ceiling >= 0.90: the inclusive boundary.
+    const atThreshold = Math.floor(bytes / PATH_SCOPED_NEAR_THRESHOLD);
+    // 85 % occupied — comfortably inside the corridor, nothing to say.
+    const below = Math.round(bytes / 0.85);
+
+    expect(bytes / atThreshold).toBeGreaterThanOrEqual(PATH_SCOPED_NEAR_THRESHOLD);
+    expect(
+      checkInstructionBudget({ repoRoot: makeRepoRoot(), rulesDir, pathScopedByteCeiling: atThreshold }),
+    ).not.toBeNull();
+    expect(
+      checkInstructionBudget({ repoRoot: makeRepoRoot(), rulesDir, pathScopedByteCeiling: below }),
+    ).toBeNull();
+  });
+
+  it('leaves the over-ceiling breach banner unchanged (the near line never masks a breach)', () => {
+    const rulesDir = makePathScopedFixture();
+
+    const banner = checkInstructionBudget({
+      repoRoot: makeRepoRoot(),
+      rulesDir,
+      pathScopedByteCeiling: 2000,
+    });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('Instruction budget over');
+    expect(banner.message).toContain('path-scoped rules');
+    expect(banner.message).toContain('> 2000 B');
+    // A breach is reported ONCE, as a breach — never also as "nearly full".
+    expect(banner.message).not.toContain('Regel-Decke');
+  });
+
+  it('carries the held-back learning count from the last reconcile run', () => {
+    const rulesDir = makePathScopedFixture();
+    const bytes = pathScopedBytes(rulesDir);
+    const repoRoot = makeRepoRoot([
+      { event: 'orchestrator.reconcile.completed', capped: 12, timestamp: '2026-09-19T10:00:00Z' },
+      { event: 'orchestrator.session.started', timestamp: '2026-09-20T09:00:00Z' },
+      // Newest reconcile record wins — the walk stops at the first hit.
+      { event: 'orchestrator.reconcile.completed', capped: 91, timestamp: '2026-09-20T10:00:00Z' },
+    ]);
+
+    const banner = checkInstructionBudget({
+      repoRoot,
+      rulesDir,
+      pathScopedByteCeiling: Math.round(bytes / 0.95),
+    });
+
+    expect(banner).not.toBeNull();
+    expect(banner.message).toContain('91 Learnings warten');
+    expect(banner.message).not.toContain('12 Learnings warten');
+  });
+
+  it('omits the backlog clause when it was not measured or is zero — never prints 0', () => {
+    const rulesDir = makePathScopedFixture();
+    const bytes = pathScopedBytes(rulesDir);
+    const ceiling = Math.round(bytes / 0.95);
+
+    // (a) no ledger at all ⇒ not measured.
+    const noLedger = checkInstructionBudget({
+      repoRoot: makeRepoRoot(),
+      rulesDir,
+      pathScopedByteCeiling: ceiling,
+    });
+    // (b) a ledger without any reconcile record ⇒ also not measured.
+    const noRecord = checkInstructionBudget({
+      repoRoot: makeRepoRoot([{ event: 'orchestrator.session.started', timestamp: '2026-09-20T09:00:00Z' }]),
+      rulesDir,
+      pathScopedByteCeiling: ceiling,
+    });
+    // (c) a measured zero ⇒ nothing is waiting, so nothing to report.
+    const zero = checkInstructionBudget({
+      repoRoot: makeRepoRoot([{ event: 'orchestrator.reconcile.completed', capped: 0 }]),
+      rulesDir,
+      pathScopedByteCeiling: ceiling,
+    });
+
+    for (const banner of [noLedger, noRecord, zero]) {
+      expect(banner).not.toBeNull();
+      expect(banner.message).toContain('path-scoped Regel-Decke');
+      expect(banner.message).not.toContain('Learnings warten');
+      expect(banner.message).not.toMatch(/\b0 Learnings\b/);
+    }
   });
 });

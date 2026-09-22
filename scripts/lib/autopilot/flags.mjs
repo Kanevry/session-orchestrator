@@ -58,7 +58,7 @@ function parseNumeric(raw) {
  * silently to bounds. Unknown flags are ignored. `--dry-run` is a boolean flag.
  *
  * @param {string[]} argv — argument tokens (e.g. ['--max-sessions=3', '--dry-run'])
- * @returns {{maxSessions: number, maxHours: number, confidenceThreshold: number, dryRun: boolean}}
+ * @returns {{maxSessions: number, maxHours: number, confidenceThreshold: number, maxTokens: number, dryRun: boolean}}
  */
 export function parseFlags(argv) {
   const tokens = Array.isArray(argv) ? argv : [];
@@ -66,6 +66,7 @@ export function parseFlags(argv) {
   let rawSessions = null;
   let rawHours = null;
   let rawConfidence = null;
+  let rawTokens = null;
   let dryRun = false;
 
   for (const tok of tokens) {
@@ -81,6 +82,7 @@ export function parseFlags(argv) {
     if (key === '--max-sessions') rawSessions = parseNumeric(val);
     else if (key === '--max-hours') rawHours = parseNumeric(val);
     else if (key === '--confidence-threshold') rawConfidence = parseNumeric(val);
+    else if (key === '--max-tokens') rawTokens = parseNumeric(val);
   }
 
   return {
@@ -99,6 +101,15 @@ export function parseFlags(argv) {
       max: FLAG_BOUNDS.confidenceThreshold.max,
       fallback: FLAG_BOUNDS.confidenceThreshold.default,
     }),
+    // Integer token count — the TOKEN_BUDGET_EXCEEDED switch compares it against
+    // a summed `usage.output_tokens`, which is never fractional. `0` disables the
+    // switch (`kill-switches.mjs` guards on `maxTokens > 0`), so the lower bound
+    // stays 0 rather than 1.
+    maxTokens: Math.floor(clampNumber(rawTokens, {
+      min: FLAG_BOUNDS.maxTokens.min,
+      max: FLAG_BOUNDS.maxTokens.max,
+      fallback: FLAG_BOUNDS.maxTokens.default,
+    })),
     dryRun,
   };
 }

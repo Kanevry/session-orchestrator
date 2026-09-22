@@ -398,8 +398,11 @@ consolidation survives the next `/reconcile`:
   whole, so its learnings become re-proposable — fail-open on an unparseable
   date. Two known limits, measured 2026-09-18: this is the on-disk half only
   (79 of this repo's 92 provenance keys are ALSO sidecar-terminal, so just 13
-  return), and a file the sweep cannot split (`no-1to1-mapping` &c. — none in
-  the live tree today, `skipped: []` over 7 files) that expires legitimately
+  return), and a file the sweep cannot split or cannot read
+  (`no-1to1-mapping`, `no-provenance-block`, `unreadable`, and since GH#70
+  `no-counter-sentence` — the fail-closed branch that touches such a file not
+  at all, deletion included; none in the live tree today, `skipped: []` over 7
+  files) that expires legitimately
   re-proposes on every run with no mechanical exit. Detail:
   `docs/rule-authoring.md` § Consolidated rules.
 - **A dropped learning must be STAMPED before deletion, or it regenerates.**

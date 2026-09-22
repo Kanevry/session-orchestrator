@@ -530,6 +530,12 @@ export function buildBatch({
     let sessionForPing;
     /** @type {'ledger'|'derived'|'absent'} */
     let sessionRecordSource = 'ledger';
+    // #1416: the events-ledger completeness verdict, carried to the ping as its
+    // own optional boolean. Stays `null` on the LEDGER branch by construction —
+    // that branch never reads events.jsonl, so it has nothing to report, and
+    // `buildUsagePing` omits the key for anything that is not a real boolean.
+    /** @type {boolean|null} */
+    let ledgerComplete = null;
     if (sessionRecord && typeof sessionRecord.started_at === 'string' && !Number.isNaN(Date.parse(sessionRecord.started_at))) {
       const startMs = Date.parse(sessionRecord.started_at);
       windowInvocations = invocations.filter((rec) => {
@@ -547,6 +553,7 @@ export function buildBatch({
       const derived = deriveSessionFromEvents(dir);
       sessionForPing = derived.session;
       sessionRecordSource = derived.source;
+      ledgerComplete = derived.ledger_complete;
 
       const derivedStartMs = Date.parse(sessionForPing.started_at);
       const cutoff = (Number.isNaN(Date.parse(nowIso)) ? Date.now() : Date.parse(nowIso)) - DAILY_FLUSH_MS;
@@ -569,6 +576,7 @@ export function buildBatch({
       consentState,
       sessionRecordSource,
       sessionProfile: readSessionProfileForMetricsDir(dir),
+      ledgerComplete,
     });
 
     const target = statePath || TELEMETRY_JSON_PATH;

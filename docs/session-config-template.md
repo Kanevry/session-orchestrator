@@ -1009,6 +1009,21 @@ config-protection:
   mode: warn               # warn | strict (strict blocks loosening, exit 2)
 allow-config-weakening: false   # per-session bypass (mirrors allow-destructive-ops)
 
+# Orphan-process watchdog (#1425 / #1432) — DEFAULT OFF; arm only after measuring its firing rate (HR-101)
+reaper:
+  enabled: false                 # only an explicit `true` arms it; it can send signals to processes
+  mode: report                   # report (decide + audit only) | kill (send signals — PRD Stufe 2)
+  min-age-seconds: 300           # DevWatchdog's hard limit for tsgo; the 2026-09-20 orphans were 7–17 min old
+  min-scan-interval-seconds: 30  # throttle; keeps a PostToolBatch storm from taxing every tool call
+  kill-grace-ms: 10000           # DEFAULT_KILL_GRACE_MS from dispatch-common.mjs:61 — repo convention
+  verify-wait-ms: 500            # wait before reading the effect back (a sent signal proves nothing)
+  max-hook-latency-ms: 50        # ceiling a scan may delay a hook by
+  false-alarm-window: 50         # rolling window of audit decisions the HR-101 10 % rate is judged over
+
+# Quality-gate path B ceiling (#1425 A3) — SO_GATE_TIMEOUT_MS still overrides this per run
+gate:
+  timeout-path-b-ms: 900000      # 15 min; same cap as GATE_TIMEOUT_MS on path A
+
 # Agent mapping
 agent-mapping:
   impl: code-implementer

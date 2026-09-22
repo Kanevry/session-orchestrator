@@ -20,6 +20,12 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { mkdtempSync, rmSync, writeFileSync as writeFileSyncNode } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { performance as perfHooks } from 'node:perf_hooks';
+import { join as joinPath } from 'node:path';
+const perfNow = () => perfHooks.now();
+import { maybeTriggerOrphanScan } from '../../hooks/post-tool-batch-wave-signal.mjs';
 
 const HOOK = new URL('../../hooks/post-tool-batch-wave-signal.mjs', import.meta.url).pathname;
 const SESSION_REL = join('.orchestrator', 'current-session.json');
@@ -643,5 +649,187 @@ describe('post-tool-batch wave diff-size measurement (#980)', () => {
     expect(Object.hasOwn(completed[0], 'files_changed')).toBe(false);
     // The stale sha is cleared rather than left to inflate the next count.
     expect(readSessionFile().wave_start_sha).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// orphan-reaper trigger (#1432 B4)
+// ---------------------------------------------------------------------------
+
+describe('maybeTriggerOrphanScan — PostToolBatch', () => {
+  let rtmp;
+
+  beforeEach(() => { rtmp = mkdtempSync(joinPath(tmpdir(), 'reaper-trigger-')); });
+  afterEach(() => { rmSync(rtmp, { recursive: true, force: true }); });
+
+  /** Record every spawn the trigger attempts, without ever spawning. */
+  function recordingSpawn(calls) {
+    return (cmd, args, opts) => {
+      calls.push({ cmd, args, opts });
+      return { unref() {} };
+    };
+  }
+
+  function writeClaudeMd(body) {
+    writeFileSyncNode(joinPath(rtmp, 'CLAUDE.md'), body, 'utf8');
+  }
+
+  it('does nothing when no CLAUDE.md/AGENTS.md exists', async () => {
+    // Bug: an unreadable config defaulting to ENABLED would arm a signal-sending
+    // watchdog on every repo that has no Session Config at all.
+    const calls = [];
+    const r = await maybeTriggerOrphanScan({ projectDir: rtmp, spawnFn: recordingSpawn(calls) });
+    expect(r).toEqual({ spawned: false, reason: 'disabled' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('reaper.enabled: false → no stat, no spawn', async () => {
+    // Bug: the default-off block still paying for a marker stat on every hook.
+    writeClaudeMd('reaper:\n  enabled: false\n');
+    const calls = [];
+    const stats = [];
+    const r = await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      spawnFn: recordingSpawn(calls),
+      statFn: (p) => { stats.push(p); throw new Error('nope'); },
+    });
+    expect(r).toEqual({ spawned: false, reason: 'disabled' });
+    expect(calls).toHaveLength(0);
+    expect(stats).toHaveLength(0);
+  });
+
+  it('spawns exactly one detached child when armed and the marker is absent', async () => {
+    writeClaudeMd('reaper:\n  enabled: true\n');
+    const calls = [];
+    const r = await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      spawnFn: recordingSpawn(calls),
+      writeFn: () => {},
+    });
+    expect(r).toEqual({ spawned: true, reason: 'spawned' });
+    expect(calls).toHaveLength(1);
+    const [call] = calls;
+    expect(call.cmd).toBe(process.execPath);
+    expect(call.opts).toMatchObject({ detached: true, stdio: 'ignore' });
+    // argv shape: <scriptPath> --repo-root <p> --mode <m> --min-age-seconds …
+    // The script path is argv[0] — no `--input-type=module -e <program>` any
+    // more, so nothing this hook builds is executable source at all.
+    expect(call.args[0]).toMatch(/orphan-reaper\.mjs$/);
+    expect(call.args[0].startsWith('file://')).toBe(false);
+    expect(call.args.slice(1, 5)).toEqual(['--repo-root', rtmp, '--mode', 'report']);
+    // Bug: a checkout path reaching the child as anything but its OWN argv
+    // value (an interpolated `-e` program, a concatenated `--repo-root=<p>`)
+    // is code or an unparseable flag, not a value.
+    expect(call.args).not.toContain('-e');
+    expect(call.args.filter((a) => a.includes(rtmp))).toEqual([rtmp]);
+  });
+
+  it('the throttle skips the spawn when the marker is fresh', async () => {
+    // Bug (PRD FA4, second scenario): without the throttle a PostToolBatch storm
+    // spawns one ps-running child per tool call.
+    writeClaudeMd('reaper:\n  enabled: true\n  min-scan-interval-seconds: 30\n');
+    const calls = [];
+    const now = 1_000_000;
+    const r = await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      now,
+      spawnFn: recordingSpawn(calls),
+      statFn: () => ({ mtimeMs: now - 5_000 }),
+      writeFn: () => {},
+    });
+    expect(r).toEqual({ spawned: false, reason: 'throttled' });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('spawns again once the interval has elapsed', async () => {
+    writeClaudeMd('reaper:\n  enabled: true\n  min-scan-interval-seconds: 30\n');
+    const calls = [];
+    const now = 1_000_000;
+    const r = await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      now,
+      spawnFn: recordingSpawn(calls),
+      statFn: () => ({ mtimeMs: now - 31_000 }),
+      writeFn: () => {},
+    });
+    expect(r).toEqual({ spawned: true, reason: 'spawned' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('passes mode: kill through to the child', async () => {
+    writeClaudeMd('reaper:\n  enabled: true\n  mode: kill\n  min-age-seconds: 600\n');
+    const calls = [];
+    await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      spawnFn: recordingSpawn(calls),
+      writeFn: () => {},
+    });
+    expect(calls[0].args.slice(3, 7))
+      .toEqual(['--mode', 'kill', '--min-age-seconds', '600']);
+  });
+
+  it('degrades silently when the spawn throws', async () => {
+    // Bug (PRD FA4): the hook must never fail because the reaper did.
+    writeClaudeMd('reaper:\n  enabled: true\n');
+    const r = await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      spawnFn: () => { throw new Error('EAGAIN'); },
+      writeFn: () => {},
+    });
+    expect(r).toEqual({ spawned: false, reason: 'error' });
+  });
+
+  it('returns within reaper.max-hook-latency-ms (50 ms)', async () => {
+    // Bug: running the scan inline. One ps round-trip out of Node was measured
+    // at ~47 ms over 287 KB — alone enough to blow the budget.
+    writeClaudeMd('reaper:\n  enabled: true\n');
+    const spawnFn = () => ({ unref() {} });
+    // Warm the dynamic import so the measurement is the STEADY-STATE cost the
+    // hook pays, not the one-off module load of the very first tool batch.
+    await maybeTriggerOrphanScan({ projectDir: rtmp, spawnFn, writeFn: () => {} });
+    const started = perfNow();
+    await maybeTriggerOrphanScan({ projectDir: rtmp, spawnFn, writeFn: () => {} });
+    expect(perfNow() - started).toBeLessThan(50);
+  });
+});
+
+describe('orphan-reaper wiring — the hook actually calls the trigger (#1432 B4)', () => {
+  let wtmp;
+
+  beforeEach(() => { wtmp = mkdtempSync(joinPath(tmpdir(), 'reaper-wiring-ptb-')); });
+  afterEach(() => { rmSync(wtmp, { recursive: true, force: true }); });
+
+  function runIn(projectDir) {
+    return spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ batch_id: 'b1', batch_size: 1 }),
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: projectDir,
+        SO_HOOK_PROFILE: 'full',
+        SO_DISABLED_HOOKS: '',
+      },
+      timeout: 15_000,
+    });
+  }
+
+  it('stamps the throttle marker when reaper.enabled: true', () => {
+    // Bug: the exported trigger works but NO call site invokes it — the unit
+    // tests above would stay green while the watchdog never runs in production.
+    // `mode: report` keeps the detached child in dry-run: it sends no signals.
+    writeFileSync(joinPath(wtmp, 'CLAUDE.md'), 'reaper:\n  enabled: true\n  mode: report\n', 'utf8');
+    const marker = joinPath(wtmp, '.orchestrator', 'tmp', 'reaper-last-scan');
+    expect(existsSync(marker)).toBe(false);
+
+    const res = runIn(wtmp);
+    expect(res.status).toBe(0);
+    expect(existsSync(marker)).toBe(true);
+  });
+
+  it('writes no marker when the reaper is not armed', () => {
+    writeFileSync(joinPath(wtmp, 'CLAUDE.md'), 'reaper:\n  enabled: false\n', 'utf8');
+    const res = runIn(wtmp);
+    expect(res.status).toBe(0);
+    expect(existsSync(joinPath(wtmp, '.orchestrator', 'tmp', 'reaper-last-scan'))).toBe(false);
   });
 });
