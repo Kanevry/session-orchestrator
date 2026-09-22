@@ -131,6 +131,25 @@ only the **first** JSON object on stdout, so all banner lines must leave as
 **one** `systemMessage` (measured: five emitters, four lines, one shown — and the
 two warning that another session held this working copy were among the discarded).
 
+## HR-107: Eine Waise ist ein Register-Treffer, kein PPID-Wert
+
+Die Waisen-Bedingung ist eine Konjunktion: (1) PID/pgid steht im eigenen
+Abstammungsregister dieses Hosts, (2) `ppid == 1`, (3) Alter ueber
+`reaper.min-age-seconds`, (4) Kommando-Signatur read-only, (5) Identitaetspruefung
+unmittelbar vor dem Signal bestanden. PPID = 1 ist notwendig, nie hinreichend —
+68,6 % aller Prozesse erfuellen es (538/784, gemessen 2026-09-21). Ein Kandidat
+ohne Register-Eintrag wird gemeldet, nie getoetet — derselbe „report, never
+count"-Modus wie HR-104 fuer Zombies, aus demselben Grund. Abgrenzung zu HR-104:
+der Zombie dort ist idle und verursacht die Last nicht; die Waise hier ist im
+eigenen Register bekannt und verbrennt messbar Ressourcen (86–588 % CPU, bis
+8,0 GB RSS am 2026-09-20). HR-105 bindet: die Feuerrate wird gegen
+`reaper.false-alarm-window` gemessen, bevor eine Schwelle bewegt wird. HR-106
+bindet: die Banner-Zeile nennt die Zahl, die entschieden hat (Register-Treffer +
+Alter), nicht die PPID.
+
+Mechanik und verworfene Alternativen: `docs/adr/0015-process-group-kill-and-orphan-reaper.md`
+(Vorgabe `reaper.enabled: false`, `mode: report`).
+
 ## Anti-Patterns
 
 - Raising a threshold that fires on 90% of samples instead of asking what it
@@ -143,10 +162,14 @@ two warning that another session held this working copy were among the discarded
   (HR-104).
 - Shipping a threshold whose firing rate nothing records (HR-105).
 - A banner number that is not the number the rule judged (HR-106).
+- Killing a process because its PPID is 1 — the register hit, not the
+  reparenting, makes it ours (HR-107).
 
 ## See Also
 parallel-sessions.md (PSA-001/002 — the peer axis this banner surfaces) ·
 verification-before-completion.md · development.md § Guard & Threshold Design
 (category separation over threshold raising) · test-value.md § TV-003 (the same
 "measure it, don't re-derive it" discipline for the tests:src corridor) ·
-`docs/session-config-reference.md` § resource-thresholds
+`docs/session-config-reference.md` § resource-thresholds · § `reaper:` ·
+`docs/adr/0015-process-group-kill-and-orphan-reaper.md` (Prozessgruppen-Kill
+und Waisen-Waechter — die Mechanik hinter HR-107)

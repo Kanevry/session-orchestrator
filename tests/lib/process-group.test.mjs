@@ -231,6 +231,37 @@ describe('spawnInGroup — kill ladder', () => {
 });
 
 describe('killProcessGroup', () => {
+  it.each([
+    ['1 (launchd/init) — kill(-1, sig) signals EVERY process this user may signal', 1],
+    ['0 — kill(-0, sig) signals the CALLER\'s own process group', 0],
+    ['-0 — indistinguishable from 0 after negation', -0],
+    ['-12345 — the negation flips it positive and kills a single stranger PID', -12345],
+    ['NaN — a threshold-shaped value that compares false against everything', NaN],
+    ['3.5 — a non-integer pgid the kernel would coerce', 3.5],
+  ])('sends NOTHING for pgid %s and reports invalid-pgid', async (_label, pgid) => {
+    // Reproduction of the S-HIGH: one ledger line `{pid: 4242, pgid: 1}` made
+    // the reaper call kill(-1, 'SIGTERM') and kill(-1, 'SIGKILL'). The spy
+    // records targets instead of signalling; a real signal is never sent here.
+    const targets = [];
+    const res = await killProcessGroup(pgid, {
+      killFn: (target, signal) => {
+        targets.push([target, signal]);
+        return true;
+      },
+      sleepFn: async () => {},
+      isAliveFn: () => {
+        throw new Error('must not probe: nothing was signalled');
+      },
+      beforeSignal: () => {
+        throw new Error('must not consult the gate: there is nothing to permit');
+      },
+    });
+    expect(targets).toEqual([]);
+    expect(res).toEqual({
+      ok: false, signalsSent: [], survivors: [], error: 'invalid-pgid', aborted: null,
+    });
+  });
+
   it('treats ESRCH on the escalation as proof of death', async () => {
     // Bug: reading any kill() throw as failure books a successfully reaped
     // group as a survivor, which makes the reaper's success rate unreadable.
@@ -509,6 +540,47 @@ describe('gate-process ledger', () => {
     expect(read.expired).toBe(1);
   });
 
+  it.each([
+    ['pgid 1 — kill(-1) is a POSIX broadcast to every process this user may signal', { pgid: 1 }],
+    ['pgid 0 — kill(-0) signals the CALLER\'s own group', { pgid: 0 }],
+    ['a negative pgid — the negation turns it into a single-PID kill of a stranger', { pgid: -12345 }],
+    ['pid 1 — launchd is never a process this module spawned', { pid: 1 }],
+  ])('counts a ledger line with %s as MALFORMED instead of returning it as a kill target', (_label, override) => {
+    // Bug: the reader checked `typeof === "number"`, so `{pid: 4242, pgid: 1}`
+    // came back as a usable record and the reaper handed `-1` to kill(2).
+    const now = Date.now();
+    // Written through the real writer, so the case is a line the ledger CAN
+    // contain — the reader is the only thing under test here.
+    recordGateProcess(repoRoot, { ...rec(4242, now - 1000), ...override });
+
+    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    expect(read.records).toEqual([]);
+    expect(read.malformedLines).toBe(1);
+  });
+
+  it('counts a ledger line with NO commandSignature as malformed — without it the identity check has only the observed command to compare against', () => {
+    // Bug: `record.commandSignature ?? buildCommandSignature(row.args)` built
+    // the expectation FROM the row it was verifying — a check that can only pass.
+    const now = Date.now();
+    const { commandSignature, ...withoutSignature } = rec(4242, now - 1000);
+    expect(commandSignature).toBeTruthy();
+    recordGateProcess(repoRoot, withoutSignature);
+
+    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    expect(read.records).toEqual([]);
+    expect(read.malformedLines).toBe(1);
+  });
+
+  it('prunes a line the READER rejects, not only an expired one — a line kept by the pruner but skipped by the reader sits in the ledger forever', () => {
+    const now = Date.now();
+    recordGateProcess(repoRoot, rec(301, now - 1000));
+    recordGateProcess(repoRoot, { ...rec(302, now - 1000), pgid: 1 });
+
+    expect(pruneGateProcessLedger(repoRoot, { nowMs: now })).toBe(1);
+    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    expect(read.records.map((r) => r.pid)).toEqual([301]);
+  });
+
   it('returns an empty read for a repo with no ledger yet', () => {
     const read = readGateProcessLedger(repoRoot, { nowMs: Date.now() });
     expect(read).toEqual({ records: [], malformedLines: 0, expired: 0 });
@@ -541,6 +613,31 @@ describe('gate-process ledger', () => {
     expect(written).toHaveLength(1);
     expect(written[0].file).toBe(path.join('/nonexistent-repo-root', GATE_PROCESS_LEDGER_RELPATH));
     expect(JSON.parse(written[0].line).pid).toBe(401);
+  });
+
+  it('PRUNES the ledger on every registration — an append-only ledger with no production pruner grows monotonically', () => {
+    // Bug: `pruneGateProcessLedger` had ZERO production callers (measured
+    // 2026-09-22: `grep -rn pruneGateProcessLedger scripts/ hooks/ tests/` →
+    // the definition and one test), so the file grew ~369 lines/day.
+    const now = Date.now();
+    recordGateProcess(repoRoot, rec(901, now - 48 * 3600 * 1000));
+    recordGateProcess(repoRoot, rec(902, now - 1000));
+
+    const child = fakeChild(7272);
+    const promise = spawnInGroup('npm test', {
+      spawnFn: () => child,
+      killFn: () => true,
+      timeoutMs: null,
+      repoRoot,
+      sessionId: 'fixture-session',
+    });
+    child.emit('close', 0, null);
+    return promise.then(() => {
+      const read = readGateProcessLedger(repoRoot, { nowMs: now });
+      expect(read.records.map((r) => r.pid)).toEqual([902, 7272]);
+      const body = readFileSync(path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH), 'utf8');
+      expect(body.trim().split('\n')).toHaveLength(2);
+    });
   });
 
   it('registers the spawned group in the ledger under repoRoot', () => {

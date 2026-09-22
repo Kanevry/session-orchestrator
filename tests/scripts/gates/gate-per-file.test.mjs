@@ -7,6 +7,8 @@
 
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -14,12 +16,16 @@ const SCRIPT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../scripts/lib/gates/gate-per-file.mjs',
 );
+const TEST_LEDGER_ROOT = mkdtempSync(path.join(tmpdir(), 'gate-test-ledger-'));
 
 /**
  * Spawn gate-per-file.mjs with the given extra env vars.
  */
 function run(extraEnv = {}) {
   const env = { ...process.env };
+  // Never let a spawned gate script register its children in the LIVE
+  // .orchestrator/runtime/gate-processes.jsonl of this checkout (q-1 H1, W5).
+  env.GATE_LEDGER_ROOT = TEST_LEDGER_ROOT;
   for (const key of ['TYPECHECK_CMD', 'TEST_CMD', 'LINT_CMD', 'FILES', 'SESSION_START_REF']) {
     delete env[key];
   }

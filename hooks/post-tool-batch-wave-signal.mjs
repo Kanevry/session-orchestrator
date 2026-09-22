@@ -70,6 +70,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -311,11 +312,14 @@ function countFilesChangedSince(projectDir, sha) {
 // orphan-reaper trigger (#1432 B4)
 // ---------------------------------------------------------------------------
 //
-// DUPLICATED VERBATIM in hooks/on-stop.mjs. Deliberate, with a named revisit
-// trigger (BV-004): the two hooks are the only two trigger points the PRD
-// declares, and a shared `hooks/_lib/reaper-trigger.mjs` would be a third file
-// in the hook import graph for ~40 lines of glue. Extract it the moment a THIRD
-// hook needs the trigger, or the moment the two copies need to differ.
+// DUPLICATED VERBATIM between the two trigger hooks —
+// hooks/post-tool-batch-wave-signal.mjs <-> hooks/on-stop.mjs. Deliberate, with
+// a named revisit trigger (BV-004): they are the only two trigger points the
+// PRD declares, and a shared `hooks/_lib/reaper-trigger.mjs` would be a third
+// file in the hook import graph. SIZE, measured 2026-09-22 by diffing the two
+// blocks: 138 identical lines — this note said "~40 lines of glue" until then,
+// which is what made the duplicate look cheaper than it is. Extract it the
+// moment a THIRD hook needs the trigger, or the moment the copies must differ.
 
 /**
  * Filesystem path of the scan CLI, spawned as a PLAIN argv call.
@@ -367,6 +371,14 @@ function loadReaperConfig(projectDir) {
  * the throttle window — otherwise a broken spawn would be retried on every
  * single tool batch.
  *
+ * `reaper.max-hook-latency-ms` is the ceiling on the work above — measured here
+ * with `performance.now()` and reported as ONE stderr WARN line when exceeded.
+ * A WARN and not an event: this fires from a `PostToolBatch`-class hook, and a
+ * per-fire telemetry record is exactly the always-on signal
+ * `.claude/rules/host-resources.md` HR-101 calls a broken instrument. The
+ * measurement covers preparation only — the scan itself runs detached, which is
+ * the whole reason the budget can be held.
+ *
  * Never throws: any failure degrades silently (PRD FA4 "lautlos degradieren").
  *
  * @param {object} [opts]
@@ -375,6 +387,8 @@ function loadReaperConfig(projectDir) {
  * @param {Function} [opts.spawnFn]   Injected `spawn` (tests).
  * @param {Function} [opts.statFn]    Injected `statSync` (tests).
  * @param {Function} [opts.writeFn]   Injected marker writer (tests).
+ * @param {() => number} [opts.clockFn]  Injected monotonic clock for the latency
+ *   budget (tests); defaults to `performance.now`.
  * @returns {Promise<{spawned: boolean, reason: string}>}
  */
 export async function maybeTriggerOrphanScan({
@@ -383,7 +397,19 @@ export async function maybeTriggerOrphanScan({
   spawnFn = spawn,
   statFn,
   writeFn,
+  clockFn = () => performance.now(),
 } = {}) {
+  const startedAt = clockFn();
+  /** One WARN line when the preparation overran `reaper.max-hook-latency-ms`. */
+  const checkLatency = (budgetMs) => {
+    const elapsed = clockFn() - startedAt;
+    if (Number.isFinite(budgetMs) && budgetMs > 0 && elapsed > budgetMs) {
+      process.stderr.write(
+        `orphan-reaper trigger: hook latency ${elapsed.toFixed(1)} ms exceeded `
+        + `reaper.max-hook-latency-ms (${budgetMs} ms)\n`,
+      );
+    }
+  };
   try {
     const root = typeof projectDir === 'string' && projectDir ? projectDir : getProjectDir();
     const cfg = loadReaperConfig(root);
@@ -395,6 +421,7 @@ export async function maybeTriggerOrphanScan({
     const nowMs = typeof now === 'number' ? now : Date.now();
 
     if (!reaper.shouldScanNow(markerPath, nowMs, cfg['min-scan-interval-seconds'], { statFn })) {
+      checkLatency(cfg['max-hook-latency-ms']);
       return { spawned: false, reason: 'throttled' };
     }
     reaper.touchScanMarker(markerPath, { writeFn });
@@ -408,10 +435,12 @@ export async function maybeTriggerOrphanScan({
         '--min-age-seconds', String(cfg['min-age-seconds']),
         '--kill-grace-ms', String(cfg['kill-grace-ms']),
         '--verify-wait-ms', String(cfg['verify-wait-ms']),
+        '--false-alarm-window', String(cfg['false-alarm-window']),
       ],
       { detached: true, stdio: 'ignore' },
     );
     if (child && typeof child.unref === 'function') child.unref();
+    checkLatency(cfg['max-hook-latency-ms']);
     return { spawned: true, reason: 'spawned' };
   } catch {
     return { spawned: false, reason: 'error' };

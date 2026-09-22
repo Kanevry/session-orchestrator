@@ -1162,26 +1162,36 @@ describe('W4-A6 Group H — no diagnostics bundle on successful gate (L3 split)'
 });
 
 // ---------------------------------------------------------------------------
-// Group I: maxBuffer overflow path (#528B)
+// Group I: output byte-cap overflow path (#528B)
 //
-// runGate enforces `maxBuffer: 16 * 1024 * 1024` (16 MiB) via spawnSync.
-// When a child process emits >16 MiB, spawnSync does NOT throw — it returns
-// `result.error.code === 'ENOBUFS'`, `result.status === null`, and truncated
-// stdout. The quality-gate code must handle this gracefully: it should return
-// a structured failure (exitCode=1, ok=false) rather than crashing.
+// The rationale below was rewritten 2026-09-22: it still described `spawnSync`
+// + `ENOBUFS` + `status === null`, which has not been the mechanism since Epic
+// #1425 A3 moved the gate onto `spawnInGroup` (`scripts/lib/process-group.mjs`).
+// The ASSERTIONS were and are correct — only their stated cause was stale, which
+// is the worse failure: a reader debugging a red case here would have gone
+// looking for a `spawnSync` call that no longer exists.
+//
+// The live mechanism: `runGate` spawns the command DETACHED as its own process
+// group. Async `spawn` has no `maxBuffer` at all, so `spawnInGroup` counts the
+// captured bytes itself against `DEFAULT_MAX_OUTPUT_BYTES` (16 MiB). Crossing
+// the cap sets `overflow: true`, appends a `process-group: output exceeded …`
+// line to the capture and KILLS the group — it never throws. The result then
+// carries `exitCode: 1` (the cap's own code, deliberately the same value the
+// old ENOBUFS path produced, so this group's contract is unchanged) and
+// `quality-gate.mjs` reports it as a normal gate failure.
 //
 // This was flagged as untested in issue #528B: W4-A5 used 512KB (well under
 // the cap). This group generates 21 MiB to actually cross the 16 MiB boundary.
 // ---------------------------------------------------------------------------
 
-describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
-  // 21 MiB single-write command — crosses the 16 MiB spawnSync maxBuffer cap.
+describe('W4-A6 Group I — output byte-cap overflow (21 MiB output, #528B)', () => {
+  // 21 MiB single-write command — crosses `DEFAULT_MAX_OUTPUT_BYTES` (16 MiB).
   // Completes in ~60ms (measured); does NOT approach the 15-min GATE_TIMEOUT_MS.
   const OVERFLOW_CMD = `node -e "process.stdout.write('x'.repeat(1024 * 1024 * 21))"`;
 
   it('I1: does not throw or crash the test process when gate output exceeds 16 MiB', { timeout: 30_000 }, async () => {
     // The test itself is the crash-safety check: if runQualityGateWithRetry
-    // propagated an ENOBUFS error or an uncaught exception, this assertion
+    // propagated the overflow as a throw instead of a result, this assertion
     // would never be reached and vitest would report a process-level failure.
     const result = await runQualityGateWithRetry({
       maxRetries: 0,
@@ -1195,9 +1205,9 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
   });
 
   it('I2: returns ok: false when the overflowing command is the only gate (ENOBUFS is a failure)', { timeout: 30_000 }, async () => {
-    // spawnSync with ENOBUFS sets result.status = null, which the quality-gate
-    // code maps to exitCode = 1 (non-zero). The gate must be reported as failed,
-    // not silently swallowed.
+    // `spawnInGroup` reports the byte cap as `overflow: true` + `exitCode: 1`
+    // (non-zero). The gate must be reported as failed, not silently swallowed —
+    // a killed-for-verbosity command measured nothing.
     const result = await runQualityGateWithRetry({
       maxRetries: 0,
       dispatchFixer: async () => {},
@@ -1220,10 +1230,10 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
     expect(result.finalFailure.gate).toBe('lint');
   });
 
-  it('I4: finalFailure.exitCode is 1 on ENOBUFS overflow (null status mapped to 1)', { timeout: 30_000 }, async () => {
-    // spawnSync ENOBUFS: result.status === null, result.signal === 'SIGTERM'.
-    // The timedOut check (SIGTERM + ETIMEDOUT) does NOT match ENOBUFS, so the
-    // quality-gate code falls through to exitCode = 1.
+  it('I4: finalFailure.exitCode is 1 on byte-cap overflow', { timeout: 30_000 }, async () => {
+    // Precedence inside `spawnInGroup`: `timedOut` wins, THEN `overflow` → 1,
+    // then the child's own code. This command is killed for its VOLUME, not on
+    // the clock, so it lands on the overflow branch and reports 1 — never 124.
     const result = await runQualityGateWithRetry({
       maxRetries: 0,
       dispatchFixer: async () => {},
@@ -1234,9 +1244,9 @@ describe('W4-A6 Group I — maxBuffer overflow (21 MiB output, #528B)', () => {
     expect(result.finalFailure.exitCode).toBe(1);
   });
 
-  it('I5: captured output is truncated well below the 21 MiB input (maxBuffer cap enforced)', { timeout: 30_000 }, async () => {
-    // spawnSync with maxBuffer=16 MiB enforces an ENOBUFS at roughly
-    // maxBuffer + 64 KiB (observed: 16,842,752 bytes = 16 MiB + 64 KiB).
+  it('I5: captured output is truncated well below the 21 MiB input (byte cap enforced)', { timeout: 30_000 }, async () => {
+    // The cap fires on the first chunk that takes the running total past
+    // 16 MiB, so the capture settles at roughly 16 MiB plus one pipe chunk.
     // The output passed through runGate's .split('\n').slice(-50).join('\n')
     // tail step — for a single-line write that is the full truncated string.
     //

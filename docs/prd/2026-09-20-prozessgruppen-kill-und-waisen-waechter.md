@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-20
 **Author:** Bernhard Götzendorfer + Claude (AI-assisted planning)
-**Status:** Draft
+**Status:** Implemented (Stufe 1, 2026-09-22, Session main-2026-09-21-session-4)
 **Epic:** #1425
 **Appetite:** Stufe 1 zuerst, Stufe 2 als Option danach (Reihenfolge zählt, nicht Kalenderzeit)
 **Parent Project:** session-orchestrator
@@ -89,34 +89,41 @@ Mac samt aller vier parallelen Sessions. Auf dem Zielbild (Venture Studio, bis z
 
 ### In-Scope — Stufe 1 (zuerst bauen)
 
-- [ ] **A1** `quality-gate.mjs` von `spawnSync` auf asynchrones `spawn` mit
+- [x] **A1** `quality-gate.mjs` von `spawnSync` auf asynchrones `spawn` mit
       `detached: true` und `stdio: 'pipe'` umstellen; Timeout beendet die **Prozessgruppe**
       (`process.kill(-pid, …)`), nicht nur die Shell.
-- [ ] **A2** SIGTERM→Gnadenfrist→SIGKILL-Leiter, nach dem bestehenden Vorbild
+- [x] **A2** SIGTERM→Gnadenfrist→SIGKILL-Leiter, nach dem bestehenden Vorbild
       `dispatch-common.mjs:99-164` (`DEFAULT_KILL_GRACE_MS`), angewandt auf die Gruppe.
-- [ ] **A3** Timeout für den bisher ungedeckelten Pfad B (`run-quality-gate.mjs:388`,
+- [x] **A3** Timeout für den bisher ungedeckelten Pfad B (`run-quality-gate.mjs:388`,
       `gate-helpers.mjs:69`), mit derselben Gruppen-Semantik.
-- [ ] **A4** **Abstammungsregister:** jeder selbst gestartete Gate-Prozess wird mit
+- [x] **A4** **Abstammungsregister:** jeder selbst gestartete Gate-Prozess wird mit
       `pid`, `pgid`, Startzeit und Kommando-Signatur festgehalten. Das ist die
       Identitätsgrundlage für Teil B.
-- [ ] **B1** Reine Entscheidungsfunktion `decideReapCandidates(psSnapshot, ledger, now)` —
+- [x] **B1** Reine Entscheidungsfunktion `decideReapCandidates(psSnapshot, ledger, now)` —
       kein I/O, kein `kill`, vollständig aus `ps`-Textfixtures testbar.
-- [ ] **B2** Erkennung über `ps -A -o pid,ppid,rss,etime,%cpu,comm,args` (die drei heute
+- [x] **B2** Erkennung über `ps -A -o pid,ppid,rss,etime,%cpu,comm,args` (die drei heute
       fehlenden Spalten `ppid`, `rss`, `args` kommen dazu). Stufe 1 erkennt nur
       **PPID = 1**; die zwei Runaways vom 2026-09-20, die noch einen lebenden Elternteil
       hatten, deckt **Teil A an der Quelle** ab, nicht der Reaper. Waisen ohne PPID = 1
       zuverlässig zu erkennen ist ausdrücklich Stufe 2 (C4).
-- [ ] **B3** **Identitätsprüfung unmittelbar vor jedem Signal** (Startzeit + Kommandoname)
+- [x] **B3** **Identitätsprüfung unmittelbar vor jedem Signal** (Startzeit + Kommandoname)
       gegen PID-Recycling. Schlägt sie fehl, wird kein Signal gesendet.
-- [ ] **B4** Andocken an `PostToolBatch` (der einzige Hook mit belegt hoher Frequenz
+- [x] **B4** Andocken an `PostToolBatch` (der einzige Hook mit belegt hoher Frequenz
       *während* laufender Wellen) und `SubagentStop`. Non-blocking, eigener gezielter
       `ps`-Aufruf statt des vollen `probe()` mit bis zu fünf Subprozessen, und gedrosselt
       auf `reaper.min-scan-interval-seconds`, damit ein Hook-Sturm nicht jeden Tool-Call verteuert.
-- [ ] **B5** JSONL-Audit je Kill: Auslöser, Schwellenwert, Ist-Wert, Einheit, PID,
+- [x] **B5** JSONL-Audit je Kill: Auslöser, Schwellenwert, Ist-Wert, Einheit, PID,
       Kommando, Ergebnis.
-- [ ] **B6** **Wirkung zurücklesen mit Wartezeit** — Exit-Code und „Signal gesendet" sind
+- [x] **B6** **Wirkung zurücklesen mit Wartezeit** — Exit-Code und „Signal gesendet" sind
       kein Beleg. (Beim Aufräumen am 2026-09-20 meldete die eigene Prüfroutine
       fälschlich „lebt noch", weil sie ohne Wartezeit direkt nach `kill -9` maß.)
+
+**Zwei Abweichungen in der Umsetzung, bewusst:** (a) B2 läuft mit
+`ps -Aww -o pid=,ppid=,rss=,etime=,%cpu=,args=` — die Spalte `comm` fiel weg, weil sie auf macOS
+ein auf 16 Zeichen beschnittener Pfad ist und die Kommando-Signatur damit nicht trägt.
+(b) Die `ps`-Erweiterung sitzt nicht in `probe-platform.mjs`, sondern als eigener, gezielter
+Aufruf in `scripts/lib/orphan-reaper.mjs` (plus `parseEtimeToSeconds` in
+`scripts/lib/resource-probe/parsers.mjs`) — so bleibt `probe()` unverteuert, wie in B4 verlangt.
 
 ### In-Scope — Stufe 2 (erst nach Auswertung von Stufe 1)
 
@@ -125,6 +132,19 @@ Mac samt aller vier parallelen Sessions. Auf dem Zielbild (Venture Studio, bis z
 - [ ] **C2** Notfallmodus mit Hysterese (sofort hoch, Cooldown runter).
 - [ ] **C3** `maxRuntime`-Tabelle je Prozesstyp.
 - [ ] **C4** Orphan-Confidence über PPID-Historie (`reparented` vs. `seit jeher PPID 1`).
+
+
+**C1 Kalibrierung ist Vorbedingung für `mode: kill`.** Stufe 1 liefert die Population: jede
+Entscheidung — auch eine zurückgezogene — steht in `.orchestrator/metrics/reaper-audit.jsonl`,
+und `falseAlarmRate()` misst die Feuerrate über `reaper.false-alarm-window` Entscheidungen.
+Erst wenn diese Rate gegen die 10-%-Decke aus `.claude/rules/host-resources.md` HR-101 gemessen
+wurde (HR-105: eine Rate, die niemand aufzeichnet, ist unfalsifizierbar), darf `reaper.mode`
+von `report` auf `kill` wechseln. Bis dahin sendet der Wächter kein Signal.
+
+**Stufe 1b, in derselben Session** (Nachbesserungen aus dem REFUTE-Panel der Welle 4, behoben in
+Welle 5): pgid-Validierung vor dem Gruppensignal, Join von `ps`-Zeile und Registereintrag auch über
+die pgid, Session-ID-Bindung des Registereintrags, und die read-only-Allowlist pro Statement statt
+über die ganze Kommandozeile.
 
 ### Out-of-Scope
 
@@ -262,7 +282,7 @@ der Mindestabstand seit dem letzten Scan verstrichen ist.
   `spawnSync` den Event Loop blockiert und `child.pid` erst nach Prozessende liefert.
 - `scripts/run-quality-gate.mjs` — Timeout ergänzen.
 - `scripts/lib/gates/gate-helpers.mjs` — `execSync` → deckelbarer Aufruf.
-- `scripts/lib/orphan-reaper.mjs` — **neu**, nach dem `resolveDeps()`-Muster aus <!-- path-check: planned #1430 -->
+- `scripts/lib/orphan-reaper.mjs` — **neu**, nach dem `resolveDeps()`-Muster aus
   `lock-reaper.mjs:77-100`, mit neuem Slot `deps.killProcess`.
 - `scripts/lib/resource-probe/probe-platform.mjs` — `ps`-Spalten um `ppid`, `rss`, `args`
   erweitern (eigener Aufruf, um `probe()` nicht zu verteuern).

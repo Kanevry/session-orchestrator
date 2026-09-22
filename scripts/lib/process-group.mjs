@@ -130,6 +130,52 @@ function defaultKill(target, signal) {
 }
 
 /**
+ * Is `pgid` a value that may be NEGATED and handed to `kill(2)`?
+ *
+ * The only guard between a malformed ledger line and a POSIX broadcast. Three
+ * values are catastrophic rather than merely wrong, and all three are ordinary
+ * JSON numbers that reach here from a file on disk:
+ *  - `1` → `kill(-1, sig)` signals EVERY process the user may signal.
+ *  - `0` / `-0` → `kill(-0, sig)` signals the CALLER's own group (the session).
+ *  - a negative pgid → the negation turns it POSITIVE, so the group-wide kill
+ *    silently degrades into a single-PID kill of a stranger.
+ * `1` is excluded and not merely `<= 0` because pgid 1 is launchd's group on
+ * Darwin and init's on Linux — a real id, and never one of ours.
+ *
+ * @param {unknown} pgid
+ * @returns {boolean}
+ */
+function isSignalablePgid(pgid) {
+  return Number.isInteger(pgid) && /** @type {number} */ (pgid) > 1;
+}
+
+/**
+ * Is a parsed ledger line a usable {@link GateProcessRecord}?
+ *
+ * Shared by {@link readGateProcessLedger} and {@link pruneGateProcessLedger} so
+ * the reader and the pruner cannot disagree about what "usable" means — a line
+ * the reader rejects but the pruner keeps would sit in the ledger forever.
+ *
+ * `typeof === 'number'` is not enough for a value that gets NEGATED and handed
+ * to `kill(2)`: `1`, `0`, `-0`, `NaN` and a negative pgid are all numbers, and
+ * the first two are a POSIX broadcast and a self-kill respectively
+ * ({@link isSignalablePgid}). `commandSignature` is required for the same class
+ * of reason: without it the reaper's identity check has nothing to compare a
+ * `ps` row against but the row itself.
+ *
+ * @param {unknown} parsed
+ * @returns {boolean}
+ */
+function isValidLedgerRecord(parsed) {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const r = /** @type {Record<string, unknown>} */ (parsed);
+  return isSignalablePgid(r.pid)
+    && isSignalablePgid(r.pgid)
+    && typeof r.commandSignature === 'string' && r.commandSignature.length > 0
+    && typeof r.startTime === 'number' && Number.isFinite(r.startTime);
+}
+
+/**
  * Stable, short, non-reversible signature of a command line.
  *
  * Shape: `<first token>:<16 hex of sha256(full command)>`. The leading token
@@ -200,12 +246,13 @@ export function installExitHandler() {
 
 /**
  * SIGKILL every registered group, synchronously, swallowing every error.
- * Deliberately not exported: it is the exit path, not an API.
+ * Deliberately not exported: it is the exit path, not part of the interface.
  *
  * @returns {void}
  */
 function killAllLiveGroupsSync() {
   for (const [pgid, entry] of LIVE_GROUPS) {
+    if (!isSignalablePgid(pgid)) continue;
     try {
       entry.killFn(-pgid, 'SIGKILL');
     } catch {
@@ -225,6 +272,11 @@ function killAllLiveGroupsSync() {
  * success.
  *
  * Error semantics:
+ *  - `invalid-pgid` — the id is not a signalable process group
+ *    ({@link isSignalablePgid}). Checked FIRST, before `beforeSignal` and before
+ *    any signal: `ok: false`, `signalsSent: []`, nothing is sent. The ledger is
+ *    a file on disk, and `pgid: 1` in one line means `kill(-1, …)` — a POSIX
+ *    broadcast to every process this user may signal.
  *  - `ESRCH` on the FIRST signal — the group was already gone. `ok: true`,
  *    `error: 'ESRCH'`, no escalation.
  *  - `ESRCH` on the escalation — proof of death, not a failure: `error` stays
@@ -258,7 +310,7 @@ function killAllLiveGroupsSync() {
  * @param {((signal: string) => boolean|Promise<boolean>)|null} [opts.beforeSignal]  Consulted
  *   immediately before EVERY signal. Anything but `true` aborts the rest of the ladder.
  * @returns {Promise<{ok: boolean, signalsSent: string[], survivors: number[],
- *   error: 'ESRCH'|'EPERM'|null, aborted: string|null}>}
+ *   error: 'ESRCH'|'EPERM'|'invalid-pgid'|null, aborted: string|null}>}
  *   `signalsSent` records ATTEMPTS in order, including one that threw.
  */
 export async function killProcessGroup(pgid, {
@@ -271,6 +323,15 @@ export async function killProcessGroup(pgid, {
 } = {}) {
   /** @type {string[]} */
   const signalsSent = [];
+
+  // Fail-closed BEFORE anything else: an unsignalable id never reaches `killFn`,
+  // not even through an injected seam, and `beforeSignal` is not consulted —
+  // there is nothing to permit.
+  if (!isSignalablePgid(pgid)) {
+    return {
+      ok: false, signalsSent, survivors: [], error: 'invalid-pgid', aborted: null,
+    };
+  }
 
   /** Fail-closed gate: only an explicit `true` permits the signal. */
   const permitted = async (signal) => {
@@ -453,7 +514,9 @@ export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
  *
  * Malformed lines are skipped AND COUNTED: a silently skipping JSONL parser
  * turns a partial read into a clean verdict, which is the exact failure mode a
- * reaper must not have. Entries older than `maxAgeMs` are filtered out and
+ * reaper must not have. "Malformed" includes a line whose `pid`/`pgid` is not a
+ * SIGNALABLE process-group id and one carrying no `commandSignature` — see the
+ * inline note at the check. Entries older than `maxAgeMs` are filtered out and
  * counted separately — they are not candidates for anything, and their PIDs are
  * the most likely to have been recycled.
  *
@@ -494,9 +557,7 @@ export function readGateProcessLedger(repoRoot, {
       malformedLines += 1;
       continue;
     }
-    if (!parsed || typeof parsed !== 'object'
-      || typeof parsed.pid !== 'number' || typeof parsed.pgid !== 'number'
-      || typeof parsed.startTime !== 'number') {
+    if (!isValidLedgerRecord(parsed)) {
       malformedLines += 1;
       continue;
     }
@@ -511,7 +572,14 @@ export function readGateProcessLedger(repoRoot, {
 }
 
 /**
- * Drop expired and unparseable lines from the ledger, rewriting it in place.
+ * Drop expired and unusable lines from the ledger, rewriting it in place.
+ * "Unusable" is {@link isValidLedgerRecord}'s verdict — the same one
+ * {@link readGateProcessLedger} applies, so nothing the reader skips survives
+ * the pruner.
+ *
+ * Called once per gate command from {@link spawnInGroup}'s register path and
+ * once per scan from the orphan reaper: an append-only ledger with no pruner
+ * grows monotonically, and it had none until 2026-09-22.
  *
  * In-process fs only — never a shell `rm`/`mv` (PSA-003, and
  * `.orchestrator/metrics/**` deletions are a blocked-command rule for a reason).
@@ -557,7 +625,7 @@ export function pruneGateProcessLedger(repoRoot, {
       removed += 1;
       continue;
     }
-    if (!parsed || typeof parsed.startTime !== 'number' || nowMs - parsed.startTime > maxAgeMs) {
+    if (!isValidLedgerRecord(parsed) || nowMs - parsed.startTime > maxAgeMs) {
       removed += 1;
       continue;
     }
@@ -729,6 +797,21 @@ export function spawnInGroup(cmd, {
           register(record);
         } catch {
           /* the ledger is an aid to the reaper, never a gate precondition */
+        }
+      }
+      // Prune AFTER the append, once per gate command — the ledger is
+      // append-only and had NO production pruner, so it grew monotonically
+      // (measured 2026-09-22: 369 lines/day on this host). Only on the real
+      // sink: with an injected `onRegister` the caller owns its storage and a
+      // prune here would write a file the test never asked for. Cheap by
+      // construction (the file holds one line per gate command) and wrapped,
+      // because a pruner that throws must not fail the gate it is housekeeping
+      // for.
+      if (!onRegister && repoRoot) {
+        try {
+          pruneGateProcessLedger(repoRoot);
+        } catch {
+          /* housekeeping, never a gate precondition */
         }
       }
     }

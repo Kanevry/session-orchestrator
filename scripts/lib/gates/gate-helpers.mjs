@@ -123,6 +123,61 @@ export function gateTimeoutEnvelope({ variant, timeoutMs, run }) {
   };
 }
 
+/**
+ * Decide WHAT a finished gate sub-script run publishes — stdout, stderr,
+ * exit code and operator warnings — without performing any of the writes.
+ *
+ * ## Why this is a pure function and not four `process.*.write` calls
+ *
+ * The timeout branch in `scripts/run-quality-gate.mjs` was unreachable by any
+ * test: reaching it required a REAL gate sub-script to exceed
+ * `resolveGateTimeoutMs() + GATE_OUTER_TIMEOUT_RESERVE_MS` (15 min + 60 s, a
+ * hard constant with no injection seam), so the four decisions it makes —
+ * suppress the partial capture on stdout, re-publish it on stderr, emit ONE
+ * complete `gate-timeout` envelope, warn about survivors — were pinned by
+ * nothing. The CLI now decides here and only WRITES there, so each decision is
+ * testable against a synthetic {@link spawnInGroup} result.
+ *
+ * ## The one-document contract on stdout
+ *
+ * A killed child never wrote its envelope, so its capture is at best a partial
+ * JSON document. Publishing that hands every stdout consumer a parse error
+ * where a named failure belongs; publishing BOTH the partial text and an
+ * envelope breaks the "one JSON document" contract. Hence: capture → stderr,
+ * envelope → stdout, and `stdout` carries EXACTLY the envelope line.
+ *
+ * @param {object} args
+ * @param {{fullOutput?: string, exitCode?: number, timedOut?: boolean, pgid?: number,
+ *   durationMs?: number, killSignals?: string[], survivors?: number[]}} args.result
+ *   The {@link spawnInGroup} result for the gate sub-script.
+ * @param {string} args.variant  The `--variant` value the run was started with.
+ * @param {number} args.timeoutMs  The OUTER ceiling that applied to the sub-script.
+ * @returns {{stdout: string, stderr: string, exitCode: number, warnings: string[]}}
+ *   `stdout`/`stderr` are written verbatim (empty string = write nothing);
+ *   `warnings` go through the caller's `warn()`; `exitCode` is the gate's own,
+ *   which `spawnInGroup` reports as 124 on the timeout path.
+ */
+export function publishGateOutcome({ result, variant, timeoutMs }) {
+  const capture = String(result?.fullOutput ?? '');
+  const exitCode = result?.exitCode ?? 0;
+
+  if (!result?.timedOut) {
+    return { stdout: capture, stderr: '', exitCode, warnings: [] };
+  }
+
+  const survivors = result.survivors ?? [];
+  return {
+    stdout: `${JSON.stringify(gateTimeoutEnvelope({ variant, timeoutMs, run: result }))}\n`,
+    stderr: capture.trim()
+      ? `\n\u2500\u2500\u2500\u2500 gate TIMED OUT \u2014 captured output before the kill \u2500\u2500\u2500\u2500\n${capture}\n\u2500\u2500\u2500\u2500 end \u2500\u2500\u2500\u2500\n`
+      : '',
+    exitCode,
+    warnings: survivors.length > 0
+      ? [`gate process group ${result.pgid} left survivors after SIGKILL: ${survivors.join(', ')}`]
+      : [],
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Internal pattern helpers
 // ---------------------------------------------------------------------------

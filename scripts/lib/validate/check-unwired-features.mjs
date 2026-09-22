@@ -53,6 +53,30 @@
  * a rule that only cites live instances loses its explanation the moment it works.
  * If you need a CURRENT S2 hit, run the checker; do not assume this one.
  *
+ *   S6 `parser-only-config-key`  — the key IS read, but the ONLY file that
+ *                                   reads it is its own block parser
+ *                                   `scripts/lib/config/<root>.mjs`.
+ *
+ * S6 is the mirror image of S2, and it exists because S1 counts the PARSER as a
+ * consumer: `CONSUMER_DIRS` is `scripts/` + `hooks/`, and every block parser
+ * lives under `scripts/lib/config/`. A key its parser resolves and nothing else
+ * reads is `compact-nudge` wearing a value object. Measured 2026-09-22 on this
+ * tree: `reaper.max-hook-latency-ms` and `reaper.false-alarm-window` both passed
+ * S1 on `scripts/lib/config/reaper.mjs` alone while `scripts/lib/orphan-reaper.mjs`
+ * used same-named HARDCODED defaults and never saw the parsed value.
+ *
+ * Why the signal is this narrow — one read file, and it is the key's OWN parser.
+ * The blunt rule ("the parser layer never counts") was measured first and
+ * REJECTED: it flips 102 of 263 declared keys to unwired, because the ordinary
+ * shape here is a consumer that reads the camelCase FIELD (`cfg.driftCheck.mode`)
+ * while this census matches the kebab TOKEN. 102 of 263 is the broken instrument
+ * `.claude/rules/host-resources.md` HR-101 forbids. The narrow rule reports 32 —
+ * a backlog, printed as an aggregate like S4 and enumerated under `--list`.
+ *
+ * S6 carries no camelCase fallback ON PURPOSE: adding one re-hides both reaper
+ * keys, whose camelCase names exist in `orphan-reaper.mjs` as that module's own
+ * defaults. A name is not a read.
+ *
  * S2 applies to TOP-LEVEL keys only — a nested key reaches code through its
  * parent — and its premise is structural: every Session Config key has to pass
  * through the parser layer to become a value. Measured 2026-08-08: 84 of 89
@@ -394,6 +418,29 @@ const PARSER_PATHS = Object.freeze([
 ]);
 
 /**
+ * The per-block parser directory: `scripts/lib/config/<block>.mjs` turns ONE
+ * Session Config block's YAML into a value object and does nothing else.
+ *
+ * Signal S6 below is about this directory specifically, which is why it is not
+ * folded into {@link PARSER_PATHS}.
+ */
+const BLOCK_PARSER_DIR = path.join('scripts', 'lib', 'config');
+
+/**
+ * The key's OWN block parser, by convention `scripts/lib/config/<root>.mjs`.
+ *
+ * Deliberately an exact name match and not "anything under the parser dir": a
+ * sibling block's parser reading the key is still a second file, and S6 only
+ * fires when there is exactly ONE reader and it is the key's own.
+ *
+ * @param {string} root top-level key of the block
+ * @returns {string} plugin-root-relative path
+ */
+function ownBlockParserPath(root) {
+  return path.join(BLOCK_PARSER_DIR, `${root}.mjs`);
+}
+
+/**
  * Declared-but-unread keys accepted on purpose. Key = full dotted path (S1/S2)
  * or module path relative to the plugin root (S4), value = REASON naming the
  * real consumer. See the header for the contract: an empty reason, a key that
@@ -420,7 +467,8 @@ const ALLOWLIST = Object.freeze({
 
 /**
  * @typedef {{
- *   kind: 'unwired-config-key' | 'parser-orphan-config-key' | 'allowlist-missing-reason'
+ *   kind: 'unwired-config-key' | 'parser-orphan-config-key' | 'parser-only-config-key'
+ *       | 'allowlist-missing-reason'
  *       | 'allowlist-stale' | 'orphaned-prose-module' | 'unreachable-library-module'
  *       | 'coordinator-invoked-module' | 'hand-keyed-learning-subject'
  *       | 'tool-error',
@@ -1279,6 +1327,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
       orphanedModules: 0,
       unreachableModules: 0,
       coordinatorInvokedModules: 0,
+      parserOnly: 0,
       handKeyedSubjects: 0,
       judgedSubjects: 0,
     },
@@ -1338,7 +1387,7 @@ export function inspectUnwiredFeatures(pluginRoot) {
 
   for (const key of [...declared.keys.keys()].sort()) {
     const meta = /** @type {DeclaredKey} */ (declared.keys.get(key));
-    const { code, comment } = countReadSites(meta, corpus);
+    const { code, comment, files: readFiles } = countReadSites(meta, corpus);
 
     /** @type {Finding | null} */
     let issue = null;
@@ -1350,6 +1399,21 @@ export function inspectUnwiredFeatures(pluginRoot) {
         message:
           `declared in ${meta.sources.join(' + ')} but no .mjs under ${CONSUMER_DIRS.join('/ or ')}/ ` +
           `reads it${commentNote} — wire it, delete it, or allowlist it with a reason`,
+      };
+    } else if (readFiles.length === 1 && readFiles[0] === ownBlockParserPath(meta.root)) {
+      // S6 — the ONLY file that reads this key is the parser that produced it.
+      // A parser is not a consumer: it turns YAML into a field nobody then
+      // reads, which is `compact-nudge` wearing a value object. Measured
+      // 2026-09-22: `reaper.max-hook-latency-ms` and `reaper.false-alarm-window`
+      // both passed S1 on the strength of `scripts/lib/config/reaper.mjs`
+      // alone, while `orphan-reaper.mjs` used its OWN hardcoded defaults of the
+      // same name and never received the parsed value.
+      issue = {
+        kind: 'parser-only-config-key',
+        key,
+        message:
+          `read only by its own block parser (${readFiles[0]}) — a parser is not a consumer; ` +
+          'nothing outside the config layer reads the parsed value',
       };
     } else if (key === meta.root && !tokenMatcher(key).test(parserBody)) {
       issue = {
@@ -1376,7 +1440,8 @@ export function inspectUnwiredFeatures(pluginRoot) {
       continue;
     }
 
-    result.summary.unwired += 1;
+    if (issue.kind === 'parser-only-config-key') result.summary.parserOnly += 1;
+    else result.summary.unwired += 1;
     findings.push(issue);
   }
 
@@ -1446,6 +1511,7 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
     consumerFiles,
     unwired,
     allowlisted,
+    parserOnly,
     orphanedModules,
     unreachableModules,
     coordinatorInvokedModules,
@@ -1465,8 +1531,16 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
   // architecture — an instruction surface tells an LLM to call the module.
   // Measured 2026-09-07: 46 of the 52 findings the single S4 class carried.
   // Printing 46 WARN lines for the design is the broken instrument HR-101 forbids.
-  const DEFERRED = Object.freeze(['unreachable-library-module', 'coordinator-invoked-module']);
+  //
+  // `parser-only-config-key` (S6) is deferred on the S4 terms too: 32 findings
+  // on the live tree is a backlog to work down, not a per-run alarm.
+  const DEFERRED = Object.freeze([
+    'unreachable-library-module',
+    'coordinator-invoked-module',
+    'parser-only-config-key',
+  ]);
   const s4 = inspection.findings.filter((item) => item.kind === 'unreachable-library-module');
+  const s6 = inspection.findings.filter((item) => item.kind === 'parser-only-config-key');
   for (const item of inspection.findings) {
     if (!list && DEFERRED.includes(item.kind)) continue;
     console.log(`  WARN: [${item.kind}] ${item.key} — ${item.message}`);
@@ -1485,10 +1559,19 @@ export function runCheckUnwiredFeatures(pluginRoot, { list = false } = {}) {
     );
   }
 
+  if (!list && s6.length > 0) {
+    console.log(
+      `  WARN: [parser-only-config-key] ${s6.length} declared key(s) whose only reader is their own ` +
+        `block parser — e.g. ${s6.slice(0, 3).map((item) => item.key).join(', ')}. ` +
+        'Re-run with --list for the full census.',
+    );
+  }
+
   console.log(
     `  PASS: censused ${declaredKeys} declared key(s) from ${inspection.sourcesScanned.join(' + ') || '(no source)'} ` +
       `against ${consumerFiles} consumer file(s) — ${unwired} unwired, ${allowlisted} allowlisted, ` +
-      `${orphanedModules} prose-orphaned module(s), ${unreachableModules} unreachable module(s), ` +
+      `${parserOnly} parser-only, ${orphanedModules} prose-orphaned module(s), ` +
+      `${unreachableModules} unreachable module(s), ` +
       `${coordinatorInvokedModules} coordinator-invoked module(s), ${handKeyedSubjects} hand-keyed ` +
       `learning subject(s) of ${judgedSubjects} judged`,
   );

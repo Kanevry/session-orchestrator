@@ -50,10 +50,11 @@ import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-poli
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
 import {
   admitSuiteCounts,
-  gateTimeoutEnvelope,
+  publishGateOutcome,
   resolveGateTimeoutMs,
 } from './lib/gates/gate-helpers.mjs';
 import { buildCommandSignature, spawnInGroup } from './lib/process-group.mjs';
+import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { findScopeFile } from './lib/scope-gate.mjs';
 
 // ---------------------------------------------------------------------------
@@ -428,6 +429,12 @@ const commandTimeoutMs = operatorTimeoutOverride || configuredGateTimeoutMs === 
   ? resolveGateTimeoutMs()
   : configuredGateTimeoutMs;
 
+// Gate-process REGISTER root — the same precedence the telemetry destination
+// uses below (`--ledger-root` > project-dir env > cwd), so a sandboxed test that
+// only sets CLAUDE_PROJECT_DIR never writes register lines into the checkout.
+const gateLedgerRoot =
+  ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot;
+
 const env = {
   ...process.env,
   npm_config_loglevel: 'notice',
@@ -435,6 +442,10 @@ const env = {
   TEST_CMD,
   LINT_CMD,
   GATE_TIMEOUT_MS: String(commandTimeoutMs),
+  // Same resolution the wrapper uses for its OWN spawn (`--ledger-root` > repo
+  // root): the gate sub-scripts pass it to runCheck() so every register line of
+  // one gate run lands in ONE ledger (#1425 A4, W5 fix-pass).
+  GATE_LEDGER_ROOT: gateLedgerRoot,
   FILES: files,
   SESSION_START_REF: sessionStartRef,
 };
@@ -488,9 +499,23 @@ const result = await spawnInGroup(gateCommand, {
   // processes from every other `node` on the host, so it is pinned to the same
   // root the telemetry is — under the pre-push hook the tree the gate runs in
   // is deleted seconds later, and the record with it.
-  repoRoot: ledgerRoot ?? repoRoot,
+  repoRoot: gateLedgerRoot,
   commandSignature: buildCommandSignature(gateCommand),
-  spawnFn: (command, options) => spawn(command, { ...options, stdio: ['inherit', 'pipe', 'inherit'] }),
+  // The OWNER the ledger records, from the PROCESS-LOCAL witness only — the same
+  // rule `scripts/lib/quality-gate.mjs` follows for the gate commands it spawns
+  // (`.claude/rules/identity-and-locks.md`: rank witnesses, never union them).
+  // `.orchestrator/session.lock` is deliberately NOT consulted: it is a
+  // repo-GLOBAL artefact any session in this working copy may hold, so reading
+  // it would stamp a PEER's id onto our own gate process and point the orphan
+  // reaper (#1425 B) at the wrong owner. No witness → `null`, which the ledger
+  // records as "owner unknown" — the state every record carried before this.
+  sessionId: [...readProcessLocalSessionIds({ env: process.env, hookInput: null })][0] ?? null,
+  // stdin is IGNORED, not inherited. A gate sub-script reads no stdin, but a
+  // DETACHED child is in its own process group and is therefore not the
+  // terminal's foreground group: the first read from an inherited TTY earns it
+  // SIGTTIN, which stops the whole group until the outer ceiling kills it. An
+  // ignored stdin turns that hang into an immediate EOF.
+  spawnFn: (command, options) => spawn(command, { ...options, stdio: ['ignore', 'pipe', 'inherit'] }),
 });
 
 // `pid: -1` is `spawnInGroup`'s spawn-failure channel (it never rejects).
@@ -504,20 +529,15 @@ if (result.pid === -1) {
 // partial text AND an envelope would break the one-document contract. So the
 // capture goes to stderr, where the operator can still read it, and stdout
 // carries a complete `gate-timeout` envelope instead.
+//
+// The DECISION lives in `publishGateOutcome` (gate-helpers.mjs) and only the
+// WRITES live here: this branch needs a real 16-minute gate to reach, so while
+// the decision was inline it was pinned by nothing.
+const outcome = publishGateOutcome({ result, variant, timeoutMs: gateTimeoutMs });
 const gateStdout = result.timedOut ? '' : result.fullOutput;
-if (result.timedOut) {
-  if (result.fullOutput.trim()) {
-    process.stderr.write(`\n──── gate TIMED OUT — captured output before the kill ────\n${result.fullOutput}\n──── end ────\n`);
-  }
-  process.stdout.write(
-    JSON.stringify(gateTimeoutEnvelope({ variant, timeoutMs: gateTimeoutMs, run: result })) + '\n',
-  );
-  if (result.survivors.length > 0) {
-    warn(`gate process group ${result.pgid} left survivors after SIGKILL: ${result.survivors.join(', ')}`);
-  }
-} else if (gateStdout) {
-  process.stdout.write(gateStdout);
-}
+if (outcome.stderr) process.stderr.write(outcome.stderr);
+if (outcome.stdout) process.stdout.write(outcome.stdout);
+for (const line of outcome.warnings) warn(line);
 
 // Quality-gate telemetry — one canonical event per gate run via emitEvent
 // (single emission path). `sessionAttribution` is the shared helper in
@@ -553,7 +573,7 @@ if (result.timedOut) {
 //
 // Best-effort: a telemetry failure must NEVER alter the gate's authoritative
 // exit code — which is why the counts parse also lives inside this try.
-const exitCode = result.exitCode;
+const exitCode = outcome.exitCode;
 try {
   const counts = suiteCountsFromGateStdout(gateStdout);
   // The names behind `counts.failed`. Absent, never `[]` — see

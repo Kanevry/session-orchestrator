@@ -14,7 +14,7 @@
  *      refreshed; when no lock exists, the hook still exits 0 (best-effort).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -766,6 +766,57 @@ describe('maybeTriggerOrphanScan — PostToolBatch', () => {
     });
     expect(calls[0].args.slice(3, 7))
       .toEqual(['--mode', 'kill', '--min-age-seconds', '600']);
+  });
+
+  it('passes reaper.false-alarm-window through to the child — the key had NO consumer before 2026-09-22', async () => {
+    // Bug: `false-alarm-window` was parsed, defaulted, documented and never
+    // sent anywhere. `runOrphanScan` hard-coded REAPER_DEFAULTS, so configuring
+    // it changed nothing at all — a config key that only its parser knows.
+    writeClaudeMd('reaper:\n  enabled: true\n  false-alarm-window: 25\n');
+    const calls = [];
+    await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      spawnFn: recordingSpawn(calls),
+      writeFn: () => {},
+    });
+    const i = calls[0].args.indexOf('--false-alarm-window');
+    expect(i).toBeGreaterThan(0);
+    expect(calls[0].args[i + 1]).toBe('25');
+  });
+
+  it('WARNS on stderr when the trigger overran reaper.max-hook-latency-ms, and stays silent inside it', async () => {
+    // Bug: `max-hook-latency-ms` was a documented budget nothing measured
+    // against — the only "enforcement" was the prose claim that the scan runs
+    // detached. A budget with no measurement cannot be exceeded OR held.
+    writeClaudeMd('reaper:\n  enabled: true\n  max-hook-latency-ms: 5\n');
+    const written = [];
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      written.push(String(chunk));
+      return true;
+    });
+    try {
+      // A clock that jumps 12 ms between entry and the post-spawn check.
+      let t = 0;
+      await maybeTriggerOrphanScan({
+        projectDir: rtmp,
+        spawnFn: () => ({ unref() {} }),
+        writeFn: () => {},
+        clockFn: () => { const v = t; t += 12; return v; },
+      });
+      expect(written.join('')).toMatch(/hook latency 12\.0 ms exceeded reaper\.max-hook-latency-ms \(5 ms\)/);
+
+      written.length = 0;
+      let t2 = 0;
+      await maybeTriggerOrphanScan({
+        projectDir: rtmp,
+        spawnFn: () => ({ unref() {} }),
+        writeFn: () => {},
+        clockFn: () => { const v = t2; t2 += 1; return v; },
+      });
+      expect(written).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('degrades silently when the spawn throws', async () => {

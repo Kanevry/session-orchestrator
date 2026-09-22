@@ -4,9 +4,13 @@
  * Unit tests for scripts/lib/gates/gate-helpers.mjs
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import {
   admitSuiteCounts,
   csvToJsonArray,
@@ -19,10 +23,75 @@ import {
   runCheck,
   findChangedFiles,
   findChangedTestFiles,
+  publishGateOutcome,
   resolveTestFiles,
   GATE_TIMEOUT_ENV,
 } from '@lib/gates/gate-helpers.mjs';
-import { DEFAULT_GATE_TIMEOUT_MS } from '@lib/process-group.mjs';
+import {
+  DEFAULT_GATE_TIMEOUT_MS,
+  GATE_PROCESS_LEDGER_RELPATH,
+  buildCommandSignature,
+} from '@lib/process-group.mjs';
+
+// ---------------------------------------------------------------------------
+// Ledger isolation for every runCheck that actually SPAWNS
+// ---------------------------------------------------------------------------
+
+/**
+ * THE BUG (2026-09-22): `runCheck` defaults `repoRoot` to `process.cwd()`, and
+ * under vitest that IS this repo — so every spawning case in this file appended
+ * a record to the LIVE `.orchestrator/runtime/gate-processes.jsonl`, the ledger
+ * the orphan reaper (#1425 B) reads to tell real gate processes from every other
+ * `node` on the host. Measured the same day: running this file plus
+ * `tests/scripts/run-quality-gate.test.mjs` grew it from 440 to 485 lines, with
+ * signatures for `this_command_definitely_does_not_exist_xyz123` among them.
+ *
+ * So every spawning call passes `withTmpRepoRoot()`: a throwaway root whose
+ * ledger nobody reads. The timeout cases below use `onRegister: () => {}`
+ * instead — they never spawn a real process at all.
+ */
+const TMP_LEDGER_ROOTS = [];
+
+/**
+ * @param {object} [opts] extra `runCheck` options to merge.
+ * @returns {object} `opts` with `repoRoot` pinned to a fresh throwaway dir.
+ */
+function withTmpRepoRoot(opts = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'gate-helpers-ledger-'));
+  TMP_LEDGER_ROOTS.push(root);
+  return { ...opts, repoRoot: root };
+}
+
+afterAll(() => {
+  for (const root of TMP_LEDGER_ROOTS) rmSync(root, { recursive: true, force: true });
+});
+
+/**
+ * The REAL repo's gate-process ledger, resolved from this file's own location.
+ *
+ * Deliberately NOT from `process.cwd()`: cwd is what the defect used, so reading
+ * the same value would make the regression test agree with the bug.
+ */
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const REPO_LEDGER = join(REPO_ROOT, ...GATE_PROCESS_LEDGER_RELPATH.split('/'));
+
+/**
+ * Whether the real repo's ledger carries a record for `signature`.
+ *
+ * Deliberately a SIGNATURE probe and not a line COUNT: the ledger is a
+ * repo-global artefact and the sibling files in this directory
+ * (`gate-full.test.mjs` and friends) spawn real gate commands from parallel
+ * vitest workers, so a before/after count measures THEM as often as it measures
+ * this file — it went red at 518-vs-515 on the first full-directory run. A
+ * signature only this test can produce is race-free.
+ *
+ * @param {string} signature `buildCommandSignature` output to look for.
+ * @returns {boolean}
+ */
+function repoLedgerHasSignature(signature) {
+  if (!existsSync(REPO_LEDGER)) return false;
+  return readFileSync(REPO_LEDGER, 'utf8').includes(signature);
+}
 
 // ---------------------------------------------------------------------------
 // csvToJsonArray
@@ -333,7 +402,7 @@ describe('runCheck', () => {
 
   it('returns status=pass and output for a succeeding command', async () => {
     // Use a real shell command that is not an echo stub (echo stubs are short-circuited).
-    const result = await runCheck('node -e "process.stdout.write(\'hi\')"');
+    const result = await runCheck('node -e "process.stdout.write(\'hi\')"', withTmpRepoRoot());
     expect(result.status).toBe('pass');
     expect(result.output).toContain('hi');
     expect(result.exitCode).toBe(0);
@@ -342,6 +411,7 @@ describe('runCheck', () => {
   it('returns status=pass for a succeeding command with large output', async () => {
     const result = await runCheck(
       'node -e "process.stdout.write(\'x\'.repeat(2 * 1024 * 1024)); process.stdout.write(\'\\\\n42 passed\\\\n\')"',
+      withTmpRepoRoot(),
     );
     expect(result.status).toBe('pass');
     expect(result.output).toContain('42 passed');
@@ -371,13 +441,13 @@ describe('runCheck', () => {
   });
 
   it('returns status=fail for a failing command', async () => {
-    const result = await runCheck('node -e "process.exit(1)"');
+    const result = await runCheck('node -e "process.exit(1)"', withTmpRepoRoot());
     expect(result.status).toBe('fail');
     expect(result.exitCode).toBe(1);
   });
 
   it('returns status=skip for a command-not-found (exit 127)', async () => {
-    const result = await runCheck('this_command_definitely_does_not_exist_xyz123');
+    const result = await runCheck('this_command_definitely_does_not_exist_xyz123', withTmpRepoRoot());
     expect(result.status).toBe('skip');
     expect(result.output).toBe('command not found');
   });
@@ -485,7 +555,7 @@ describe('runCheck fullOutput', () => {
   ].join('; ');
 
   it('keeps the whole captured text in fullOutput while output stays a bounded tail', async () => {
-    const res = await runCheck(`sh -c '${script}'`);
+    const res = await runCheck(`sh -c '${script}'`, withTmpRepoRoot());
     expect(res.status).toBe('fail');
     expect(res.fullOutput).toContain('14357 passed');
     expect(res.output).not.toContain('14357 passed');
@@ -493,7 +563,7 @@ describe('runCheck fullOutput', () => {
   });
 
   it('lets extractTestCounts recover the real counts from fullOutput, not from the tail', async () => {
-    const res = await runCheck(`sh -c '${script}'`);
+    const res = await runCheck(`sh -c '${script}'`, withTmpRepoRoot());
     expect(extractTestCounts(res.fullOutput)).toEqual({
       passed: 14357,
       failed: 1,
@@ -510,7 +580,7 @@ describe('runCheck fullOutput', () => {
   });
 
   it('reports fullOutput on the success path too', async () => {
-    const res = await runCheck(`sh -c 'echo "${SUMMARY}"; echo trailing'`);
+    const res = await runCheck(`sh -c 'echo "${SUMMARY}"; echo trailing'`, withTmpRepoRoot());
     expect(res.status).toBe('pass');
     expect(res.fullOutput).toContain('14357 passed');
   });
@@ -758,5 +828,116 @@ describe('gateTimeoutEnvelope', () => {
     // Must survive JSON.stringify/parse as ONE document — it replaces the gate's
     // own envelope on stdout, which every consumer parses as exactly one line.
     expect(JSON.parse(JSON.stringify(env)).error).toBe('gate-timeout');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runCheck — the ledger this suite must NOT write to (2026-09-22)
+// ---------------------------------------------------------------------------
+
+describe('runCheck ledger isolation', () => {
+  // Fake-regression: drop the `withTmpRepoRoot()` argument below and this test
+  // goes red — `runCheck` then defaults `repoRoot` to `process.cwd()` (this
+  // repo) and appends a real record to the reaper's ledger, exactly as the
+  // whole file did before. The count is read through `import.meta.url`, never
+  // `process.cwd()`, so the assertion cannot agree with the defect.
+  it('appends nothing to the real repo gate-process ledger', async () => {
+    // A nonce in the command, so the signature cannot pre-exist from an earlier
+    // run of a BUGGY revision of this file — which is exactly what a fake
+    // regression leaves behind.
+    const nonce = `ledger-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const cmd = `node -e "process.stdout.write('${nonce}')"`;
+    const signature = buildCommandSignature(cmd);
+    expect(repoLedgerHasSignature(signature)).toBe(false);
+
+    const res = await runCheck(cmd, withTmpRepoRoot());
+    expect(res.status).toBe('pass');
+    expect(res.fullOutput).toContain(nonce);
+    expect(repoLedgerHasSignature(signature)).toBe(false);
+  });
+
+  it('writes the record into the repoRoot it was handed', async () => {
+    const opts = withTmpRepoRoot();
+    await runCheck('node -e "process.stdout.write(\'ok\')"', opts);
+    const ledger = join(opts.repoRoot, ...GATE_PROCESS_LEDGER_RELPATH.split('/'));
+    expect(existsSync(ledger)).toBe(true);
+    const records = readFileSync(ledger, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    expect(records).toHaveLength(1);
+    expect(records[0].commandSignature).toMatch(/^node:[0-9a-f]{16}$/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// publishGateOutcome — the CLI's timeout branch, made reachable (q-4)
+// ---------------------------------------------------------------------------
+
+describe('publishGateOutcome', () => {
+  /** A `spawnInGroup`-shaped result. */
+  function runResult(over = {}) {
+    return {
+      pid: 4242,
+      pgid: 4242,
+      exitCode: 0,
+      fullOutput: '{"variant":"full-gate","typecheck":"pass"}\n',
+      timedOut: false,
+      durationMs: 12,
+      killSignals: [],
+      survivors: [],
+      ...over,
+    };
+  }
+
+  it('passes the gate capture straight through on the normal path', () => {
+    const result = runResult({ exitCode: 2, fullOutput: '{"variant":"full-gate"}\n' });
+    const out = publishGateOutcome({ result, variant: 'full-gate', timeoutMs: 960_000 });
+    expect(out.stdout).toBe(result.fullOutput);
+    expect(out.stderr).toBe('');
+    expect(out.exitCode).toBe(2);
+    expect(out.warnings).toEqual([]);
+  });
+
+  it('publishes exactly ONE gate-timeout object on stdout when the ceiling fired', () => {
+    const result = runResult({
+      timedOut: true,
+      exitCode: 124,
+      fullOutput: '{"variant":"full-ga',
+      durationMs: 960_123,
+      killSignals: ['SIGTERM', 'SIGKILL'],
+    });
+    const out = publishGateOutcome({ result, variant: 'full-gate', timeoutMs: 960_000 });
+
+    // One document, and it parses — the partial capture must never reach stdout.
+    expect(out.stdout.trimEnd().split('\n')).toHaveLength(1);
+    const envelope = JSON.parse(out.stdout);
+    expect(envelope).toEqual({
+      variant: 'full-gate',
+      error: 'gate-timeout',
+      timeout_ms: 960_000,
+      duration_ms: 960_123,
+      pgid: 4242,
+      kill_signals: ['SIGTERM', 'SIGKILL'],
+      survivors: [],
+    });
+    expect(out.stdout).not.toContain('full-ga"');
+    expect(out.exitCode).toBe(124);
+  });
+
+  it('re-publishes the partial capture on stderr, never on stdout', () => {
+    const result = runResult({ timedOut: true, exitCode: 124, fullOutput: 'vitest is still running…' });
+    const out = publishGateOutcome({ result, variant: 'baseline', timeoutMs: 100 });
+    expect(out.stderr).toContain('gate TIMED OUT');
+    expect(out.stderr).toContain('vitest is still running…');
+    expect(out.stdout).not.toContain('vitest is still running…');
+  });
+
+  it('emits no stderr block when the killed gate had produced no output', () => {
+    const result = runResult({ timedOut: true, exitCode: 124, fullOutput: '   \n' });
+    expect(publishGateOutcome({ result, variant: 'baseline', timeoutMs: 100 }).stderr).toBe('');
+  });
+
+  it('warns about processes that outlived SIGKILL (a sent signal proves nothing)', () => {
+    const result = runResult({ timedOut: true, exitCode: 124, survivors: [123, 456] });
+    const out = publishGateOutcome({ result, variant: 'full-gate', timeoutMs: 100 });
+    expect(out.warnings).toEqual(['gate process group 4242 left survivors after SIGKILL: 123, 456']);
   });
 });

@@ -13,6 +13,8 @@
 
 import { describe, it, expect, inject } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -24,8 +26,15 @@ const SKIP_CONFIG_WITH_LINT = JSON.stringify({
   'test-command': 'skip',
   'lint-command': 'skip',
 });
+// Every wrapper spawn registers its gate children in a ledger; keep that out of
+// the LIVE .orchestrator/runtime/gate-processes.jsonl of this checkout (q-1 H1).
+const TEST_LEDGER_ROOT = mkdtempSync(path.join(tmpdir(), 'orch-e2e-ledger-'));
+// resolveLedgerRoot() only honours a root that already carries .orchestrator/ —
+// a bare tmp dir would fall back to the checkout silently.
+mkdirSync(path.join(TEST_LEDGER_ROOT, '.orchestrator'), { recursive: true });
 function runGate(args) {
-  return spawnSync('node', [path.join(ROOT, 'scripts/run-quality-gate.mjs'), ...args], {
+  const withLedger = args.includes('--ledger-root') ? args : ['--ledger-root', TEST_LEDGER_ROOT, ...args];
+  return spawnSync('node', [path.join(ROOT, 'scripts/run-quality-gate.mjs'), ...withLedger], {
     encoding: 'utf8',
     cwd: ROOT,
     timeout: 30_000,

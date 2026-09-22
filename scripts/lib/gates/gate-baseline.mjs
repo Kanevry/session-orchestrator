@@ -23,7 +23,16 @@ const testCmd = process.env.TEST_CMD;
  */
 const CHECK_OPTS = (() => {
   const raw = Number((process.env.GATE_TIMEOUT_MS || '').trim());
-  return Number.isFinite(raw) && raw > 0 ? { timeoutMs: raw } : {};
+  const opts = Number.isFinite(raw) && raw > 0 ? { timeoutMs: raw } : {};
+  // GATE_LEDGER_ROOT (#1425 A4, W5 fix-pass): the wrapper publishes the ledger
+  // root it resolved (--ledger-root > repo root) so the gate-process register
+  // is written where the WRAPPER decided, not where this sub-script happens to
+  // run. Without it every runCheck() here defaulted to process.cwd(), and a test
+  // that spawned this script from the checkout wrote real lines into the live
+  // .orchestrator/runtime/gate-processes.jsonl — the reaper's kill population.
+  const ledgerRoot = (process.env.GATE_LEDGER_ROOT || "").trim();
+  if (ledgerRoot && ledgerRoot.startsWith("/")) opts.repoRoot = ledgerRoot;
+  return opts;
 })();
 
 if (!typecheckCmd) {

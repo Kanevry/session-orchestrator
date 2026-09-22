@@ -34,17 +34,34 @@
  * CONJUNCTION: in our own gate-process ledger, PPID 1, old enough, a read-only
  * gate command, and an identity that still verifies against the ledger record.
  *
- * ## Named ceiling (BV-004) — Stufe 1 matches the ledger by PID
+ * ## Coverage: the ledger is joined by PID **and** by PGID
  *
- * The binding `ps` format ({@link PS_ARGS}) publishes no `pgid` column, so a row
- * can only be joined to the ledger on `pid` (and, defensively, on a record's
- * `pgid`, which equals its `pid` under `detached: true`). That means Stufe 1
- * reaps the GROUP LEADER — killing whose group takes its descendants with it —
- * and never a surviving grandchild whose leader is already gone. That grandchild
- * carries no ledger identity in this format and is therefore not a candidate BY
- * DESIGN (PRD § Umfangsgrenze: orphan-confidence via PPID history is Stufe 2 /
- * C4). Revisit trigger: if a grandchild-without-leader case is ever observed for
- * a process the ledger DID record, add `pgid=` to {@link PS_ARGS} and join on it.
+ * The binding `ps` format ({@link PS_ARGS}) publishes `pgid`, so a row joins the
+ * ledger either as the recorded LEADER (`row.pid === record.pid`) or as any
+ * member of the recorded GROUP (`row.pgid === record.pgid`). The group join is
+ * what covers the measured grandchild case: `npm run typecheck` (82507) spawns
+ * `node scripts/typecheck.mjs` (82591) which spawns `tsgo`, all three in pgid
+ * 82507 — when only the leader dies, 82591 sits at PPID 1 and the ledger knows
+ * its group but not its pid. Named ceiling (BV-004): the join FINDS every
+ * member, but a member is only reaped when its own command passes the read-only
+ * allowlist — `tsgo`/`vitest` descendants are, a repo-local `node scripts/…`
+ * runner is NOT and is reported as `not-read-only` (measured 2026-09-22); the
+ * group still dies through its allowlisted sibling. Revisit trigger: an orphaned
+ * node runner that outlives every allowlisted sibling.
+ *
+ * A non-leader cannot be identified the leader's way: its start time is its own
+ * and its command line is not the recorded one. Its identity is therefore
+ * {@link verifyGroupMemberIdentity} — born no earlier than its group leader
+ * (a descendant is never older than the process that forked it), plus either
+ * the record's signature token or a command name the read-only allowlist knows.
+ *
+ * The KILL TARGET is the group in both cases (`-pgid`), so one record still
+ * covers its whole group with one ladder.
+ *
+ * Named ceiling (BV-004): a process that `setsid`-ed out of its group carries no
+ * ledger identity in this format and is not a candidate BY DESIGN (PRD
+ * § Umfangsgrenze: orphan-confidence via PPID history is Stufe 2 / C4). Revisit
+ * if such a case is ever observed for a process the ledger DID record.
  */
 
 import { spawn } from 'node:child_process';
@@ -53,8 +70,8 @@ import path from 'node:path';
 
 import { isMainModule } from './is-main-module.mjs';
 import {
-  buildCommandSignature,
   killProcessGroup,
+  pruneGateProcessLedger,
   readGateProcessLedger,
   verifyProcessIdentity,
 } from './process-group.mjs';
@@ -98,35 +115,56 @@ export const REAPER_DEFAULTS = Object.freeze({
  * DELIBERATELY OUT — anything that holds state or serves a port: dev servers,
  *   MCP servers, `npm run build`, `git` (writes the index), database processes.
  *
- * Matched against the FULL `args` string, with a `(^|[\s/])` boundary so both
- * `tsgo --noEmit` and `/opt/homebrew/bin/tsgo --noEmit` and `npx tsgo` hit.
+ * Matched per STATEMENT (see {@link isReadOnlyCommand}), with a `(^|[\s/])`
+ * boundary so both `tsgo --noEmit` and `/opt/homebrew/bin/tsgo --noEmit` and
+ * `npx tsgo` hit.
+ *
+ * `eslint` carries a negative lookahead for its WRITING flags: `eslint . --fix`
+ * is this repo's own `lint:fix` script and rewrites the working copy, so it is
+ * not re-runnable at will and has no business on a read-only allowlist.
  */
 export const READ_ONLY_COMMAND_PATTERNS = Object.freeze([
   /(^|[\s/])tsgo(\s|$)/,
   /(^|[\s/])tsc(\s|$)/,
   /(^|[\s/])vitest(\s|$)/,
-  /(^|[\s/])eslint(\s|$)/,
+  /(^|[\s/])eslint(?!\S)(?!.*\s--(fix|fix-dry-run|output-file)(\s|=|$))/,
   /(^|[\s/])node\s+\S*vitest/,
   /(^|[\s/])npm\s+(run\s+)?(test|typecheck|lint)(\s|$)/,
 ]);
 
 /**
+ * Shell operators that separate one STATEMENT from the next in a `ps` `args`
+ * line. `ps` prints argv joined by spaces with the quoting already stripped, so
+ * a quote-aware lexer (`command-blocker.mjs` `splitChainSegments`) would have
+ * nothing left to be aware of here — and it would put 2.190 lines into the
+ * static import closure of a module that is destined for a hot-path hook
+ * (#1432) and lazily imports even `events.mjs` for that reason.
+ */
+const STATEMENT_SEPARATOR_RE = /\s*(?:&&|\|\||[;|&])\s*/;
+
+/**
  * The binding `ps` invocation (Discovery d-2, 2026-09-21, Darwin 25.6.0).
  *
- * Headerless (`=` per field) and five NUMERIC fields before `args`, because on
+ * Headerless (`=` per field) and six NUMERIC fields before `args`, because on
  * macOS `comm` is a 16-character-truncated PATH that may contain spaces (68 of
  * 784 processes carried a space, 13 of them survived the truncation) — appending
  * `args` after `comm` breaks whitespace splitting outright. `-ww` disables column
  * truncation; `ps` escapes control characters, so one process is one line.
  * `rss` is in KiB. Roundtrip measured at ~47 ms for 287 KB / 784 processes.
  *
+ * `pgid=` is the sixth column and is what lets a row join the ledger as a GROUP
+ * MEMBER rather than only as the recorded leader (see the module header).
+ * Availability measured 2026-09-22 on Darwin 25.6.0 — `ps -Aww -o
+ * pid=,ppid=,pgid=,rss=,etime=,%cpu=,args=` exits 0 and prints the column; it is
+ * POSIX (`pgid` is a standard `-o` keyword) and present on Linux `procps` too.
+ *
  * A targeted call, NOT the full `probe()` — that one spawns up to five
  * subprocesses and has no caching (PRD § B4).
  */
-export const PS_ARGS = Object.freeze(['-Aww', '-o', 'pid=,ppid=,rss=,etime=,%cpu=,args=']);
+export const PS_ARGS = Object.freeze(['-Aww', '-o', 'pid=,ppid=,pgid=,rss=,etime=,%cpu=,args=']);
 
 /**
- * The TARGETED variant of {@link PS_ARGS}: one pid, same six columns.
+ * The TARGETED variant of {@link PS_ARGS}: one pid, same seven columns.
  *
  * Used immediately before every signal and once after the ladder (B3/B6). It is
  * a separate call rather than a re-run of the full `-A` scan because the whole
@@ -138,7 +176,7 @@ export const PS_ARGS = Object.freeze(['-Aww', '-o', 'pid=,ppid=,rss=,etime=,%cpu
  * @returns {string[]}
  */
 export function psPidArgs(pid) {
-  return ['-ww', '-p', String(pid), '-o', 'pid=,ppid=,rss=,etime=,%cpu=,args='];
+  return ['-ww', '-p', String(pid), '-o', 'pid=,ppid=,pgid=,rss=,etime=,%cpu=,args='];
 }
 
 /**
@@ -176,6 +214,7 @@ const PS_TIMEOUT_MS = 2000;
  * @typedef {object} PsRow
  * @property {number} pid
  * @property {number} ppid
+ * @property {number} pgid            Process-group id — the ledger's group join key.
  * @property {number} rssKb           Resident set size in KiB.
  * @property {number} etimeSeconds    Elapsed seconds since exec.
  * @property {number} cpuPct
@@ -205,23 +244,24 @@ export function parsePsSnapshotDetailed(text) {
   /** @type {PsRow[]} */
   const rows = [];
   let malformed = 0;
-  // Five whitespace-free fields, then `args` as the ENTIRE rest of the line —
+  // Six whitespace-free fields, then `args` as the ENTIRE rest of the line —
   // args legitimately contains spaces, so it must never be split.
-  const rowRe = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/;
+  const rowRe = /^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)(?:\s+(.*))?$/;
   for (const raw of String(text).split(/\r?\n/)) {
     if (raw.trim().length === 0) continue;
     const m = rowRe.exec(raw);
     if (!m) { malformed += 1; continue; }
-    const etimeSeconds = parseEtimeToSeconds(m[4]);
-    const cpuPct = parseFloat(m[5]);
+    const etimeSeconds = parseEtimeToSeconds(m[5]);
+    const cpuPct = parseFloat(m[6]);
     if (etimeSeconds === null || Number.isNaN(cpuPct)) { malformed += 1; continue; }
     rows.push({
       pid: parseInt(m[1], 10),
       ppid: parseInt(m[2], 10),
-      rssKb: parseInt(m[3], 10),
+      pgid: parseInt(m[3], 10),
+      rssKb: parseInt(m[4], 10),
       etimeSeconds,
       cpuPct,
-      args: m[6] ?? '',
+      args: m[7] ?? '',
     });
   }
   return { rows, malformed };
@@ -237,15 +277,99 @@ export function parsePsSnapshot(text) {
 }
 
 /**
- * True when `args` is a read-only gate command per {@link READ_ONLY_COMMAND_PATTERNS}.
+ * True when EVERY statement of `args` is a read-only gate command per
+ * {@link READ_ONLY_COMMAND_PATTERNS}.
+ *
+ * Per-statement and ALL, not the whole string and ANY: judged over the whole
+ * line, `sh -c npm run build && npm test` matches the `npm test` pattern as a
+ * SUBSTRING and a build — which writes — is allowlisted by the read-only half
+ * of its own command. This is the destructive-guard's per-statement rule
+ * (`.claude/rules/guard-design.md` § "Widening a matcher without narrowing its
+ * bypass"), applied in the other direction: there one appended statement lifts
+ * a block, here one appended statement must be able to REVOKE a permission.
+ *
+ * An empty statement (a trailing `&&`, a doubled separator) is skipped rather
+ * than counted as a failure; a line with no statement at all is not read-only.
+ *
  * @param {string} args
  * @param {readonly RegExp[]} [patterns]
  * @returns {boolean}
  */
-function isReadOnlyCommand(args, patterns = READ_ONLY_COMMAND_PATTERNS) {
+export function isReadOnlyCommand(args, patterns = READ_ONLY_COMMAND_PATTERNS) {
   const s = typeof args === 'string' ? args : '';
-  if (s.length === 0) return false;
-  return patterns.some((re) => re.test(s));
+  if (s.trim().length === 0) return false;
+  const statements = s.split(STATEMENT_SEPARATOR_RE).filter((part) => part.trim().length > 0);
+  if (statements.length === 0) return false;
+  return statements.every((statement) => patterns.some((re) => re.test(statement)));
+}
+
+/**
+ * Identity check for a NON-LEADER member of a recorded process group — PURE.
+ *
+ * {@link verifyProcessIdentity} cannot serve here: it compares the row's start
+ * time against the LEADER's and the row's first token against the LEADER's
+ * signature, and a descendant matches neither (`node scripts/typecheck.mjs` was
+ * forked by `npm run typecheck` seconds after it).
+ *
+ * Both checks must hold, and both are one-sided on purpose:
+ *  1. NOT OLDER than the group leader, within `toleranceMs`. A process that
+ *     existed BEFORE the leader cannot be its descendant, so an older row in the
+ *     same pgid is a recycled group id, never a grandchild.
+ *  2. Either the leader's signature token prefixes the row's command (the
+ *     descendant re-execs the same binary — `npm` → `npm`), or the row's command
+ *     is itself on the read-only allowlist (`tsgo`, `node …vitest` — NOT a
+ *     repo-local `node scripts/typecheck.mjs`, see the module head).
+ *
+ * @param {PsRow|null} row
+ * @param {import('./process-group.mjs').GateProcessRecord} record
+ * @param {object} [opts]
+ * @param {number} [opts.nowMs]
+ * @param {number} [opts.toleranceMs]
+ * @param {readonly RegExp[]} [opts.readOnlyPatterns]
+ * @returns {{match: boolean, reason: 'ok'|'gone'|'start-time-mismatch'|'signature-mismatch'}}
+ */
+export function verifyGroupMemberIdentity(row, record, {
+  nowMs = Date.now(),
+  toleranceMs = 2000,
+  readOnlyPatterns = READ_ONLY_COMMAND_PATTERNS,
+} = {}) {
+  if (!row || typeof row !== 'object') return { match: false, reason: 'gone' };
+  const etimeSeconds = typeof row.etimeSeconds === 'number' && Number.isFinite(row.etimeSeconds)
+    ? row.etimeSeconds
+    : null;
+  // An unmeasurable age is a refusal, never a pass — the same fail-closed
+  // direction `verifyProcessIdentity` takes for the leader.
+  if (etimeSeconds === null) return { match: false, reason: 'start-time-mismatch' };
+  const observedStart = nowMs - etimeSeconds * 1000;
+  const leaderStart = Number(record?.startTime);
+  if (!Number.isFinite(leaderStart)) return { match: false, reason: 'start-time-mismatch' };
+  if (observedStart < leaderStart - toleranceMs) {
+    return { match: false, reason: 'start-time-mismatch' };
+  }
+
+  const args = typeof row.args === 'string' ? row.args : '';
+  const token = signatureTokenOf(record?.commandSignature);
+  const firstToken = args.trim().split(/\s+/)[0] ?? '';
+  const tokenOk = token.length > 0 && firstToken === token;
+  if (!tokenOk && !isReadOnlyCommand(args, readOnlyPatterns)) {
+    return { match: false, reason: 'signature-mismatch' };
+  }
+  return { match: true, reason: 'ok' };
+}
+
+/**
+ * The command-name half of a command signature (`npm:6f1c…` → `npm`).
+ * A local four-liner rather than an import: `process-group.mjs` keeps its own
+ * copy private, and re-exporting it for one caller would widen that module's
+ * interface for no second consumer.
+ *
+ * @param {unknown} signature
+ * @returns {string}
+ */
+function signatureTokenOf(signature) {
+  const s = typeof signature === 'string' ? signature : '';
+  const i = s.lastIndexOf(':');
+  return i === -1 ? s : s.slice(0, i);
 }
 
 /**
@@ -253,22 +377,35 @@ function isReadOnlyCommand(args, patterns = READ_ONLY_COMMAND_PATTERNS) {
  *
  * No I/O, no signal, no clock of its own: `nowMs` is an argument. The only
  * imports it reaches are {@link verifyProcessIdentity} and
- * {@link buildCommandSignature}, both themselves pure.
+ * {@link verifyGroupMemberIdentity}, both themselves pure.
  *
  * Exactly ONE verdict per examined row, at a FIXED priority, so a row can never
  * appear twice and a trigger is never ambiguous:
  *
  *   1. not in the ledger            → `rejected: not-in-ledger`
- *   2. PPID !== 1                   → `rejected: has-parent`
- *   3. younger than `minAgeSeconds` → `rejected: too-young`
- *   4. foreign session, live or of unmeasurable liveness
+ *   2. record with `pgid !== pid`   → `rejected: pgid-mismatch`
+ *   3. PPID !== 1                   → `rejected: has-parent`
+ *   4. younger than `minAgeSeconds` → `rejected: too-young`
+ *   5. no `sessionId` on the record → `reported: unattributed`          (never killed)
+ *   6. foreign session, live or of unmeasurable liveness
  *                                   → `reported: foreign-live-session`
  *                                     / `foreign-session-liveness-unknown`  (never killed)
- *   5. not a read-only command      → `reported: not-read-only`         (never killed)
- *   6. identity does not verify     → `rejected: identity-mismatch | signature-mismatch`
- *   7. otherwise                    → `candidates` with `trigger: 'orphan-ppid1'`
+ *   7. not a read-only command      → `reported: not-read-only`         (never killed)
+ *   8. identity does not verify     → `rejected: identity-mismatch | signature-mismatch`
+ *   9. otherwise                    → `candidates` with `trigger: 'orphan-ppid1'`
  *
- * Step 4 precedes step 5 on purpose: a foreign live session's process is
+ * Step 2 is a LEDGER-INTEGRITY rejection, not a property of the row: under
+ * `detached: true` the leader IS its own group, so `pgid === pid` is the
+ * documented invariant (`process-group.mjs` — "the child calls setsid, so it IS
+ * its own group leader"). A record violating it describes a group this module
+ * did not create, and its `pgid` is the value that gets negated and signalled.
+ *
+ * Step 5 is fail-closed and was inert until 2026-09-22: `sessionId` was `null`
+ * in 377 of 377 live records because the gate runner passed none, and a null
+ * owner was silently read as "nobody's, therefore mine". An unattributed process
+ * is REPORTED — it is not evidence of ownership in either direction.
+ *
+ * Step 6 precedes step 7 on purpose: a foreign live session's process is
  * reported for its OWNER, whether or not it also happens to be read-only
  * (PRD FA3: "gemeldet, aber nicht automatisch getötet").
  *
@@ -311,14 +448,17 @@ export function decideReapCandidates(snapshot, ledgerRecords, nowMs, {
     : new Set((Array.isArray(livePeerSessionIds) ? livePeerSessionIds : [])
       .filter((id) => typeof id === 'string' && id.length > 0));
 
-  /** @type {Map<number, object>} */
+  /** Leader index: the pid the ledger recorded. @type {Map<number, object>} */
   const byPid = new Map();
+  /** Group index: every member of a recorded group joins through this.
+   *  @type {Map<number, object>} */
+  const byPgid = new Map();
   for (const rec of records) {
     if (!rec || typeof rec.pid !== 'number') continue;
-    // A `pid` hit wins over a `pgid` hit: under `detached: true` the two are
-    // equal, so indexing both is defensive, never a second source of truth.
-    if (typeof rec.pgid === 'number' && !byPid.has(rec.pgid)) byPid.set(rec.pgid, rec);
     byPid.set(rec.pid, rec);
+    // First record wins for a pgid: a recycled group id would otherwise let a
+    // newer record claim an older group's members.
+    if (typeof rec.pgid === 'number' && !byPgid.has(rec.pgid)) byPgid.set(rec.pgid, rec);
   }
 
   const candidates = [];
@@ -326,7 +466,13 @@ export function decideReapCandidates(snapshot, ledgerRecords, nowMs, {
   const rejected = [];
 
   for (const row of rows) {
-    const record = byPid.get(row.pid) ?? null;
+    // A `pid` hit is the LEADER; a `pgid` hit is any other member of its group
+    // (the measured grandchild case — see the module header). The leader wins,
+    // so a row is never judged by the weaker of the two identities.
+    const leaderRecord = byPid.get(row.pid) ?? null;
+    const record = leaderRecord
+      ?? (typeof row.pgid === 'number' ? byPgid.get(row.pgid) ?? null : null);
+    const isLeader = leaderRecord !== null;
     const orphanShaped = row.ppid === 1;
 
     if (!record) {
@@ -338,16 +484,30 @@ export function decideReapCandidates(snapshot, ledgerRecords, nowMs, {
       continue;
     }
 
+    const recordSessionId = typeof record.sessionId === 'string' && record.sessionId.length > 0
+      ? record.sessionId
+      : null;
     const base = {
       pid: row.pid,
-      pgid: typeof record.pgid === 'number' ? record.pgid : row.pid,
+      pgid: record.pgid,
       ppid: row.ppid,
+      isLeader,
       ageSeconds: row.etimeSeconds,
       rssKb: row.rssKb,
       cpuPct: row.cpuPct,
       commandSignature: record.commandSignature ?? null,
-      sessionId: record.sessionId ?? null,
+      // Normalised to `null`: an empty-string owner is an ABSENT owner, and
+      // leaving `''` here would let a downstream truthiness check read it as one.
+      sessionId: recordSessionId,
     };
+
+    // Ledger integrity before anything else: `record.pgid` is the value that
+    // gets NEGATED and signalled, and `pgid === pid` is the invariant every
+    // record this module writes satisfies.
+    if (record.pgid !== record.pid) {
+      rejected.push({ ...base, reason: 'pgid-mismatch' });
+      continue;
+    }
 
     if (!orphanShaped) {
       rejected.push({ ...base, reason: 'has-parent' });
@@ -358,10 +518,13 @@ export function decideReapCandidates(snapshot, ledgerRecords, nowMs, {
       continue;
     }
 
-    const foreignSessionId = typeof record.sessionId === 'string' && record.sessionId.length > 0
-      && record.sessionId !== ownSessionId
-      ? record.sessionId
-      : null;
+    if (recordSessionId === null) {
+      // Fail-closed: an unowned record is not an unowned PROCESS. Report it and
+      // let the operator (or a fixed producer) decide.
+      reported.push({ ...base, reason: 'unattributed' });
+      continue;
+    }
+    const foreignSessionId = recordSessionId !== ownSessionId ? recordSessionId : null;
     if (foreignSessionId !== null) {
       if (peers === null) {
         // Unmeasurable liveness → report, never reap. The only foreign process
@@ -370,7 +533,15 @@ export function decideReapCandidates(snapshot, ledgerRecords, nowMs, {
         continue;
       }
       if (peers.has(foreignSessionId)) {
-        reported.push({ ...base, args: row.args, reason: 'foreign-live-session' });
+        // `args` ONLY for a command the allowlist already cleared — the same
+        // rule `ARGS_HEAD_CHARS` states, applied at the source rather than at
+        // the audit writer, so a foreign dev server's command line (paths,
+        // tokens) never enters the result in the first place.
+        reported.push({
+          ...base,
+          ...(isReadOnlyCommand(row.args, readOnlyPatterns) ? { args: row.args } : {}),
+          reason: 'foreign-live-session',
+        });
         continue;
       }
     }
@@ -383,14 +554,15 @@ export function decideReapCandidates(snapshot, ledgerRecords, nowMs, {
       continue;
     }
 
-    const identity = verifyProcessIdentity(
-      row.pid,
-      {
-        startTime: record.startTime,
-        commandSignature: record.commandSignature ?? buildCommandSignature(row.args),
-      },
-      { snapshotLine: row, nowMs, toleranceMs: identityToleranceMs },
-    );
+    const identity = isLeader
+      ? verifyProcessIdentity(
+        row.pid,
+        { startTime: record.startTime, commandSignature: record.commandSignature },
+        { snapshotLine: row, nowMs, toleranceMs: identityToleranceMs },
+      )
+      : verifyGroupMemberIdentity(row, record, {
+        nowMs, toleranceMs: identityToleranceMs, readOnlyPatterns,
+      });
     if (!identity.match) {
       rejected.push({
         ...base,
@@ -613,8 +785,8 @@ function defaultSleep(ms) {
 }
 
 /**
- * Resolve the dependency bundle, defaulting every seam to the real
- * implementation — the `resolveDeps()` pattern from `lock-reaper.mjs:77-100`.
+ * Resolve the adapter, defaulting every seam to the real implementation — the
+ * `resolveDeps()` pattern from `lock-reaper.mjs:77-100`.
  *
  * `killProcessGroup` HAS a real default, and that is safe only because
  * {@link runOrphanScan} defaults `dryRun: true`. Tests ALWAYS inject it
@@ -745,13 +917,17 @@ function auditRecord(entry, decision, {
  * @param {number} [opts.minAgeSeconds]
  * @param {number} [opts.killGraceMs]
  * @param {number} [opts.verifyWaitMs]
+ * @param {number} [opts.falseAlarmWindow]  Rolling window of audit DECISIONS the
+ *   HR-101 rate is judged over (`reaper.false-alarm-window`).
  * @returns {Promise<{scanned: number, candidates: object[], reported: object[],
- *   rejected: object[], killed: object[], skipped?: string, malformed: number,
+ *   rejected: object[], killed: object[], unattributed: number,
+ *   peerLiveness: 'measured'|'unmeasured'|null, skipped?: string, malformed: number,
  *   durationMs: number, instrumentSuspect: boolean|null, falseAlarmRate: number|null,
  *   falseAlarmWindowN: number}>}
  *   `instrumentSuspect`/`falseAlarmRate` are `null` on a degraded (`skipped`) scan
  *   and `falseAlarmRate` is `null` below the 10-decision floor — in both cases a
- *   measurement that does not exist, never a measured zero.
+ *   measurement that does not exist, never a measured zero. `peerLiveness` is the
+ *   same distinction for the peer probe, and `null` only on a degraded scan.
  */
 export async function runOrphanScan({
   repoRoot,
@@ -761,6 +937,7 @@ export async function runOrphanScan({
   minAgeSeconds = REAPER_DEFAULTS.minAgeSeconds,
   killGraceMs = REAPER_DEFAULTS.killGraceMs,
   verifyWaitMs = REAPER_DEFAULTS.verifyWaitMs,
+  falseAlarmWindow = REAPER_DEFAULTS.falseAlarmWindow,
 } = {}) {
   const d = resolveDeps(deps);
   const startedAt = typeof now === 'number' ? now : d.now();
@@ -773,6 +950,11 @@ export async function runOrphanScan({
     reported: [],
     rejected: [],
     killed: [],
+    unattributed: 0,
+    // Nothing was measured, so peer liveness was not measured either — `null`
+    // rather than the string, because "unmeasured" is a MEASUREMENT OUTCOME and
+    // a degraded scan never got as far as the probe.
+    peerLiveness: null,
     skipped,
     malformed,
     durationMs: Math.max(0, d.now() - startedAt),
@@ -848,16 +1030,23 @@ export async function runOrphanScan({
   const complete = async () => {
     let auditRecords;
     try {
-      auditRecords = (await d.readAuditRecords(repoRoot, REAPER_DEFAULTS.falseAlarmWindow)) ?? [];
+      auditRecords = (await d.readAuditRecords(repoRoot, falseAlarmWindow)) ?? [];
     } catch {
       auditRecords = [];
     }
-    const fa = falseAlarmRate(auditRecords, REAPER_DEFAULTS.falseAlarmWindow);
+    const fa = falseAlarmRate(auditRecords, falseAlarmWindow);
     // HR-101: the rate re-aims the instrument, it never re-thresholds it — so
     // this flag is REPORTED and nothing here branches on it.
     const instrumentSuspect = typeof fa.rate === 'number' && fa.rate > FALSE_ALARM_SUSPECT_RATE;
     const survivedSigkill = killed.filter((k) => k.survivedSigkill === true).length;
     const durationMs = Math.max(0, d.now() - startedAt);
+    // Two counts that must not hide inside `reported`: an unattributed record is
+    // a PRODUCER defect (the gate runner passed no session id), and an
+    // unmeasured peer probe is an INSTRUMENT gap. Folded into the generic
+    // `reported` number, both are invisible — which is how the foreign-session
+    // guard stayed inert across 377 of 377 records without anything saying so.
+    const unattributed = reported.filter((r) => r.reason === 'unattributed').length;
+    const peerLiveness = livePeerSessionIds === null ? 'unmeasured' : 'measured';
 
     // HR-101 again, in the other direction: a signal that fires on every hook
     // is noise nobody reads. A scan that found nothing emits nothing — the
@@ -871,6 +1060,8 @@ export async function runOrphanScan({
           reported: reported.length,
           rejected: rejected.length,
           killed: killed.length,
+          unattributed,
+          peer_liveness: peerLiveness,
           survived_sigkill: survivedSigkill,
           dry_run: dryRun === true,
           duration_ms: durationMs,
@@ -885,12 +1076,23 @@ export async function runOrphanScan({
       }
     }
 
+    // Housekeeping, last and best-effort: the ledger is append-only and grew
+    // monotonically (measured 2026-09-22: 369 lines/day) because nothing in
+    // production ever called the pruner.
+    try {
+      pruneGateProcessLedger(repoRoot);
+    } catch {
+      /* housekeeping, never a precondition of a scan */
+    }
+
     return {
       scanned: rows.length,
       candidates,
       reported,
       rejected,
       killed,
+      unattributed,
+      peerLiveness,
       malformed,
       durationMs,
       instrumentSuspect,
@@ -927,6 +1129,13 @@ export async function runOrphanScan({
     if (text === null || text === undefined) return { match: false, reason: 'unmeasured' };
     const row = parsePsSnapshot(text).find((r) => r.pid === c.pid) ?? null;
     try {
+      // A group MEMBER is re-verified the way it was decided — by the leader's
+      // seam it would fail every time (its own start time, its own command),
+      // and a pre-signal check that always refuses is a disarmed feature, not a
+      // strict one.
+      if (c.isLeader === false) {
+        return verifyGroupMemberIdentity(row, c.ledgerRecord, { nowMs: d.now() });
+      }
       return d.verifyIdentity(
         c.pid,
         { startTime: c.ledgerRecord.startTime, commandSignature: c.ledgerRecord.commandSignature },
@@ -937,7 +1146,19 @@ export async function runOrphanScan({
     }
   };
 
-  for (const c of candidates) {
+  // ONE ladder per GROUP, not per row: with the pgid join a single group can
+  // contribute several candidate rows (leader + descendants), and they all name
+  // the same kill target. Leaders first, so the target of a group is the process
+  // the ledger actually recorded whenever it is still alive.
+  const killTargets = [];
+  const coveredPgids = new Set();
+  for (const c of [...candidates.filter((x) => x.isLeader), ...candidates.filter((x) => !x.isLeader)]) {
+    if (coveredPgids.has(c.pgid)) continue;
+    coveredPgids.add(c.pgid);
+    killTargets.push(c);
+  }
+
+  for (const c of killTargets) {
     /** Set by the gate below when it refuses; `null` means every signal was permitted. */
     let withdrawal = null;
     const beforeSignal = async (signal) => {
@@ -1000,6 +1221,10 @@ export async function runOrphanScan({
     killed.push({
       pid: c.pid,
       pgid: c.pgid,
+      // Every candidate row this one ladder covers — the group join means one
+      // signal can end several candidates, and a `killed` list that named only
+      // the target would under-report what the reaper did to the host.
+      groupMemberPids: candidates.filter((x) => x.pgid === c.pgid).map((x) => x.pid),
       ok,
       signalsSent,
       survivors,
@@ -1138,7 +1363,7 @@ export function falseAlarmRate(auditRecords, windowSize = REAPER_DEFAULTS.falseA
  * @param {string[]} [argv]  `process.argv.slice(2)`
  * @returns {{help: boolean, json: boolean, repoRoot: string|null, mode: 'report'|'kill',
  *   dryRun: boolean, minAgeSeconds: number, killGraceMs: number, verifyWaitMs: number,
- *   errors: string[]}}
+ *   falseAlarmWindow: number, errors: string[]}}
  */
 export function parseReaperCliArgs(argv = []) {
   const args = Array.isArray(argv) ? argv : [];
@@ -1153,6 +1378,7 @@ export function parseReaperCliArgs(argv = []) {
     minAgeSeconds: REAPER_DEFAULTS.minAgeSeconds,
     killGraceMs: REAPER_DEFAULTS.killGraceMs,
     verifyWaitMs: REAPER_DEFAULTS.verifyWaitMs,
+    falseAlarmWindow: REAPER_DEFAULTS.falseAlarmWindow,
     errors,
   };
 
@@ -1224,6 +1450,24 @@ export function parseReaperCliArgs(argv = []) {
         else out.verifyWaitMs = n;
         break;
       }
+      case '--false-alarm-window': {
+        const value = valueAt(arg, i);
+        if (value === null) break;
+        i += 1;
+        const n = numberFrom(arg, value);
+        if (n === null) break;
+        // A window of 0 is not "no window" — `falseAlarmRate` reads it as "every
+        // firing ever recorded", which is the opposite of the rolling window the
+        // key names. The config parser clamps at 1; the CLI refuses instead, so
+        // a hand-run diagnosis never measures a different population than the
+        // hook does.
+        if (n < 1) {
+          errors.push(`${arg} expects a number >= 1, got ${JSON.stringify(value)}`);
+          break;
+        }
+        out.falseAlarmWindow = n;
+        break;
+      }
       default:
         errors.push(`unknown argument: ${arg}`);
     }
@@ -1262,6 +1506,9 @@ OPTIONS
                             (default: ${REAPER_DEFAULTS.killGraceMs}).
   --verify-wait-ms <n>      Wait before re-measuring the effect
                             (default: ${REAPER_DEFAULTS.verifyWaitMs}).
+  --false-alarm-window <n>  Rolling window of audit DECISIONS the HR-101
+                            false-alarm rate is judged over; >= 1
+                            (default: ${REAPER_DEFAULTS.falseAlarmWindow}).
   --json                    Emit the full scan result as one JSON object.
   --help, -h                Show this help and exit.
 
@@ -1303,6 +1550,7 @@ async function mainCli(argv) {
       minAgeSeconds: cli.minAgeSeconds,
       killGraceMs: cli.killGraceMs,
       verifyWaitMs: cli.verifyWaitMs,
+      falseAlarmWindow: cli.falseAlarmWindow,
     });
   } catch (err) {
     // runOrphanScan carries a NO-THROW contract; this catch exists so a broken
@@ -1316,7 +1564,8 @@ async function mainCli(argv) {
   } else {
     process.stdout.write(
       `orphan-reaper: scanned=${result.scanned} candidates=${result.candidates.length} `
-      + `reported=${result.reported.length} killed=${result.killed.length} `
+      + `reported=${result.reported.length} unattributed=${result.unattributed} `
+      + `peer_liveness=${result.peerLiveness ?? 'none'} killed=${result.killed.length} `
       + `malformed=${result.malformed} mode=${cli.mode}`
       + `${result.skipped ? ` skipped=${result.skipped}` : ''}\n`,
     );

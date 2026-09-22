@@ -2,8 +2,8 @@
  * orphan-reaper.test.mjs — Epic #1425 B1+B2.
  *
  * Every test names the bug it catches. The fixtures below are REAL `ps -Aww -o
- * pid=,ppid=,rss=,etime=,%cpu=,args=` lines captured on this host 2026-09-21
- * (Darwin 25.6.0) plus synthetic gate-process rows; no test ever uses a live
+ * pid=,ppid=,pgid=,rss=,etime=,%cpu=,args=` lines captured on this host
+ * 2026-09-22 (Darwin 25.6.0) plus synthetic gate-process rows; no test uses a live
  * `ps` result as a kill target, and `killProcessGroup` is ALWAYS injected
  * (`.claude/rules/testing.md` — tests must not kill developer processes).
  *
@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,7 @@ import {
   auditPath,
   decideReapCandidates,
   falseAlarmRate,
+  isReadOnlyCommand,
   parsePsSnapshot,
   parsePsSnapshotDetailed,
   parseReaperCliArgs,
@@ -40,24 +41,43 @@ import {
   touchScanMarker,
 } from '../../scripts/lib/orphan-reaper.mjs';
 import {
+  GATE_PROCESS_LEDGER_RELPATH,
   buildCommandSignature,
   killProcessGroup as realKillProcessGroup,
+  recordGateProcess,
 } from '../../scripts/lib/process-group.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
-/** Five REAL rows, captured 2026-09-21 on Darwin 25.6.0. Row 3 carries a SPACE
+/** Five REAL rows, captured 2026-09-22 on Darwin 25.6.0 with the binding
+ *  `ps -Aww -o pid=,ppid=,pgid=,rss=,etime=,%cpu=,args=`. Row 3 carries a SPACE
  *  inside `args` — the 16-character-`comm`-truncation trap Discovery d-2 named:
  *  68 of 784 processes had a space, so any parser that splits `args` on
  *  whitespace silently mangles them. */
 const REAL_ROWS = [
-  '    1     0  17472 09-11:05:54   0.8 /sbin/launchd',
-  '  329     1  26112 09-11:04:32   1.3 /usr/libexec/logd',
-  '  331     1   8672 09-11:04:32   0.0 /usr/libexec/UserEventAgent (System)',
-  '  337     1   4352 09-11:04:32   0.0 /usr/sbin/systemstats --daemon',
-  '  382     1   1120 09-11:09:37   0.0 /System/Library/PrivateFrameworks/Heimdal.framework/Helpers/kdc',
+  '    1     0     1  17472 09-11:05:54   0.8 /sbin/launchd',
+  '  329     1   329  26112 09-11:04:32   1.3 /usr/libexec/logd',
+  '  331     1   331   8672 09-11:04:32   0.0 /usr/libexec/UserEventAgent (System)',
+  '  337     1   337   4352 09-11:04:32   0.0 /usr/sbin/systemstats --daemon',
+  '  382     1   382   1120 09-11:09:37   0.0 /System/Library/PrivateFrameworks/Heimdal.framework/Helpers/kdc',
+];
+
+/** The MEASURED grandchild chain (2026-09-22, Darwin 25.6.0): `npm run
+ *  typecheck` (82507) forks `node scripts/typecheck.mjs` (82591) which forks
+ *  `tsgo` (82604) — all three in pgid 82507, only the leader in the ledger.
+ *  When the leader dies, 82591 and 82604 sit at PPID 1 with a group the ledger
+ *  knows and a pid it does not. */
+const GRANDCHILD_PGID = 82507;
+const GRANDCHILD_ARGS = 'npm run typecheck';
+const GRANDCHILD_SIG = buildCommandSignature(GRANDCHILD_ARGS);
+const grandchildRows = ({ leaderAlive = false } = {}) => [
+  ...(leaderAlive
+    ? [`  ${GRANDCHILD_PGID}     1  ${GRANDCHILD_PGID}  41216 07:12   0.9 ${GRANDCHILD_ARGS}`]
+    : []),
+  `  82591     1  ${GRANDCHILD_PGID}  98304 07:10   4.1 node scripts/typecheck.mjs`,
+  `  82604     1  ${GRANDCHILD_PGID} 8388608 07:08  312.0 tsgo --noEmit`,
 ];
 
 const makeOutput = (...rows) => [...rows].join('\n');
@@ -70,8 +90,10 @@ const TSGO_SIG = buildCommandSignature(TSGO_ARGS);
 
 /** One synthetic gate row. `etime` and the ledger `startTime` are kept
  *  consistent so the identity check passes for the right reason. */
-const gateRow = ({ pid = 4242, ppid = 1, etime = '07:12', rss = 3_600_000, cpu = 97.2, args = TSGO_ARGS } = {}) =>
-  `${String(pid).padStart(6)} ${String(ppid).padStart(5)} ${String(rss).padStart(6)} ${etime}   ${cpu} ${args}`;
+const gateRow = ({
+  pid = 4242, ppid = 1, pgid, etime = '07:12', rss = 3_600_000, cpu = 97.2, args = TSGO_ARGS,
+} = {}) => `${String(pid).padStart(6)} ${String(ppid).padStart(5)} ${String(pgid ?? pid).padStart(6)} `
+  + `${String(rss).padStart(6)} ${etime}   ${cpu} ${args}`;
 
 const ledgerRecord = ({
   pid = 4242, pgid = 4242, ageSeconds = ORPHAN_AGE_S, signature = TSGO_SIG, sessionId = 'own-session',
@@ -95,8 +117,25 @@ describe('parsePsSnapshot', () => {
     const userEventAgent = rows.find((r) => r.pid === 331);
     expect(userEventAgent.args).toBe('/usr/libexec/UserEventAgent (System)');
     expect(userEventAgent.ppid).toBe(1);
+    expect(userEventAgent.pgid).toBe(331);
     expect(userEventAgent.rssKb).toBe(8672);
     expect(userEventAgent.cpuPct).toBe(0);
+  });
+
+  it('reads pgid as its own column and never as the rss it precedes — a column silently shifted by one turns every rss and age into another field\'s value', () => {
+    // Bug: adding `pgid=` to PS_ARGS without moving the parser's capture groups
+    // reads pgid as rss, rss as etime and etime as %cpu — the row still parses,
+    // so nothing goes red while every threshold compares the wrong number.
+    const [member] = parsePsSnapshot(makeOutput(grandchildRows()[0]));
+    expect(member).toMatchObject({
+      pid: 82591,
+      ppid: 1,
+      pgid: GRANDCHILD_PGID,
+      rssKb: 98304,
+      etimeSeconds: 7 * 60 + 10,
+      cpuPct: 4.1,
+      args: 'node scripts/typecheck.mjs',
+    });
   });
 
   it('parses DD-HH:MM:SS etime to whole seconds — catches an age computed from a format the twin parseEtimeToMinutes would round to minutes', () => {
@@ -109,7 +148,7 @@ describe('parsePsSnapshot', () => {
     const detailed = parsePsSnapshotDetailed(makeOutput(
       REAL_ROWS[1],
       'this is not a ps row',
-      '  999     1   1024 not-an-etime   0.0 /bin/sh',
+      '  999     1   999   1024 not-an-etime   0.0 /bin/sh',
       '',
     ));
     expect(detailed.rows).toHaveLength(1);
@@ -264,9 +303,106 @@ describe('decideReapCandidates', () => {
     expect(out.reported).toHaveLength(1);
     expect(out.reported[0].reason).toBe('foreign-live-session');
     expect(out.reported[0].sessionId).toBe('peer-session');
-    // The foreign-live branch RETAINS args (the not-read-only branch drops them),
-    // so this is the second, independent witness of which block decided.
-    expect(out.reported[0].args).toBe(args);
+    // `args` stays out: the command did NOT clear the read-only allowlist, and
+    // `ARGS_HEAD_CHARS` documents "ONLY for allowlisted". Until 2026-09-22 this
+    // branch copied a foreign dev server's command line — paths and tokens
+    // included — into the result and from there into the audit.
+    expect(out.reported[0].args).toBeUndefined();
+  });
+
+  it('keeps args on a foreign-live report ONLY when the command cleared the read-only allowlist', () => {
+    // Bug: the doc at ARGS_HEAD_CHARS promises args "ONLY for allowlisted", and
+    // the foreign-live branch ignored it. Dropping args unconditionally would be
+    // the opposite over-correction — the owner loses the one detail that makes
+    // the report actionable for a command we already judged safe to name.
+    const snapshot = parsePsSnapshot(makeOutput(gateRow()));
+    const records = [ledgerRecord({ sessionId: 'peer-session' })];
+
+    const out = decideReapCandidates(snapshot, records, NOW, {
+      ownSessionId: 'own-session',
+      livePeerSessionIds: ['peer-session'],
+    });
+
+    expect(out.reported[0].reason).toBe('foreign-live-session');
+    expect(out.reported[0].args).toBe(TSGO_ARGS);
+  });
+
+  it('REPORTS a ledger record carrying no sessionId as unattributed and never makes it a candidate — an unowned RECORD is not an unowned PROCESS', () => {
+    // Bug: `sessionId` was null in 377 of 377 live records (the gate runner
+    // passed none), and a null owner fell straight through the foreign-session
+    // guard into the kill path — the guard was structurally inert.
+    const snapshot = parsePsSnapshot(makeOutput(gateRow()));
+
+    for (const sessionId of [null, '']) {
+      const out = decideReapCandidates(snapshot, [ledgerRecord({ sessionId })], NOW, {
+        ownSessionId: 'own-session',
+        livePeerSessionIds: [],
+      });
+      expect(out.candidates).toEqual([]);
+      expect(out.reported).toHaveLength(1);
+      expect(out.reported[0]).toMatchObject({ pid: 4242, reason: 'unattributed', sessionId: null });
+    }
+  });
+
+  it('rejects a ledger record whose pgid is not its pid as pgid-mismatch — under detached:true the leader IS its own group, and record.pgid is what gets negated and signalled', () => {
+    // Reproduction of the S-HIGH: `{pid: 4242, pgid: 1}` produced a candidate
+    // whose kill target was `-1` — a POSIX broadcast.
+    const snapshot = parsePsSnapshot(makeOutput(gateRow()));
+
+    for (const pgid of [1, 0, -12345, 9999]) {
+      const out = decideReapCandidates(snapshot, [ledgerRecord({ pgid })], NOW, {
+        ownSessionId: 'own-session',
+        livePeerSessionIds: [],
+      });
+      expect(out.candidates).toEqual([]);
+      expect(out.rejected[0]).toMatchObject({ pid: 4242, reason: 'pgid-mismatch' });
+    }
+  });
+
+  it('makes the ORPHANED GRANDCHILD of a recorded group a candidate through the pgid join, with the GROUP as kill target', () => {
+    // Bug (measured 2026-09-22): `npm run typecheck` (82507) -> `node
+    // scripts/typecheck.mjs` (82591) -> `tsgo` (82604), all pgid 82507. With a
+    // pid-only join, a dead leader left BOTH descendants at PPID 1 classified
+    // `not-in-ledger` — the exact 2026-09-20 incident shape (an 8 GB `tsgo` at
+    // PPID 1) the reaper exists for, invisible to it.
+    const snapshot = parsePsSnapshot(makeOutput(...grandchildRows()));
+    const records = [ledgerRecord({
+      pid: GRANDCHILD_PGID, pgid: GRANDCHILD_PGID, signature: GRANDCHILD_SIG,
+    })];
+
+    const out = decideReapCandidates(snapshot, records, NOW, {
+      ownSessionId: 'own-session',
+      livePeerSessionIds: [],
+    });
+
+    // 82604 (`tsgo`) is on the read-only allowlist; the join found it although
+    // the ledger never knew its pid. Its kill target is the GROUP, which takes
+    // 82591 with it.
+    expect(out.candidates.map((c) => c.pid)).toEqual([82604]);
+    expect(out.candidates[0]).toMatchObject({ pgid: GRANDCHILD_PGID, isLeader: false });
+    // 82591 IS joined (no longer `not-in-ledger`) but `node scripts/typecheck.mjs`
+    // is not an allowlisted command, so it is reported, never signalled directly.
+    expect(out.reported.map((r) => [r.pid, r.reason])).toEqual([[82591, 'not-read-only']]);
+    expect(out.rejected).toEqual([]);
+  });
+
+  it('refuses a group member OLDER than its group leader — a process that existed before the leader cannot be its descendant, so the pgid was recycled', () => {
+    // Bug: the group join without an identity check reaps whatever currently
+    // wears a recycled pgid. Age is the one-sided discriminator: descendants are
+    // younger than the leader, never older.
+    const older = `  82604     1  ${GRANDCHILD_PGID} 8388608   19:00 312.0 tsgo --noEmit`;
+    const records = [ledgerRecord({
+      pid: GRANDCHILD_PGID, pgid: GRANDCHILD_PGID, signature: GRANDCHILD_SIG,
+    })];
+
+    const out = decideReapCandidates(parsePsSnapshot(makeOutput(older)), records, NOW, {
+      ownSessionId: 'own-session',
+      livePeerSessionIds: [],
+    });
+
+    expect(out.candidates).toEqual([]);
+    expect(out.rejected[0]).toMatchObject({ pid: 82604, reason: 'identity-mismatch' });
+    expect(out.rejected[0].identity.reason).toBe('start-time-mismatch');
   });
 
   it('rejects a recycled PID whose elapsed time contradicts the ledger start time — the PID-recycling guard, FA3', () => {
@@ -290,6 +426,8 @@ describe('decideReapCandidates', () => {
       'eslint .',
       'npm run lint',
       'npm test',
+      // Composite, but EVERY statement is read-only.
+      'npm run typecheck && npm test',
     ];
     const reject = [
       '/usr/libexec/logd',
@@ -297,10 +435,22 @@ describe('decideReapCandidates', () => {
       'npm run build',
       'node mcp-server.mjs',
       '/sbin/launchd',
+      // This repo's own `lint:fix` script — it REWRITES the working copy, so it
+      // is not re-runnable at will and has no business on a read-only list.
+      'eslint . --fix',
+      'eslint . --fix-dry-run',
+      'eslint src --output-file report.json',
+      // The substring trap: `npm test` matches, and the build that writes does
+      // not — judged over the whole line, the writer rides in on the reader.
+      'sh -c npm run build && npm test',
+      'npm test && rm -rf dist',
+      'npm test; npm run build',
+      'npm run build | npm test',
     ];
-    const hits = (s) => READ_ONLY_COMMAND_PATTERNS.some((re) => re.test(s));
-    expect(accept.filter(hits)).toEqual(accept);
-    expect(reject.filter(hits)).toEqual([]);
+    expect(accept.filter((s) => isReadOnlyCommand(s))).toEqual(accept);
+    expect(reject.filter((s) => isReadOnlyCommand(s))).toEqual([]);
+    // The PATTERNS themselves stay the exported contract the fixtures pin.
+    expect(READ_ONLY_COMMAND_PATTERNS).toHaveLength(6);
   });
 });
 
@@ -465,6 +615,7 @@ describe('runOrphanScan', () => {
     expect(res.killed).toEqual([{
       pid: 4242,
       pgid: 4242,
+      groupMemberPids: [4242],
       ok: true,
       signalsSent: ['SIGTERM', 'SIGKILL'],
       survivors: [],
@@ -593,6 +744,103 @@ describe('runOrphanScan', () => {
 
     expect(res.killed[0]).toMatchObject({ ok: false, survivors: [4242], verified: 'unverified' });
   });
+
+  it('runs ONE ladder per GROUP, not one per candidate row, and names every row that ladder covered', async () => {
+    // Bug: with the pgid join a group contributes several candidate rows that
+    // all name the SAME kill target, so a per-row loop signals the same group
+    // repeatedly and books its own ESRCH echoes as separate reaps.
+    const kill = vi.fn(async () => ({
+      ok: true, signalsSent: ['SIGTERM', 'SIGKILL'], survivors: [], error: null, aborted: null,
+    }));
+    // Leader ALIVE plus its `tsgo` descendant: two allowlisted candidate rows,
+    // one group, one kill target.
+    const rows = grandchildRows({ leaderAlive: true });
+    const { deps } = scanDeps({
+      psOutputs: [makeOutput(...rows)],
+      psPidOutputs: [makeOutput(...rows)],
+      records: [ledgerRecord({
+        pid: GRANDCHILD_PGID, pgid: GRANDCHILD_PGID, signature: GRANDCHILD_SIG,
+      })],
+      kill,
+    });
+
+    const res = await runOrphanScan({ repoRoot: '/synthetic/repo', dryRun: false, deps });
+
+    expect(res.candidates.map((c) => c.pid).sort((a, b) => a - b)).toEqual([GRANDCHILD_PGID, 82604]);
+    expect(kill).toHaveBeenCalledTimes(1);
+    expect(kill.mock.calls[0][0]).toBe(GRANDCHILD_PGID);
+    // Leaders first: the target is the process the ledger actually recorded.
+    expect(res.killed).toHaveLength(1);
+    expect(res.killed[0].pid).toBe(GRANDCHILD_PGID);
+    expect(res.killed[0].groupMemberPids.sort((a, b) => a - b)).toEqual([GRANDCHILD_PGID, 82604]);
+  });
+
+  it('REPORTS an unattributed record and never signals it, counting it separately from the other reports', async () => {
+    // Bug: the foreign-session guard was inert for 377 of 377 records, and the
+    // count that would have shown it was folded into the generic `reported`.
+    const kill = vi.fn();
+    const { deps } = scanDeps({
+      psOutputs: [makeOutput(gateRow())],
+      records: [ledgerRecord({ sessionId: null })],
+      kill,
+    });
+
+    const res = await runOrphanScan({ repoRoot: '/synthetic/repo', dryRun: false, deps });
+
+    expect(kill).not.toHaveBeenCalled();
+    expect(res.killed).toEqual([]);
+    expect(res.unattributed).toBe(1);
+    expect(res.reported[0]).toMatchObject({ reason: 'unattributed' });
+  });
+
+  it('PRUNES the gate-process ledger at the end of a scan — the reaper reads that file every run and nothing else ever shrinks it', async () => {
+    // Bug: `pruneGateProcessLedger` had ZERO production callers (measured
+    // 2026-09-22), so the ledger the reaper joins against grew without bound
+    // and every scan re-read a day's worth of dead records.
+    const ptmp = mkdtempSync(join(tmpdir(), 'reaper-prune-'));
+    try {
+      const fresh = { ...ledgerRecord(), pid: 4242, pgid: 4242, startTime: Date.now() - 1000 };
+      const stale = {
+        ...ledgerRecord(), pid: 4343, pgid: 4343, startTime: Date.now() - 48 * 3600 * 1000,
+      };
+      recordGateProcess(ptmp, fresh);
+      recordGateProcess(ptmp, stale);
+
+      const { deps } = scanDeps({ psOutputs: [makeOutput(...REAL_ROWS)], records: [] });
+      await runOrphanScan({ repoRoot: ptmp, deps });
+
+      const body = readFileSync(join(ptmp, GATE_PROCESS_LEDGER_RELPATH), 'utf8');
+      expect(body.trim().split('\n')).toHaveLength(1);
+      expect(JSON.parse(body.trim()).pid).toBe(4242);
+    } finally {
+      rmSync(ptmp, { recursive: true, force: true });
+    }
+  });
+
+  it('honours the falseAlarmWindow it is given instead of the module default — the key reaches the rate that judges the instrument', async () => {
+    // Bug: `reaper.false-alarm-window` was parsed, documented and passed through
+    // the hooks, then discarded — `runOrphanScan` hard-coded REAPER_DEFAULTS at
+    // both use sites, so the key had no consumer at all.
+    const auditRecords = [
+      ...Array.from({ length: 40 }, () => ({ decision: 'kill', result: { ok: true } })),
+      ...Array.from({ length: 10 }, () => ({ decision: 'reject' })),
+    ];
+    const { deps } = scanDeps({ psOutputs: [makeOutput(...REAL_ROWS)], records: [], auditRecords });
+    const readSpy = vi.fn(() => auditRecords);
+    deps.readAuditRecords = readSpy;
+
+    // Last 10 decisions are all rejects → rate 1.0. Over the default 50 → 0.2.
+    const narrow = await runOrphanScan({
+      repoRoot: '/synthetic/repo', deps, falseAlarmWindow: 10,
+    });
+    expect(readSpy).toHaveBeenCalledWith('/synthetic/repo', 10);
+    expect(narrow.falseAlarmRate).toBe(1);
+    expect(narrow.falseAlarmWindowN).toBe(10);
+
+    const wide = await runOrphanScan({ repoRoot: '/synthetic/repo', deps });
+    expect(wide.falseAlarmRate).toBeCloseTo(0.2, 5);
+    expect(wide.falseAlarmWindowN).toBe(50);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -616,6 +864,8 @@ describe('runOrphanScan — telemetry', () => {
       survived_sigkill: 0,
       dry_run: true,
       instrument_suspect: false,
+      unattributed: 0,
+      peer_liveness: 'measured',
     });
     expect(typeof payload.duration_ms).toBe('number');
     // Below the 10-decision floor the rate is ABSENT, never 0 — a fabricated
@@ -623,6 +873,23 @@ describe('runOrphanScan — telemetry', () => {
     expect('false_alarm_rate' in payload).toBe(false);
     expect(opts).toEqual({ repoRoot: '/synthetic/repo' });
     expect(res.candidates).toHaveLength(1);
+  });
+
+  it('surfaces an UNMEASURED peer probe in the event instead of letting it look like "no peers are alive"', async () => {
+    // Bug: `livePeerSessionIds === null` (the probe could not answer) and `[]`
+    // (it answered "nobody") are opposite facts that left identical traces —
+    // every consumer of the event saw the same record for both.
+    const { deps } = scanDeps({ psOutputs: [makeOutput(gateRow())] });
+    deps.detectPeers = async () => null;
+
+    const res = await runOrphanScan({ repoRoot: '/synthetic/repo', deps });
+
+    expect(res.peerLiveness).toBe('unmeasured');
+    expect(deps.emitEvent.mock.calls[0][1]).toMatchObject({ peer_liveness: 'unmeasured' });
+
+    const measured = scanDeps({ psOutputs: [makeOutput(gateRow())] });
+    const ok = await runOrphanScan({ repoRoot: '/synthetic/repo', deps: measured.deps });
+    expect(ok.peerLiveness).toBe('measured');
   });
 
   it('emits NOTHING on a scan that found nothing — a signal that fires on every hook is noise (HR-101)', async () => {
@@ -732,13 +999,16 @@ describe('falseAlarmRate', () => {
 
 describe('module contract', () => {
   it('pins the binding ps invocation Wave 3 and the fixtures both depend on', () => {
-    expect([...PS_ARGS]).toEqual(['-Aww', '-o', 'pid=,ppid=,rss=,etime=,%cpu=,args=']);
+    // `pgid=` is load-bearing since 2026-09-22: without it a row can only join
+    // the ledger as the recorded LEADER, and every orphaned descendant of a
+    // dead leader is classified `not-in-ledger`.
+    expect([...PS_ARGS]).toEqual(['-Aww', '-o', 'pid=,ppid=,pgid=,rss=,etime=,%cpu=,args=']);
   });
 
   it('pins the TARGETED ps invocation the pre-signal identity check depends on', () => {
     // Bug: dropping `-ww` re-enables column truncation, so a long command line
     // is cut and the signature check fails for a process that IS ours.
-    expect(psPidArgs(4242)).toEqual(['-ww', '-p', '4242', '-o', 'pid=,ppid=,rss=,etime=,%cpu=,args=']);
+    expect(psPidArgs(4242)).toEqual(['-ww', '-p', '4242', '-o', 'pid=,ppid=,pgid=,rss=,etime=,%cpu=,args=']);
   });
 
   it('resolveDeps supplies a real default for every seam and lets a test override each one', () => {
@@ -772,6 +1042,7 @@ describe('parseReaperCliArgs', () => {
     expect(cli.minAgeSeconds).toBe(REAPER_DEFAULTS.minAgeSeconds);
     expect(cli.killGraceMs).toBe(REAPER_DEFAULTS.killGraceMs);
     expect(cli.verifyWaitMs).toBe(REAPER_DEFAULTS.verifyWaitMs);
+    expect(cli.falseAlarmWindow).toBe(REAPER_DEFAULTS.falseAlarmWindow);
   });
 
   it('parses the exact argv both hooks build, and only --mode kill arms it', () => {
@@ -783,6 +1054,7 @@ describe('parseReaperCliArgs', () => {
       '--min-age-seconds', '600',
       '--kill-grace-ms', '1000',
       '--verify-wait-ms', '250',
+      '--false-alarm-window', '20',
     ]);
     expect(cli.errors).toEqual([]);
     expect(cli).toMatchObject({
@@ -792,7 +1064,15 @@ describe('parseReaperCliArgs', () => {
       minAgeSeconds: 600,
       killGraceMs: 1000,
       verifyWaitMs: 250,
+      falseAlarmWindow: 20,
     });
+  });
+
+  it('refuses --false-alarm-window 0 — `falseAlarmRate` reads 0 as EVERY firing ever recorded, the opposite of the rolling window the key names', () => {
+    expect(parseReaperCliArgs(['--false-alarm-window', '0']).errors)
+      .toEqual(['--false-alarm-window expects a number >= 1, got "0"']);
+    expect(parseReaperCliArgs(['--false-alarm-window', '-3']).errors)
+      .toEqual(['--false-alarm-window expects a non-negative number, got "-3"']);
   });
 
   it('reports an error — and stays dry — for an unknown flag, a missing value, a bad number and a bad mode', () => {

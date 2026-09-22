@@ -1068,3 +1068,78 @@ describe('isCliEntrypoint — guard grammar', () => {
     expect(isCliEntrypoint('export function helper() {\n  return 1;\n}\n')).toBe(false); // check-untracked-test-deps:ignore — arg is a fixture source string quoting `import.meta.url`
   });
 });
+
+// ---------------------------------------------------------------------------
+// S6 — parser-only-config-key (2026-09-22)
+// ---------------------------------------------------------------------------
+
+describe('check-unwired-features — S6 parser-only-config-key', () => {
+  const BLOCK = ['fixture:', '  max-latency-ms: 50'].join('\n');
+  // The parser resolves the key into a value object. That is production of a
+  // value, never consumption of one — the distinction S6 exists to draw.
+  const PARSER = [
+    "export const KEY = kv['wired-key'];",
+    "export function parseFixture(kv) {",
+    "  return { maxLatencyMs: kv['max-latency-ms'] ?? 50 };",
+    '}',
+  ].join('\n');
+
+  /** @param {object} result @returns {string[]} S6 keys */
+  const s6Keys = (result) =>
+    result.findings.filter((f) => f.kind === 'parser-only-config-key').map((f) => f.key);
+
+  it('reports a key its own block parser is the ONLY reader of', () => {
+    const root = makeFixture({ template: BLOCK, live: BLOCK, parser: PARSER });
+    try {
+      const result = inspectUnwiredFeatures(root);
+      expect(s6Keys(result)).toContain('fixture.max-latency-ms');
+      // Not S1: the key IS read. Reporting it as unread would send the next
+      // agent to wire a reader that already exists, in the wrong file.
+      expect(result.findings.filter((f) => f.kind === 'unwired-config-key').map((f) => f.key))
+        .not.toContain('fixture.max-latency-ms');
+      expect(result.summary.parserOnly).toBeGreaterThan(0);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('stops reporting it once a file outside the parser layer reads it', () => {
+    // Fake-regression: the SAME fixture, one consumer file apart.
+    const root = makeFixture({
+      template: BLOCK,
+      live: BLOCK,
+      parser: PARSER,
+      consumer: "import { parseFixture } from '../scripts/lib/config/fixture.mjs';\n"
+        + "export const ms = parseFixture({})['max-latency-ms'];\n",
+    });
+    try {
+      expect(s6Keys(inspectUnwiredFeatures(root))).not.toContain('fixture.max-latency-ms');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('does not fire when a SECOND block parser also reads the key', () => {
+    // The signal is "exactly one reader, and it is my own parser". Two readers
+    // inside the config layer is a different shape (a shared coercer, a sibling
+    // block) and would make the census fire on legitimate wiring.
+    const root = makeFixture({ template: BLOCK, live: BLOCK, parser: PARSER });
+    try {
+      writeFileSync(
+        join(root, 'scripts', 'lib', 'config', 'other-block.mjs'),
+        "export const shared = (kv) => kv['max-latency-ms'];\n",
+      );
+      expect(s6Keys(inspectUnwiredFeatures(root))).not.toContain('fixture.max-latency-ms');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  it('counts a comment-only mention in the parser as no read at all (stays S1)', () => {
+    const root = makeFixture({
+      template: BLOCK,
+      live: BLOCK,
+      parser: "export const KEY = kv['wired-key'];\n// max-latency-ms is handled elsewhere\n",
+    });
+    try {
+      const result = inspectUnwiredFeatures(root);
+      expect(s6Keys(result)).not.toContain('fixture.max-latency-ms');
+      expect(result.findings.filter((f) => f.kind === 'unwired-config-key').map((f) => f.key))
+        .toContain('fixture.max-latency-ms');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});

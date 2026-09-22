@@ -47,6 +47,27 @@ const REPO_ROOT = resolve(__dirname, '../../');
  */
 const LEDGER_SANDBOX = mkdtempSync(join(tmpdir(), 'qg-ledger-sandbox-'));
 
+/**
+ * Same class, second ledger (2026-09-22). `CLAUDE_PROJECT_DIR` pins where the
+ * TELEMETRY lands; it does not reach the GATE-PROCESS ledger, whose root the
+ * CLI takes from `--ledger-root ?? process.cwd()` — and cwd here is the real
+ * repo. Measured: this file plus `tests/scripts/gates/gate-helpers.test.mjs`
+ * grew `.orchestrator/runtime/gate-processes.jsonl` from 440 to 485 lines,
+ * poisoning the census the orphan reaper (#1425 B) reads.
+ *
+ * So every spawn that does not pin its own `--ledger-root` gets one: the SAME
+ * directory its telemetry already goes to, which leaves the assertions in the
+ * telemetry describe reading exactly the file they read before. A test that
+ * passes `--ledger-root` itself (including the bogus-root case) is untouched.
+ *
+ * @param {string} dir directory to make eligible as a `--ledger-root`.
+ * @returns {string} `dir`
+ */
+function asLedgerRoot(dir) {
+  mkdirSync(join(dir, '.orchestrator'), { recursive: true });
+  return dir;
+}
+
 function run(args, extraEnv = {}, options = {}) {
   const env = { ...process.env };
   // Belt-and-braces scrub of the AMBIENT value only. `SO_GATE_LEDGER_ROOT` was
@@ -61,7 +82,10 @@ function run(args, extraEnv = {}, options = {}) {
   // running this suite points at the REAL repo and would otherwise win.
   // extraEnv stays last, so an explicit per-test dir still overrides.
   Object.assign(env, { CLAUDE_PROJECT_DIR: LEDGER_SANDBOX }, extraEnv);
-  return spawnSync('node', [SCRIPT, ...args], {
+  const gateArgs = args.includes('--ledger-root')
+    ? args
+    : [...args, '--ledger-root', asLedgerRoot(env.CLAUDE_PROJECT_DIR)];
+  return spawnSync('node', [SCRIPT, ...gateArgs], {
     encoding: 'utf8',
     cwd: options.cwd ?? REPO_ROOT,
     env,
@@ -770,5 +794,78 @@ describe('gate timeout propagation to the gate sub-script', () => {
     // Bug: a 0 ms ceiling would kill every gate command instantly — worse than
     // the uncapped state the key exists to fix.
     expect(observedTimeout({ gate: { 'timeout-path-b-ms': 0 } })).toBe('900000');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gate-process ledger — owner attribution and isolation (2026-09-22)
+// ---------------------------------------------------------------------------
+
+describe('run-quality-gate.mjs — the gate-process ledger', () => {
+  const LEDGER_REL = join('.orchestrator', 'runtime', 'gate-processes.jsonl');
+  let tmp;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'qg-gpl-'));
+    mkdirSync(join(tmp, '.orchestrator'), { recursive: true });
+  });
+  afterEach(() => { if (tmp && existsSync(tmp)) rmSync(tmp, { recursive: true, force: true }); });
+
+  /** @returns {object[]} parsed ledger records under `root`. */
+  function readLedger(root) {
+    const p = join(root, LEDGER_REL);
+    if (!existsSync(p)) return [];
+    return readFileSync(p, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  }
+
+  const SKIP_CONFIG = JSON.stringify({
+    'typecheck-command': 'skip', 'test-command': 'skip', 'lint-command': 'skip',
+  });
+
+  // THE BUG (q-2): the spawn passed no `sessionId`, so EVERY record the reaper
+  // reads carried `sessionId: null` and its foreign-session protection — "do not
+  // kill a process another session owns" — had nothing to compare. Fake
+  // regression: drop the `sessionId:` line from the spawn options in
+  // `scripts/run-quality-gate.mjs` and this goes red.
+  it('stamps the process-local session id onto the record', () => {
+    const r = run(
+      ['--variant', 'baseline', '--config', SKIP_CONFIG, '--ledger-root', tmp],
+      // Explicit, never inherited: a spawn test that lets the ambient value
+      // through is measuring the operator's live session, not the code.
+      { CLAUDE_CODE_SESSION_ID: 'sess-under-test-9f3a', SO_PLATFORM: 'claude', CLAUDE_PROJECT_DIR: tmp },
+    );
+    expect(r.status).toBe(0);
+    const records = readLedger(tmp);
+    expect(records).toHaveLength(1);
+    expect(records[0].sessionId).toBe('sess-under-test-9f3a');
+  });
+
+  // The other half of the same contract: no witness is `null`, never a guess
+  // read off `session.lock` (a repo-GLOBAL artefact a PEER may own).
+  it('records sessionId null when this process cannot prove who it is', () => {
+    const r = run(
+      ['--variant', 'baseline', '--config', SKIP_CONFIG, '--ledger-root', tmp],
+      { CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: '', SO_PLATFORM: 'claude', CLAUDE_PROJECT_DIR: tmp },
+    );
+    expect(r.status).toBe(0);
+    expect(readLedger(tmp)[0].sessionId).toBeNull();
+  });
+
+  // THE BUG (q-1, same class one layer out): `--ledger-root` absent meant
+  // `process.cwd()`, and cwd for every spawn in this file is the real checkout.
+  // `run()` now defaults `--ledger-root` to the per-test project dir; this pins
+  // that the real repo's ledger stays untouched.
+  it('never appends to the real repo ledger during this suite', () => {
+    const repoLedger = join(REPO_ROOT, LEDGER_REL);
+    const before = existsSync(repoLedger)
+      ? readFileSync(repoLedger, 'utf8').split('\n').filter(Boolean).length
+      : 0;
+    const r = run(['--variant', 'baseline', '--config', SKIP_CONFIG], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+    expect(readLedger(tmp).length).toBeGreaterThan(0);
+    const after = existsSync(repoLedger)
+      ? readFileSync(repoLedger, 'utf8').split('\n').filter(Boolean).length
+      : 0;
+    expect(after).toBe(before);
   });
 });
