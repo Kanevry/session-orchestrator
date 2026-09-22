@@ -38,63 +38,61 @@ expires-at: 2026-10-16
 
 ### A NUL byte makes a tracked file invisible to every grep-based audit — and needs a byte-level pre-commit gate
 
-**Blind spot.** Claude Code grep (`ugrep -I`) skips binary files SILENTLY (exit 1, no output); ONE NUL makes a text file binary, so an allowlisted NUL hides a security hook from every audit that greps rather than reads. Use `grep -a` / `rg --text`.
-
-**Source.** A control character carried LITERALLY instead of as an escape (`\0`, `\x00`) in a test sentinel becomes a real NUL in the commit — vitest runs, ESLint is silent, only the pre-commit NUL guard blocks. Escape control characters in fixtures, always.
+Ein NUL macht Text binaer: Claude Code grep (`ugrep -I`) ueberspringt die Datei still (exit 1), auch einen Security-Hook mit allowlistetem NUL. Fuer solche Audits `grep -a` / `rg --text` nutzen. Steuerzeichen in Fixtures immer escapen (`\0`, `\x00`); literale Sentinels ueberleben vitest/ESLint, der byteweise Pre-Commit-Guard faengt sie.
 
 **Evidence** — 2026-07-29: the deny-path census missed `emitDeny` in `hooks/config-protection.mjs` (1 allowlisted NUL); after the escape-form fix a plain grep finds it at line 502. 2026-07-27 P1: tmp-repo dry-run — the POSIX block exits 1 on a staged corrupt `.mjs`, 0 on clean files; the substitution variant exits 0 on the same corrupt file. Stage 2 of `.husky/pre-commit`, run verbatim by `tests/husky/pre-commit-nul-byte-guard.test.mjs` (4 tests green).
 
 ### `npm install` does not refresh `node_modules` when only an `overrides` entry is added
 
-A new `overrides` entry changes the lockfile, but npm deems `node_modules` current (`node_modules/.package-lock.json` matches) and skips reinstall (`npm install --dry-run`: nothing), so local runs test the OLD version green; prove with `npm ci` in a throwaway directory. `npm audit fix` claims transitive fixes that dry-run unchanged when the fix is outside the parent's semver range — only `overrides` helps there.
+Adding only `overrides` updates the lockfile while npm may keep OLD `node_modules` (`node_modules/.package-lock.json` matches; install dry-run does nothing). Verify with `npm ci` in a throwaway directory. Outside a parent semver range, `npm audit fix` may claim an unchanged fix; use `overrides` there.
 
 **Evidence** — 2026-08-04 deep-1, twice: `fast-uri` 3.1.4 → 3.1.5 (via ajv), `brace-expansion` 5.0.7 → 5.0.9 (via eslint→minimatch); `node_modules` stayed old both times, the second `npm run lint` falsely exit 0. Isolated `npm ci` installed the new versions; CI (`npm ci` on Linux) confirmed both.
 
 ### The quality-gate wrapper needs a large output buffer and env isolation
 
-Gate wrapper tests fail for HARNESS reasons: `npm test` output over the `execSync` buffer (fixed: `RUN_CHECK_MAX_BUFFER_BYTES = 64 * 1024 * 1024`, `gate-helpers.mjs:13`), or outer env leaking into nested gates — LIVE: `scripts/run-quality-gate.mjs:280-287` sets `TYPECHECK_CMD`, `TEST_CMD`, `LINT_CMD`, `FILES`, `SESSION_START_REF`, and `runCheck` (`scripts/lib/gates/gate-helpers.mjs:58-62`) calls `execSync` with NO `env` option, so gate tests under vitest inherit them.
+Gate wrappers need a large buffer (`RUN_CHECK_MAX_BUFFER_BYTES = 64 * 1024 * 1024`, `gate-helpers.mjs:13`) and nested-env isolation. `run-quality-gate.mjs:280-287` sets `TYPECHECK_CMD`, `TEST_CMD`, `LINT_CMD`, `FILES`, `SESSION_START_REF`; `runCheck` (`gate-helpers.mjs:58-62`) uses `execSync` without `env`, so nested vitest gates inherit them.
 
 **Evidence** — Only mitigation: per-file `const env = { ...process.env }; delete env.TYPECHECK_CMD;` in exactly 4 files (`tests/scripts/gates/gate-{full,baseline,incremental,per-file}.test.mjs`), enforced by NOTHING: a 5th file omitting it passes under `npx vitest run tests/scripts/gates/` and fails only inside the nested full gate.
 
 ### A green quality gate on the development platform is not evidence the tree builds on CI
 
-Two macOS-only shapes: (1) `process.env.TMPDIR` ends in `/` on macOS and is UNSET in Linux containers, so `${TMPDIR}name` lands inside the temp root on one, outside on the other; (2) a 200,000-character argv entry fits macOS `ARG_MAX`, dies with `spawnSync E2BIG` on Linux. PIN the env shape, pass a LENGTH not a payload via argv, reproduce CI with `env -u TMPDIR`.
+Pin platform env shape: macOS `TMPDIR` ends in `/`, Linux containers may leave it UNSET; `${TMPDIR}name` then changes destination. Linux also rejects a 200,000-character argv entry with `E2BIG` despite macOS success. Pass a LENGTH, not payload, via argv; reproduce with `env -u TMPDIR`.
 
 **Evidence** — 2026-07-30 pipeline 6819 red on `3a27817` (3 failures) minutes after a local 12855/0; after the fix `env -u TMPDIR npx vitest run tests/hooks/pre-bash-destructive-guard.test.mjs` 75/75, pipeline 6821 green on `81e07dd`.
 
 ### Der husky Pre-Push-Gate laeuft die Suite im materialisierten Tree unter `$TMPDIR`
 
-`detectSandbox()` sagt dort korrekt `sandbox:temp-root`; zwei Tests in `tests/telemetry/sync.test.mjs` (`REAL_CWD = process.cwd()`) blockierten jeden Push, im Checkout gruen. Gleiche Klasse: der Gate vererbt sein env (`SO_GATE_LEDGER_ROOT`) an die eigenen vitest-Kinder. Umgebungsabhaengige Tests auch im materialisierten Tree pruefen (`git archive HEAD | tar -x -C $T`; `ln -s node_modules`); Gates nennen die rote Datei (`failed_files[]`). Vorbedingung (gemessen 2026-09-18 @ `20a4cbff`): so ein Tree hat KEIN `.git`, und `scripts/validate-plugin.mjs` stirbt dort im Guard `:49` mit `ERROR: Not inside a git repository` (exit 1), bevor eine einzige seiner 230 Pruefungen laeuft — also `git init` + einen Commit im Tree, sonst misst man nichts. Die Falle beim Nachmessen: derselbe Tree INNERHALB des Repos materialisiert (z. B. unter `.orchestrator/tmp/`) liest still das `.git` des Elternteils und meldet 230/0.
+Pre-Push prueft den materialisierten `$TMPDIR`-Tree: `detectSandbox()` meldet korrekt `sandbox:temp-root`; Tests mit `REAL_CWD = process.cwd()` und vererbtem Gate-env (`SO_GATE_LEDGER_ROOT`) koennen nur dort scheitern. Auch dort testen (`git archive HEAD | tar -x -C $T`; `ln -s node_modules`); Gates nennen `failed_files[]`. Vorbedingung: ein Tree AUSSERHALB des Repos hat kein `.git` — fuer `validate-plugin.mjs` dort `git init` + Commit, sonst exit 1 vor allen 230 Pruefungen (2026-09-18 @ `20a4cbff`). Innerhalb des Repos liest derselbe Tree still dessen Eltern-`.git` und meldet 230/0.
 
 **Evidence** — 2026-09-06: `w5-push-origin.log` `failed_files [tests/telemetry/sync.test.mjs]` 2 failed; Repro in `$T/tree` gruen nach Fix `432b1871` (`REAL_CWD = join(os.homedir(),...)`); W4-Q3 HIGH: `SO_GATE_LEDGER_ROOT=$L vitest -t "telemetry emission"` → 8 failed | 1 passed.
 
 ### hook-import-set drift blocks every parallel agent via vitest globalSetup
 
-Once ONE agent adds an import to a hook-reachable module, `hooks/_lib/hook-import-set.json` drifts; `validate-plugin` is vitest's globalSetup, so every sibling's `npx vitest run <file>` aborts before workers start. Regenerate mid-wave on first escalation and at wave end — or dispatch hook-graph-changing agents first, alone.
+Ein neuer Import in einem hook-erreichbaren Modul laesst `hooks/_lib/hook-import-set.json` driften. Weil validate-plugin vitest-globalSetup ist, blockiert das die Tests ALLER Geschwister vor Worker-Start. Bei erster Eskalation und Wellenende regenerieren oder Importgraph-Aenderungen zuerst allein dispatchen.
 
 **Evidence** — Session `main-2026-09-09-session-4`: 6 agents reported the drift across W2-W4; regenerated 4× (155→157 modules) via `node scripts/generate-hook-import-set.mjs`.
 
 ### Ein Zwischenstand mit Vorwaertsreferenz in einem hook-importierten Modul sperrt Bash/Edit host-weit
 
-Ein Modul, das ein Live-Hook auf JEDEM Edit/Write laedt (`scripts/lib/session-identity/own-session.mjs` via `hooks/enforce-scope.mjs`), nie mit Verweisen auf undefinierte Bezeichner speichern: W3-P6 speicherte `classifyManifestSession()` mit `manifestSessionBinding`/`MANIFEST_SESSION_KEYS` vor deren Definition — jeder Bash-/Edit-Aufruf JEDER Session warf `ReferenceError`. `node --check` faengt das nicht, nur eine Import-Probe (`node --input-type=module -e "await import(...)"`).
+Hook-importierte Module nie mit undefinierten Vorwaertsreferenzen speichern: ein von `enforce-scope.mjs` geladenes Modul blockiert dann jeden Bash/Edit/Write aller Sessions. `node --check` reicht nicht; zusaetzlich Import-Probe (`node --input-type=module -e "await import(...)"`).
 
 **Evidence** — STATE.md Deviations [2026-09-04T17:14:42.025Z]: ~8 Min. host-weite Sperre; Hotfix via Monitor-Tool, da kein PreToolUse-Matcher existiert; C4/C5/C8 hatten `node --check` + Load-Probe als Auflage und blieben sauber, P6 nicht.
 
 ### Ein frischer Worktree ohne `node_modules` laesst lint-staged still scheitern — der Push nimmt den alten HEAD
 
-`git commit` im Wegwerf-Worktree scheiterte in lint-staged an eslint ENOENT, ein grep-Filter verschluckte es, der Push schob den alten HEAD hoch; ein Edit VOR dem gescheiterten Commit landete im nachgeholten. Regel: `ln -s ../repo/node_modules`, nach jedem Commit `git rev-parse HEAD`, vor dem Push `git show HEAD:<pfad>`.
+Frischen Worktree vor lint-staged mit `ln -s ../repo/node_modules` versorgen. Commit-Fehler (eslint ENOENT) nicht per grep-Filter verschlucken: nach jedem Commit `git rev-parse HEAD`, vor Push `git show HEAD:<pfad>` pruefen, sonst geht alter HEAD oder ein spaeteres Edit mit.
 
 **Evidence** — 2026-09-03 session-1: `bca78dae` trug den Bogus-Wert (`git diff bca78dae dc9522dd` = 1 Zeile), Pipelines 8352/8354 liefen auf falschem Inhalt.
 
 ### In a linked worktree the gitdir `rev-parse` returns is not the one git reads excludes from
 
-git reads `info/exclude` from `--git-common-dir`, never from the per-worktree gitdir `rev-parse --git-dir` returns, so `node_modules` written there is a no-op that LOOKS like protection — and the shared `.git/info/exclude` must not be mutated (PSA-003). Filter at query time: `git ls-files --others --exclude-standard --exclude=node_modules`. Also: `git diff` sees TRACKED files only, so an all-new-files run measures as an empty diff.
+Linked worktrees read `info/exclude` from `--git-common-dir`, not `rev-parse --git-dir`; changing per-worktree excludes is inert, changing shared `.git/info/exclude` violates PSA-003. Filter at query time: `git ls-files --others --exclude-standard --exclude=node_modules`. `git diff` sees only TRACKED files: include untracked enumeration in all-new-file runs.
 
 **Evidence** — 2026-08-25 synthetic repo: `node_modules` in `/tmp/so-wtx-Gd9z/.git/worktrees/wt/info/exclude` → `git -C wt status --porcelain` still `?? node_modules/`; in `/tmp/so-wtx-Gd9z/.git/info/exclude` → empty. `git -C wt diff --name-only` empty for `brand-new.mjs`, `ls-files --others --exclude-standard` lists it. `tests/lib/wave-executor/foreign-dispatch.test.mjs` (33 passed, exit 0).
 
 ### `agent-browser eval` serialisiert selbst — `JSON.stringify` im Page-Skript kodiert doppelt
 
-agent-browser 0.37.1 gibt den Completion-Wert von `eval` bereits als pretty-printed JSON aus (mehrzeilig). Ein Skript, das `JSON.stringify(x)` zurueckgibt, druckt daher einen gequoteten, escapeten String und zwingt jeden Leser zum Doppel-Parse. Page-Evals plain Objekte zurueckgeben lassen und stdout KOMPLETT (nicht zeilenweise) parsen.
+agent-browser 0.37.1 serialisiert `eval`-Completion-Werte bereits als mehrzeiliges JSON. Plain Objekte zurueckgeben, stdout KOMPLETT parsen; `JSON.stringify` im Page-Skript erzeugt einen doppelt kodierten String.
 
 **Evidence** — gemessen 2026-09-12 mit agent-browser 0.37.1: `(() => ({n: window.innerWidth}))()` druckte mehrzeilig `{"n": 1280}`; `(() => JSON.stringify({n:1}))()` den gequoteten String; `document.title` druckte `""` statt einer leeren Zeile.
 

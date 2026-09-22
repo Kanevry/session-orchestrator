@@ -3,8 +3,8 @@ id: agent-card
 type: peer-card
 target: agent
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-09-09T08:38:51.637Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes", "main-2026-08-05-deep-1", "main-2026-09-06-session-17", "main-2026-09-09-session-10"]
+updated: "2026-09-22T13:55:37.788Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-2026-05-28-1152", "evolve-2026-05-30-0913", "evolve-2026-07-04-session-3-reviewed-no-changes", "main-2026-08-05-deep-1", "main-2026-09-06-session-17", "main-2026-09-09-session-10", "main-2026-09-22-housekeeping-0834", "main-2026-09-21-session-4", "main-2026-09-20-session-3", "main-2026-09-19-session-18", "main-2026-09-19-session-9", "main-2026-09-19-session-1", "main-2026-09-18-session-10", "main-2026-09-18-session-1", "main-2026-09-17-session-23", "main-2026-09-16-session-6", "main-2026-09-13-session-42", "c33eb804-46cd-47b8-9392-b98c0a5b2598", "main-2026-09-12-session-26", "5de6560c-ae9c-4c4a-8212-f102c4576ff0", "main-2026-09-13-session-9", "main-2026-09-07-session-11", "main-2026-09-11-session-25"]
 ---
 
 <!-- BEGIN MANAGED: guard-and-protocol-migration -->
@@ -31,18 +31,18 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 <!-- BEGIN MANAGED: wave-execution -->
 ## Wave execution
 
-- 5W structure default: Discovery → Impl-Core → Impl-Polish → Quality → Finalization.
-- Housekeeping sessions: single-wave Express Path, 0-6 agents, coordinator-direct. No multi-wave planning needed.
-- 5W×6A thin-slice epics with shipped substrate: W1 6 parallel Explore, W2 6 file-disjoint code-implementers, W3 typically reduces to 4 after W2 absorption, W4 test-writers + security-reviewer, W5 2-3 agents.
-- Inter-wave Quality-Lite gate after Impl-Core must include `npm test` when production fixes touch files with adjacent test files — typecheck+lint alone is insufficient.
-- When session-reviewer reports BLOCK at end of W2, add the fix as a new agent in W3 (Impl-Polish); do not restart W2.
-- Test-writers must verify both `npm test` (all tests pass) AND `npm run lint` (zero lint errors) before reporting done. Lint-only verification allows stylistic regressions to slip to Full Gate.
-- When a test-writer agent runs tests against production code, then mutates the SUT to a known-broken state and re-runs to observe failure, this falsifiability cycle proves the test catches the regression it claims to cover. Mutation+revert cycles are expected in test delivery.
-- When a wave ships a fix for a recurring anti-pattern, run a pattern-replication audit on the rest of the diff before W4 closes — the agent who just fixed the bug is the most likely to re-introduce it elsewhere in the same change set. A single-agent review misses the recurrence; a multi-reviewer W4 panel catches it. Add a 1-line grep of the diff for other instances of the just-fixed pattern.
-- MEDIUM findings discovered in-session (during W3/W4) should be folded and documented in STATE.md Deviations rather than filed as carryover issues. Exceptions: MEDIUM findings that require redesign (scope change beyond the current agent's file boundary) stay as blockers.
-- Before calling `materialize-wave-scope.mjs`, verify every coordinator-declared file path (especially test paths) with `ls` or an equivalent existence check. A manifest that declares a phantom path grants no real access to it — the actual write permission for the real files then comes silently from a broader glob expansion, not from the declared scope, which hides a planning defect until someone greps for it.
-- Instruct dispatched agents to fold any post-report hook-triggered addendum (e.g. a PSA-006 discovery-validator correction) INTO a re-sent, complete final report, rather than leaving the addendum standing alone as the last message. The coordinator reads only the LAST message from an agent; an addendum-only final message displaces the actual report and forces a SendMessage follow-up to recover it (measured: 5 such recoveries in one session, ~2-5 min each).
-- A fix-pass agent batch (a post-review corrective dispatch outside the planned wave sequence) needs the same file-scope-manifest step as a wave: write its per-agent scope file and fold it into the wave's aggregate before dispatch. Skipping it does not fail safe — the scope-disjoint hook blocks the agent's edit, the agent reports `blocked` upward, and the coordinator only learns the manifest was missing via that escalation.
+- Use the resolved session shape and explicit user request. Discovery → Impl-Core → Impl-Polish → Quality → Finalization is an established sequence, not a requirement to invent work for every stage.
+- Housekeeping may use the single-wave Express Path when eligible. An explicit request for waves, parallel subagents, or a larger approved scope takes precedence; do not collapse that request into coordinator-direct execution merely because the session type is housekeeping.
+- For thin-slice epics, freeze shared contracts before parallel implementation. Adjust later waves to work already absorbed and to the current resource gate rather than repeating historical agent counts.
+- Inter-wave Quality-Lite after Impl-Core must include relevant tests when production fixes touch files with adjacent tests; typecheck and lint alone cannot verify the changed behavior.
+- When a reviewer reports a blocker, add its verified repair to the next suitable wave where dependencies allow, then re-verify. Do not restart an earlier wave solely to preserve its label.
+- Test-writers must run the relevant tests and lint before reporting done, quoting the actual result and exit code.
+- A red-before-fix test needs a causal check: disable the newly added behavior and confirm the intended assertion fails while unrelated controls remain green. Use isolated mutant copies when the SUT is outside the agent's file scope or loaded by live hooks; rewrite static and dynamic relative imports, keep an unmodified control, and reject missing-module failures as mutation evidence.
+- When a wave fixes a recurring anti-pattern, inspect the remaining diff for the same pattern before Quality closes. Independent reviewers should examine the full current diff, including uncommitted results.
+- Classify findings against the frozen scope. Fix in-scope blockers and enumerated same-pattern sites within the owned files; route adjacent findings to follow-up. A contract or owner-boundary change needs an explicit disposition, not automatic absorption based on a MEDIUM label.
+- Verify coordinator-declared paths before materializing scope. Write both per-agent scope files and the aggregate including coordinator edits; a phantom path or a missing shape can leave the intended protection ineffective.
+- A fix-pass dispatch needs the same scope materialization as a planned wave. Read-only review of uncommitted work must see the working tree containing that work, rather than a fresh worktree containing only HEAD.
+- Dispatched agents should incorporate a post-report correction into a complete replacement report. Keep the original findings, verification receipts, and final status together so an addendum cannot displace them.
 <!-- END MANAGED: wave-execution -->
 
 <!-- BEGIN MANAGED: discovery-and-scope-adjustment -->
@@ -108,10 +108,11 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 <!-- END MANAGED: incremental-epic-delivery --><!-- BEGIN MANAGED: crashed-session-recovery -->
 ## Crashed session recovery
 
-- On resuming a crashed session, the STATE.md mission premise may be hallucinated. Before continuing any work, grep-verify the referenced issues and PRDs against the actual issue tracker + code repo. If all referenced issues are CLOSED or unrelated, reground the mission to actual code + learnings before proceeding.
-- The crashed session's `.claude/wave-scope.json` (if present and valid) is the definitive artifact for work planned vs completed. Its `allowedPaths` show which files the wave intended to touch. Diff against working-tree state to identify the gap.
-- After work from a crashed session is verified sound (existing tests green, grep-confirms the code is on-target), the cross-batch watermark tokens (e.g., `last_wave`) are preserved by gating on `semantic_session_id` equality in on-session-start. This prevents double-emission of wave.started on resume.
-- A green test suite verifies functional correctness only. When adopting an orphaned prior session's uncommitted work, security-sensitive changes inside it still need their own review pass before landing — passing tests does not confirm a security-relevant edit is sound, and an adopted diff with unreviewed security changes should be treated as unverified regardless of test status.
+- Re-verify the STATE.md mission premise against the issue tracker, PRDs, and actual code before resuming. Closed or unrelated references require regrounding the mission, not blindly continuing it.
+- Locate the current harness's wave-scope artifact and verify its ownership. Compare its planned paths with modified and untracked files to distinguish the intended work from the remaining gap; a stale shared artifact is not proof of the current session's identity.
+- Verify inherited work with relevant tests and an independent review before landing it. A green suite alone does not establish that an unreviewed security change is sound.
+- After an interrupted or failed agent, inspect every changed file for leftover mutation branches, disabled checks, temporary aliases, and fixtures. Syntax checks and successful imports cannot detect a syntactically valid mutation such as `if (false && ...)`.
+- Preserve resume watermarks only when their session identity matches. Never carry a prior session's completion state into a new session solely because the working-copy artifact is readable.
 <!-- END MANAGED: crashed-session-recovery --><!-- BEGIN MANAGED: review-discipline-refutation-mandate -->
 ## Review discipline — the refutation mandate
 
@@ -136,4 +137,11 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-28-0839", "evolve-20
 - Give every concurrent `offload`/remote dispatch run its OWN job-id. Several parallel runs sharing one job-id write into the same log/output file; the later runs silently overwrite the earlier ones and the tool returns identical, plausible-looking short outputs instead of an error.
 - A remote/offload account that has hit its usage-window limit returns a NORMAL CLI response (`result.is_error: true`, exit code 1) — indistinguishable from a genuine failure by exit code alone. Read the reset time out of the error message before treating it as a code bug and retrying blindly.
 ```
-<!-- END MANAGED: remote-dispatch -->
+<!-- END MANAGED: remote-dispatch --><!-- BEGIN MANAGED: probe-and-measurement-boundaries -->
+## Probe and measurement boundaries
+
+- Match a probe's observation window to the effect it claims to measure. An import that resolves successfully can still be followed by an asynchronous process exit; use a child process and a bounded settling window, and verify a known-bad control before trusting the probe.
+- Distinguish existence, successful reading, and completeness. A file being present does not mean it was consumed; skipped malformed records or missing archives must remain visible in the result. Unknown or unmeasured is not a measured zero.
+- A checker of a construct's form does not prove the construct exists. Exercise both checks on the same missing-construct fixture when their coverage is complementary.
+- Derive instruction-budget targets from the same canonical measurement the writer uses, including its treatment of frontmatter. Surface approaching capacity and the measured backlog before a writer refuses an approved addition; do not change the ceiling to avoid consolidation.
+<!-- END MANAGED: probe-and-measurement-boundaries -->
