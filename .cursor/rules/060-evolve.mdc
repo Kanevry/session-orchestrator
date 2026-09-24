@@ -96,14 +96,20 @@ If zero patterns were extracted, report: "No patterns found in session history."
 
 ### Step 5: Write Confirmed Learnings
 
-Use atomic rewrite strategy:
+Write through the archive-safe pipeline — never a shell redirect (#1017, #1446):
 1. Read ALL existing lines from `learnings.jsonl` into memory
-2. Apply confidence updates for confirmed existing learnings (+0.15, cap at 1.0)
-3. Apply confidence decrements for contradicted learnings (-0.2)
-4. Append new learnings with confidence 0.5
-5. Prune entries where `expires_at` < current date OR `confidence` <= 0.0
-6. Consolidate duplicates (same `type` + `subject`): keep highest confidence
-7. Write entire result back with `>` (atomic rewrite, NOT append `>>`)
+2. Apply confidence updates for confirmed existing learnings (+0.15, cap at 1.0; reset `expires_at` via `deriveExpiresAt(now, type)`)
+3. Apply confidence decrements for contradicted learnings (-0.2; `expires_at` unchanged)
+4. Add new learnings with confidence 0.5 in the canonical shape (see Learning JSONL Format below)
+5. Write that full next generation as JSONL to a sidecar via the file-write tool (e.g. `.orchestrator/metrics/.learnings-next.jsonl`), then let the `/evolve` helper prune (`expires_at` < now OR `confidence` <= 0.0), consolidate duplicates (same `type` + `subject`, highest confidence wins), archive every removed record and rewrite the store with a `.bak-<ISO>` snapshot. Preview first, then apply:
+
+   ```bash
+   NEXT=".orchestrator/metrics/.learnings-next.jsonl"
+   node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT"
+   node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" && rm -f "$NEXT"
+   ```
+
+   Exit `1` = the sidecar is absent, malformed or empty; store and archive untouched.
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 
@@ -140,7 +146,7 @@ Present as a numbered Markdown list (see Cursor Adaptation above):
 
 ### Step 3: Apply Changes
 
-Same atomic rewrite strategy as analyze mode. Read all, modify selected, prune, consolidate, write all with `>`.
+Same pipeline as analyze mode Step 5: read all, modify the selected entries (a deleted entry is simply left out of the sidecar — the helper archives it), write the next generation to the sidecar, then run `node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT"` followed by `--prune --apply --json --entries "$NEXT"`.
 
 Report: "Updated N learnings. Total active: K."
 
@@ -185,6 +191,7 @@ Each line in `.orchestrator/metrics/learnings.jsonl` is a JSON object:
 
 ```json
 {
+  "schema_version": 1,
   "id": "uuid-v4",
   "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern",
   "subject": "identifier for the pattern",
@@ -192,10 +199,16 @@ Each line in `.orchestrator/metrics/learnings.jsonl` is a JSON object:
   "evidence": "specific data points supporting the pattern",
   "confidence": 0.5,
   "source_session": "session-id",
+  "scope": "local",
+  "host_class": null,
+  "anonymized": false,
+  "file_paths": ["src/lib/auth.ts"],
   "created_at": "2026-04-07T00:00:00Z",
   "expires_at": "2026-05-07T00:00:00Z"
 }
 ```
+
+`schema_version` is the integer `1`. `scope` MUST be `local|private|public` — a file path belongs in `file_paths`, never in `scope` (GH#69). `expires_at` is derived per `type` via `deriveExpiresAt()` (`LEARNING_TTL_DAYS`).
 
 ### Confidence Lifecycle
 
@@ -225,8 +238,8 @@ Each line in `.orchestrator/metrics/learnings.jsonl` is a JSON object:
 - NEVER skip deduplication (check `type` + `subject` match)
 - NEVER write learnings without user confirmation
 - ALWAYS use uuid-v4 for new learning IDs (generate via `uuidgen`)
-- ALWAYS set `expires_at` to current date + `learning-expiry-days` from config (default: 30)
-- ALWAYS use atomic rewrite (read all, modify, write all with `>`)
+- ALWAYS derive `expires_at` per type via `deriveExpiresAt()` unless the candidate supplies one
+- ALWAYS write through `scripts/sweep-expired-learnings.mjs --prune` (read all, modify, sidecar, prune) — NEVER a shell rewrite of the store
 - ALWAYS cap confidence at 1.0
 - NEVER fabricate patterns -- only extract from actual session data with verifiable evidence
 - NEVER append to `learnings.jsonl` with `>>` -- always atomic rewrite

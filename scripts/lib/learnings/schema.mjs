@@ -230,7 +230,7 @@ export class ValidationError extends Error {
  * Throws ValidationError on contract violations. Does NOT mutate input.
  *
  * @param {object} entry — candidate learning
- * @param {{ legacyTolerant?: boolean }} [opts] — GitLab #386. When `true`, a
+ * @param {{ legacyTolerant?: boolean }} [opts] — EventDrop #386. When `true`, a
  *   value `normalizeLearning()` already passes through UNCHECKED (or merely
  *   DEFAULTED, never validated) on read is no longer rejected here either:
  *   an out-of-enum `schema_version` (measured against the real EventDrop.at
@@ -238,7 +238,7 @@ export class ValidationError extends Error {
  *   LEGACY_REQUIRED_FIELDS presence check, the `confidence` range/type check
  *   when NO `confidence` key is present, and the `scope`/`host_class`/
  *   `anonymized` shape checks (measured live: a record with `scope:
- *   "src/components/landing/mobile-sticky-cta.tsx"` — a producer bug that
+ *   "src/components/sample/sticky-cta.tsx"` — a producer bug that
  *   wrote a file path into the scope column, which `normalizeLearning` never
  *   validates and therefore never rejects). A field that IS present keeps
  *   being validated regardless when its DATA TYPE can be silently corrupted
@@ -297,7 +297,7 @@ export function validateLearning(entry, { legacyTolerant = false } = {}) {
   // absent value (`d.scope ?? 'local'`, etc.) on read — it never validates a
   // PRESENT one, so a corrupt legacy value round-trips silently today
   // (measured live in production: a record with `scope:
-  // "src/components/landing/mobile-sticky-cta.tsx"` — evidently a producer
+  // "src/components/sample/sticky-cta.tsx"` — evidently a producer
   // bug that wrote a file path into the scope column). All three checks are
   // therefore skipped under legacyTolerant. Unlike `confidence` (a number,
   // where `NaN`/`Infinity` are non-JSON-safe and silently become `null`
@@ -477,15 +477,56 @@ export function normalizeDialects(entry, { reserializeTimestamps = true } = {}) 
 }
 
 /**
+ * File extensions a path-like `scope` value must end in to be treated as a
+ * repo-relative file path (GitHub #69 / GitLab #1446). Deliberately a closed
+ * list: a looser "contains a slash and a dot" test would also swallow values
+ * such as `infrastructure/docker-compose` or `node.js`.
+ */
+const PATH_SCOPE_EXT = /\.(mjs|cjs|js|jsx|ts|tsx|mts|cts|json|jsonl|md|mdx|ya?ml|toml|css|scss|html|vue|svelte|astro|py|rb|go|rs|swift|kt|java|sh|sql|prisma)$/i;
+
+/**
+ * Strict predicate: is `s` a repo-relative file path (at least one directory
+ * segment, no `..`, no empty segment, a known source/doc extension)? Rejects
+ * canonical scopes, absolute and home-relative paths, Windows drive paths,
+ * URLs, and anything containing whitespace.
+ *
+ * @param {unknown} s — candidate `scope` value
+ * @returns {boolean}
+ */
+function looksLikeRepoRelativePath(s) {
+  if (typeof s !== 'string' || VALID_SCOPES.includes(s) || s.length > 512) return false;
+  if (/\s/.test(s) || /^[/~]/.test(s) || /^[A-Za-z]:[\\/]/.test(s) || s.includes('://')) return false;
+  const segs = s.split('/');
+  if (segs.length < 2 || segs.includes('..') || segs.includes('')) return false;
+  return PATH_SCOPE_EXT.test(segs[segs.length - 1]);
+}
+
+/**
  * Migrate a legacy learning record to the canonical schema_version:1 shape.
  * Idempotent — calling it on an already-canonical record is a safe no-op.
  *
  * Alias precedence for insight: insight > description > recommendation > observation > lesson
  *
  * Producer dialects (`files`→`file_paths`, duplicate `session_id`, `last_seen`,
- * `next_review: null`) are normalized by {@link normalizeDialects} as the final
- * step. Timestamp FORMAT is deliberately NOT reformatted here (byte-exact
- * contract preserved); the read funnel + backfill canonicalize timestamps.
+ * `next_review: null`) are normalized by {@link normalizeDialects}. Timestamp
+ * FORMAT is deliberately NOT reformatted here (byte-exact contract preserved);
+ * the read funnel + backfill canonicalize timestamps.
+ *
+ * Broken-consumer-record coercions (GitHub #69 / GitLab #1446 — measured in a
+ * consumer store: 124 of 307 records failed strict validateLearning, 76 on
+ * `scope`, 48 on `schema_version`). Applied AFTER normalizeDialects, because
+ * coercing a path-like scope before the `files`→`file_paths` move would lose
+ * the legacy `files` data. Only this MIGRATION path coerces — the read funnel
+ * (normalizeLearning / normalizeDialects) stays pass-through by design:
+ *   - path-like `scope` (a repo-relative file path a producer wrote into the
+ *     scope column, see {@link looksLikeRepoRelativePath}) → appended to
+ *     `file_paths` (copied, never mutated in place; created when absent/null;
+ *     no duplicate) and `scope: 'private'`. A present non-array `file_paths`
+ *     leaves the record untouched — it stays invalid and is counted.
+ *   - `scope: 'project'` / `scope: 'repo'` → `'private'`.
+ *   - `schema_version: '1'` (string) or `2` (number) → `1`.
+ * Each rule's output never re-matches that rule, so the whole function stays
+ * idempotent.
  *
  * The caller MUST still run validateLearning() on the result to confirm the
  * migrated record passes the full schema gate before writing.
@@ -560,12 +601,37 @@ export function migrateLegacyLearning(entry) {
     out.schema_version = CURRENT_SCHEMA_VERSION;
   }
 
-  // Normalize producer dialects last (files→file_paths, session_id/last_seen/
+  // Normalize producer dialects (files→file_paths, session_id/last_seen/
   // next_review reconciliation) — schema_version is preserved by normalizeDialects.
   // reserializeTimestamps:false keeps migrateLegacyLearning's byte-exact timestamp
   // contract (it does schema/alias migration, not timestamp reformatting). The
   // READ funnel (normalizeLearning) and the backfill canonicalize timestamp format.
-  return normalizeDialects(out, { reserializeTimestamps: false });
+  const migrated = normalizeDialects(out, { reserializeTimestamps: false });
+
+  // Broken-consumer-record coercions (GitHub #69 / GitLab #1446) — AFTER
+  // normalizeDialects so a legacy `files` list has already become `file_paths`.
+  if (looksLikeRepoRelativePath(migrated.scope)) {
+    const pathScope = migrated.scope;
+    if (migrated.file_paths === undefined || migrated.file_paths === null) {
+      migrated.file_paths = [pathScope];
+      migrated.scope = 'private';
+    } else if (Array.isArray(migrated.file_paths)) {
+      // Copy: normalizeDialects' shallow copy still shares the caller's array.
+      const filePaths = [...migrated.file_paths];
+      if (!filePaths.includes(pathScope)) filePaths.push(pathScope);
+      migrated.file_paths = filePaths;
+      migrated.scope = 'private';
+    }
+    // Present but not an array → leave untouched; the record stays invalid.
+  } else if (migrated.scope === 'project' || migrated.scope === 'repo') {
+    migrated.scope = 'private';
+  }
+
+  if (migrated.schema_version === '1' || migrated.schema_version === 2) {
+    migrated.schema_version = CURRENT_SCHEMA_VERSION;
+  }
+
+  return migrated;
 }
 
 // Module-level dedupe sets for warnings (per-process).

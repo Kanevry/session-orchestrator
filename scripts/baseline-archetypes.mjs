@@ -10,7 +10,7 @@ export async function main(argv = process.argv.slice(2)) {
   for (let index = 0; index < argv.length; index++) {
     const arg = argv[index];
     if (arg === '--help' || arg === '-h') {
-      process.stdout.write('Usage: node scripts/baseline-archetypes.mjs [--repo PATH] [--archetype ID]\nOffline, read-only JSON lookup. Exit 0: public/private; exit 2: invalid configuration or contract.\n');
+      process.stdout.write('Usage: node scripts/baseline-archetypes.mjs [--repo PATH] [--archetype ID]\nOffline, read-only JSON lookup. Exit 0: public/private; exit 2: invalid configuration or contract.\nExit 2 reason producer-missing: the baseline directory exists but has no scripts/archetype-manifest.mjs exporter.\n');
       return 0;
     }
     if (!['--repo', '--archetype'].includes(arg) || !argv[index + 1] || argv[index + 1].startsWith('--')) {
