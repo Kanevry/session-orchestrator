@@ -29,11 +29,21 @@
  *   also YIELDS to tier 1: when SO_BASELINE_PATH is set (non-blank), resolveNamedBaseline
  *   returns the null-fallback ({source:null}) so the caller's env tier wins.
  *
+ * ── Other sections (agents/vault#319) ────────────────────────────────────────
+ *
+ *   The same directory-prefix match serves any owner.yaml list of the shape
+ *   `{ path, match: { path-prefix } }`. `section` picks the list and `envKey` the
+ *   env var this tier yields to. The live second consumer is `vault-dirs:`
+ *   (section 'vault-dirs', envKey 'SO_VAULT_DIR'), driven by
+ *   `resolveVaultDir` in scripts/lib/config/host-paths.mjs. `name` is required
+ *   only for `baselines:` (the #819 contract); elsewhere it is optional and
+ *   defaults to `path`, which is what the ambiguity WARN then names.
+ *
  * ── Exports ──────────────────────────────────────────────────────────────────
  *
- *   parseBaselines(ownerConfig)
- *   matchBaselineForPath(absPath, baselines)
- *   resolveNamedBaseline({ cwd, ownerConfig, env })
+ *   parseBaselines(ownerConfig, section?)
+ *   matchBaselineForPath(absPath, baselines, section?)
+ *   resolveNamedBaseline({ cwd, ownerConfig, env, section?, envKey? })
  */
 
 import { normalize, sep } from 'node:path';
@@ -42,6 +52,9 @@ import { expandTilde } from './common.mjs';
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/** Sections whose entries MUST carry a `name` (the #819 baselines contract). */
+const NAME_REQUIRED_SECTIONS = new Set(['baselines']);
 
 /** @param {unknown} v */
 function isPlainObject(v) {
@@ -70,18 +83,23 @@ function _normalizePath(p) {
 // ---------------------------------------------------------------------------
 
 /**
- * Extract and validate the `baselines:` list from a raw ownerConfig object.
+ * Extract and validate a directory-prefix list (default `baselines:`) from a raw
+ * ownerConfig object.
  *
  * Drop-and-WARN on malformed entries; never throw. Returns [] when the section
- * is absent, null, or empty — the backward-compat no-op path.
+ * is absent, null, or empty — the backward-compat no-op path. Every WARN names
+ * the section it came from.
  *
- * Each valid entry: { name: string, path: string, match: { 'path-prefix': string } }
+ * Each valid entry: { name: string, path: string, match: { 'path-prefix': string } }.
+ * `name` is required for `baselines`; for other sections an absent name falls
+ * back to `path` (a present-but-blank or non-string name is still dropped).
  *
  * @param {object|undefined} ownerConfig — raw parsed owner.yaml (NOT merged with defaults)
+ * @param {string} [section='baselines'] — owner.yaml list to read (e.g. 'vault-dirs')
  * @returns {Array<{name:string, path:string, match:{'path-prefix':string}}>}
  */
-export function parseBaselines(ownerConfig) {
-  const raw = ownerConfig?.baselines;
+export function parseBaselines(ownerConfig, section = 'baselines') {
+  const raw = ownerConfig?.[section];
 
   // Absent or explicit null/empty → no-op
   if (raw === undefined || raw === null) return [];
@@ -89,54 +107,56 @@ export function parseBaselines(ownerConfig) {
 
   if (!Array.isArray(raw)) {
     process.stderr.write(
-      'WARN named-baseline-resolver: owner.yaml baselines: must be an array; ignoring\n',
+      `WARN named-baseline-resolver: owner.yaml ${section}: must be an array; ignoring\n`,
     );
     return [];
   }
 
+  const nameRequired = NAME_REQUIRED_SECTIONS.has(section);
   const result = [];
   for (let i = 0; i < raw.length; i++) {
     const entry = raw[i];
     if (!isPlainObject(entry)) {
       process.stderr.write(
-        `WARN named-baseline-resolver: owner.yaml baselines[${i}] is not an object; dropping\n`,
+        `WARN named-baseline-resolver: owner.yaml ${section}[${i}] is not an object; dropping\n`,
       );
       continue;
     }
 
     const { name, path: entryPath, match } = entry;
 
-    if (typeof name !== 'string' || name.trim() === '') {
+    const nameAbsent = name === undefined || name === null;
+    if ((nameRequired || !nameAbsent) && (typeof name !== 'string' || name.trim() === '')) {
       process.stderr.write(
-        `WARN named-baseline-resolver: owner.yaml baselines[${i}].name must be a non-empty string; dropping entry\n`,
+        `WARN named-baseline-resolver: owner.yaml ${section}[${i}].name must be a non-empty string; dropping entry\n`,
       );
       continue;
     }
     if (typeof entryPath !== 'string' || entryPath.trim() === '') {
       process.stderr.write(
-        `WARN named-baseline-resolver: owner.yaml baselines[${i}].path must be a non-empty string; dropping entry\n`,
+        `WARN named-baseline-resolver: owner.yaml ${section}[${i}].path must be a non-empty string; dropping entry\n`,
       );
       continue;
     }
 
-    // match is REQUIRED (unlike vaults) — a baseline with no path-prefix can
+    // match is REQUIRED (unlike vaults) — an entry with no path-prefix can
     // never be selected, so it is dropped rather than kept.
     if (!isPlainObject(match)) {
       process.stderr.write(
-        `WARN named-baseline-resolver: owner.yaml baselines[${i}].match must be an object; dropping entry\n`,
+        `WARN named-baseline-resolver: owner.yaml ${section}[${i}].match must be an object; dropping entry\n`,
       );
       continue;
     }
     const pathPrefix = match['path-prefix'];
     if (typeof pathPrefix !== 'string' || pathPrefix.trim() === '') {
       process.stderr.write(
-        `WARN named-baseline-resolver: owner.yaml baselines[${i}].match.path-prefix must be a non-empty string; dropping entry\n`,
+        `WARN named-baseline-resolver: owner.yaml ${section}[${i}].match.path-prefix must be a non-empty string; dropping entry\n`,
       );
       continue;
     }
 
     result.push({
-      name: name.trim(),
+      name: nameAbsent ? entryPath.trim() : name.trim(),
       path: entryPath.trim(),
       match: { 'path-prefix': pathPrefix.trim() },
     });
@@ -162,9 +182,10 @@ export function parseBaselines(ownerConfig) {
  *
  * @param {string} absPath — the working directory to classify
  * @param {Array<{name:string, path:string, match:{'path-prefix':string}}>} baselines
+ * @param {string} [section='baselines'] — owner.yaml list name, used only in the WARN
  * @returns {{name:string, path:string, match:{'path-prefix':string}}|null}
  */
-export function matchBaselineForPath(absPath, baselines) {
+export function matchBaselineForPath(absPath, baselines, section = 'baselines') {
   if (!absPath || !Array.isArray(baselines) || baselines.length === 0) return null;
 
   const target = _normalizePath(absPath);
@@ -181,7 +202,7 @@ export function matchBaselineForPath(absPath, baselines) {
 
   if (matched.length > 1) {
     process.stderr.write(
-      `WARN named-baseline-resolver: multiple baselines match path "${absPath}": ${matched
+      `WARN named-baseline-resolver: multiple ${section} match path "${absPath}": ${matched
         .map((b) => b.name)
         .join(', ')}; using first match "${matched[0].name}"\n`,
     );
@@ -195,13 +216,13 @@ export function matchBaselineForPath(absPath, baselines) {
 // ---------------------------------------------------------------------------
 
 /**
- * Resolve the `baselines:` match tier for a given cwd.
+ * Resolve the directory-prefix match tier (default `baselines:`) for a given cwd.
  *
  * Returns:
- *   { path, name, source:'match' } when a baseline directory-prefix matches cwd.
+ *   { path, name, source:'match' } when an entry's directory-prefix matches cwd.
  *   { path:null, name:null, source:null } (the null-fallback) otherwise — including
- *   when SO_BASELINE_PATH env is set (this tier yields to the higher env tier the
- *   caller owns), when no `baselines:` are configured, or when nothing matches.
+ *   when `env[envKey]` is set (this tier yields to the higher env tier the caller
+ *   owns), when the section is not configured, or when nothing matches.
  *
  * Pure + synchronous — no git calls, no disk reads. Never throws.
  *
@@ -209,22 +230,26 @@ export function matchBaselineForPath(absPath, baselines) {
  *   cwd?: string,
  *   ownerConfig?: object,
  *   env?: Record<string, string|undefined>,
- * }} [opts]
+ *   section?: string,
+ *   envKey?: string,
+ * }} [opts] — `section` defaults to 'baselines', `envKey` to 'SO_BASELINE_PATH'
  * @returns {{ path: string|null, name: string|null, source: 'match'|null }}
  */
 export function resolveNamedBaseline({
   cwd = process.cwd(),
   ownerConfig,
   env = process.env,
+  section = 'baselines',
+  envKey = 'SO_BASELINE_PATH',
 } = {}) {
-  // Yield to the higher-precedence env tier the caller owns (SO_BASELINE_PATH).
-  const envVal = env?.SO_BASELINE_PATH;
+  // Yield to the higher-precedence env tier the caller owns.
+  const envVal = env?.[envKey];
   if (typeof envVal === 'string' && envVal.trim() !== '') {
     return { path: null, name: null, source: null };
   }
 
-  const baselines = parseBaselines(ownerConfig);
-  const matched = baselines.length > 0 ? matchBaselineForPath(cwd, baselines) : null;
+  const entries = parseBaselines(ownerConfig, section);
+  const matched = entries.length > 0 ? matchBaselineForPath(cwd, entries, section) : null;
   if (matched !== null) {
     return { path: matched.path, name: matched.name, source: 'match' };
   }

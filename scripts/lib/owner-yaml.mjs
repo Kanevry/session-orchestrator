@@ -36,6 +36,16 @@
  *   dispatcher:             (optional; host-local cross-repo dispatcher autonomy override — #679)
  *     autonomy: string      ('' = no override; resolver enum off | advisory | autonomous-gated;
  *                            precedence env SO_DISPATCHER_AUTONOMY > this > committed > off)
+ *   vault-integration:      (optional; host-local switch for the vault-integration gate — SO#1448)
+ *     enabled: boolean      (false = off on this host; true is ignored — the host may not enable)
+ *     mode: 'off' | 'warn' | 'strict'  (applied only when weaker than the committed mode;
+ *                            precedence env SO_VAULT_INTEGRATION > this > committed.
+ *                            An invalid value drops ONLY this section, see loadOwnerConfig)
+ *   vault-dirs:             (optional list; per-directory vault-dir — agents/vault#319)
+ *     - path: string                       (the vault directory)
+ *       match: { path-prefix: string }     (required; cwd directory prefix, first match wins)
+ *       name: string                       (optional label, defaults to path)
+ *                            precedence env SO_VAULT_DIR > this > paths.vault-dir > committed
  *
  * ── Exports ───────────────────────────────────────────────────────────────────
  *
@@ -44,7 +54,8 @@
  *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
  *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
  *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
- *                                sections (paths/dispatcher/vaults/baselines) — #820
+ *                                sections (paths/dispatcher/vault-integration/vaults/
+ *                                baselines/vault-dirs) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
  *   getDefaults()              — returns sensible default config object
  *
@@ -202,9 +213,12 @@ const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 
  * sections — currently `scripts/lib/owner-config-banner.mjs`, which derived the
  * #1244 "survived a whole-file discard" set from a hand-mirrored local copy.
  * Frozen so a consumer cannot mutate the shared array.
+ *
+ * `vault-integration` has no `getDefaults()` entry: absent means "no host
+ * override", so a dropped section simply leaves the committed gate in force.
  */
 export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
-  Object.freeze(['paths', 'dispatcher'])
+  Object.freeze(['paths', 'dispatcher', 'vault-integration'])
 );
 
 /**
@@ -213,7 +227,10 @@ export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
  * `parseNamedVaults`/`parseBaselines` — that already drops bad entries with
  * its own WARN). Surfaced here only via `sectionWarnings`, never dropped.
  */
-const OPTIONAL_LIST_SECTIONS = /** @type {const} */ (['vaults', 'baselines']);
+const OPTIONAL_LIST_SECTIONS = /** @type {const} */ (['vaults', 'baselines', 'vault-dirs']);
+
+/** Host-settable vault-integration modes (mirrors VAULT_MODE_VALUES in config-schema.mjs). */
+const VALID_VAULT_INTEGRATION_MODES = ['off', 'warn', 'strict'];
 
 /** Canonical validation-order — MUST match the pre-#820 inline validation order. */
 const SECTION_ORDER = /** @type {const} */ ([
@@ -421,6 +438,35 @@ export function validateOwnerSections(obj) {
     sections.dispatcher = { valid: errors.length === 0, errors };
   }
 
+  // ── vault-integration (optional; host-local gate switch — SO#1448) ──────────
+  // STRICT enum validation, unlike `dispatcher`: a typo like `mode: of` must not
+  // fall through to the committed `strict` silently while the operator believes
+  // the host is off. An invalid section is dropped (and reported) on its own —
+  // `paths` and every other section survive (#820 per-section tolerance).
+  {
+    const errors = [];
+    const vi = obj['vault-integration'];
+    if (vi !== undefined && vi !== null) {
+      if (!isPlainObject(vi)) {
+        errors.push('vault-integration must be an object when present');
+      } else {
+        if (vi.enabled !== undefined && vi.enabled !== null && typeof vi.enabled !== 'boolean') {
+          errors.push(`vault-integration.enabled must be a boolean, got: ${typeof vi.enabled}`);
+        }
+        if (
+          vi.mode !== undefined &&
+          vi.mode !== null &&
+          !VALID_VAULT_INTEGRATION_MODES.includes(vi.mode)
+        ) {
+          errors.push(
+            `vault-integration.mode must be one of ${VALID_VAULT_INTEGRATION_MODES.join(', ')}, got: ${JSON.stringify(vi.mode)}`,
+          );
+        }
+      }
+    }
+    sections['vault-integration'] = { valid: errors.length === 0, errors };
+  }
+
   // ── vaults (optional; N named vaults for walk-up resolution — #700) ──────────
   // Drop-and-WARN on malformed entries is handled by parseNamedVaults() in
   // named-vault-resolver.mjs. Here we only validate the container shape to
@@ -512,6 +558,47 @@ export function validateOwnerSections(obj) {
     sections.baselines = { valid: errors.length === 0, errors };
   }
 
+  // ── vault-dirs (optional; per-directory vault-dir — agents/vault#319) ────────
+  // Same entry shape as baselines: (and parsed by the same parseBaselines() with
+  // section 'vault-dirs'), except `name` is optional. List section: surfaced via
+  // sectionWarnings, never dropped — the resolver drops bad entries itself.
+  {
+    const errors = [];
+    const vaultDirs = obj['vault-dirs'];
+    if (vaultDirs !== undefined && vaultDirs !== null) {
+      if (!Array.isArray(vaultDirs)) {
+        errors.push('vault-dirs must be an array when present');
+      } else {
+        for (let i = 0; i < vaultDirs.length; i++) {
+          const entry = vaultDirs[i];
+          if (!isPlainObject(entry)) {
+            errors.push(`vault-dirs[${i}] must be an object`);
+            continue;
+          }
+          if (typeof entry.path !== 'string' || entry.path.trim() === '') {
+            errors.push(`vault-dirs[${i}].path must be a non-empty string`);
+          }
+          if (
+            entry.name !== undefined &&
+            entry.name !== null &&
+            (typeof entry.name !== 'string' || entry.name.trim() === '')
+          ) {
+            errors.push(`vault-dirs[${i}].name must be a non-empty string when present`);
+          }
+          if (!isPlainObject(entry.match)) {
+            errors.push(`vault-dirs[${i}].match must be an object`);
+          } else if (
+            typeof entry.match['path-prefix'] !== 'string' ||
+            entry.match['path-prefix'].trim() === ''
+          ) {
+            errors.push(`vault-dirs[${i}].match.path-prefix must be a non-empty string`);
+          }
+        }
+      }
+    }
+    sections['vault-dirs'] = { valid: errors.length === 0, errors };
+  }
+
   const errors = SECTION_ORDER.flatMap((name) => sections[name].errors);
   return { sections, errors };
 }
@@ -540,10 +627,10 @@ export function validateOwnerConfig(obj) {
  * Per-section tolerance (#820): an invalid REQUIRED section (owner, tone,
  * efficiency, hardware-sharing) still discards the whole file (legacy
  * behaviour, unchanged). An invalid OPTIONAL object section (paths,
- * dispatcher) is instead replaced by its default value — the rest of the
+ * dispatcher, vault-integration) is instead replaced by its default value — the rest of the
  * file survives, `source` becomes `'partial'`, and the drop is reported via
  * `droppedSections` + a stderr WARN. OPTIONAL list sections (vaults,
- * baselines) are passed through UNTOUCHED even when strict-invalid — their
+ * baselines, vault-dirs) are passed through UNTOUCHED even when strict-invalid — their
  * consumers already run a lenient parse-at-point-of-use pass — and are
  * surfaced only via `sectionWarnings` (never dropped, never counted towards
  * `'partial'`).
@@ -673,7 +760,10 @@ export function loadOwnerConfig(opts = {}) {
   for (const name of OPTIONAL_OBJECT_SECTIONS) {
     const sec = sections[name];
     if (sec && !sec.valid) {
-      config[name] = defaults[name];
+      // A section without a default (vault-integration) is removed, not set to
+      // `undefined`: js-yaml's dump rejects undefined values on a write-back.
+      if (defaults[name] === undefined) delete config[name];
+      else config[name] = defaults[name];
       droppedSections.push({ section: name, errors: sec.errors });
       const firstError = sec.errors[0] ?? 'invalid section';
       console.warn(

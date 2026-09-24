@@ -321,14 +321,27 @@ describe('resolveNamedBaseline — AC1: per-context directory match', () => {
     expect(result.path).toBe('~/Projects/intern/projects-baseline');
   });
 
-  it('SO_BASELINE_PATH env yields the null-fallback so the caller env tier wins', () => {
+  // Bug (agents/vault#319 reuse): for `vault-dirs` the match tier must still yield
+  // to SO_VAULT_DIR. If it landed above the env tier, tests/setup/vault-guard.mjs
+  // (which sets SO_VAULT_DIR to shadow every host-local vault) would stop working
+  // and the suite could write into the operator's real vault.
+  it.each([
+    { section: 'baselines', envKey: 'SO_BASELINE_PATH' },
+    { section: 'vault-dirs', envKey: 'SO_VAULT_DIR' },
+  ])('$envKey env yields the $section match tier so the caller env tier wins', ({ section, envKey }) => {
     const cwd = join(homedir(), 'Projects', 'private-world', 'repo-a');
+    const cfg = { [section]: ownerConfig.baselines };
+    // Without the env var the section matches — so the null below is the yield, not a miss.
+    expect(resolveNamedBaseline({ cwd, ownerConfig: cfg, env: {}, section, envKey }).source).toBe(
+      'match',
+    );
     const result = resolveNamedBaseline({
       cwd,
-      ownerConfig,
-      env: { SO_BASELINE_PATH: '/env/override/baseline' },
+      ownerConfig: cfg,
+      env: { [envKey]: '/env/override' },
+      section,
+      envKey,
     });
-    // The resolver does NOT report a match — it yields to the higher env tier.
     expect(result.source).toBeNull();
     expect(result.path).toBeNull();
   });

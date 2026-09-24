@@ -88,7 +88,9 @@ describe('vault-integration nested object', () => {
       'discovery-validator:',
       '  enabled: false',
     ].join('\n');
-    const config = parseSessionConfig(content);
+    // Hermetic: a host-local `vault-integration: { enabled: false }` (SO#1448) would
+    // otherwise lower the committed `enabled: true` asserted here.
+    const config = parseSessionConfig(content, hermetic);
     expect(config['vault-integration'].enabled).toBe(true);
   });
 
@@ -96,6 +98,113 @@ describe('vault-integration nested object', () => {
     const config = parseSessionConfig(readFixture('config-minimal.md'));
     expect(config['vault-sync'].enabled).toBe(false);
     expect(config['vault-sync'].exclude).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-local vault-dir match tier (agents/vault#319)
+// ---------------------------------------------------------------------------
+
+describe('vault-dir: owner.yaml vault-dirs match tier (agents/vault#319)', () => {
+  // Committed value names neither host vault, so any hit below is a host tier.
+  const content = [
+    '## Session Config',
+    '',
+    'vault-integration:',
+    '  enabled: true',
+    '  vault-dir: /committed/vault',
+    '  mode: warn',
+    '',
+    'vault-sync:',
+    '  enabled: true',
+    '  vault-dir: /committed/vault',
+  ].join('\n');
+  const OWNER_WIDE = '/hosts/h1/Projects/vault'; // paths.vault-dir: the host-wide vault (A)
+  const MATCHED = '/hosts/h1/Projects/private/vault'; // vault-dirs entry (B)
+  const ownerConfig = {
+    paths: { 'vault-dir': OWNER_WIDE },
+    'vault-dirs': [{ path: MATCHED, match: { 'path-prefix': '/hosts/h1/Projects/private/' } }],
+  };
+
+  // Bug #319: paths.vault-dir silently overrode the repo's own vault, and the two
+  // call sites (vault-integration, vault-sync) could drift apart.
+  it('cwd under the prefix resolves both vault-integration and vault-sync to the match, source "match"', () => {
+    const config = parseSessionConfig(content, {
+      hostPaths: { env: {}, ownerConfig, cwd: '/hosts/h1/Projects/private/vault' },
+    });
+    expect(config['vault-integration']['vault-dir']).toBe(MATCHED);
+    expect(config['vault-integration']['vault-dir-source']).toBe('match');
+    expect(config['vault-sync']['vault-dir']).toBe(MATCHED);
+  });
+
+  // Bug: the match spills over onto repos outside the prefix.
+  it('cwd outside the prefix keeps paths.vault-dir, source "owner"', () => {
+    const config = parseSessionConfig(content, {
+      hostPaths: { env: {}, ownerConfig, cwd: '/hosts/h1/Projects/other-repo' },
+    });
+    expect(config['vault-integration']['vault-dir']).toBe(OWNER_WIDE);
+    expect(config['vault-integration']['vault-dir-source']).toBe('owner');
+    expect(config['vault-sync']['vault-dir']).toBe(OWNER_WIDE);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Host-local vault-integration switch (SO#1448) — lower-only
+// ---------------------------------------------------------------------------
+
+describe('vault-integration host switch (SO#1448)', () => {
+  const committed = (enabled, mode) =>
+    ['## Session Config', '', 'vault-integration:', `  enabled: ${enabled}`, `  mode: ${mode}`].join(
+      '\n',
+    );
+
+  it.each([
+    {
+      // Bug SO#1448: no host-local way to turn a committed strict gate off.
+      name: 'owner enabled:false lowers committed strict to off',
+      md: committed(true, 'strict'),
+      env: {},
+      owner: { enabled: false },
+      want: { enabled: false, mode: 'off', 'host-override': 'owner.yaml' },
+    },
+    {
+      // Bug: wrong precedence — owner.yaml beating the env var.
+      name: 'SO_VAULT_INTEGRATION=off beats owner mode:warn',
+      md: committed(true, 'strict'),
+      env: { SO_VAULT_INTEGRATION: 'off' },
+      owner: { mode: 'warn' },
+      want: { enabled: false, mode: 'off', 'host-override': 'env:SO_VAULT_INTEGRATION' },
+    },
+    {
+      // Bug: the host raises the gate and mirrors a repo that never opted in.
+      name: 'owner mode:strict does not enable a committed enabled:false',
+      md: committed(false, 'warn'),
+      env: {},
+      owner: { mode: 'strict' },
+      want: { enabled: false, mode: 'warn', 'host-override': null },
+    },
+    {
+      name: 'owner enabled:true does not enable a committed enabled:false',
+      md: committed(false, 'warn'),
+      env: {},
+      owner: { enabled: true },
+      want: { enabled: false, mode: 'warn', 'host-override': null },
+    },
+    {
+      name: 'owner mode:strict does not raise a committed warn',
+      md: committed(true, 'warn'),
+      env: {},
+      owner: { mode: 'strict' },
+      want: { enabled: true, mode: 'warn', 'host-override': null },
+    },
+  ])('$name', ({ md, env, owner, want }) => {
+    const config = parseSessionConfig(md, {
+      hostPaths: { env, ownerConfig: { 'vault-integration': owner } },
+    });
+    const vi = config['vault-integration'];
+    expect({ enabled: vi.enabled, mode: vi.mode, 'host-override': vi['host-override'] }).toEqual(
+      want,
+    );
   });
 });
 

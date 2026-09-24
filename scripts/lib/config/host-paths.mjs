@@ -13,6 +13,19 @@
  *   3. committed Session Config default (the value the committed CLAUDE.md —
  *      AGENTS.md on Codex CLI — produced)
  *
+ * `vault-dir` has one more tier (agents/vault#319), see `resolveVaultDir`:
+ *   1. SO_VAULT_DIR env
+ *   2. owner.yaml `vault-dirs:` entry whose `match.path-prefix` contains the cwd
+ *   3. owner.yaml paths.vault-dir
+ *   4. committed Session Config value
+ * Without tier 2 a single host-wide `paths.vault-dir` silently redirected every
+ * repo on the host into ONE vault, including a repo whose committed config names
+ * a different one.
+ *
+ * `resolveVaultIntegrationHost` is the host-local switch for the
+ * `vault-integration` gate itself (SO#1448). It may only LOWER the committed
+ * level (strict → warn → off), never raise it.
+ *
  * SYNCHRONOUS by design: `parseSessionConfig` in scripts/lib/config.mjs is sync,
  * so this layer reuses the SYNC owner loader (`loadOwnerConfig`) and exposes only
  * sync functions. An empty/whitespace value at any tier is treated as "unset" and
@@ -20,6 +33,7 @@
  */
 
 import { loadOwnerConfig } from '../owner-yaml.mjs';
+import { resolveNamedBaseline } from '../named-baseline-resolver.mjs';
 
 /** Maps a logical path key to its environment-variable name. */
 const ENV_KEYS = /** @type {const} */ ({
@@ -89,4 +103,115 @@ export function resolveHostPath(key, committedDefault, { env = process.env, owne
   if (typeof ownerVal === 'string' && ownerVal.trim() !== '') return ownerVal;
 
   return committedDefault;
+}
+
+/**
+ * @param {unknown} v
+ * @returns {v is string}
+ */
+function isNonBlank(v) {
+  return typeof v === 'string' && v.trim() !== '';
+}
+
+/**
+ * Resolve `vault-dir` and report which tier produced it (agents/vault#319).
+ *
+ * Precedence (highest first): SO_VAULT_DIR env > owner.yaml `vault-dirs:`
+ * path-prefix match against the cwd > owner.yaml `paths.vault-dir` > committed.
+ * The env tier stays on top because tests/setup/vault-guard.mjs relies on it to
+ * shadow every host-local vault for the whole suite.
+ *
+ * `cwd` in the ctx is a test-only DI seam; production reads `process.cwd()`.
+ *
+ * @param {string|null|undefined} committed — value the committed Session Config produced
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object, cwd?: string }} [ctx] — from loadHostPaths()
+ * @returns {{ value: string|null|undefined, source: 'env'|'match'|'owner'|'committed' }}
+ */
+export function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}) {
+  const envVal = env?.[ENV_KEYS['vault-dir']];
+  if (isNonBlank(envVal)) return { value: envVal, source: 'env' };
+
+  const matched = resolveNamedBaseline({
+    cwd: cwd ?? process.cwd(),
+    ownerConfig,
+    env,
+    section: 'vault-dirs',
+    envKey: ENV_KEYS['vault-dir'],
+  });
+  if (matched.source === 'match' && isNonBlank(matched.path)) {
+    return { value: matched.path, source: 'match' };
+  }
+
+  const ownerVal = ownerConfig?.paths?.['vault-dir'];
+  if (isNonBlank(ownerVal)) return { value: ownerVal, source: 'owner' };
+
+  return { value: committed, source: 'committed' };
+}
+
+/** vault-integration levels, weakest first. The index order IS the ordering. */
+const VAULT_INTEGRATION_LEVELS = /** @type {readonly string[]} */ (['off', 'warn', 'strict']);
+
+/**
+ * @param {unknown} v
+ * @returns {'off'|'warn'|'strict'|undefined} a valid level, or undefined for unset/invalid
+ */
+function coerceVaultIntegrationLevel(v) {
+  if (typeof v !== 'string') return undefined;
+  const lower = v.trim().toLowerCase();
+  return VAULT_INTEGRATION_LEVELS.includes(lower)
+    ? /** @type {'off'|'warn'|'strict'} */ (lower)
+    : undefined;
+}
+
+/**
+ * Overlay the host-local `vault-integration` switch onto the committed block
+ * (SO#1448). Precedence: env `SO_VAULT_INTEGRATION=off|warn|strict` > owner.yaml
+ * `vault-integration: { enabled: false | mode: off|warn|strict }` > committed.
+ * An invalid value at a tier counts as unset and falls through, mirroring
+ * resolveDispatcherAutonomy in dispatcher-autonomy.mjs.
+ *
+ * LOWER-ONLY: the host's level is applied only when it is weaker than the
+ * committed one. A host that could raise it would mirror repos into the vault
+ * that never opted in, so `enabled: true` or a stronger mode is ignored.
+ * Applying `off` sets both `enabled: false` and `mode: 'off'`, so either
+ * consumer check (`enabled`, `mode != off`) sees the integration as off.
+ *
+ * @param {{ enabled?: boolean, mode?: string } & Record<string, unknown>} vi — parsed committed block
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [ctx] — from loadHostPaths()
+ * @returns {Record<string, unknown> & { enabled?: boolean, mode?: string, 'host-override': 'env:SO_VAULT_INTEGRATION'|'owner.yaml'|null }}
+ *   a copy of `vi`; `host-override` names the tier that lowered it, `null` when none did
+ */
+export function resolveVaultIntegrationHost(vi, { env = process.env, ownerConfig } = {}) {
+  /** @type {Record<string, unknown> & { enabled?: boolean, mode?: string, 'host-override': 'env:SO_VAULT_INTEGRATION'|'owner.yaml'|null }} */
+  const result = { ...vi, 'host-override': null };
+
+  /** @type {'off'|'warn'|'strict'|undefined} */
+  let requested = coerceVaultIntegrationLevel(env?.SO_VAULT_INTEGRATION);
+  /** @type {'env:SO_VAULT_INTEGRATION'|'owner.yaml'} */
+  let source = 'env:SO_VAULT_INTEGRATION';
+  if (requested === undefined) {
+    const owner = ownerConfig?.['vault-integration'];
+    if (owner !== null && typeof owner === 'object' && !Array.isArray(owner)) {
+      requested = owner.enabled === false ? 'off' : coerceVaultIntegrationLevel(owner.mode);
+      source = 'owner.yaml';
+    }
+  }
+  if (requested === undefined) return result;
+
+  const committedLevel =
+    vi?.enabled === true ? (coerceVaultIntegrationLevel(vi.mode) ?? 'warn') : 'off';
+  if (
+    VAULT_INTEGRATION_LEVELS.indexOf(requested) >= VAULT_INTEGRATION_LEVELS.indexOf(committedLevel)
+  ) {
+    return result;
+  }
+
+  if (requested === 'off') {
+    result.enabled = false;
+    result.mode = 'off';
+  } else {
+    result.mode = requested;
+  }
+  result['host-override'] = source;
+  return result;
 }

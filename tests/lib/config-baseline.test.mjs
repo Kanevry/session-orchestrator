@@ -67,6 +67,8 @@ describe('issue #497: YAML list-item form + inline vault-integration', () => {
       'vault-dir': '~/Projects/vault',
       mode: 'warn',
       'vault-name': null,
+      'vault-dir-source': 'committed',
+      'host-override': null,
     });
   });
 
