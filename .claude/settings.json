@@ -73,7 +73,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILEPATH=$(echo $CLAUDE_TOOL_INPUT | jq -r '.file_path // .filePath // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.(ts|tsx|js|jsx)$'; then npx prettier --write \"$FILEPATH\" 2>/dev/null; fi"
+            "command": "if command -v jq >/dev/null 2>&1; then INPUT=$(cat); FILEPATH=$(printf '%s' \"$INPUT\" | jq -r '.tool_input.file_path | select(type == \"string\")' 2>/dev/null); if [ -n \"$FILEPATH\" ] && printf '%s\\n' \"$FILEPATH\" | grep -qE '\\.(ts|tsx|js|jsx)$'; then PROJECT_DIR=\"${CLAUDE_PROJECT_DIR:-$PWD}\"; PRETTIER=\"$PROJECT_DIR/node_modules/.bin/prettier\"; if [ -x \"$PRETTIER\" ] && node -e 'const fs=require(\"node:fs\"),p=require(\"node:path\");try{const root=fs.realpathSync(process.argv[1]),file=fs.realpathSync(p.resolve(root,process.argv[2])),rel=p.relative(root,file);process.exit(rel&&rel!==\"..\"&&!rel.startsWith(\"..\"+p.sep)&&!p.isAbsolute(rel)&&fs.statSync(file).isFile()?0:1)}catch{process.exit(1)}' \"$PROJECT_DIR\" \"$FILEPATH\" 2>/dev/null; then (cd \"$PROJECT_DIR\" && \"$PRETTIER\" --write -- \"$FILEPATH\") 2>/dev/null || printf '[baseline] Local formatter failed; run project formatting checks.\\n' >&2; fi; fi; fi"
           }
         ]
       },
@@ -82,7 +82,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILEPATH=$(echo $CLAUDE_TOOL_INPUT | jq -r '.file_path // .filePath // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.env\\.example$'; then echo '.env.example modified. Reminder: update local .env if new vars added.'; fi"
+            "command": "if command -v jq >/dev/null 2>&1; then INPUT=$(cat); FILEPATH=$(printf '%s' \"$INPUT\" | jq -r '.tool_input.file_path // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.env\\.example$'; then echo '.env.example modified. Reminder: update local .env if new vars added.'; fi; fi"
           }
         ]
       },
@@ -91,7 +91,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "FILEPATH=$(echo $CLAUDE_TOOL_INPUT | jq -r '.file_path // .filePath // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.(ts|tsx)$' && ! echo \"$FILEPATH\" | grep -qE '\\.(test|spec)\\.(ts|tsx)$'; then DIR=$(dirname \"$FILEPATH\"); BASE=$(basename \"$FILEPATH\" | sed 's/\\.[^.]*$//'); TESTFILE=\"${DIR}/${BASE}.test.ts\"; if [ ! -f \"$TESTFILE\" ]; then echo \"No co-located test file found. Consider: $TESTFILE\"; fi; fi"
+            "command": "if command -v jq >/dev/null 2>&1; then INPUT=$(cat); FILEPATH=$(printf '%s' \"$INPUT\" | jq -r '.tool_input.file_path // empty' 2>/dev/null); if [ -n \"$FILEPATH\" ] && echo \"$FILEPATH\" | grep -qE '\\.(ts|tsx)$' && ! echo \"$FILEPATH\" | grep -qE '\\.(test|spec)\\.(ts|tsx)$'; then DIR=$(dirname \"$FILEPATH\"); BASE=$(basename \"$FILEPATH\" | sed 's/\\.[^.]*$//'); TESTFILE=\"${DIR}/${BASE}.test.ts\"; if [ ! -f \"$TESTFILE\" ]; then echo \"No co-located test file found. Consider: $TESTFILE\"; fi; fi; fi"
           }
         ]
       }
@@ -102,7 +102,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "CMD=$(echo $CLAUDE_TOOL_INPUT | jq -r '.command // empty' 2>/dev/null); if echo \"$CMD\" | grep -qE 'rm\\s+-rf\\s+/|DROP\\s+(DATABASE|TABLE)|TRUNCATE\\s+TABLE|format\\s+c:|git\\s+push\\s+--force|docker\\s+system\\s+prune'; then echo '{\"decision\":\"deny\",\"reason\":\"Destructive command blocked by baseline hook\"}'; fi"
+            "command": "INPUT=$(cat); if command -v jq >/dev/null 2>&1; then CMD=$(printf '%s' \"$INPUT\" | jq -r '.tool_input.command // empty' 2>/dev/null); if echo \"$CMD\" | grep -qE 'rm\\s+-rf\\s+/|DROP\\s+(DATABASE|TABLE)|TRUNCATE\\s+TABLE|format\\s+c:|git\\s+push\\s+--force|git\\s+reset\\s+--hard|docker\\s+system\\s+prune'; then printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Destructive command blocked by baseline hook\"}}'; fi; else printf '%s' '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"jq not available - destructive command guard cannot validate. Install jq to proceed.\"}}'; fi"
           }
         ]
       }
