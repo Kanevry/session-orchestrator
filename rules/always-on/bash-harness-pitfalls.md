@@ -1,4 +1,3 @@
-<!-- source: session-orchestrator plugin (canonical: rules/always-on/bash-harness-pitfalls.md) -->
 ---
 globs:
   - "**/*.sh"
@@ -6,8 +5,15 @@ globs:
   - scripts/**
   - tests/**
   - .husky/**
+paths:
+  - "**/*.sh"
+  - "**/*.bash"
+  - scripts/**
+  - tests/**
+  - .husky/**
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/always-on/bash-harness-pitfalls.md) -->
 # Bash / Shell-Harness Pitfalls (Path-scoped)
 
 Six recurring bash-harness failure classes, each surfaced by a live run rather

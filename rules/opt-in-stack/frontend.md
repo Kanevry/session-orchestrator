@@ -1,12 +1,17 @@
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/frontend.md) -->
 ---
 globs:
   - src/**/*.tsx
   - src/**/*.css
   - src/**/*.module.css
   - "**/components/**/*.{ts,tsx}"
+paths:
+  - src/**/*.tsx
+  - src/**/*.css
+  - src/**/*.module.css
+  - "**/components/**/*.{ts,tsx}"
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/frontend.md) -->
 # Frontend Rules (Path-scoped)
 
 ## React & Next.js

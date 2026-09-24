@@ -40,7 +40,7 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 - `always-on/build-value.md` — BV-001..004: the seven-rung build ladder, the four protections never simplified away
 - `always-on/cross-session-messaging.md` — CSM-001..005: messaging is transport, not shared state; no permission laundering
 - `always-on/loop-and-monitor.md` — LM-001..008: routing between `/goal`, Workflows, Channels, Monitor, `/loop`, and Routines
-- `always-on/bash-harness-pitfalls.md` — six false-green shell-harness failure classes (path-scoped via its own `globs:`/`paths:` frontmatter)
+- `always-on/bash-harness-pitfalls.md` — six false-green shell-harness failure classes (path-scoped via `globs:` + `paths:` frontmatter carrying identical lists — `paths:` is what Claude Code reads, `globs:` what `rule-loader.mjs` reads first; #1449)
 
 ## opt-in-stack (vendored on match)
 
@@ -56,4 +56,4 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 
 ## Sync mechanism
 
-Consumer repos receive these files via `/bootstrap --sync-rules`. Re-running the command syncs every manifest category that has entries: universal entries always vendor, and archetype-tagged entries vendor only when the consumer repo's resolved archetype matches. Plugin-sourced files are overwritten while local rules are preserved (copy-on-write via the `<!-- source: session-orchestrator plugin ... -->` header on plugin files). Category entries must not share a basename, because all synced files flatten into `.claude/rules/`.
+Consumer repos receive these files via `/bootstrap --sync-rules`. Re-running the command syncs every manifest category that has entries: universal entries always vendor, and archetype-tagged entries vendor only when the consumer repo's resolved archetype matches. Plugin-sourced files are overwritten while local rules are preserved (copy-on-write via the `<!-- source: session-orchestrator plugin ... -->` header on plugin files). That header stands on the first line directly after the closing `---` of a rule's frontmatter, because Claude Code reads frontmatter only when it opens on line 1; only a rule without frontmatter carries it on line 1 (#1449). A consumer copy written in the older format (header on line 1, frontmatter after it) still counts as plugin-owned and is rewritten into the current format on the next sync. Category entries must not share a basename, because all synced files flatten into `.claude/rules/`.
