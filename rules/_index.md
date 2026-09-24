@@ -52,7 +52,7 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 
 ## opt-in-domain (vendored on match)
 
-- `opt-in-domain/prompt-caching.md` — Anthropic prompt caching (breakpoint placement, TTL selection, pre-warming, verification) [archetypes: nextjs-saas, express-service, docker-service, monorepo-oss, cli-tool]
+- `opt-in-domain/prompt-caching.md` — Anthropic prompt caching (breakpoint placement, TTL selection, pre-warming, verification) [archetypes: nextjs-saas, express-service, docker-service, monorepo-oss]
 
 ## Sync mechanism
 
