@@ -37,6 +37,9 @@
  *   --entries PATH    JSONL sidecar holding the caller's next store generation.
  *                      PRUNE ONLY. Must exist, parse cleanly, and hold at least
  *                      one record — absent/malformed/empty all exit 1 untouched.
+ *                      A NEW record (its `id` not in the store) must pass strict
+ *                      `validateLearning()`, else exit 1 untouched (GH#69);
+ *                      records already in the store keep the tolerant path.
  *                      Omitted ⇒ a pure prune+consolidate pass over the on-disk
  *                      store.
  *   --file PATH       Learnings store (default: .orchestrator/metrics/learnings.jsonl)
@@ -61,14 +64,17 @@
  *
  * Exit codes:
  *   0  Success (including no-op when nothing is archive-eligible)
- *   1  Usage/input error (bad flag/value, flag used in the wrong mode, or an
- *      absent/malformed/empty `--entries` sidecar)
+ *   1  Usage/input error (bad flag/value, flag used in the wrong mode, an
+ *      absent/malformed/empty `--entries` sidecar, or a NEW `--entries` record
+ *      that fails strict schema validation — dry run and apply alike)
  *   2  Sweep/prune error (I/O or validation failure inside the lib)
  */
 
 import { existsSync } from 'node:fs';
+import { isDeepStrictEqual } from 'node:util';
 import { sweepExpiredLearnings, pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
 import { readLearnings } from './lib/learnings/io.mjs';
+import { validateLearning } from './lib/learnings/schema.mjs';
 import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/learnings.jsonl';
@@ -91,11 +97,14 @@ Options:
   --json            Emit a single machine-parseable JSON summary line
   --grace-days N    Days past expiry before archiving (default: ${DEFAULT_GRACE_DAYS}); sweep only
   --entries PATH    JSONL sidecar with the next store generation; prune only.
-                    Must exist, parse cleanly, and hold >= 1 record
+                    Must exist, parse cleanly, and hold >= 1 record; a NEW
+                    record (id not in the store) must pass strict schema
+                    validation, else exit 1 with nothing written
   --file PATH       Learnings store (default: ${DEFAULT_FILE})
   --archive PATH    Archive sidecar (default: ${DEFAULT_ARCHIVE})
 
-Exit codes:  0 success  1 usage/input error  2 sweep/prune error
+Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries record)
+             2 sweep/prune error
 `
   );
 }
@@ -309,12 +318,52 @@ async function loadEntriesSidecar(entriesPath) {
 }
 
 /**
+ * Strict-validate every `--entries` record the store does not already hold.
+ *
+ * `pruneLearnings()` rewrites through `rewriteLearnings()`, which runs
+ * `legacyTolerant` so records ALREADY in the store (legacy shapes, EventDrop
+ * #386) survive a round-trip. Without this gate the same tolerance admitted
+ * NEW records too — a sidecar record with `scope: "src/app/x.tsx"` and no
+ * `created_at`/`expires_at` was written (GH#69). New = its `id` is absent from
+ * the store; an id-less record counts as known only when an id-less store
+ * record is deep-equal to it (the carry-through case — linear scan over the
+ * id-less subset, fine while such records stay rare; revisit if a store holds
+ * hundreds of them). Runs before any write, in dry run and apply alike.
+ *
+ * @param {object[]} entries - the parsed `--entries` generation
+ * @param {string} filePath - the learnings store
+ */
+async function rejectInvalidNewRecords(entries, filePath) {
+  let store;
+  try {
+    ({ entries: store } = await readLearnings(filePath));
+  } catch (err) {
+    process.stderr.write(`sweep-expired-learnings: prune failed: cannot read ${filePath}: ${err.message}\n`);
+    process.exit(2);
+  }
+  const idOf = (e) => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : null);
+  const storeIds = new Set(store.map(idOf).filter((id) => id !== null));
+  const storeIdless = store.filter((e) => idOf(e) === null);
+  for (const entry of entries) {
+    const id = idOf(entry);
+    const known = id !== null ? storeIds.has(id) : storeIdless.some((s) => isDeepStrictEqual(s, entry));
+    if (known) continue;
+    try {
+      validateLearning(entry);
+    } catch (err) {
+      usageError(`--entries: new record ${id ?? '(no id)'} is invalid: ${err.message} — nothing written`);
+    }
+  }
+}
+
+/**
  * Decision-driven prune + consolidate + rewrite (issue #1017).
  *
  * @param {ReturnType<typeof parseArgs>} args
  */
 async function runPrune(args) {
   const entries = args.entries === null ? undefined : await loadEntriesSidecar(args.entries);
+  if (entries !== undefined) await rejectInvalidNewRecords(entries, args.file);
 
   let result;
   try {

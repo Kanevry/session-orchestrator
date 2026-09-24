@@ -28,7 +28,8 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
 4. **Infer archetype.** Run Phase 0.5's read-only source detection. For a private
    contract, use its detected `selected.id`; retain `null` with an explicit
    `insufficient-evidence` report if no markers match. An invalid configured
-   contract aborts. Do not scaffold or apply rules in this retroactive flow.
+   contract aborts (for `producer-missing`, report its path-free `message` with
+   the reason). Do not scaffold or apply rules in this retroactive flow.
    For the public path, use best-effort detection from existing files:
    - `pyproject.toml` present → `python-uv`
    - `package.json` with `next` in dependencies → `nextjs-minimal`

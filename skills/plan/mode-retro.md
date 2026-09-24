@@ -236,10 +236,11 @@ If issues were created and a 5+-action Epic wrapper was used (see `SKILL.md` § 
 
 ### 3.3 Update Learnings
 
-Append new patterns to `.orchestrator/metrics/learnings.jsonl`. Use the same JSONL schema as session-end writes (see session-end/SKILL.md for canonical field reference):
+Collect new patterns as learning objects in the same strict schema session-end uses (canonical field reference: `skills/session-end/learning-patterns.md` § 3.5a):
 
 ```json
 {
+  "schema_version": 1,
   "id": "<uuid-v4>",
   "type": "fragile-file|effective-sizing|recurring-issue|scope-guidance|deviation-pattern",
   "subject": "<what the learning is about>",
@@ -247,10 +248,24 @@ Append new patterns to `.orchestrator/metrics/learnings.jsonl`. Use the same JSO
   "evidence": "<supporting data>",
   "confidence": 0.5,
   "source_session": "retro-YYYY-MM-DD",
-  "created_at": "<ISO 8601>",
-  "expires_at": "<ISO 8601 + learning-expiry-days (default: 30)>"
+  "scope": "local",
+  "host_class": null,
+  "anonymized": false,
+  "file_paths": ["<repo-relative path(s) this learning applies to>"],
+  "created_at": "<ISO 8601>"
 }
 ```
+
+`scope` MUST be `local|private|public` — a file path goes in `file_paths`, never in `scope` (GH#69). `schema_version` is the integer `1`. Omit `expires_at`: the CLI derives it per `type` via `deriveExpiresAt()`.
+
+Write them **only** through `scripts/apply-session-learnings.mjs` (#1446) — never by hand, never with a shell redirect. Put `{"confidence_updates": [...], "new_learnings": [...]}` in a sidecar under `.orchestrator/tmp/` via the Write tool, preview, then apply. `--decay-rate 0` keeps a retro from applying the per-session passive decay a second time:
+
+```bash
+node scripts/apply-session-learnings.mjs --input .orchestrator/tmp/retro-learnings.json --decay-rate 0 --json
+node scripts/apply-session-learnings.mjs --input .orchestrator/tmp/retro-learnings.json --decay-rate 0 --apply --json
+```
+
+Exit `1` means a record failed validation (the message names its id) and nothing was written.
 
 Typical retro learning types:
 - `fragile-file` — hotspots correlating with failures or carryover
@@ -259,7 +274,7 @@ Typical retro learning types:
 - `scope-guidance` — session scope calibration insights
 - `deviation-pattern` — systematic plan deviations indicating planning gaps
 
-Before writing, check existing entries for matching `type` + `subject`. Confirm (+0.15 confidence, cap 1.0) or contradict (-0.2). New learnings start at 0.5.
+Before writing, check existing entries for matching `type` + `subject`. A match is not a new learning: list its `id` in `confidence_updates` with `"operation": "confirm"` (+0.15, cap 1.0) or `"contradict"` (-0.2) — the CLI applies both. New learnings start at 0.5.
 
 ### 3.4 Optional Baseline Update
 

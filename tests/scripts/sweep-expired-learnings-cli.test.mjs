@@ -161,7 +161,7 @@ describe('sweep-expired-learnings.mjs — --apply', () => {
     expect(backups).toHaveLength(1);
   });
 
-  // GitLab #386: rewriteLearnings() re-validated the KEEP batch with the same
+  // EventDrop #386: rewriteLearnings() re-validated the KEEP batch with the same
   // strict gate as a brand-new write, so ONE legacy record missing
   // `source_session` (a field readLearnings() already tolerates with a WARN)
   // blocked the entire --apply — including archiving an UNRELATED expired
@@ -169,7 +169,7 @@ describe('sweep-expired-learnings.mjs — --apply', () => {
   // moves records" (issue text) is exactly what this proves: the legacy
   // record is never mutated, it just has to survive being re-written as part
   // of the KEEP batch.
-  it('#386: a legacy record missing source_session no longer blocks --apply, and round-trips unchanged', () => {
+  it('EventDrop #386: a legacy record missing source_session no longer blocks --apply, and round-trips unchanged', () => {
     const legacyActive = learning({
       id: 'legacy-no-source-session',
       expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(), // still active -> stays in KEEP
@@ -428,6 +428,75 @@ describe('sweep-expired-learnings.mjs — --prune --entries empty-sidecar guard'
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('--entries sidecar holds no records');
+  });
+});
+
+describe('sweep-expired-learnings.mjs — --prune --entries strict validation of NEW records (GH#69)', () => {
+  // TV-001 — the bug: pruneLearnings() rewrites through a legacyTolerant
+  // rewriteLearnings(), so a NEW sidecar record with a garbage `scope` or an
+  // unknown `schema_version` was written (exit 0, kept:2). Records already in
+  // the store must keep the tolerant path; only new ids get the strict check.
+  it.each([
+    ['an out-of-enum scope', '--apply', { scope: 'project' }, 'scope must be one of local|private|public, got: project'],
+    ['schema_version 2', '--dry-run', { schema_version: 2 }, 'schema_version must be 0 (legacy) or 1, got: 2'],
+  ])('exits 1 and touches nothing when a new record has %s (%s)', (_label, mode, override, message) => {
+    const survivor = liveLearning({ id: 'survivor', subject: 's' });
+    writeJsonl(learningsPath, [survivor]);
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f', ...override })]);
+
+    const result = runSweep([
+      '--prune', mode,
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readdirSync(workdir).filter((f) => f.includes('.bak-'))).toHaveLength(0);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(`--entries: new record fresh is invalid: ${message} — nothing written`);
+  });
+
+  it('carries an in-store legacy record (no source_session) through the tolerant path', () => {
+    const legacy = liveLearning({ id: 'legacy', subject: 'l' });
+    delete legacy.source_session;
+    writeJsonl(learningsPath, [legacy]);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [legacy]);
+
+    const result = runSweep([
+      '--prune', '--apply', '--json',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(result.status).toBe(0);
+    const remaining = readJsonl(learningsPath);
+    expect(remaining.map((e) => e.id)).toEqual(['legacy']);
+    expect(remaining[0]).not.toHaveProperty('source_session');
+  });
+
+  it('writes a valid new record alongside the survivors', () => {
+    const survivor = liveLearning({ id: 'survivor', subject: 's' });
+    writeJsonl(learningsPath, [survivor]);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f' })]);
+
+    const result = runSweep([
+      '--prune', '--apply', '--json',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({ kept: 2, archived: 0, dryRun: false });
+    expect(readJsonl(learningsPath).map((e) => e.id)).toEqual(['survivor', 'fresh']);
   });
 });
 

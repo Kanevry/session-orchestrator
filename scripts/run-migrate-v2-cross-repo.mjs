@@ -3,7 +3,12 @@
  * run-migrate-v2-cross-repo.mjs — cross-repo Migrate-CLI v2 runner.
  *
  * Walks a list of repos, applies the v2 migration to each repo's learnings.jsonl,
- * and reports pre/post invalid-rate per repo.
+ * and reports pre/post invalid-rate per repo — plus, per repo and in the
+ * aggregate, the count of invalid records per validation error class before and
+ * after migration (`errorClassesPre` / `errorClassesPost`, GitHub #69 / GitLab
+ * #1446). An error class is the validateLearning message up to `, got:`
+ * (e.g. `scope must be one of local|private|public`), so a dry run shows which
+ * failure kinds the migration fixes and which remain.
  *
  * Usage:
  *   node scripts/run-migrate-v2-cross-repo.mjs [--repos <comma-list>] [--apply] [--json] [--out <path>]
@@ -135,8 +140,32 @@ if (reposArg) {
  * @property {number} invalidPost - invalid records after migration
  * @property {number} fixedByV2  - records that became valid after migration
  * @property {number} malformed  - JSON-parse failures (preserved, not counted in invalid)
+ * @property {Record<string, number>} errorClassesPre  - invalid-pre count per error class
+ * @property {Record<string, number>} errorClassesPost - invalid-post count per error class
  * @property {string|null} error  - error message if status=error
  */
+
+/**
+ * Reduce a validateLearning error message to its class: the text before the
+ * record-specific `, got: <value>` tail. Messages without that tail (e.g.
+ * `learning missing required field: subject`) are their own class.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+function errorClassOf(err) {
+  const message = err instanceof Error ? err.message : String(err);
+  const idx = message.indexOf(', got:');
+  return idx === -1 ? message : message.slice(0, idx);
+}
+
+/**
+ * @param {Record<string, number>} counts
+ * @param {string} cls
+ */
+function bump(counts, cls) {
+  counts[cls] = (counts[cls] ?? 0) + 1;
+}
 
 /**
  * Process a single repo. Returns a RepoResult.
@@ -157,6 +186,8 @@ function processRepo(repoPath, apply) {
       invalidPost: 0,
       fixedByV2: 0,
       malformed: 0,
+      errorClassesPre: {},
+      errorClassesPost: {},
       error: null,
     };
   }
@@ -174,6 +205,8 @@ function processRepo(repoPath, apply) {
       invalidPost: 0,
       fixedByV2: 0,
       malformed: 0,
+      errorClassesPre: {},
+      errorClassesPost: {},
       error: `read failed: ${err.message}`,
     };
   }
@@ -184,6 +217,10 @@ function processRepo(repoPath, apply) {
   let invalidPre = 0;
   let invalidPost = 0;
   let fixedByV2 = 0;
+  /** @type {Record<string, number>} */
+  const errorClassesPre = {};
+  /** @type {Record<string, number>} */
+  const errorClassesPost = {};
   const outputLines = [];
 
   for (const line of lines) {
@@ -201,9 +238,10 @@ function processRepo(repoPath, apply) {
     let wasValidPre = true;
     try {
       validateLearning({ ...parsed, schema_version: parsed.schema_version ?? 1 });
-    } catch {
+    } catch (err) {
       wasValidPre = false;
       invalidPre++;
+      bump(errorClassesPre, errorClassOf(err));
     }
 
     // Migrate
@@ -217,9 +255,10 @@ function processRepo(repoPath, apply) {
         ...migrated,
         schema_version: migrated.schema_version ?? 1,
       });
-    } catch {
+    } catch (err) {
       isValidPost = false;
       invalidPost++;
+      bump(errorClassesPost, errorClassOf(err));
     }
 
     if (!wasValidPre && isValidPost) {
@@ -259,6 +298,8 @@ function processRepo(repoPath, apply) {
         invalidPost,
         fixedByV2,
         malformed,
+        errorClassesPre,
+        errorClassesPost,
         error: `write failed: ${err.message}`,
       };
     }
@@ -272,6 +313,8 @@ function processRepo(repoPath, apply) {
     invalidPost,
     fixedByV2,
     malformed,
+    errorClassesPre,
+    errorClassesPost,
     error: null,
   };
 }
@@ -294,6 +337,12 @@ const aggregate = results.reduce(
     acc.totalMalformed += r.malformed;
     acc.totalReposProcessed += r.status !== 'skipped' ? 1 : 0;
     acc.totalReposSkipped += r.status === 'skipped' ? 1 : 0;
+    for (const [cls, n] of Object.entries(r.errorClassesPre)) {
+      acc.errorClassesPre[cls] = (acc.errorClassesPre[cls] ?? 0) + n;
+    }
+    for (const [cls, n] of Object.entries(r.errorClassesPost)) {
+      acc.errorClassesPost[cls] = (acc.errorClassesPost[cls] ?? 0) + n;
+    }
     return acc;
   },
   {
@@ -303,6 +352,10 @@ const aggregate = results.reduce(
     totalMalformed: 0,
     totalReposProcessed: 0,
     totalReposSkipped: 0,
+    /** @type {Record<string, number>} */
+    errorClassesPre: {},
+    /** @type {Record<string, number>} */
+    errorClassesPost: {},
   }
 );
 
@@ -317,6 +370,26 @@ function repoName(absPath) {
 function fmtPct(count, total) {
   if (total === 0) return '—';
   return `${count} (${((count / total) * 100).toFixed(1)}%)`;
+}
+
+/**
+ * Markdown table of invalid-record counts per error class, pre vs post
+ * migration. Classes are the union of both sides, sorted by pre count desc.
+ *
+ * @param {Record<string, number>} pre
+ * @param {Record<string, number>} post
+ * @returns {string[]}
+ */
+function errorClassTable(pre, post) {
+  const classes = [...new Set([...Object.keys(pre), ...Object.keys(post)])].sort(
+    (a, b) => (pre[b] ?? 0) - (pre[a] ?? 0) || a.localeCompare(b)
+  );
+  if (classes.length === 0) return ['_No validation errors._'];
+  const rows = ['| Error class | Invalid pre | Invalid post |', '|-------------|-------------|--------------|'];
+  for (const cls of classes) {
+    rows.push(`| ${cls.replaceAll('|', '\\|')} | ${pre[cls] ?? 0} | ${post[cls] ?? 0} |`);
+  }
+  return rows;
 }
 
 function buildMarkdown(results, aggregate, mode) {
@@ -345,6 +418,17 @@ function buildMarkdown(results, aggregate, mode) {
   lines.push(`- Repos processed: **${aggregate.totalReposProcessed}**`);
   lines.push(`- Repos skipped (no learnings.jsonl): **${aggregate.totalReposSkipped}**`);
   lines.push('');
+  lines.push('## Error classes (all repos)');
+  lines.push('');
+  lines.push(...errorClassTable(aggregate.errorClassesPre, aggregate.errorClassesPost));
+  lines.push('');
+  for (const r of results) {
+    if (r.status === 'skipped') continue;
+    lines.push(`### ${repoName(r.repo)}`);
+    lines.push('');
+    lines.push(...errorClassTable(r.errorClassesPre, r.errorClassesPost));
+    lines.push('');
+  }
   return lines.join('\n');
 }
 

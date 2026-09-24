@@ -94,7 +94,7 @@ Store `INVOCATION_MODE = transitive | direct`.
 
 - `private`: the existing host-local config resolution found a baseline directory and its reduced contract validated. Use `private-contract.md` for selection, templates, commands, CI and rules.
 - `public`: the resolved baseline is absent, empty, or points to a missing directory. Use plugin-bundled templates.
-- Existing but invalid configured baseline: abort before dispatch; report the reader's sanitized error reason.
+- Existing but invalid configured baseline: abort before dispatch; report the reader's sanitized error reason; for `producer-missing` also surface the `message` and the migrate-or-unconfigure choice (see `public-fallback.md` § Step 1).
 
 Pass `PATH_TYPE` into Phase 1 and all subsequent phases. All tier templates (`fast-template.md`, `standard-template.md`, `deep-template.md`) must consult `public-fallback.md` for CLAUDE.md generation and archetype file sourcing when `PATH_TYPE = public`.
 

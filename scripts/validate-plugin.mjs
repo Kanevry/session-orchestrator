@@ -513,6 +513,13 @@ runStrictShAdvisory();
 // session-end tail phases from their dispatcher.
 if (runCheck('check-skill-links.mjs') !== 0) checkFailed = 1;
 
+// BLOCKING (#1446 / GH#69): instruction prose that tells an agent to write
+// `learnings.jsonl` with a shell `>` / `>>`. The store is gitignored, so a bad
+// write has no VCS restore; the sanctioned writers (`apply-session-learnings.mjs`,
+// `sweep-expired-learnings.mjs --prune`) validate, snapshot `.bak` and archive.
+process.stdout.write('\n');
+if (runCheck('check-learnings-shell-writes.mjs') !== 0) checkFailed = 1;
+
 // WARN-only: a state-mutating `git` call in tests/ that names no target resolves
 // its destination from the ambient cwd (or an inherited GIT_DIR) — the 2026-08-19
 // incident, where fixture commits, a fixture remote and a fixture identity landed

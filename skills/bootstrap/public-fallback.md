@@ -23,12 +23,15 @@ export BOOTSTRAP_CONTRACT PATH_TYPE
 |----------------|--------------------|
 | No configured baseline, empty value, or missing directory | `public`; use bundled templates |
 | Existing baseline with valid reduced schema v1 export | `private`; retain `archetypes` and `selected` |
-| Existing baseline with missing CLI, invalid export, unsafe source, or producer failure | Abort; report the sanitized error reason |
+| Existing baseline directory without its `scripts/archetype-manifest.mjs` exporter (`reason: producer-missing`) | Abort with the sanitized reason and its `message`; tell the user which interface is missing and offer the two ways forward: migrate the baseline to the exporter contract ([`docs/baseline.md`](../../docs/baseline.md) § How bootstrap finds it) or unset the configured baseline path (`SO_BASELINE_PATH` / matching `owner.yaml` `baselines` entry / `paths.baseline-path` / `plan-baseline-path`) to run the public path. This is the user's decision — never silently downgrade to public. <!-- path-check: example --> |
+| Existing baseline with invalid export, unsafe source (symlink, path escape), or producer failure | Abort; report the sanitized error reason |
 | Valid private contract but no matching repository markers | `private`, `selected: null`; require selection for Standard/Deep |
 
 Lookup is offline and read-only. A broken configured contract never silently
-switches to a public archetype. Missing directories retain the established
-public fallback. Never guess a baseline path or fetch one automatically.
+switches to a public archetype. `producer-missing` is the one reason with a
+documented migration path (migrate or unconfigure, above); even then the public
+path runs only after the user unsets the configured baseline. Missing
+directories retain the established public fallback. Never guess a baseline path or fetch one automatically.
 
 ## Private Path
 

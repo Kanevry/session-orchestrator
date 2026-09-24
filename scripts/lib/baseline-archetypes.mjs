@@ -19,10 +19,11 @@ const BASENAME = /^[a-zA-Z0-9][a-zA-Z0-9_.-]*\.md$/;
 const unique = (items) => [...new Set(items)].sort();
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 
+/** `message` must never interpolate a baseline root or any other host path. */
 export class BaselineContractError extends Error {
-  constructor(reason) { super(`Baseline archetype lookup failed (${reason}).`); this.name = 'BaselineContractError'; this.reason = reason; }
+  constructor(reason, message = `Baseline archetype lookup failed (${reason}).`) { super(message); this.name = 'BaselineContractError'; this.reason = reason; }
 }
-function fail(reason = 'invalid-contract') { throw new BaselineContractError(reason); }
+function fail(reason = 'invalid-contract', message) { throw new BaselineContractError(reason, message); }
 function check(condition) { if (!condition) fail(); }
 function shape(value, required, optional = []) {
   check(object(value) && required.every((key) => Object.hasOwn(value, key)) && Object.keys(value).every((key) => [...required, ...optional].includes(key)));
@@ -122,24 +123,38 @@ process.stdout.write(JSON.stringify(resolveConfiguredBaselinePath(JSON.parse(rea
   return realpathSync(root);
 }
 
-/** Resolve a canonical relative source and reject symlinks at every component. */
-export function baselineSourcePath(root, source, directory = false) {
+/** Resolve a canonical relative source and reject symlinks at every component.
+ * Only an ENOENT thrown by the per-component `lstatSync` itself maps to
+ * `missingReason`; every other failure is `unsafe-source`. Existence is never
+ * probed with a link-following call (existsSync/statSync/accessSync/realpathSync):
+ * a dangling symlink would then read as "missing" instead of `unsafe-source`.
+ */
+export function baselineSourcePath(root, source, directory = false, { missingReason = 'unsafe-source' } = {}) {
   relative(source);
+  // Resolved first: a vanished root is unsafe, never a missing source.
+  let realRoot;
+  try { realRoot = realpathSync(root); } catch { fail('unsafe-source'); }
   let current = root;
-  try {
-    for (const component of source.split('/')) {
-      current = path.join(current, component);
-      if (lstatSync(current).isSymbolicLink()) fail('unsafe-source');
-    }
-    const stat = lstatSync(current);
-    if (directory ? !stat.isDirectory() : !stat.isFile()) fail('unsafe-source');
-    if (!realpathSync(current).startsWith(`${realpathSync(root)}${path.sep}`)) fail('unsafe-source');
-    return current;
-  } catch { fail('unsafe-source'); }
+  let stat;
+  for (const component of source.split('/')) {
+    current = path.join(current, component);
+    try { stat = lstatSync(current); } catch (error) { fail(error?.code === 'ENOENT' ? missingReason : 'unsafe-source'); }
+    if (stat.isSymbolicLink()) fail('unsafe-source');
+  }
+  if (directory ? !stat.isDirectory() : !stat.isFile()) fail('unsafe-source');
+  let real;
+  try { real = realpathSync(current); } catch { fail('unsafe-source'); }
+  if (!real.startsWith(`${realRoot}${path.sep}`)) fail('unsafe-source');
+  return current;
 }
 
+const PRODUCER = 'scripts/archetype-manifest.mjs';
 function projection(root, args, { timeoutMs = 5000, maxBuffer = MAX_BYTES } = {}) {
-  const script = baselineSourcePath(root, 'scripts/archetype-manifest.mjs');
+  let script;
+  try { script = baselineSourcePath(root, PRODUCER, false, { missingReason: 'producer-missing' }); } catch (error) {
+    if (error?.reason !== 'producer-missing') throw error;
+    fail('producer-missing', `Baseline archetype lookup failed (producer-missing): the configured baseline has no ${PRODUCER} exporter — see docs/baseline.md § How bootstrap finds it.`);
+  }
   const result = spawnSync(process.execPath, [script, ...args], {
     cwd: root, encoding: 'utf8', timeout: Math.min(timeoutMs, 5000), maxBuffer: Math.min(maxBuffer, MAX_BYTES),
     shell: false, killSignal: 'SIGKILL', stdio: ['ignore', 'pipe', 'pipe'],
@@ -230,7 +245,9 @@ export async function loadBaselineArchetypes(options = {}) {
       pluginRuleTargets: ruleTargets.filter((name) => owned.includes(name)), baselineRules,
     } };
   } catch (error) {
-    return { status: 'error', reason: error instanceof BaselineContractError ? error.reason : 'lookup-failed', archetypes: [], selected: null };
+    // Only a BaselineContractError message is path-free by construction; others stay opaque.
+    const contract = error instanceof BaselineContractError;
+    return { status: 'error', reason: contract ? error.reason : 'lookup-failed', ...(contract && { message: error.message }), archetypes: [], selected: null };
   }
 }
 
@@ -290,11 +307,12 @@ function applyCopies(plan) {
   return { status: 'applied', created, preserved };
 }
 function applyFailure(error) {
-  return { status: 'error', reason: error instanceof BaselineContractError ? error.reason : 'apply-failed', created: [], preserved: [] };
+  const contract = error instanceof BaselineContractError;
+  return { status: 'error', reason: contract ? error.reason : 'apply-failed', ...(contract && { message: error.message }), created: [], preserved: [] };
 }
 async function selectedContext(options) {
   const result = await loadBaselineArchetypes(options);
-  if (result.status !== 'private' || !result.selected) fail(result.reason);
+  if (result.status !== 'private' || !result.selected) fail(result.reason, result.message);
   const root = await resolveBaselineLocation(options);
   if (!root) fail('baseline-unavailable');
   return { root, selected: result.selected };
@@ -401,7 +419,7 @@ export async function syncBootstrapRules(options = {}) {
     // ordinary plugin rules, just as its minimal scaffold does.
     const contract = options.minimal ? { status: 'public', selected: null }
       : await loadBaselineArchetypes({ ...options, repoRoot, pluginRoot, archetype });
-    if (contract.status === 'error') fail(contract.reason);
+    if (contract.status === 'error') fail(contract.reason, contract.message);
     if (contract.status === 'private' && !contract.selected && !hasUnselectedFastLock(repoRoot)) fail(contract.reason);
     const before = new Set();
     for (const name of pluginRuleTargets(pluginRoot)) {

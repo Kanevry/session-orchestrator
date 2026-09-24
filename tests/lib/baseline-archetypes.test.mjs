@@ -62,7 +62,7 @@ describe('configured baseline bootstrap contract', () => {
     for (const baseline of [undefined, path.join(repo, 'absent')]) {
       const result = run(repo, baseline);
       expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ status: 'public', selected: null, archetypes: [] });
+      expect(JSON.parse(result.stdout)).toMatchObject({ status: 'public', reason: 'baseline-absent', selected: null, archetypes: [] });
     }
     expect(readdirSync(repo)).toEqual([]);
   });
@@ -141,19 +141,52 @@ describe('configured baseline bootstrap contract', () => {
     expect(readdirSync(repo)).toEqual([]);
   });
 
-  it.each(['missing', 'malformed', 'stderr', 'oversize', 'unsafe-rules', 'missing-rule', 'symlink'])('rejects a %s producer instead of falling back', (mode) => {
-    const baseline = fixture();
-    const script = 'scripts/archetype-manifest.mjs';
-    if (mode === 'missing') rmSync(path.join(baseline, script));
-    if (mode === 'malformed') put(baseline, script, 'process.stdout.write("not json")');
-    if (mode === 'stderr') put(baseline, script, 'process.stderr.write("/private/secret-host/token"); process.exit(1)');
-    if (mode === 'oversize') put(baseline, script, 'process.stdout.write("x".repeat(2000000))');
-    if (mode === 'unsafe-rules') put(baseline, script, `import {readFileSync} from 'node:fs'; process.stdout.write(process.argv[2] === 'export' ? readFileSync(new URL('../contract.json', import.meta.url)) : '../secret.md');`);
-    if (mode === 'missing-rule') rmSync(path.join(baseline, 'templates/shared/.claude/rules/sample-runtime.md'));
-    if (mode === 'symlink') { rmSync(path.join(baseline, script)); symlinkSync(path.join(baseline, 'contract.json'), path.join(baseline, script)); }
+  // #1445 (GH#73): an absent exporter used to surface as unsafe-source, sending operators hunting for a symlink.
+  const EXPORTER = 'scripts/archetype-manifest.mjs';
+  it.each([
+    ['exporter file', EXPORTER],
+    ['scripts directory', 'scripts'],
+  ])('reports producer-missing naming the exporter when the %s is absent, without the baseline path', (_label, removed) => {
+    const baseline = fixture(); rmSync(path.join(baseline, removed), { recursive: true });
     const result = run(temp(), baseline, ['--archetype', 'sample-general']);
     expect(result.status).toBe(2);
-    expect(JSON.parse(result.stdout).status).toBe('error');
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: 'error', reason: 'producer-missing', message: expect.stringContaining('scripts/archetype-manifest.mjs') });
+    expect(result.stdout + result.stderr).not.toContain(baseline);
+  });
+
+  // The bootstrap skill calls syncBootstrapRules directly, not the CLI — the exporter pointer must survive that path too.
+  it('syncBootstrapRules reports producer-missing naming the exporter, without the baseline path', async () => {
+    const { syncBootstrapRules } = await import('../../scripts/lib/baseline-archetypes.mjs');
+    const baseline = fixture(); rmSync(path.join(baseline, EXPORTER));
+    const result = await syncBootstrapRules({ repoRoot: temp(), archetype: 'sample-general', dryRun: true, hostPaths: { env: { SO_BASELINE_PATH: baseline }, ownerConfig: {} } });
+    expect(result).toMatchObject({ status: 'error', reason: 'producer-missing', message: expect.stringContaining('scripts/archetype-manifest.mjs') });
+    expect(JSON.stringify(result)).not.toContain(baseline);
+  });
+
+  // Only an lstat ENOENT is "missing"; a dangling link must never be probed with a link-following call.
+  const relink = (baseline, name, target) => { rmSync(path.join(baseline, name), { recursive: true }); symlinkSync(target, path.join(baseline, name)); };
+  it.each([
+    ['malformed', 'invalid-contract', (b) => put(b, EXPORTER, 'process.stdout.write("not json")')],
+    ['stderr', 'producer-failed', (b) => put(b, EXPORTER, 'process.stderr.write("/private/secret-host/token"); process.exit(1)')],
+    ['oversize', 'producer-failed', (b) => put(b, EXPORTER, 'process.stdout.write("x".repeat(2000000))')],
+    ['unsafe-rules', 'invalid-contract', (b) => put(b, EXPORTER, `import {readFileSync} from 'node:fs'; process.stdout.write(process.argv[2] === 'export' ? readFileSync(new URL('../contract.json', import.meta.url)) : '../secret.md');`)],
+    ['missing-rule', 'unsafe-source', (b) => rmSync(path.join(b, 'templates/shared/.claude/rules/sample-runtime.md'))],
+    ['symlink', 'unsafe-source', (b) => relink(b, EXPORTER, path.join(b, 'contract.json'))],
+    ['dangling-symlink', 'unsafe-source', (b) => relink(b, EXPORTER, path.join(b, 'absent.mjs'))],
+    ['dangling-scripts-symlink', 'unsafe-source', (b) => relink(b, 'scripts', path.join(b, 'absent'))],
+    ['escaping-scripts-symlink', 'unsafe-source', (b) => {
+      const outside = temp();
+      cpSync(path.join(b, 'scripts'), path.join(outside, 'scripts'), { recursive: true });
+      cpSync(path.join(b, 'contract.json'), path.join(outside, 'contract.json'));
+      relink(b, 'scripts', path.join(outside, 'scripts'));
+    }],
+    ['directory', 'unsafe-source', (b) => { rmSync(path.join(b, EXPORTER)); mkdirSync(path.join(b, EXPORTER)); }],
+    ['scripts-is-a-file', 'unsafe-source', (b) => { rmSync(path.join(b, 'scripts'), { recursive: true }); writeFileSync(path.join(b, 'scripts'), ''); }],
+  ])('rejects a %s producer as %s instead of falling back', (_mode, reason, arrange) => {
+    const baseline = fixture(); arrange(baseline);
+    const result = run(temp(), baseline, ['--archetype', 'sample-general']);
+    expect(result.status).toBe(2);
+    expect(JSON.parse(result.stdout)).toMatchObject({ status: 'error', reason });
     expect(result.stdout + result.stderr).not.toContain('/private/secret-host');
     expect(result.stdout + result.stderr).not.toContain(baseline);
   });

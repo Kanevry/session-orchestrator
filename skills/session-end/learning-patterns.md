@@ -16,7 +16,7 @@ Analyze the completed session to extract reusable learnings for future sessions.
 - **Scope guidance**: was the scope too large/small? How many issues fit comfortably in one session?
 - **Deviation patterns**: read the `## Deviations` section from `<state-dir>/STATE.md` — were there plan adaptations? What triggered them? Extract as `deviation-pattern` type if a pattern emerges across sessions (e.g., "scope expansion during Impl-Core is common for this project")
 
-**Learning format** (append each as one JSONL line to `.orchestrator/metrics/learnings.jsonl`):
+**Learning format** (collect each as a learning object; Phase 3.6 writes them through `scripts/apply-session-learnings.mjs`):
 ```json
 {
   "schema_version": 1,
@@ -27,10 +27,18 @@ Analyze the completed session to extract reusable learnings for future sessions.
   "evidence": "<what happened this session>",
   "confidence": 0.5,
   "source_session": "<session_id>",
-  "created_at": "<ISO 8601>",
-  "expires_at": "<ISO 8601 + learning-expiry-days (default: 30)>"
+  "scope": "local",
+  "host_class": null,
+  "anonymized": false,
+  "file_paths": ["<repo-relative path(s) this learning applies to>"],
+  "created_at": "<ISO 8601>"
 }
 ```
+
+- `scope` MUST be one of `local|private|public`. A file PATH belongs in `file_paths`, **never** in `scope` — a producer that wrote a path into `scope` is the GH#69 root cause, and the strict `validateLearning` in the write CLI rejects it.
+- `schema_version` MUST be the integer `1` (not `"1"`, not `2`).
+- `expires_at` may be omitted: the CLI derives it per `type` via `deriveExpiresAt()` (`LEARNING_TTL_DAYS`), not a flat +30 days.
+- `file_paths` may be omitted when the learning is not about specific files; for `fragile-file`, `file_paths: [subject]`.
 
 **Schema versioning** (`schema_version`, introduced 2026-04):
 - All new records MUST carry `schema_version: 1`. `scripts/lib/learnings.mjs` auto-stamps missing values on append/rewrite so callers can omit the field safely.
@@ -39,7 +47,7 @@ Analyze the completed session to extract reusable learnings for future sessions.
 
 **Confidence updates for existing learnings:**
 Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and check for existing entries with the same `type` + `subject` (exact string match on both fields):
-- If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0) and reset `expires_at` to current date + `learning-expiry-days` (default: 30)
+- If this session **confirms** an existing learning: note the update — increment `confidence` by +0.15 (cap at 1.0) and reset `expires_at` via `deriveExpiresAt(now, type)` (the per-type TTL in `LEARNING_TTL_DAYS`)
 - If this session **contradicts** an existing learning: note the update — decrement `confidence` by -0.2
 - If no existing match: note as a new learning with confidence 0.5
 
@@ -59,11 +67,13 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
 2. If count exceeds `memory-cleanup-threshold` (default: 5), suggest:
    "You have [N] session memory files. Consider running `/memory-cleanup` to consolidate."
 3. This is a suggestion only — not blocking
-4. **Write learnings** to `.orchestrator/metrics/learnings.jsonl` (if file exists or new learnings were extracted):
-   a. Read all existing lines from `learnings.jsonl` (if exists)
-   b. Apply confidence updates from Phase 3.5a (confirmed: +0.15 capped at 1.0 AND reset `expires_at` to current date + `learning-expiry-days` (default: 30); contradicted: -0.2)
-   c. Append new learnings from Phase 3.5a (those with no existing match)
-   d. **Passive decay (#89)** — for every existing learning NOT touched this session (i.e., not in the set of learnings confirmed or contradicted in Phase 3.5a, and not newly appended in step c), subtract `learning-decay-rate` (from Session Config, default `0.05`) from its `confidence`. Clamp to 0.0 (do not produce negative values). The prune step in `e` will remove any entry that fell to `confidence <= 0.0`. Decay does NOT reset `expires_at` — let decayed entries continue to age naturally. If `learning-decay-rate` is `0.0`, skip this step entirely (opt-out).
+4. **Write learnings** to `.orchestrator/metrics/learnings.jsonl` (if the file exists or new learnings were extracted) — **only** through `scripts/apply-session-learnings.mjs` (#1446):
+   a. Write the Phase 3.5a result as ONE JSON object to a sidecar under `.orchestrator/tmp/` via the Write tool, e.g. `.orchestrator/tmp/session-learnings.json`:
+      `{"confidence_updates": [{"id": "<existing id>", "operation": "confirm"}], "new_learnings": [<learning objects per the format above>]}`
+   b. Dry run first and show the summary line (`read`, `confirmed`, `contradicted`, `appended`, `decayed`, `pruned`, `consolidated`, `kept`) — nothing is written:
+      `node scripts/apply-session-learnings.mjs --input .orchestrator/tmp/session-learnings.json --json`
+   c. Apply the same input: `node scripts/apply-session-learnings.mjs --input .orchestrator/tmp/session-learnings.json --apply --json`
+   d. The CLI performs everything the old hand-written steps did, in code: confirm (+0.15, cap 1.0, `expires_at` re-derived per type) / contradict (-0.2, floor 0); strict `validateLearning` on every new record; **passive decay (#89)** of every existing learning NOT confirmed or contradicted this session by `learning-decay-rate` (Session Config, default `0.05`; `0.0` opts out; `expires_at` is not reset); prune (`expires_at` < now OR `confidence` <= 0.0); consolidate duplicates (same `type` + `subject`, highest confidence wins); archive every removed record to `learnings-archive.jsonl`; atomic rewrite with a `.bak-<ISO>` snapshot — all via `pruneLearnings()` in `scripts/lib/learnings/expiry-sweep.mjs`.
 
       | Sessions since last touch | Confidence (starting 0.5, decay 0.05) | Status |
       |---|---|---|
@@ -72,7 +82,7 @@ Before writing new learnings, read `.orchestrator/metrics/learnings.jsonl` and c
       | 9 | 0.05 | active |
       | 10 | 0.00 | pruned next write |
 
-   e. Prune: remove entries where `expires_at` < current date OR `confidence` <= 0.0
-   f. Consolidate duplicates (same `type` + `subject`): keep the one with highest confidence
-   g. Write the entire result back to `learnings.jsonl` (atomic rewrite with `>`, not append with `>>`)
+   e. Exit codes: `0` applied (or a clean no-op); `1` input or validation error — the message names the record id and the failing field, and **nothing was written**: fix the sidecar and re-run; `2` store/IO error — report it, do not retry by hand.
+   f. **Hand-writing the store is FORBIDDEN** — no shell rewrite, no shell append, no `jq … | tee`. Those bypass validation, the `.bak` snapshot and the archive (see `skills/evolve/SKILL.md` § Critical Rules). The blocking validator `scripts/lib/validate/check-learnings-shell-writes.mjs` fails `validate-plugin` on prose that instructs one.
+   g. Proof it ran: `--apply` appends one `orchestrator.learnings.session_write_applied` record to `.orchestrator/metrics/events.jsonl` (`appended`, `confirmed`, `contradicted`, `decayed`, `pruned`). No record = no write.
    h. If no existing file and no new learnings: skip
