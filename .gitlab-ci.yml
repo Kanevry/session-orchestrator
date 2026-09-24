@@ -301,10 +301,13 @@ npm-audit-signatures:
 
 semgrep:
   stage: security
-  image: semgrep/semgrep:1.161.0
+  image:
+    name: semgrep/semgrep:1.161.0
+    entrypoint: [""]
   interruptible: true
   timeout: 10m
   variables:
+    SEMGREP_SRC_DIRECTORY: $CI_PROJECT_DIR
     SEMGREP_SEND_METRICS: "off"
     GIT_DEPTH: "0"   # --baseline-commit needs real history, not a shallow clone
   script:
