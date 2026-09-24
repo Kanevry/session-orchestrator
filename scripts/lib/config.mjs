@@ -78,8 +78,57 @@ import { _parseRemoteHosts } from './config/remote-hosts.mjs';
 import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
-import { loadHostPaths, resolveHostPath } from './config/host-paths.mjs';
+import { loadHostPaths, resolveHostPath, resolveVaultIntegrationHost } from './config/host-paths.mjs';
 import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
+import { expandTilde } from './common.mjs';
+
+/**
+ * Resolve `vault-dir` and report which tier produced it (agents/vault#319).
+ *
+ * Precedence (highest first): SO_VAULT_DIR env > owner.yaml `vault-dirs:`
+ * path-prefix match against the cwd > owner.yaml `paths.vault-dir` > committed.
+ * The env tier stays on top because tests/setup/vault-guard.mjs relies on it to
+ * shadow every host-local vault for the whole suite.
+ *
+ * Lives here, not in config/host-paths.mjs: host-paths.mjs is a direct CP11
+ * helper of check-owner-leakage.mjs, whose standalone vendored copy carries only
+ * its three direct helpers. The named-baseline-resolver import edge would make
+ * CP11 fail closed there (tests/husky/pre-commit-owner-leakage.test.mjs).
+ *
+ * The two owner.yaml tiers (`match`, `owner`) come back tilde-expanded: owner.yaml
+ * is host-local and `~/…` is the natural way to write a path there, but consumers
+ * such as vault-mirror.mjs `existsSync(resolve(vaultDir))` would read a literal
+ * `~` as `<cwd>/~/…`. The `env` and `committed` tiers keep their pass-through;
+ * vault-mirror.mjs expands its `--vault-dir` at entry for every tier anyway.
+ *
+ * `cwd` in the ctx is a test-only DI seam; production reads `process.cwd()`.
+ *
+ * @param {string|null|undefined} committed — value the committed Session Config produced
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object, cwd?: string }} [ctx] — from loadHostPaths()
+ * @returns {{ value: string|null|undefined, source: 'env'|'match'|'owner'|'committed' }}
+ */
+function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}) {
+  const isNonBlank = (v) => typeof v === 'string' && v.trim() !== '';
+
+  const envVal = env?.SO_VAULT_DIR;
+  if (isNonBlank(envVal)) return { value: envVal, source: 'env' };
+
+  const matched = resolveNamedBaseline({
+    cwd: cwd ?? process.cwd(),
+    ownerConfig,
+    env,
+    section: 'vault-dirs',
+    envKey: 'SO_VAULT_DIR',
+  });
+  if (matched.source === 'match' && isNonBlank(matched.path)) {
+    return { value: expandTilde(matched.path), source: 'match' };
+  }
+
+  const ownerVal = ownerConfig?.paths?.['vault-dir'];
+  if (isNonBlank(ownerVal)) return { value: expandTilde(ownerVal), source: 'owner' };
+
+  return { value: committed, source: 'committed' };
+}
 // express-path lives one level UP from config/ (see its module header for why):
 // the parser is a sibling of config/state-md-lock.mjs in every respect except
 // its directory. Only the pure parser is imported here — `evaluateExpressPath`
@@ -114,8 +163,9 @@ export { readConfigFile } from './config/io.mjs';
  *   hermetic ctx (e.g. `{ env: {}, ownerConfig: undefined }`) when asserting COMMITTED values:
  *   the default reads the real `owner.yaml`, so a host-local `paths:` override would otherwise
  *   bleed into fixture assertions (incident: 2026-07-03 Full-Gate red after the operator set
- *   `paths.baseline-path` host-locally). `cwd` feeds the `baselines:` match tier (#819) — a
- *   test-only DI seam; production always resolves it from `process.cwd()`.
+ *   `paths.baseline-path` host-locally). `cwd` feeds the `baselines:` (#819) and
+ *   `vault-dirs:` (agents/vault#319) match tiers — a test-only DI seam; production
+ *   always resolves it from `process.cwd()`.
  * @returns {object} config object with EXACT same shape as parse-config.sh stdout
  * @throws if any enum value is invalid
  */
@@ -331,18 +381,25 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // vault-integration: parsed from full content (block-scoped, avoids the
   // pre-#593 KV-name collision where `enabled:` was shared with 15+ other
   // blocks like docs-orchestrator/vault-staleness/slopcheck).
-  const vaultIntegration = _parseVaultIntegration(mdContent);
-  // Host-local override (issue #653) — applied here, NOT inside _parseVaultIntegration,
-  // so claude-md-drift-check (which calls the parser directly) keeps seeing raw values.
-  vaultIntegration['vault-dir'] = resolveHostPath('vault-dir', vaultIntegration['vault-dir'], hostCtx);
+  // Host-local overrides — applied here, NOT inside _parseVaultIntegration, so
+  // claude-md-drift-check (which calls the parser directly) keeps seeing raw values.
+  //   - the enabled/mode switch (SO#1448): env SO_VAULT_INTEGRATION > owner.yaml
+  //     `vault-integration:` > committed, LOWER-ONLY; `host-override` names the tier.
+  //   - vault-dir (#653, agents/vault#319): env > owner.yaml `vault-dirs:` cwd match >
+  //     owner.yaml paths.vault-dir > committed; `vault-dir-source` names the tier.
+  const vaultIntegration = resolveVaultIntegrationHost(_parseVaultIntegration(mdContent), hostCtx);
+  const vaultIntegrationDir = resolveVaultDir(vaultIntegration['vault-dir'], hostCtx);
+  vaultIntegration['vault-dir'] = vaultIntegrationDir.value;
+  vaultIntegration['vault-dir-source'] = vaultIntegrationDir.source;
 
   // resource-thresholds sub-keys (v3.1.0 env-aware — issue #166)
   const resourceThresholds = _parseResourceThresholds(kv);
 
   // vault-sync: parsed from full content (can live outside Session Config)
   const vaultSync = _parseVaultSync(mdContent);
-  // Host-local override (issue #653) — same host source as vault-integration above.
-  vaultSync['vault-dir'] = resolveHostPath('vault-dir', vaultSync['vault-dir'], hostCtx);
+  // Host-local override (issue #653) — same resolver as vault-integration above, so the
+  // two blocks cannot disagree about which vault this repo writes to (agents/vault#319).
+  vaultSync['vault-dir'] = resolveVaultDir(vaultSync['vault-dir'], hostCtx).value;
 
   // drift-check: parsed from full content (standalone top-level block)
   const driftCheck = _parseDriftCheck(mdContent);
@@ -408,7 +465,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // dispatcher-autonomy: opt-in cross-repo dispatcher autonomy block (Epic #673 / issue #679).
   // Parser stays pure (raw committed value) for claude-md-drift-check raw-value parity;
   // the host-local override (env > owner.yaml > committed > off) is overlaid onto the
-  // FINAL object only — mirroring the vault-dir resolveHostPath pattern above. Reuses the
+  // FINAL object only — mirroring the vault-dir host-override pattern above. Reuses the
   // already-loaded hostCtx.ownerConfig so owner.yaml is not read twice.
   const dispatcherAutonomy = _parseDispatcherAutonomy(mdContent);
   dispatcherAutonomy.autonomy = resolveDispatcherAutonomy({

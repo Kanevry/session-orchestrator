@@ -13,6 +13,17 @@
  *   3. committed Session Config default (the value the committed CLAUDE.md —
  *      AGENTS.md on Codex CLI — produced)
  *
+ * `vault-dir` has one more tier (agents/vault#319): an owner.yaml `vault-dirs:`
+ * cwd match between env and paths.vault-dir. That tier lives in
+ * `resolveVaultDir` in scripts/lib/config.mjs, NOT here: this module is one of
+ * the three direct CP11 helpers check-owner-leakage.mjs imports, and a standalone
+ * vendored copy carries only those three files. A new import edge from here
+ * (e.g. to named-baseline-resolver.mjs) makes CP11 fail closed in that copy.
+ *
+ * `resolveVaultIntegrationHost` is the host-local switch for the
+ * `vault-integration` gate itself (SO#1448). It may only LOWER the committed
+ * level (strict → warn → off), never raise it.
+ *
  * SYNCHRONOUS by design: `parseSessionConfig` in scripts/lib/config.mjs is sync,
  * so this layer reuses the SYNC owner loader (`loadOwnerConfig`) and exposes only
  * sync functions. An empty/whitespace value at any tier is treated as "unset" and
@@ -89,4 +100,72 @@ export function resolveHostPath(key, committedDefault, { env = process.env, owne
   if (typeof ownerVal === 'string' && ownerVal.trim() !== '') return ownerVal;
 
   return committedDefault;
+}
+
+/** vault-integration levels, weakest first. The index order IS the ordering. */
+const VAULT_INTEGRATION_LEVELS = /** @type {readonly string[]} */ (['off', 'warn', 'strict']);
+
+/**
+ * @param {unknown} v
+ * @returns {'off'|'warn'|'strict'|undefined} a valid level, or undefined for unset/invalid
+ */
+function coerceVaultIntegrationLevel(v) {
+  if (typeof v !== 'string') return undefined;
+  const lower = v.trim().toLowerCase();
+  return VAULT_INTEGRATION_LEVELS.includes(lower)
+    ? /** @type {'off'|'warn'|'strict'} */ (lower)
+    : undefined;
+}
+
+/**
+ * Overlay the host-local `vault-integration` switch onto the committed block
+ * (SO#1448). Precedence: env `SO_VAULT_INTEGRATION=off|warn|strict` > owner.yaml
+ * `vault-integration: { enabled: false | mode: off|warn|strict }` > committed.
+ * An invalid value at a tier counts as unset and falls through, mirroring
+ * resolveDispatcherAutonomy in dispatcher-autonomy.mjs.
+ *
+ * LOWER-ONLY: the host's level is applied only when it is weaker than the
+ * committed one. A host that could raise it would mirror repos into the vault
+ * that never opted in, so `enabled: true` or a stronger mode is ignored.
+ * Applying `off` sets both `enabled: false` and `mode: 'off'`, so either
+ * consumer check (`enabled`, `mode != off`) sees the integration as off.
+ *
+ * @param {{ enabled?: boolean, mode?: string } & Record<string, unknown>} vi — parsed committed block
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [ctx] — from loadHostPaths()
+ * @returns {Record<string, unknown> & { enabled?: boolean, mode?: string, 'host-override': 'env:SO_VAULT_INTEGRATION'|'owner.yaml'|null }}
+ *   a copy of `vi`; `host-override` names the tier that lowered it, `null` when none did
+ */
+export function resolveVaultIntegrationHost(vi, { env = process.env, ownerConfig } = {}) {
+  /** @type {Record<string, unknown> & { enabled?: boolean, mode?: string, 'host-override': 'env:SO_VAULT_INTEGRATION'|'owner.yaml'|null }} */
+  const result = { ...vi, 'host-override': null };
+
+  /** @type {'off'|'warn'|'strict'|undefined} */
+  let requested = coerceVaultIntegrationLevel(env?.SO_VAULT_INTEGRATION);
+  /** @type {'env:SO_VAULT_INTEGRATION'|'owner.yaml'} */
+  let source = 'env:SO_VAULT_INTEGRATION';
+  if (requested === undefined) {
+    const owner = ownerConfig?.['vault-integration'];
+    if (owner !== null && typeof owner === 'object' && !Array.isArray(owner)) {
+      requested = owner.enabled === false ? 'off' : coerceVaultIntegrationLevel(owner.mode);
+      source = 'owner.yaml';
+    }
+  }
+  if (requested === undefined) return result;
+
+  const committedLevel =
+    vi?.enabled === true ? (coerceVaultIntegrationLevel(vi.mode) ?? 'warn') : 'off';
+  if (
+    VAULT_INTEGRATION_LEVELS.indexOf(requested) >= VAULT_INTEGRATION_LEVELS.indexOf(committedLevel)
+  ) {
+    return result;
+  }
+
+  if (requested === 'off') {
+    result.enabled = false;
+    result.mode = 'off';
+  } else {
+    result.mode = requested;
+  }
+  result['host-override'] = source;
+  return result;
 }

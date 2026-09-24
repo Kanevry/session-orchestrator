@@ -12,7 +12,8 @@
  *
  * Flow:
  *   1. findProjectRoot → resolve CLAUDE.md → parseSessionConfig → vault-integration.vault-dir
- *      (host-resolved: SO_VAULT_DIR env > owner.yaml paths.vault-dir > committed).
+ *      (host-resolved: SO_VAULT_DIR env > owner.yaml vault-dirs: cwd match >
+ *      owner.yaml paths.vault-dir > committed — `resolveVaultDir` in lib/config.mjs).
  *   2. Enumerate tracked .md files under --prd-dir (git ls-files), excluding
  *      *.original-uncommitted.md. A missing/empty --prd-dir yields [] → clean
  *      report, exit 0 (no crash) — see listTrackedPrds.

@@ -6,14 +6,15 @@
  * synthetic `repoRoot` with a fixture `CLAUDE.md` fakes the SOURCE of the
  * mirrored content — it never fakes the DESTINATION.
  *
- * The resolution chain (scripts/lib/config/host-paths.mjs `resolveHostPath`) is:
+ * The resolution chain (scripts/lib/config.mjs `resolveVaultDir`, agents/vault#319) is:
  *
- *     SO_VAULT_DIR  >  owner.yaml paths.vault-dir  >  committed CLAUDE.md value
+ *     SO_VAULT_DIR  >  owner.yaml vault-dirs: cwd prefix match
+ *                   >  owner.yaml paths.vault-dir  >  committed CLAUDE.md value
  *
  * The committed value in this repo is `~/Projects/vault`, and the operator's
- * owner.yaml sets tier 2 to the same real vault. So a test that calls any vault
- * writer — `mirrorNarrative()`, the board writer, `vault-mirror.mjs` — without
- * passing a hermetic `hostPaths` ctx resolves tiers 2/3 on the HOST and lands in
+ * owner.yaml sets the owner tiers to the same real vault. So a test that calls any
+ * vault writer — `mirrorNarrative()`, the board writer, `vault-mirror.mjs` — without
+ * passing a hermetic `hostPaths` ctx resolves tiers 2-4 on the HOST and lands in
  * a directory that is tracked and PUSHED in the operator's vault repo.
  *
  * WHY A PER-CALL-SITE CONVENTION IS NOT ENOUGH — the same shape as
@@ -32,7 +33,9 @@
  * tier, so one assignment shadows owner.yaml AND the committed default for every
  * consumer at once — the sync resolver, production code that reads it directly,
  * and any child process the suite spawns (which inherits `process.env`). A
- * lower-tier fix would have to be re-applied per consumer.
+ * lower-tier fix would have to be re-applied per consumer. The sibling host
+ * switch `SO_VAULT_INTEGRATION` (SO#1448) only ever weakens the gate, so it is
+ * not redirected here but cleared in tests/setup/scrub-session-env.mjs.
  *
  * OPT-OUT: set `SO_VAULT_GUARD_ALLOW_REAL=1`. The guard is ON by default —
  * fail-closed, because the failure mode it prevents is not recoverable by a

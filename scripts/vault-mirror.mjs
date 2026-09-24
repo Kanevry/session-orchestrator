@@ -64,6 +64,7 @@ import { resolveCanonicalSuffixes } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { expandTilde } from './lib/common.mjs';
 
 // ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
 // These are module-level (above the CLI bootstrap) so the module is import-safe
@@ -235,7 +236,11 @@ if (flagValues.help === true) {
   process.exit(0);
 }
 
-const vaultDir = flagValues['vault-dir'];
+// Expand a leading `~` before anything touches the path: owner.yaml `vault-dirs:` /
+// `paths.vault-dir` and the committed Session Config all accept `~/…`, and a quoted
+// `--vault-dir "~/…"` reaches us literally. `resolve('~/x')` would yield `<cwd>/~/x`
+// and the existsSync check below would abort with `missing-vault-dir` (agents/vault#319).
+const vaultDir = expandTilde(flagValues['vault-dir']);
 const source = flagValues.source;
 const kind = flagValues.kind;
 const dryRun = flagValues['dry-run'] === true;

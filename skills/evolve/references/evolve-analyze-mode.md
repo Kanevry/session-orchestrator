@@ -301,13 +301,13 @@ For confirmed learnings, use atomic rewrite strategy:
    old "read back the first line to confirm valid JSON" check is redundant here: `rewriteLearnings()`
    round-trip-validates EVERY line before any byte reaches disk (#662), and the `malformed` guard
    above rejects an unparseable sidecar before the store is touched at all.
-6. **Vault mirror (conditional):** Check `$CONFIG."vault-integration".enabled` via jq. If the field is missing or `false`, skip this step entirely — skill behavior is unchanged.
+6. **Vault mirror (conditional):** Check `$CONFIG."vault-integration".enabled` via jq. If `$CONFIG."vault-integration"."host-override"` is set and the integration is off (`enabled` is `false` or `mode` is `off`), report `vault-mirror: bewusst aus auf diesem Host (<host-override>)` and skip this step — the host switched it off on purpose (SO#1448), so this is never a failure, even when the committed mode is `strict`. Otherwise, if the field is missing or `false`, skip this step entirely — skill behavior is unchanged.
 
    If `enabled` is `true`:
 
    a. Check `$CONFIG."vault-integration".mode`. If `mode` is `off`, skip the mirror invocation (treat as disabled). If `mode` is absent, default to `warn`.
 
-   b. Resolve the vault directory: use `$CONFIG."vault-integration"."vault-dir"` if non-null, otherwise fall back to the `$VAULT_DIR` environment variable. If neither is set, emit a warning and skip.
+   b. Resolve the vault directory: use `$CONFIG."vault-integration"."vault-dir"` if non-null, otherwise fall back to the `$VAULT_DIR` environment variable. If neither is set, emit a warning and skip. Report `vault-dir=<path> (Quelle: <source>)`, where `<source>` is `$CONFIG."vault-integration"."vault-dir-source"` (`env`, `match`, `owner`, `committed`), or `env VAULT_DIR` when the fallback was used.
 
    c. Invoke the mirror script. Derive a synthetic `EVOLVE_SESSION_ID` so the vault-mirror auto-commit phase (#31) produces a traceable commit subject (`chore(vault): mirror evolve-<date> — N learnings + 0 sessions`). Pass `--vault-name` when `vault-integration.vault-name` is set in Session Config:
       ```bash

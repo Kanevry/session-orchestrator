@@ -763,9 +763,10 @@ async function emitMaskerEvent({ repoRoot, needleCount, hits, dryRun }) {
  * before any write.
  *
  * THIS FUNCTION WRITES TO THE OPERATOR'S REAL VAULT UNLESS YOU STOP IT. `vault-dir`
- * resolves HOST-LOCALLY — `SO_VAULT_DIR` > `owner.yaml` `paths.vault-dir` >
- * committed Session Config (`scripts/lib/config/host-paths.mjs`) — so the literal
- * value in a CLAUDE.md you just wrote into a tmp dir LOSES to both overrides. A
+ * resolves HOST-LOCALLY — `SO_VAULT_DIR` > `owner.yaml` `vault-dirs:` cwd match >
+ * `owner.yaml` `paths.vault-dir` > committed Session Config (`resolveVaultDir` in
+ * `scripts/lib/config.mjs`) — so the literal value in a CLAUDE.md you just wrote
+ * into a tmp dir LOSES to every override. A
  * probe that passes a synthetic `repoRoot` and nothing else has already written
  * into the live vault once (#1025 review). Any caller that must not touch the real
  * vault passes `hostPaths: { env: {}, ownerConfig: undefined }` (see below),

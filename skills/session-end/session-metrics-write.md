@@ -135,11 +135,23 @@
    ```bash
    VM_ENABLED=$(echo "$CONFIG" | jq -r '."vault-integration".enabled // false')
    VM_MODE=$(echo "$CONFIG" | jq -r '."vault-integration".mode // "warn"')
+   VM_HOST_OVERRIDE=$(echo "$CONFIG" | jq -r '."vault-integration"."host-override" // empty')
 
-   if [[ "$VM_ENABLED" == "true" && "$VM_MODE" != "off" ]]; then
-     # Resolve vault directory: config field takes precedence, env var as fallback
+   if [[ -n "$VM_HOST_OVERRIDE" && ( "$VM_ENABLED" != "true" || "$VM_MODE" == "off" ) ]]; then
+     # SO#1448: this host switched the mirror off on purpose (env
+     # SO_VAULT_INTEGRATION or owner.yaml `vault-integration:`). Say so, instead of
+     # running into vault-mirror's exit 2 (missing-vault-dir) and a strict block.
+     echo "vault-mirror: bewusst aus auf diesem Host ($VM_HOST_OVERRIDE)"
+   elif [[ "$VM_ENABLED" == "true" && "$VM_MODE" != "off" ]]; then
+     # Resolve vault directory: config field (host-resolved, see vault-dir-source)
+     # takes precedence; $VAULT_DIR is only the bash fallback when it is empty.
      VM_DIR=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-dir" // empty')
-     : "${VM_DIR:=$VAULT_DIR}"
+     VM_DIR_SOURCE=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-dir-source" // "committed"')
+     if [[ -z "$VM_DIR" && -n "${VAULT_DIR:-}" ]]; then
+       VM_DIR="$VAULT_DIR"
+       VM_DIR_SOURCE="env VAULT_DIR"
+     fi
+     echo "vault-dir=$VM_DIR (Quelle: $VM_DIR_SOURCE)"
 
      # Quality-gate thresholds (PRD F1.2). Defaults match
      # scripts/vault-mirror.mjs (400 chars / 0.5 confidence). The nested key
@@ -242,9 +254,12 @@
 
    | `enabled` | `mode`  | Result |
    |-----------|---------|--------|
+   | `false` via host override (`host-override` set) | any | Skip; print `vault-mirror: bewusst aus auf diesem Host (<quelle>)` — never blocks |
    | `false` or missing | any | Skip entirely — no-op, no output |
    | `true` | `off`   | Skip entirely — no-op, no output |
    | `true` | `warn`  | Run mirror; on failure surface a warning but do NOT block close |
    | `true` | `strict` | Run mirror; on failure block session close with an error message |
+
+   > **Host-local overrides.** `enabled`/`mode` above are the values AFTER the host switch: env `SO_VAULT_INTEGRATION=off|warn|strict` > owner.yaml `vault-integration: { enabled: false | mode: … }` > committed. The host may only lower the committed level, never raise it; `."vault-integration"."host-override"` names the tier that lowered it (`env:SO_VAULT_INTEGRATION`, `owner.yaml`) and is `null` otherwise. `."vault-integration"."vault-dir-source"` (`env`, `match`, `owner`, `committed`) says where the vault path came from. See `docs/session-config-reference.md` § Vault Integration.
 
    > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-invalid` (entry failed required-field validation, or the mapper crashed rendering an otherwise-parseable record — the latter case carries `reason: "mapper-crash"`, #718), `skipped-quality-low` (entry failed quality gate — PRD F1.2; line carries a `reason` field).

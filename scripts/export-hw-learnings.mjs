@@ -14,8 +14,9 @@
  * research/hardware-patterns.md`), via the same `vault-integration.vault-dir`
  * resolution `scripts/archive-closed-prds.mjs` uses (findProjectRoot →
  * CLAUDE.md/AGENTS.md → parseSessionConfig; host-resolved: SO_VAULT_DIR env >
- * owner.yaml paths.vault-dir > committed default). Pass `--output <path>` to
- * override.
+ * owner.yaml vault-dirs: cwd match > owner.yaml paths.vault-dir > committed
+ * default, see `resolveVaultDir` in scripts/lib/config.mjs). Pass `--output <path>`
+ * to override.
  *
  * Idempotent: running without new data rewrites the same file byte-for-byte
  * modulo the generated-at line.
@@ -74,7 +75,8 @@ const DEFAULT_VAULT_SUBPATH = path.join('01-projects', 'session-orchestrator', '
  * explicitly. Mirrors the vault-dir resolution `scripts/archive-closed-prds.mjs`
  * uses: findProjectRoot → CLAUDE.md/AGENTS.md → parseSessionConfig →
  * vault-integration.vault-dir (host-resolved: SO_VAULT_DIR env > owner.yaml
- * paths.vault-dir > committed default).
+ * vault-dirs: cwd match > owner.yaml paths.vault-dir > committed default, see
+ * `resolveVaultDir` in scripts/lib/config.mjs).
  *
  * @param {object} [opts]
  * @param {string} [opts.repoRoot] — override for findProjectRoot() (tests).

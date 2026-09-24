@@ -824,6 +824,30 @@ describe('#820 per-section tolerance', () => {
     expect(result.config.tone.style).toBe('direct');
   });
 
+  // Bug (SO#1448): an invalid host switch must neither take the rest of owner.yaml
+  // (here: paths.vault-dir) down with it nor survive as a half-read override.
+  it('invalid vault-integration.mode drops ONLY that section; paths survive', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "direct"\n  tonality: "terse"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths:\n  vault-dir: "/real/vault"\nvault-integration:\n  mode: bogus\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('partial');
+    expect(result.droppedSections).toEqual([
+      {
+        section: 'vault-integration',
+        errors: ['vault-integration.mode must be one of off, warn, strict, got: "bogus"'],
+      },
+    ]);
+    expect(result.config).not.toHaveProperty('vault-integration');
+    expect(result.config.paths['vault-dir']).toBe('/real/vault');
+  });
+
   it('malformed baselines entry with valid required sections → source "file", raw baselines array passed through untouched, sectionWarnings names baselines, paths.vault-dir preserved (#820 motivating case)', () => {
     const dir = makeTmpDir();
     const filePath = join(dir, 'owner.yaml');
@@ -865,6 +889,27 @@ describe('#820 per-section tolerance', () => {
     expect(result.config).toEqual(getDefaults());
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors.some((e) => e.includes('tone.style'))).toBe(true);
+  });
+
+  // Bug (agents/vault#319): the whole-file discard kept paths.vault-dir (#1244)
+  // but dropped vault-dirs, so an unrelated tone: typo sent a repo under a
+  // declared prefix back into the host-wide vault.
+  it('invalid REQUIRED section → vault-dirs survives the discard raw, alongside paths', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "nonsense"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths:\n  vault-dir: "/host/vault"\nvault-dirs:\n  - path: "/other/vault"\n    match:\n      path-prefix: "/work/other"\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('defaults');
+    expect(result.config.paths['vault-dir']).toBe('/host/vault');
+    expect(result.config['vault-dirs']).toEqual([
+      { path: '/other/vault', match: { 'path-prefix': '/work/other' } },
+    ]);
   });
 
   it('validateOwnerSections returns per-section buckets keyed by section name, each with valid/errors', () => {
