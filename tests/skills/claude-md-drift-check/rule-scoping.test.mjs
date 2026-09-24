@@ -5,7 +5,8 @@
  * skills/claude-md-drift-check/checker.mjs (issue #722 Epic A).
  *
  * Behaviour under test:
- *   - paths-presence      → errors[]:   a top-level `paths:` frontmatter key.
+ *   - paths-presence      → errors[]:   a top-level `paths:` frontmatter key;
+ *     and a frontmatter block that does not start on line 1 (#1449).
  *   - cited-but-missing    → errors[]:   (a) CLAUDE.md/AGENTS.md citations of a
  *     `.claude/rules/<name>.md` file that does not exist on disk; (b) a rule's
  *     own "## See Also" footer citing a bare `<name>.md` token that does not
@@ -108,25 +109,36 @@ describe('rule-scoping — paths-presence probe', () => {
     expect(j.errors.filter((e) => e.check === 'rule-scoping')).toHaveLength(0);
   });
 
-  it('does NOT report an error when a well-formed paths: is preceded by a provenance comment', () => {
-    // parseGlobsFrontmatter (rule-loader.mjs) and extractFrontmatterBlockBody
-    // (checker.mjs) locate the frontmatter start via two SEPARATE
-    // implementations (stripLeadingProvenanceHeader vs
-    // stripLeadingRuleHeaderLines) — this variant keeps both exercised so a
-    // future divergence between the two would still be caught.
+  // #1449 — Claude Code reads frontmatter only from line 1, so a provenance
+  // comment ABOVE the `---` turns the whole block into body text and the rule
+  // loads always-on. The check used to tolerate that header and stay silent.
+  const PROVENANCE = '<!-- source: session-orchestrator plugin (canonical: rules/always-on/bad.md) -->';
+  const FRONTMATTER = '---\npaths:\n  - src/**\n---\n';
+
+  it('reports exactly one error when a provenance comment precedes the frontmatter (#1449)', () => {
     const rulesDir = makeRulesDir();
-    writeFileSync(
-      join(rulesDir, 'bad.md'),
-      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/bad.md) -->\n---\npaths:\n  - src/**\n---\n\n# Bad Rule\n',
-    );
+    writeFileSync(join(rulesDir, 'bad.md'), `${PROVENANCE}\n${FRONTMATTER}\n# Bad Rule\n`);
+    mkdirSync(join(vault, 'src'), { recursive: true });
+    writeFileSync(join(vault, 'src', 'index.ts'), '// x\n');
+
+    const r = runChecker(vault, ['--mode', 'hard']);
+
+    expect(r.code).toBe(1);
+    const errs = parseJson(r.stdout).errors.filter((e) => e.check === 'rule-scoping');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toContain('frontmatter is not at line 1');
+  });
+
+  it('control: the same comment moved after the closing --- reports no error (#1449)', () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(join(rulesDir, 'bad.md'), `${FRONTMATTER}${PROVENANCE}\n\n# Bad Rule\n`);
     mkdirSync(join(vault, 'src'), { recursive: true });
     writeFileSync(join(vault, 'src', 'index.ts'), '// x\n');
 
     const r = runChecker(vault, ['--mode', 'hard']);
 
     expect(r.code).toBe(0);
-    const j = parseJson(r.stdout);
-    expect(j.errors.filter((e) => e.check === 'rule-scoping')).toHaveLength(0);
+    expect(parseJson(r.stdout).errors.filter((e) => e.check === 'rule-scoping')).toHaveLength(0);
   });
 
   it('reports an error when paths: is present but genuinely malformed (parse mismatch — negative twin)', () => {

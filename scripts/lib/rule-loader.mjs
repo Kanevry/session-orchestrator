@@ -20,16 +20,17 @@
  * `globs:`. Precedence when BOTH keys are present on the same rule: `globs:`
  * wins (silently — no merge, no warning) and `paths:` is ignored entirely.
  *
- * A rule file MAY carry a leading single-line provenance header before its
- * frontmatter block — the vendoring pipeline (`scripts/rules-sync.mjs`)
- * requires a first-line `<!-- source: session-orchestrator plugin
- * (canonical: ...) -->` comment on every vendored rule. The frontmatter
- * parser tolerates any leading run of blank lines and/or single-line HTML
- * comments before the opening `---`, so a vendored rule keeps its `globs:`
- * scoping and scalar meta instead of silently falling back to always-on.
- * Only single-line comments are tolerated (no multi-line comment blocks);
- * files with no header, or starting directly with `---`, parse exactly as
- * before.
+ * Frontmatter counts ONLY when its opening `---` is the very first line of the
+ * file (#1449) — the same rule Claude Code applies when it reads `paths:`.
+ * Until #1449 this parser skipped leading blank lines and single-line HTML
+ * comments (the vendoring pipeline's `<!-- source: … -->` provenance header),
+ * so a rule Claude Code loads ALWAYS-ON was classified path-scoped here and
+ * `instruction-budget-guard.mjs` under-counted the always-on surface. A
+ * provenance comment now belongs directly AFTER the closing `---` (body text,
+ * inert). A frontmatter-shaped block that is NOT on line 1 — any text,
+ * comment or blank line before it — yields no globs and no meta at all, and
+ * the entry carries `defect: 'frontmatter-not-at-top'` so callers can report
+ * the file instead of silently loading it always-on.
  *
  * Beyond the `globs:` key (issue #336), the frontmatter parser also captures
  * these scalar activation keys (issue #694), surfaced on each RuleEntry:
@@ -150,34 +151,15 @@ function matchGlob(filePath, globPattern) {
 // Minimal YAML frontmatter parser (matches state-md.mjs style)
 // ---------------------------------------------------------------------------
 
+// Anchored at offset 0: frontmatter exists only when `---` is line 1 (#1449).
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 
-// A single header line is either blank or a complete single-line HTML
-// comment (`<!-- ... -->` on one line). Multi-line comment blocks are
-// deliberately NOT supported — the vendoring convention is a single first
-// line, and tolerating a few stacked comment lines (each matching this RE)
-// is sufficient.
-const HEADER_LINE_RE = /^[ \t]*(?:<!--.*-->)?[ \t]*$/;
-
 /**
- * Skips a leading run of blank lines and/or single-line HTML comments
- * (`<!-- ... -->`) at the very start of a rule file's contents, so the
- * frontmatter opener (`---`) can be found even when the vendoring pipeline's
- * mandatory provenance header precedes it. Stops at the first line that is
- * neither blank nor a complete single-line comment.
- *
- * @param {string} contents - raw file contents
- * @returns {string} contents starting at the first non-header line (empty
- *   string when the entire content is header lines)
+ * Defect code for a frontmatter block that does not start on line 1 (#1449).
+ * Claude Code ignores such a block, so the rule loads always-on there; the
+ * loader mirrors that and tags the entry with this code.
  */
-function stripLeadingProvenanceHeader(contents) {
-  const lines = contents.split(/\r?\n/);
-  let idx = 0;
-  while (idx < lines.length && HEADER_LINE_RE.test(lines[idx])) {
-    idx++;
-  }
-  return lines.slice(idx).join('\n');
-}
+export const FRONTMATTER_NOT_AT_TOP = 'frontmatter-not-at-top';
 
 // Scalar activation keys captured (issue #694 + #692). The `globs` key keeps
 // its dedicated sequence/flow handling and is NOT routed through this table.
@@ -193,34 +175,6 @@ const SCALAR_META_KEYS = new Set([
   'tier',
 ]);
 
-/**
- * Parses the YAML frontmatter block for the `globs:` field (issue #336),
- * its `paths:` alias (issue #795), and the scalar activation keys (issue #694).
- *
- * Returns:
- *   - `{ globs: string[] | null, meta: object }` on success
- *   - throws `Error` on malformed frontmatter so the caller can fall back
- *
- * `globs` is `null` when no frontmatter, and neither `globs:` nor `paths:` is
- * present (always-on). `paths:` is parsed with the identical inline-array and
- * block-list forms as `globs:`; when BOTH keys are present on the same rule,
- * `globs:` wins silently and `paths:` is discarded (no merge, no warning —
- * see module doc). The returned shape is unchanged either way — callers never
- * see which key produced the value. `meta` carries only the recognised scalar
- * keys that were present, with type coercion applied:
- *   - `alwaysApply`, `auto-generated` → boolean ('true'/'false')
- *   - `confidence` → number (undefined when NaN)
- *   - all other recognised keys → quote-stripped strings
- * Unknown keys are ignored without error.
- *
- * A leading run of blank lines and/or single-line HTML comments (e.g. the
- * vendoring pipeline's provenance header) is tolerated before the opening
- * `---` — see `stripLeadingProvenanceHeader`. Files with no such header parse
- * identically to before this tolerance was added.
- *
- * @param {string} contents - raw file contents
- * @returns {{ globs: string[] | null, meta: Record<string, unknown> }}
- */
 /**
  * Undo the ONE quoting style the renderer emits for a scalar (#1041 follow-up).
  *
@@ -243,11 +197,85 @@ function unquoteYamlScalar(valuePart) {
   return v.replace(/^["']|["']$/g, '');
 }
 
+/**
+ * Parses the YAML frontmatter block for the `globs:` field (issue #336),
+ * its `paths:` alias (issue #795), and the scalar activation keys (issue #694).
+ *
+ * Returns:
+ *   - `{ globs: string[] | null, meta: object }` on success
+ *   - `{ globs: null, meta: {}, defect: 'frontmatter-not-at-top' }` when a
+ *     frontmatter block exists but does not start on line 1 (#1449)
+ *   - throws `Error` on malformed frontmatter so the caller can fall back
+ *
+ * `globs` is `null` when no frontmatter, and neither `globs:` nor `paths:` is
+ * present (always-on). `paths:` is parsed with the identical inline-array and
+ * block-list forms as `globs:`; when BOTH keys are present on the same rule,
+ * `globs:` wins silently and `paths:` is discarded (no merge, no warning —
+ * see module doc). The returned shape is unchanged either way — callers never
+ * see which key produced the value. `meta` carries only the recognised scalar
+ * keys that were present, with type coercion applied:
+ *   - `alwaysApply`, `auto-generated` → boolean ('true'/'false')
+ *   - `confidence` → number (undefined when NaN)
+ *   - all other recognised keys → quote-stripped strings
+ * Unknown keys are ignored without error.
+ *
+ * Only a block whose opening `---` is line 1 is frontmatter (#1449), exactly
+ * as Claude Code reads it. Anything before the opener — a provenance comment,
+ * a blank line, any text — makes the block body text: no globs, no meta, and
+ * the `defect` field names the misplacement (see {@link FRONTMATTER_NOT_AT_TOP}).
+ *
+ * @param {string} contents - raw file contents
+ * @returns {{ globs: string[] | null, meta: Record<string, unknown>, defect?: 'frontmatter-not-at-top' }}
+ */
 export function parseGlobsFrontmatter(contents) {
-  const match = FRONTMATTER_RE.exec(stripLeadingProvenanceHeader(contents));
-  if (!match) return { globs: null, meta: {} };
+  const match = FRONTMATTER_RE.exec(contents);
+  if (match) return parseFrontmatterBlock(match[1]);
+  if (hasDisplacedFrontmatter(contents)) {
+    return { globs: null, meta: {}, defect: FRONTMATTER_NOT_AT_TOP };
+  }
+  return { globs: null, meta: {} };
+}
 
-  const fmText = match[1];
+/**
+ * Does `contents` carry a frontmatter block that is NOT on line 1 (#1449)?
+ *
+ * Only the FIRST bare `---` line is considered, and its block must parse
+ * cleanly AND carry at least one key this loader honours (`globs`, `paths`,
+ * or a scalar activation key). That second condition keeps a horizontal rule
+ * pair around ordinary prose from being reported: prose between two `---`
+ * lines almost always holds a colon-less line (a heading, a sentence), which
+ * throws, and a recognised key at column 0 is what makes the misplacement
+ * change behaviour at all. The known blind spot is a displaced block that is
+ * itself malformed — it is treated as body text, which is what Claude Code
+ * does with it too.
+ *
+ * @param {string} contents - raw file contents
+ * @returns {boolean}
+ */
+function hasDisplacedFrontmatter(contents) {
+  const lines = contents.split(/\r?\n/);
+  const opener = lines.indexOf('---');
+  // -1: no opener at all. 0: the opener IS line 1, so FRONTMATTER_RE already
+  // had its chance (an unclosed block) — not a displacement.
+  if (opener <= 0) return false;
+  const block = FRONTMATTER_RE.exec(lines.slice(opener).join('\n'));
+  if (!block) return false;
+  try {
+    const { globs, meta } = parseFrontmatterBlock(block[1]);
+    return globs !== null || Object.keys(meta).length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Parses the text BETWEEN the two `---` fences (the frontmatter body).
+ * Throws on a malformed top-level line — see {@link parseGlobsFrontmatter}.
+ *
+ * @param {string} fmText - frontmatter body without its fences
+ * @returns {{ globs: string[] | null, meta: Record<string, unknown> }}
+ */
+function parseFrontmatterBlock(fmText) {
   const lines = fmText.split(/\r?\n/);
 
   let globsValue = null;
@@ -466,6 +494,9 @@ function applyGates(meta, filePath, mode, hostClass, now, context = null) {
  *   from the `alwaysApply` frontmatter key)
  * @property {string[]} matchedGlobs - globs that matched; empty when alwaysOn
  * @property {true} [_parseError] - present only on frontmatter parse-error entries
+ * @property {'frontmatter-not-at-top'} [defect] - present only when a frontmatter
+ *   block exists but does not start on line 1 (#1449); such an entry is always
+ *   `alwaysOn: true` and carries no meta fields, mirroring Claude Code
  * @property {string} [description] - frontmatter `description` (issue #694), when present
  * @property {string} [mode] - frontmatter `mode` (issue #694), when present
  * @property {string} [hostClass] - frontmatter `host-class` (issue #694), when present
@@ -484,6 +515,10 @@ function applyGates(meta, filePath, mode, hostClass, now, context = null) {
  * Rules without `globs:` (or its `paths:` alias — issue #795) frontmatter are
  * always included (alwaysOn: true). Rules with `globs:`/`paths:` are included
  * only when at least one scopePath matches at least one glob pattern.
+ * A rule whose frontmatter does not start on line 1 is always-on with no meta
+ * (so no gate excludes it) and carries `defect: 'frontmatter-not-at-top'`
+ * (#1449) — no stderr line, because callers such as the instruction-budget
+ * guard load the directory several times per run and report the defect themselves.
  *
  * After a successful frontmatter parse, deterministic gates (issue #694) are
  * applied to BOTH always-on and glob-matched rules — a rule must pass ALL
@@ -557,10 +592,11 @@ export function loadApplicableRules({
 
     let globs;
     let meta;
+    let defect;
     let parseError = false;
 
     try {
-      ({ globs, meta } = parseGlobsFrontmatter(content));
+      ({ globs, meta, defect } = parseGlobsFrontmatter(content));
     } catch (err) {
       process.stderr.write(
         `[rule-loader] Frontmatter parse error in ${filePath}: ${err.message} — treating as always-on\n`,
@@ -581,7 +617,8 @@ export function loadApplicableRules({
     const metaFields = metaToEntryFields(meta);
 
     if (globs === null) {
-      // No globs frontmatter (or parse error) → always-on
+      // No globs frontmatter (or parse error, or frontmatter not on line 1 —
+      // #1449) → always-on
       results.push({
         path: filePath,
         content,
@@ -589,6 +626,7 @@ export function loadApplicableRules({
         matchedGlobs: [],
         ...metaFields,
         ...(parseError ? { _parseError: true } : {}),
+        ...(defect ? { defect } : {}),
       });
       continue;
     }

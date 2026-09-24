@@ -928,11 +928,12 @@ describe('no tier key backward-compat (#692)', () => {
 });
 
 // ===========================================================================
-// #722 Epic A Wave 2 — leading provenance-header tolerance in frontmatter parsing
+// #722 → #1449 — a header BEFORE the frontmatter is no longer tolerated: Claude
+// Code reads frontmatter only from line 1, so such a rule loads always-on.
 // ===========================================================================
 
-describe('leading provenance-header tolerance (#722)', () => {
-  it('loads a header-prefixed rule with globs as scoped, with matchedGlobs populated', () => {
+describe('provenance header before frontmatter (#722, retired by #1449)', () => {
+  it('loads a header-prefixed globs rule as always-on with the frontmatter-not-at-top defect', () => {
     const dir = makeTmpRulesDir();
     writeRule(
       dir,
@@ -943,11 +944,18 @@ describe('leading provenance-header tolerance (#722)', () => {
     const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/index.ts'] });
 
     expect(results).toHaveLength(1);
-    expect(results[0].alwaysOn).toBe(false);
-    expect(results[0].matchedGlobs).toContain('src/**');
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].matchedGlobs).toEqual([]);
+    expect(results[0].defect).toBe('frontmatter-not-at-top');
   });
 
-  it('excludes a header-prefixed globs rule when the scope does not match', () => {
+  // A scoped rule is dropped when no scope path matches — including an EMPTY
+  // scope (session start). The displaced rule must survive both, as it does in
+  // Claude Code.
+  it.each([
+    ['a non-matching scope', ['docs/readme.md']],
+    ['an empty scope', []],
+  ])('still loads a header-prefixed globs rule for %s (always-on, defect kept)', (_label, scopePaths) => {
     const dir = makeTmpRulesDir();
     writeRule(
       dir,
@@ -955,12 +963,15 @@ describe('leading provenance-header tolerance (#722)', () => {
       '<!-- source: session-orchestrator plugin (canonical: rules/always-on/vendored.md) -->\n---\nglobs:\n  - src/**\n---\n\n# Vendored Rule\n',
     );
 
-    const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['docs/readme.md'] });
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths });
 
-    expect(results).toHaveLength(0);
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].matchedGlobs).toEqual([]);
+    expect(results[0].defect).toBe('frontmatter-not-at-top');
   });
 
-  it('keeps scalar meta (description) on a header-prefixed rule', () => {
+  it('drops scalar meta (description) on a header-prefixed rule', () => {
     const dir = makeTmpRulesDir();
     writeRule(
       dir,
@@ -970,7 +981,7 @@ describe('leading provenance-header tolerance (#722)', () => {
 
     const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/index.ts'] });
 
-    expect(results[0].description).toBe('A vendored rule');
+    expect(results[0].description).toBeUndefined();
   });
 
   it('a file starting directly with --- (no header) parses identically to before', () => {
@@ -998,7 +1009,31 @@ describe('leading provenance-header tolerance (#722)', () => {
     expect(results[0].alwaysOn).toBe(true);
   });
 
-  it('multiple stacked single-line comment header lines are still tolerated', () => {
+  it('a single blank line before --- is enough to displace the frontmatter', () => {
+    // Claude Code needs `---` on line 1 — not "the first non-blank line".
+    const parsed = parseGlobsFrontmatter('\n---\nglobs:\n  - src/**\n---\n\n# Rule\n');
+
+    expect(parsed.globs).toBeNull();
+    expect(parsed.defect).toBe('frontmatter-not-at-top');
+  });
+
+  // Not every later `---` pair is displaced frontmatter: a body using `---` as
+  // horizontal rules, or a line-1 block that never closes, is plain body text.
+  it.each([
+    ['two --- horizontal rules in the body', '# Rule\n\nIntro.\n\n---\n\nA sentence between the rules.\n\n---\n\nOutro.\n'],
+    ['an unclosed block on line 1', '---\nglobs:\n  - src/**\n\n# Rule without a closing fence\n'],
+  ])('reports no defect for %s (always-on)', (_label, content) => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'body.md', content);
+
+    expect(parseGlobsFrontmatter(content)).toEqual({ globs: null, meta: {} });
+    const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
+    expect(results).toHaveLength(1);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].defect).toBeUndefined();
+  });
+
+  it('multiple stacked single-line comment header lines also load always-on with the defect', () => {
     const dir = makeTmpRulesDir();
     writeRule(
       dir,
@@ -1009,7 +1044,8 @@ describe('leading provenance-header tolerance (#722)', () => {
     const results = loadApplicableRules({ rulesDir: dir, scopePaths: ['src/x.ts'] });
 
     expect(results).toHaveLength(1);
-    expect(results[0].alwaysOn).toBe(false);
+    expect(results[0].alwaysOn).toBe(true);
+    expect(results[0].defect).toBe('frontmatter-not-at-top');
   });
 });
 
