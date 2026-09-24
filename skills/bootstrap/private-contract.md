@@ -22,7 +22,8 @@ BOOTSTRAP_CONTRACT=$(node "$PLUGIN_ROOT/scripts/baseline-archetypes.mjs" \
 export BOOTSTRAP_CONTRACT
 ```
 
-`status: error` aborts before scaffolding. Its reason is safe to report; do not
+`status: error` aborts before scaffolding. Its reason — and, for
+`producer-missing`, its path-free `message` — is safe to report; do not
 print baseline paths, raw producer diagnostics, or private catalog files.
 `insufficient-evidence` is a selection state, not permission to use `node-minimal`.
 Fast tier has no archetype; use the plugin's minimal instruction-file flow and

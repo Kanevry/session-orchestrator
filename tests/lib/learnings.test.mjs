@@ -515,7 +515,7 @@ describe('rewriteLearnings — pre-write round-trip self-validation (#662)', () 
 });
 
 // ---------------------------------------------------------------------------
-// rewriteLearnings — legacy-tolerant round-trip (GitLab #386)
+// rewriteLearnings — legacy-tolerant round-trip (EventDrop #386)
 //
 // readLearnings() already tolerates a record missing `source_session` (WARN,
 // pass through unchanged — see 'normalizeLearning — required-key WARN' above).
@@ -526,7 +526,7 @@ describe('rewriteLearnings — pre-write round-trip self-validation (#662)', () 
 // exercises exactly this path via its KEEP-batch dry-run probe.
 // ---------------------------------------------------------------------------
 
-describe('rewriteLearnings — legacy-tolerant round-trip (#386)', () => {
+describe('rewriteLearnings — legacy-tolerant round-trip (EventDrop #386)', () => {
   const legacyNoSourceSession = () => {
     const e = LEGACY();
     delete e.source_session;
@@ -551,7 +551,7 @@ describe('rewriteLearnings — legacy-tolerant round-trip (#386)', () => {
     expect(after[0].insight).toBe(legacyNoSourceSession().insight);
   });
 
-  it('legacyTolerant: false opts back into the strict pre-#386 behaviour', async () => {
+  it('legacyTolerant: false opts back into the strict pre-EventDrop #386 behaviour', async () => {
     const filePath = join(tmp, 'legacy-strict.jsonl');
     writeFileSync(filePath, JSON.stringify(legacyNoSourceSession()) + '\n');
     const { entries } = await readLearnings(filePath);

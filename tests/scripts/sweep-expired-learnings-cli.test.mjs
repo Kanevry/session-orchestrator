@@ -161,7 +161,7 @@ describe('sweep-expired-learnings.mjs — --apply', () => {
     expect(backups).toHaveLength(1);
   });
 
-  // GitLab #386: rewriteLearnings() re-validated the KEEP batch with the same
+  // EventDrop #386: rewriteLearnings() re-validated the KEEP batch with the same
   // strict gate as a brand-new write, so ONE legacy record missing
   // `source_session` (a field readLearnings() already tolerates with a WARN)
   // blocked the entire --apply — including archiving an UNRELATED expired
@@ -169,7 +169,7 @@ describe('sweep-expired-learnings.mjs — --apply', () => {
   // moves records" (issue text) is exactly what this proves: the legacy
   // record is never mutated, it just has to survive being re-written as part
   // of the KEEP batch.
-  it('#386: a legacy record missing source_session no longer blocks --apply, and round-trips unchanged', () => {
+  it('EventDrop #386: a legacy record missing source_session no longer blocks --apply, and round-trips unchanged', () => {
     const legacyActive = learning({
       id: 'legacy-no-source-session',
       expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString(), // still active -> stays in KEEP

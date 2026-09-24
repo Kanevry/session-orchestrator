@@ -22,6 +22,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateLearning } from '@lib/learnings.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -29,6 +30,7 @@ import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'run-migrate-v2-cross-repo.mjs');
+const GOLDEN_FIXTURE = join(REPO_ROOT, 'tests', 'fixtures', 'learnings-invalid-golden.jsonl');
 
 // ---------------------------------------------------------------------------
 // Fixtures — canonical learning record (all required fields, valid)
@@ -450,5 +452,82 @@ describe('run-migrate-v2-cross-repo', () => {
     expect(result.stderr).toContain('cross-repo: no projects configured');
     // Must not produce any output table
     expect(result.stdout).toBe('');
+  });
+  // -------------------------------------------------------------------------
+  // Test 7/8 — golden fixture (GitHub #69 / GitLab #1446): 8 records that fail
+  // strict validateLearning on `scope` (6) and `schema_version` (2).
+  // -------------------------------------------------------------------------
+
+  /** Copy the golden fixture into a fresh tmp repo; returns { repo, file, original }. */
+  function goldenRepo() {
+    const repo = makeFakeRepo(makeTmpBase(), 'repo-golden', null);
+    const file = join(repo, '.orchestrator', 'metrics', 'learnings.jsonl');
+    const original = readFileSync(GOLDEN_FIXTURE, 'utf8');
+    writeFileSync(file, original, 'utf8');
+    return { repo, file, original };
+  }
+
+  /** null when the record passes strict validation, else the error message. */
+  function strictError(record) {
+    try {
+      validateLearning(record);
+      return null;
+    } catch (err) {
+      return err.message;
+    }
+  }
+
+  it('7. golden fixture: dry run counts both error classes, fixes all 8, writes nothing', () => {
+    const { repo, file, original } = goldenRepo();
+
+    const result = run(['--repos', repo, '--json']);
+    expect(result.status).toBe(0);
+    const repoResult = JSON.parse(result.stdout).repos[0];
+    expect(repoResult).toMatchObject({ invalidPre: 8, invalidPost: 0, fixedByV2: 8 });
+    expect(repoResult.errorClassesPre).toEqual({
+      'scope must be one of local|private|public': 6,
+      'schema_version must be 0 (legacy) or 1': 2,
+    });
+    expect(repoResult.errorClassesPost).toEqual({});
+    expect(readFileSync(file, 'utf8')).toBe(original);
+    expect(listBackups(repo)).toHaveLength(0);
+
+    const markdown = run(['--repos', repo]);
+    expect(markdown.stdout).toContain('| scope must be one of local\\|private\\|public | 6 | 0 |');
+  });
+
+  it('8. golden fixture: --apply backs up the original and leaves 8 strictly valid, coerced records', () => {
+    const { repo, original } = goldenRepo();
+
+    const result = run(['--repos', repo, '--apply', '--json']);
+    expect(result.status).toBe(0);
+
+    const backups = listBackups(repo);
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(join(repo, '.orchestrator', 'metrics', backups[0]), 'utf8')).toBe(original);
+
+    const records = readLearnings(repo);
+    expect(records.map(strictError)).toEqual([null, null, null, null, null, null, null, null]);
+    expect(
+      records.map((r) => ({
+        id: r.id,
+        scope: r.scope,
+        schema_version: r.schema_version,
+        file_paths: r.file_paths ?? null,
+        hasFiles: 'files' in r,
+      })),
+    ).toEqual([
+      { id: '7c1e4a2b-3d5f-4a6b-8c9d-0e1f2a3b4c5d', scope: 'private', schema_version: 1, file_paths: ['app/ui/demo-banner.tsx'], hasFiles: false },
+      { id: '9a8b7c6d-5e4f-4a3b-9c2d-1e0f9a8b7c6d', scope: 'private', schema_version: 1, file_paths: ['lib/format/index.ts', 'lib/format/price-label.ts'], hasFiles: false },
+      { id: '2b3c4d5e-6f7a-4b8c-a9d0-e1f2a3b4c5d6', scope: 'private', schema_version: 1, file_paths: null, hasFiles: false },
+      { id: '4d5e6f7a-8b9c-4d0e-b1f2-a3b4c5d6e7f8', scope: 'private', schema_version: 1, file_paths: null, hasFiles: false },
+      { id: '6f7a8b9c-0d1e-4f2a-83b4-c5d6e7f8a9b0', scope: 'local', schema_version: 1, file_paths: null, hasFiles: false },
+      { id: '8b9c0d1e-2f3a-4b4c-95d6-e7f8a9b0c1d2', scope: 'private', schema_version: 1, file_paths: null, hasFiles: false },
+      { id: '7af5fe58-6033-42f1-9118-7b8b99d0bf1c', scope: 'private', schema_version: 1, file_paths: ['src/sample/list-item.tsx', 'src/sample/list-view.tsx'], hasFiles: false },
+      { id: 'ce99fcdb-19db-4e7e-8ab8-2f4b84b747f2', scope: 'private', schema_version: 1, file_paths: ['docs/guide.md'], hasFiles: false },
+    ]);
+
+    const rerun = run(['--repos', repo, '--json']);
+    expect(JSON.parse(rerun.stdout).repos[0].invalidPre).toBe(0);
   });
 });
