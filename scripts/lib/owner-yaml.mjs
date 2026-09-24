@@ -745,6 +745,14 @@ export function loadOwnerConfig(opts = {}) {
         discardDropped.push({ section: name, errors: sec.errors });
       }
     }
+    // `vault-dirs:` (agents/vault#319) survives the discard too, raw — exactly as
+    // on the required-valid branch below; parseBaselines() drops bad entries at
+    // point-of-use. Dropping it would hand a repo under a declared prefix the
+    // host-wide `paths.vault-dir` (which DOES survive above): the silent vault
+    // override #319 exists to prevent, triggered by an unrelated `tone:` typo.
+    if (parsed['vault-dirs'] !== undefined && parsed['vault-dirs'] !== null) {
+      discardConfig['vault-dirs'] = parsed['vault-dirs'];
+    }
     const discardResult = { config: discardConfig, source: 'defaults', errors: allErrors };
     if (discardDropped.length > 0) discardResult.droppedSections = discardDropped;
     return discardResult;

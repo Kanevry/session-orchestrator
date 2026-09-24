@@ -891,6 +891,27 @@ describe('#820 per-section tolerance', () => {
     expect(result.errors.some((e) => e.includes('tone.style'))).toBe(true);
   });
 
+  // Bug (agents/vault#319): the whole-file discard kept paths.vault-dir (#1244)
+  // but dropped vault-dirs, so an unrelated tone: typo sent a repo under a
+  // declared prefix back into the host-wide vault.
+  it('invalid REQUIRED section → vault-dirs survives the discard raw, alongside paths', () => {
+    const dir = makeTmpDir();
+    const filePath = join(dir, 'owner.yaml');
+    writeFileSync(
+      filePath,
+      'owner:\n  name: "Bernhard"\n  language: "en"\ntone:\n  style: "nonsense"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths:\n  vault-dir: "/host/vault"\nvault-dirs:\n  - path: "/other/vault"\n    match:\n      path-prefix: "/work/other"\n',
+      'utf8',
+    );
+
+    const result = loadOwnerConfig({ path: filePath });
+
+    expect(result.source).toBe('defaults');
+    expect(result.config.paths['vault-dir']).toBe('/host/vault');
+    expect(result.config['vault-dirs']).toEqual([
+      { path: '/other/vault', match: { 'path-prefix': '/work/other' } },
+    ]);
+  });
+
   it('validateOwnerSections returns per-section buckets keyed by section name, each with valid/errors', () => {
     const cfg = validConfig({ paths: 'oops' });
     const result = validateOwnerSections(cfg);

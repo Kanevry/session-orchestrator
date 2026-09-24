@@ -9,6 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSessionConfig } from '@lib/config.mjs';
@@ -146,6 +147,23 @@ describe('vault-dir: owner.yaml vault-dirs match tier (agents/vault#319)', () =>
     expect(config['vault-integration']['vault-dir-source']).toBe('owner');
     expect(config['vault-sync']['vault-dir']).toBe(OWNER_WIDE);
   });
+
+  // Bug (#319 review): owner.yaml `~/…` came back literal, and consumers that
+  // `resolve()` it (vault-mirror.mjs existsSync) looked in `<cwd>/~/…`.
+  it.each([
+    { tier: 'match', cwd: '/hosts/h1/Projects/private/repo' },
+    { tier: 'owner', cwd: '/hosts/h1/Projects/other-repo' },
+  ])('tilde-expands the owner.yaml $tier tier', ({ tier, cwd }) => {
+    const tildeOwner = {
+      paths: { 'vault-dir': '~/wide-vault' },
+      'vault-dirs': [{ path: '~/private-vault', match: { 'path-prefix': '/hosts/h1/Projects/private/' } }],
+    };
+    const config = parseSessionConfig(content, { hostPaths: { env: {}, ownerConfig: tildeOwner, cwd } });
+    const want = join(homedir(), tier === 'match' ? 'private-vault' : 'wide-vault');
+    expect(config['vault-integration']['vault-dir']).toBe(want);
+    expect(config['vault-integration']['vault-dir-source']).toBe(tier);
+    expect(config['vault-sync']['vault-dir']).toBe(want);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -174,6 +192,15 @@ describe('vault-integration host switch (SO#1448)', () => {
       env: { SO_VAULT_INTEGRATION: 'off' },
       owner: { mode: 'warn' },
       want: { enabled: false, mode: 'off', 'host-override': 'env:SO_VAULT_INTEGRATION' },
+    },
+    {
+      // Bug: lowering strict to warn also cleared enabled, turning the mirror off
+      // where the host only asked for a softer gate.
+      name: 'SO_VAULT_INTEGRATION=warn lowers committed strict to warn, stays enabled',
+      md: committed(true, 'strict'),
+      env: { SO_VAULT_INTEGRATION: 'warn' },
+      owner: {},
+      want: { enabled: true, mode: 'warn', 'host-override': 'env:SO_VAULT_INTEGRATION' },
     },
     {
       // Bug: the host raises the gate and mirrors a repo that never opted in.

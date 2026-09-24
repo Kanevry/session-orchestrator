@@ -80,6 +80,7 @@ import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
 import { loadHostPaths, resolveHostPath, resolveVaultIntegrationHost } from './config/host-paths.mjs';
 import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
+import { expandTilde } from './common.mjs';
 
 /**
  * Resolve `vault-dir` and report which tier produced it (agents/vault#319).
@@ -93,6 +94,12 @@ import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
  * helper of check-owner-leakage.mjs, whose standalone vendored copy carries only
  * its three direct helpers. The named-baseline-resolver import edge would make
  * CP11 fail closed there (tests/husky/pre-commit-owner-leakage.test.mjs).
+ *
+ * The two owner.yaml tiers (`match`, `owner`) come back tilde-expanded: owner.yaml
+ * is host-local and `~/…` is the natural way to write a path there, but consumers
+ * such as vault-mirror.mjs `existsSync(resolve(vaultDir))` would read a literal
+ * `~` as `<cwd>/~/…`. The `env` and `committed` tiers keep their pass-through;
+ * vault-mirror.mjs expands its `--vault-dir` at entry for every tier anyway.
  *
  * `cwd` in the ctx is a test-only DI seam; production reads `process.cwd()`.
  *
@@ -114,11 +121,11 @@ function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}
     envKey: 'SO_VAULT_DIR',
   });
   if (matched.source === 'match' && isNonBlank(matched.path)) {
-    return { value: matched.path, source: 'match' };
+    return { value: expandTilde(matched.path), source: 'match' };
   }
 
   const ownerVal = ownerConfig?.paths?.['vault-dir'];
-  if (isNonBlank(ownerVal)) return { value: ownerVal, source: 'owner' };
+  if (isNonBlank(ownerVal)) return { value: expandTilde(ownerVal), source: 'owner' };
 
   return { value: committed, source: 'committed' };
 }

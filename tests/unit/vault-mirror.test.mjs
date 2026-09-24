@@ -47,10 +47,11 @@ const VALID_SESSION = JSON.stringify({
 
 /**
  * @param {string[]} args — CLI flags passed to scripts/vault-mirror.mjs.
- * @param {{ projectDir?: string }} [opts] — `projectDir` pins CLAUDE_PROJECT_DIR
- *   to a caller-owned tmp dir so the test can READ the resulting
- *   `.orchestrator/metrics/events.jsonl`. Omit it to keep the default throwaway
- *   dir (the ledger is then unreadable by design — see the note below).
+ * @param {{ projectDir?: string, env?: Record<string, string> }} [opts] — `projectDir`
+ *   pins CLAUDE_PROJECT_DIR to a caller-owned tmp dir so the test can READ the
+ *   resulting `.orchestrator/metrics/events.jsonl`. Omit it to keep the default
+ *   throwaway dir (the ledger is then unreadable by design — see the note below).
+ *   `env` is merged last (e.g. a tmp HOME for tilde expansion).
  */
 function runMirror(args, opts = {}) {
   // VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 bypasses the #600 canonical-vault guard:
@@ -80,6 +81,7 @@ function runMirror(args, opts = {}) {
       // override at a throwaway keeps a future resolver change from turning this
       // suite into a writer against the operator's REAL vault.
       SO_VAULT_DIR: projectDir,
+      ...opts.env,
     },
   });
 }
@@ -814,6 +816,22 @@ describe('vault-mirror CLI', () => {
     const result = runMirror(['--vault-dir', '/nonexistent/path/99999', '--source', sourceFile, '--kind', 'learning']);
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('vault-dir not found');
+  });
+
+  // Bug (agents/vault#319 review): a `~/…` vault-dir — owner.yaml vault-dirs: /
+  // paths.vault-dir, or a quoted flag — was resolved as `<cwd>/~/…` and the run
+  // aborted with exit 2 missing-vault-dir.
+  it('expands a literal ~ in --vault-dir against HOME', () => {
+    const home = tmp();
+    mkdirSync(join(home, 'vault'));
+    const sourceFile = writeJsonl(home, VALID_LEARNING);
+    const result = runMirror(
+      ['--vault-dir', '~/vault', '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault'],
+      { env: { HOME: home } },
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(join(home, 'vault', '40-learnings', 'test-vault', 'cross-repo-deep-session.md'))).toBe(true);
   });
 
   it('happy-path create: learning entry produces created action at 40-learnings path', () => {
