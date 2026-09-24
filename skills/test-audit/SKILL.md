@@ -66,6 +66,8 @@ Judge each test by what its assertions can catch, never by its name.
 
 **Keep list** (the counterweight to TV-002): a test that is the independent proof for a public API, protocol, a config value production reads (a config field whose only reader is the test is a seam, not a contract), migration, storage format, security control, release step, or data-protection rule stays. So do observable call ordering and regressions with a credible failure mode. Static or slow is not a reason to delete. When in doubt, mark R.
 
+**Accidental coverage** is not a proof: a line that runs only because a mock is incomplete (a missing method sends the code into its catch branch) or because a timer is left dangling after the test. Deleting its duplicate loses no contract but trips the coverage backstop; answer that with a contract test (fake timers, an explicit failing mock), never by restoring the accidental one.
+
 ## Ledger marks
 
 Every test declaration in scope gets exactly one mark and one evidence line. A parametrised table is one declaration unless its rows need different marks.
@@ -78,6 +80,7 @@ Every test declaration in scope gets exactly one mark and one evidence line. A p
 | D | delete | the remaining proof, or why no contract exists |
 | N | new test | only after passing the write gate |
 | B | red on the baseline (from the P1 / M0 pass/fail list only) | possible product bug: never deleted, becomes an issue |
+| O | owner decision pending: keep | the open question and the candidate's line count; listed in the MR under open decisions, never folded into R |
 
 Suspected product bugs found while reading, with no test behind them, go into a separate _Issues_ section of the ledger (`file:line`, expected vs. actual). They become issues, never red tests in the MR.
 
@@ -92,16 +95,16 @@ All eight fields, written into the ledger before the edit. A missing field means
 5. History: `git log -S "<identifier>" -- <file>` and the reason the test or seam exists.
 6. What the deletion unlocks (a test-only export, a wrapper, a dead path).
 7. Risk and the focused command that re-checks it.
-8. The proposed contract mutation (`src/file:line`, one-line diff) under which the keeper must go red; falsification executes it.
+8. The proposed contract mutation (id, `src/file:line`, one-line diff) under which the keeper must go red; falsification executes it.
 
 ## Falsification
 
-For every C, D, and F, make one targeted contract mutation in the production code: flip the condition, drop the field, change the byte the contract names. Replacing a whole function body with `throw` kills every caller and proves nothing; use it at most as a pre-filter. The keeper (for C/D) or the repaired test (for F) must turn red under the mutation.
+For every contract that a C, D, or F relies on, make one targeted mutation in the production code: flip the condition, drop the field, change the byte the contract names. Several marks may share one mutation when they name the same keeper and contract; the ledger maps every mark to at least one mutation id. Replacing a whole function body with `throw` kills every caller and proves nothing; use it at most as a pre-filter. The keeper (for C/D) or the repaired test (for F) must turn red under the mutation.
 
-- Apply the mutation as a patch (`git apply`), run the one test, reverse it (`git apply -R`), then prove the restore byte for byte: `git diff --exit-code -- <prod-file>`, or a checksum taken before the mutation when the file already carried edits. A leftover diff aborts the audit.
+- Apply the mutation as a patch (`git apply`), run the one test, reverse it (`git apply -R`), then prove the restore byte for byte: `git diff --exit-code -- <prod-file>`, or a checksum taken before the mutation when the file already carried edits. A leftover diff aborts the audit. [references/mutate.sh](references/mutate.sh) runs a manifest of such patches ([references/campaign.md](references/campaign.md) § Mutation manifest). Prove the red with the runner's failure summary (vitest: `Tests N failed`), never with the exit code alone, and keep the output files.
 - Never mutate a checkout another session or agent is using, and never edit while the test runner is live in that checkout. Run mutations in an offload worktree: `offload run <repo> -H <host> --job <id> -- <command>`, reused with `--no-sync` (hosts come from `remote-hosts:` in Session Config; see the `remote-offload` skill; path and expansion pitfalls in [references/campaign.md](references/campaign.md) § Measurements).
 - Log each mutation: `file:line`, the mutation diff, the test that went red, the restore proof.
-- Per-file coverage is the mechanical backstop: if a production file's coverage drops after a C or D, the test was not a duplicate. Revert that decision.
+- Per-file coverage is the mechanical backstop, compared on all four metrics (lines, branches, functions, statements); lines alone miss a lost callback. When any of them drops for a production file, locate the line, branch, or function in the detailed report (vitest `--coverage.reporter=json`) and restore the contract in the keeper with a caught mutation. Restore the deleted test verbatim only when it was the genuine proof; accidental coverage (§ The value bar) gets a contract test instead.
 
 Bash harnesses are falsified before their tests are judged: feed a known-broken input and require a non-zero exit and a FAIL in the written artefact, under `bash`, not zsh (`.claude/rules/bash-harness-pitfalls.md`).
 
@@ -110,8 +113,8 @@ Bash harnesses are falsified before their tests are judged: feed a known-broken 
 1. Read the project instruction file and the test rules it points at. Record the M0 numbers for the scope at a pinned SHA (recipes in [references/campaign.md](references/campaign.md) § Measurements).
 2. Read every test in scope in full, plus the production owner, its entry point, callers, and history. For more than a handful of files, dispatch `qa-strategist` read-only to draft the ledger; it has no write tool, so it returns the ledger as text (or writes under `/tmp/<audit>/`) and the coordinator assembles the ledger file.
 3. Write the ledger with marks and evidence. Prefer a few well-proven candidates over a long speculative list.
-4. Falsify every C, D, and F before editing.
-5. Edit: `test-writer` applies the ledger; removing a test-only production seam is a separate `code-implementer` task. Agents never commit (PSA-007 in `.claude/rules/parallel-sessions.md`).
+4. Keepers first: `test-writer` repairs every F and absorbs every C into its keeper, uncommitted. Agents never commit (PSA-007 in `.claude/rules/parallel-sessions.md`).
+5. Falsify every C, D, and F against the edited keepers; only then delete and commit. Removing a test-only production seam is a separate `code-implementer` task.
 6. Independent preservation review, read-only (`session-reviewer`, or `pr-review-toolkit:pr-test-analyzer` when installed): contracts that lost their only proof, and new assertions that cannot fail. Every restored contract needs a caught mutation.
 7. Measure M1 with the same commands, then report.
 
@@ -141,8 +144,8 @@ Done when: the gate is green at the MR SHA; flakes and per-file coverage are no 
 ## Output
 
 - `docs/audits/<date>-test-audit.md` (report) and `docs/audits/<date>-test-audit-ledger.md` (ledger) in the target repo.
-- A draft MR titled `test(audit): <scope> Test-Audit <date>` carrying: M0/M1 table, R/F/C/D/N/B counts per lane, the keeper per contract, the mutation table, kept false alarms and why, production and test lines counted separately, owner decisions.
-- Commits by the coordinator: one per lane, seam removal separate, the audit documents separate.
+- A draft MR titled `test(audit): <scope> Test-Audit <date>` carrying: M0/M1 table, R/F/C/D/N/B/O counts per lane, the keeper per contract, the mutation table, kept false alarms and why, production and test lines counted separately, owner decisions taken and open (every O).
+- Commits by the coordinator: one per lane, owner lanes before the cross-cutting lane, seam removal separate, the audit documents separate.
 - Follow-up issues: every B, every entry of the ledger's _Issues_ section, every flake, every seam whose removal changes a contract, every N gap not implemented.
 
 Inspired by openclaw/openclaw `.agents/skills/test-audit` @ 80930af (MIT, Copyright (c) 2026 OpenClaw Foundation); rewritten for session-orchestrator.
