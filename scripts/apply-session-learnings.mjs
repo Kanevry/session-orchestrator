@@ -421,7 +421,11 @@ async function main(argv) {
     written: opts.apply ? res.kept : 0,
   };
 
-  if (opts.apply) {
+  // The event's presence is documented as proof the write ran
+  // (docs/events-schema.md). pruneLearnings() returns early WITHOUT writing
+  // exactly when the store and the next generation are both empty — the only
+  // path that reports `scanned: 0` — so no store + empty input emits nothing.
+  if (opts.apply && res.scanned > 0) {
     await emitSessionWriteApplied({
       repoRoot,
       filePath,

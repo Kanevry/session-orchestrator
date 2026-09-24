@@ -431,6 +431,75 @@ describe('sweep-expired-learnings.mjs — --prune --entries empty-sidecar guard'
   });
 });
 
+describe('sweep-expired-learnings.mjs — --prune --entries strict validation of NEW records (GH#69)', () => {
+  // TV-001 — the bug: pruneLearnings() rewrites through a legacyTolerant
+  // rewriteLearnings(), so a NEW sidecar record with a garbage `scope` or an
+  // unknown `schema_version` was written (exit 0, kept:2). Records already in
+  // the store must keep the tolerant path; only new ids get the strict check.
+  it.each([
+    ['an out-of-enum scope', '--apply', { scope: 'project' }, 'scope must be one of local|private|public, got: project'],
+    ['schema_version 2', '--dry-run', { schema_version: 2 }, 'schema_version must be 0 (legacy) or 1, got: 2'],
+  ])('exits 1 and touches nothing when a new record has %s (%s)', (_label, mode, override, message) => {
+    const survivor = liveLearning({ id: 'survivor', subject: 's' });
+    writeJsonl(learningsPath, [survivor]);
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f', ...override })]);
+
+    const result = runSweep([
+      '--prune', mode,
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readdirSync(workdir).filter((f) => f.includes('.bak-'))).toHaveLength(0);
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain(`--entries: new record fresh is invalid: ${message} — nothing written`);
+  });
+
+  it('carries an in-store legacy record (no source_session) through the tolerant path', () => {
+    const legacy = liveLearning({ id: 'legacy', subject: 'l' });
+    delete legacy.source_session;
+    writeJsonl(learningsPath, [legacy]);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [legacy]);
+
+    const result = runSweep([
+      '--prune', '--apply', '--json',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(result.status).toBe(0);
+    const remaining = readJsonl(learningsPath);
+    expect(remaining.map((e) => e.id)).toEqual(['legacy']);
+    expect(remaining[0]).not.toHaveProperty('source_session');
+  });
+
+  it('writes a valid new record alongside the survivors', () => {
+    const survivor = liveLearning({ id: 'survivor', subject: 's' });
+    writeJsonl(learningsPath, [survivor]);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f' })]);
+
+    const result = runSweep([
+      '--prune', '--apply', '--json',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({ kept: 2, archived: 0, dryRun: false });
+    expect(readJsonl(learningsPath).map((e) => e.id)).toEqual(['survivor', 'fresh']);
+  });
+});
+
 describe('sweep-expired-learnings.mjs — --prune --apply', () => {
   // TV-001 — the bug: a CLI that parses --apply/--entries but never threads them
   // into pruneLearnings() reports success while the store is untouched (or,

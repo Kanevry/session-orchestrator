@@ -237,10 +237,12 @@ export class ValidationError extends Error {
  *   store: 3 live records carry `schema_version: 2`), the
  *   LEGACY_REQUIRED_FIELDS presence check, the `confidence` range/type check
  *   when NO `confidence` key is present, and the `scope`/`host_class`/
- *   `anonymized` shape checks (measured live: a record with `scope:
- *   "src/components/sample/sticky-cta.tsx"` — a producer bug that
- *   wrote a file path into the scope column, which `normalizeLearning` never
- *   validates and therefore never rejects). A field that IS present keeps
+ *   `anonymized` shape checks (measured live: a record whose `scope` held a
+ *   file path — e.g. a repo-relative component path such as
+ *   `src/components/sample/sticky-cta.tsx` (the measured value is not
+ *   reproduced here) — a producer bug that wrote a file path into the scope
+ *   column, which `normalizeLearning` never validates and therefore never
+ *   rejects). A field that IS present keeps
  *   being validated regardless when its DATA TYPE can be silently corrupted
  *   by a JSON round-trip (a present-but-malformed `confidence` still throws
  *   — see io.mjs #662): this option relaxes "you must HAVE a valid value",
@@ -296,9 +298,11 @@ export function validateLearning(entry, { legacyTolerant = false } = {}) {
   // scope/host_class/anonymized: `normalizeLearning()` only DEFAULTS an
   // absent value (`d.scope ?? 'local'`, etc.) on read — it never validates a
   // PRESENT one, so a corrupt legacy value round-trips silently today
-  // (measured live in production: a record with `scope:
-  // "src/components/sample/sticky-cta.tsx"` — evidently a producer
-  // bug that wrote a file path into the scope column). All three checks are
+  // (measured live in production: a record whose `scope` held a file path —
+  // e.g. a repo-relative component path such as
+  // `src/components/sample/sticky-cta.tsx` (the measured value is not
+  // reproduced here) — evidently a producer bug that wrote a file path into
+  // the scope column). All three checks are
   // therefore skipped under legacyTolerant. Unlike `confidence` (a number,
   // where `NaN`/`Infinity` are non-JSON-safe and silently become `null`
   // across a JSON round-trip — the #662 concern), a string/string-or-null/

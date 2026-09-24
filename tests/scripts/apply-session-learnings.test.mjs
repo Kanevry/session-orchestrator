@@ -11,7 +11,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -95,6 +95,8 @@ function runCli(repo, args, stdin) {
 }
 
 const backupsIn = (metrics) => readdirSync(metrics).filter((f) => f.startsWith('learnings.jsonl.bak-'));
+// docs/events-schema.md: the event's presence is the proof a write ran.
+const eventsIn = (metrics) => existsSync(path.join(metrics, 'events.jsonl'));
 const recordsIn = (store) =>
   readFileSync(store, 'utf8')
     .split('\n')
@@ -119,6 +121,7 @@ describe('apply-session-learnings CLI', () => {
     });
     expect(readFileSync(store, 'utf8')).toBe(original);
     expect(backupsIn(metrics)).toEqual([]);
+    expect(eventsIn(metrics)).toBe(false);
   });
 
   it('--apply backs up the store, applies confirm/contradict/decay, appends the new record and emits the event', () => {
@@ -169,27 +172,85 @@ describe('apply-session-learnings CLI', () => {
   it.each([
     [
       'a new record with scope "project"',
+      [],
       { new_learnings: [{ ...NEW_LEARNING, scope: 'project' }] },
       /new_learnings\[0\] \(id=rec-new\): scope must be one of/,
     ],
     [
       'a new record with schema_version 2',
+      [],
       { new_learnings: [{ ...NEW_LEARNING, schema_version: 2 }] },
       /new_learnings\[0\] \(id=rec-new\): schema_version must be 0 \(legacy\) or 1/,
     ],
     [
       'a confidence update for an unknown id',
+      [],
       { confidence_updates: [{ id: 'rec-missing', operation: 'confirm' }] },
       /id rec-missing not found in the store/,
     ],
-  ])('--apply with %s exits 1 and leaves the store untouched', (_label, input, message) => {
+    [
+      'two new records sharing one id',
+      [],
+      { new_learnings: [{ ...NEW_LEARNING, id: 'rec-dup' }, { ...NEW_LEARNING, id: 'rec-dup', subject: 'other-subject' }] },
+      /new_learnings\[1\] \(id=rec-dup\): id already exists/,
+    ],
+    [
+      'a new record reusing an id already in the store',
+      [],
+      { new_learnings: [{ ...NEW_LEARNING, id: 'rec-decay' }] },
+      /new_learnings\[0\] \(id=rec-decay\): id already exists/,
+    ],
+    ['--decay-rate 1.5', ['--decay-rate', '1.5'], {}, /--decay-rate must be a number in \[0, 1\], got: 1\.5/],
+    ['--input naming a missing file', ['--input', 'absent-input.json'], {}, /cannot read input: ENOENT/],
+  ])('--apply with %s exits 1 and leaves the store untouched', (_label, flags, input, message) => {
     const { repo, metrics, store, original } = makeRepo();
-    const result = runCli(repo, ['--apply', '--json'], input);
+    const result = runCli(repo, ['--apply', '--json', ...flags], input);
 
     expect(result.status).toBe(1);
     expect(result.stderr).toMatch(message);
     expect(readFileSync(store, 'utf8')).toBe(original);
     expect(backupsIn(metrics)).toEqual([]);
+    expect(eventsIn(metrics)).toBe(false);
+  });
+
+  it('refuses --apply on a store with a malformed line, which a dry run only reports', () => {
+    const { repo, metrics, store } = makeRepo();
+    const malformedStore = `${JSON.stringify(STORE[0])}\n{broken\n`;
+    writeFileSync(store, malformedStore, 'utf8');
+
+    const dryRun = runCli(repo, ['--json'], {});
+    expect(dryRun.status).toBe(0);
+    expect(JSON.parse(dryRun.stdout)).toMatchObject({ dry_run: true, read: 1, malformed: 1, written: 0 });
+
+    const applied = runCli(repo, ['--apply', '--json'], {});
+    expect(applied.status).toBe(2);
+    expect(applied.stderr).toMatch(/refusing to rewrite — 1 malformed line\(s\)/);
+    expect(readFileSync(store, 'utf8')).toBe(malformedStore);
+    expect(backupsIn(metrics)).toEqual([]);
+    expect(existsSync(path.join(metrics, 'learnings-archive.jsonl'))).toBe(false);
+    expect(eventsIn(metrics)).toBe(false);
+  });
+
+  it('--apply with no store and an empty input writes nothing and emits no event', () => {
+    const { repo, metrics, store } = makeRepo();
+    rmSync(store);
+    const result = runCli(repo, ['--apply', '--json'], { confidence_updates: [], new_learnings: [] });
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ dry_run: false, read: 0, written: 0 });
+    expect(existsSync(store)).toBe(false);
+    expect(eventsIn(metrics)).toBe(false);
+  });
+
+  it('--apply to a --file outside --repo-root writes that store but pins no event to the repo', () => {
+    const { repo, metrics } = makeRepo();
+    const foreign = makeRepo();
+    const result = runCli(repo, ['--apply', '--json', '--file', foreign.store], {});
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/lies outside --repo-root/);
+    expect(backupsIn(foreign.metrics)).toHaveLength(1);
+    expect(eventsIn(metrics)).toBe(false);
   });
 
   it.each([

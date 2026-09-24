@@ -154,6 +154,15 @@ describe('configured baseline bootstrap contract', () => {
     expect(result.stdout + result.stderr).not.toContain(baseline);
   });
 
+  // The bootstrap skill calls syncBootstrapRules directly, not the CLI — the exporter pointer must survive that path too.
+  it('syncBootstrapRules reports producer-missing naming the exporter, without the baseline path', async () => {
+    const { syncBootstrapRules } = await import('../../scripts/lib/baseline-archetypes.mjs');
+    const baseline = fixture(); rmSync(path.join(baseline, EXPORTER));
+    const result = await syncBootstrapRules({ repoRoot: temp(), archetype: 'sample-general', dryRun: true, hostPaths: { env: { SO_BASELINE_PATH: baseline }, ownerConfig: {} } });
+    expect(result).toMatchObject({ status: 'error', reason: 'producer-missing', message: expect.stringContaining('scripts/archetype-manifest.mjs') });
+    expect(JSON.stringify(result)).not.toContain(baseline);
+  });
+
   // Only an lstat ENOENT is "missing"; a dangling link must never be probed with a link-following call.
   const relink = (baseline, name, target) => { rmSync(path.join(baseline, name), { recursive: true }); symlinkSync(target, path.join(baseline, name)); };
   it.each([

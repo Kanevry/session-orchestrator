@@ -13,7 +13,7 @@ Extract patterns from session history into reusable learnings. Three modes of op
 - **Persistence gate**: `persistence: true` must be set in Session Config. If not, abort: "Learnings require persistence to be enabled in Session Config."
 - Session history must exist at `.orchestrator/metrics/sessions.jsonl`
 - Learnings are stored at `.orchestrator/metrics/learnings.jsonl`
-- Config field: `learning-expiry-days` (default: 30) — controls `expires_at` for new and updated learnings
+- Config field: `learning-expiry-days` (default: 30) — legacy window used only by the Review-mode *Extend expiry* action; new and confirmed learnings derive `expires_at` per `type` via `deriveExpiresAt()` (`LEARNING_TTL_DAYS`)
 
 ## Cursor Adaptation
 
@@ -105,8 +105,8 @@ Write through the archive-safe pipeline — never a shell redirect (#1017, #1446
 
    ```bash
    NEXT=".orchestrator/metrics/.learnings-next.jsonl"
-   node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT"
-   node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" && rm -f "$NEXT"
+   node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT" --repo-root "$(pwd)"
+   node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" --repo-root "$(pwd)" && rm -f "$NEXT"
    ```
 
    Exit `1` = the sidecar is absent, malformed or empty; store and archive untouched.
@@ -146,7 +146,7 @@ Present as a numbered Markdown list (see Cursor Adaptation above):
 
 ### Step 3: Apply Changes
 
-Same pipeline as analyze mode Step 5: read all, modify the selected entries (a deleted entry is simply left out of the sidecar — the helper archives it), write the next generation to the sidecar, then run `node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT"` followed by `--prune --apply --json --entries "$NEXT"`.
+Same pipeline as analyze mode Step 5: read all, modify the selected entries (a deleted entry is simply left out of the sidecar — the helper archives it), write the next generation to the sidecar, then run `node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT" --repo-root "$(pwd)"` followed by `--prune --apply --json --entries "$NEXT" --repo-root "$(pwd)"`.
 
 Report: "Updated N learnings. Total active: K."
 
@@ -242,4 +242,4 @@ Each line in `.orchestrator/metrics/learnings.jsonl` is a JSON object:
 - ALWAYS write through `scripts/sweep-expired-learnings.mjs --prune` (read all, modify, sidecar, prune) — NEVER a shell rewrite of the store
 - ALWAYS cap confidence at 1.0
 - NEVER fabricate patterns -- only extract from actual session data with verifiable evidence
-- NEVER append to `learnings.jsonl` with `>>` -- always atomic rewrite
+- NEVER append to `learnings.jsonl` with `>>` -- the only write is the prune helper's atomic tmp-file + rename, which keeps a `.bak-<ISO>` snapshot
