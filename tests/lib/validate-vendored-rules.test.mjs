@@ -2,14 +2,15 @@
  * tests/lib/validate-vendored-rules.test.mjs
  *
  * Unit tests for scripts/lib/validate-vendored-rules.mjs — issue #722 Epic A
- * Wave 2. Covers the 5 vendoring probes (paths-frontmatter, provenance-header,
- * placeholder, zero-match-globs, foreign-glob), validateRulesDir(), the CLI's
- * exit-code contract, and the mandatory PLUGIN_HEADER_PREFIX identity guard
- * against scripts/lib/rules-sync.mjs's textually-duplicated copy.
+ * Wave 2. Covers the vendoring probes (globs-paths-mismatch,
+ * frontmatter-not-at-top, provenance-header, placeholder, zero-match-globs,
+ * foreign-glob), validateRulesDir(), the CLI's exit-code contract, and the
+ * mandatory PLUGIN_HEADER_PREFIX identity guard against
+ * scripts/lib/rules-sync.mjs's textually-duplicated copy.
  *
- * Also pins the paths-frontmatter probe's POPULATION (2026-09-16): the `rules/`
- * fleet library, never a repo's own consolidated `.claude/rules/` tree, whose
- * files are `paths:`-canonical by design (#1108).
+ * Also pins the globs-paths-mismatch probe's POPULATION (2026-09-16): the
+ * `rules/` fleet library, never a repo's own consolidated `.claude/rules/`
+ * tree, whose files are `paths:`-only by design (#1108).
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -18,7 +19,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { validateRuleContent, validateRulesDir } from '@lib/validate-vendored-rules.mjs';
+import { validateRuleContent, validateRulesDir, isPluginOwnedContent } from '@lib/validate-vendored-rules.mjs';
 import { PLUGIN_HEADER_PREFIX } from '@lib/rules-sync.mjs';
 
 // NOTE: `new URL(...)` does NOT resolve vitest's `@lib` alias — it does standard
@@ -26,6 +27,9 @@ import { PLUGIN_HEADER_PREFIX } from '@lib/rules-sync.mjs';
 // no `@lib` alias either. Keep this string as a raw relative path (#407 exempt).
 const SCRIPT_PATH = fileURLToPath(new URL('../../scripts/lib/validate-vendored-rules.mjs', import.meta.url));
 const VALIDATOR_SOURCE_PATH = fileURLToPath(new URL('../../scripts/lib/validate-vendored-rules.mjs', import.meta.url));
+
+// The provenance line exactly as a library rule carries it.
+const HEADER = '<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/foo.md) -->';
 
 // ---------------------------------------------------------------------------
 // Fixture management
@@ -71,40 +75,69 @@ function runCLI(args = []) {
 }
 
 // ---------------------------------------------------------------------------
-// Probe 1 — paths-frontmatter (error)
+// Probe 1 — globs-paths-mismatch / frontmatter-not-at-top (error, #1449)
 // ---------------------------------------------------------------------------
 
-describe('validateRuleContent — paths-frontmatter probe', () => {
-  it('reports an error when frontmatter declares a top-level paths: key', () => {
-    const content = '---\npaths:\n  - src/**\n---\n\n# Rule\n\nBody text.\n';
-
+describe('validateRuleContent — globs-paths-mismatch probe', () => {
+  // Bug caught (globs-only row, #1449): a library rule scoped by `globs:` alone
+  // passed the gate silently, and Claude Code — which reads only `paths:` —
+  // loaded it always-on in every consumer repo. Each row must name the key
+  // that is missing, or the author cannot tell which one to add.
+  it.each([
+    ['paths: without globs:', '---\npaths:\n  - src/**\n---\n\n# Rule\n\nBody text.\n', "declares 'paths:' but no 'globs:'"],
+    ['globs: without paths:', '---\nglobs:\n  - src/**\n---\n\n# Rule\n\nBody text.\n', "declares 'globs:' but no 'paths:'"],
+  ])('reports exactly one error naming the missing key when frontmatter declares %s', (_label, content, missingKey) => {
     const result = validateRuleContent({ content, relPath: 'foo.md' });
 
     expect(result.ok).toBe(false);
-    expect(result.violations).toHaveLength(1);
-    expect(result.violations[0].rule).toBe('paths-frontmatter');
-    expect(result.violations[0].severity).toBe('error');
+    expect(result.violations.map((v) => [v.rule, v.severity, v.line])).toEqual([['globs-paths-mismatch', 'error', 2]]);
+    expect(result.violations[0].message).toContain(missingKey);
   });
 
-  it('reports paths: after provenance comments, blank lines, and CRLF line endings', () => {
-    const content =
-      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/foo.md) -->\r\n\r\n---\r\npaths:\r\n  - src/**\r\n---\r\n\r\n# Rule\r\n';
-
-    const result = validateRuleContent({ content, relPath: 'foo.md' });
+  // Bug caught (#1449): the pre-#1449 library shape — provenance comment on
+  // line 1, frontmatter below it — passed the gate with 0 errors, although
+  // Claude Code reads frontmatter only from line 1 and so loaded every such
+  // rule always-on. Reported once, at line 1: never doubled by a
+  // provenance-header error (the header IS there, and isPluginOwnedContent
+  // must keep such copies plugin-owned so the next sync upgrades them), nor by
+  // a globs-paths-mismatch on a block no loader reads.
+  it.each([
+    ['header on line 1, --- on line 2 (the pre-#1449 library shape)', `${HEADER}\n---\nglobs:\n  - src/**\npaths:\n  - src/**\n---\n\n# Rule\n`],
+    ['header, blank line, paths: only, CRLF line endings', `${HEADER}\r\n\r\n---\r\npaths:\r\n  - src/**\r\n---\r\n\r\n# Rule\r\n`],
+    // Bug caught (#1449 review F1): a NON-comment line (a heading) before the
+    // block passed the probe silently although the loader already reported
+    // defect: frontmatter-not-at-top — the two detectors disagreed.
+    ['header, then a heading, then the block (any text before ---)', `${HEADER}\n# Title\n---\nglobs:\n  - src/**\npaths:\n  - src/**\n---\n\nbody\n`],
+  ])('reports frontmatter-not-at-top once at line 1 and no provenance-header error: %s', (_label, content) => {
+    const result = validateRuleContent({ content, relPath: 'foo.md', requireProvenance: true });
 
     expect(result.ok).toBe(false);
-    const v = result.violations.find((x) => x.rule === 'paths-frontmatter');
-    expect(v).toBeDefined();
-    expect(v.severity).toBe('error');
+    expect(result.violations.map((v) => [v.rule, v.severity, v.line])).toEqual([['frontmatter-not-at-top', 'error', 1]]);
   });
 
-  it('stays silent when frontmatter uses globs: instead of paths:', () => {
-    const content = '---\nglobs:\n  - src/**\n---\n\n# Rule\n\nBody text.\n';
-
+  // Bug caught (reorder row): comparing the two lists position by position
+  // rejects a library rule whose keys list the same globs in another order —
+  // a false error that makes syncRules() skip the rule in every consumer.
+  it.each([
+    ['in the same order', '---\nglobs:\n  - src/**\n  - lib/**\npaths:\n  - src/**\n  - lib/**\n---\n\n# Rule\n'],
+    ['in a different order', '---\nglobs:\n  - src/**\n  - lib/**\npaths:\n  - lib/**\n  - src/**\n---\n\n# Rule\n'],
+  ])('stays silent when globs: and paths: carry the identical list %s', (_label, content) => {
     const result = validateRuleContent({ content, relPath: 'foo.md' });
 
     expect(result.ok).toBe(true);
-    expect(result.violations.filter((v) => v.rule === 'paths-frontmatter')).toHaveLength(0);
+    expect(result.violations).toEqual([]);
+  });
+
+  it('names the entries each key carries alone when globs: and paths: differ', () => {
+    // Bug caught (#1449): two different lists scope one rule differently per
+    // loader (Claude Code by paths:, rule-loader.mjs by globs:) and passed the
+    // gate silently. The message must say WHICH entries differ.
+    const content = '---\nglobs:\n  - src/**\n  - lib/**\npaths:\n  - src/**\n  - test/**\n---\n\n# Rule\n';
+
+    const result = validateRuleContent({ content, relPath: 'foo.md' });
+
+    expect(result.violations.map((v) => [v.rule, v.severity, v.line])).toEqual([['globs-paths-mismatch', 'error', 2]]);
+    expect(result.violations[0].message).toContain('only in globs: ["lib/**"]; only in paths: ["test/**"]');
   });
 });
 
@@ -112,19 +145,22 @@ describe('validateRuleContent — paths-frontmatter probe', () => {
 // Probe 1 — scope: the `rules/` fleet library, never `.claude/rules/` (F5)
 // ---------------------------------------------------------------------------
 
-describe('paths-frontmatter — scope is the rules/ fleet library', () => {
+describe('globs-paths-mismatch — scope is the rules/ fleet library', () => {
   const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
-  it('finds no paths-frontmatter error in the live rules/ library — its only production population', () => {
-    // Bug caught: a fleet-library source lands with `paths:` instead of `globs:`.
-    // syncRules() runs this exact probe as a pre-write gate and records an error
-    // for that file, so the rule is SKIPPED in every consumer repo's
-    // .claude/rules/ — a silent fleet-sync hole that surfaces only on the next
+  it('finds no frontmatter-convention error in the live rules/ library — its only production population', () => {
+    // Bug caught: a fleet-library source lands with its frontmatter below the
+    // provenance line, or with only one of globs:/paths: (#1449). syncRules()
+    // runs these exact probes as a pre-write gate and records an error for that
+    // file, so the rule is SKIPPED in every consumer repo's .claude/rules/ — a
+    // silent fleet-sync hole that surfaces only on the next
     // /bootstrap --sync-rules run in some other repo.
     const result = validateRulesDir({ dir: join(REPO_ROOT, 'rules') });
 
     const offenders = result.files
-      .filter((f) => f.violations.some((v) => v.rule === 'paths-frontmatter'))
+      .filter((f) =>
+        f.violations.some((v) => v.rule === 'globs-paths-mismatch' || v.rule === 'frontmatter-not-at-top'),
+      )
       .map((f) => f.file);
 
     expect(result.files.length).toBeGreaterThan(0);
@@ -143,16 +179,16 @@ describe('paths-frontmatter — scope is the rules/ fleet library', () => {
   });
 
   it('scopes its remedy to vendored rules and exempts a repo-local .claude/rules/ file', () => {
-    // Bug caught: an unscoped remedy ("migrate to globs:") read by a
-    // consolidation pass over .claude/rules/ — obeying it strips `paths:`, and
-    // Claude Code's native loader then loads the rule ALWAYS-ON (#1108), the
-    // instruction-budget failure consolidation exists to prevent. The probe's
-    // population is the rules/ library (module doc § Scope); the message must
-    // say so rather than address every reader of every rule file.
+    // Bug caught: an unscoped remedy ("add globs:") read by a consolidation
+    // pass over .claude/rules/ — those files are paths:-only by design (#1108),
+    // so obeying it there rewrites every consolidated rule to a convention it
+    // was never meant to follow. The probe's population is the rules/ library
+    // (module doc § Scope); the message must say so rather than address every
+    // reader of every rule file.
     const content = '---\npaths:\n  - scripts/**\n---\n\n# Consolidated rule\n';
 
     const { violations } = validateRuleContent({ content, relPath: 'testing.md' });
-    const v = violations.find((x) => x.rule === 'paths-frontmatter');
+    const v = violations.find((x) => x.rule === 'globs-paths-mismatch');
 
     expect(v).toBeDefined();
     expect(v.message).toContain('rules/ library');
@@ -177,13 +213,15 @@ describe('validateRuleContent — provenance-header probe', () => {
     expect(v.line).toBe(1);
   });
 
-  it('stays silent when the provenance header is present on line 1', () => {
-    const content =
-      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/foo.md) -->\n---\nglobs:\n  - src/**\n---\n\n# Rule\n';
+  it('accepts the #1449 format — frontmatter on line 1, header on the line after the closing ---', () => {
+    // Bug caught: a line-1-only provenance check rejects every scoped library
+    // rule in the one format Claude Code scopes correctly, so syncRules()'s
+    // pre-write gate records an error and the rule is never vendored.
+    const content = `---\nglobs:\n  - src/**\npaths:\n  - src/**\ntier: wave-only\n---\n${HEADER}\n\n# Rule\n`;
 
     const result = validateRuleContent({ content, relPath: 'foo.md', requireProvenance: true });
 
-    expect(result.violations.filter((v) => v.rule === 'provenance-header')).toHaveLength(0);
+    expect(result.violations).toEqual([]);
   });
 
   it('does not evaluate provenance when requireProvenance is false (default)', () => {
@@ -192,6 +230,29 @@ describe('validateRuleContent — provenance-header probe', () => {
     const result = validateRuleContent({ content, relPath: 'foo.md' });
 
     expect(result.violations.filter((v) => v.rule === 'provenance-header')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isPluginOwnedContent — the ownership predicate rules-sync.mjs uses (#1449)
+//
+// The three accepted header positions and the header-less local rule are
+// pinned where a wrong answer does damage: syncRules() (Test 4, the
+// "ownership across the #1449 header move" and "local rule preservation"
+// blocks in tests/unit/rules-sync.test.mjs) and the provenance probe above.
+// Only the two edges no caller-level test reaches are asserted here:
+//   - CRLF row: splitting on '\n' leaves '---\r', so a Windows autocrlf
+//     checkout of an upgraded copy is disowned and frozen again.
+//   - buried row: a predicate that finds the marker anywhere claims a local
+//     rule that merely quotes it, and the next sync overwrites that rule.
+// ---------------------------------------------------------------------------
+
+describe('isPluginOwnedContent', () => {
+  it.each([
+    ['#1449 format with CRLF line endings', true, `---\r\nglobs:\r\n  - src/**\r\npaths:\r\n  - src/**\r\n---\r\n${HEADER}\r\n\r\n# Rule\r\n`],
+    ['header buried after body text', false, `---\npaths:\n  - src/**\n---\n\n# Local rule\n\nQuoting the marker:\n${HEADER}\n`],
+  ])('%s → %s', (_label, expected, content) => {
+    expect(isPluginOwnedContent(content)).toBe(expected);
   });
 });
 
@@ -287,7 +348,7 @@ describe('validateRuleContent — zero-match-globs probe (warn)', () => {
   it('a zero-match-globs warning never flips ok to false', () => {
     const targetRoot = tmp();
     writeFileSync(join(targetRoot, 'unrelated.txt'), 'x');
-    const content = '---\nglobs:\n  - src/**/*.ts\n---\n\n# Rule\n';
+    const content = '---\nglobs:\n  - src/**/*.ts\npaths:\n  - src/**/*.ts\n---\n\n# Rule\n';
 
     const result = validateRuleContent({ content, relPath: 'foo.md', targetRoot });
 

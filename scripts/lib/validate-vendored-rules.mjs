@@ -6,17 +6,21 @@
  * Catches vendoring bugs that are invisible at the source-of-truth layer but
  * become live footguns once synced into a target repo:
  *
- *   - `paths:` frontmatter in a `rules/` LIBRARY SOURCE — a vendoring-
- *     CONVENTION gate, not a loader-compatibility one. Since #795
- *     `rule-loader.mjs` accepts `paths:` as an alias for `globs:`, so such a
- *     rule IS glob-scoped; `globs:` stays the canonical form for a rule
- *     vendored out through the library (#742). See § Scope below — this probe
- *     never judges a repo's own consolidated `.claude/rules/` files.
+ *   - `frontmatter-not-at-top` — a `---` block preceded by anything (the
+ *     provenance comment, a blank line). Claude Code reads frontmatter only
+ *     from line 1 and reads only its `paths:` key, so such a rule silently
+ *     loads ALWAYS-ON in every consumer repo (#1449).
+ *   - `globs-paths-mismatch` — a library rule's frontmatter must carry
+ *     `globs:` AND `paths:` with the identical list (order-insensitive), or
+ *     neither. `paths:` is what Claude Code reads; `globs:` stays because
+ *     `rule-loader.mjs` prefers it (#742/#795). One key alone, or two
+ *     different lists, scopes the rule differently per loader.
  *   - Missing provenance header — `rules-sync.mjs` detects "plugin-owned vs.
- *     local override" purely by checking whether the first line starts with
- *     `PLUGIN_HEADER_PREFIX`. A source file missing that header gets
- *     mis-detected as a local override on the NEXT re-sync (it looks
- *     hand-authored), so the plugin can never update it again.
+ *     local override" via `isPluginOwnedContent()`: the header line starting
+ *     with `PLUGIN_HEADER_PREFIX` on line 1 (a rule without frontmatter) or as
+ *     the first non-blank line after a line-1 frontmatter block. A source file
+ *     missing it gets mis-detected as a local override on the NEXT re-sync (it
+ *     looks hand-authored), so the plugin can never update it again.
  *   - Unfilled placeholder tokens (`{{PROJECT_NAME}}`-style, `## TODO:
  *     Customize` headings, `<!-- TODO:` comments) leaking from an
  *     un-filled-in skeleton into a synced rule.
@@ -30,9 +34,10 @@
  * Stdlib-only ESM, with the same picomatch-with-fallback resolution pattern
  * as `rule-loader.mjs` (duplicated here rather than imported because those
  * helpers are module-private there — the *approach* is reused, not
- * reinvented). Frontmatter `globs:` extraction is NOT duplicated — this
- * module imports the already-exported `parseGlobsFrontmatter` from
- * `rule-loader.mjs` directly.
+ * reinvented). The globs-derived probes use the already-exported
+ * `parseGlobsFrontmatter` from `rule-loader.mjs` directly; only
+ * `globs-paths-mismatch` reads the two keys itself (`readScopeKeys`), because
+ * the loader merges them and cannot say which key carried which list.
  *
  * ## Scope: the `rules/` fleet library, never a repo's own `.claude/rules/`
  *
@@ -43,15 +48,14 @@
  * written target is never read back through the gate. The CLI's `--dir` is
  * operator-supplied and means that same library.
  *
- * This is load-bearing for `paths-frontmatter`: a repo's own CONSOLIDATED rules
- * under `.claude/rules/` are `paths:`-canonical by design, because Claude
- * Code's native loader reads ONLY `paths:` and treats a rule without it as
- * always-on (`validate/check-rules.mjs` #1108; `docs/rule-authoring.md`
- * § Consolidated rules point 3). Measured 2026-09-16 in this repo: 10
- * path-scoped rule files there, 9 of them `paths:`-only. Pointing `--dir` at
- * such a tree would emit findings that, if obeyed, UNDO that consolidation —
- * which is also why `check-rules.mjs` deliberately does not duplicate this
- * probe for `.claude/rules/`.
+ * This matters for `globs-paths-mismatch` and the provenance probe: they encode
+ * the LIBRARY convention (both scope keys, a provenance header). A repo's own
+ * CONSOLIDATED rules under `.claude/rules/` are `paths:`-only and header-free
+ * by design, because Claude Code's native loader reads ONLY `paths:`
+ * (`validate/check-rules.mjs` #1108; `docs/rule-authoring.md` § Consolidated
+ * rules point 3). Measured 2026-09-16 in this repo: 10 path-scoped rule files
+ * there, 9 of them `paths:`-only. Pointing `--dir` at such a tree reports
+ * findings about a convention those files were never meant to follow.
  *
  * @module validate-vendored-rules
  */
@@ -61,7 +65,7 @@ import { join, resolve, relative, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { parseGlobsFrontmatter } from './rule-loader.mjs';
+import { parseGlobsFrontmatter, FRONTMATTER_NOT_AT_TOP } from './rule-loader.mjs';
 import { isMainModule } from './is-main-module.mjs';
 
 // Mirrors rules-sync.mjs's exported PLUGIN_HEADER_PREFIX (rules-sync.mjs
@@ -137,21 +141,26 @@ function matchGlob(filePath, globPattern) {
 // Frontmatter helpers
 // ---------------------------------------------------------------------------
 
+// A line that may precede a MISPLACED frontmatter opener: blank, or one
+// complete single-line HTML comment (the provenance header's shape).
 const HEADER_LINE_RE = /^[ \t]*(?:<!--.*-->)?[ \t]*$/;
 
 /**
- * Finds a YAML frontmatter block delimited by `---` lines.
+ * Locates a YAML frontmatter block delimited by `---` lines.
  *
- * Mirrors rule-loader.mjs's header-tolerant frontmatter shape for the `paths:`
- * authoring guard: a leading run of blank lines and/or single-line HTML
- * comments may precede the opening `---`.
+ * Deliberately tolerant of a leading run of blank lines and/or single-line
+ * HTML comments before the opener — NOT because such a block is valid (Claude
+ * Code reads frontmatter only when `---` is line 1, and `rule-loader.mjs`
+ * no longer tolerates the prefix either), but so `frontmatter-not-at-top` can
+ * SEE the misplaced block and report it. Callers that judge what a loader
+ * reads must check `startLine === 0` first.
  *
- * @param {string} content
- * @returns {{ body: string, startLine: number } | null} startLine is the
- *   0-based file-line index of the opening `---`.
+ * @param {string[]} lines - file content split on `\r?\n`
+ * @returns {{ bodyLines: string[], startLine: number, endLine: number } | null}
+ *   startLine / endLine are the 0-based file-line indices of the opening and
+ *   closing `---`.
  */
-function extractFrontmatter(content) {
-  const lines = content.split(/\r?\n/);
+function locateFrontmatter(lines) {
   let startLine = 0;
   while (startLine < lines.length && HEADER_LINE_RE.test(lines[startLine])) {
     startLine++;
@@ -159,22 +168,93 @@ function extractFrontmatter(content) {
   if (lines[startLine] !== '---') return null;
   for (let i = startLine + 1; i < lines.length; i++) {
     if (lines[i] === '---') {
-      return { body: lines.slice(startLine + 1, i).join('\n'), startLine };
+      return { bodyLines: lines.slice(startLine + 1, i), startLine, endLine: i };
     }
   }
   return null;
 }
 
 /**
- * Line number (1-based, absolute within the file) of a match at `bodyIndex`
- * inside the frontmatter body.
- * @param {number} startLine - 0-based file-line index of the opening `---`
- * @param {string} body - frontmatter body text
- * @param {number} bodyIndex - character offset within body
- * @returns {number}
+ * True when `content` carries the plugin provenance header in one of the two
+ * positions the vendoring convention allows (#1449):
+ *
+ *   (a) line 1 — a rule WITHOUT frontmatter, and also every vendored copy
+ *       written before #1449 (header on line 1, frontmatter after it);
+ *   (b) the first non-blank line after the closing `---` of a frontmatter
+ *       block that opens on line 1 — the current format for a rule WITH
+ *       frontmatter, because Claude Code reads `paths:` only from a line-1
+ *       block.
+ *
+ * This is the ownership predicate `rules-sync.mjs` uses to tell a
+ * plugin-owned vendored copy (rewrite it) from a local rule (preserve it), and
+ * the `provenance-header` probe's acceptance test. Accepting (a) with a
+ * frontmatter after it keeps old-format consumer copies plugin-owned, so the
+ * next sync REWRITES them into the new format instead of preserving them
+ * forever. Lives here rather than in rules-sync.mjs because rules-sync.mjs
+ * imports from this module; it re-exports this function.
+ *
+ * @param {string} content - raw rule file content
+ * @returns {boolean}
  */
-function lineWithinFrontmatter(startLine, body, bodyIndex) {
-  return startLine + 1 + body.slice(0, bodyIndex).split('\n').length;
+export function isPluginOwnedContent(content) {
+  const lines = content.split(/\r?\n/);
+  if ((lines[0] ?? '').startsWith(PLUGIN_HEADER_PREFIX)) return true;
+  const fm = locateFrontmatter(lines);
+  if (!fm || fm.startLine !== 0) return false;
+  const next = lines.slice(fm.endLine + 1).find((l) => l.trim() !== '');
+  return next !== undefined && next.startsWith(PLUGIN_HEADER_PREFIX);
+}
+
+/**
+ * Strips one pair of surrounding quotes, as rule-loader.mjs does for list items.
+ * @param {string} s
+ * @returns {string}
+ */
+function unquoteItem(s) {
+  return s.trim().replace(/^["']|["']$/g, '');
+}
+
+/**
+ * Reads the `globs:` and `paths:` sequences of a frontmatter body EACH ON ITS
+ * OWN. `parseGlobsFrontmatter()` cannot answer this: it merges the two keys by
+ * design (`globs:` wins, `paths:` is discarded), so it cannot say which key
+ * carried which list. Accepts the three value shapes rule-loader.mjs accepts —
+ * indented block list, flow list `[a, b]`, single inline value.
+ *
+ * @param {string[]} bodyLines - frontmatter lines between the `---` markers
+ * @returns {{ globs?: { values: string[], index: number }, paths?: { values: string[], index: number } }}
+ *   `index` is the 0-based body line of the key.
+ */
+function readScopeKeys(bodyLines) {
+  /** @type {{ globs?: { values: string[], index: number }, paths?: { values: string[], index: number } }} */
+  const found = {};
+  let active = null;
+  bodyLines.forEach((raw, index) => {
+    const line = raw.replace(/\s+$/, '');
+    if (line === '' || /^\s*#/.test(line)) return;
+    if (active) {
+      const item = /^\s+-\s+(.*)$/.exec(line);
+      if (item) {
+        found[active].values.push(unquoteItem(item[1]));
+        return;
+      }
+      active = null;
+    }
+    const key = /^(globs|paths):\s*(.*)$/.exec(line);
+    if (!key) return;
+    const [, name, value] = key;
+    let values = [];
+    if (value === '') {
+      active = name;
+    } else if (value.startsWith('[') && value.endsWith(']')) {
+      const inner = value.slice(1, -1).trim();
+      values = inner === '' ? [] : inner.split(',').map(unquoteItem);
+    } else {
+      values = [unquoteItem(value)];
+    }
+    found[name] = { values, index };
+  });
+  return found;
 }
 
 /**
@@ -463,7 +543,7 @@ const FOREIGN_TOKEN_RE = /[A-Z][a-z]+[A-Z]/;
 
 /**
  * @typedef {object} RuleViolation
- * @property {string} rule - check id (paths-frontmatter | provenance-header | placeholder | zero-match-globs | foreign-glob)
+ * @property {string} rule - check id (frontmatter-not-at-top | globs-paths-mismatch | provenance-header | placeholder | zero-match-globs | foreign-glob)
  * @property {'error'|'warn'} severity
  * @property {string} message
  * @property {number} [line] - 1-based line number, when known
@@ -486,52 +566,94 @@ export function validateRuleContent({ content, relPath, targetRoot = null, requi
   /** @type {RuleViolation[]} */
   const violations = [];
 
-  // ---- paths-frontmatter (error) ----
-  const fm = extractFrontmatter(content);
-  if (fm) {
-    const pathsMatch = /^paths:/m.exec(fm.body);
-    if (pathsMatch) {
+  const lines = content.split(/\r?\n/);
+  const fm = locateFrontmatter(lines);
+
+  // ---- frontmatter-not-at-top (error) ----
+  // Claude Code reads frontmatter only when `---` is line 1. Anything before
+  // it (the provenance comment, a blank line) makes it see NO frontmatter, so
+  // a path-scoped rule loads ALWAYS-ON in every consumer repo, with no error.
+  // Two detectors, one verdict (BV-003): `locateFrontmatter` sees a block
+  // behind blank lines / single-line comments (the provenance shape);
+  // `parseGlobsFrontmatter` (the loader — the same code the wave injector
+  // runs) additionally sees one behind ANY text, e.g. a heading. Either
+  // signal is the defect; the finding is reported once.
+  const loaderDefect = parseGlobsFrontmatter(content).defect === FRONTMATTER_NOT_AT_TOP;
+  if ((fm && fm.startLine !== 0) || (!(fm && fm.startLine === 0) && loaderDefect)) {
+    const openerLine = fm ? fm.startLine + 1 : lines.findIndex((l) => l === '---') + 1;
+    violations.push({
+      rule: 'frontmatter-not-at-top',
+      severity: 'error',
+      message:
+        `${relPath}: the frontmatter block opens on line ${openerLine}, not line 1. ` +
+        `Claude Code reads frontmatter only when '---' is the very first line, so it sees none ` +
+        `here and loads this rule always-on, ignoring its 'paths:' scope. Move the block to the ` +
+        `top; the provenance header goes on the first line after the closing '---'.`,
+      line: 1,
+    });
+  }
+
+  // ---- globs-paths-mismatch (error) ----
+  // Judged only on a line-1 block: a misplaced block is read by no loader,
+  // and frontmatter-not-at-top already reports it.
+  if (fm && fm.startLine === 0) {
+    const { globs, paths } = readScopeKeys(fm.bodyLines);
+    // body index i sits on 1-based file line i + 2 when the opener is line 1.
+    const keyLine = (k) => k.index + 2;
+    let detail = null;
+    let line;
+    if (globs && !paths) {
+      detail =
+        `declares 'globs:' but no 'paths:'. Claude Code reads only 'paths:', so it loads this ` +
+        `rule always-on. Add 'paths:' carrying the identical list.`;
+      line = keyLine(globs);
+    } else if (paths && !globs) {
+      detail =
+        `declares 'paths:' but no 'globs:'. rule-loader.mjs prefers 'globs:' (#742/#795); a ` +
+        `rule vendored out through the plugin's rules/ library carries both keys. Add 'globs:' ` +
+        `carrying the identical list. This does NOT apply to a repo's own consolidated ` +
+        `.claude/rules/ files — those are paths:-only by design and this gate never scans them.`;
+      line = keyLine(paths);
+    } else if (globs && paths) {
+      const g = new Set(globs.values);
+      const p = new Set(paths.values);
+      const onlyGlobs = [...g].filter((x) => !p.has(x));
+      const onlyPaths = [...p].filter((x) => !g.has(x));
+      if (onlyGlobs.length > 0 || onlyPaths.length > 0) {
+        detail =
+          `'globs:' and 'paths:' carry different lists (only in globs: ${JSON.stringify(onlyGlobs)}; ` +
+          `only in paths: ${JSON.stringify(onlyPaths)}). Claude Code scopes by 'paths:', ` +
+          `rule-loader.mjs by 'globs:', so the two would activate this rule on different files. ` +
+          `Make both lists identical.`;
+        line = keyLine(globs.index <= paths.index ? globs : paths);
+      }
+    }
+    if (detail) {
       violations.push({
-        rule: 'paths-frontmatter',
+        rule: 'globs-paths-mismatch',
         severity: 'error',
-        // NOTE (#795 / corrected 2026-07-25): the previous wording claimed rule-loader.mjs
-        // does not recognize `paths:` and that such a rule loads always-on. Both are false
-        // since #795 — `rule-loader.mjs:275` accepts `paths` alongside `globs`, and `:313`
-        // treats it as a fallback alias (`globs:` wins silently when both are present), so a
-        // `paths:`-only rule IS glob-scoped. The probe itself stays: it enforces the canonical
-        // vendoring form, which is a convention gate, not a loader-compatibility gate. That
-        // intent survives #795 and is the subject of the #742 fleet canonicalisation sweep.
-        // SCOPE (2026-09-16): this fires only over `rules/` library sources — the module doc's
-        // § Scope section names every caller. Do NOT re-point it at a repo's own
-        // `.claude/rules/`: those consolidated files are `paths:`-canonical and obeying this
-        // remedy there would undo the consolidation (docs/rule-authoring.md point 3).
-        message:
-          `${relPath}: frontmatter declares a top-level 'paths:' key. It is a recognized alias ` +
-          `for 'globs:' (issue #795), so the rule does load glob-scoped — but 'globs:' is the ` +
-          `canonical form for a rule VENDORED OUT through the plugin's rules/ library, which is ` +
-          `this probe's only population. Migrate to 'globs:' (see issue #742). This does NOT ` +
-          `apply to a repo's own consolidated .claude/rules/ files — those are paths:-canonical ` +
-          `(Claude Code's native loader reads only 'paths:') and this gate never scans them.`,
-        line: lineWithinFrontmatter(fm.startLine, fm.body, pathsMatch.index),
+        message: `${relPath}: frontmatter ${detail}`,
+        line,
       });
     }
   }
 
   // ---- provenance-header (error, opt-in) ----
-  if (requireProvenance) {
-    const firstLine = content.split('\n')[0] ?? '';
-    if (!firstLine.startsWith(PLUGIN_HEADER_PREFIX)) {
-      violations.push({
-        rule: 'provenance-header',
-        severity: 'error',
-        message:
-          `${relPath}: missing provenance header — the first line must start with ` +
-          `${JSON.stringify(PLUGIN_HEADER_PREFIX)} (see rules-sync.mjs PLUGIN_HEADER_PREFIX). ` +
-          `Without it, rules-sync.mjs mis-detects this file as a local override on the next re-sync ` +
-          `and will never update it again.`,
-        line: 1,
-      });
-    }
+  // A header on line 1 followed by a frontmatter is accepted HERE (the file
+  // has a header, and isPluginOwnedContent must keep old vendored copies
+  // plugin-owned); frontmatter-not-at-top reports that shape, once.
+  if (requireProvenance && !isPluginOwnedContent(content)) {
+    violations.push({
+      rule: 'provenance-header',
+      severity: 'error',
+      message:
+        `${relPath}: missing provenance header — a line starting with ` +
+        `${JSON.stringify(PLUGIN_HEADER_PREFIX)} (see rules-sync.mjs PLUGIN_HEADER_PREFIX) must ` +
+        `stand either on line 1 (a rule without frontmatter) or on the first non-blank line after ` +
+        `the closing '---' of a frontmatter that opens on line 1. Without it, rules-sync.mjs ` +
+        `mis-detects this file as a local override on the next re-sync and will never update it again.`,
+      line: 1,
+    });
   }
 
   // ---- placeholder (error) — skip matches inside fenced code blocks ----
@@ -569,6 +691,9 @@ export function validateRuleContent({ content, relPath, targetRoot = null, requi
   }
 
   // ---- globs: derived checks (zero-match-globs, foreign-glob) ----
+  // Driven by the loader's own parse, so these judge exactly the list
+  // rule-loader.mjs will scope by (`globs:`, else its `paths:` alias). On a
+  // misplaced block that yields no globs — frontmatter-not-at-top covers it.
   let globs;
   try {
     ({ globs } = parseGlobsFrontmatter(content));

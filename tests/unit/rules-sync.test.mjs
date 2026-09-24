@@ -206,14 +206,20 @@ describe('syncRules — re-run idempotency', () => {
 // ---------------------------------------------------------------------------
 
 describe('syncRules — local rule preservation', () => {
-  it('does not overwrite a rule file that lacks the plugin source header', () => {
+  it.each([
+    ['plain markdown', '# My Custom Parallel Sessions Rule\n\nThis is locally maintained.\n'],
+    // #1449 widened ownership to a header AFTER a line-1 frontmatter. Bug
+    // caught by this row: an ownership check that takes any line-1 frontmatter
+    // as the plugin's format claims a consumer's own paths:-scoped rule (the
+    // shape every consolidated .claude/rules/ file has) and overwrites it.
+    ['a paths:-scoped rule with its frontmatter on line 1', '---\npaths:\n  - src/**\n---\n\n# My Custom Parallel Sessions Rule\n'],
+  ])('does not overwrite a rule file that lacks the plugin source header: %s', (_label, localContent) => {
     const pluginRoot = makeFakePluginRoot(tmp());
     const repoRoot = tmp();
 
     // Pre-create a local parallel-sessions.md without the plugin header
     const rulesDir = join(repoRoot, '.claude', 'rules');
     mkdirSync(rulesDir, { recursive: true });
-    const localContent = '# My Custom Parallel Sessions Rule\n\nThis is locally maintained.\n';
     writeFileSync(join(rulesDir, 'parallel-sessions.md'), localContent);
 
     const result = syncRules({ pluginRoot, repoRoot });
@@ -258,6 +264,72 @@ describe('syncRules — stale plugin-owned rule overwrite', () => {
     );
     const actual = readFileSync(join(rulesDir, 'commit-discipline.md'), 'utf8');
     expect(actual).toBe(srcContent);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1449 — the header moved below a line-1 frontmatter. Copies in EITHER
+// position stay plugin-owned, so old copies upgrade and new ones keep updating.
+// (A stale always-on copy with the header on line 1 and no frontmatter is
+// Test 4 above.)
+// ---------------------------------------------------------------------------
+
+describe('syncRules — ownership across the #1449 header move', () => {
+  const HEADER = '<!-- source: session-orchestrator plugin (canonical: rules/always-on/commit-discipline.md) -->';
+  const NEW_FORMAT_SOURCE = `---\nglobs:\n  - src/**\npaths:\n  - src/**\n---\n${HEADER}\n\n# Rule: commit-discipline.md\n\nCurrent content.\n`;
+
+  /** Plugin root whose commit-discipline.md is NEW_FORMAT_SOURCE; consumer copy = targetContent. */
+  function setup(targetContent) {
+    const pluginRoot = makeFakePluginRoot(tmp());
+    writeFileSync(join(pluginRoot, 'rules', 'always-on', 'commit-discipline.md'), NEW_FORMAT_SOURCE);
+    const repoRoot = tmp();
+    const rulesDir = join(repoRoot, '.claude', 'rules');
+    mkdirSync(rulesDir, { recursive: true });
+    const target = join(rulesDir, 'commit-discipline.md');
+    writeFileSync(target, targetContent);
+    return { pluginRoot, repoRoot, target };
+  }
+
+  it('rewrites a pre-#1449 copy (header on line 1, globs: frontmatter below it) into the source byte-for-byte', () => {
+    // Bug caught — the "16 copies freeze": an ownership check that accepts the
+    // header only where the new format puts it (after the closing ---) takes
+    // every copy vendored before #1449 for a local override and preserves it
+    // forever, so its misplaced frontmatter — which makes Claude Code load the
+    // rule always-on — is never repaired in any consumer repo.
+    const { pluginRoot, repoRoot, target } = setup(
+      `${HEADER}\n---\nglobs:\n  - src/**\n---\n\n# Rule: commit-discipline.md\n\nOld content.\n`,
+    );
+
+    const result = syncRules({ pluginRoot, repoRoot });
+
+    expect(result.errors).toEqual([]);
+    expect(result.preserved).toEqual([]);
+    expect(result.written).toEqual(['parallel-sessions.md', 'commit-discipline.md', 'npm-quality-gates.md']);
+    expect(readFileSync(target, 'utf8')).toBe(NEW_FORMAT_SOURCE);
+  });
+
+  // Bug caught: the pre-#1449 line-1-only ownership check disowns a copy whose
+  // header sits after the frontmatter, so every rule freezes again right after
+  // its first upgrade and never receives the next library change.
+  it.each([
+    ['identical to the source', NEW_FORMAT_SOURCE, {
+      written: ['parallel-sessions.md', 'npm-quality-gates.md'],
+      skipped: ['commit-discipline.md'],
+      preserved: [],
+    }],
+    ['stale', NEW_FORMAT_SOURCE.replace('Current content.', 'Stale content.'), {
+      written: ['parallel-sessions.md', 'commit-discipline.md', 'npm-quality-gates.md'],
+      skipped: [],
+      preserved: [],
+    }],
+  ])('keeps a #1449-format copy plugin-owned when it is %s', (_label, targetContent, expected) => {
+    const { pluginRoot, repoRoot, target } = setup(targetContent);
+
+    const { written, skipped, preserved, errors } = syncRules({ pluginRoot, repoRoot });
+
+    expect(errors).toEqual([]);
+    expect({ written, skipped, preserved }).toEqual(expected);
+    expect(readFileSync(target, 'utf8')).toBe(NEW_FORMAT_SOURCE);
   });
 });
 
@@ -420,7 +492,7 @@ describe('syncRules — pre-write validation gate', () => {
     );
     writeFileSync(
       join(rulesDir, 'warn-rule.md'),
-      '<!-- source: session-orchestrator plugin (canonical: rules/always-on/warn-rule.md) -->\n---\nglobs:\n  - src/FooBarTests/**\n---\n\n# Warn Rule\n',
+      '---\nglobs:\n  - src/FooBarTests/**\npaths:\n  - src/FooBarTests/**\n---\n<!-- source: session-orchestrator plugin (canonical: rules/always-on/warn-rule.md) -->\n\n# Warn Rule\n',
     );
     const repoRoot = tmp();
     // Give the repo a matching file so only foreign-glob fires (not zero-match-globs too).
