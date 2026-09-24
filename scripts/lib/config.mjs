@@ -78,13 +78,50 @@ import { _parseRemoteHosts } from './config/remote-hosts.mjs';
 import { _parseEvolve, _parseEvolveDecay } from './config/evolve.mjs';
 import { _parseSkillEvolution } from './config/skill-evolution.mjs';
 import { _parseDispatcherAutonomy, resolveDispatcherAutonomy } from './config/dispatcher-autonomy.mjs';
-import {
-  loadHostPaths,
-  resolveHostPath,
-  resolveVaultDir,
-  resolveVaultIntegrationHost,
-} from './config/host-paths.mjs';
+import { loadHostPaths, resolveHostPath, resolveVaultIntegrationHost } from './config/host-paths.mjs';
 import { resolveNamedBaseline } from './named-baseline-resolver.mjs';
+
+/**
+ * Resolve `vault-dir` and report which tier produced it (agents/vault#319).
+ *
+ * Precedence (highest first): SO_VAULT_DIR env > owner.yaml `vault-dirs:`
+ * path-prefix match against the cwd > owner.yaml `paths.vault-dir` > committed.
+ * The env tier stays on top because tests/setup/vault-guard.mjs relies on it to
+ * shadow every host-local vault for the whole suite.
+ *
+ * Lives here, not in config/host-paths.mjs: host-paths.mjs is a direct CP11
+ * helper of check-owner-leakage.mjs, whose standalone vendored copy carries only
+ * its three direct helpers. The named-baseline-resolver import edge would make
+ * CP11 fail closed there (tests/husky/pre-commit-owner-leakage.test.mjs).
+ *
+ * `cwd` in the ctx is a test-only DI seam; production reads `process.cwd()`.
+ *
+ * @param {string|null|undefined} committed — value the committed Session Config produced
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object, cwd?: string }} [ctx] — from loadHostPaths()
+ * @returns {{ value: string|null|undefined, source: 'env'|'match'|'owner'|'committed' }}
+ */
+function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}) {
+  const isNonBlank = (v) => typeof v === 'string' && v.trim() !== '';
+
+  const envVal = env?.SO_VAULT_DIR;
+  if (isNonBlank(envVal)) return { value: envVal, source: 'env' };
+
+  const matched = resolveNamedBaseline({
+    cwd: cwd ?? process.cwd(),
+    ownerConfig,
+    env,
+    section: 'vault-dirs',
+    envKey: 'SO_VAULT_DIR',
+  });
+  if (matched.source === 'match' && isNonBlank(matched.path)) {
+    return { value: matched.path, source: 'match' };
+  }
+
+  const ownerVal = ownerConfig?.paths?.['vault-dir'];
+  if (isNonBlank(ownerVal)) return { value: ownerVal, source: 'owner' };
+
+  return { value: committed, source: 'committed' };
+}
 // express-path lives one level UP from config/ (see its module header for why):
 // the parser is a sibling of config/state-md-lock.mjs in every respect except
 // its directory. Only the pure parser is imported here — `evaluateExpressPath`

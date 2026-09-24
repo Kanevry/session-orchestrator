@@ -13,14 +13,12 @@
  *   3. committed Session Config default (the value the committed CLAUDE.md —
  *      AGENTS.md on Codex CLI — produced)
  *
- * `vault-dir` has one more tier (agents/vault#319), see `resolveVaultDir`:
- *   1. SO_VAULT_DIR env
- *   2. owner.yaml `vault-dirs:` entry whose `match.path-prefix` contains the cwd
- *   3. owner.yaml paths.vault-dir
- *   4. committed Session Config value
- * Without tier 2 a single host-wide `paths.vault-dir` silently redirected every
- * repo on the host into ONE vault, including a repo whose committed config names
- * a different one.
+ * `vault-dir` has one more tier (agents/vault#319): an owner.yaml `vault-dirs:`
+ * cwd match between env and paths.vault-dir. That tier lives in
+ * `resolveVaultDir` in scripts/lib/config.mjs, NOT here: this module is one of
+ * the three direct CP11 helpers check-owner-leakage.mjs imports, and a standalone
+ * vendored copy carries only those three files. A new import edge from here
+ * (e.g. to named-baseline-resolver.mjs) makes CP11 fail closed in that copy.
  *
  * `resolveVaultIntegrationHost` is the host-local switch for the
  * `vault-integration` gate itself (SO#1448). It may only LOWER the committed
@@ -33,7 +31,6 @@
  */
 
 import { loadOwnerConfig } from '../owner-yaml.mjs';
-import { resolveNamedBaseline } from '../named-baseline-resolver.mjs';
 
 /** Maps a logical path key to its environment-variable name. */
 const ENV_KEYS = /** @type {const} */ ({
@@ -103,49 +100,6 @@ export function resolveHostPath(key, committedDefault, { env = process.env, owne
   if (typeof ownerVal === 'string' && ownerVal.trim() !== '') return ownerVal;
 
   return committedDefault;
-}
-
-/**
- * @param {unknown} v
- * @returns {v is string}
- */
-function isNonBlank(v) {
-  return typeof v === 'string' && v.trim() !== '';
-}
-
-/**
- * Resolve `vault-dir` and report which tier produced it (agents/vault#319).
- *
- * Precedence (highest first): SO_VAULT_DIR env > owner.yaml `vault-dirs:`
- * path-prefix match against the cwd > owner.yaml `paths.vault-dir` > committed.
- * The env tier stays on top because tests/setup/vault-guard.mjs relies on it to
- * shadow every host-local vault for the whole suite.
- *
- * `cwd` in the ctx is a test-only DI seam; production reads `process.cwd()`.
- *
- * @param {string|null|undefined} committed — value the committed Session Config produced
- * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object, cwd?: string }} [ctx] — from loadHostPaths()
- * @returns {{ value: string|null|undefined, source: 'env'|'match'|'owner'|'committed' }}
- */
-export function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}) {
-  const envVal = env?.[ENV_KEYS['vault-dir']];
-  if (isNonBlank(envVal)) return { value: envVal, source: 'env' };
-
-  const matched = resolveNamedBaseline({
-    cwd: cwd ?? process.cwd(),
-    ownerConfig,
-    env,
-    section: 'vault-dirs',
-    envKey: ENV_KEYS['vault-dir'],
-  });
-  if (matched.source === 'match' && isNonBlank(matched.path)) {
-    return { value: matched.path, source: 'match' };
-  }
-
-  const ownerVal = ownerConfig?.paths?.['vault-dir'];
-  if (isNonBlank(ownerVal)) return { value: ownerVal, source: 'owner' };
-
-  return { value: committed, source: 'committed' };
 }
 
 /** vault-integration levels, weakest first. The index order IS the ordering. */
