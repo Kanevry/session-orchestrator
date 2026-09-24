@@ -22,6 +22,7 @@ for M in "$MDIR"/*/manifest.tsv; do
   L=$(dirname "$M"); lane=$(basename "$L")
   while IFS=$'\t' read -r id patch testfiles pattern contract refs || [ -n "${id:-}" ]; do
     case "$id" in (''|\#*|id) continue ;; esac
+    case "$patch" in (EXTERN:*) echo "REF $lane $id -> ${patch#EXTERN:} refs=$refs"; continue ;; esac
     n=$((n + 1)); P="$L/$patch"
     files=$(git apply --numstat "$P" 2>/dev/null | awk '{print $3}')
     if [ -z "$files" ] || ! before=$(sha $files) || ! git apply "$P" 2>"$L/$id.apply.err"; then

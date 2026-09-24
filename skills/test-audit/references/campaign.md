@@ -30,7 +30,7 @@ Done when the M0/M1 table is complete and per-file coverage is compared.
 
 **P9 Hand-off.** Draft MR and follow-up issues as listed in the SKILL.md § Output. A campaign that outlives many `main` commits merges `main` instead of rebasing; when `main` changed a file the campaign deleted, the deletion stays and the new contract moves into the keeper.
 
-**Calibration** (one TypeScript/vitest campaign, 2026-09-24; 5.8k test lines, 138 C/D/F marks): 105 mutations covered the 138 marks and took about 3 minutes on the offload host, each a focused `-t` run (81 of them in 63 s). P7 still found 4 lost proofs (2.9 % of the marks) and the per-file backstop 2 more, so neither replaces the other. The whole campaign took about 2 h wall-clock and about 3.2 M subagent tokens.
+**Calibration** (one TypeScript/vitest campaign, 2026-09-24; 5.8k test lines, 138 C/D/F marks): 105 mutations covered the 138 marks and took about 3 minutes on the offload host, each a focused `-t` run (81 of them in 63 s). P7 still found 4 lost proofs (2.9 % of the marks) and the per-file backstop 2 more, so neither replaces the other. The whole campaign took about 2 h wall-clock and about 3.2 M subagent tokens. Re-checked with `mutate.sh` at the MR head: control green, 105 of 105 mutations CAUGHT with a red summary, 11 cross-lane `REF` rows.
 
 ## Measurements
 
@@ -66,7 +66,7 @@ One directory per lane, `/tmp/<campaign>/mutations/<lane>/`, holding `manifest.t
 | Column | Content |
 |---|---|
 | `id` | unique mutation id, cited by the ledger |
-| `patch` | patch file in the lane directory: `git diff -- <prod-file>` of the mutated tree |
+| `patch` | patch file in the lane directory: `git diff -- <prod-file>` of the mutated tree; or `EXTERN:<lane>` when the contract's mutation lives in another lane's manifest (logged as `REF`, not run) |
 | `testfiles` | space-separated keeper test files that must go red |
 | `pattern` | the runner's name filter for the keeper (vitest `-t`), or `-` for whole files |
 | `contract` | one sentence |
