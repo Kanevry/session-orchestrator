@@ -30,41 +30,41 @@ expires-at: 2026-10-04
 
 Each guard here passed its own tests while permitting what it existed to forbid — a vacuous predicate, or a matcher widened without its bypass.
 
-**`expires-at` 2026-10-04 = the EARLIEST of the 17 absorbed dates** — a merged file must not outlive its shortest-lived content (`docs/rule-authoring.md` § Consolidated rules).
+**`expires-at` 2026-10-04 = the EARLIEST of the 19 absorbed dates** — a merged file must not outlive its shortest-lived content (`docs/rule-authoring.md` § Consolidated rules).
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
 ### A declaration and a grant must never share one unfiltered data structure
 
-`unionFileScopes()` treated the peer-VISIBILITY record `peer-session-<id>` (#1195) like any other, so `--union` put it into `allowedPaths`, GRANTING its paths to the whole wave and making the peer-write branch of `post-bash-write-verify` unreachable. Fix: union skips peer records, `--assert-disjoint` keeps them, materialize writes no per-agent file.
+`unionFileScopes()` must skip peer-VISIBILITY records (`peer-session-<id>`, #1195): including them in `allowedPaths` grants the wave their paths and makes `post-bash-write-verify` peer-write detection unreachable. `--assert-disjoint` keeps peer records; materialize writes no per-agent file for them.
 
 **Evidence** — 2026-09-02 W4 panel (RV-ARCH, HIGH), commit `2ae28770`; `scope-gate.mjs` (`PEER_RECORD_PREFIX` as SSOT) + `materialize-wave-scope.mjs`; four red proofs.
 
 ### An ownership check that compares the fallback value is self-fulfilling
 
-`if (id === null) id = recordedId` then `id === recordedId` compares a copy with itself — always "mine". The ACTOR identity may fall back; the ownership CLAIM is decided from the RAW input, else `current-session.json` hands you a live peer's identity and wave completion.
+`if (id === null) id = recordedId` followed by `id === recordedId` always says "mine". ACTOR attribution may fall back; decide the ownership CLAIM from RAW input, or `current-session.json` lends a live peer's identity and wave completion.
 
 **Evidence** — 2026-09-02 `grep -rn "= recordedId;" hooks/ scripts/` → exactly 2 sites, both defective: `hooks/on-session-end.mjs:147` (gated `durationMs`, `semanticSessionId`, final `wave.completed`; a /tmp repro wrote `last_wave_completed:3` into a PEER's file), `hooks/on-stop.mjs:284`. Fake-regressed red: 4 and 1 test.
 
 ### Widening a matcher without narrowing its bypass opens a hole the narrow version did not have
 
-Every check on a widened matcher needs the same per-statement scoping, the bypass first: judged over the WHOLE command, one appended exemption statement lifts it. Fix: bind the bypass to the statement the matcher hit.
+Scope every widened-matcher check per statement, starting with its bypass. A whole-command bypass lets one appended exemption lift another statement's denial; bind it to the statement the matcher hit.
 
 **Evidence** — 2026-08-23 after #1106: `glab issue create --title REAL; glab issue create --label ci --title junk` → ALLOW, `glab issue create --title REAL` → DENY, pattern live; security panel, reproduced on old and new versions.
 
 ### A declaration mechanism with two required shapes fails silently when only one is written
 
-#1020 needs per-agent path files AND the per-wave `{id,files}` aggregate (CLAUDE.md § Critical Gotchas); aggregate-only errors nowhere — no injection, `pre-task-scope-disjoint` permits all and writes NO ledger entry. A missing second artefact must be a loud error, never an empty read.
+#1020 requires per-agent path files AND the per-wave `{id,files}` aggregate (CLAUDE.md § Critical Gotchas). Aggregate-only silently loses injection: `pre-task-scope-disjoint` permits all and writes NO ledger entry. Missing either shape must be a loud error, never an empty read.
 
-Fix-pass BATCHES need the same manifest step as waves: W4-F8 ran without `w4-f8.json` + aggregate + union, `pre-task-scope-disjoint` blocked it, and the agent escalated by SendMessage — the HOOK is the catcher, not the coordinator.
+Fix-pass BATCHES require the same manifest step: W4-F8 omitted `w4-f8.json` + aggregate + union; the hook blocked dispatch and the agent escalated by SendMessage. The HOOK caught it, not the coordinator.
 
 **Evidence** — 2026-08-19 GitLab #1083: six waves / ~29 dispatches aggregate-only; `.orchestrator/wave-dispatch-scopes.json` held a two-day-old foreign waveKey. 2026-09-06 STATE.md Deviations: *"W4-F8 dispatched WITHOUT materialising its scope"*, `w4-f8.json` written after the fact, `--assert-subset` ok. Matrix: `docs/scope-collision-guard.md`.
 
 ### Ein Masker-Guard, der nur einen von zwei Generatoren deckt, liest sich als geschlossene Klasse
 
-W2 guardete nur `processLearning` (`maskerWouldChange` vor jedem skipped-noop, Kommentar "every skipped-noop return in processLearning"); `processSession` (groessere Leckflaeche) blieb date-only, der Legacy-Flat-Zweig liess das Klartext-Original liegen. Bei einem Skip-Site-Fix `rg` nach ALLEN Sites der Aktion, je Generator eine Fixture.
+Bei einem Skip-Site-Fix ALLE Sites per `rg` suchen und je Generator eine Fixture pruefen: W2 guardete `processLearning` mit `maskerWouldChange` vor jedem skipped-noop, liess aber `processSession` (groessere Leckflaeche) date-only und das Klartext-Original im Legacy-Flat-Zweig liegen.
 
-Die DRITTE Senke hat die Luecke der ersten beiden NICHT: `writeNarrative` (`vault-status/narrative-mirror.mjs`) vergleicht das GANZE Dokument statt fuenf kanonische Felder, und ihr Kandidat lief schon durch den aktuellen Masker — eine `maskerWouldChange`-Probe schriebe dort jeden Lauf neu, ohne zu heilen. Je Senke die VERGLEICHSFORM pruefen, nicht nur die Guard-Praesenz.
+Je Senke die VERGLEICHSFORM pruefen, nicht nur die Guard-Praesenz: `writeNarrative` (`vault-status/narrative-mirror.mjs`) vergleicht das GANZE Dokument statt fuenf kanonische Felder; der Kandidat ist bereits aktuell maskiert. Dort wuerde `maskerWouldChange` jeden Lauf neu schreiben, ohne eine Luecke zu heilen.
 
 **Evidence** — `scripts/lib/vault-mirror/process.mjs` guarded :687, :739, :763; unguarded :904, :929 (`rg -n skipped-noop`, 2026-09-03 @ `e22a702e`). Fixpass `37169158`: 4 Tests, rot auf HEAD 2/66, gruen 68/68. Dritte Senke: PROBE 2026-09-04 @ `cd785003`, `tests/lib/vault-status/narrative-mirror.test.mjs` — getauschte Argumente in `matchesModuloRedaction(existing, candidate)` → beide `skipped-noop` (Fake-Regression, 2 failed).
 
@@ -82,13 +82,25 @@ Unterminierter `<!--` in `## Session Config`: der PARSER liefert die Zeilen unge
 
 ### Ein Config-Key, den nur der Konsument kennt: Leser mit Default, aber kein Producer emittiert ihn
 
-`checkInstructionBudget` las `cfg['generated-byte-ceiling']`/`cfg['path-scoped-byte-ceiling']` mit Default; der einzige Producer `_parseInstructionBudget` kannte beide nie. Fuer jeden `cfg['<key>']`-Leser den Producer greppen.
+Fuer jeden `cfg['<key>']`-Leser den Producer greppen: `checkInstructionBudget` las `generated-byte-ceiling`/`path-scoped-byte-ceiling` mit Default, obwohl `_parseInstructionBudget` beide nie emittierte.
 
 **Evidence** — `grep -n "cfg\['" scripts/lib/instruction-budget-guard.mjs` (2026-09-11): 3 gelesene Keys, der Parser kannte nur 4 andere; die 79er-Suite blieb vor #1309 gruen.
 
-Dieselbe Deckel-Linie, andere Richtung: eine nur beratende Achse in ein Aggregat-Verdikt zu falten, macht jeden Konsumenten dieses Verdikts zum Stolperdraht. `tests/rules/receiving-review.test.mjs` pinnt `overBudget===false` am LIVE-Korpus, also wurde die naechste `/reconcile`-Regel (2,2-2,8 KB gegen 1.237 B Luft) zu einem roten `npm test` ohne Hinweis zur Schreibzeit. Vor dem Falten jeden Konsumenten zensieren und den Fold mit einem Write-Time-Preflight im Producer paaren.
+Vor dem Falten einer beratenden Achse ins Aggregat-Verdikt alle Konsumenten zensieren und den Fold mit einem Write-Time-Preflight im Producer paaren: `receiving-review.test.mjs` pinnt `overBudget===false` am LIVE-Korpus; die naechste `/reconcile`-Regel (2,2–2,8 KB gegen 1.237 B Luft) machte daher `npm test` rot, ohne Hinweis beim Schreiben.
 
 **Evidence** — session-17 W4 architect-reviewer HIGH (`receiving-review.test.mjs:54-57` + `instruction-budget-guard.mjs:1058`); behoben in W5 durch `budgetPreflight` in `scripts/lib/reconcile/writer.mjs`.
+
+### Eine Hook-Warnung mit einem woertlichen Pfad ist ein Pfad, keine Formatierungsmacke
+
+Wenn ein Guard einen Pfad meldet, der seltsam aussieht (`undefined/...`), ist die teure Fehlannahme, ihn als Artefakt des Guards zu lesen. Der Guard zitiert, was tatsaechlich geschrieben wurde. Wer die Warnung wegerklaert, committet den Fund.
+
+**Evidence** — 2026-09-20: ein W3-Agent schrieb seine Dry-Run-Fixtures nach $PWD/undefined/ (Pfad-Template loeste zu undefined auf). post-bash-write-verify warnte und nannte die Pfade woertlich; der Agent schrieb in seinem Bericht "its own path-template artefact" und "no repo file was touched by a Bash call". Vier Dateien lagen im Repo. Gefangen NICHT vom Bericht, sondern vom Abgleich jeder gestagten Datei gegen die filescopes beim Commit-Vorbereiten.
+
+### Ein Checker ueber die FORM eines Konstrukts ist blind fuer dessen ABWESENHEIT
+
+check-entry-guard (#1371) prueft vorhandene Entry-Guards auf symlink-fragile Vergleichsformen und ueberspringt jedes Statement-Fragment ohne process.argv[1] — eine Datei OHNE jeden Guard besteht ihn trivial. Form-Oracle und Existenz-Oracle sind zwei Checks, nie einer; die Komplementaritaet gehoert als Test auf EINEM gemeinsamen Fixture belegt, nicht als Prosa behauptet.
+
+**Evidence** — 2026-09-22 @ 98d06598: derselbe Quelltext (hooks/on-stop.mjs mit entferntem Guard, Kopie unter $TMPDIR) ergibt findFragileGuards() -> [] und check-hook-entry-guards -> 3 FAIL (missing-entry-guard x2, toplevel-profile-exit x1, Exit 1). Zensus real: 27 registrierte .mjs ueber 4 Manifeste, 27/27 guarded.
 
 <!-- untrusted-content:end -->
 
@@ -129,4 +141,8 @@ Dedupe anchors — dropping a pair regenerates that learning.
 - learning-id: `5949e882-0d7e-40be-afa8-aa7c1fd4832c`  <!-- markers only (substance: folded into the Masker-Guard entry above, paragraph "Die DRITTE Senke" — document comparison vs five canonical fields) -->
 - learning-key: `anti-pattern/folding-a-banner-only-budget-axis-into-overbudget-turns-a-live-corpus-test-pin-into-a-ci-trip-wire-the-writer-cannot-see`
 - learning-id: `6f0caca5-689d-494d-83a1-020b0ca2b3e8`  <!-- markers only (substance: folded into the Config-Key entry above, paragraph "Dieselbe Deckel-Linie" — folding a banner-only axis into overBudget trips a live-corpus test pin) -->
+- learning-key: `anti-pattern/eine-hook-warnung-mit-einem-woertlichen-pfad-ist-ein-pfad-keine-formatierungsmacke`
+- learning-id: `eca56714-89b0-4d73-bc5f-63d419e25f2d`
+- learning-key: `anti-pattern/ein-checker-ueber-die-form-eines-konstrukts-ist-blind-fuer-dessen-abwesenheit`
+- learning-id: `cef9230f-2aed-409d-817c-4b8cd59c185b`
 - generated-by: reconciliation-engine (Epic #693 FA2 / #695), consolidated by hand 2026-09-06

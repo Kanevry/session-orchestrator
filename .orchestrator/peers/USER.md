@@ -3,27 +3,28 @@ id: owner-card
 type: peer-card
 target: user
 created: "2026-05-25T17:34:29.831Z"
-updated: "2026-09-13T16:45:00.000Z"
-source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913", "evolve-2026-08-05-deep-1-reviewed-no-changes", "main-2026-09-13-session-45-readme-reduction"]
+updated: "2026-09-22T13:55:37.786Z"
+source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913", "evolve-2026-08-05-deep-1-reviewed-no-changes", "main-2026-09-13-session-45-readme-reduction", "main-2026-09-22-housekeeping-0834", "main-2026-09-21-session-4", "main-2026-09-20-session-3", "main-2026-09-19-session-18", "main-2026-09-19-session-9", "main-2026-09-19-session-1", "main-2026-09-18-session-10", "main-2026-09-18-session-1", "main-2026-09-17-session-23", "main-2026-09-16-session-6", "main-2026-09-13-session-42", "c33eb804-46cd-47b8-9392-b98c0a5b2598", "main-2026-09-12-session-26", "5de6560c-ae9c-4c4a-8212-f102c4576ff0", "main-2026-09-13-session-9", "main-2026-09-07-session-11", "main-2026-09-11-session-25"]
 ---
 
 <!-- BEGIN MANAGED: session-preferences -->
 ## Session preferences
 
-- Prefers deep sessions with 5 waves and parallel subagents (5W×6A standard; 5W×18A for deep clusters).
-- Session types map to execution modes: deep = parallel-subagents or coord-direct, housekeeping = single-wave Express Path with 0-6 agents.
-- Expects 100% completion rate per session with zero carryover as the default target.
-- Accepts filing follow-up issues for MEDIUM/LOW security findings rather than blocking the session.
-- When a session-reviewer reports BLOCK at inter-wave checkpoint, the fix folds into the next wave (Impl-Polish) as an additional agent rather than restarting.
+- Prefers work organized in waves with parallel subagents. Use the current request and resolved configuration to choose the shape; historical 5-wave sessions and their agent counts are examples, not a fixed dispatch requirement. An explicit request for housekeeping in waves overrides the single-wave Express default.
+- Preserve the user's selected model, reasoning effort, and service tier unless the user asks for a change. Historical role names or model choices in session records do not authorize a switch.
+- An instruction to execute the approved scope in full and end to end includes verification and session close. Continue authorized work without asking for the same approval again.
+- Aim to finish the agreed scope. Report verified completion separately from follow-ups or unresolved acceptance criteria; do not turn missing evidence into a completed item to meet a completion-rate target.
+- Accepts follow-up issues for findings outside the agreed scope. Classify findings by their effect and owner boundary before deciding whether they block; severity alone does not authorize an unrelated repair.
+- When a reviewer finds a blocker, fold its verified repair into the next suitable wave where dependencies allow, then re-verify before landing.
 <!-- END MANAGED: session-preferences -->
 
 <!-- BEGIN MANAGED: wave-structure-preferences -->
 ## Wave structure preferences
 
-- Wave 2 agents must have file-disjoint `allowedPaths` enforced — this is non-negotiable regardless of worktree isolation mode.
-- When RAM is low (below ~0.6 GB free), worktree isolation is dropped automatically; prompt-level `allowedPaths` is sufficient.
-- CLAUDE.md edits are deferred to Wave 5 coord-direct finalization — never dispatched to concurrent W2/W3 agents.
-- MEDIUM findings discovered in-session (W3/W4) are folded and filed as follow-ups, not deferred as carryover. Exceptions: MEDIUM findings that require redesign (non-local scope change) stay as HIGH-equivalent blockers.
+- Agents in every parallel wave must have file-disjoint scopes, regardless of worktree isolation. Materialize each agent's scope and the aggregate including coordinator edits before dispatch.
+- Use the current resource gate and the best host signal available. On macOS, memory pressure takes precedence over raw free RAM; a historical free-RAM threshold does not justify dropping isolation or changing the plan.
+- Keep shared CLAUDE.md edits with the coordinator in finalization; concurrent agents may return proposed additions.
+- Classify findings against the agreed scope before folding them into a later wave. A repair requiring a new contract or owner boundary must be routed explicitly rather than absorbed because its severity is MEDIUM.
 <!-- END MANAGED: wave-structure-preferences -->
 
 <!-- BEGIN MANAGED: discovery-and-scope -->
@@ -39,17 +40,18 @@ source_sessions: ["evolve-2026-05-25T1638", "evolve-2026-05-30-0913", "evolve-20
 ## Quality and verification
 
 - CI status at session-start is authoritative; local `npm test` green does not substitute for CI green.
-- Quality-Lite after Impl-Core must include `npm test` when the production fix touches files with co-located tests.
-- Full Gate (typecheck + lint + test + validate-plugin) is required before commit; the gate is the reviewer.
-- Session-reviewer dispatch is safely skipped when the session ships runtime + comprehensive test suite extension (≥10 new tests) on top of a known-good base.
-- Session-reviewer dispatch is safely skipped for doc-only scaffold sessions (zero new code modules).
+- Quality-Lite after Impl-Core must include relevant tests when the production fix touches files with adjacent tests.
+- Run the Full Gate before commit. A passing gate establishes its measured checks; it does not replace an independent review of the actual session diff.
+- Brief reviewers to try to refute the implementation and the coordinator's premises. Recent sessions repeatedly found HIGH defects and same-session regressions behind a green gate.
+- Choose review depth from the changed behavior and risk. A count of new tests, or a known-good base, is no reason to skip review; documentation still needs its claims checked against the implementation it describes.
 <!-- END MANAGED: quality-and-verification -->
 
 <!-- BEGIN MANAGED: resource-management -->
 ## Resource management
 
-- Hard-blocking on idle peer processes is unacceptable for autonomous loops; resource-adaptive 4-tier cap (green/warn/degraded/critical) is preferred.
-- Coordinator-direct mode at cap=0 is viable for multi-issue feature sessions under RAM pressure.
+- Use the current resource gate rather than a remembered tier table. Idle processes, cumulative swap, and a transient one-minute CPU spike are not sufficient evidence for reducing a wave.
+- Prefer the OS memory-pressure verdict, then available RAM, then raw free RAM when better signals are absent. Report the signal that actually determined the decision.
+- Coordinator-direct execution is viable when the gate sets cap=0. Preserve the user's selected model, reasoning effort, and service tier while adapting concurrency.
 <!-- END MANAGED: resource-management --><!-- BEGIN MANAGED: crashed-session-recovery -->
 ## Crashed session recovery
 

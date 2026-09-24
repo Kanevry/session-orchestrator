@@ -1,10 +1,11 @@
 /**
- * auto-dream.mjs — Auto-Dream Post-Session Hook helper (issue #502, PRD F2.2).
+ * auto-dream.mjs — Memory-maintenance signals and proposal I/O (issue #502).
  *
- * Provides the decision + I/O surface used by session-end Phase 3.6.5 and by
- * /memory-cleanup --dry-run / --apply-pending. Decides whether the post-session
- * dream should fire, writes the proposed diff to `.orchestrator/pending-dream.md`
- * atomically, and applies it in a follow-up session.
+ * Provides the due signal used by session-start's maintenance-due probe and
+ * the I/O used by /memory-cleanup --dry-run / --apply-pending. The former
+ * session-end Phase 3.6.5 nudge was retired in #1288. The manual skill writes
+ * `.orchestrator/pending-dream.md` atomically and applies a reviewed proposal;
+ * the maintenance probe does not generate proposals or dispatch a cleanup.
  *
  * Decision inputs (PRD F2.2 acceptance criteria):
  *   - memory-cleanup-threshold (default 5) — sessions since last cleanup
@@ -118,7 +119,7 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
 // ---------------------------------------------------------------------------
 
 /**
- * Decide whether session-end Phase 3.6.5 should dispatch /memory-cleanup --dry-run.
+ * Decide whether session-start should report that memory cleanup is due.
  *
  * Rules (PRD F2.2):
  *   - threshold === 0 → never trigger (kill-switch).

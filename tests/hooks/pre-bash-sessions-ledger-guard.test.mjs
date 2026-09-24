@@ -76,7 +76,10 @@ describe('pre-bash-sessions-ledger-guard', () => {
       // The bug: this exact command class put a schema-invalid record into the
       // ledger. Without the guard it runs and the corruption is silent.
       const env = runHook({ command: `echo '{"session_id":"x"}' >> ${LEDGER}` });
-      const denial = expectDeny(env, 'emit-session.mjs');
+      const denial = expectDeny(env, [
+        'emit-session.mjs',
+        'node scripts/check-sessions-integrity.mjs --session-id',
+      ]);
       // The operator must be told the sanctioned path, not just "blocked":
       // a deny whose text carries no route is what agents read as a crash and
       // route around (the #906 failure mode).

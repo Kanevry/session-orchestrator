@@ -18,10 +18,12 @@ import {
   chmodSync,
   existsSync,
   utimesSync,
+  copyFileSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Repo paths
@@ -80,7 +82,7 @@ function createTmpLayout(tmp) {
 // Helper: spawn scripts/autopilot.mjs
 // ---------------------------------------------------------------------------
 
-function runAutopilot(args, { tmp, env = {}, pathPrefix = null } = {}) {
+function runAutopilot(args, { tmp, env = {}, pathPrefix = null, script = SCRIPT, nodeArgs = [] } = {}) {
   const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
   const spawnEnv = {
     ...process.env,
@@ -93,7 +95,7 @@ function runAutopilot(args, { tmp, env = {}, pathPrefix = null } = {}) {
     ...env,
   };
 
-  return spawnSync(process.execPath, [SCRIPT, ...args], {
+  return spawnSync(process.execPath, [...nodeArgs, script, ...args], {
     cwd: tmp,
     env: spawnEnv,
     encoding: 'utf8',
@@ -368,6 +370,60 @@ describe('scripts/autopilot.mjs integration', () => {
     // an existsSync on the directory alone would also pass for any stray path.
     expect(existsSync(join(argv[3], 'commands', 'session.md'))).toBe(true);
     expect(argv).toHaveLength(4);
+    const session = JSON.parse(readFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8'));
+    expect(session.session_type).toBe('deep');
+  });
+
+  it('loads nondefault Session Config from a plugin path with spaces and Unicode', () => {
+    const scriptsDir = join(tmp, 'plugin büro', 'scripts');
+    mkdirSync(scriptsDir, { recursive: true });
+    copyFileSync(SCRIPT, join(scriptsDir, 'autopilot.mjs'));
+    copyFileSync(join(REPO_ROOT, 'scripts', 'parse-config.mjs'), join(scriptsDir, 'parse-config.mjs'));
+    copyFileSync(join(REPO_ROOT, 'scripts', 'validate-config.mjs'), join(scriptsDir, 'validate-config.mjs'));
+    symlinkSync(join(REPO_ROOT, 'scripts', 'lib'), join(scriptsDir, 'lib'), 'dir');
+    writeFileSync(join(tmp, 'CLAUDE.md'), '## Session Config\nresource-thresholds:\n  ram-free-min-gb: 10\n  ram-free-critical-gb: 9\n');
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE);
+
+    // Control host pressure and peer count, retaining the real parser, evaluator
+    // and loop. Eight free GiB is healthy by default, critical under this config.
+    const loader = join(tmp, 'host-fixture.mjs');
+    const evaluatorUrl = pathToFileURL(join(REPO_ROOT, 'scripts', 'lib', 'resource-probe', 'evaluate.mjs')).href;
+    writeFileSync(loader, `
+      import { registerHooks } from 'node:module';
+      const sources = {
+        './lib/resource-probe.mjs': ${JSON.stringify(`export { evaluate, DEFAULT_RESOURCE_THRESHOLDS } from ${JSON.stringify(evaluatorUrl)}; export async function probe() { return { ram_free_gb: 8, cpu_load_pct: 0 }; }`)},
+        './lib/session-registry.mjs': 'export async function detectPeers() { return [{}, {}, {}, {}, {}, {}, {}]; }',
+      };
+      registerHooks({ resolve(specifier, context, nextResolve) {
+        if (context.parentURL?.endsWith('/autopilot.mjs') && sources[specifier]) {
+          return { url: 'data:text/javascript,' + encodeURIComponent(sources[specifier]), shortCircuit: true };
+        }
+        return nextResolve(specifier, context);
+      } });
+    `);
+
+    const result = runAutopilot(['--headless', '--max-sessions=1', '--confidence-threshold=0.4'], {
+      tmp, script: join(scriptsDir, 'autopilot.mjs'), nodeArgs: ['--import', pathToFileURL(loader).href],
+    });
+
+    expect(result.status).toBe(0);
+    const [record] = readAutopilotJsonl(tmp);
+    expect(record.kill_switch).toBe('resource-overload');
+    expect(record.iterations_completed).toBe(0);
+    expect(readFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8')).toBe('');
+  });
+
+  it.each([
+    ['/session-orchestrator:session housekeeping --verbose', 'housekeeping'],
+    ['/session deep --verbose', 'deep'],
+    ['/session-orchestrator:session malformed', 'feature'],
+  ])('stub records only the mode from %s', (prompt, expectedMode) => {
+    const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
+    const result = spawnSync(STUB_CLAUDE, ['-p', prompt, '--plugin-dir', REPO_ROOT], {
+      cwd: tmp, env: { ...process.env, STUB_SESSIONS_JSONL: sessionsJsonl }, encoding: 'utf8', timeout: 5_000,
+    });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(readFileSync(sessionsJsonl, 'utf8')).session_type).toBe(expectedMode);
   });
 
   // -------------------------------------------------------------------------

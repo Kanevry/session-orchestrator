@@ -21,13 +21,16 @@ if [ "$EXIT_CODE" != "0" ]; then
   exit "$EXIT_CODE"
 fi
 
-# Parse session type from args: the second arg after "-p" is "/session <mode>"
-# argv: claude -p '/session deep'
+# Parse the mode token from the namespaced prompt (and legacy /session form).
 SESSION_TYPE="feature"
 for arg in "$@"; do
   case "$arg" in
-    /session\ *)
-      SESSION_TYPE="${arg#/session }"
+    /session\ *|/session-orchestrator:session\ *)
+      MODE="${arg#* }"
+      MODE="${MODE%% *}"
+      case "$MODE" in
+        housekeeping|feature|deep) SESSION_TYPE="$MODE" ;;
+      esac
       ;;
   esac
 done

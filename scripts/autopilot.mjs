@@ -94,10 +94,7 @@ const { maxSessions, maxHours, confidenceThreshold, maxTokens, dryRun } = parseF
  */
 function loadConfig() {
   try {
-    const scriptPath = resolve(
-      new URL('.', import.meta.url).pathname,
-      'parse-config.mjs'
-    );
+    const scriptPath = fileURLToPath(new URL('parse-config.mjs', import.meta.url));
     const result = spawnSync(
       process.execPath,
       [scriptPath],
