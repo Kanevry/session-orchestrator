@@ -1,0 +1,12 @@
+---
+description: "Use when writing, reviewing, or pruning tests. Three modes, one value bar: a four-question gate before any new test is written, a focused audit of one scope, and a campaign over a whole repo or subsystem that removes the least useful tests under a coverage guard. Every delete, merge, or repair carries written evidence and a caught mutation. Triggered by \"audit the tests\", \"prune the test suite\", \"remove low-value tests\", \"test diet\", \"is this test worth adding\", /test-audit."
+argument-hint: "[gate|audit|campaign] [scope] [--goal \\\"<goal>\\\"]"
+---
+
+# /test-audit
+
+Use the Session Orchestrator skill definition at `skills/test-audit/SKILL.md`.
+
+Arguments: $@
+
+Read that skill file and follow it exactly. When it references `$ARGUMENTS`, substitute the arguments above. Keep all Session Orchestrator platform fallbacks intact.
