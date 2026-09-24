@@ -1,4 +1,3 @@
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/backend.md) -->
 ---
 globs:
   - src/app/**
@@ -6,8 +5,15 @@ globs:
   - src/lib/api/**
   - src/routes/**
   - src/app/api/**
+paths:
+  - src/app/**
+  - src/services/**
+  - src/lib/api/**
+  - src/routes/**
+  - src/app/api/**
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/backend.md) -->
 # Backend Rules (Path-scoped)
 
 ## Server Actions (Next.js)

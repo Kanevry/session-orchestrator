@@ -1,4 +1,3 @@
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/backend-data.md) -->
 ---
 globs:
   - src/lib/db/**
@@ -8,8 +7,17 @@ globs:
   - migrations/**
   - src/lib/redis/**
   - src/lib/queue/**
+paths:
+  - src/lib/db/**
+  - src/lib/cache/**
+  - src/services/db/**
+  - supabase/**
+  - migrations/**
+  - src/lib/redis/**
+  - src/lib/queue/**
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/backend-data.md) -->
 # Backend Data Rules (Path-scoped)
 
 ## Database (Supabase)

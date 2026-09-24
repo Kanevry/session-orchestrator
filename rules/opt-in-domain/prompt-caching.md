@@ -1,11 +1,15 @@
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-domain/prompt-caching.md) -->
 ---
 globs:
   - "**/lib/ai/**"
   - "**/lib/llm/**"
   - "**/providers/**"
+paths:
+  - "**/lib/ai/**"
+  - "**/lib/llm/**"
+  - "**/providers/**"
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-domain/prompt-caching.md) -->
 # Prompt Caching Rules (Path-scoped — repos using `@anthropic-ai/sdk` or `@ai-sdk/anthropic`)
 
 > Path-scoped — applies anywhere a project imports `@anthropic-ai/sdk` or uses the `@ai-sdk/anthropic` provider. Out of scope: `session-orchestrator` itself (no SDK use; `backend.md` § "AI Provider Abstraction" already forbids direct SDK imports in business logic, and the orchestrator runs inside Claude Code's harness which manages caching at the platform layer).

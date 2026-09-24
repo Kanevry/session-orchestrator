@@ -47,6 +47,16 @@
  * tier-gate conditionals `applyGates` already implements (the `context`
  * param below is the exact mechanism rule-loader exposes for this).
  *
+ * #1449: that membership now matches what Claude Code actually loads. The
+ * loader used to skip a leading provenance comment before `---`, so a rule
+ * Claude Code loads always-on (it reads frontmatter only from line 1) counted
+ * here as path-scoped, and every consumer's always-on total was short by the
+ * vendored rules carrying that header. Such a file now counts as always-on —
+ * its displaced frontmatter as body bytes, since that is how Claude Code
+ * delivers it — and is listed in `defects` and on its own banner line. The
+ * list is report-only: it is not an `overBudget` term, so a defect never turns
+ * a budget verdict red.
+ *
  * Cross-references:
  * - "2026-06-20 instruction-budget audit" (#668 / #687; archived in the private Meta-Vault)
  * - scripts/lib/rule-loader.mjs (always-on classification + tier-gate SSOT)
@@ -79,7 +89,11 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { scanEventsBackwards } from './events.mjs';
-import { loadApplicableRules, parseGlobsFrontmatter } from './rule-loader.mjs';
+import {
+  FRONTMATTER_NOT_AT_TOP,
+  loadApplicableRules,
+  parseGlobsFrontmatter,
+} from './rule-loader.mjs';
 
 /** Default directive ceiling (operator-chosen growth ratchet just above the ~457 baseline). */
 export const DEFAULT_CEILING = 480;
@@ -1055,12 +1069,18 @@ function measureRuleCorpora(rulesDir) {
  *   bySurface: { coordinator: number, wave: number, always: number,
  *               generated: {bytes: number, files: number},
  *               pathScoped: {bytes: number, files: number} },
+ *   defects: string[],
  * }}
- *   perFile is sorted DESC by count. On missing/unreadable dir →
+ *   perFile is sorted DESC by count. `defects` (#1449) lists, sorted by name,
+ *   the rule files whose frontmatter does not start on line 1 — Claude Code
+ *   ignores it, so they load always-on and are counted as such. It is
+ *   independent of `context` (such a file has no tier to gate on) and never
+ *   feeds `overBudget`. On missing/unreadable dir →
  *   { totalDirectives: 0, totalBytes: 0, perFile: [], ceiling, byteCeiling,
  *     overDirectiveBudget: false, overByteBudget: false, overBudget: false,
  *     severity: 'ok', bySurface: { coordinator: 0, wave: 0, always: 0,
- *     generated: {bytes:0,files:0}, pathScoped: {bytes:0,files:0} } }.
+ *     generated: {bytes:0,files:0}, pathScoped: {bytes:0,files:0} },
+ *     defects: [] }.
  *
  *   #931a verdict rule — `overBudget` is the OR of the two axes
  *   (`overDirectiveBudget || overByteBudget`), NOT a per-axis severity split:
@@ -1165,6 +1185,7 @@ export function computeInstructionBudget(opts = {}) {
       generated: { bytes: 0, files: 0 },
       pathScoped: { bytes: 0, files: 0 },
     },
+    defects: [],
   };
 
   let allEntries;
@@ -1256,6 +1277,13 @@ export function computeInstructionBudget(opts = {}) {
   const overPathScopedBudget = bySurface.pathScoped.bytes > pathScopedByteCeiling;
   const overBudget = overDirectiveBudget || overByteBudget || overGeneratedBudget || overPathScopedBudget;
 
+  // #1449: read off the untiered list — a defective file carries no meta, so
+  // no tier gate drops it and `alwaysOnAll` holds every one of them.
+  const defects = alwaysOnAll
+    .filter((e) => e.defect === FRONTMATTER_NOT_AT_TOP)
+    .map((e) => basename(e.path))
+    .sort((a, b) => a.localeCompare(b));
+
   return {
     totalDirectives,
     totalBytes,
@@ -1271,6 +1299,7 @@ export function computeInstructionBudget(opts = {}) {
     overBudget,
     severity: overBudget ? 'warn' : 'ok',
     bySurface,
+    defects,
   };
 }
 
@@ -1352,6 +1381,21 @@ function formatNearPathScopedLine(budget, repoRoot) {
 }
 
 /**
+ * The #1449 defect line: rule files whose frontmatter Claude Code never reads.
+ * Names every file — the fix is per file (move the text above `---` below the
+ * closing fence), so a count alone would send the operator hunting.
+ *
+ * @param {string[]} defects - basenames from `computeInstructionBudget().defects`
+ * @returns {string}
+ */
+function formatFrontmatterDefectLine(defects) {
+  return (
+    `⚠ ${defects.length} rule(s) carry frontmatter that Claude Code ignores ` +
+    `(text before the opening ---): ${defects.join(', ')} — they load always-on.`
+  );
+}
+
+/**
  * Banner wrapper — session-start Phase 4 convention.
  *
  * Reads `instruction-budget.{enabled,ceiling,byte-ceiling,mode}` from Session
@@ -1367,7 +1411,9 @@ function formatNearPathScopedLine(budget, repoRoot) {
  *
  * The message names WHICH axis breached (#931a) — a banner that only said
  * "over budget" would leave the operator guessing whether to prune bullets or
- * prose. It stays at three lines because it renders at every session start.
+ * prose. It stays short because it renders at every session start: the breach
+ * block is three lines, plus one line per extra finding (near-threshold,
+ * frontmatter defect).
  *
  * @param {object} [opts]  forwarded to computeInstructionBudget.
  * @param {string} [opts.repoRoot] project root for the config read.
@@ -1382,8 +1428,10 @@ function formatNearPathScopedLine(budget, repoRoot) {
  *   raises it at {@link PATH_SCOPED_NEAR_THRESHOLD} of its ceiling, before the
  *   breach: that band used to be silent, and the ceiling then surfaced only
  *   inside `writeApprovedRules` — after the operator had approved rules it
- *   refused to write. The RETURN SHAPE is unchanged (`{severity:'warn',
- *   message}` | null), so `session-start-probes.mjs` needs no new vocabulary.
+ *   refused to write. Since #1449 a rule whose frontmatter is not on line 1
+ *   raises it too (one line naming the files), whether or not any axis is
+ *   close. The RETURN SHAPE is unchanged (`{severity:'warn', message}` |
+ *   null), so `session-start-probes.mjs` needs no new vocabulary.
  */
 export function checkInstructionBudget(opts = {}) {
   let cfg;
@@ -1455,18 +1503,27 @@ export function checkInstructionBudget(opts = {}) {
     budget.pathScopedByteCeiling > 0 &&
     budget.bySurface.pathScoped.bytes >= budget.pathScopedByteCeiling * PATH_SCOPED_NEAR_THRESHOLD;
 
-  if (!budget.overBudget && !nearPathScoped) return null;
+  // #1449 — reported on its own line, never folded into `overBudget`.
+  const defectLine =
+    budget.defects.length > 0 ? formatFrontmatterDefectLine(budget.defects) : null;
+
+  if (!budget.overBudget && !nearPathScoped && !defectLine) return null;
 
   const nearLine = nearPathScoped ? formatNearPathScopedLine(budget, opts.repoRoot) : null;
 
-  // Near-threshold and nothing breached: a one-finding banner, carrying the
-  // same remedy as the breach clause below (consolidate — never raise).
+  // Nothing breached: one block per finding — the near-threshold line carries
+  // the same remedy as the breach clause below (consolidate — never raise).
   if (!budget.overBudget) {
     return {
       severity: 'warn',
       message: [
-        `⚠ ${nearLine}.`,
-        '  Consolidate generated rules per docs/rule-authoring.md § Consolidated rules; never raise the ceiling.',
+        ...(nearLine
+          ? [
+              `⚠ ${nearLine}.`,
+              '  Consolidate generated rules per docs/rule-authoring.md § Consolidated rules; never raise the ceiling.',
+            ]
+          : []),
+        ...(defectLine ? [defectLine] : []),
       ].join('\n'),
     };
   }
@@ -1523,6 +1580,7 @@ export function checkInstructionBudget(opts = {}) {
     ...(nearLine ? [`  ${nearLine}.`] : []),
     `  Top files: ${top}`,
     '  See the instruction-budget audit (#687; archived in the private Meta-Vault) for the prune/demote list.',
+    ...(defectLine ? [defectLine] : []),
   ].join('\n');
 
   return { severity: 'warn', message };

@@ -1,11 +1,15 @@
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/swift.md) -->
 ---
 globs:
   - "**/*.swift"
   - "**/Package.swift"
   - "**/*.xcodeproj/**"
+paths:
+  - "**/*.swift"
+  - "**/Package.swift"
+  - "**/*.xcodeproj/**"
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/swift.md) -->
 # Swift Rules (Path-scoped)
 
 ## Language & Style

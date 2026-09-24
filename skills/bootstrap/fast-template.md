@@ -182,7 +182,7 @@ inherited Fast passes the confirmed contract ID and records all created paths.
 
 Idempotency is handled by the writer itself:
 - Missing → create
-- Exists, plugin-owned (first line is the `<!-- source: session-orchestrator plugin ... -->` header) and byte-identical → skip silently
+- Exists, plugin-owned (the `<!-- source: session-orchestrator plugin ... -->` header is on line 1, or is the first line after a line-1 frontmatter's closing `---` — `isPluginOwnedContent()`, #1449) and byte-identical → skip silently
 - Exists, plugin-owned and stale → overwrite (the plugin copy is canonical)
 - Exists WITHOUT that header → preserved untouched (a repo-private rule the operator authored)
 

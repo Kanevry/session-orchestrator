@@ -3,26 +3,37 @@
  * Syncs canonical rules from the plugin's rules/ library into a consumer repo's .claude/rules/.
  *
  * Stdlib-only, cross-platform, no Zod, no third-party parsers. ESM module.
- * Preserves local rules (files without the plugin source header).
+ * Preserves local rules — files carrying the plugin provenance header in
+ * neither accepted position (see `isPluginOwnedContent`).
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, basename, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { validateRuleContent, scanVendoringLeaks } from './validate-vendored-rules.mjs';
+import {
+  validateRuleContent,
+  scanVendoringLeaks,
+  isPluginOwnedContent,
+} from './validate-vendored-rules.mjs';
 import { isMainModule } from './is-main-module.mjs';
 
 // The vendoring sanitizer (issue #1098) lives in validate-vendored-rules.mjs —
 // it has that module's shape ("judge one rule file → findings") and its
 // standalone CLI needs it too. Re-exported here so importers that predate the
 // move (and this file's own tests) keep resolving it from rules-sync.mjs.
-export { scanVendoringLeaks };
+//
+// isPluginOwnedContent (#1449) — the ownership predicate below — lives there
+// for the same reason as PLUGIN_HEADER_PREFIX's copy: this module imports
+// validate-vendored-rules.mjs, so defining it here and importing it back into
+// the validator's provenance probe would make the two modules import each
+// other. Re-exported so the ownership rule is reachable from the sync module.
+export { scanVendoringLeaks, isPluginOwnedContent };
 
 // Exported (issue #722 Epic A Wave 2) for external consumers (e.g. tests).
-// NOT imported by validate-vendored-rules.mjs — that module imports
-// validateRuleContent FROM this file (see the pre-write gate below), so
-// importing this constant back would create a module-load cycle; it keeps
-// its own textually-identical copy instead.
+// NOT imported by validate-vendored-rules.mjs — this module imports
+// validateRuleContent FROM that file (see the pre-write gate below), so
+// importing this constant back there would create a module-load cycle; it
+// keeps its own textually-identical copy instead.
 export const PLUGIN_HEADER_PREFIX = '<!-- source: session-orchestrator plugin';
 
 /**
@@ -170,8 +181,9 @@ function escapeRegex(s) {
  *
  * When `validate` is true (the default — issue #722 Epic A Wave 2),
  * validateRuleContent() runs as a pre-write gate on every source file before
- * it is copied. A file with any error-severity violation (paths-frontmatter,
- * missing provenance header, unfilled placeholder) is recorded in `errors[]`
+ * it is copied. A file with any error-severity violation (frontmatter-not-at-top,
+ * globs-paths-mismatch, missing provenance header, unfilled placeholder) is
+ * recorded in `errors[]`
  * and its write is skipped entirely — it is never added to
  * written/skipped/preserved. Warn-severity violations (zero-match-globs,
  * foreign-glob) do NOT block the write; they are collected into the
@@ -405,9 +417,12 @@ export function syncRules({
         continue;
       }
 
-      const firstLine = targetContent.split('\n')[0] ?? '';
-      if (!firstLine.startsWith(PLUGIN_HEADER_PREFIX)) {
-        // Local file — preserve it
+      // Ownership accepts BOTH header positions (#1449): line 1 (the format
+      // every copy vendored before #1449 carries, frontmatter or not) and the
+      // first non-blank line after a line-1 frontmatter (the current format).
+      // So an old-format copy is rewritten into the new format below, never
+      // preserved; only a file with no header in either position is local.
+      if (!isPluginOwnedContent(targetContent)) {
         preserved.push(fileName);
         continue;
       }

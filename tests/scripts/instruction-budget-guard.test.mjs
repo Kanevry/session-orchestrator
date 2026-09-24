@@ -307,6 +307,66 @@ describe('#795 paths:-scoped rules excluded from always-on budget', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1449 — frontmatter not on line 1: Claude Code ignores it, so the rule loads
+// always-on. Same globs, same body; only the provenance comment moves.
+// ---------------------------------------------------------------------------
+
+const PROVENANCE_LINE = '<!-- source: session-orchestrator plugin (canonical: rules/x.md) -->';
+const SCOPED_FM = '---\nglobs:\n  - "src/**"\n---\n';
+/** New format: frontmatter on line 1, provenance comment after the closing fence. */
+const headerAfter = (heading) => `${SCOPED_FM}${PROVENANCE_LINE}\n\n## ${heading}\n\n- one\n`;
+/** Old format: provenance comment on line 1 pushes the frontmatter down. */
+const headerBefore = (heading) => `${PROVENANCE_LINE}\n${SCOPED_FM}\n## ${heading}\n\n- one\n`;
+
+describe('#1449 frontmatter not at line 1 counts always-on and is reported', () => {
+  function makeRoot() {
+    const root = mkdtempSync(join(tmpdir(), 'instr-budget-1449-root-'));
+    tmpDirs.push(root); // no CLAUDE.md → config defaults
+    return root;
+  }
+
+  it('lists the old-format rule in defects and counts it always-on; the new-format rule stays path-scoped', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'new.md', headerAfter('New'));
+    writeRule(dir, 'old.md', headerBefore('Old'));
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.defects).toEqual(['old.md']);
+    expect(result.perFile.map((f) => f.file)).toEqual(['old.md']);
+    expect(result.bySurface.pathScoped.files).toBe(1);
+  });
+
+  it('the banner names the defective file even when nothing is over budget', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'new.md', headerAfter('New'));
+    writeRule(dir, 'old.md', headerBefore('Old'));
+
+    const banner = checkInstructionBudget({ repoRoot: makeRoot(), rulesDir: dir, ceiling: 1000 });
+
+    expect(banner).not.toBeNull();
+    expect(banner.severity).toBe('warn');
+    expect(banner.message).toContain(
+      '⚠ 1 rule(s) carry frontmatter that Claude Code ignores (text before the opening ---): old.md — they load always-on.',
+    );
+    expect(banner.message).not.toContain('Instruction budget over');
+  });
+
+  it('control: with the old rule rewritten to the new format there is no defect and no banner', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'new.md', headerAfter('New'));
+    writeRule(dir, 'old.md', headerAfter('Old'));
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.defects).toEqual([]);
+    expect(result.perFile).toEqual([]);
+    expect(result.bySurface.pathScoped.files).toBe(2);
+    expect(checkInstructionBudget({ repoRoot: makeRoot(), rulesDir: dir, ceiling: 1000 })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Ceiling boundary
 // ---------------------------------------------------------------------------
 
@@ -989,6 +1049,7 @@ describe('never throws on a missing rulesDir', () => {
         generated: { bytes: 0, files: 0 },
         pathScoped: { bytes: 0, files: 0 },
       },
+      defects: [],
     });
   });
 

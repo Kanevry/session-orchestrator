@@ -23,6 +23,7 @@ All keys are optional. Unknown keys are **ignored without error** — adding a n
 | Field | Type | Required | Meaning | Example |
 |-------|------|----------|---------|---------|
 | `globs` | `string[]` (block or flow style) | no | Glob patterns relative to repo root. Rule loads only when a `scopePath` matches at least one. Absent = always-on; `[]` = matches nothing (disabled). | `globs:` then `  - src/**/*.tsx` |
+| `paths` | `string[]` (block or flow style) | no — **required alongside `globs` with the identical list in a path-scoped VENDORED rule** (`rules/` library, #1449) | Alias for `globs` in `rule-loader.mjs` (#795; `globs` wins when both are present). It is the ONLY key Claude Code's native loader reads, and only from a frontmatter that opens on line 1 — a rule without it loads always-on there. A vendored rule therefore carries both keys: `paths` for Claude Code, `globs` for `rule-loader.mjs`, which reads it first. A repo's own consolidated `.claude/rules/` files are `paths`-only (see [Consolidated rules](#consolidated-rules-n-provenance-pairs-in-one-file-the-merge-contract) point 3). | `paths:` then `  - src/**/*.tsx` |
 | `description` | `string` | no | Human-readable summary of what the rule covers. Surfaced on the rule entry; used by FA2/FA4 tooling and authors. | `description: Tailwind + a11y conventions` |
 | `mode` | `string` (`housekeeping` \| `feature` \| `deep`) | no | Session-mode gate. Rule loads only in the named session mode. Absent = passes every mode. | `mode: deep` |
 | `host-class` | `string` | no | Host-class gate. Matched against `host_class` in `.orchestrator/host.json`. Rule loads only on matching hosts. Absent = passes every host. | `host-class: macos-arm64-m4pro` |
@@ -93,29 +94,42 @@ Since issue #743, `rules/opt-in-stack/{backend,backend-data,frontend,swift,secur
 
 ### Provenance header + frontmatter coexistence (issue #722)
 
-Vendored rule sources carry a mandatory single-line provenance header **before** any frontmatter block — `rules-sync.mjs` uses that header (`PLUGIN_HEADER_PREFIX = '<!-- source: session-orchestrator plugin ...'`) to tell "plugin-owned, safe to overwrite on re-sync" apart from "local override, preserve". The recommended shape for a vendored rule with `globs:` frontmatter:
+Vendored rule sources carry a mandatory single-line provenance header — `rules-sync.mjs` uses that header (`PLUGIN_HEADER_PREFIX = '<!-- source: session-orchestrator plugin ...'`) to tell "plugin-owned, safe to overwrite on re-sync" apart from "local override, preserve". Where it goes depends on whether the rule has frontmatter (#1449):
+
+- **Rule with frontmatter** — the frontmatter opens on **line 1** (the file's first bytes are `---`), and the header is the first line directly after the closing `---`. Claude Code reads a rule's frontmatter only when it opens on line 1, so a header above the opener makes the whole block body text and the rule loads always-on in every consumer.
+- **Rule without frontmatter** — the header stays on line 1.
+
+The shape for a path-scoped vendored rule:
 
 ```markdown
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/foo.md) -->
 ---
 globs:
   - src/**/*.tsx
+paths:
+  - src/**/*.tsx
+tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/foo.md) -->
 # Foo Rules (Path-scoped)
 ```
 
-`rule-loader.mjs`'s frontmatter parser (`parseGlobsFrontmatter`) tolerates a leading run of blank lines and/or single-line HTML comments before the opening `---`, so a vendored rule's provenance header does not defeat its `globs:` scoping — the header line is skipped, then frontmatter parses exactly as it would without the header. This tolerance is header-agnostic (it accepts any single-line HTML comment, not only the plugin's own), so a hand-authored rule that happens to start with a one-line comment is unaffected.
+A path-scoped vendored rule declares its patterns under **both** `globs:` and `paths:`, with identical lists. `paths:` is the only key Claude Code reads from a rule; `globs:` is what `rule-loader.mjs` reads first (#742/#795 — when both are present `globs:` wins silently), so one key alone, or two different lists, would scope the rule differently per loader.
+
+`rule-loader.mjs`'s frontmatter parser (`parseGlobsFrontmatter`) counts a frontmatter block only when its opening `---` is line 1 — the same rule Claude Code applies. Until #1449 it skipped a leading run of blank lines and single-line HTML comments, which classified a header-first rule as path-scoped while Claude Code loaded it always-on. Now a block with anything before its opener (a comment, a blank line, any text) yields no globs and no meta: the rule is always-on, and its entry carries `defect: 'frontmatter-not-at-top'` so callers such as the instruction-budget guard can report the file instead of loading it always-on without a trace. The header after the closing `---` is ordinary body text and has no effect on loading.
+
+Consumer copies written before #1449 (header on line 1, frontmatter after it) still count as plugin-owned: `isPluginOwnedContent()` (`validate-vendored-rules.mjs`, re-exported by `rules-sync.mjs`) accepts the header at either position, so the next `/bootstrap --sync-rules` rewrites such a copy into the current format rather than preserving it as a local override.
 
 This convention binds only files that are actual sync SOURCES — the entries `syncRules()` resolves from `rules/_index.md` (`join(pluginRoot, 'rules', '_index.md')`, the manifest it reads before writing anything into a consumer's `.claude/rules/`). `rules/README.md` and `rules/_index.md` itself are never entries in that manifest, so they are never sync targets and carry no provenance header by construction — not an oversight to fix.
 
 ### Vendoring validation (issue #722)
 
-Before `syncRules()` writes a source file into a consumer repo's `.claude/rules/`, it runs a pre-write gate via `validateRuleContent()` (`scripts/lib/validate-vendored-rules.mjs`). Five probes:
+Before `syncRules()` writes a source file into a consumer repo's `.claude/rules/`, it runs a pre-write gate via `validateRuleContent()` (`scripts/lib/validate-vendored-rules.mjs`). Six probes:
 
 | Probe | Severity | Rejects / flags |
 |-------|----------|------------------|
-| `paths-frontmatter` | error | A top-level `paths:` frontmatter key **in a `rules/` library source**. Since #795 `rule-loader.mjs` accepts `paths:` as an alias for `globs:`, so such a rule IS glob-scoped — this is a vendoring-CONVENTION gate (`globs:` is the canonical form for vendored rules, #742), not a loader-compatibility gate. Its population is what `syncRules()` reads, i.e. `<pluginRoot>/rules/**` as listed by `rules/_index.md`; the consolidated files under `.claude/rules/` are `paths:`-canonical (see § Consolidated rules point 3) and are never its input. |
-| `provenance-header` | error (opt-in via `requireProvenance`, default `true` in `syncRules()`) | Missing provenance header on a library source — without it, `rules-sync.mjs` mis-detects the file as a local override on the next re-sync and can never update it again. |
+| `frontmatter-not-at-top` | error | A `---` frontmatter block preceded by anything — the provenance comment, a blank line, any text (#1449). Claude Code reads frontmatter only when it opens on line 1, so such a rule loads ALWAYS-ON in every consumer repo, whatever its scope keys say. Fix: move the block to line 1 and put the provenance header on the first line after the closing `---`. |
+| `globs-paths-mismatch` | error | A library source whose line-1 frontmatter carries exactly one of `globs:` / `paths:`, or both with different lists (compared order-insensitively) (#1449). A path-scoped vendored rule carries both with the identical list: `paths:` is the only key Claude Code reads, `globs:` is what `rule-loader.mjs` reads first (#742/#795). Replaces the pre-#1449 `paths-frontmatter` probe, which rejected `paths:` in a library source outright. Its population is what `syncRules()` reads, i.e. `<pluginRoot>/rules/**` as listed by `rules/_index.md`; the consolidated files under `.claude/rules/` are `paths:`-only by design (see § Consolidated rules point 3) and are never its input. |
+| `provenance-header` | error (opt-in via `requireProvenance`, default `true` in `syncRules()`) | Missing provenance header on a library source — without it, `rules-sync.mjs` mis-detects the file as a local override on the next re-sync and can never update it again. Two positions are accepted: line 1 (a rule without frontmatter) or the first non-blank line after the closing `---` of a frontmatter that opens on line 1. A header on line 1 ABOVE a frontmatter (the pre-#1449 format) still satisfies this probe — `frontmatter-not-at-top` reports that shape, once — and keeps an old consumer copy plugin-owned, so the next sync upgrades it to the current format instead of freezing it as a local override. |
 | `placeholder` | error | Unfilled placeholder tokens: `{{PROJECT_NAME}}`-style handlebars, a `## TODO: Customize` heading, or a `<!-- TODO:` comment — skeleton content, not a finished rule. |
 | `zero-match-globs` | warn | A `globs:` pattern matching 0 files in the target repo's tracked file list (`git ls-files`, falling back to a directory walk). Legitimately possible in a freshly-scaffolded repo. |
 | `foreign-glob` | warn | A glob segment carrying a PascalCase, product-like token (regex `[A-Z][a-z]+[A-Z]`, e.g. `WalkAITalkieTests`) — a likely copy-paste leftover from another project's rule scope. |
@@ -342,10 +356,11 @@ them silently loses a learning or regenerates it:
    10 path-scoped rule files, ALL 10 `paths:`-only — 0 carry `globs:`, 0 carry
    both (`grep -rn '^globs:' .claude/rules/` → no match, exit 1). Until this
    session `cli-design.md` carried both; the duplicate `globs:` was removed
-   here. `globs:` is canonical only for rules VENDORED OUT through the `rules/`
-   fleet library, where `validate-vendored-rules.mjs`'s `paths-frontmatter`
-   probe enforces it (issue #742); that probe judges `rules/` sources only and
-   never sees a consolidated file under `.claude/rules/`. Carrying both keys is
+   here. Only rules VENDORED OUT through the `rules/` fleet library carry
+   both keys, with identical lists — `paths:` for Claude Code, `globs:` for
+   `rule-loader.mjs` (issues #742, #1449) — and `validate-vendored-rules.mjs`'s
+   `globs-paths-mismatch` probe enforces it; that probe judges `rules/`
+   sources only and never sees a consolidated file under `.claude/rules/`. Carrying both keys is
    allowed, but NEVER with different values: `globs:` wins SILENTLY when both
    are present (#795), and `check-rules.mjs` fails a divergent pair outright.
 
@@ -468,7 +483,7 @@ Core security principles that apply to ALL code.
 
 ### (b) Glob-scoped rule (block-style `globs:`)
 
-Loads only on waves whose `allowedPaths` intersect the patterns. Mirrors the real `frontend.md`:
+Loads only on waves whose `allowedPaths` intersect the patterns. Mirrors the real `frontend.md` (the vendored `rules/opt-in-stack/frontend.md` additionally carries `paths:` with the same list, `tier: wave-only`, and its provenance header after the closing `---` — see [Vendored Rules](#vendored-rules-issue-722-epic-a)):
 
 ```markdown
 ---
@@ -558,4 +573,4 @@ timeout masks real perf regressions.
 - [`scripts/lib/reconcile/eligibility.mjs`](../scripts/lib/reconcile/eligibility.mjs) — `CONVERT_TYPES` (derived from `LEARNING_TYPE_REGISTRY`), rule-conversion eligibility gates
 - [`scripts/lib/memory-proposals/schema.mjs`](../scripts/lib/memory-proposals/schema.mjs) — `PROPOSAL_TYPES` (derived from `LEARNING_TYPE_REGISTRY`)
 - [`docs/session-config-reference.md`](session-config-reference.md#reconcile-693--696--697) § Reconcile — `reconcile.rule-expiry-days` / `min-rule-days` / `min-insight-chars` config keys that tune the emitted `expires-at` and eligibility gates
-- Issues: #336 (glob-scoping), #668 (instruction-budget), #692 (tier load-context gating), #693 (Rule Activation epic), #694 (FA1 foundation), #697 (FA4 validation), #722 (vendoring validation + archetype-scoped manifest), #723 B6 / #733 (type-taxonomy + provenance standard), #880 (FA5 — handwritten-rule symmetric check, warn mode)
+- Issues: #336 (glob-scoping), #668 (instruction-budget), #692 (tier load-context gating), #693 (Rule Activation epic), #694 (FA1 foundation), #697 (FA4 validation), #722 (vendoring validation + archetype-scoped manifest), #723 B6 / #733 (type-taxonomy + provenance standard), #880 (FA5 — handwritten-rule symmetric check, warn mode), #1449 (frontmatter on line 1, `globs:` + `paths:` pair and provenance-header position for vendored rules)

@@ -1,4 +1,3 @@
-<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/security-web.md) -->
 ---
 globs:
   - src/middleware*.ts
@@ -6,8 +5,15 @@ globs:
   - next.config.*
   - src/lib/csp*
   - src/lib/cors*
+paths:
+  - src/middleware*.ts
+  - src/app/**
+  - next.config.*
+  - src/lib/csp*
+  - src/lib/cors*
 tier: wave-only
 ---
+<!-- source: session-orchestrator plugin (canonical: rules/opt-in-stack/security-web.md) -->
 
 # Security — Web & API (Path-scoped)
 

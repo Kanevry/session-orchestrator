@@ -11,7 +11,12 @@ It is **not** the always-on rule set of *this* repository — those live in
 
 Every rule file here carries a
 `<!-- source: session-orchestrator plugin (canonical: rules/<path>) -->` header.
-On sync, plugin-sourced files are overwritten in the consumer while its
+In a rule with frontmatter it stands on the first line directly after the
+closing `---` — the frontmatter itself must open on line 1, because Claude Code
+reads a rule's frontmatter only there. A rule without frontmatter carries the
+header on line 1. A path-scoped rule declares its file patterns twice, as
+`globs:` and `paths:` with identical lists: `paths:` is the only key Claude Code
+reads, `globs:` is what `rule-loader.mjs` reads first (#1449). On sync, plugin-sourced files are overwritten in the consumer while its
 locally-authored rules are preserved (copy-on-write). The canonical manifest of
 what vendors where is [`_index.md`](./_index.md).
 

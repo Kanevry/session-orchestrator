@@ -5,6 +5,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { parseSessionConfig } from '../../scripts/lib/config.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from '../../scripts/lib/quality-gates-policy.mjs';
+import { isPluginOwnedContent } from '../../scripts/lib/validate-vendored-rules.mjs';
 
 const pluginRoot = path.resolve(import.meta.dirname, '../..');
 const roots = [];
@@ -124,7 +125,11 @@ it.each([['backend.md', 'security-web.md'], ['frontend.md', 'security-web.md']])
   for (const name of targets) {
     const filename = path.join(context.repo, '.claude/rules', name);
     expect(existsSync(filename), name).toBe(true);
-    expect(readFileSync(filename, 'utf8')).toMatch(/^<!-- source: session-orchestrator plugin/);
+    const content = readFileSync(filename, 'utf8');
+    // #1449: every target here is a scoped rule. Claude Code reads frontmatter
+    // only when '---' is line 1, so the header sits after the closing '---'.
+    expect(content, name).toMatch(/^---\n/);
+    expect(isPluginOwnedContent(content), name).toBe(true);
     rmSync(filename);
   }
   put(context.repo, '.orchestrator/bootstrap.lock', 'tier: standard\narchetype: sample-web\n');
