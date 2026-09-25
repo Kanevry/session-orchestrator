@@ -462,7 +462,9 @@ export function checkStaleArtifacts(repoRoot, ageDays = DEFAULT_ARTIFACT_AGE_DAY
  * H4 — CI configuration hygiene.
  *
  * Measured 5/6. Checks locally declared executable commands without evaluating
- * pipeline conditions or external includes. The dependency-audit gap is the load-bearing one: three
+ * pipeline conditions or external includes; when no local audit step is found
+ * but `.gitlab-ci.yml` declares `include:`, the finding is downgraded to an
+ * unverifiable, non-fixable one. The dependency-audit gap is the load-bearing one: three
  * of the tested repos carried known-vulnerable dependencies that no pipeline
  * would ever surface.
  *
@@ -506,6 +508,24 @@ export function checkCiConfig(repoRoot) {
   }
 
   if (ciConfigs.some(({ text }) => text) && !ciConfigs.some(hasAuditStep)) {
+    // Jobs supplied via include: (component/local/project/remote/template) are
+    // never resolved, so an audit may exist there — report it as unverifiable.
+    let includes = 0;
+    try {
+      const gitlabText = hasGitlab ? ciConfigs[0].text : '';
+      const include = yaml.loadAll(gitlabText, undefined, { schema: GITLAB_SCHEMA }).filter(isConfigMap).at(-1)?.include;
+      includes = Array.isArray(include) ? include.length : include ? 1 : 0;
+    } catch {
+      /* unparseable config — keep the plain missing-audit finding */
+    }
+    if (includes > 0) {
+      findings.push({
+        check: 'ci-audit-job',
+        fixable: false,
+        message: `CI dependency-audit step could not be verified: ${includes} include(s) not evaluated (.gitlab-ci.yml include:)`,
+      });
+      return findings;
+    }
     findings.push({
       check: 'ci-audit-job',
       fixable: true,

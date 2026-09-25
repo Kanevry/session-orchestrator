@@ -156,7 +156,7 @@
    - **Findings present**: render the message verbatim. It already leads with the count and the mechanically-fixable subset, then names the top 3 and summarises the remainder — this shape was chosen because a flat list stops being read past roughly 25 findings.
    - **Healthy repo**: silent (no banner).
 
-   Use `result.mechanical` when proposing session scope: findings with `fixable: true` (aged artifacts, ignored ballast, a missing CI audit step) are safe batch work, while the rest (release cadence, absent CI, undocumented configuration) need an operator decision and belong in the Q&A, not in an auto-fix batch.
+   Use `result.mechanical` when proposing session scope: findings with `fixable: true` (aged artifacts, ignored ballast, a missing CI audit step — an audit that cannot be verified because `.gitlab-ci.yml` pulls jobs via `include:` is reported `fixable: false` instead) are safe batch work, while the rest (release cadence, absent CI, undocumented configuration) need an operator decision and belong in the Q&A, not in an auto-fix batch.
 
    The checks are: release-tag/CHANGELOG distance from HEAD, ignored working-tree ballast plus files that are neither tracked nor ignored, aged `.orchestrator/` artifacts, CI pipeline presence and dependency-audit coverage, and `.env.example` presence. Two high-yield checks are intentionally NOT here: **docs-drift** is already covered by `claude-md-drift-check` (it only runs at session-END, so the gap is scheduling, not implementation), and **env completeness** is omitted because diffing `process.env` reads against `.env.example` produced a 100% false-positive rate against code that reads configuration through a central schema module.
 
