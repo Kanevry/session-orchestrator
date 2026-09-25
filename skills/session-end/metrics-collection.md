@@ -59,7 +59,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
    # corruption.
    METRICS_ENTRY=$(node --input-type=module -e "
    const entry = {
-     session_id: '<branch>-<YYYY-MM-DD>-<HHmm>',
+     session_id: '<STATE.md frontmatter session, verbatim>',
      session_type: '<type>',
      platform: '<claude|codex>',
      started_at: '<ISO 8601 from STATE.md frontmatter started_at — already canonical>',
@@ -101,7 +101,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
    **Canonical JSONL schema** (for field reference — populated by the snippet above):
    ```json
    {
-     "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
+     "session_id": "<STATE.md frontmatter session, verbatim>",
      "session_type": "<type>",
      "platform": "<claude|codex>",
      "started_at": "<canonical ISO 8601 from STATE.md>",
@@ -164,7 +164,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
 
    > **ISO-8601 canonical format (#540):** `started_at`, `completed_at`, and `lease_acquired_at` MUST match the regex `/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/`. The validating writer (`scripts/emit-session.mjs`) rejects any non-canonical form. Use `new Date().toISOString()` (Node-native, always canonical) — never hand-edit fractional digits or timezone suffixes.
 
-> The `session_id` uses `<HHmm>` from the `started_at` timestamp to ensure uniqueness when multiple sessions run on the same branch in one day.
+> The `session_id` is the STATE.md frontmatter `session` value, copied verbatim — the semantic label session-start minted, which `.orchestrator/current-session.json` also carries as `semantic_session_id`. Never construct one (the former `<branch>-<YYYY-MM-DD>-<HHmm>` recipe is wrong): `scripts/emit-session.mjs` adopts `raw_session_id`, the token rollup and the events-derived `session_start_ref` only when the record's `session_id` equals the marker's `semantic_session_id`; any other label is WARNed and those fields are omitted.
 
 > **Conditional fields:**
 > - `discovery_stats`: populated ONLY when `discovery-on-close: true` in Session Config AND Phase 1.5 executed successfully. Source: the stats object returned by the discovery skill (see discovery skill Phase 4.6 for schema). When discovery runs in **embedded mode** (Phases 0-4 only), `user_dismissed`, `issues_created`, and `actioned` per category will always be `0` — embedded mode does not perform user triage (Phase 5) or issue creation (Phase 6).

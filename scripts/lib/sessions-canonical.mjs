@@ -21,8 +21,9 @@
  *     collision class than (3), and rule (1) alone resolves it.
  *
  *     EXCEPT: a backfill stub never shadows a record that is not one (#1443).
- *     A stub (`_backfill_source` set, and not a `completed` record carrying a
- *     wave, an agent or a changed file) appended AFTER the real record for the
+ *     A stub (a synthesised `_backfill_source` — repair provenance is not one,
+ *     see `isBackfillStub()` — and no wave, agent or changed file, whatever the
+ *     `status` or `_repair_source`) appended AFTER the real record for the
  *     same id hid that record from every reader — the writers were closed by
  *     #1368 and the key-occupancy guard, this reader was the remaining gap.
  *     Among non-stubs, and among stubs, the newest still wins. The same guard
@@ -171,8 +172,11 @@ function supersedeRejectReason(superseder, target) {
 
 /**
  * `_backfill_source` prefix that `session-record-repair.mjs` stamps
- * (`REPAIR_SOURCE`, `'repair-invalid-sessions/1004'`) on a REAL record it
- * repaired in place. Kept as a literal so this module stays a stdlib-only leaf.
+ * (`REPAIR_SOURCE`, `'repair-invalid-sessions/1004'`) on a record it repaired
+ * in place that had NO origin of its own — i.e. a REAL record. A record that
+ * already carried a synthesised origin keeps it, and the repair goes to the
+ * separate `_repair_source` field, which this module deliberately ignores
+ * (#1443 F2). Kept as a literal so this module stays a stdlib-only leaf.
  */
 const REPAIR_PROVENANCE_PREFIX = 'repair-invalid-sessions/';
 
@@ -182,9 +186,15 @@ const REPAIR_PROVENANCE_PREFIX = 'repair-invalid-sessions/';
  * measured no work (0 waves, agents and files) — whatever its `status`. A
  * missing `status` is the norm on real records, so status cannot decide it.
  *
- * Repair provenance (`repair-invalid-sessions/…`) is never a stub: the repair
- * tool stamps it on a real record it fixed in place, not on one it invented
- * (#1443 F1 — a repaired 4-wave record lost to an older 2-wave one).
+ * Repair provenance (`repair-invalid-sessions/…`) in `_backfill_source` is
+ * never a stub: the repair tool puts it there only on a record without an
+ * origin, i.e. a real record it fixed in place, not one it invented (#1443 F1 —
+ * a repaired 4-wave record lost to an older 2-wave one). A repaired STUB keeps
+ * its synthesised `_backfill_source` (`state-md-completed`, `events-jsonl`,
+ * `abandoned`) and is judged on that and on its work, whatever its
+ * `_repair_source` says (#1443 F2 — a repaired 0-wave stub shadowed a 4-wave
+ * record once the repair overwrote its origin). Legacy records repaired before
+ * F2 lost that origin irrecoverably and read as real.
  *
  * Module-local on purpose. `session-close-backfill.mjs::isSupersedableStub()`
  * asks a narrower WRITER question ("may this be overwritten?" — `abandoned`

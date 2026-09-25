@@ -36,11 +36,17 @@
  *    no key-order churn.
  *
  * ── PROVENANCE ───────────────────────────────────────────────────────────────
- * Every repaired record carries `_backfill_source` + `_backfill_incomplete_fields`
- * (both already schema-accepted by `_validateOptionalFields`, so no schema bump
- * is needed). The incomplete-fields list is the EXACT set of fields this record
- * had defaulted, which is what lets a downstream consumer tell a measured zero
- * apart from a repaired-to-zero.
+ * Every repaired record carries `_repair_source` (`REPAIR_SOURCE`) +
+ * `_backfill_incomplete_fields`; `_backfill_source` is set to `REPAIR_SOURCE`
+ * only when the record had no origin of its own. An existing origin
+ * (`state-md-completed`, `events-jsonl`, `abandoned`) is KEPT, because
+ * `sessions-canonical.mjs`'s stub guard reads it: overwriting it promoted a
+ * repaired zero-work stub to a real record that shadowed the real one (#1443
+ * F2). `_backfill_*` is schema-accepted by `_validateOptionalFields`, and
+ * `validateSession` ignores undeclared keys (as it does the `_<field>_raw`
+ * sidecars), so no schema bump is needed. The incomplete-fields list is the
+ * EXACT set of fields this record had defaulted, which is what lets a
+ * downstream consumer tell a measured zero apart from a repaired-to-zero.
  *
  * It also never DISCARDS what it replaces: any field whose present value is
  * overwritten by a default is first copied to a `_<field>_raw` sidecar
@@ -70,7 +76,10 @@ import { checkSessionsIntegrity as defaultCheckIntegrity } from './sessions-inte
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Value written to `_backfill_source` on every record this module repairs. */
+/**
+ * Value written to `_repair_source` on every record this module repairs, and to
+ * `_backfill_source` only on a record that had no origin there (#1443 F2).
+ */
 export const REPAIR_SOURCE = 'repair-invalid-sessions/1004';
 
 /** Ledger path (relative to repoRoot) that `checkSessionsIntegrity` inspects. */
@@ -404,7 +413,14 @@ export function repairRecord(record) {
     ? record._backfill_incomplete_fields.filter((f) => typeof f === 'string')
     : [];
   const merged = orderIncompleteFields(incomplete);
-  out._backfill_source = REPAIR_SOURCE;
+  // The repair is recorded in its own field; `_backfill_source` keeps the
+  // record's ORIGIN. Overwriting a synthesised origin ('state-md-completed',
+  // 'events-jsonl', 'abandoned') made a repaired zero-work stub read as a real
+  // record, and it shadowed the real one for its id (#1443 F2).
+  out._repair_source = REPAIR_SOURCE;
+  if (typeof record._backfill_source !== 'string' || record._backfill_source.length === 0) {
+    out._backfill_source = REPAIR_SOURCE;
+  }
   out._backfill_incomplete_fields = [...new Set([...prior, ...merged])];
 
   return { record: out, defects, incompleteFields: merged, changed: true };

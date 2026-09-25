@@ -531,6 +531,7 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
 describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref fallback', () => {
   const U = '11111111-2222-4333-8444-555555555555';
   const SHA = 'a4e6d2550000000000000000000000000000beef';
+  const SHA_B = 'c'.repeat(40);
   let tmp;
   let targetFile;
 
@@ -604,6 +605,30 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect(r.stderr).toContain('token rollup found no subagents.jsonl records');
   });
 
+  // Bug: one fractional token value in subagents.jsonl made the rollup's
+  // total_tokens fractional; it was merged BEFORE validateSession(), which
+  // requires an integer — exit 1, no line appended, /close aborted over an
+  // optional enrichment.
+  it('a fractional token value omits total_tokens with a WARN and still appends', () => {
+    writeJsonlIn('subagents.jsonl', [stop('a1', 100.5, 200)]);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    expect('total_tokens' in readWritten()).toBe(false);
+    expect(r.stderr).toContain('emit-session: WARN token rollup produced an invalid field (total_tokens');
+  });
+
+  // Bug: with neither STATE.md nor an own session.started event supplying a
+  // ref, session_start_ref was omitted silently — indistinguishable from a
+  // record whose writer never looked.
+  it('WARNs when no source supplies session_start_ref, and still appends', () => {
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    expect('session_start_ref' in readWritten()).toBe(false);
+    expect(r.stderr).toContain(
+      'emit-session: WARN no session_start_ref — STATE.md carries none and no own session.started head_sha found'
+    );
+  });
+
   it('adopts the UUID from an OWNED current-session.json only — a foreign marker is WARNed', () => {
     writeJsonlIn('subagents.jsonl', [stop('a1', 1, 2)]);
     const cwd = join(tmp, 'wc');
@@ -637,21 +662,29 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
 
   // Bugs caught, one per row: a scan that ignores the UUID takes a parallel
   // session's start sha; a tail-first (last-match-wins) scan takes the sha a
-  // resume re-emitted under the same raw id instead of the session's real start.
+  // resume re-emitted under the same raw id instead of the session's real start;
+  // a scan that skips an own start event lacking head_sha takes a later
+  // compact/resume event's sha — the FIRST own event decides, sha or not.
   it.each([
     ['a foreign session.started precedes the own one', [
       { event: 'orchestrator.session.started', session_id: 'other-uuid', head_sha: 'b'.repeat(40) },
       { event: 'orchestrator.session.started', session_id: U, head_sha: SHA },
-    ]],
+    ], SHA],
     ['a resume re-emitted the own session.started (first match wins)', [
       { event: 'orchestrator.session.started', session_id: U, head_sha: SHA },
-      { event: 'orchestrator.session.started', session_id: U, head_sha: 'c'.repeat(40) },
-    ]],
-  ])('falls back to the own session.started head_sha when STATE.md carries none: %s', (_label, events) => {
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B },
+    ], SHA],
+    ['the first own session.started carries no head_sha (a later resume sha is not the start)', [
+      { event: 'orchestrator.session.started', session_id: U },
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B },
+    ], undefined],
+  ])('derives session_start_ref from the FIRST own session.started when STATE.md carries none: %s', (_label, events, expected) => {
     writeJsonlIn('events.jsonl', events);
     const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
     expect(r.status).toBe(0);
-    expect(readWritten().session_start_ref).toBe('a4e6d2550000000000000000000000000000beef');
+    const w = readWritten();
+    expect('session_start_ref' in w).toBe(expected !== undefined);
+    expect(w.session_start_ref).toBe(expected);
   });
 
   it('drops an explicit short session_start_ref instead of writing an ambiguous ref (#1443)', () => {

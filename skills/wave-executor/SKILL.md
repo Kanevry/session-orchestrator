@@ -93,7 +93,7 @@ Before starting the first wave (Discovery role):
    
    **Execution Config shortcut:** If the session-plan output contains an `### Execution Config` section, its execution-level fields (waves, agents-per-wave, isolation, enforcement, max-turns) take precedence over `$CONFIG`. Session-level fields (persistence, pencil) always come from `$CONFIG`. If the Execution Config section is missing, use `$CONFIG` alone.
 6. **Initialize session metrics** (if `persistence` enabled): Prepare a metrics tracking object for this session:
-   - `session_id`: `<branch>-<YYYY-MM-DD>-<HHmm>` (HHmm from `started_at` — ensures uniqueness across multiple sessions per day)
+   - `session_id`: the STATE.md frontmatter `session` value, verbatim (the semantic label, = `semantic_session_id` in `.orchestrator/current-session.json`) — never a constructed `<branch>-<YYYY-MM-DD>-<HHmm>`; `scripts/emit-session.mjs` attaches the raw UUID and token rollup only when the labels match
    - `session_type`: from Session Config
    - `started_at`: ISO 8601 timestamp
    - `waves`: empty array (populated after each wave)

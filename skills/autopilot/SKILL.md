@@ -111,7 +111,7 @@ intent for THIS run, not a standing policy.
 ## Command Surface
 
 ```
-/autopilot [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--dry-run]
+/autopilot [--max-sessions=N] [--max-hours=H] [--confidence-threshold=0.X] [--max-tokens=N] [--dry-run]
 ```
 
 | Flag | Default | Bounds | Meaning |
@@ -119,6 +119,7 @@ intent for THIS run, not a standing policy.
 | `--max-sessions` | `5` | 1..50 | Iteration cap (graceful exit when reached) |
 | `--max-hours` | `4.0` | 0.5..24.0 | Wall-clock budget for entire loop |
 | `--confidence-threshold` | `0.85` | 0.0..1.0 | Minimum `selectMode` confidence for auto-execute |
+| `--max-tokens` | `0` (off) | 0..10000000 | Token budget for `token-budget-exceeded`. Unit: cumulative **subagent OUTPUT** tokens, summed from each `sessions.jsonl` record's `total_token_output` (falling back to `total_tokens`, which is subagent-only as well) — coordinator tokens are not counted. Off by default until calibrated: one measured deep session's subagents produced 450 499 output tokens, so a six-figure budget stops the loop after about one deep session |
 | `--dry-run` | `false` | — | Print planned iterations without executing |
 
 Out-of-range values silently clamp to bounds. `--dry-run` exits after printing — never

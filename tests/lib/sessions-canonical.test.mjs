@@ -21,6 +21,7 @@ import {
   canonicalizeSessions,
   canonicalizeSessionsDetailed,
 } from '@lib/sessions-canonical.mjs';
+import { repairRecord } from '@lib/session-record-repair.mjs';
 
 let repoRoot;
 
@@ -181,6 +182,38 @@ describe('rule 1 — newest-wins per session_id', () => {
 
     expect(out).toHaveLength(1);
     expect(out[0].notes).toBe('newer-repaired');
+  });
+
+  it('keeps the real record when a later zero-work stub was repaired in place (#1443 F2)', () => {
+    // Bug: repairRecord overwrote the stub's synthesised `_backfill_source`
+    // ('state-md-completed') with repair provenance, which F1 reads as "never
+    // a stub" — so repairing a 0-wave stub (here: its microsecond timestamps)
+    // promoted it to real and it shadowed the 4-wave record via newest-wins.
+    const real = rec({
+      session_id: 'main-2026-09-24-deep-1',
+      waves: [{ wave: 1 }, { wave: 2 }, { wave: 3 }, { wave: 4 }],
+      total_waves: 4,
+      notes: 'real',
+    });
+    const { record: repairedStub, changed } = repairRecord(
+      rec({
+        session_id: 'main-2026-09-24-deep-1',
+        started_at: '2026-09-24T10:00:00.123456Z',
+        completed_at: '2026-09-24T10:00:00.123456Z',
+        _backfill_source: 'state-md-completed',
+        waves: [],
+        total_waves: 0,
+        total_agents: 0,
+        total_files_changed: 0,
+        notes: 'stub',
+      }),
+    );
+    expect(changed).toBe(true);
+
+    const out = canonicalizeSessions([real, repairedStub]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ notes: 'real', total_waves: 4 });
   });
 });
 

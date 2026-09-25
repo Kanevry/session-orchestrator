@@ -805,7 +805,8 @@ export function gateKillFields(run) {
  *
  * NO DOUBLE-COUNTING. The two gate paths never nest:
  *   - `scripts/run-quality-gate.mjs` spawns `scripts/lib/gates/gate-*.mjs`
- *     directly and does not import this module;
+ *     directly; it imports only the pure `gateKillFields` helper from this
+ *     module, never `runQualityGateWithRetry`, so it never reaches this emitter;
  *   - this module spawns the resolved gate COMMANDS (and `parse-config.mjs`)
  *     directly and does not invoke that wrapper.
  * A single run therefore passes through exactly one emitter.

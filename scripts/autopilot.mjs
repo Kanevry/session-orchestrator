@@ -14,7 +14,10 @@
  *   --max-sessions=N            Max iterations (1..50, default 5).
  *   --max-hours=H               Max wall-clock hours (0.5..24.0, default 4.0).
  *   --confidence-threshold=0.X  Mode confidence gate (0.0..1.0, default 0.85).
- *   --max-tokens=N              Cumulative output-token budget (0..10000000, default 500000; 0 disables).
+ *   --max-tokens=N              Cumulative token budget (0..10000000, default 0 = off). Counts
+ *                               SUBAGENT output tokens only (sessions.jsonl total_token_output,
+ *                               else total_tokens — both subagent-only; coordinator tokens are
+ *                               not counted). One deep session measured ~450k.
  *   --dry-run                   Emit a single record without spawning sessions.
  *   --verbose                   Pipe child process stdio (instead of inherit).
  *

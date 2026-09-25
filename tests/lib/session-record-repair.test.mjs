@@ -268,10 +268,29 @@ describe('repairRecord — every defect class becomes schema-valid', () => {
       expect(defects).toContain(c.defect);
       expect(() => validateSession(record)).not.toThrow();
       c.expect(record);
-      // Provenance is set on every repaired record.
+      // Provenance is set on every repaired record; with no prior origin the
+      // repair IS the origin.
+      expect(record._repair_source).toBe(REPAIR_SOURCE);
       expect(record._backfill_source).toBe(REPAIR_SOURCE);
     });
   }
+
+  it('keeps a synthesised `_backfill_source` and stamps the repair separately (#1443 F2)', () => {
+    // Bug caught: the repair overwrote 'state-md-completed' with its own
+    // provenance, so a repaired zero-work stub lost the only marker that
+    // classes it as a stub and began shadowing the real record for its id.
+    const input = baseRecord({
+      started_at: '2026-01-01T09:00:00.123456Z',
+      _backfill_source: 'state-md-completed',
+    });
+
+    const { record, changed } = repairRecord(input);
+
+    expect(changed).toBe(true);
+    expect(record._backfill_source).toBe('state-md-completed');
+    expect(record._repair_source).toBe(REPAIR_SOURCE);
+    expect(() => validateSession(record)).not.toThrow();
+  });
 
   it('repairs ALL defects of a six-defect record in ONE pass', () => {
     // Bug caught: first-error-only repair. Live line 85 needs six fields; a

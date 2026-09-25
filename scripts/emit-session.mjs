@@ -72,6 +72,9 @@ const ROLLUP_KEYS = Object.freeze([
   '_token_schema',
 ]);
 
+// Rollup keys validateSession() requires to be non-negative integers.
+const INTEGER_ROLLUP_KEYS = new Set(['total_tokens', 'matched_records']);
+
 /**
  * Resolve THIS session's raw harness UUID — the join key `subagents.jsonl`
  * (`parent_session_id`) and `events.jsonl` (`session_id`) carry, which the
@@ -123,9 +126,15 @@ function resolveOwnSessionUuid({ override, recordSessionId }) {
   const processIds = readProcessLocalSessionIds();
   const processAgrees = processIds.length === 0 || processIds.includes(uuid);
   if (namesRecord && processAgrees) return uuid;
+  // The record's session_id is the semantic label (STATE.md `session`); name
+  // both sides of whichever comparison failed, so the operator sees which drifted.
+  const why = namesRecord
+    ? `session label ${recordSessionId} matches, but this process runs as ` +
+      `${processIds.join('/')}, not the marker's uuid ${uuid}`
+    : `session label mismatch: marker semantic_session_id=${semantic || '<absent>'} ` +
+      `vs record session_id=${recordSessionId ?? '<unknown>'}`;
   process.stderr.write(
-    `emit-session: WARN current-session.json belongs to session=${semantic || uuid}, ` +
-      `not session_id=${recordSessionId ?? '<unknown>'}; omitting raw_session_id and the token rollup\n`
+    `emit-session: WARN current-session.json ${why}; omitting raw_session_id and the token rollup\n`
   );
   return null;
 }
@@ -133,8 +142,10 @@ function resolveOwnSessionUuid({ override, recordSessionId }) {
 /**
  * The `head_sha` of THIS session's own `orchestrator.session.started` event —
  * matched on the raw UUID, so a parallel session's start event never supplies
- * it. The FIRST match wins: a resume that re-emits the event under the same raw
- * id is not the session's start. Returns null when absent or not a full sha.
+ * it. The FIRST own event decides: a resume or compact that re-emits the event
+ * under the same raw id is not the session's start, so its sha is never taken —
+ * not even when the first own event carries none. Returns null when there is no
+ * own event, or the first one's head_sha is absent or not a full sha.
  *
  * Whole-file read, like deriveMemoryCleanupSignal() on the same file — fine at
  * today's events.jsonl size; revisit if the file outgrows a single read.
@@ -161,7 +172,7 @@ function readOwnStartHeadSha(eventsFile, uuid) {
       continue;
     }
     if (ev?.event !== 'orchestrator.session.started' || ev.session_id !== uuid) continue;
-    if (typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha)) return ev.head_sha;
+    return typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha) ? ev.head_sha : null;
   }
   return null;
 }
@@ -421,6 +432,11 @@ async function main() {
       process.stderr.write(
         `emit-session: derived session_start_ref=${headSha} from the own orchestrator.session.started event\n`
       );
+    } else {
+      process.stderr.write(
+        'emit-session: WARN no session_start_ref — STATE.md carries none and no own ' +
+          'session.started head_sha found\n'
+      );
     }
   }
 
@@ -450,9 +466,41 @@ async function main() {
     if (rollup !== null && rollup.matched_records > 0) {
       const merged = {};
       for (const key of ROLLUP_KEYS) {
-        if (!hasOwn(key) && Number.isFinite(rollup[key])) merged[key] = rollup[key];
+        if (hasOwn(key) || !Number.isFinite(rollup[key])) continue;
+        // Mirrors validateSession(): these two are non-negative INTEGERS, while
+        // total_token_input/output may be fractional — one fractional token
+        // value upstream must cost the field, not the record.
+        if (INTEGER_ROLLUP_KEYS.has(key) && !Number.isInteger(rollup[key])) {
+          process.stderr.write(
+            `emit-session: WARN token rollup produced an invalid field (${key} must be a ` +
+              `non-negative integer, got: ${rollup[key]}); omitting ${key}\n`
+          );
+          continue;
+        }
+        merged[key] = rollup[key];
       }
-      repaired = { ...repaired, ...merged };
+      // Enrichment must never be the reason the ledger gains no line: validate
+      // the enriched record first and fall back to the un-enriched one. Blamed
+      // on the rollup only when the un-enriched record validates on its own —
+      // otherwise the validation below reports the record's own defect.
+      try {
+        validateSession({ ...repaired, ...merged });
+        repaired = { ...repaired, ...merged };
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err;
+        let baseValid = true;
+        try {
+          validateSession(repaired);
+        } catch {
+          baseValid = false;
+        }
+        if (baseValid) {
+          process.stderr.write(
+            `emit-session: WARN token rollup produced an invalid field (${err.message}); ` +
+              `omitting token fields\n`
+          );
+        }
+      }
       if (rollup.total_tokens === null) {
         process.stderr.write(
           `emit-session: WARN token rollup matched ${rollup.matched_records} subagents.jsonl record(s) ` +

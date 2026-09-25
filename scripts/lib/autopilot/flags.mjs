@@ -20,7 +20,12 @@ export const FLAG_BOUNDS = Object.freeze({
   maxSessions: { min: 1, max: 50, default: 5 },
   maxHours: { min: 0.5, max: 24.0, default: 4.0 },
   confidenceThreshold: { min: 0.0, max: 1.0, default: 0.85 },
-  maxTokens: { min: 0, max: 10_000_000, default: 500_000 },
+  // Default 0 = token-budget switch OFF until calibrated (HR-101): the budget
+  // counts subagent OUTPUT tokens only, and one measured deep session's
+  // subagents alone produced 450 499 — a 500 000 default stopped autopilot after
+  // about one deep session. Revisit once sessions.jsonl carries enough
+  // total_token_output values to pick a threshold that fires rarely.
+  maxTokens: { min: 0, max: 10_000_000, default: 0 },
 });
 
 /** Default peer Claude-process count above which `resource-overload` fires when verdict is critical. */
