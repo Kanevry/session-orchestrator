@@ -13,7 +13,7 @@
  * Testing-rule compliance (testing.md · cli-design.md):
  *   - Behaviour over implementation: summary + on-disk bytes + exit codes.
  *   - Hardcoded expected values.
- *   - Error paths prove the exit-code contract (0/1/2; 3 is unit-tested via the
+ *   - Error paths prove the exit-code contract (0/1/2/4; 3 is unit-tested via the
  *     write seam in the module suite, since a corrupt write cannot be induced
  *     through the process boundary).
  */
@@ -221,12 +221,66 @@ describe('exit-code contract', () => {
     expect(res.stderr).toContain('repair-invalid-sessions:');
   });
 
-  it('--help exits 0 and documents all four exit codes', () => {
+  it('--help exits 0 and documents all five exit codes', () => {
     const res = run(['--help']);
     expect(res.code).toBe(0);
-    for (const code of ['0 completed', '1 arg error', '2 system error', '3 post-verification failed']) {
+    for (const code of [
+      '0 completed',
+      '1 arg error',
+      '2 system error',
+      '3 post-verification failed',
+      '4 unrepairable remain',
+    ]) {
       expect(res.stdout).toContain(code);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1442 — unrepairable remainder: exit 4, repair kept, remainder named
+// ---------------------------------------------------------------------------
+
+describe('unrepairable remainder (#1442)', () => {
+  // A microsecond started_at is repairable; a started_at that is not a
+  // timestamp at all has no defensible default and must stay as it is.
+  const REPAIRABLE =
+    '{"session_id":"main-2026-01-01-session-1","session_type":"feature","started_at":"2026-01-01T09:00:00.123456Z",' +
+    '"completed_at":"2026-01-01T10:00:00.000Z","total_waves":0,"waves":[],' +
+    '"agent_summary":{"complete":0,"partial":0,"failed":0,"spiral":0},"total_agents":0,"total_files_changed":0,' +
+    '"effectiveness":{"carryover":0}}';
+  const UNREPAIRABLE = REPAIRABLE.replace('main-2026-01-01-session-1', 'main-2026-01-02-session-1').replace(
+    '2026-01-01T09:00:00.123456Z',
+    'yesterday'
+  );
+
+  beforeEach(() => {
+    writeFileSync(ledger, `${REPAIRABLE}\n${UNREPAIRABLE}\n`, 'utf8');
+  });
+
+  it('--apply exits 4, keeps the repair and leaves the unrepairable line byte-identical', () => {
+    // Bug caught: exit 3 + full rollback for a ledger whose only remaining
+    // defect is a line nobody can repair — and no exit code telling "clean"
+    // apart from "clean except N".
+    const res = run(['--apply', '--json', '--repo-root', repoRoot]);
+
+    expect(res.code).toBe(4);
+    const summary = JSON.parse(res.stdout);
+    expect(summary.ok).toBe(true);
+    expect(summary.restored).toBe(false);
+    expect(summary.unrepairable).toBe(1);
+    const [line1, line2] = readFileSync(ledger, 'utf8').split('\n');
+    expect(JSON.parse(line1).started_at).toBe('2026-01-01T09:00:00.123Z');
+    expect(line2).toBe(UNREPAIRABLE);
+  });
+
+  it('dry-run names the line that will remain unrepairable and exits 4 without writing', () => {
+    // Bug caught: the operator learns about the remainder only after --apply.
+    const res = run(['--repo-root', repoRoot]);
+
+    expect(res.code).toBe(4);
+    expect(res.stdout).toContain('unrepairable:    1 (would remain invalid');
+    expect(res.stdout).toContain('line 2 main-2026-01-02-session-1');
+    expect(readFileSync(ledger, 'utf8')).toBe(`${REPAIRABLE}\n${UNREPAIRABLE}\n`);
   });
 });
 

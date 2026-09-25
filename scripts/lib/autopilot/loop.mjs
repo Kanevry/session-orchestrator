@@ -131,11 +131,12 @@ export async function runLoop(opts = {}) {
     confidence_threshold: confidenceThreshold,
     // Persisted for the same reason as the three above (HR-105): a switch whose
     // input is never recorded cannot be falsified afterwards. `0` = disabled.
-    // CEILING: reaching a NON-zero value here does not make TOKEN_BUDGET_EXCEEDED
-    // live under the headless driver — `readTailSession()` in scripts/autopilot.mjs
-    // returns no `usage`, and sessions.jsonl carries no token field to build one
-    // from, so `total_tokens_used` stays 0. Revisit when a session record gains
-    // token counts.
+    // Live path (#1436): scripts/emit-session.mjs merges the subagents.jsonl
+    // rollup (`total_token_output`, `total_tokens`) into each session record,
+    // `readTailSession()` in scripts/autopilot.mjs projects them as `usage`, and
+    // the accumulator below sums them into `total_tokens_used`. CEILING: a record
+    // with no own-UUID or no token-bearing subagent records carries no totals, so
+    // that iteration adds 0 — the budget undercounts, it never over-fires.
     max_tokens: opts.maxTokens ?? 0,
     iterations_completed: 0,
     kill_switch: null,

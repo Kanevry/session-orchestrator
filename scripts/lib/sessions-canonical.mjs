@@ -20,6 +20,17 @@
  *     (2026-05-10) carries a byte-identical duplicate LINE — an older
  *     collision class than (3), and rule (1) alone resolves it.
  *
+ *     EXCEPT: a backfill stub never shadows a record that is not one (#1443).
+ *     A stub (`_backfill_source` set, and not a `completed` record carrying a
+ *     wave, an agent or a changed file) appended AFTER the real record for the
+ *     same id hid that record from every reader — the writers were closed by
+ *     #1368 and the key-occupancy guard, this reader was the remaining gap.
+ *     Among non-stubs, and among stubs, the newest still wins. The same guard
+ *     joins ACROSS ids: a stub sharing a non-empty `raw_session_id` with a
+ *     non-stub under a DIFFERENT `session_id` is dropped for the non-stub. That
+ *     join runs LAST, so it can neither orphan a synthetic twin of (2) nor
+ *     change what (3) reports.
+ *
  * (2) NARROW COLLAPSE OF THE SYSTEMIC DOUBLE-STUB CLASS.
  *     Two `abandoned` records with an EXACT `started_at` + `completed_at`
  *     tuple match are one physical session recorded twice by the two backfill
@@ -70,8 +81,8 @@
  *         refused marker keeps both records and is reported (never logged)
  *         via `canonicalizeSessionsDetailed().ignoredSupersedes`.
  *
- * RULE ORDER: (1) → (2) → (3). The double-stub collapse must run BEFORE
- * supersede removal: with the reverse order a `supersedes` append deleted the
+ * RULE ORDER: (1) → (2) → (3) → (1)'s raw-id join. The double-stub collapse
+ * must run BEFORE supersede removal: with the reverse order a `supersedes` append deleted the
  * authentic stub first, shrank the tuple group to a single member, and the
  * synthetic phantom then survived the very session that refuted it.
  *
@@ -156,6 +167,52 @@ function supersedeRejectReason(superseder, target) {
     return null;
   }
   return 'no-shared-join-key';
+}
+
+/**
+ * True when a record is a BACKFILL STUB for rule (1)'s #1443 guard: it carries
+ * reconstructed provenance (`_backfill_source`) AND is not a `completed` record
+ * with real content. A content-free `completed` backfill (a
+ * `state-md-completed` record with 0 waves, agents and files) counts as a stub
+ * too — it measured nothing a real record for the same session lacks.
+ *
+ * Module-local on purpose. `session-close-backfill.mjs::isSupersedableStub()`
+ * asks a narrower WRITER question ("may this be overwritten?" — `abandoned`
+ * only), and that module imports this one, so importing back would be a cycle.
+ *
+ * @param {object} rec
+ * @returns {boolean}
+ */
+function isBackfillStub(rec) {
+  if (!isNonEmptyString(rec._backfill_source)) return false;
+  if (rec.status !== 'completed') return true;
+  const hasWork = (Array.isArray(rec.waves) && rec.waves.length > 0)
+    || rec.total_waves > 0 || rec.total_agents > 0 || rec.total_files_changed > 0;
+  return !hasWork;
+}
+
+/**
+ * Rule (1), cross-id half (#1443) — drop every backfill stub that shares a
+ * non-empty `raw_session_id` with at least one non-stub. A group of stubs only
+ * (or of non-stubs only) is left intact: with no non-stub to prefer there is no
+ * evidence which record is the artefact. Mutates `byId`.
+ * @param {Map<string, object>} byId
+ * @returns {void}
+ */
+function collapseStubsByRawSessionId(byId) {
+  const byRaw = new Map();
+  for (const rec of byId.values()) {
+    if (!isNonEmptyString(rec.raw_session_id)) continue;
+    const group = byRaw.get(rec.raw_session_id);
+    if (group) group.push(rec);
+    else byRaw.set(rec.raw_session_id, [rec]);
+  }
+  for (const group of byRaw.values()) {
+    if (group.length < 2 || group.every(isBackfillStub)) continue;
+    for (const rec of group) {
+      if (isBackfillStub(rec)) byId.delete(rec.session_id);
+    }
+  }
 }
 
 /**
@@ -285,10 +342,13 @@ function resolveSupersedes(byId, ignored) {
  *
  * Rules, applied in this order (see the module header for the measured
  * justification of each):
- *   1. newest-wins per `session_id` (file order is chronological);
+ *   1. newest-wins per `session_id` (file order is chronological), except
+ *      that a later backfill stub never shadows an earlier non-stub (#1443);
  *   2. two `abandoned` records with an exact, both-present
  *      `started_at` + `completed_at` tuple collapse to the non-synthetic one;
- *   3. a surviving record's ATTESTABLE `supersedes: X` removes record `X`.
+ *   3. a surviving record's ATTESTABLE `supersedes: X` removes record `X`;
+ *   4. a backfill stub sharing a non-empty `raw_session_id` with a surviving
+ *      non-stub under another `session_id` is dropped (#1443).
  *
  * The double-stub collapse runs BEFORE supersede removal so that a stub which
  * is itself about to be superseded still shadows its synthetic twin — with the
@@ -325,6 +385,9 @@ export function canonicalizeSessionsDetailed(records, { keepUnidentified = false
       if (keepUnidentified) unidentified.push(rec);
       continue;
     }
+    // #1443 — a later backfill stub never shadows an earlier non-stub.
+    const prev = byId.get(rec.session_id);
+    if (prev && isBackfillStub(rec) && !isBackfillStub(prev)) continue;
     byId.set(rec.session_id, rec);
   }
 
@@ -334,6 +397,9 @@ export function canonicalizeSessionsDetailed(records, { keepUnidentified = false
   // -- (3) supersede removal (order-independent, join-key constrained) -------
   const ignoredSupersedes = [];
   resolveSupersedes(byId, ignoredSupersedes);
+
+  // -- (1b) stub vs non-stub across ids, joined by raw_session_id (#1443) ----
+  collapseStubsByRawSessionId(byId);
 
   return { records: [...byId.values(), ...unidentified], ignoredSupersedes };
 }

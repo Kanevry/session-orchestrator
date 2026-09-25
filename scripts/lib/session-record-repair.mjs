@@ -98,6 +98,28 @@ const INCOMPLETE_FIELD_ORDER = Object.freeze([
   'total_agents',
   'total_files_changed',
 ]);
+// `timestamp_precision` (#1442) deliberately adds NOTHING to the list above: a
+// truncated timestamp is still a measurement (exact to the millisecond), not a
+// default. Listing it would make consumers discard a real value —
+// `sessions-staleness-banner.mjs` returns null for any timestamp named in
+// `_backfill_incomplete_fields`, `session-close-backfill.mjs` keys on
+// `includes('started_at')`. The sub-millisecond original survives in the
+// `_<field>_raw` sidecar instead.
+
+/**
+ * Timestamp fields `validateSession` holds to `ISO_8601_UTC_MS_RE`
+ * (`session-schema/validator.mjs`, not exported): exactly three fractional
+ * digits or none.
+ */
+const MS_PRECISION_FIELDS = Object.freeze(['started_at', 'completed_at', 'lease_acquired_at']);
+
+/**
+ * ISO-8601 UTC with MORE than three fractional digits (`.994600Z`) — the one
+ * rejected shape that has an unambiguous canonical form. Group 1 is the value
+ * cut at the millisecond. Offsets, `.3Z` and non-ISO strings do not match and
+ * stay for the validator to reject: there is no defensible default for them.
+ */
+const ISO_UTC_SUB_MS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d+Z$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -110,6 +132,20 @@ function isPlainObject(v) {
 /** Non-negative finite number — the shape every count field must satisfy. */
 function isCount(v) {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0;
+}
+
+/**
+ * Cut a sub-millisecond ISO-8601 UTC timestamp to milliseconds. TRUNCATES,
+ * never rounds: `.9999Z` must not roll into the next second, and truncation is
+ * monotone, so `completed_at >= started_at` survives on every pair it held on.
+ *
+ * @param {unknown} value
+ * @returns {string|null} the truncated value, or null when there is nothing to cut
+ */
+function truncateToMs(value) {
+  if (typeof value !== 'string') return null;
+  const m = ISO_UTC_SUB_MS_RE.exec(value);
+  return m ? `${m[1]}Z` : null;
 }
 
 function orderIncompleteFields(fields) {
@@ -321,6 +357,19 @@ export function repairRecord(record) {
     incomplete.add('total_files_changed');
   }
 
+  // -- timestamp precision (#1442) -------------------------------------------
+  // Runs BEFORE the completed_at default below, because that default copies
+  // `started_at` — a microsecond `started_at` would otherwise be copied into
+  // `completed_at` and spread the defect instead of fixing it.
+  let precisionCut = false;
+  for (const key of MS_PRECISION_FIELDS) {
+    const truncated = truncateToMs(out[key]);
+    if (truncated === null) continue;
+    preserveRaw(out, key, record[key], rescued);
+    out[key] = truncated;
+    precisionCut = true;
+  }
+
   // -- completed_at ---------------------------------------------------------
   // Legacy `ended_at` is the same fact under its old name (emit-session.mjs
   // aliasLegacyEndedAt precedent) — prefer it when parseable and monotonic,
@@ -332,13 +381,19 @@ export function repairRecord(record) {
     preserveRaw(out, 'completed_at', record.completed_at, rescued);
     const endedMs = typeof out.ended_at === 'string' ? Date.parse(out.ended_at) : NaN;
     const startedMs = Date.parse(out.started_at);
-    out.completed_at =
-      Number.isFinite(endedMs) && Number.isFinite(startedMs) && endedMs >= startedMs
-        ? out.ended_at
-        : out.started_at;
+    if (Number.isFinite(endedMs) && Number.isFinite(startedMs) && endedMs >= startedMs) {
+      // The COPY is cut to milliseconds; `ended_at` itself is not a validated
+      // field and keeps its original bytes, so nothing needs a sidecar here.
+      const endedTruncated = truncateToMs(out.ended_at);
+      if (endedTruncated !== null) precisionCut = true;
+      out.completed_at = endedTruncated ?? out.ended_at;
+    } else {
+      out.completed_at = out.started_at;
+    }
     defects.push('completed_at_missing');
     incomplete.add('completed_at');
   }
+  if (precisionCut) defects.push('timestamp_precision');
 
   if (defects.length === 0) {
     return { record, defects: [], incompleteFields: [], changed: false };
@@ -487,6 +542,11 @@ export function repairText(raw, deps = {}) {
       repaired,
       // Projected: every line that was invalid and did NOT get repaired.
       invalid_after: invalidBefore - repaired,
+      // Lines with no defensible repair (`repairLine` status `error`). They are
+      // emitted byte-identically and are EXPECTED to stay invalid after a
+      // write — `verifyWritten` tolerates exactly these line numbers (#1442).
+      // Same population as `errors`, which carries the per-line detail.
+      unrepairable: errors.length,
       duplicate_ids_observed: duplicates,
       defects_by_class: defectsByClass,
       errors,
@@ -507,9 +567,32 @@ export function repairText(raw, deps = {}) {
  * any other target it is reported as skipped rather than quietly measuring the
  * wrong file.
  *
- * @returns {{ok: boolean, invalid_after: number, invalid_lines: object[], integrity: string|object}}
+ * ── WHAT "OK" MEANS (#1442) ──────────────────────────────────────────────────
+ * Not "zero invalid lines". A ledger that carries lines this module has no
+ * defensible repair for could never pass that bar, so one unrepairable record
+ * rolled back every repair beside it (all-or-nothing). `ok` now means NO
+ * WORSENING and ALL REPAIRABLE VALID:
+ *   - every invalid line in the written file is one of `expected.unrepairableLines`
+ *     (so every repaired AND every already-valid line validates), and
+ *   - `invalid_after <= expected.invalidBefore`, and
+ *   - the integrity probe flags no line it did not already flag in
+ *     `expected.integrityBefore` (compared by line number — the repair never
+ *     adds or removes lines, so positions are stable across the write).
+ * With no `expected`, the defaults reproduce the old strict bar: no invalid
+ * line tolerated, and a clean pre-write integrity baseline.
+ *
+ * NAMED CEILING (BV-004): integrity is compared per line, not per reason — a
+ * line flagged before AND after for a DIFFERENT reason is not "worse". The
+ * per-line `validateSession` pass above still catches it for the schema half.
+ *
+ * @param {object} args
+ * @param {object} [args.expected]
+ * @param {number[]} [args.expected.unrepairableLines] 1-based lines allowed to stay invalid
+ * @param {number}   [args.expected.invalidBefore]      invalid count before the write
+ * @param {object|null} [args.expected.integrityBefore] pre-write `checkIntegrity` banner (null = clean)
+ * @returns {{ok: boolean, invalid_after: number, invalid_lines: object[], unexpected_invalid: object[], integrity: string|object, integrity_worsened: boolean}}
  */
-export function verifyWritten({ file, repoRoot, deps = {} }) {
+export function verifyWritten({ file, repoRoot, deps = {}, expected = {} }) {
   const {
     readFileSync = fs.readFileSync,
     validateSession = defaultValidateSession,
@@ -539,17 +622,50 @@ export function verifyWritten({ file, repoRoot, deps = {} }) {
     }
   }
 
+  const { unrepairableLines = [], invalidBefore = 0, integrityBefore = null } = expected;
+  const tolerated = new Set(unrepairableLines);
+  const unexpectedInvalid = invalidLines.filter((l) => !tolerated.has(l.line));
+
   let integrity = 'skipped-not-canonical-path';
-  if (typeof repoRoot === 'string' && repoRoot.length > 0) {
-    const canonical = path.join(repoRoot, CANONICAL_LEDGER_REL);
-    if (path.resolve(file) === path.resolve(canonical)) {
-      const banner = checkIntegrity({ repoRoot });
-      integrity = banner === null ? 'clean' : banner;
-    }
+  let worsened = false;
+  if (isCanonicalLedger(file, repoRoot)) {
+    const banner = checkIntegrity({ repoRoot });
+    integrity = banner === null ? 'clean' : banner;
+    worsened = integrityWorsened(integrityBefore, banner);
   }
 
-  const ok = invalidLines.length === 0 && (integrity === 'clean' || integrity === 'skipped-not-canonical-path');
-  return { ok, invalid_after: invalidLines.length, invalid_lines: invalidLines, integrity };
+  const ok = unexpectedInvalid.length === 0 && invalidLines.length <= invalidBefore && !worsened;
+  return {
+    ok,
+    invalid_after: invalidLines.length,
+    invalid_lines: invalidLines,
+    unexpected_invalid: unexpectedInvalid,
+    integrity,
+    integrity_worsened: worsened,
+  };
+}
+
+/** True when `file` IS `<repoRoot>/.orchestrator/metrics/sessions.jsonl` — the only file `checkIntegrity` reads. */
+function isCanonicalLedger(file, repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return false;
+  return path.resolve(file) === path.resolve(path.join(repoRoot, CANONICAL_LEDGER_REL));
+}
+
+/**
+ * Did the integrity probe flag a line after the write that it did not flag
+ * before? Fail-safe on an unreadable banner shape: a non-null banner without
+ * its `schemaInvalid` / `mirrorSkipped` arrays counts as worse.
+ */
+function integrityWorsened(before, after) {
+  if (after === null || after === undefined) return false;
+  for (const key of ['schemaInvalid', 'mirrorSkipped']) {
+    const now = after && Array.isArray(after[key]) ? after[key] : null;
+    if (now === null) return true;
+    const prior = before && Array.isArray(before[key]) ? before[key] : [];
+    const priorLines = new Set(prior.map((e) => e?.line));
+    if (now.some((e) => !priorLines.has(e?.line))) return true;
+  }
+  return false;
 }
 
 /**
@@ -560,7 +676,10 @@ export function verifyWritten({ file, repoRoot, deps = {} }) {
  * `<file>.tmp-<pid>` in the same directory and renames it over the target
  * (atomic within a filesystem), then re-verifies the written file. A failed
  * verification restores the backup byte-identically and reports `ok: false` —
- * the caller maps that to exit 3.
+ * the caller maps that to exit 3. Lines with no defensible repair are kept
+ * byte-identical and counted in `summary.unrepairable`; they are NOT a
+ * verification failure (see `verifyWritten` § WHAT "OK" MEANS) — the caller
+ * maps an ok run with an unrepairable remainder to exit 4.
  *
  * Never throws for a defective RECORD (those land in `summary.errors`); a
  * genuine I/O failure DOES throw and is the caller's exit-2 case.
@@ -584,6 +703,8 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
     existsSync = fs.existsSync,
   } = deps;
 
+  const { checkIntegrity = defaultCheckIntegrity } = deps;
+
   const raw = readFileSync(file, 'utf8');
   const { text, summary: base } = repairText(raw, deps);
 
@@ -594,9 +715,16 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
     backup_path: null,
     post_verify: null,
     ok: true,
+    restored: false,
   };
 
   if (!apply) return summary;
+
+  // -- integrity baseline (#1442) --------------------------------------------
+  // Measured on the ORIGINAL bytes, before anything is written, so the
+  // post-write probe can be judged "not worse" instead of "perfectly clean" —
+  // unrepairable lines keep the banner non-null on both sides by construction.
+  const integrityBefore = isCanonicalLedger(file, repoRoot) ? checkIntegrity({ repoRoot }) : null;
 
   // -- backup FIRST (unconditional unless explicitly opted out) --------------
   let backupPath = null;
@@ -621,14 +749,27 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
   }
 
   // -- post-verification ----------------------------------------------------
-  const verdict = verifyWritten({ file, repoRoot, deps });
+  const verdict = verifyWritten({
+    file,
+    repoRoot,
+    deps,
+    expected: {
+      unrepairableLines: base.errors.map((e) => e.line),
+      invalidBefore: base.invalid_before,
+      integrityBefore,
+    },
+  });
   summary.post_verify = verdict;
   summary.invalid_after = verdict.invalid_after;
 
   if (!verdict.ok) {
-    // Restore byte-identically. The backup is preferred (it is the on-disk
-    // artefact an operator can inspect); `raw` is the in-memory fallback for
-    // `--no-backup`, and both are the same bytes.
+    // Restore byte-identically — ONLY for a repaired (or previously valid) line
+    // that fails verification, or an integrity probe that got worse. An
+    // unrepairable remainder alone is not a failure (#1442): those lines were
+    // emitted byte-identically and keep the ledger exactly as broken as it was.
+    // The backup is preferred (it is the on-disk artefact an operator can
+    // inspect); `raw` is the in-memory fallback for `--no-backup`, and both are
+    // the same bytes.
     if (backupPath) {
       copyFileSync(backupPath, file);
     } else {

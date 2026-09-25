@@ -533,6 +533,19 @@ describe('#1005 — repair apply is ledger-guarded', () => {
   ])('%s', (_label, command, decision, reason) => {
     decisionAssertions[decision](runHook({ command }), reason);
   });
+
+  it('an in-command SO_DISABLED_HOOKS prefix is denied and the reason says why (#1442)', () => {
+    // Bug caught: the generic deny never named the allowed bare command, so an
+    // agent re-spelled it with an env prefix — which this hook cannot see (it
+    // reads SO_DISABLED_HOOKS from its OWN process env) and which also breaks
+    // the exact match. Both facts must be in the reason.
+    expectDeny(
+      runHook({
+        command: 'SO_DISABLED_HOOKS=pre-bash-sessions-ledger-guard node scripts/repair-invalid-sessions.mjs --apply',
+      }),
+      ['  node scripts/repair-invalid-sessions.mjs --apply', 'prefix INSIDE the command has no effect'],
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

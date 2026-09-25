@@ -79,6 +79,65 @@ describe('rule 1 — newest-wins per session_id', () => {
     expect(out[0].session_id).toBe('main-2026-05-10-session-1');
     expect(out[0].notes).toBe('second');
   });
+
+  it('keeps the real record when a backfill stub for the same id is appended after it (#1443)', () => {
+    // Bug: newest-wins never consulted `_backfill_source`, so a content-free
+    // backfill stub appended AFTER the real completed record hid that record
+    // from every reader — the session read as abandoned with 0 waves/files.
+    writeLedger([
+      rec({ session_id: 'main-2026-09-20-deep-1', total_waves: 3, total_files_changed: 7, notes: 'real' }),
+      rec({
+        session_id: 'main-2026-09-20-deep-1',
+        status: 'abandoned',
+        _backfill_source: 'state-md-completed',
+        total_waves: 0,
+        waves: [],
+        total_files_changed: 0,
+      }),
+    ]);
+
+    const out = readCanonicalSessions({ repoRoot });
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ status: 'completed', notes: 'real', total_waves: 3 });
+  });
+
+  it('drops a stub that shares raw_session_id with a real record under another id (#1443)', () => {
+    // Bug: the stub and the real record carry different session_ids, so
+    // newest-wins kept both and the one session was counted twice — once as
+    // abandoned. raw_session_id was consulted only for supersede markers.
+    const out = canonicalizeSessions([
+      rec({ session_id: 'main-2026-09-20-deep-1', raw_session_id: 'uuid-1443', total_waves: 2 }),
+      rec({
+        session_id: 'x-backfill',
+        raw_session_id: 'uuid-1443',
+        status: 'abandoned',
+        _backfill_source: 'abandoned',
+        total_waves: 0,
+      }),
+    ]);
+
+    expect(out.map((r) => r.session_id)).toEqual(['main-2026-09-20-deep-1']);
+  });
+
+  it('still lets a newer content-bearing backfill win over an older record (#1443 guard)', () => {
+    // Bug guarded: a stub test keyed on `_backfill_source` alone would freeze
+    // an id at its first record and discard a later completed backfill that
+    // DID measure work (waves/files) — the stub guard must not break rule 1.
+    const out = canonicalizeSessions([
+      rec({ session_id: 'main-2026-09-21-deep-1', notes: 'older' }),
+      rec({
+        session_id: 'main-2026-09-21-deep-1',
+        _backfill_source: 'state-md-completed',
+        total_waves: 4,
+        waves: [{ wave: 1 }],
+        notes: 'newer',
+      }),
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe('newer');
+  });
 });
 
 // ---------------------------------------------------------------------------

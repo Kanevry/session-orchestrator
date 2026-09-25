@@ -21,6 +21,7 @@ issues: [<issue numbers from plan>]
 session: <semantic session label, e.g. main-2026-01-01-deep-1>
 session-id: <raw session_id from .orchestrator/session.lock — OMIT the key when no lock exists>
 started_at: <resolveSessionStartedAt({ repoRoot }) — the lock's own started_at, NEVER new Date() at write time (#1368)>
+session-start-ref: <full sha from git rev-parse HEAD at init>
 status: active
 current-wave: 0
 total-waves: <from session plan>
@@ -50,6 +51,8 @@ node -e "import('./scripts/lib/state-md.mjs').then(m => console.log(JSON.stringi
 `resolveSessionStartedAt()` returns `.orchestrator/session.lock`'s own `started_at`, which the `orchestrator.session.lock.acquired` and `orchestrator.session.started` events agree with to the millisecond; it falls back to the current time only when no lock exists (`persistence: false`, or the acquire failed). Writing `new Date()` here instead put STATE.md 48 minutes ahead of the lock (measured 2026-09-13) and made `/close`'s #429 pre-check unable to join STATE.md to its own ledger record.
 
 `session-id` is the raw/native harness id (`resolveSessionIds().session_id`), `session` the semantic label (`.semantic_session_id`). Both are OPTIONAL (`schema-version` stays `1`): when the lock yields `null`, OMIT the key entirely — never write a placeholder. Neither field grants lock or registry ownership; see `skills/_shared/state-ownership.md`.
+
+`session-start-ref` is the commit the session started on (`git rev-parse HEAD`, full SHA); `scripts/emit-session.mjs` derives the ledger's `session_start_ref` from it and, when the key is absent, falls back to the `head_sha` of this session's own `orchestrator.session.started` event (#1443).
 
 Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 

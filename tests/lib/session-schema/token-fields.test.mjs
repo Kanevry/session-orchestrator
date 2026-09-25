@@ -112,11 +112,22 @@ describe('validateSession — token-field constraint violations', () => {
     ['subagents_with_tokens', 2.5, 'a non-integer float'],
     ['subagents_with_tokens', -1, 'negative'],
     ['subagents_with_tokens', '3', 'a numeric string'],
+    // #1436 — previously unchecked: `total_tokens: "abc"` validated, and the
+    // autopilot token budget reads exactly this field.
+    ['total_tokens', 'abc', 'a string'],
+    ['total_tokens', -1, 'negative'],
+    ['total_tokens', 2.5, 'a non-integer float'],
+    ['matched_records', '2', 'a numeric string'],
   ])('rejects %s when it is %s, naming the field in the message', (field, value) => {
     const entry = { ...BASE(), [field]: value };
 
     expect(() => validateSession(entry)).toThrow(ValidationError);
     expect(() => validateSession(entry)).toThrow(new RegExp(field));
+  });
+
+  it('accepts integer total_tokens / matched_records and null as not-measured (#1436)', () => {
+    expect(() => validateSession({ ...BASE(), total_tokens: 410, matched_records: 2 })).not.toThrow();
+    expect(() => validateSession({ ...BASE(), total_tokens: null, matched_records: null })).not.toThrow();
   });
 
   it('accepts subagents_with_tokens: 1 (valid integer)', () => {
