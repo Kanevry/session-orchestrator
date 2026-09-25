@@ -62,7 +62,9 @@
  *   <repo-root>    defaults to process.cwd()
  *   --json         emit a single JSON object on stdout, nothing else
  *   --check        exit 1 when the ratio exceeds the ceiling (consolidation
- *                  wave required); exit 0 when inside the corridor
+ *                  wave required); exit 3 when the ratio is not measurable
+ *                  (`reason: 'no-tests-found'`, #1451); exit 0 when inside
+ *                  the corridor
  *   --ceiling <n>  override the TV-003 ceiling (default 1.60)
  *   --stdin        take newline-separated paths from stdin instead of
  *                  enumerating via `git ls-files` (test seam / staged-only mode)
@@ -71,6 +73,12 @@
  *   0 — measurement completed (and, under --check, ratio is within the corridor)
  *   1 — --check only: ratio exceeds the ceiling
  *   2 — tool error (missing/unreadable root, bad argv)
+ *   3 — --check only: ratio not measurable — 0 test files counted while test-like
+ *       files ARE tracked (`reason: 'no-tests-found'`, e.g. a TypeScript repo whose
+ *       `*.test.ts` sit outside CODE_EXTENSIONS). Fail-closed since #1451: before,
+ *       such a repo read `ratio 0, withinCorridor true` — "not found" reported as
+ *       "in corridor". Whether TS tests SHOULD count is an open owner decision;
+ *       until it is made the script refuses to call the corridor green.
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -94,6 +102,23 @@ export const CODE_EXTENSIONS = Object.freeze(['.mjs', '.js', '.cjs']);
 
 /** Path prefix that makes a tracked code file part of the TEST corpus. */
 export const TEST_PREFIX = 'tests/';
+
+/**
+ * A tracked path that LOOKS like a test even though the recipe does not count it:
+ * a `*.test.*` / `*.spec.*` JS/TS file, anything under a `__tests__/` segment, or
+ * any file under `tests/` regardless of extension. Used only to tell "this repo
+ * has no tests" apart from "this repo has tests the recipe cannot see" (#1451).
+ */
+const TEST_LIKE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+
+/**
+ * @param {string} relPath repo-relative path
+ * @returns {boolean}
+ */
+export function isTestLikePath(relPath) {
+  const p = String(relPath).replace(/\\/g, '/').replace(/^\.\//, '');
+  return TEST_LIKE_RE.test(p) || p.startsWith(TEST_PREFIX) || /(^|\/)__tests__\//.test(p);
+}
 
 /** The TV-003 ceiling. Exceeding it switches the consolidation rule on. */
 export const DEFAULT_CEILING = 1.6;
@@ -154,7 +179,8 @@ export function countPhysicalLines(content) {
  * @param {(relPath: string) => string|null} opts.readFile returns content, or null when unreadable
  * @param {number} [opts.ceiling]
  * @returns {{testFiles:number,testLoc:number,srcFiles:number,srcLoc:number,ratio:number|null,
- *            ceiling:number,withinCorridor:boolean,consolidationWaveRequired:boolean,skipped:number}}
+ *            ceiling:number,withinCorridor:boolean|null,consolidationWaveRequired:boolean|null,
+ *            skipped:number,testLikeFilesSeen:number,reason:'no-tests-found'|null}}
  */
 export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
   let testFiles = 0;
@@ -162,8 +188,10 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
   let srcFiles = 0;
   let srcLoc = 0;
   let skipped = 0;
+  let testLikeFilesSeen = 0;
 
   for (const rel of files) {
+    if (isTestLikePath(rel)) testLikeFilesSeen++;
     const bucket = classifyPath(rel);
     if (bucket === null) continue;
     const content = readFile(rel);
@@ -183,6 +211,26 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
 
   // A repo with no src code has an undefined ratio, not an infinite one. Saying
   // `null` keeps the consumer from reading Infinity as a corridor breach.
+  // Fail closed (#1451): a zero numerator next to tracked test-like files means
+  // the recipe cannot SEE this repo's tests (e.g. `*.test.ts`), not that there
+  // are none. Reporting ratio 0 / withinCorridor true there turned "not found"
+  // into "green". The verdict is unknown, so every verdict field is null.
+  if (testFiles === 0 && testLikeFilesSeen > 0) {
+    return {
+      testFiles,
+      testLoc,
+      srcFiles,
+      srcLoc,
+      ratio: null,
+      ceiling,
+      withinCorridor: null,
+      consolidationWaveRequired: null,
+      skipped,
+      testLikeFilesSeen,
+      reason: 'no-tests-found',
+    };
+  }
+
   const ratio = srcLoc === 0 ? null : Number((testLoc / srcLoc).toFixed(4));
   const withinCorridor = ratio === null ? true : ratio <= ceiling;
 
@@ -196,6 +244,8 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
     withinCorridor,
     consolidationWaveRequired: !withinCorridor,
     skipped,
+    testLikeFilesSeen,
+    reason: null,
   };
 }
 
@@ -322,7 +372,11 @@ const USAGE =
  * because a measurement problem must not block a session start.
  *
  * @param {{ repoRoot?: string, ceiling?: number }} [opts]
- * @returns {{ severity: 'warn', message: string, ratio: number, ceiling: number } | null}
+ * The one non-null path besides a breach is `reason: 'no-tests-found'` (#1451):
+ * a repo whose tests the recipe cannot see gets a WARN, never silence — silence
+ * is what made the unmeasurable ratio read as green fleet-wide.
+ *
+ * @returns {{ severity: 'warn', message: string, ratio: number|null, ceiling: number, reason?: string } | null}
  */
 export function checkTestsSrcRatio({ repoRoot, ceiling = DEFAULT_CEILING } = {}) {
   try {
@@ -342,6 +396,18 @@ export function checkTestsSrcRatio({ repoRoot, ceiling = DEFAULT_CEILING } = {})
     };
 
     const result = measure({ files, readFile, ceiling });
+    if (result.reason === 'no-tests-found') {
+      return {
+        severity: 'warn',
+        ratio: null,
+        ceiling: result.ceiling,
+        reason: result.reason,
+        message:
+          `⚠ tests:src ratio nicht messbar — 0 Testdateien gezählt, ` +
+          `${result.testLikeFilesSeen} test-artige Dateien getrackt (#1451). ` +
+          `Detail: node scripts/lib/tests-src-ratio.mjs --json`,
+      };
+    }
     if (result.ratio === null || result.withinCorridor) return null;
 
     const dirty = isDirty(root);
@@ -408,11 +474,13 @@ function main() {
     console.log('  lines        physical; blanks + comments counted; EOF-newline-insensitive');
     console.log('');
     console.log('  --json         machine-readable envelope on stdout');
-    console.log('  --check        exit 1 when the ratio exceeds the ceiling');
+    console.log('  --check        exit 1 when the ratio exceeds the ceiling, 3 when not measurable');
     console.log(`  --ceiling <n>  override the TV-003 ceiling (default ${DEFAULT_CEILING})`);
     console.log('  --stdin        read newline-separated paths instead of git ls-files');
     console.log('');
-    console.log('Exit: 0 ok / within corridor · 1 (--check) ceiling exceeded · 2 tool error');
+    console.log(
+      'Exit: 0 ok / within corridor · 1 (--check) ceiling exceeded · 2 tool error · 3 (--check) not measurable',
+    );
     process.exit(0);
   }
 
@@ -460,10 +528,17 @@ function main() {
     // fail-open class is not worth re-litigating per payload size.
     writeStdoutLineSync(JSON.stringify(envelope, null, 2));
   } else {
-    const r = result.ratio === null ? 'n/a (no src code)' : result.ratio.toFixed(4);
-    const verdict = result.withinCorridor
-      ? 'within corridor'
-      : `ABOVE ceiling ${result.ceiling} — TV-003 consolidation wave required`;
+    const notMeasurable = result.reason === 'no-tests-found';
+    const r = notMeasurable
+      ? 'n/a (no tests found)'
+      : result.ratio === null
+        ? 'n/a (no src code)'
+        : result.ratio.toFixed(4);
+    const verdict = notMeasurable
+      ? `NOT MEASURABLE — ${result.testLikeFilesSeen} test-like files tracked but 0 counted (#1451)`
+      : result.withinCorridor
+        ? 'within corridor'
+        : `ABOVE ceiling ${result.ceiling} — TV-003 consolidation wave required`;
     const at = envelope.ref ? ` @ ${envelope.ref}${dirty ? '+dirty' : ''}` : '';
     writeStdoutLineSync(
       `tests:src = ${r}  (${result.testLoc} test LOC / ${result.srcLoc} src LOC` +
@@ -472,6 +547,13 @@ function main() {
     );
   }
 
+  if (args.check && result.reason === 'no-tests-found') {
+    console.error(
+      `tests:src ratio not measurable — 0 test files counted but ${result.testLikeFilesSeen} ` +
+        `test-like files tracked (no-tests-found); see #1451`,
+    );
+    process.exit(3);
+  }
   process.exit(args.check && !result.withinCorridor ? 1 : 0);
 }
 

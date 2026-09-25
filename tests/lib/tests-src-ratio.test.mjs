@@ -211,6 +211,20 @@ describe('measure — the recipe over a controlled corpus', () => {
     expect(r.withinCorridor).toBe(true);
   });
 
+  it('a repo with 0 counted test files but tracked *.test.ts files reports withinCorridor null and reason no-tests-found', () => {
+    // #1451: a TypeScript repo's tests sit outside CODE_EXTENSIONS. Before the
+    // fix this read ratio 0 / withinCorridor true — "not found" as "green".
+    const r = measure({
+      files: ['src/app.ts', 'scripts/build.mjs', 'src/app.test.ts', 'src/__tests__/b.spec.tsx'],
+      readFile: () => 'x\n'.repeat(10),
+    });
+    expect(r.testFiles).toBe(0);
+    expect(r.withinCorridor).toBeNull();
+    expect(r.ratio).toBeNull();
+    expect(r.reason).toBe('no-tests-found');
+    expect(r.testLikeFilesSeen).toBe(2);
+  });
+
   it('counts unreadable files as skipped rather than as zero-line files', () => {
     const r = measure({
       files: ['scripts/gone.mjs', 'scripts/here.mjs'],
