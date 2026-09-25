@@ -364,6 +364,9 @@ async function main() {
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(repaired, key);
   const needsProfile = !hasOwn('session_profile');
   const needsStartRef = !hasOwn('session_start_ref');
+  // What STATE.md contributed to session_start_ref, for the WARN below when no
+  // source supplies one (#1457 point 2): none, or a ref that was discarded.
+  let stateMdStartRefNote = 'STATE.md carried none';
   if (needsProfile || needsStartRef) {
     let stateMdContents = '';
     try {
@@ -375,6 +378,7 @@ async function main() {
           `derivation (${err?.message ?? err}); omitting both\n`
       );
       stateMdContents = '';
+      stateMdStartRefNote = 'STATE.md unreadable';
     }
     // No initialiser: both the try and the catch below assign `profile`.
     let profile;
@@ -393,6 +397,7 @@ async function main() {
           `emit-session: WARN STATE.md session-start-ref=${rawRef} is not a full hex sha; ` +
             `omitting session_start_ref\n`
         );
+        stateMdStartRefNote = 'STATE.md ref discarded (not a full hex sha)';
       }
     } catch (err) {
       process.stderr.write(
@@ -401,6 +406,7 @@ async function main() {
       );
       profile = null;
       startRef = null;
+      stateMdStartRefNote = 'STATE.md unparseable';
     }
     const derived = {};
     if (needsProfile && profile !== null) derived.session_profile = profile;
@@ -410,6 +416,9 @@ async function main() {
       if (owner !== null && owner === repaired.session_id) {
         repaired = { ...repaired, ...derived };
       } else {
+        if (derived.session_start_ref !== undefined) {
+          stateMdStartRefNote = `STATE.md ref discarded (belongs to session=${owner ?? '<absent>'})`;
+        }
         // A visible omission: silence here is indistinguishable from "STATE.md
         // carries no such field", and a foreign STATE.md in this working copy
         // is precisely what the operator wants to know about.
@@ -424,9 +433,13 @@ async function main() {
 
   // session_start_ref fallback (#1443): STATE.md supplied none (absent key,
   // foreign owner, unparseable) — take the head_sha the SessionStart hook
-  // recorded on this session's own start event. Absent there too → omitted.
-  if (!hasOwn('session_start_ref') && ownUuid !== null) {
-    const headSha = readOwnStartHeadSha(join(dirname(args.file), 'events.jsonl'), ownUuid);
+  // recorded on this session's own start event. Absent there too → omitted,
+  // with a WARN whether or not an own UUID was available (#1457 point 2) —
+  // without one the fallback cannot run, which is exactly when silence hid it.
+  if (!hasOwn('session_start_ref')) {
+    const headSha = ownUuid !== null
+      ? readOwnStartHeadSha(join(dirname(args.file), 'events.jsonl'), ownUuid)
+      : null;
     if (headSha !== null) {
       repaired = { ...repaired, session_start_ref: headSha };
       process.stderr.write(
@@ -434,8 +447,8 @@ async function main() {
       );
     } else {
       process.stderr.write(
-        'emit-session: WARN no session_start_ref — STATE.md carries none and no own ' +
-          'session.started head_sha found\n'
+        `emit-session: WARN no session_start_ref — ${stateMdStartRefNote}, ` +
+          'no own session.started head_sha available\n'
       );
     }
   }

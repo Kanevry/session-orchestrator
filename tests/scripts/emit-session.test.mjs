@@ -87,7 +87,8 @@ describe('emit-session.mjs CLI', () => {
     const entry = validEntry();
     const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    // No source supplies session_start_ref here, and that is said (#1457).
+    expect(r.stderr).toBe('emit-session: WARN no session_start_ref — STATE.md carried none, no own session.started head_sha available\n');
     const contents = readFileSync(targetFile, 'utf8');
     const lines = contents.trim().split('\n');
     expect(lines).toHaveLength(1);
@@ -298,7 +299,8 @@ describe('emit-session.mjs CLI — #321 pre-validation repair', () => {
     const entry = validEntry();
     const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
     expect(r.status).toBe(0);
-    expect(r.stderr).toBe('');
+    // The only line is the missing-session_start_ref WARN (#1457), never a clamp/alias one.
+    expect(r.stderr).toBe('emit-session: WARN no session_start_ref — STATE.md carried none, no own session.started head_sha available\n');
     const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
     expect(written._clamped).toBeUndefined();
     expect(written._completed_at_conflict).toBeUndefined();
@@ -481,9 +483,13 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
     ['a full sha: copied', '8f6ac02277d889413bed283f9ab6c747f841ac03', {}, true,
       '8f6ac02277d889413bed283f9ab6c747f841ac03', ''],
     ['HEAD: omitted with a WARN', 'HEAD', {}, false, undefined,
-      'emit-session: WARN STATE.md session-start-ref=HEAD is not a full hex sha; omitting session_start_ref\n'],
+      'emit-session: WARN STATE.md session-start-ref=HEAD is not a full hex sha; omitting session_start_ref\n'
+      + 'emit-session: WARN no session_start_ref — STATE.md ref discarded (not a full hex sha), '
+      + 'no own session.started head_sha available\n'],
     ['an 8-hex short sha: omitted with a WARN', '8f6ac022', {}, false, undefined,
-      'emit-session: WARN STATE.md session-start-ref=8f6ac022 is not a full hex sha; omitting session_start_ref\n'],
+      'emit-session: WARN STATE.md session-start-ref=8f6ac022 is not a full hex sha; omitting session_start_ref\n'
+      + 'emit-session: WARN no session_start_ref — STATE.md ref discarded (not a full hex sha), '
+      + 'no own session.started head_sha available\n'],
     ['a full sha, but the entry carries its own sha: the entry wins', '8f6ac02277d889413bed283f9ab6c747f841ac03',
       { session_start_ref: 'a4e6d2550000000000000000000000000000beef' }, true,
       'a4e6d2550000000000000000000000000000beef', ''],
@@ -625,7 +631,23 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect(r.status).toBe(0);
     expect('session_start_ref' in readWritten()).toBe(false);
     expect(r.stderr).toContain(
-      'emit-session: WARN no session_start_ref — STATE.md carries none and no own session.started head_sha found'
+      'emit-session: WARN no session_start_ref — STATE.md carried none, no own session.started head_sha available'
+    );
+  });
+
+  // Bug (#1457 point 2): the WARN sat inside the own-UUID branch, so without
+  // --session-uuid and without an owned current-session.json the ref was
+  // omitted with no word at all.
+  it('WARNs about the missing session_start_ref even without any own UUID', () => {
+    const cwd = join(tmp, 'no-uuid-wc');
+    mkdirSync(cwd, { recursive: true });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry())], null, { cwd, env: NO_NATIVE_ID });
+    expect(r.status).toBe(0);
+    const w = readWritten();
+    expect('session_start_ref' in w).toBe(false);
+    expect('raw_session_id' in w).toBe(false);
+    expect(r.stderr).toContain(
+      'emit-session: WARN no session_start_ref — STATE.md carried none, no own session.started head_sha available'
     );
   });
 

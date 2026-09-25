@@ -124,6 +124,95 @@ export function gateTimeoutEnvelope({ variant, timeoutMs, run }) {
 }
 
 /**
+ * The INNER kill ladder of one gate command, in the gate envelope's own
+ * snake_case shape (#1457 point 1).
+ *
+ * `runCheck` knows, per command, whether its per-command ceiling fired, which
+ * signals it sent and which pids survived the SIGKILL step. Until this helper
+ * that knowledge died inside the gate sub-script, so a command killed by the
+ * INNER ceiling reached `orchestrator.quality_gate.failed` as
+ * `timed_out: false`. Spread it into the command's envelope object.
+ *
+ * Absent is not zero: a result that spawned nothing (skip, stub) carries no
+ * `timedOut` boolean, and gets NO keys — never `false` / `[]`.
+ *
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]}} result
+ *   A {@link runCheck} result.
+ * @returns {{timed_out: boolean, kill_signals: string[], survivors: number[]}|{}}
+ *   `survivors` are the pids, same as {@link gateTimeoutEnvelope}.
+ */
+export function commandKillFields(result) {
+  if (typeof result?.timedOut !== 'boolean') return {};
+  return {
+    timed_out: result.timedOut,
+    kill_signals: Array.isArray(result.killSignals) ? [...result.killSignals] : [],
+    survivors: Array.isArray(result.survivors) ? [...result.survivors] : [],
+  };
+}
+
+/** Envelope keys, in execution order, that may carry {@link commandKillFields}. */
+const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
+
+/**
+ * Join the OUTER kill ladder (the gate sub-script as a whole) with the INNER
+ * per-command ladders its JSON envelope publishes (#1457 point 1), into the
+ * `timed_out` / `survivors` / `kill_signals` keys of
+ * `orchestrator.quality_gate.{passed,failed}`.
+ *
+ * - inner measured (the envelope parses and EVERY command object either carries
+ *   a boolean `timed_out` or provably spawned nothing — `status: 'skip'` or
+ *   listed in `stubbed`): `timed_out` = outer OR any inner; `kill_signals` =
+ *   outer followed by each command's, in execution order; `survivors` = outer
+ *   count plus every inner pid count.
+ * - inner NOT measured (a variant whose envelope does not publish it, an
+ *   unparseable envelope, or the outer ceiling killed the sub-script before it
+ *   wrote one): the outer ladder alone when it fired — a kill is a kill — and
+ *   otherwise NO keys, because `false` / `0` / `[]` would claim that no
+ *   command was killed when nobody looked.
+ *
+ * Never throws.
+ *
+ * @param {object} args
+ * @param {{timed_out: boolean, survivors: number, kill_signals: string[]}} args.outer
+ *   `gateKillFields()` of the sub-script's `spawnInGroup` result.
+ * @param {string} args.gateStdout  The sub-script's stdout envelope (`''` on an outer kill).
+ * @returns {{timed_out: boolean, survivors: number, kill_signals: string[]}|{}}
+ */
+export function joinGateKillFields({ outer, gateStdout }) {
+  let parsed = null;
+  if (typeof gateStdout === 'string' && gateStdout.trim()) {
+    try {
+      parsed = JSON.parse(gateStdout);
+    } catch {
+      parsed = null;
+    }
+  }
+  const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  const names = isObj(parsed) ? KILL_FIELD_COMMANDS.filter((name) => isObj(parsed[name])) : [];
+  const stubbed = isObj(parsed?.stubbed) ? parsed.stubbed : {};
+  // A command either published its ladder, or provably spawned nothing (skip /
+  // stub) — nothing killed is then a measurement too. Any OTHER command (a
+  // variant that ran it but does not publish the ladder) makes the inner side
+  // unknown as a whole.
+  const inner = names.map((name) => parsed[name]).filter((c) => typeof c.timed_out === 'boolean');
+  const innerKnown = names.length > 0 && names.every((name) => typeof parsed[name].timed_out === 'boolean'
+    || parsed[name].status === 'skip'
+    || Boolean(stubbed[name]));
+
+  if (!innerKnown) return outer?.timed_out === true ? { ...outer } : {};
+
+  return {
+    timed_out: outer?.timed_out === true || inner.some((c) => c.timed_out),
+    survivors: (outer?.survivors ?? 0)
+      + inner.reduce((n, c) => n + (Array.isArray(c.survivors) ? c.survivors.length : 0), 0),
+    kill_signals: [
+      ...(outer?.kill_signals ?? []),
+      ...inner.flatMap((c) => (Array.isArray(c.kill_signals) ? c.kill_signals : [])),
+    ],
+  };
+}
+
+/**
  * Decide WHAT a finished gate sub-script run publishes — stdout, stderr,
  * exit code and operator warnings — without performing any of the writes.
  *

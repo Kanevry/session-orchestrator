@@ -19,6 +19,7 @@ import {
   extractFailedTestFiles,
   extractErrorLinesJson,
   gateTimeoutEnvelope,
+  joinGateKillFields,
   resolveGateTimeoutMs,
   runCheck,
   findChangedFiles,
@@ -939,5 +940,27 @@ describe('publishGateOutcome', () => {
     const result = runResult({ timedOut: true, exitCode: 124, survivors: [123, 456] });
     const out = publishGateOutcome({ result, variant: 'full-gate', timeoutMs: 100 });
     expect(out.warnings).toEqual(['gate process group 4242 left survivors after SIGKILL: 123, 456']);
+  });
+});
+
+describe('joinGateKillFields (#1457)', () => {
+  const quietOuter = { timed_out: false, survivors: 0, kill_signals: [] };
+  const envelope = (typecheck) => JSON.stringify({ variant: 'full-gate', typecheck, test: { status: 'skip' } });
+
+  it('ORs an inner per-command kill into the outer ladder', () => {
+    const out = joinGateKillFields({
+      outer: quietOuter,
+      gateStdout: envelope({ status: 'fail', timed_out: true, kill_signals: ['SIGTERM', 'SIGKILL'], survivors: [4242] }),
+    });
+    expect(out).toEqual({ timed_out: true, survivors: 1, kill_signals: ['SIGTERM', 'SIGKILL'] });
+  });
+
+  it('omits all three keys when no inner ladder was published and the outer did not fire', () => {
+    expect(joinGateKillFields({ outer: quietOuter, gateStdout: JSON.stringify({ variant: 'incremental' }) })).toEqual({});
+  });
+
+  it('keeps an outer kill even when the envelope is missing', () => {
+    const outer = { timed_out: true, survivors: 0, kill_signals: ['SIGTERM'] };
+    expect(joinGateKillFields({ outer, gateStdout: '' })).toEqual(outer);
   });
 });

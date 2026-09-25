@@ -82,7 +82,10 @@ describe('gate-full — typecheck failure', () => {
     const r = run({ TYPECHECK_CMD: 'node -e "process.exit(1)"', TEST_CMD: 'skip', LINT_CMD: 'skip' });
     expect(r.status).toBe(2);
     const json = JSON.parse(r.stdout);
-    expect(json.typecheck).toEqual({ status: 'fail', error_count: 0 });
+    // The inner kill ladder is MEASURED for a spawned command (#1457): not killed.
+    expect(json.typecheck).toEqual({
+      status: 'fail', error_count: 0, timed_out: false, kill_signals: [], survivors: [],
+    });
   });
 
   it('typecheck.error_count is >= 1 when output contains TS error lines', () => {
@@ -131,6 +134,9 @@ describe('gate-full — test failure', () => {
       // pins. See `failed_files` in gate-full.mjs.
       failed_files: [],
       suite_died: true,
+      timed_out: false,
+      kill_signals: [],
+      survivors: [],
     });
     // Contract: consumers parse exactly one JSON document from stdout.
     expect(r.stdout.trim().split('\n')).toHaveLength(1);
@@ -174,7 +180,9 @@ describe('gate-full — test failure', () => {
     expect(r.status).toBe(2);
 
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.test).toEqual({ status: 'fail', total: 3, passed: 3, failed: 0 });
+    expect(parsed.test).toEqual({
+      status: 'fail', total: 3, passed: 3, failed: 0, timed_out: false, kill_signals: [], survivors: [],
+    });
     expect(parsed.test).not.toHaveProperty('files_total');
     expect(parsed.test).not.toHaveProperty('files_passed');
     expect(parsed.test).not.toHaveProperty('files_failed');
@@ -274,5 +282,32 @@ describe('gate-full — missing env vars', () => {
     const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', env });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('LINT_CMD');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inner per-command kill reaches the envelope (#1457 point 1)
+// ---------------------------------------------------------------------------
+
+describe('gate-full — inner per-command kill ladder', () => {
+  // Bug: a command killed by the INNER ceiling (`runCheck`, GATE_TIMEOUT_MS)
+  // left no trace in the envelope, so run-quality-gate.mjs emitted
+  // `timed_out: false` for a gate that had in fact killed a command.
+  it('publishes timed_out/kill_signals on the killed command, omits them for skipped ones', () => {
+    const r = run({
+      GATE_TIMEOUT_MS: '300',
+      TYPECHECK_CMD: 'sleep 30',
+      TEST_CMD: 'skip',
+      LINT_CMD: 'skip',
+    });
+    expect(r.status).toBe(2);
+    const json = JSON.parse(r.stdout);
+    expect(json.typecheck.status).toBe('fail');
+    expect(json.typecheck.timed_out).toBe(true);
+    expect(json.typecheck.kill_signals[0]).toBe('SIGTERM');
+    expect(Array.isArray(json.typecheck.survivors)).toBe(true);
+    // Skipped commands spawned nothing: absent, never `false`.
+    expect(json.lint).not.toHaveProperty('timed_out');
+    expect(json.test).not.toHaveProperty('timed_out');
   });
 });

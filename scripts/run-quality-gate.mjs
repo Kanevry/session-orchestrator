@@ -50,6 +50,7 @@ import { loadQualityGatesPolicy, resolveCommand } from './lib/quality-gates-poli
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
 import {
   admitSuiteCounts,
+  joinGateKillFields,
   publishGateOutcome,
   resolveGateTimeoutMs,
 } from './lib/gates/gate-helpers.mjs';
@@ -595,9 +596,12 @@ async function main() {
       {
         variant,
         exit_code: exitCode,
-        // `timed_out` / `survivors` / `kill_signals` of the OUTER ladder — the
-        // gate sub-script as a whole (#1439). Same builder as the library emitter.
-        ...gateKillFields(result),
+        // `timed_out` / `survivors` / `kill_signals`: the OUTER ladder (the gate
+        // sub-script as a whole, #1439 — same builder as the library emitter)
+        // OR-joined with the INNER per-command ladders the envelope publishes
+        // (#1457). Keys omitted when the inner ladder was not measured and the
+        // outer one did not fire — see `joinGateKillFields`.
+        ...joinGateKillFields({ outer: gateKillFields(result), gateStdout }),
         ...(counts ? { counts } : {}),
         ...(failedFiles ? { failed_files: failedFiles } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
