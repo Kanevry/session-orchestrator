@@ -599,6 +599,29 @@ describe('repairLedger — post-verification is fail-safe', () => {
     expect(summary.post_verify.integrity).toBe('clean');
   });
 
+  it('rolls back a schema-clean write whose integrity probe got WORSE', () => {
+    // Bug caught: post-verify judging only validateSession. The repaired file is
+    // schema-valid, but the vault-mirror probe now drops line 1 where it dropped
+    // nothing before — an integrityWorsened() that ignores new flagged lines
+    // (or a verdict that never reads it) keeps that write on disk.
+    const original = `${REPAIRABLE}\n`;
+    const { repoRoot, file } = makeRepo(original);
+    const banners = [null, { schemaInvalid: [], mirrorSkipped: [{ line: 1 }] }];
+
+    const summary = repairLedger({
+      file,
+      repoRoot,
+      apply: true,
+      deps: { checkIntegrity: () => banners.shift() },
+    });
+
+    expect(summary.ok).toBe(false);
+    expect(summary.restored).toBe(true);
+    expect(summary.post_verify.integrity_worsened).toBe(true);
+    expect(summary.post_verify.unexpected_invalid).toEqual([]);
+    expect(readFileSync(file, 'utf8')).toBe(original);
+  });
+
   it('reports the integrity probe as skipped for a non-canonical path', () => {
     // Bug caught: silently measuring <repoRoot>/.orchestrator/metrics/sessions.jsonl
     // (the path checkSessionsIntegrity hardcodes) while --file pointed elsewhere,

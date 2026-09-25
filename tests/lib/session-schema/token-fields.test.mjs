@@ -128,6 +128,9 @@ describe('validateSession — token-field constraint violations', () => {
   it('accepts integer total_tokens / matched_records and null as not-measured (#1436)', () => {
     expect(() => validateSession({ ...BASE(), total_tokens: 410, matched_records: 2 })).not.toThrow();
     expect(() => validateSession({ ...BASE(), total_tokens: null, matched_records: null })).not.toThrow();
+    // Boundary: a measured zero is a real value — a `<= 0` / truthiness check
+    // would reject every session whose subagents reported no tokens.
+    expect(() => validateSession({ ...BASE(), total_tokens: 0, matched_records: 0 })).not.toThrow();
   });
 
   it('accepts subagents_with_tokens: 1 (valid integer)', () => {

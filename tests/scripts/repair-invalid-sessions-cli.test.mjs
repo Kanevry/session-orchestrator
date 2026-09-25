@@ -13,9 +13,11 @@
  * Testing-rule compliance (testing.md · cli-design.md):
  *   - Behaviour over implementation: summary + on-disk bytes + exit codes.
  *   - Hardcoded expected values.
- *   - Error paths prove the exit-code contract (0/1/2/4; 3 is unit-tested via the
- *     write seam in the module suite, since a corrupt write cannot be induced
- *     through the process boundary).
+ *   - Error paths prove the exit-code contract through the process (0/1/2/4).
+ *     Exit 3 cannot be reached there — a corrupt write cannot be induced through
+ *     the process boundary — so it is pinned in two halves: the rollback that
+ *     yields `ok: false` via the write seam in the module suite, and the
+ *     summary→exit mapping via the exported `exitCodeFor` below.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -24,6 +26,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { exitCodeFor } from '../../scripts/repair-invalid-sessions.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = path.join(REPO_ROOT, 'scripts', 'repair-invalid-sessions.mjs');
@@ -233,6 +237,17 @@ describe('exit-code contract', () => {
     ]) {
       expect(res.stdout).toContain(code);
     }
+  });
+
+  // Bug caught: checking `unrepairable` before `ok` maps a rolled-back run that
+  // also had an unrepairable line to 4 ("repair kept, N remain") although the
+  // restore kept nothing — the one row no process-level test can reach.
+  it.each([
+    ['a rollback wins over an unrepairable remainder', { ok: false, unrepairable: 1 }, 3],
+    ['an ok run with an unrepairable remainder', { ok: true, unrepairable: 1 }, 4],
+    ['an ok run with nothing left', { ok: true, unrepairable: 0 }, 0],
+  ])('exitCodeFor maps %s to its exit code', (_label, summary, expected) => {
+    expect(exitCodeFor(summary)).toBe(expected);
   });
 });
 

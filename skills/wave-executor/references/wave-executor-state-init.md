@@ -52,7 +52,7 @@ node -e "import('./scripts/lib/state-md.mjs').then(m => console.log(JSON.stringi
 
 `session-id` is the raw/native harness id (`resolveSessionIds().session_id`), `session` the semantic label (`.semantic_session_id`). Both are OPTIONAL (`schema-version` stays `1`): when the lock yields `null`, OMIT the key entirely — never write a placeholder. Neither field grants lock or registry ownership; see `skills/_shared/state-ownership.md`.
 
-`session-start-ref` is the commit the session started on (`git rev-parse HEAD`, full SHA); `scripts/emit-session.mjs` derives the ledger's `session_start_ref` from it and, when the key is absent, falls back to the `head_sha` of this session's own `orchestrator.session.started` event (#1443).
+`session-start-ref` is the commit the session started on (`git rev-parse HEAD`, full SHA); `scripts/emit-session.mjs` derives the ledger's `session_start_ref` from it and, when the key is absent, falls back to the `head_sha` of this session's own `orchestrator.session.started` event (#1443). `hooks/pre-task-scope-disjoint.mjs` reads it too, for its warn-only #1413 stale-worktree check on `isolation: "worktree"` dispatches — and because this template takes HEAD at wave-executor init while the harness bases agent worktrees on the commit at session start, a commit landed in between makes that warning compare against the wrong ref.
 
 Create the `<state-dir>` directory if needed (`mkdir -p <state-dir>`) before writing. This file is the persistent state record — other skills and resumed sessions read it.
 

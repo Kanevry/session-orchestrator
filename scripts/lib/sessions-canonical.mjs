@@ -170,11 +170,21 @@ function supersedeRejectReason(superseder, target) {
 }
 
 /**
+ * `_backfill_source` prefix that `session-record-repair.mjs` stamps
+ * (`REPAIR_SOURCE`, `'repair-invalid-sessions/1004'`) on a REAL record it
+ * repaired in place. Kept as a literal so this module stays a stdlib-only leaf.
+ */
+const REPAIR_PROVENANCE_PREFIX = 'repair-invalid-sessions/';
+
+/**
  * True when a record is a BACKFILL STUB for rule (1)'s #1443 guard: it carries
- * reconstructed provenance (`_backfill_source`) AND is not a `completed` record
- * with real content. A content-free `completed` backfill (a
- * `state-md-completed` record with 0 waves, agents and files) counts as a stub
- * too — it measured nothing a real record for the same session lacks.
+ * SYNTHESISED provenance (`_backfill_source`, but not repair provenance) AND
+ * measured no work (0 waves, agents and files) — whatever its `status`. A
+ * missing `status` is the norm on real records, so status cannot decide it.
+ *
+ * Repair provenance (`repair-invalid-sessions/…`) is never a stub: the repair
+ * tool stamps it on a real record it fixed in place, not on one it invented
+ * (#1443 F1 — a repaired 4-wave record lost to an older 2-wave one).
  *
  * Module-local on purpose. `session-close-backfill.mjs::isSupersedableStub()`
  * asks a narrower WRITER question ("may this be overwritten?" — `abandoned`
@@ -185,7 +195,7 @@ function supersedeRejectReason(superseder, target) {
  */
 function isBackfillStub(rec) {
   if (!isNonEmptyString(rec._backfill_source)) return false;
-  if (rec.status !== 'completed') return true;
+  if (rec._backfill_source.startsWith(REPAIR_PROVENANCE_PREFIX)) return false;
   const hasWork = (Array.isArray(rec.waves) && rec.waves.length > 0)
     || rec.total_waves > 0 || rec.total_agents > 0 || rec.total_files_changed > 0;
   return !hasWork;

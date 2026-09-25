@@ -638,4 +638,54 @@ describe('G7 — cwd is relative to the project dir, never absolute', { timeout:
     expect(cwd).toMatch(/^sha256:[0-9a-f]{12}$/);
     expect(cwd.includes('..')).toBe(false);
   });
+
+  // Bug: username leaks into a webhook-bound event. With the project dir at `/`
+  // or at/above the home dir, the RELATIVE form is `Users/<name>/…` (or the
+  // home-relative layout) — no absolute path, so the `startsWith('/')` guard
+  // above stays green while the username still goes out. HOME is faked under
+  // the tmp dir (`os.homedir()` reads it), so no row touches the real home;
+  // the `/` row's event lands in the ledger sandbox instead of `/.orchestrator`.
+  it.each([
+    {
+      name: 'the filesystem root',
+      build: (dir) => ({ projectDir: '/', home: os.homedir(), cwd: dir, eventsRoot: dir }),
+    },
+    {
+      name: 'the home dir',
+      build: (dir) => ({
+        projectDir: path.join(dir, 'users', 'alice'),
+        home: path.join(dir, 'users', 'alice'),
+        cwd: path.join(dir, 'users', 'alice', 'work'),
+        eventsRoot: path.join(dir, 'users', 'alice'),
+      }),
+    },
+    {
+      name: 'an ancestor of the home dir',
+      build: (dir) => ({
+        projectDir: path.join(dir, 'users'),
+        home: path.join(dir, 'users', 'alice'),
+        cwd: path.join(dir, 'users', 'alice', 'work'),
+        eventsRoot: path.join(dir, 'users'),
+      }),
+    },
+  ])('is a sha256-prefix hash when the project dir is $name', async ({ build }) => {
+    const dir = await mkProjectTracked();
+    const { projectDir, home, cwd, eventsRoot } = build(dir);
+    await fs.mkdir(cwd, { recursive: true });
+    const result = await runHook({
+      projectDir: eventsRoot,
+      cwd,
+      env: {
+        CLAUDE_PROJECT_DIR: projectDir,
+        HOME: home,
+        SO_EVENTS_LEDGER_SANDBOX: path.join(eventsRoot, '.orchestrator', 'metrics', 'events.jsonl'),
+      },
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1' }),
+    });
+    expectAllow(result);
+    const events = await readEvents(eventsRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].cwd).toMatch(/^sha256:[0-9a-f]{12}$/);
+    expect(JSON.stringify(events[0]).includes('alice')).toBe(false);
+  });
 });

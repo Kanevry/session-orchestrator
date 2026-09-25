@@ -111,11 +111,15 @@ describe('pre-edit-sessions-ledger-guard — deny paths', () => {
     );
   });
 
-  it('denies relative, dot-dot and backslash spellings of the ledger path', () => {
+  it('denies relative, dot-dot, backslash, case-folded and multi-digit-rotation spellings of the ledger path', () => {
     for (const p of [
       '.orchestrator/metrics/sessions.jsonl',
       '/repo/.orchestrator/metrics/../metrics/sessions.jsonl',
       'C:\\repo\\.orchestrator\\metrics\\sessions.jsonl',
+      // Case-insensitive filesystems (macOS default, Windows) resolve this to the ledger.
+      '/repo/.orchestrator/metrics/Sessions.JSONL',
+      // Rotation past .9: a single-digit `\.\d` suffix match would allow it.
+      '/repo/.orchestrator/metrics/sessions.jsonl.10',
     ]) {
       expectDeny(runHook({ payload: edit(p) }), 'emit-session.mjs');
     }

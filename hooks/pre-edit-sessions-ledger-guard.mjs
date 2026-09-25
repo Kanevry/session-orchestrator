@@ -35,6 +35,24 @@
  * `NotebookEdit` tool (not in the matcher; it cannot target a `.jsonl` file
  * meaningfully).
  *
+ * Named limits (measured 2026-09-25, security review of #1443):
+ *
+ * - The TRACKED fixture `tests/fixtures/harness-audit/clean-repo/.orchestrator/
+ *   metrics/sessions.jsonl` matches the suffix and is DENIED (the Bash guard
+ *   denies it too, by basename). No `tests/fixtures/` exemption on purpose: a
+ *   path-prefix carve-out is a second hole, not a narrower guard. Editing that
+ *   fixture is intentional maintenance — run with
+ *   `SO_DISABLED_HOOKS=pre-edit-sessions-ledger-guard`.
+ * - A payload over 1 MB fails OPEN: `readStdin` (`scripts/lib/io.mjs`) rejects
+ *   past 1,048,576 bytes and the catch below allows. A whole-ledger `Write`
+ *   carries the file as `content`, so it bypasses the guard once the ledger
+ *   nears that size. Largest ledger on the reference host: 481,543 bytes
+ *   (`wc -c` over all 31 `.orchestrator/metrics/sessions.jsonl` under the
+ *   projects root). Revisit when any ledger passes ~900 KB.
+ * - The case-insensitive match can DENY a distinct file on a case-sensitive
+ *   filesystem (Linux): `.Orchestrator/METRICS/Sessions.JSONL` is not the
+ *   ledger there, but is refused. Fails closed; same override as above.
+ *
  * ## Platforms
  *
  * Cursor and Pi reach this hook through their bridges

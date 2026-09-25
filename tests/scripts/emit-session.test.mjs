@@ -635,14 +635,23 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect('raw_session_id' in readWritten()).toBe(false);
   });
 
-  it('falls back to the own session.started head_sha when STATE.md carries no session-start-ref', () => {
-    writeJsonlIn('events.jsonl', [
+  // Bugs caught, one per row: a scan that ignores the UUID takes a parallel
+  // session's start sha; a tail-first (last-match-wins) scan takes the sha a
+  // resume re-emitted under the same raw id instead of the session's real start.
+  it.each([
+    ['a foreign session.started precedes the own one', [
       { event: 'orchestrator.session.started', session_id: 'other-uuid', head_sha: 'b'.repeat(40) },
       { event: 'orchestrator.session.started', session_id: U, head_sha: SHA },
-    ]);
+    ]],
+    ['a resume re-emitted the own session.started (first match wins)', [
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA },
+      { event: 'orchestrator.session.started', session_id: U, head_sha: 'c'.repeat(40) },
+    ]],
+  ])('falls back to the own session.started head_sha when STATE.md carries none: %s', (_label, events) => {
+    writeJsonlIn('events.jsonl', events);
     const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
     expect(r.status).toBe(0);
-    expect(readWritten().session_start_ref).toBe(SHA);
+    expect(readWritten().session_start_ref).toBe('a4e6d2550000000000000000000000000000beef');
   });
 
   it('drops an explicit short session_start_ref instead of writing an ambiguous ref (#1443)', () => {

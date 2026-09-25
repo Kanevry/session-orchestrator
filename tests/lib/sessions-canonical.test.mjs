@@ -138,6 +138,50 @@ describe('rule 1 — newest-wins per session_id', () => {
     expect(out).toHaveLength(1);
     expect(out[0].notes).toBe('newer');
   });
+
+  it('lets the newer of two stubs for one id win (#1443 guard is stub-vs-real only)', () => {
+    // Bug guarded: dropping `!isBackfillStub(prev)` from the skip condition
+    // freezes an id at its FIRST stub — every later stub (a re-run backfill
+    // with corrected fields) would be discarded although no real record exists.
+    const stub = {
+      session_id: 'main-2026-09-22-deep-1',
+      status: 'abandoned',
+      _backfill_source: 'abandoned',
+      total_waves: 0,
+    };
+    const out = canonicalizeSessions([rec({ ...stub, notes: 'older stub' }), rec({ ...stub, notes: 'newer stub' })]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe('newer stub');
+  });
+
+  it('keeps a newer record repaired in place (repair provenance, status null) over an older same-id record (#1443 F1)', () => {
+    // Bug: session-record-repair stamps `_backfill_source` on every record it
+    // repairs IN PLACE, and most real records carry no `status` — so a stub
+    // test keyed on "provenance set AND status !== completed" classed the
+    // repaired 4-wave record as a stub and let the OLDER 2-wave record win.
+    const older = {
+      session_id: 'main-2026-09-23-deep-1',
+      started_at: '2026-09-23T10:00:00.000Z',
+      waves: [{ wave: 1 }, { wave: 2 }],
+      total_waves: 2,
+      notes: 'older',
+    };
+    const newerRepaired = {
+      session_id: 'main-2026-09-23-deep-1',
+      started_at: '2026-09-23T10:00:00.000Z',
+      waves: [{ wave: 1 }, { wave: 2 }, { wave: 3 }, { wave: 4 }],
+      total_waves: 4,
+      _backfill_source: 'repair-invalid-sessions/1004',
+      _completed_at_raw: '2026-09-23 14:00',
+      notes: 'newer-repaired',
+    };
+
+    const out = canonicalizeSessions([older, newerRepaired]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe('newer-repaired');
+  });
 });
 
 // ---------------------------------------------------------------------------

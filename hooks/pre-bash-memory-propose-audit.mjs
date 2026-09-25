@@ -26,6 +26,7 @@ import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
 import crypto from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { findScopeFile } from '../scripts/lib/hardening.mjs';
@@ -137,6 +138,13 @@ function flagsPresent(command) {
  * `path.relative` then calls the project dir itself `../../../private/var/…`.
  * A path that cannot be resolved falls back to `path.resolve` — never throws.
  *
+ * A project dir that is no project boundary — the filesystem root, the home
+ * dir, or an ancestor of it (`/Users`) — also gets the hash form: relative to
+ * `/` the cwd reads `Users/<name>/…`, i.e. the username in a webhook-bound
+ * event, the very leak the relative form exists to prevent. The ancestor test
+ * is path-segment-wise (`path.relative`), so `/Users/al` is NOT an ancestor of
+ * `/Users/alice` the way a string prefix would claim.
+ *
  * @param {string} cwd
  * @param {string} projectDir
  * @returns {string}
@@ -145,14 +153,20 @@ function relativeCwd(cwd, projectDir) {
   const real = (p) => {
     try { return realpathSync(p); } catch { return path.resolve(p); }
   };
+  // `..`-prefixed (above the base) or absolute (another Windows drive).
+  const escapes = (rel) =>
+    rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
   const realCwd = real(cwd);
-  const rel = path.relative(real(projectDir), realCwd);
+  const realProject = real(projectDir);
+  const rel = path.relative(realProject, realCwd);
   if (rel === '') return '.';
-  // `..`-prefixed (above the project) or absolute (another Windows drive).
-  if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-    // Same sha256 recipe as `command_hash`, cut to 12 hex.
-    return `sha256:${hashCommand(realCwd).slice(0, 12)}`;
-  }
+  // Same sha256 recipe as `command_hash`, cut to 12 hex.
+  const hashed = `sha256:${hashCommand(realCwd).slice(0, 12)}`;
+  if (escapes(rel)) return hashed;
+  if (path.dirname(realProject) === realProject) return hashed; // filesystem root
+  let home = null;
+  try { home = real(os.homedir()); } catch { /* no home dir: root check above still holds */ }
+  if (home !== null && !escapes(path.relative(realProject, home))) return hashed;
   return rel;
 }
 
