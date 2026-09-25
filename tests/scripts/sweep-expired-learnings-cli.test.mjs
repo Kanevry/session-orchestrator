@@ -738,7 +738,11 @@ describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the name
     // The sidecar path is the block's own `NEXT` value — if the prose renames
     // it, the run fails closed on the absent-sidecar guard and this test goes
     // red rather than silently pruning against a different file.
-    const sidecar = path.join(metrics, '.learnings-next.jsonl');
+    // #1453: the sidecar lives in .orchestrator/tmp/ (outside the ledger
+    // guard's delete denylist), not in metrics/.
+    const tmpDir = path.join(workdir, '.orchestrator', 'tmp');
+    mkdirSync(tmpDir, { recursive: true });
+    const sidecar = path.join(tmpDir, 'learnings-next.jsonl');
     writeJsonl(sidecar, [keep]);
 
     let run;
@@ -768,7 +772,7 @@ describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the name
     const summary = JSON.parse(lines[0]);
     expect(summary).toMatchObject({
       file: '.orchestrator/metrics/learnings.jsonl',
-      entries_from: '.orchestrator/metrics/.learnings-next.jsonl',
+      entries_from: '.orchestrator/tmp/learnings-next.jsonl',
       scanned: 2,
       kept: 1,
       archived: 1,
