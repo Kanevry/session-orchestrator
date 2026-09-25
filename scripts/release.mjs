@@ -1303,14 +1303,21 @@ export function evaluatePublishReceipt(result, target) {
  * failure remains visible, but none invalidates the already irreversible npm
  * publish; callers must reconcile rather than retry `--publish`.
  *
+ * `npm view <pkg> version` resolves the `latest` dist-tag (and `npm view` fetches
+ * with `preferOnline`, so no local cache masks the answer): the poll returns
+ * `verified` on the first attempt whose `dist-tags.latest` equals `target`.
+ * Default budget: 12 attempts, 15 s apart = 165 s between the first and last
+ * poll. npm's registry needs ~2 min to serve a fresh `latest` (#1440 C2); the
+ * previous 5 x 3 s = 12 s budget reported `timeout` on every real publish.
+ *
  * @param {string} repoRoot
  * @param {string} target
  * @param {{attempts?: number, delaySeconds?: number, runImpl?: Function, waitImpl?: Function}} [deps]
  * @returns {{ok: boolean, kind: 'verified'|'timeout'|'query-failed'|'wait-failed', attempts: number, detail: string}}
  */
 export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
-  const attempts = deps.attempts ?? 5;
-  const delaySeconds = deps.delaySeconds ?? 3;
+  const attempts = deps.attempts ?? 12;
+  const delaySeconds = deps.delaySeconds ?? 15;
   const runImpl = deps.runImpl ?? run;
   const waitImpl = deps.waitImpl ?? (() => runImpl('sleep', [String(delaySeconds)], { cwd: repoRoot }));
 

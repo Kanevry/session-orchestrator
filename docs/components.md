@@ -49,7 +49,7 @@ Custom agents live in `agents/` (plugin) or `.claude/agents/` (project) as Markd
 
 ## Hook event types (10)
 
-The full Claude wiring uses: `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation + opt-in frontend-slop detection + loop-guard), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record).
+The full Claude wiring uses: `SessionStart` (banner + init), `SessionEnd` (close events), `PreToolUse/Edit|Write` (scope enforcement + config protection + sessions-ledger guard), `PreToolUse/Bash` (destructive-command guard + enforce-commands + templates-first + staging-fence + memory-propose audit), `PostToolUse` (edit validation + opt-in frontend-slop detection + loop-guard), `Stop` (session events), `SubagentStop` (telemetry), `PostToolUseFailure` (corrective context), `PostToolBatch` (wave signal + operator-steer), `SubagentStart` (telemetry), `CwdChanged` (cwd-change record).
 
 Codex uses the curated six-event project subset `SessionStart`, `PreToolUse`, `PostToolUse`, `SubagentStart`, `SubagentStop`, and `Stop`. Claude-only events are not exposed there, and Claude Edit/Write handlers remain unwired until a real adapter translates Codex's canonical `apply_patch` payload. The manifest uses native `${PLUGIN_ROOT}` while exporting `CODEX_PLUGIN_ROOT` plus `SO_PLATFORM=codex` for shared compatibility code.
 

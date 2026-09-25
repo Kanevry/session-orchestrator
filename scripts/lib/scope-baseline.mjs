@@ -604,10 +604,9 @@ export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
     ? plannedFilesRaw
     : 0;
 
-  // Mirrors the existing over_delivery_ratio div-by-zero guard in
-  // skills/wave-executor/wave-loop.md (`files_changed / max(planned_files_count, 1)`,
-  // in the per-wave metrics section). Deliberately un-line-pinned: that file is
-  // edited often enough that a pinned number goes stale, as this very comment did.
+  // Division-by-zero guard: a baseline that froze zero planned files (no declared
+  // file scope, or a non-numeric count coerced to 0 above) would otherwise yield
+  // Infinity or NaN; `max(plannedFiles, 1)` keeps the ratio finite and comparable.
   const filesRatio = round2(actualFiles / Math.max(plannedFiles, 1));
   const breached = filesRatio >= threshold;
 

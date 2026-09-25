@@ -774,6 +774,32 @@ function coerceMaxRetries(n) {
 // ---------------------------------------------------------------------------
 
 /**
+ * The kill-ladder fields of a `quality_gate.passed/.failed` record (#1439).
+ *
+ * ONE builder for BOTH emitters — this library's {@link emitGateEvent} and the
+ * `scripts/run-quality-gate.mjs` CLI — so the two can never publish different
+ * shapes under the same keys. All three keys are ALWAYS present: `timed_out`
+ * `false`, `survivors` `0` and `kill_signals` `[]` are measurements ("not
+ * killed"), unlike `counts`, whose absence means "not measured".
+ *
+ * - `timed_out` — the run hit its wall-clock ceiling and was killed (exit 124).
+ * - `survivors` — how many pids were still alive after the SIGKILL step; the
+ *   pids themselves stay in the gate output / diagnostics bundle.
+ * - `kill_signals` — the signals actually sent, in order (`SIGTERM`, `SIGKILL`).
+ *   Copied, because `spawnInGroup` records them at send time into a live array.
+ *
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]}|null|undefined} run
+ * @returns {{timed_out: boolean, survivors: number, kill_signals: string[]}}
+ */
+export function gateKillFields(run) {
+  return {
+    timed_out: run?.timedOut === true,
+    survivors: Array.isArray(run?.survivors) ? run.survivors.length : 0,
+    kill_signals: Array.isArray(run?.killSignals) ? [...run.killSignals] : [],
+  };
+}
+
+/**
  * Emit exactly one `orchestrator.quality_gate.{passed,failed}` event per
  * `runQualityGateWithRetry` CALL (#928b).
  *
@@ -846,8 +872,13 @@ function coerceMaxRetries(n) {
  * @param {number} attempts
  * @param {string|null} gate
  * @param {{passed: number, failed: number, total: number}|null} [counts]
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]}|null} [killRun]
+ *   the run that decided the verdict — the last attempt's failing gate; `null`
+ *   on the passing path, where every gate exited 0 and so none was killed
+ *   (`spawnInGroup` only starts its kill ladder on timeout or overflow, and
+ *   both force a non-zero exit code).
  */
-async function emitGateEvent(repoRoot, ok, attempts, gate, counts) {
+async function emitGateEvent(repoRoot, ok, attempts, gate, counts, killRun = null) {
   try {
     await emitEvent(
       `orchestrator.quality_gate.${ok ? 'passed' : 'failed'}`,
@@ -857,6 +888,7 @@ async function emitGateEvent(repoRoot, ok, attempts, gate, counts) {
         attempts,
         ...(gate ? { gate } : {}),
         ...(counts ? { counts } : {}),
+        ...gateKillFields(killRun),
         ...sessionAttribution(repoRoot),
       },
       { repoRoot },
@@ -985,6 +1017,8 @@ export async function runQualityGateWithRetry(opts) {
         exitCode: result.exitCode,
         output: result.output,
         timedOut: result.timedOut,
+        killSignals: result.killSignals,
+        survivors: result.survivors,
         command: cmd,
         attempt,
       };
@@ -1063,7 +1097,7 @@ export async function runQualityGateWithRetry(opts) {
     `❌ quality-gate exhausted retries (${attempt}), writing diagnostics to ${bundlePath ?? '<unwritable>'}\n`,
   );
 
-  await emitGateEvent(repoRoot, false, attempt, lastFailure?.gate ?? null, testCounts);
+  await emitGateEvent(repoRoot, false, attempt, lastFailure?.gate ?? null, testCounts, lastFailure);
 
   const out = {
     ok: false,

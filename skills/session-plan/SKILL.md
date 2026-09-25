@@ -140,7 +140,6 @@ Extract these fields for planning:
    - **Effective sizing**: use historical sizing data to inform Step 3 complexity scoring
    - **Recurring issues**: pre-populate risk mitigation with known issue patterns
    - **Scope guidance**: validate planned scope against historical session capacity
-   - **Over-delivery sizing (#730/H4)**: read the over_delivery_ratio of recent same-session_type waves — from `effective-sizing` learnings if present, else directly from the last ~5 sessions.jsonl records' `waves[].over_delivery_ratio` (skip records lacking the field — pre-#730; also skip Discovery/Finalization waves, whose planned set is empty by design). If the median ratio R > 1.3, the fleet historically under-briefs file scope: inflate the Step 3 "Files to change" estimate by R before scoring the complexity tier; note it under Project Intelligence Applied.
 
 For each agreed task/issue:
 1. Read the VCS issue description and acceptance criteria
@@ -318,8 +317,6 @@ Score the session scope to determine optimal agent counts per wave. Skip only fo
 **Total score** = sum of all factors (0-6 range).
 
 > **Cross-module scope** counts top-level source directories (e.g., `src/auth/`, `src/api/`, `lib/utils/`). Nested subdirectories under the same parent count as one directory. Non-source directories (docs, config, scripts) don't count unless they contain modified production code.
-
-> **Over-delivery adjustment (#730/H4):** when Step 0.5 surfaced a historical over-delivery ratio R > 1.3 for this session_type, score the "Files to change" row against ceil(briefed_files × R) rather than the raw briefed count — agents historically deliver R× the briefed scope, so the raw count under-sizes the wave.
 
 ### Complexity Tiers
 

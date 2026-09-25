@@ -113,6 +113,11 @@ const DOCUMENTED_ASYMMETRIES = {
         'skill-invocation-telemetry.mjs',
         'enforce-scope.mjs',
         'config-protection.mjs',
+        // pre-edit-sessions-ledger-guard (#1443): same Edit/Write/MultiEdit tool-name
+        // gate as enforce-scope/config-protection above — Codex writes files through
+        // `apply_patch`, a name this hook never matches. Wired, it would run and allow
+        // everything: a silent no-op, not enforcement. Gap registered, not faked.
+        'pre-edit-sessions-ledger-guard.mjs',
         'pre-bash-destructive-guard.mjs',
         'pre-bash-staging-fence.mjs',
         'pre-bash-memory-propose-audit.mjs',

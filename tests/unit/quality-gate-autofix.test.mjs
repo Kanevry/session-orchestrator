@@ -169,6 +169,10 @@ describe('runQualityGateWithRetry — suite counts on the emitted event (#954)',
     const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
     expect(ev).toBeDefined();
     expect(ev.counts).toEqual({ passed: 12, failed: 2, total: 14 });
+    // #1439 point 2 — always present, same shape as the CLI emitter.
+    expect(ev.timed_out).toBe(false);
+    expect(ev.survivors).toBe(0);
+    expect(ev.kill_signals).toEqual([]);
   });
 
   // Bug this catches: fail-fast on lint means the test gate NEVER RAN, yet the
@@ -1378,6 +1382,14 @@ describe('W2-2 Group J — gate timeout kills the process GROUP (#1427 A1/A2)', 
     const bundle = JSON.parse(readFileSync(result.diagnosticsBundlePath, 'utf8'));
     expect(bundle.finalError.timedOut).toBe(true);
 
+    // #1439 point 2 — the telemetry record says the same thing. Before the fix
+    // `gateFailure` dropped the ladder and the event carried none of the three
+    // keys, so a killed gate read as an ordinary exit-1 failure in the ledger.
+    const ev = readFileSync(join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l))
+      .find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toMatchObject({ timed_out: true, survivors: 0, kill_signals: ['SIGTERM', 'SIGKILL'] });
+
     // A4: the gate process was recorded in the descendancy ledger, which is
     // what lets the orphan-reaper tell OUR descendant from a foreign process.
     const ledger = readFileSync(
@@ -1410,5 +1422,12 @@ describe('W2-2 Group J — gate timeout kills the process GROUP (#1427 A1/A2)', 
 
     expect(result.ok).toBe(false);
     expect(result.finalFailure.output).toContain('1 process(es) survived SIGKILL: 4343');
+
+    // #1439 point 2 — the survivor is COUNTED on the record, not only named in
+    // the output tail: `survivors: 0` here would book a leaked process as clean.
+    const ev = readFileSync(join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8')
+      .trim().split('\n').map((l) => JSON.parse(l))
+      .find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toMatchObject({ timed_out: true, survivors: 1 });
   });
 });

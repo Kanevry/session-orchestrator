@@ -107,10 +107,10 @@ describe('Broken-Window Budget prose↔code wiring (#730/H5, session-end)', () =
 });
 
 // ---------------------------------------------------------------------------
-// (f) metrics-collection.md carries the three new effectiveness fields
+// (f) metrics-collection.md carries the override_ratio effectiveness field
 // ---------------------------------------------------------------------------
 
-describe('Broken-Window metrics fields (#730/H4+H5, metrics-collection.md)', () => {
+describe('Broken-Window metrics fields (#730/H5, metrics-collection.md)', () => {
   const metrics = readFileSync(METRICS_PATH, 'utf8');
 
   it('skills/session-end/metrics-collection.md exists at the expected path', () => {
@@ -119,14 +119,6 @@ describe('Broken-Window metrics fields (#730/H4+H5, metrics-collection.md)', () 
 
   it('documents the override_ratio effectiveness field', () => {
     expect(metrics).toContain('override_ratio');
-  });
-
-  it('documents the over_delivery_ratio per-wave field', () => {
-    expect(metrics).toContain('over_delivery_ratio');
-  });
-
-  it('documents the planned_files_count per-wave field', () => {
-    expect(metrics).toContain('planned_files_count');
   });
 });
 

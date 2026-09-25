@@ -1111,6 +1111,32 @@ describe('waitForRegistryPropagation', () => {
     ]);
   });
 
+  it('#1440 C2: the default budget outlasts a ~150 s registry propagation and stops polling once latest matches', () => {
+    // Bug: the old default (5 attempts x 3 s = 12 s) returned `timeout` on every
+    // real publish, because npm serves a fresh `latest` only after ~2 min.
+    // Simulated clock — waitImpl advances it instead of sleeping.
+    let elapsedSeconds = 0;
+    const calls = [];
+    const result = waitForRegistryPropagation('/repo', '3.21.0', {
+      runImpl: (cmd, args) => {
+        calls.push(`${cmd} ${args.join(' ')}`);
+        return { status: 0, stdout: elapsedSeconds >= 150 ? '3.21.0\n' : '3.20.0\n', stderr: '' };
+      },
+      waitImpl: ({ delaySeconds }) => {
+        calls.push('wait');
+        elapsedSeconds += delaySeconds;
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+
+    expect(result).toMatchObject({ ok: true, kind: 'verified', attempts: 11 });
+    expect(result.detail).toBe('registry reports 3.21.0 on attempt 11/12');
+    // Stopped at the match: 11 polls, 10 waits — the 12th attempt never ran.
+    expect(calls.filter((c) => c === 'wait')).toHaveLength(10);
+    expect(calls.filter((c) => c.startsWith('npm view'))).toHaveLength(11);
+    expect(calls.at(-1)).toBe('npm view session-orchestrator version');
+  });
+
   it('returns a visible propagation result when the checked wait fails', () => {
     const calls = [];
     const result = waitForRegistryPropagation('/repo', '3.21.0', {

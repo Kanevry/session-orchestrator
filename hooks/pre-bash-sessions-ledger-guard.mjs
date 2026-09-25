@@ -268,8 +268,9 @@
  *     hides its payload from this matcher by construction.
  *   - `sponge`, `install`, `rsync`, `awk > file` and other less common write
  *     verbs (a redirect inside an `awk` program string is quoted data here).
- *   - The Write/Edit tools — a different PreToolUse matcher entirely
- *     (`hooks/enforce-scope.mjs` territory), not this hook's surface.
+ *   - The Write/Edit/MultiEdit tools — a different PreToolUse matcher entirely,
+ *     guarded by `hooks/pre-edit-sessions-ledger-guard.mjs` (#1443), not this
+ *     hook's surface.
  *   - The #385 repair-apply subshell/backtick deny (`unwrapSubshellLayers`)
  *     only unwraps a command that IS, in its entirety, one wrapped run —
  *     `x=$(node scripts/repair-invalid-sessions.mjs --apply)` (the wrapper is

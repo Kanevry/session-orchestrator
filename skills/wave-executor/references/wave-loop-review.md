@@ -373,8 +373,6 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
    - `agent_count_completed`: distinct agents whose task-notification (`<status>completed</status>`) arrived (#1115). A gap `agent_count_started > agent_count_completed` at wave end is an agent that started and never returned — the started-but-never-returned state, not a silent drop.
    - Per-agent results: `{description, status: done|partial|failed, files_changed_count}`
    - `files_changed`: total unique files changed this wave (from `git diff --stat --name-only`)
-   - `planned_files_count`: size of this wave's Planned set (union of agent file scopes) as computed in step 3c File-level grounding above. Reuse that value — do not recompute.
-   - `over_delivery_ratio`: files_changed / max(planned_files_count, 1), rounded to 2 decimals. > 1 = agents touched more files than briefed (under-sizing signal, #730/H4). Omit both fields when `grounding-check: false`.
    - `quality_check`: incremental check result (pass/fail/skipped)
    - `suite_passed` / `suite_failed` (+ optional `suite_platform`): the full-suite counts feeding the § 3a Wave History header `— suite <passed>/<failed> on <platform>`. `quality_check` is a traffic light; these are the number the light was derived from, and unlike STATE.md (gitignored, demoted to `## Previous Session` and then overwritten) the metrics record survives the session.
      **Copy the two counts off the gate's own event — do not re-read them from the terminal (#966 step 3).** `scripts/run-quality-gate.mjs`, the wrapper that fires between waves, emits `orchestrator.quality_gate.{passed,failed}` carrying a machine-measured `counts: {passed, failed, total}` (admitted by `admitSuiteCounts()`) plus the `wave_number` it resolved from `wave-scope.json`. Payload fields are flat at the record's top level:
@@ -391,7 +389,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
      > **What is NOT on the event, and stays hand-written:** `suite_platform` — the payload has no platform field, so keep writing it from the § 3a header as before. Likewise, the auto-fix-loop producer (`scripts/lib/quality-gate.mjs`, active only under `verification-auto-fix.enabled: true`) emits `counts` WITHOUT `wave_number`, so its retry records correctly never match the selector above; they are mid-wave attempts, not the wave's verdict. If the wave's gate ran outside `run-quality-gate.mjs` entirely, no event exists — fall back to the gate output you read, and say so in the progress update. The reader side (`skills/session-end/metrics-collection.md` § 1.7) reads the event first and this hand-written trio second, so keep writing the trio: it is the compatibility path for those two cases and for sessions already in flight.
    Append this wave record to the session metrics `waves` array.
 
-7a. **Scope drift tripwire (S2 — #896, warn-only)**: distinct from `over_delivery_ratio` above — that metric is per-wave and unfiltered; this one is session-cumulative (since `session-start-ref`) and filtered through `DRIFT_EXCLUDE_PATTERNS`, so the two numbers are NOT expected to agree. Call `computeDrift()` from the same `scripts/lib/scope-baseline.mjs` module as `wave-loop-dispatch.md` § 0a Scope Baseline Freeze. Never blocks — exit code stays 0 and the next wave is dispatched regardless of the result.
+7a. **Scope drift tripwire (S2 — #896, warn-only)**: session-cumulative (since `session-start-ref`) and filtered through `DRIFT_EXCLUDE_PATTERNS`, so its `filesRatio` is NOT expected to agree with this wave's unfiltered `files_changed` from step 7. Call `computeDrift()` from the same `scripts/lib/scope-baseline.mjs` module as `wave-loop-dispatch.md` § 0a Scope Baseline Freeze. Never blocks — exit code stays 0 and the next wave is dispatched regardless of the result.
 
    ```js
    import { computeDrift } from '$PLUGIN_ROOT/scripts/lib/scope-baseline.mjs';
@@ -446,13 +444,13 @@ After each wave completes and before the progress update, update `<state-dir>/ST
 
 1. **Frontmatter**: set `current-wave` to the just-completed wave number; set `status` to `active` (or `paused` if waiting on user input). Readers that need the RUNNING wave (e.g. `scripts/memory-propose.mjs`) read `<state-dir>/wave-scope.json` `wave` (only when the manifest is bound to this session via `semantic_session_id`; an unbound manifest is ignored — it may be a peer's, #1123) and fall back to `current-wave + 1` (#1166) — do not change this field's meaning.
 2. **`## Current Wave`**: replace contents with next wave info — wave number, role, agents to dispatch and count
-3. **`## Wave History`**: append an entry for the completed wave (the `(planned … → actual …, over-delivery …)` parenthetical is omitted when `grounding-check: false`, since the counts are unavailable):
+3. **`## Wave History`**: append an entry for the completed wave:
    > **Record the SUITE COUNT, not just "gates green" — and name the platform (#944).** The wave line MUST carry the full-suite pass/fail count from the gate that just ran (`<passed>/<failed>`), not merely that typecheck and lint were clean. A deep session on 2026-07-30 logged typecheck/lint/validate-plugin for every wave and no suite count; a test that had been vacuous for its entire life sat red on HEAD through three waves and was found only by the review panel — in a session whose own premise was turning CI from red to green.
    >
    > **A green gate on one platform is not evidence for another.** That same session's local gate reported 541/541 three times on a tree CI could not build: two tests encoded macOS assumptions (a `TMPDIR` that carries a trailing slash; an `ARG_MAX` that tolerates a 200 KB argv entry). Both passed locally and failed on the Linux runner. When the wave touched anything platform-sensitive — spawn/argv shapes, `os.tmpdir()`, path separators, file modes, `$PATH` lookups of external binaries — say so in the wave line, and treat CI, not the local run, as the verdict.
 
    ```
-   ### Wave N — <Role> (planned <P> files → actual <A>, over-delivery <R>) — suite <passed>/<failed> on <platform>
+   ### Wave N — <Role> — suite <passed>/<failed> on <platform>
    - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
    - Agent "<description>": <done|partial|failed> — <files changed> — <1-line note>
    ```

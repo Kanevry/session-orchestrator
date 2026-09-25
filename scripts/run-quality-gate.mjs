@@ -56,6 +56,8 @@ import {
 import { buildCommandSignature, spawnInGroup } from './lib/process-group.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { findScopeFile } from './lib/scope-gate.mjs';
+import { gateKillFields } from './lib/quality-gate.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -104,64 +106,6 @@ const GATE_SCRIPT = {
   'per-file':  join(GATES_DIR, 'gate-per-file.mjs'),
 };
 
-// ---------------------------------------------------------------------------
-// Argument parsing
-// ---------------------------------------------------------------------------
-
-const argv = process.argv.slice(2);
-
-if (argv.includes('-h') || argv.includes('--help')) {
-  process.stdout.write(
-    'Usage: run-quality-gate.mjs --variant <variant> [--config <json-or-file>] ' +
-    '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>]\n\n' +
-    'Variants: baseline, incremental, full-gate, per-file\n\n' +
-    'Exit codes:\n' +
-    '  0 — pass (non-blocking variants always exit 0)\n' +
-    '  1 — script error (bad arguments, missing dependencies)\n' +
-    '  2 — gate failed (full-gate only)\n' +
-    '  124 — gate timed out; its process group was killed (SIGTERM→SIGKILL)\n',
-  );
-  process.exit(0);
-}
-
-let variant = '';
-let config = '';
-let files = '';
-let sessionStartRef = '';
-let ledgerRootArg = '';
-
-for (let i = 0; i < argv.length; i++) {
-  const arg = argv[i];
-  switch (arg) {
-    case '--variant':
-      if (i + 1 >= argv.length) die('Missing value for --variant');
-      variant = argv[++i];
-      break;
-    case '--config':
-      if (i + 1 >= argv.length) die('Missing value for --config');
-      config = argv[++i];
-      break;
-    case '--files':
-      if (i + 1 >= argv.length) die('Missing value for --files');
-      files = argv[++i];
-      break;
-    case '--session-start-ref':
-      if (i + 1 >= argv.length) die('Missing value for --session-start-ref');
-      sessionStartRef = argv[++i];
-      break;
-    case '--ledger-root':
-      if (i + 1 >= argv.length) die('Missing value for --ledger-root');
-      ledgerRootArg = argv[++i];
-      break;
-    default:
-      die(`Unknown argument: ${arg}`);
-  }
-}
-
-if (!variant) die('Missing required argument: --variant');
-if (!VALID_VARIANTS.includes(variant)) {
-  die(`Invalid variant: '${variant}' (allowed: ${VALID_VARIANTS.join(', ')})`);
-}
 
 // ---------------------------------------------------------------------------
 // Command resolution — policy-file-first (#183), then config, then defaults
@@ -350,255 +294,327 @@ function resolveWaveNumber(projectDir) {
   }
 }
 
-// Load policy file (never throws)
-const repoRoot = process.cwd();
-const policy = loadQualityGatesPolicy(repoRoot);
+// ---------------------------------------------------------------------------
+// Main — the CLI body. Guarded below so a bare `import()` runs none of it.
+// ---------------------------------------------------------------------------
 
-// Parse --config (JSON string or file path)
-let configJson = null;
-if (config) {
-  if (existsSync(config)) {
-    try {
-      configJson = JSON.parse(readFileSync(config, 'utf8'));
-    } catch (err) {
-      warn(`Could not parse config file '${config}': ${err.message}; using defaults`);
-    }
-  } else {
-    try {
-      configJson = JSON.parse(config);
-    } catch {
-      warn('Config is neither a valid file path nor valid JSON; using defaults');
+async function main() {
+  // Argument parsing
+  const argv = process.argv.slice(2);
+
+  if (argv.includes('-h') || argv.includes('--help')) {
+    process.stdout.write(
+      'Usage: run-quality-gate.mjs --variant <variant> [--config <json-or-file>] ' +
+      '[--files <file1,file2,...>] [--session-start-ref <ref>] [--ledger-root <path>]\n\n' +
+      'Variants: baseline, incremental, full-gate, per-file\n\n' +
+      'Exit codes:\n' +
+      '  0 — pass (non-blocking variants always exit 0)\n' +
+      '  1 — script error (bad arguments, missing dependencies)\n' +
+      '  2 — gate failed (full-gate only)\n' +
+      '  124 — gate timed out; its process group was killed (SIGTERM→SIGKILL)\n',
+    );
+    process.exit(0);
+  }
+
+  let variant = '';
+  let config = '';
+  let files = '';
+  let sessionStartRef = '';
+  let ledgerRootArg = '';
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    switch (arg) {
+      case '--variant':
+        if (i + 1 >= argv.length) die('Missing value for --variant');
+        variant = argv[++i];
+        break;
+      case '--config':
+        if (i + 1 >= argv.length) die('Missing value for --config');
+        config = argv[++i];
+        break;
+      case '--files':
+        if (i + 1 >= argv.length) die('Missing value for --files');
+        files = argv[++i];
+        break;
+      case '--session-start-ref':
+        if (i + 1 >= argv.length) die('Missing value for --session-start-ref');
+        sessionStartRef = argv[++i];
+        break;
+      case '--ledger-root':
+        if (i + 1 >= argv.length) die('Missing value for --ledger-root');
+        ledgerRootArg = argv[++i];
+        break;
+      default:
+        die(`Unknown argument: ${arg}`);
     }
   }
+
+  if (!variant) die('Missing required argument: --variant');
+  if (!VALID_VARIANTS.includes(variant)) {
+    die(`Invalid variant: '${variant}' (allowed: ${VALID_VARIANTS.join(', ')})`);
+  }
+
+  // Load policy file (never throws)
+  const repoRoot = process.cwd();
+  const policy = loadQualityGatesPolicy(repoRoot);
+
+  // Parse --config (JSON string or file path)
+  let configJson = null;
+  if (config) {
+    if (existsSync(config)) {
+      try {
+        configJson = JSON.parse(readFileSync(config, 'utf8'));
+      } catch (err) {
+        warn(`Could not parse config file '${config}': ${err.message}; using defaults`);
+      }
+    } else {
+      try {
+        configJson = JSON.parse(config);
+      } catch {
+        warn('Config is neither a valid file path nor valid JSON; using defaults');
+      }
+    }
+  }
+
+  const TYPECHECK_CMD = extractCommand(policy, 'typecheck', 'typecheck-command', configJson, DEFAULT_TYPECHECK_CMD);
+  const TEST_CMD      = extractCommand(policy, 'test',      'test-command',      configJson, DEFAULT_TEST_CMD);
+  const LINT_CMD      = extractCommand(policy, 'lint',      'lint-command',      configJson, DEFAULT_LINT_CMD);
+
+  // ---------------------------------------------------------------------------
+  // Gate dispatch — shell-out to existing gate-*.mjs sub-scripts
+  // ---------------------------------------------------------------------------
+
+  const gatePath = GATE_SCRIPT[variant];
+
+  if (!existsSync(gatePath)) {
+    die(`Gate script not found: ${gatePath}`);
+  }
+
+  // Resolved BEFORE the spawn (it used to sit beside the telemetry block below):
+  // the gate-process ledger the spawn writes is pinned to the same root as the
+  // event, for the same reason — see the spawn's `repoRoot` comment.
+  const ledgerRoot = resolveLedgerRoot(ledgerRootArg);
+
+  // `npm_config_loglevel` is INHERITED by every descendant, and the pre-push hook
+  // invokes this script as `npm run --silent quality-gate` — which sets it to
+  // `silent`. That level then reached the gate's own children: `npm pack
+  // --dry-run` emitted ZERO `npm notice` lines instead of 818 (measured
+  // 2026-08-22), so the release leakage test saw an empty listing, and several
+  // validate-plugin/e2e tests that shell out to npm went red the same way. Every
+  // one of them passes under a bare `npm test` and fails only INSIDE the gate,
+  // which is the hardest shape to diagnose and cost an hour of chasing phantoms.
+  //
+  // Pinned rather than deleted: an explicit level makes the gate's children
+  // independent of how the gate itself was invoked. `--silent` still does its real
+  // job — keeping THIS process's stdout to the single JSON envelope — because the
+  // children's output is captured by `runCheck`, never streamed.
+  /**
+   * Per-command wall-clock ceiling for PATH B (#1425 A3 / #1432).
+   *
+   * Precedence, highest first:
+   *   1. `SO_GATE_TIMEOUT_MS` — the OPERATOR override. It is inherited by every
+   *      descendant, so a gate child that re-derives the ceiling gets the same
+   *      answer; `resolveGateTimeoutMs()` already reads it.
+   *   2. Session Config `gate.timeout-path-b-ms` — the COMMITTED default.
+   *   3. `DEFAULT_GATE_TIMEOUT_MS` (900 000), via `resolveGateTimeoutMs()`.
+   *
+   * Published to the gate sub-script as `GATE_TIMEOUT_MS` — a DIFFERENT name from
+   * the operator override on purpose: writing the resolved value back into
+   * `SO_GATE_TIMEOUT_MS` would make a committed default indistinguishable from an
+   * operator decision for every process further down the tree.
+   */
+  const configuredGateTimeoutMs = (() => {
+    const block = configJson !== null && typeof configJson === 'object' ? configJson.gate : null;
+    const raw = block && typeof block === 'object' ? block['timeout-path-b-ms'] : undefined;
+    return Number.isFinite(raw) && raw > 0 ? raw : null;
+  })();
+  const operatorTimeoutOverride = (process.env.SO_GATE_TIMEOUT_MS || '').trim() !== '';
+  const commandTimeoutMs = operatorTimeoutOverride || configuredGateTimeoutMs === null
+    ? resolveGateTimeoutMs()
+    : configuredGateTimeoutMs;
+
+  // Gate-process REGISTER root — the same precedence the telemetry destination
+  // uses below (`--ledger-root` > project-dir env > cwd), so a sandboxed test that
+  // only sets CLAUDE_PROJECT_DIR never writes register lines into the checkout.
+  const gateLedgerRoot =
+    ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot;
+
+  const env = {
+    ...process.env,
+    npm_config_loglevel: 'notice',
+    TYPECHECK_CMD,
+    TEST_CMD,
+    LINT_CMD,
+    GATE_TIMEOUT_MS: String(commandTimeoutMs),
+    // Same resolution the wrapper uses for its OWN spawn (`--ledger-root` > repo
+    // root): the gate sub-scripts pass it to runCheck() so every register line of
+    // one gate run lands in ONE ledger (#1425 A4, W5 fix-pass).
+    GATE_LEDGER_ROOT: gateLedgerRoot,
+    FILES: files,
+    SESSION_START_REF: sessionStartRef,
+  };
+
+  /**
+   * POSIX single-quote one argument for the shell `spawnInGroup` runs the command
+   * through. The gate path is derived from `import.meta.url`, so it carries
+   * whatever the checkout path carries — a space in it must not split the command.
+   *
+   * @param {string} value
+   * @returns {string}
+   */
+  function shellQuote(value) {
+    return `'${String(value).replace(/'/g, "'\\''")}'`;
+  }
+
+  // The gate sub-script runs as the LEADER OF ITS OWN PROCESS GROUP under a
+  // wall-clock ceiling (Epic #1425 A3). Before this, `spawnSync('node', [gatePath])`
+  // had NO timeout at all and no group semantics: a wedged `tsgo` or vitest worker
+  // two levels down was reparented to PPID 1 and kept its memory (2026-09-20: four
+  // such orphans, up to 8.0 GB RSS each, host at 13 % free).
+  //
+  // stdout is PIPED (not inherited) so the suite counts the gate already computed
+  // can be lifted straight off its JSON envelope into telemetry (#954) instead of
+  // travelling as prose through the STATE.md header. The envelope is re-emitted
+  // verbatim below, so the stdout contract is unchanged — a gate sub-script writes
+  // exactly one JSON line at the very end (its own child commands are captured by
+  // `runCheck`), so nothing streamed before and nothing streams now.
+  //
+  // stderr stays INHERITED, and that is why `spawnFn` is overridden here rather
+  // than left at its default: `spawnInGroup` merges stdout and stderr into one
+  // capture, which would interleave the gate's failure disclosure (hundreds of
+  // lines, #1149) into the single JSON document every consumer parses off stdout.
+  // Handing it a child with `stderr: 'inherit'` leaves `child.stderr` null, the
+  // module's own `child.stderr?.on(…)` a no-op, and the gate's warnings live on
+  // the operator's terminal exactly as before.
+  const gateCommand = `node ${shellQuote(gatePath)}`;
+  // Derived from the SAME resolved per-command ceiling published as
+  // `GATE_TIMEOUT_MS` above — not from `resolveGateTimeoutMs()` a second time.
+  // The outer cap must stay strictly ABOVE the inner one so the inner kill fires
+  // first and the gate can still print its envelope; re-deriving here would leave
+  // the outer cap at the 900 000 default while a committed
+  // `gate.timeout-path-b-ms` above it made the inner cap the later of the two.
+  const gateTimeoutMs = commandTimeoutMs + GATE_OUTER_TIMEOUT_RESERVE_MS;
+  const result = await spawnInGroup(gateCommand, {
+    cwd: repoRoot,
+    env,
+    timeoutMs: gateTimeoutMs,
+    maxOutputBytes: GATE_STDOUT_MAX_BUFFER_BYTES,
+    // The ledger is what the orphan reaper (#1425 B) reads to tell its OWN gate
+    // processes from every other `node` on the host, so it is pinned to the same
+    // root the telemetry is — under the pre-push hook the tree the gate runs in
+    // is deleted seconds later, and the record with it.
+    repoRoot: gateLedgerRoot,
+    commandSignature: buildCommandSignature(gateCommand),
+    // The OWNER the ledger records, from the PROCESS-LOCAL witness only — the same
+    // rule `scripts/lib/quality-gate.mjs` follows for the gate commands it spawns
+    // (`.claude/rules/identity-and-locks.md`: rank witnesses, never union them).
+    // `.orchestrator/session.lock` is deliberately NOT consulted: it is a
+    // repo-GLOBAL artefact any session in this working copy may hold, so reading
+    // it would stamp a PEER's id onto our own gate process and point the orphan
+    // reaper (#1425 B) at the wrong owner. No witness → `null`, which the ledger
+    // records as "owner unknown" — the state every record carried before this.
+    sessionId: [...readProcessLocalSessionIds({ env: process.env, hookInput: null })][0] ?? null,
+    // stdin is IGNORED, not inherited. A gate sub-script reads no stdin, but a
+    // DETACHED child is in its own process group and is therefore not the
+    // terminal's foreground group: the first read from an inherited TTY earns it
+    // SIGTTIN, which stops the whole group until the outer ceiling kills it. An
+    // ignored stdin turns that hang into an immediate EOF.
+    spawnFn: (command, options) => spawn(command, { ...options, stdio: ['ignore', 'pipe', 'inherit'] }),
+  });
+
+  // `pid: -1` is `spawnInGroup`'s spawn-failure channel (it never rejects).
+  if (result.pid === -1) {
+    die(`Failed to run gate script: ${result.fullOutput.trim()}`);
+  }
+
+  // On timeout the child was KILLED before it could write its envelope, so its
+  // capture is at best a partial JSON document. Publishing that would hand every
+  // stdout consumer a parse error where a named failure belongs; publishing the
+  // partial text AND an envelope would break the one-document contract. So the
+  // capture goes to stderr, where the operator can still read it, and stdout
+  // carries a complete `gate-timeout` envelope instead.
+  //
+  // The DECISION lives in `publishGateOutcome` (gate-helpers.mjs) and only the
+  // WRITES live here: this branch needs a real 16-minute gate to reach, so while
+  // the decision was inline it was pinned by nothing.
+  const outcome = publishGateOutcome({ result, variant, timeoutMs: gateTimeoutMs });
+  const gateStdout = result.timedOut ? '' : result.fullOutput;
+  if (outcome.stderr) process.stderr.write(outcome.stderr);
+  if (outcome.stdout) process.stdout.write(outcome.stdout);
+  for (const line of outcome.warnings) warn(line);
+
+  // Quality-gate telemetry — one canonical event per gate run via emitEvent
+  // (single emission path). `sessionAttribution` is the shared helper in
+  // events.mjs (#941); this CLI wrapper runs against the CWD `repoRoot`, so the
+  // bare emitEvent destination (SO_PROJECT_DIR default) is correct here.
+  //
+  // EXCEPT under the pre-push hook, which is the one caller that runs the gate in
+  // a tree that is about to be DELETED. `.husky/pre-push` materialises the tracked
+  // tree into a temp dir and deliberately scrubs every `*PROJECT_DIR` name before
+  // invoking the gate there, so `getProjectDir()` resolves to that temp tree (it
+  // carries both a CLAUDE.md (or AGENTS.md) and a .git) and the record lands in
+  // `<tmp>/.orchestrator/metrics/events.jsonl`, which the hook's EXIT trap then
+  // removes. Measured 2026-09-06: a pre-push run that BLOCKED a push left no
+  // `orchestrator.quality_gate.failed` line in this repo's ledger at all — the
+  // gate failure was, by construction, the one event that could never be recorded.
+  //
+  // `--ledger-root` is that hook's channel for handing back the root it already
+  // knows (`git rev-parse --show-toplevel`, read BEFORE it cds). It pins ONLY the
+  // telemetry destination and the attribution root — every other path the gate
+  // resolves stays inside the tree actually under test, which is the whole point
+  // of the materialisation. Absent (every other caller) → unchanged behaviour:
+  // `emitEvent`'s own default resolution.
+  //
+  // It is an ARGV FLAG and not an env var, and that is load-bearing. Measured
+  // 2026-09-06 with the env-var form: `SO_GATE_LEDGER_ROOT=$tmp npx vitest run
+  // tests/scripts/run-quality-gate.test.mjs -t "telemetry emission"` → `8 failed |
+  // 1 passed`. The chain was: hook exports the var → `npm run quality-gate` →
+  // `gate-full.mjs` spawns `npm test` → every vitest worker inherits it → the
+  // suite's own gate spawns spread `...process.env`, so the pinned root outranked
+  // their per-test project dir and the gate's telemetry tests wrote to the hook's
+  // root. The gate that releases 4.0.0 would have blocked on itself. An env var is
+  // inherited by every descendant; a flag reaches exactly one process.
+  //
+  // Best-effort: a telemetry failure must NEVER alter the gate's authoritative
+  // exit code — which is why the counts parse also lives inside this try.
+  const exitCode = outcome.exitCode;
+  try {
+    const counts = suiteCountsFromGateStdout(gateStdout);
+    // The names behind `counts.failed`. Absent, never `[]` — see
+    // `failedFilesFromGateStdout`.
+    const failedFiles = failedFilesFromGateStdout(gateStdout);
+    // Wave-scope sidecar is read from the SAME project dir the event lands in
+    // (emitEvent's own destination precedence), so a tmp-scoped run cannot pick
+    // up the host repo's live wave. Mirrors the hook's projectDir resolution.
+    const waveNumber = resolveWaveNumber(
+      ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot,
+    );
+    await emitEvent(
+      `orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`,
+      {
+        variant,
+        exit_code: exitCode,
+        // `timed_out` / `survivors` / `kill_signals` of the OUTER ladder — the
+        // gate sub-script as a whole (#1439). Same builder as the library emitter.
+        ...gateKillFields(result),
+        ...(counts ? { counts } : {}),
+        ...(failedFiles ? { failed_files: failedFiles } : {}),
+        ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
+        ...sessionAttribution(ledgerRoot ?? repoRoot),
+      },
+      // `{}` is byte-identical to omitting the argument (`opts.repoRoot ??
+      // getProjectDir()`), so the default path is untouched.
+      ledgerRoot ? { repoRoot: ledgerRoot } : {},
+    );
+  } catch { /* best-effort telemetry — gate result is authoritative */ }
+
+  process.exit(exitCode);
 }
 
-const TYPECHECK_CMD = extractCommand(policy, 'typecheck', 'typecheck-command', configJson, DEFAULT_TYPECHECK_CMD);
-const TEST_CMD      = extractCommand(policy, 'test',      'test-command',      configJson, DEFAULT_TEST_CMD);
-const LINT_CMD      = extractCommand(policy, 'lint',      'lint-command',      configJson, DEFAULT_LINT_CMD);
-
-// ---------------------------------------------------------------------------
-// Gate dispatch — shell-out to existing gate-*.mjs sub-scripts
-// ---------------------------------------------------------------------------
-
-const gatePath = GATE_SCRIPT[variant];
-
-if (!existsSync(gatePath)) {
-  die(`Gate script not found: ${gatePath}`);
+// Entry guard (#1440 C1): run only as the node script `npm run quality-gate` /
+// the pre-push hook exec — a bare `import()` must parse no argv, spawn no gate
+// and never `process.exit` the importing process.
+if (isMainModule(import.meta.url)) {
+  await main();
 }
-
-// Resolved BEFORE the spawn (it used to sit beside the telemetry block below):
-// the gate-process ledger the spawn writes is pinned to the same root as the
-// event, for the same reason — see the spawn's `repoRoot` comment.
-const ledgerRoot = resolveLedgerRoot(ledgerRootArg);
-
-// `npm_config_loglevel` is INHERITED by every descendant, and the pre-push hook
-// invokes this script as `npm run --silent quality-gate` — which sets it to
-// `silent`. That level then reached the gate's own children: `npm pack
-// --dry-run` emitted ZERO `npm notice` lines instead of 818 (measured
-// 2026-08-22), so the release leakage test saw an empty listing, and several
-// validate-plugin/e2e tests that shell out to npm went red the same way. Every
-// one of them passes under a bare `npm test` and fails only INSIDE the gate,
-// which is the hardest shape to diagnose and cost an hour of chasing phantoms.
-//
-// Pinned rather than deleted: an explicit level makes the gate's children
-// independent of how the gate itself was invoked. `--silent` still does its real
-// job — keeping THIS process's stdout to the single JSON envelope — because the
-// children's output is captured by `runCheck`, never streamed.
-/**
- * Per-command wall-clock ceiling for PATH B (#1425 A3 / #1432).
- *
- * Precedence, highest first:
- *   1. `SO_GATE_TIMEOUT_MS` — the OPERATOR override. It is inherited by every
- *      descendant, so a gate child that re-derives the ceiling gets the same
- *      answer; `resolveGateTimeoutMs()` already reads it.
- *   2. Session Config `gate.timeout-path-b-ms` — the COMMITTED default.
- *   3. `DEFAULT_GATE_TIMEOUT_MS` (900 000), via `resolveGateTimeoutMs()`.
- *
- * Published to the gate sub-script as `GATE_TIMEOUT_MS` — a DIFFERENT name from
- * the operator override on purpose: writing the resolved value back into
- * `SO_GATE_TIMEOUT_MS` would make a committed default indistinguishable from an
- * operator decision for every process further down the tree.
- */
-const configuredGateTimeoutMs = (() => {
-  const block = configJson !== null && typeof configJson === 'object' ? configJson.gate : null;
-  const raw = block && typeof block === 'object' ? block['timeout-path-b-ms'] : undefined;
-  return Number.isFinite(raw) && raw > 0 ? raw : null;
-})();
-const operatorTimeoutOverride = (process.env.SO_GATE_TIMEOUT_MS || '').trim() !== '';
-const commandTimeoutMs = operatorTimeoutOverride || configuredGateTimeoutMs === null
-  ? resolveGateTimeoutMs()
-  : configuredGateTimeoutMs;
-
-// Gate-process REGISTER root — the same precedence the telemetry destination
-// uses below (`--ledger-root` > project-dir env > cwd), so a sandboxed test that
-// only sets CLAUDE_PROJECT_DIR never writes register lines into the checkout.
-const gateLedgerRoot =
-  ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot;
-
-const env = {
-  ...process.env,
-  npm_config_loglevel: 'notice',
-  TYPECHECK_CMD,
-  TEST_CMD,
-  LINT_CMD,
-  GATE_TIMEOUT_MS: String(commandTimeoutMs),
-  // Same resolution the wrapper uses for its OWN spawn (`--ledger-root` > repo
-  // root): the gate sub-scripts pass it to runCheck() so every register line of
-  // one gate run lands in ONE ledger (#1425 A4, W5 fix-pass).
-  GATE_LEDGER_ROOT: gateLedgerRoot,
-  FILES: files,
-  SESSION_START_REF: sessionStartRef,
-};
-
-/**
- * POSIX single-quote one argument for the shell `spawnInGroup` runs the command
- * through. The gate path is derived from `import.meta.url`, so it carries
- * whatever the checkout path carries — a space in it must not split the command.
- *
- * @param {string} value
- * @returns {string}
- */
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
-// The gate sub-script runs as the LEADER OF ITS OWN PROCESS GROUP under a
-// wall-clock ceiling (Epic #1425 A3). Before this, `spawnSync('node', [gatePath])`
-// had NO timeout at all and no group semantics: a wedged `tsgo` or vitest worker
-// two levels down was reparented to PPID 1 and kept its memory (2026-09-20: four
-// such orphans, up to 8.0 GB RSS each, host at 13 % free).
-//
-// stdout is PIPED (not inherited) so the suite counts the gate already computed
-// can be lifted straight off its JSON envelope into telemetry (#954) instead of
-// travelling as prose through the STATE.md header. The envelope is re-emitted
-// verbatim below, so the stdout contract is unchanged — a gate sub-script writes
-// exactly one JSON line at the very end (its own child commands are captured by
-// `runCheck`), so nothing streamed before and nothing streams now.
-//
-// stderr stays INHERITED, and that is why `spawnFn` is overridden here rather
-// than left at its default: `spawnInGroup` merges stdout and stderr into one
-// capture, which would interleave the gate's failure disclosure (hundreds of
-// lines, #1149) into the single JSON document every consumer parses off stdout.
-// Handing it a child with `stderr: 'inherit'` leaves `child.stderr` null, the
-// module's own `child.stderr?.on(…)` a no-op, and the gate's warnings live on
-// the operator's terminal exactly as before.
-const gateCommand = `node ${shellQuote(gatePath)}`;
-// Derived from the SAME resolved per-command ceiling published as
-// `GATE_TIMEOUT_MS` above — not from `resolveGateTimeoutMs()` a second time.
-// The outer cap must stay strictly ABOVE the inner one so the inner kill fires
-// first and the gate can still print its envelope; re-deriving here would leave
-// the outer cap at the 900 000 default while a committed
-// `gate.timeout-path-b-ms` above it made the inner cap the later of the two.
-const gateTimeoutMs = commandTimeoutMs + GATE_OUTER_TIMEOUT_RESERVE_MS;
-const result = await spawnInGroup(gateCommand, {
-  cwd: repoRoot,
-  env,
-  timeoutMs: gateTimeoutMs,
-  maxOutputBytes: GATE_STDOUT_MAX_BUFFER_BYTES,
-  // The ledger is what the orphan reaper (#1425 B) reads to tell its OWN gate
-  // processes from every other `node` on the host, so it is pinned to the same
-  // root the telemetry is — under the pre-push hook the tree the gate runs in
-  // is deleted seconds later, and the record with it.
-  repoRoot: gateLedgerRoot,
-  commandSignature: buildCommandSignature(gateCommand),
-  // The OWNER the ledger records, from the PROCESS-LOCAL witness only — the same
-  // rule `scripts/lib/quality-gate.mjs` follows for the gate commands it spawns
-  // (`.claude/rules/identity-and-locks.md`: rank witnesses, never union them).
-  // `.orchestrator/session.lock` is deliberately NOT consulted: it is a
-  // repo-GLOBAL artefact any session in this working copy may hold, so reading
-  // it would stamp a PEER's id onto our own gate process and point the orphan
-  // reaper (#1425 B) at the wrong owner. No witness → `null`, which the ledger
-  // records as "owner unknown" — the state every record carried before this.
-  sessionId: [...readProcessLocalSessionIds({ env: process.env, hookInput: null })][0] ?? null,
-  // stdin is IGNORED, not inherited. A gate sub-script reads no stdin, but a
-  // DETACHED child is in its own process group and is therefore not the
-  // terminal's foreground group: the first read from an inherited TTY earns it
-  // SIGTTIN, which stops the whole group until the outer ceiling kills it. An
-  // ignored stdin turns that hang into an immediate EOF.
-  spawnFn: (command, options) => spawn(command, { ...options, stdio: ['ignore', 'pipe', 'inherit'] }),
-});
-
-// `pid: -1` is `spawnInGroup`'s spawn-failure channel (it never rejects).
-if (result.pid === -1) {
-  die(`Failed to run gate script: ${result.fullOutput.trim()}`);
-}
-
-// On timeout the child was KILLED before it could write its envelope, so its
-// capture is at best a partial JSON document. Publishing that would hand every
-// stdout consumer a parse error where a named failure belongs; publishing the
-// partial text AND an envelope would break the one-document contract. So the
-// capture goes to stderr, where the operator can still read it, and stdout
-// carries a complete `gate-timeout` envelope instead.
-//
-// The DECISION lives in `publishGateOutcome` (gate-helpers.mjs) and only the
-// WRITES live here: this branch needs a real 16-minute gate to reach, so while
-// the decision was inline it was pinned by nothing.
-const outcome = publishGateOutcome({ result, variant, timeoutMs: gateTimeoutMs });
-const gateStdout = result.timedOut ? '' : result.fullOutput;
-if (outcome.stderr) process.stderr.write(outcome.stderr);
-if (outcome.stdout) process.stdout.write(outcome.stdout);
-for (const line of outcome.warnings) warn(line);
-
-// Quality-gate telemetry — one canonical event per gate run via emitEvent
-// (single emission path). `sessionAttribution` is the shared helper in
-// events.mjs (#941); this CLI wrapper runs against the CWD `repoRoot`, so the
-// bare emitEvent destination (SO_PROJECT_DIR default) is correct here.
-//
-// EXCEPT under the pre-push hook, which is the one caller that runs the gate in
-// a tree that is about to be DELETED. `.husky/pre-push` materialises the tracked
-// tree into a temp dir and deliberately scrubs every `*PROJECT_DIR` name before
-// invoking the gate there, so `getProjectDir()` resolves to that temp tree (it
-// carries both a CLAUDE.md (or AGENTS.md) and a .git) and the record lands in
-// `<tmp>/.orchestrator/metrics/events.jsonl`, which the hook's EXIT trap then
-// removes. Measured 2026-09-06: a pre-push run that BLOCKED a push left no
-// `orchestrator.quality_gate.failed` line in this repo's ledger at all — the
-// gate failure was, by construction, the one event that could never be recorded.
-//
-// `--ledger-root` is that hook's channel for handing back the root it already
-// knows (`git rev-parse --show-toplevel`, read BEFORE it cds). It pins ONLY the
-// telemetry destination and the attribution root — every other path the gate
-// resolves stays inside the tree actually under test, which is the whole point
-// of the materialisation. Absent (every other caller) → unchanged behaviour:
-// `emitEvent`'s own default resolution.
-//
-// It is an ARGV FLAG and not an env var, and that is load-bearing. Measured
-// 2026-09-06 with the env-var form: `SO_GATE_LEDGER_ROOT=$tmp npx vitest run
-// tests/scripts/run-quality-gate.test.mjs -t "telemetry emission"` → `8 failed |
-// 1 passed`. The chain was: hook exports the var → `npm run quality-gate` →
-// `gate-full.mjs` spawns `npm test` → every vitest worker inherits it → the
-// suite's own gate spawns spread `...process.env`, so the pinned root outranked
-// their per-test project dir and the gate's telemetry tests wrote to the hook's
-// root. The gate that releases 4.0.0 would have blocked on itself. An env var is
-// inherited by every descendant; a flag reaches exactly one process.
-//
-// Best-effort: a telemetry failure must NEVER alter the gate's authoritative
-// exit code — which is why the counts parse also lives inside this try.
-const exitCode = outcome.exitCode;
-try {
-  const counts = suiteCountsFromGateStdout(gateStdout);
-  // The names behind `counts.failed`. Absent, never `[]` — see
-  // `failedFilesFromGateStdout`.
-  const failedFiles = failedFilesFromGateStdout(gateStdout);
-  // Wave-scope sidecar is read from the SAME project dir the event lands in
-  // (emitEvent's own destination precedence), so a tmp-scoped run cannot pick
-  // up the host repo's live wave. Mirrors the hook's projectDir resolution.
-  const waveNumber = resolveWaveNumber(
-    ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot,
-  );
-  await emitEvent(
-    `orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`,
-    {
-      variant,
-      exit_code: exitCode,
-      ...(counts ? { counts } : {}),
-      ...(failedFiles ? { failed_files: failedFiles } : {}),
-      ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
-      ...sessionAttribution(ledgerRoot ?? repoRoot),
-    },
-    // `{}` is byte-identical to omitting the argument (`opts.repoRoot ??
-    // getProjectDir()`), so the default path is untouched.
-    ledgerRoot ? { repoRoot: ledgerRoot } : {},
-  );
-} catch { /* best-effort telemetry — gate result is authoritative */ }
-
-process.exit(exitCode);
