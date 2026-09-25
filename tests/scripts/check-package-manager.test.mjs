@@ -24,6 +24,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { load as loadYaml } from 'js-yaml';
 import {
+  checkHuskyHooksPath,
   checkCommittedTree,
   checkWorkingTreeDrift,
   resolveRepoRoot,
@@ -338,7 +339,14 @@ describe('check-package-manager.mjs', () => {
     it('returns ok:true with empty findings for a clean repo', () => {
       makeCleanNpmRepo(tmp);
       const result = runPackageManagerGuard({ repoRoot: tmp, cwd: tmp, ci: false });
-      expect(result).toEqual({ ok: true, ci: false, skipped: false, repoRoot: tmp, findings: [] });
+      expect(result).toEqual({
+        ok: true,
+        ci: false,
+        skipped: false,
+        repoRoot: tmp,
+        findings: [],
+        hooks: { hooksPath: '', active: false, skipped: 'no-husky-dir' },
+      });
     });
 
     it('w3 stays effectiveSeverity warn (ok:true) locally when ci is false', () => {
@@ -382,6 +390,52 @@ describe('check-package-manager.mjs', () => {
         repoRoot: realpathSync(tmp),
         findings: [],
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // checkHuskyHooksPath (#1458 — ignore-scripts=true skips `prepare: husky`)
+  // -------------------------------------------------------------------------
+
+  describe('checkHuskyHooksPath (#1458)', () => {
+    /** Isolated from the host's global/system git config (a global core.hooksPath would leak in). */
+    const isolatedEnv = (overrides = {}) =>
+      baseEnv({ GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...overrides });
+
+    beforeEach(() => {
+      makeCleanNpmRepo(tmp);
+      mkdirSync(join(tmp, '.husky'));
+    });
+
+    it('fresh clone (.husky/ present, core.hooksPath unset, local) → inactive, not skipped', () => {
+      expect(checkHuskyHooksPath(tmp, { env: isolatedEnv() })).toEqual({
+        hooksPath: '',
+        active: false,
+        skipped: null,
+      });
+    });
+
+    it('under CI → skipped:"ci", even with hooksPath unset', () => {
+      expect(checkHuskyHooksPath(tmp, { env: isolatedEnv({ CI: 'true' }) })).toEqual({
+        hooksPath: '',
+        active: false,
+        skipped: 'ci',
+      });
+    });
+
+    it('core.hooksPath=.husky/_ → active', () => {
+      fixtureGitSpawn(['config', 'core.hooksPath', '.husky/_'], tmp);
+      expect(checkHuskyHooksPath(tmp, { env: isolatedEnv() })).toEqual({
+        hooksPath: '.husky/_',
+        active: true,
+        skipped: null,
+      });
+    });
+
+    it('CLI warns with the npx husky hint but still exits 0 (advisory, never fatal)', () => {
+      const r = runCli([], { cwd: tmp, env: isolatedEnv() });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toContain('Run: npx husky');
     });
   });
 
