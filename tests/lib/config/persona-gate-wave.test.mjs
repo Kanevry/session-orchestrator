@@ -49,7 +49,7 @@ persona-gate-wave:
     expect(result.after).toBe('quality');
     expect(result.threshold).toBe('all');
     expect(result.mode).toBe('off');
-    expect(result['dispatch-model']).toBe('claude-opus-4-7');
+    expect(result['dispatch-model']).toBe('opus');
     expect(result.personas).toEqual([]);
   });
 });
@@ -65,7 +65,7 @@ describe('_normalizePersonaGateWave — happy path defaults', () => {
     expect(result.after).toBe('quality');
     expect(result.threshold).toBe('all');
     expect(result.personas).toEqual([]);
-    expect(result['dispatch-model']).toBe('claude-opus-4-7');
+    expect(result['dispatch-model']).toBe('opus');
     expect(result.mode).toBe('off');
   });
 

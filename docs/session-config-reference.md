@@ -1849,7 +1849,7 @@ persona-gate-wave:
   after: quality               # quality | impl-polish — wave name after which to fire
   threshold: "all"             # "M-of-N" | "all" | "N-of-N" — passed to parseThreshold
   personas: []                 # list of persona names from .claude/personas/; empty = all catalog
-  dispatch-model: claude-opus-4-7   # alias or full model ID — default 'claude-opus-4-7'
+  dispatch-model: opus              # alias or full model ID — default 'opus'
   mode: off                    # off | warn | strict
 ```
 
@@ -1859,7 +1859,7 @@ persona-gate-wave:
 | `persona-gate-wave.after` | string (`quality` \| `impl-polish`) | `quality` | The wave role after which the hook fires. The hook runs once per session, immediately after the named wave's STATE.md update. |
 | `persona-gate-wave.threshold` | string | `"all"` | Voting threshold passed to `parseThreshold()` from `scripts/lib/persona-panel/threshold.mjs`. Accepts `"all"`, `"any"`, or `"M-of-N"` where `1 ≤ M ≤ N ≤ 20`. Example: `"6-of-6"` requires every persona to vote PASS; `"4-of-6"` allows two dissenters. |
 | `persona-gate-wave.personas` | string[] | `[]` | Roster of persona names to dispatch. Each entry must match `^[a-z0-9-]{1,64}$` and refer to a persona file under `.claude/personas/<name>.md`. When the list is empty (default), every persona in the catalog is dispatched. |
-| `persona-gate-wave.dispatch-model` | string | `claude-opus-4-7` | Model used for each persona agent dispatch. Accepts the same shape as agent frontmatter `model:` — one of `inherit` \| `sonnet` \| `opus` \| `haiku`, or a full model ID like `claude-opus-4-7`. |
+| `persona-gate-wave.dispatch-model` | string | `opus` | Model used for each persona agent dispatch. Accepts the same shape as agent frontmatter `model:` — one of `inherit` \| `sonnet` \| `opus` \| `haiku`, or a full model ID like `claude-opus-4-7`. Default is the alias `opus`, which tracks the current Opus; pin a full ID only for a named reproducibility need. |
 | `persona-gate-wave.mode` | string (`off` \| `warn` \| `strict`) | `off` | Behaviour on consolidator result. `off` skips dispatch entirely even when `enabled: true` (silent no-op). `warn` consolidates and logs findings under a `Persona-gate:` bullet in the wave progress update without blocking. `strict` consolidates and on any non-PROCEED verdict prompts the operator via `AskUserQuestion` to proceed-as-is, revise remaining waves, or abort. |
 
 **Validation:**

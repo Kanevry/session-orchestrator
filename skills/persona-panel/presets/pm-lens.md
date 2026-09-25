@@ -3,7 +3,7 @@ name: pm-lens
 schema_version: 1
 version: "1"
 role: "Product Manager lens — evaluates user value, outcome-metric clarity, and scope discipline"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "The change is tied to a specific, named user or business problem — not a solution in search of one."

@@ -156,7 +156,7 @@ async function runPersonaGateHook({
     personas_invoked: personas.map((p) => ({
       name: p.name,
       version: p.version ?? 1,
-      model: cfg['dispatch-model'] ?? 'claude-opus-4-7',
+      model: cfg['dispatch-model'] ?? 'opus',
       prompt_hash: 'a'.repeat(16),
       timestamp_start: iso,
       timestamp_end: iso,

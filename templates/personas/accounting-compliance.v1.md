@@ -3,7 +3,7 @@ name: accounting-compliance
 schema_version: 1
 version: "1"
 role: "DSGVO/GDPR Compliance Officer — audits AI-accountant outputs for privacy and audit-trail conformance"
-model: claude-opus-4-7
+model: opus
 tier: compliance
 evaluation_criteria:
   - "Keine PII im Output: kein Klarname, E-Mail, IBAN ausserhalb des eigenen Mandanten-Kontexts"

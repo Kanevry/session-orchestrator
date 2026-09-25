@@ -39,7 +39,7 @@ Subject-matter experts (SMEs) reviewing outputs for technical correctness — ac
 
 **Exemplars:** `accounting-tax-advisor.v1.md`, `klima-ai-expert.v1.md`, `klima-physicist.v1.md`
 
-**Recommended model:** `claude-opus-4-7` — Opus surfaces nuances Sonnet misses (vault learning `[[persona-opus-finds-real-failing-cibadge]]`).
+**Recommended model:** the Opus tier via alias `opus` — Opus surfaces nuances Sonnet misses (vault learning `[[persona-opus-finds-real-failing-cibadge]]`); the alias tracks the current Opus; pin a full model ID only for a named reproducibility need.
 
 #### `buyer-persona`
 
@@ -47,7 +47,7 @@ Synthetic archetype of a target customer reviewing for market fit, pain-point re
 
 **Exemplars:** `buyer-p1-cto.v1.md` through `buyer-p6-ld.v1.md` (6-persona set covering CTO, Kanzlei, Build-buyer, Tech-veto, Solopreneur, L&D).
 
-**Recommended model:** `claude-opus-4-7` for high-stakes go/no-go reviews; Sonnet acceptable for lower-stakes copy tests.
+**Recommended model:** alias `opus` (tracks the current Opus) for high-stakes go/no-go reviews; Sonnet acceptable for lower-stakes copy tests.
 
 #### `compliance`
 
@@ -55,7 +55,7 @@ Compliance officers auditing outputs against regulation (GDPR/DSGVO, tax law, se
 
 **Exemplar:** `accounting-compliance.v1.md` (DSGVO Art. 5/17/20 audit trail).
 
-**Recommended model:** `claude-opus-4-7` — false negatives in compliance reviews are expensive.
+**Recommended model:** alias `opus` (tracks the current Opus) — false negatives in compliance reviews are expensive.
 
 #### `auditor`
 
@@ -63,7 +63,7 @@ Independent auditor checking that outputs match a stated standard, framework, or
 
 **No exemplar yet — first author should propose a starter template.**
 
-**Recommended model:** `claude-opus-4-7` for high-stakes audits; Sonnet for routine standard-conformance checks.
+**Recommended model:** alias `opus` (tracks the current Opus) for high-stakes audits; Sonnet for routine standard-conformance checks.
 
 #### `reviewer`
 
@@ -119,7 +119,7 @@ name: tax-law-reviewer
 schema_version: 1
 version: "1"
 role: "Austrian tax accountant reviewing accounting AI outputs for UStG/BAO law compliance"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "UStG compliance: VAT rate and reverse-charge correctly applied to outputs"

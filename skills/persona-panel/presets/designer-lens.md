@@ -3,7 +3,7 @@ name: designer-lens
 schema_version: 1
 version: "1"
 role: "Designer lens — evaluates interaction flow, cognitive load, consistency, and accessibility"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "The interaction flow is legible on first encounter — a new user can predict what happens next without hidden state."

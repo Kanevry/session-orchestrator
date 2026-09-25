@@ -28,7 +28,7 @@ name: ai-expert
 schema_version: 1
 version: "2"
 role: "AI/ML domain expert — evaluates technical accuracy and implementation quality"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 output_contract:
   type: object
@@ -59,7 +59,7 @@ evaluation_criteria:
 | `schema_version` | integer | Must be `1`. |
 | `version` | string | Non-empty string. Persona content version. Increment on any output-affecting change. Used in sidecar + trend-tracking (#459). |
 | `role` | string | Identity statement. Injected verbatim as prompt opener. Keep under 200 chars. |
-| `model` | string | Full model ID (`MODEL_ID_RE`) or alias (`inherit|sonnet|opus|haiku`). Validated at load time. Recommend `claude-opus-4-7` for `domain-expert` and `compliance` tiers (Opus finds real issues Sonnet misses — vault learning `[[persona-opus-finds-real-failing-cibadge]]`). |
+| `model` | string | Full model ID (`MODEL_ID_RE`) or alias (`inherit|sonnet|opus|haiku`). Validated at load time. Recommend the Opus tier via alias `opus` for `domain-expert` and `compliance` tiers (Opus finds real issues Sonnet misses — vault learning `[[persona-opus-finds-real-failing-cibadge]]`); the alias tracks the current Opus; pin a full model ID only for a named reproducibility need, and name the reason. |
 | `output_contract` | object | Inline JSON Schema Draft 2020-12. `$ref/$defs/allOf/anyOf` FORBIDDEN (H3). Must require `verdict` + `rationale`. AJV compile wrapped in 2s AbortSignal timeout. |
 | `evaluation_criteria` | array | Non-empty. Each string max 512 chars. Injected wrapped in `<persona-criteria>` delimiters (M1). Write as statements, not questions. |
 | `tier` | enum | `domain-expert` \| `buyer-persona` \| `auditor` \| `compliance` \| `reviewer` \| `custom`. Affects model selection (Phase 3). |

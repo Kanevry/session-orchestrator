@@ -10,7 +10,7 @@
  *   after           — 'quality' | 'impl-polish'  (default: 'quality')
  *   threshold       — string spec parsed via parseThreshold (default: 'all')
  *   personas        — string[] (each matches SAFE_PERSONA_NAME_RE)  (default: [])
- *   dispatch-model  — model alias or full ID  (default: 'claude-opus-4-7')
+ *   dispatch-model  — model alias or full ID  (default: 'opus' — tracks the current Opus)
  *   mode            — 'off' | 'warn' | 'strict'  (default: 'off')
  *
  * Used by skills/wave-executor/wave-loop.md § 3b: Persona-Gate Hook to decide
@@ -32,7 +32,7 @@ const DEFAULTS = Object.freeze({
   threshold: 'all',
   threshold_parsed: null,  // cached ParsedThreshold result; populated by _normalizePersonaGateWave
   personas: [],
-  'dispatch-model': 'claude-opus-4-7',
+  'dispatch-model': 'opus',
   mode: 'off',
 });
 
