@@ -856,7 +856,7 @@ persona-gate-wave:
   after: quality                       # quality | impl-polish
   threshold: all                       # all | any | <m>-of-<n>
   personas: []                         # persona slugs the panel dispatches
-  dispatch-model: claude-opus-4-7
+  dispatch-model: opus                 # alias or full model ID — default 'opus'
   mode: off                            # off | warn | strict — enabled: true with mode: off never fires
 
 # Agentic test orchestrator (/test) — run profiles and artifact retention

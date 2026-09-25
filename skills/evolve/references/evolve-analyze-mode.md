@@ -237,7 +237,12 @@ For confirmed learnings, use atomic rewrite strategy:
 
    Write the full next-generation entry set (existing entries **with** the step-2/3 confidence
    updates, **plus** the step-4 new learnings) as JSONL to a temp sidecar **via the Write tool**
-   (not a shell `>` redirect — the destructive-command guard blocks it), then invoke the
+   (not a shell `>` redirect — the destructive-command guard blocks it) at
+   `.orchestrator/tmp/learnings-next.jsonl` (the Write tool creates the missing
+   `.orchestrator/tmp/` itself; from a shell, `mkdir -p .orchestrator/tmp` first). The sidecar
+   lives under `.orchestrator/tmp/`, never `.orchestrator/metrics/`, because `tmp/` is outside
+   the ledger guard's `ledger-delete-protected` denylist — a metrics-dir sidecar made the
+   cleanup `rm` below a blocked command (#1453). Then invoke the
    `--prune` subcommand of the sweep CLI. **This call is also `/evolve`'s ONLY
    `orchestrator.evolve.completed` success emit (#1206)** — export `N` (Step 3.5(4)'s
    new-learnings count), `M` (Step 3.5(2)'s reinforced-existing count) and `DURATION_MS`
@@ -246,7 +251,7 @@ For confirmed learnings, use atomic rewrite strategy:
    an argument error:
 
    ```bash
-   NEXT=".orchestrator/metrics/.learnings-next.jsonl"   # written by the step above
+   NEXT=".orchestrator/tmp/learnings-next.jsonl"   # written by the step above
    node scripts/sweep-expired-learnings.mjs --prune --apply --json --entries "$NEXT" \
      --appended "${N:-0}" --boosted "${M:-0}" --duration-ms "${DURATION_MS:-0}" \
      --repo-root "$(pwd)" && rm -f "$NEXT"

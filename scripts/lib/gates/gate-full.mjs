@@ -11,6 +11,7 @@ import {
   extractTestCounts,
   extractFailedTestFiles,
   collectDebugArtifacts,
+  commandKillFields,
 } from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
@@ -145,7 +146,10 @@ if (lintResult.stubbed) stubbed.lint = lintResult.stubbed;
 const output = {
   variant: 'full-gate',
   duration_seconds: durationSeconds,
-  typecheck: { status: tcResult.status, error_count: tcErrorCount },
+  // Each command object also carries its INNER kill ladder (`timed_out`,
+  // `kill_signals`, `survivors` pids) when `runCheck` spawned it — omitted for
+  // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
+  typecheck: { status: tcResult.status, error_count: tcErrorCount, ...commandKillFields(tcResult) },
   // `failed` is published explicitly (#967 item 1) rather than left to be
   // re-derived as `total - passed` downstream: the derivation and the parse can
   // disagree, and only an explicit third number lets a consumer check
@@ -161,8 +165,9 @@ const output = {
     // read just passed/failed/total, so the stdout JSON contract stays one
     // document and the test-case triple keeps `total === passed + failed`.
     ...fileFields,
+    ...commandKillFields(testResult),
   },
-  lint: { status: lintResult.status, warnings: lintWarnings },
+  lint: { status: lintResult.status, warnings: lintWarnings, ...commandKillFields(lintResult) },
   debug_artifacts: debugArtifacts,
   stubbed,
 };

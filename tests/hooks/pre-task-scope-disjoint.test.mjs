@@ -120,14 +120,14 @@ function transcriptAsyncLaunchAck(toolUseId, agentId) {
   });
 }
 
-/** The ASYNC shape's real completion. */
-function transcriptTaskNotification(toolUseId, agentId, desc) {
+/** The ASYNC shape's terminal notification (`status` defaults to completed). */
+function transcriptTaskNotification(toolUseId, agentId, desc, status = 'completed') {
   return JSON.stringify({
     type: 'user',
     timestamp: '2026-08-14T14:24:39.360Z',
     message: {
       role: 'user',
-      content: `<task-notification>\n<task-id>${agentId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>completed</status>\n<summary>Agent "${desc}" finished</summary>\n<result>done</result>\n</task-notification>`,
+      content: `<task-notification>\n<task-id>${agentId}</task-id>\n<tool-use-id>${toolUseId}</tool-use-id>\n<status>${status}</status>\n<summary>Agent "${desc}" finished</summary>\n<result>done</result>\n</task-notification>`,
     },
   });
 }
@@ -408,6 +408,34 @@ describe('pre-task-scope-disjoint — liveness: a FINISHED agent no longer binds
 
     expectAllow(dispatch(dir, 'C2 vcs repo-flag checker', ['scripts/lib/vcs.mjs'], { transcriptPath }));
     expectAllow(dispatch(dir, 'Fix self-defeating findings floor', ['scripts/lib/vcs.mjs'], { transcriptPath }));
+  });
+
+  it.each(['failed', 'killed', 'stopped'])('finishes a %s agent that was resumed via SendMessage under a new tool-use-id (#1455)', async (status) => {
+    // Bug caught (#1455, EventDrop.at 2026-09-25): two agents hit a 429, their
+    // notification said `failed`, the coordinator resumed them via SendMessage,
+    // and the completion arrived under the SendMessage's NEW id. Only
+    // `completed` finished an id, so the ORIGINAL dispatch id stayed "running"
+    // forever and every next-wave agent on those files was denied permanently.
+    const { buildTranscriptIndex } = await import(pathToFileURL(HOOK).href);
+    const D = 'W1 implement feature X';
+    const dispatchRow = transcriptDispatch(D, 'toolu_01T1');
+    const sendMessageRow = JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_01T2', name: 'SendMessage', input: { to: 'a1b2c3d4e5f60718a', message: 'continue' } }] },
+    });
+    const raw = [
+      dispatchRow,
+      transcriptTaskNotification('toolu_01T1', 'a1b2c3d4e5f60718a', D, status),
+      sendMessageRow,
+      transcriptTaskNotification('toolu_01T2', 'a1b2c3d4e5f60718a', D, 'completed'),
+    ].join('\n');
+    expect(buildTranscriptIndex(raw).get(D)).toBe(true);
+
+    // The boundary stays: a `running` notification or the launch ACK is not terminal.
+    const running = [dispatchRow, transcriptTaskNotification('toolu_01T1', 'a1b2c3d4e5f60718a', D, 'running')].join('\n');
+    expect(buildTranscriptIndex(running).get(D)).toBe(false);
+    const acked = [dispatchRow, transcriptAsyncLaunchAck('toolu_01T1', 'a1b2c3d4e5f60718a')].join('\n');
+    expect(buildTranscriptIndex(acked).get(D)).toBe(false);
   });
 
   it('still DENIES two RUNNING agents that overlap — the async launch ACK is not a completion', () => {

@@ -3,7 +3,7 @@ name: accounting-tax-advisor
 schema_version: 1
 version: "1"
 role: "Austrian Steuerberater (StBKO §47) — reviews AI-accountant outputs for AT tax-law compliance"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "UStG-Konformität: correct VAT rate applied; exemptions follow §6 UStG; Reverse-Charge correctly identified"

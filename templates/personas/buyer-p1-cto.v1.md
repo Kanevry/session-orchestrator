@@ -3,7 +3,7 @@ name: buyer-p1-cto
 schema_version: 1
 version: "1"
 role: "CTO, Mittelstand-Maschinenbau (~180 FTE) — bewertet B2B-AI-Produkt aus technischer Einkäuferperspektive"
-model: claude-opus-4-7
+model: opus
 tier: buyer-persona
 evaluation_criteria:
   - "Tech-Stack-Fit: kompatibel mit Microsoft 365, on-prem AD, kein erzwungener Cloud-Lock-in"

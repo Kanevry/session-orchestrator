@@ -25,6 +25,11 @@
 //            (warn locally; upgraded to a hard failure under CI)
 //        c1  pnpm-lock.yaml must NOT be tracked in git
 //        c2  package-lock.json MUST be tracked in git
+//   3. Husky activation (#1458, advisory only — never affects `ok`/exit code):
+//        h1  `.husky/` exists but git core.hooksPath is not `.husky/_` — the
+//            `prepare: husky` script never ran because ignore-scripts=true,
+//            so commit-msg/pre-commit/pre-push are inactive. Warns locally
+//            and recommends `npx husky`; silent under CI.
 //
 // SCOPE GUARD:
 //   This script only guards the REPOSITORY ROOT package.json. If invoked
@@ -64,8 +69,8 @@
 // on any dependency install).
 
 import { existsSync, lstatSync, readFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { dirname, isAbsolute, join, posix, resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -266,11 +271,53 @@ export function parseCiEnv(value) {
   return !['', '0', 'false', 'no'].includes(normalized);
 }
 
+/** One-line stderr WARN for an inactive Husky install (#1458). */
+export const HUSKY_INACTIVE_WARNING =
+  '⚠ check-package-manager: git core.hooksPath is not set to .husky/_ — Husky hooks (commit-msg, pre-commit, pre-push) are INACTIVE in this clone because .npmrc ignore-scripts=true skips the prepare script (#1458). Run: npx husky';
+
+/**
+ * Advisory check (#1458): `.npmrc` `ignore-scripts=true` (SEC-020) means the
+ * `prepare: husky` script never runs on `npm ci`, so a fresh clone has no
+ * `core.hooksPath` and every Husky hook is silently inactive. This only
+ * REPORTS the state — it never runs `npx husky`, never writes git config and
+ * never affects the guard's `ok`/exit code. Silent under CI.
+ * @param {string} repoRoot
+ * @param {{ env?: NodeJS.ProcessEnv, ci?: boolean }} [opts] — `env` is also
+ *   passed to the git subprocess (lets tests isolate from global git config).
+ * @returns {{ hooksPath: string, active: boolean, skipped: 'ci'|'no-husky-dir'|null }}
+ */
+export function checkHuskyHooksPath(repoRoot, { env = process.env, ci } = {}) {
+  if (ci ?? parseCiEnv(env.CI)) return { hooksPath: '', active: false, skipped: 'ci' };
+  if (!existsSync(join(repoRoot, '.husky'))) {
+    return { hooksPath: '', active: false, skipped: 'no-husky-dir' };
+  }
+
+  let hooksPath;
+  try {
+    hooksPath = execFileSync('git', ['-C', repoRoot, 'config', '--get', 'core.hooksPath'], {
+      encoding: 'utf8',
+      env,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    // Non-zero exit (key unset) or git unavailable — treat as unset.
+    hooksPath = '';
+  }
+
+  const norm = hooksPath.replace(/\\/g, '/').replace(/\/+$/, '');
+  const active =
+    norm !== '' &&
+    (isAbsolute(hooksPath) ? norm.endsWith('/.husky/_') : posix.normalize(norm) === '.husky/_');
+
+  return { hooksPath, active, skipped: null };
+}
+
 /**
  * Runs the full guard and returns a plain-object result. Pure(ish) — the
  * only side effects are read-only fs/git calls. Never throws or exits.
- * @param {{ cwd?: string, ci?: boolean, allowMissingNodeModules?: boolean, repoRoot?: string }} [opts]
- * @returns {{ ok: boolean, ci: boolean, skipped: boolean, repoRoot: string, findings: Array<{code: string, severity: string, effectiveSeverity: string, message: string}> }}
+ * `hooks` carries the advisory Husky check (#1458); it never affects `ok`.
+ * @param {{ cwd?: string, ci?: boolean, allowMissingNodeModules?: boolean, repoRoot?: string, env?: NodeJS.ProcessEnv }} [opts]
+ * @returns {{ ok: boolean, ci: boolean, skipped: boolean, repoRoot: string, findings: Array<{code: string, severity: string, effectiveSeverity: string, message: string}>, hooks?: { hooksPath: string, active: boolean, skipped: 'ci'|'no-husky-dir'|null } }}
  */
 export function runPackageManagerGuard(opts = {}) {
   const cwd = opts.cwd ?? process.cwd();
@@ -302,7 +349,9 @@ export function runPackageManagerGuard(opts = {}) {
 
   const ok = !findings.some((f) => f.effectiveSeverity === 'error');
 
-  return { ok, ci, skipped: false, repoRoot, findings };
+  const hooks = checkHuskyHooksPath(repoRoot, { env: opts.env ?? process.env, ci });
+
+  return { ok, ci, skipped: false, repoRoot, findings, hooks };
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +381,9 @@ CHECKS
         (warn locally; upgraded to a hard failure under CI, fail-closed)
     c1  pnpm-lock.yaml must NOT be tracked in git
     c2  package-lock.json MUST be tracked in git
+  Husky activation (advisory, never changes the exit code; silent under CI):
+    h1  .husky/ exists but git core.hooksPath is not .husky/_ (#1458) —
+        run \`npx husky\` once (ignore-scripts=true skips \`prepare\`)
 
 OPTIONS
   --allow-missing-node-modules  Document that node_modules may not exist yet
@@ -411,6 +463,11 @@ if (isMain) {
   }
 
   const result = runPackageManagerGuard({ allowMissingNodeModules: opts.allowMissingNodeModules });
+
+  // Advisory only (#1458) — never changes the exit code.
+  if (result.hooks && !result.hooks.active && result.hooks.skipped === null) {
+    console.error(HUSKY_INACTIVE_WARNING);
+  }
 
   if (opts.json) {
     console.log(JSON.stringify(result));

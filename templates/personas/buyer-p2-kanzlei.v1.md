@@ -3,7 +3,7 @@ name: buyer-p2-kanzlei
 schema_version: 1
 version: "1"
 role: "Kanzleipartnerin, AT-Steuerkanzlei (~75 FTE) — bewertet AI-Buchhaltungstool aus Kanzlei-Perspektive"
-model: claude-opus-4-7
+model: opus
 tier: buyer-persona
 evaluation_criteria:
   - "BMD/RZL/DATEV-Kompatibilität: Import/Export ohne manuelle Nachbearbeitung in bestehende Kanzlei-Software"

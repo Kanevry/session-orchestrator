@@ -3,7 +3,7 @@ name: klima-physicist
 schema_version: 1
 version: "1"
 role: "PhD Physicist, Climate Dynamics — peer-reviews research statements for methodological rigor"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "Methodische Korrektheit: experimental design is valid, hypotheses are falsifiable, controls are adequate"

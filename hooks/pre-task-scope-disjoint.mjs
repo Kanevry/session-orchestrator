@@ -76,7 +76,10 @@
  *      real background-batch collision through. Completion arrives later as a
  *      `<task-notification>` record carrying `<tool-use-id>toolu_…</tool-use-id>`
  *      and `<status>completed</status>` (measured: launch 14:14:26.768 →
- *      notification 14:24:39.360, ten minutes later).
+ *      notification 14:24:39.360, ten minutes later). Any TERMINAL status
+ *      finishes the id, not only `completed` — see {@link TERMINAL_STATUS_RE}.
+ *      #1455: a 429'd agent notified `failed`, was resumed via SendMessage
+ *      (new tool-use-id), and its original id never finished → permanent deny.
  *
  * COST CONTAINMENT: the transcript is read ONLY when a collision has already
  * been found — i.e. on the path that is about to deny. The 99 % no-collision
@@ -360,6 +363,15 @@ const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
  * must not take.
  */
 const ASYNC_LAUNCH_ACK = 'Async agent launched successfully';
+
+/**
+ * `<task-notification>` statuses that mean the task is NO LONGER RUNNING (#1455).
+ * Enumerated from evidence, not guessed — census 2026-09-25 over the operator's
+ * local Claude Code transcripts (`rg "<tool-use-id>…<status>X</status>"` on
+ * `*.jsonl`): completed, failed 1430 lines, killed 609, stopped 28.
+ * `running` is deliberately absent — it is the one non-terminal spelling.
+ */
+const TERMINAL_STATUS_RE = /<status>(?:completed|failed|killed|stopped)<\/status>/;
 
 /**
  * The consequence block spliced VERBATIM into the GUARD INACTIVE banner (#993),
@@ -788,8 +800,10 @@ export function agentIdOf(toolInput) {
  *   - `tool_use` `{name:'Agent', id, input.description}` — the dispatch.
  *   - `tool_result` `{tool_use_id, content}` — a completion for the SYNCHRONOUS
  *     shape, but only when its text is not the {@link ASYNC_LAUNCH_ACK}.
- *   - a `<task-notification>` record carrying `<tool-use-id>` and
- *     `<status>completed</status>` — the ASYNC shape's completion.
+ *   - a `<task-notification>` record carrying `<tool-use-id>` and a TERMINAL
+ *     `<status>` ({@link TERMINAL_STATUS_RE}) — the ASYNC shape's completion.
+ *     `failed` counts too (#1455): a failed agent is not running, and a resumed
+ *     one completes under the SendMessage's NEW id, never the original one.
  *
  * A description dispatched N times counts as finished only when EVERY one of its
  * tool_use ids is finished. Conservative on purpose: one outstanding run of the
@@ -813,7 +827,7 @@ export function buildTranscriptIndex(raw) {
     // ASYNC completion — matched on the RAW line: the tags are plain text inside
     // a JSON string, so no parse is needed and the `queue-operation` carrier
     // record (which has no `message.content`) is covered too.
-    if (line.includes('task-notification') && line.includes('<status>completed</status>')) {
+    if (line.includes('task-notification') && TERMINAL_STATUS_RE.test(line)) {
       for (const m of line.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g)) finishedIds.add(m[1]);
     }
 

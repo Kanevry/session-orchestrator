@@ -410,6 +410,21 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev.exit_code).toBe(r.status);
   });
 
+  it('carries an INNER per-command kill into the failed event while the outer ceiling stays quiet (#1457)', () => {
+    // SO_GATE_TIMEOUT_MS=300 kills `sleep 30` inside gate-full after ~300 ms;
+    // the CLI's own outer ceiling is 300 ms + 60 s and never fires. Only the
+    // envelope join (`joinGateKillFields`) can put that kill into the event —
+    // plain `gateKillFields(result)` reports the quiet outer ladder
+    // (`timed_out: false`, `kill_signals: []`) and this test goes red.
+    const config = JSON.stringify({ 'typecheck-command': 'sleep 30', 'test-command': 'skip', 'lint-command': 'skip' });
+    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp, SO_GATE_TIMEOUT_MS: '300' });
+    expect(r.status).not.toBe(0);
+    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.failed');
+    expect(ev).toBeDefined();
+    expect(ev.timed_out).toBe(true);
+    expect(ev.kill_signals[0]).toBe('SIGTERM');
+  });
+
   it('emits orchestrator.quality_gate.passed with variant "incremental" for a passing incremental run (#613)', () => {
     // Emission was previously asserted only for the full-gate variant. This pins
     // that the emitted `variant` field carries the raw --variant CLI value, so an

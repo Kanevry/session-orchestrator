@@ -3,7 +3,7 @@ name: engineer-lens
 schema_version: 1
 version: "1"
 role: "Engineer lens — evaluates feasibility, complexity, failure modes, and long-term maintainability"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "Failure modes are enumerated — what breaks under load, bad input, or partial failure, and how the system responds."

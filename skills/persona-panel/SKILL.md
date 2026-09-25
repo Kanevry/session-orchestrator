@@ -184,8 +184,8 @@ Dispatch one Agent per persona from the active catalog set.
 
 **Model selection per persona:**
 - If `persona.model` is a full Claude model ID (`MODEL_ID_RE`): use it as-is.
-- If `persona.model` is `opus` or unset AND `persona.tier == 'domain-expert'`: override to
-  `claude-opus-4-7` (empirically validated — Opus finds real problems Sonnet misses; see vault
+- If `persona.model` is `opus` or unset AND `persona.tier == 'domain-expert'`: use the alias
+  `opus`, which tracks the current Opus — pin a full ID only for a named reproducibility need (empirically validated — Opus finds real problems Sonnet misses; see vault
   learning `[[persona-opus-finds-real-failing-cibadge]]`).
 - Otherwise: use the persona's declared model alias.
 

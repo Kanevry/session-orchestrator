@@ -3,7 +3,7 @@ name: klima-ai-expert
 schema_version: 1
 version: "1"
 role: "AI/ML Suitability Reviewer, climate research — rates research questions on AI-method fit"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 evaluation_criteria:
   - "D1 Datenverfügbarkeit (0-3): sufficient labeled or unlabeled corpus exists for training/validation"

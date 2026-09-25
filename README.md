@@ -39,6 +39,8 @@ You need **Node.js 24 or later**, a git repository, and one of the four agents b
 | **Cursor IDE** | `git clone` the repo, `npm install`, then `node scripts/cursor-install.mjs /path/to/your/project` ([guide](docs/cursor-setup.md)). |
 | **Pi** | `pi install npm:session-orchestrator` ([guide](docs/pi-setup.md)). |
 
+After a clone-based install (Codex CLI, Cursor IDE, or contributing), run `npx husky` once: `.npmrc` sets `ignore-scripts=true` (SEC-020), which skips the `prepare` script that would otherwise activate the git hooks.
+
 ## Quick Start
 
 **1. Run `/bootstrap` once in your project.** It creates the minimum structure and writes `.orchestrator/bootstrap.lock`. `/session` refuses to start until that file exists.

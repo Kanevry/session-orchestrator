@@ -3,7 +3,7 @@ name: buyer-p6-ld
 schema_version: 1
 version: "1"
 role: "Learning & Development Managerin, Konzern (~1500 MA) — bewertet Lernplattformen aus L&D-Perspektive (ROI, LMS-Integration, Completion-Rates)"
-model: claude-opus-4-7
+model: opus
 tier: buyer-persona
 evaluation_criteria:
   - "Completion-Rate-Uplift: messbare Steigerung der Lernabschluss-Quote vs. Baseline, Pilotdaten aus vergleichbaren Organisationen verfügbar"

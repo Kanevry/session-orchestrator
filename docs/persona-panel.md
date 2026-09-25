@@ -110,8 +110,8 @@ Sidecar: .orchestrator/persona-panel/2026-05-20T14-30-00Z-a1b2c3d4.json
   "run_id": "a1b2c3d4",
   "target": "/abs/path/docs/research/wfk-2.1.5.md",
   "personas_invoked": [
-    { "name": "klima-physicist", "version": "2", "model": "claude-opus-4-7", ... },
-    { "name": "klima-ai-expert",  "version": "1", "model": "claude-opus-4-7", ... }
+    { "name": "klima-physicist", "version": "2", "model": "opus", ... },
+    { "name": "klima-ai-expert",  "version": "1", "model": "opus", ... }
   ],
   "consolidation": {
     "mode": "voting-quorum",
@@ -239,7 +239,7 @@ name: my-reviewer
 schema_version: 1
 version: "1"
 role: "Domain expert in [field] — evaluates [aspect] of the target"
-model: claude-opus-4-7
+model: opus
 tier: domain-expert
 output_contract:
   type: object
@@ -293,8 +293,9 @@ None.
 | `compliance` | DSGVO, SEC, HIPAA, ISO reviewers |
 | `custom` | Any other structured reviewer |
 
-`domain-expert` and `compliance` tiers default to `claude-opus-4-7` for model selection
+`domain-expert` and `compliance` tiers default to the Opus tier via alias `opus` for model selection
 (Opus finds real issues Sonnet misses — see vault learning `[[persona-opus-finds-real-failing-cibadge]]`).
+The alias tracks the current Opus; pin a full model ID only for a reproducibility need, and name the reason.
 
 ### output_contract security rules
 
