@@ -34,6 +34,8 @@ A worktree is clean iff ALL three conditions hold:
 > **Authoritative impl:** `scripts/lib/session-end/worktree-cleanup.mjs` — `isWorktreeClean(wtPath, opts)`. Import and call; do NOT re-implement from this doc.
 >
 > Algorithm: run `git status --porcelain`; filter blank lines, then discount EXACTLY the one untracked line the promotion marker itself produces (`?? .orchestrator/promoted-from.json` — in a repo where `.orchestrator/` is only partly gitignored, or on a worktree whose branch predates the ignore line, the marker `enterWorktree()` writes would otherwise make every promoted worktree read "dirty"; a modified/staged/renamed/conflicted marker still counts as dirty). If any lines remain → dirty (`false`). Else run `git status --short --branch`; if it matches `/\bahead\b/` → unpushed (`false`). Otherwise `true`. On ANY git error → `false` (conservative PSA-003 default: never auto-remove a worktree we could not verify). Git invocation is via the injection-safe `opts.execFileFn` (default `execFileSync` with an args array — #577 HARDEN-001).
+>
+> `isWorktreeClean()` discounts exactly the marker's own untracked line, never operator work.
 
 ### Clean path: auto-remove + WARN (PRD §3 P3 Gherkin row 2)
 
