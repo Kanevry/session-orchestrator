@@ -483,6 +483,20 @@ describe('checkCiConfig', () => {
     writeFileSync(join(root, '.gitlab-ci.yml'), config);
     expect(checkCiConfig(root).map((finding) => finding.check)).toEqual(audited ? [] : ['ci-audit-job']);
   });
+
+  it.each([
+    ['component', 'include:\n  - component: gitlab.example.org/ci/npm-audit/audit@1.0\n'],
+    ['local', 'include:\n  - local: ci/audit.yml\n'],
+    ['remote string', "include: 'https://example.org/audit.yml'\ntest:\n  script: npm test\n"],
+  ])('reports an unverifiable audit, not a missing one, when GitLab jobs come from include: %s', (_form, config) => {
+    // Bug this catches: an audit job supplied by a CI component/include was
+    // reported as a mechanically-fixable "missing" step, prompting a duplicate job.
+    writeFileSync(join(root, 'package.json'), '{}');
+    writeFileSync(join(root, '.gitlab-ci.yml'), config);
+    expect(checkCiConfig(root)).toEqual([
+      { check: 'ci-audit-job', fixable: false, message: expect.stringMatching(/could not be verified: 1 include/) },
+    ]);
+  });
 });
 
 // ── Env documentation ────────────────────────────────────────────────────────

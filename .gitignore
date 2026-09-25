@@ -16,6 +16,8 @@ Thumbs.db
 .claude/STATE.md
 .claude/wave-scope.json
 .claude/filescopes/
+# SEC-021: never commit a settings file that may carry a pasted token (.claude/rules/security.md)
+.claude/settings.local.json
 .claude/metrics/
 .claude/worktrees/
 .claude/*.lock

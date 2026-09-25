@@ -8,7 +8,7 @@
 > superseded claims marked inline below.
 >
 > Status: Accepted · session main-2026-05-27-deep-3 · issues #574 #575
-> Source: `skills/session-end/SKILL.md` § Phase 4a ordering rationale; `scripts/lib/session-end/worktree-cleanup.mjs`; issue #490 (durableCommit ordering invariant); CLAUDE.md "Auto-promoted worktree cleanup is Hybrid Pattern" critical gotcha.
+> Source: `skills/session-end/SKILL.md` § Phase 4a ordering rationale; `scripts/lib/session-end/worktree-cleanup.mjs`; issue #490 (durableCommit ordering invariant); CLAUDE.md "Auto-promoted worktree cleanup keys on the `.orchestrator/promoted-from.json` marker" critical gotcha (long form: `skills/session-end/references/phase-4a-worktree-cleanup.md`).
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
 ## Context
@@ -57,7 +57,7 @@ All git invocations in Phase 4a use the injection-safe arg-array form (`execFile
 
 - Phase 4a is wired into `skills/session-end/SKILL.md` between Phase 4 and Phase 5. It is guarded by `persistence: false` skip and by the `detectAutoPromotedWorktree` null-return for non-promoted worktrees (the common case — overhead is one `git worktree list` call).
 - `scripts/lib/session-end/worktree-cleanup.mjs` is the authoritative implementation. Skill bodies must import and call the module functions; re-implementing the detection or clean-check logic inline from the SKILL.md pseudocode is forbidden.
-- The ordering constraint is documented in CLAUDE.md as a critical gotcha: *"The Phase 4a cleanup runs AFTER Phase 4 commit+push, not before — this respects #490 durableCommit ordering so sessions.jsonl + STATE.md are persisted to origin BEFORE worktree-removal."*
+- The ordering constraint is documented in the CLAUDE.md critical gotcha (pointer form since 2026-09-25: "`/close` Phase 4a runs AFTER Phase 4 commit+push (#490)") and in full in `skills/session-end/references/phase-4a-worktree-cleanup.md`: the cleanup respects #490 durableCommit ordering so sessions.jsonl + STATE.md are persisted to origin BEFORE worktree-removal.
 
 **What we keep unchanged:**
 
@@ -78,6 +78,6 @@ All git invocations in Phase 4a use the injection-safe arg-array form (`execFile
 - Issue #575 — P3.2 Hybrid Cleanup (Phase 4a + `worktree-cleanup.mjs`)
 - `skills/session-end/SKILL.md` § Phase 4a (authoritative phase spec)
 - `scripts/lib/session-end/worktree-cleanup.mjs` (authoritative implementation)
-- CLAUDE.md § "Auto-promoted worktree cleanup is Hybrid Pattern" (critical gotcha)
+- CLAUDE.md § "Auto-promoted worktree cleanup keys on the `.orchestrator/promoted-from.json` marker" (critical gotcha, Hybrid Pattern pointer)
 - `.claude/rules/parallel-sessions.md` PSA-003 (destructive action safeguards)
 - Issue #577 — HARDEN-001: arg-array git invocation in worktree-cleanup
