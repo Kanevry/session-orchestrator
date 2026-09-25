@@ -41,10 +41,10 @@ const BS = String.fromCharCode(92); // \
 /**
  * Spawn the hook, pipe stdin JSON, resolve with exit code + stdout/stderr.
  */
-async function runHook({ projectDir, stdin, env = {} }) {
+async function runHook({ projectDir, stdin, env = {}, cwd = projectDir }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
-      cwd: projectDir,
+      cwd,
       env: {
         ...process.env,
         CLAUDE_PROJECT_DIR: projectDir,
@@ -591,5 +591,101 @@ describe('G7 — events.jsonl append', { timeout: 15000 }, () => {
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].exit_code).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G7 — `cwd` never carries an absolute host path (#1439 point 1)
+// ---------------------------------------------------------------------------
+
+describe('G7 — cwd is relative to the project dir, never absolute', { timeout: 15000 }, () => {
+  // Bug these catch: the record wrote `cwd: process.cwd()` — an absolute host
+  // path (`/Users/<name>/…`) into the TRACKED events.jsonl and, with the webhook
+  // configured, onto the network. The key-list test above stays green on that,
+  // because the KEY never changed; only its value leaked.
+  async function cwdFrom(runCwd, projectDir) {
+    const result = await runHook({
+      projectDir,
+      cwd: runCwd,
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1' }),
+    });
+    expectAllow(result);
+    const events = await readEvents(projectDir);
+    expect(events).toHaveLength(1);
+    expect(events[0].cwd.startsWith('/')).toBe(false);
+    return events[0].cwd;
+  }
+
+  // Also catches a relative path computed from UNRESOLVED paths: on macOS the
+  // tmp dir is `/var/…` while the child's `process.cwd()` is `/private/var/…`,
+  // so a naive `path.relative` yields `../../../private/var/…` for the very
+  // directory it should call `.`.
+  it('is "." when the hook runs from the project dir itself', async () => {
+    const dir = await mkProjectTracked();
+    expect(await cwdFrom(dir, dir)).toBe('.');
+  });
+
+  it('is the relative path when the hook runs from a subdirectory', async () => {
+    const dir = await mkProjectTracked();
+    await fs.mkdir(path.join(dir, 'scripts', 'lib'), { recursive: true });
+    expect(await cwdFrom(path.join(dir, 'scripts', 'lib'), dir)).toBe(path.join('scripts', 'lib'));
+  });
+
+  it('is a sha256-prefix hash when the hook runs outside the project dir', async () => {
+    const dir = await mkProjectTracked();
+    const outside = await mkProjectTracked();
+    const cwd = await cwdFrom(outside, dir);
+    expect(cwd).toMatch(/^sha256:[0-9a-f]{12}$/);
+    expect(cwd.includes('..')).toBe(false);
+  });
+
+  // Bug: username leaks into a webhook-bound event. With the project dir at `/`
+  // or at/above the home dir, the RELATIVE form is `Users/<name>/…` (or the
+  // home-relative layout) — no absolute path, so the `startsWith('/')` guard
+  // above stays green while the username still goes out. HOME is faked under
+  // the tmp dir (`os.homedir()` reads it), so no row touches the real home;
+  // the `/` row's event lands in the ledger sandbox instead of `/.orchestrator`.
+  it.each([
+    {
+      name: 'the filesystem root',
+      build: (dir) => ({ projectDir: '/', home: os.homedir(), cwd: dir, eventsRoot: dir }),
+    },
+    {
+      name: 'the home dir',
+      build: (dir) => ({
+        projectDir: path.join(dir, 'users', 'alice'),
+        home: path.join(dir, 'users', 'alice'),
+        cwd: path.join(dir, 'users', 'alice', 'work'),
+        eventsRoot: path.join(dir, 'users', 'alice'),
+      }),
+    },
+    {
+      name: 'an ancestor of the home dir',
+      build: (dir) => ({
+        projectDir: path.join(dir, 'users'),
+        home: path.join(dir, 'users', 'alice'),
+        cwd: path.join(dir, 'users', 'alice', 'work'),
+        eventsRoot: path.join(dir, 'users'),
+      }),
+    },
+  ])('is a sha256-prefix hash when the project dir is $name', async ({ build }) => {
+    const dir = await mkProjectTracked();
+    const { projectDir, home, cwd, eventsRoot } = build(dir);
+    await fs.mkdir(cwd, { recursive: true });
+    const result = await runHook({
+      projectDir: eventsRoot,
+      cwd,
+      env: {
+        CLAUDE_PROJECT_DIR: projectDir,
+        HOME: home,
+        SO_EVENTS_LEDGER_SANDBOX: path.join(eventsRoot, '.orchestrator', 'metrics', 'events.jsonl'),
+      },
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1' }),
+    });
+    expectAllow(result);
+    const events = await readEvents(eventsRoot);
+    expect(events).toHaveLength(1);
+    expect(events[0].cwd).toMatch(/^sha256:[0-9a-f]{12}$/);
+    expect(JSON.stringify(events[0]).includes('alice')).toBe(false);
   });
 });

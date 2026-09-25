@@ -21,6 +21,7 @@ import {
   canonicalizeSessions,
   canonicalizeSessionsDetailed,
 } from '@lib/sessions-canonical.mjs';
+import { repairRecord } from '@lib/session-record-repair.mjs';
 
 let repoRoot;
 
@@ -78,6 +79,141 @@ describe('rule 1 — newest-wins per session_id', () => {
     expect(out).toHaveLength(2);
     expect(out[0].session_id).toBe('main-2026-05-10-session-1');
     expect(out[0].notes).toBe('second');
+  });
+
+  it('keeps the real record when a backfill stub for the same id is appended after it (#1443)', () => {
+    // Bug: newest-wins never consulted `_backfill_source`, so a content-free
+    // backfill stub appended AFTER the real completed record hid that record
+    // from every reader — the session read as abandoned with 0 waves/files.
+    writeLedger([
+      rec({ session_id: 'main-2026-09-20-deep-1', total_waves: 3, total_files_changed: 7, notes: 'real' }),
+      rec({
+        session_id: 'main-2026-09-20-deep-1',
+        status: 'abandoned',
+        _backfill_source: 'state-md-completed',
+        total_waves: 0,
+        waves: [],
+        total_files_changed: 0,
+      }),
+    ]);
+
+    const out = readCanonicalSessions({ repoRoot });
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ status: 'completed', notes: 'real', total_waves: 3 });
+  });
+
+  it('drops a stub that shares raw_session_id with a real record under another id (#1443)', () => {
+    // Bug: the stub and the real record carry different session_ids, so
+    // newest-wins kept both and the one session was counted twice — once as
+    // abandoned. raw_session_id was consulted only for supersede markers.
+    const out = canonicalizeSessions([
+      rec({ session_id: 'main-2026-09-20-deep-1', raw_session_id: 'uuid-1443', total_waves: 2 }),
+      rec({
+        session_id: 'x-backfill',
+        raw_session_id: 'uuid-1443',
+        status: 'abandoned',
+        _backfill_source: 'abandoned',
+        total_waves: 0,
+      }),
+    ]);
+
+    expect(out.map((r) => r.session_id)).toEqual(['main-2026-09-20-deep-1']);
+  });
+
+  it('still lets a newer content-bearing backfill win over an older record (#1443 guard)', () => {
+    // Bug guarded: a stub test keyed on `_backfill_source` alone would freeze
+    // an id at its first record and discard a later completed backfill that
+    // DID measure work (waves/files) — the stub guard must not break rule 1.
+    const out = canonicalizeSessions([
+      rec({ session_id: 'main-2026-09-21-deep-1', notes: 'older' }),
+      rec({
+        session_id: 'main-2026-09-21-deep-1',
+        _backfill_source: 'state-md-completed',
+        total_waves: 4,
+        waves: [{ wave: 1 }],
+        notes: 'newer',
+      }),
+    ]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe('newer');
+  });
+
+  it('lets the newer of two stubs for one id win (#1443 guard is stub-vs-real only)', () => {
+    // Bug guarded: dropping `!isBackfillStub(prev)` from the skip condition
+    // freezes an id at its FIRST stub — every later stub (a re-run backfill
+    // with corrected fields) would be discarded although no real record exists.
+    const stub = {
+      session_id: 'main-2026-09-22-deep-1',
+      status: 'abandoned',
+      _backfill_source: 'abandoned',
+      total_waves: 0,
+    };
+    const out = canonicalizeSessions([rec({ ...stub, notes: 'older stub' }), rec({ ...stub, notes: 'newer stub' })]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe('newer stub');
+  });
+
+  it('keeps a newer record repaired in place (repair provenance, status null) over an older same-id record (#1443 F1)', () => {
+    // Bug: session-record-repair stamps `_backfill_source` on every record it
+    // repairs IN PLACE, and most real records carry no `status` — so a stub
+    // test keyed on "provenance set AND status !== completed" classed the
+    // repaired 4-wave record as a stub and let the OLDER 2-wave record win.
+    const older = {
+      session_id: 'main-2026-09-23-deep-1',
+      started_at: '2026-09-23T10:00:00.000Z',
+      waves: [{ wave: 1 }, { wave: 2 }],
+      total_waves: 2,
+      notes: 'older',
+    };
+    const newerRepaired = {
+      session_id: 'main-2026-09-23-deep-1',
+      started_at: '2026-09-23T10:00:00.000Z',
+      waves: [{ wave: 1 }, { wave: 2 }, { wave: 3 }, { wave: 4 }],
+      total_waves: 4,
+      _backfill_source: 'repair-invalid-sessions/1004',
+      _completed_at_raw: '2026-09-23 14:00',
+      notes: 'newer-repaired',
+    };
+
+    const out = canonicalizeSessions([older, newerRepaired]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].notes).toBe('newer-repaired');
+  });
+
+  it('keeps the real record when a later zero-work stub was repaired in place (#1443 F2)', () => {
+    // Bug: repairRecord overwrote the stub's synthesised `_backfill_source`
+    // ('state-md-completed') with repair provenance, which F1 reads as "never
+    // a stub" — so repairing a 0-wave stub (here: its microsecond timestamps)
+    // promoted it to real and it shadowed the 4-wave record via newest-wins.
+    const real = rec({
+      session_id: 'main-2026-09-24-deep-1',
+      waves: [{ wave: 1 }, { wave: 2 }, { wave: 3 }, { wave: 4 }],
+      total_waves: 4,
+      notes: 'real',
+    });
+    const { record: repairedStub, changed } = repairRecord(
+      rec({
+        session_id: 'main-2026-09-24-deep-1',
+        started_at: '2026-09-24T10:00:00.123456Z',
+        completed_at: '2026-09-24T10:00:00.123456Z',
+        _backfill_source: 'state-md-completed',
+        waves: [],
+        total_waves: 0,
+        total_agents: 0,
+        total_files_changed: 0,
+        notes: 'stub',
+      }),
+    );
+    expect(changed).toBe(true);
+
+    const out = canonicalizeSessions([real, repairedStub]);
+
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ notes: 'real', total_waves: 4 });
   });
 });
 

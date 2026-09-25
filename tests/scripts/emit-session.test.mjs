@@ -523,3 +523,175 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
     expect('session_profile' in written).toBe(false);
   });
 });
+
+// #1436 / #1443 — the token rollup, raw_session_id and the session_start_ref
+// events fallback are derived by the writer itself. Bug caught by the block as a
+// whole: emit-session never read subagents.jsonl, so no session record carried
+// a token total and the autopilot token budget had nothing to compare.
+describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref fallback', () => {
+  const U = '11111111-2222-4333-8444-555555555555';
+  const SHA = 'a4e6d2550000000000000000000000000000beef';
+  const SHA_B = 'c'.repeat(40);
+  let tmp;
+  let targetFile;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'emit-session-1436-'));
+    targetFile = join(tmp, 'sessions.jsonl');
+  });
+
+  afterEach(() => {
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  // Field set of a post-#949 schema_version 2 stop record (see
+  // tests/lib/session-token-rollup.test.mjs stopRecord for the golden source).
+  function stop(agent, input, output, parent = U) {
+    return {
+      timestamp: '2026-09-25T10:00:00.000Z',
+      event: 'stop',
+      agent_id: agent,
+      schema_version: 2,
+      agent_type: 'Explore',
+      parent_session_id: parent,
+      duration_ms: 1000,
+      start_record_found: true,
+      subagent_transcript_found: true,
+      token_input: input,
+      token_output: output,
+      total_cost_usd: null,
+    };
+  }
+  function writeJsonlIn(name, records) {
+    writeFileSync(join(tmp, name), records.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
+  }
+  const readWritten = () => JSON.parse(readFileSync(targetFile, 'utf8').trim());
+  // Blank the harness ids this suite may itself run under, so the
+  // process-local witness is decided by the test, not by the host.
+  const NO_NATIVE_ID = { CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: '', SO_PLATFORM: '' };
+
+  it('merges the own-UUID rollup (other sessions excluded) and stamps raw_session_id', () => {
+    writeJsonlIn('subagents.jsonl', [stop('a1', 100, 200), stop('a2', 50, 60), stop('x', 9, 9, 'other-uuid')]);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    const w = readWritten();
+    expect(w.total_tokens).toBe(410);
+    expect(w.total_token_input).toBe(150);
+    expect(w.total_token_output).toBe(260);
+    expect(w.matched_records).toBe(2);
+    expect(w.subagents_with_tokens).toBe(2);
+    expect(w.raw_session_id).toBe(U);
+    // unknown model → null cost → omitted, never a fabricated 0
+    expect('total_cost_usd' in w).toBe(false);
+  });
+
+  it('an explicit total_tokens on the entry wins and suppresses the merge', () => {
+    writeJsonlIn('subagents.jsonl', [stop('a1', 100, 200)]);
+    const entry = validEntry({ total_tokens: 7 });
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    const w = readWritten();
+    expect(w.total_tokens).toBe(7);
+    expect('matched_records' in w).toBe(false);
+  });
+
+  it('a missing subagents.jsonl omits every rollup key, WARNs, and still appends', () => {
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    const w = readWritten();
+    for (const key of ['total_tokens', 'total_token_input', 'total_token_output', 'matched_records', 'subagents_with_tokens']) {
+      expect(key in w).toBe(false);
+    }
+    expect(r.stderr).toContain('token rollup found no subagents.jsonl records');
+  });
+
+  // Bug: one fractional token value in subagents.jsonl made the rollup's
+  // total_tokens fractional; it was merged BEFORE validateSession(), which
+  // requires an integer — exit 1, no line appended, /close aborted over an
+  // optional enrichment.
+  it('a fractional token value omits total_tokens with a WARN and still appends', () => {
+    writeJsonlIn('subagents.jsonl', [stop('a1', 100.5, 200)]);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    expect('total_tokens' in readWritten()).toBe(false);
+    expect(r.stderr).toContain('emit-session: WARN token rollup produced an invalid field (total_tokens');
+  });
+
+  // Bug: with neither STATE.md nor an own session.started event supplying a
+  // ref, session_start_ref was omitted silently — indistinguishable from a
+  // record whose writer never looked.
+  it('WARNs when no source supplies session_start_ref, and still appends', () => {
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    expect('session_start_ref' in readWritten()).toBe(false);
+    expect(r.stderr).toContain(
+      'emit-session: WARN no session_start_ref — STATE.md carries none and no own session.started head_sha found'
+    );
+  });
+
+  it('adopts the UUID from an OWNED current-session.json only — a foreign marker is WARNed', () => {
+    writeJsonlIn('subagents.jsonl', [stop('a1', 1, 2)]);
+    const cwd = join(tmp, 'wc');
+    mkdirSync(join(cwd, '.orchestrator'), { recursive: true });
+    const marker = join(cwd, '.orchestrator', 'current-session.json');
+
+    writeFileSync(marker, JSON.stringify({ session_id: U, semantic_session_id: 'someone-else-session-1' }));
+    const foreign = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry())], null, { cwd, env: NO_NATIVE_ID });
+    expect(foreign.status).toBe(0);
+    expect('raw_session_id' in readWritten()).toBe(false);
+    expect(foreign.stderr).toContain('someone-else-session-1');
+
+    rmSync(targetFile);
+    writeFileSync(marker, JSON.stringify({ session_id: U, semantic_session_id: validEntry().session_id }));
+    const owned = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry())], null, { cwd, env: NO_NATIVE_ID });
+    expect(owned.status).toBe(0);
+    const w = readWritten();
+    expect(w.raw_session_id).toBe(U);
+    expect(w.total_tokens).toBe(3);
+
+    // A process-local id that is NOT the marker's outranks the matching label:
+    // the marker was written by a peer that minted the same semantic id.
+    rmSync(targetFile);
+    const peer = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry())], null, {
+      cwd,
+      env: { ...NO_NATIVE_ID, SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: '99999999-2222-4333-8444-555555555555' },
+    });
+    expect(peer.status).toBe(0);
+    expect('raw_session_id' in readWritten()).toBe(false);
+  });
+
+  // Bugs caught, one per row: a scan that ignores the UUID takes a parallel
+  // session's start sha; a tail-first (last-match-wins) scan takes the sha a
+  // resume re-emitted under the same raw id instead of the session's real start;
+  // a scan that skips an own start event lacking head_sha takes a later
+  // compact/resume event's sha — the FIRST own event decides, sha or not.
+  it.each([
+    ['a foreign session.started precedes the own one', [
+      { event: 'orchestrator.session.started', session_id: 'other-uuid', head_sha: 'b'.repeat(40) },
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA },
+    ], SHA],
+    ['a resume re-emitted the own session.started (first match wins)', [
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA },
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B },
+    ], SHA],
+    ['the first own session.started carries no head_sha (a later resume sha is not the start)', [
+      { event: 'orchestrator.session.started', session_id: U },
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B },
+    ], undefined],
+  ])('derives session_start_ref from the FIRST own session.started when STATE.md carries none: %s', (_label, events, expected) => {
+    writeJsonlIn('events.jsonl', events);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    const w = readWritten();
+    expect('session_start_ref' in w).toBe(expected !== undefined);
+    expect(w.session_start_ref).toBe(expected);
+  });
+
+  it('drops an explicit short session_start_ref instead of writing an ambiguous ref (#1443)', () => {
+    const entry = validEntry({ session_start_ref: 'ae452d33' });
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
+    expect(r.status).toBe(0);
+    expect('session_start_ref' in readWritten()).toBe(false);
+    expect(r.stderr).toContain('session_start_ref=ae452d33 is not a full hex sha');
+  });
+});

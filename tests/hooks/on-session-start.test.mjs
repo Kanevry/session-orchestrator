@@ -277,6 +277,10 @@ describe('normal run — event written to JSONL', { timeout: 15000 }, () => {
     expect(evt).toHaveProperty('platform');
     expect(typeof evt.session_id).toBe('string');
     expect(evt.session_id.length).toBeGreaterThan(0);
+    // #1443 — the start commit, the fallback for session_start_ref.
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
+    expect(evt.head_sha).toMatch(/^[0-9a-f]{40}$/);
+    expect(evt.head_sha).toBe(head);
   });
 });
 
@@ -337,6 +341,8 @@ describe('project-dir resolution', { timeout: 15000 }, () => {
       project: path.basename(dir),
       branch: 'unknown',
     });
+    // #1443 — `git rev-parse HEAD` fails here: the key is omitted, never faked.
+    expect(events[0]).not.toHaveProperty('head_sha');
   });
 });
 

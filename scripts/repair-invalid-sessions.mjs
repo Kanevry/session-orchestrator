@@ -18,7 +18,11 @@
  * over the target (atomic), and the result is then re-verified against BOTH
  * `validateSession` and `checkSessionsIntegrity`. A failed verification restores
  * the backup byte-identically and exits 3 — the ledger is never left in a state
- * worse than the one this CLI found.
+ * worse than the one this CLI found. Records with no defensible repair (a
+ * timestamp that is not ISO-8601 at all, a waves entry that is not an object)
+ * are kept byte-identical and do NOT trigger that rollback (#1442): the repair
+ * of every other line is kept, and the run exits 4 so a caller can tell "clean"
+ * from "clean except N lines nobody can repair".
  *
  * TARGET CONSTRAINT (MED-3): `--file` MUST resolve inside
  * `<repo-root>/.orchestrator/metrics/`. Any target outside it — including a
@@ -32,6 +36,10 @@
  *   1 — user/input error (bad flag, unknown argument)
  *   2 — system error (unreadable/unwritable ledger, I/O failure)
  *   3 — post-verification failed; the backup was restored and nothing was kept
+ *   4 — completed, but N unrepairable lines remain (apply: every repairable
+ *       line was fixed and verified, the N were kept byte-identical; dry-run:
+ *       the N lines that WOULD remain are listed). Checked after 3: a
+ *       rolled-back run is always 3, never 4.
  */
 
 import fs from 'node:fs';
@@ -53,7 +61,9 @@ const USAGE =
   ');\n' +
   '                must resolve inside <repo-root>/.orchestrator/metrics/\n' +
   '  --repo-root   project root (default: resolved project dir)\n' +
-  'Exit codes: 0 completed, 1 arg error, 2 system error, 3 post-verification failed\n';
+  'Exit codes: 0 completed, 1 arg error, 2 system error, 3 post-verification failed\n' +
+  '            (backup restored), 4 unrepairable remain (N lines kept byte-identical;\n' +
+  '            every repairable line fixed — dry-run: would remain)\n';
 
 /**
  * Resolve `--file` and REFUSE any target outside
@@ -127,7 +137,10 @@ export function renderHuman(s) {
   }
   if (s.backup_path) lines.push(`  backup:          ${s.backup_path}`);
   if (s.errors.length > 0) {
-    lines.push(`  errors:          ${s.errors.length} (original line kept)`);
+    // #1442: name every line that stays invalid — in dry-run BEFORE anything is
+    // written, so the operator knows the remainder --apply will leave behind.
+    const verb = s.mode === 'apply' ? 'remain' : 'would remain';
+    lines.push(`  unrepairable:    ${s.errors.length} (${verb} invalid; original line kept byte-identical)`);
     for (const e of s.errors) lines.push(`    line ${e.line} ${e.session_id ?? '<no session_id>'}: ${e.error}`);
   }
   if (s.post_verify && s.post_verify.integrity !== 'clean' && s.post_verify.integrity !== 'skipped-not-canonical-path') {
@@ -135,8 +148,28 @@ export function renderHuman(s) {
   }
   if (s.ok === false) {
     lines.push('  POST-VERIFICATION FAILED — backup restored, ledger unchanged.');
+  } else if (s.errors.length > 0) {
+    lines.push(
+      s.mode === 'apply'
+        ? `  Repairable lines fixed and verified; ${s.errors.length} unrepairable line(s) left as they were (exit 4).`
+        : `  --apply would fix every repairable line and leave ${s.errors.length} unrepairable line(s) as they are (exit 4).`
+    );
   }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * Map a `repairLedger` summary to the exit-code contract in the header.
+ * Rollback (3) wins over an unrepairable remainder (4): a restored ledger kept
+ * nothing, so "N remain" would describe a write that did not happen.
+ *
+ * @param {object} summary
+ * @returns {0|3|4}
+ */
+export function exitCodeFor(summary) {
+  if (summary.ok === false) return 3;
+  if (summary.unrepairable > 0) return 4;
+  return 0;
 }
 
 async function main() {
@@ -197,7 +230,7 @@ async function main() {
   } else {
     process.stdout.write(renderHuman(summary));
   }
-  process.exit(summary.ok === false ? 3 : 0);
+  process.exit(exitCodeFor(summary));
 }
 
 const isDirectRun =isMainModule(import.meta.url);

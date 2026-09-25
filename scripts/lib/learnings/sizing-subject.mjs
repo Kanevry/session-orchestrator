@@ -9,8 +9,8 @@
  * 4-5. Before this module, the `effective-sizing` analyzer
  * (`skills/evolve/references/evolve-analyze-mode.md`) keyed its subject on
  * `session_type` alone (e.g. `deep-session-sizing`), so a 7-wave ultradeep
- * session and a 5-wave deep session landed on the SAME row — the over-delivery
- * median for one profile silently absorbed the other's.
+ * session and a 5-wave deep session landed on the SAME row — the agents-per-wave
+ * average for one profile silently absorbed the other's.
  *
  * Pure, stdlib-only, no imports, no clock, no fs.
  *

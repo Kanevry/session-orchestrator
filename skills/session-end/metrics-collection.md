@@ -59,7 +59,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
    # corruption.
    METRICS_ENTRY=$(node --input-type=module -e "
    const entry = {
-     session_id: '<branch>-<YYYY-MM-DD>-<HHmm>',
+     session_id: '<STATE.md frontmatter session, verbatim>',
      session_type: '<type>',
      platform: '<claude|codex>',
      started_at: '<ISO 8601 from STATE.md frontmatter started_at — already canonical>',
@@ -69,7 +69,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
      total_agents: <N>,
      total_files_changed: <N>,
      agent_summary: {complete: <N>, partial: <N>, failed: <N>, spiral: <N>},
-     waves: [/* {wave, role, agent_count, files_changed, quality, agent_count_planned?, agent_count_started?, agent_count_completed?, planned_files_count?, over_delivery_ratio?} */],
+     waves: [/* {wave, role, agent_count, files_changed, quality, agent_count_planned?, agent_count_started?, agent_count_completed?} */],
      // effectiveness is CONSTRUCTED EXPLICITLY (#773) — NOT left as an optional
      // field for the coordinator to remember. Leaving it optional is exactly how
      // the carryover=0 blind spot recurred (41/41 records read carryover:0).
@@ -101,7 +101,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
    **Canonical JSONL schema** (for field reference — populated by the snippet above):
    ```json
    {
-     "session_id": "<branch>-<YYYY-MM-DD>-<HHmm>",
+     "session_id": "<STATE.md frontmatter session, verbatim>",
      "session_type": "<type>",
      "platform": "<claude|codex>",
      "started_at": "<canonical ISO 8601 from STATE.md>",
@@ -112,7 +112,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
      "total_files_changed": N,
      "agent_summary": {"complete": N, "partial": N, "failed": N, "spiral": N},
      "waves": [
-       {"wave": 1, "role": "Discovery", "agent_count": N, "files_changed": N, "quality": "pass|fail|skip", "agent_count_planned": N, "agent_count_started": N, "agent_count_completed": N, "planned_files_count": N, "over_delivery_ratio": 0.0},
+       {"wave": 1, "role": "Discovery", "agent_count": N, "files_changed": N, "quality": "pass|fail|skip", "agent_count_planned": N, "agent_count_started": N, "agent_count_completed": N},
        ...
      ],
      "discovery_stats": {
@@ -164,7 +164,7 @@ Finalize session metrics by reading the wave data accumulated during execution:
 
    > **ISO-8601 canonical format (#540):** `started_at`, `completed_at`, and `lease_acquired_at` MUST match the regex `/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/`. The validating writer (`scripts/emit-session.mjs`) rejects any non-canonical form. Use `new Date().toISOString()` (Node-native, always canonical) — never hand-edit fractional digits or timezone suffixes.
 
-> The `session_id` uses `<HHmm>` from the `started_at` timestamp to ensure uniqueness when multiple sessions run on the same branch in one day.
+> The `session_id` is the STATE.md frontmatter `session` value, copied verbatim — the semantic label session-start minted, which `.orchestrator/current-session.json` also carries as `semantic_session_id`. Never construct one (the former `<branch>-<YYYY-MM-DD>-<HHmm>` recipe is wrong): `scripts/emit-session.mjs` adopts `raw_session_id`, the token rollup and the events-derived `session_start_ref` only when the record's `session_id` equals the marker's `semantic_session_id`; any other label is WARNed and those fields are omitted.
 
 > **Conditional fields:**
 > - `discovery_stats`: populated ONLY when `discovery-on-close: true` in Session Config AND Phase 1.5 executed successfully. Source: the stats object returned by the discovery skill (see discovery skill Phase 4.6 for schema). When discovery runs in **embedded mode** (Phases 0-4 only), `user_dismissed`, `issues_created`, and `actioned` per category will always be `0` — embedded mode does not perform user triage (Phase 5) or issue creation (Phase 6).
@@ -172,7 +172,6 @@ Finalize session metrics by reading the wave data accumulated during execution:
 > - `effectiveness`: ALWAYS populated from Phase 1 plan verification results, and CONSTRUCTED EXPLICITLY in the METRICS_ENTRY snippet (#773) — never deferred to a "remember to add" optional step (that omission is how `carryover: 0` slipped past 41 records). `completion_rate` = `completed / planned_issues` (0.0-1.0, where 0.0 means nothing was completed). **`carryover` counting rule (#773):** `carryover` is the **length of the Phase 1.65 gate carry-list** — `autoCarry` ∪ the middle-band `ask` items the operator LEFT SELECTED ∪ the answered-question `impliesWork: true` candidates — NOT the raw Phase 1.2+1.3 candidate count. On the fail-open skip (gate disabled / headless / AUQ unavailable), EVERY candidate carries, so `carryover` = the full candidate-list length. Count the gate's OUTPUT (what reaches Phase 5 Step 3 filing), not its INPUT.
 > - `effectiveness.override_ratio` (#730/H5): OPTIONAL nested field = `overridden_findings / max(total_findings_surfaced, 1)` (float 0.0-1.0). Populate ONLY when Phase 2.6 (Broken-Window Budget) ran this session (`broken-window-budget.enabled: true`). OMIT (do NOT write null/0) otherwise — **absent = "not measured"**, `0.0` = "measured, nothing overridden". `overridden_findings` = the summed `count` of the `orchestrator.finding.overridden` events emitted this session; `total_findings_surfaced` = every MED/LOW+ finding surfaced across Phase 1.8 + wave reviewers.
 > - `waves[].agent_count_planned` / `waves[].agent_count_started` / `waves[].agent_count_completed` (#724/#1115): OPTIONAL per-wave fields, sourced from `wave-loop.md` § Capture wave metrics step 7 — mirror its definitions exactly, do not re-derive them here. `agent_count_planned` = agents named in the session plan for this wave. `agent_count_started` = distinct agents whose `agent-<id>.meta.json` sidecar is present, after any silent-drop re-dispatch — NOT "produced a tool-result" (under background dispatch the launch ack is a result and would count an agent that never ran). `agent_count_completed` = distinct agents whose task-notification (`<status>completed</status>`) arrived. Omit each field when the wave did not measure it — **absent = "not measured"**, never zero-fill; `0` would read as "measured, no agent started", which is the opposite of an unmeasured wave. The two gaps carry the diagnosis: `agent_count_planned > agent_count_started` after re-dispatch is a persistent silent drop, `agent_count_started > agent_count_completed` at wave end is an agent that started and never returned. Both are also logged to STATE.md `## Deviations` by wave-loop.md, so a record and a deviation entry should agree.
-> - `waves[].planned_files_count` / `waves[].over_delivery_ratio` (#730/H4): OPTIONAL per-wave fields, populated from STATE.md Wave History headers of the form `(planned <P> files → actual <A>, over-delivery <R>)` (written by wave-executor §3a since #730/H4); omit when absent (pre-#730 sessions / grounding-check: false).
 > - `waves[].suite_passed` / `waves[].suite_failed` / `waves[].suite_platform` (#944): OPTIONAL per-wave fields. Omit all three when absent — absent = "not measured", `suite_failed: 0` = "measured, zero failures".
 >   **`suite_passed` / `suite_failed`: read the event FIRST, the STATE.md header only as fallback (#966 step 3).** Since #954/#967 the between-waves gate wrapper `scripts/run-quality-gate.mjs` emits `orchestrator.quality_gate.{passed,failed}` with a machine-measured `counts: {passed, failed, total}` AND the `wave_number` it resolved from the `wave-scope.json` sidecar, so per-wave attribution needs no wall-clock window join. Payload fields are flat at the record's top level; for each wave `N` of this session:
 >

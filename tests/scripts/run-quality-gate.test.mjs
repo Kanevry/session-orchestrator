@@ -9,11 +9,11 @@
  * tests hermetic (no network, no build tool dependency).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 import { parseSessionConfig } from '@lib/config.mjs';
 
@@ -388,6 +388,15 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev).toBeDefined();
     expect(ev.variant).toBe('full-gate');
     expect(ev.exit_code).toBe(0);
+    // #1439 point 2 — the kill-ladder fields are ALWAYS present, so a reader
+    // can tell "not killed" from "field missing". Before the fix the record had
+    // no key at all, and a killed run (exit 124) was indistinguishable from an
+    // ordinary failure in the ledger. The `timed_out: true` half of the shape
+    // is pinned on the shared builder in tests/unit/quality-gate-autofix.test.mjs
+    // (J1/J2): the CLI's OUTER ceiling is commandTimeout + 60 s, too slow here.
+    expect(ev.timed_out).toBe(false);
+    expect(ev.survivors).toBe(0);
+    expect(ev.kill_signals).toEqual([]);
   });
 
   it('emits orchestrator.quality_gate.failed when a full-gate check fails', () => {
@@ -867,5 +876,32 @@ describe('run-quality-gate.mjs — the gate-process ledger', () => {
       ? readFileSync(repoLedger, 'utf8').split('\n').filter(Boolean).length
       : 0;
     expect(after).toBe(before);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Main-module guard (#1440 C1)
+// ---------------------------------------------------------------------------
+
+describe('run-quality-gate.mjs — a bare import does not run the CLI (#1440 C1)', () => {
+  // Bug this catches: the whole CLI ran at module top level — argv parsing,
+  // `die()`, a top-level `await spawnInGroup` and `process.exit`. A bare
+  // `import()` (an import probe, a coverage crawl, a test of one helper) parsed
+  // the IMPORTER's argv and exited the importing process.
+  it('parses no argv and never calls process.exit when imported', async () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`process.exit(${code}) called during import`);
+    });
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      await import(pathToFileURL(SCRIPT).href);
+      // Settle window: an async `main().finally(() => process.exit())` fires a
+      // macrotask AFTER the import resolves (measurement-discipline.md).
+      await new Promise((r) => setTimeout(r, 300));
+      expect(exit).not.toHaveBeenCalled();
+    } finally {
+      exit.mockRestore();
+      stderr.mockRestore();
+    }
   });
 });

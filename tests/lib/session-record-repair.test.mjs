@@ -211,6 +211,50 @@ describe('repairRecord — every defect class becomes schema-valid', () => {
       defect: 'completed_at_missing',
       expect: (r) => expect(r.completed_at).toBe('2026-01-01T09:00:00.000Z'),
     },
+    // #1442 — validator.mjs ISO_8601_UTC_MS_RE allows exactly 3 fractional
+    // digits. Bug caught: a microsecond timestamp (live shape
+    // '2026-09-13T14:43:41.994600Z') had no defect class, so repairLine
+    // returned status 'error' and the record could never be repaired.
+    {
+      name: 'started_at with microseconds → truncated to ms, raw preserved',
+      input: () => baseRecord({ started_at: '2026-01-01T09:00:00.123456Z' }),
+      defect: 'timestamp_precision',
+      expect: (r) => {
+        expect(r.started_at).toBe('2026-01-01T09:00:00.123Z');
+        expect(r._started_at_raw).toBe('2026-01-01T09:00:00.123456Z');
+        // A truncated timestamp is still a measurement: listing it here would
+        // make sessions-staleness-banner discard it (it skips named fields).
+        expect(r._backfill_incomplete_fields).not.toContain('started_at');
+      },
+    },
+    {
+      // Truncation, not rounding: .999999 rounded would roll into the next second.
+      name: 'completed_at with microseconds → truncated (never rounded up)',
+      input: () => baseRecord({ completed_at: '2026-01-01T10:00:00.999999Z' }),
+      defect: 'timestamp_precision',
+      expect: (r) => {
+        expect(r.completed_at).toBe('2026-01-01T10:00:00.999Z');
+        expect(r._completed_at_raw).toBe('2026-01-01T10:00:00.999999Z');
+      },
+    },
+    {
+      name: 'lease_acquired_at with sub-ms digits → truncated to ms',
+      input: () => baseRecord({ lease_acquired_at: '2026-01-01T09:00:00.5000001Z' }),
+      defect: 'timestamp_precision',
+      expect: (r) => expect(r.lease_acquired_at).toBe('2026-01-01T09:00:00.500Z'),
+    },
+    {
+      // Bug caught: completed_at_missing copied a microsecond ended_at
+      // verbatim, so the repair SPREAD the defect into completed_at.
+      name: 'completed_at missing with microsecond ended_at → truncated copy',
+      input: () =>
+        without(baseRecord({ ended_at: '2026-01-01T11:00:00.654321Z' }), 'completed_at'),
+      defect: 'timestamp_precision',
+      expect: (r) => {
+        expect(r.completed_at).toBe('2026-01-01T11:00:00.654Z');
+        expect(r.ended_at).toBe('2026-01-01T11:00:00.654321Z');
+      },
+    },
   ];
 
   for (const c of CASES) {
@@ -224,10 +268,29 @@ describe('repairRecord — every defect class becomes schema-valid', () => {
       expect(defects).toContain(c.defect);
       expect(() => validateSession(record)).not.toThrow();
       c.expect(record);
-      // Provenance is set on every repaired record.
+      // Provenance is set on every repaired record; with no prior origin the
+      // repair IS the origin.
+      expect(record._repair_source).toBe(REPAIR_SOURCE);
       expect(record._backfill_source).toBe(REPAIR_SOURCE);
     });
   }
+
+  it('keeps a synthesised `_backfill_source` and stamps the repair separately (#1443 F2)', () => {
+    // Bug caught: the repair overwrote 'state-md-completed' with its own
+    // provenance, so a repaired zero-work stub lost the only marker that
+    // classes it as a stub and began shadowing the real record for its id.
+    const input = baseRecord({
+      started_at: '2026-01-01T09:00:00.123456Z',
+      _backfill_source: 'state-md-completed',
+    });
+
+    const { record, changed } = repairRecord(input);
+
+    expect(changed).toBe(true);
+    expect(record._backfill_source).toBe('state-md-completed');
+    expect(record._repair_source).toBe(REPAIR_SOURCE);
+    expect(() => validateSession(record)).not.toThrow();
+  });
 
   it('repairs ALL defects of a six-defect record in ONE pass', () => {
     // Bug caught: first-error-only repair. Live line 85 needs six fields; a
@@ -494,6 +557,53 @@ describe('repairLedger — post-verification is fail-safe', () => {
     expect(readFileSync(summary.backup_path, 'utf8')).toBe(before);
   });
 
+  // #1442 — one record nobody can repair used to roll back every repair beside
+  // it: post-verify demanded ZERO invalid lines, so the ledger stayed broken.
+  const REPAIRABLE = JSON.stringify(baseRecord({ started_at: '2026-01-01T09:00:00.123456Z' }));
+  const UNREPAIRABLE = JSON.stringify(
+    baseRecord({ session_id: 'main-2026-01-02-session-1', started_at: 'yesterday' })
+  );
+
+  it('keeps the repair when the only remaining invalid line is unrepairable', () => {
+    // Bug caught: all-or-nothing post-verification — the unrepairable line
+    // failed verifyWritten, the backup was restored, the repairable line was lost.
+    const { repoRoot, file } = makeRepo(`${REPAIRABLE}\n${UNREPAIRABLE}\n`);
+
+    const summary = repairLedger({ file, repoRoot, apply: true });
+
+    expect(summary.ok).toBe(true);
+    expect(summary.restored).toBe(false);
+    expect(summary.repaired).toBe(1);
+    expect(summary.unrepairable).toBe(1);
+    expect(summary.invalid_after).toBe(1);
+    const [line1, line2] = readFileSync(file, 'utf8').split('\n');
+    expect(JSON.parse(line1).started_at).toBe('2026-01-01T09:00:00.123Z');
+    expect(() => validateSession(JSON.parse(line1))).not.toThrow();
+    expect(line2).toBe(UNREPAIRABLE);
+  });
+
+  it('still restores when a REPAIRED line fails verification beside an unrepairable one', () => {
+    // Bug caught: a tolerance keyed on the COUNT alone (invalid_after <=
+    // invalid_before) would accept this write — 2 invalid after, 2 before —
+    // although the repaired line never reached disk in valid form.
+    const original = `${REPAIRABLE}\n${UNREPAIRABLE}\n`;
+    const { repoRoot, file } = makeRepo(original);
+
+    const summary = repairLedger({
+      file,
+      repoRoot,
+      apply: true,
+      deps: {
+        writeFileSync: (p, _content, enc) => writeFileSync(p, original, enc),
+      },
+    });
+
+    expect(summary.ok).toBe(false);
+    expect(summary.restored).toBe(true);
+    expect(summary.post_verify.unexpected_invalid.map((l) => l.line)).toEqual([1]);
+    expect(readFileSync(file, 'utf8')).toBe(original);
+  });
+
   it('reports ok and a clean integrity verdict on a canonical ledger path', () => {
     // The integrity probe exercises the REAL vault-mirror render path, which is
     // a strictly different population from validateSession — 5 of the live
@@ -506,6 +616,29 @@ describe('repairLedger — post-verification is fail-safe', () => {
     expect(summary.repaired).toBe(10);
     expect(summary.invalid_after).toBe(0);
     expect(summary.post_verify.integrity).toBe('clean');
+  });
+
+  it('rolls back a schema-clean write whose integrity probe got WORSE', () => {
+    // Bug caught: post-verify judging only validateSession. The repaired file is
+    // schema-valid, but the vault-mirror probe now drops line 1 where it dropped
+    // nothing before — an integrityWorsened() that ignores new flagged lines
+    // (or a verdict that never reads it) keeps that write on disk.
+    const original = `${REPAIRABLE}\n`;
+    const { repoRoot, file } = makeRepo(original);
+    const banners = [null, { schemaInvalid: [], mirrorSkipped: [{ line: 1 }] }];
+
+    const summary = repairLedger({
+      file,
+      repoRoot,
+      apply: true,
+      deps: { checkIntegrity: () => banners.shift() },
+    });
+
+    expect(summary.ok).toBe(false);
+    expect(summary.restored).toBe(true);
+    expect(summary.post_verify.integrity_worsened).toBe(true);
+    expect(summary.post_verify.unexpected_invalid).toEqual([]);
+    expect(readFileSync(file, 'utf8')).toBe(original);
   });
 
   it('reports the integrity probe as skipped for a non-canonical path', () => {

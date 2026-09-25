@@ -378,6 +378,7 @@ describe('rollupSessionTokens — null sentinel when no token data', () => {
     expect(result).toEqual({
       total_token_input: null,
       total_token_output: null,
+      total_tokens: null,
       subagents_with_tokens: 0,
       matched_records: 0,
       total_token_input_uncached: null,
@@ -413,6 +414,7 @@ describe('rollupSessionTokens — absent subagents file', () => {
     expect(result).toEqual({
       total_token_input: null,
       total_token_output: null,
+      total_tokens: null,
       subagents_with_tokens: 0,
       matched_records: 0,
       total_token_input_uncached: null,
@@ -539,6 +541,7 @@ describe('rollupSessionTokens — edge cases', () => {
     expect(result).toEqual({
       total_token_input: null,
       total_token_output: null,
+      total_tokens: null,
       subagents_with_tokens: 0,
       matched_records: 0,
       total_token_input_uncached: null,
@@ -643,5 +646,27 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(known.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
     expect(known.cost_records_priced).toBe(1);
     expect(known.cost_records_total).toBe(1);
+  });
+});
+
+// #1436 — total_tokens is the figure the autopilot token budget compares
+// against. Bug caught: the field was never produced, so a caller reading
+// `total_tokens` got undefined and the budget never fired.
+describe('rollupSessionTokens — total_tokens (#1436)', () => {
+  it('equals total_token_input + total_token_output', () => {
+    const subagentsPath = writeJsonl('subagents.jsonl', [
+      stopRecord({ session: 'sess-abc', agent: 'agent-1', input: 100, output: 200 }),
+      stopRecord({ session: 'sess-abc', agent: 'agent-2', input: 50, output: 60 }),
+    ]);
+    const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath });
+    expect(result.total_tokens).toBe(410);
+  });
+
+  it('counts the present side when the other is null, and is null (not 0) with no data', () => {
+    const onlyOutput = writeJsonl('subagents.jsonl', [
+      stopRecord({ session: 'sess-abc', agent: 'agent-1', input: null, output: 70 }),
+    ]);
+    expect(rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: onlyOutput }).total_tokens).toBe(70);
+    expect(rollupSessionTokens({ parentSessionId: 'nobody', subagentsPath: onlyOutput }).total_tokens).toBeNull();
   });
 });

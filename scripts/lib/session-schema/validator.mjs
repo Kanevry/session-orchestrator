@@ -417,6 +417,20 @@ function _validateOptionalFields(entry) {
     }
   }
 
+  // #1436 — the session-level token total and the rollup's record count, merged
+  // by emit-session from subagents.jsonl. Same contract as subagents_with_tokens:
+  // a non-negative integer, null/absent = not measured. Before this, neither was
+  // checked and `total_tokens: "abc"` validated — the field the autopilot token
+  // budget reads.
+  for (const field of ['total_tokens', 'matched_records']) {
+    const value = entry[field];
+    if (value !== undefined && value !== null) {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+        throw new ValidationError(`${field} must be a non-negative integer, got: ${value}`);
+      }
+    }
+  }
+
   // Epic #724 C1 — SessionEnd close-through backfill provenance fields.
   // All additive-optional; null/absent passes without further checks so that
   // pre-#724 records (and every normally-closed record) validate cleanly.

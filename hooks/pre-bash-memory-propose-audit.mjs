@@ -24,8 +24,9 @@
 
 import { readStdin, emitAllow } from '../scripts/lib/io.mjs';
 import crypto from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { findScopeFile } from '../scripts/lib/hardening.mjs';
@@ -124,6 +125,52 @@ function flagsPresent(command) {
 }
 
 /**
+ * The working directory as a value that carries no absolute host path (#1439).
+ *
+ * Relative to `projectDir` (`.` when equal); a directory OUTSIDE the project is
+ * written as `sha256:<12 hex>` of its resolved path instead — still groupable,
+ * never the path itself. Until 2026-09-25 this was `process.cwd()` verbatim,
+ * i.e. `/Users/<name>/…` in a TRACKED events.jsonl line and, with the webhook
+ * configured, in a network payload. No production reader consumes `cwd`.
+ *
+ * Both sides are realpath-resolved before comparing: on macOS the tmp dir is
+ * `/var/…` while `process.cwd()` reports `/private/var/…`, and a naive
+ * `path.relative` then calls the project dir itself `../../../private/var/…`.
+ * A path that cannot be resolved falls back to `path.resolve` — never throws.
+ *
+ * A project dir that is no project boundary — the filesystem root, the home
+ * dir, or an ancestor of it (`/Users`) — also gets the hash form: relative to
+ * `/` the cwd reads `Users/<name>/…`, i.e. the username in a webhook-bound
+ * event, the very leak the relative form exists to prevent. The ancestor test
+ * is path-segment-wise (`path.relative`), so `/Users/al` is NOT an ancestor of
+ * `/Users/alice` the way a string prefix would claim.
+ *
+ * @param {string} cwd
+ * @param {string} projectDir
+ * @returns {string}
+ */
+function relativeCwd(cwd, projectDir) {
+  const real = (p) => {
+    try { return realpathSync(p); } catch { return path.resolve(p); }
+  };
+  // `..`-prefixed (above the base) or absolute (another Windows drive).
+  const escapes = (rel) =>
+    rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel);
+  const realCwd = real(cwd);
+  const realProject = real(projectDir);
+  const rel = path.relative(realProject, realCwd);
+  if (rel === '') return '.';
+  // Same sha256 recipe as `command_hash`, cut to 12 hex.
+  const hashed = `sha256:${hashCommand(realCwd).slice(0, 12)}`;
+  if (escapes(rel)) return hashed;
+  if (path.dirname(realProject) === realProject) return hashed; // filesystem root
+  let home = null;
+  try { home = real(os.homedir()); } catch { /* no home dir: root check above still holds */ }
+  if (home !== null && !escapes(path.relative(realProject, home))) return hashed;
+  return rel;
+}
+
+/**
  * Resolve the session_id from the hook stdin payload, with fallback to the
  * persisted file written by on-session-start.mjs. Returns null when neither
  * source yields a string.
@@ -219,7 +266,7 @@ async function main() {
       command_hash: commandHash,
       flags_present: flags,
       argv_length: command.length,
-      cwd: process.cwd(),
+      cwd: relativeCwd(process.cwd(), projectDir),
       exit_code: null,
     });
   } catch { /* telemetry never blocks the hook (#1183) */ }

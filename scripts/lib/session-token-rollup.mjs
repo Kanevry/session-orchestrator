@@ -115,6 +115,7 @@ function isV2(record) {
  * @typedef {Object} TokenRollupResult
  * @property {number|null} total_token_input  - Sum of token_input across TOKEN-BEARING matched records; null when none had a non-null value.
  * @property {number|null} total_token_output - Sum of token_output across TOKEN-BEARING matched records; null when none had a non-null value.
+ * @property {number|null} total_tokens       - total_token_input + total_token_output (#1436); a null side counts as absent, null only when BOTH are null.
  * @property {number}      subagents_with_tokens - Count of distinct agent_ids with at least one token-bearing record. This is the numerator of the honest coverage ratio.
  * @property {number}      matched_records    - Total count of JSONL records matched by parentSessionId. Counts start records, phantom stops and pre-#949 records alike, so it is NOT the denominator for a token-coverage ratio — dividing by it is what made healthy sessions read as 12% covered.
  * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached across v2 token-bearing records.
@@ -144,6 +145,7 @@ export function rollupSessionTokens({
   const ZERO = {
     total_token_input: null,
     total_token_output: null,
+    total_tokens: null,
     subagents_with_tokens: 0,
     matched_records: 0,
     total_token_input_uncached: null,
@@ -270,6 +272,9 @@ export function rollupSessionTokens({
   return {
     total_token_input: sumInput,
     total_token_output: sumOutput,
+    // #1436 — the one figure a session-level budget compares against. Null only
+    // when neither side has data; never a fabricated 0.
+    total_tokens: sumInput === null && sumOutput === null ? null : (sumInput ?? 0) + (sumOutput ?? 0),
     subagents_with_tokens: agentsWithTokens.size,
     matched_records: matched.length,
     total_token_input_uncached: sumUncached,

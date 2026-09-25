@@ -359,6 +359,20 @@ describe('backfillAbandonedSession — dedupe', () => {
     // The pre-existing record is untouched (still exactly one record).
     expect(readSessions()).toHaveLength(1);
   });
+
+  it('skips when a real record under the semantic label carries the native uuid as raw_session_id (#1443)', async () => {
+    // Wiring guard: the #1443 ledger duplicate was a stub keyed by the uuid
+    // written NEXT TO a real record keyed by the label and joined to it only
+    // through raw_session_id. The abandoned writer must find that join and
+    // append nothing.
+    seedEvents([{ timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' }]);
+    seedSessions([{ session_id: 'main-2026-05-27-session-1', raw_session_id: UUID, status: 'completed', started_at: STARTED_AT, total_waves: 2 }]);
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res).toEqual({ action: 'skipped-already-recorded', sessionId: 'main-2026-05-27-session-1' });
+    expect(readSessions()).toHaveLength(1);
+  });
 });
 
 // ---------------------------------------------------------------------------

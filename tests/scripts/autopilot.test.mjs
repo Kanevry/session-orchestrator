@@ -478,6 +478,47 @@ describe('scripts/autopilot.mjs integration', () => {
   // ceiling, which the default can never produce.
   // -------------------------------------------------------------------------
 
+  // #1436 — the REAL readTailSession() path. Bug caught: readTailSession()
+  // projected no `usage`, so total_tokens_used stayed 0 and --max-tokens could
+  // never fire under the headless driver. The shared fixture stub writes no
+  // token field and lives outside this test's scope, so a wrapper stamps the
+  // totals emit-session now writes onto the stub's record.
+  it('fires token-budget-exceeded from the token totals on the session record', () => {
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+    const binDir = join(tmp, 'token-bin');
+    mkdirSync(binDir, { recursive: true });
+    const stamp = join(binDir, 'stamp.mjs');
+    writeFileSync(
+      stamp,
+      "import { readFileSync, writeFileSync } from 'node:fs';\n" +
+      'const p = process.env.STUB_SESSIONS_JSONL;\n' +
+      "const lines = readFileSync(p, 'utf8').split('\\n').filter((l) => l.trim());\n" +
+      'const last = JSON.parse(lines.pop());\n' +
+      'lines.push(JSON.stringify({ ...last, total_token_output: 5000, total_tokens: 7000 }));\n' +
+      "writeFileSync(p, lines.join('\\n') + '\\n');\n",
+      'utf8'
+    );
+    const wrapper = join(binDir, 'claude');
+    writeFileSync(
+      wrapper,
+      '#!/usr/bin/env bash\n' +
+      `"${STUB_CLAUDE}" "$@" || exit $?\n` +
+      `exec "${process.execPath}" "${stamp}"\n`,
+      'utf8'
+    );
+    chmodSync(wrapper, 0o755);
+
+    runAutopilot(
+      ['--headless', '--max-sessions=3', '--confidence-threshold=0.4', '--max-tokens=100'],
+      { tmp, pathPrefix: binDir }
+    );
+
+    const [rec] = readAutopilotJsonl(tmp);
+    expect(rec.kill_switch).toBe('token-budget-exceeded');
+    expect(rec.iterations_completed).toBe(1);
+    expect(rec.total_tokens_used).toBe(5000);
+  });
+
   it('forwards --max-tokens to runLoop (clamped), instead of silently ignoring it', () => {
     const result = runAutopilot(
       ['--headless', '--dry-run', '--max-tokens=99999999'],

@@ -6,11 +6,14 @@
  * a single session record to `.orchestrator/metrics/sessions.jsonl` (or any
  * target path). Replaces the raw shell `>>` append with a validated path:
  *
- *   node scripts/emit-session.mjs [--file PATH] [--entry JSON]
+ *   node scripts/emit-session.mjs [--file PATH] [--entry JSON] [--session-uuid ID]
  *
  * Input modes:
  *   --entry '<json>'   pass the entry JSON literally (for shell pipelines)
  *   (stdin)            read the entry JSON from stdin (default when no --entry)
+ *
+ *   --session-uuid ID  this session's raw harness UUID (overrides the
+ *                      current-session.json lookup; the test seam)
  *
  * Defaults:
  *   --file .orchestrator/metrics/sessions.jsonl
@@ -33,6 +36,8 @@ import {
   stampMemoryCleanup,
 } from './lib/memory-cleanup-stamp.mjs';
 import { parseStateMd, readSessionProfile, resolveStateMdPath } from './lib/state-md.mjs';
+import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { rollupSessionTokens } from './lib/session-token-rollup.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
 import {
   validateSession,
@@ -50,17 +55,141 @@ export { serializeSessionLineChecked };
 // ref (`HEAD`, a branch) would resolve to a DIFFERENT commit when read later.
 const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
+// Rollup fields merged into the record (#1436) — the totals plus the #1244
+// cache buckets and contract marker the former prose recipe merged. The
+// provenance counters (`cost_records_*`, `legacy_v1_records`) stay in the
+// rollup's own return value.
+const ROLLUP_KEYS = Object.freeze([
+  'total_tokens',
+  'total_token_input',
+  'total_token_output',
+  'total_token_input_uncached',
+  'total_token_cache_read',
+  'total_token_cache_creation',
+  'total_cost_usd',
+  'subagents_with_tokens',
+  'matched_records',
+  '_token_schema',
+]);
+
+// Rollup keys validateSession() requires to be non-negative integers.
+const INTEGER_ROLLUP_KEYS = new Set(['total_tokens', 'matched_records']);
+
+/**
+ * Resolve THIS session's raw harness UUID — the join key `subagents.jsonl`
+ * (`parent_session_id`) and `events.jsonl` (`session_id`) carry, which the
+ * record itself does not (its `session_id` is the semantic slug).
+ *
+ * `--session-uuid` wins (an explicit assertion, and the test seam). Otherwise
+ * `.orchestrator/current-session.json` is read. That file is SHARED by the
+ * working copy — the last SessionStart hook wrote it — so its UUID is adopted
+ * ONLY when its `semantic_session_id` (or, for a legacy raw-id record, its
+ * `session_id`) equals this record's `session_id`: the same "named owner
+ * equals the record" gate as the STATE.md derivation in main(). When this
+ * process carries its own session id (`readProcessLocalSessionIds()` — the
+ * harness env, which a dispatched subagent inherits from the coordinator), that
+ * witness OUTRANKS the shared marker: a marker UUID the process does not carry
+ * was written by a peer and is refused even when the labels agree (two sessions
+ * can mint the same semantic label, #1066). Ranked, never unioned
+ * (.claude/rules/identity-and-locks.md). A foreign marker is WARNed and yields
+ * null; an absent marker yields null silently.
+ *
+ * CEILING: a resumed session that received a NEW raw id keeps its semantic id,
+ * so only the latest raw id resolves and subagents dispatched under the earlier
+ * one are not rolled up. Revisit if current-session.json gains a raw-id history.
+ *
+ * Never throws.
+ *
+ * @param {{ override: string|null, recordSessionId: unknown }} opts
+ * @returns {string|null}
+ */
+function resolveOwnSessionUuid({ override, recordSessionId }) {
+  const trimmed = (v) => (typeof v === 'string' ? v.trim() : '');
+  const explicit = trimmed(override);
+  if (explicit) return explicit;
+  const markerPath = join(process.cwd(), '.orchestrator', 'current-session.json');
+  let marker;
+  try {
+    if (!existsSync(markerPath)) return null;
+    marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+  } catch (err) {
+    process.stderr.write(
+      `emit-session: WARN could not read ${markerPath} (${err?.message ?? err}); ` +
+        `omitting raw_session_id and the token rollup\n`
+    );
+    return null;
+  }
+  const uuid = trimmed(marker?.session_id);
+  if (!uuid) return null;
+  const semantic = trimmed(marker?.semantic_session_id);
+  const namesRecord = (semantic !== '' && semantic === recordSessionId) || uuid === recordSessionId;
+  const processIds = readProcessLocalSessionIds();
+  const processAgrees = processIds.length === 0 || processIds.includes(uuid);
+  if (namesRecord && processAgrees) return uuid;
+  // The record's session_id is the semantic label (STATE.md `session`); name
+  // both sides of whichever comparison failed, so the operator sees which drifted.
+  const why = namesRecord
+    ? `session label ${recordSessionId} matches, but this process runs as ` +
+      `${processIds.join('/')}, not the marker's uuid ${uuid}`
+    : `session label mismatch: marker semantic_session_id=${semantic || '<absent>'} ` +
+      `vs record session_id=${recordSessionId ?? '<unknown>'}`;
+  process.stderr.write(
+    `emit-session: WARN current-session.json ${why}; omitting raw_session_id and the token rollup\n`
+  );
+  return null;
+}
+
+/**
+ * The `head_sha` of THIS session's own `orchestrator.session.started` event —
+ * matched on the raw UUID, so a parallel session's start event never supplies
+ * it. The FIRST own event decides: a resume or compact that re-emits the event
+ * under the same raw id is not the session's start, so its sha is never taken —
+ * not even when the first own event carries none. Returns null when there is no
+ * own event, or the first one's head_sha is absent or not a full sha.
+ *
+ * Whole-file read, like deriveMemoryCleanupSignal() on the same file — fine at
+ * today's events.jsonl size; revisit if the file outgrows a single read.
+ *
+ * Never throws.
+ *
+ * @param {string} eventsFile
+ * @param {string} uuid
+ * @returns {string|null}
+ */
+function readOwnStartHeadSha(eventsFile, uuid) {
+  let raw;
+  try {
+    raw = readFileSync(eventsFile, 'utf8');
+  } catch {
+    return null;
+  }
+  for (const line of raw.split('\n')) {
+    if (!line.includes(uuid)) continue;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (ev?.event !== 'orchestrator.session.started' || ev.session_id !== uuid) continue;
+    return typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha) ? ev.head_sha : null;
+  }
+  return null;
+}
+
 function parseArgs(argv) {
-  const args = { file: '.orchestrator/metrics/sessions.jsonl', entry: null };
+  const args = { file: '.orchestrator/metrics/sessions.jsonl', entry: null, sessionUuid: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--file') args.file = argv[++i];
     else if (a === '--entry') args.entry = argv[++i];
+    else if (a === '--session-uuid') args.sessionUuid = argv[++i];
     else if (a === '--help' || a === '-h') {
       process.stdout.write(
         'Usage: node scripts/emit-session.mjs [--file PATH] [--entry JSON]\n' +
           '  --file   target JSONL file (default: .orchestrator/metrics/sessions.jsonl)\n' +
           '  --entry  entry JSON (if omitted, read from stdin)\n' +
+          '  --session-uuid  raw harness UUID (default: owned .orchestrator/current-session.json)\n' +
           'Exit codes: 0 append ok, 1 validation error, 2 I/O error\n'
       );
       process.exit(0);
@@ -130,6 +259,29 @@ async function main() {
   //      current version) and apply top-level aliases that validateSession's
   //      contract deliberately does not.
   repaired = normalizeWaveKeys(repaired);
+
+  // Own raw UUID (#1436), resolved once for the three derivations further down:
+  // raw_session_id, the session_start_ref events fallback, the token rollup.
+  const ownUuid = resolveOwnSessionUuid({
+    override: args.sessionUuid,
+    recordSessionId: repaired.session_id,
+  });
+
+  // An explicit session_start_ref that is not a full sha (#1443) names a
+  // DIFFERENT commit once the short form becomes ambiguous. Dropped with a WARN
+  // rather than rejected: the record is the load-bearing artefact, and the
+  // derivations below may still supply the full sha. Explicit `null` stays.
+  // Enforced HERE, not in validateSession(): the ledger already holds records
+  // with 7-char refs, and the session-start integrity banner runs every one of
+  // them through validateSession().
+  if (typeof repaired.session_start_ref === 'string' && !FULL_SHA_RE.test(repaired.session_start_ref)) {
+    process.stderr.write(
+      `emit-session: WARN session_start_ref=${repaired.session_start_ref} is not a full hex sha; ` +
+        `dropping it\n`
+    );
+    const { session_start_ref: _dropped, ...rest } = repaired;
+    repaired = rest;
+  }
 
   // `memory_cleanup_at` derivation (#699 follow-up — Disziplin statt Mechanik).
   // The flag used to be a boolean the coordinator-LLM remembered to pass at
@@ -267,6 +419,99 @@ async function main() {
             `omitting ${derivedKeys.join(', ')}\n`
         );
       }
+    }
+  }
+
+  // session_start_ref fallback (#1443): STATE.md supplied none (absent key,
+  // foreign owner, unparseable) — take the head_sha the SessionStart hook
+  // recorded on this session's own start event. Absent there too → omitted.
+  if (!hasOwn('session_start_ref') && ownUuid !== null) {
+    const headSha = readOwnStartHeadSha(join(dirname(args.file), 'events.jsonl'), ownUuid);
+    if (headSha !== null) {
+      repaired = { ...repaired, session_start_ref: headSha };
+      process.stderr.write(
+        `emit-session: derived session_start_ref=${headSha} from the own orchestrator.session.started event\n`
+      );
+    } else {
+      process.stderr.write(
+        'emit-session: WARN no session_start_ref — STATE.md carries none and no own ' +
+          'session.started head_sha found\n'
+      );
+    }
+  }
+
+  if (ownUuid !== null && !hasOwn('raw_session_id')) {
+    repaired = { ...repaired, raw_session_id: ownUuid };
+  }
+
+  // Token rollup (#1436) — mechanical, replacing the session-metrics-write.md
+  // prose step that had no production caller. Joins the sibling subagents.jsonl
+  // on the own raw UUID and fills ONLY keys the entry does not carry; an
+  // explicit `total_tokens` means the caller already rolled up, so nothing is
+  // merged. No matching records or a failed read OMITS the fields with a WARN —
+  // never a fabricated 0; a null total (unknown model, no token-bearing record)
+  // is omitted rather than written.
+  if (ownUuid !== null && !hasOwn('total_tokens')) {
+    let rollup = null;
+    try {
+      rollup = rollupSessionTokens({
+        parentSessionId: ownUuid,
+        subagentsPath: join(dirname(args.file), 'subagents.jsonl'),
+      });
+    } catch (err) {
+      process.stderr.write(
+        `emit-session: WARN token rollup failed (${err?.message ?? err}); omitting token fields\n`
+      );
+    }
+    if (rollup !== null && rollup.matched_records > 0) {
+      const merged = {};
+      for (const key of ROLLUP_KEYS) {
+        if (hasOwn(key) || !Number.isFinite(rollup[key])) continue;
+        // Mirrors validateSession(): these two are non-negative INTEGERS, while
+        // total_token_input/output may be fractional — one fractional token
+        // value upstream must cost the field, not the record.
+        if (INTEGER_ROLLUP_KEYS.has(key) && !Number.isInteger(rollup[key])) {
+          process.stderr.write(
+            `emit-session: WARN token rollup produced an invalid field (${key} must be a ` +
+              `non-negative integer, got: ${rollup[key]}); omitting ${key}\n`
+          );
+          continue;
+        }
+        merged[key] = rollup[key];
+      }
+      // Enrichment must never be the reason the ledger gains no line: validate
+      // the enriched record first and fall back to the un-enriched one. Blamed
+      // on the rollup only when the un-enriched record validates on its own —
+      // otherwise the validation below reports the record's own defect.
+      try {
+        validateSession({ ...repaired, ...merged });
+        repaired = { ...repaired, ...merged };
+      } catch (err) {
+        if (!(err instanceof ValidationError)) throw err;
+        let baseValid = true;
+        try {
+          validateSession(repaired);
+        } catch {
+          baseValid = false;
+        }
+        if (baseValid) {
+          process.stderr.write(
+            `emit-session: WARN token rollup produced an invalid field (${err.message}); ` +
+              `omitting token fields\n`
+          );
+        }
+      }
+      if (rollup.total_tokens === null) {
+        process.stderr.write(
+          `emit-session: WARN token rollup matched ${rollup.matched_records} subagents.jsonl record(s) ` +
+            `for ${ownUuid}, none token-bearing; total_tokens omitted\n`
+        );
+      }
+    } else if (rollup !== null) {
+      process.stderr.write(
+        `emit-session: WARN token rollup found no subagents.jsonl records for ${ownUuid}; ` +
+          `omitting token fields\n`
+      );
     }
   }
 

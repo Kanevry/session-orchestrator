@@ -40,8 +40,8 @@ describe('FLAG_BOUNDS — frozen object identity', () => {
     expect(FLAG_BOUNDS.confidenceThreshold).toEqual({ min: 0.0, max: 1.0, default: 0.85 });
   });
 
-  it('maxTokens bounds are {min:0, max:10_000_000, default:500_000}', () => {
-    expect(FLAG_BOUNDS.maxTokens).toEqual({ min: 0, max: 10_000_000, default: 500_000 });
+  it('maxTokens bounds are {min:0, max:10_000_000, default:0}', () => {
+    expect(FLAG_BOUNDS.maxTokens).toEqual({ min: 0, max: 10_000_000, default: 0 });
   });
 });
 
@@ -77,7 +77,7 @@ describe('parseFlags — default values on empty argv', () => {
       maxSessions: 5,
       maxHours: 4.0,
       confidenceThreshold: 0.85,
-      maxTokens: 500_000,
+      maxTokens: 0,
       dryRun: false,
     });
   });
@@ -87,7 +87,7 @@ describe('parseFlags — default values on empty argv', () => {
       maxSessions: 5,
       maxHours: 4.0,
       confidenceThreshold: 0.85,
-      maxTokens: 500_000,
+      maxTokens: 0,
       dryRun: false,
     });
   });
@@ -214,7 +214,7 @@ describe('parseFlags — mixed valid + clamped flags', () => {
       maxSessions: 3,
       maxHours: 24.0,
       confidenceThreshold: 0.85,
-      maxTokens: 500_000,
+      maxTokens: 0,
       dryRun: true,
     });
   });

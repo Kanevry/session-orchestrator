@@ -219,10 +219,10 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // #1339 P8 — HEAD sha at session start. Gives `/evolve analyze` an
   // attributable commit range instead of a time window that also catches
   // parallel sessions' commits. Absent = not measured. NOT guaranteed to be a
-  // full sha: scripts/emit-session.mjs adopts STATE.md `session-start-ref`
-  // only when it is a full 40/64-hex sha, but an explicit key already on the
-  // record wins unchecked (even `null`), and every record before that
-  // derivation was hand-composed — 19 with a 40-char and 9 with a 7-char
+  // full sha: scripts/emit-session.mjs now writes only a full 40/64-hex sha or
+  // an explicit `null` (a derived ref is adopted only in full form, and an
+  // explicit short ref on the record is dropped with a WARN), but every record
+  // before that derivation was hand-composed — 19 with a 40-char and 9 with a 7-char
   // value (measured 2026-09-19 @ 8f6ac022, jq over sessions.jsonl).
   // Consumers must accept a short sha or `null`, never assume a full one.
   'session_start_ref',

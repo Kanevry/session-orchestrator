@@ -314,7 +314,7 @@ nachvollziehbar ist, wogegen Stufe 1 gemessen wurde (CLAUDE.md: „keine Zahl oh
 | `reaper.min-scan-interval-seconds` | 30 | DevWatchdogs Normal-Scan-Takt; verhindert, dass ein `PostToolBatch`-Sturm jeden Tool-Call verteuert |
 | `reaper.kill-grace-ms` | 10 000 | `DEFAULT_KILL_GRACE_MS` aus `dispatch-common.mjs:61` — Repo-Konvention, nicht neu erfunden |
 | `reaper.verify-wait-ms` | 500 | Wartezeit vor dem Zurücklesen; ohne sie meldete die Prüfroutine am 2026-09-20 fälschlich „lebt noch" |
-| `reaper.max-hook-latency-ms` | 50 | Obergrenze, um die ein Scan einen Hook verzögern darf; darüber gilt der Scan als zu teuer und wird übersprungen |
+| `reaper.max-hook-latency-ms` | 50 | Obergrenze, um die ein Scan einen Hook verzögern darf; eine Überschreitung schreibt nur eine WARN-Zeile auf stderr, der Scan läuft trotzdem (`hooks/post-tool-batch-wave-signal.mjs`, `hooks/on-stop.mjs`) |
 | `reaper.false-alarm-window` | letzte 50 Entscheidungen aus dem JSONL-Audit (B5) | rollierendes Fenster statt Kalenderzeit, damit die Rate auch auf ruhigen Hosts eine Population hat |
 | `gate.timeout-path-b-ms` | 900 000 (15 min) | gleicher Deckel wie `GATE_TIMEOUT_MS` in Pfad A, damit beide Pfade gleich lange dürfen |
 

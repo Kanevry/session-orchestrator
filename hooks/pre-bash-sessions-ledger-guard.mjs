@@ -268,8 +268,9 @@
  *     hides its payload from this matcher by construction.
  *   - `sponge`, `install`, `rsync`, `awk > file` and other less common write
  *     verbs (a redirect inside an `awk` program string is quoted data here).
- *   - The Write/Edit tools — a different PreToolUse matcher entirely
- *     (`hooks/enforce-scope.mjs` territory), not this hook's surface.
+ *   - The Write/Edit/MultiEdit tools — a different PreToolUse matcher entirely,
+ *     guarded by `hooks/pre-edit-sessions-ledger-guard.mjs` (#1443), not this
+ *     hook's surface.
  *   - The #385 repair-apply subshell/backtick deny (`unwrapSubshellLayers`)
  *     only unwraps a command that IS, in its entirety, one wrapped run —
  *     `x=$(node scripts/repair-invalid-sessions.mjs --apply)` (the wrapper is
@@ -1520,6 +1521,29 @@ async function main() {
   const shown = target.length > TARGET_ECHO_MAX
     ? `${target.slice(0, TARGET_ECHO_MAX)}… (${target.length} chars)`
     : target;
+
+  // #1442 — a repair-apply VARIANT (extra flag, wrapper, env prefix) reached
+  // here because it is not the exact sanctioned string. Text only, no matching
+  // change: name the one command that IS allowed, and say why the most common
+  // re-spelling cannot work — this hook reads SO_DISABLED_HOOKS from its OWN
+  // process env (hooks/_lib/profile-gate.mjs), never from the command text, and
+  // a leading `VAR=val` token also breaks the exact match above.
+  if (target.startsWith(REPAIR_APPLY_MARKER)) {
+    emitDeny(
+      [
+        `Direct write to the sessions ledger blocked: '${shown}'`,
+        `The sanctioned repair invocation is allowed ONLY as the exact bare command:`,
+        `  ${REPAIR_APPLY_CANONICAL_COMMAND}`,
+        `Any variant — an extra flag, a wrapper, an env prefix — is denied.`,
+        `A SO_DISABLED_HOOKS=… prefix INSIDE the command has no effect: this hook reads`,
+        `it from the environment of the whole session, never from the command text.`,
+        `Override (intentional maintenance only, operator-side — e.g. started with \`!\`):`,
+        `SO_DISABLED_HOOKS=pre-bash-sessions-ledger-guard as the environment of the session`,
+        `See: GitLab #958, #1442, skills/session-end/session-metrics-write.md`,
+      ].join('\n'),
+    );
+    return;
+  }
 
   emitDeny(
     [

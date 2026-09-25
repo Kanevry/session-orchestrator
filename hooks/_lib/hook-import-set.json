@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-22T06:04:50.134Z",
-  "head": "132e3ae1b222cc3a5e52e2a1e67e9688832f2c20",
+  "generated_at": "2026-09-25T12:02:25.775Z",
+  "head": "2ac6dc8e9cab8cd257867d4a4bb615f34cfeaee3",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -61,6 +61,7 @@
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
+        "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
@@ -237,6 +238,12 @@
       "file": "hooks/pre-bash-templates-first.mjs",
       "reachable_from": [
         "pre-bash-templates-first.mjs"
+      ]
+    },
+    {
+      "file": "hooks/pre-edit-sessions-ledger-guard.mjs",
+      "reachable_from": [
+        "pre-edit-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -1016,6 +1023,7 @@
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
+        "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
       ]
@@ -1045,6 +1053,7 @@
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
+        "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"

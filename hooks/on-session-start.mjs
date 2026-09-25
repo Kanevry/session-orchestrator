@@ -762,6 +762,13 @@ async function main() {
   // Resolve current branch; fall back to "unknown" when detached HEAD or no git.
   const branch = (await gitOutput(['branch', '--show-current'], projectRoot)) ?? 'unknown';
 
+  // #1443 — the commit this session started on, the fallback source for
+  // `session_start_ref` (STATE.md's `session-start-ref` had no writer). Kept
+  // only when it is a full object name; no repo, an unborn HEAD or a missing
+  // git leaves it null and the payload key is OMITTED, never fabricated.
+  const rawHeadSha = await gitOutput(['rev-parse', 'HEAD'], projectRoot);
+  const headSha = rawHeadSha && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(rawHeadSha) ? rawHeadSha : null;
+
   // v3.1.0 env-aware banner (opt-out via enable-host-banner: false in Session Config).
   // The ask-via-tool nudge rides the same opt-out flag — both are coordinator
   // reminders shown at session start; users who silence one expect silence.
@@ -1126,6 +1133,7 @@ async function main() {
     // makes the supersession rate measurable instead of inferred (HR-105).
     peers_superseded: mechanicalPeersSuperseded,
   };
+  if (headSha) payload.head_sha = headSha;
 
   // #1091 — record the native SessionStart source so "does the same raw
   // session_id repeat under source=resume?" becomes answerable from

@@ -83,6 +83,11 @@
             "type": "command",
             "command": "sh \"$CURSOR_PLUGIN_ROOT/hooks/run-node.sh\" \"$CURSOR_PLUGIN_ROOT/hooks/config-protection.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh \"$CURSOR_PLUGIN_ROOT/hooks/run-node.sh\" \"$CURSOR_PLUGIN_ROOT/hooks/pre-edit-sessions-ledger-guard.mjs\"",
+            "timeout": 5
           }
         ]
       }
