@@ -778,9 +778,13 @@ function coerceMaxRetries(n) {
  *
  * ONE builder for BOTH emitters — this library's {@link emitGateEvent} and the
  * `scripts/run-quality-gate.mjs` CLI — so the two can never publish different
- * shapes under the same keys. All three keys are ALWAYS present: `timed_out`
- * `false`, `survivors` `0` and `kill_signals` `[]` are measurements ("not
- * killed"), unlike `counts`, whose absence means "not measured".
+ * shapes under the same keys. From THIS builder all three keys are always
+ * present: `timed_out` `false`, `survivors` `0` and `kill_signals` `[]` are
+ * measurements ("not killed"), unlike `counts`, whose absence means "not
+ * measured". The CLI then passes the result through `joinGateKillFields()`
+ * (`scripts/lib/gates/gate-helpers.mjs`, #1457), which OR-joins the inner
+ * per-command ladders and MAY omit the three keys when that inner side was
+ * not measured and the outer ladder did not fire.
  *
  * - `timed_out` — the run hit its wall-clock ceiling and was killed (exit 124).
  * - `survivors` — how many pids were still alive after the SIGKILL step; the

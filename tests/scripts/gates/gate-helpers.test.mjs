@@ -955,12 +955,31 @@ describe('joinGateKillFields (#1457)', () => {
     expect(out).toEqual({ timed_out: true, survivors: 1, kill_signals: ['SIGTERM', 'SIGKILL'] });
   });
 
-  it('omits all three keys when no inner ladder was published and the outer did not fire', () => {
-    expect(joinGateKillFields({ outer: quietOuter, gateStdout: JSON.stringify({ variant: 'incremental' }) })).toEqual({});
+  const firedOuter = { timed_out: true, survivors: 0, kill_signals: ['SIGKILL'] };
+  const truncated = '{"typecheck":{"timed_';
+  // A stubbed command spawned nothing, so "not killed" is a measurement for it
+  // too: without the `stubbed[name]` branch the inner side of this row turns
+  // "unknown" and the inner typecheck kill is dropped (result `{}`).
+  const stubbedEnvelope = JSON.stringify({
+    variant: 'full-gate',
+    typecheck: { status: 'fail', timed_out: true, kill_signals: ['SIGTERM'], survivors: [] },
+    test: { status: 'pass' },
+    lint: { status: 'skip' },
+    stubbed: { test: { kind: 'noop' } },
   });
 
-  it('keeps an outer kill even when the envelope is missing', () => {
-    const outer = { timed_out: true, survivors: 0, kill_signals: ['SIGTERM'] };
-    expect(joinGateKillFields({ outer, gateStdout: '' })).toEqual(outer);
+  it.each([
+    ['omits all three keys when no inner ladder was published and the outer did not fire',
+      quietOuter, JSON.stringify({ variant: 'incremental' }), {}],
+    ['keeps an outer kill even when the envelope is missing',
+      firedOuter, '', { timed_out: true, survivors: 0, kill_signals: ['SIGKILL'] }],
+    ['keeps an outer kill when the envelope is truncated mid-object',
+      firedOuter, truncated, { timed_out: true, survivors: 0, kill_signals: ['SIGKILL'] }],
+    ['omits all three keys when the envelope is truncated and the outer did not fire',
+      quietOuter, truncated, {}],
+    ['counts a stubbed command as measured, so the inner typecheck kill survives',
+      quietOuter, stubbedEnvelope, { timed_out: true, survivors: 0, kill_signals: ['SIGTERM'] }],
+  ])('%s', (_name, outer, gateStdout, expected) => {
+    expect(joinGateKillFields({ outer, gateStdout })).toEqual(expected);
   });
 });

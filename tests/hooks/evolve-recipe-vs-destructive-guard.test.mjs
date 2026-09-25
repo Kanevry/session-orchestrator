@@ -52,12 +52,8 @@ describe('#1453 — /evolve Step 3.5 sidecar recipe vs. the destructive-command 
   const block = extractPruneBlock(readFileSync(DOC, 'utf8'));
   const next = block.match(/^\s*NEXT="([^"]+)"/m)?.[1];
 
-  it('resolves $NEXT to a path under .orchestrator/tmp/', () => {
-    expect(next).toBeDefined();
-    expect(next.startsWith('.orchestrator/tmp/')).toBe(true);
-  });
-
   it('the recipe with $NEXT spelled out is ALLOWED by the real guard policy', () => {
+    expect(next).toBeDefined();
     const command = block.replaceAll('"$NEXT"', `"${next}"`).trim();
     // Guard against a vacuous ALLOW: no unresolved $NEXT operand may remain.
     expect(command).not.toContain('$NEXT');

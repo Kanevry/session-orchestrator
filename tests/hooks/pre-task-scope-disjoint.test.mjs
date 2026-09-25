@@ -410,7 +410,7 @@ describe('pre-task-scope-disjoint — liveness: a FINISHED agent no longer binds
     expectAllow(dispatch(dir, 'Fix self-defeating findings floor', ['scripts/lib/vcs.mjs'], { transcriptPath }));
   });
 
-  it('finishes a FAILED agent that was resumed via SendMessage under a new tool-use-id (#1455)', async () => {
+  it.each(['failed', 'killed', 'stopped'])('finishes a %s agent that was resumed via SendMessage under a new tool-use-id (#1455)', async (status) => {
     // Bug caught (#1455, EventDrop.at 2026-09-25): two agents hit a 429, their
     // notification said `failed`, the coordinator resumed them via SendMessage,
     // and the completion arrived under the SendMessage's NEW id. Only
@@ -425,7 +425,7 @@ describe('pre-task-scope-disjoint — liveness: a FINISHED agent no longer binds
     });
     const raw = [
       dispatchRow,
-      transcriptTaskNotification('toolu_01T1', 'a1b2c3d4e5f60718a', D, 'failed'),
+      transcriptTaskNotification('toolu_01T1', 'a1b2c3d4e5f60718a', D, status),
       sendMessageRow,
       transcriptTaskNotification('toolu_01T2', 'a1b2c3d4e5f60718a', D, 'completed'),
     ].join('\n');

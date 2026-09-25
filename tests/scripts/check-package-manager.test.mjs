@@ -437,6 +437,19 @@ describe('check-package-manager.mjs', () => {
       expect(r.status).toBe(0);
       expect(r.stderr).toContain('Run: npx husky');
     });
+
+    it('CLI stays quiet about husky once core.hooksPath=.husky/_ is set', () => {
+      fixtureGitSpawn(['config', 'core.hooksPath', '.husky/_'], tmp);
+      const r = runCli([], { cwd: tmp, env: isolatedEnv() });
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('npx husky');
+    });
+
+    it('CLI stays quiet about husky under CI=true even with hooksPath unset', () => {
+      const r = runCli([], { cwd: tmp, env: isolatedEnv({ CI: 'true' }) });
+      expect(r.status).toBe(0);
+      expect(r.stderr).not.toContain('npx husky');
+    });
   });
 
   // -------------------------------------------------------------------------

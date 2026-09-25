@@ -42,7 +42,7 @@
  * git index entirely (PSA-007).
  */
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -53,6 +53,7 @@ import {
   classifyPath,
   countPhysicalLines,
   measure,
+  checkTestsSrcRatio,
   parseArgs,
   DEFAULT_CEILING,
   CODE_EXTENSIONS,
@@ -225,6 +226,15 @@ describe('measure — the recipe over a controlled corpus', () => {
     expect(r.testLikeFilesSeen).toBe(2);
   });
 
+  it('a repo with genuinely no test-like files stays measurable: ratio 0, reason null, within corridor', () => {
+    // Pins the #1451 condition's second conjunct (testLikeFilesSeen > 0): a
+    // pure-src repo must not be reported as no-tests-found.
+    const r = measure({ files: ['scripts/a.mjs'], readFile: () => 'x\n'.repeat(10) });
+    expect(r.reason).toBeNull();
+    expect(r.ratio).toBe(0);
+    expect(r.withinCorridor).toBe(true);
+  });
+
   it('counts unreadable files as skipped rather than as zero-line files', () => {
     const r = measure({
       files: ['scripts/gone.mjs', 'scripts/here.mjs'],
@@ -307,6 +317,23 @@ describe('CLI contract', () => {
     expect(stdout).toMatch(/consolidation wave required/);
   });
 
+  it('exits 3 under --check when test-like files are tracked but none is counted', () => {
+    let code = 0;
+    let stderr = '';
+    try {
+      execFileSync('node', [SCRIPT, dir, '--stdin', '--check'], {
+        input: 'src/a.ts\nsrc/a.test.ts\nscripts/b.mjs',
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    } catch (err) {
+      code = err.status;
+      stderr = err.stderr;
+    }
+    expect(code).toBe(3);
+    expect(stderr).toContain('no-tests-found');
+  });
+
   it('exits 2 on a bad argument rather than reporting a number', () => {
     let code = 0;
     try {
@@ -315,5 +342,31 @@ describe('CLI contract', () => {
       code = err.status;
     }
     expect(code).toBe(2);
+  });
+});
+
+describe('checkTestsSrcRatio — session-start probe over a real git repo', () => {
+  let repo;
+
+  afterEach(() => {
+    if (repo) rmSync(repo, { recursive: true, force: true });
+    repo = undefined;
+  });
+
+  it('warns no-tests-found with a null ratio when only uncounted *.test.ts files are tracked', () => {
+    repo = mkdtempSync(join(tmpdir(), 'tests-src-ratio-probe-'));
+    writeFileSync(join(repo, 'x.test.ts'), 'a\n'.repeat(3));
+    writeFileSync(join(repo, 'a.mjs'), 'b\n'.repeat(5));
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+    const git = (...args) => execFileSync('git', args, { cwd: repo, env, stdio: 'pipe' });
+    git('init', '-q');
+    git('add', 'x.test.ts', 'a.mjs');
+    git('-c', 'user.name=t', '-c', 'user.email=t@example.org', 'commit', '-q', '-m', 'fixture');
+
+    expect(checkTestsSrcRatio({ repoRoot: repo })).toMatchObject({
+      severity: 'warn',
+      reason: 'no-tests-found',
+      ratio: null,
+    });
   });
 });
