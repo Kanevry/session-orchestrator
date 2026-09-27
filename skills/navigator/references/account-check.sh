@@ -43,7 +43,17 @@ if [ -z "$account_cmd" ]; then
 fi
 
 here=$(cd "$(dirname "$0")" && pwd)
-rows=$(timeout 40 bash -c "$account_cmd" 2>/dev/null)
+# Cap the operator command at 40 s where a timeout binary exists (GNU coreutils `timeout`, Homebrew
+# `gtimeout`); a stock macOS host has neither, and the command then runs uncapped rather than failing
+# as "not measurable" (measured on the offload host: `command -v timeout` and `gtimeout` both empty).
+# No bash array here: under `set -u` an empty array expansion fails on bash 3.2 (stock macOS).
+run_capped() {
+  if command -v timeout >/dev/null 2>&1; then timeout 40 "$@"
+  elif command -v gtimeout >/dev/null 2>&1; then gtimeout 40 "$@"
+  else "$@"
+  fi
+}
+rows=$(run_capped bash -c "$account_cmd" 2>/dev/null)
 cmd_rc=$?
 if [ "$cmd_rc" -ne 0 ] || [ -z "$rows" ]; then
   echo "account watch: not measurable (account command failed, rc=$cmd_rc)"
