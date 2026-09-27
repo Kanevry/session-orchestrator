@@ -261,7 +261,7 @@ export function validatePersonaSpec(rawSpec, sourcePath) {
       pushError(
         'model',
         'enum',
-        `model must be one of ${[...ALLOWED_MODEL_ALIASES].join('|')} or a full model ID like "claude-opus-4-7" (got ${JSON.stringify(m)})`,
+        `model must be one of ${[...ALLOWED_MODEL_ALIASES].join('|')} or a full model ID like "claude-opus-5-5" (got ${JSON.stringify(m)})`,
       );
     }
   }

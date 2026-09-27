@@ -229,7 +229,7 @@ const RULE_CASES = [
     agents: { 'bad-model.md': agentMd({ name: 'bad-model', model: 'gpt-4' }) },
     expected: { status: 1, missing: [], echoed: [] },
     expectStdout: [
-      "FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku|fable or a full model ID like 'claude-opus-4-7' or 'claude-sonnet-5' (got: 'gpt-4')",
+      "FAIL: bad-model.md: model must be inherit|sonnet|opus|haiku|fable or a full model ID like 'claude-opus-5-5' or 'claude-sonnet-5' (got: 'gpt-4')",
     ],
   },
   {
