@@ -32,16 +32,18 @@ ist dein Owner-Auftrag"**. Eine Datei, die fehlt, heißt „nicht nachweisbar", 
 
 | Feld | Inhalt |
 |---|---|
-| `session_id` | Registry-ID des Navigators (Pflicht) |
+| `session_id` | Registry-ID des Navigators (Pflicht; pfadsicher wie oben, höchstens 128 Zeichen) |
 | `plattform` | `claude` \| `codex` \| `kopflos` (Pflicht) |
-| `adresse` | `ListAgents`-Name, wenn Claude; sonst `null` |
-| `seit` | ISO-Zeit des Erwerbs (Pflicht) |
-| `laeuft_ab` | ISO-Zeit; Erneuerung je Ticker-Runde, Ablauf 30 min nach der letzten (Pflicht) |
+| `adresse` | `ListAgents`-Name, wenn Claude (`[A-Za-z0-9._:@-]`, 1–128 Zeichen); sonst `null` |
+| `seit` | Zeit des Erwerbs, UTC mit `Z`, Sekunden oder Millisekunden (Pflicht) |
+| `laeuft_ab` | UTC mit `Z`; Erneuerung je Ticker-Runde, Ablauf 30 min nach der letzten (Pflicht) |
 | `uebergabe_an` | `null` oder Session-ID des Nachfolgers |
 
 **„Aktiv" heißt ausschließlich: gültige Lease.** `readNavigatorLease()` liefert genau eines von
 `active` (Datei lesbar, Pflichtfelder da, `laeuft_ab` in der Zukunft), `none` (Datei fehlt oder
-`laeuft_ab` überschritten) oder `unreadable` (kaputtes JSON, fehlende Pflichtfelder, Lesefehler).
+`laeuft_ab` überschritten) oder `unreadable` (kaputtes JSON, fehlende Pflichtfelder, Lesefehler, oder ein Feld außerhalb der
+Tabellenform: unbekannte `plattform`, Steuerzeichen in `session_id`/`adresse`, eine Zeit ohne `Z`
+oder mit Offset — sie würde in lokaler Zeit gelesen und könnte die Lease verlängern).
 Unlesbar oder abgelaufen ist **nie** aktiv (fail-closed). Registry-Heartbeat (`role: navigator`,
 `scripts/lib/session-registry.mjs`) und `ListAgents` sind Zusatzsignale, keine Lebendbeweise.
 Erwerb und Übergabe der Lease sind S4 (agents/navigator#36), nicht Teil dieses Repos.

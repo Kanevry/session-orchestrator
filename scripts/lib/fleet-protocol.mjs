@@ -146,11 +146,6 @@ const REQUIRED_CHECKIN_FIELDS = [
   'kandidaten', 'schreibbereich', 'rueckfall', 'zeit',
 ];
 
-/**
- * Per-field type checks. Each returns an error message or null. Applied to every
- * PRESENT field; presence of the required ones is checked separately.
- * @type {Record<string, (v: unknown) => string|null>}
- */
 /** Repo name shape accepted in a check-in: `name` or `group/name`, no path parts. */
 const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}(?:\/[A-Za-z0-9._-]{1,100})?$/;
 
@@ -163,6 +158,11 @@ function isIssueRef(v) {
   return typeof v === 'string' && /^#?\d{1,9}$/.test(v);
 }
 
+/**
+ * Per-field type checks. Each returns an error message or null. Applied to every
+ * PRESENT field; presence of the required ones is checked separately.
+ * @type {Record<string, (v: unknown) => string|null>}
+ */
 const CHECKIN_FIELD_CHECKS = {
   session: (v) =>
     isSafeSessionId(v) ? null : 'session must be a safe id: [A-Za-z0-9._-], 1..128 chars, not . or ..',

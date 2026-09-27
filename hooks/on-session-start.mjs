@@ -119,7 +119,7 @@ export function navigatorBannerLine(verdict) {
     // Defence in depth: the lease reader already refuses control bytes in these
     // two fields; a newline / ANSI / bidi byte must still never reach systemMessage.
     let shown = String(lease.adresse ?? lease.session_id ?? 'unknown')
-      .replace(/[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, '?');
+      .replace(/[\p{Cc}\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, '?');
     if (Buffer.byteLength(shown, 'utf8') > room) {
       const chars = [...shown];
       while (chars.length > 0 && Buffer.byteLength(`${chars.join('')}…`, 'utf8') > room) chars.pop();
