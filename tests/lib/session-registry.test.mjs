@@ -167,6 +167,55 @@ describe('session-registry', () => {
     });
   });
 
+  // #1462: `role` is a DISPLAY field set only through heartbeat(patch.role).
+  // The navigator lease stays authoritative; these cases pin that an unpatched
+  // heartbeat — the exact call shape of hooks/on-stop.mjs — never drops it.
+  describe('role field (#1462)', () => {
+    const entryFile = (id) => path.join(tmpBase, 'active', `${id}.json`);
+
+    it('persists role: "navigator" and keeps it across an unpatched heartbeat(id)', async () => {
+      await registerSelf({ sessionId: 'role-nav', projectRoot: '/tmp/proj' });
+      const set = await heartbeat('role-nav', { role: 'navigator' });
+      expect(set.role).toBe('navigator');
+      expect(JSON.parse(await readFile(entryFile('role-nav'), 'utf8')).role).toBe('navigator');
+
+      const kept = await heartbeat('role-nav');
+      expect(kept.role).toBe('navigator');
+      expect(JSON.parse(await readFile(entryFile('role-nav'), 'utf8')).role).toBe('navigator');
+    });
+
+    it('clears the role with role: null', async () => {
+      await registerSelf({ sessionId: 'role-clear', projectRoot: '/tmp/proj' });
+      await heartbeat('role-clear', { role: 'navigator' });
+      const cleared = await heartbeat('role-clear', { role: null });
+      expect(cleared.role).toBeNull();
+      expect(JSON.parse(await readFile(entryFile('role-clear'), 'utf8')).role).toBeNull();
+    });
+
+    it('rejects an unknown role with TypeError and leaves the file byte-identical', async () => {
+      await registerSelf({ sessionId: 'role-bad', projectRoot: '/tmp/proj' });
+      const before = await readFile(entryFile('role-bad'), 'utf8');
+      await expect(heartbeat('role-bad', { role: 'boss' })).rejects.toThrow(TypeError);
+      expect(await readFile(entryFile('role-bad'), 'utf8')).toBe(before);
+    });
+
+    it('readRegistry drops a non-string role but keeps role: null and role-less entries', async () => {
+      await mkdir(path.join(tmpBase, 'active'), { recursive: true });
+      const now = new Date().toISOString();
+      const base = { started_at: now, last_heartbeat: now };
+      const cases = [
+        { session_id: 'role-num', role: 42 },
+        { session_id: 'role-null', role: null },
+        { session_id: 'role-absent' },
+      ];
+      for (const c of cases) {
+        await writeFile(entryFile(c.session_id), JSON.stringify({ ...base, ...c }) + '\n');
+      }
+      const ids = (await readRegistry()).map((e) => e.session_id).sort();
+      expect(ids).toEqual(['role-absent', 'role-null']);
+    });
+  });
+
   describe('readRegistry', () => {
     it('returns [] when the active dir does not exist yet', async () => {
       expect(await readRegistry()).toEqual([]);
