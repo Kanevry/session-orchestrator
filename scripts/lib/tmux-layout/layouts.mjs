@@ -25,6 +25,7 @@
 
 import path from 'node:path';
 import { resolveStateDir } from '../platform.mjs';
+import { shellQuote } from '../sh-quote.mjs';
 import { detectVcsCommand } from './vcs-detector.mjs';
 import { isSessionCollision } from './tmux-shell.mjs';
 
@@ -47,17 +48,6 @@ try {
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Single-quote a shell command string for use as a tmux send-keys argument.
- * Escapes embedded single-quotes using the POSIX `'...' '\'' '...'` pattern.
- *
- * @param {string} s
- * @returns {string}  e.g. 'tail -F /path/to/STATE.md'
- */
-function shellQuote(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
-}
 
 /** Poll interval (seconds) of the agent-status pane loop. */
 const STATUS_PANE_POLL_SECONDS = 2;

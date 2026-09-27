@@ -35,6 +35,7 @@ import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-rep
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { resolveRepoSpec, redactUrlCredentials } from './lib/vcs-repo-spec.mjs';
 import { expandTilde } from './lib/common.mjs';
+import { shellQuote } from './lib/sh-quote.mjs';
 
 // ── Argument parsing ──────────────────────────────────────────────────────────
 
@@ -285,7 +286,7 @@ function buildTickBody(issueMap, depIds, verdict, streak, date) {
 function buildFlipBody(repos) {
   // Defense-in-depth: regex+confinement upstream already filter, but shell-quote here
   // makes the embedded bash safe under any future bypass.
-  const repoList = repos.map(r => `'${r.replace(/'/g, "'\\''")}'`).join(' ');
+  const repoList = repos.map(shellQuote).join(' ');
   // The sed/add/commit one-liner targets the project-instruction file. Most
   // ecosystem repos use CLAUDE.md, but Codex-CLI repos use AGENTS.md as a
   // transparent alias — see skills/_shared/instruction-file-resolution.md.

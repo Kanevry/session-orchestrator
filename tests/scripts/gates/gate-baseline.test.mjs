@@ -60,8 +60,8 @@ describe('gate-baseline — skip+skip', () => {
   it('JSON typecheck and test fields are "skip"', () => {
     const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'skip' });
     const json = JSON.parse(r.stdout);
-    expect(json.typecheck).toBe('skip');
-    expect(json.test).toBe('skip');
+    expect(json.typecheck.status).toBe('skip');
+    expect(json.test.status).toBe('skip');
   });
 
   it('JSON contains typecheck_output and test_output keys', () => {
@@ -81,7 +81,7 @@ describe('gate-baseline — passing commands', () => {
     const r = run({ TYPECHECK_CMD: 'node -e "console.log(\'TC_OK\')"', TEST_CMD: 'skip' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
-    expect(json.typecheck).toBe('pass');
+    expect(json.typecheck.status).toBe('pass');
   });
 
   it('typecheck_output contains the command output', () => {
@@ -94,7 +94,7 @@ describe('gate-baseline — passing commands', () => {
     const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'node -e "console.log(\'TEST_OK\')"' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
-    expect(json.test).toBe('pass');
+    expect(json.test.status).toBe('pass');
   });
 
   it('test_output contains the command output', () => {
@@ -117,7 +117,18 @@ describe('gate-baseline — failing typecheck', () => {
   it('typecheck field is "fail" when command exits non-zero', () => {
     const r = run({ TYPECHECK_CMD: 'node -e "process.exit(1)"', TEST_CMD: 'skip' });
     const json = JSON.parse(r.stdout);
-    expect(json.typecheck).toBe('fail');
+    expect(json.typecheck.status).toBe('fail');
+  });
+
+  it('publishes the INNER kill ladder on the typecheck object when its ceiling fires (#1457)', () => {
+    // GATE_TIMEOUT_MS=300 kills `sleep 30` inside runCheck. Without the object
+    // shape the envelope carries only the bare status string and
+    // `joinGateKillFields` never sees `timed_out`.
+    const r = run({ TYPECHECK_CMD: 'sleep 30', TEST_CMD: 'skip', GATE_TIMEOUT_MS: '300' });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.typecheck.timed_out).toBe(true);
+    expect(json.typecheck.kill_signals[0]).toBe('SIGTERM');
   });
 });
 
@@ -142,5 +153,17 @@ describe('gate-baseline — missing env vars', () => {
     const r = spawnSync('node', [SCRIPT], { encoding: 'utf8', env });
     expect(r.status).toBe(1);
     expect(r.stderr).toContain('TEST_CMD');
+  });
+});
+
+describe('gate-baseline — stubbed map (#1459 item 3 review F1)', () => {
+  // Without the map a stubbed sibling makes `joinGateKillFields` declare the
+  // whole inner ladder unknown, so a killed typecheck would vanish from the
+  // event again — the exact bug class of #1457 item 12.
+  it('publishes a stubbed map like gate-full so a stub counts as measured', () => {
+    const r = run({ TYPECHECK_CMD: 'echo ok', TEST_CMD: 'skip' });
+    const json = JSON.parse(r.stdout);
+    expect(json.stubbed).toEqual({ typecheck: { kind: 'echo' } });
+    expect(json.typecheck).toEqual({ status: 'pass' });
   });
 });

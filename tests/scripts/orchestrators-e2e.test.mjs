@@ -51,8 +51,8 @@ describe('orchestrators e2e (post .sh→.mjs port)', () => {
     expect(r.status).toBe(0);
     const out = JSON.parse(r.stdout);
     expect(out.variant).toBe('baseline');
-    expect(out.typecheck).toBe('skip');
-    expect(out.test).toBe('skip');
+    expect(out.typecheck.status).toBe('skip');
+    expect(out.test.status).toBe('skip');
   });
 
   it('run-quality-gate.mjs incremental emits JSON with variant:incremental and errors:[], exit 0', () => {

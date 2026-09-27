@@ -6,6 +6,8 @@
 
 import { execSync } from 'node:child_process';
 
+import { shellQuote } from '../sh-quote.mjs';
+
 const MIN_MAJOR = 3;
 const MIN_MINOR = 0;
 
@@ -68,15 +70,4 @@ export function isSessionCollision(sessionName) {
     if (err.code === 'ENOENT') return { exists: false, error: 'tmux not installed' };
     return { exists: false, error: `tmux has-session failed: ${err.message}` };
   }
-}
-
-/**
- * Shell-quote a string for safe interpolation into a shell command.
- * Uses single-quote wrapping with embedded single-quote escaping.
- *
- * @param {string} s
- * @returns {string}
- */
-function shellQuote(s) {
-  return "'" + String(s).replace(/'/g, "'\\''") + "'";
 }

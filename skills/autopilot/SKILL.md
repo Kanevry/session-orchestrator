@@ -137,7 +137,7 @@ WHILE state.iterations_completed < max-sessions:
     kill_switch := 'max-sessions-reached'; break
   IF (now() - state.started_at) > max-hours:
     kill_switch := 'max-hours-exceeded'; break
-  IF cumulative_tokens_used >= max-tokens:
+  IF max-tokens > 0 AND cumulative_tokens_used >= max-tokens:
     kill_switch := 'token-budget-exceeded'; break
   IF resource_verdict() == 'critical' AND peer_count() > autopilot-peer-abort:
     kill_switch := 'resource-overload'; break

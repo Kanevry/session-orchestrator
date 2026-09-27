@@ -793,6 +793,48 @@ export function agentIdOf(toolInput) {
 // Liveness — has an already-recorded agent FINISHED? (§ Liveness)
 // ---------------------------------------------------------------------------
 
+const NOTIFICATION_OPEN = '<task-notification>';
+const NOTIFICATION_CLOSE = '</task-notification>';
+
+/**
+ * The tool-use id a raw transcript line reports as TERMINATED via its FIRST
+ * `<task-notification>` block (#1459 Pkt 2) — at most one id per line.
+ *
+ * `<summary>` and `<result>` carry free text that can QUOTE another
+ * notification's `<tool-use-id>` and `<status>`, or even forge a whole block
+ * (R2 F1: a summary that closes itself and opens a complete fake block defeated
+ * the earlier cut-then-split approach). So nothing past the block's HEAD is read:
+ * the head runs from the first opener to the earliest `<summary>`, `<result>` or
+ * `</task-notification>`, and only its first `<tool-use-id>` counts, only when
+ * its first `<status>` is terminal. Fail-closed — the deny stays — when the line
+ * has no opener, no closing tag after it (truncated block), no id or no terminal
+ * status in the head.
+ *
+ * Named ceiling (BV-004): a real batch of several DIFFERENT notifications in one
+ * line would report only the first as finished (the rest stay running, the safe
+ * direction). Measured 0 such lines over 370 transcripts (R2, 2026-09-27) —
+ * carrier lines hold one notification, `queued_command` repeats the SAME ids.
+ * Revisit-Trigger: a transcript line carrying 2+ distinct real tool-use ids.
+ *
+ * @param {string} line — one raw JSONL line
+ * @returns {string[]} zero or one finished tool-use id
+ */
+function finishedNotificationIds(line) {
+  const open = line.indexOf(NOTIFICATION_OPEN);
+  if (open === -1) return [];
+  const close = line.indexOf(NOTIFICATION_CLOSE, open);
+  if (close === -1) return [];
+  let headEnd = close;
+  for (const tag of ['<summary>', '<result>']) {
+    const at = line.indexOf(tag, open);
+    if (at !== -1 && at < headEnd) headEnd = at;
+  }
+  const head = line.slice(open, headEnd);
+  const id = head.match(/<tool-use-id>([^<]+)<\/tool-use-id>/);
+  const status = head.match(/<status>[^<]*<\/status>/);
+  return id && status && TERMINAL_STATUS_RE.test(status[0]) ? [id[1]] : [];
+}
+
 /**
  * Index a session transcript by agent DESCRIPTION → completion state.
  *
@@ -800,8 +842,11 @@ export function agentIdOf(toolInput) {
  *   - `tool_use` `{name:'Agent', id, input.description}` — the dispatch.
  *   - `tool_result` `{tool_use_id, content}` — a completion for the SYNCHRONOUS
  *     shape, but only when its text is not the {@link ASYNC_LAUNCH_ACK}.
- *   - a `<task-notification>` record carrying `<tool-use-id>` and a TERMINAL
- *     `<status>` ({@link TERMINAL_STATUS_RE}) — the ASYNC shape's completion.
+ *   - a `<task-notification>` record — the ASYNC shape's completion (#1459 Pkt 2,
+ *     {@link finishedNotificationIds}): only the line's FIRST block, only its
+ *     head before `<summary>`/`<result>`, its first `<tool-use-id>` plus its
+ *     first `<status>` which must be TERMINAL ({@link TERMINAL_STATUS_RE}); the
+ *     closing `</task-notification>` is mandatory.
  *     `failed` counts too (#1455): a failed agent is not running, and a resumed
  *     one completes under the SendMessage's NEW id, never the original one.
  *
@@ -827,8 +872,8 @@ export function buildTranscriptIndex(raw) {
     // ASYNC completion — matched on the RAW line: the tags are plain text inside
     // a JSON string, so no parse is needed and the `queue-operation` carrier
     // record (which has no `message.content`) is covered too.
-    if (line.includes('task-notification') && TERMINAL_STATUS_RE.test(line)) {
-      for (const m of line.matchAll(/<tool-use-id>([^<]+)<\/tool-use-id>/g)) finishedIds.add(m[1]);
+    if (line.includes('task-notification')) {
+      for (const id of finishedNotificationIds(line)) finishedIds.add(id);
     }
 
     if (!line.includes('"tool_use"') && !line.includes('tool_use_id')) continue;

@@ -327,7 +327,7 @@ if (mdFiles.length === 0) {
       if (modelVal === null || (!ALLOWED_MODEL_ALIASES.has(modelVal) && !MODEL_ID_RE.test(modelVal))) {
         const got = modelVal ?? '';
         const aliasList = [...ALLOWED_MODEL_ALIASES].join('|');
-        fail(`${agentName}: model must be ${aliasList} or a full model ID like 'claude-opus-4-7' or 'claude-sonnet-5' (got: '${got}')`);
+        fail(`${agentName}: model must be ${aliasList} or a full model ID like 'claude-opus-5-5' or 'claude-sonnet-5' (got: '${got}')`);
       }
     }
 

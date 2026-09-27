@@ -473,9 +473,9 @@ describe('scripts/autopilot.mjs integration', () => {
   // Test 8 — --max-tokens reaches the loop (MR3)
   //
   // parseFlags ignored the flag entirely, so the value never reached runLoop and
-  // `max_tokens` could only ever be the 500_000 default. The observable proof at
-  // the CLI boundary is the clamp: a value above the ceiling comes back as the
-  // ceiling, which the default can never produce.
+  // `max_tokens` could only ever be the default (500_000 then, 0 = off today).
+  // The observable proof at the CLI boundary is the clamp: a value above the
+  // ceiling comes back as the ceiling, which the default can never produce.
   // -------------------------------------------------------------------------
 
   // #1436 — the REAL readTailSession() path. Bug caught: readTailSession()

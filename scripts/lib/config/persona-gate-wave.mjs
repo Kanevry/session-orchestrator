@@ -138,7 +138,7 @@ export function _normalizePersonaGateWave(parsed) {
     }
     if (!ALLOWED_MODEL_ALIASES.has(m) && !MODEL_ID_RE.test(m)) {
       throw new Error(
-        `persona-gate-wave.dispatch-model must be one of ${[...ALLOWED_MODEL_ALIASES].map((a) => JSON.stringify(a)).join('|')} or a full model ID like "claude-opus-4-7" (got ${JSON.stringify(m)})`,
+        `persona-gate-wave.dispatch-model must be one of ${[...ALLOWED_MODEL_ALIASES].map((a) => JSON.stringify(a)).join('|')} or a full model ID like "claude-opus-5-5" (got ${JSON.stringify(m)})`,
       );
     }
     out['dispatch-model'] = m;
