@@ -123,6 +123,14 @@ async function applyDecisionRules(measurements, opts) {
  * declares a remote host that accepts this wave role, route the wave to that
  * host at its full planned agent count instead of shrinking it.
  *
+ * `offload-first: true` in Session Config (#1465) widens that trigger to a
+ * `proceed` verdict too: an offloadable wave role goes to a ready host even when
+ * the local host has headroom. Host selection, the witness contract and the
+ * HR-004 cap below are identical on both paths. With the switch on, a wave that
+ * stays local anyway (no host declared, none ready) carries a named
+ * `offload-first:` reason, so the switch never fails silently; a role absent
+ * from OFFLOADABLE_WAVE_ROLES stays local without one.
+ *
  * The gate does NOT probe the network — a placement decision must stay a pure
  * function of its inputs. The caller supplies a readiness WITNESS:
  *   - `opts.remoteReady` — `{ [alias]: boolean }`, e.g. built from the
@@ -140,13 +148,24 @@ async function applyDecisionRules(measurements, opts) {
  * @returns {Promise<{decision: string, agents: number, reasons: string[], measurements: object, host?: string}>}
  */
 async function applyOffloadDecision(result, opts) {
-  if (result.decision !== 'reduce' && result.decision !== 'coordinator-direct') return result;
+  const offloadFirst = opts.config?.['offload-first'] === true;
+  if (!offloadFirst && result.decision !== 'reduce' && result.decision !== 'coordinator-direct') {
+    return result;
+  }
 
   const { config, plannedAgents, waveRole, remoteReady, probeFn = null } = opts;
-  const hosts = config?.['remote-hosts'];
-  if (!Array.isArray(hosts) || hosts.length === 0) return result;
-
   const role = String(waveRole ?? '').trim().toLowerCase();
+  const hosts = config?.['remote-hosts'];
+  if (!Array.isArray(hosts) || hosts.length === 0) {
+    // Only an offloadable role could have been placed, so only it gets the note.
+    return offloadFirst && OFFLOADABLE_WAVE_ROLES[role] !== undefined
+      ? {
+          ...result,
+          reasons: [...result.reasons, 'offload-first: true but no remote-hosts declared — staying local'],
+        }
+      : result;
+  }
+
   // No isNeverForeignRole() check here (D8 #1204 LOW-1): the invariant is
   // enforced STRUCTURALLY by this mapping table, not by an extra guard.
   // NEVER_FOREIGN_ROLES {impl-core, security-review, migration, release,
@@ -186,9 +205,10 @@ async function applyOffloadDecision(result, opts) {
     }
   }
   if (host === undefined) {
-    return probeFailures.length === 0
-      ? result
-      : { ...result, reasons: [...result.reasons, ...probeFailures] };
+    const notes = offloadFirst
+      ? [...probeFailures, `offload-first: no ready host for '${role}' — staying local`]
+      : probeFailures;
+    return notes.length === 0 ? result : { ...result, reasons: [...result.reasons, ...notes] };
   }
 
   // The wave runs at its planned size again — but never above the HR-004 static
@@ -207,7 +227,9 @@ async function applyOffloadDecision(result, opts) {
     host: host.alias,
     reasons: [
       ...result.reasons,
-      `offload: ${role} routed to host '${host.alias}' instead of reducing to ${result.agents}`,
+      result.decision === 'proceed'
+        ? `offload-first: ${role} routed to host '${host.alias}' (verdict was proceed)`
+        : `offload: ${role} routed to host '${host.alias}' instead of reducing to ${result.agents}`,
     ],
     measurements: result.measurements,
   };
@@ -383,14 +405,18 @@ export async function evaluateWaveResourceGate(opts) {
   }
 
   // Rule 2: probe the system (or use override for tests).
+  // A failed probe yields `proceed`. Under `offload-first: true` (#1465) that
+  // result still goes through placement: routing to a witnessed-ready host needs
+  // no local measurement, so a broken probe must not silently disable the switch.
   const measured = await extractMeasurements(opts);
   if ('probeFailed' in measured) {
-    return {
+    const failed = {
       decision: 'proceed',
       agents: plannedAgents,
       reasons: ['probe failed (ignored)'],
       measurements: {},
     };
+    return config['offload-first'] === true ? applyOffloadDecision(failed, opts) : failed;
   }
 
   // Rules 3-8: apply decision rule sequence.

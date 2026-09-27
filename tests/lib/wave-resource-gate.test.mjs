@@ -768,3 +768,118 @@ describe('evaluateWaveResourceGate — offload decision (#1160)', () => {
     expect(out).toContain('Decision: offload — agents: 6 @ m5');
   });
 });
+
+// ---------------------------------------------------------------------------
+// offload-first (#1465)
+// ---------------------------------------------------------------------------
+//
+// `offload-first: true` routes an offloadable wave role to a declared+ready host
+// even when the local verdict is `proceed`. Every case here starts from HEALTHY
+// measurements (makeOverride() defaults → proceed), the path the #1160 block
+// above never reaches.
+
+describe('evaluateWaveResourceGate — offload-first (#1465)', () => {
+  // Bug: the switch is parsed but applyOffloadDecision still returns early on
+  // `proceed`, so a healthy host never offloads and the switch is dead.
+  test('routes a Quality wave to a ready host under a proceed verdict', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'offload-first': true, 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('offload');
+    expect(result.host).toBe('m5');
+    expect(result.agents).toBe(6);
+    expect(result.reasons.some((r) => r.includes('offload-first'))).toBe(true);
+  });
+
+  // Bug: the switch bypasses the witness and offloads to a host nobody vouched for.
+  test('stays local with a named reason when no host is ready', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'offload-first': true, 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(),
+      remoteReady: { m5: false },
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.host).toBeUndefined();
+    expect(result.reasons.some((r) => r.includes('offload-first: no ready host'))).toBe(true);
+  });
+
+  // Bug: the switch defaults to on (or `false` is read as truthy), offloading
+  // every healthy wave of every repo that merely declares a host.
+  test.each([
+    ['absent', {}],
+    ['false', { 'offload-first': false }],
+  ])('switch %s: a healthy wave stays local and says nothing about offload', async (_label, extra) => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ ...extra, 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      probeOverride: makeOverride(),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.host).toBeUndefined();
+    expect(result.reasons.some((r) => /offload/.test(r))).toBe(false);
+  });
+
+  // Bug: the new proceed path skips the role mapping and ships impl work off-host.
+  test('never offloads Impl-Core, even with the switch and a ready host', async () => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'offload-first': true, 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Impl-Core',
+      probeOverride: makeOverride(),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.host).toBeUndefined();
+  });
+
+  // Bug: the switch is on but the repo declares no host, and the wave stays
+  // local WITHOUT saying so — the operator reads a silent no-op as "offloaded";
+  // or the note lands on Impl-Core, which could never have been placed anyway.
+  test.each([
+    ['Quality', true],
+    ['Impl-Core', false],
+  ])('no remote-hosts declared: %s carries the named note = %s', async (waveRole, noted) => {
+    const result = await evaluateWaveResourceGate({
+      config: makeConfig({ 'offload-first': true, 'remote-hosts': [] }),
+      plannedAgents: 6,
+      waveRole,
+      probeOverride: makeOverride(),
+      remoteReady: { m5: true },
+    });
+    expect(result.decision).toBe('proceed');
+    expect(result.host).toBeUndefined();
+    expect(result.reasons.some((r) => r.includes('offload-first: true but no remote-hosts declared'))).toBe(noted);
+  });
+
+  // Bug: the probe-failed early return bypasses placement, so offload-first
+  // silently stops working exactly when the local probe is broken.
+  test('still places the wave when the local probe fails', async () => {
+    const { vi } = await import('vitest');
+    vi.resetModules();
+    vi.doMock('@lib/resource-probe.mjs', () => ({
+      probe: async () => {
+        throw new Error('synthetic probe failure');
+      },
+    }));
+    const { evaluateWaveResourceGate: evalGate } = await import('@lib/wave-resource-gate.mjs');
+    const result = await evalGate({
+      config: makeConfig({ 'offload-first': true, 'remote-hosts': [M5] }),
+      plannedAgents: 6,
+      waveRole: 'Quality',
+      remoteReady: { m5: true },
+    });
+    vi.doUnmock('@lib/resource-probe.mjs');
+    vi.resetModules();
+    expect(result.decision).toBe('offload');
+    expect(result.host).toBe('m5');
+    expect(result.reasons).toContain('probe failed (ignored)');
+  });
+});

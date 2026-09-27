@@ -280,6 +280,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // heavy-repo / worktree-cleanup: HR-003 preflight fields (templates/shared/.claude/rules/heavy-repo.md),
   // documented but previously unwired — silently dropped by the parser (baseline issue #60).
   const heavyRepo = _coerceBoolean(kv, 'heavy-repo', false);
+  // offload-first (#1465): route offloadable wave roles to a ready remote host
+  // even on a `proceed` resource verdict (consumed by wave-resource-gate.mjs).
+  const offloadFirst = _coerceBoolean(kv, 'offload-first', false);
 
   // List fields
   const crossRepos = _coerceList(kv, 'cross-repos', undefined);
@@ -609,6 +612,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'resource-awareness': resourceAwareness,
     'enable-host-banner': enableHostBanner,
     'heavy-repo': heavyRepo,
+    'offload-first': offloadFirst,
     'worktree-cleanup': worktreeCleanup,
     'resource-thresholds': resourceThresholds,
     'worktree-exclude': worktreeExclude,
