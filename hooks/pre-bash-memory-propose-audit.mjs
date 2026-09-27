@@ -87,7 +87,8 @@ const KNOWN_FLAGS = Object.freeze([
  *
  * WHY THE HASH IS HERE (#1415, 2026-09-21): until today this hook wrote a
  * merely flag-redacted `argv_truncated` (512 chars of command text) into
- * `orchestrator.memory.propose_invoked` — a TRACKED `events.jsonl` line and,
+ * `orchestrator.memory.propose_invoked` — an `events.jsonl` line (gitignored
+ * here via `.gitignore:57`; consumer repos may track it) and,
  * with the webhook configured, a network payload. Redaction covered only the
  * five `--insight/--subject/--evidence/--content/--reason` values and said so
  * in its own caveat: `$VAR`, `$(cat secret)` and any value written elsewhere
@@ -130,7 +131,8 @@ function flagsPresent(command) {
  * Relative to `projectDir` (`.` when equal); a directory OUTSIDE the project is
  * written as `sha256:<12 hex>` of its resolved path instead — still groupable,
  * never the path itself. Until 2026-09-25 this was `process.cwd()` verbatim,
- * i.e. `/Users/<name>/…` in a TRACKED events.jsonl line and, with the webhook
+ * i.e. `/Users/<name>/…` in an events.jsonl line (gitignored here via
+ * `.gitignore:57`; consumer repos may track it) and, with the webhook
  * configured, in a network payload. No production reader consumes `cwd`.
  *
  * Both sides are realpath-resolved before comparing: on macOS the tmp dir is
