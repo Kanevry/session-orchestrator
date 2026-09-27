@@ -2325,8 +2325,14 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     return banners.flatMap((b) => b.systemMessage.split('\n')).filter((l) => l.includes('🧭 Navigator'));
   }
 
+  const navDirs = [];
+  afterEach(async () => {
+    await Promise.all(navDirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true })));
+  });
+
   async function mkNavDir(lease) {
     const navDir = await fs.mkdtemp(path.join(os.tmpdir(), 'so-nav-banner-'));
+    navDirs.push(navDir);
     if (lease !== undefined) {
       await fs.mkdir(path.join(navDir, 'leases'), { recursive: true });
       const body = typeof lease === 'string' ? lease : JSON.stringify(lease);
@@ -2388,14 +2394,23 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
   });
 
-  it('a 200-character id is cut so the line stays within 120 bytes, fixed text intact', async () => {
+  it('a 200-character id never breaks the 120-byte budget — the lease reader refuses it (unreadable), one line', async () => {
     const dir = await mkProjectTracked();
-    const longId = 'ä'.repeat(200); // 2 bytes per char — byte budget, not char count
-    const navDir = await mkNavDir(validLease(longId));
+    const navDir = await mkNavDir(validLease('a'.repeat(200)));
     const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
     const lines = navigatorLines(result.stdout);
     expect(lines).toHaveLength(1);
     expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
-    expect(lines[0]).toMatch(/^🧭 Navigator aktiv: ä+…, Check-in nach ~\/\.config\/navigator\/checkin\/$/);
+    expect(lines[0]).toBe('🧭 Navigator: Lease unlesbar, Status nicht nachweisbar');
+  });
+
+  it('a 128-character adresse (the longest the lease reader accepts) is cut with …, fixed text intact', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir(validLease('nav-raw-id', { adresse: 'n'.repeat(128) }));
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
+    expect(lines[0]).toMatch(/^🧭 Navigator aktiv: n+…, Check-in nach ~\/\.config\/navigator\/checkin\/$/);
   });
 });

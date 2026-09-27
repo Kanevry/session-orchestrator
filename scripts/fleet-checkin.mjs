@@ -26,6 +26,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from './lib/events.mjs';
 import {
@@ -128,7 +129,10 @@ async function main() {
     );
   }
 
-  process.stdout.write(JSON.stringify({ ok: true, path: target, navigator_state: navigatorState, event }) + '\n');
+  // Report the path with `~` for the home prefix: stdout lands in transcripts.
+  const home = os.homedir();
+  const shownPath = target.startsWith(`${home}${path.sep}`) ? `~${target.slice(home.length)}` : target;
+  process.stdout.write(JSON.stringify({ ok: true, path: shownPath, navigator_state: navigatorState, event }) + '\n');
   return 0;
 }
 

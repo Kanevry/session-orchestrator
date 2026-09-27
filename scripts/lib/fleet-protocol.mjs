@@ -37,6 +37,9 @@ const SESSION_ID_RE = /^[A-Za-z0-9._-]+$/;
 const SESSION_ID_MAX = 128;
 const UTC_SECONDS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
 
+/** Lease timestamps: UTC with `Z`, seconds or milliseconds — never a local-time reading. */
+const LEASE_TS_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/;
+
 const PLATTFORMEN = ['claude', 'codex', 'kopflos'];
 const MODI = ['housekeeping', 'feature', 'deep', 'operations'];
 
@@ -134,6 +137,10 @@ function isIsoTimestamp(v) {
   return typeof v === 'string' && !Number.isNaN(Date.parse(v));
 }
 
+function isLeaseTimestamp(v) {
+  return typeof v === 'string' && LEASE_TS_RE.test(v) && isIsoTimestamp(v);
+}
+
 const REQUIRED_CHECKIN_FIELDS = [
   'session', 'plattform', 'repo', 'modus', 'auftrag_ref',
   'kandidaten', 'schreibbereich', 'rueckfall', 'zeit',
@@ -144,11 +151,26 @@ const REQUIRED_CHECKIN_FIELDS = [
  * PRESENT field; presence of the required ones is checked separately.
  * @type {Record<string, (v: unknown) => string|null>}
  */
+/** Repo name shape accepted in a check-in: `name` or `group/name`, no path parts. */
+const REPO_NAME_RE = /^[A-Za-z0-9._-]{1,100}(?:\/[A-Za-z0-9._-]{1,100})?$/;
+
+/** Lease `adresse` shape (a ListAgents peer name): no whitespace, no control bytes. */
+const ADRESSE_RE = /^[A-Za-z0-9._:@-]{1,128}$/;
+
+/** True for an issue reference: a non-negative integer or a `#123` / `123` string. */
+function isIssueRef(v) {
+  if (typeof v === 'number') return Number.isInteger(v) && v >= 0;
+  return typeof v === 'string' && /^#?\d{1,9}$/.test(v);
+}
+
 const CHECKIN_FIELD_CHECKS = {
   session: (v) =>
     isSafeSessionId(v) ? null : 'session must be a safe id: [A-Za-z0-9._-], 1..128 chars, not . or ..',
   plattform: (v) => (PLATTFORMEN.includes(/** @type {string} */ (v)) ? null : `plattform must be one of ${PLATTFORMEN.join('|')}`),
-  repo: (v) => (isNonEmptyString(v) ? null : 'repo must be a non-empty string'),
+  // A repo NAME (optionally `group/name`), never a filesystem path: the value
+  // travels in `orchestrator.fleet.checkin`, which may leave the host over the
+  // optional events webhook (docs/events-schema.md: "never the absolute root").
+  repo: (v) => (typeof v === 'string' && REPO_NAME_RE.test(v) ? null : 'repo must be a repo name [A-Za-z0-9._-] (optionally group/name), not a path'),
   repo_id: (v) => (v === null || typeof v === 'string' ? null : 'repo_id must be a string or null'),
   worktree: (v) => (typeof v === 'boolean' ? null : 'worktree must be a boolean'),
   modus: (v) => (MODI.includes(/** @type {string} */ (v)) ? null : `modus must be one of ${MODI.join('|')}`),
@@ -159,7 +181,11 @@ const CHECKIN_FIELD_CHECKS = {
       : 'konto_slot must be a number, a string or null',
   quota: (v) => (typeof v === 'string' ? null : 'quota must be a string'),
   stand: (v) => (isPlainObject(v) ? null : 'stand must be an object'),
-  kandidaten: (v) => (Array.isArray(v) ? null : 'kandidaten must be an array'),
+  // Issue numbers only (42 or "#42"), at most 64 — same webhook reasoning as `repo`.
+  kandidaten: (v) =>
+    Array.isArray(v) && v.length <= 64 && v.every(isIssueRef)
+      ? null
+      : 'kandidaten must be an array of at most 64 issue numbers (42 or "#42")',
   schreibbereich: (v) =>
     Array.isArray(v) && v.every((e) => typeof e === 'string') ? null : 'schreibbereich must be an array of strings',
   bedarf: (v) => (isPlainObject(v) ? null : 'bedarf must be an object'),
@@ -199,16 +225,20 @@ export function validateCheckin(obj) {
 function leaseProblem(lease) {
   if (!isPlainObject(lease)) return 'lease is not a JSON object';
   const l = /** @type {Record<string, unknown>} */ (lease);
-  if (!isNonEmptyString(l.session_id)) return 'lease.session_id missing or not a non-empty string';
-  if (!isNonEmptyString(l.plattform)) return 'lease.plattform missing or not a non-empty string';
-  if (l.adresse !== undefined && l.adresse !== null && typeof l.adresse !== 'string') {
-    return 'lease.adresse must be a string or null';
+  // Shape-checked at the source ("escaped at generation"): both values can reach
+  // the operator's session-start banner, so control bytes are refused here.
+  if (!isSafeSessionId(l.session_id)) return 'lease.session_id missing or not a safe id';
+  if (!PLATTFORMEN.includes(/** @type {string} */ (l.plattform))) return `lease.plattform must be one of ${PLATTFORMEN.join('|')}`;
+  if (l.adresse !== undefined && l.adresse !== null && !(typeof l.adresse === 'string' && ADRESSE_RE.test(l.adresse))) {
+    return 'lease.adresse must be null or a peer name [A-Za-z0-9._:@-] (1..128 chars)';
   }
   if (l.uebergabe_an !== undefined && l.uebergabe_an !== null && typeof l.uebergabe_an !== 'string') {
     return 'lease.uebergabe_an must be a string or null';
   }
-  if (!isIsoTimestamp(l.seit)) return 'lease.seit missing or not a parseable timestamp';
-  if (!isIsoTimestamp(l.laeuft_ab)) return 'lease.laeuft_ab missing or not a parseable timestamp';
+  // Strict UTC form: a `Z`-less value would be read in the host's local time and
+  // could EXTEND the lease west of UTC — a fail-open reading, hence unreadable.
+  if (!isLeaseTimestamp(l.seit)) return 'lease.seit missing or not a UTC timestamp (…Z)';
+  if (!isLeaseTimestamp(l.laeuft_ab)) return 'lease.laeuft_ab missing or not a UTC timestamp (…Z)';
   return null;
 }
 

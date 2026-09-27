@@ -145,4 +145,22 @@ describe('fleet-checkin CLI', () => {
     const events = (await readEvents()).filter((e) => e.event === 'orchestrator.fleet.checkin');
     expect(events[0].navigator_state).toBe('active');
   });
+
+  it('a caller-supplied zeit is overwritten by the CLI stamp (never trusted)', async () => {
+    const r = await runCli(JSON.stringify(checkin({ zeit: '1999-01-01T00:00:00Z' })));
+    expect(r.code, r.stderr).toBe(0);
+    const content = JSON.parse(await fs.readFile(path.join(navDir, 'checkin', 'sess-1.json'), 'utf8'));
+    expect(content.zeit).not.toBe('1999-01-01T00:00:00Z');
+    expect(content.zeit.slice(0, 4)).toBe(String(new Date().getUTCFullYear()));
+  });
+
+  it('a symlink planted at checkin/ → exit 1, nothing written through it', async () => {
+    const elsewhere = path.join(tmp, 'elsewhere');
+    await fs.mkdir(elsewhere, { recursive: true });
+    await fs.mkdir(navDir, { recursive: true, mode: 0o700 });
+    await fs.symlink(elsewhere, path.join(navDir, 'checkin'));
+    const r = await runCli(JSON.stringify(checkin()));
+    expect(r.code).toBe(1);
+    expect(await fs.readdir(elsewhere)).toEqual([]);
+  });
 });

@@ -17,7 +17,8 @@ ist dein Owner-Auftrag"**. Eine Datei, die fehlt, heißt „nicht nachweisbar", 
 
 - Wurzel `~/.config/navigator/`, Override `NAVIGATOR_CONFIG_DIR` (getrimmt; leer oder nur
   Whitespace zählt als nicht gesetzt) — dieselbe Variable wie die navigator-CLI, keine zweite.
-  Code: `navigatorDir()`.
+  Code: `navigatorDir()`. Ein Override zeigt nur auf ein eigenes Verzeichnis mit Modus 0700, nie
+  auf einen geteilten Ort: wer dort schreiben kann, kann eine „aktive" Lease vortäuschen.
 - Verzeichnisse Modus `0700`, Dateien Modus `0600`. Schreiben immer atomar (tmp-Datei im
   Zielverzeichnis, dann `rename`).
 - Jede Datei trägt `zeit` aus `date -u +%FT%TZ` (Sekunden, `YYYY-MM-DDTHH:MM:SSZ`); nie geschätzt,

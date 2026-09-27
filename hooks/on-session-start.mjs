@@ -99,10 +99,6 @@ const bannerLines = [];
  */
 let pendingAdditionalContext = null;
 
-/**
- * Queue one or more banner lines for the single end-of-hook flush.
- * @param {string|null|undefined} line — multi-line strings are pushed verbatim
- */
 /** Byte budget of the navigator line (#1462, PRD 4.5 row "Bannerzeile B6"). */
 const NAVIGATOR_BANNER_MAX_BYTES = 120;
 
@@ -120,7 +116,10 @@ export function navigatorBannerLine(verdict) {
     const prefix = '🧭 Navigator aktiv: ';
     const suffix = ', Check-in nach ~/.config/navigator/checkin/';
     const room = NAVIGATOR_BANNER_MAX_BYTES - Buffer.byteLength(prefix + suffix, 'utf8');
-    let shown = String(lease.adresse ?? lease.session_id ?? 'unknown');
+    // Defence in depth: the lease reader already refuses control bytes in these
+    // two fields; a newline / ANSI / bidi byte must still never reach systemMessage.
+    let shown = String(lease.adresse ?? lease.session_id ?? 'unknown')
+      .replace(/[\p{Cc}\u200e\u200f\u202a-\u202e\u2066-\u2069]/gu, '?');
     if (Buffer.byteLength(shown, 'utf8') > room) {
       const chars = [...shown];
       while (chars.length > 0 && Buffer.byteLength(`${chars.join('')}…`, 'utf8') > room) chars.pop();
@@ -132,6 +131,10 @@ export function navigatorBannerLine(verdict) {
   return '🧭 Navigator: keiner nachweisbar (keine gültige Lease)';
 }
 
+/**
+ * Queue one or more banner lines for the single end-of-hook flush.
+ * @param {string|null|undefined} line — multi-line strings are pushed verbatim
+ */
 function pushBanner(line) {
   if (typeof line !== 'string' || line.length === 0) return;
   bannerLines.push(line);

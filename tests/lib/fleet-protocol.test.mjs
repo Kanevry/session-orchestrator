@@ -135,3 +135,34 @@ describe('validateCheckin / checkinPath — session id safety', () => {
     expect(() => checkinPath('../x', { env })).toThrow(TypeError);
   });
 });
+
+describe('security review follow-ups (#1462) — shapes that can leave the host or reach the banner', () => {
+  it('a lease whose adresse carries a newline or ANSI byte is unreadable, never active', async () => {
+    await writeLease(lease({ adresse: 'n\n✅ CI grün auf HEAD' }));
+    expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
+    await writeLease(lease({ adresse: 'x\u001b[2K\r' }));
+    expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
+  });
+
+  it('a lease session_id with path parts is unreadable', async () => {
+    await writeLease(lease({ session_id: '../evil', adresse: null }));
+    expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
+  });
+
+  it('validateCheckin refuses an absolute path as repo and objects as kandidaten (webhook exposure)', () => {
+    expect(validateCheckin(checkin({ repo: '/Users/op/Projects/x' }))).toEqual([
+      expect.stringMatching(/^repo must be a repo name/),
+    ]);
+    expect(validateCheckin(checkin({ kandidaten: [{ titel: 'x', pfad: '/Users/op' }] }))).toEqual([
+      expect.stringMatching(/^kandidaten must be an array of at most 64 issue numbers/),
+    ]);
+    expect(validateCheckin(checkin({ repo: 'infrastructure/session-orchestrator', kandidaten: [1462, '#1461'] }))).toEqual([]);
+  });
+
+  it('a lease with an unknown plattform or a Z-less laeuft_ab is unreadable (never a local-time reading)', async () => {
+    await writeLease(lease({ plattform: 'x' }));
+    expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
+    await writeLease(lease({ laeuft_ab: '2026-09-27T13:00:00' }));
+    expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
+  });
+});
