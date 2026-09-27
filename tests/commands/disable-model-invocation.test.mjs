@@ -53,6 +53,8 @@ describe('disable-model-invocation (#430)', () => {
   // when users described session-start in prose rather than typing `/session`.
   const userOnlyCommands = [
     'bootstrap', 'brainstorm', 'close', 'go', 'plan', 'release',
+    // Coordinator role: starts headless runs and writes fleet conditions — must not be auto-invoked by a model.
+    'navigator',
   ];
 
   userOnlyCommands.forEach((cmd) => {
