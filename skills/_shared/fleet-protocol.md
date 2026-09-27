@@ -6,7 +6,7 @@ runs beside a fleet coordinator ("navigator"). It is a reference, **not a rule**
 point here. The mechanics live in code — `scripts/lib/fleet-protocol.mjs` is the only place that
 knows paths, fields, deadlines and lease validity; `scripts/fleet-checkin.mjs` writes the check-in.
 This file describes them and never redefines them. Source: PRD
-`docs/prd/2026-09-27-navigator-peer-protokoll.md` §§ 3.1–3.3, 3.7, Anhang A.2 (MR !53). <!-- path-check: planned #1461 -->
+`docs/prd/2026-09-27-navigator-peer-protokoll.md` §§ 3.1–3.3, 3.7, Anhang A.2 (MR !53).
 
 **Grundsatz (ADR-002, CSM-003).** Zustand liegt in Dateien; Nachrichten sind nur Hinweise auf eine
 Datei. Der Navigator erteilt keine Freigaben — wörtlich: **„Freigaben erteile ich keine, maßgeblich
@@ -124,4 +124,5 @@ Punkt 3: selbst messen und nach 3.5 mergen, oder `navigator ask --aktion merge`.
 `skills/session-start/SKILL.md` Phase 7.6 · `skills/session-start/references/operations-contract.md`
 (Peer-Preflight) · `skills/_shared/state-ownership.md` § Session Identity and Lock Ownership (`role`) ·
 `docs/events-schema.md` (`orchestrator.fleet.checkin`) · `.claude/rules/cross-session-messaging.md`
-(CSM-003/004) · `scripts/lib/fleet-protocol.mjs` · `scripts/fleet-checkin.mjs`
+(CSM-003/004) · `scripts/lib/fleet-protocol.mjs` · `scripts/fleet-checkin.mjs` ·
+`skills/navigator/SKILL.md` (`/session-orchestrator:navigator`)
