@@ -224,6 +224,7 @@ lesen". Ein Format für alle drei Plattformen.
 - **Vorbild `remote-offload`, vollständig übernommen:** Mechanik liegt dort nicht im Skill, sondern in
   SO-Adaptern (`scripts/lib/wave-executor/remote-dispatch.mjs`, Exit-Karte `OFFLOAD_EXIT_REASONS`
   Z. 68), Bereitschaft kommt über eine Bannerzeile, und fehlt der Host, ist die Funktion aus. Für
+<!-- path-check: planned #1463 -->
   navigator heißt das: **SO-Adapter** `scripts/lib/navigator-adapter.mjs` mit Exit-Karte
   (`authority check` 1 = fail-closed; `authority query --exit-code`; `ask` 0/3/4/2) und Kontrakt-Test
   gegen die echte CLI wie MR !41. **Ohne CLI** gibt es keinen „Handbetrieb" mit denselben Rechten:
@@ -235,11 +236,13 @@ lesen". Ein Format für alle drei Plattformen.
 
 | # | Baustein | Ort | Hängt an |
 |---|---|---|---|
+<!-- path-check: planned #1462 -->
 | B1 | Protokoll-Referenz (3.1–3.7, Standard-Auflagen, Dateischemata) | SO `skills/_shared/fleet-protocol.md`, keine Rule | B2, B3, B5 laden sie |
 | B2 | Check-in Phase 7.6 + Schritt im Operations-Contract + Event `orchestrator.fleet.checkin` | SO `skills/session-start/SKILL.md`, `references/operations-contract.md` | B1, B4 |
 | B3 | Merge-Disziplin vor `glab mr merge` (`skills/gitlab-ops/SKILL.md` Z. 189) und `gh pr merge` (Z. 226); optional PreToolUse-Hinweis auf diese Befehle | SO `gitlab-ops`, ggf. Hook | B1; Hook kostet einen Aufruf je Bash-Befehl (4.5) |
 | B4 | Registry-Feld `role` + `heartbeat(patch.role)` + `state-ownership.md` | SO `session-registry.mjs` | keiner |
 | B5 | Skill `navigator`: `/navigator [ticker\|status\|start\|fenster\|handover]`, Referenzen Ticker, Auflagen, Brief-Vorlage, Codex-Adapter | SO `skills/navigator/` | B1, B4, B6 |
+<!-- path-check: planned #1463 -->
 | B6 | Adapter + Exit-Karte + Kontrakt-Test + Bannerzeile `navigator: ready=yes\|no` | SO `scripts/lib/navigator-adapter.mjs`, `hooks/on-session-start.mjs` | navigator-CLI |
 | B7 | Codex-Inbox-Hook mit Rahmung und Ledger-Prüfung | SO `hooks/hooks-codex.json` + neues `.mjs` | B1, B6, Owner-Vertrauen |
 | B8 | Navigator-Lease, Merge-Ansage/Lease-Dateien, Verfall | navigator-CLI `navigator lease`, `navigator merge` | B10 |
