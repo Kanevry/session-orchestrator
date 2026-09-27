@@ -51,6 +51,7 @@ export default defineConfig({
       './tests/setup/vault-guard.mjs',
       './tests/setup/host-alias-guard.mjs',
       './tests/setup/events-ledger-guard.mjs',
+      './tests/setup/navigator-dir-guard.mjs',
     ],
     // skills/vault-sync/tests/schema-drift.test.mjs intentionally excluded:
     // it requires a sibling projects-baseline checkout (HAS_CANONICAL) and

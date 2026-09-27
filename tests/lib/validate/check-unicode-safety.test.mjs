@@ -499,6 +499,7 @@ const EXPECTED_ALLOWED_EMOJI = [
   0x2705, 0x274c, 0x2b50, // check / cross / star
   0x1f3af, 0x1f465, 0x1f4ca, 0x1f4cb, 0x1f4da, 0x1f501,
   0x1f50d, 0x1f527, 0x1f534, 0x1f5a5, 0x1f6a6, 0x1f6a8,
+  0x1f9ed, // 🧭 — navigator banner line in hooks/on-session-start.mjs (#1462)
 ];
 
 describe('check-unicode-safety — curated emoji allow-list (exact-set pin)', () => {

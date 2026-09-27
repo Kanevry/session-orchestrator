@@ -2306,3 +2306,111 @@ describe('resume_linkage across a native resume (#1091 F1)', { timeout: 20000 },
     expect(lock.session_id).toBe(FOREIGN_RAW_ID);
   });
 });
+
+describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 }, () => {
+  // THE BUG THIS CATCHES: the hook reading the lease from the operator's real
+  // `~/.config/navigator/` (the guard in tests/setup redirects it, and every
+  // case below points NAVIGATOR_CONFIG_DIR at its own tmp dir explicitly), a
+  // missing/expired/unreadable lease rendered as "aktiv" (fail-open), two
+  // navigator lines instead of one, or a long id pushing the line past the
+  // 120-byte budget PRD 4.5 grants it.
+  const MAX_BYTES = 120;
+
+  function navigatorLines(stdout) {
+    const banners = stdout
+      .split('\n')
+      .filter((l) => l.trim().startsWith('{'))
+      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((l) => l && l.systemMessage);
+    return banners.flatMap((b) => b.systemMessage.split('\n')).filter((l) => l.includes('🧭 Navigator'));
+  }
+
+  const navDirs = [];
+  afterEach(async () => {
+    await Promise.all(navDirs.splice(0).map((d) => fs.rm(d, { recursive: true, force: true })));
+  });
+
+  async function mkNavDir(lease) {
+    const navDir = await fs.mkdtemp(path.join(os.tmpdir(), 'so-nav-banner-'));
+    navDirs.push(navDir);
+    if (lease !== undefined) {
+      await fs.mkdir(path.join(navDir, 'leases'), { recursive: true });
+      const body = typeof lease === 'string' ? lease : JSON.stringify(lease);
+      await fs.writeFile(path.join(navDir, 'leases', 'navigator.json'), body);
+    }
+    return navDir;
+  }
+
+  function validLease(sessionId, { adresse = null, minutes = 30 } = {}) {
+    const now = Date.now();
+    return {
+      session_id: sessionId,
+      plattform: 'claude',
+      adresse,
+      seit: new Date(now - 60_000).toISOString(),
+      laeuft_ab: new Date(now + minutes * 60_000).toISOString(),
+      uebergabe_an: null,
+    };
+  }
+
+  it('renders exactly one "aktiv" line from a valid lease, naming adresse over session_id', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir(validLease('nav-raw-id', { adresse: 'navigator-fd' }));
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe('🧭 Navigator aktiv: navigator-fd, Check-in nach ~/.config/navigator/checkin/');
+    expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
+  });
+
+  it('an expired lease is "keiner nachweisbar" — never aktiv (fail-closed)', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir(validLease('nav-raw-id', { minutes: -5 }));
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe('🧭 Navigator: keiner nachweisbar (keine gültige Lease)');
+    expect(lines[0]).not.toMatch(/aktiv/);
+  });
+
+  it('a missing lease file is "keiner nachweisbar" (ADR-004: absence is not a free seat)', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir(undefined);
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe('🧭 Navigator: keiner nachweisbar (keine gültige Lease)');
+    expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
+  });
+
+  it('an unreadable lease says so and still does not block the hook', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir('{ this is not json');
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    expect(result.code).toBe(0);
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toBe('🧭 Navigator: Lease unlesbar, Status nicht nachweisbar');
+    expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
+  });
+
+  it('a 200-character id never breaks the 120-byte budget — the lease reader refuses it (unreadable), one line', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir(validLease('a'.repeat(200)));
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
+    expect(lines[0]).toBe('🧭 Navigator: Lease unlesbar, Status nicht nachweisbar');
+  });
+
+  it('a 128-character adresse (the longest the lease reader accepts) is cut with …, fixed text intact', async () => {
+    const dir = await mkProjectTracked();
+    const navDir = await mkNavDir(validLease('nav-raw-id', { adresse: 'n'.repeat(128) }));
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
+    const lines = navigatorLines(result.stdout);
+    expect(lines).toHaveLength(1);
+    expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
+    expect(lines[0]).toMatch(/^🧭 Navigator aktiv: n+…, Check-in nach ~\/\.config\/navigator\/checkin\/$/);
+  });
+});

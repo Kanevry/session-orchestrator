@@ -38,6 +38,7 @@ import path from 'node:path';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
+import { readNavigatorLease } from '../scripts/lib/fleet-protocol.mjs';
 import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { getPlatform, resolveProjectDir } from '../scripts/lib/platform.mjs';
@@ -97,6 +98,38 @@ const bannerLines = [];
  * @type {string|null}
  */
 let pendingAdditionalContext = null;
+
+/** Byte budget of the navigator line (#1462, PRD 4.5 row "Bannerzeile B6"). */
+const NAVIGATOR_BANNER_MAX_BYTES = 120;
+
+/**
+ * Render the one-line navigator status (#1462, fleet protocol v1). The verdict
+ * comes from `readNavigatorLease()`: only a VALID lease is "aktiv"; a missing or
+ * expired one is "nicht nachweisbar" (ADR-004: absence is no proof of a free
+ * seat), an unreadable one says so instead of guessing. A long id is cut from
+ * the label — never from the fixed text — so the whole line stays ≤ 120 bytes.
+ * Same wording on every harness (Codex runs this hook too).
+ */
+export function navigatorBannerLine(verdict) {
+  if (verdict?.state === 'active') {
+    const lease = verdict.lease ?? {};
+    const prefix = '🧭 Navigator aktiv: ';
+    const suffix = ', Check-in nach ~/.config/navigator/checkin/';
+    const room = NAVIGATOR_BANNER_MAX_BYTES - Buffer.byteLength(prefix + suffix, 'utf8');
+    // Defence in depth: the lease reader already refuses control bytes in these
+    // two fields; a newline / ANSI / bidi byte must still never reach systemMessage.
+    let shown = String(lease.adresse ?? lease.session_id ?? 'unknown')
+      .replace(/[\p{Cc}\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/gu, '?');
+    if (Buffer.byteLength(shown, 'utf8') > room) {
+      const chars = [...shown];
+      while (chars.length > 0 && Buffer.byteLength(`${chars.join('')}…`, 'utf8') > room) chars.pop();
+      shown = `${chars.join('')}…`;
+    }
+    return `${prefix}${shown}${suffix}`;
+  }
+  if (verdict?.state === 'unreadable') return '🧭 Navigator: Lease unlesbar, Status nicht nachweisbar';
+  return '🧭 Navigator: keiner nachweisbar (keine gültige Lease)';
+}
 
 /**
  * Queue one or more banner lines for the single end-of-hook flush.
@@ -992,6 +1025,18 @@ async function main() {
     // process and structurally cannot call it, so busy/waiting/idle is
     // unavailable here. The coordinator half (A3b) overlays it later.
     pushBanner('   (registry view: repo/branch/wave. Liveness (busy/idle) is model-side — not available in this hook.)');
+  }
+
+  // #1462 — Navigator line (fleet protocol v1). Exactly one line, read from the
+  // lease file only (`~/.config/navigator/leases/navigator.json`, override
+  // NAVIGATOR_CONFIG_DIR); registry `role` and ListAgents are hints, never proof.
+  // Gated like the peer lines above: no host banner → no navigator line. A read
+  // failure must never block the hook — the helper is fail-closed itself, the
+  // try/catch only guards against the unexpected.
+  if (bannerData) {
+    try {
+      pushBanner(navigatorBannerLine(await readNavigatorLease()));
+    } catch { /* swallow — hook must remain non-blocking */ }
   }
 
   // Epic #583 W3-P3 — Mechanical peer-detection banner (independent of the

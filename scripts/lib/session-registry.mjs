@@ -17,7 +17,9 @@
  *   {
  *     session_id, pid, platform, repo_path_hash, repo_name, branch,
  *     started_at, last_heartbeat, status ('active'|'wave'|'idle'),
- *     current_wave, host_class, mode (Epic #583 W2-I3)
+ *     current_wave, host_class, mode (Epic #583 W2-I3),
+ *     role ('navigator'|null, optional, #1462 — display only, never ownership;
+ *           set by heartbeat(patch.role), NOT by registerSelf)
  *   }
  *
  * Schema v2 (Epic #583, W2-I3): `mode` field added so the exclusivity-matrix
@@ -142,6 +144,14 @@ function _validEntry(obj) {
   if ('mode' in obj && obj.mode !== null && typeof obj.mode !== 'string') {
     return false;
   }
+  // #1462: `role` is optional and a DISPLAY field only — the registry shows who
+  // claims to be navigator, it never decides it. The authoritative claim is the
+  // navigator lease under `~/.config/navigator/leases/navigator.json`, and
+  // classifyMode ignores `role`. When present it MUST be null or a string (no
+  // number / object smuggling); absent is accepted like a v1 `mode`.
+  if ('role' in obj && obj.role !== null && typeof obj.role !== 'string') {
+    return false;
+  }
   return true;
 }
 
@@ -236,11 +246,25 @@ export async function registerSelf(opts) {
   return entry;
 }
 
+/** Roles `heartbeat(id, { role })` accepts besides `null` (#1462). */
+export const REGISTRY_ROLES = Object.freeze(['navigator']);
+
 /**
  * Refresh last_heartbeat on the existing entry (and optionally status /
- * current_wave). No-op if the entry is missing.
+ * current_wave / role). No-op if the entry is missing.
+ *
+ * `patch.role`: `undefined` keeps the stored role, `null` clears it, a member
+ * of `REGISTRY_ROLES` sets it. Anything else throws before the file is touched.
+ *
+ * @param {string} sessionId
+ * @param {{ status?: string, currentWave?: number, role?: string|null }} [patch]
+ * @returns {Promise<object|null>} the updated entry, or null if none exists.
+ * @throws {TypeError} when `patch.role` is neither undefined, null, nor a REGISTRY_ROLES member.
  */
 export async function heartbeat(sessionId, patch = {}) {
+  if (patch.role !== undefined && patch.role !== null && !REGISTRY_ROLES.includes(patch.role)) {
+    throw new TypeError('heartbeat: role must be "navigator" or null');
+  }
   const file = entryPath(sessionId);
   const existing = await _readJsonSafe(file);
   if (!_validEntry(existing)) return null;
@@ -249,6 +273,7 @@ export async function heartbeat(sessionId, patch = {}) {
     last_heartbeat: utcTimestamp(),
     ...(patch.status !== undefined ? { status: patch.status } : {}),
     ...(patch.currentWave !== undefined ? { current_wave: patch.currentWave } : {}),
+    ...(patch.role !== undefined ? { role: patch.role } : {}),
   };
   await _writeJsonAtomic(file, updated);
   return updated;

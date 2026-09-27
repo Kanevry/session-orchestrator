@@ -104,6 +104,11 @@ layer.
   contract requires a trusted native resume identifier and remains a follow-up.
   In particular, a host rotation that changes both raw and semantic values has
   no guaranteed continuity.
+- **Registry `role` (`'navigator'`) is display, never ownership.** The
+  authoritative claim is the navigator lease (`leases/navigator.json` under
+  `~/.config/navigator/`, see `skills/_shared/fleet-protocol.md`); `registerSelf()`
+  does not carry the field across a repeated SessionStart, so the `/navigator`
+  skill re-sets it each ticker round via `heartbeat(id, { role })` (#1462).
 
 The peer-discovery and issue-budget procedures below apply these rules at their
 narrow surfaces; neither creates a second ownership model.
