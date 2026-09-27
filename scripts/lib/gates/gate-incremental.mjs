@@ -88,6 +88,13 @@ const result = {
   // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
   typecheck: { status: tcResult.status, ...commandKillFields(tcResult) },
   test: { status: testResult.status, ...commandKillFields(testResult) },
+  // Stub map, same shape as gate-full: a command `runCheck` recognised as a
+  // stub (`echo …`/`true`) spawned nothing, so `joinGateKillFields` may count
+  // it as measured instead of declaring the whole inner ladder unknown.
+  stubbed: {
+    ...(tcResult.stubbed ? { typecheck: tcResult.stubbed } : {}),
+    ...(testResult.stubbed ? { test: testResult.stubbed } : {}),
+  },
   errors,
 };
 

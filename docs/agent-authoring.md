@@ -49,7 +49,7 @@ Agent files live in `agents/` as Markdown with YAML frontmatter. Required fields
 ---
 name: kebab-case-name                # 3-50 chars, lowercase + hyphens only
 description: Use this agent when [conditions]. <example>Context: ... user: "..." assistant: "..." <commentary>Why this agent is appropriate</commentary></example>
-model: inherit                        # inherit | sonnet | opus | haiku | fable — OR full ID like claude-opus-4-7, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-sonnet-5, claude-fable-5
+model: inherit                        # inherit | sonnet | opus | haiku | fable — OR full ID like claude-opus-5-5, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-sonnet-5, claude-fable-5
 color: blue                           # blue | cyan | green | yellow | purple | orange | pink | red | magenta
 tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (both accepted; we prefer comma-string for consistency)
 ---
@@ -76,7 +76,7 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 - **`sonnet`** — an explicit cost cap, NOT a default. Pin it only when an agent must stay on the workhorse tier even in an Opus session, and state the reason inline. A bare `sonnet` on a working agent silently overrides the operator's session model — the failure mode that moved the implementation and review catalog to `inherit`.
 - **`inherit`** — **the default for the working catalog.** Lets the coordinator/session's active model tier flow through, so the agent runs at whatever tier the operator picked (an Opus session gives its implementers AND its reviewers Opus-quality judgment). Use it for implementation, test-writing, and review agents alike — `code-implementer`, `test-writer`, `security-reviewer`, `session-reviewer`, `db-specialist`, `ui-developer`, and the read-only analysis agents. Diverge only for a named cost/quality reason.
 - **`opus`** — reserve for agents whose task genuinely needs the strongest available reasoning (e.g. `ux-evaluator`) and where the cost is justified because the agent runs rarely (dispatched solo, not fanned out across a wave).
-- **Full model-ID pinning** (`claude-opus-4-7`, `claude-sonnet-5`, `claude-fable-5-20260101`, …) — only when the agent has a demonstrated dependency on a SPECIFIC model version, e.g. a reproducibility requirement that needs a dated snapshot, or a known behavioral regression on newer models for this agent's exact prompt. Pinning trades away automatic model-family upgrades — document the reason inline as a frontmatter comment when you do this.
+- **Full model-ID pinning** (`claude-opus-5-5`, `claude-sonnet-5`, `claude-fable-5-20260101`, …) — only when the agent has a demonstrated dependency on a SPECIFIC model version, e.g. a reproducibility requirement that needs a dated snapshot, or a known behavioral regression on newer models for this agent's exact prompt. Pinning trades away automatic model-family upgrades — document the reason inline as a frontmatter comment when you do this.
 
 **Resolution order** (highest precedence first): `CLAUDE_CODE_SUBAGENT_MODEL` environment variable → the invocation-time model parameter (if the dispatcher passes one explicitly) → the agent's own frontmatter `model:` value. An agent's `model:` is therefore a default, not a guarantee — a session or environment override can supersede it.
 

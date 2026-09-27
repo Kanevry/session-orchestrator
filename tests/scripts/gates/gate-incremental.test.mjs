@@ -154,3 +154,15 @@ describe('gate-incremental — missing env vars', () => {
     expect(r.stderr).toContain('TEST_CMD');
   });
 });
+
+describe('gate-incremental — stubbed map (#1459 item 3 review F1)', () => {
+  // Without the map a stubbed sibling makes `joinGateKillFields` declare the
+  // whole inner ladder unknown, so a killed typecheck would vanish from the
+  // event again — the exact bug class of #1457 item 12.
+  it('publishes a stubbed map like gate-full so a stub counts as measured', () => {
+    const r = run({ TYPECHECK_CMD: 'echo ok', TEST_CMD: 'skip' });
+    const json = JSON.parse(r.stdout);
+    expect(json.stubbed).toEqual({ typecheck: { kind: 'echo' } });
+    expect(json.typecheck).toEqual({ status: 'pass' });
+  });
+});
