@@ -52,7 +52,8 @@ Erwerb und Übergabe der Lease sind S4 (agents/navigator#36), nicht Teil dieses 
 `.orchestrator/` und `.claude/`, Commit, Branch, Push, MR, Issue, Kommentar). SO-eigener
 Sitzungszustand zählt nicht: Phase 1.1 (CLAUDE.md-Migration, einmalig), 1.2 `session.lock`, 1.5
 `STATE.md`, 1.6 Metriken, 1.7 Live-Status-Board. Phase 1.1 ist eine Repo-Datei und wird deshalb
-als Ausnahme im Check-in genannt (`vorab_geschrieben`).
+als Ausnahme im Check-in genannt (`vorab_geschrieben`). (`CLAUDE.md` heißt auf Codex CLI `AGENTS.md`, siehe
+`skills/_shared/instruction-file-resolution.md`.)
 
 Der Check-in liegt **vor der ersten schreibenden Aktion** (Phase 7.6, oder der Peer-Preflight der
 Operations-Route). Schreiber: `node scripts/fleet-checkin.mjs` liest das JSON von stdin, ergänzt
