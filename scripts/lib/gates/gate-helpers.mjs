@@ -703,8 +703,10 @@ export function extractFailedTestFiles(output, cwd = process.cwd()) {
  *
  * This function sees a candidate triple and nothing else. It performs no I/O and
  * reads no files. The following are per-caller INPUT ADAPTERS and must not
- * migrate here: JSON-envelope parsing; the `test`-object-vs-status-string
- * variant discrimination (non-full-gate variants emit a bare status string);
+ * migrate here: JSON-envelope parsing; the `test`-must-be-an-object check
+ * (every variant emits an object since #1457 pkt 12; only full-gate's carries
+ * counts, so the others fall through to this function's own finite-number
+ * refusal);
  * `test.status ∈ {pass, fail}`; the `parsed.stubbed?.test` short-circuit; the
  * raw-text tail parse ({@link extractTestCounts}); and the positional evidence
  * that the test gate ran at all — which each caller expresses by handing over

@@ -71,8 +71,10 @@ as the session baseline for later comparison.
 
 **Script output schema (Baseline):**
 ```json
-{"variant": "baseline", "typecheck": {"status": "pass|fail|skip", "output": "string"}, "test": {"status": "pass|fail|skip", "output": "string"}}
+{"variant": "baseline", "typecheck": {"status": "pass|fail|skip"}, "test": {"status": "pass|fail|skip"}, "typecheck_output": "string", "test_output": "string"}
 ```
+
+In every variant, each command object that was actually spawned also carries its per-command kill ladder: `timed_out` (boolean), `kill_signals` (string[]) and `survivors` (pid[]). A skipped or stubbed command has none of the three keys (absent, never `false`/`[]`). `scripts/run-quality-gate.mjs` joins them into `orchestrator.quality_gate.{passed,failed}` (#1457).
 
 ## Variant 2: Incremental
 
@@ -91,8 +93,8 @@ Metrics output (for consuming skills to capture):
 {
   "variant": "incremental",
   "duration_seconds": null,
-  "typecheck": "pass|fail|skip",
-  "test": "pass|fail|skip",
+  "typecheck": {"status": "pass|fail|skip"},
+  "test": {"status": "pass|fail|skip"},
   "errors": []
 }
 ```

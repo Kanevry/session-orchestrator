@@ -6,7 +6,7 @@
 // Required env: TYPECHECK_CMD, TEST_CMD
 // Optional env: FILES (comma-separated), SESSION_START_REF
 
-import { runCheck, resolveTestFiles, extractErrorLinesJson } from './gate-helpers.mjs';
+import { runCheck, resolveTestFiles, extractErrorLinesJson, commandKillFields } from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
 const testCmd = process.env.TEST_CMD;
@@ -49,41 +49,32 @@ if (!testCmd) {
 
 const start = Date.now();
 
-let testStatus;
+// A skipped test run spawned nothing: `{ status: 'skip' }`, no kill keys.
+let testResult = { status: 'skip' };
 let errors = [];
 
 // --- typecheck (always runs unless cmd is "skip") ---
 const tcResult = await runCheck(typecheckCmd, CHECK_OPTS);
-const tcStatus = tcResult.status;
-if (tcStatus === 'fail') {
+if (tcResult.status === 'fail') {
   errors = errors.concat(extractErrorLinesJson(tcResult.output, /error TS\d+/));
 }
 
 // --- test (scoped to changed/specified files) ---
-if (testCmd === 'skip') {
-  testStatus = 'skip';
-} else {
+if (testCmd !== 'skip') {
   const testFiles = await resolveTestFiles(files, sessionStartRef);
   if (testFiles.length > 0) {
     const fileArgs = testFiles.join(' ');
-    const testResult = await runCheck(`${testCmd} -- ${fileArgs}`, CHECK_OPTS);
-    testStatus = testResult.status;
-    if (testStatus === 'fail') {
-      const testErrors = extractErrorLinesJson(testResult.output, /(fail|error|FAIL)/i);
-      errors = errors.concat(testErrors);
-    }
+    testResult = await runCheck(`${testCmd} -- ${fileArgs}`, CHECK_OPTS);
   } else if (!files && !sessionStartRef) {
     // No FILES or SESSION_START_REF supplied: run the full test suite
-    const testResult = await runCheck(testCmd, CHECK_OPTS);
-    testStatus = testResult.status;
-    if (testStatus === 'fail') {
-      const testErrors = extractErrorLinesJson(testResult.output, /(fail|error|FAIL)/i);
-      errors = errors.concat(testErrors);
-    }
+    testResult = await runCheck(testCmd, CHECK_OPTS);
   } else {
     // Files/ref supplied but no test files found — skip
     process.stderr.write('warn: No test files found for incremental run; skipping tests\n');
-    testStatus = 'skip';
+  }
+  if (testResult.status === 'fail') {
+    const testErrors = extractErrorLinesJson(testResult.output, /(fail|error|FAIL)/i);
+    errors = errors.concat(testErrors);
   }
 }
 
@@ -92,8 +83,11 @@ const duration_seconds = Math.round((Date.now() - start) / 1000);
 const result = {
   variant: 'incremental',
   duration_seconds,
-  typecheck: tcStatus,
-  test: testStatus,
+  // Each command object also carries its INNER kill ladder (`timed_out`,
+  // `kill_signals`, `survivors` pids) when `runCheck` spawned it — omitted for
+  // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
+  typecheck: { status: tcResult.status, ...commandKillFields(tcResult) },
+  test: { status: testResult.status, ...commandKillFields(testResult) },
   errors,
 };
 

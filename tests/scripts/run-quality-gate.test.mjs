@@ -254,8 +254,8 @@ describe('run-quality-gate.mjs — baseline variant', () => {
     const r = run(['--variant', 'baseline', '--config', config]);
     expect(r.status).toBe(0);
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.typecheck).toBe('skip');
-    expect(parsed.test).toBe('skip');
+    expect(parsed.typecheck.status).toBe('skip');
+    expect(parsed.test.status).toBe('skip');
   });
 });
 
@@ -340,7 +340,7 @@ describe('run-quality-gate.mjs — config handling', () => {
     const r = run(['--variant', 'baseline', '--config', config]);
     expect(r.status).toBe(0);
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.typecheck).toBe('skip');
+    expect(parsed.typecheck.status).toBe('skip');
   });
 
   it('warns but does not crash when --config is not valid JSON', () => {
@@ -358,8 +358,8 @@ describe('run-quality-gate.mjs — config handling', () => {
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('Config is neither a valid file path nor valid JSON');
     const parsed = JSON.parse(r.stdout);
-    expect(parsed.typecheck).toBe('skip');
-    expect(parsed.test).toBe('skip');
+    expect(parsed.typecheck.status).toBe('skip');
+    expect(parsed.test.status).toBe('skip');
   });
 });
 

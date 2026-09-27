@@ -156,9 +156,11 @@ function extractCommand(policy, policyKey, configKey, configJson, defaultCmd) {
  * The four rejections that stay here are envelope-shaped, not numeric:
  *
  *   1. stdout is absent or not parseable JSON;
- *   2. `test` is not the object form — only `gate-full.mjs` reports numbers;
- *      `gate-{baseline,incremental,per-file}.mjs` emit a bare status STRING, so
- *      a non-full-gate variant structurally cannot carry counts;
+ *   2. `test` is not an object. Every variant emits `test` as an object since
+ *      #1457 pkt 12, but only `gate-full.mjs` puts counts in it —
+ *      `gate-{baseline,incremental,per-file}.mjs` publish `{ status, …kill
+ *      ladder }` only, which {@link admitSuiteCounts} refuses for lack of a
+ *      finite `passed` / `total`;
  *   3. the test gate was skipped (`status` neither `pass` nor `fail`);
  *   4. the test COMMAND was detected as a stub (`echo …` / no-op) — a stub's
  *      output parses to 0/0, which would be a fabricated zero.
@@ -202,7 +204,8 @@ function suiteCountsFromGateStdout(stdout) {
  * the key instead of publishing an empty array that reads as "no file failed".
  *
  * Only `gate-full.mjs` publishes the key, and only when the runner printed a
- * file-level summary; every other variant emits a bare status string.
+ * file-level summary; every other variant's `test` object carries only
+ * `status` and the kill ladder.
  *
  * Never throws.
  *

@@ -5,7 +5,7 @@
 // Required env: TYPECHECK_CMD, TEST_CMD
 // Each may equal "skip" or empty string → treated as skip.
 
-import { runCheck } from './gate-helpers.mjs';
+import { runCheck, commandKillFields } from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
 const testCmd = process.env.TEST_CMD;
@@ -57,8 +57,11 @@ if (testCmd !== 'skip') {
 
 const result = {
   variant: 'baseline',
-  typecheck: tcResult.status,
-  test: testResult.status,
+  // Each command object also carries its INNER kill ladder (`timed_out`,
+  // `kill_signals`, `survivors` pids) when `runCheck` spawned it — omitted for
+  // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
+  typecheck: { status: tcResult.status, ...commandKillFields(tcResult) },
+  test: { status: testResult.status, ...commandKillFields(testResult) },
   typecheck_output: tcResult.output,
   test_output: testResult.output,
 };

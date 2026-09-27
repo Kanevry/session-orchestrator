@@ -9,7 +9,7 @@
  * Part of v3.2 shell-helper port migration (issue #218 / #317).
  */
 
-import { runCheck, csvToJsonArray } from './gate-helpers.mjs';
+import { runCheck, csvToJsonArray, commandKillFields } from './gate-helpers.mjs';
 
 const typecheckCmd = process.env.TYPECHECK_CMD;
 const testCmd = process.env.TEST_CMD;
@@ -59,20 +59,22 @@ if (files.length === 0) {
 
 // Typecheck runs on the whole project, not per-file
 const tcResult = await runCheck(typecheckCmd, CHECK_OPTS);
-const tcStatus = tcResult.status;
 
-let testStatus = 'skip';
+// A skipped test run spawned nothing: `{ status: 'skip' }`, no kill keys.
+let testResult = { status: 'skip' };
 
 if (testCmd !== 'skip' && files.length > 0) {
   const fileArgs = files.join(' ');
-  const testResult = await runCheck(`${testCmd} -- ${fileArgs}`, CHECK_OPTS);
-  testStatus = testResult.status;
+  testResult = await runCheck(`${testCmd} -- ${fileArgs}`, CHECK_OPTS);
 }
 
 const result = {
   variant: 'per-file',
-  typecheck: tcStatus,
-  test: testStatus,
+  // Each command object also carries its INNER kill ladder (`timed_out`,
+  // `kill_signals`, `survivors` pids) when `runCheck` spawned it — omitted for
+  // skip/stub (#1457). `run-quality-gate.mjs` joins them into its event.
+  typecheck: { status: tcResult.status, ...commandKillFields(tcResult) },
+  test: { status: testResult.status, ...commandKillFields(testResult) },
   files,
 };
 

@@ -92,7 +92,7 @@ describe('gate-incremental — typecheck failure', () => {
   it('typecheck field is "fail" when command exits non-zero', () => {
     const r = run({ TYPECHECK_CMD: 'node -e "process.exit(1)"', TEST_CMD: 'skip' });
     const json = JSON.parse(r.stdout);
-    expect(json.typecheck).toBe('fail');
+    expect(json.typecheck.status).toBe('fail');
   });
 
   it('errors array is populated when typecheck output contains TS error patterns', () => {
@@ -116,7 +116,18 @@ describe('gate-incremental — full suite fallback when no file scope given', ()
     const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'echo TESTS_PASS' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
-    expect(json.test).toBe('pass');
+    expect(json.test.status).toBe('pass');
+  });
+
+  it('publishes the INNER kill ladder on the test object when its ceiling fires (#1457)', () => {
+    // GATE_TIMEOUT_MS=300 kills `sleep 30` inside runCheck. The test result used
+    // to be reduced to its status string, dropping `timed_out` before the
+    // envelope was written.
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'sleep 30', GATE_TIMEOUT_MS: '300' });
+    expect(r.status).toBe(0);
+    const json = JSON.parse(r.stdout);
+    expect(json.test.timed_out).toBe(true);
+    expect(json.test.kill_signals[0]).toBe('SIGTERM');
   });
 });
 
