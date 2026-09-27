@@ -59,6 +59,7 @@ import { readProcessLocalSessionIds } from './lib/session-identity/own-session.m
 import { findScopeFile } from './lib/scope-gate.mjs';
 import { gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { shellQuote } from './lib/sh-quote.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -456,18 +457,6 @@ async function main() {
     SESSION_START_REF: sessionStartRef,
   };
 
-  /**
-   * POSIX single-quote one argument for the shell `spawnInGroup` runs the command
-   * through. The gate path is derived from `import.meta.url`, so it carries
-   * whatever the checkout path carries — a space in it must not split the command.
-   *
-   * @param {string} value
-   * @returns {string}
-   */
-  function shellQuote(value) {
-    return `'${String(value).replace(/'/g, "'\\''")}'`;
-  }
-
   // The gate sub-script runs as the LEADER OF ITS OWN PROCESS GROUP under a
   // wall-clock ceiling (Epic #1425 A3). Before this, `spawnSync('node', [gatePath])`
   // had NO timeout at all and no group semantics: a wedged `tsgo` or vitest worker
@@ -488,6 +477,8 @@ async function main() {
   // Handing it a child with `stderr: 'inherit'` leaves `child.stderr` null, the
   // module's own `child.stderr?.on(…)` a no-op, and the gate's warnings live on
   // the operator's terminal exactly as before.
+  // Quoted: the gate path derives from `import.meta.url`, so a space in the
+  // checkout path must not split the command.
   const gateCommand = `node ${shellQuote(gatePath)}`;
   // Derived from the SAME resolved per-command ceiling published as
   // `GATE_TIMEOUT_MS` above — not from `resolveGateTimeoutMs()` a second time.

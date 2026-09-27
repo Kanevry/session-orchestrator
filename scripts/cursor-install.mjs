@@ -20,6 +20,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { CURSOR_TO_CANONICAL_EVENT } from './lib/cursor-hook-bridge.mjs';
+import { shellQuote as shQuote } from './lib/sh-quote.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -60,10 +61,6 @@ function _isFile(p) {
 
 function _isDir(p) {
   try { return statSync(p).isDirectory(); } catch { return false; }
-}
-
-function shQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 function linkPath(source, dest, label) {
