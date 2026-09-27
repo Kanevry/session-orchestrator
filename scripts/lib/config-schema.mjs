@@ -120,6 +120,19 @@ export function validateSessionConfig(config) {
     }
   }
 
+  // #1465 cross-field: offload-first with no declared host can never place a
+  // wave anywhere — advisory (warn-level), it never flips `ok`.
+  if (config['offload-first'] === true) {
+    const hosts = config['remote-hosts'];
+    if (!Array.isArray(hosts) || hosts.length === 0) {
+      warnings.push({
+        path: 'remote-hosts',
+        rule: 'offload-first-cross-field',
+        message: 'offload-first: true but no remote-hosts declared — every wave stays local',
+      });
+    }
+  }
+
   if (errors.length > 0) {
     return { ok: false, errors, warnings };
   }

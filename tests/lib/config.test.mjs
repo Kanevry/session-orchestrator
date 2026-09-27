@@ -108,7 +108,7 @@ describe('parseSessionConfig', () => {
       'grounding-injection-max-files', 'grounding-check', 'allow-destructive-ops',
       'resource-awareness', 'enable-host-banner', 'resource-thresholds',
       'worktree-exclude', 'vault-integration', 'vault-sync', 'drift-check',
-      'heavy-repo', 'worktree-cleanup', 'issue-budget',
+      'heavy-repo', 'offload-first', 'worktree-cleanup', 'issue-budget',
     ])('always emits the top-level key %s', (key) => {
       expect(MINIMAL).toHaveProperty(key);
     });

@@ -365,6 +365,27 @@ describe('heavy-repo × isolation cross-field warning (HR-003, baseline #60)', (
   });
 });
 
+// Bug (#1465): an operator enables offload-first in a repo that declares no
+// remote host — nothing can ever be placed, and nothing says so.
+describe('offload-first × remote-hosts cross-field warning (#1465)', () => {
+  const offloadWarn = (r) => r.warnings.some((w) => w.rule === 'offload-first-cross-field');
+
+  it.each([
+    ['absent', {}],
+    ['empty', { 'remote-hosts': [] }],
+  ])('warns (never errors) when offload-first: true and remote-hosts is %s', (_label, extra) => {
+    const result = validateSessionConfig(baseConfig({ 'offload-first': true, ...extra }));
+    expect(result.ok).toBe(true);
+    expect(offloadWarn(result)).toBe(true);
+  });
+
+  it('does not warn when a host is declared, or when the switch is off', () => {
+    const host = { alias: 'm5', 'roles-allowed': ['test'], 'repo-path': null, 'claude-path': null };
+    expect(offloadWarn(validateSessionConfig(baseConfig({ 'offload-first': true, 'remote-hosts': [host] })))).toBe(false);
+    expect(offloadWarn(validateSessionConfig(baseConfig({ 'offload-first': false, 'remote-hosts': [] })))).toBe(false);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // issue-budget — per-session-type override validation
 // ---------------------------------------------------------------------------
