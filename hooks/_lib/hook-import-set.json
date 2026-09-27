@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-25T12:02:25.775Z",
-  "head": "2ac6dc8e9cab8cd257867d4a4bb615f34cfeaee3",
+  "generated_at": "2026-09-27T15:30:07.617Z",
+  "head": "aaa30f4d77b1d70d68b5ba86c503784f08704196",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -952,6 +952,12 @@
         "pre-bash-memory-propose-audit.mjs",
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/fleet-protocol.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
       ]
     },
     {

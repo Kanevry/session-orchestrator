@@ -204,6 +204,7 @@ const ALLOWED_EMOJI_CODEPOINTS = new Set([
   0x1f5a5, // 🖥
   0x1f6a6, // 🚦
   0x1f6a8, // 🚨
+  0x1f9ed, // 🧭 (navigator banner line in hooks/on-session-start.mjs — #1462)
   0x2139, //  ℹ
   0x2194, //  ↔
   0x26a0, //  ⚠
