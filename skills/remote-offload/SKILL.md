@@ -28,12 +28,14 @@ Exit codes (`offload --help`, measured 2026-09-02): `0` ok · `1` usage/config �
 
 ## 1. Decision rule — offload vs reduce
 
-The gate decides, not the coordinator. `applyOffloadDecision()` in `scripts/lib/wave-resource-gate.mjs` only fires when the resource verdict is already `reduce` or `coordinator-direct`, and only AFTER the HR-004 heavy-repo cap — a capped wave that offloads still respects the cap. It never probes the network; the coordinator supplies a readiness WITNESS:
+The gate decides, not the coordinator. `applyOffloadDecision()` in `scripts/lib/wave-resource-gate.mjs` fires when the resource verdict is `reduce` or `coordinator-direct` (and, with `offload-first: true`, on `proceed` as well — see below), and only AFTER the HR-004 heavy-repo cap — a capped wave that offloads still respects the cap. It never probes the network; the coordinator supplies a readiness WITNESS:
 
 - `opts.remoteReady` — `{ [alias]: boolean }`, built from the SessionStart banner line `Offload <alias>: ready=yes …`, or
 - `opts.probeFn` — an async `(alias) => boolean` fallback, consulted only for aliases `remoteReady` doesn't answer for (backed by `remoteDoctor()`, i.e. `offload doctor -H <alias> --brief` parsed by `parseDoctorLine()`).
 
-With neither supplied, no host counts as ready and the wave stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`: `impl-core`, `security-review`, `migration`, `release`, `secrets`) is never offloaded regardless of readiness.
+With neither supplied, no host counts as ready and the wave stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`: `impl-core`, `security-review`, `migration`, `release`, `secrets`, `incident`, `refactor-crosscut`) is never offloaded regardless of readiness.
+
+With `offload-first: true` in Session Config (#1465, default `false`) the placement arm also fires on `proceed`, so an offloadable role goes to a witnessed-ready host without waiting for local pressure. The witness stays mandatory — without `remoteReady`/`probeFn` nothing moves — and a wave that stays local carries a named reason (`offload-first: no ready host for '<role>' — staying local`, or `… no remote-hosts declared — staying local`).
 
 ## 2. What is declared where
 

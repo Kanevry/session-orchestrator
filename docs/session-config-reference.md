@@ -1373,13 +1373,39 @@ remote-hosts:
 
 **Two enums, never conflated.** `roles-allowed` holds `agent-mapping` roles (`test`, `ui`, `perf`) — NOT wave roles (`Impl-Core`, `Quality`, …). The wave→role translation is `OFFLOADABLE_WAVE_ROLES` in `scripts/lib/wave-resource-gate.mjs`; a wave role absent from that map is local-only by default.
 
-**Placement contract.** The gate applies its offload arm only after the HR-004 heavy-repo cap, and only when the resource verdict was `reduce` or `coordinator-direct`. It does NOT probe the network: the coordinator supplies a readiness witness (`remoteReady: { m5: true }`, or an async `probeFn`). With no witness, no host counts as ready and the decision stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`) is never offloaded regardless.
+**Placement contract.** The gate applies its offload arm only after the HR-004 heavy-repo cap, and only when the resource verdict was `reduce` or `coordinator-direct` — or, with `offload-first: true`, on `proceed` as well (see § `offload-first` below). It does NOT probe the network: the coordinator supplies a readiness witness (`remoteReady: { m5: true }`, or an async `probeFn`). With no witness, no host counts as ready and the decision stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`) is never offloaded regardless.
 
 **agent-mapping interaction.** A declared alias is what an `agent-mapping` value of the form `<role>: ssh:<alias>` validates against; naming an undeclared host throws at parse time, naming the `ssh` channel with no target throws as for any other channel.
 
 Read by: `scripts/lib/config/remote-hosts.mjs` (parser), `scripts/lib/config.mjs` (`ssh:` channel validation), `scripts/lib/wave-resource-gate.mjs` (placement).
 
 See `skills/remote-offload/SKILL.md` for the wave-executor-side decision rule, the three offload channels, and how a declared alias here is what an `agent-mapping` `ssh:<alias>` value validates against.
+
+### `offload-first` (#1465)
+
+Opt-in switch that makes placement the FIRST choice for an offloadable wave role, not only the answer to local pressure. Scalar key, so a trailing `# comment` on its line is fine (the block-header gotcha above does not apply).
+
+```yaml
+offload-first: false   # true = offloadable roles go to a witnessed-ready remote host even on `proceed`
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `offload-first` | boolean | `false` | When `true`, the gate's offload arm fires on a `proceed` verdict too, not only on `reduce` / `coordinator-direct`. `false` (or absent) changes nothing. |
+
+**Behaviour with `offload-first: true`.**
+
+- Only roles in `OFFLOADABLE_WAVE_ROLES` (`scripts/lib/wave-resource-gate.mjs`) move: wave roles `quality` / `test` → `test`, `ui` → `ui`, `perf` → `perf`. The table is NOT extended by this switch — build, lint and audit work is covered by the Quality wave's `test` role. `impl-core`, `security-review`, `migration`, `release`, `secrets`, `incident` and `refactor-crosscut` never leave the local host.
+- The target is the FIRST declared `remote-hosts` entry whose `roles-allowed` carries the mapped role AND that is witnessed ready (`remoteReady: { m5: true }` or an async `probeFn`). The gate still never probes the network itself, so the witness is mandatory for the switch to have any effect: without one, nothing offloads even with the switch on.
+- The HR-004 heavy-repo cap still binds the offloaded agent count.
+- No ready host for the role → the verdict is unchanged (`proceed`, or the `reduce`/`coordinator-direct` the resource rules computed) and `reasons` carries `offload-first: no ready host for '<role>' — staying local`.
+- Switch on but no `remote-hosts` declared → the verdict is unchanged and `reasons` carries `offload-first: true but no remote-hosts declared — staying local`. `validateSessionConfig()` (`scripts/lib/config-schema.mjs`) additionally emits a warn-level cross-field finding `offload-first-cross-field` for that combination; it never flips `ok`.
+- `resource-awareness: false` remains a FULL opt-out (no probe, no HR-004 cap, no placement), as documented in § Environment Awareness — the switch does not change that.
+- On the `probe failed (ignored)` path placement DOES apply when the switch is on, because placement needs no measurement; the `probe failed (ignored)` reason is kept.
+
+**Committed-only.** There is no host-local precedence (env > `owner.yaml` > committed) for this key: the existing `resolveDispatcherAutonomy` resolver is enum-specific and `owner.yaml` freezes its allowed sections, so reusing it would need a schema change for a need nobody has raised yet (BV-001) — the value in the committed Session Config is the value that applies.
+
+Read by: `scripts/lib/config.mjs` (parser), `scripts/lib/config-schema.mjs` (cross-field warning), `scripts/lib/wave-resource-gate.mjs` (placement).
 
 ## Evolve Extra Sources (#638)
 

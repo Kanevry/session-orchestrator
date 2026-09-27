@@ -410,6 +410,14 @@ The gate never probes the network. Without a readiness witness no host counts as
 
 Read by: `scripts/lib/config/remote-hosts.mjs`, `scripts/lib/wave-resource-gate.mjs`.
 
+`offload-first` (#1465) makes placement the first choice instead of the answer to pressure: with `true`, an offloadable role (`test` / `ui` / `perf`) goes to the first witnessed-ready declared host even when the gate verdict is `proceed`. It needs both a `remote-hosts` entry and a readiness witness to act; without them the wave stays local and the gate names the reason.
+
+```yaml
+offload-first: false                   # true = offloadable roles go to a witnessed-ready remote host even on `proceed`
+```
+
+Read by: `scripts/lib/config.mjs`, `scripts/lib/config-schema.mjs`, `scripts/lib/wave-resource-gate.mjs`.
+
 ## Evolve Extra Sources (#638)
 
 Opt-in EXTRA learning sources for `/evolve`. A `domain-regression` measurement (e.g. an eval-learn harness) runs OUT-OF-BAND and writes a sidecar JSON; `/evolve` then READS each declared sidecar and emits a `domain-regression` learning candidate per persistent regression flag. `/evolve` NEVER runs the measurement itself — this is a strict read-only consumption contract. Absent/empty ⇒ `[]` ⇒ no extra sources are read.
@@ -886,6 +894,7 @@ remote-hosts:
     roles-allowed: [test, ui, perf]    # subset of test|ui|perf (default: all three)
     repo-path: ~/Projects/Alice     # optional SAFE path (default: null)
     claude-path: ~/.local/bin/claude   # optional SAFE path (default: null)
+offload-first: false                   # #1465: true = offloadable roles go to a witnessed-ready remote host even on `proceed`
 
 # Evolve extra-sources — opt-in EXTRA /evolve learning sources (#638)
 evolve:

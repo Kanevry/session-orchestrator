@@ -89,9 +89,11 @@ const gate = await evaluateWaveResourceGate({
 
 Passing neither is a valid choice, not a bug: the gate then behaves exactly as it did before #1160 and reduces locally.
 
+With `offload-first: true` (#1465) the witness is mandatory for the switch to act: the gate may then place an offloadable role even on `proceed`, but without `remoteReady`/`probeFn` everything stays local exactly as before. In that case `gate.reasons` carries an extra `offload-first: … — staying local` line naming why — include it in the wave progress update's "Resource gate:" bullet like any other reason.
+
 Reasons MUST appear in the wave's progress update under a "Resource gate:" bullet. Measurements (RAM free GB, CPU %, concurrent sessions) appear verbatim so the user can trust the decision.
 
-Probe failures never block a wave — the gate returns `proceed` with a "probe failed (ignored)" reason and the wave continues at the planned count. A config without `resource-thresholds` (legacy pre-#166) returns `proceed` with `"resource-thresholds missing from config — gate skipped"` — a defensive fallback so the gate never crashes the dispatch loop.
+Probe failures never block a wave — the gate returns `proceed` with a "probe failed (ignored)" reason and the wave continues at the planned count (with `offload-first: true` that `proceed` still goes through placement, so the answer can be `offload` with the same reason kept). A config without `resource-thresholds` (legacy pre-#166) returns `proceed` with `"resource-thresholds missing from config — gate skipped"` — a defensive fallback so the gate never crashes the dispatch loop.
 
 **STATE.md deviation contract (#193):** when the gate returns `reduce` or `coordinator-direct`, append a single timestamped entry to `## Deviations` in `<state-dir>/STATE.md`. Use this exact format so future sessions and the evolve skill can mine for hardware-pattern learnings:
 
