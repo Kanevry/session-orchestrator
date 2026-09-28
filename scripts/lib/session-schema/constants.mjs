@@ -226,4 +226,22 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // value (measured 2026-09-19 @ 8f6ac022, jq over sessions.jsonl).
   // Consumers must accept a short sha or `null`, never assume a full one.
   'session_start_ref',
+  // #1457 point 7 — four fields that were written and (two of them) shape-
+  // checked while appearing in NEITHER list, the same "status only inferable
+  // from an `if`" class as `effectiveness` above (#964). Each one has a live
+  // writer:
+  //   `total_tokens`, `matched_records` — merged from the #1436 subagents.jsonl
+  //     rollup by scripts/emit-session.mjs (ROLLUP_KEYS) and produced by
+  //     scripts/lib/session-token-rollup.mjs; validator.mjs checks both as
+  //     non-negative integers.
+  //   `raw_session_id` — the native harness uuid beside the semantic
+  //     `session_id`, written by scripts/emit-session.mjs and by the SessionEnd
+  //     backfill in scripts/lib/session-close-backfill.mjs.
+  //   `_repair_source` — provenance marker every record repaired by
+  //     scripts/lib/session-record-repair.mjs carries (#1443 F2), distinct from
+  //     `_backfill_source`, which keeps the record's origin.
+  'total_tokens',
+  'matched_records',
+  'raw_session_id',
+  '_repair_source',
 ]);

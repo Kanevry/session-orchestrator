@@ -33,6 +33,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { expectAllow } from '../_helpers/hook-decision.mjs';
+import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
 
 const REPO = path.resolve(import.meta.dirname, '../..');
 const HOOK = path.join(REPO, 'hooks/pre-bash-destructive-guard.mjs');
@@ -40,10 +41,9 @@ const DOC = path.join(REPO, 'skills/evolve/references/evolve-analyze-mode.md');
 
 /** The one fenced block that carries the `--prune` invocation. */
 function extractPruneBlock(markdown) {
-  const blocks = [...markdown.matchAll(/```bash\n([\s\S]*?)```/g)].map((m) => m[1]);
-  const hits = blocks.filter(
-    (b) => b.includes('sweep-expired-learnings.mjs --prune') && b.includes('rm -f "$NEXT"'),
-  );
+  const hits = fencedBlocksMentioning(markdown, 'sweep-expired-learnings.mjs --prune', {
+    lang: 'bash',
+  }).filter((b) => b.includes('rm -f "$NEXT"'));
   expect(hits).toHaveLength(1);
   return hits[0];
 }

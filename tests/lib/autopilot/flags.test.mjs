@@ -230,31 +230,31 @@ describe('parseFlags — mixed valid + clamped flags', () => {
 // ---------------------------------------------------------------------------
 
 describe('parseFlags — --max-tokens', () => {
+  // Absent and non-numeric input are not cased here: the default is 0, and so is
+  // Math.floor(null), so a missing fallback is unobservable for this flag. The
+  // absent case is pinned by the empty-argv toEqual above; the shared
+  // parseNumeric/clampNumber fallback by the non-numeric block for the other flags.
   it('reads --max-tokens=N', () => {
     expect(parseFlags(['--max-tokens=120000']).maxTokens).toBe(120_000);
   });
 
-  it('defaults to FLAG_BOUNDS.maxTokens.default when the flag is absent', () => {
-    expect(parseFlags([]).maxTokens).toBe(FLAG_BOUNDS.maxTokens.default);
+  it('clamps above the ceiling to 10_000_000', () => {
+    expect(parseFlags(['--max-tokens=99999999']).maxTokens).toBe(10_000_000);
   });
 
-  it('accepts 0 — the documented "switch disabled" value, not a clamp to 1', () => {
+  it('clamps a negative value to 0 — the "switch disabled" floor, not 1', () => {
+    expect(parseFlags(['--max-tokens=-5']).maxTokens).toBe(0);
+  });
+
+  // Kept although default = min = 0 makes it indistinguishable from the clamp
+  // today: flags.mjs plans to move the default off 0 (see FLAG_BOUNDS.maxTokens),
+  // and from that moment a falsy-coalescing parse arm (`parseNumeric(val) || null`)
+  // would silently turn the operator's documented disable switch into the default.
+  it('passes an explicit 0 through unchanged — the documented disable switch', () => {
     expect(parseFlags(['--max-tokens=0']).maxTokens).toBe(0);
-  });
-
-  it('clamps above the ceiling to FLAG_BOUNDS.maxTokens.max', () => {
-    expect(parseFlags(['--max-tokens=99999999']).maxTokens).toBe(FLAG_BOUNDS.maxTokens.max);
-  });
-
-  it('clamps a negative value to the floor 0', () => {
-    expect(parseFlags(['--max-tokens=-5']).maxTokens).toBe(FLAG_BOUNDS.maxTokens.min);
   });
 
   it('floors a fractional value — the counter it gates is an integer', () => {
     expect(parseFlags(['--max-tokens=1234.9']).maxTokens).toBe(1234);
-  });
-
-  it('non-numeric falls back to the default', () => {
-    expect(parseFlags(['--max-tokens=lots']).maxTokens).toBe(FLAG_BOUNDS.maxTokens.default);
   });
 });

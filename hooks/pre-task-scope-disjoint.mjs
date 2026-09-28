@@ -80,6 +80,10 @@
  *      finishes the id, not only `completed` — see {@link TERMINAL_STATUS_RE}.
  *      #1455: a 429'd agent notified `failed`, was resumed via SendMessage
  *      (new tool-use-id), and its original id never finished → permanent deny.
+ *      Only a HARNESS-WRITTEN carrier record counts (#1459 Pkt 2 Rest,
+ *      {@link notificationCarrierText}): a complete block inside a `tool_result`
+ *      (a `Read` of a fixture), assistant text or a typed prompt is a forgery
+ *      that would false-ALLOW an overlap with a still-running agent.
  *
  * COST CONTAINMENT: the transcript is read ONLY when a collision has already
  * been found — i.e. on the path that is about to deny. The 99 % no-collision
@@ -797,42 +801,109 @@ const NOTIFICATION_OPEN = '<task-notification>';
 const NOTIFICATION_CLOSE = '</task-notification>';
 
 /**
- * The tool-use id a raw transcript line reports as TERMINATED via its FIRST
- * `<task-notification>` block (#1459 Pkt 2) — at most one id per line.
+ * A notification head in the harness's own tag order: `<task-id>`,
+ * `<tool-use-id>`, optional `<output-file>`, `<status>` — anchored at the opener.
+ * Group 1 is the tool-use id, group 2 the whole `<status>` element.
+ */
+const NOTIFICATION_HEAD_RE = /^<task-notification>\s*<task-id>[^<]*<\/task-id>\s*<tool-use-id>([^<]+)<\/tool-use-id>\s*(?:<output-file>[^<]*<\/output-file>\s*)?(<status>[^<]*<\/status>)/;
+
+/** `origin.kind` / `commandMode` value the harness stamps on a notification carrier. */
+const CARRIER_KIND = 'task-notification';
+
+/** `queue-operation` operations measured to carry a notification (dequeue carries no content). */
+const CARRIER_QUEUE_OPS = new Set(['enqueue', 'remove']);
+
+/** First line of the harness preamble some `user` carriers put before the block. */
+const SYSTEM_NOTIFICATION_MARK = '[SYSTEM NOTIFICATION - NOT USER INPUT]\n';
+
+/**
+ * The notification text of a HARNESS-WRITTEN carrier record, or `null` for any
+ * other record (#1459 Pkt 2 Rest). Census 2026-09-28 over the operator's local
+ * transcripts (11,005 files, 2026-08-06 → 2026-09-28): every terminal id the
+ * pre-fix raw-line match accepted from a real carrier came from exactly one of
+ * three record forms, each of which carries ids the other two do not:
+ *   - `user` with STRING `message.content` and `origin.kind: 'task-notification'`
+ *     (a typed prompt carries `origin.kind: 'human'`). The text begins with the
+ *     opener, or with the harness preamble ({@link SYSTEM_NOTIFICATION_MARK},
+ *     tag-free, ending in a blank line) directly followed by the opener;
+ *   - `queue-operation` with `operation` `enqueue`/`remove` and string `content`;
+ *   - `attachment` of type `queued_command` with `commandMode: 'task-notification'`.
+ * Everything else — `tool_result` content, assistant text, tool inputs, typed
+ * prompts — is a quote or a forgery and yields `null`, i.e. no finished id.
  *
+ * The guard on the `user` form is `origin.kind`, which only the harness sets; the
+ * preamble rule merely strips a tag-free prefix and is no control on its own.
+ *
+ * Named residual (BV-004): a `queue-operation` record has no field that tells a
+ * harness notification from an operator prompt typed while the agent was busy,
+ * so an OPERATOR could forge through that one channel. An agent cannot through
+ * the one producer censused: text a subagent or peer delivers via `SendMessage`
+ * arrives wrapped by the harness, so it never begins with the opener. Measured
+ * 2026-09-28 in a second run (count only, 11,008 transcript files, three more
+ * than the census above): 7,131 records carry such a message, 1,801 of them as
+ * `queue-operation`, 2,486 as `queued_command` with `commandMode: 'prompt'`;
+ * 0 of the 7,131 begin with `<task-notification>`. Other queue producers
+ * (scheduled wake-ups, a `/loop` body) were not censused. Revisit if the harness
+ * adds a discriminator here (like `commandMode` on the attachment) or stops
+ * wrapping.
+ *
+ * @param {any} rec — one parsed transcript record
+ * @returns {string|null}
+ */
+function notificationCarrierText(rec) {
+  if (rec?.type === 'user' && rec?.origin?.kind === CARRIER_KIND && typeof rec?.message?.content === 'string') {
+    const text = rec.message.content;
+    if (!text.startsWith(SYSTEM_NOTIFICATION_MARK)) return text;
+    const open = text.indexOf('<');
+    return open !== -1 && text.startsWith(`\n\n${NOTIFICATION_OPEN}`, open - 2) ? text.slice(open) : null;
+  }
+  if (rec?.type === 'queue-operation' && CARRIER_QUEUE_OPS.has(rec?.operation) && typeof rec?.content === 'string') {
+    return rec.content;
+  }
+  const att = rec?.type === 'attachment' ? rec?.attachment : undefined;
+  if (att?.type === 'queued_command' && att?.commandMode === CARRIER_KIND && typeof att?.prompt === 'string') {
+    return att.prompt;
+  }
+  return null;
+}
+
+/**
+ * The tool-use id a carrier's text reports as TERMINATED via its FIRST
+ * `<task-notification>` block (#1459 Pkt 2) — at most one id per carrier.
+ *
+ * The text must BEGIN with the opener (a block further in is a quote) and its
+ * head must follow the harness tag order ({@link NOTIFICATION_HEAD_RE}).
  * `<summary>` and `<result>` carry free text that can QUOTE another
  * notification's `<tool-use-id>` and `<status>`, or even forge a whole block
  * (R2 F1: a summary that closes itself and opens a complete fake block defeated
  * the earlier cut-then-split approach). So nothing past the block's HEAD is read:
- * the head runs from the first opener to the earliest `<summary>`, `<result>` or
- * `</task-notification>`, and only its first `<tool-use-id>` counts, only when
- * its first `<status>` is terminal. Fail-closed — the deny stays — when the line
- * has no opener, no closing tag after it (truncated block), no id or no terminal
- * status in the head.
+ * the head runs from the opener to the earliest `<summary>`, `<result>` or
+ * `</task-notification>`. Fail-closed — the deny stays — when the text is not a
+ * carrier's, does not begin with the opener, has no closing tag (truncated
+ * block), or its head is out of order or carries no terminal status.
  *
- * Named ceiling (BV-004): a real batch of several DIFFERENT notifications in one
- * line would report only the first as finished (the rest stay running, the safe
- * direction). Measured 0 such lines over 370 transcripts (R2, 2026-09-27) —
- * carrier lines hold one notification, `queued_command` repeats the SAME ids.
- * Revisit-Trigger: a transcript line carrying 2+ distinct real tool-use ids.
+ * Named ceiling (BV-004): a batch of several DIFFERENT notifications in one
+ * carrier reports only the first as finished (the rest stay running, the safe
+ * direction but a false-DENY source). Census 2026-09-28: 31 preamble-form `user`
+ * carriers hold 2+ distinct terminal ids; 155 of their non-first ids are finished
+ * by no other carrier. Revisit-Trigger has FIRED — carryover #1467: reading past
+ * the first block needs a forgery-safe block split (the R2 F1 break-out), not a
+ * looser head.
  *
- * @param {string} line — one raw JSONL line
+ * @param {string|null} text — a carrier's text from {@link notificationCarrierText}
  * @returns {string[]} zero or one finished tool-use id
  */
-function finishedNotificationIds(line) {
-  const open = line.indexOf(NOTIFICATION_OPEN);
-  if (open === -1) return [];
-  const close = line.indexOf(NOTIFICATION_CLOSE, open);
+function finishedNotificationIds(text) {
+  if (typeof text !== 'string' || !text.startsWith(NOTIFICATION_OPEN)) return [];
+  const close = text.indexOf(NOTIFICATION_CLOSE);
   if (close === -1) return [];
   let headEnd = close;
   for (const tag of ['<summary>', '<result>']) {
-    const at = line.indexOf(tag, open);
+    const at = text.indexOf(tag);
     if (at !== -1 && at < headEnd) headEnd = at;
   }
-  const head = line.slice(open, headEnd);
-  const id = head.match(/<tool-use-id>([^<]+)<\/tool-use-id>/);
-  const status = head.match(/<status>[^<]*<\/status>/);
-  return id && status && TERMINAL_STATUS_RE.test(status[0]) ? [id[1]] : [];
+  const head = text.slice(0, headEnd).match(NOTIFICATION_HEAD_RE);
+  return head && TERMINAL_STATUS_RE.test(head[2]) ? [head[1]] : [];
 }
 
 /**
@@ -842,11 +913,12 @@ function finishedNotificationIds(line) {
  *   - `tool_use` `{name:'Agent', id, input.description}` — the dispatch.
  *   - `tool_result` `{tool_use_id, content}` — a completion for the SYNCHRONOUS
  *     shape, but only when its text is not the {@link ASYNC_LAUNCH_ACK}.
- *   - a `<task-notification>` record — the ASYNC shape's completion (#1459 Pkt 2,
- *     {@link finishedNotificationIds}): only the line's FIRST block, only its
- *     head before `<summary>`/`<result>`, its first `<tool-use-id>` plus its
- *     first `<status>` which must be TERMINAL ({@link TERMINAL_STATUS_RE}); the
- *     closing `</task-notification>` is mandatory.
+ *   - a `<task-notification>` CARRIER record — the ASYNC shape's completion
+ *     (#1459 Pkt 2, {@link notificationCarrierText} + {@link finishedNotificationIds}):
+ *     only a harness-written carrier, only when its text BEGINS with the block,
+ *     only that block's head before `<summary>`/`<result>` in harness tag order,
+ *     whose `<status>` must be TERMINAL ({@link TERMINAL_STATUS_RE}); the closing
+ *     `</task-notification>` is mandatory.
  *     `failed` counts too (#1455): a failed agent is not running, and a resumed
  *     one completes under the SendMessage's NEW id, never the original one.
  *
@@ -868,17 +940,20 @@ export function buildTranscriptIndex(raw) {
 
   for (const line of raw.split('\n')) {
     if (line.length < 24) continue;
-
-    // ASYNC completion — matched on the RAW line: the tags are plain text inside
-    // a JSON string, so no parse is needed and the `queue-operation` carrier
-    // record (which has no `message.content`) is covered too.
-    if (line.includes('task-notification')) {
-      for (const id of finishedNotificationIds(line)) finishedIds.add(id);
-    }
-
-    if (!line.includes('"tool_use"') && !line.includes('tool_use_id')) continue;
+    // Substring prefilter only — the verdict needs the PARSED record: a raw-line
+    // match let a forged block in any record finish an id (#1459 Pkt 2 Rest).
+    const hasNotification = line.includes('task-notification');
+    const hasToolRow = line.includes('"tool_use"') || line.includes('tool_use_id');
+    if (!hasNotification && !hasToolRow) continue;
     let rec;
     try { rec = JSON.parse(line); } catch { continue; }
+
+    // ASYNC completion — only from a harness-written carrier record.
+    if (hasNotification) {
+      for (const id of finishedNotificationIds(notificationCarrierText(rec))) finishedIds.add(id);
+    }
+
+    if (!hasToolRow) continue;
     const content = rec?.message?.content;
     if (!Array.isArray(content)) continue;
 

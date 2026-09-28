@@ -41,6 +41,8 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
+
 const SCRIPT = path.resolve(process.cwd(), 'scripts/sweep-expired-learnings.mjs');
 const DAY_MS = 86_400_000;
 
@@ -669,31 +671,6 @@ describe('sweep-expired-learnings.mjs — --prune and the expiry sweep do not in
 // The invocation /evolve actually runs — extracted from the SKILL body and
 // EXECUTED, never quoted.
 // ---------------------------------------------------------------------------
-
-/**
- * Every fenced block of a Markdown document whose body mentions `needle`.
- *
- * Fences are matched leading-whitespace-tolerantly because this one is nested
- * inside a numbered list. The body is returned VERBATIM (indentation included —
- * bash ignores leading whitespace) so nothing about the executed string is this
- * test's invention.
- */
-function fencedBlocksMentioning(markdown, needle) {
-  const blocks = [];
-  let body = null;
-  for (const line of markdown.split('\n')) {
-    if (/^\s*```/.test(line)) {
-      if (body === null) body = [];
-      else {
-        blocks.push(body.join('\n'));
-        body = null;
-      }
-      continue;
-    }
-    if (body !== null) body.push(line);
-  }
-  return blocks.filter((b) => b.includes(needle));
-}
 
 describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the named invocation, executed', () => {
   // TV-001 — the bug: /evolve's ONLY store-write path is a command string in a
