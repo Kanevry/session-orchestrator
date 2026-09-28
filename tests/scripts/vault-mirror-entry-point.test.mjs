@@ -362,10 +362,16 @@ describe('vault-mirror session dedup — duplicated session_id (#1186c)', () => 
 
     const lines = result.stdout.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
     const forThisSession = lines.filter((l) => l.id === older.session_id);
-    // THE assertion: one physical session, one note — never two stdout actions
-    // for the same session_id, however many lines the ledger carries for it.
-    expect(forThisSession).toHaveLength(1);
-    expect(forThisSession[0].action).toBe('created');
+    // THE assertion: one physical session, one note — exactly ONE dispatched
+    // action for the session_id, however many lines the ledger carries for it.
+    // The losing line is still named on stdout, as `skipped-duplicate-session`
+    // (#1291), and never as a second render.
+    const dispatched = forThisSession.filter((l) => l.action !== 'skipped-duplicate-session');
+    expect(dispatched).toHaveLength(1);
+    expect(dispatched[0].action).toBe('created');
+    const duplicates = forThisSession.filter((l) => l.action === 'skipped-duplicate-session');
+    expect(duplicates).toHaveLength(1);
+    expect(duplicates[0].line).toBe(1);
 
     const notePath = join(vaultDir, '50-sessions', 'test-vault', `${older.session_id}.md`);
     expect(existsSync(notePath)).toBe(true);
@@ -375,15 +381,14 @@ describe('vault-mirror session dedup — duplicated session_id (#1186c)', () => 
   });
 
   // qa-strategist GAP-1 (HEAD 3b352d78): `runState.total` is incremented PER
-  // RAW LINE (scripts/vault-mirror.mjs ~:602), unconditionally — including for
-  // a line whose session_id the dedup pass above later collapses away. That
-  // relaxation is a NAMED BV-004 ceiling in the source comment ("runState.total
-  // still counts this raw line, so created+updated+skipped+failed no longer
-  // partitions total ... no test pins that invariant for session kind"), but
-  // nothing actually PINS the accepted shape — so a dedup regression that
-  // DROPS a distinct session_id (the sum would fall to 1) is indistinguishable
-  // from this accepted gap without a test that asserts the exact numbers.
-  it('#1186c ceiling: a 3-line/2-id session ledger counts total=3 while dispatching exactly 2, no aborted key', () => {
+  // RAW LINE, unconditionally — including for a line whose session_id the
+  // dedup pass later collapses away. Until #1291 that line produced no action
+  // at all, so the classes no longer partitioned `total` for a session run.
+  // Since #1291 the losing line is tallied as `skipped-duplicate-session`, and
+  // the sum invariant holds for `--kind session` too. The exact numbers below
+  // still separate a dedup regression that DROPS a distinct session_id
+  // (created falls to 1) from one that stops collapsing (created rises to 3).
+  it('#1186c/#1291: a 3-line/2-id session ledger counts total=3, dispatches exactly 2, names the duplicate, no aborted key', () => {
     const older = JSON.parse(VALID_SESSION);
     const newer = { ...older, completed_at: '2026-05-24T10:00:00Z', total_files_changed: 99 };
     // A THIRD, distinct session_id — the id the dedup pass must NOT collapse
@@ -418,15 +423,37 @@ describe('vault-mirror session dedup — duplicated session_id (#1186c)', () => 
     // THE denominator: three raw non-blank JSONL lines were attempted, dedup
     // collapse or not.
     expect(runEvents[0].total).toBe(3);
-    // THE partition: two DISTINCT session_ids survive dedup (the winner of the
-    // older/newer pair, plus the untouched third id) — a per-line-dispatch
-    // regression would push this to 3; a dedup-drops-a-survivor regression
-    // would push this to 1.
+    // THE partition (#1291): every attempted line lands in exactly one class,
+    // the collapsed duplicate included.
     expect(
       runEvents[0].created + runEvents[0].updated + runEvents[0].skipped + runEvents[0].failed,
-    ).toBe(2);
+    ).toBe(3);
+    // Two DISTINCT session_ids survive dedup (the winner of the older/newer
+    // pair, plus the untouched third id) — a per-line-dispatch regression would
+    // push this to 3; a dedup-drops-a-survivor regression would push it to 1.
+    expect(runEvents[0].action_breakdown.created).toBe(2);
+    expect(runEvents[0].action_breakdown['skipped-duplicate-session']).toBe(1);
     // A complete (non-aborted) run must never carry the `aborted` label.
     expect(runEvents[0]).not.toHaveProperty('aborted');
+
+    // The per-entry ledger record for the losing line: a locator, no path —
+    // no target file exists for a line that was never dispatched.
+    const dupEvents = readEvents(projectDir, 'orchestrator.vault.mirror_completed').filter(
+      (e) => e.action === 'skipped-duplicate-session',
+    );
+    expect(dupEvents).toHaveLength(1);
+    expect(dupEvents[0].record_id).toBe(older.session_id);
+    expect(dupEvents[0].line).toBe(1);
+    expect(dupEvents[0]).not.toHaveProperty('path');
+
+    const dupStdout = result.stdout
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((l) => JSON.parse(l))
+      .filter((l) => l.action === 'skipped-duplicate-session');
+    expect(dupStdout).toHaveLength(1);
+    expect(dupStdout[0]).toMatchObject({ kind: 'session', id: older.session_id, line: 1 });
   });
 });
 

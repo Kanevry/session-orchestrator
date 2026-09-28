@@ -11,6 +11,10 @@
  *     records that between them said nothing happened (#1151). Its count is
  *     carried by the run event's `skipped` total and `action_breakdown`, so the
  *     class stays measured — only its per-line locators are gone.
+ *     `skipped-duplicate-session` (#1291) is one of these per-entry records:
+ *     a `--kind session` line whose `session_id` a later line in the same
+ *     source superseded, so it was never dispatched. It carries `record_id`
+ *     and `line` and never `path` — no target file exists for it.
  *   - `orchestrator.vault.mirror_run_completed` — ONE record per CLI run,
  *     carrying the DENOMINATOR (`total` plus the per-class counts).
  *
@@ -162,7 +166,10 @@ export async function emitMirrorEvent({
  * @param {number} opts.updated — entries whose action was `updated`.
  * @param {number} opts.skipped — entries skipped for a NON-failure reason
  *   (`skipped-noop`, `skipped-handwritten`, `skipped-quality-low`,
- *   `skipped-collision-resolved`, `skipped-abandoned`).
+ *   `skipped-collision-resolved`, `skipped-abandoned`,
+ *   `skipped-duplicate-session`). The last one (#1291) is what keeps
+ *   `created + updated + skipped + failed === total` true for a `--kind
+ *   session` run whose dedup pass collapsed a duplicate `session_id` line.
  * @param {number} opts.failed — entries that produced `skipped-invalid`
  *   (validation error or mapper crash). Split out from `skipped` because these
  *   are the runs where a session silently ends up WITHOUT its vault note.

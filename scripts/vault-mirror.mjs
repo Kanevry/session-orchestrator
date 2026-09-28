@@ -18,7 +18,7 @@
  *   2 — filesystem error
  *
  * Output: one JSON line per action on stdout:
- *   {"action":"created|updated|skipped-noop|skipped-handwritten|skipped-collision-resolved|skipped-invalid|skipped-quality-low","path":"...","kind":"...","id":"..."}
+ *   {"action":"created|updated|skipped-noop|skipped-handwritten|skipped-collision-resolved|skipped-invalid|skipped-quality-low|skipped-abandoned|skipped-duplicate-session","path":"...","kind":"...","id":"..."}
  *
  * Idempotency rules:
  *   1. File does not exist → create.
@@ -54,7 +54,12 @@ import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
 
-import { processLearning, processSession, getMaskerStats } from './lib/vault-mirror/process.mjs';
+import {
+  processLearning,
+  processSession,
+  getMaskerStats,
+  emitAction,
+} from './lib/vault-mirror/process.mjs';
 import { emitMirrorEvent, emitMirrorRunEvent } from './lib/vault-mirror/telemetry.mjs';
 import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
@@ -659,18 +664,27 @@ async function main() {
       if (isIdentifiable(entry) && !survivors.has(entry)) {
         // A losing duplicate: an earlier line whose `session_id` a LATER line
         // in this same batch supersedes or overwrites (crash-recovery
-        // re-append, #1068 stub/supersede pair). No dispatch, no stdout line,
-        // no tally for it — the winning occurrence (dispatched below, at its
-        // own position) already produces the ONE note this physical session
-        // gets. BV-004 ceiling: `runState.total` still counts this raw line,
-        // so `created+updated+skipped+failed` no longer partitions `total`
-        // for a `--kind session` run that collapsed at least one duplicate —
-        // no test pins that invariant for session kind (only for `learning`,
-        // where duplicates are not collapsed), and a partially-written vault
-        // from a batch that could not be fully deduped is the worse failure
-        // mode. Revisit with a dedicated telemetry action if an operator ever
-        // needs to name WHICH lines were collapsed, not just how many notes
-        // were written.
+        // re-append, #1068 stub/supersede pair). Never dispatched — the winning
+        // occurrence (dispatched below, at its own position) produces the ONE
+        // note this physical session gets. It is still ACCOUNTED for (#1291):
+        // `skipped-duplicate-session` goes through the same per-entry path as
+        // every other skip (stdout line + per-entry ledger record, no `path`
+        // because no target file exists for it) and into the tally, so
+        // `created+updated+skipped+failed === total` partitions a `--kind
+        // session` run that collapsed duplicates, and the ledger names WHICH
+        // lines were collapsed, not just how many notes were written.
+        tally(
+          await emitAction({
+            action: 'skipped-duplicate-session',
+            path: null,
+            kind,
+            id: entry.session_id,
+            vaultDir: ctx.vaultDir,
+            meta: { line: sessionLineNums[i] },
+            line: sessionLineNums[i],
+            dryRun,
+          }),
+        );
         continue;
       }
       await dispatchEntry(entry, sessionLineNums[i]);
