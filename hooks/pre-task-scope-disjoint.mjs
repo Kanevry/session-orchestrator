@@ -836,13 +836,16 @@ const SYSTEM_NOTIFICATION_MARK = '[SYSTEM NOTIFICATION - NOT USER INPUT]\n';
  *
  * Named residual (BV-004): a `queue-operation` record has no field that tells a
  * harness notification from an operator prompt typed while the agent was busy,
- * so an OPERATOR could forge through that one channel; an agent cannot — text a
- * subagent or peer delivers via `SendMessage` arrives wrapped by the harness, so
- * it never begins with the opener. Measured 2026-09-28 (count only, 11,008
- * transcript files): 7,131 records carry such a message, 1,801 of them as
+ * so an OPERATOR could forge through that one channel. An agent cannot through
+ * the one producer censused: text a subagent or peer delivers via `SendMessage`
+ * arrives wrapped by the harness, so it never begins with the opener. Measured
+ * 2026-09-28 in a second run (count only, 11,008 transcript files, three more
+ * than the census above): 7,131 records carry such a message, 1,801 of them as
  * `queue-operation`, 2,486 as `queued_command` with `commandMode: 'prompt'`;
- * 0 of the 7,131 begin with `<task-notification>`. Revisit if the harness adds
- * a discriminator here (like `commandMode` on the attachment) or stops wrapping.
+ * 0 of the 7,131 begin with `<task-notification>`. Other queue producers
+ * (scheduled wake-ups, a `/loop` body) were not censused. Revisit if the harness
+ * adds a discriminator here (like `commandMode` on the attachment) or stops
+ * wrapping.
  *
  * @param {any} rec — one parsed transcript record
  * @returns {string|null}
