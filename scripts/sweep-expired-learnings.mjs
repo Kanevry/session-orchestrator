@@ -71,6 +71,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { sweepExpiredLearnings, pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
 import { readLearnings } from './lib/learnings/io.mjs';
@@ -193,7 +194,8 @@ function parseArgs(argv) {
       args.skipped = typeof raw === 'string' ? raw.split(',').filter((s) => s.length > 0) : [];
       args.telemetryExplicit = true;
     } else if (a === '--repo-root') {
-      args.repoRoot = argv[++i];
+      // Absolute on purpose: emitEvent refuses a relative root (#1468).
+      args.repoRoot = path.resolve(argv[++i]);
       args.telemetryExplicit = true;
     } else if (a === '--help' || a === '-h') {
       printHelp();
