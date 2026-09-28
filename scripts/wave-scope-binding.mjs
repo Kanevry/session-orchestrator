@@ -37,6 +37,7 @@
  */
 
 import { parseArgs } from 'node:util';
+import path from 'node:path';
 import { attributionForRecord, emitEvent } from './lib/events.mjs';
 import { MANIFEST_SESSION_KEYS } from './lib/session-identity/own-session.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -109,7 +110,7 @@ async function main(argv) {
     return;
   }
 
-  const repoRoot = parsed.values['repo-root'] ?? process.cwd();
+  const repoRoot = path.resolve(parsed.values['repo-root'] ?? process.cwd());
   const binding = resolveBinding(repoRoot);
 
   if (Object.keys(binding).length === 0) {

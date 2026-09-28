@@ -653,7 +653,7 @@ async function main() {
 
   // --apply is an explicit opt-in; absent it (or with --dry-run) we never write.
   const apply = values.apply === true && values['dry-run'] !== true;
-  const repoRoot = values['repo-root'] || getProjectDir();
+  const repoRoot = path.resolve(values['repo-root'] || getProjectDir());
 
   let assumeDeadBeforeMs = null;
   if (typeof values['assume-dead-before'] === 'string' && values['assume-dead-before'].length > 0) {
