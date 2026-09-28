@@ -1733,7 +1733,12 @@ describe('mirrorBoard — canonical-vault guard (#1450)', () => {
     let result;
     let dropWarns;
     try {
-      result = await mirrorBoard({ repoRoot, now: FIXED_NOW });
+      // `hostPaths: undefined` on purpose: the real host resolution IS the
+      // subject here (`undefined ?? loadHostPaths()`), and the sibling
+      // hostpaths-guard.test.mjs requires the key to be spelled out so the
+      // omission is visibly deliberate. The env stubs above keep the real
+      // owner.yaml and vault out of reach.
+      result = await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: undefined });
       dropWarns = warn.mock.calls.filter((c) => String(c[0]).includes('dropping owner.yaml section'));
     } finally {
       warn.mockRestore();
