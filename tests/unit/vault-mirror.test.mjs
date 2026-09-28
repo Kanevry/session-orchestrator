@@ -76,7 +76,8 @@ function runMirror(args, opts = {}) {
       VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
       CLAUDE_PROJECT_DIR: projectDir,
       // Belt-and-braces: `vault-dir` resolves HOST-LOCALLY elsewhere in this
-      // codebase (SO_VAULT_DIR > owner.yaml > CLAUDE.md). This CLI takes
+      // codebase (SO_VAULT_DIR > owner.yaml vault-dirs: cwd match > owner.yaml
+      // paths.vault-dir > CLAUDE.md). This CLI takes
       // --vault-dir as a flag and never consults that chain, but pinning the
       // override at a throwaway keeps a future resolver change from turning this
       // suite into a writer against the operator's REAL vault.
