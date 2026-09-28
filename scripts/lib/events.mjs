@@ -388,7 +388,11 @@ function waveForRecord(root, attribution) {
  *   metrics/events.jsonl` instead of the module-level `SO_PROJECT_DIR` default
  *   (#941). Ignored when `opts.filePath` is given (explicit path wins). This is
  *   the clean interface replacing the hand-built `join(repoRoot, …)` recipes that
- *   used to open-code this destination at each call-site.
+ *   used to open-code this destination at each call-site. A relative or empty
+ *   `repoRoot` is refused with one stderr WARN and nothing is written (no line,
+ *   no directory, no webhook): joining it would land relative to the working
+ *   directory — the incident class where an unset env var produced
+ *   `undefined/…/.orchestrator/metrics/events.jsonl` under the cwd.
  * @returns {Promise<void>}
  */
 export async function emitEvent(type, payload = {}, opts = {}) {
@@ -434,11 +438,26 @@ export async function emitEvent(type, payload = {}, opts = {}) {
 
   // Ensure the destination directory exists before appending. Resolution order:
   //   1. explicit opts.filePath (a pre-resolved path — #611)
-  //   2. opts.repoRoot → <repoRoot>/.orchestrator/metrics/events.jsonl (#941)
+  //   2. opts.repoRoot → <repoRoot>/.orchestrator/metrics/events.jsonl (#941),
+  //      or refused when relative/empty (WARN, no write — see below)
   //   3. the SO_PROJECT_DIR default (unchanged for 2-arg callers)
   // eventsFilePath(undefined) falls through to its SO_PROJECT_DIR default, so a
   // caller passing neither behaves EXACTLY as before (additive) — except under
   // the test-only EVENTS_LEDGER_SANDBOX_ENV seam, which only 3. honours.
+  // An explicit filePath is never second-guessed. A defined repoRoot that is not
+  // absolute would be joined relative to the cwd, so it is refused: WARN and
+  // return (hooks must never throw). The value itself is not printed — it may
+  // carry a host-local path.
+  if (
+    opts.filePath === undefined &&
+    opts.repoRoot !== undefined &&
+    (typeof opts.repoRoot !== 'string' || !path.isAbsolute(opts.repoRoot))
+  ) {
+    process.stderr.write(
+      `[events] ${String(type)} not emitted: opts.repoRoot is not an absolute path; refusing to write relative to the working directory.\n`,
+    );
+    return;
+  }
   const filePath = opts.filePath ?? eventsFilePath(opts.repoRoot);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, 'utf8');

@@ -63,7 +63,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { emitEvent, sessionAttribution } from './events.mjs';
@@ -120,7 +120,8 @@ const GATE_TIMEOUT_MS = DEFAULT_GATE_TIMEOUT_MS;
  * @returns {string}
  */
 function resolveRepoRoot(explicit) {
-  if (typeof explicit === 'string' && explicit.trim()) return explicit;
+  // Absolute on purpose: emitEvent refuses a relative root (#1468).
+  if (typeof explicit === 'string' && explicit.trim()) return resolve(explicit);
   return process.cwd();
 }
 

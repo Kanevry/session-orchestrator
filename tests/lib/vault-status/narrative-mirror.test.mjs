@@ -416,8 +416,15 @@ describe('mirrorNarrative', () => {
    * diverges from the tmp dir these tests create. Every `mirrorNarrative()`
    * call below passes this hermetic ctx so the fixture's `vault-dir:` value
    * is what actually resolves.
+   *
+   * `readOriginUrl` feeds the canonical-vault guard (#1450): a tmp vault has
+   * no git origin, so without this stub every write would be refused.
    */
-  const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined };
+  const HERMETIC_HOST_PATHS = {
+    env: {},
+    ownerConfig: undefined,
+    readOriginUrl: () => 'git@gitlab.example.com:agents/vault.git',
+  };
 
   let tmpBase;
 
@@ -561,7 +568,11 @@ describe('mirrorNarrative', () => {
       repoRoot,
       repo: repoSlug,
       dryRun: true,
-      hostPaths: { env: {}, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
+      hostPaths: {
+        env: {},
+        ownerConfig: { paths: { 'vault-dir': fakeVaultDir } },
+        readOriginUrl: HERMETIC_HOST_PATHS.readOriginUrl,
+      },
     });
 
     // Falsification proof: if mirrorNarrative stopped forwarding `hostPaths`
@@ -573,6 +584,65 @@ describe('mirrorNarrative', () => {
     expect(result.action).toBe('dry-run');
     expect(result.path).toBe(resolveNarrativePath(fakeVaultDir, repoSlug));
     expect(result.path).not.toBe(resolveNarrativePath(vaultDir, repoSlug));
+  });
+
+  // =========================================================================
+  // mirrorNarrative — canonical-vault guard (#1450)
+  //
+  // The narrative mirror was the third vault writer without the shared
+  // checkCanonicalVault() guard: a vault-dir pointing at a foreign or
+  // origin-less checkout was written to regardless.
+  // =========================================================================
+
+  describe('canonical-vault guard (#1450)', () => {
+    function narrativeTarget(vaultDir, repoDirName) {
+      return resolveNarrativePath(vaultDir, repoDirName.toLowerCase());
+    }
+
+    it('refuses a vault whose git origin is foreign, writes nothing, and says so in exactly one stderr line', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'ForeignOrigin' });
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let result;
+      let calls;
+      try {
+        result = await mirrorNarrative({
+          repoRoot,
+          hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => 'git@gitlab.example.com:someone/other-vault.git' },
+        });
+      } finally {
+        // Copy before restore — mockRestore() also clears the recorded calls.
+        calls = [...stderrSpy.mock.calls];
+        stderrSpy.mockRestore();
+      }
+      expect(result).toEqual({ action: 'skipped-vault-not-canonical' });
+      expect(fs.existsSync(narrativeTarget(vaultDir, 'ForeignOrigin'))).toBe(false);
+      const guardLines = calls.filter(([chunk]) => String(chunk).startsWith('narrative-mirror:'));
+      expect(guardLines).toHaveLength(1);
+      expect(String(guardLines[0][0])).not.toContain(vaultDir);
+    });
+
+    it('refuses a vault with no git origin and writes nothing', async () => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'NoOrigin' });
+      const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+      let result;
+      try {
+        result = await mirrorNarrative({ repoRoot, hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => '' } });
+      } finally {
+        stderrSpy.mockRestore();
+      }
+      expect(result).toEqual({ action: 'skipped-vault-not-canonical' });
+      expect(fs.existsSync(narrativeTarget(vaultDir, 'NoOrigin'))).toBe(false);
+    });
+
+    it('honours the VAULT_MIRROR_SKIP_CANONICAL_CHECK escape hatch even without an origin', async () => {
+      const { repoRoot } = scaffold({ repoDirName: 'EscapeHatch' });
+      const result = await mirrorNarrative({
+        repoRoot,
+        hostPaths: { ...HERMETIC_HOST_PATHS, env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' }, readOriginUrl: () => '' },
+      });
+      expect(result.action).toBe('written');
+      expect(fs.existsSync(result.path)).toBe(true);
+    });
   });
 
   // =========================================================================

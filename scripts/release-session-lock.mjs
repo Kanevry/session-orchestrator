@@ -43,6 +43,7 @@
  */
 
 import { parseArgs } from 'node:util';
+import path from 'node:path';
 
 import { readLockDetailed, loadOwnerProof, release } from './lib/session-lock.mjs';
 import { LOCK_RELEASED_EVENT } from './lib/session-transition.mjs';
@@ -174,7 +175,7 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
     return 1;
   }
 
-  const repoRoot = values['repo-root'] ?? process.cwd();
+  const repoRoot = path.resolve(values['repo-root'] ?? process.cwd());
 
   const emitResult = async (result) => {
     if (values.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');

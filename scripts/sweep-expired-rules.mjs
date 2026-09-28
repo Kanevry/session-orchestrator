@@ -29,6 +29,7 @@
  *      per-file error on the `--apply` path)
  */
 
+import path from 'node:path';
 import { emitEvent } from './lib/events.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import {
@@ -100,7 +101,7 @@ export function parseArgs(argv) {
     } else if (a === '--repo-root') {
       const raw = argv[++i];
       if (typeof raw !== 'string' || raw.length === 0) usageError('--repo-root requires a path');
-      args.repoRoot = raw;
+      args.repoRoot = path.resolve(raw);
     } else if (a === '--learnings') {
       const raw = argv[++i];
       if (typeof raw !== 'string' || raw.length === 0) usageError('--learnings requires a path');

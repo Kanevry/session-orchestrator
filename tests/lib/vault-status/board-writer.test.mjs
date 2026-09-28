@@ -1709,4 +1709,45 @@ describe('mirrorBoard — canonical-vault guard (#1450)', () => {
     expect(result.action).toBe('written');
     expect(existsSync(boardPath)).toBe(true);
   });
+
+  // Bug this catches (#1450 follow-up): without an injected `hostPaths`,
+  // mirrorBoard loaded owner.yaml once for the config parse and a second time
+  // for this guard, so every section-drop WARN of a broken owner.yaml printed
+  // twice per board write.
+  it('loads owner.yaml once when no hostPaths is passed (section-drop WARN printed once)', async () => {
+    const { repoRoot, boardPath } = setup('guard-owner-yaml-once');
+    const configHome = mkdtempSync(join(tmpdir(), 'board-writer-config-home-'));
+    extraCleanupDirs.push(configHome);
+    // All REQUIRED sections valid, optional `paths:` malformed -> exactly one
+    // "dropping owner.yaml section" WARN per loadOwnerConfig() call.
+    writeFileSync(
+      join(configHome, 'owner.yaml'),
+      'owner:\n  name: "Test Owner"\n  language: "en"\ntone:\n  style: "direct"\nefficiency:\n  output-level: "full"\n  preamble: "minimal"\nhardware-sharing:\n  enabled: false\n  hash-salt: ""\npaths: 42\n',
+    );
+    vi.stubEnv('SO_CONFIG_HOME', configHome);
+    vi.stubEnv('SO_VAULT_DIR', '');
+    vi.stubEnv('SO_VAULT_INTEGRATION', '');
+    vi.stubEnv('VAULT_MIRROR_SKIP_CANONICAL_CHECK', '');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let result;
+    let dropWarns;
+    try {
+      // `hostPaths: undefined` on purpose: the real host resolution IS the
+      // subject here (`undefined ?? loadHostPaths()`), and the sibling
+      // hostpaths-guard.test.mjs requires the key to be spelled out so the
+      // omission is visibly deliberate. The env stubs above keep the real
+      // owner.yaml and vault out of reach.
+      result = await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: undefined });
+      dropWarns = warn.mock.calls.filter((c) => String(c[0]).includes('dropping owner.yaml section'));
+    } finally {
+      warn.mockRestore();
+      stderr.mockRestore();
+      vi.unstubAllEnvs();
+    }
+    // The tmp vault has no git origin, so the real origin read refuses it.
+    expect(result).toEqual({ action: 'skipped-vault-not-canonical' });
+    expect(existsSync(boardPath)).toBe(false);
+    expect(dropWarns).toHaveLength(1);
+  });
 });

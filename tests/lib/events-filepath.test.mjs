@@ -191,3 +191,67 @@ describe('emitEvent / eventsFilePath — opts.repoRoot parameter (#941)', () => 
     ).rejects.toThrow();
   });
 });
+
+describe('emitEvent — a relative or empty opts.repoRoot is refused, never written under the cwd', () => {
+  // Incident class: `{ repoRoot: process.env.T + '/repo' }` with T unset passed
+  // the string 'undefined/repo', and the write created
+  // `undefined/repo/.orchestrator/metrics/events.jsonl` under the working
+  // directory. The cwd is pinned to a fresh tmp dir so a regression lands there,
+  // where it is observable, instead of in the checkout.
+  let tmpDir;
+  let tmpCwd;
+  const origCwd = process.cwd();
+  const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-relroot-default-'));
+    tmpCwd = await mkdtemp(path.join(tmpdir(), 'so-events-relroot-cwd-'));
+    delete process.env.CLANK_EVENT_SECRET;
+    delete process.env.CLANK_EVENT_URL;
+    process.chdir(tmpCwd);
+  });
+
+  afterEach(async () => {
+    process.chdir(origCwd);
+    vi.restoreAllMocks();
+    vi.resetModules();
+    if (origClaudeProjectDir === undefined) {
+      delete process.env.CLAUDE_PROJECT_DIR;
+    } else {
+      process.env.CLAUDE_PROJECT_DIR = origClaudeProjectDir;
+    }
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(tmpCwd, { recursive: true, force: true });
+  });
+
+  it.each([
+    ['relative', 'undefined/repo'],
+    ['empty', ''],
+  ])('%s repoRoot: no write under the cwd, one WARN that does not quote the cwd', async (_label, repoRoot) => {
+    const { emitEvent, eventsFilePath } = await importEventsWithDir(tmpDir);
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    await emitEvent('orchestrator.session.started', { session_id: 's1' }, { repoRoot });
+
+    const calls = spy.mock.calls.map((c) => String(c[0]));
+    spy.mockRestore();
+
+    await expect(access(path.join(tmpCwd, 'undefined'))).rejects.toThrow();
+    await expect(access(path.join(tmpCwd, '.orchestrator'))).rejects.toThrow();
+    // Refusal is not a silent reroute to the SO_PROJECT_DIR default either.
+    await expect(access(eventsFilePath())).rejects.toThrow();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('not emitted');
+    expect(calls[0]).not.toContain(tmpCwd);
+  });
+
+  it('an explicit filePath is still written when repoRoot is relative (the guard covers repoRoot only)', async () => {
+    const { emitEvent } = await importEventsWithDir(tmpDir);
+    const overridePath = path.join(tmpDir, 'explicit', 'pinned.jsonl');
+
+    await emitEvent('override.precedence', {}, { filePath: overridePath, repoRoot: 'undefined/repo' });
+
+    await expect(access(overridePath)).resolves.toBeUndefined();
+    await expect(access(path.join(tmpCwd, 'undefined'))).rejects.toThrow();
+  });
+});

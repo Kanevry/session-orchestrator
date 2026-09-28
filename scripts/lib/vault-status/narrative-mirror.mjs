@@ -44,6 +44,8 @@ import { validatePathInsideProject } from '../path-utils.mjs';
 import { createSecretValueMasker } from '../secret-masker.mjs';
 import { expandTilde } from '../common.mjs';
 import { readVaultSlug } from '../vault-yaml.mjs';
+import { checkCanonicalVault } from '../named-vault-resolver.mjs';
+import { loadHostPaths } from '../config/host-paths.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned narrative files. */
 export const GENERATOR_MARKER = 'session-orchestrator-vault-status-narrative@1';
@@ -778,10 +780,13 @@ async function emitMaskerEvent({ repoRoot, needleCount, hits, dryRun }) {
  *   now?: Date,
  *   dryRun?: boolean,
  *   fs?: object,
- *   hostPaths?: { env?: Record<string, string|undefined>, ownerConfig?: object },
+ *   hostPaths?: { env?: Record<string, string|undefined>, ownerConfig?: object,
+ *     readOriginUrl?: (vaultDir: string) => string },
  * }} opts
  *   `hostPaths` is forwarded verbatim to {@link parseSessionConfig}'s `hostPaths` DI
- *   seam (issue #653). Tests MUST pass a hermetic ctx (e.g. `{ env: {}, ownerConfig:
+ *   seam (issue #653). The same ctx feeds {@link checkCanonicalVault} (#1450);
+ *   `readOriginUrl` replaces its `git remote get-url origin` read (tests only —
+ *   tmp vaults have no origin). Tests MUST pass a hermetic ctx (e.g. `{ env: {}, ownerConfig:
  *   undefined }`) when asserting a fixture's committed `vault-dir` — omitting it reads
  *   the REAL host `owner.yaml`, whose `vault-dirs:` cwd match or `paths.vault-dir`
  *   override (if set) wins over the fixture value and bleeds into the assertion (issue #783). Production callers omit
@@ -830,7 +835,7 @@ export async function mirrorNarrative(opts) {
  * Split out so that the two emit sites in `mirrorNarrative` (the narrative
  * event AND, since #1028, the masker event) each cover EVERY outcome from
  * ONE call: a future early return added inside this function is telemetered
- * by construction, whereas hand-placing an emit beside each of the seven
+ * by construction, whereas hand-placing an emit beside each of the eight
  * `return`s makes "forgot the new one" the default failure. The `chars` companion travels beside the result
  * rather than inside it because the returned object is a PUBLIC shape that
  * callers (and tests) compare with `toEqual` — adding a key there would be an
@@ -856,10 +861,14 @@ async function runNarrativeMirror(opts) {
   const masker = createSecretValueMasker(process.env);
 
   // Read Session Config (CLAUDE.md / AGENTS.md) and resolve vault settings.
+  // Loaded ONCE and shared by the Session Config parse and the canonical-vault
+  // guard below, so owner.yaml is read a single time per run.
+  const hostCtx = hostPaths ?? loadHostPaths();
+
   let config;
   try {
     const configText = await readConfigFile(repoRoot);
-    config = parseSessionConfig(configText, { hostPaths });
+    config = parseSessionConfig(configText, { hostPaths: hostCtx });
   } catch {
     return { result: { action: 'skipped-vault-disabled' }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
@@ -901,6 +910,22 @@ async function runNarrativeMirror(opts) {
   }
 
   const vaultDir = path.resolve(expandTilde(rawVaultDir));
+
+  // #1450: same shared guard as board-writer.mjs and scripts/vault-mirror.mjs —
+  // refuse a vault-dir whose git origin is not a canonical Meta-Vault. The
+  // stderr line names the expected suffixes and the origin, never the vault
+  // path itself.
+  const canonical = checkCanonicalVault({
+    vaultDir,
+    ownerConfig: hostCtx.ownerConfig,
+    env: hostCtx.env ?? process.env,
+    readOriginUrl: hostCtx.readOriginUrl,
+  });
+  if (!canonical.ok) {
+    process.stderr.write(`narrative-mirror: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${canonical.got ?? 'no git origin'})\n`);
+    return { result: { action: 'skipped-vault-not-canonical' }, needleCount: masker.needleCount, hits: 0, dryRun };
+  }
+
   const candidateSlug = subjectToSlug(repoName) || 'unknown';
   // A declared `.vault.yaml` slug needs no healing — it IS the canonical folder
   // name, so resolveLooseSlug is SKIPPED for it. Running the healer over it

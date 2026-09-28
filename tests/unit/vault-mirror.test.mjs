@@ -819,6 +819,32 @@ describe('vault-mirror CLI', () => {
     expect(result.stderr).toContain('vault-dir not found');
   });
 
+  // Bug this catches (#1450 follow-up): the canonical-vault refusal must still
+  // close the run with `mirror_run_completed` labelled `aborted:
+  // vault-not-canonical` — an exit(2) that skips finishRun() leaves the run
+  // uncounted, indistinguishable from a broken emitter. The exit/stderr shape is
+  // also pinned black-box in tests/scripts/vault-mirror-entry-point.test.mjs;
+  // the ledger record and the untouched vault are pinned only here.
+  it('refuses a vault without a git origin: exit 2, aborted:vault-not-canonical, nothing written', () => {
+    const vaultDir = tmp(); // exists, but no git repo -> no origin
+    const projectDir = tmp();
+    // An empty config home: no owner.yaml, so the host's `vaults:` list is not read.
+    const configHome = tmp();
+    const sourceFile = writeJsonl(tmp(), VALID_LEARNING);
+
+    const result = runMirror(
+      ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning'],
+      { projectDir, env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: '', SO_CONFIG_HOME: configHome } },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('not the canonical Meta-Vault');
+    const runEvents = readMirrorEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({ aborted: 'vault-not-canonical', total: 0 });
+    expect(readdirSync(vaultDir)).toEqual([]);
+  });
+
   // Bug (agents/vault#319 review): a `~/…` vault-dir — owner.yaml vault-dirs: /
   // paths.vault-dir, or a quoted flag — was resolved as `<cwd>/~/…` and the run
   // aborted with exit 2 missing-vault-dir.
