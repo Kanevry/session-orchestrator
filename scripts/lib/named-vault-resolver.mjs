@@ -285,6 +285,9 @@ function _defaultReadOriginUrl(vaultDir) {
  * resolution that throws all return `ok: false`. The only bypass is the
  * existing `VAULT_MIRROR_SKIP_CANONICAL_CHECK === '1'` switch, read from the
  * `env` passed in (never from the ambient process.env when `env` is given).
+ * It is evaluated before any suffix resolution, so a skipped check neither
+ * parses `ownerConfig.vaults` nor prints its WARN lines, and returns
+ * `expected: []`.
  *
  * @param {{
  *   vaultDir: string,
@@ -295,14 +298,16 @@ function _defaultReadOriginUrl(vaultDir) {
  * @returns {{ ok: boolean, reason?: 'skipped-by-env'|'no-git-origin'|'not-canonical', got?: string, expected: string[] }}
  */
 export function checkCanonicalVault({ vaultDir, ownerConfig, env = process.env, readOriginUrl = _defaultReadOriginUrl } = {}) {
+  if (env?.VAULT_MIRROR_SKIP_CANONICAL_CHECK === '1') {
+    // Empty on purpose: suffix resolution is exactly what the switch skips, and
+    // callers read `expected` only on `ok: false`.
+    return { ok: true, reason: 'skipped-by-env', expected: [] };
+  }
   let expected;
   try {
     expected = resolveCanonicalSuffixes({ ownerConfig, env });
   } catch {
     return { ok: false, reason: 'not-canonical', expected: [] };
-  }
-  if (env?.VAULT_MIRROR_SKIP_CANONICAL_CHECK === '1') {
-    return { ok: true, reason: 'skipped-by-env', expected };
   }
 
   let url;

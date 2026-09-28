@@ -727,10 +727,21 @@ describe('checkCanonicalVault', () => {
     const readOriginUrl = () => {
       throw new Error('must not be called when the check is skipped');
     };
-    const res = checkCanonicalVault({
-      vaultDir: '/vault', env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' }, readOriginUrl,
+    // A vaults: entry without `suffix` makes parseNamedVaults() WARN on stderr.
+    // The skip switch must win before suffix resolution, so a skipped check
+    // prints nothing about a list it never reads.
+    const malformedOwnerConfig = { vaults: [{ name: 'team', root: '~/team-notes' }] };
+    let res;
+    const warnings = captureStderr(() => {
+      res = checkCanonicalVault({
+        vaultDir: '/vault',
+        ownerConfig: malformedOwnerConfig,
+        env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' },
+        readOriginUrl,
+      });
     });
-    expect(res).toEqual({ ok: true, reason: 'skipped-by-env', expected: ['/agents/vault'] });
+    expect(warnings).toEqual([]);
+    expect(res).toEqual({ ok: true, reason: 'skipped-by-env', expected: [] });
 
     const notSkipped = checkCanonicalVault({
       vaultDir: '/vault', env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: 'true' }, readOriginUrl: () => '',
