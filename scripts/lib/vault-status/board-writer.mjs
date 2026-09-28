@@ -870,10 +870,16 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
   }
 
   // Read + parse Session Config. Any failure → silent no-op.
+  // The host context is resolved ONCE here and reused by the canonical-vault
+  // guard below: loadOwnerConfig() has no cache and its section-drop WARNs are
+  // not rate-limited, so a second load would print every WARN of a broken
+  // owner.yaml twice per board write (#1450 follow-up).
   let config;
+  let hostCtx;
   try {
     const text = await readConfigFile(repoRoot);
-    config = parseSessionConfig(text, { hostPaths });
+    hostCtx = hostPaths ?? loadHostPaths();
+    config = parseSessionConfig(text, { hostPaths: hostCtx });
   } catch {
     return { result: { action: 'skipped-vault-disabled' } };
   }
@@ -897,10 +903,9 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
 
   // Safety: the vault must be a canonical Meta-Vault (#1450) — the same guard
   // vault-mirror applies, so a vault-dir that resolved to a FOREIGN vault can
-  // never receive the board. Same host-context precedence as parseSessionConfig
-  // (`hostPaths ?? loadHostPaths()`), so a hermetic ctx never reads the real
-  // owner.yaml. Runs before the dry-run branch and the lock: fail-closed.
-  const hostCtx = hostPaths ?? loadHostPaths();
+  // never receive the board. Reuses the `hostCtx` the config parse used, so a
+  // hermetic ctx never reads the real owner.yaml and owner.yaml is loaded at
+  // most once. Runs before the dry-run branch and the lock: fail-closed.
   const canonical = checkCanonicalVault({
     vaultDir: expandedVault,
     ownerConfig: hostCtx.ownerConfig,
