@@ -853,7 +853,7 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
  *   `git remote get-url origin` read (tests only — tmp vaults have no origin).
  *   Tests MUST pass a hermetic ctx (e.g. `{ env: {}, ownerConfig: undefined }`) when
  *   asserting a fixture's committed `vault-dir` — omitting it reads the REAL host
- *   `owner.yaml`, whose `paths.vault-dir` override (if set) wins over the fixture value
+ *   `owner.yaml`, whose `vault-dirs:` cwd match or `paths.vault-dir` override (if set) wins over the fixture value
  *   and bleeds into the assertion (issue #783). Production callers omit this — the
  *   default (real owner.yaml resolution) is the correct host-local behavior there.
  * @returns {Promise<{ result: { action: string, path?: string }, rows?: number,
