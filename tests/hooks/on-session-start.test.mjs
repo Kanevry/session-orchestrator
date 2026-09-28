@@ -2355,11 +2355,11 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
 
   it('renders exactly one "aktiv" line from a valid lease, naming adresse over session_id', async () => {
     const dir = await mkProjectTracked();
-    const navDir = await mkNavDir(validLease('nav-raw-id', { adresse: 'navigator-fd' }));
+    const navDir = await mkNavDir(validLease('nav-raw-id', { adresse: 'navigator-A1' }));
     const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: navDir } });
     const lines = navigatorLines(result.stdout);
     expect(lines).toHaveLength(1);
-    expect(lines[0]).toBe('🧭 Navigator aktiv: navigator-fd, Check-in nach ~/.config/navigator/checkin/');
+    expect(lines[0]).toBe('🧭 Navigator aktiv: navigator-A1, Check-in nach ~/.config/navigator/checkin/');
     expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
   });
 
