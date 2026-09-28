@@ -48,7 +48,6 @@
  * Part of session-orchestrator vault-mirror (Issue #14).
  */
 
-import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -65,7 +64,7 @@ import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
-import { resolveCanonicalSuffixes } from './lib/named-vault-resolver.mjs';
+import { checkCanonicalVault, normalizeRemote } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -91,7 +90,7 @@ export function _resolveCanonicalSuffix(envValue) {
   return envValue && envValue.trim() ? envValue.trim() : '/agents/vault';
 }
 
-// Kept for documentation; the guard now uses resolveCanonicalSuffixes() which
+// Kept for documentation; the guard now uses checkCanonicalVault() which
 // generalises this to N suffixes. The `_` prefix satisfies the no-unused-vars rule.
 const _CANONICAL_VAULT_SUFFIX = _resolveCanonicalSuffix(
   process.env.VAULT_MIRROR_CANONICAL_SUFFIX,
@@ -99,18 +98,14 @@ const _CANONICAL_VAULT_SUFFIX = _resolveCanonicalSuffix(
 
 /**
  * Normalize a git remote URL to a host/path tail for canonical-suffix matching
- * (#607 D2 — exported for unit tests). Strips `.git`, the `git@host:` / scheme
- * prefixes, and trailing slashes.
+ * (#607 D2 — exported for unit tests). Since #1450 the ONE implementation is
+ * `normalizeRemote` in lib/named-vault-resolver.mjs, shared with the board
+ * writer's guard; this name is kept for the existing test imports.
  * @param {string} url
  * @returns {string}
  */
 export function _normalizeRemote(url) {
-  return String(url ?? '')
-    .trim()
-    .replace(/\.git$/, '')
-    .replace(/^git@([^:]+):/, '$1/')
-    .replace(/^[a-z]+:\/\//, '')
-    .replace(/\/+$/, '');
+  return normalizeRemote(url);
 }
 
 // ── Mirror telemetry (#1116) ──────────────────────────────────────────────────
@@ -445,23 +440,20 @@ async function main() {
     process.exit(2);
   }
 
-  if (process.env.VAULT_MIRROR_SKIP_CANONICAL_CHECK !== '1') {
-    const res = spawnSync('git', ['-C', resolve(vaultDir), 'remote', 'get-url', 'origin'], {
-      encoding: 'utf8',
-    });
-    const canonicalSuffixes = resolveCanonicalSuffixes({
-      ownerConfig: loadOwnerConfig().config,
-      env: process.env,
-    });
-    const ok = res.status === 0 && canonicalSuffixes.some((s) => _normalizeRemote(res.stdout).endsWith(s));
-    if (!ok) {
-      const got = res.status === 0 ? res.stdout.trim() : 'no git origin';
-      process.stderr.write(
-        `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin ending in one of: ${canonicalSuffixes.join(', ')}; got ${got})\n`,
-      );
-      await finishRun('vault-not-canonical');
-      process.exit(2);
-    }
+  // The check itself — origin probe, suffix match, the SKIP_CANONICAL_CHECK
+  // escape hatch — is the shared `checkCanonicalVault` (#1450), the same one the
+  // board writer applies, so the two vault writers cannot drift apart again.
+  const canonical = checkCanonicalVault({
+    vaultDir: resolve(vaultDir),
+    ownerConfig: loadOwnerConfig().config,
+    env: process.env,
+  });
+  if (!canonical.ok) {
+    process.stderr.write(
+      `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${canonical.got ?? 'no git origin'})\n`,
+    );
+    await finishRun('vault-not-canonical');
+    process.exit(2);
   }
 
   if (!existsSync(resolve(source))) {

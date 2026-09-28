@@ -12,8 +12,9 @@
  *
  * Telemetry: every {@link mirrorBoard} call — and therefore every
  * {@link sweepBoard} call — emits exactly ONE {@link BOARD_EVENT} record,
- * including the no-op paths (`skipped-vault-disabled`, `skipped-handwritten`,
- * `skipped-noop`, `skipped-write-failed`). Those are the states that previously
+ * including the no-op paths (`skipped-vault-disabled`,
+ * `skipped-vault-not-canonical`, `skipped-handwritten`, `skipped-noop`,
+ * `skipped-write-failed`). Those are the states that previously
  * looked identical to a healthy write from outside the process. Emission is
  * best-effort and can never fail a board write.
  *
@@ -43,7 +44,8 @@
  *   2. Defense-in-depth: writeBoard hard-refuses to touch `_overview.md`
  *      (sven-owned, must NEVER be written by this generator).
  *
- * No console noise — library code. Plain Node ESM. No external deps.
+ * No console noise — library code — except the one stderr line on a
+ * canonical-vault refusal (#1450). Plain Node ESM. No external deps.
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -60,6 +62,8 @@ import { enumerateCandidates } from '../dispatcher/enumerate.mjs';
 import { atomicWriteWithBackup } from '../io.mjs';
 import { withBoardLock } from './board-lock.mjs';
 import { expandTilde } from '../common.mjs';
+import { checkCanonicalVault } from '../named-vault-resolver.mjs';
+import { loadHostPaths } from '../config/host-paths.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned board files. */
 export const GENERATOR_MARKER = 'session-orchestrator-active-sessions@1';
@@ -825,6 +829,8 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
  * Vault path assertion (Epic #673 safety): the resolved vault dir MUST live
  * under $HOME — a vault outside the home tree is refused as `skipped-vault-disabled`
  * so a misconfigured path can never drive a write into an arbitrary location.
+ * It must also be a canonical Meta-Vault ({@link checkCanonicalVault}, #1450):
+ * otherwise `skipped-vault-not-canonical`, nothing written, no lock, dry-run included.
  *
  * @param {object} opts
  * @param {string} opts.repoRoot — the repo whose row is being updated.
@@ -840,8 +846,11 @@ async function emitBoardEvent({ repoRoot, caller, action, path: outputPath, rows
  * @param {Date} [opts.now]
  * @param {boolean} [opts.dryRun]
  * @param {object} [opts.fs] — injectable fs for tests.
- * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [opts.hostPaths]
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object,
+ *   readOriginUrl?: (vaultDir: string) => string }} [opts.hostPaths]
  *   — forwarded verbatim to {@link parseSessionConfig}'s `hostPaths` DI seam (issue #653).
+ *   The same ctx feeds {@link checkCanonicalVault}; `readOriginUrl` replaces its
+ *   `git remote get-url origin` read (tests only — tmp vaults have no origin).
  *   Tests MUST pass a hermetic ctx (e.g. `{ env: {}, ownerConfig: undefined }`) when
  *   asserting a fixture's committed `vault-dir` — omitting it reads the REAL host
  *   `owner.yaml`, whose `paths.vault-dir` override (if set) wins over the fixture value
@@ -884,6 +893,25 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
   const inHome = validatePathInsideProject(expandedVault, home);
   if (!inHome.ok) {
     return { result: { action: 'skipped-vault-disabled' } };
+  }
+
+  // Safety: the vault must be a canonical Meta-Vault (#1450) — the same guard
+  // vault-mirror applies, so a vault-dir that resolved to a FOREIGN vault can
+  // never receive the board. Same host-context precedence as parseSessionConfig
+  // (`hostPaths ?? loadHostPaths()`), so a hermetic ctx never reads the real
+  // owner.yaml. Runs before the dry-run branch and the lock: fail-closed.
+  const hostCtx = hostPaths ?? loadHostPaths();
+  const canonical = checkCanonicalVault({
+    vaultDir: expandedVault,
+    ownerConfig: hostCtx.ownerConfig,
+    env: hostCtx.env ?? process.env,
+    readOriginUrl: hostCtx.readOriginUrl,
+  });
+  if (!canonical.ok) {
+    process.stderr.write(
+      `vault-status board: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${canonical.got ?? 'no git origin'})\n`,
+    );
+    return { result: { action: 'skipped-vault-not-canonical' } };
   }
 
   // `vault-name` (#660) overrides the git-derived repo slug for per-project
@@ -1112,10 +1140,10 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
  * Public {@link mirrorBoardInner} wrapper that emits exactly ONE
  * {@link BOARD_EVENT} per call — on EVERY path, no-ops included.
  *
- * The wrapper exists so the emit cannot be forgotten: the six return points
- * inside {@link mirrorBoardInner} (five `skipped-vault-disabled` guards plus
- * whatever {@link writeBoard} decides) all funnel through here, and so does the
- * seventh someone adds next. Emitting per-return instead would leave each new
+ * The wrapper exists so the emit cannot be forgotten: the seven return points
+ * inside {@link mirrorBoardInner} (five `skipped-vault-disabled` guards, the
+ * `skipped-vault-not-canonical` guard, plus whatever {@link writeBoard}
+ * decides) all funnel through here, and so does the eighth someone adds next. Emitting per-return instead would leave each new
  * early return silent by default — which is the exact defect being fixed.
  *
  * A THROW from the inner function is deliberately NOT converted into an event:
@@ -1276,7 +1304,8 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  * @param {object} [opts.deps] — injectable deps for {@link enumerateCandidates}
  *   (test seam: `readdirSync`, `existsSync`, `readLock`, `isLockLive`,
  *   `getCrossRepoProjects`, `validatePathInsideProject`, `now`).
- * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [opts.hostPaths]
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object,
+ *   readOriginUrl?: (vaultDir: string) => string }} [opts.hostPaths]
  *   — forwarded verbatim to every {@link mirrorBoard} call below (both the happy-path
  *   and the enumeration-failure-fallback path), which in turn forwards it to
  *   {@link parseSessionConfig}'s `hostPaths` DI seam (issue #653/#783). See
