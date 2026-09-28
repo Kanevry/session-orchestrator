@@ -13,7 +13,7 @@
  * host's real registry never leaks into a test.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync, existsSync } from 'node:fs';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
@@ -130,7 +130,13 @@ const FIXED_NOW = new Date('2026-06-18T12:00:00.000Z');
  * `mirrorBoard()` call below MUST pass this hermetic ctx so the fixture's
  * `vault-dir:` value is what actually resolves.
  */
-const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined };
+/**
+ * A remote ending in the resolver's default canonical suffix. The tmp vaults
+ * these tests build have no git origin, so the canonical-vault guard (#1450)
+ * would refuse every write; the hermetic ctx injects this origin instead.
+ */
+const CANONICAL_ORIGIN = 'git@gitlab.example.com:agents/vault.git';
+const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined, readOriginUrl: () => CANONICAL_ORIGIN };
 
 /**
  * A fresh vault dir under $HOME (mirrorBoard's safety guard requires this),
@@ -1146,7 +1152,10 @@ describe('mirrorBoard — hostPaths forwarding (load-bearing, #783 falsification
       repos: [{ repoRoot: thisRepoRoot }],
       now: FIXED_NOW,
       dryRun: true,
-      hostPaths: { env: {}, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
+      hostPaths: {
+        ...HERMETIC_HOST_PATHS,
+        ownerConfig: { paths: { 'vault-dir': fakeVaultDir } },
+      },
     });
 
     // Falsification proof: if mirrorBoard stopped forwarding `hostPaths` to
@@ -1633,5 +1642,71 @@ describe('mirrorBoard — concurrent writers (issue #1180)', () => {
     const rows = parseBoardRows(readFileSync(boardPath, 'utf8'));
     expect(rows.map((r) => r.repo).sort()).toEqual(['concurrent-writer-a', 'concurrent-writer-b']);
     expect(rows.map((r) => r.status)).toEqual(['in-progress', 'in-progress']);
+  });
+});
+
+// ===========================================================================
+// mirrorBoard — canonical-vault guard (#1450)
+// ===========================================================================
+//
+// Bug this catches: the board writer had no canonical-vault check, so on a host
+// whose vault-dir resolved to a FOREIGN vault the board was written into it.
+// vault-mirror refused the same vault; board-writer did not.
+
+describe('mirrorBoard — canonical-vault guard (#1450)', () => {
+  function setup(name) {
+    const vaultDir = makeVaultDir();
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    const repoRoot = makeThisRepoConfig(name, vaultDir);
+    return { vaultDir, repoRoot, boardPath: resolveBoardPath(vaultDir) };
+  }
+
+  it('refuses a vault without a git origin and writes nothing', async () => {
+    const { repoRoot, boardPath } = setup('guard-no-origin');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    let result;
+    let lines;
+    try {
+      result = await mirrorBoard({
+        repoRoot,
+        now: FIXED_NOW,
+        hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => '' },
+      });
+      lines = stderr.mock.calls.map((c) => String(c[0]));
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(result).toEqual({ action: 'skipped-vault-not-canonical' });
+    expect(existsSync(boardPath)).toBe(false);
+    const refusals = lines.filter((l) => l.startsWith('vault-status board: refusing'));
+    expect(refusals).toEqual([
+      'vault-status board: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: /agents/vault; got no git origin)\n',
+    ]);
+  });
+
+  it('refuses a foreign origin on the dry-run path too (fail-closed)', async () => {
+    const { repoRoot } = setup('guard-foreign-dry');
+    const result = await mirrorBoard({
+      repoRoot,
+      now: FIXED_NOW,
+      dryRun: true,
+      hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => 'git@gitlab.example.com:someone/other-vault.git' },
+    });
+    expect(result).toEqual({ action: 'skipped-vault-not-canonical' });
+  });
+
+  it('writes when VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 is set in the injected env', async () => {
+    const { repoRoot, boardPath } = setup('guard-skip-env');
+    const result = await mirrorBoard({
+      repoRoot,
+      now: FIXED_NOW,
+      hostPaths: {
+        env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' },
+        ownerConfig: undefined,
+        readOriginUrl: () => '',
+      },
+    });
+    expect(result.action).toBe('written');
+    expect(existsSync(boardPath)).toBe(true);
   });
 });

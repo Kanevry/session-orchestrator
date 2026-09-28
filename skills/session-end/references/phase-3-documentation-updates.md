@@ -208,7 +208,7 @@ const boardResult = await mirrorBoard({
   repoRoot: process.cwd(),
   explicitStatus: 'closed',        // force THIS repo's row to `closed`
 });
-// boardResult.action ∈ { 'written', 'skipped-noop', 'skipped-handwritten', 'skipped-vault-disabled', 'dry-run' }
+// boardResult.action ∈ { 'written', 'skipped-noop', 'skipped-handwritten', 'skipped-vault-disabled', 'skipped-vault-not-canonical', 'dry-run' }
 ```
 
 > **Note (single-repo close path):** with `repos` omitted, `mirrorBoard` builds the repo descriptor itself as `[{ repoRoot, status: explicitStatus }]` — this is the supported single-repo shape, so `explicitStatus: 'closed'` lands on THIS repo's row. (When a caller DOES pass `repos`, each element must be a `{ repoRoot, repoName?, status? }` object, NOT a bare path string — bare strings are silently skipped by `collectRows`.) The board at `<vault-dir>/01-projects/_active-sessions.md` is generator-owned: `mirrorBoard` refuses to touch any file lacking the `session-orchestrator-active-sessions@1` marker, hard-refuses `_overview.md`, and is idempotent (a re-run after the row is already `closed` returns `skipped-noop`). Rows for repos NOT in this update are preserved verbatim by the idempotent merge.

@@ -4,6 +4,8 @@ Date: 2026-09-19. Branch: `codex/session-entrypoints`. Implementation: `176b605c
 
 **Next-session priority: #1391.** The user explicitly assigned integration to the next session and requested that these fixes be active in the next release. Keep #1391 open through publication, production installation refresh and operational acceptance. Related existing work: #1263 and #1266; the latter still requires a visible desktop picker check.
 
+The [close evidence](2026-09-19-codex-session-entrypoints-close.md) of the session that produced this handover records the gate results, review findings and the pushed tree.
+
 ## What was wrong, and what changed
 
 This was a combination of adapter drift and argument handling, not evidence that Codex has no `go` or `close` support. The installed plugin already exposed those entries to native discovery. The portable generator, however, copied only skills and omitted command-only `session`. Passing a mode together with task prose also lacked an explicit leading-token boundary. The default remains `deep`; `housekeeping` and `ultradeep` are arguments to `session`, not separate commands. No `/start` alias was added.

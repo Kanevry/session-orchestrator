@@ -73,7 +73,15 @@ const FIXED_NOW = new Date('2026-06-18T12:00:00.000Z');
  * board. Every `sweepBoard()` call below MUST pass this hermetic ctx so the
  * fixture's `vault-dir:` value is what actually resolves.
  */
-const HERMETIC_HOST_PATHS = { env: {}, ownerConfig: undefined };
+/**
+ * The tmp vaults below have no git origin, so the canonical-vault guard (#1450)
+ * would refuse every write; the hermetic ctx injects a canonical origin instead.
+ */
+const HERMETIC_HOST_PATHS = {
+  env: {},
+  ownerConfig: undefined,
+  readOriginUrl: () => 'git@gitlab.example.com:agents/vault.git',
+};
 
 let cleanupDirs;
 let prevRegistryDir;
@@ -631,7 +639,7 @@ describe('sweepBoard — hostPaths forwarding (load-bearing, #783 falsification)
       now: FIXED_NOW,
       dryRun: true,
       deps: NO_CROSS_REPO_DEPS,
-      hostPaths: { env: {}, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
+      hostPaths: { ...HERMETIC_HOST_PATHS, ownerConfig: { paths: { 'vault-dir': fakeVaultDir } } },
     });
 
     // Falsification proof: if sweepBoard stopped forwarding `hostPaths` to

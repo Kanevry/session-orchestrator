@@ -16,6 +16,10 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import {
   parseNamedVaults,
@@ -24,6 +28,8 @@ import {
   resolveCanonicalSuffixes,
   findRepoRoot,
   resolveNamedVault,
+  normalizeRemote,
+  checkCanonicalVault,
 } from '../../scripts/lib/named-vault-resolver.mjs';
 
 // ---------------------------------------------------------------------------
@@ -696,5 +702,89 @@ describe('resolveNamedVault — default remote resolution (#1039)', () => {
     expect(noRepoRoot.remoteError).toBeUndefined();
     expect(noOrgMatch.remoteError).toBeUndefined();
     expect(noOrgMatch.source).toBe('fallback');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeRemote / checkCanonicalVault — the shared canonical-vault guard
+// (#1450: board-writer wrote into a foreign vault because only vault-mirror
+// carried this check)
+// ---------------------------------------------------------------------------
+
+describe('normalizeRemote', () => {
+  it('reduces ssh and https forms of the same remote to one host/path tail', () => {
+    expect(normalizeRemote('git@gitlab.example.com:agents/vault.git')).toBe('gitlab.example.com/agents/vault');
+    expect(normalizeRemote('https://gitlab.example.com/agents/vault.git\n')).toBe('gitlab.example.com/agents/vault');
+    expect(normalizeRemote('ssh://git@gitlab.example.com/agents/vault/')).toBe('git@gitlab.example.com/agents/vault');
+    expect(normalizeRemote(undefined)).toBe('');
+  });
+});
+
+describe('checkCanonicalVault', () => {
+  const CANONICAL = 'git@gitlab.example.com:agents/vault.git';
+
+  it('skips the check only when VAULT_MIRROR_SKIP_CANONICAL_CHECK is exactly "1"', () => {
+    const readOriginUrl = () => {
+      throw new Error('must not be called when the check is skipped');
+    };
+    const res = checkCanonicalVault({
+      vaultDir: '/vault', env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1' }, readOriginUrl,
+    });
+    expect(res).toEqual({ ok: true, reason: 'skipped-by-env', expected: ['/agents/vault'] });
+
+    const notSkipped = checkCanonicalVault({
+      vaultDir: '/vault', env: { VAULT_MIRROR_SKIP_CANONICAL_CHECK: 'true' }, readOriginUrl: () => '',
+    });
+    expect(notSkipped.ok).toBe(false);
+  });
+
+  it('refuses a vault without a git origin', () => {
+    const res = checkCanonicalVault({ vaultDir: '/vault', env: {}, readOriginUrl: () => '' });
+    expect(res).toEqual({ ok: false, reason: 'no-git-origin', expected: ['/agents/vault'] });
+  });
+
+  it('refuses a vault whose origin does not end in a canonical suffix', () => {
+    const res = checkCanonicalVault({
+      vaultDir: '/vault', env: {}, readOriginUrl: () => 'git@gitlab.example.com:someone/other-vault.git',
+    });
+    expect(res).toEqual({
+      ok: false,
+      reason: 'not-canonical',
+      got: 'git@gitlab.example.com:someone/other-vault.git',
+      expected: ['/agents/vault'],
+    });
+  });
+
+  it('accepts a canonical origin in ssh and https form, and honours named-vault suffixes', () => {
+    expect(checkCanonicalVault({ vaultDir: '/v', env: {}, readOriginUrl: () => CANONICAL }).ok).toBe(true);
+    expect(
+      checkCanonicalVault({ vaultDir: '/v', env: {}, readOriginUrl: () => 'https://gitlab.example.com/agents/vault.git' }).ok,
+    ).toBe(true);
+    const ownerConfig = { vaults: [{ name: 'team', suffix: '/team/notes', root: '~/team-notes' }] };
+    expect(
+      checkCanonicalVault({ vaultDir: '/v', ownerConfig, env: {}, readOriginUrl: () => 'git@gitlab.example.com:team/notes.git' }),
+    ).toEqual({ ok: true, expected: ['/team/notes'] });
+    // With named vaults configured the default suffix no longer qualifies.
+    expect(checkCanonicalVault({ vaultDir: '/v', ownerConfig, env: {}, readOriginUrl: () => CANONICAL }).ok).toBe(false);
+  });
+
+  it('is fail-closed when reading the origin throws', () => {
+    const res = checkCanonicalVault({
+      vaultDir: '/v', env: {}, readOriginUrl: () => { throw new Error('spawn git ENOENT'); },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe('no-git-origin');
+  });
+
+  it('default origin reader: a real git repo without an origin remote is refused', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'canonical-vault-check-'));
+    try {
+      const init = spawnSync('git', ['init', '-q', dir], { encoding: 'utf8' });
+      expect(init.status).toBe(0);
+      const res = checkCanonicalVault({ vaultDir: dir, env: {} });
+      expect(res).toEqual({ ok: false, reason: 'no-git-origin', expected: ['/agents/vault'] });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

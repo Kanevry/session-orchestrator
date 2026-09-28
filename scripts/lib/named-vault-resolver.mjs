@@ -47,10 +47,13 @@
  *   resolveCanonicalSuffixes({ ownerConfig, env })
  *   findRepoRoot(cwd, { existsSync, realpathSync })
  *   resolveNamedVault({ vaultName, cwd, ownerConfig, env, gitRemote, existsSync, realpathSync })
+ *   normalizeRemote(url)
+ *   checkCanonicalVault({ vaultDir, ownerConfig, env, readOriginUrl })
  */
 
 import { join, dirname } from 'node:path';
 import { existsSync as nodeExistsSync, realpathSync as nodeRealpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { resolvePreferredRemote, isQueryFailure } from './vcs-repo-spec.mjs';
 
 // ---------------------------------------------------------------------------
@@ -256,6 +259,68 @@ export function resolveCanonicalSuffixes({ ownerConfig, env = process.env } = {}
 }
 
 // ---------------------------------------------------------------------------
+// checkCanonicalVault — the canonical-vault write guard (#1450)
+// ---------------------------------------------------------------------------
+
+/**
+ * Default origin reader: `git -C <vaultDir> remote get-url origin`. Returns
+ * `''` on a spawn error or a non-zero exit, so every failure reads as "no
+ * origin" and the guard stays fail-closed.
+ * @param {string} vaultDir
+ * @returns {string}
+ */
+function _defaultReadOriginUrl(vaultDir) {
+  const res = spawnSync('git', ['-C', vaultDir, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
+  if (res.error || res.status !== 0) return '';
+  return String(res.stdout ?? '').trim();
+}
+
+/**
+ * Decide whether `vaultDir` is a canonical Meta-Vault, i.e. whether its git
+ * `origin` ends in one of {@link resolveCanonicalSuffixes}. Shared by every
+ * writer into the vault so none of them can write into a foreign vault that
+ * `vault-dir` happened to resolve to.
+ *
+ * Fail-closed: a missing origin, a failing or throwing reader, and a suffix
+ * resolution that throws all return `ok: false`. The only bypass is the
+ * existing `VAULT_MIRROR_SKIP_CANONICAL_CHECK === '1'` switch, read from the
+ * `env` passed in (never from the ambient process.env when `env` is given).
+ *
+ * @param {{
+ *   vaultDir: string,
+ *   ownerConfig?: object,
+ *   env?: Record<string, string|undefined>,
+ *   readOriginUrl?: (vaultDir: string) => string,
+ * }} opts
+ * @returns {{ ok: boolean, reason?: 'skipped-by-env'|'no-git-origin'|'not-canonical', got?: string, expected: string[] }}
+ */
+export function checkCanonicalVault({ vaultDir, ownerConfig, env = process.env, readOriginUrl = _defaultReadOriginUrl } = {}) {
+  let expected;
+  try {
+    expected = resolveCanonicalSuffixes({ ownerConfig, env });
+  } catch {
+    return { ok: false, reason: 'not-canonical', expected: [] };
+  }
+  if (env?.VAULT_MIRROR_SKIP_CANONICAL_CHECK === '1') {
+    return { ok: true, reason: 'skipped-by-env', expected };
+  }
+
+  let url;
+  try {
+    url = String(readOriginUrl(vaultDir) ?? '').trim();
+  } catch {
+    url = '';
+  }
+  if (!url) return { ok: false, reason: 'no-git-origin', expected };
+
+  const normalized = normalizeRemote(url);
+  if (!expected.some((s) => normalized.endsWith(s))) {
+    return { ok: false, reason: 'not-canonical', got: url, expected };
+  }
+  return { ok: true, expected };
+}
+
+// ---------------------------------------------------------------------------
 // findRepoRoot — injectable IO
 // ---------------------------------------------------------------------------
 
@@ -414,7 +479,7 @@ export function resolveNamedVault({
 
         // Guard: if this repo IS one of the vaults, skip (don't self-mirror)
         const canonicalSuffixes = canonicalSuffixesFromVaults(vaults, env?.VAULT_MIRROR_CANONICAL_SUFFIX);
-        const normalized = _normalizeRemoteUrl(remoteUrl);
+        const normalized = normalizeRemote(remoteUrl);
         if (canonicalSuffixes.some((s) => normalized.endsWith(s))) {
           // This is the vault itself — fall through to fallback
         } else {
@@ -460,11 +525,14 @@ function _resolveEnvSuffix(env) {
 }
 
 /**
- * Normalize a git remote URL to host/path tail (mirrors vault-mirror.mjs _normalizeRemote).
+ * Normalize a git remote URL to a host/path tail for canonical-suffix matching.
+ * Strips `.git`, the `git@host:` / scheme prefixes, and trailing slashes —
+ * byte-identical to vault-mirror.mjs `_normalizeRemote`, which predates this
+ * export and can import it from here.
  * @param {string} url
  * @returns {string}
  */
-function _normalizeRemoteUrl(url) {
+export function normalizeRemote(url) {
   return String(url ?? '')
     .trim()
     .replace(/\.git$/, '')
@@ -480,7 +548,7 @@ function _normalizeRemoteUrl(url) {
  * @returns {string}
  */
 function _deriveSlugFromRemote(url) {
-  const normalized = _normalizeRemoteUrl(url);
+  const normalized = normalizeRemote(url);
   // normalized is now 'host/path/to/repo' — take the last two segments
   const parts = normalized.split('/').filter(Boolean);
   if (parts.length >= 2) {
