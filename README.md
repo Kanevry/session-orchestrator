@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.3.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.4.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -123,9 +123,9 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.3.0)
+## Recent highlights (v5.4.0)
 
-Highlights of the v5.3.0 line:
+Highlights of the v5.4.0 line:
 
 - **Gate commands die as a group now.** Both quality-gate paths start every command in its own process group and, on timeout, signal the whole group — SIGTERM, a grace period, then SIGKILL — instead of just the shell. The previously uncapped path B carries a 900 s ceiling and reports exit 124. Root cause was measured on 2026-09-20: four orphaned `tsgo --noEmit` processes at up to 8 GB each froze the host after a plain shell kill left them at PPID 1 (#1425, #1427, #1428).
 - **An orphan watchdog, shipped off.** `scripts/lib/orphan-reaper.mjs` decides purely (own ancestry register ∧ PPID 1 ∧ age ∧ read-only allowlist ∧ identity re-checked before every signal) and runs detached from two hooks, throttled to one scan per 30 s. `reaper.enabled` defaults to `false` and `mode` to `report`; arming `kill` waits for a measured false-alarm rate (ADR-0015, HR-107).
