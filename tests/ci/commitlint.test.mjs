@@ -76,7 +76,7 @@ function makeRepo(messages) {
 }
 
 /**
- * Execute the committed script block with an explicit CI environment. The four
+ * Execute the committed script block with an explicit CI environment. The three
  * range variables are always set (empty string = unset) so a real GitLab runner
  * running this suite cannot leak its own values in.
  * @param {string} dir
@@ -123,6 +123,9 @@ describe('commitlint job is wired as a hard, non-scheduled gate', () => {
 });
 
 describe('commitlint job lints the merge-request range', () => {
+  // Every MR case passes `before: head`, the shape real MR pipelines carry (27 of the
+  // last 40 had before_sha == sha, measured 2026-09-29): it pins the MR-base-first
+  // precedence — checked the other way round, those pipelines would see an empty range.
   // Boundary of header-max-length 120 in commitlint.config.mjs: proves the job runs the
   // repo's config over the range instead of just exiting 0.
   it.each([
@@ -131,26 +134,26 @@ describe('commitlint job lints the merge-request range', () => {
   ])('%s -> exit %i', (_label, header, expected) => {
     expect(header.length).toBe(expected === 0 ? 120 : 121);
     const { dir, base, head } = makeRepo(['fix: fine', header]);
-    const { status, out } = runJob(dir, { mrBase: base, sha: head });
+    const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).toBe(expected);
   });
 
   it('a non-conventional type in the middle of the range fails the job', () => {
     // Catches a job that lints only the tip commit (`build` is not in type-enum).
     const { dir, base, head } = makeRepo(['build: bump', 'fix: fine']);
-    const { status, out } = runJob(dir, { mrBase: base, sha: head });
+    const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).not.toBe(0);
   });
 
   it('valid commits plus a GitLab merge commit and a Revert pass', () => {
     // Catches a config that starts rejecting the merge commits GitLab itself creates
-    // (config-conventional default ignores; measured 2026-09-29).
+    // (commitlint's built-in default ignores, @commitlint/is-ignored; measured 2026-09-29).
     const { dir, base, head } = makeRepo([
       'fix: fine',
       "Merge branch 'fix/x' into 'main'",
       'Revert "fix: fine"',
     ]);
-    const { status, out } = runJob(dir, { mrBase: base, sha: head });
+    const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).toBe(0);
     expect(out).toContain('[commitlint] range');
   });
@@ -176,9 +179,11 @@ describe('commitlint job fails closed', () => {
 
 describe('commitlint job range fallbacks on non-MR pipelines', () => {
   it('uses the push before-sha when present', () => {
-    // Branch pipeline: only commits new in this push are linted, not the whole history.
-    const { dir, base, head } = makeRepo(['fix: fine']);
-    const { status, out } = runJob(dir, { before: base, sha: head });
+    // Branch pipeline: only commits new in this push are linted, not the whole history —
+    // the non-conforming commit sits just below the range and must not turn it red.
+    const { dir, head } = makeRepo(['not conventional', 'fix: fine']);
+    const before = git(dir, ['rev-parse', 'HEAD~1']);
+    const { status, out } = runJob(dir, { before, sha: head });
     expect(status, out).toBe(0);
     expect(out).toContain('push before-sha');
   });

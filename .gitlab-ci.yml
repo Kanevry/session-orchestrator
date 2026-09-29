@@ -356,7 +356,10 @@ lint:
 #
 # Why CI and not only the husky `commit-msg` hook: the hook is inactive in a
 # fresh clone until `npx husky` has run, absent for Codex / web edits, and
-# skipped by `--no-verify`. CI is the one place every commit must pass.
+# skipped by `--no-verify`. An MR's pipeline re-lints the whole MR range on
+# every push; a direct push to a branch is linted per push only, so a push
+# pipeline that is auto-cancelled leaves its commits unlinted (see
+# docs/ci-setup.md § commitlint for the measured gap and its revisit trigger).
 #
 # GIT_DEPTH "0": the project default clone depth is 20, so the range base can be
 # missing from a shallow clone (same setting as `semgrep`, for its baseline).
@@ -369,8 +372,9 @@ lint:
 # Fail-closed: `commitlint --from X --to Y` exits 0 over an EMPTY range (measured
 # 2026-09-29, @commitlint/cli 19.8.1), so the script rejects an empty range and a
 # base missing from the clone itself — "nothing was checked" is not a pass.
-# Merge commits and `Revert "..."` are ignored by config-conventional's default
-# ignores (measured 2026-09-29), so GitLab's own merge commits do not fail here.
+# Merge commits, `Revert "..."`, `fixup!`/`squash!` and version-only headers are
+# skipped by commitlint's built-in default ignores (@commitlint/is-ignored, not
+# config-conventional; measured 2026-09-29), so GitLab's merge commits pass.
 # Rule set: commitlint.config.mjs. `<<: *node-setup` provides `npm ci`, hence the
 # local @commitlint/cli; `--no` stops npx from fetching anything else.
 commitlint:
@@ -394,7 +398,7 @@ commitlint:
       fi;
       echo "[commitlint] range $from..$CI_COMMIT_SHA ($src)";
       if ! git cat-file -e "$from^{commit}" 2>/dev/null; then
-        echo "[commitlint] FAIL: range base $from is not in this clone - nothing was checked"; exit 1;
+        echo "[commitlint] FAIL: range base $from is not in this clone (shallow clone, or a force-push replaced it) - nothing was checked"; exit 1;
       fi;
       if [ "$(git rev-list --count "$from..$CI_COMMIT_SHA")" -eq 0 ]; then
         echo "[commitlint] FAIL: empty range - nothing was checked, which is not a pass"; exit 1;

@@ -438,8 +438,17 @@ clone until `npx husky` has run, absent for Codex / web edits, and skipped by
 - **`GIT_DEPTH: "0"`.** The project default clone depth is 20, so the range base
   can be absent from a shallow clone. `semgrep` uses the same setting for its
   baseline commit.
-- **Merge commits and `Revert "..."`** are ignored by `config-conventional`'s
-  default ignores (measured 2026-09-29), so GitLab's own merge commits pass.
+- **Skipped headers.** Merge commits, `Revert "..."`, `fixup!`/`squash!` and
+  version-only headers are skipped by commitlint's built-in default ignores
+  (`@commitlint/is-ignored`, not `config-conventional`; measured 2026-09-29), so
+  GitLab's own merge commits pass. The husky hook applies the same ignores.
+- **Coverage gap (known, measured 2026-09-29).** An MR pipeline re-lints the
+  whole MR range on every push. A direct push is linted per push only
+  (`before-sha..sha`), and every job here is `interruptible`, so a push pipeline
+  auto-cancelled by the next push leaves its commits unlinted: 11 of the last
+  100 `main` pipelines were cancelled, 7 of them carrying direct-push commits.
+  A squash merge takes the MR title, which the MR pipeline never lints. Revisit
+  when a non-conforming commit is found on `main`.
 - Hard-`needs`-ed by `pipeline-gate` and on the shared gate rules, so it runs on
   every non-scheduled pipeline. Behavioural tests: `tests/ci/commitlint.test.mjs`
   (they execute the committed script block against temp git repos).
