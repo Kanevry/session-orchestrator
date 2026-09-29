@@ -139,9 +139,10 @@ function jsonlPath() {
  * tokens and model; the session rollup counts it as an unpriced cost candidate
  * (#1474) instead of reading it. Frequency per issue #1474 (2026-09-29): 2 of
  * 10,482 subagent transcripts exceeded this size. REVISIT when oversized
- * transcripts exceed ~0.1% of found stop records, or a session's cost is
- * reported as under-counted — then read large transcripts streamed instead of
- * skipping them.
+ * transcripts exceed ~0.1% of found stop records — count them from transcript
+ * sizes, because the ledger writes the same token-less record for an oversized,
+ * a usage-free and an unreadable transcript — then read large transcripts
+ * streamed instead of skipping them.
  */
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // ~50 MB
 

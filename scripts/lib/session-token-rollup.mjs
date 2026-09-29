@@ -69,8 +69,9 @@
  * is worse than no cost, because it reads as a complete one. `cost_records_priced`
  * / `cost_records_total` say how much of the session the estimate covers.
  * Two record shapes bypass `costUsd()` (#1474): a record whose four token
- * buckets are all 0 is priced at $0 whatever its model, and a v2 record with a
- * found transcript but no tokens (oversized, or no usage turns) counts in
+ * buckets are all 0 is priced at $0 whatever its model (it never turns a null
+ * total into a number on its own), and a v2 record with a found transcript but
+ * no tokens (oversized, no usage turns, or unreadable) counts in
  * `cost_records_total` only — it lowers the covered share without touching
  * `total_cost_usd`.
  *
@@ -126,9 +127,9 @@ function isV2(record) {
  * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached across v2 token-bearing records.
  * @property {number|null}  total_token_cache_read     - Sum of token_cache_read across v2 token-bearing records.
  * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation across v2 token-bearing records.
- * @property {number|null}  total_cost_usd     - Σ cost over the records counted in cost_records_priced; null when ANY v2 record with tokens carries an unknown model (never 0 — see telemetry/pricing.mjs).
+ * @property {number|null}  total_cost_usd     - Σ cost over the records counted in cost_records_priced; null when no record with a non-zero bucket was priced (all-zero and token-less records alone never yield a fabricated $0), or when ANY v2 record with a non-zero bucket carries an unknown model (never 0 — see telemetry/pricing.mjs).
  * @property {number}       cost_records_priced - How many v2 token-bearing records carry a known cost: priced by the table, or all four token buckets 0 (priced at $0 whatever the model, #1474).
- * @property {number}       cost_records_total  - How many v2 token-bearing records were candidates for pricing — including a record with no tokens (transcript found but oversized or without usage turns, #1474), whose cost is unknown. priced < total means part of the session's cost is missing from total_cost_usd.
+ * @property {number}       cost_records_total  - How many v2 token-bearing records were candidates for pricing — including a record with no tokens (transcript found but oversized, without usage turns, or unreadable, #1474), whose cost is unknown. priced < total means part of the session's cost is missing from total_cost_usd.
  * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every total above because their schema_version < 2 (their token_input is a different quantity).
  * @property {2}            _token_schema      - The token contract these totals were computed under.
  */
@@ -281,7 +282,10 @@ export function rollupSessionTokens({
         costUnknownModel = true;
       } else {
         costPriced += 1;
-        sumCost = (sumCost ?? 0) + cost;
+        // An all-zero record adds nothing, so it must not be what turns
+        // `sumCost` from null into a number: next to a token-less record it
+        // would persist a fabricated $0 for a session whose real cost is unknown.
+        if (!allZero) sumCost = (sumCost ?? 0) + cost;
       }
     } else {
       // #1474 — the subagent's own transcript was found but yielded no tokens:

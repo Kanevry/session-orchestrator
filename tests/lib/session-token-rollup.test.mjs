@@ -689,6 +689,35 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(r.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
     expect(r.cost_records_priced).toBe(2);
     expect(r.cost_records_total).toBe(2);
+
+    // Bug caught: next to a token-less (oversized) record, the $0 record alone
+    // turned an unknown session cost into a persisted, complete-looking 0.
+    const unknownCost = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([
+        stop({
+          agent_id: 'oversized',
+          token_input: null,
+          token_input_uncached: null,
+          token_cache_read: null,
+          token_cache_creation: null,
+          token_output: null,
+          model: null,
+        }),
+        stop({
+          agent_id: 'synthetic',
+          token_input: 0,
+          token_input_uncached: 0,
+          token_cache_read: 0,
+          token_cache_creation: 0,
+          token_output: 0,
+          model: '<synthetic>',
+        }),
+      ]),
+    });
+    expect(unknownCost.total_cost_usd).toBeNull();
+    expect(unknownCost.cost_records_priced).toBe(1);
+    expect(unknownCost.cost_records_total).toBe(2);
   });
 });
 
