@@ -68,6 +68,11 @@
  * priced record carries a model the price table does not know — a partial cost
  * is worse than no cost, because it reads as a complete one. `cost_records_priced`
  * / `cost_records_total` say how much of the session the estimate covers.
+ * Two record shapes bypass `costUsd()` (#1474): a record whose four token
+ * buckets are all 0 is priced at $0 whatever its model, and a v2 record with a
+ * found transcript but no tokens (oversized, or no usage turns) counts in
+ * `cost_records_total` only — it lowers the covered share without touching
+ * `total_cost_usd`.
  *
  * @module session-token-rollup
  */
@@ -121,9 +126,9 @@ function isV2(record) {
  * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached across v2 token-bearing records.
  * @property {number|null}  total_token_cache_read     - Sum of token_cache_read across v2 token-bearing records.
  * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation across v2 token-bearing records.
- * @property {number|null}  total_cost_usd     - Σ costUsd() over v2 token-bearing records; null when ANY of them carries an unknown model (never 0 — see telemetry/pricing.mjs).
- * @property {number}       cost_records_priced - How many token-bearing records the price table could price.
- * @property {number}       cost_records_total  - How many token-bearing records were candidates for pricing.
+ * @property {number|null}  total_cost_usd     - Σ cost over the records counted in cost_records_priced; null when ANY v2 record with tokens carries an unknown model (never 0 — see telemetry/pricing.mjs).
+ * @property {number}       cost_records_priced - How many v2 token-bearing records carry a known cost: priced by the table, or all four token buckets 0 (priced at $0 whatever the model, #1474).
+ * @property {number}       cost_records_total  - How many v2 token-bearing records were candidates for pricing — including a record with no tokens (transcript found but oversized or without usage turns, #1474), whose cost is unknown. priced < total means part of the session's cost is missing from total_cost_usd.
  * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every total above because their schema_version < 2 (their token_input is a different quantity).
  * @property {2}            _token_schema      - The token contract these totals were computed under.
  */
@@ -253,19 +258,39 @@ export function rollupSessionTokens({
       // model poisons the SESSION total — a cost covering some of the agents
       // reads as covering all of them.
       costTotal += 1;
-      const cost = costUsd({
-        model: record.model,
-        tokenInputUncached: record.token_input_uncached,
-        tokenCacheRead: record.token_cache_read,
-        tokenCacheCreation: record.token_cache_creation,
-        tokenOutput: record.token_output,
-      });
+      // #1474 — all four buckets 0 costs $0 whatever the model says. The hook
+      // names such a record by its last turn, typically `<synthetic>`, which
+      // the price table does not know; pricing it would null the session total
+      // for a record that added nothing to it.
+      const allZero = [
+        record.token_input_uncached,
+        record.token_cache_read,
+        record.token_cache_creation,
+        record.token_output,
+      ].every((v) => v === 0);
+      const cost = allZero
+        ? 0
+        : costUsd({
+            model: record.model,
+            tokenInputUncached: record.token_input_uncached,
+            tokenCacheRead: record.token_cache_read,
+            tokenCacheCreation: record.token_cache_creation,
+            tokenOutput: record.token_output,
+          });
       if (cost === null) {
         costUnknownModel = true;
       } else {
         costPriced += 1;
         sumCost = (sumCost ?? 0) + cost;
       }
+    } else {
+      // #1474 — the subagent's own transcript was found but yielded no tokens:
+      // it exceeded the hook's MAX_TRANSCRIPT_BYTES and was not read, or it held
+      // no usage turns. Either way the agent ran and its cost is unknown, so it
+      // counts as an unpriced candidate (total, not priced) — the gap stays
+      // visible as priced < total. It does NOT null `total_cost_usd`; that
+      // stays "Σ over priced records, null only on an unknown model".
+      costTotal += 1;
     }
   }
 

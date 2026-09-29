@@ -647,6 +647,49 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(known.cost_records_priced).toBe(1);
     expect(known.cost_records_total).toBe(1);
   });
+
+  it('counts a found transcript without tokens as an unpriced cost candidate (#1474)', () => {
+    // Bug caught: an oversized (> 50 MiB) transcript yields a token-less record that fell out of both counts, so priced == total hid the missing cost.
+    const path = write([
+      stop({ agent_id: 'known' }),
+      stop({
+        agent_id: 'oversized',
+        token_input: null,
+        token_input_uncached: null,
+        token_cache_read: null,
+        token_cache_creation: null,
+        token_output: null,
+        model: null,
+      }),
+    ]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(2);
+    expect(r.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
+    expect(r.subagents_with_tokens).toBe(1);
+  });
+
+  it('prices an all-zero-bucket record at $0 whatever its model (#1474)', () => {
+    // Bug caught: a 0-token `<synthetic>` record hit the unknown-model path and nulled a session total it added nothing to.
+    const path = write([
+      stop({ agent_id: 'known' }),
+      stop({
+        agent_id: 'synthetic',
+        token_input: 0,
+        token_input_uncached: 0,
+        token_cache_read: 0,
+        token_cache_creation: 0,
+        token_output: 0,
+        model: '<synthetic>',
+      }),
+    ]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
+    expect(r.cost_records_priced).toBe(2);
+    expect(r.cost_records_total).toBe(2);
+  });
 });
 
 // #1436 — total_tokens is the figure the autopilot token budget compares

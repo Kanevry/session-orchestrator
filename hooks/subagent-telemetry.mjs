@@ -133,7 +133,15 @@ function jsonlPath() {
  * Defense-in-depth byte ceiling for transcript reads (#624). The transcript path
  * is harness-trusted, so this is not an exploitable vector — but the repo follows
  * a bounded-read discipline: a pathologically large transcript is skipped (yields
- * the empty/zero-usage result) rather than read whole into memory.
+ * the null-usage result) rather than read whole into memory.
+ *
+ * CEILING: a skipped transcript yields a stop record with found=true but null
+ * tokens and model; the session rollup counts it as an unpriced cost candidate
+ * (#1474) instead of reading it. Frequency per issue #1474 (2026-09-29): 2 of
+ * 10,482 subagent transcripts exceeded this size. REVISIT when oversized
+ * transcripts exceed ~0.1% of found stop records, or a session's cost is
+ * reported as under-counted — then read large transcripts streamed instead of
+ * skipping them.
  */
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // ~50 MB
 
@@ -572,8 +580,8 @@ function extractTranscriptUsage(transcriptPath) {
     // because the ledger cannot tell a mixed-model null from a missing model
     // (both are `null`). The fallback also names the LAST model of a transcript
     // whose turns all carry 0 tokens — measured 2026-09-29, 31 of 10,479 records,
-    // all `<synthetic>`; the rollup then counts the record as unpriced although it
-    // cost $0. Follow-up, not built here.
+    // all `<synthetic>`; the session rollup prices a record whose four buckets
+    // are all 0 at $0 regardless of its model (#1474), so that name is harmless.
     if (unattributed || billedModels.size > 1) model = null;
     else if (billedModels.size === 1) [model] = billedModels;
 
