@@ -733,6 +733,19 @@ describe('subagent-telemetry hook', () => {
       expect(record.token_output).toBe(70);
     });
 
+    it('records model null when a token-bearing turn names no model, never the other turn model', async () => {
+      // Bug: the model-less turn was summed but skipped as an observation, so the
+      // whole record was priced at the one model that WAS named (~50x too cheap here).
+      const record = await stopRecord(
+        'unattributed-agent',
+        turn('req_U1', 'claude-sonnet-5-5', 10, 0, 0, 10) +
+          turn('req_U2', undefined, 0, 0, 0, 1_000_000),
+      );
+
+      expect(record.model).toBeNull();
+      expect(record.token_output).toBe(1_000_010);
+    });
+
     it('falls back to the last model when no turn carries any billable token', async () => {
       const record = await stopRecord(
         'zero-agent',

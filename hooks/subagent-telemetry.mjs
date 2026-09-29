@@ -428,9 +428,9 @@ function readStdinJson() {
  * kept turn is token-bearing when its four clamped buckets sum to > 0. Exactly
  * one distinct `message.model` across the token-bearing turns → that model;
  * zero-token turns of another model (a trailing `<synthetic>` turn) are ignored.
- * Two or more → null, an honest unknown, with the token sums unchanged. No
- * token-bearing turn at all → the last kept block that carries one (null when
- * absent).
+ * Two or more, or a token-bearing turn that names no model → null, an honest
+ * unknown, with the token sums unchanged. No token-bearing turn at all → the
+ * last kept block that carries one (null when absent).
  *
  * @param {string|undefined|null} transcriptPath — absolute path from stdin
  * @returns {{ tokenInputUncached: number|null, tokenCacheRead: number|null,
@@ -532,6 +532,8 @@ function extractTranscriptUsage(transcriptPath) {
     let model = null;
     /** Distinct models of the token-bearing kept turns (#1470). */
     const billedModels = new Set();
+    /** A token-bearing turn that names no model: its price is unknowable. */
+    let unattributed = false;
     // Per-turn clamp (#624): a turn's value counts ONLY when it is a non-negative
     // integer. A poisoned value (negative, NaN, float like 10.5) contributes 0 so
     // the good turns survive. An absent side contributes 0, not null.
@@ -545,14 +547,20 @@ function extractTranscriptUsage(transcriptPath) {
       tokenCacheRead += cacheRead;
       tokenCacheCreation += cacheCreation;
       tokenOutput += outTok;
-      if (turnModel === null) continue;
+      const billed = inTok + cacheRead + cacheCreation + outTok > 0;
+      if (turnModel === null) {
+        if (billed) unattributed = true;
+        continue;
+      }
       model = turnModel;
-      if (inTok + cacheRead + cacheCreation + outTok > 0) billedModels.add(turnModel);
+      if (billed) billedModels.add(turnModel);
     }
 
     // Model attribution (#1470): only a token-bearing turn is an observation of
     // its model; one distinct model → that model, two or more → null, none →
-    // the fallback above. CEILING: a mixed-model record is not priced — a null
+    // the fallback above. A token-bearing turn that names no model also gives
+    // null: its tokens must not be priced at whichever other model was named.
+    // CEILING: a mixed-model record is not priced — a null
     // model makes the session rollup count the record as unpriced, and
     // `total_cost_usd` becomes null. Measured 2026-09-29 over 10,745 subagent
     // transcripts under `~/.claude/projects`: 17 (0.16%) contained more than one
@@ -562,9 +570,12 @@ function extractTranscriptUsage(transcriptPath) {
     // storage change) and is deliberately not built. REVISIT when mixed records
     // exceed ~1% of token-bearing stop records — count them from the transcripts,
     // because the ledger cannot tell a mixed-model null from a missing model
-    // (both are `null`).
-    if (billedModels.size === 1) [model] = billedModels;
-    else if (billedModels.size > 1) model = null;
+    // (both are `null`). The fallback also names the LAST model of a transcript
+    // whose turns all carry 0 tokens — measured 2026-09-29, 31 of 10,479 records,
+    // all `<synthetic>`; the rollup then counts the record as unpriced although it
+    // cost $0. Follow-up, not built here.
+    if (unattributed || billedModels.size > 1) model = null;
+    else if (billedModels.size === 1) [model] = billedModels;
 
     // The aggregates are guaranteed non-negative integers by per-turn clamping
     // above (Σ of non-negative integers), so emit them directly.
@@ -803,7 +814,8 @@ async function main() {
     }
     if (tokenOutput !== null) record.token_output = tokenOutput;
 
-    // Model id (#1244) — null when the transcript exposes none. Cost is NOT
+    // Model id (#1244) — null when the transcript exposes none, or when its
+    // token-bearing turns are not attributable to one model (#1470). Cost is NOT
     // computed here: pricing lives in scripts/lib/telemetry/pricing.mjs and is
     // applied by the session rollup, so this hot-path hook keeps its import
     // graph unchanged.
