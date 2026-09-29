@@ -419,6 +419,31 @@ The trade-off that buys is registry availability — a registry outage fails thi
 job, and therefore the pipeline, without any code being wrong. Retry the job;
 do not make it `allow_failure`, which would restore the silent hole.
 
+## `commitlint` job (#1458)
+
+Runs `commitlint` (rule set: `commitlint.config.mjs`, Conventional Commits with
+`header-max-length 120`) over the commits a pipeline introduces. CI is needed in
+addition to the husky `commit-msg` hook because the hook is inactive in a fresh
+clone until `npx husky` has run, absent for Codex / web edits, and skipped by
+`--no-verify`.
+
+- **Range** `<from>..$CI_COMMIT_SHA`, first match wins: `CI_MERGE_REQUEST_DIFF_BASE_SHA`
+  (MR pipelines), else `CI_COMMIT_BEFORE_SHA` (branch pipelines), else the first
+  parent of the pipeline commit (a new branch has an all-zero before-sha). The
+  job logs the range and the commits it lints.
+- **Fail-closed.** `commitlint --from X --to Y` exits 0 over an *empty* range
+  (measured 2026-09-29, `@commitlint/cli` 19.8.1), so the script itself fails
+  when the range is empty or its base is missing from the clone. "Nothing was
+  checked" is never a pass.
+- **`GIT_DEPTH: "0"`.** The project default clone depth is 20, so the range base
+  can be absent from a shallow clone. `semgrep` uses the same setting for its
+  baseline commit.
+- **Merge commits and `Revert "..."`** are ignored by `config-conventional`'s
+  default ignores (measured 2026-09-29), so GitLab's own merge commits pass.
+- Hard-`needs`-ed by `pipeline-gate` and on the shared gate rules, so it runs on
+  every non-scheduled pipeline. Behavioural tests: `tests/ci/commitlint.test.mjs`
+  (they execute the committed script block against temp git repos).
+
 ## `pipeline-gate` — the fan-in job
 
 The last stage holds one job that depends on every blocking gate. It exists
