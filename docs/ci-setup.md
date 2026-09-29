@@ -443,10 +443,23 @@ nothing" are different failures:
    `allow_failure` job never blocks a dependent job, so `needs:` alone is blind
    to it.
 
-Coverage is required only on merge-request and default-branch pipelines (it is
-the slowest job at ~148s, and it re-runs a suite `test` has already run). On a
-plain branch pipeline `pipeline-gate` states that coverage was not measured —
-absent, but never silently absent.
+`coverage` runs only on the default branch (`main`). It is the most expensive
+job and re-runs a suite `test` has already run: across 14 MR pipelines
+(2026-09-27..29) it took 5.0 to 12.9 min, median 6.6 min, 29% of the MR job
+minutes (measured 2026-09-29 13:24 CEST). `pipeline-gate` requires
+`.ci-markers/coverage.ok` when `CI_COMMIT_BRANCH` is the default branch (push,
+web and api pipelines alike); on every MR and branch pipeline it prints
+`coverage: NOT MEASURED here` — absent, but never silently absent.
+
+Consequence: an MR no longer gets the thresholds (70/70/70/60, set in the
+vitest configuration) nor a second, instrumented full-suite run; both fire
+after the merge, so a coverage regression turns `main` red, not the MR. The
+MR page also loses its coverage percentage. The second run has caught things
+before: in the failed-job history (measured 2026-09-29, oldest 2026-05-11) 3 of
+14 failed `coverage` jobs were in MR pipelines, each with every `test` shard
+green. Revisit trigger: a `main` coverage failure whose MR pipeline was green,
+or a switch to measuring coverage inside the three `test` shards with
+`vitest --merge-reports`.
 
 ## Local pre-push gate
 
