@@ -352,6 +352,62 @@ lint:
     - npm run lint
   rules: *gate-rules
 
+# commitlint — Conventional Commits over the commits this pipeline introduces.
+#
+# Why CI and not only the husky `commit-msg` hook: the hook is inactive in a
+# fresh clone until `npx husky` has run, absent for Codex / web edits, and
+# skipped by `--no-verify`. An MR's pipeline re-lints the whole MR range on
+# every push; a direct push to a branch is linted per push only, so a push
+# pipeline auto-cancelled before this job finishes can leave its commits
+# unlinted (see docs/ci-setup.md § commitlint for the measured gap and its
+# revisit trigger).
+#
+# GIT_DEPTH "0": the project default clone depth is 20, so the range base can be
+# missing from a shallow clone (same setting as `semgrep`, for its baseline).
+#
+# Range `<from>..$CI_COMMIT_SHA`, first match wins: the merge-request diff base
+# (MR pipelines), else the push's before-sha (branch pipelines), else the first
+# parent of the pipeline commit (new branch or API/web run: before-sha is all
+# zeroes; on a merge commit `^1..` still covers every merged-in commit).
+#
+# Fail-closed: `commitlint --from X --to Y` exits 0 over an EMPTY range (measured
+# 2026-09-29, @commitlint/cli 19.8.1), so the script rejects an empty range and a
+# base missing from the clone itself — "nothing was checked" is not a pass.
+# Merge commits, `Revert "..."`, `fixup!`/`squash!` and version-only headers are
+# skipped by commitlint's built-in default ignores (@commitlint/is-ignored, not
+# config-conventional; measured 2026-09-29), so GitLab's merge commits pass.
+# Rule set: commitlint.config.mjs. `<<: *node-setup` provides `npm ci`, hence the
+# local @commitlint/cli; `--no` stops npx from fetching anything else.
+commitlint:
+  stage: validate
+  <<: *node-setup
+  interruptible: true
+  timeout: 10m
+  allow_failure: false
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - >
+      set -eu;
+      zero=0000000000000000000000000000000000000000;
+      if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+        from="$CI_MERGE_REQUEST_DIFF_BASE_SHA"; src="merge-request diff base";
+      elif [ -n "${CI_COMMIT_BEFORE_SHA:-}" ] && [ "$CI_COMMIT_BEFORE_SHA" != "$zero" ]; then
+        from="$CI_COMMIT_BEFORE_SHA"; src="push before-sha";
+      else
+        from="${CI_COMMIT_SHA}^1"; src="first parent of the pipeline commit";
+      fi;
+      echo "[commitlint] range $from..$CI_COMMIT_SHA ($src)";
+      if ! git cat-file -e "$from^{commit}" 2>/dev/null; then
+        echo "[commitlint] FAIL: range base $from is not in this clone (shallow clone, or a force-push replaced it) - nothing was checked"; exit 1;
+      fi;
+      if [ "$(git rev-list --count "$from..$CI_COMMIT_SHA")" -eq 0 ]; then
+        echo "[commitlint] FAIL: empty range - nothing was checked, which is not a pass"; exit 1;
+      fi;
+      git log --format='[commitlint]   %h %s' "$from..$CI_COMMIT_SHA";
+      npx --no -- commitlint --from "$from" --to "$CI_COMMIT_SHA" --verbose
+  rules: *gate-rules
+
 typecheck:
   stage: validate
   <<: *node-setup
@@ -807,6 +863,7 @@ pipeline-gate:
     - package-manager-guard
     - test
     - pack-lifecycle
+    - commitlint
     # Optional + artifacts — conditionally absent, judged by marker (mechanism 2).
     - job: coverage
       optional: true

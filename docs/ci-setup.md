@@ -419,6 +419,46 @@ The trade-off that buys is registry availability — a registry outage fails thi
 job, and therefore the pipeline, without any code being wrong. Retry the job;
 do not make it `allow_failure`, which would restore the silent hole.
 
+## `commitlint` job (#1458)
+
+Runs `commitlint` (rule set: `commitlint.config.mjs`, Conventional Commits with
+`header-max-length 120`) over the commits a pipeline introduces. CI is needed in
+addition to the husky `commit-msg` hook because the hook is inactive in a fresh
+clone until `npx husky` has run, absent for Codex / web edits, and skipped by
+`--no-verify`.
+
+- **Range** `<from>..$CI_COMMIT_SHA`, first match wins: `CI_MERGE_REQUEST_DIFF_BASE_SHA`
+  (MR pipelines), else `CI_COMMIT_BEFORE_SHA` (branch pipelines), else the first
+  parent of the pipeline commit (a new branch has an all-zero before-sha). The
+  job logs the range and the commits it lints.
+- **Fail-closed.** `commitlint --from X --to Y` exits 0 over an *empty* range
+  (measured 2026-09-29, `@commitlint/cli` 19.8.1), so the script itself fails
+  when the range is empty or its base is missing from the clone. "Nothing was
+  checked" is never a pass.
+- **`GIT_DEPTH: "0"`.** The project default clone depth is 20, so the range base
+  can be absent from a shallow clone. `semgrep` uses the same setting for its
+  baseline commit.
+- **Skipped headers.** Merge commits, `Revert "..."`, `fixup!`/`squash!` and
+  version-only headers are skipped by commitlint's built-in default ignores
+  (`@commitlint/is-ignored`, not `config-conventional`; measured 2026-09-29), so
+  GitLab's own merge commits pass. The husky hook applies the same ignores.
+- **Coverage gap (known, measured 2026-09-29).** An MR pipeline re-lints the
+  whole MR range on every push. A direct push is linted per push only
+  (`before-sha..sha`), and every job here is `interruptible`, so a push pipeline
+  auto-cancelled by the next push can leave its commits unlinted when that push
+  lands before the validate stage finishes. Of the last 100 `main` pipelines, 11
+  were cancelled (7 of them with direct-push commits), and in all 11 every
+  security and validate job had already finished — 0 were exposed. A squash
+  merge's commit (the MR title) is never linted by the MR pipeline, only by the
+  `main` pipeline after the merge, where a red job can no longer block it.
+  Two non-conforming commits reached `main` after `commitlint.config.mjs` was
+  added and before this job (`c99f57d9`, a 126-character header; `c5252e68`, a
+  `merge:` type). Revisit when a non-conforming commit lands on `main`
+  after this job: `npx --no -- commitlint --from <sha that added this job> --to origin/main`.
+- Hard-`needs`-ed by `pipeline-gate` and on the shared gate rules, so it runs on
+  every non-scheduled pipeline. Behavioural tests: `tests/ci/commitlint.test.mjs`
+  (they execute the committed script block against temp git repos).
+
 ## `pipeline-gate` — the fan-in job
 
 The last stage holds one job that depends on every blocking gate. It exists

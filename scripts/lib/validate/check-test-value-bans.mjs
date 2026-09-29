@@ -335,6 +335,20 @@ const keyLiteralRe = (key) => new RegExp(`["'\\\\]+${key}["'\\\\]+\\s*:`);
  * An absolute date pinned as the EXPECTED value of an equality assertion.
  * Input-position date literals (`created_at: '2026-06-21T…'`) do not match —
  * that is what keeps the passthrough class (input date === output date) out.
+ *
+ * CEILING (#1473): a fixed INPUT date that a production TTL ages out later is
+ * not flagged either, on purpose. Measured 2026-09-29 with a shim that moves
+ * `Date.now()` and `new Date()` forward in every vitest worker: the 34 test
+ * files (plus one fixture module) holding a fixed `created_at: '2026-05…09'`
+ * (1,211 tests) stayed green at +120, +365 and +3,650 days, so a rule keyed on
+ * fixed input dates would have reported false positives only. The one real
+ * bomb of that shape, the phase-skip fixture before 6670149c, was green at
+ * -60 days and red at +0 and +120 days under the same shim — and
+ * scanClockBombs() cannot reach that file either: it imports its subjects
+ * through the `@lib/` alias, not a relative path, and hands no clock argument
+ * to anything. REVISIT when a
+ * second fixed-input-date bomb lands on main: the class then recurs, and a
+ * clock-shift run of the suite is the check that finds it without guessing.
  */
 const DATE_EXPECTATION =
   /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
