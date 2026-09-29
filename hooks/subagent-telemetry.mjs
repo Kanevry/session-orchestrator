@@ -423,9 +423,14 @@ function readStdinJson() {
  * Four buckets, not two (#1244 / schema_version 2): `input_tokens`,
  * `cache_read_input_tokens`, `cache_creation_input_tokens` and `output_tokens`
  * are accumulated SEPARATELY per deduped turn, because they are billed at three
- * different rates. `model` is captured from `message.model` of the last kept
- * block that carries one (null when absent) — it is what makes a cost estimate
- * possible at all downstream.
+ * different rates. `model` is what makes a cost estimate possible at all
+ * downstream, so it names only a model that actually carried tokens (#1470): a
+ * kept turn is token-bearing when its four clamped buckets sum to > 0. Exactly
+ * one distinct `message.model` across the token-bearing turns → that model;
+ * zero-token turns of another model (a trailing `<synthetic>` turn) are ignored.
+ * Two or more → null, an honest unknown, with the token sums unchanged. No
+ * token-bearing turn at all → the last kept block that carries one (null when
+ * absent).
  *
  * @param {string|undefined|null} transcriptPath — absolute path from stdin
  * @returns {{ tokenInputUncached: number|null, tokenCacheRead: number|null,
@@ -523,21 +528,43 @@ function extractTranscriptUsage(transcriptPath) {
     let tokenCacheRead = 0;
     let tokenCacheCreation = 0;
     let tokenOutput = 0;
+    /** Last non-null model over ALL kept turns — the zero-token fallback. */
     let model = null;
+    /** Distinct models of the token-bearing kept turns (#1470). */
+    const billedModels = new Set();
+    // Per-turn clamp (#624): a turn's value counts ONLY when it is a non-negative
+    // integer. A poisoned value (negative, NaN, float like 10.5) contributes 0 so
+    // the good turns survive. An absent side contributes 0, not null.
+    const clamp = (value) => (Number.isInteger(value) && value >= 0 ? value : 0);
     for (const { usage, model: turnModel } of kept) {
-      // Per-turn clamp (#624): add a turn's value ONLY when it is a non-negative
-      // integer. A poisoned value (negative, NaN, float like 10.5) is skipped so
-      // the good turns survive. An absent side contributes 0, not null.
-      const inTok = usage.input_tokens;
-      const cacheRead = usage.cache_read_input_tokens;
-      const cacheCreation = usage.cache_creation_input_tokens;
-      const outTok = usage.output_tokens;
-      if (Number.isInteger(inTok) && inTok >= 0) tokenInputUncached += inTok;
-      if (Number.isInteger(cacheRead) && cacheRead >= 0) tokenCacheRead += cacheRead;
-      if (Number.isInteger(cacheCreation) && cacheCreation >= 0) tokenCacheCreation += cacheCreation;
-      if (Number.isInteger(outTok) && outTok >= 0) tokenOutput += outTok;
-      if (turnModel !== null) model = turnModel;
+      const inTok = clamp(usage.input_tokens);
+      const cacheRead = clamp(usage.cache_read_input_tokens);
+      const cacheCreation = clamp(usage.cache_creation_input_tokens);
+      const outTok = clamp(usage.output_tokens);
+      tokenInputUncached += inTok;
+      tokenCacheRead += cacheRead;
+      tokenCacheCreation += cacheCreation;
+      tokenOutput += outTok;
+      if (turnModel === null) continue;
+      model = turnModel;
+      if (inTok + cacheRead + cacheCreation + outTok > 0) billedModels.add(turnModel);
     }
+
+    // Model attribution (#1470): only a token-bearing turn is an observation of
+    // its model; one distinct model → that model, two or more → null, none →
+    // the fallback above. CEILING: a mixed-model record is not priced — a null
+    // model makes the session rollup count the record as unpriced, and
+    // `total_cost_usd` becomes null. Measured 2026-09-29 over 10,745 subagent
+    // transcripts under `~/.claude/projects`: 17 (0.16%) contained more than one
+    // model on token-bearing turns (0 of 917 in this repo), while 273 contained
+    // more than one model id only through zero-token `<synthetic>` turns, which
+    // this rule ignores. Per-model aggregation would need a new ledger field (a
+    // storage change) and is deliberately not built. REVISIT when mixed records
+    // exceed ~1% of token-bearing stop records — count them from the transcripts,
+    // because the ledger cannot tell a mixed-model null from a missing model
+    // (both are `null`).
+    if (billedModels.size === 1) [model] = billedModels;
+    else if (billedModels.size > 1) model = null;
 
     // The aggregates are guaranteed non-negative integers by per-turn clamping
     // above (Σ of non-negative integers), so emit them directly.
