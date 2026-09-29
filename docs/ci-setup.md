@@ -451,8 +451,9 @@ clone until `npx husky` has run, absent for Codex / web edits, and skipped by
   security and validate job had already finished — 0 were exposed. A squash
   merge's commit (the MR title) is never linted by the MR pipeline, only by the
   `main` pipeline after the merge, where a red job can no longer block it.
-  One non-conforming commit predates this job on `main` (`c99f57d9`, a
-  126-character header). Revisit when a non-conforming commit lands on `main`
+  Two non-conforming commits reached `main` after `commitlint.config.mjs` was
+  added and before this job (`c99f57d9`, a 126-character header; `c5252e68`, a
+  `merge:` type). Revisit when a non-conforming commit lands on `main`
   after this job: `npx --no -- commitlint --from <sha that added this job> --to origin/main`.
 - Hard-`needs`-ed by `pipeline-gate` and on the shared gate rules, so it runs on
   every non-scheduled pipeline. Behavioural tests: `tests/ci/commitlint.test.mjs`

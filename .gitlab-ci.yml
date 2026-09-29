@@ -358,7 +358,7 @@ lint:
 # fresh clone until `npx husky` has run, absent for Codex / web edits, and
 # skipped by `--no-verify`. An MR's pipeline re-lints the whole MR range on
 # every push; a direct push to a branch is linted per push only, so a push
-# pipeline auto-cancelled before its validate stage finishes leaves its commits
+# pipeline auto-cancelled before this job finishes can leave its commits
 # unlinted (see docs/ci-setup.md § commitlint for the measured gap and its
 # revisit trigger).
 #
