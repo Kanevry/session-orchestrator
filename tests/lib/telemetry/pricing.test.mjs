@@ -1,10 +1,12 @@
 /**
  * tests/lib/telemetry/pricing.test.mjs — #1244.
  *
- * Two bugs are pinned here, both of which turn a cost report into a lie:
+ * Three bugs are pinned here, each of which turns a cost report into a lie:
  *   1. an unknown model priced as 0 (a run that cost money reported as free);
  *   2. one blended rate applied to all four token buckets (cache reads are
- *      ~10x cheaper and cache writes ~1.25x dearer than an uncached token).
+ *      10-40x cheaper and 5-minute cache writes ~1.25x dearer than an uncached token);
+ *   3. (#1470) an unlisted model generation priced at a neighbour's rates and
+ *      marked verified.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -44,12 +46,93 @@ describe('telemetry/pricing', () => {
   });
 
   it('resolves dated and long-context model ids to their table row', () => {
-    // A transcript's `message.model` is not always the bare table key — a
-    // prefix/alias miss would silently null out the whole session cost.
+    // A transcript's `message.model` is not always the bare table key — an
+    // alias miss would silently null out the whole session cost.
     expect(priceFor('claude-haiku-4-5-20251001')).toBe(PRICING_TABLE['claude-haiku-4-5']);
     expect(priceFor('claude-opus-5[1m]')).toBe(PRICING_TABLE['claude-opus-5']);
     expect(priceFor('claude-sonnet-5')).toBe(PRICING_TABLE['claude-sonnet-5']);
     expect(priceFor('claude-fable-5-1')).toBe(PRICING_TABLE['claude-fable-5-1']);
+  });
+
+  // #1470 — an id that is not an exact key or an explicit alias must be UNKNOWN.
+  // The old unbounded `startsWith` gave an invented generation the rates of its
+  // nearest table key, marked verified.
+  it.each([
+    'claude-opus-5-99',
+    'claude-sonnet-5-7',
+    'claude-opus-5-20260401',
+    'claude-opus-5-5-20260401',
+    'claude-haiku-4-5-20251002',
+    'claude-fable-5-2',
+  ])('treats the unlisted model id %s as unknown in priceFor and costUsd', (id) => {
+    expect(priceFor(id)).toBeNull();
+    expect(
+      costUsd({
+        model: id,
+        tokenInputUncached: 1_000_000,
+        tokenCacheRead: 1_000_000,
+        tokenCacheCreation: 1_000_000,
+        tokenOutput: 1_000_000,
+      }),
+    ).toBeNull();
+  });
+
+  it('prices claude-opus-5-5 at its own rates, not those of claude-opus-5', () => {
+    expect(priceFor('claude-opus-5-5').input).toBe(4);
+    // 1M tokens per bucket: 4 + 0.2 + 5 + 20 = 29.20 USD (claude-opus-5 would be 36.75).
+    expect(
+      costUsd({
+        model: 'claude-opus-5-5',
+        tokenInputUncached: 1_000_000,
+        tokenCacheRead: 1_000_000,
+        tokenCacheCreation: 1_000_000,
+        tokenOutput: 1_000_000,
+      }),
+    ).toBeCloseTo(29.2, 10);
+  });
+
+  // Golden table (USD/MTok) from https://platform.claude.com/docs/en/about-claude/pricing.
+  it.each([
+    ['claude-fable-5-1', 10, 0.25, 12.5, 50],
+    ['claude-fable-5', 10, 1, 12.5, 50],
+    ['claude-opus-5-5', 4, 0.2, 5, 20],
+    ['claude-opus-5', 5, 0.5, 6.25, 25],
+    ['claude-opus-4-8', 5, 0.5, 6.25, 25],
+    ['claude-sonnet-5-5', 2, 0.2, 2.5, 10],
+    ['claude-sonnet-5', 2, 0.2, 2.5, 10],
+    ['claude-haiku-4-5', 1, 0.1, 1.25, 5],
+  ])(
+    '%s carries the documented rates %d / %d / %d / %d',
+    (id, input, cacheRead, cacheCreation, output) => {
+      expect(PRICING_TABLE[id]).toMatchObject({
+        input,
+        cache_read: cacheRead,
+        cache_creation: cacheCreation,
+        output,
+      });
+    },
+  );
+
+  it('lists exactly the eight documented models', () => {
+    expect(Object.keys(PRICING_TABLE).sort()).toEqual([
+      'claude-fable-5',
+      'claude-fable-5-1',
+      'claude-haiku-4-5',
+      'claude-opus-4-8',
+      'claude-opus-5',
+      'claude-opus-5-5',
+      'claude-sonnet-5',
+      'claude-sonnet-5-5',
+    ]);
+  });
+
+  it.each(Object.entries(PRICING_TABLE))('%s row carries full provenance', (_id, row) => {
+    expect(row.verified).toBe(true);
+    expect(row.cache_source).toBe('documented');
+    expect(row.source_url).toMatch(/^https:\/\/platform\.claude\.com\//);
+    expect(row.checked_at).toBe(PRICING_TABLE_DATE);
+    expect(row.provider).toBe('anthropic');
+    expect(row.cache_write_ttl).toBe('5m');
   });
 
   it('never returns a non-finite cost for an absurd bucket — Infinity serialises as null', () => {
