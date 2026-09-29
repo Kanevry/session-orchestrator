@@ -356,11 +356,12 @@ const gateScript = gateJob?.script ?? [];
  * @param {string} [opts.branch] CI_COMMIT_BRANCH — omitted entirely for MR
  *   pipelines, where GitLab genuinely does not set it (this is what proves the
  *   `${CI_COMMIT_BRANCH:-}` guard holds under `set -u`)
+ * @param {string} [opts.defaultBranch] CI_DEFAULT_BRANCH; defaults to 'main'
  * @param {string} [opts.optional] SCHEMA_DRIFT_OPTIONAL override; defaults to
  *   the value the job itself declares, so the default cases test the gate
  *   exactly as committed
  */
-function runGate({ markers = [], source, branch, optional } = {}) {
+function runGate({ markers = [], source, branch, defaultBranch = 'main', optional } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'so-pipeline-gate-'));
   tmpDirs.push(dir);
   if (markers.length > 0) {
@@ -373,7 +374,7 @@ function runGate({ markers = [], source, branch, optional } = {}) {
     PATH: process.env.PATH,
     CI_PIPELINE_ID: '424242',
     CI_PIPELINE_SOURCE: source,
-    CI_DEFAULT_BRANCH: 'main',
+    CI_DEFAULT_BRANCH: defaultBranch,
     SCHEMA_DRIFT_OPTIONAL: optional ?? gateJob.variables.SCHEMA_DRIFT_OPTIONAL,
   };
   if (branch !== undefined) {
@@ -383,31 +384,65 @@ function runGate({ markers = [], source, branch, optional } = {}) {
 }
 
 describe('pipeline-gate fan-in evaluates the markers (#940)', () => {
-  it('passes an MR pipeline when both markers are present', () => {
-    // bug_caught: the gate rejecting a fully-verified pipeline — a gate that
-    // reddens good pipelines gets allow_failure'd out of existence, taking the
-    // whole fan-in mechanism with it. Also pins the single-folded-block shape
-    // the executability of every test here depends on.
-    expect(gateScript).toHaveLength(1);
-    const res = runGate({ markers: ['coverage.ok', 'schema-drift.ok'], source: 'merge_request_event' });
+  it.each([
+    { branch: 'main', defaultBranch: 'main' },
+    { branch: 'trunk', defaultBranch: 'trunk' },
+  ])(
+    'passes a default-branch pipeline ($branch) when both markers are present and reports coverage VERIFIED',
+    ({ branch, defaultBranch }) => {
+      // bug_caught: (a) the gate rejecting a fully-verified pipeline — a gate
+      // that reddens good pipelines gets allow_failure'd out of existence,
+      // taking the whole fan-in mechanism with it; (b) the gate reading a
+      // marker name the producer no longer writes (a rename on one side), which
+      // reddens every main pipeline; (c) a hardcoded 'main' instead of
+      // $CI_DEFAULT_BRANCH (the 'trunk' case). Also pins the single-folded-
+      // block shape the executability of every test here depends on.
+      expect(gateScript).toHaveLength(1);
+      const res = runGate({
+        markers: ['coverage.ok', 'schema-drift.ok'],
+        source: 'push',
+        branch,
+        defaultBranch,
+      });
+
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('RESULT: PASS');
+      expect(res.stdout).toMatch(/coverage:\s+VERIFIED/);
+    },
+  );
+
+  it.each(['push', 'web', 'api'])(
+    'fails a default-branch %s pipeline whose coverage marker is missing',
+    (source) => {
+      // bug_caught: the gate letting coverage through silently on the default
+      // branch — the condition hangs on the branch, not on the pipeline
+      // source, so every pipeline kind on main (push/web/api) must demand the
+      // marker; otherwise the only threshold check (main-only) expires
+      // unnoticed. Also the pipeline-6815 disease: the job drops out (rules
+      // drift, marker write deleted) and the pipeline stays green.
+      const res = runGate({ markers: ['schema-drift.ok'], source, branch: 'main' });
+
+      expect(res.status).toBe(1);
+      expect(res.stdout).toContain('RESULT: FAIL');
+      expect(res.stdout).toMatch(/coverage:\s+MISSING/);
+    },
+  );
+
+  it('passes an MR pipeline without a coverage marker and says coverage was not measured', () => {
+    // bug_caught: MR pipelines without a coverage job (rule removed) turning
+    // red and therefore unmergeable (only_allow_merge_if_pipeline_succeeds),
+    // OR the gate claiming VERIFIED for a check that never ran.
+    const res = runGate({ markers: ['schema-drift.ok'], source: 'merge_request_event' });
 
     expect(res.status).toBe(0);
     expect(res.stdout).toContain('RESULT: PASS');
-  });
-
-  it('fails an MR pipeline whose coverage marker is missing', () => {
-    // bug_caught: the pipeline-6815 disease — a skippable/optional job drops
-    // out (rules drift, marker write deleted) and the pipeline stays green.
-    // This is the fail-closed half the gate exists for.
-    const res = runGate({ markers: ['schema-drift.ok'], source: 'merge_request_event' });
-
-    expect(res.status).toBe(1);
-    expect(res.stdout).toContain('RESULT: FAIL');
+    expect(res.stdout).toMatch(/coverage:\s+NOT MEASURED/);
+    expect(res.stdout).not.toMatch(/coverage:\s+VERIFIED/);
   });
 
   it('does not require coverage on a non-default branch pipeline', () => {
     // bug_caught: the branch-scope condition inverted or lost — coverage runs
-    // only on MR + default-branch pipelines by rule, so demanding its marker
+    // only on the default-branch pipeline by rule, so demanding its marker
     // on feature-branch pipelines reddens every branch push.
     const res = runGate({ markers: ['schema-drift.ok'], source: 'push', branch: 'feat/x' });
 

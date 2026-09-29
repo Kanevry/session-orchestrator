@@ -558,8 +558,9 @@ pack-lifecycle:
 # Stage: coverage (#263)
 #
 # Gated at 70% lines/functions/statements, 60% branches via vitest.config.mjs
-# thresholds. Runs only on main + MRs targeting main. Fails the pipeline if
-# coverage regresses below the threshold.
+# thresholds. Runs only on the default branch, not in MR or branch pipelines
+# (since 2026-09-29). Fails the pipeline if coverage regresses below the
+# threshold.
 # ---------------------------------------------------------------------------
 
 coverage:
@@ -606,17 +607,35 @@ coverage:
       - coverage/
       - .ci-markers/
     expire_in: 2 weeks
-  # Deliberately NOT *gate-rules: coverage is the single most expensive job in
-  # the pipeline (measured 148s in pipeline 6816 — every other job is ≤ 100s)
-  # and it re-runs the SAME suite the `test` job already ran on every branch
-  # pipeline, only under v8 instrumentation. Its unique signal is the threshold
-  # check, which is a merge-boundary concern. So it stays on MR + default only,
-  # and `pipeline-gate` states in plain text on every branch pipeline that
-  # coverage was NOT measured — absent, but never silently absent.
+  # Deliberately NOT *gate-rules and, since 2026-09-29, not in MR pipelines
+  # either: it is the most expensive job (14 MR pipelines 2026-09-27..29:
+  # 5.0-12.9 min, median 6.6 min = 29 % of MR job-minutes, measured 2026-09-29
+  # 13:24 CEST) and re-runs the SAME suite `test` already ran, only under v8
+  # instrumentation and unsharded. So it runs on the default branch only.
+  # `pipeline-gate` requires the marker there (CI_COMMIT_BRANCH == default
+  # branch: push, web and api pipelines alike) and prints `NOT MEASURED` on
+  # every MR and branch pipeline — absent, but never silently absent.
+  # Ceiling (BV-004): an MR no longer gets (a) the 70/70/70/60 threshold check
+  # (vitest.config.mjs) NOR (b) a second, instrumented full-suite run; both now
+  # fire AFTER the merge, so a regression turns main red, not the MR. Measured
+  # 2026-09-29 (jobs API, scope failed, oldest 2026-05-11): 14 failed coverage
+  # jobs, 3 of them in MR pipelines (95996, 89322, 89272), each with every
+  # `test` shard green — the instrumented run caught what the shards did not.
+  # Threshold margin, one measurement (job 135774, pipeline 13575, main, 2026-09-28):
+  # lines 76.46, functions 78.74, statements 74.48 (tightest, 4.48 pp above
+  # 70), branches 71.1.
+  # Revisit-Trigger: a main coverage failure whose MR pipeline was green (main
+  # already carries 11 failed coverage jobs in that history, so a bare "first
+  # red main" would not discriminate), OR a move to measuring coverage inside
+  # the three `test` shards and merging the reports with `vitest
+  # --merge-reports` (follow-up, not yet filed).
+  # Known edge: an open MR whose SOURCE branch is the default branch suppresses
+  # the default-branch push pipeline (workflow:rules), so coverage would
+  # neither run nor be required for that push; none exists in this project
+  # (0 MRs with source_branch=main, 2026-09-29).
   rules:
     - if: $CI_PIPELINE_SOURCE == "schedule"
       when: never
-    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
 # ---------------------------------------------------------------------------
@@ -804,15 +823,15 @@ pipeline-gate:
       failed=0;
       echo "[gate] pipeline=$CI_PIPELINE_ID source=$CI_PIPELINE_SOURCE ref=${CI_COMMIT_BRANCH:-merge-request}";
       if [ -d .ci-markers ]; then ls -la .ci-markers; else echo "[gate] no .ci-markers/ directory present"; fi;
-      if [ "$CI_PIPELINE_SOURCE" = "merge_request_event" ] || [ "${CI_COMMIT_BRANCH:-}" = "$CI_DEFAULT_BRANCH" ]; then
+      if [ "${CI_COMMIT_BRANCH:-}" = "$CI_DEFAULT_BRANCH" ]; then
         if [ -f .ci-markers/coverage.ok ]; then
           echo "[gate] coverage:     VERIFIED";
         else
-          echo "[gate] coverage:     MISSING — required on MR and $CI_DEFAULT_BRANCH pipelines, but no marker was produced";
+          echo "[gate] coverage:     MISSING — required on $CI_DEFAULT_BRANCH pipelines, but no marker was produced";
           failed=1;
         fi;
       else
-        echo "[gate] coverage:     NOT REQUIRED here — this branch pipeline did NOT measure coverage (MR + $CI_DEFAULT_BRANCH only)";
+        echo "[gate] coverage:     NOT MEASURED here — coverage (instrumented full-suite run + thresholds) runs on $CI_DEFAULT_BRANCH pipelines only; this MR/branch pipeline did NOT measure it (checked after the merge)";
       fi;
       if [ -f .ci-markers/schema-drift.ok ]; then
         echo "[gate] schema-drift: VERIFIED";
