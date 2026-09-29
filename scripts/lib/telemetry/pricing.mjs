@@ -151,7 +151,8 @@ export const MODEL_ALIASES = Object.freeze({
 /**
  * Look up the rate row for a model id.
  *
- * Resolution: exact `PRICING_TABLE` key → explicit `MODEL_ALIASES` entry → `null`.
+ * Resolution: exact `PRICING_TABLE` key → explicit `MODEL_ALIASES` entry → `null`,
+ * after trimming surrounding whitespace.
  * Nothing else resolves — no prefix, no pattern, no family fallback — so
  * `claude-opus-5-20260401`, `claude-opus-5-99` and `claude-haiku-4-5-20251002` are
  * all UNKNOWN even though each starts with a table key.

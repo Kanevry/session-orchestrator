@@ -1,10 +1,12 @@
 /**
  * tests/lib/telemetry/pricing.test.mjs — #1244.
  *
- * Two bugs are pinned here, both of which turn a cost report into a lie:
+ * Three bugs are pinned here, each of which turns a cost report into a lie:
  *   1. an unknown model priced as 0 (a run that cost money reported as free);
  *   2. one blended rate applied to all four token buckets (cache reads are
- *      ~10x cheaper and cache writes ~1.25x dearer than an uncached token).
+ *      10-40x cheaper and 5-minute cache writes ~1.25x dearer than an uncached token);
+ *   3. (#1470) an unlisted model generation priced at a neighbour's rates and
+ *      marked verified.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -44,8 +46,8 @@ describe('telemetry/pricing', () => {
   });
 
   it('resolves dated and long-context model ids to their table row', () => {
-    // A transcript's `message.model` is not always the bare table key — a
-    // prefix/alias miss would silently null out the whole session cost.
+    // A transcript's `message.model` is not always the bare table key — an
+    // alias miss would silently null out the whole session cost.
     expect(priceFor('claude-haiku-4-5-20251001')).toBe(PRICING_TABLE['claude-haiku-4-5']);
     expect(priceFor('claude-opus-5[1m]')).toBe(PRICING_TABLE['claude-opus-5']);
     expect(priceFor('claude-sonnet-5')).toBe(PRICING_TABLE['claude-sonnet-5']);
@@ -76,7 +78,6 @@ describe('telemetry/pricing', () => {
   });
 
   it('prices claude-opus-5-5 at its own rates, not those of claude-opus-5', () => {
-    expect(priceFor('claude-opus-5-5')).not.toBe(PRICING_TABLE['claude-opus-5']);
     expect(priceFor('claude-opus-5-5').input).toBe(4);
     // 1M tokens per bucket: 4 + 0.2 + 5 + 20 = 29.20 USD (claude-opus-5 would be 36.75).
     expect(
@@ -100,14 +101,17 @@ describe('telemetry/pricing', () => {
     ['claude-sonnet-5-5', 2, 0.2, 2.5, 10],
     ['claude-sonnet-5', 2, 0.2, 2.5, 10],
     ['claude-haiku-4-5', 1, 0.1, 1.25, 5],
-  ])('%s carries the documented rates %d / %d / %d / %d', (id, input, cacheRead, cacheCreation, output) => {
-    expect(PRICING_TABLE[id]).toMatchObject({
-      input,
-      cache_read: cacheRead,
-      cache_creation: cacheCreation,
-      output,
-    });
-  });
+  ])(
+    '%s carries the documented rates %d / %d / %d / %d',
+    (id, input, cacheRead, cacheCreation, output) => {
+      expect(PRICING_TABLE[id]).toMatchObject({
+        input,
+        cache_read: cacheRead,
+        cache_creation: cacheCreation,
+        output,
+      });
+    },
+  );
 
   it('lists exactly the eight documented models', () => {
     expect(Object.keys(PRICING_TABLE).sort()).toEqual([

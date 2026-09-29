@@ -42,8 +42,10 @@
  *   token_cache_creation  integer | null — `usage.cache_creation_input_tokens` (v2+)
  *   token_output      integer | null — completion token count for this subagent
  *   model             string  | null — model id from the transcript (v2+); null when
- *                                      the transcript exposes none. Required to price
- *                                      the record — see scripts/lib/telemetry/pricing.mjs.
+ *                                      the transcript exposes none, or when its token-
+ *                                      bearing turns used two or more models or one turn
+ *                                      named none (#1470). Required to price the record —
+ *                                      see scripts/lib/telemetry/pricing.mjs.
  *   total_cost_usd    number  | null — native total cost in USD (#624, fractional,
  *                                      best-effort: null when the harness does not
  *                                      expose it; no rate table is applied)
