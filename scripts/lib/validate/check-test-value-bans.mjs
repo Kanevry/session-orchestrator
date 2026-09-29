@@ -344,23 +344,40 @@ const keyLiteralRe = (key) => new RegExp(`["'\\\\]+${key}["'\\\\]+\\s*:`);
  * fixed input dates would have reported false positives only. The one real
  * bomb of that shape, the phase-skip fixture before 6670149c, was green at
  * -60 days and red at +0 and +120 days under the same shim — and
- * scanClockBombs() cannot reach that file either: it imports its subjects
- * through the `@lib/` alias, not a relative path, and hands no clock argument
- * to anything. REVISIT when a
+ * scanClockBombs() reaches that file since #1476 (alias imports are read) but
+ * stays silent on it: the file hands no clock argument to anything. REVISIT when a
  * second fixed-input-date bomb lands on main: the class then recurs, and a
  * clock-shift run of the suite is the check that finds it without guessing.
  */
 const DATE_EXPECTATION =
   /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
 
-/** An explicit clock handed to a callee — the seam this ban asks tests to use. */
-const CLOCK_ARG = /\b(?:now|nowMs|nowIso|clock|currentDate)\s*:/;
+/**
+ * An explicit clock handed to a callee — the seam this ban asks tests to use.
+ * Property shorthand (`{ now }`, `{ repoRoot, now }`) and a positional `now`
+ * count too; `Date.now()` and `const now =` do not.
+ */
+const CLOCK_ARG = /(?<![.\w$])(?:now|nowMs|nowIso|clock|currentDate)\s*(?::|,|\}|\))/;
 
 /** Freezing the global clock — equally valid control, but not a seam PROOF. */
 const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
 
-/** `import { a, b as c } from './rel.mjs'` — SUT candidates live behind these. */
-const RELATIVE_IMPORT = /import\s+([^;]+?)\s+from\s+['"](\.[^'"]+)['"]/g;
+/**
+ * Vitest aliases that resolve to the repo's own modules — source of truth is
+ * `resolve.alias` in vitest.config.mjs (today only `@lib`). CEILING: one entry
+ * per alias, kept by hand; REVISIT when vitest.config.mjs gains an alias — the
+ * parametrised B5 test reads that config and goes red until the key is listed
+ * here. Dynamic imports (`await import('@lib/…')`) are not read in either form.
+ */
+const ALIAS_PREFIXES = ['@lib/'];
+
+/** `import { a, b as c } from './rel.mjs'` or `'@lib/x.mjs'` — SUT candidates live behind these. */
+const LOCAL_IMPORT = new RegExp(
+  String.raw`import\s+([^;]+?)\s+from\s+['"]((?:\.|` +
+    ALIAS_PREFIXES.map((p) => p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')).join('|') +
+    String.raw`)[^'"]+)['"]`,
+  'g',
+);
 
 // ---------------------------------------------------------------------------
 // File enumeration
@@ -602,17 +619,17 @@ function testBlocks(lines) {
 }
 
 /**
- * Identifiers this test file imports from the repo's OWN modules (relative
- * specifiers). These are the subject-under-test candidates for B5; framework
- * (`vitest`) and stdlib (`node:*`) imports are structurally excluded because
- * their specifiers are not relative.
+ * Identifiers this test file imports from the repo's OWN modules (relative or
+ * vitest-alias specifiers). These are the subject-under-test candidates for B5;
+ * framework (`vitest`) and stdlib (`node:*`) imports are structurally excluded
+ * because their specifiers match neither form.
  * @param {string} content
  * @returns {string[]}
  */
 function importedLocalIdentifiers(content) {
   /** @type {Set<string>} */
   const ids = new Set();
-  for (const m of content.matchAll(RELATIVE_IMPORT)) {
+  for (const m of content.matchAll(LOCAL_IMPORT)) {
     const clause = m[1];
     // `{ a, b as c }` → c ; `x` / `* as ns` → x / ns
     for (const part of clause.replace(/[{}]/g, ',').split(',')) {
@@ -683,6 +700,11 @@ function scanClockBombs(relPath, content, lines) {
       if (isCommentLine(line)) return;
       const m = DATE_EXPECTATION.exec(line);
       if (!m) return;
+      // Echo: the pinned value also appears in this file outside an assertion — an
+      // input the test supplies, not a clock reading (the CEILING above keeps fixed
+      // INPUT dates unflagged on purpose). CEILING: a real bomb whose expected date
+      // happens to equal an input literal of the same file is swallowed.
+      if (lines.some((l) => !isCommentLine(l) && !DATE_EXPECTATION.test(l) && l.includes(m[2]))) return;
       findings.push({
         file: relPath,
         line: b.start + k + 1,
