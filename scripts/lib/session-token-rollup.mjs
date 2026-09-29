@@ -289,11 +289,12 @@ export function rollupSessionTokens({
       }
     } else {
       // #1474 — the subagent's own transcript was found but yielded no tokens:
-      // it exceeded the hook's MAX_TRANSCRIPT_BYTES and was not read, or it held
-      // no usage turns. Either way the agent ran and its cost is unknown, so it
-      // counts as an unpriced candidate (total, not priced) — the gap stays
-      // visible as priced < total. It does NOT null `total_cost_usd`; that
-      // stays "Σ over priced records, null only on an unknown model".
+      // it exceeded the hook's MAX_TRANSCRIPT_BYTES and was not read, it held no
+      // usage turns, or it was unreadable. Either way the agent ran and its cost
+      // is unknown, so it counts as an unpriced candidate (total, not priced) —
+      // the gap stays visible as priced < total. It does NOT null
+      // `total_cost_usd` by itself; that is null on an unknown model, or when no
+      // record with a non-zero bucket was priced.
       costTotal += 1;
     }
   }

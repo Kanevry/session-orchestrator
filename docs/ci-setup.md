@@ -445,10 +445,15 @@ clone until `npx husky` has run, absent for Codex / web edits, and skipped by
 - **Coverage gap (known, measured 2026-09-29).** An MR pipeline re-lints the
   whole MR range on every push. A direct push is linted per push only
   (`before-sha..sha`), and every job here is `interruptible`, so a push pipeline
-  auto-cancelled by the next push leaves its commits unlinted: 11 of the last
-  100 `main` pipelines were cancelled, 7 of them carrying direct-push commits.
-  A squash merge takes the MR title, which the MR pipeline never lints. Revisit
-  when a non-conforming commit is found on `main`.
+  auto-cancelled by the next push can leave its commits unlinted when that push
+  lands before the validate stage finishes. Of the last 100 `main` pipelines, 11
+  were cancelled (7 of them with direct-push commits), and in all 11 every
+  security and validate job had already finished — 0 were exposed. A squash
+  merge's commit (the MR title) is never linted by the MR pipeline, only by the
+  `main` pipeline after the merge, where a red job can no longer block it.
+  One non-conforming commit predates this job on `main` (`c99f57d9`, a
+  126-character header). Revisit when a non-conforming commit lands on `main`
+  after this job: `npx --no -- commitlint --from <sha that added this job> --to origin/main`.
 - Hard-`needs`-ed by `pipeline-gate` and on the shared gate rules, so it runs on
   every non-scheduled pipeline. Behavioural tests: `tests/ci/commitlint.test.mjs`
   (they execute the committed script block against temp git repos).

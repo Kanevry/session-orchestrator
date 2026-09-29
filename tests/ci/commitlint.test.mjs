@@ -136,6 +136,8 @@ describe('commitlint job lints the merge-request range', () => {
     const { dir, base, head } = makeRepo(['fix: fine', header]);
     const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).toBe(expected);
+    // Red for the right reason, not via the empty-range exit a wrong precedence gives.
+    if (expected !== 0) expect(out).toContain('header-max-length');
   });
 
   it('a non-conventional type in the middle of the range fails the job', () => {
@@ -143,6 +145,7 @@ describe('commitlint job lints the merge-request range', () => {
     const { dir, base, head } = makeRepo(['build: bump', 'fix: fine']);
     const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).not.toBe(0);
+    expect(out).toContain('type-enum');
   });
 
   it('valid commits plus a GitLab merge commit and a Revert pass', () => {
