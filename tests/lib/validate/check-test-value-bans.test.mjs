@@ -68,9 +68,12 @@
  *  18. B5's clock check forgets property shorthand `{ now }` → a block that
  *      hands the clock over is flagged as uncontrolled (11 of the 19 false
  *      positives measured 2026-09-30 when the alias was first added).
- *  19. B5 flags a date that only echoes an input literal of the same file → the
- *      passthrough class floods the advisory (the other 8 false positives of
- *      that measurement).
+ *  19. B5 flags a date that only echoes an input of its own block or of the
+ *      shared setup → the passthrough class floods the advisory (the other 8
+ *      false positives of that measurement).
+ *  20. B5's echo check widens to the whole file → a sibling test that asserts
+ *      the same date hides a real bomb (the two 2026-08-05 bombs of fa57ee66^
+ *      vanished in all 8 realistic variants measured 2026-09-30).
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -496,6 +499,14 @@ const ECHO_BLOCK = [
   '});',
 ];
 
+/** A seamed sibling that happens to assert the same date — its assertion is no input of the bomb's block. */
+const SIBLING_SAME_DATE_BLOCK = [
+  "it('reports the expiry inside the metadata object', () => {",
+  "  const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });",
+  "  expect(meta).toMatchObject({ expiresAt: '2026-08-05' });",
+  '});',
+];
+
 describe('check-test-value-bans — B5 date-literal time bombs', () => {
   it.each(IMPORT_FORMS)('flags a pinned date in a block that ignores the seam its siblings use (import %s)', (spec) => {
     const { res, json } = scan({
@@ -597,8 +608,8 @@ describe('check-test-value-bans — B5 counter-examples', () => {
     expect(json.counts['B5-date-time-bomb']).toBe(0);
   });
 
-  it('does not flag an asserted date that echoes an input literal of the same file', () => {
-    // Expected value equals an input literal of the same file = echo. Consistent with the
+  it('does not flag an asserted date that echoes an input literal of its own block', () => {
+    // Expected value equals an input literal of the same block = echo. Consistent with the
     // scanner's CEILING decision that fixed INPUT dates are not flagged: nothing reads the clock.
     const { json } = scan({
       'tests/echo.test.mjs': [
@@ -612,6 +623,28 @@ describe('check-test-value-bans — B5 counter-examples', () => {
     });
 
     expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  it('still flags a bomb whose date only a sibling test repeats', () => {
+    // Catches an echo check that reads the whole file: a sibling's toMatchObject carrying
+    // the same date then hides the real bomb (measured 2026-09-30 on the fa57ee66^ bombs).
+    const { json } = scan({
+      'tests/sibling.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        ...SIBLING_SAME_DATE_BLOCK,
+        '',
+        "it('derives the per-type expiry', () => {",
+        '  const meta = toActivationMetadata(learning, {});',
+        "  expect(meta.expiresAt).toBe('2026-08-05');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
   });
 });
 

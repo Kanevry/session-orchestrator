@@ -692,19 +692,31 @@ function scanClockBombs(relPath, content, lines) {
   }
   if (seamed.size === 0) return findings;
 
+  // Where an echo may come from: the finding's own block, or the setup every
+  // block shares (helpers, constants, beforeEach). Never a sibling test — its
+  // assertions, titles and clock literals say nothing about this block's inputs.
+  /** @type {Set<number>} */
+  const inBlock = new Set();
+  for (const b of blocks) for (let q = b.start; q < b.start + b.body.length; q++) inBlock.add(q);
+  const sharedSetup = lines.filter((_, q) => !inBlock.has(q));
+
   for (const b of blocks) {
     if (b.hasClockArg || b.hasFakeTimer) continue;
     const subject = [...seamed].find((id) => callsIdentifier(b.body, id));
     if (!subject) continue;
+    const echoSources = [...b.body, ...sharedSetup].filter(
+      (l) => !isCommentLine(l) && !DATE_EXPECTATION.test(l),
+    );
     b.body.forEach((line, k) => {
       if (isCommentLine(line)) return;
       const m = DATE_EXPECTATION.exec(line);
       if (!m) return;
-      // Echo: the pinned value also appears in this file outside an assertion — an
-      // input the test supplies, not a clock reading (the CEILING above keeps fixed
-      // INPUT dates unflagged on purpose). CEILING: a real bomb whose expected date
-      // happens to equal an input literal of the same file is swallowed.
-      if (lines.some((l) => !isCommentLine(l) && !DATE_EXPECTATION.test(l) && l.includes(m[2]))) return;
+      // Echo: the pinned value is also an input of this block or its shared setup,
+      // not a clock reading (the CEILING above keeps fixed INPUT dates unflagged on
+      // purpose). CEILING: a real bomb whose date also stands in its own block or
+      // the shared setup (its title, a trailing comment, a helper fixture) is
+      // swallowed; REVISIT when a clock-shift run finds a bomb this scan missed.
+      if (echoSources.some((l) => l.includes(m[2]))) return;
       findings.push({
         file: relPath,
         line: b.start + k + 1,
