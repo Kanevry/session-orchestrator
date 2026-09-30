@@ -695,6 +695,9 @@ function scanClockBombs(relPath, content, lines) {
   // Where an echo may come from: the finding's own block, or the setup every
   // block shares (helpers, constants, beforeEach). Never a sibling test — its
   // assertions, titles and clock literals say nothing about this block's inputs.
+  // A block without its own `});` (a one-line it) runs on to the next sibling
+  // and takes the setup lines in between out of sharedSetup — that direction can
+  // only add a finding, never hide one (1.4% of blocks, measured 2026-09-30).
   /** @type {Set<number>} */
   const inBlock = new Set();
   for (const b of blocks) for (let q = b.start; q < b.start + b.body.length; q++) inBlock.add(q);
