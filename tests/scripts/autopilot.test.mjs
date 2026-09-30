@@ -24,6 +24,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { KILL_SWITCHES } from '../../scripts/lib/autopilot.mjs';
+import { canonicalizeSessions } from '../../scripts/lib/sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Repo paths
@@ -74,7 +76,7 @@ rationale: "test fixture"
 function createTmpLayout(tmp) {
   mkdirSync(join(tmp, '.orchestrator', 'metrics'), { recursive: true });
   mkdirSync(join(tmp, '.claude'), { recursive: true });
-  // Pre-create empty sessions.jsonl (required by sessionRunner countSessionLines)
+  // Start with an empty session ledger.
   writeFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), '', 'utf8');
 }
 
@@ -281,42 +283,25 @@ describe('scripts/autopilot.mjs integration', () => {
     expect(rec.iterations_completed).toBe(1);
   });
 
-  // -------------------------------------------------------------------------
-  // Test 5 — kill-switch: sessionRunner throws when stub exits 1
-  // -------------------------------------------------------------------------
-
-  it('kill-switch failed-wave: stub STUB_EXIT_CODE=1 causes sessionRunner to throw', () => {
+  // A nonzero child exit must fail before an iteration is counted.
+  // Missing raw identity must never fall back to a foreign ledger tail (#1457).
+  // Multiple canonical identities with the child's raw UUID must fail closed (#1457).
+  it.each([
+    ['stub STUB_EXIT_CODE=1 causes sessionRunner to throw', { STUB_EXIT_CODE: '1' }, 'claude exit 1'],
+    ['missing child raw_session_id fails closed', { STUB_RAW_ID_MODE: 'omit' }, 'no session record carries raw_session_id'],
+    ['ambiguous child raw_session_id fails closed', { STUB_DUP_RAW: '1' }, 'ambiguous'],
+  ])('kill-switch failed-wave: %s', (_name, env, detail) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
-
-    const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
-
     const result = runAutopilot(
       ['--headless', '--max-sessions=2', '--confidence-threshold=0.4'],
-      {
-        tmp,
-        env: {
-          STUB_SESSIONS_JSONL: sessionsJsonl,
-          STUB_EXIT_CODE: '1',
-          STUB_AGENT_FAILED: '0',
-          STUB_AGENT_SPIRAL: '0',
-        },
-      }
+      { tmp, env }
     );
-
     const records = readAutopilotJsonl(tmp);
     expect(records).toHaveLength(1);
-
-    const rec = records[0];
-
-    // If confidence fell below threshold, accept the fallback as degraded mode.
-    if (rec.kill_switch === 'low-confidence-fallback' || rec.fallback_to_manual === true) {
-      expect(rec.iterations_completed).toBe(0);
-      // REPORT: test 5 hit low-confidence-fallback before stub could fire
-      return;
-    }
-
+    const [rec] = records;
     expect(result.status).toBe(2);
-    expect(rec.kill_switch).toBe('failed-wave');
+    expect(rec.kill_switch).toBe(KILL_SWITCHES.FAILED_WAVE);
+    expect(rec.kill_switch_detail).toContain(detail);
     expect(rec.iterations_completed).toBe(0);
   });
 
@@ -369,9 +354,12 @@ describe('scripts/autopilot.mjs integration', () => {
     // The plugin root must be THIS checkout, proven by a file only it has —
     // an existsSync on the directory alone would also pass for any stray path.
     expect(existsSync(join(argv[3], 'commands', 'session.md'))).toBe(true);
-    expect(argv).toHaveLength(4);
+    expect(argv).toHaveLength(6);
+    expect(argv[4]).toBe('--session-id');
+    expect(argv[5]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
     const session = JSON.parse(readFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8'));
     expect(session.session_type).toBe('deep');
+    expect(session.raw_session_id).toBe(argv[5]);
   });
 
   it('loads nondefault Session Config from a plugin path with spaces and Unicode', () => {
@@ -478,45 +466,58 @@ describe('scripts/autopilot.mjs integration', () => {
   // ceiling comes back as the ceiling, which the default can never produce.
   // -------------------------------------------------------------------------
 
-  // #1436 — the REAL readTailSession() path. Bug caught: readTailSession()
-  // projected no `usage`, so total_tokens_used stayed 0 and --max-tokens could
-  // never fire under the headless driver. The shared fixture stub writes no
-  // token field and lives outside this test's scope, so a wrapper stamps the
-  // totals emit-session now writes onto the stub's record.
-  it('fires token-budget-exceeded from the token totals on the session record', () => {
+  // #1436: session token totals must reach the loop's budget kill-switch.
+  // #1457: a peer appended after the child must not supply its token usage —
+  // two iterations, so the tail reader trips the budget on the peer's 900000
+  // after the first one instead of reaching max-sessions with the own 2 × 5000.
+  it.each([
+    ['fires token-budget-exceeded from the token totals on the session record', {}, 3, 100, 'token-budget-exceeded', 5000, 1],
+    ['ignores peer tokens appended after the own session record', { STUB_PEER_APPEND: '1' }, 2, 100000, 'max-sessions-reached', 10000, 2],
+  ])('%s', (_name, env, maxSessions, maxTokens, killSwitch, tokensUsed, iterations) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
-    const binDir = join(tmp, 'token-bin');
-    mkdirSync(binDir, { recursive: true });
-    const stamp = join(binDir, 'stamp.mjs');
-    writeFileSync(
-      stamp,
-      "import { readFileSync, writeFileSync } from 'node:fs';\n" +
-      'const p = process.env.STUB_SESSIONS_JSONL;\n' +
-      "const lines = readFileSync(p, 'utf8').split('\\n').filter((l) => l.trim());\n" +
-      'const last = JSON.parse(lines.pop());\n' +
-      'lines.push(JSON.stringify({ ...last, total_token_output: 5000, total_tokens: 7000 }));\n' +
-      "writeFileSync(p, lines.join('\\n') + '\\n');\n",
-      'utf8'
-    );
-    const wrapper = join(binDir, 'claude');
-    writeFileSync(
-      wrapper,
-      '#!/usr/bin/env bash\n' +
-      `"${STUB_CLAUDE}" "$@" || exit $?\n` +
-      `exec "${process.execPath}" "${stamp}"\n`,
-      'utf8'
-    );
-    chmodSync(wrapper, 0o755);
-
     runAutopilot(
-      ['--headless', '--max-sessions=3', '--confidence-threshold=0.4', '--max-tokens=100'],
-      { tmp, pathPrefix: binDir }
+      ['--headless', `--max-sessions=${maxSessions}`, '--confidence-threshold=0.4', `--max-tokens=${maxTokens}`],
+      { tmp, env: { STUB_OWN_TOKENS: '5000', ...env } }
     );
-
     const [rec] = readAutopilotJsonl(tmp);
-    expect(rec.kill_switch).toBe('token-budget-exceeded');
-    expect(rec.iterations_completed).toBe(1);
+    expect(rec.kill_switch).toBe(killSwitch);
+    expect(rec.total_tokens_used).toBe(tokensUsed);
+    expect(rec.iterations_completed).toBe(iterations);
+  });
+
+  // #1457: canonicalization must discard a later backfill stub sharing the child's raw UUID.
+  it('uses the authoritative own record when a later raw-ID stub canonicalizes away', () => {
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+    const binDir = join(tmp, 'canonical-bin');
+    mkdirSync(binDir);
+    const stamp = join(binDir, 'stamp.mjs');
+    writeFileSync(stamp, `
+      import { readFileSync, appendFileSync } from 'node:fs';
+      const p = process.env.STUB_SESSIONS_JSONL;
+      const own = JSON.parse(readFileSync(p, 'utf8').trim());
+      const stub = { ...own, session_id: 'backfill-stub', _backfill_source: 'test-backfill',
+        total_waves: 0, total_token_output: 900000, total_tokens: 900000 };
+      appendFileSync(p, JSON.stringify(stub) + '\\n');
+    `);
+    const wrapper = join(binDir, 'claude');
+    writeFileSync(wrapper, '#!/usr/bin/env bash\n' +
+      `"${STUB_CLAUDE}" "$@" || exit $?\n` +
+      `exec "${process.execPath}" "${stamp}"\n`);
+    chmodSync(wrapper, 0o755);
+    const result = runAutopilot(
+      ['--headless', '--max-sessions=1', '--confidence-threshold=0.4', '--max-tokens=100000'],
+      { tmp, pathPrefix: binDir, env: { STUB_OWN_TOKENS: '5000' } }
+    );
+    expect(result.status).toBe(0);
+    const raw = readFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8')
+      .trim().split('\n').map((line) => JSON.parse(line));
+    expect(raw).toHaveLength(2);
+    expect(raw[1].raw_session_id).toBe(raw[0].raw_session_id);
+    expect(canonicalizeSessions(raw)).toEqual([raw[0]]);
+    const [rec] = readAutopilotJsonl(tmp);
+    expect(rec.sessions).toEqual([raw[0].session_id]);
     expect(rec.total_tokens_used).toBe(5000);
+    expect(rec.kill_switch).toBe('max-sessions-reached');
   });
 
   it('forwards --max-tokens to runLoop (clamped), instead of silently ignoring it', () => {

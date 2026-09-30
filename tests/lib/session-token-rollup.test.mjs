@@ -337,15 +337,30 @@ describe('rollupSessionTokens — subagents_with_tokens', () => {
 // ---------------------------------------------------------------------------
 
 describe('rollupSessionTokens — null sentinel when no token data', () => {
-  it('returns total_token_input: null (NOT 0) when no matching records exist', () => {
+  it('distinguishes an unmatched semantic ID from the matching UUID in the same ledger (#1027 Nachtrag 7)', () => {
+    const uuid = '73a3f0d2-8d6b-42e7-ae94-68032cbd14e2';
     const subagentsPath = writeJsonl('subagents.jsonl', [
-      stopRecord({ session: 'OTHER-session', agent: 'agent-1', input: 100, output: 200 }),
+      { ...stopRecord({ session: uuid, agent: 'agent-1', input: 100, output: 200 }),
+        model: 'claude-opus-5', token_input_uncached: 100, token_cache_read: 0, token_cache_creation: 0 },
+      { ...stopRecord({ session: uuid, agent: 'agent-2', input: 50, output: 60 }),
+        model: 'claude-opus-5', token_input_uncached: 50, token_cache_read: 0, token_cache_creation: 0 },
     ]);
 
-    const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath });
+    const result = rollupSessionTokens({ parentSessionId: 'main-2026-08-14-session-1', subagentsPath });
 
     // Critically: null, not 0.  A result of 0 would misrepresent "no data" as "free session".
     expect(result.total_token_input).toBeNull();
+    expect(result.match_status).toBe('unmatched');
+    expect(result.ledger_records).toBe(2);
+    expect(result.total_tokens).toBeNull();
+    expect(result.total_cost_usd).toBeNull();
+
+    const matched = rollupSessionTokens({ parentSessionId: uuid, subagentsPath });
+    expect(matched.match_status).toBe('matched');
+    expect(matched.ledger_records).toBe(2);
+    expect(matched.matched_records).toBe(2);
+    expect(matched.total_tokens).toBe(410);
+    expect(matched.total_cost_usd).toBeCloseTo(0.00725, 12);
   });
 
   it('returns total_token_output: null (NOT 0) when no matching records exist', () => {
@@ -370,12 +385,14 @@ describe('rollupSessionTokens — null sentinel when no token data', () => {
 
   it('returns the full null/zero sentinel shape when file has no records for this session', () => {
     const subagentsPath = writeJsonl('subagents.jsonl', [
-      stopRecord({ session: 'OTHER-session', agent: 'agent-1', input: 100, output: 200 }),
+      startRecord({ session: 'OTHER-session', agent: 'agent-1' }),
     ]);
 
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath });
 
     expect(result).toEqual({
+      match_status: 'unmatched',
+      ledger_records: 1,
       total_token_input: null,
       total_token_output: null,
       total_tokens: null,
@@ -390,6 +407,15 @@ describe('rollupSessionTokens — null sentinel when no token data', () => {
       legacy_v1_records: 0,
       _token_schema: 2,
     });
+
+    const matched = rollupSessionTokens({ parentSessionId: 'OTHER-session', subagentsPath });
+    expect(matched.match_status).toBe('matched');
+    expect(matched.ledger_records).toBe(1);
+    expect(matched.matched_records).toBe(1);
+    expect(matched.total_token_input).toBeNull();
+    expect(matched.total_token_output).toBeNull();
+    expect(matched.total_tokens).toBeNull();
+    expect(matched.total_cost_usd).toBeNull();
   });
 });
 
@@ -412,6 +438,8 @@ describe('rollupSessionTokens — absent subagents file', () => {
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: missingPath });
 
     expect(result).toEqual({
+      match_status: 'ledger-absent',
+      ledger_records: null,
       total_token_input: null,
       total_token_output: null,
       total_tokens: null,
@@ -442,6 +470,12 @@ describe('rollupSessionTokens — malformed JSONL lines', () => {
       valid1,
       'THIS IS NOT JSON }{{{',
       valid2,
+      '[]',
+      '{}',
+      'null',
+      '42',
+      '"text"',
+      'true',
       '',
     ].join('\n'), 'utf8');
 
@@ -450,6 +484,9 @@ describe('rollupSessionTokens — malformed JSONL lines', () => {
     expect(result.total_token_input).toBe(150);
     expect(result.total_token_output).toBe(260);
     expect(result.matched_records).toBe(2);
+    expect(result.match_status).toBe('matched');
+    // valid1, valid2 and `{}` — an array, null or a primitive is no record.
+    expect(result.ledger_records).toBe(3);
   });
 
   it('does not throw when every line in the file is malformed JSON', () => {
@@ -461,15 +498,18 @@ describe('rollupSessionTokens — malformed JSONL lines', () => {
     ).not.toThrow();
   });
 
-  it('returns null totals when all lines are malformed (no valid records)', () => {
+  it.each(['garbage1\ngarbage2\n', '', '\n  \n', 'null\n42\n"text"\ntrue\n'])(
+    'returns ledger-empty and null totals when no object records exist: %j', (contents) => {
     const p = join(tmp, 'subagents.jsonl');
-    writeFileSync(p, 'garbage1\ngarbage2\n', 'utf8');
+    writeFileSync(p, contents, 'utf8');
 
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: p });
 
     expect(result.total_token_input).toBeNull();
     expect(result.total_token_output).toBeNull();
     expect(result.matched_records).toBe(0);
+    expect(result.match_status).toBe('ledger-empty');
+    expect(result.ledger_records).toBe(0);
   });
 });
 
@@ -510,17 +550,16 @@ describe('rollupSessionTokens — cross-session isolation', () => {
 // ---------------------------------------------------------------------------
 
 describe('rollupSessionTokens — edge cases', () => {
-  it('returns null/zero sentinel when parentSessionId is an empty string', () => {
-    const subagentsPath = writeJsonl('subagents.jsonl', [
-      stopRecord({ session: '', agent: 'agent-1', input: 100, output: 200 }),
-    ]);
+  it.each(['', null, undefined, 42, {}])('returns invalid-key without reading for parentSessionId %j', (parentSessionId) => {
+    // Reading the directory would throw EISDIR; invalid keys must return first.
+    const result = rollupSessionTokens({ parentSessionId, subagentsPath: tmp });
 
-    const result = rollupSessionTokens({ parentSessionId: '', subagentsPath });
-
-    // Empty string parentSessionId is treated as invalid — sentinel returned
+    // A non-string or empty parentSessionId is invalid — sentinel returned
     expect(result.total_token_input).toBeNull();
     expect(result.total_token_output).toBeNull();
     expect(result.matched_records).toBe(0);
+    expect(result.match_status).toBe('invalid-key');
+    expect(result.ledger_records).toBeNull();
   });
 
   it('handles an empty file without throwing', () => {
@@ -530,6 +569,11 @@ describe('rollupSessionTokens — edge cases', () => {
     expect(() =>
       rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: p })
     ).not.toThrow();
+
+    // A readable empty ledger is valid, but other read failures still propagate.
+    expect(() =>
+      rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: tmp })
+    ).toThrow(expect.objectContaining({ code: 'EISDIR' }));
   });
 
   it('returns null/zero sentinel for an empty file', () => {
@@ -539,6 +583,8 @@ describe('rollupSessionTokens — edge cases', () => {
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: p });
 
     expect(result).toEqual({
+      match_status: 'ledger-empty',
+      ledger_records: 0,
       total_token_input: null,
       total_token_output: null,
       total_tokens: null,
@@ -563,6 +609,8 @@ describe('rollupSessionTokens — edge cases', () => {
 
     expect(result.total_token_input).toBeNull();
     expect(result.matched_records).toBe(0);
+    expect(result.match_status).toBe('ledger-empty');
+    expect(result.ledger_records).toBe(0);
   });
 });
 

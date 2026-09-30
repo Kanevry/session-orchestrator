@@ -12,6 +12,8 @@
  * - File-absent or all-null-token sessions return a sentinel shape with null
  *   totals (not 0) so callers can distinguish "session had no token data" from
  *   "session was genuinely free / cost $0".
+ * - `match_status` and `ledger_records` distinguish why totals are absent
+ *   without interpreting the session key's shape (#1027 Nachtrag 7).
  * - Malformed JSONL lines are silently skipped (resilience over strictness).
  * - `subagents_with_tokens` counts distinct agent_ids that have at least one
  *   TOKEN-BEARING record (coverage metric).
@@ -119,6 +121,8 @@ function isV2(record) {
 
 /**
  * @typedef {Object} TokenRollupResult
+ * @property {'invalid-key'|'ledger-absent'|'ledger-empty'|'unmatched'|'matched'} match_status - Distinguishes absent telemetry from an unmatched key (#1027 Nachtrag 7).
+ * @property {number|null} ledger_records - Count of parsed non-null, non-array objects; null when the ledger was not read (#1027 Nachtrag 7).
  * @property {number|null} total_token_input  - Sum of token_input across TOKEN-BEARING matched records; null when none had a non-null value.
  * @property {number|null} total_token_output - Sum of token_output across TOKEN-BEARING matched records; null when none had a non-null value.
  * @property {number|null} total_tokens       - total_token_input + total_token_output (#1436); a null side counts as absent, null only when BOTH are null.
@@ -149,6 +153,8 @@ export function rollupSessionTokens({
 }) {
   /** @type {TokenRollupResult} */
   const ZERO = {
+    match_status: 'invalid-key',
+    ledger_records: null,
     total_token_input: null,
     total_token_output: null,
     total_tokens: null,
@@ -177,7 +183,7 @@ export function rollupSessionTokens({
     raw = readFileSync(resolvedPath, 'utf8');
   } catch (err) {
     if (err.code === 'ENOENT') {
-      return { ...ZERO };
+      return { ...ZERO, match_status: 'ledger-absent' };
     }
     throw err;
   }
@@ -185,6 +191,7 @@ export function rollupSessionTokens({
   // Parse JSONL — skip malformed lines, filter to parentSessionId.
   const lines = raw.split('\n');
   const matched = [];
+  let ledgerRecords = 0;
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
@@ -195,13 +202,19 @@ export function rollupSessionTokens({
       // Malformed line — skip silently.
       continue;
     }
-    if (record && record.parent_session_id === parentSessionId) {
+    if (record === null || typeof record !== 'object' || Array.isArray(record)) continue;
+    ledgerRecords += 1;
+    if (record.parent_session_id === parentSessionId) {
       matched.push(record);
     }
   }
 
   if (matched.length === 0) {
-    return { ...ZERO };
+    return {
+      ...ZERO,
+      match_status: ledgerRecords === 0 ? 'ledger-empty' : 'unmatched',
+      ledger_records: ledgerRecords,
+    };
   }
 
   // Aggregate — skip null/undefined token values.
@@ -300,6 +313,8 @@ export function rollupSessionTokens({
   }
 
   return {
+    match_status: 'matched',
+    ledger_records: ledgerRecords,
     total_token_input: sumInput,
     total_token_output: sumOutput,
     // #1436 — the one figure a session-level budget compares against. Null only

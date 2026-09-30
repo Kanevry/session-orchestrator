@@ -589,6 +589,9 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect(w.raw_session_id).toBe(U);
     // unknown model → null cost → omitted, never a fabricated 0
     expect('total_cost_usd' in w).toBe(false);
+    // The rollup's diagnostics explain an omission; they never enter the ledger.
+    expect('match_status' in w).toBe(false);
+    expect('ledger_records' in w).toBe(false);
   });
 
   it('an explicit total_tokens on the entry wins and suppresses the merge', () => {
@@ -608,7 +611,24 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     for (const key of ['total_tokens', 'total_token_input', 'total_token_output', 'matched_records', 'subagents_with_tokens']) {
       expect(key in w).toBe(false);
     }
-    expect(r.stderr).toContain('token rollup found no subagents.jsonl records');
+    expect(r.stderr).toContain(`token rollup found no subagents.jsonl records for ${U} (ledger absent)`);
+  });
+
+  it('a ledger with only foreign records reports the count and omits every rollup key', () => {
+    writeJsonlIn('subagents.jsonl', [stop('x', 100, 200, 'other-uuid'), stop('y', 50, 60, 'other-uuid')]);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    expect(r.stderr).toContain(`2 subagents.jsonl record(s) present, none with parent_session_id=${U}`);
+    expect(r.stderr).toContain('not attributable via this UUID, not zero cost');
+    const w = readWritten();
+    for (const key of [
+      'total_tokens', 'total_token_input', 'total_token_output',
+      'total_token_input_uncached', 'total_token_cache_read', 'total_token_cache_creation',
+      'total_cost_usd', 'subagents_with_tokens', 'matched_records', '_token_schema',
+      'match_status', 'ledger_records',
+    ]) {
+      expect(key in w).toBe(false);
+    }
   });
 
   // Bug: one fractional token value in subagents.jsonl made the rollup's

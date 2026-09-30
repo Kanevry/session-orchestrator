@@ -133,10 +133,12 @@ export async function runLoop(opts = {}) {
     // input is never recorded cannot be falsified afterwards. `0` = disabled.
     // Live path (#1436): scripts/emit-session.mjs merges the subagents.jsonl
     // rollup (`total_token_output`, `total_tokens`) into each session record,
-    // `readTailSession()` in scripts/autopilot.mjs projects them as `usage`, and
-    // the accumulator below sums them into `total_tokens_used`. CEILING: a record
-    // with no own-UUID or no token-bearing subagent records carries no totals, so
-    // that iteration adds 0 — the budget undercounts, it never over-fires.
+    // scripts/autopilot.mjs selects the unique canonical record whose
+    // raw_session_id equals the child's --session-id UUID and projects its
+    // totals as `usage`; the accumulator sums them into `total_tokens_used`.
+    // Zero or multiple matches throw → FAILED_WAVE, never foreign token usage.
+    // CEILING: an own record without token totals adds 0 — the budget
+    // undercounts, it never over-fires.
     max_tokens: opts.maxTokens ?? 0,
     iterations_completed: 0,
     kill_switch: null,
@@ -272,7 +274,8 @@ export async function runLoop(opts = {}) {
     }
     state.iterations_completed += 1;
 
-    // Accumulate output tokens; stays 0 when sessionRunner omits `usage` (forward-compat).
+    // Accumulate own-record output tokens (total_tokens fallback); missing totals
+    // add 0. An unassignable child record already threw → FAILED_WAVE above.
     if (sessionResult && typeof sessionResult.usage === 'object' && sessionResult.usage !== null) {
       const outTokens = Number(
         sessionResult.usage.output_tokens ?? sessionResult.usage.total_tokens
