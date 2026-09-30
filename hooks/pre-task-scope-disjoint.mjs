@@ -884,18 +884,20 @@ function notificationCarrierText(rec) {
  *
  * Named ceiling (BV-004, #1467): a batch of several DIFFERENT notifications in
  * one carrier reports only the first as finished (the rest stay running, the
- * safe direction but a false-DENY source). Census 2026-09-30 (11,684 transcript
- * files, 2026-08-06 → 2026-09-30, at f58480e5): 23 preamble-form `user` carriers
- * hold 2+ distinct terminal ids; 108 non-first ids are finished by no other
- * carrier, and 0 of them is an `Agent` dispatch id (105 Bash, 3 Monitor) — the
- * only ids this index resolves, so no Agent liveness is lost today. The
- * 2026-09-28 figures (31 / 155) were not reproduced. No split is built: it cannot
- * be forgery-safe — a complete block forged in `<summary>`/`<result>` is
- * byte-identical to a genuine `\n\n`-joined batch, `origin` has no per-block
- * discriminator, free text is not escaped. Revisit-Trigger: re-run the census
- * and a non-first terminal id is an `Agent` dispatch id finished by no other
- * carrier or `tool_result`, or the harness adds a per-block discriminator or
- * escapes free text.
+ * safe direction but a false-DENY source). Census 2026-09-30 over the operator's
+ * local transcripts of all repos (11,684 files, 2026-08-06 → 2026-09-30, at
+ * f58480e5): 23 preamble-form `user` carriers hold 2+ distinct terminal ids; 108
+ * non-first ids are finished by no other carrier, and 0 of them is an `Agent`
+ * dispatch id (105 Bash, 3 Monitor) — the only ids this index resolves, so no
+ * Agent liveness is lost today. The 2026-09-28 figures (31 / 155) were not
+ * reproduced. No split is built: it would gain nothing, and its safety is
+ * unproven. `origin` has no per-block discriminator, so a split is safe only if
+ * the harness escapes `<` in `<summary>`/`<result>` — unescaped, a block forged
+ * there is byte-identical to a genuine `\n\n`-joined batch. The census suggests
+ * escaping (12,039 of 25,031 results carry `&lt;`, 3 a raw `<` + letter) but
+ * does not establish it for every harness version. Revisit-Trigger: a re-run
+ * census finds a non-first terminal id that is an `Agent` dispatch id finished
+ * by no other carrier or `tool_result`; a split then needs escaping proven first.
  *
  * @param {string|null} text — a carrier's text from {@link notificationCarrierText}
  * @returns {string[]} zero or one finished tool-use id
