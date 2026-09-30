@@ -84,6 +84,16 @@
  *      {@link notificationCarrierText}): a complete block inside a `tool_result`
  *      (a `Read` of a fixture), assistant text or a typed prompt is a forgery
  *      that would false-ALLOW an overlap with a still-running agent.
+ *   c) EXACT ID, POSITIVE PROOF, RESUME (#1480, #1459 P1). A ledger entry keeps
+ *      its dispatch's PreToolUse `tool_use_id` as `useId`, and liveness is
+ *      looked up by THAT id; the description is only the fallback for entries
+ *      without one, the ledger `id` never (B3). A dispatch finishes only on
+ *      positive evidence — a terminal carrier, `is_error`, or a result in
+ *      {@link RESULT_COMPLETION_FORMS}; any other result form is "unknown",
+ *      i.e. no evidence (B2, row 13). A `SendMessage` to the dispatch's task id
+ *      re-opens it until a terminal carrier for the dispatch, that SendMessage or
+ *      the task id follows — a resumed agent is running, not done (#1459 P1;
+ *      {@link buildLivenessIndex}).
  *
  * COST CONTAINMENT: the transcript is read ONLY when a collision has already
  * been found — i.e. on the path that is about to deny. The 99 % no-collision
@@ -91,8 +101,9 @@
  * costs 78 ms to read + 129 ms to scan; a typical one is 1–5 MB.
  *
  * BLIND FALLBACK + ITS CEILING (BV-004): when the transcript is unavailable or
- * carries no record of that agent at all, liveness falls back to the ledger
- * entry's own age, with `IN_FLIGHT_TTL_MS` = 30 min. Named ceiling: the largest
+ * carries no positive evidence for that agent (no record, or only an unknown
+ * result form), liveness falls back to the ledger entry's own age, with
+ * `IN_FLIGHT_TTL_MS` = 30 min. Named ceiling: the largest
  * MEASURED same-batch dispatch spread is 95.7 s, so 30 min is ~19× headroom
  * against the false-ALLOW direction, while both measured sequential repair gaps
  * (36 min, 49 min) sit above it. Revisit trigger: a same-batch spread above
@@ -119,11 +130,11 @@
  *   | 7 | ledger unreadable / corrupt            | WARN + ALLOW + SELF-HEAL | loss of state is not evidence of a violation; loud so it gets noticed. The verdict now CARRIES a fresh ledger, so the corruption is repaired on the spot — without it the guard stayed OFF for the whole remaining wave, visible only in one `systemMessage` |
  *   | 8 | `git ls-files` failed                  | ALLOW (degraded)    | glob-vs-glob expansion degrades, concrete collisions are still found. A git outage is not a scope violation |
  *   | 9 | `findScopeCollisions` → not evaluable   | WARN + ALLOW        | the library says "not evaluable". Denying on a verdict with no witness is an assertion without evidence |
- *   |10 | same agent id re-dispatched, same scope| ALLOW (ledger replace) | a retry after a failed agent is legitimate; treating it as a duplicate would make the guard block every retry — a self-lock vector |
- *   |10a| collision, but EVERY colliding prior agent has FINISHED | ALLOW (+ prune) | the sequential repair pass. Its ledger records are pruned, so the state cannot re-block the next one either |
+ *   |10 | same agent id re-dispatched         | ALLOW; predecessor pruned only when FINISHED | a retry after a failed agent is legitimate (a failed agent is finished), so the guard must not self-lock. #1480 B4: an unfinished predecessor is KEPT as a claim — a third agent hitting only its scope still collides. With distinct `tool_use_id`s on both it is an ordinary partner (row 11); without them it never collides with its own retry. Replaced WITHOUT a probe only where no claim is lost: the same `tool_use_id` (the same dispatch evaluated again), or — neither carrying an id — a predecessor wholly covered by the retry's scope |
+ *   |10a| collision, but EVERY colliding prior agent has FINISHED (positive evidence) | ALLOW (+ prune) | the sequential repair pass. Its ledger records are pruned, so the state cannot re-block the next one either |
  *   |11 | collision with a prior agent still IN FLIGHT | **DENY**       | the one case this hook exists for |
  *   |12 | unexpected throw                       | ALLOW + stderr      | as row 2 |
- *   |13 | liveness probe throws / no evidence at all | treat as IN FLIGHT | keeps row 11 biting; the blind case is bounded by `IN_FLIGHT_TTL_MS`, never unbounded |
+ *   |13 | liveness probe throws / no positive evidence (no record, unknown result form) | treat as IN FLIGHT | keeps row 11 biting; the blind case is bounded by `IN_FLIGHT_TTL_MS`, never unbounded. A dispatch re-opened by a SendMessage with no completion after it is in flight outright, without TTL |
  *   |14 | ledger lock not acquirable in `LEDGER_LOCK_TIMEOUT_MS` | run UNLOCKED (degraded) | the lock removes the read-modify-write race (below); failing to take it must not deny, so the cycle degrades to the pre-lock behaviour |
  *
  * Every row that reaches a verdict from `decide()` — 5–11 and 13–14 — also
@@ -367,6 +378,54 @@ const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
  * must not take.
  */
 const ASYNC_LAUNCH_ACK = 'Async agent launched successfully';
+
+/**
+ * The `tool_result` forms that PROVE a dispatch finished (#1480 B2), one line
+ * per form. A result matching none of them is NOT a completion but "no
+ * evidence" — the entry falls back to the TTL rule (matrix row 13). `is_error`
+ * is handled beside this list (the dispatch never ran), and the ACK is tested
+ * FIRST, so a launch receipt can never read as a completion.
+ *
+ * Census 2026-09-30 (local transcripts, 14 days, counts only), Agent
+ * tool_results: ACK 4,730; sync completion carrying the `<usage>`/`total_tokens`
+ * trailer and `agentId:` 690 (690/690); `is_error` 37; neither 38. Of those 38,
+ * "This agent's report was delivered…" is a completion (35/35 without a
+ * terminal carrier before or after, 2026-09-30), "Fork started — processing in
+ * b…" is not (a start receipt without the ACK wording — before this list it was
+ * read as a completion: the B2 fail-open).
+ *
+ * Named ceiling (BV-004): any other wording reads as "unknown", so a fresh entry
+ * binds for up to IN_FLIGHT_TTL_MS although its agent may be done — a bounded
+ * false-DENY, never a false-ALLOW. Revisit-Trigger: a census re-run finds an
+ * Agent tool_result wording in neither this list nor ASYNC_LAUNCH_ACK — classify
+ * it, then add ONE line here.
+ */
+const RESULT_COMPLETION_FORMS = Object.freeze([
+  Object.freeze({ at: 'anywhere', text: '<usage>' }),                        // sync trailer, 690/690
+  Object.freeze({ at: 'anywhere', text: 'total_tokens' }),                   // sync trailer, 690/690
+  Object.freeze({ at: 'start', text: "This agent's report was delivered" }), // 35/35 without carrier
+]);
+
+/** The tool that addresses — and can RESUME — an already-dispatched agent (#1459 P1). */
+const SEND_MESSAGE_TOOL = 'SendMessage';
+
+/**
+ * A `SendMessage` result that reached nobody (`{"success":false,…"No agent
+ * named…"}`, census 2026-09-30): such a send activates nothing.
+ */
+const SEND_NO_EFFECT = '"success":false';
+
+/**
+ * The harness's `agentId:` line in an Agent tool_result (ACK or sync trailer) —
+ * the task id a `SendMessage` addresses. Read as the LAST match: a sync result
+ * embeds the agent's own report ahead of the harness trailer.
+ */
+const AGENT_ID_LINE_RE = /agentId:\s*([A-Za-z0-9_-]+)/g;
+
+/** Per-dispatch liveness states — see {@link buildLivenessIndex}. */
+const LIVE_FINISHED = 'finished';
+const LIVE_RUNNING = 'running';
+const LIVE_UNKNOWN = 'unknown';
 
 /**
  * `<task-notification>` statuses that mean the task is NO LONGER RUNNING (#1455).
@@ -766,8 +825,8 @@ export function extractScopeFromPrompt(prompt) {
 
 /**
  * The dispatch's human description — the field the liveness probe matches
- * against the transcript's `tool_use` blocks (present in 147/147 measured
- * payloads).
+ * against the transcript's `tool_use` blocks when an entry carries no exact
+ * `useId` (present in 147/147 measured payloads).
  *
  * @param {{description?: unknown}} toolInput
  * @returns {string}
@@ -793,6 +852,22 @@ export function agentIdOf(toolInput) {
   return 'unnamed-agent';
 }
 
+/**
+ * A dispatch's EXACT identity (#1480 A): the PreToolUse payload's `tool_use_id`,
+ * or a ledger entry's stored `useId`. On Claude Code it equals the transcript's
+ * `tool_use` id, so liveness becomes a lookup instead of a description match;
+ * other harnesses may omit it, and `''` then means "no exact id". Taken
+ * verbatim, never re-spelled — and dropped rather than clipped past
+ * MAX_AGENT_ID_CHARS: a clipped id could never match, two clipped ids could
+ * match wrongly.
+ *
+ * @param {unknown} value
+ * @returns {string}
+ */
+function exactUseId(value) {
+  return typeof value === 'string' && value.trim() !== '' && value.length <= MAX_AGENT_ID_CHARS ? value : '';
+}
+
 // ---------------------------------------------------------------------------
 // Liveness — has an already-recorded agent FINISHED? (§ Liveness)
 // ---------------------------------------------------------------------------
@@ -803,9 +878,10 @@ const NOTIFICATION_CLOSE = '</task-notification>';
 /**
  * A notification head in the harness's own tag order: `<task-id>`,
  * `<tool-use-id>`, optional `<output-file>`, `<status>` — anchored at the opener.
- * Group 1 is the tool-use id, group 2 the whole `<status>` element.
+ * Group 1 is the task id (the resume key, #1459 P1), group 2 the tool-use id,
+ * group 3 the whole `<status>` element.
  */
-const NOTIFICATION_HEAD_RE = /^<task-notification>\s*<task-id>[^<]*<\/task-id>\s*<tool-use-id>([^<]+)<\/tool-use-id>\s*(?:<output-file>[^<]*<\/output-file>\s*)?(<status>[^<]*<\/status>)/;
+const NOTIFICATION_HEAD_RE = /^<task-notification>\s*<task-id>([^<]*)<\/task-id>\s*<tool-use-id>([^<]+)<\/tool-use-id>\s*(?:<output-file>[^<]*<\/output-file>\s*)?(<status>[^<]*<\/status>)/;
 
 /** `origin.kind` / `commandMode` value the harness stamps on a notification carrier. */
 const CARRIER_KIND = 'task-notification';
@@ -868,8 +944,11 @@ function notificationCarrierText(rec) {
 }
 
 /**
- * The tool-use id a carrier's text reports as TERMINATED via its FIRST
- * `<task-notification>` block (#1459 Pkt 2) — at most one id per carrier.
+ * The HEAD of a carrier text's FIRST `<task-notification>` block (#1459 Pkt 2) —
+ * its task id, its tool-use id and whether its status is TERMINAL; at most one
+ * head per carrier. Only a terminal head finishes an id; a non-terminal one only
+ * contributes the task id (#1459 P1), which can open a dispatch, never close it.
+ * (Named `finishedNotificationIds` until #1480; the ceiling below is unchanged.)
  *
  * The text must BEGIN with the opener (a block further in is a quote) and its
  * head must follow the harness tag order ({@link NOTIFICATION_HEAD_RE}).
@@ -900,54 +979,133 @@ function notificationCarrierText(rec) {
  * by no other carrier or `tool_result`; a split then needs escaping proven first.
  *
  * @param {string|null} text — a carrier's text from {@link notificationCarrierText}
- * @returns {string[]} zero or one finished tool-use id
+ * @returns {{taskId: string, toolUseId: string, terminal: boolean}|null}
  */
-function finishedNotificationIds(text) {
-  if (typeof text !== 'string' || !text.startsWith(NOTIFICATION_OPEN)) return [];
+function notificationHead(text) {
+  if (typeof text !== 'string' || !text.startsWith(NOTIFICATION_OPEN)) return null;
   const close = text.indexOf(NOTIFICATION_CLOSE);
-  if (close === -1) return [];
+  if (close === -1) return null;
   let headEnd = close;
   for (const tag of ['<summary>', '<result>']) {
     const at = text.indexOf(tag);
     if (at !== -1 && at < headEnd) headEnd = at;
   }
   const head = text.slice(0, headEnd).match(NOTIFICATION_HEAD_RE);
-  return head && TERMINAL_STATUS_RE.test(head[2]) ? [head[1]] : [];
+  if (head === null) return null;
+  return { taskId: head[1].trim(), toolUseId: head[2], terminal: TERMINAL_STATUS_RE.test(head[3]) };
 }
 
 /**
- * Index a session transcript by agent DESCRIPTION → completion state.
+ * Classify an Agent dispatch's OWN `tool_result` (#1480 B2): `done` only on
+ * positive evidence (`is_error`, or one of {@link RESULT_COMPLETION_FORMS}),
+ * `ack` for the launch acknowledgement, `unknown` for everything else. The ACK
+ * is tested before the forms, so no ACK wording can ever read as a completion.
  *
- * Three record shapes are read, all measured in this repo's own transcripts:
- *   - `tool_use` `{name:'Agent', id, input.description}` — the dispatch.
- *   - `tool_result` `{tool_use_id, content}` — a completion for the SYNCHRONOUS
- *     shape, but only when its text is not the {@link ASYNC_LAUNCH_ACK}.
- *   - a `<task-notification>` CARRIER record — the ASYNC shape's completion
- *     (#1459 Pkt 2, {@link notificationCarrierText} + {@link finishedNotificationIds}):
- *     only a harness-written carrier, only when its text BEGINS with the block,
- *     only that block's head before `<summary>`/`<result>` in harness tag order,
- *     whose `<status>` must be TERMINAL ({@link TERMINAL_STATUS_RE}); the closing
- *     `</task-notification>` is mandatory.
- *     `failed` counts too (#1455): a failed agent is not running, and a resumed
- *     one completes under the SendMessage's NEW id, never the original one.
+ * @param {{is_error?: unknown}} block
+ * @param {string} text — {@link resultTextOf}(block)
+ * @returns {'done'|'ack'|'unknown'}
+ */
+function dispatchResultForm(block, text) {
+  if (block?.is_error === true) return 'done';
+  if (text.includes(ASYNC_LAUNCH_ACK)) return 'ack';
+  const lead = text.trimStart();
+  for (const form of RESULT_COMPLETION_FORMS) {
+    if (form.at === 'start' ? lead.startsWith(form.text) : text.includes(form.text)) return 'done';
+  }
+  return 'unknown';
+}
+
+/**
+ * The LAST `agentId:` a harness-written dispatch result names, or `''`.
  *
- * A description dispatched N times counts as finished only when EVERY one of its
- * tool_use ids is finished. Conservative on purpose: one outstanding run of the
- * same agent keeps the deny alive.
+ * @param {string} text
+ * @returns {string}
+ */
+function lastAgentIdIn(text) {
+  let last = '';
+  for (const m of text.matchAll(AGENT_ID_LINE_RE)) last = m[1];
+  return last;
+}
+
+/**
+ * Append `value` to the array stored under `key`.
+ *
+ * @template T
+ * @param {Map<string, T[]>} map
+ * @param {string} key
+ * @param {T} value
+ */
+function pushTo(map, key, value) {
+  const list = map.get(key);
+  if (list === undefined) map.set(key, [value]);
+  else list.push(value);
+}
+
+/**
+ * Index a session transcript by DISPATCH tool-use id → liveness state, plus
+ * description → dispatch ids for ledger entries that carry no exact id.
+ *
+ * Record shapes read, all measured (census 2026-09-30 for the SendMessage half):
+ *   - `tool_use` `{name:'Agent', id, input.description}` — the dispatch U.
+ *   - `tool_use` `{name:'SendMessage', id, input.to}` — addresses a dispatch by
+ *     its task id T(U) (= agentId); 1,055 via a notification task id, 33 via the
+ *     ACK's agentId, 0 via the description.
+ *   - `tool_result` for U — classified by {@link dispatchResultForm}; for a
+ *     SendMessage only whether it reached nobody ({@link SEND_NO_EFFECT} or
+ *     `is_error`).
+ *   - a `<task-notification>` CARRIER record — only a harness-written carrier
+ *     ({@link notificationCarrierText}), only its first block's head
+ *     ({@link notificationHead}); a terminal `<status>` finishes (#1455: `failed`
+ *     too).
+ *
+ * T(U) is the last `agentId:` of U's own ACK or positive result, else the task
+ * id of the first carrier head carrying U's tool-use id.
+ *
+ * RESUME (#1459 P1). U is ACTIVATED by its dispatch and by every SendMessage
+ * with `to === T(U)` whose result is not a no-effect (a send without a result
+ * yet counts — the safe direction). U is FINISHED when a completion lies AFTER
+ * its last activation, by transcript line position: a terminal carrier with
+ * tool-use id U, with the id of an activating SendMessage, or with task id T(U);
+ * when the dispatch itself is the last activation, also U's own positive
+ * result. Measured 2026-09-30: a resumed agent completes under the
+ * SendMessage's id and the same task id, never again under U (455 cases); a
+ * message queued to a running agent completes under U with the same task id
+ * (566). Activations only OPEN; closing still needs a carrier or U's own
+ * harness-written result.
+ *
+ * States: `finished`; `running` — no result, an ACK, or a SendMessage as last
+ * activation with no completion after it (no TTL); `unknown` — only a result
+ * form without positive evidence, which the probe treats as no evidence (TTL).
+ * Every occurrence of a duplicated record counts, so the LAST activation wins —
+ * the direction that keeps a deny, never the one that lifts it.
+ *
+ * Named ceiling (BV-004): `to` is matched against T(U) only — a SendMessage that
+ * addresses the agent by name or description re-opens nothing (0 of ~6,200
+ * measured 2026-09-30). Revisit-Trigger: a census re-run finds a SendMessage to
+ * a dispatch whose `to` is not its task id.
  *
  * Pure and total — a malformed line is skipped, never thrown on.
  *
  * @param {string} raw — the transcript's JSONL text
- * @returns {Map<string, boolean>} description → finished?
+ * @returns {{states: Map<string, 'finished'|'running'|'unknown'>,
+ *            idsByDesc: Map<string, string[]>}}
  */
-export function buildTranscriptIndex(raw) {
-  const out = new Map();
-  if (typeof raw !== 'string' || raw.length === 0) return out;
+function buildLivenessIndex(raw) {
+  const states = new Map();
+  const idsByDesc = new Map();
+  if (typeof raw !== 'string' || raw.length === 0) return { states, idsByDesc };
 
-  const dispatched = new Map(); // description → tool_use ids
-  const finishedIds = new Set();
+  const dispatchPos = new Map();     // U → last line position of its tool_use
+  const results = new Map();         // U → [{pos, form, agentId}]
+  const sendsByTo = new Map();       // SendMessage `to` → [{id, pos}]
+  const sendIds = new Set();
+  const sendNoEffect = new Set();    // SendMessage ids whose result reached nobody
+  const headsByUse = new Map();      // carrier tool-use id → [{pos, taskId, terminal}]
+  const terminalByTask = new Map();  // carrier task id → [pos] of terminal heads
 
-  for (const line of raw.split('\n')) {
+  const lines = raw.split('\n');
+  for (let pos = 0; pos < lines.length; pos++) {
+    const line = lines[pos];
     if (line.length < 24) continue;
     // Substring prefilter only — the verdict needs the PARSED record: a raw-line
     // match let a forged block in any record finish an id (#1459 Pkt 2 Rest).
@@ -957,9 +1115,13 @@ export function buildTranscriptIndex(raw) {
     let rec;
     try { rec = JSON.parse(line); } catch { continue; }
 
-    // ASYNC completion — only from a harness-written carrier record.
+    // Completion (and the task id) — only from a harness-written carrier record.
     if (hasNotification) {
-      for (const id of finishedNotificationIds(notificationCarrierText(rec))) finishedIds.add(id);
+      const head = notificationHead(notificationCarrierText(rec));
+      if (head !== null) {
+        pushTo(headsByUse, head.toolUseId, { pos, taskId: head.taskId, terminal: head.terminal });
+        if (head.terminal && head.taskId !== '') pushTo(terminalByTask, head.taskId, pos);
+      }
     }
 
     if (!hasToolRow) continue;
@@ -967,22 +1129,110 @@ export function buildTranscriptIndex(raw) {
     if (!Array.isArray(content)) continue;
 
     for (const block of content) {
-      if (block?.type === 'tool_use' && block?.name === DISPATCH_TOOL && typeof block?.id === 'string') {
-        const desc = typeof block?.input?.description === 'string' ? block.input.description.trim() : '';
-        if (desc === '') continue;
-        const ids = dispatched.get(desc) ?? [];
-        ids.push(block.id);
-        dispatched.set(desc, ids);
+      if (block?.type === 'tool_use' && typeof block?.id === 'string') {
+        if (block.name === DISPATCH_TOOL) {
+          if (!results.has(block.id)) {
+            results.set(block.id, []);
+            const desc = typeof block?.input?.description === 'string' ? block.input.description.trim() : '';
+            if (desc !== '') pushTo(idsByDesc, desc, block.id);
+          }
+          dispatchPos.set(block.id, pos);
+        } else if (block.name === SEND_MESSAGE_TOOL && typeof block?.input?.to === 'string' && block.input.to !== '') {
+          sendIds.add(block.id);
+          pushTo(sendsByTo, block.input.to, { id: block.id, pos });
+        }
         continue;
       }
       if (block?.type === 'tool_result' && typeof block?.tool_use_id === 'string') {
-        // The launch ACK is not a completion — see § Liveness (b).
-        if (!resultTextOf(block).includes(ASYNC_LAUNCH_ACK)) finishedIds.add(block.tool_use_id);
+        const own = results.get(block.tool_use_id);
+        if (own !== undefined) {
+          const text = resultTextOf(block);
+          const form = dispatchResultForm(block, text);
+          // An error text is not a harness trailer — learn T(U) from ACK/completion only.
+          const agentId = form === 'ack' || (form === 'done' && block.is_error !== true) ? lastAgentIdIn(text) : '';
+          own.push({ pos, form, agentId });
+        } else if (sendIds.has(block.tool_use_id)
+          && (block.is_error === true || resultTextOf(block).includes(SEND_NO_EFFECT))) {
+          sendNoEffect.add(block.tool_use_id);
+        }
       }
     }
   }
 
-  for (const [desc, ids] of dispatched) out.set(desc, ids.every((id) => finishedIds.has(id)));
+  for (const [useId, pos] of dispatchPos) {
+    const own = results.get(useId) ?? [];
+    const taskId = own.find((r) => r.agentId !== '')?.agentId
+      ?? (headsByUse.get(useId) ?? []).find((h) => h.taskId !== '')?.taskId
+      ?? '';
+
+    let lastPos = pos;
+    let lastIsSend = false;
+    const closers = [useId];
+    if (taskId !== '') {
+      for (const send of sendsByTo.get(taskId) ?? []) {
+        if (sendNoEffect.has(send.id)) continue;
+        closers.push(send.id);
+        if (send.pos > lastPos) { lastPos = send.pos; lastIsSend = true; }
+      }
+    }
+
+    const closedAfter = closers.some((id) => (headsByUse.get(id) ?? []).some((h) => h.terminal && h.pos > lastPos))
+      || (taskId !== '' && (terminalByTask.get(taskId) ?? []).some((p) => p > lastPos))
+      || (!lastIsSend && own.some((r) => r.form === 'done' && r.pos > lastPos));
+
+    let state;
+    if (closedAfter) state = LIVE_FINISHED;
+    else if (lastIsSend || own.length === 0 || own.some((r) => r.form === 'ack')) state = LIVE_RUNNING;
+    else state = LIVE_UNKNOWN;
+    states.set(useId, state);
+  }
+  return { states, idsByDesc };
+}
+
+/**
+ * Description-level verdict for a ledger entry WITHOUT an exact id: `false` if
+ * any of the description's dispatches is running, `true` only if every one is
+ * finished, `undefined` (no evidence → TTL) otherwise. `excludeUseId` drops the
+ * CURRENT dispatch, whose `tool_use` may already sit in the transcript at
+ * PreToolUse time and would make a finished same-named predecessor look alive.
+ *
+ * @param {{states: Map<string, string>, idsByDesc: Map<string, string[]>}} index
+ * @param {string} desc
+ * @param {string} excludeUseId
+ * @returns {boolean|undefined}
+ */
+function descFinished(index, desc, excludeUseId) {
+  let seen = false;
+  let unknown = false;
+  for (const useId of index.idsByDesc.get(desc) ?? []) {
+    if (useId === excludeUseId) continue;
+    seen = true;
+    const state = index.states.get(useId);
+    if (state === LIVE_RUNNING) return false;
+    if (state !== LIVE_FINISHED) unknown = true;
+  }
+  return seen && !unknown ? true : undefined;
+}
+
+/**
+ * Index a session transcript by agent DESCRIPTION → completion state — the
+ * description view of {@link buildLivenessIndex}.
+ *
+ * A description dispatched N times counts as finished only when EVERY one of its
+ * tool_use ids is finished, and as running as soon as one is. Conservative on
+ * purpose: one outstanding run of the same agent keeps the deny alive. A
+ * description with no running run but an `unknown` one is absent (no evidence).
+ *
+ * @param {string} raw — the transcript's JSONL text
+ * @returns {Map<string, boolean>} description → finished? (absent = no evidence)
+ */
+export function buildTranscriptIndex(raw) {
+  const index = buildLivenessIndex(raw);
+  const out = new Map();
+  for (const desc of index.idsByDesc.keys()) {
+    const finished = descFinished(index, desc, '');
+    if (finished !== undefined) out.set(desc, finished);
+  }
   return out;
 }
 
@@ -1009,10 +1259,16 @@ function resultTextOf(block) {
  * been found. The no-collision path — the overwhelming majority — never touches
  * the file (§ Liveness, cost containment).
  *
- * Resolution order per ledger entry:
- *   1. transcript evidence for its description → definitive;
- *   2. no evidence → the entry's own age against `IN_FLIGHT_TTL_MS`;
- *   3. no usable timestamp either → NOT finished (matrix row 13 — keeps the
+ * Resolution order per ledger entry (#1480 A):
+ *   1. an entry WITH `useId` → that exact dispatch's state: finished / running
+ *      are definitive, `unknown` or no record is no evidence;
+ *   2. an entry WITHOUT `useId` (legacy, or a harness sending no `tool_use_id`)
+ *      → its non-empty description via {@link descFinished}, the current
+ *      dispatch (`selfUseId`) excluded. Never the ledger `id` — a
+ *      `desc (type)` string or a bare subagent type, which matched unrelated
+ *      dispatches (B3);
+ *   3. no evidence → the entry's own age against `IN_FLIGHT_TTL_MS`;
+ *   4. no usable timestamp either → NOT finished (matrix row 13 — keeps the
  *      deny biting rather than inventing a completion).
  *
  * @param {object} params
@@ -1020,9 +1276,13 @@ function resultTextOf(block) {
  * @param {number} [params.now]
  * @param {number} [params.ttlMs]
  * @param {(p: string, enc: string) => string} [params.readFn]
- * @returns {(entry: {id: string, desc?: string, at?: string}) => boolean}
+ * @param {string} [params.selfUseId] the CURRENT dispatch's `tool_use_id`
+ * @returns {(entry: {id: string, desc?: string, at?: string, useId?: string}) => boolean}
  */
-export function makeFinishedProbe({ transcriptPath, now = Date.now(), ttlMs = IN_FLIGHT_TTL_MS, readFn = readFileSync } = {}) {
+export function makeFinishedProbe({
+  transcriptPath, now = Date.now(), ttlMs = IN_FLIGHT_TTL_MS, readFn = readFileSync, selfUseId,
+} = {}) {
+  const excludeUseId = exactUseId(selfUseId);
   let index; // undefined = not loaded yet, null = unavailable
   const load = () => {
     if (index !== undefined) return index;
@@ -1030,7 +1290,7 @@ export function makeFinishedProbe({ transcriptPath, now = Date.now(), ttlMs = IN
     try {
       if (typeof transcriptPath === 'string' && transcriptPath.length > 0) {
         if (statSync(transcriptPath).size <= MAX_TRANSCRIPT_BYTES) {
-          index = buildTranscriptIndex(readFn(transcriptPath, 'utf8'));
+          index = buildLivenessIndex(readFn(transcriptPath, 'utf8'));
         }
       }
     } catch {
@@ -1042,10 +1302,17 @@ export function makeFinishedProbe({ transcriptPath, now = Date.now(), ttlMs = IN
   return (entry) => {
     try {
       const idx = load();
-      const desc = typeof entry?.desc === 'string' && entry.desc !== '' ? entry.desc : entry?.id;
-      if (idx !== null && typeof desc === 'string') {
-        const finished = idx.get(desc);
-        if (finished !== undefined) return finished;
+      if (idx !== null) {
+        const useId = exactUseId(entry?.useId);
+        if (useId !== '') {
+          const state = idx.states.get(useId);
+          if (state === LIVE_FINISHED) return true;
+          if (state === LIVE_RUNNING) return false;
+        } else {
+          const desc = typeof entry?.desc === 'string' ? entry.desc.trim() : '';
+          const finished = desc === '' ? undefined : descFinished(idx, desc, excludeUseId);
+          if (finished !== undefined) return finished;
+        }
       }
       const at = Date.parse(entry?.at ?? '');
       if (Number.isFinite(at)) return now - at > ttlMs;
@@ -1521,7 +1788,10 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   }
 
   const desc = agentDescOf(toolInput);
-  const self = { id, desc, files, at };
+  // #1480 A: the exact dispatch id travels with the entry, so liveness is never
+  // guessed from a description when the harness names the dispatch itself.
+  const useId = exactUseId(input?.tool_use_id);
+  const self = useId === '' ? { id, desc, files, at } : { id, desc, files, at, useId };
 
   // Row 7: ledger existed but was unparseable. Terminal warn — decided here and
   // returned, never emitted mid-flow. SELF-HEALING since the review: the verdict
@@ -1542,13 +1812,51 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     ? ledger.agents.filter((a) => a !== null && typeof a === 'object' && typeof a.id === 'string')
     : [];
 
-  // Row 10: same agent re-dispatched (a retry after a failed agent is legitimate).
-  // Replace its record instead of letting it collide with its own earlier self.
-  const others = prior.filter((a) => a.id !== id);
+  // Row 10 (#1480 B4): a predecessor with the SAME agent id is no longer dropped
+  // before the check. Dropping it unconditionally erased the claim of a still
+  // RUNNING agent: [a,b] running, re-dispatched as [b,c], and a third agent on
+  // `a` was allowed while the first run still wrote it. Now:
+  //   - the same `tool_use_id` → the same dispatch evaluated again → replaced;
+  //   - FINISHED (probe true) → pruned below, so a retry after a failed agent
+  //     stays allowed — a failed agent finishes via its `failed` carrier,
+  //     `is_error` or its report;
+  //   - both dispatches carry distinct exact ids and the predecessor is NOT
+  //     finished → an ordinary collision partner (row 11);
+  //   - otherwise no exact statement is possible → it stays as a CLAIM (a third
+  //     agent hitting only its scope still collides) but never collides with
+  //     this retry.
+  // Named ceiling (BV-004): without exact ids a same-id retry cannot tell "my
+  // earlier run is still going" from "it failed", so the retry is allowed while
+  // the earlier claim is kept — the pre-#1480 behaviour for the retry itself,
+  // and a claim a third agent can hit until the earlier run finishes or its TTL
+  // lapses. Revisit-Trigger: a harness without `tool_use_id` in the PreToolUse
+  // payload dispatches a measurable share of this repo's waves.
+  // A predecessor wholly covered by this retry's scope, neither carrying an
+  // exact id, adds nothing but ledger growth — both are resolved through the
+  // same description and this entry is the younger one — so it is superseded.
+  const superseded = (a) => a.id === id && (
+    (useId !== '' && exactUseId(a.useId) === useId)
+    || (useId === '' && exactUseId(a.useId) === '' && desc !== '' && a.desc === desc
+      && Array.isArray(a.files) && a.files.every((f) => files.includes(f)))
+  );
+  const others = prior.filter((a) => !superseded(a));
+
+  // One comparison key per record, unique by construction: several records may
+  // share an agent id now, and `findScopeCollisions` reports equal ids as
+  // duplicates rather than comparing them. The readable id stays the key where
+  // it is unique, so the deny text and every single-record wave are unchanged.
+  const used = new Set([id]);
+  const partners = others.map((entry) => {
+    let key = entry.id;
+    for (let n = 2; used.has(key); n++) key = `${entry.id} #${n}`;
+    used.add(key);
+    const selfClaim = entry.id === id && !(useId !== '' && exactUseId(entry.useId) !== '');
+    return { key, entry, selfClaim };
+  });
 
   const known = new Set(Array.isArray(knownFiles) ? knownFiles : []);
   const agentScopes = [
-    ...others.map((a) => ({ id: a.id, files: promoteDirEntries(a.files, known) })),
+    ...partners.map((p) => ({ id: p.key, files: promoteDirEntries(p.entry.files, known) })),
     { id, files: promoteDirEntries(files, known) },
   ];
 
@@ -1596,28 +1904,35 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   // § Liveness — the review's HIGH finding. A collision with an agent that has
   // ALREADY FINISHED is a sequential repair pass, not a race. The probe is called
   // ONLY here, so the transcript is read only on the path that would deny.
-  const byId = new Map(others.map((a) => [a.id, a]));
+  const byKey = new Map(partners.map((p) => [p.key, p]));
   const probe = typeof isFinished === 'function' ? isFinished : () => false;
-  const finishedIds = new Set();
+  const finishedKeys = new Set();
   const live = [];
+  let selfClaims = 0;
   for (const c of mine) {
-    const otherId = c.a === id ? c.b : c.a;
-    const entry = byId.get(otherId);
-    if (entry !== undefined && probe(entry)) {
-      finishedIds.add(otherId);
+    const otherKey = c.a === id ? c.b : c.a;
+    const partner = byKey.get(otherKey);
+    if (partner !== undefined && probe(partner.entry)) {
+      finishedKeys.add(otherKey);
+      continue;
+    }
+    // Row 10: an unfinished same-id claim without exact ids is kept, not collided with.
+    if (partner?.selfClaim === true) {
+      selfClaims++;
       continue;
     }
     live.push(c);
   }
+  const counted = mine.length - selfClaims;
 
   // Row 10a: every colliding prior agent has finished. Allow AND prune their
   // records — leaving them would make the NEXT repair pass pay the transcript
   // scan again for a question already answered.
   if (live.length === 0) {
-    const kept = others.filter((a) => !finishedIds.has(a.id));
+    const kept = partners.filter((p) => !finishedKeys.has(p.key)).map((p) => p.entry);
     return {
       action: 'allow',
-      telemetry: telemetryFor('allow-finished', mine.length),
+      telemetry: finishedKeys.size > 0 ? telemetryFor('allow-finished', counted) : telemetryFor('allow'),
       ledger: {
         waveKey,
         updated: at,
@@ -1630,13 +1945,15 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   // Row 11: the one case this hook exists for.
   const shown = live.slice(0, MAX_REPORTED_COLLISIONS);
   const lines = shown.map((c) => {
-    const other = c.a === id ? c.b : c.a;
+    const otherKey = c.a === id ? c.b : c.a;
+    const other = byKey.get(otherKey)?.entry.id ?? otherKey;
+    const earlier = other === id ? ' (an earlier dispatch of the same agent)' : '';
     const ev = Array.isArray(c.evidence) ? c.evidence : [];
     const evShown = ev.slice(0, MAX_EVIDENCE_PER_COLLISION).map(clipPath).join(', ');
     const more = ev.length > MAX_EVIDENCE_PER_COLLISION
       ? ` (+${ev.length - MAX_EVIDENCE_PER_COLLISION} more)`
       : '';
-    return `  • "${id}" ↔ "${other}" [${c.kind}]: ${evShown}${more}`;
+    return `  • "${id}" ↔ "${other}"${earlier} [${c.kind}]: ${evShown}${more}`;
   });
   const omitted = live.length > shown.length ? `\n  (+${live.length - shown.length} further collisions)` : '';
 
@@ -1655,7 +1972,7 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
 
   // Deliberately NOT persisting the ledger on deny: the dispatch did not happen,
   // so recording it would make the retry-after-fix look like a duplicate.
-  return { action: 'deny', telemetry: telemetryFor('deny', mine.length), reason, suggestion };
+  return { action: 'deny', telemetry: telemetryFor('deny', counted), reason, suggestion };
 }
 
 // ---------------------------------------------------------------------------
@@ -1677,7 +1994,9 @@ async function main() {
 
   const waveKey = waveKeyOf(projectDir, sessionId, readFileSync);
   const knownFiles = listTrackedFiles(projectDir);
-  const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path });
+  // `selfUseId`: this dispatch's own tool_use may already stand in the transcript
+  // and must not make a finished same-named predecessor look alive (#1480 A).
+  const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path, selfUseId: input.tool_use_id });
   const ledgerPath = path.join(projectDir, LEDGER_REL);
 
   // The read-modify-write CYCLE, run under the ledger lock below. Everything
