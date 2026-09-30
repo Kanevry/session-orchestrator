@@ -464,6 +464,7 @@ async function main() {
   // merged. No matching records or a failed read OMITS the fields with a WARN —
   // never a fabricated 0; a null total (unknown model, no token-bearing record)
   // is omitted rather than written.
+  // match_status explains the omission; diagnostic fields stay out of the record.
   if (ownUuid !== null && !hasOwn('total_tokens')) {
     let rollup = null;
     try {
@@ -521,10 +522,26 @@ async function main() {
         );
       }
     } else if (rollup !== null) {
-      process.stderr.write(
-        `emit-session: WARN token rollup found no subagents.jsonl records for ${ownUuid}; ` +
-          `omitting token fields\n`
-      );
+      let warning = `token rollup found no subagents.jsonl records for ${ownUuid}`;
+      switch (rollup.match_status) {
+        case 'ledger-absent':
+          warning += ' (ledger absent)';
+          break;
+        case 'ledger-empty':
+          warning += ' (ledger holds no readable records)';
+          break;
+        case 'unmatched':
+          warning = `token rollup found ${rollup.ledger_records} subagents.jsonl record(s) present, ` +
+            `none with parent_session_id=${ownUuid} — not attributable via this UUID, not zero cost`;
+          break;
+        case 'invalid-key':
+          warning = `token rollup rejected invalid parent_session_id=${ownUuid}`;
+          break;
+        default:
+          // Unknown or missing diagnostics retain the generic omission warning.
+          break;
+      }
+      process.stderr.write(`emit-session: WARN ${warning}; omitting token fields\n`);
     }
   }
 

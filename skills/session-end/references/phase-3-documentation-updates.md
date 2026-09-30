@@ -169,7 +169,7 @@ Then:
 
 Read `skills/session-end/session-metrics-write.md` for JSONL append, vault-mirror invocation, and behavior matrix.
 
-> **Token Rollup (#644):** Before emitting the JSONL record (step 2 of session-metrics-write.md), step 1a calls `rollupSessionTokens({ parentSessionId })` from `scripts/lib/session-token-rollup.mjs` and merges three optional fields onto the in-memory record: `total_token_input`, `total_token_output`, and `subagents_with_tokens` (coverage count). Null totals mean "no token data captured" — not zero cost. The rollup is non-blocking: a missing `subagents.jsonl` or all-null session still writes cleanly with null/0 values.
+> **Token Rollup (#644, #1436):** When the incoming record has no `total_tokens`, `scripts/emit-session.mjs` resolves the session's own raw UUID as described in step 1a of session-metrics-write.md and calls `rollupSessionTokens({ parentSessionId: ownUuid })`, joining `parent_session_id` on that UUID rather than the semantic session ID. It fills only absent fields from the rollup whitelist; diagnostic fields `match_status` and `ledger_records` stay out of the record. Missing or unreadable ledgers, or no records for the own UUID, omit token fields with a WARN stating the reason, never zero cost; null totals are also omitted. The rollup remains non-blocking.
 
 ### 3.7a Compute and Write Recommendations (Epic #271 Phase A)
 
