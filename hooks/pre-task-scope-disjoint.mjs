@@ -882,13 +882,20 @@ function notificationCarrierText(rec) {
  * carrier's, does not begin with the opener, has no closing tag (truncated
  * block), or its head is out of order or carries no terminal status.
  *
- * Named ceiling (BV-004): a batch of several DIFFERENT notifications in one
- * carrier reports only the first as finished (the rest stay running, the safe
- * direction but a false-DENY source). Census 2026-09-28: 31 preamble-form `user`
- * carriers hold 2+ distinct terminal ids; 155 of their non-first ids are finished
- * by no other carrier. Revisit-Trigger has FIRED — carryover #1467: reading past
- * the first block needs a forgery-safe block split (the R2 F1 break-out), not a
- * looser head.
+ * Named ceiling (BV-004, #1467): a batch of several DIFFERENT notifications in
+ * one carrier reports only the first as finished (the rest stay running, the
+ * safe direction but a false-DENY source). Census 2026-09-30 (11,684 transcript
+ * files, 2026-08-06 → 2026-09-30, at f58480e5): 23 preamble-form `user` carriers
+ * hold 2+ distinct terminal ids; 108 non-first ids are finished by no other
+ * carrier, and 0 of them is an `Agent` dispatch id (105 Bash, 3 Monitor) — the
+ * only ids this index resolves, so no Agent liveness is lost today. The
+ * 2026-09-28 figures (31 / 155) were not reproduced. No split is built: it cannot
+ * be forgery-safe — a complete block forged in `<summary>`/`<result>` is
+ * byte-identical to a genuine `\n\n`-joined batch, `origin` has no per-block
+ * discriminator, free text is not escaped. Revisit-Trigger: re-run the census
+ * and a non-first terminal id is an `Agent` dispatch id finished by no other
+ * carrier or `tool_result`, or the harness adds a per-block discriminator or
+ * escapes free text.
  *
  * @param {string|null} text — a carrier's text from {@link notificationCarrierText}
  * @returns {string[]} zero or one finished tool-use id
