@@ -376,6 +376,12 @@ const MAX_TRANSCRIPT_BYTES = 256 * 1024 * 1024;
  * a completion — see § Liveness (b). Reading it as one would let every real
  * background-batch collision through, which is the one direction this repair
  * must not take.
+ *
+ * Recognised only as the PREFIX of the result text (after trimStart): a finished
+ * sync report that merely QUOTES this sentence is not a launch receipt, and read
+ * as one it stayed "running" without TTL (R1 LOW). Census 2026-09-30, 5,881
+ * local transcripts: 4,684 of 4,684 ACK results begin with it, also in their
+ * first content part.
  */
 const ASYNC_LAUNCH_ACK = 'Async agent launched successfully';
 
@@ -417,10 +423,15 @@ const SEND_NO_EFFECT = '"success":false';
 
 /**
  * The harness's `agentId:` line in an Agent tool_result (ACK or sync trailer) —
- * the task id a `SendMessage` addresses. Read as the LAST match: a sync result
- * embeds the agent's own report ahead of the harness trailer.
+ * the task id a `SendMessage` addresses. Only a line that BEGINS with it, id on
+ * the same line, read as the LAST match over the content parts joined with
+ * `\n`: a sync result embeds the agent's own report ahead of the harness
+ * trailer, and a report ending in `agentId:` must not swallow the trailer's
+ * line (R1 MEDIUM — a wrong task id let a resumed agent read as finished).
+ * Census 2026-09-30, 5,881 local transcripts: in 5,375 of 5,375 Agent results
+ * carrying `agentId:`, the last one starts a line and sits in the last part.
  */
-const AGENT_ID_LINE_RE = /agentId:\s*([A-Za-z0-9_-]+)/g;
+const AGENT_ID_LINE_RE = /^agentId:[ \t]*([A-Za-z0-9_-]+)/gm;
 
 /** Per-dispatch liveness states — see {@link buildLivenessIndex}. */
 const LIVE_FINISHED = 'finished';
@@ -998,8 +1009,9 @@ function notificationHead(text) {
 /**
  * Classify an Agent dispatch's OWN `tool_result` (#1480 B2): `done` only on
  * positive evidence (`is_error`, or one of {@link RESULT_COMPLETION_FORMS}),
- * `ack` for the launch acknowledgement, `unknown` for everything else. The ACK
- * is tested before the forms, so no ACK wording can ever read as a completion.
+ * `ack` for the launch acknowledgement (a text PREFIX, see
+ * {@link ASYNC_LAUNCH_ACK}), `unknown` for everything else. The ACK is tested
+ * before the forms, so no ACK wording can ever read as a completion.
  *
  * @param {{is_error?: unknown}} block
  * @param {string} text — {@link resultTextOf}(block)
@@ -1007,8 +1019,8 @@ function notificationHead(text) {
  */
 function dispatchResultForm(block, text) {
   if (block?.is_error === true) return 'done';
-  if (text.includes(ASYNC_LAUNCH_ACK)) return 'ack';
   const lead = text.trimStart();
+  if (lead.startsWith(ASYNC_LAUNCH_ACK)) return 'ack';
   for (const form of RESULT_COMPLETION_FORMS) {
     if (form.at === 'start' ? lead.startsWith(form.text) : text.includes(form.text)) return 'done';
   }
@@ -1016,12 +1028,19 @@ function dispatchResultForm(block, text) {
 }
 
 /**
- * The LAST `agentId:` a harness-written dispatch result names, or `''`.
+ * The LAST line-leading `agentId:` a harness-written dispatch result names, or
+ * `''` — see {@link AGENT_ID_LINE_RE}. Parts are joined with `\n` HERE (unlike
+ * {@link resultTextOf}), so a part boundary is a line boundary and report text
+ * cannot run into the trailer's line.
  *
- * @param {string} text
+ * @param {{content?: unknown}} block
  * @returns {string}
  */
-function lastAgentIdIn(text) {
+function lastAgentIdIn(block) {
+  const c = block?.content;
+  const text = typeof c === 'string'
+    ? c
+    : Array.isArray(c) ? c.map((part) => (typeof part?.text === 'string' ? part.text : '')).join('\n') : '';
   let last = '';
   for (const m of text.matchAll(AGENT_ID_LINE_RE)) last = m[1];
   return last;
@@ -1058,7 +1077,8 @@ function pushTo(map, key, value) {
  *     ({@link notificationHead}); a terminal `<status>` finishes (#1455: `failed`
  *     too).
  *
- * T(U) is the last `agentId:` of U's own ACK or positive result, else the task
+ * T(U) is the last line-leading `agentId:` ({@link lastAgentIdIn}) of U's own
+ * ACK or positive result, else the task
  * id of the first carrier head carrying U's tool-use id.
  *
  * RESUME (#1459 P1). U is ACTIVATED by its dispatch and by every SendMessage
@@ -1076,8 +1096,12 @@ function pushTo(map, key, value) {
  * States: `finished`; `running` — no result, an ACK, or a SendMessage as last
  * activation with no completion after it (no TTL); `unknown` — only a result
  * form without positive evidence, which the probe treats as no evidence (TTL).
- * Every occurrence of a duplicated record counts, so the LAST activation wins —
- * the direction that keeps a deny, never the one that lifts it.
+ * A repeated `tool_use` record (same Agent or SendMessage id) is the SAME event,
+ * not a new activation: its position is the FIRST occurrence, so a copy after
+ * the completion cannot re-open a finished agent (R1 D4, a false-DENY). A
+ * repeated carrier still closes. Hardening without a measured case: census
+ * 2026-09-30 (5,881 local transcripts) found 0 repeated Agent and 0 repeated
+ * SendMessage `tool_use` records.
  *
  * Named ceiling (BV-004): `to` is matched against T(U) only — a SendMessage that
  * addresses the agent by name or description re-opens nothing (0 of ~6,200
@@ -1095,7 +1119,7 @@ function buildLivenessIndex(raw) {
   const idsByDesc = new Map();
   if (typeof raw !== 'string' || raw.length === 0) return { states, idsByDesc };
 
-  const dispatchPos = new Map();     // U → last line position of its tool_use
+  const dispatchPos = new Map();     // U → FIRST line position of its tool_use
   const results = new Map();         // U → [{pos, form, agentId}]
   const sendsByTo = new Map();       // SendMessage `to` → [{id, pos}]
   const sendIds = new Set();
@@ -1131,13 +1155,14 @@ function buildLivenessIndex(raw) {
     for (const block of content) {
       if (block?.type === 'tool_use' && typeof block?.id === 'string') {
         if (block.name === DISPATCH_TOOL) {
-          if (!results.has(block.id)) {
+          if (!results.has(block.id)) {   // first occurrence only — see D4 above
             results.set(block.id, []);
+            dispatchPos.set(block.id, pos);
             const desc = typeof block?.input?.description === 'string' ? block.input.description.trim() : '';
             if (desc !== '') pushTo(idsByDesc, desc, block.id);
           }
-          dispatchPos.set(block.id, pos);
-        } else if (block.name === SEND_MESSAGE_TOOL && typeof block?.input?.to === 'string' && block.input.to !== '') {
+        } else if (block.name === SEND_MESSAGE_TOOL && typeof block?.input?.to === 'string' && block.input.to !== ''
+          && !sendIds.has(block.id)) {
           sendIds.add(block.id);
           pushTo(sendsByTo, block.input.to, { id: block.id, pos });
         }
@@ -1149,7 +1174,7 @@ function buildLivenessIndex(raw) {
           const text = resultTextOf(block);
           const form = dispatchResultForm(block, text);
           // An error text is not a harness trailer — learn T(U) from ACK/completion only.
-          const agentId = form === 'ack' || (form === 'done' && block.is_error !== true) ? lastAgentIdIn(text) : '';
+          const agentId = form === 'ack' || (form === 'done' && block.is_error !== true) ? lastAgentIdIn(block) : '';
           own.push({ pos, form, agentId });
         } else if (sendIds.has(block.tool_use_id)
           && (block.is_error === true || resultTextOf(block).includes(SEND_NO_EFFECT))) {

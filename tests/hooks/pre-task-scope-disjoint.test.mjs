@@ -455,6 +455,8 @@ describe('pre-task-scope-disjoint — liveness: a FINISHED agent no longer binds
     ['report with usage trailer', '## Report\nagentId: a1b2c3\n<usage>total_tokens: 123</usage>', {}, undefined, true, true],
     ['is_error result', 'Dispatch failed', { is_error: true }, undefined, true, true],
     ['delivered report prefix', "This agent's report was delivered to the coordinator.", {}, undefined, true, true],
+    // Bug caught (R1 LOW): an ACK found anywhere in the text kept a finished report quoting it running.
+    ['sync report quoting the ACK sentence', 'Saw "Async agent launched successfully" earlier.\nagentId: a1b2c3\n<usage>total_tokens: 1</usage>', {}, undefined, true, true],
   ])('classifies %s by exact useId and positive evidence', async (_name, content, extra, at, finished, indexed) => {
     const { makeFinishedProbe, buildTranscriptIndex } = await import(pathToFileURL(HOOK).href);
     const dir = makeProjectDir();
@@ -483,6 +485,46 @@ describe('pre-task-scope-disjoint — liveness: a FINISHED agent no longer binds
     expect(makeFinishedProbe({ transcriptPath, now: Date.parse('2026-08-14T02:00:00.000Z') })({
       id: 'Agent A', desc: 'Agent A', useId: 'toolu_01A', at: '2026-08-14T00:00:00.000Z',
     })).toBe(finished);
+  });
+
+  // Bug caught (R1 MEDIUM): report text ending in `agentId:` swallowed the harness trailer's
+  // line, so T(U) was wrong, the resuming SendMessage matched nothing and the agent read as done.
+  it.each([
+    ['a report ending in "agentId:" before the trailer part', ['## Report\nDone. agentId:', 'agentId: a1b2c3\n<usage>total_tokens: 5</usage>']],
+    ['a report ending in "agentId: x" before the trailer part', ['## Report\nagentId: x', 'agentId: a1b2c3\n<usage>total_tokens: 5</usage>']],
+  ])('keeps a resumed agent running after %s (#1459 P1)', async (_name, parts) => {
+    const { makeFinishedProbe } = await import(pathToFileURL(HOOK).href);
+    const dir = makeProjectDir();
+    const transcriptPath = writeTranscript(dir, [
+      transcriptDispatch('Agent A', 'toolu_01A'),
+      transcriptResult('toolu_01A', parts.map((text) => ({ type: 'text', text }))),
+      transcriptSendMessage('toolu_01S', 'a1b2c3'),
+      transcriptResult('toolu_01S', '{"success":true,"message":"Resuming agent…"}'),
+    ]);
+    expect(makeFinishedProbe({ transcriptPath, now: Date.parse('2026-08-14T02:00:00.000Z') })({
+      id: 'Agent A', desc: 'Agent A', useId: 'toolu_01A', at: '2026-08-14T00:00:00.000Z',
+    })).toBe(false);
+
+    expectAllow(dispatch(dir, 'Agent A', ['a.mjs'], { transcriptPath, toolUseId: 'toolu_01A' }));
+    expectDeny(dispatch(dir, 'Other', ['a.mjs'], { transcriptPath, toolUseId: 'toolu_01C' }), 'a.mjs');
+  });
+
+  // Bug caught (R1 D4): a repeated tool_use record read as a NEW activation after the
+  // completion, re-opening a finished agent — a false DENY with no TTL to end it.
+  it.each([
+    ['Agent dispatch', [
+      transcriptDispatch('Agent A', 'toolu_01A'), transcriptSyncResult('toolu_01A'), transcriptDispatch('Agent A', 'toolu_01A'),
+    ]],
+    ['SendMessage', [
+      transcriptDispatch('Agent A', 'toolu_01A'), transcriptAsyncLaunchAck('toolu_01A', 'a1b2c3'),
+      transcriptTaskNotification('toolu_01A', 'a1b2c3', 'Agent A', 'failed'),
+      transcriptSendMessage('toolu_01S', 'a1b2c3'), transcriptResult('toolu_01S', '{"success":true,"message":"Resuming agent…"}'),
+      transcriptTaskNotification('toolu_01S', 'a1b2c3', 'Agent A'), transcriptSendMessage('toolu_01S', 'a1b2c3'),
+    ]],
+  ])('keeps an agent finished when its %s record repeats after the completion', async (_name, rows) => {
+    const { makeFinishedProbe } = await import(pathToFileURL(HOOK).href);
+    const transcriptPath = writeTranscript(makeProjectDir(), rows);
+    expect(makeFinishedProbe({ transcriptPath })({ id: 'Agent A', desc: 'Agent A', useId: 'toolu_01A' })).toBe(true);
   });
 
   // Bug caught: exact dispatch identities must not turn disjoint live scopes into false DENY.
