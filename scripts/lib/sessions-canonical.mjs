@@ -485,7 +485,7 @@ export function countSessionsInJsonl(raw) {
  * is skipped rather than aborting the whole read (same posture as the readers
  * in `session-close-backfill.mjs` and `backfill-abandoned-sessions.mjs`).
  *
- * NOT EVERY RAW READ OF `sessions.jsonl` IS A GAP TO CLOSE (#1221 P2). Five
+ * NOT EVERY RAW READ OF `sessions.jsonl` IS A GAP TO CLOSE (#1221 P2). Four
  * more readers bypass this module's collapse on purpose — verified via
  * `rg -n "sessions.jsonl|SESSIONS"` against each file — and none of them
  * should be "migrated" to `readCanonicalSessions`:
@@ -503,10 +503,6 @@ export function countSessionsInJsonl(raw) {
  *     window; a canonical read could drop a duplicate/superseded stub that
  *     still names a worktree, making a live worktree look unreferenced and
  *     eligible for garbage collection.
- *   - `readTailSession()` in `scripts/autopilot.mjs` parses only the LAST raw
- *     line to project the record this run's own session just appended,
- *     verbatim; canonicalizing could return a different record than the tail
- *     line if a collapse rule folded it away.
  *
  * @param {object} [args]
  * @param {string} [args.repoRoot] project root; the ledger is resolved as

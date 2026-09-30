@@ -36,7 +36,7 @@
  *   "/autopilot Loop Command (Phase C)" (#277/#271; archived in the private Meta-Vault)
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -185,53 +185,24 @@ const branch = detectBranch();
 const SESSIONS_JSONL_PATH = resolve('.orchestrator/metrics/sessions.jsonl');
 
 /**
- * Set of the DISTINCT session identities currently recorded in sessions.jsonl.
- * Empty set when the file is missing or unreadable.
- *
- * Identities, not lines (#1167): the ledger is append-only, so one physical
- * session can occupy two lines (an abandoned stub plus the authoritative
- * record that supersedes it, or the systemic double-stub pair). The
- * pre/post comparison below asks "did the session I just spawned record
- * itself?", and a raw line count answers that question wrong in BOTH
- * directions — a duplicate pair looks like two sessions, while a supersede
- * append (+1 line, −1 stub) leaves a canonical COUNT unchanged. Comparing the
- * id SETS is immune to both.
- *
- * @returns {Set<string>}
- */
-function readSessionIds() {
-  if (!existsSync(SESSIONS_JSONL_PATH)) return new Set();
-  const ids = new Set();
-  for (const rec of readCanonicalSessions({ filePath: SESSIONS_JSONL_PATH })) {
-    if (typeof rec.session_id === 'string' && rec.session_id.length > 0) {
-      ids.add(rec.session_id);
-    }
-  }
-  return ids;
-}
-
-/**
- * Read the last non-empty line from sessions.jsonl, parse it, run it through
- * normalizeSession, and project to the sessionRunner return shape.
- *
- * `usage` (#1436) carries the record's `total_token_output` / `total_tokens`
- * — written by scripts/emit-session.mjs from the subagents.jsonl rollup — as
- * `output_tokens` / `total_tokens`, which is what the loop accumulates into
- * the TOKEN_BUDGET_EXCEEDED kill-switch. Only finite numbers are projected;
- * `usage` is OMITTED when neither is present (a record with no token data must
- * not read as a free session).
- *
+ * Read the child's canonical record by its raw harness UUID, independent of
+ * semantic session IDs and peer append order. Zero or multiple matches throw;
+ * only the unique record supplies normalized fields and finite token usage.
  * @returns {{session_id: string, agent_summary?: object, effectiveness?: object,
  *   usage?: {output_tokens?: number, total_tokens?: number}}}
  */
-function readTailSession() {
-  const raw = readFileSync(SESSIONS_JSONL_PATH, 'utf8');
-  const lines = raw.split('\n').filter((l) => l.trim().length > 0);
-  if (lines.length === 0) {
-    throw new Error('sessions.jsonl is empty after session completed');
+function readOwnSession(childSessionId) {
+  const own = readCanonicalSessions({ filePath: SESSIONS_JSONL_PATH }).filter((r) => r.raw_session_id === childSessionId);
+  if (own.length === 0) {
+    throw new Error(
+      `no session record carries raw_session_id=${childSessionId} (the child wrote none, or none stamped ` +
+        'with its raw id) — refusing to fall back to the ledger tail (#1457)'
+    );
   }
-  const parsed = JSON.parse(lines[lines.length - 1]);
-  const normalized = normalizeSession(parsed);
+  if (own.length > 1) {
+    throw new Error(`ambiguous: ${own.length} canonical records carry raw_session_id=${childSessionId} (#1457)`);
+  }
+  const normalized = normalizeSession(own[0]);
   const result = {
     session_id: normalized.session_id,
     agent_summary: normalized.agent_summary,
@@ -279,13 +250,16 @@ async function modeSelector() {
 
 /**
  * sessionRunner — spawns `claude` with the recommended mode and awaits exit.
- * Verifies that a new sessions.jsonl record was appended before returning.
+ * Sets a fresh raw harness UUID so a peer's later ledger append is never read
+ * as the child's record (emit-session stamps that UUID as `raw_session_id`).
+ * After exit 0, returns its unique canonical record; zero or multiple matches
+ * throw into the loop's failed-wave channel.
  *
  * @param {{mode: string, autopilotRunId: string}} args
  * @returns {Promise<{session_id: string, agent_summary?: object, effectiveness?: object}>}
  */
 async function sessionRunner({ mode, autopilotRunId }) {
-  const preIds = readSessionIds();
+  const childSessionId = randomUUID();
 
   await new Promise((res, rej) => {
     const childStdio = hasVerbose
@@ -299,7 +273,7 @@ async function sessionRunner({ mode, autopilotRunId }) {
     // resolves, and only when the plugin that defines it is on `--plugin-dir`.
     const child = spawn(
       'claude',
-      ['-p', `/session-orchestrator:session ${mode}`, '--plugin-dir', PLUGIN_ROOT],
+      ['-p', `/session-orchestrator:session ${mode}`, '--plugin-dir', PLUGIN_ROOT, '--session-id', childSessionId],
       {
         env: { ...process.env, AUTOPILOT_RUN_ID: autopilotRunId },
         stdio: childStdio,
@@ -322,13 +296,7 @@ async function sessionRunner({ mode, autopilotRunId }) {
     });
   });
 
-  const postIds = readSessionIds();
-  const appeared = [...postIds].some((id) => !preIds.has(id));
-  if (!appeared) {
-    throw new Error('no session record appended');
-  }
-
-  return readTailSession();
+  return readOwnSession(childSessionId);
 }
 
 /**

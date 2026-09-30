@@ -39,9 +39,11 @@ the invocation surface only:
 Headless requirements:
 
 - Anthropic API key configured for `claude -p` (Claude Code CLI auth).
-- `scripts/autopilot.mjs` reads `sessions.jsonl` tail after each child exit to construct
-  the `sessionRunner` return shape — the spawned session must complete cleanly and append
-  its record (session-end Phase 3.7 handles this).
+- `scripts/autopilot.mjs` starts each child with `--session-id <fresh uuid>` and, after it
+  exits, reads the one canonical `sessions.jsonl` record whose `raw_session_id` is that uuid
+  to construct the `sessionRunner` return shape — the spawned session must complete cleanly
+  and append its record (session-end Phase 3.7 handles this). No such record, or more than
+  one, stops the loop with `failed-wave` instead of reading the ledger tail (#1457).
 - `AUTOPILOT_RUN_ID` env var is propagated to the child so session-end stamps it onto the
   per-iteration `sessions.jsonl` record.
 
@@ -223,7 +225,7 @@ session — drives `runLoop` between manual `/session` invocations. The headless
 | Field | Signature | Source |
 |---|---|---|
 | `modeSelector` | `() => Promise<{mode, confidence, rationale?}>` | wraps `selectMode(await buildLiveSignals())` |
-| `sessionRunner` | `({mode, autopilotRunId}) => Promise<{session_id, agent_summary?, effectiveness?}>` | wraps a `/session <mode>` invocation; reads `sessions.jsonl` tail to construct return value |
+| `sessionRunner` | `({mode, autopilotRunId}) => Promise<{session_id, agent_summary?, effectiveness?}>` | wraps a `/session <mode>` invocation; reads the child's own record (matched on `raw_session_id`) to construct return value |
 | `resourceEvaluator` | `() => {verdict}` | calls `evaluate(cachedProbeSnapshot, thresholds)` from `resource-probe.mjs` over a snapshot `peerCounter` refreshed on the prior iteration — never calls `probe()` itself, which is what keeps it synchronous |
 | `peerCounter` | `() => Promise<number>` | returns `peers.length` from `detectPeers({ sessionId, freshnessMin: 15 })` (a SESSION count, not a process count — see `host-resources.md` HR-103) while refreshing the cached `probe()` snapshot `resourceEvaluator` reads |
 
@@ -315,9 +317,10 @@ four required `runLoop` dependencies (`modeSelector`, `sessionRunner`,
 `resourceEvaluator`, `peerCounter`) plus the optional `abortSignal` to production
 sources — distinct from, and more concrete than, the in-process skeleton above:
 
-- `sessionRunner` — spawns `claude -p '/session <mode>'` as a child process; after it
-  exits cleanly, reads the `sessions.jsonl` tail to construct the return shape
-  `{session_id, agent_summary?, effectiveness?}` (`scripts/autopilot.mjs` `sessionRunner`).
+- `sessionRunner` — spawns `claude -p '/session <mode>' --session-id <uuid>` as a child
+  process; after it exits cleanly, reads the one canonical `sessions.jsonl` record whose
+  `raw_session_id` is that uuid to construct the return shape
+  `{session_id, agent_summary?, effectiveness?, usage?}` (`scripts/autopilot.mjs` `sessionRunner`).
 - `resourceEvaluator` — calls `evaluate(cachedProbeSnapshot, thresholds)` from
   `scripts/lib/resource-probe.mjs`, reading a snapshot refreshed by `peerCounter` on the
   prior iteration so the function itself stays synchronous, per the `runLoop` contract
