@@ -719,6 +719,37 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(r.subagents_with_tokens).toBe(1);
   });
 
+  const noTranscript = (over) =>
+    stop({
+      agent_id: 'wf',
+      agent_type: 'workflow-subagent',
+      subagent_transcript_found: false,
+      token_input: null,
+      token_input_uncached: null,
+      token_cache_read: null,
+      token_cache_creation: null,
+      token_output: null,
+      model: null,
+      ...over,
+    });
+
+  it.each([
+    // Bug caught (#1475 review): a started agent whose stop found no transcript fell out of both counts, so priced == total persisted the known agent's cost as the session's (fleet: 40 such `workflow-subagent`s beside a "complete" $115).
+    { name: 'a started agent without a transcript', extra: noTranscript({ start_record_found: true }), total: 2, costNull: true },
+    // A phantom stop (#939) is no agent at all — counting it would null nearly every session.
+    { name: 'a phantom stop (no start record)', extra: noTranscript({ start_record_found: false }), total: 1, costNull: false },
+    // Bug caught: an earlier found:false stop of an agent whose later stop DID read its transcript would null a session whose cost is known.
+    { name: 'an earlier stop of an agent whose later stop found its transcript', extra: noTranscript({ agent_id: 'known', start_record_found: true }), total: 1, costNull: false },
+  ])('$name next to a priced record → priced 1 / total $total', ({ extra, total, costNull }) => {
+    const path = write([stop({ agent_id: 'known', start_record_found: true }), extra]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(total);
+    if (costNull) expect(r.total_cost_usd).toBeNull();
+    else expect(r.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
+  });
+
   it('prices a mixed-model record per model from models_usage (#1470)', () => {
     // Bug caught: a record whose token-bearing turns span two models carries model null, so it stayed unpriced and nulled the session cost although both models have a rate.
     const mixed = stop({
