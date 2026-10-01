@@ -22,6 +22,14 @@
  */
 
 /**
+ * Re-exported, not re-declared: the value lives in `process-group.mjs` since
+ * 773a994b, but this module exported it in 5.3.x and the package ships
+ * `scripts/` with no `exports` map — so a deep importer still links against
+ * this name. One definition, two import paths.
+ */
+export { DEFAULT_KILL_GRACE_MS } from '../process-group.mjs';
+
+/**
  * Roles that may NEVER run on a foreign model. Copied verbatim from
  * account-switch `tools/routing/routing.yaml` § never_foreign (read 2026-08-25).
  * Keep in sync by hand — the YAML lives in a different repo and is parsed there
@@ -43,22 +51,6 @@ export const NEVER_FOREIGN_ROLES = Object.freeze([
  * ran 2 of 3 hard-test tasks past a 540 s cap (recorded as DNF). Lowering this
  * manufactures timeouts and reads as model failure. */
 export const DEFAULT_TIMEOUT_SEC = 900;
-
-/**
- * Grace period between SIGTERM and SIGKILL, in ms.
- *
- * `child.kill('SIGTERM')` is a REQUEST: a child that installs a handler and
- * ignores it never emits `close`, and this module's only resolve paths are
- * `close` and `error` — so without escalation a wedged `cursor-agent` hangs
- * `dispatchForeign` forever and takes the whole wave with it. SIGKILL is not
- * catchable, so the escalation always terminates.
- *
- * Named ceiling (BV-004): 10 s is enough for a cooperative child to flush its
- * stream-json tail and exit. Revisit if a well-behaved `cursor-agent` is ever
- * measured needing longer than that to shut down — raise the constant, never
- * drop the escalation.
- */
-export const DEFAULT_KILL_GRACE_MS = 10_000;
 
 /** A runId names a directory and a log file. Anything outside this alphabet —
  * or the two relative-path literals the alphabet happens to admit — can escape
@@ -90,8 +82,8 @@ export function isNeverForeignRole(role) {
  *
  * The escalation is the difference between a bounded dispatch and a hung wave:
  * this function's only resolve paths are the child's `close` and `error`
- * events, so a child that ignores SIGTERM never lets the promise settle. See
- * {@link DEFAULT_KILL_GRACE_MS}.
+ * events, so a child that ignores SIGTERM never lets the promise settle. The
+ * callers pass `DEFAULT_KILL_GRACE_MS` from `process-group.mjs`.
  *
  * @returns {Promise<{capture: string, exitCode: number|null, signal: string|null,
  *   timerFired: boolean, killSignals: string[], errorCode: string|null}>}

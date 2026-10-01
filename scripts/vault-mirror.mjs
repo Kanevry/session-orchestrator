@@ -49,7 +49,7 @@
  */
 
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { basename, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
 
@@ -64,7 +64,7 @@ import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
-import { checkCanonicalVault, normalizeRemote } from './lib/named-vault-resolver.mjs';
+import { checkCanonicalVault, describeOriginForLog, normalizeRemote } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -328,6 +328,21 @@ if (kind !== 'learning' && kind !== 'session') {
 // imports) so they are import-safe and unit-testable; see _resolveCanonicalSuffix
 // / _normalizeRemote there (#607 D2).
 
+/**
+ * Render a CLI path flag for a stderr line as its basename only (#1479).
+ *
+ * This CLI's stderr lands in CI logs and session transcripts, and an absolute
+ * `--vault-dir` / `--source` carries the operator's home directory — the
+ * owner-leakage class `.claude/rules/security.md` § Owner-Privacy guards. The
+ * basename still says WHICH value was wrong; the caller passed the full path
+ * and already knows it.
+ * @param {string} p
+ * @returns {string}
+ */
+function pathForLog(p) {
+  return `.../${basename(String(p ?? ''))}`;
+}
+
 // ── Run-level accounting + run close-out (#1147) ──────────────────────────────
 //
 // Deliberately OUTSIDE main(): the run event's whole contract is that it is
@@ -435,7 +450,7 @@ async function main() {
   // are all `0`, and `aborted` is what makes that zero readable as "never
   // started" rather than "ran over an empty source".
   if (!existsSync(resolve(vaultDir))) {
-    process.stderr.write(`vault-mirror: vault-dir not found: ${vaultDir}\n`);
+    process.stderr.write(`vault-mirror: vault-dir not found: ${pathForLog(vaultDir)}\n`);
     await finishRun('missing-vault-dir');
     process.exit(2);
   }
@@ -450,14 +465,14 @@ async function main() {
   });
   if (!canonical.ok) {
     process.stderr.write(
-      `vault-mirror: refusing to mirror — "${vaultDir}" is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${canonical.got ?? 'no git origin'})\n`,
+      `vault-mirror: refusing to mirror — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${describeOriginForLog(canonical.got) || 'no git origin'})\n`,
     );
     await finishRun('vault-not-canonical');
     process.exit(2);
   }
 
   if (!existsSync(resolve(source))) {
-    process.stderr.write(`vault-mirror: source file not found: ${source}\n`);
+    process.stderr.write(`vault-mirror: source file not found: ${pathForLog(source)}\n`);
     await finishRun('missing-source');
     process.exit(2);
   }

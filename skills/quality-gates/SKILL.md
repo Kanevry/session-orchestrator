@@ -74,7 +74,7 @@ as the session baseline for later comparison.
 {"variant": "baseline", "typecheck": {"status": "pass|fail|skip"}, "test": {"status": "pass|fail|skip"}, "typecheck_output": "string", "test_output": "string"}
 ```
 
-In every variant, each command object that was actually spawned also carries its per-command kill ladder: `timed_out` (boolean), `kill_signals` (string[]) and `survivors` (pid[]). A skipped or stubbed command has none of the three keys (absent, never `false`/`[]`). `scripts/run-quality-gate.mjs` joins them into `orchestrator.quality_gate.{passed,failed}` (#1457).
+In every variant, each command object that was actually spawned also carries its per-command kill ladder: `timed_out` (boolean), `kill_signals` (string[]) and `survivors` (pid[]). A skipped or stubbed command has none of the three keys (absent, never `false`/`[]`). `scripts/run-quality-gate.mjs` joins them into `orchestrator.quality_gate.{passed,failed}` (#1457). A run whose joined `timed_out` is `true` is recorded as `.failed` in every variant, although Baseline, Incremental and Per-File still exit 0 (#1459, decided 2026-10-01).
 
 ## Variant 2: Incremental
 
@@ -184,7 +184,7 @@ node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-qual
 node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/run-quality-gate.mjs" --variant per-file --config "$CONFIG" --files specific-file.ts
 ```
 
-The script handles graceful degradation (missing tools → skip), structured JSON output matching the schemas above, and proper exit codes (0=pass, 1=error, 2=gate-failed).
+The script handles graceful degradation (missing tools → skip), structured JSON output matching the schemas above, and proper exit codes (0=pass, 1=error, 2=gate-failed). Only Full Gate exits 2: the three reporting variants exit 0 after a failing or killed check, so their verdict is in the JSON envelope (a kill also turns the event into `.failed`; a plain failing check does not).
 
 ## Baseline Cache (#258)
 

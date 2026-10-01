@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { fixtureGit, removeTree } from '../_helpers/tmp-fixture.mjs';
@@ -55,6 +55,13 @@ const VALID_SESSION = JSON.stringify({
   effectiveness: { planned_issues: 3, completed: 3, carryover: 0, emergent: 1, completion_rate: 1.0 },
 });
 
+// An empty private config dir for every spawn (#1479). The CLI calls
+// loadOwnerConfig() for the canonical-vault guard, and without this pin that
+// reads the HOST's owner.yaml: a `vaults:` list there replaces the default
+// `/agents/vault` suffix, so the guard suites below would pass or fail by
+// whatever the operator's machine declares. No owner.yaml → built-in defaults.
+const EMPTY_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'vault-mirror-entry-config-'));
+
 /**
  * Pin `CLAUDE_PROJECT_DIR` at a caller-owned (or throwaway) tmp dir.
  *
@@ -72,7 +79,7 @@ const VALID_SESSION = JSON.stringify({
  */
 function pinnedLedgerEnv(projectDir) {
   const dir = projectDir ?? mkdtempSync(join(tmpdir(), 'vault-mirror-entry-events-'));
-  return { CLAUDE_PROJECT_DIR: dir, SO_VAULT_DIR: dir };
+  return { CLAUDE_PROJECT_DIR: dir, SO_VAULT_DIR: dir, SO_CONFIG_HOME: EMPTY_CONFIG_HOME };
 }
 
 /**
@@ -191,6 +198,10 @@ describe('vault-mirror entry-point invariant (#536)', () => {
     );
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('source file not found');
+    // #1479: stderr reaches CI logs and transcripts — the basename names the
+    // flag value, the absolute (home-bearing) directory must not appear.
+    expect(result.stderr).toContain('pending-dream.md');
+    expect(result.stderr).not.toContain(dirname(missingSidecar));
 
     // #1151 — THE named bug: this exit sat BEFORE `finishRun`, so an aborted
     // run left NOTHING durable behind. stderr is not durable (it goes to
@@ -545,6 +556,27 @@ describe('vault-mirror canonical-vault guard (#600)', () => {
     expect(result.status).toBe(2);
     expect(result.stderr).toMatch(/not the canonical Meta-Vault/);
     expect(result.stderr).toContain('example.com');
+    // #1479: the refusal names the origin, never the local vault path.
+    expect(result.stderr).not.toContain(vaultDir);
+  });
+
+  it('file:// origin: the refusal names neither the vault path nor the origin path (#1479)', () => {
+    // A local clone as origin: checkCanonicalVault returns the raw origin, and
+    // the refusal used to print it verbatim — an absolute, home-bearing path in
+    // CI logs. The formatter reduces it to `file://<local path>`.
+    const vaultDir = tmp();
+    const originDir = tmp();
+    gitInitWithOrigin(vaultDir, `file://${originDir}/foo/bar.git`);
+    const sourceFile = writeJsonl(tmp(), VALID_LEARNING);
+    const result = runMirrorGuarded([
+      '--vault-dir', vaultDir,
+      '--source', sourceFile,
+      '--kind', 'learning',
+    ]);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('got file://<local path>)');
+    expect(result.stderr).not.toContain(originDir);
+    expect(result.stderr).not.toContain(vaultDir);
   });
 
   it('bypass honored: VAULT_MIRROR_SKIP_CANONICAL_CHECK=1 skips the guard for a non-git vault (exit 0)', () => {

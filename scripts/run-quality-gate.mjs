@@ -585,17 +585,24 @@ async function main() {
     const waveNumber = resolveWaveNumber(
       ledgerRoot ?? process.env.CLAUDE_PROJECT_DIR ?? process.env.CODEX_PROJECT_DIR ?? repoRoot,
     );
+    // `timed_out` / `survivors` / `kill_signals`: the OUTER ladder (the gate
+    // sub-script as a whole, #1439 — same builder as the library emitter)
+    // OR-joined with the INNER per-command ladders the envelope publishes
+    // (#1457). Keys omitted when the inner ladder was not measured and the
+    // outer one did not fire — see `joinGateKillFields`.
+    const killFields = joinGateKillFields({ outer: gateKillFields(result), gateStdout });
+    // A killed gate is `failed` in every variant (#1459, owner decision
+    // 2026-10-01). The reporting variants (baseline / incremental / per-file)
+    // exit 0 even when a command was killed, so the exit code alone would
+    // record that run as `passed`. Their exit code stays 0 on purpose: it has
+    // never carried the check verdict there (a failing check exits 0 too).
+    const failed = exitCode !== 0 || killFields.timed_out === true;
     await emitEvent(
-      `orchestrator.quality_gate.${exitCode === 0 ? 'passed' : 'failed'}`,
+      `orchestrator.quality_gate.${failed ? 'failed' : 'passed'}`,
       {
         variant,
         exit_code: exitCode,
-        // `timed_out` / `survivors` / `kill_signals`: the OUTER ladder (the gate
-        // sub-script as a whole, #1439 — same builder as the library emitter)
-        // OR-joined with the INNER per-command ladders the envelope publishes
-        // (#1457). Keys omitted when the inner ladder was not measured and the
-        // outer one did not fire — see `joinGateKillFields`.
-        ...joinGateKillFields({ outer: gateKillFields(result), gateStdout }),
+        ...killFields,
         ...(counts ? { counts } : {}),
         ...(failedFiles ? { failed_files: failedFiles } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),

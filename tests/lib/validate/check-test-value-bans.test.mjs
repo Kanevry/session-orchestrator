@@ -62,6 +62,22 @@
  *      every pre-existing finding in it, so the warning is about work the
  *      committer did not do and gets trained away. The unscoped CI job
  *      `test-value-bans` is what keeps the repo-wide census.
+ *  17. B5 stops seeing subjects imported through a vitest alias (`@lib/`) → 303
+ *      of 715 test files (measured 2026-09-30) are unreachable by the scan
+ *      again, and every clock-seam time bomb in them ships unseen (#1476).
+ *  18. B5's clock check forgets property shorthand `{ now }` → a block that
+ *      hands the clock over is flagged as uncontrolled (11 of the 19 false
+ *      positives measured 2026-09-30 when the alias was first added).
+ *  19. B5 flags a date that only echoes an input of its own block or of the
+ *      shared setup → the passthrough class floods the advisory (the other 8
+ *      false positives of that measurement).
+ *  20. B5's echo check widens to the whole file → a sibling test that asserts
+ *      the same date hides a real bomb (the two 2026-08-05 bombs of fa57ee66^
+ *      vanished in all 8 realistic variants measured 2026-09-30).
+ *  21. B5's seam proof reads the WIDE clock form of the controlled-block check →
+ *      a helper whose only clock token is a shorthand/positional `now` becomes a
+ *      "subject", and a date pinned next to it is reported (+20 seamed pairs in
+ *      15 files measured 2026-10-01, e.g. `expectDeny` in enforce-scope, #1478).
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -72,6 +88,7 @@ import { spawnSync, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import vitestConfig from '../../../vitest.config.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-test-value-bans.mjs');
@@ -463,11 +480,42 @@ const SEAM_BLOCK = [
 
 const EMITTER_IMPORT = "import { toActivationMetadata } from '../scripts/lib/reconcile/emitter.mjs';";
 
+// Every import form a real test file uses: relative, plus each vitest alias read from the real config.
+const IMPORT_FORMS = [
+  '../scripts/lib/reconcile/emitter.mjs',
+  ...Object.keys(vitestConfig.resolve.alias).map((key) => `${key}/reconcile/emitter.mjs`),
+];
+
+/** A block that hands the clock over in property shorthand — `{ now }` is the seam in use, not an uncontrolled call. */
+const SHORTHAND_CLOCK_BLOCK = [
+  "it('derives the expiry from the clock it hands over', () => {",
+  "  const now = new Date('2026-07-05T00:00:00Z');",
+  '  const meta = toActivationMetadata(learning, { now });',
+  "  expect(meta.expiresAt).toBe('2026-08-05');",
+  '});',
+];
+
+/** The pinned date is an echo of an input the file itself supplies — a passthrough, not a clock reading. */
+const ECHO_BLOCK = [
+  "it('keeps the supplied reviewed_at', () => {",
+  "  const meta = toActivationMetadata({ reviewed_at: '2026-06-21' }, {});",
+  "  expect(meta.reviewedAt).toBe('2026-06-21');",
+  '});',
+];
+
+/** A seamed sibling that happens to assert the same date — its assertion is no input of the bomb's block. */
+const SIBLING_SAME_DATE_BLOCK = [
+  "it('reports the expiry inside the metadata object', () => {",
+  "  const meta = toActivationMetadata(learning, { now: new Date('2026-07-05T00:00:00Z') });",
+  "  expect(meta).toMatchObject({ expiresAt: '2026-08-05' });",
+  '});',
+];
+
 describe('check-test-value-bans — B5 date-literal time bombs', () => {
-  it('flags a pinned date in a block that ignores the seam its siblings use', () => {
+  it.each(IMPORT_FORMS)('flags a pinned date in a block that ignores the seam its siblings use (import %s)', (spec) => {
     const { res, json } = scan({
       'tests/bomb.test.mjs': [
-        EMITTER_IMPORT,
+        `import { toActivationMetadata } from '${spec}';`,
         '',
         ...SEAM_BLOCK,
         '',
@@ -544,6 +592,87 @@ describe('check-test-value-bans — B5 date-literal time bombs', () => {
     });
 
     expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+});
+
+describe('check-test-value-bans — B5 counter-examples', () => {
+  it('does not flag a block that hands the clock over as `{ now }` shorthand', () => {
+    // Catches a CLOCK_ARG that only knows `now:` — it flags every `{ now }` block.
+    const { json } = scan({
+      'tests/shorthand.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        ...SHORTHAND_CLOCK_BLOCK,
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  it('does not prove a seam from a clock handed over only as a bare `now` value', () => {
+    // Catches a seam proof that reads the wide controlled-block form (#1478): `manifestMtimeMs: now }`
+    // (shape of enforce-scope.test.mjs) would make the helper `expectDeny` a clock-seamed subject.
+    const { json } = scan({
+      'tests/helper.test.mjs': [
+        "import { expectDeny } from '../_helpers/hook-decision.mjs';",
+        '',
+        "it('denies an edit once the manifest went stale', () => {",
+        '  const now = Date.now();',
+        '  writeManifest(dir, { sessionStartedAtMs: now - HOUR_MS, manifestMtimeMs: now });',
+        '  expectDeny(runHook(dir));',
+        '});',
+        '',
+        "it('stamps the deny record with its day', () => {",
+        '  expectDeny(runHook(dir));',
+        "  expect(readLedger(dir)[0].day).toBe('2026-08-05');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  it('does not flag an asserted date that echoes an input literal of its own block', () => {
+    // Expected value equals an input literal of the same block = echo. Consistent with the
+    // scanner's CEILING decision that fixed INPUT dates are not flagged: nothing reads the clock.
+    const { json } = scan({
+      'tests/echo.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        ...ECHO_BLOCK,
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  it('still flags a bomb whose date only a sibling test repeats', () => {
+    // Catches an echo check that reads the whole file: a sibling's toMatchObject carrying
+    // the same date then hides the real bomb (measured 2026-09-30 on the fa57ee66^ bombs).
+    const { json } = scan({
+      'tests/sibling.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        ...SIBLING_SAME_DATE_BLOCK,
+        '',
+        "it('derives the per-type expiry', () => {",
+        '  const meta = toActivationMetadata(learning, {});',
+        "  expect(meta.expiresAt).toBe('2026-08-05');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
   });
 });
 

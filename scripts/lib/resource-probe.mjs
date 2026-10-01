@@ -49,7 +49,7 @@ import { ramSnapshot, cpuSnapshot, processCounts, swapUsedMb, memoryPressurePctF
 
 export { evaluate, PROCESSES_PER_SESSION, PRESSURE_HARD_PCT, PRESSURE_SOFT_PCT, PRESSURE_HEALTHY_PCT, DEFAULT_RESOURCE_THRESHOLDS } from './resource-probe/evaluate.mjs';
 export { peerSessionsCount } from './resource-probe/probe-platform.mjs';
-export { parseEtimeToMinutes, countZombieProcesses, countProcessMatches, parseSwapUsageOutput, parseMemoryPressureOutput, parseVmStatAvailableGb } from './resource-probe/parsers.mjs';
+export { parseEtimeToMinutes, parseEtimeToSeconds, countZombieProcesses, countProcessMatches, parseSwapUsageOutput, parseMemoryPressureOutput, parseVmStatAvailableGb } from './resource-probe/parsers.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API — probe()

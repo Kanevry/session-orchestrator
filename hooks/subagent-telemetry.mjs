@@ -133,7 +133,16 @@ function jsonlPath() {
  * Defense-in-depth byte ceiling for transcript reads (#624). The transcript path
  * is harness-trusted, so this is not an exploitable vector — but the repo follows
  * a bounded-read discipline: a pathologically large transcript is skipped (yields
- * the empty/zero-usage result) rather than read whole into memory.
+ * the null-usage result) rather than read whole into memory.
+ *
+ * CEILING: a skipped transcript yields a stop record with found=true but null
+ * tokens and model; the session rollup counts it as an unpriced cost candidate
+ * (#1474) instead of reading it. Frequency per issue #1474 (2026-09-29): 2 of
+ * 10,482 subagent transcripts exceeded this size. REVISIT when oversized
+ * transcripts exceed ~0.1% of found stop records — count them from transcript
+ * sizes, because the ledger writes the same token-less record for an oversized,
+ * a usage-free and an unreadable transcript — then read large transcripts
+ * streamed instead of skipping them.
  */
 const MAX_TRANSCRIPT_BYTES = 50 * 1024 * 1024; // ~50 MB
 
@@ -423,13 +432,23 @@ function readStdinJson() {
  * Four buckets, not two (#1244 / schema_version 2): `input_tokens`,
  * `cache_read_input_tokens`, `cache_creation_input_tokens` and `output_tokens`
  * are accumulated SEPARATELY per deduped turn, because they are billed at three
- * different rates. `model` is captured from `message.model` of the last kept
- * block that carries one (null when absent) — it is what makes a cost estimate
- * possible at all downstream.
+ * different rates. `model` is what makes a cost estimate possible at all
+ * downstream, so it names only a model that actually carried tokens (#1470): a
+ * kept turn is token-bearing when its four clamped buckets sum to > 0. Exactly
+ * one distinct `message.model` across the token-bearing turns → that model;
+ * zero-token turns of another model (a trailing `<synthetic>` turn) are ignored.
+ * Two or more, or a token-bearing turn that names no model → null, an honest
+ * unknown, with the token sums unchanged. No token-bearing turn at all → the
+ * last kept block that carries one (null when absent). Two or more models with
+ * every token-bearing turn named → `modelsUsage` carries the four buckets per
+ * model, so the session rollup can price each part; otherwise it is null.
  *
  * @param {string|undefined|null} transcriptPath — absolute path from stdin
  * @returns {{ tokenInputUncached: number|null, tokenCacheRead: number|null,
- *   tokenCacheCreation: number|null, tokenOutput: number|null, model: string|null }}
+ *   tokenCacheCreation: number|null, tokenOutput: number|null, model: string|null,
+ *   modelsUsage: Array<{ model: string, token_input_uncached: number,
+ *     token_cache_read: number, token_cache_creation: number,
+ *     token_output: number }>|null }}
  */
 function extractTranscriptUsage(transcriptPath) {
   const nullResult = {
@@ -438,6 +457,7 @@ function extractTranscriptUsage(transcriptPath) {
     tokenCacheCreation: null,
     tokenOutput: null,
     model: null,
+    modelsUsage: null,
   };
   try {
     if (typeof transcriptPath !== 'string' || !transcriptPath.trim()) return nullResult;
@@ -523,21 +543,72 @@ function extractTranscriptUsage(transcriptPath) {
     let tokenCacheRead = 0;
     let tokenCacheCreation = 0;
     let tokenOutput = 0;
+    /** Last non-null model over ALL kept turns — the zero-token fallback. */
     let model = null;
+    /** Per-model bucket sums of the token-bearing kept turns (#1470). */
+    const billedModels = new Map();
+    /** A token-bearing turn that names no model: its price is unknowable. */
+    let unattributed = false;
+    // Per-turn clamp (#624): a turn's value counts ONLY when it is a non-negative
+    // integer. A poisoned value (negative, NaN, float like 10.5) contributes 0 so
+    // the good turns survive. An absent side contributes 0, not null.
+    const clamp = (value) => (Number.isInteger(value) && value >= 0 ? value : 0);
     for (const { usage, model: turnModel } of kept) {
-      // Per-turn clamp (#624): add a turn's value ONLY when it is a non-negative
-      // integer. A poisoned value (negative, NaN, float like 10.5) is skipped so
-      // the good turns survive. An absent side contributes 0, not null.
-      const inTok = usage.input_tokens;
-      const cacheRead = usage.cache_read_input_tokens;
-      const cacheCreation = usage.cache_creation_input_tokens;
-      const outTok = usage.output_tokens;
-      if (Number.isInteger(inTok) && inTok >= 0) tokenInputUncached += inTok;
-      if (Number.isInteger(cacheRead) && cacheRead >= 0) tokenCacheRead += cacheRead;
-      if (Number.isInteger(cacheCreation) && cacheCreation >= 0) tokenCacheCreation += cacheCreation;
-      if (Number.isInteger(outTok) && outTok >= 0) tokenOutput += outTok;
-      if (turnModel !== null) model = turnModel;
+      const inTok = clamp(usage.input_tokens);
+      const cacheRead = clamp(usage.cache_read_input_tokens);
+      const cacheCreation = clamp(usage.cache_creation_input_tokens);
+      const outTok = clamp(usage.output_tokens);
+      tokenInputUncached += inTok;
+      tokenCacheRead += cacheRead;
+      tokenCacheCreation += cacheCreation;
+      tokenOutput += outTok;
+      const billed = inTok + cacheRead + cacheCreation + outTok > 0;
+      if (turnModel === null) {
+        if (billed) unattributed = true;
+        continue;
+      }
+      model = turnModel;
+      if (!billed) continue;
+      let part = billedModels.get(turnModel);
+      if (part === undefined) {
+        part = {
+          model: turnModel,
+          token_input_uncached: 0,
+          token_cache_read: 0,
+          token_cache_creation: 0,
+          token_output: 0,
+        };
+        billedModels.set(turnModel, part);
+      }
+      part.token_input_uncached += inTok;
+      part.token_cache_read += cacheRead;
+      part.token_cache_creation += cacheCreation;
+      part.token_output += outTok;
     }
+
+    // Model attribution (#1470): only a token-bearing turn is an observation of
+    // its model; one distinct model → that model, two or more → null, none →
+    // the fallback above. A token-bearing turn that names no model also gives
+    // null: its tokens must not be priced at whichever other model was named.
+    // A mixed-model record carries its per-model sums as `modelsUsage`, which
+    // the session rollup prices part by part (#1470). Measured 2026-09-29 over
+    // 10,745 subagent transcripts under `~/.claude/projects`: 17 (0.16%)
+    // contained more than one model on token-bearing turns (0 of 917 in this
+    // repo), while 273 contained more than one model id only through zero-token
+    // `<synthetic>` turns, which this rule ignores. A model-less token-bearing
+    // turn gets no breakdown: its tokens belong to no part, so the record stays
+    // unpriced. The ledger now tells a mixed-model null (`models_usage`
+    // present) from a missing model (absent). The fallback also names the LAST
+    // model of a transcript whose turns all carry 0 tokens — measured 2026-09-29,
+    // 31 of 10,479 records, all `<synthetic>`; the session rollup prices a record
+    // whose four buckets are all 0 at $0 regardless of its model (#1474), so that
+    // name is harmless.
+    let modelsUsage = null;
+    if (unattributed) model = null;
+    else if (billedModels.size > 1) {
+      model = null;
+      modelsUsage = [...billedModels.values()];
+    } else if (billedModels.size === 1) [model] = billedModels.keys();
 
     // The aggregates are guaranteed non-negative integers by per-turn clamping
     // above (Σ of non-negative integers), so emit them directly.
@@ -547,6 +618,7 @@ function extractTranscriptUsage(transcriptPath) {
       tokenCacheCreation,
       tokenOutput,
       model,
+      modelsUsage,
     };
   } catch {
     return nullResult;
@@ -752,7 +824,7 @@ async function main() {
     // NO fallback to input.transcript_path: that path is the parent session
     // transcript, and reading it is the #949 defect (every stop inherited the
     // parent's running totals). A phantom stop gets null — the honest value.
-    const { tokenInputUncached, tokenCacheRead, tokenCacheCreation, tokenOutput, model } =
+    const { tokenInputUncached, tokenCacheRead, tokenCacheCreation, tokenOutput, model, modelsUsage } =
       subagentTranscriptFound
         ? extractTranscriptUsage(subagentTranscriptPath)
         : {
@@ -761,6 +833,7 @@ async function main() {
             tokenCacheCreation: null,
             tokenOutput: null,
             model: null,
+            modelsUsage: null,
           };
 
     // schema_version 2 (#1244): `token_input` is now BILLABLE PROMPT VOLUME —
@@ -776,11 +849,15 @@ async function main() {
     }
     if (tokenOutput !== null) record.token_output = tokenOutput;
 
-    // Model id (#1244) — null when the transcript exposes none. Cost is NOT
+    // Model id (#1244) — null when the transcript exposes none, or when its
+    // token-bearing turns are not attributable to one model (#1470). Cost is NOT
     // computed here: pricing lives in scripts/lib/telemetry/pricing.mjs and is
     // applied by the session rollup, so this hot-path hook keeps its import
     // graph unchanged.
     record.model = model;
+    // Per-model breakdown (#1470) — written only for a mixed-model record, so
+    // the rollup can price it part by part; absent on every other record.
+    if (modelsUsage !== null) record.models_usage = modelsUsage;
 
     // Cost is best-effort / forward-compat (#624): the native transcript does
     // NOT expose total_cost_usd today, so this is null in practice. No rate

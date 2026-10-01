@@ -22,8 +22,11 @@
  * Here `src` is defined by NEGATION, so a new top-level directory joins the
  * denominator the moment it is committed, with no rule edit and no re-derivation.
  *
- *   universe     `git ls-files`, filtered to CODE_EXTENSIONS
- *   numerator    tracked code under `tests/`
+ *   universe     `git ls-files`, filtered to CODE_EXTENSIONS, minus declaration
+ *                files (`*.d.ts`, `*.d.mts`, `*.d.cts` — types, not executable code)
+ *   numerator    tracked code under a top-level `tests/`, plus co-located tests
+ *                anywhere: basename `*.test.<ext>` / `*.spec.<ext>`, or any file
+ *                under a `__tests__/` directory
  *   denominator  every OTHER tracked code file
  *
  * ## The four questions, answered in code rather than left open
@@ -37,8 +40,8 @@
  *   Only git-tracked?                     YES — reproducible at a SHA, and it is
  *                                         what keeps node_modules/, coverage/ and
  *                                         untracked scratch out without an ignore list.
- *   Do `tests/fixtures/` count as test LOC? YES when they are code (`.mjs`/`.js`/
- *                                         `.cjs`). A code fixture is maintained
+ *   Do `tests/fixtures/` count as test LOC? YES when they are code (any of
+ *                                         CODE_EXTENSIONS). A code fixture is maintained
  *                                         code that exists only to serve the suite —
  *                                         that is test-corpus cost. Non-code
  *                                         fixtures (`.json`, `.jsonl`, `.md`) are
@@ -74,11 +77,11 @@
  *   1 — --check only: ratio exceeds the ceiling
  *   2 — tool error (missing/unreadable root, bad argv)
  *   3 — --check only: ratio not measurable — 0 test files counted while test-like
- *       files ARE tracked (`reason: 'no-tests-found'`, e.g. a TypeScript repo whose
- *       `*.test.ts` sit outside CODE_EXTENSIONS). Fail-closed since #1451: before,
- *       such a repo read `ratio 0, withinCorridor true` — "not found" reported as
- *       "in corridor". Whether TS tests SHOULD count is an open owner decision;
- *       until it is made the script refuses to call the corridor green.
+ *       files ARE tracked (`reason: 'no-tests-found'`, e.g. a Python repo whose
+ *       `tests/test_*.py` sit outside CODE_EXTENSIONS). Fail-closed since #1451:
+ *       before, such a repo read `ratio 0, withinCorridor true` — "not found"
+ *       reported as "in corridor". TypeScript tests count since the 2026-10-01
+ *       owner decision on #1451; other stacks still get "not measurable".
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
@@ -98,16 +101,38 @@ import { isMainModule } from './is-main-module.mjs';
  * Applied symmetrically to numerator and denominator by construction — a file
  * type can never inflate one side while being invisible to the other.
  */
-export const CODE_EXTENSIONS = Object.freeze(['.mjs', '.js', '.cjs']);
+export const CODE_EXTENSIONS = Object.freeze([
+  '.mjs',
+  '.js',
+  '.cjs',
+  '.jsx',
+  '.ts',
+  '.tsx',
+  '.mts',
+  '.cts',
+]);
 
-/** Path prefix that makes a tracked code file part of the TEST corpus. */
+/**
+ * TypeScript declaration files end in a CODE_EXTENSION but carry only types —
+ * no executable line a test could exercise. Excluded from BOTH sides, so a
+ * generated `.d.ts` can never move the ratio.
+ */
+export const DECLARATION_SUFFIXES = Object.freeze(['.d.ts', '.d.mts', '.d.cts']);
+
+/** Top-level path prefix that makes a tracked code file part of the TEST corpus. */
 export const TEST_PREFIX = 'tests/';
 
 /**
- * A tracked path that LOOKS like a test even though the recipe does not count it:
- * a `*.test.*` / `*.spec.*` JS/TS file, anything under a `__tests__/` segment, or
- * any file under `tests/` regardless of extension. Used only to tell "this repo
- * has no tests" apart from "this repo has tests the recipe cannot see" (#1451).
+ * Co-located test files, wherever they sit: a `*.test.<ext>` / `*.spec.<ext>`
+ * basename (the vitest/jest default include shape) or a `__tests__/` segment.
+ */
+const COLOCATED_TEST_RE = /\.(test|spec)\.[^./]+$|(^|\/)__tests__\//;
+
+/**
+ * A tracked path that LOOKS like a test, counted or not: a `*.test.*` / `*.spec.*`
+ * JS/TS file, anything under a `__tests__/` segment, or any file under `tests/`
+ * regardless of extension. Used only to tell "this repo has no tests" apart from
+ * "this repo has tests the recipe cannot see" (#1451) — e.g. `tests/test_x.py`.
  */
 const TEST_LIKE_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
 
@@ -124,14 +149,17 @@ export function isTestLikePath(relPath) {
 export const DEFAULT_CEILING = 1.6;
 
 /** Machine-readable schema tag for the --json envelope. */
-export const SCHEMA = 'tests-src-ratio/1';
+export const SCHEMA = 'tests-src-ratio/2';
 
 /**
  * Which bucket a repo-relative path belongs to.
  *
- * `src` is defined by NEGATION — every tracked code file that is not under
- * `tests/`. That is what makes the two buckets a partition rather than two
- * globs that can overlap or leave a gap.
+ * `src` is defined by NEGATION — every tracked code file that is not a test
+ * (under `tests/`, or co-located per COLOCATED_TEST_RE). That is what makes the
+ * two buckets a partition rather than two globs that can overlap or leave a gap.
+ *
+ * Known blind spot: a nested `pkg/tests/helper.ts` that is not itself named
+ * `*.test.*` counts as src — only the TOP-LEVEL `tests/` is a test directory.
  *
  * @param {string} relPath repo-relative path, `/`-separated
  * @returns {'test'|'src'|null} null = outside the metric entirely
@@ -139,7 +167,8 @@ export const SCHEMA = 'tests-src-ratio/1';
 export function classifyPath(relPath) {
   const p = String(relPath).replace(/\\/g, '/').replace(/^\.\//, '');
   if (!CODE_EXTENSIONS.some((ext) => p.endsWith(ext))) return null;
-  return p === TEST_PREFIX.slice(0, -1) || p.startsWith(TEST_PREFIX) ? 'test' : 'src';
+  if (DECLARATION_SUFFIXES.some((ext) => p.endsWith(ext))) return null;
+  return p.startsWith(TEST_PREFIX) || COLOCATED_TEST_RE.test(p) ? 'test' : 'src';
 }
 
 /**
@@ -212,8 +241,8 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
   // A repo with no src code has an undefined ratio, not an infinite one. Saying
   // `null` keeps the consumer from reading Infinity as a corridor breach.
   // Fail closed (#1451): a zero numerator next to tracked test-like files means
-  // the recipe cannot SEE this repo's tests (e.g. `*.test.ts`), not that there
-  // are none. Reporting ratio 0 / withinCorridor true there turned "not found"
+  // the recipe cannot SEE this repo's tests (e.g. `tests/test_x.py`), not that
+  // there are none. Reporting ratio 0 / withinCorridor true there turned "not found"
   // into "green". The verdict is unknown, so every verdict field is null.
   if (testFiles === 0 && testLikeFilesSeen > 0) {
     return {
@@ -258,11 +287,16 @@ export function definitionOf(source) {
   return {
     source: source === 'stdin' ? 'stdin path list' : 'git ls-files (tracked files only)',
     codeExtensions: [...CODE_EXTENSIONS],
-    numerator: `tracked code files under ${TEST_PREFIX}`,
+    declarationsExcluded: [...DECLARATION_SUFFIXES],
+    numerator:
+      `tracked code files under a top-level ${TEST_PREFIX}, plus co-located tests anywhere: ` +
+      'basename *.test.<ext> / *.spec.<ext>, or any file under a __tests__/ directory',
     denominator: `every OTHER tracked code file (src defined by negation, not by a directory list)`,
     lineRule: 'physical lines; blank + comment lines counted; EOF-newline-insensitive',
     excluded:
-      'non-code extensions (.md, .json, .jsonl, .yml) on BOTH sides; untracked files (node_modules/, coverage/, scratch)',
+      `declaration files (${DECLARATION_SUFFIXES.map((x) => `*${x}`).join(', ')}: types, not ` +
+      'executable code) and non-code extensions (.md, .json, .jsonl, .yml) on BOTH sides; ' +
+      'untracked files (node_modules/, coverage/, scratch)',
   };
 }
 
@@ -468,9 +502,10 @@ function main() {
     console.log(USAGE);
     console.log('');
     console.log('The canonical tests:src LOC measurement for TV-003 (test-value.md).');
-    console.log('  numerator    tracked code under tests/');
+    console.log('  numerator    tracked code under tests/, plus *.test.* / *.spec.* / __tests__/ anywhere');
     console.log('  denominator  every other tracked code file (src by negation)');
     console.log(`  code exts    ${CODE_EXTENSIONS.join(' ')}   (.md / .json never counted)`);
+    console.log(`  excluded     declaration files ${DECLARATION_SUFFIXES.join(' ')} on both sides`);
     console.log('  lines        physical; blanks + comments counted; EOF-newline-insensitive');
     console.log('');
     console.log('  --json         machine-readable envelope on stdout');

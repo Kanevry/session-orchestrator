@@ -30,9 +30,9 @@ vitest coverage enforces four gates (fail build if below):
 | Metric | Threshold |
 |--------|-----------|
 | Statements | 70% |
-| Branches | 65% |
+| Branches | 60% |
 | Functions | 70% |
-| Lines | 60% |
+| Lines | 70% |
 
 ## Constraints & Pitfalls
 

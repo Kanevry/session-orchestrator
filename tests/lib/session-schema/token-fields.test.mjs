@@ -118,11 +118,22 @@ describe('validateSession — token-field constraint violations', () => {
     ['total_tokens', -1, 'negative'],
     ['total_tokens', 2.5, 'a non-integer float'],
     ['matched_records', '2', 'a numeric string'],
+    // #1475 — the persisted cost-coverage counters.
+    ['cost_records_priced', -1, 'negative'],
+    ['cost_records_total', 1.5, 'a non-integer float'],
   ])('rejects %s when it is %s, naming the field in the message', (field, value) => {
     const entry = { ...BASE(), [field]: value };
 
     expect(() => validateSession(entry)).toThrow(ValidationError);
     expect(() => validateSession(entry)).toThrow(new RegExp(field));
+  });
+
+  it('rejects cost_records_priced above cost_records_total (#1475)', () => {
+    // Bug caught: a record claiming more priced than candidate records would read as coverage above 100%.
+    expect(() => validateSession({ ...BASE(), cost_records_priced: 3, cost_records_total: 2 })).toThrow(
+      /cost_records_priced must not exceed cost_records_total/
+    );
+    expect(() => validateSession({ ...BASE(), cost_records_priced: 1, cost_records_total: 2 })).not.toThrow();
   });
 
   it('accepts integer total_tokens / matched_records and null as not-measured (#1436)', () => {

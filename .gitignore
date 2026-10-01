@@ -63,6 +63,8 @@ Thumbs.db
 .orchestrator/metrics/*.jsonl.bak-*
 .orchestrator/metrics/*.jsonl.bak.*
 .orchestrator/metrics/*.jsonl.archive-*
+.orchestrator/metrics/*.jsonl.lock*
+.orchestrator/metrics/*.jsonl.tmp-*
 .orchestrator/metrics/repo-audit-*.json
 .orchestrator/metrics/sweep.log
 .orchestrator/metrics/_archive/

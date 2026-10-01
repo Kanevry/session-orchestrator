@@ -34,8 +34,8 @@ import path from 'node:path';
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
 import { isPathInside } from '../path-utils.mjs';
+import { DEFAULT_KILL_GRACE_MS } from '../process-group.mjs';
 import {
-  DEFAULT_KILL_GRACE_MS,
   DEFAULT_TIMEOUT_SEC,
   isNeverForeignRole,
   isSafeRunId,

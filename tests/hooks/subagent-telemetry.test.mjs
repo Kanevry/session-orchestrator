@@ -25,6 +25,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readSubagents } from '@lib/subagents-schema.mjs';
+import { rollupSessionTokens } from '@lib/session-token-rollup.mjs';
 
 const HOOK = new URL('../../hooks/subagent-telemetry.mjs', import.meta.url).pathname;
 const JSONL_REL = join('.orchestrator', 'metrics', 'subagents.jsonl');
@@ -607,6 +608,8 @@ describe('subagent-telemetry hook', () => {
     expect(records[0].token_cache_read).toBe(1_000_000);
     expect(records[0].token_cache_creation).toBe(6000);
     expect(records[0].token_output).toBe(1000);
+    // Single model across every turn → that model is attributed unchanged.
+    expect(records[0].model).toBe('claude-opus-5');
   });
 
   it('keeps the raw uncached value in gen_ai.usage.input_tokens and adds the two cache aliases', async () => {
@@ -662,6 +665,111 @@ describe('subagent-telemetry hook', () => {
     expect(records[0].schema_version).toBe(2);
     // No model in the transcript → null, never a guessed default.
     expect(records[0].model).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // #1470 — model attribution. A child that switched model mid-run must not get
+  // ALL its tokens priced at the last turn's model; only token-bearing turns
+  // count as an observation of their model.
+  // -------------------------------------------------------------------------
+
+  describe('#1470 model attribution', () => {
+    const turn = (requestId, model, input, cacheRead, cacheCreation, output) =>
+      JSON.stringify({
+        type: 'assistant',
+        requestId,
+        message: {
+          role: 'assistant',
+          model,
+          usage: {
+            input_tokens: input,
+            cache_read_input_tokens: cacheRead,
+            cache_creation_input_tokens: cacheCreation,
+            output_tokens: output,
+          },
+        },
+      }) + '\n';
+
+    async function stopRecord(agentId, subagent) {
+      const transcriptPath = seedTranscripts({ agentId, subagent });
+      const result = runHook(
+        JSON.stringify({
+          hook_event_name: 'SubagentStop',
+          session_id: 'S',
+          agent_id: agentId,
+          duration_ms: 3000,
+          transcript_path: transcriptPath,
+        }),
+      );
+      expect(result.status).toBe(0);
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      expect(records).toHaveLength(1);
+      return records[0];
+    }
+
+    it('records model null when token-bearing turns used two different models, keeping the token sums', async () => {
+      const record = await stopRecord(
+        'mixed-agent',
+        turn('req_M1', 'claude-opus-5-5', 10, 1000, 200, 30) +
+          turn('req_M2', 'claude-sonnet-5-5', 20, 2000, 400, 60),
+      );
+
+      expect(record.model).toBeNull();
+      expect(record.token_input_uncached).toBe(30);
+      expect(record.token_cache_read).toBe(3000);
+      expect(record.token_cache_creation).toBe(600);
+      expect(record.token_output).toBe(90);
+      expect(record.token_input).toBe(3630);
+      // Bug caught: without a per-model breakdown the record could only be
+      // priced at one model or not at all; the rollup prices each part.
+      expect(record.models_usage).toEqual([
+        { model: 'claude-opus-5-5', token_input_uncached: 10, token_cache_read: 1000, token_cache_creation: 200, token_output: 30 },
+        { model: 'claude-sonnet-5-5', token_input_uncached: 20, token_cache_read: 2000, token_cache_creation: 400, token_output: 60 },
+      ]);
+      // Producer→rollup contract on the record the hook really wrote (the
+      // rollup's own test prices a hand-built record): 1840 µ$ opus + 2040 µ$ sonnet.
+      const rollup = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: join(tmp, JSONL_REL) });
+      expect(rollup.total_cost_usd).toBeCloseTo(0.00388, 12);
+    });
+
+    it('keeps the real model when the LAST turn is a zero-token <synthetic> turn', async () => {
+      const record = await stopRecord(
+        'synthetic-agent',
+        turn('req_S1', 'claude-opus-5', 5, 400, 0, 50) +
+          turn('req_S2', 'claude-opus-5', 7, 600, 0, 20) +
+          turn('req_S3', '<synthetic>', 0, 0, 0, 0),
+      );
+
+      expect(record.model).toBe('claude-opus-5');
+      expect(record.token_input_uncached).toBe(12);
+      expect(record.token_output).toBe(70);
+    });
+
+    it('records model null when a token-bearing turn names no model, never the other turn model', async () => {
+      // Bug: the model-less turn was summed but skipped as an observation, so the
+      // whole record was priced at the one model that WAS named (~50x too cheap here).
+      const record = await stopRecord(
+        'unattributed-agent',
+        turn('req_U1', 'claude-sonnet-5-5', 10, 0, 0, 10) +
+          turn('req_U2', undefined, 0, 0, 0, 1_000_000),
+      );
+
+      expect(record.model).toBeNull();
+      expect(record.token_output).toBe(1_000_010);
+      // A breakdown here would carry only the named part, so the rollup would
+      // price the record without the model-less turn's tokens.
+      expect(record.models_usage).toBeUndefined();
+    });
+
+    it('falls back to the last model when no turn carries any billable token', async () => {
+      const record = await stopRecord(
+        'zero-agent',
+        turn('req_Z1', 'claude-opus-5', 0, 0, 0, 0) + turn('req_Z2', 'claude-sonnet-5', 0, 0, 0, 0),
+      );
+
+      expect(record.model).toBe('claude-sonnet-5');
+      expect(record.token_input).toBe(0);
+    });
   });
 
   // -------------------------------------------------------------------------

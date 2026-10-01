@@ -1661,8 +1661,13 @@ describe('mirrorBoard — canonical-vault guard (#1450)', () => {
     return { vaultDir, repoRoot, boardPath: resolveBoardPath(vaultDir) };
   }
 
-  it('refuses a vault without a git origin and writes nothing', async () => {
-    const { repoRoot, boardPath } = setup('guard-no-origin');
+  // The file:// row (#1479): the refusal line must never print the local path
+  // of a file:// origin — it lands in a public CI log or a peer's transcript.
+  it.each([
+    ['without a git origin', 'guard-no-origin', '', 'no git origin'],
+    ['with a local file:// origin, without printing its path', 'guard-file-origin', 'file:///home/someone/vault.git', 'file://<local path>'],
+  ])('refuses a vault %s and writes nothing', async (_label, name, origin, got) => {
+    const { repoRoot, boardPath } = setup(name);
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     let result;
     let lines;
@@ -1670,7 +1675,7 @@ describe('mirrorBoard — canonical-vault guard (#1450)', () => {
       result = await mirrorBoard({
         repoRoot,
         now: FIXED_NOW,
-        hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => '' },
+        hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => origin },
       });
       lines = stderr.mock.calls.map((c) => String(c[0]));
     } finally {
@@ -1680,7 +1685,7 @@ describe('mirrorBoard — canonical-vault guard (#1450)', () => {
     expect(existsSync(boardPath)).toBe(false);
     const refusals = lines.filter((l) => l.startsWith('vault-status board: refusing'));
     expect(refusals).toEqual([
-      'vault-status board: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: /agents/vault; got no git origin)\n',
+      `vault-status board: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: /agents/vault; got ${got})\n`,
     ]);
   });
 

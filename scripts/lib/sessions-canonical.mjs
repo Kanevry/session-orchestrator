@@ -196,14 +196,16 @@ const REPAIR_PROVENANCE_PREFIX = 'repair-invalid-sessions/';
  * record once the repair overwrote its origin). Legacy records repaired before
  * F2 lost that origin irrecoverably and read as real.
  *
- * Module-local on purpose. `session-close-backfill.mjs::isSupersedableStub()`
- * asks a narrower WRITER question ("may this be overwritten?" — `abandoned`
- * only), and that module imports this one, so importing back would be a cycle.
+ * Exported for `scripts/autopilot.mjs`, which must not read a stub as a
+ * healthy 0-token iteration (#1457 F2). Not shared with
+ * `session-close-backfill.mjs::isSupersedableStub()` on purpose: that asks a
+ * narrower WRITER question ("may this be overwritten?" — `abandoned` only), and
+ * that module imports this one, so reusing it here would be a cycle.
  *
  * @param {object} rec
  * @returns {boolean}
  */
-function isBackfillStub(rec) {
+export function isBackfillStub(rec) {
   if (!isNonEmptyString(rec._backfill_source)) return false;
   if (rec._backfill_source.startsWith(REPAIR_PROVENANCE_PREFIX)) return false;
   const hasWork = (Array.isArray(rec.waves) && rec.waves.length > 0)
@@ -216,6 +218,13 @@ function isBackfillStub(rec) {
  * non-empty `raw_session_id` with at least one non-stub. A group of stubs only
  * (or of non-stubs only) is left intact: with no non-stub to prefer there is no
  * evidence which record is the artefact. Mutates `byId`.
+ *
+ * LIMIT (#1457 point 9): the join assumes one raw_session_id = one physical
+ * session. A raw id can also span a CLOSED session and a later, separate
+ * abandoned tail (measured: a stub starting 4 minutes after its partner's
+ * `completed_at`, LeadPipeDACH `main-2026-09-03-session-11`) — that stub is
+ * dropped too, so the tail is invisible to every reader. No time-window check
+ * guards against it; adding one is a separate decision.
  * @param {Map<string, object>} byId
  * @returns {void}
  */
@@ -485,7 +494,7 @@ export function countSessionsInJsonl(raw) {
  * is skipped rather than aborting the whole read (same posture as the readers
  * in `session-close-backfill.mjs` and `backfill-abandoned-sessions.mjs`).
  *
- * NOT EVERY RAW READ OF `sessions.jsonl` IS A GAP TO CLOSE (#1221 P2). Five
+ * NOT EVERY RAW READ OF `sessions.jsonl` IS A GAP TO CLOSE (#1221 P2). Four
  * more readers bypass this module's collapse on purpose — verified via
  * `rg -n "sessions.jsonl|SESSIONS"` against each file — and none of them
  * should be "migrated" to `readCanonicalSessions`:
@@ -503,10 +512,6 @@ export function countSessionsInJsonl(raw) {
  *     window; a canonical read could drop a duplicate/superseded stub that
  *     still names a worktree, making a live worktree look unreferenced and
  *     eligible for garbage collection.
- *   - `readTailSession()` in `scripts/autopilot.mjs` parses only the LAST raw
- *     line to project the record this run's own session just appended,
- *     verbatim; canonicalizing could return a different record than the tail
- *     line if a collapse rule folded it away.
  *
  * @param {object} [args]
  * @param {string} [args.repoRoot] project root; the ledger is resolved as

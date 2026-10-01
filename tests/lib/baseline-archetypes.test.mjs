@@ -170,7 +170,9 @@ describe('configured baseline bootstrap contract', () => {
     ['stderr', 'producer-failed', (b) => put(b, EXPORTER, 'process.stderr.write("/private/secret-host/token"); process.exit(1)')],
     ['oversize', 'producer-failed', (b) => put(b, EXPORTER, 'process.stdout.write("x".repeat(2000000))')],
     ['unsafe-rules', 'invalid-contract', (b) => put(b, EXPORTER, `import {readFileSync} from 'node:fs'; process.stdout.write(process.argv[2] === 'export' ? readFileSync(new URL('../contract.json', import.meta.url)) : '../secret.md');`)],
-    ['missing-rule', 'unsafe-source', (b) => rmSync(path.join(b, 'templates/shared/.claude/rules/sample-runtime.md'))],
+    // #1447 3a: an absent declared source is an incomplete baseline, never the security refusal unsafe-source.
+    ['missing-rule', 'invalid-rule-projection', (b) => rmSync(path.join(b, 'templates/shared/.claude/rules/sample-runtime.md'))],
+    ['missing-template', 'invalid-contract', (b) => rmSync(path.join(b, 'templates/sample-general'), { recursive: true })],
     ['symlink', 'unsafe-source', (b) => relink(b, EXPORTER, path.join(b, 'contract.json'))],
     ['dangling-symlink', 'unsafe-source', (b) => relink(b, EXPORTER, path.join(b, 'absent.mjs'))],
     ['dangling-scripts-symlink', 'unsafe-source', (b) => relink(b, 'scripts', path.join(b, 'absent'))],

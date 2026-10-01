@@ -671,6 +671,9 @@ describe('validateProposalRecord — proposed_by_agent optional field', () => {
 // validateProposalRecord() — file_paths optional field (#900 C)
 // ---------------------------------------------------------------------------
 
+const FILE_PATHS_ERROR =
+  'file_paths must be a non-empty array of repo-relative, newline-free, glob-metacharacter-free strings when present';
+
 describe('validateProposalRecord — file_paths optional field (#900 C)', () => {
   it('returns {ok:true} when file_paths is a non-empty array of valid strings', () => {
     const record = createProposalRecord(validOpts({ filePaths: ['scripts/lib/a.mjs'] }));
@@ -685,7 +688,7 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
   });
 
@@ -696,7 +699,7 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
   });
 
@@ -707,7 +710,7 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
   });
 
@@ -718,7 +721,7 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
   });
 
@@ -732,7 +735,7 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
   });
 
@@ -743,8 +746,23 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
+  });
+
+  // Bug pinned (q-1 follow-up): this gate checked type/newline/glob only, so a
+  // non-repo-relative entry was queued and approved, then refused by
+  // validateLearning at promotion — the one rule now lives in learnings/schema.mjs.
+  it.each([
+    ['a home-relative path', '~/notes.mjs'],
+    ['a Windows drive path', 'C:\\x\\y.mjs'],
+    ['a URL', 'https://x/y.mjs'],
+  ])('returns {ok:false} when a file_paths entry is %s', (_label, entry) => {
+    const record = validRecord();
+    record.file_paths = ['scripts/lib/a.mjs', entry];
+    const result = validateProposalRecord(record);
+    expect(result.ok).toBe(false);
+    expect(result.errors[0]).toBe(FILE_PATHS_ERROR);
   });
 
   // Q2-conf55 mitnahme: createProposalRecord never sets an empty array (it
@@ -757,7 +775,7 @@ describe('validateProposalRecord — file_paths optional field (#900 C)', () => 
     const result = validateProposalRecord(record);
     expect(result.ok).toBe(false);
     expect(result.errors[0]).toBe(
-      'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+      FILE_PATHS_ERROR,
     );
   });
 });

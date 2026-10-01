@@ -30,6 +30,9 @@
  *   5. DIVIDE-BY-ZERO — a src-less file set yielding Infinity, which a consumer
  *      reads as a corridor breach.
  *
+ *   6. STACK BLINDNESS (#1451) — a co-located `foo.test.ts` or `__tests__/` file
+ *      counted as src (or not at all), or a `*.d.ts` counted on either side.
+ *
  * ## Why a fixture and not the real repo
  *
  * The live ratio moves with every commit, so asserting it would be a time bomb
@@ -148,6 +151,25 @@ describe('classifyPath — the partition', () => {
   it('is not fooled by a path that merely starts with the letters "tests"', () => {
     expect(classifyPath('testsuite/runner.mjs')).toBe('src');
   });
+
+  // #1451, owner decision 2026-10-01: TypeScript counts. Literal rows, never
+  // derived from CODE_EXTENSIONS — a dropped extension must turn a row red.
+  it.each([
+    ['src/app.ts', 'src'], // TS source joins the denominator
+    ['src/view.tsx', 'src'],
+    ['src/app.test.ts', 'test'], // co-located test counted as src
+    ['src/view.spec.tsx', 'test'],
+    ['skills/x/tests/drift.test.mjs', 'test'], // JS too: nested, named as a test
+    ['src/__tests__/helper.ts', 'test'], // __tests__/ file counted as src
+    ['src/__tests__/legacy.mjs', 'test'],
+    ['src/contest.ts', 'src'], // "test" inside a basename is no test marker
+    ['src/types.d.ts', null], // declaration file counted at all
+    ['tests/types.d.ts', null],
+    ['lib/mod.d.mts', null],
+    ['lib/mod.d.cts', null],
+  ])('classifies %s as %s', (path, bucket) => {
+    expect(classifyPath(path)).toBe(bucket);
+  });
 });
 
 describe('countPhysicalLines — bug class 2 (EOF-newline off-by-one)', () => {
@@ -212,11 +234,27 @@ describe('measure — the recipe over a controlled corpus', () => {
     expect(r.withinCorridor).toBe(true);
   });
 
-  it('a repo with 0 counted test files but tracked *.test.ts files reports withinCorridor null and reason no-tests-found', () => {
-    // #1451: a TypeScript repo's tests sit outside CODE_EXTENSIONS. Before the
+  it('measures a TypeScript repo with co-located tests instead of reporting it unmeasurable', () => {
+    // #1451: before the 2026-10-01 owner decision this repo read 0 test files /
+    // reason no-tests-found. The .d.ts carries the most lines and must count nowhere.
+    const lines = {
+      'src/app.ts': 10,
+      'scripts/build.mjs': 5,
+      'src/app.test.ts': 6,
+      'src/__tests__/b.spec.tsx': 3,
+      'src/types.d.ts': 50,
+    };
+    const r = measure({ files: Object.keys(lines), readFile: (rel) => 'x\n'.repeat(lines[rel]) });
+    expect(r).toMatchObject({ testFiles: 2, testLoc: 9, srcFiles: 2, srcLoc: 15, ratio: 0.6 });
+    expect(r.reason).toBeNull();
+    expect(r.withinCorridor).toBe(true);
+  });
+
+  it('a repo with 0 counted test files but tracked test-like files reports withinCorridor null and reason no-tests-found', () => {
+    // #1451: a stack the recipe cannot see (here Python). Before the fail-closed
     // fix this read ratio 0 / withinCorridor true — "not found" as "green".
     const r = measure({
-      files: ['src/app.ts', 'scripts/build.mjs', 'src/app.test.ts', 'src/__tests__/b.spec.tsx'],
+      files: ['app/main.py', 'scripts/build.mjs', 'tests/test_main.py', 'tests/conftest.py'],
       readFile: () => 'x\n'.repeat(10),
     });
     expect(r.testFiles).toBe(0);
@@ -281,13 +319,25 @@ describe('CLI contract', () => {
 
   it('emits a parseable --json envelope naming the globs it used', () => {
     const parsed = JSON.parse(runCli(['--json']));
-    expect(parsed.schema).toBe('tests-src-ratio/1');
+    expect(parsed.schema).toBe('tests-src-ratio/2');
     expect(parsed.ratio).toBe(1.4737);
     expect(parsed.testLoc).toBe(EXPECTED_TEST_LOC);
     expect(parsed.srcLoc).toBe(EXPECTED_SRC_LOC);
     // The envelope must be self-describing: a consumer never guesses the recipe.
-    expect(parsed.definition.codeExtensions).toEqual([...CODE_EXTENSIONS]);
+    // Literals, not [...CODE_EXTENSIONS]: comparing the constant to itself pins nothing.
+    expect(parsed.definition.codeExtensions).toEqual([
+      '.mjs',
+      '.js',
+      '.cjs',
+      '.jsx',
+      '.ts',
+      '.tsx',
+      '.mts',
+      '.cts',
+    ]);
+    expect(parsed.definition.declarationsExcluded).toEqual(['.d.ts', '.d.mts', '.d.cts']);
     expect(parsed.definition.numerator).toMatch(/tests\//);
+    expect(parsed.definition.numerator).toMatch(/__tests__\//);
     expect(parsed.definition.denominator).toMatch(/negation/);
     expect(parsed.definition.lineRule).toMatch(/physical lines/);
   });
@@ -322,7 +372,7 @@ describe('CLI contract', () => {
     let stderr = '';
     try {
       execFileSync('node', [SCRIPT, dir, '--stdin', '--check'], {
-        input: 'src/a.ts\nsrc/a.test.ts\nscripts/b.mjs',
+        input: 'app/a.py\ntests/test_a.py\nscripts/b.mjs',
         encoding: 'utf8',
         stdio: 'pipe',
       });
@@ -353,14 +403,15 @@ describe('checkTestsSrcRatio — session-start probe over a real git repo', () =
     repo = undefined;
   });
 
-  it('warns no-tests-found with a null ratio when only uncounted *.test.ts files are tracked', () => {
+  it('warns no-tests-found with a null ratio when only uncounted test files are tracked', () => {
     repo = mkdtempSync(join(tmpdir(), 'tests-src-ratio-probe-'));
-    writeFileSync(join(repo, 'x.test.ts'), 'a\n'.repeat(3));
+    mkdirSync(join(repo, 'tests'));
+    writeFileSync(join(repo, 'tests', 'test_x.py'), 'a\n'.repeat(3));
     writeFileSync(join(repo, 'a.mjs'), 'b\n'.repeat(5));
     const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
     const git = (...args) => execFileSync('git', args, { cwd: repo, env, stdio: 'pipe' });
     git('init', '-q');
-    git('add', 'x.test.ts', 'a.mjs');
+    git('add', 'tests/test_x.py', 'a.mjs');
     git('-c', 'user.name=t', '-c', 'user.email=t@example.org', 'commit', '-q', '-m', 'fixture');
 
     expect(checkTestsSrcRatio({ repoRoot: repo })).toMatchObject({

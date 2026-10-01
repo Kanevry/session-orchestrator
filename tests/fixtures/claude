@@ -10,8 +10,13 @@
 #   STUB_AGENT_SPIRAL        — defaults to 0; integer count for agent_summary.spiral
 #   STUB_PLANNED_ISSUES      — defaults to 1
 #   STUB_CARRYOVER           — defaults to 0
+#   STUB_RAW_ID_MODE         — omit suppresses the --session-id stamp
+#   STUB_OWN_TOKENS          — optional own output and total token count
+#   STUB_PEER_APPEND         — 1 appends a foreign record after the own record
+#   STUB_PEER_TOKENS         — peer token count, defaults to 900000
+#   STUB_DUP_RAW             — 1 appends another identity with the own raw UUID
 #
-# Output: writes one schema_version=1 sessions.jsonl line via append.
+# Output: appends schema_version=1 records; optional peer/duplicate follows own.
 #
 # Exits with $STUB_EXIT_CODE (default 0). When STUB_EXIT_CODE != 0, no append.
 
@@ -23,7 +28,13 @@ fi
 
 # Parse the mode token from the namespaced prompt (and legacy /session form).
 SESSION_TYPE="feature"
+RAW_SESSION_ID=""
+PREVIOUS_ARG=""
 for arg in "$@"; do
+  if [ "$PREVIOUS_ARG" = "--session-id" ]; then
+    RAW_SESSION_ID="$arg"
+  fi
+  PREVIOUS_ARG="$arg"
   case "$arg" in
     /session\ *|/session-orchestrator:session\ *)
       MODE="${arg#* }"
@@ -52,6 +63,27 @@ if [ -z "$JSONL_PATH" ]; then
   exit 1
 fi
 
-printf '%s\n' "{\"schema_version\":1,\"session_id\":\"${SESSION_ID}\",\"session_type\":\"${SESSION_TYPE}\",\"started_at\":\"${STARTED_AT}\",\"completed_at\":\"${COMPLETED_AT}\",\"total_waves\":5,\"waves\":[],\"agent_summary\":{\"complete\":0,\"partial\":0,\"failed\":${AGENT_FAILED},\"spiral\":${AGENT_SPIRAL}},\"total_agents\":0,\"total_files_changed\":0,\"effectiveness\":{\"planned_issues\":${PLANNED_ISSUES},\"carryover\":${CARRYOVER},\"completion_rate\":1.0,\"completed_issues\":${PLANNED_ISSUES}},\"autopilot_run_id\":\"${RUN_ID}\"}" >> "$JSONL_PATH"
+RAW_FIELD=""
+if [ -n "$RAW_SESSION_ID" ] && [ "${STUB_RAW_ID_MODE:-}" != "omit" ]; then
+  RAW_FIELD=",\"raw_session_id\":\"${RAW_SESSION_ID}\""
+fi
+TOKEN_FIELDS=""
+if [ -n "${STUB_OWN_TOKENS:-}" ]; then
+  TOKEN_FIELDS=",\"total_token_output\":${STUB_OWN_TOKENS},\"total_tokens\":${STUB_OWN_TOKENS}"
+fi
+
+# Share required fields across own, peer and ambiguous records.
+append_record() {
+  printf '%s\n' "{\"schema_version\":1,\"session_id\":\"${1}\",\"session_type\":\"${SESSION_TYPE}\",\"started_at\":\"${STARTED_AT}\",\"completed_at\":\"${COMPLETED_AT}\",\"total_waves\":5,\"waves\":[],\"agent_summary\":{\"complete\":0,\"partial\":0,\"failed\":${AGENT_FAILED},\"spiral\":${AGENT_SPIRAL}},\"total_agents\":0,\"total_files_changed\":0,\"effectiveness\":{\"planned_issues\":${PLANNED_ISSUES},\"carryover\":${CARRYOVER},\"completion_rate\":1.0,\"completed_issues\":${PLANNED_ISSUES}},\"autopilot_run_id\":\"${RUN_ID}\"${2}${3}}" >> "$JSONL_PATH"
+}
+
+append_record "$SESSION_ID" "$RAW_FIELD" "$TOKEN_FIELDS"
+if [ "${STUB_PEER_APPEND:-0}" = "1" ]; then
+  PEER_TOKENS="${STUB_PEER_TOKENS:-900000}"
+  append_record "peer-session-$$" ',"raw_session_id":"11111111-1111-4111-8111-111111111111"' ",\"total_token_output\":${PEER_TOKENS},\"total_tokens\":${PEER_TOKENS}"
+fi
+if [ "${STUB_DUP_RAW:-0}" = "1" ]; then
+  append_record "duplicate-session-$$" "$RAW_FIELD" "$TOKEN_FIELDS"
+fi
 
 exit 0

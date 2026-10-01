@@ -27,18 +27,19 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  * Startwerte für Stufe 1 — NOT calibrated. Every number carries its provenance
  * from the PRD §4 parameter table ("keine Zahl ohne ihre Population").
  *
- * RUNTIME SSOT is `REAPER_DEFAULTS` in `scripts/lib/orphan-reaper.mjs`; these
- * literals mirror it deliberately rather than importing it, because that module
- * pulls `process-group.mjs` + `resource-probe/parsers.mjs` into the config
- * import graph, which every `parseSessionConfig()` caller would then pay for.
- * The parity is held by a test, not by an import
+ * RUNTIME SSOT is `REAPER_DEFAULTS` in `scripts/lib/orphan-reaper/defaults.mjs`; these
+ * literals mirror it rather than importing it. The original reason — the
+ * single-file `orphan-reaper.mjs` pulled `process-group.mjs` +
+ * `resource-probe/parsers.mjs` into the config import graph — no longer holds
+ * since the #1437 split (`defaults.mjs` imports only `node:path`); revisit the
+ * mirror there. The parity is held by a test, not by an import
  * (`tests/lib/config/reaper.test.mjs` § defaults mirror REAPER_DEFAULTS).
  */
 /** 300 s — DevWatchdog's hard limit for `tsgo`; the 2026-09-20 orphans were 7–17 min old. */
 const DEFAULT_MIN_AGE_SECONDS = 300;
 /** 30 s — DevWatchdog's normal scan cadence; keeps a PostToolBatch storm from taxing every tool call. */
 const DEFAULT_MIN_SCAN_INTERVAL_SECONDS = 30;
-/** 10 000 ms — `DEFAULT_KILL_GRACE_MS` from `dispatch-common.mjs:61`; repo convention, not newly invented. */
+/** 10 000 ms — `DEFAULT_KILL_GRACE_MS` from `process-group.mjs`; repo convention, not newly invented. */
 const DEFAULT_KILL_GRACE_MS = 10_000;
 /** 500 ms — wait before reading the effect back; without it the 2026-09-20 check falsely reported "still alive". */
 const DEFAULT_VERIFY_WAIT_MS = 500;

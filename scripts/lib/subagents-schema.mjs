@@ -42,8 +42,16 @@
  *   token_cache_creation  integer | null — `usage.cache_creation_input_tokens` (v2+)
  *   token_output      integer | null — completion token count for this subagent
  *   model             string  | null — model id from the transcript (v2+); null when
- *                                      the transcript exposes none. Required to price
- *                                      the record — see scripts/lib/telemetry/pricing.mjs.
+ *                                      the transcript exposes none, or when its token-
+ *                                      bearing turns used two or more models or one turn
+ *                                      named none (#1470). Required to price the record —
+ *                                      see scripts/lib/telemetry/pricing.mjs.
+ *   models_usage      array   | absent — per-model breakdown of a record whose token-
+ *                                      bearing turns used two or more models, every
+ *                                      one named (#1470): [{ model, token_input_uncached,
+ *                                      token_cache_read, token_cache_creation,
+ *                                      token_output }], one entry per model. The session
+ *                                      rollup prices each part; absent on every other record.
  *   total_cost_usd    number  | null — native total cost in USD (#624, fractional,
  *                                      best-effort: null when the harness does not
  *                                      expose it; no rate table is applied)
@@ -115,7 +123,8 @@ export class ValidationError extends Error {
  *
  * Required fields: timestamp, event, agent_id, schema_version.
  * Additional requirement when event='stop': duration_ms (integer or null).
- * Optional: agent_type, parent_session_id, token_input, token_output.
+ * Optional: agent_type, parent_session_id, token_input, token_output, the cache
+ * buckets, model, models_usage, total_cost_usd and the OTel aliases.
  *
  * @param {object} entry
  * @param {object} [options]
@@ -231,6 +240,24 @@ export function validateSubagent(entry, options = {}) {
   // absence and makes the record unpriceable, never free.
   if (entry.model !== undefined && entry.model !== null && typeof entry.model !== 'string') {
     throw new ValidationError('model must be a string or null', 'model');
+  }
+
+  // models_usage (optional, #1470) — per-model parts of a mixed-model record.
+  // Each part is priced on its own, so each needs a model and four buckets.
+  if (entry.models_usage !== undefined && entry.models_usage !== null) {
+    if (!Array.isArray(entry.models_usage)) {
+      throw new ValidationError('models_usage must be an array or null', 'models_usage');
+    }
+    for (const part of entry.models_usage) {
+      const bucketsValid = ['token_input_uncached', 'token_cache_read', 'token_cache_creation', 'token_output']
+        .every((field) => Number.isInteger(part?.[field]) && part[field] >= 0);
+      if (typeof part?.model !== 'string' || part.model.length === 0 || !bucketsValid) {
+        throw new ValidationError(
+          'models_usage entries must carry a model string and four non-negative integer token buckets',
+          'models_usage'
+        );
+      }
+    }
   }
 
   // total_cost_usd (optional, #624) — fractional number (not integer), best-effort.

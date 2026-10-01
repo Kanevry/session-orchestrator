@@ -8,14 +8,18 @@
 import {
   readFile,
   writeFile,
+  appendFile,
   mkdir,
   rename,
   copyFile,
   readdir,
   unlink,
 } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { withFileLock } from '../file-lock.mjs';
 import {
   validateLearning,
   normalizeLearning,
@@ -23,6 +27,117 @@ import {
   deriveExpiresAt,
   ValidationError,
 } from './schema.mjs';
+
+// ---------------------------------------------------------------------------
+// Store lock (GitLab #1447 point 8)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long a writer waits for the store lock before giving up — the
+ * `withFileLock` default. Every critical section here is one read plus one
+ * append or rewrite of a JSONL file (milliseconds), so ten seconds of
+ * contention means a stuck holder, not a slow one.
+ */
+export const LEARNINGS_LOCK_TIMEOUT_MS = 10000;
+
+/**
+ * Thrown when the learnings store lock cannot be acquired. Every writer takes
+ * the lock BEFORE it touches the store, so this error always means nothing was
+ * written. The message is one line and names the lock file.
+ */
+export class LearningsLockError extends Error {
+  /**
+   * @param {string} lockPath
+   * @param {'timeout'|'fs-error'} reason
+   * @param {number} timeoutMs
+   * @param {string} [detail]
+   */
+  constructor(lockPath, reason, timeoutMs, detail) {
+    const why =
+      reason === 'timeout'
+        ? `held by another writer, waited ${timeoutMs} ms`
+        : `${reason}${detail ? `: ${detail}` : ''}`;
+    super(`learnings store lock ${lockPath} not acquired (${why}) — nothing written`);
+    this.name = 'LearningsLockError';
+    this.lockPath = lockPath;
+    this.reason = reason;
+  }
+}
+
+/**
+ * Store locks held by the CURRENT async call chain, so a nested writer inside a
+ * critical section (apply → prune → rewrite, sweep → rewrite, promote →
+ * rewrite) runs straight through instead of waiting on its own lock until the
+ * timeout. Keyed per async context, deliberately NOT per process: a concurrent
+ * call chain in the same process does not inherit the entry and waits like a
+ * second process would — which is exactly the interleaving the lock exists for.
+ * @type {AsyncLocalStorage<Map<string, {live: boolean}>>}
+ */
+const heldStoreLocks = new AsyncLocalStorage();
+
+/**
+ * `<store>.lock` beside the store. The directory is canonicalised so two
+ * spellings of one store (`/var` vs `/private/var`, a realpath'd repo root as
+ * `memory-proposals/sink.mjs` passes it) contend on ONE lock file. Creates the
+ * directory: the lock file needs it, and every caller is about to write there.
+ *
+ * @param {string} filePath
+ * @returns {Promise<string>}
+ */
+async function resolveStoreLockPath(filePath) {
+  const dir = path.dirname(path.resolve(filePath));
+  await mkdir(dir, { recursive: true });
+  return path.join(realpathSync(dir), `${path.basename(filePath)}.lock`);
+}
+
+/**
+ * Run `fn` while holding the exclusive lock of the learnings store at
+ * `filePath`. Every read-modify-write of the store must run its WHOLE
+ * read → write sequence inside one call: a write outside the lock is silently
+ * lost when a rewriter that read before it renames its next generation over
+ * the file. `appendLearning()` and `rewriteLearnings()` take the lock
+ * themselves.
+ *
+ * Reentrant within one async call chain (see `heldStoreLocks`). Reentrancy
+ * prevents a deadlock, not a lost write: an `appendLearning()` issued INSIDE a
+ * read → rewrite section lands in the file that section is about to replace —
+ * fold such a record into the rewrite batch instead.
+ *
+ * Crash safety comes from `withFileLock`'s default `staleCheck: 'pid'`: a lock
+ * whose holder process is gone is overridden (WARN on stderr); a live holder or
+ * one on another host is waited for until `timeoutMs`.
+ *
+ * @template T
+ * @param {string} filePath — the learnings store (the lock file sits beside it)
+ * @param {() => (T | Promise<T>)} fn
+ * @param {{ timeoutMs?: number }} [opts]
+ * @returns {Promise<T>}
+ * @throws {LearningsLockError} when the lock is not acquired — `fn` never ran
+ */
+export async function withLearningsLock(filePath, fn, { timeoutMs = LEARNINGS_LOCK_TIMEOUT_MS } = {}) {
+  const lockPath = await resolveStoreLockPath(filePath);
+  const held = heldStoreLocks.getStore();
+  if (held?.get(lockPath)?.live === true) return fn();
+
+  const token = { live: true };
+  const scope = new Map(held ?? []);
+  scope.set(lockPath, token);
+  let result;
+  try {
+    result = await withFileLock(lockPath, () => heldStoreLocks.run(scope, fn), {
+      timeoutMs,
+      // A per-acquisition holder makes the owner-guarded release delete only
+      // THIS acquisition's lock, never a successor's (#1285).
+      holder: `learnings-store:${process.pid}:${randomUUID()}`,
+    });
+  } finally {
+    // A continuation `fn` left running past its own return must not keep
+    // treating the released lock as held.
+    token.live = false;
+  }
+  if (!result.ok) throw new LearningsLockError(lockPath, result.reason, timeoutMs, result.error);
+  return result.value;
+}
 
 // ---------------------------------------------------------------------------
 // Pre-write self-validation seam (issue #662)
@@ -144,11 +259,18 @@ export async function readLearnings(filePath) {
  * atomic on POSIX append. For very large insight/evidence fields that
  * might exceed that boundary, use rewriteLearnings() instead.
  *
+ * The append runs under the store lock ({@link withLearningsLock}): an append
+ * that landed between a rewriter's read and its rename was silently lost.
+ * Validation runs first, outside the lock — a rejected record never waits.
+ *
  * @param {string} filePath
  * @param {object} entry
+ * @param {{ lockTimeoutMs?: number }} [opts] — store-lock wait, default
+ *   {@link LEARNINGS_LOCK_TIMEOUT_MS}
  * @returns {Promise<object>} validated entry
+ * @throws {LearningsLockError} when the store lock is not acquired (nothing appended)
  */
-export async function appendLearning(filePath, entry) {
+export async function appendLearning(filePath, entry, { lockTimeoutMs } = {}) {
   // Ensure created_at is set first — many writers omit it, and expires_at
   // derivation depends on it. Use ISO 8601 UTC.
   const createdAt =
@@ -174,9 +296,10 @@ export async function appendLearning(filePath, entry) {
   // parses back AND re-validates before any append touches disk. Throws
   // ValidationError on a non-round-tripping record — file is left untouched.
   const line = serializeLearningLineChecked(validated);
-  await mkdir(path.dirname(filePath), { recursive: true });
-  const { appendFile } = await import('node:fs/promises');
-  await appendFile(filePath, line, 'utf8');
+  // The lock path resolution creates the parent directory.
+  await withLearningsLock(filePath, () => appendFile(filePath, line, 'utf8'), {
+    timeoutMs: lockTimeoutMs,
+  });
   return validated;
 }
 
@@ -332,24 +455,28 @@ export async function rewriteLearnings(
   if (dryRun) return validated;
 
   const body = lines.join('');
-  await mkdir(path.dirname(filePath), { recursive: true });
 
-  // Backup-before-rewrite (#721): snapshot the current store to a timestamped
-  // sidecar BEFORE the destructive rename, then prune to keep-N. Only meaningful
-  // when the target already exists (a first-time write has nothing to lose).
-  if (backup && existsSync(filePath)) {
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    await copyFile(filePath, `${filePath}.bak-${ts}`);
-    try {
-      await rotateBackups(path.dirname(filePath), path.basename(filePath));
-    } catch {
-      // Rotation is best-effort — a stale/undeletable sibling must never abort
-      // the rewrite. The fresh backup above is already safely on disk.
+  // Under the store lock (#1447 point 8) so no append lands between the backup
+  // and the rename. The CALLER's read must sit inside the same lock for a
+  // read-modify-write to be safe — this call joins it reentrantly.
+  await withLearningsLock(filePath, async () => {
+    // Backup-before-rewrite (#721): snapshot the current store to a timestamped
+    // sidecar BEFORE the destructive rename, then prune to keep-N. Only meaningful
+    // when the target already exists (a first-time write has nothing to lose).
+    if (backup && existsSync(filePath)) {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      await copyFile(filePath, `${filePath}.bak-${ts}`);
+      try {
+        await rotateBackups(path.dirname(filePath), path.basename(filePath));
+      } catch {
+        // Rotation is best-effort — a stale/undeletable sibling must never abort
+        // the rewrite. The fresh backup above is already safely on disk.
+      }
     }
-  }
 
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, body, 'utf8');
-  await rename(tmp, filePath);
+    const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
+    await writeFile(tmp, body, 'utf8');
+    await rename(tmp, filePath);
+  });
   return validated;
 }

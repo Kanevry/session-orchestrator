@@ -241,9 +241,13 @@ describe('C — input smuggled → phase flips to run:true', () => {
 
   it('3.6.8 flips to run when reconcile enabled AND an eligible high-confidence learning exists', async () => {
     const root = makeRepo();
+    // created_at is relative to now: a fixed date is a time bomb — `convention`
+    // has a 90-day TTL, and the fixture 2026-07-01 stopped being eligible on
+    // 2026-09-29 (already-expired-at-proposal), turning every push hook red.
+    const createdAt = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
     writeJsonl(metric(root, 'learnings.jsonl'), [
       {
-        id: 'c1', created_at: '2026-07-01T00:00:00.000Z', type: 'convention', confidence: 0.9,
+        id: 'c1', created_at: createdAt, type: 'convention', confidence: 0.9,
         subject: 'always stage files individually', insight: 'git add . sweeps parallel work',
         evidence: 'seen in 3 sessions', expires_at: '2027-01-01T00:00:00.000Z', schema_version: 1,
         scope: 'repo-local', file_paths: ['skills/x.md'],

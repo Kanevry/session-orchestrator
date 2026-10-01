@@ -337,15 +337,30 @@ describe('rollupSessionTokens — subagents_with_tokens', () => {
 // ---------------------------------------------------------------------------
 
 describe('rollupSessionTokens — null sentinel when no token data', () => {
-  it('returns total_token_input: null (NOT 0) when no matching records exist', () => {
+  it('distinguishes an unmatched semantic ID from the matching UUID in the same ledger (#1027 Nachtrag 7)', () => {
+    const uuid = '73a3f0d2-8d6b-42e7-ae94-68032cbd14e2';
     const subagentsPath = writeJsonl('subagents.jsonl', [
-      stopRecord({ session: 'OTHER-session', agent: 'agent-1', input: 100, output: 200 }),
+      { ...stopRecord({ session: uuid, agent: 'agent-1', input: 100, output: 200 }),
+        model: 'claude-opus-5', token_input_uncached: 100, token_cache_read: 0, token_cache_creation: 0 },
+      { ...stopRecord({ session: uuid, agent: 'agent-2', input: 50, output: 60 }),
+        model: 'claude-opus-5', token_input_uncached: 50, token_cache_read: 0, token_cache_creation: 0 },
     ]);
 
-    const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath });
+    const result = rollupSessionTokens({ parentSessionId: 'main-2026-08-14-session-1', subagentsPath });
 
     // Critically: null, not 0.  A result of 0 would misrepresent "no data" as "free session".
     expect(result.total_token_input).toBeNull();
+    expect(result.match_status).toBe('unmatched');
+    expect(result.ledger_records).toBe(2);
+    expect(result.total_tokens).toBeNull();
+    expect(result.total_cost_usd).toBeNull();
+
+    const matched = rollupSessionTokens({ parentSessionId: uuid, subagentsPath });
+    expect(matched.match_status).toBe('matched');
+    expect(matched.ledger_records).toBe(2);
+    expect(matched.matched_records).toBe(2);
+    expect(matched.total_tokens).toBe(410);
+    expect(matched.total_cost_usd).toBeCloseTo(0.00725, 12);
   });
 
   it('returns total_token_output: null (NOT 0) when no matching records exist', () => {
@@ -370,12 +385,14 @@ describe('rollupSessionTokens — null sentinel when no token data', () => {
 
   it('returns the full null/zero sentinel shape when file has no records for this session', () => {
     const subagentsPath = writeJsonl('subagents.jsonl', [
-      stopRecord({ session: 'OTHER-session', agent: 'agent-1', input: 100, output: 200 }),
+      startRecord({ session: 'OTHER-session', agent: 'agent-1' }),
     ]);
 
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath });
 
     expect(result).toEqual({
+      match_status: 'unmatched',
+      ledger_records: 1,
       total_token_input: null,
       total_token_output: null,
       total_tokens: null,
@@ -390,6 +407,15 @@ describe('rollupSessionTokens — null sentinel when no token data', () => {
       legacy_v1_records: 0,
       _token_schema: 2,
     });
+
+    const matched = rollupSessionTokens({ parentSessionId: 'OTHER-session', subagentsPath });
+    expect(matched.match_status).toBe('matched');
+    expect(matched.ledger_records).toBe(1);
+    expect(matched.matched_records).toBe(1);
+    expect(matched.total_token_input).toBeNull();
+    expect(matched.total_token_output).toBeNull();
+    expect(matched.total_tokens).toBeNull();
+    expect(matched.total_cost_usd).toBeNull();
   });
 });
 
@@ -412,6 +438,8 @@ describe('rollupSessionTokens — absent subagents file', () => {
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: missingPath });
 
     expect(result).toEqual({
+      match_status: 'ledger-absent',
+      ledger_records: null,
       total_token_input: null,
       total_token_output: null,
       total_tokens: null,
@@ -442,6 +470,12 @@ describe('rollupSessionTokens — malformed JSONL lines', () => {
       valid1,
       'THIS IS NOT JSON }{{{',
       valid2,
+      '[]',
+      '{}',
+      'null',
+      '42',
+      '"text"',
+      'true',
       '',
     ].join('\n'), 'utf8');
 
@@ -450,6 +484,9 @@ describe('rollupSessionTokens — malformed JSONL lines', () => {
     expect(result.total_token_input).toBe(150);
     expect(result.total_token_output).toBe(260);
     expect(result.matched_records).toBe(2);
+    expect(result.match_status).toBe('matched');
+    // valid1, valid2 and `{}` — an array, null or a primitive is no record.
+    expect(result.ledger_records).toBe(3);
   });
 
   it('does not throw when every line in the file is malformed JSON', () => {
@@ -461,15 +498,18 @@ describe('rollupSessionTokens — malformed JSONL lines', () => {
     ).not.toThrow();
   });
 
-  it('returns null totals when all lines are malformed (no valid records)', () => {
+  it.each(['garbage1\ngarbage2\n', '', '\n  \n', 'null\n42\n"text"\ntrue\n'])(
+    'returns ledger-empty and null totals when no object records exist: %j', (contents) => {
     const p = join(tmp, 'subagents.jsonl');
-    writeFileSync(p, 'garbage1\ngarbage2\n', 'utf8');
+    writeFileSync(p, contents, 'utf8');
 
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: p });
 
     expect(result.total_token_input).toBeNull();
     expect(result.total_token_output).toBeNull();
     expect(result.matched_records).toBe(0);
+    expect(result.match_status).toBe('ledger-empty');
+    expect(result.ledger_records).toBe(0);
   });
 });
 
@@ -510,17 +550,16 @@ describe('rollupSessionTokens — cross-session isolation', () => {
 // ---------------------------------------------------------------------------
 
 describe('rollupSessionTokens — edge cases', () => {
-  it('returns null/zero sentinel when parentSessionId is an empty string', () => {
-    const subagentsPath = writeJsonl('subagents.jsonl', [
-      stopRecord({ session: '', agent: 'agent-1', input: 100, output: 200 }),
-    ]);
+  it.each(['', null, undefined, 42, {}])('returns invalid-key without reading for parentSessionId %j', (parentSessionId) => {
+    // Reading the directory would throw EISDIR; invalid keys must return first.
+    const result = rollupSessionTokens({ parentSessionId, subagentsPath: tmp });
 
-    const result = rollupSessionTokens({ parentSessionId: '', subagentsPath });
-
-    // Empty string parentSessionId is treated as invalid — sentinel returned
+    // A non-string or empty parentSessionId is invalid — sentinel returned
     expect(result.total_token_input).toBeNull();
     expect(result.total_token_output).toBeNull();
     expect(result.matched_records).toBe(0);
+    expect(result.match_status).toBe('invalid-key');
+    expect(result.ledger_records).toBeNull();
   });
 
   it('handles an empty file without throwing', () => {
@@ -530,6 +569,11 @@ describe('rollupSessionTokens — edge cases', () => {
     expect(() =>
       rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: p })
     ).not.toThrow();
+
+    // A readable empty ledger is valid, but other read failures still propagate.
+    expect(() =>
+      rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: tmp })
+    ).toThrow(expect.objectContaining({ code: 'EISDIR' }));
   });
 
   it('returns null/zero sentinel for an empty file', () => {
@@ -539,6 +583,8 @@ describe('rollupSessionTokens — edge cases', () => {
     const result = rollupSessionTokens({ parentSessionId: 'sess-abc', subagentsPath: p });
 
     expect(result).toEqual({
+      match_status: 'ledger-empty',
+      ledger_records: 0,
       total_token_input: null,
       total_token_output: null,
       total_tokens: null,
@@ -563,6 +609,8 @@ describe('rollupSessionTokens — edge cases', () => {
 
     expect(result.total_token_input).toBeNull();
     expect(result.matched_records).toBe(0);
+    expect(result.match_status).toBe('ledger-empty');
+    expect(result.ledger_records).toBe(0);
   });
 });
 
@@ -646,6 +694,154 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(known.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
     expect(known.cost_records_priced).toBe(1);
     expect(known.cost_records_total).toBe(1);
+  });
+
+  it('counts a found transcript without tokens as an unpriced candidate and omits the partial cost (#1474, #1475)', () => {
+    // Bug caught: an oversized (> 50 MiB) transcript yields a token-less record that fell out of both counts, so priced == total hid the missing cost.
+    // Bug caught (#1475): with priced 1 of 2, the known record's cost was still returned as total_cost_usd and persisted as if complete.
+    const path = write([
+      stop({ agent_id: 'known' }),
+      stop({
+        agent_id: 'oversized',
+        token_input: null,
+        token_input_uncached: null,
+        token_cache_read: null,
+        token_cache_creation: null,
+        token_output: null,
+        model: null,
+      }),
+    ]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(2);
+    expect(r.total_cost_usd).toBeNull();
+    expect(r.subagents_with_tokens).toBe(1);
+  });
+
+  const noTranscript = (over) =>
+    stop({
+      agent_id: 'wf',
+      agent_type: 'workflow-subagent',
+      subagent_transcript_found: false,
+      token_input: null,
+      token_input_uncached: null,
+      token_cache_read: null,
+      token_cache_creation: null,
+      token_output: null,
+      model: null,
+      ...over,
+    });
+
+  const known = stop({ agent_id: 'known', start_record_found: true });
+  // 100 uncached * $5/MTok + 1000 cache_read * $0.5/MTok + 10 out * $25/MTok.
+  const KNOWN_COST = 100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6;
+
+  it.each([
+    // Bug caught (#1475 review): a started agent whose stop found no transcript fell out of both counts, so priced == total persisted the known agent's cost as the session's (fleet: 40 such `workflow-subagent`s beside a "complete" $115).
+    { name: 'a started agent without a transcript', records: [known, noTranscript({ start_record_found: true })], priced: 1, total: 2, cost: null, output: 10 },
+    // A phantom stop (#939) is no agent at all — counting it would null nearly every session.
+    { name: 'a phantom stop (no start record)', records: [known, noTranscript({ start_record_found: false })], priced: 1, total: 1, cost: KNOWN_COST, output: 10 },
+    // Bug caught: a found:false stop of an agent whose other stop DID read its transcript would null a session whose cost is known.
+    { name: 'a found:false stop after the found stop of the same agent', records: [known, noTranscript({ agent_id: 'known', start_record_found: true })], priced: 1, total: 1, cost: KNOWN_COST, output: 10 },
+    // The measured fleet order (found:false first, found:true later). Bug caught: a single-pass reducer that asks "does this agent have a found record?" only of the records read so far counts the found:false stop as an unpriced agent and nulls a known cost.
+    { name: 'a found:false stop before the found stop of the same agent', records: [noTranscript({ agent_id: 'known', start_record_found: true, timestamp: '2026-09-09T09:00:00.000Z' }), known], priced: 1, total: 1, cost: KNOWN_COST, output: 10 },
+    // Bug caught: the hook re-reads the WHOLE transcript at every stop, so a resumed agent's second record carries its running total — summing both counted the first 10 output tokens twice and priced the agent twice (fleet 2026-10-01: 1,002 such session/agent pairs).
+    { name: 'a later found stop of the same agent with its running total', records: [known, stop({ agent_id: 'known', start_record_found: true, timestamp: '2026-09-09T11:00:00.000Z', token_input: 1700, token_input_uncached: 200, token_cache_read: 1500, token_output: 30 })], priced: 1, total: 1, cost: 200 * 5e-6 + 1500 * 0.5e-6 + 30 * 25e-6, output: 30 },
+    // A later stop past the hook's 50 MiB read limit yields no tokens (fleet: 2 agents). Bug caught either way: taking only that record drops the agent's known running total from the token sums; pricing the earlier record persists a partial cost as complete.
+    { name: 'a later token-less stop of the same agent (oversized transcript)', records: [known, noTranscript({ agent_id: 'known', start_record_found: true, subagent_transcript_found: true, timestamp: '2026-09-09T11:00:00.000Z' })], priced: 0, total: 1, cost: null, output: 10 },
+  ])('$name → priced $priced / total $total', ({ records, priced, total, cost, output }) => {
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: write(records) });
+    expect(r.cost_records_priced).toBe(priced);
+    expect(r.cost_records_total).toBe(total);
+    expect(r.total_token_output).toBe(output);
+    if (cost === null) expect(r.total_cost_usd).toBeNull();
+    else expect(r.total_cost_usd).toBeCloseTo(cost, 12);
+  });
+
+  it('prices a mixed-model record per model from models_usage (#1470)', () => {
+    // Bug caught: a record whose token-bearing turns span two models carries model null, so it stayed unpriced and nulled the session cost although both models have a rate.
+    const mixed = stop({
+      agent_id: 'mixed',
+      model: null,
+      token_input: 3630,
+      token_input_uncached: 30,
+      token_cache_read: 3000,
+      token_cache_creation: 600,
+      token_output: 90,
+      models_usage: [
+        { model: 'claude-opus-5-5', token_input_uncached: 10, token_cache_read: 1000, token_cache_creation: 200, token_output: 30 },
+        { model: 'claude-sonnet-5-5', token_input_uncached: 20, token_cache_read: 2000, token_cache_creation: 400, token_output: 60 },
+      ],
+    });
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: write([mixed]) });
+    // opus-5-5: 10*4 + 1000*0.2 + 200*5 + 30*20 = 1840 µ$; sonnet-5-5: 20*2 + 2000*0.2 + 400*2.5 + 60*10 = 2040 µ$.
+    // Pricing all buckets at either single model would give 5520 or 3060 µ$.
+    expect(r.total_cost_usd).toBeCloseTo(0.00388, 12);
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(1);
+
+    // One part on a model the table does not know leaves the whole record unpriced.
+    const unknownPart = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([
+        { ...mixed, models_usage: [mixed.models_usage[0], { ...mixed.models_usage[1], model: 'gpt-5.6-sol' }] },
+      ]),
+    });
+    expect(unknownPart.total_cost_usd).toBeNull();
+    expect(unknownPart.cost_records_priced).toBe(0);
+    expect(unknownPart.cost_records_total).toBe(1);
+  });
+
+  it('prices an all-zero-bucket record at $0 whatever its model (#1474)', () => {
+    // Bug caught: a 0-token `<synthetic>` record hit the unknown-model path and nulled a session total it added nothing to.
+    const path = write([
+      stop({ agent_id: 'known' }),
+      stop({
+        agent_id: 'synthetic',
+        token_input: 0,
+        token_input_uncached: 0,
+        token_cache_read: 0,
+        token_cache_creation: 0,
+        token_output: 0,
+        model: '<synthetic>',
+      }),
+    ]);
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
+    expect(r.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
+    expect(r.cost_records_priced).toBe(2);
+    expect(r.cost_records_total).toBe(2);
+
+    // Bug caught: next to a token-less (oversized) record, the $0 record alone
+    // turned an unknown session cost into a persisted, complete-looking 0.
+    const unknownCost = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([
+        stop({
+          agent_id: 'oversized',
+          token_input: null,
+          token_input_uncached: null,
+          token_cache_read: null,
+          token_cache_creation: null,
+          token_output: null,
+          model: null,
+        }),
+        stop({
+          agent_id: 'synthetic',
+          token_input: 0,
+          token_input_uncached: 0,
+          token_cache_read: 0,
+          token_cache_creation: 0,
+          token_output: 0,
+          model: '<synthetic>',
+        }),
+      ]),
+    });
+    expect(unknownCost.total_cost_usd).toBeNull();
+    expect(unknownCost.cost_records_priced).toBe(1);
+    expect(unknownCost.cost_records_total).toBe(2);
   });
 });
 

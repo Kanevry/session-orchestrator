@@ -59,6 +59,7 @@ import {
   rewriteLearnings,
   CURRENT_ANONYMIZATION_VERSION,
 } from './lib/learnings.mjs';
+import { withLearningsLock } from './lib/learnings/io.mjs';
 import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { createSecretValueMasker } from './lib/secret-masker.mjs';
@@ -636,6 +637,22 @@ function parseArgs(argv) {
  * @returns {Promise<{promoted: number, skipped: number, flags: string[]}>}
  */
 export async function promoteHwLearnings(opts) {
+  // The read → rewrite below runs under the store lock (#1447 point 8): an
+  // append landing between them would vanish in the rename. A dry run writes
+  // nothing and takes no lock. A lock not acquired throws LearningsLockError
+  // (nothing written), which the CLI reports as `export failed: …`, exit 1.
+  if (opts.dryRun) return promoteHwLearningsUnlocked(opts);
+  return withLearningsLock(opts.input, () => promoteHwLearningsUnlocked(opts));
+}
+
+/**
+ * Body of {@link promoteHwLearnings}; the caller holds the store lock or runs
+ * a dry run.
+ *
+ * @param {Parameters<typeof promoteHwLearnings>[0]} opts
+ * @returns {Promise<{promoted: number, skipped: number, flags: string[]}>}
+ */
+async function promoteHwLearningsUnlocked(opts) {
   const repoRoot = opts.repoRoot;
   const { entries, malformed } = await readLearnings(opts.input);
 

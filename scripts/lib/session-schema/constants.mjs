@@ -244,4 +244,12 @@ export const OPTIONAL_FIELDS = Object.freeze([
   'matched_records',
   'raw_session_id',
   '_repair_source',
+  // #1475 — how many of the session's cost-relevant subagent records were
+  // priced, out of how many. Merged from the rollup by scripts/emit-session.mjs;
+  // non-negative integers, priced ≤ total. `total_cost_usd` is omitted when
+  // priced < total (some agent's cost is unknown) AND when total is 0 (nothing
+  // to price — 1223 of 2093 ledger×session pairs, 31 fleet ledgers,
+  // 2026-10-01), so the counters say which of the two it is.
+  'cost_records_priced',
+  'cost_records_total',
 ]);

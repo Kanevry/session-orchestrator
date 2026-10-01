@@ -56,9 +56,9 @@ export { serializeSessionLineChecked };
 const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 // Rollup fields merged into the record (#1436) — the totals plus the #1244
-// cache buckets and contract marker the former prose recipe merged. The
-// provenance counters (`cost_records_*`, `legacy_v1_records`) stay in the
-// rollup's own return value.
+// cache buckets and contract marker the former prose recipe merged, and the
+// #1475 cost-coverage counters, which say why `total_cost_usd` is absent when
+// priced < total. `legacy_v1_records` stays in the rollup's own return value.
 const ROLLUP_KEYS = Object.freeze([
   'total_tokens',
   'total_token_input',
@@ -69,11 +69,18 @@ const ROLLUP_KEYS = Object.freeze([
   'total_cost_usd',
   'subagents_with_tokens',
   'matched_records',
+  'cost_records_priced',
+  'cost_records_total',
   '_token_schema',
 ]);
 
 // Rollup keys validateSession() requires to be non-negative integers.
-const INTEGER_ROLLUP_KEYS = new Set(['total_tokens', 'matched_records']);
+const INTEGER_ROLLUP_KEYS = new Set([
+  'total_tokens',
+  'matched_records',
+  'cost_records_priced',
+  'cost_records_total',
+]);
 
 /**
  * Resolve THIS session's raw harness UUID — the join key `subagents.jsonl`
@@ -147,6 +154,15 @@ function resolveOwnSessionUuid({ override, recordSessionId }) {
  * not even when the first own event carries none. Returns null when there is no
  * own event, or the first one's head_sha is absent or not a full sha.
  *
+ * LIMIT — rotation (#1457 point 3): events.jsonl rotates at SessionStart once
+ * it exceeds `events-rotation.max-size-mb` (default 10), and when that start is
+ * a compact/resume of THIS session the first SURVIVING own event can be a
+ * compact/resume re-emit whose head_sha is later than the real start. When the
+ * first own event carries `native_source` 'compact' or 'resume' it is provably
+ * not the start, so this returns null (unknown) rather than a wrong ref. An
+ * event without `native_source` (Codex/Cursor, or a pre-#1091 writer) is still
+ * taken — so a rotation that leaves an unlabelled re-emit first stays wrong.
+ *
  * Whole-file read, like deriveMemoryCleanupSignal() on the same file — fine at
  * today's events.jsonl size; revisit if the file outgrows a single read.
  *
@@ -172,6 +188,7 @@ function readOwnStartHeadSha(eventsFile, uuid) {
       continue;
     }
     if (ev?.event !== 'orchestrator.session.started' || ev.session_id !== uuid) continue;
+    if (ev.native_source === 'compact' || ev.native_source === 'resume') return null;
     return typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha) ? ev.head_sha : null;
   }
   return null;
@@ -462,8 +479,11 @@ async function main() {
   // on the own raw UUID and fills ONLY keys the entry does not carry; an
   // explicit `total_tokens` means the caller already rolled up, so nothing is
   // merged. No matching records or a failed read OMITS the fields with a WARN —
-  // never a fabricated 0; a null total (unknown model, no token-bearing record)
-  // is omitted rather than written.
+  // never a fabricated 0; a null total is omitted rather than written — for
+  // `total_cost_usd` that is any session with an unpriced subagent record
+  // (#1475: unknown model, no model, or no tokens), which the persisted
+  // `cost_records_priced < cost_records_total` then explains.
+  // match_status explains the omission; diagnostic fields stay out of the record.
   if (ownUuid !== null && !hasOwn('total_tokens')) {
     let rollup = null;
     try {
@@ -521,10 +541,26 @@ async function main() {
         );
       }
     } else if (rollup !== null) {
-      process.stderr.write(
-        `emit-session: WARN token rollup found no subagents.jsonl records for ${ownUuid}; ` +
-          `omitting token fields\n`
-      );
+      let warning = `token rollup found no subagents.jsonl records for ${ownUuid}`;
+      switch (rollup.match_status) {
+        case 'ledger-absent':
+          warning += ' (ledger absent)';
+          break;
+        case 'ledger-empty':
+          warning += ' (ledger holds no readable records)';
+          break;
+        case 'unmatched':
+          warning = `token rollup found ${rollup.ledger_records} subagents.jsonl record(s) present, ` +
+            `none with parent_session_id=${ownUuid} — not attributable via this UUID, not zero cost`;
+          break;
+        case 'invalid-key':
+          warning = `token rollup rejected invalid parent_session_id=${ownUuid}`;
+          break;
+        default:
+          // Unknown or missing diagnostics retain the generic omission warning.
+          break;
+      }
+      process.stderr.write(`emit-session: WARN ${warning}; omitting token fields\n`);
     }
   }
 

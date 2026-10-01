@@ -93,7 +93,8 @@
  *                     pure input→output date function is out of scope by
  *                     construction rather than by exception list.
  *
- *                     NOT flagged: blocks that control the clock (`now:` arg,
+ *                     NOT flagged: blocks that control the clock (`now:`, `{ now }`
+ *                     or a positional `now` — wider than the seam proof, #1478 —
  *                     `vi.useFakeTimers` / `vi.setSystemTime`); date literals in
  *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
  *                     expected values are read), which leaves the passthrough
@@ -335,18 +336,68 @@ const keyLiteralRe = (key) => new RegExp(`["'\\\\]+${key}["'\\\\]+\\s*:`);
  * An absolute date pinned as the EXPECTED value of an equality assertion.
  * Input-position date literals (`created_at: '2026-06-21T…'`) do not match —
  * that is what keeps the passthrough class (input date === output date) out.
+ *
+ * CEILING (#1473): a fixed INPUT date that a production TTL ages out later is
+ * not flagged either, on purpose. Measured 2026-09-29 with a shim that moves
+ * `Date.now()` and `new Date()` forward in every vitest worker: the 34 test
+ * files (plus one fixture module) holding a fixed `created_at: '2026-05…09'`
+ * (1,211 tests) stayed green at +120, +365 and +3,650 days, so a rule keyed on
+ * fixed input dates would have reported false positives only. The one real
+ * bomb of that shape, the phase-skip fixture before 6670149c, was green at
+ * -60 days and red at +0 and +120 days under the same shim — and
+ * scanClockBombs() reaches that file since #1476 (alias imports are read) but
+ * stays silent on it: the file hands no clock argument to anything. REVISIT when a
+ * second fixed-input-date bomb lands on main: the class then recurs, and a
+ * clock-shift run of the suite is the check that finds it without guessing.
  */
 const DATE_EXPECTATION =
   /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
 
-/** An explicit clock handed to a callee — the seam this ban asks tests to use. */
-const CLOCK_ARG = /\b(?:now|nowMs|nowIso|clock|currentDate)\s*:/;
+/** A clock-named token not read off an object (`Date.now`, `opts.now`) — shared head of the two below. */
+const CLOCK_NAME = String.raw`(?<![.\w$])(?:now|nowMs|nowIso|clock|currentDate)\s*`;
+
+/**
+ * Pass 1, the seam PROOF: a NAMED clock key (`{ now: … }`) — only that shape says
+ * the callee's API takes a clock. Every line it matches also matches
+ * CONTROL_CLOCK_ARG, so a block that proves a seam is never flagged itself.
+ */
+const SEAM_CLOCK_ARG = new RegExp(`${CLOCK_NAME}:`);
+
+/**
+ * Pass 2, is this block clock-CONTROLLED: any clock handover. Property shorthand
+ * (`{ now }`, `{ repoRoot, now }`) and a positional `now` count too; `Date.now()`
+ * and `const now =` do not. Wider is the safe direction here — it can only
+ * remove findings.
+ *
+ * CEILING (#1478): pass 1 reads only the named form, because the wide form also
+ * turns helpers into seams — +20 seamed (file, id) pairs in 15 files
+ * (172 → 192, measured 2026-10-01 @ ffc5929f), e.g. `expectDeny` via a
+ * `{ manifestMtimeMs: now }` fixture. Cost: a file whose ONLY clock handover is
+ * `{ now }` or a positional `now` loses its seam proof and its bombs go unseen.
+ * REVISIT on the first B5 finding whose subject is a helper, or the first CI
+ * `test-value-bans` B5 finding the ±days clock-shift probe shows to be false.
+ */
+const CONTROL_CLOCK_ARG = new RegExp(String.raw`${CLOCK_NAME}(?::|,|\}|\))`);
 
 /** Freezing the global clock — equally valid control, but not a seam PROOF. */
 const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
 
-/** `import { a, b as c } from './rel.mjs'` — SUT candidates live behind these. */
-const RELATIVE_IMPORT = /import\s+([^;]+?)\s+from\s+['"](\.[^'"]+)['"]/g;
+/**
+ * Vitest aliases that resolve to the repo's own modules — source of truth is
+ * `resolve.alias` in vitest.config.mjs (today only `@lib`). CEILING: one entry
+ * per alias, kept by hand; REVISIT when vitest.config.mjs gains an alias — the
+ * parametrised B5 test reads that config and goes red until the key is listed
+ * here. Dynamic imports (`await import('@lib/…')`) are not read in either form.
+ */
+const ALIAS_PREFIXES = ['@lib/'];
+
+/** `import { a, b as c } from './rel.mjs'` or `'@lib/x.mjs'` — SUT candidates live behind these. */
+const LOCAL_IMPORT = new RegExp(
+  String.raw`import\s+([^;]+?)\s+from\s+['"]((?:\.|` +
+    ALIAS_PREFIXES.map((p) => p.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')).join('|') +
+    String.raw`)[^'"]+)['"]`,
+  'g',
+);
 
 // ---------------------------------------------------------------------------
 // File enumeration
@@ -588,17 +639,17 @@ function testBlocks(lines) {
 }
 
 /**
- * Identifiers this test file imports from the repo's OWN modules (relative
- * specifiers). These are the subject-under-test candidates for B5; framework
- * (`vitest`) and stdlib (`node:*`) imports are structurally excluded because
- * their specifiers are not relative.
+ * Identifiers this test file imports from the repo's OWN modules (relative or
+ * vitest-alias specifiers). These are the subject-under-test candidates for B5;
+ * framework (`vitest`) and stdlib (`node:*`) imports are structurally excluded
+ * because their specifiers match neither form.
  * @param {string} content
  * @returns {string[]}
  */
 function importedLocalIdentifiers(content) {
   /** @type {Set<string>} */
   const ids = new Set();
-  for (const m of content.matchAll(RELATIVE_IMPORT)) {
+  for (const m of content.matchAll(LOCAL_IMPORT)) {
     const clause = m[1];
     // `{ a, b as c }` → c ; `x` / `* as ns` → x / ns
     for (const part of clause.replace(/[{}]/g, ',').split(',')) {
@@ -623,8 +674,9 @@ function callsIdentifier(lines, id) {
  *
  * Two passes over the file's `it`/`test` blocks:
  *   1. PROVE the seam — an imported id called from a block that also hands over
- *      an explicit clock argument is clock-seamed. A public API only grows a
- *      `now` parameter because the function reads the clock on its main path.
+ *      a NAMED clock key (SEAM_CLOCK_ARG) is clock-seamed. A public API only
+ *      grows a `now` parameter because the function reads the clock on its
+ *      main path.
  *   2. FLAG — in blocks with NO clock control at all, any equality assertion
  *      pinning an absolute date against such a subject is a time bomb.
  *
@@ -648,7 +700,8 @@ function scanClockBombs(relPath, content, lines) {
     return {
       start,
       body,
-      hasClockArg: live.some((l) => CLOCK_ARG.test(l)),
+      provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
+      hasClockArg: live.some((l) => CONTROL_CLOCK_ARG.test(l)),
       hasFakeTimer: live.some((l) => FAKE_TIMER.test(l)),
     };
   });
@@ -656,19 +709,39 @@ function scanClockBombs(relPath, content, lines) {
   /** @type {Set<string>} */
   const seamed = new Set();
   for (const b of blocks) {
-    if (!b.hasClockArg) continue;
+    if (!b.provesSeam) continue;
     for (const id of sutIds) if (callsIdentifier(b.body, id)) seamed.add(id);
   }
   if (seamed.size === 0) return findings;
+
+  // Where an echo may come from: the finding's own block, or the setup every
+  // block shares (helpers, constants, beforeEach). Never a sibling test — its
+  // assertions, titles and clock literals say nothing about this block's inputs.
+  // A block without its own `});` (a one-line it) runs on to the next sibling
+  // and takes the setup lines in between out of sharedSetup — that direction can
+  // only add a finding, never hide one (1.4% of blocks, measured 2026-09-30).
+  /** @type {Set<number>} */
+  const inBlock = new Set();
+  for (const b of blocks) for (let q = b.start; q < b.start + b.body.length; q++) inBlock.add(q);
+  const sharedSetup = lines.filter((_, q) => !inBlock.has(q));
 
   for (const b of blocks) {
     if (b.hasClockArg || b.hasFakeTimer) continue;
     const subject = [...seamed].find((id) => callsIdentifier(b.body, id));
     if (!subject) continue;
+    const echoSources = [...b.body, ...sharedSetup].filter(
+      (l) => !isCommentLine(l) && !DATE_EXPECTATION.test(l),
+    );
     b.body.forEach((line, k) => {
       if (isCommentLine(line)) return;
       const m = DATE_EXPECTATION.exec(line);
       if (!m) return;
+      // Echo: the pinned value is also an input of this block or its shared setup,
+      // not a clock reading (the CEILING above keeps fixed INPUT dates unflagged on
+      // purpose). CEILING: a real bomb whose date also stands in its own block or
+      // the shared setup (its title, a trailing comment, a helper fixture) is
+      // swallowed; REVISIT when a clock-shift run finds a bomb this scan missed.
+      if (echoSources.some((l) => l.includes(m[2]))) return;
       findings.push({
         file: relPath,
         line: b.start + k + 1,
