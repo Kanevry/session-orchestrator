@@ -62,7 +62,7 @@ import { enumerateCandidates } from '../dispatcher/enumerate.mjs';
 import { atomicWriteWithBackup } from '../io.mjs';
 import { withBoardLock } from './board-lock.mjs';
 import { expandTilde } from '../common.mjs';
-import { checkCanonicalVault } from '../named-vault-resolver.mjs';
+import { checkCanonicalVault, describeOriginForLog } from '../named-vault-resolver.mjs';
 import { loadHostPaths } from '../config/host-paths.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned board files. */
@@ -873,7 +873,10 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
   // The host context is resolved ONCE here and reused by the canonical-vault
   // guard below: loadOwnerConfig() has no cache and its section-drop WARNs are
   // not rate-limited, so a second load would print every WARN of a broken
-  // owner.yaml twice per board write (#1450 follow-up).
+  // owner.yaml twice per board write (#1450 follow-up). The config file is read
+  // BEFORE owner.yaml — the order narrative-mirror.mjs shares (#1479); vault-dir
+  // precedence is applied in parseSessionConfig, so the order changes only
+  // whether a repo without a config file reads owner.yaml at all.
   let config;
   let hostCtx;
   try {
@@ -914,7 +917,7 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
   });
   if (!canonical.ok) {
     process.stderr.write(
-      `vault-status board: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${canonical.got ?? 'no git origin'})\n`,
+      `vault-status board: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${describeOriginForLog(canonical.got) || 'no git origin'})\n`,
     );
     return { result: { action: 'skipped-vault-not-canonical' } };
   }

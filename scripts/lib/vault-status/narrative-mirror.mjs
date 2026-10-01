@@ -44,7 +44,7 @@ import { validatePathInsideProject } from '../path-utils.mjs';
 import { createSecretValueMasker } from '../secret-masker.mjs';
 import { expandTilde } from '../common.mjs';
 import { readVaultSlug } from '../vault-yaml.mjs';
-import { checkCanonicalVault } from '../named-vault-resolver.mjs';
+import { checkCanonicalVault, describeOriginForLog } from '../named-vault-resolver.mjs';
 import { loadHostPaths } from '../config/host-paths.mjs';
 
 /** Frontmatter sentinel that identifies generator-owned narrative files. */
@@ -861,13 +861,18 @@ async function runNarrativeMirror(opts) {
   const masker = createSecretValueMasker(process.env);
 
   // Read Session Config (CLAUDE.md / AGENTS.md) and resolve vault settings.
-  // Loaded ONCE and shared by the Session Config parse and the canonical-vault
-  // guard below, so owner.yaml is read a single time per run.
-  const hostCtx = hostPaths ?? loadHostPaths();
-
+  // The host context is loaded ONCE and shared by the Session Config parse and
+  // the canonical-vault guard below, so owner.yaml is read a single time per run.
+  // Order (#1479, same as board-writer.mjs): config file first, owner.yaml
+  // second. The `vault-dir` precedence (SO_VAULT_DIR > owner.yaml > committed)
+  // is applied inside parseSessionConfig, after both are in hand, so the order
+  // cannot change the resolved dir; it only spares a repo without a config file
+  // the owner.yaml read and its section-drop WARNs on a run that skips anyway.
   let config;
+  let hostCtx;
   try {
     const configText = await readConfigFile(repoRoot);
+    hostCtx = hostPaths ?? loadHostPaths();
     config = parseSessionConfig(configText, { hostPaths: hostCtx });
   } catch {
     return { result: { action: 'skipped-vault-disabled' }, needleCount: masker.needleCount, hits: 0, dryRun };
@@ -922,7 +927,7 @@ async function runNarrativeMirror(opts) {
     readOriginUrl: hostCtx.readOriginUrl,
   });
   if (!canonical.ok) {
-    process.stderr.write(`narrative-mirror: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${canonical.got ?? 'no git origin'})\n`);
+    process.stderr.write(`narrative-mirror: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: ${canonical.expected.join(', ')}; got ${describeOriginForLog(canonical.got) || 'no git origin'})\n`);
     return { result: { action: 'skipped-vault-not-canonical' }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 

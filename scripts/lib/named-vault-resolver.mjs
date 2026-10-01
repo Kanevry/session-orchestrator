@@ -54,7 +54,7 @@
 import { join, dirname } from 'node:path';
 import { existsSync as nodeExistsSync, realpathSync as nodeRealpathSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { resolvePreferredRemote, isQueryFailure } from './vcs-repo-spec.mjs';
+import { resolvePreferredRemote, isQueryFailure, redactUrlCredentials } from './vcs-repo-spec.mjs';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -544,6 +544,32 @@ export function normalizeRemote(url) {
     .replace(/^git@([^:]+):/, '$1/')
     .replace(/^[a-z]+:\/\//, '')
     .replace(/\/+$/, '');
+}
+
+/**
+ * Render a git origin URL for a stderr line (#1479). The vault writers print
+ * the origin {@link checkCanonicalVault} rejected, and that stderr lands in CI
+ * logs and session transcripts — so a LOCAL origin must not carry its path
+ * (the operator's home dir, `.claude/rules/security.md` § Owner-Privacy).
+ *
+ * - `file:` URL, or a bare/relative path (git's rule: no `://` and no `:`
+ *   before the first `/`, a Windows drive letter counting as a path)
+ *   → `file://<local path>`.
+ * - Every other form (`https://`, `ssh://`, scp-like `git@host:path`) keeps its
+ *   host/path and goes through {@link redactUrlCredentials}, so an
+ *   `https://user:token@host/…` origin cannot leak its credential either.
+ *
+ * Returns `''` for an empty/absent origin; callers supply their own wording.
+ * @param {string|undefined|null} url
+ * @returns {string}
+ */
+export function describeOriginForLog(url) {
+  const s = String(url ?? '').trim();
+  if (!s) return '';
+  if (/^file:/i.test(s)) return 'file://<local path>';
+  if (s.includes('://')) return redactUrlCredentials(s);
+  const scpLike = /^[^/\\]*:/.test(s) && !/^[a-z]:[\\/]/i.test(s);
+  return scpLike ? redactUrlCredentials(s) : 'file://<local path>';
 }
 
 /**
