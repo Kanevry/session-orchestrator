@@ -26,7 +26,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { filterEligible } from '../../../scripts/lib/reconcile/eligibility.mjs';
-import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
+import { migrateLegacyLearning, normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
 
 /**
  * Build `count` synthetic learning records of a given (possibly free-form,
@@ -126,5 +126,22 @@ describe('#900 regression — 49-record real-corpus fixture (0/49 eligible pre-f
     expect(eligible).toHaveLength(28);
     expect(rejected).toHaveLength(21);
     expect(eligible.length + rejected.length).toBe(49);
+  });
+
+  it('makes a gotcha whose file path sat in `scope` eligible after migrateLegacyLearning (#1446/#1447)', () => {
+    // The fixture above builds file_paths directly; real broken records carry
+    // the path in the scope column, and only the MIGRATION moves it.
+    const migrated = migrateLegacyLearning({
+      type: 'gotcha',
+      subject: 'gotcha-path-scope',
+      insight: 'Real insight text describing a gotcha whose path sat in scope.',
+      confidence: 0.7,
+      created_at: '2026-06-21T00:00:00Z',
+      scope: 'scripts/lib/x.mjs',
+    });
+    expect(migrated.scope).toBe('private');
+    const { eligible, rejected } = filterEligible([migrated]);
+    expect(rejected).toEqual([]);
+    expect(eligible).toHaveLength(1);
   });
 });

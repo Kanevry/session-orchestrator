@@ -22,6 +22,7 @@ import {
   normalizeDialects,
   normalizeLearning,
   migrateLegacyLearning,
+  validateLearning,
   LEARNING_TYPE_ALIASES,
   LEARNING_TYPE_REGISTRY,
 } from '../../scripts/lib/learnings/schema.mjs';
@@ -335,5 +336,38 @@ describe('migrateLegacyLearning — write funnel applies dialects + stamps schem
     expect(migrated.type).toBe('anti-pattern');
     expect(migrated.file_paths).toEqual(['scripts/y.mjs']);
     expect(classifyLearning(migrated).eligible).toBe(true); // post-migration: canonical type + file_paths present
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — GitLab #1447 path-scope coercions (./ prefix, array scope)
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — #1447 path-scope coercions', () => {
+  it.each([
+    ['strips a ./ run, keeps case', { scope: '././Src/Banner.tsx' }, ['Src/Banner.tsx']],
+    [
+      'moves an array of paths, merged and deduped with file_paths',
+      { scope: ['src/a.ts', './CLAUDE.md', 'skills/**'], file_paths: ['src/a.ts'] },
+      ['src/a.ts', 'CLAUDE.md', 'skills/**'],
+    ],
+    ['turns an empty array into private, no file_paths', { scope: [] }, undefined],
+  ])('%s', (_label, input, expectedPaths) => {
+    const migrated = migrateLegacyLearning({ ...BASE(), schema_version: 1, ...input });
+    expect(migrated.scope).toBe('private');
+    expect(migrated.file_paths).toEqual(expectedPaths);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrateLegacyLearning(migrated)).toEqual(migrated);
+  });
+
+  it.each([
+    ['an absolute path', ['/etc/runner/config.toml', 'src/a.ts']],
+    ['a scope word', ['public', 'src/a.ts']],
+    ['a non-string', [7, 'src/a.ts']],
+  ])('leaves an array scope holding %s untouched (nothing dropped, record stays invalid)', (_label, scope) => {
+    const migrated = migrateLegacyLearning({ ...BASE(), schema_version: 1, scope });
+    expect(migrated.scope).toEqual(scope);
+    expect('file_paths' in migrated).toBe(false);
+    expect(() => validateLearning(migrated)).toThrow(/scope must be one of/);
   });
 });

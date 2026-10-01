@@ -424,12 +424,14 @@ describe('run-migrate-v2-cross-repo', () => {
     expect(repoBResult.status).toBe('skipped');
     expect(repoBResult.total).toBe(0);
 
-    // Aggregate shape
-    expect(typeof parsed.aggregate.totalRecords).toBe('number');
-    expect(typeof parsed.aggregate.totalFixedByV2).toBe('number');
-    expect(typeof parsed.aggregate.totalStillInvalidPost).toBe('number');
-    expect(parsed.aggregate.totalFixedByV2).toBe(1);
-    expect(parsed.aggregate.totalReposSkipped).toBe(1);
+    // Aggregate sums over the two repos (skipped repo-json-b contributes 0)
+    expect(parsed.aggregate).toMatchObject({
+      totalRecords: 2,
+      totalFixedByV2: 1,
+      totalStillInvalidPost: 0,
+      totalReposProcessed: 1,
+      totalReposSkipped: 1,
+    });
   });
 
   // -------------------------------------------------------------------------
