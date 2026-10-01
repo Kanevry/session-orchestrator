@@ -731,6 +731,9 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     ['rotation left a compact re-emit as the first surviving own session.started', [
       { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B, native_source: 'compact' },
     ], undefined],
+    ['rotation left a resume re-emit as the first surviving own session.started', [
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B, native_source: 'resume' },
+    ], undefined],
   ])('derives session_start_ref from the FIRST own session.started when STATE.md carries none: %s', (_label, events, expected) => {
     writeJsonlIn('events.jsonl', events);
     const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);

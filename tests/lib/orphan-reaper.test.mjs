@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -793,10 +793,12 @@ describe('runOrphanScan', () => {
     expect(res.reported[0]).toMatchObject({ reason: 'unattributed' });
   });
 
-  it('PRUNES the gate-process ledger at the end of a scan — the reaper reads that file every run and nothing else ever shrinks it', async () => {
+  it('PRUNES the gate-process ledger and the reaper audit at the end of a scan — nothing else in production ever shrinks either', async () => {
     // Bug: `pruneGateProcessLedger` had ZERO production callers (measured
     // 2026-09-22), so the ledger the reaper joins against grew without bound
-    // and every scan re-read a day's worth of dead records.
+    // and every scan re-read a day's worth of dead records. The audit pruner
+    // has exactly one production caller, this scan: drop the call and the
+    // audit grows unbounded too (the same class #1437 fixed for the ledger).
     const ptmp = mkdtempSync(join(tmpdir(), 'reaper-prune-'));
     try {
       const fresh = { ...ledgerRecord(), pid: 4242, pgid: 4242, startTime: Date.now() - 1000 };
@@ -805,6 +807,15 @@ describe('runOrphanScan', () => {
       };
       recordGateProcess(ptmp, fresh);
       recordGateProcess(ptmp, stale);
+      // 2,200 kill records of 505 bytes each = 1,111,000 bytes, over the 1 MiB cap.
+      const killLine = `${JSON.stringify({
+        ts: '2026-09-22T10:00:00.000Z', decision: 'kill', pid: 4242, pgid: 4242,
+        sessionId: 'sess-audit', result: { ok: true }, command: 'x'.repeat(371),
+      })}\n`;
+      const audit = auditPath(ptmp);
+      mkdirSync(join(audit, '..'), { recursive: true });
+      writeFileSync(audit, killLine.repeat(2200));
+      expect(statSync(audit).size).toBe(1111000);
 
       const { deps } = scanDeps({ psOutputs: [makeOutput(...REAL_ROWS)], records: [] });
       await runOrphanScan({ repoRoot: ptmp, deps });
@@ -812,6 +823,9 @@ describe('runOrphanScan', () => {
       const body = readFileSync(join(ptmp, GATE_PROCESS_LEDGER_RELPATH), 'utf8');
       expect(body.trim().split('\n')).toHaveLength(1);
       expect(JSON.parse(body.trim()).pid).toBe(4242);
+      expect(statSync(audit).size).toBeLessThanOrEqual(524288);
+      const auditLines = readFileSync(audit, 'utf8').trim().split('\n');
+      expect(JSON.parse(auditLines.at(-1))).toMatchObject({ decision: 'kill', pid: 4242 });
     } finally {
       rmSync(ptmp, { recursive: true, force: true });
     }
