@@ -44,22 +44,6 @@ export const NEVER_FOREIGN_ROLES = Object.freeze([
  * manufactures timeouts and reads as model failure. */
 export const DEFAULT_TIMEOUT_SEC = 900;
 
-/**
- * Grace period between SIGTERM and SIGKILL, in ms.
- *
- * `child.kill('SIGTERM')` is a REQUEST: a child that installs a handler and
- * ignores it never emits `close`, and this module's only resolve paths are
- * `close` and `error` — so without escalation a wedged `cursor-agent` hangs
- * `dispatchForeign` forever and takes the whole wave with it. SIGKILL is not
- * catchable, so the escalation always terminates.
- *
- * Named ceiling (BV-004): 10 s is enough for a cooperative child to flush its
- * stream-json tail and exit. Revisit if a well-behaved `cursor-agent` is ever
- * measured needing longer than that to shut down — raise the constant, never
- * drop the escalation.
- */
-export const DEFAULT_KILL_GRACE_MS = 10_000;
-
 /** A runId names a directory and a log file. Anything outside this alphabet —
  * or the two relative-path literals the alphabet happens to admit — can escape
  * the parent it is joined to. */
@@ -90,8 +74,8 @@ export function isNeverForeignRole(role) {
  *
  * The escalation is the difference between a bounded dispatch and a hung wave:
  * this function's only resolve paths are the child's `close` and `error`
- * events, so a child that ignores SIGTERM never lets the promise settle. See
- * {@link DEFAULT_KILL_GRACE_MS}.
+ * events, so a child that ignores SIGTERM never lets the promise settle. The
+ * callers pass `DEFAULT_KILL_GRACE_MS` from `process-group.mjs`.
  *
  * @returns {Promise<{capture: string, exitCode: number|null, signal: string|null,
  *   timerFired: boolean, killSignals: string[], errorCode: string|null}>}

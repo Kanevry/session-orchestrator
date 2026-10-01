@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-09-27T15:30:07.617Z",
-  "head": "aaa30f4d77b1d70d68b5ba86c503784f08704196",
+  "generated_at": "2026-10-01T17:18:47.118Z",
+  "head": "ffc5929f12df0b5fd7c75d9708a3aa1a5dc6fa45",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -327,7 +327,6 @@
         "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
-        "post-tool-batch-wave-signal.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-templates-first.mjs"
       ]
@@ -1160,7 +1159,14 @@
       ]
     },
     {
-      "file": "scripts/lib/orphan-reaper.mjs",
+      "file": "scripts/lib/orphan-reaper/defaults.mjs",
+      "reachable_from": [
+        "on-stop.mjs",
+        "post-tool-batch-wave-signal.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/orphan-reaper/scan-throttle.mjs",
       "reachable_from": [
         "on-stop.mjs",
         "post-tool-batch-wave-signal.mjs"
@@ -1258,13 +1264,6 @@
       ]
     },
     {
-      "file": "scripts/lib/process-group.mjs",
-      "reachable_from": [
-        "on-stop.mjs",
-        "post-tool-batch-wave-signal.mjs"
-      ]
-    },
-    {
       "file": "scripts/lib/resource-probe.mjs",
       "reachable_from": [
         "on-session-start.mjs"
@@ -1279,9 +1278,7 @@
     {
       "file": "scripts/lib/resource-probe/parsers.mjs",
       "reachable_from": [
-        "on-session-start.mjs",
-        "on-stop.mjs",
-        "post-tool-batch-wave-signal.mjs"
+        "on-session-start.mjs"
       ]
     },
     {
@@ -1402,8 +1399,7 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "on-stop.mjs",
-        "post-tool-batch-wave-signal.mjs"
+        "on-stop.mjs"
       ]
     },
     {
@@ -1656,13 +1652,6 @@
       "file": "scripts/lib/wave-context.mjs",
       "reachable_from": [
         "pre-bash-staging-fence.mjs"
-      ]
-    },
-    {
-      "file": "scripts/lib/wave-executor/dispatch-common.mjs",
-      "reachable_from": [
-        "on-stop.mjs",
-        "post-tool-batch-wave-signal.mjs"
       ]
     },
     {

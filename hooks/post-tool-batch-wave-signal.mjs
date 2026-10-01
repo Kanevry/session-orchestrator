@@ -416,7 +416,9 @@ export async function maybeTriggerOrphanScan({
     // Cheapest gate first: disabled means no stat, no spawn, no module load.
     if (cfg.enabled !== true) return { spawned: false, reason: 'disabled' };
 
-    const reaper = await import('../scripts/lib/orphan-reaper.mjs');
+    // The throttle module only — the scan's ledger, `ps` and kill-ladder code
+    // load in the detached child, never on this hook path (#1437).
+    const reaper = await import('../scripts/lib/orphan-reaper/scan-throttle.mjs');
     const markerPath = reaper.scanMarkerPath(root);
     const nowMs = typeof now === 'number' ? now : Date.now();
 

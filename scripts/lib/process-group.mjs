@@ -33,14 +33,23 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_KILL_GRACE_MS } from './wave-executor/dispatch-common.mjs';
-
 /**
- * Re-exported, never re-defined: the SIGTERM→SIGKILL grace is a repo
- * convention with its own named ceiling in `dispatch-common.mjs`. A second
- * literal here would drift from it silently.
+ * Grace period between SIGTERM and SIGKILL, in ms — the repo's one definition,
+ * used by the gate's group ladder here and by `wave-executor/foreign-dispatch.mjs`
+ * and `remote-dispatch.mjs` through `runChild` (`dispatch-common.mjs`).
+ *
+ * `child.kill('SIGTERM')` is a REQUEST: a child that installs a handler and
+ * ignores it never emits `close`, and `runChild`'s only resolve paths are
+ * `close` and `error` — so without escalation a wedged `cursor-agent` hangs
+ * `dispatchForeign` forever and takes the whole wave with it. SIGKILL is not
+ * catchable, so the escalation always terminates.
+ *
+ * Named ceiling (BV-004): 10 s is enough for a cooperative child to flush its
+ * stream-json tail and exit. Revisit if a well-behaved `cursor-agent` is ever
+ * measured needing longer than that to shut down — raise the constant, never
+ * drop the escalation.
  */
-export { DEFAULT_KILL_GRACE_MS };
+export const DEFAULT_KILL_GRACE_MS = 10_000;
 
 /** Append-only ledger of every gate process THIS repo's orchestrator started.
  * Gitignored via `.gitignore:125` (`.orchestrator/runtime/`), verified with

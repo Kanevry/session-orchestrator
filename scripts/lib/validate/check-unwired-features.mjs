@@ -74,7 +74,7 @@
  * a backlog, printed as an aggregate like S4 and enumerated under `--list`.
  *
  * S6 carries no camelCase fallback ON PURPOSE: adding one re-hides both reaper
- * keys, whose camelCase names exist in `orphan-reaper.mjs` as that module's own
+ * keys, whose camelCase names exist in `orphan-reaper/defaults.mjs` as that module's own
  * defaults. A name is not a read.
  *
  * S2 applies to TOP-LEVEL keys only — a nested key reaches code through its
