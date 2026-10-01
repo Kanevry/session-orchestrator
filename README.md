@@ -132,6 +132,7 @@ Highlights of the v5.4.0 line:
 - **A `test-audit` skill for shrinking a suite without losing proof.** A four-question gate before a new test, a focused audit, and a lane-based campaign; every delete, merge or repair needs written evidence and a production mutation the remaining test catches.
 - **The sessions ledger and the vault writers are honest again.** Backfill stubs no longer hide real records, token totals are rolled up mechanically so the autopilot token-budget kill-switch fires again once `--max-tokens` is set (its default is now `0`, off), and the board writer and narrative mirror refuse a vault that is not the canonical one. `vault-dir` gains a per-directory tier in `owner.yaml` (#1443, #1436, #1450, #1448).
 - **Vendored rules load path-scoped again.** Library rules open their frontmatter on line 1 and carry `paths:` beside `globs:`, so consumers no longer load path-scoped rules on every turn; the loader, budget guard, drift check and validator now flag a displaced block (#1449).
+- **Session costs never read as complete when they are not.** Each subagent now counts once in the token and cost totals (a resumed agent used to be summed per stop), a session with any unpriced agent stores no dollar figure but its coverage counters, and mixed-model agents are priced per model. Every `learnings.jsonl` read-modify-write runs under one store lock, so a concurrent append is no longer lost.
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
