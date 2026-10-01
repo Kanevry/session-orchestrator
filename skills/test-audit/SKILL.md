@@ -30,11 +30,11 @@ Invoked as `/test-audit [gate|audit|campaign] [scope] [--goal "<goal>"]` with ar
 
 State the goal in the first output and repeat it in the report. With no `--goal`, use:
 
-> Remove at least 20% of the least useful tests, measured in test lines. Total coverage stays within 2 percentage points of M0, and no production file drops below its own M0 coverage.
+> Remove at least 20 % of the least useful tests, measured in test lines. Total coverage stays within 2 percentage points of M0, and no production file drops below its own M0 coverage.
 
-Test lines count only for files the runner actually includes; tracked test files outside its include are dead test files, reported on their own line and never counted toward the goal ([references/campaign.md](references/campaign.md) § Measurements).
+Test lines count only for files the CI actually runs; tracked test files outside that scope are reported on their own line, as dead or as live outside the include, and never counted toward the goal ([references/campaign.md](references/campaign.md) § Measurements).
 
-The goal exists because a bare "clean up" stops far too early. It never licenses a deletion without evidence. A goal that is only reachable by breaking the evidence rules below is not reached: the report says which rule blocked it and where the audit stopped. An audit that ends with zero changes is valid when the ledger shows why.
+The goal exists because a bare "clean up" stops far too early. It never licenses a deletion without evidence. What counts toward it, and what is reported beside it (same-file reshaping, mock ballast, F/N growth, the O sum), is fixed in [references/campaign.md](references/campaign.md) § Goal accounting. A goal that is only reachable by breaking the evidence rules below is not reached: the report says which rule blocked it and where the audit stopped. An audit that ends with zero changes is valid when the ledger shows why.
 
 ## Mode 1: write gate
 
@@ -43,7 +43,7 @@ Before adding any test, answer all four. A missing answer means the test is not 
 1. Which observable behaviour, invariant, or independent contract does it protect?
 2. Which credible regression turns it red?
 3. Why does no existing test catch that regression? Grep first (TV-004); extend a table case or shared fixture instead of adding a near-duplicate.
-4. Does it need a production seam (export, flag, hook, injection parameter) that no production caller uses? Then no: move the test to the real boundary.
+4. Does it need a production seam (export, flag, hook, injection parameter) that no production caller uses? Then no: move the test to the real boundary. An export or parameter with one production caller is API when the package's public entry (`exports`, index, another repo) reaches it, and a seam otherwise.
 
 Then check it against the junk patterns below; a match fails the gate unless the keep list names the contract it alone guards. A regression test must be shown red on the pre-fix code, for the intended reason, before the fix lands; one that never failed proves the mock, not the fix. One regression at the owning boundary covers the bug; do not replay it at every layer. `no-tests-needed: <reason>` is a success outcome (TV-001).
 
@@ -61,8 +61,9 @@ Judge each test by what its assertions can catch, never by its name.
 - the mock implements the behaviour being asserted, or one mock stands in for different APIs;
 - a negative control that passes for an unrelated reason (a different guard rejects first, or the production path never reaches the rejection); for a security check, one that only hits the early exit (wrong length, wrong prefix) and never the comparison itself is usually F;
 - the name promises more than the assertion checks;
-- prose or structure pinned in a `.md` file (TV-002c);
-- the test is the only caller of dead production code.
+- an assertion that depends on the current date (a fixture expiring next quarter turns it red on its own; F with a fixed clock, and urgent);
+- prose or structure pinned in a `.md` file (TV-002c), unless the project instruction file makes that structure a rule (then R, citing it);
+- the test is the only caller of dead production code: D only together with the removal of that code (its own `code-implementer` commit, owner decision when the code is public API), otherwise O.
 
 **Keep list** (the counterweight to TV-002): a test that is the independent proof for a public API, protocol, a config value production reads (a config field whose only reader is the test is a seam, not a contract), migration, storage format, security control, release step, or data-protection rule stays. So do observable call ordering and regressions with a credible failure mode. Static or slow is not a reason to delete. When in doubt, mark R.
 
@@ -95,14 +96,14 @@ All eight fields, written into the ledger before the edit. A missing field means
 5. History: `git log -S "<identifier>" -- <file>` and the reason the test or seam exists.
 6. What the deletion unlocks (a test-only export, a wrapper, a dead path).
 7. Risk and the focused command that re-checks it.
-8. The proposed contract mutation (id, `src/file:line`, one-line diff) under which the keeper must go red; falsification executes it.
+8. The proposed contract mutation (id, `src/file:line`, and the diff as a patch file) under which the keeper must go red; falsification executes it. A D that removes no contract (dead code, a duplicate proven elsewhere, a test-local copy) says so here and becomes a `NOCONTRACT` manifest row instead ([references/campaign.md](references/campaign.md) § Mutation manifest).
 
 ## Falsification
 
 For every contract that a C, D, or F relies on, make one targeted mutation in the production code: flip the condition, drop the field, change the byte the contract names. Several marks may share one mutation when they name the same keeper and contract; the ledger maps every mark to at least one mutation id. Replacing a whole function body with `throw` kills every caller and proves nothing; use it at most as a pre-filter. The keeper (for C/D) or the repaired test (for F) must turn red under the mutation.
 
 - Apply the mutation as a patch (`git apply`), run the one test, reverse it (`git apply -R`), then prove the restore byte for byte: `git diff --exit-code -- <prod-file>`, or a checksum taken before the mutation when the file already carried edits. A leftover diff aborts the audit. [references/mutate.sh](references/mutate.sh) runs a manifest of such patches ([references/campaign.md](references/campaign.md) § Mutation manifest). Prove the red with the runner's failure summary (vitest: `Tests N failed`), never with the exit code alone, and keep the output files.
-- Never mutate a checkout another session or agent is using, and never edit while the test runner is live in that checkout. Run mutations in an offload worktree: `offload run <repo> -H <host> --job <id> -- <command>`, reused with `--no-sync` (hosts come from `remote-hosts:` in Session Config; see the `remote-offload` skill; path and expansion pitfalls in [references/campaign.md](references/campaign.md) § Measurements).
+- Never mutate a checkout another session or agent is using, and never edit while the test runner is live in that checkout. The binding run is the coordinator's, in an offload worktree: `offload run <repo> -H <host> --job ta-<repo>-<purpose> -- <command>`, reused with `--no-sync` (hosts come from `remote-hosts:` in Session Config; see the `remote-offload` skill; path and expansion pitfalls in [references/campaign.md](references/campaign.md) § Measurements). An agent's own pre-check runs only in a private copy outside the repo, under [references/campaign.md](references/campaign.md) § Pre-checks, and never counts as proof.
 - Log each mutation: `file:line`, the mutation diff, the test that went red, the restore proof.
 - Per-file coverage is the mechanical backstop, compared on all four metrics (lines, branches, functions, statements); lines alone miss a lost callback. When any of them drops for a production file, locate the line, branch, or function in the detailed report (vitest `--coverage.reporter=json`) and restore the contract in the keeper with a caught mutation. Restore the deleted test verbatim only when it was the genuine proof; accidental coverage (§ The value bar) gets a contract test instead.
 
@@ -110,27 +111,27 @@ Bash harnesses are falsified before their tests are judged: feed a known-broken 
 
 ## Mode 2: audit
 
-1. Read the project instruction file and the test rules it points at. Record the M0 numbers for the scope at a pinned SHA (recipes in [references/campaign.md](references/campaign.md) § Measurements).
-2. Read every test in scope in full, plus the production owner, its entry point, callers, and history. For more than a handful of files, dispatch `qa-strategist` read-only to draft the ledger; it has no write tool, so it returns the ledger as text (or writes under `/tmp/<audit>/`) and the coordinator assembles the ledger file.
+1. Read the project instruction file and the test rules it points at. Check the coverage provider and the CI scope first, then record the M0 numbers for the scope at a pinned SHA (recipes in [references/campaign.md](references/campaign.md) § P1 and § Measurements).
+2. Read every test in scope in full, plus the production owner, its entry point, callers, and history. For more than a handful of files, dispatch `qa-strategist` read-only to draft the ledger; it writes `/tmp/<audit>/ledger-<lane>.md` itself and answers with the count line, and the coordinator assembles the ledger file. A scope above one lane (about 2,200 test lines or 150 declarations, [references/campaign.md](references/campaign.md) § P2) needs campaign mode: say so and ask for the word `campaign` before step 3.
 3. Write the ledger with marks and evidence. Prefer a few well-proven candidates over a long speculative list.
-4. Keepers first: `test-writer` repairs every F and absorbs every C into its keeper, uncommitted. Agents never commit (PSA-007 in `.claude/rules/parallel-sessions.md`).
-5. Falsify every C, D, and F against the edited keepers; only then delete and commit. Removing a test-only production seam is a separate `code-implementer` task.
+4. Keepers first, in one uncommitted pass: `test-writer` repairs every F, absorbs every C into its keeper, and deletes the C and D. Agents never commit (PSA-007 in `.claude/rules/parallel-sessions.md`).
+5. Falsify every C, D, and F against that tree; commit only when every run row is `CAUGHT`. Removing a test-only production seam is a separate `code-implementer` task and commit.
 6. Independent preservation review, read-only (`session-reviewer`, or `pr-review-toolkit:pr-test-analyzer` when installed): contracts that lost their only proof, and new assertions that cannot fail. Every restored contract needs a caught mutation.
 7. Measure M1 with the same commands, then report.
 
 ## Mode 3: campaign
 
-Phases P1 to P9 with lanes, a separate layer-plan pass, and the full measurement set live in [references/campaign.md](references/campaign.md). Read it completely before P1.
+Phases P1 to P9 with lanes, a separate layer-plan pass, an owner checkpoint after P4, the sub-campaign threshold, the pre-check rules, and the full measurement set live in [references/campaign.md](references/campaign.md). Read it completely before P1.
 
 ## Never without the owner
 
-Ask via `AskUserQuestion`, and do not work around a refusal:
+Ask via `AskUserQuestion`, and do not work around a refusal. A headless run without that tool takes the answer the brief or this list already gives and logs it; anything else becomes an O mark plus an entry in the run's parking file (the report's _Parked_ section when the brief names none), never a workaround:
 
 - changing coverage thresholds, include/exclude lists, or runner config (never `autoUpdate`);
 - deleting or skipping e2e, Playwright, or real-database suites;
 - editing CI config or git hooks;
 - updating snapshots with `-u`;
-- adding any dependency, a mutation-testing tool included;
+- adding any dependency, a mutation-testing tool or a missing coverage provider included (raised in P1, with the three options in [references/campaign.md](references/campaign.md) § P1);
 - fixing a product bug found on the way (it becomes an issue);
 - removing a seam whose removal changes a public contract (`stop-and-escalate`, RCR-007 in `.claude/rules/receiving-review.md`);
 - merging.
@@ -139,13 +140,13 @@ Ask via `AskUserQuestion`, and do not work around a refusal:
 
 Stop when: a change you did not make, or a lock, appears in scope (PSA-002); a restore leaves a diff; the baseline does not reproduce; two review cycles pass without fewer open findings (RCR-008: land the smallest safe subset); a lane exceeds its budget.
 
-Done when: the gate is green at the MR SHA; flakes and per-file coverage are no worse than M0; every C, D, and F has evidence and a caught mutation; the preservation review has no open gap; the goal is reached, or the report names why it was not.
+Done when: the gate is green at the MR SHA; flakes and per-file coverage are no worse than M0; every C, D, and F has evidence and a caught mutation (a D without a contract may instead have a `NOCONTRACT` row with ledger evidence); the production diff against `main` outside the test globs and `docs/audits/` is empty, seam commits and owner-approved changes excepted; the preservation review has no open gap; the goal is reached, or the report names why it was not; the MR pipeline has finished and its result stands in the report.
 
 ## Output
 
 - `docs/audits/<date>-test-audit.md` (report) and `docs/audits/<date>-test-audit-ledger.md` (ledger) in the target repo.
-- A draft MR titled `test(audit): <scope> Test-Audit <date>` carrying: M0/M1 table, R/F/C/D/N/B/O counts per lane, the keeper per contract, the mutation table, kept false alarms and why, production and test lines counted separately, owner decisions taken and open (every O).
-- Commits by the coordinator: one per lane, owner lanes before the cross-cutting lane, seam removal separate, the audit documents separate.
+- A draft MR titled `test(audit): <scope> Test-Audit <date>` (subject case per the repo's commitlint config) carrying: M0/M1 table, R/F/C/D/N/B/O counts per lane, the keeper per contract, the mutation table, kept false alarms and why, production and test lines counted separately, the zero-production-diff proof, owner decisions taken and open (every O), and the pipeline result.
+- Commits by the coordinator: one per lane, owner lanes before the cross-cutting lane, seam removal separate, the audit documents separate (commitlint and clone depth: [references/campaign.md](references/campaign.md) § P6, § P9).
 - Follow-up issues: every B, every entry of the ledger's _Issues_ section, every flake, every seam whose removal changes a contract, every N gap not implemented.
 
 Inspired by openclaw/openclaw `.agents/skills/test-audit` @ 80930af (MIT, Copyright (c) 2026 OpenClaw Foundation); rewritten for session-orchestrator.
