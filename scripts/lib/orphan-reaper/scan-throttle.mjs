@@ -7,7 +7,7 @@
  * `ps` or kill-ladder code the detached scan child loads.
  */
 
-import { mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { REAPER_DEFAULTS, underRepo } from './defaults.mjs';
@@ -50,6 +50,15 @@ export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEF
  * not be written means the next scan runs, which is the safe direction for a
  * read-only probe.
  *
+ * A marker path that is a symlink or not a regular file is left alone and
+ * reported as not written: `writeFileSync` follows a link, so a marker linked to
+ * any file would overwrite that file on every hook (CWE-59). Silent, like every
+ * other failure here — this runs inside a 50 ms hook budget.
+ * Named ceiling (BV-004): lstat-then-write leaves a check-to-use window of one
+ * syscall; a link planted inside it is still written through. Acceptable for a
+ * gitignored throttle stamp; revisit (O_NOFOLLOW open) if the marker ever
+ * carries data.
+ *
  * @param {string} markerPath
  * @param {object} [opts]
  * @param {(p: string, data: string) => void} [opts.writeFn]
@@ -61,6 +70,13 @@ export function touchScanMarker(markerPath, { writeFn } = {}) {
       writeFn(markerPath, `${new Date().toISOString()}\n`);
       return true;
     }
+    let existing = null;
+    try {
+      existing = lstatSync(markerPath);
+    } catch {
+      /* no marker yet — the first stamp creates it */
+    }
+    if (existing && !existing.isFile()) return false;
     mkdirSync(path.dirname(markerPath), { recursive: true });
     writeFileSync(markerPath, `${new Date().toISOString()}\n`, 'utf8');
     return true;

@@ -4,7 +4,15 @@
  * reader exists for.
  */
 
-import { appendFileSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  lstatSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 
 import { readTailWindow } from '../tail-window.mjs';
@@ -172,13 +180,46 @@ export function readAuditRecords(repoRoot, limit = REAPER_DEFAULTS.falseAlarmWin
 }
 
 /**
+ * Replace the audit atomically: write `<target>.tmp-<pid>` beside it, then
+ * rename over it. Throws instead of writing when the target is a symlink or not
+ * a regular file. `writeFileSync(target)` would truncate first — a scan child
+ * killed between truncate and write left the "why was this killed" record empty
+ * — and would write THROUGH a symlink, cutting e.g. a linked `events.jsonl` to
+ * 512 KiB (CWE-59, reproduced 2026-10-01). `rename` replaces the link itself,
+ * and `wx` refuses a pre-planted file or link at the tmp name. The same few
+ * lines as `process-group.mjs`'s `replaceRegularFile`, kept local because that
+ * module is not this one's to depend on for a file write.
+ *
+ * @param {string} target
+ * @param {string} body
+ */
+function replaceRegularFile(target, body) {
+  if (!lstatSync(target).isFile()) {
+    throw new Error('not a regular file (a symlink is never written through) — left untouched');
+  }
+  const tmp = `${target}.tmp-${process.pid}`;
+  try {
+    writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
+    renameSync(tmp, target);
+  } catch (err) {
+    // EEXIST: the tmp name belongs to someone else — never remove it.
+    if (err?.code !== 'EEXIST') {
+      try { unlinkSync(tmp); } catch { /* nothing was created */ }
+    }
+    throw err;
+  }
+}
+
+/**
  * Size-bounded prune of the audit: once the file passes `maxBytes`, rewrite it
- * in place with its newest `keepBytes`, cut at a line boundary. The same
- * in-place shape as `pruneGateProcessLedger` (`process-group.mjs`), the other
+ * atomically with its newest `keepBytes`, cut at a line boundary. The same
+ * rewrite shape as `pruneGateProcessLedger` (`process-group.mjs`), the other
  * ledger the scan's housekeeping prunes; the audit is pruned by SIZE rather than
  * age because its population is a rolling window of decisions, not of days.
  *
- * Never throws; a failure prints one WARN line and leaves the file as it was.
+ * Never throws; a failure — including a symlinked or non-regular audit, which
+ * is refused rather than written through — prints one WARN line and leaves the
+ * file as it was.
  * Named ceiling (BV-004): an append that lands between the read and the write
  * is lost — a window of one read + one write, once per ~0.5 MB of audit.
  *
@@ -206,7 +247,7 @@ export function pruneReaperAudit(repoRoot, {
     // larger than the window, and keeping any part of it would keep a fragment.
     const newline = text.indexOf('\n');
     const kept = !cut ? text : (newline === -1 ? '' : text.slice(newline + 1));
-    writeFileSync(target, kept, 'utf8');
+    replaceRegularFile(target, kept);
     return size - Buffer.byteLength(kept, 'utf8');
   } catch (err) {
     process.stderr.write(

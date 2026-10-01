@@ -22,6 +22,14 @@
  */
 
 /**
+ * Re-exported, not re-declared: the value lives in `process-group.mjs` since
+ * 773a994b, but this module exported it in 5.3.x and the package ships
+ * `scripts/` with no `exports` map — so a deep importer still links against
+ * this name. One definition, two import paths.
+ */
+export { DEFAULT_KILL_GRACE_MS } from '../process-group.mjs';
+
+/**
  * Roles that may NEVER run on a foreign model. Copied verbatim from
  * account-switch `tools/routing/routing.yaml` § never_foreign (read 2026-08-25).
  * Keep in sync by hand — the YAML lives in a different repo and is parsed there

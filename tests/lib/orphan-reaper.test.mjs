@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { lstatSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -968,6 +968,24 @@ describe('shouldScanNow', () => {
     expect(writes[0][0]).toBe('/repo/x');
     expect(scanMarkerPath('/repo')).toBe('/repo/.orchestrator/tmp/reaper-last-scan');
     expect(auditPath('/repo')).toBe('/repo/.orchestrator/metrics/reaper-audit.jsonl');
+  });
+
+  it('never writes the marker through a symlink — writeFileSync overwrote whatever file the marker linked to', () => {
+    // Bug (CWE-59): the hook-path writer followed a symlinked marker, so a link
+    // to any file got that file replaced by an ISO timestamp on every scan.
+    const dir = mkdtempSync(join(tmpdir(), 'reaper-marker-'));
+    try {
+      const victim = join(dir, 'victim.jsonl');
+      writeFileSync(victim, 'keep me\n', 'utf8');
+      const marker = join(dir, 'reaper-last-scan');
+      symlinkSync(victim, marker);
+
+      expect(touchScanMarker(marker)).toBe(false);
+      expect(readFileSync(victim, 'utf8')).toBe('keep me\n');
+      expect(lstatSync(marker).isSymbolicLink()).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

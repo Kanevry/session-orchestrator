@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { spawn } from 'node:child_process';
-import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -638,6 +638,39 @@ describe('gate-process ledger', () => {
       const body = readFileSync(path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH), 'utf8');
       expect(body.trim().split('\n')).toHaveLength(2);
     });
+  });
+
+  it('refuses a symlinked ledger and leaves the link target byte-identical — writeFileSync followed the link and emptied it', async () => {
+    // Bug (CWE-59, reproduced 2026-10-01): `writeFileSync(target)` writes
+    // THROUGH a symlink, so a ledger linked to e.g. `events.jsonl` had every
+    // line judged malformed and the linked file was emptied completely.
+    const victimDir = mkdtempSync(path.join(os.tmpdir(), 'process-group-victim-'));
+    try {
+      const victim = path.join(victimDir, 'events.jsonl');
+      const body = '{"event":"orchestrator.session.started"}\n'.repeat(50);
+      writeFileSync(victim, body, 'utf8');
+      const ledger = path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH);
+      mkdirSync(path.dirname(ledger), { recursive: true });
+      symlinkSync(victim, ledger);
+      const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      let removed;
+      let warnings;
+      try {
+        removed = pruneGateProcessLedger(repoRoot, { nowMs: Date.now() });
+        warnings = warn.mock.calls.map((c) => String(c[0]));
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(removed).toBe(0);
+      expect(readFileSync(victim, 'utf8')).toBe(body);
+      expect(lstatSync(ledger).isSymbolicLink()).toBe(true);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/not a regular file/);
+    } finally {
+      await rm(victimDir, { recursive: true, force: true });
+    }
   });
 
   it('registers the spawned group in the ledger under repoRoot', () => {

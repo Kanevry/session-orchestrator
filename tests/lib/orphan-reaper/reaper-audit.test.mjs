@@ -5,11 +5,11 @@
  * each test names the bug a tail window would introduce if built naively.
  */
 
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   appendAuditRecord,
@@ -79,5 +79,38 @@ describe('reaper audit — bounded reader and prune', () => {
     expect(() => lines.map((l) => JSON.parse(l))).not.toThrow();
     expect(JSON.parse(lines.at(-1)).pid).toBe(200);
     expect(pruneReaperAudit(root, { maxBytes: 16 * 1024, keepBytes: 8 * 1024 })).toBe(0);
+  });
+
+  it('refuses a symlinked audit and leaves the link target byte-identical — writeFileSync cut the linked file to its tail', () => {
+    // Bug (CWE-59, reproduced 2026-10-01): `statSync` + `writeFileSync(target)`
+    // follow a symlink, so `ln -s events.jsonl reaper-audit.jsonl` let the next
+    // oversized prune cut events.jsonl down to its newest `keepBytes`.
+    const victimDir = mkdtempSync(join(tmpdir(), 'reaper-audit-victim-'));
+    try {
+      const victim = join(victimDir, 'events.jsonl');
+      const body = `${JSON.stringify(killRecord(1))}\n`.repeat(100);
+      writeFileSync(victim, body, 'utf8');
+      mkdirSync(dirname(auditPath(root)), { recursive: true });
+      symlinkSync(victim, auditPath(root));
+      const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      let removed;
+      let warnings;
+      try {
+        removed = pruneReaperAudit(root, { maxBytes: 16 * 1024, keepBytes: 8 * 1024 });
+        warnings = warn.mock.calls.map((c) => String(c[0]));
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(Buffer.byteLength(body)).toBeGreaterThan(16 * 1024);
+      expect(removed).toBe(0);
+      expect(readFileSync(victim, 'utf8')).toBe(body);
+      expect(lstatSync(auditPath(root)).isSymbolicLink()).toBe(true);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/not a regular file/);
+    } finally {
+      rmSync(victimDir, { recursive: true, force: true });
+    }
   });
 });
