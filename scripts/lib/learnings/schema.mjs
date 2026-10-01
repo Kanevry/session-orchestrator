@@ -530,16 +530,34 @@ function looksLikeRepoRelativePath(s) {
  * root-level files (`package.json`), directories (`docs/prd`) and globs
  * (`skills/**`) are legitimate `file_paths` values.
  *
+ * Exported because `scripts/memory-propose.mjs` gates `--file-paths` on the same
+ * rule: a proposal this predicate rejects would be queued, approved, and then
+ * refused by {@link validateLearning} at write time.
+ *
  * @param {unknown} s — candidate entry
  * @returns {boolean}
  */
-function isRepoRelativePathEntry(s) {
+export function isRepoRelativePathEntry(s) {
   if (typeof s !== 'string' || s.trim() === '') return false;
   if (/^[/\\~]/.test(s) || /^[A-Za-z]:[\\/]/.test(s) || s.includes('://')) return false;
   return !s.split(/[\\/]/).includes('..');
 }
 
 const LEADING_DOT_SLASH = /^(?:\.\/)+/;
+
+/** Non-canonical STRING scopes {@link migrateLegacyLearning} coerces to `'local'`. */
+const LOCAL_ALIAS_SCOPES = new Set(['vault-tools', 'deep-sessions', 'wave-executor', 'coordinator']);
+
+/** Non-canonical STRING scopes {@link migrateLegacyLearning} coerces to `'private'`. */
+const PRIVATE_ALIAS_SCOPES = new Set(['project', 'repo']);
+
+/**
+ * Every word the migration reads as scope vocabulary. An array-scope entry
+ * equal to one of these is a scope word, never a path — the same reading the
+ * string branch gives it, so `['project']` is not turned into
+ * `file_paths: ['project']`.
+ */
+const SCOPE_WORDS = new Set([...VALID_SCOPES, ...LOCAL_ALIAS_SCOPES, ...PRIVATE_ALIAS_SCOPES]);
 
 /**
  * The repo-relative paths a broken `scope` value carries, or `null` when it is
@@ -556,7 +574,7 @@ function pathScopeEntries(scope) {
   if (looksLikeRepoRelativePath(scope)) return [scope.replace(LEADING_DOT_SLASH, '')];
   if (!Array.isArray(scope)) return null;
   const entries = scope.map((e) => (typeof e === 'string' ? e.replace(LEADING_DOT_SLASH, '') : e));
-  return entries.every((e) => isRepoRelativePathEntry(e) && !VALID_SCOPES.includes(e)) ? entries : null;
+  return entries.every((e) => isRepoRelativePathEntry(e) && !SCOPE_WORDS.has(e)) ? entries : null;
 }
 
 /**
@@ -585,8 +603,9 @@ function pathScopeEntries(scope) {
  *   - array-typed `scope` (GitLab #1447) → the same move when every entry is a
  *     repo-relative path ({@link isRepoRelativePathEntry}: root files, dirs and
  *     globs included); an empty array → `scope: 'private'`. An array holding an
- *     absolute path, a non-string or a scope word stays untouched (invalid,
- *     counted) — nothing is ever dropped.
+ *     absolute path, a non-string or a scope word — canonical or one of the
+ *     aliases below, e.g. `['project']` — stays untouched (invalid, counted);
+ *     nothing is ever dropped.
  *   - `scope: 'project'` / `scope: 'repo'` → `'private'`.
  *   - `schema_version: '1'` (string) or `2` (number) → `1`.
  * Each rule's output never re-matches that rule, so the whole function stays
@@ -639,8 +658,7 @@ export function migrateLegacyLearning(entry) {
     out.evidence = '';
   }
 
-  const COERCIBLE_SCOPES = new Set(['vault-tools', 'deep-sessions', 'wave-executor', 'coordinator']);
-  if (out.scope && !VALID_SCOPES.includes(out.scope) && COERCIBLE_SCOPES.has(out.scope)) {
+  if (out.scope && !VALID_SCOPES.includes(out.scope) && LOCAL_ALIAS_SCOPES.has(out.scope)) {
     out.scope = 'local';
   }
 
@@ -687,7 +705,7 @@ export function migrateLegacyLearning(entry) {
       migrated.scope = 'private';
     }
     // Present but not an array → leave untouched; the record stays invalid.
-  } else if (migrated.scope === 'project' || migrated.scope === 'repo') {
+  } else if (PRIVATE_ALIAS_SCOPES.has(migrated.scope)) {
     migrated.scope = 'private';
   }
 

@@ -896,14 +896,25 @@ describe('Section F — --dry-run (validate-only, no write; #741.3)', () => {
 describe('Section G — --file-paths (#900 C)', () => {
   const WAVE_AGENT_ENV = { extraEnv: { SO_WAVE_AGENT: '1' } };
 
-  it('exits 4 when --file-paths is an absolute path', async () => {
+  // Every row but '/etc/passwd' is NOT absolute per path.isAbsolute() on POSIX,
+  // so the pre-fix CLI queued it — and strict validateLearning() (#1447) refused
+  // the approved learning at write time. Step 1b now gates on the same
+  // isRepoRelativePathEntry predicate.
+  it.each([
+    ['/etc/passwd'],
+    ['~/notes.mjs'],
+    ['C:\\x\\y.mjs'],
+    ['\\\\srv\\x.mjs'],
+    ['https://x/y.mjs'],
+  ])('exits 4 when --file-paths is not repo-relative: %s', async (p) => {
     const dir = setupTmpRepo({ stateMd: ACTIVE_STATE_MD });
-    const args = [...VALID_ARGS, '--file-paths', '/etc/passwd'];
+    const args = [...VALID_ARGS, '--file-paths', p];
     const { code, stdout } = await runCli(dir, args, WAVE_AGENT_ENV);
     expect(code).toBe(4);
     const result = parseJSON(stdout);
     expect(result.status).toBe('error');
-    expect(result.validation.some((m) => m.includes('absolute path rejected'))).toBe(true);
+    expect(result.validation.some((m) => m.includes('absolute path rejected') && m.includes(`"${p}"`))).toBe(true);
+    expect(existsSync(join(dir, '.orchestrator', 'metrics', 'proposals.jsonl'))).toBe(false);
   });
 
   it('exits 4 when --file-paths contains a ".." path segment', async () => {

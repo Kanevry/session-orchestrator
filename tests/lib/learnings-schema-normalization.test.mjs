@@ -326,11 +326,15 @@ describe('migrateLegacyLearning — write funnel applies dialects + stamps schem
     expect(classifyLearning(migrated).eligible).toBe(true); // post-migration: file_paths present
   });
 
-  it('makes a migrated gotcha+files record reconcile-eligible (#900 end-to-end: alias + files)', () => {
-    // #900: a free-form `gotcha` type carrying legacy `files` was doubly
-    // invisible pre-fix (wrong type name AND wrong scope field). Migration
-    // resolves BOTH: gotcha -> anti-pattern, files -> file_paths.
-    const legacyGotcha = { ...BASE(), id: 'mig-elig-900-1', type: 'gotcha', files: ['scripts/y.mjs'] };
+  // #900: a free-form `gotcha` type carrying its path in a legacy column was
+  // doubly invisible pre-fix (wrong type name AND wrong scope field). Migration
+  // resolves BOTH: gotcha -> anti-pattern, and the path -> file_paths — whether
+  // it sat in `files` or (real broken records, #1446/#1447) in `scope`.
+  it.each([
+    ['files', { files: ['scripts/y.mjs'] }],
+    ['scope (#1446/#1447)', { scope: 'scripts/y.mjs' }],
+  ])('makes a migrated gotcha with its path in %s reconcile-eligible (#900 end-to-end)', (_column, legacyPath) => {
+    const legacyGotcha = { ...BASE(), id: 'mig-elig-900-1', type: 'gotcha', ...legacyPath };
     expect(classifyLearning(legacyGotcha).eligible).toBe(false); // pre-migration: unknown type + no file_paths
     const migrated = migrateLegacyLearning(legacyGotcha);
     expect(migrated.type).toBe('anti-pattern');
@@ -363,6 +367,8 @@ describe('migrateLegacyLearning — #1447 path-scope coercions', () => {
   it.each([
     ['an absolute path', ['/etc/runner/config.toml', 'src/a.ts']],
     ['a scope word', ['public', 'src/a.ts']],
+    ['only a non-canonical scope word', ['project']],
+    ['a non-canonical scope word beside a path', ['src/x.mjs', 'repo']],
     ['a non-string', [7, 'src/a.ts']],
   ])('leaves an array scope holding %s untouched (nothing dropped, record stays invalid)', (_label, scope) => {
     const migrated = migrateLegacyLearning({ ...BASE(), schema_version: 1, scope });

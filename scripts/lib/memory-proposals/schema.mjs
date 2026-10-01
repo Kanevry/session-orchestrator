@@ -7,7 +7,8 @@
  * during a wave, reviewed by the memory-cleanup flow, and either accepted
  * (appended to learnings.jsonl) or discarded.
  *
- * Pure leaf module — imports only node:crypto. No I/O, no quota enforcement
+ * Pure module — imports only node:crypto and the pure learnings/schema.mjs
+ * (type registry, repo-relative path predicate). No I/O, no quota enforcement
  * (see store.mjs for those responsibilities).
  *
  * Canonical schema (schema_version: 1) — ALL required fields:
@@ -30,7 +31,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
+
+import { isRepoRelativePathEntry, LEARNING_TYPE_REGISTRY } from '../learnings/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -251,24 +253,28 @@ export function validateProposalRecord(record) {
   }
 
   // file_paths (optional, but if present must be a non-empty array of
-  // non-empty, newline-free, glob-metacharacter-free strings) — issue #900 C,
+  // repo-relative, newline-free, glob-metacharacter-free strings) — issue #900 C,
   // Q3-MED fix pass: a glob metacharacter (* ? [ ] { }) surviving this schema
   // gate would later reach emitter.mjs::globsFromFilePaths verbatim for a
   // top-level (dirname==='.') entry, effectively producing an always-on rule
   // glob (e.g. `file_paths: ['**']`). `createProposalRecord` never sets an
   // empty array (it omits the key), so a present-but-empty `[]` is itself a
   // signal of a malformed/tampered record — reject it explicitly.
+  // Repo-relative is the SAME predicate validateLearning applies at write time
+  // (isRepoRelativePathEntry): a record read back from proposals.jsonl is not
+  // re-validated before writeApproved → appendLearning, so an absolute, home-
+  // relative or URL entry must be refused here, not silently at promotion.
   if ('file_paths' in record) {
     const fp = record.file_paths;
     const isValidArray =
       Array.isArray(fp) &&
       fp.length > 0 &&
       fp.every(
-        (p) => typeof p === 'string' && p.length > 0 && !/[\r\n]/.test(p) && !/[*?[\]{}]/.test(p),
+        (p) => isRepoRelativePathEntry(p) && !/[\r\n]/.test(p) && !/[*?[\]{}]/.test(p),
       );
     if (!isValidArray) {
       errors.push(
-        'file_paths must be a non-empty array of non-empty, newline-free, glob-metacharacter-free strings when present',
+        'file_paths must be a non-empty array of repo-relative, newline-free, glob-metacharacter-free strings when present',
       );
     }
   }
