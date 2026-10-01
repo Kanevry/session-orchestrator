@@ -589,6 +589,11 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect(w.raw_session_id).toBe(U);
     // unknown model → null cost → omitted, never a fabricated 0
     expect('total_cost_usd' in w).toBe(false);
+    // #1475 — the coverage counters say why: 0 of 2 records priced. Bug
+    // caught: they stayed in the rollup's return value and never reached the
+    // ledger, so an omitted cost could not be told from an unmeasured one.
+    expect(w.cost_records_priced).toBe(0);
+    expect(w.cost_records_total).toBe(2);
     // The rollup's diagnostics explain an omission; they never enter the ledger.
     expect('match_status' in w).toBe(false);
     expect('ledger_records' in w).toBe(false);
@@ -625,6 +630,7 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
       'total_tokens', 'total_token_input', 'total_token_output',
       'total_token_input_uncached', 'total_token_cache_read', 'total_token_cache_creation',
       'total_cost_usd', 'subagents_with_tokens', 'matched_records', '_token_schema',
+      'cost_records_priced', 'cost_records_total',
       'match_status', 'ledger_records',
     ]) {
       expect(key in w).toBe(false);

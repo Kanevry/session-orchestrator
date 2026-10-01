@@ -244,4 +244,10 @@ export const OPTIONAL_FIELDS = Object.freeze([
   'matched_records',
   'raw_session_id',
   '_repair_source',
+  // #1475 — how many of the session's cost-relevant subagent records were
+  // priced, out of how many. Merged from the rollup by scripts/emit-session.mjs;
+  // non-negative integers, priced ≤ total. priced < total is exactly when
+  // `total_cost_usd` is omitted, so the counters say why it is missing.
+  'cost_records_priced',
+  'cost_records_total',
 ]);

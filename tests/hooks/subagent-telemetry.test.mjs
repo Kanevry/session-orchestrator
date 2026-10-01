@@ -718,6 +718,12 @@ describe('subagent-telemetry hook', () => {
       expect(record.token_cache_creation).toBe(600);
       expect(record.token_output).toBe(90);
       expect(record.token_input).toBe(3630);
+      // Bug caught: without a per-model breakdown the record could only be
+      // priced at one model or not at all; the rollup prices each part.
+      expect(record.models_usage).toEqual([
+        { model: 'claude-opus-5-5', token_input_uncached: 10, token_cache_read: 1000, token_cache_creation: 200, token_output: 30 },
+        { model: 'claude-sonnet-5-5', token_input_uncached: 20, token_cache_read: 2000, token_cache_creation: 400, token_output: 60 },
+      ]);
     });
 
     it('keeps the real model when the LAST turn is a zero-token <synthetic> turn', async () => {
@@ -744,6 +750,9 @@ describe('subagent-telemetry hook', () => {
 
       expect(record.model).toBeNull();
       expect(record.token_output).toBe(1_000_010);
+      // A breakdown here would carry only the named part, so the rollup would
+      // price the record without the model-less turn's tokens.
+      expect(record.models_usage).toBeUndefined();
     });
 
     it('falls back to the last model when no turn carries any billable token', async () => {

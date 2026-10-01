@@ -66,16 +66,16 @@
  * `total_token_*` and reports the excluded ones as `legacy_v1_records`: the
  * boundary is DECLARED, never silent.
  *
- * `total_cost_usd` is computed per record via `costUsd()` and is null when ANY
- * priced record carries a model the price table does not know — a partial cost
- * is worse than no cost, because it reads as a complete one. `cost_records_priced`
- * / `cost_records_total` say how much of the session the estimate covers.
- * Two record shapes bypass `costUsd()` (#1474): a record whose four token
- * buckets are all 0 is priced at $0 whatever its model (it never turns a null
- * total into a number on its own), and a v2 record with a found transcript but
- * no tokens (oversized, no usage turns, or unreadable) counts in
- * `cost_records_total` only — it lowers the covered share without touching
- * `total_cost_usd`.
+ * `total_cost_usd` is computed per record via `costUsd()` and is null whenever
+ * `cost_records_priced < cost_records_total` (#1475) — a partial cost is worse
+ * than no cost, because it reads as a complete one. A record is unpriced when its
+ * model is unknown to the price table, when it has no model (a token-bearing turn
+ * named none), or when it has no tokens at all (transcript found but oversized,
+ * without usage turns, or unreadable, #1474). A record whose four token buckets
+ * are all 0 is priced at $0 whatever its model, and never turns a null total into
+ * a number on its own. A record whose turns span several models carries
+ * `models_usage` (#1470) and is priced part by part. `cost_records_priced` /
+ * `cost_records_total` say how much of the session the estimate covers.
  *
  * @module session-token-rollup
  */
@@ -120,6 +120,35 @@ function isV2(record) {
 }
 
 /**
+ * USD cost of one v2 record, or null when it cannot be priced. A record whose
+ * token-bearing turns span several models carries `models_usage` (#1470): each
+ * part is priced at its own model's rates, and one unknown part leaves the whole
+ * record unpriced. Without that field the record's single `model` prices all
+ * four buckets.
+ * @param {object} record
+ * @returns {number|null}
+ */
+function recordCostUsd(record) {
+  const parts =
+    Array.isArray(record.models_usage) && record.models_usage.length > 0
+      ? record.models_usage
+      : [record];
+  let total = 0;
+  for (const part of parts) {
+    const cost = costUsd({
+      model: part?.model,
+      tokenInputUncached: part?.token_input_uncached,
+      tokenCacheRead: part?.token_cache_read,
+      tokenCacheCreation: part?.token_cache_creation,
+      tokenOutput: part?.token_output,
+    });
+    if (cost === null) return null;
+    total += cost;
+  }
+  return total;
+}
+
+/**
  * @typedef {Object} TokenRollupResult
  * @property {'invalid-key'|'ledger-absent'|'ledger-empty'|'unmatched'|'matched'} match_status - Distinguishes absent telemetry from an unmatched key (#1027 Nachtrag 7).
  * @property {number|null} ledger_records - Count of parsed non-null, non-array objects; null when the ledger was not read (#1027 Nachtrag 7).
@@ -131,9 +160,9 @@ function isV2(record) {
  * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached across v2 token-bearing records.
  * @property {number|null}  total_token_cache_read     - Sum of token_cache_read across v2 token-bearing records.
  * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation across v2 token-bearing records.
- * @property {number|null}  total_cost_usd     - Σ cost over the records counted in cost_records_priced; null when no record with a non-zero bucket was priced (all-zero and token-less records alone never yield a fabricated $0), or when ANY v2 record with a non-zero bucket carries an unknown model (never 0 — see telemetry/pricing.mjs).
- * @property {number}       cost_records_priced - How many v2 token-bearing records carry a known cost: priced by the table, or all four token buckets 0 (priced at $0 whatever the model, #1474).
- * @property {number}       cost_records_total  - How many v2 token-bearing records were candidates for pricing — including a record with no tokens (transcript found but oversized, without usage turns, or unreadable, #1474), whose cost is unknown. priced < total means part of the session's cost is missing from total_cost_usd.
+ * @property {number|null}  total_cost_usd     - Σ cost over the records counted in cost_records_priced; null when cost_records_priced < cost_records_total (#1475 — any unpriced record: unknown model, no model, or no tokens), and null when no record with a non-zero bucket was priced (all-zero records alone never yield a fabricated $0). Never 0 for unknown — see telemetry/pricing.mjs.
+ * @property {number}       cost_records_priced - How many v2 token-bearing records carry a known cost: priced by the table (per model part when the record carries models_usage, #1470), or all four token buckets 0 (priced at $0 whatever the model, #1474).
+ * @property {number}       cost_records_total  - How many v2 token-bearing records were candidates for pricing — including a record with no tokens (transcript found but oversized, without usage turns, or unreadable, #1474), whose cost is unknown. priced < total nulls total_cost_usd.
  * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every total above because their schema_version < 2 (their token_input is a different quantity).
  * @property {2}            _token_schema      - The token contract these totals were computed under.
  */
@@ -226,7 +255,6 @@ export function rollupSessionTokens({
   let sumCost = null;
   let costPriced = 0;
   let costTotal = 0;
-  let costUnknownModel = false;
   let legacyV1 = 0;
 
   // Track distinct agent_ids that contributed at least one non-null token.
@@ -268,8 +296,8 @@ export function rollupSessionTokens({
         agentsWithTokens.add(record.agent_id);
       }
 
-      // Cost: every token-bearing v2 record is a pricing candidate. One unknown
-      // model poisons the SESSION total — a cost covering some of the agents
+      // Cost: every token-bearing v2 record is a pricing candidate. One unpriced
+      // record poisons the SESSION total — a cost covering some of the agents
       // reads as covering all of them.
       costTotal += 1;
       // #1474 — all four buckets 0 costs $0 whatever the model says. The hook
@@ -282,18 +310,8 @@ export function rollupSessionTokens({
         record.token_cache_creation,
         record.token_output,
       ].every((v) => v === 0);
-      const cost = allZero
-        ? 0
-        : costUsd({
-            model: record.model,
-            tokenInputUncached: record.token_input_uncached,
-            tokenCacheRead: record.token_cache_read,
-            tokenCacheCreation: record.token_cache_creation,
-            tokenOutput: record.token_output,
-          });
-      if (cost === null) {
-        costUnknownModel = true;
-      } else {
+      const cost = allZero ? 0 : recordCostUsd(record);
+      if (cost !== null) {
         costPriced += 1;
         // An all-zero record adds nothing, so it must not be what turns
         // `sumCost` from null into a number: next to a token-less record it
@@ -304,10 +322,8 @@ export function rollupSessionTokens({
       // #1474 — the subagent's own transcript was found but yielded no tokens:
       // it exceeded the hook's MAX_TRANSCRIPT_BYTES and was not read, it held no
       // usage turns, or it was unreadable. Either way the agent ran and its cost
-      // is unknown, so it counts as an unpriced candidate (total, not priced) —
-      // the gap stays visible as priced < total. It does NOT null
-      // `total_cost_usd` by itself; that is null on an unknown model, or when no
-      // record with a non-zero bucket was priced.
+      // is unknown, so it counts as an unpriced candidate (total, not priced),
+      // and priced < total nulls `total_cost_usd` (#1475).
       costTotal += 1;
     }
   }
@@ -325,7 +341,8 @@ export function rollupSessionTokens({
     total_token_input_uncached: sumUncached,
     total_token_cache_read: sumCacheRead,
     total_token_cache_creation: sumCacheCreation,
-    total_cost_usd: costUnknownModel ? null : sumCost,
+    // #1475 — a cost that leaves out any candidate record is not persisted.
+    total_cost_usd: costPriced < costTotal ? null : sumCost,
     cost_records_priced: costPriced,
     cost_records_total: costTotal,
     legacy_v1_records: legacyV1,

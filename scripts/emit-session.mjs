@@ -56,9 +56,9 @@ export { serializeSessionLineChecked };
 const FULL_SHA_RE = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 // Rollup fields merged into the record (#1436) — the totals plus the #1244
-// cache buckets and contract marker the former prose recipe merged. The
-// provenance counters (`cost_records_*`, `legacy_v1_records`) stay in the
-// rollup's own return value.
+// cache buckets and contract marker the former prose recipe merged, and the
+// #1475 cost-coverage counters, which say why `total_cost_usd` is absent when
+// priced < total. `legacy_v1_records` stays in the rollup's own return value.
 const ROLLUP_KEYS = Object.freeze([
   'total_tokens',
   'total_token_input',
@@ -69,11 +69,18 @@ const ROLLUP_KEYS = Object.freeze([
   'total_cost_usd',
   'subagents_with_tokens',
   'matched_records',
+  'cost_records_priced',
+  'cost_records_total',
   '_token_schema',
 ]);
 
 // Rollup keys validateSession() requires to be non-negative integers.
-const INTEGER_ROLLUP_KEYS = new Set(['total_tokens', 'matched_records']);
+const INTEGER_ROLLUP_KEYS = new Set([
+  'total_tokens',
+  'matched_records',
+  'cost_records_priced',
+  'cost_records_total',
+]);
 
 /**
  * Resolve THIS session's raw harness UUID — the join key `subagents.jsonl`
@@ -462,8 +469,10 @@ async function main() {
   // on the own raw UUID and fills ONLY keys the entry does not carry; an
   // explicit `total_tokens` means the caller already rolled up, so nothing is
   // merged. No matching records or a failed read OMITS the fields with a WARN —
-  // never a fabricated 0; a null total (unknown model, no token-bearing record)
-  // is omitted rather than written.
+  // never a fabricated 0; a null total is omitted rather than written — for
+  // `total_cost_usd` that is any session with an unpriced subagent record
+  // (#1475: unknown model, no model, or no tokens), which the persisted
+  // `cost_records_priced < cost_records_total` then explains.
   // match_status explains the omission; diagnostic fields stay out of the record.
   if (ownUuid !== null && !hasOwn('total_tokens')) {
     let rollup = null;

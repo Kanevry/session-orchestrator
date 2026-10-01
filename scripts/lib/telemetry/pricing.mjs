@@ -122,8 +122,11 @@ export const PRICING_TABLE = Object.freeze({
   //
   // Ceiling: a model absent from this table prices as null, never at a neighbour's rate, so the
   // rollup reports `total_cost_usd: null` and `cost_records_priced < cost_records_total` — the
-  // intended way missing evidence shows up. Revisit when that ratio drops below 1: add the model
-  // as its own evidenced row, never as a family prefix or an alias to another generation.
+  // intended way missing evidence shows up. That ratio also drops below 1 for records no row can
+  // fix: a token-less record (transcript over the hook's size cap, without usage turns, or
+  // unreadable) and a record with a token-bearing turn that names no model (#1475). Revisit when
+  // an unpriced record names a model id absent from this table: add that model as its own
+  // evidenced row, never as a family prefix or an alias to another generation.
   'claude-fable-5-1': usd({ input: 10.0, cache_read: 0.25, cache_creation: 12.5, output: 50.0 }),
   'claude-fable-5': usd({ input: 10.0, cache_read: 1.0, cache_creation: 12.5, output: 50.0 }),
   'claude-opus-5-5': usd({ input: 4.0, cache_read: 0.2, cache_creation: 5.0, output: 20.0 }),

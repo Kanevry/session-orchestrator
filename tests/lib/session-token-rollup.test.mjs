@@ -696,8 +696,9 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(known.cost_records_total).toBe(1);
   });
 
-  it('counts a found transcript without tokens as an unpriced cost candidate (#1474)', () => {
+  it('counts a found transcript without tokens as an unpriced candidate and omits the partial cost (#1474, #1475)', () => {
     // Bug caught: an oversized (> 50 MiB) transcript yields a token-less record that fell out of both counts, so priced == total hid the missing cost.
+    // Bug caught (#1475): with priced 1 of 2, the known record's cost was still returned as total_cost_usd and persisted as if complete.
     const path = write([
       stop({ agent_id: 'known' }),
       stop({
@@ -714,8 +715,43 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: path });
     expect(r.cost_records_priced).toBe(1);
     expect(r.cost_records_total).toBe(2);
-    expect(r.total_cost_usd).toBeCloseTo(100 * 5e-6 + 1000 * 0.5e-6 + 10 * 25e-6, 12);
+    expect(r.total_cost_usd).toBeNull();
     expect(r.subagents_with_tokens).toBe(1);
+  });
+
+  it('prices a mixed-model record per model from models_usage (#1470)', () => {
+    // Bug caught: a record whose token-bearing turns span two models carries model null, so it stayed unpriced and nulled the session cost although both models have a rate.
+    const mixed = stop({
+      agent_id: 'mixed',
+      model: null,
+      token_input: 3630,
+      token_input_uncached: 30,
+      token_cache_read: 3000,
+      token_cache_creation: 600,
+      token_output: 90,
+      models_usage: [
+        { model: 'claude-opus-5-5', token_input_uncached: 10, token_cache_read: 1000, token_cache_creation: 200, token_output: 30 },
+        { model: 'claude-sonnet-5-5', token_input_uncached: 20, token_cache_read: 2000, token_cache_creation: 400, token_output: 60 },
+      ],
+    });
+
+    const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: write([mixed]) });
+    // opus-5-5: 10*4 + 1000*0.2 + 200*5 + 30*20 = 1840 µ$; sonnet-5-5: 20*2 + 2000*0.2 + 400*2.5 + 60*10 = 2040 µ$.
+    // Pricing all buckets at either single model would give 5520 or 3060 µ$.
+    expect(r.total_cost_usd).toBeCloseTo(0.00388, 12);
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(1);
+
+    // One part on a model the table does not know leaves the whole record unpriced.
+    const unknownPart = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([
+        { ...mixed, models_usage: [mixed.models_usage[0], { ...mixed.models_usage[1], model: 'gpt-5.6-sol' }] },
+      ]),
+    });
+    expect(unknownPart.total_cost_usd).toBeNull();
+    expect(unknownPart.cost_records_priced).toBe(0);
+    expect(unknownPart.cost_records_total).toBe(1);
   });
 
   it('prices an all-zero-bucket record at $0 whatever its model (#1474)', () => {
