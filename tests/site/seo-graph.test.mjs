@@ -15,8 +15,8 @@ const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 // Falsification seam: point at a mutated copy of site/ to prove a group goes red.
 const SITE_DIR = process.env.SEO_GRAPH_SITE_DIR || join(REPO_ROOT, 'site');
 const PAGES = [
-  { file: 'site/index.html', route: 'https://session-orchestrator.com/' },
-  { file: 'site/de/index.html', route: 'https://session-orchestrator.com/de' },
+  { file: 'site/index.html', route: 'https://session-orchestrator.com/', type: 'FAQPage' },
+  { file: 'site/de/index.html', route: 'https://session-orchestrator.com/de', type: 'FAQPage' },
   {
     file: 'site/guide/index.html',
     route: 'https://session-orchestrator.com/guide',
@@ -124,6 +124,10 @@ describe('site JSON-LD: 3. page identity', () => {
         typeof identity === 'object' && identity !== null ? identity['@id'] : identity,
         `${file}: TechArticle.mainEntityOfPage`,
       ).toBe(route);
+    }
+    // / and /de carry no WebPage node: the FAQPage @id is their page identity.
+    for (const node of nodes.filter((entry) => hasType(entry, 'FAQPage'))) {
+      expect(String(node['@id']).split('#')[0], `${file}: FAQPage.@id page`).toBe(route);
     }
   });
 });

@@ -1,12 +1,14 @@
 /** IndexNow guards: all HTTP is injected; temporary site fixtures are removed after each test. */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { main } from '../../site/seo/indexnow.mjs';
 import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
+const SCRIPT = join(REPO_ROOT, 'site/seo/indexnow.mjs');
 const ORIGIN = 'https://session-orchestrator.com';
 const ENDPOINT = 'https://api.indexnow.org/indexnow';
 const KEY = '0123456789abcdef0123456789abcdef';
@@ -145,7 +147,8 @@ describe('IndexNow accidental submissions and invalid keys', () => {
       options: {
         keys: [
           [KEY, KEY],
-          ['a'.repeat(32), 'other'],
+          // Its own name as content: only the count guard can reject this pair.
+          ['a'.repeat(32), 'a'.repeat(32)],
         ],
       },
       noFetch: true,
@@ -206,17 +209,41 @@ describe('IndexNow accidental submissions and invalid keys', () => {
     expect(readFileSync(join(site, keys[0]), 'utf8').trim()).toBe(keys[0].slice(0, -4));
   });
 
-  it('does not fetch or exit when imported by another module', async () => {
+  it('does not run main() when imported by another module', async () => {
     vi.resetModules();
     const fetch = vi.fn(() => {
       throw new Error('import attempted network IO');
     });
     vi.stubGlobal('fetch', fetch);
-    const exit = vi.spyOn(process, 'exit').mockImplementation(() => {
-      throw new Error('import exited');
-    });
-    await import('../../site/seo/indexnow.mjs');
+    const { argv, exitCode } = process;
+    // A valid --site makes a wrongly running main() reach fetch and set exitCode.
+    process.argv = [process.execPath, join(REPO_ROOT, 'elsewhere.mjs'), '--site', ORIGIN];
+    try {
+      await import('../../site/seo/indexnow.mjs');
+    } finally {
+      process.argv = argv;
+    }
+    const after = process.exitCode;
+    process.exitCode = exitCode;
     expect(fetch).not.toHaveBeenCalled();
-    expect(exit).not.toHaveBeenCalled();
+    expect(after).toBe(exitCode);
+  });
+
+  it('still runs when launched through a symlinked path', () => {
+    // A string-compared entry guard turns this launch into a silent exit 0 (#1371 class).
+    const dir = makeTmpDir('so-indexnow-link-');
+    tmpDirs.push(dir);
+    const link = join(dir, 'indexnow.mjs');
+    symlinkSync(SCRIPT, link);
+    const run = spawnSync(
+      process.execPath,
+      [link, '--site', 'https://www.session-orchestrator.com'],
+      {
+        encoding: 'utf8',
+        timeout: 20000,
+      },
+    );
+    expect(run.status).toBe(2);
+    expect(run.stderr).toContain('indexnow:');
   });
 });

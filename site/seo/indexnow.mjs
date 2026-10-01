@@ -8,8 +8,9 @@
  */
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
+import { isMainModule } from '../../scripts/lib/is-main-module.mjs';
 
 const ORIGIN = 'https://session-orchestrator.com';
 const ENDPOINT = 'https://api.indexnow.org/indexnow';
@@ -125,7 +126,8 @@ export async function main({
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+// realpath on both sides: a launch through a symlinked path (/tmp, /var on macOS) must still run.
+if (isMainModule(import.meta.url)) {
   // exitCode, not exit(): a hard exit can drop stdout still queued on a pipe.
   process.exitCode = await main();
 }
