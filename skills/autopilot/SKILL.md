@@ -43,9 +43,15 @@ Headless requirements:
   exits, reads the one canonical `sessions.jsonl` record whose `raw_session_id` is that uuid
   to construct the `sessionRunner` return shape — the spawned session must complete cleanly
   and append its record (session-end Phase 3.7 handles this). No such record, or more than
-  one, stops the loop with `failed-wave` instead of reading the ledger tail (#1457).
-- `AUTOPILOT_RUN_ID` env var is propagated to the child so session-end stamps it onto the
-  per-iteration `sessions.jsonl` record.
+  one, stops the loop with `failed-wave` instead of reading the ledger tail (#1457). So does
+  a unique record that is only a backfill stub (no waves/agents/token totals — the child never
+  closed): its token usage is unknown, not 0, so it is never counted as a healthy 0-token
+  iteration (#1457 F2).
+- `AUTOPILOT_RUN_ID` env var is set in the child's env, but **nothing reads it yet**
+  (measured 2026-10-01: `rg -n "AUTOPILOT_RUN_ID" scripts hooks skills` finds only the writer
+  in `scripts/autopilot.mjs` and this line). CLI-driven iterations therefore carry no
+  `autopilot_run_id` on their `sessions.jsonl` record yet; join them to `autopilot.jsonl` via
+  the `sessions` list there, not via that field.
 
 Do NOT re-implement loop logic inline — this skill and `scripts/lib/autopilot.mjs` are
 authoritative. Kill-switches are enforced by `scripts/lib/autopilot.mjs`, not inline by
@@ -281,6 +287,10 @@ const sessionRunner = async ({ mode, autopilotRunId }) => {
   // The coordinator (Claude) invokes /session <mode> manually here. After the
   // session completes (/close runs, sessions.jsonl appended), this function
   // reads the tail entry and projects it into the runLoop return-shape.
+  // CAUTION: a tail read has the peer-append error class — a parallel session
+  // that appends after this one supplies ITS record (and token usage). A real
+  // run should read its own record by raw session id, as scripts/autopilot.mjs
+  // does (readOwnSession → raw_session_id match, #1457).
   const tail = readSessionsJsonlTail(1);   // last line, normalized
   return {
     session_id: tail.session_id,

@@ -154,6 +154,15 @@ function resolveOwnSessionUuid({ override, recordSessionId }) {
  * not even when the first own event carries none. Returns null when there is no
  * own event, or the first one's head_sha is absent or not a full sha.
  *
+ * LIMIT — rotation (#1457 point 3): events.jsonl rotates at SessionStart once
+ * it exceeds `events-rotation.max-size-mb` (default 10), and when that start is
+ * a compact/resume of THIS session the first SURVIVING own event can be a
+ * compact/resume re-emit whose head_sha is later than the real start. When the
+ * first own event carries `native_source` 'compact' or 'resume' it is provably
+ * not the start, so this returns null (unknown) rather than a wrong ref. An
+ * event without `native_source` (Codex/Cursor, or a pre-#1091 writer) is still
+ * taken — so a rotation that leaves an unlabelled re-emit first stays wrong.
+ *
  * Whole-file read, like deriveMemoryCleanupSignal() on the same file — fine at
  * today's events.jsonl size; revisit if the file outgrows a single read.
  *
@@ -179,6 +188,7 @@ function readOwnStartHeadSha(eventsFile, uuid) {
       continue;
     }
     if (ev?.event !== 'orchestrator.session.started' || ev.session_id !== uuid) continue;
+    if (ev.native_source === 'compact' || ev.native_source === 'resume') return null;
     return typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha) ? ev.head_sha : null;
   }
   return null;

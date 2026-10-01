@@ -712,7 +712,9 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
   // session's start sha; a tail-first (last-match-wins) scan takes the sha a
   // resume re-emitted under the same raw id instead of the session's real start;
   // a scan that skips an own start event lacking head_sha takes a later
-  // compact/resume event's sha — the FIRST own event decides, sha or not.
+  // compact/resume event's sha — the FIRST own event decides, sha or not; and
+  // after an events.jsonl rotation the first SURVIVING own event can itself be
+  // a compact re-emit, whose later sha must not pass as the start (#1457 p3).
   it.each([
     ['a foreign session.started precedes the own one', [
       { event: 'orchestrator.session.started', session_id: 'other-uuid', head_sha: 'b'.repeat(40) },
@@ -725,6 +727,9 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     ['the first own session.started carries no head_sha (a later resume sha is not the start)', [
       { event: 'orchestrator.session.started', session_id: U },
       { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B },
+    ], undefined],
+    ['rotation left a compact re-emit as the first surviving own session.started', [
+      { event: 'orchestrator.session.started', session_id: U, head_sha: SHA_B, native_source: 'compact' },
     ], undefined],
   ])('derives session_start_ref from the FIRST own session.started when STATE.md carries none: %s', (_label, events, expected) => {
     writeJsonlIn('events.jsonl', events);
