@@ -58,7 +58,10 @@ Schwellen (freier Speicher des lokalen Hosts laut `memory_pressure | tail -1`):
 | ≥ 50 % | 2 prozessstartende + 2 lesende Agents |
 | 35–50 % | 1 prozessstartender Agent |
 | < 35 % | keine neuen Starts |
-| `m5-remote` 5-Minuten-Last > 12 | keine neuen Gates, bis die Last < 10 ist |
+
+Offload auf `m5-remote` trägt keine eigene Lastzahl: maßgeblich ist allein `navigator m5-ersatz
+--quiet` mit dem Exit-Vertrag aus `skills/_shared/fleet-protocol.md` (Standard-Auflagen). Jeder Exit
+außer 0 heißt keine neuen Offload-Gates; den gemessenen Exit trägt `offload.m5_ersatz_exit`.
 
 Minimalbeispiel (nur Platzhalter; Feldbedeutung laut Referenz):
 
@@ -67,7 +70,7 @@ Minimalbeispiel (nur Platzhalter; Feldbedeutung laut Referenz):
   "session": "session-A1",
   "caps": { "prozessstartend": 2, "lesend": 2, "grundlage": "frei 54 %" },
   "pipelines": { "repo-A": 2 },
-  "offload": { "host": "m5-remote", "last_max": 12, "lokal": "vitest/eslint je Datei mit timeout" },
+  "offload": { "host": "m5-remote", "m5_ersatz_exit": 0, "regel": "offload nur nach m5-ersatz Exit 0", "lokal": "vitest/eslint je Datei mit timeout" },
   "merge_protokoll": "Ansage, eigene Messung, Befugnis nach PRD 3.5",
   "zeitregel": "Zeiten nur aus date",
   "flottenprioritaet": ["repo-A", "repo-B"],

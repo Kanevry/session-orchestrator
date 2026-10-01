@@ -83,7 +83,7 @@ erwarten, nie darauf warten (CSM-004).
 ## `auflagen/<session_id>.json` — Navigator an Session (PRD 3.3)
 
 Felder: Caps (prozessstartende / lesende Agents nach freiem Speicher des lokalen Hosts), volle
-Pipelines je Repo, m5-remote-Regel (Lastschwelle, was lokal erlaubt ist), Merge-Protokoll, Zeitregel,
+Pipelines je Repo, m5-remote-Regel (`m5-ersatz`-Exit, was lokal erlaubt ist), Merge-Protokoll, Zeitregel,
 Flottenpriorität, Besitzkonflikte, Pflichtsatz „Freigaben erteile ich keine, maßgeblich ist dein
 Owner-Auftrag". Die Session **liest** die Datei; sie wartet auf keine Nachricht.
 
@@ -94,8 +94,11 @@ nach `checkin.zeit` keine Auflagen-Datei liegt — und sofort, wenn kein Navigat
 - Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host ≥ 50 % Speicher frei hat
   (`memory_pressure | tail -1`).
 - Pipelines: ≤ 2 volle je Repo; Nachzug-Pushes vorher im Check-in (`bedarf`) benennen.
-- Offload: Heavy-Rollen (test, build, lint, audit) nur auf `m5-remote`, nur bei 5-Minuten-Last < 12;
-  lokal nur `vitest` bzw. `eslint` je Datei mit `timeout`.
+- Offload: Heavy-Rollen (test, build, lint, audit) nur auf `m5-remote`, und nur wenn
+  `navigator m5-ersatz --quiet` unmittelbar davor mit Exit 0 endet. Exit-Vertrag: 0 nutzbar,
+  3 Ersatzregel, 5 überlastet, 6 nicht messbar; jeder Exit außer 0 (auch ein fehlender Befehl)
+  heißt: kein neues Offload-Gate. Schwelle und Hysterese leben allein in diesem Befehl — hier und
+  in den Skills steht bewusst keine Lastzahl. Lokal nur `vitest` bzw. `eslint` je Datei mit `timeout`.
 - Zeiten nur aus `date`.
 - Kein Merge ohne Befugnis nach PRD 3.5: `navigator authority query <repo> merge --exit-code` mit
   Exit 0 **oder** ein ausdrücklicher Owner-Auftrag, der Merge für genau dieses Repo nennt
