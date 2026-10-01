@@ -187,7 +187,7 @@ export function buildIssueBody(finding, context) {
   if (!buildIssueBodyDeprecationWarned) {
     buildIssueBodyDeprecationWarned = true;
     console.warn(
-      '[deprecated] buildIssueBody from scripts/lib/ux-grill/reconcile.mjs is deprecated since 5.3.0 ' +
+      '[deprecated] buildIssueBody from scripts/lib/ux-grill/reconcile.mjs is deprecated since the 5.3 line ' +
         'and will be removed in 6.0.0 — use buildUxGrillIssueBody instead.',
     );
   }

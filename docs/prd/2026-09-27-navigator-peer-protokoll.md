@@ -1,14 +1,14 @@
 # Feature: navigator im session-orchestrator (Peer-Protokoll v1 und Skill `/navigator`)
 
 **Date:** 2026-09-27
-**Author:** navigator-fd (Koordinatorsession), Gegenprüfung durch unabhängigen Prüfer 15:42
-**Status:** Entwurf v2 nach Gegenprüfung; Owner hat die Entscheide E1–E12 am 2026-09-27 (15:5x) an navigator-fd delegiert, alle zwölf sind wie empfohlen angenommen (siehe Abschnitt 7)
+**Author:** navigator-A1 (Koordinatorsession), Gegenprüfung durch unabhängigen Prüfer 15:42
+**Status:** Entwurf v2 nach Gegenprüfung; Owner hat die Entscheide E1–E12 am 2026-09-27 (15:5x) an navigator-A1 delegiert, alle zwölf sind wie empfohlen angenommen (siehe Abschnitt 7)
 **Epic:** noch keins (nach Freigabe: SO-Epic + navigator-Issue je Stufe)
 **Appetite:** 2w (Medium Batch), Stufen einzeln abbrechbar
 **Parent Project:** session-orchestrator (Protokoll, Adapter, Skill, Hooks) und navigator (Mechanik-CLI)
 
 > Zeiten Europe/Vienna, gemessen mit `date` oder aus Dateien mit Zeitstempel. Zahlen ohne eigene
-> Messung stammen aus der Codex-Recherche von navigator-fd (15:35) und sind so markiert. Belegstellen
+> Messung stammen aus der Codex-Recherche von navigator-A1 (15:35) und sind so markiert. Belegstellen
 > im SO beziehen sich auf **origin/main `5d9bf2b6`** (gelesen per `git show origin/main:<pfad>`),
 > Belegstellen im navigator-Repo auf den Arbeitsstand von heute. Zielwerte ohne Vorab-Messung sind als
 > **Hypothese** markiert. Messprotokoll am Ende. Begriff: navigators Einheit heißt **Auftrag**, nicht
@@ -41,7 +41,7 @@ Chatnachrichten. Im SO kommt „navigator" funktional nicht vor (grep-Zensus: 1 
 2. **Kollision mit einer unsichtbaren Session.** 15:25 startete der kopflose Lauf session-F1 in
    repo-F; 15:28 gestoppt (exit 143), weil die Codex-Desktop-Session 01a0e308-41ef am selben
    Bündel arbeitete (#449 mit 14 Treffern im Rollout, dazu #451, #450, #448, #441; Beleg
-   `navigator-flotte/docs/ops/2026-09-26-flotte/00-lage.md`, „Ab navigator-fd"). Seit 15:35 hat
+   Lagedatei der Koordinatorsession, „Ab navigator-A1"). Seit 15:35 hat
    `_start.sh` ein Belegt-Tor (Codex-Rollout mit cwd = Repo jünger 30 min oder `session.lock` jünger
    6 h, dann exit 5).
 3. **Kurier-Last.** Hackathon H2: 11 repo-G-Sessions in 6 h, der Navigator wurde „Kurier für Hunderte
@@ -390,7 +390,7 @@ Fragen: Runner-/Pipeline-Budget? Speicher? Offload-Slots? Sperren? andere Sessio
 Rückfall (session-D1): schreibende erst nach deiner Antwort oder nach 10 min ohne Antwort mit den S76-Grenzen
 ```
 
-### A.2 Auflagen (navigator-fd an alle fünf, Inhalt gleich; v1-Form, in v2 durch 3.3/3.4 ersetzt)
+### A.2 Auflagen (navigator-A1 an alle fünf, Inhalt gleich; v1-Form, in v2 durch 3.3/3.4 ersetzt)
 
 ```
 Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host >= 50 % Speicher frei hat.
@@ -405,7 +405,7 @@ Freigaben erteile ich keine, dein Mandat ist der Owner-Auftrag.   [v2: „maßge
 
 ## Anhang B: Codex-Kanaltabelle
 
-Quelle, soweit nicht als gemessen markiert: Codex-Recherche navigator-fd 15:35.
+Quelle, soweit nicht als gemessen markiert: Codex-Recherche navigator-A1 15:35.
 
 | Kanal | Richtung | Stand | Einsatz |
 |---|---|---|---|
