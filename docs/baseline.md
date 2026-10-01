@@ -41,11 +41,14 @@ missing directory keeps the public fallback. An existing directory with a
 missing producer, unsupported schema, invalid metadata or unsafe source is an
 explicit error; bootstrap does not silently switch to a public default. A
 directory without the `scripts/archetype-manifest.mjs` exporter is reported as <!-- path-check: example -->
-`producer-missing`, with a path-free `message` naming that file; `unsafe-source`
-stays reserved for symlinks (dangling or not), path escapes, wrong file types and
-any other lookup failure. The two ways forward are the user's choice: migrate the
-baseline to the exporter contract below, or unset the configured path so the
-public fallback applies.
+`producer-missing`, with a path-free `message` naming that file. A source the
+exporter declares but the baseline does not contain is an incomplete baseline, not
+a refusal: a missing archetype template directory (`templatePath`) is reported as
+`invalid-contract`, a missing rule file the `rules` projection lists as
+`invalid-rule-projection`. `unsafe-source` stays reserved for symlinks (dangling or
+not), path escapes, wrong file types and any other lookup failure. The two ways
+forward are the user's choice: migrate the baseline to the exporter contract
+below, or unset the configured path so the public fallback applies.
 
 The local producer is the baseline's `archetype-manifest.mjs export` CLI. Its reduced v1
 JSON owns IDs, ordering, declarative detection signals, runtimes, package

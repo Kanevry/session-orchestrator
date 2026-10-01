@@ -386,7 +386,9 @@ function _validateOptionalFields(entry) {
   }
   // #1244 — cache buckets, cost estimate and the token-contract marker.
   // Same non-negative-finite-or-null contract as the two totals above;
-  // total_cost_usd is fractional and null means "unknown model", never 0.
+  // total_cost_usd is fractional; null means "cost unknown" — at least one
+  // subagent record could not be priced (#1475: unknown model, no model, or no
+  // tokens; see cost_records_* below) — never 0.
   for (const field of [
     'total_token_input_uncached',
     'total_token_cache_read',
@@ -421,14 +423,25 @@ function _validateOptionalFields(entry) {
   // by emit-session from subagents.jsonl. Same contract as subagents_with_tokens:
   // a non-negative integer, null/absent = not measured. Before this, neither was
   // checked and `total_tokens: "abc"` validated — the field the autopilot token
-  // budget reads.
-  for (const field of ['total_tokens', 'matched_records']) {
+  // budget reads. #1475 adds the rollup's cost-coverage counters under the same
+  // contract, plus the one relation between them: priced never exceeds total.
+  for (const field of ['total_tokens', 'matched_records', 'cost_records_priced', 'cost_records_total']) {
     const value = entry[field];
     if (value !== undefined && value !== null) {
       if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
         throw new ValidationError(`${field} must be a non-negative integer, got: ${value}`);
       }
     }
+  }
+  if (
+    Number.isInteger(entry.cost_records_priced) &&
+    Number.isInteger(entry.cost_records_total) &&
+    entry.cost_records_priced > entry.cost_records_total
+  ) {
+    throw new ValidationError(
+      `cost_records_priced must not exceed cost_records_total, got: ` +
+        `${entry.cost_records_priced} > ${entry.cost_records_total}`
+    );
   }
 
   // Epic #724 C1 — SessionEnd close-through backfill provenance fields.

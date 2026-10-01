@@ -22,6 +22,7 @@ import {
   normalizeDialects,
   normalizeLearning,
   migrateLegacyLearning,
+  validateLearning,
   LEARNING_TYPE_ALIASES,
   LEARNING_TYPE_REGISTRY,
 } from '../../scripts/lib/learnings/schema.mjs';
@@ -325,15 +326,54 @@ describe('migrateLegacyLearning — write funnel applies dialects + stamps schem
     expect(classifyLearning(migrated).eligible).toBe(true); // post-migration: file_paths present
   });
 
-  it('makes a migrated gotcha+files record reconcile-eligible (#900 end-to-end: alias + files)', () => {
-    // #900: a free-form `gotcha` type carrying legacy `files` was doubly
-    // invisible pre-fix (wrong type name AND wrong scope field). Migration
-    // resolves BOTH: gotcha -> anti-pattern, files -> file_paths.
-    const legacyGotcha = { ...BASE(), id: 'mig-elig-900-1', type: 'gotcha', files: ['scripts/y.mjs'] };
+  // #900: a free-form `gotcha` type carrying its path in a legacy column was
+  // doubly invisible pre-fix (wrong type name AND wrong scope field). Migration
+  // resolves BOTH: gotcha -> anti-pattern, and the path -> file_paths — whether
+  // it sat in `files` or (real broken records, #1446/#1447) in `scope`.
+  it.each([
+    ['files', { files: ['scripts/y.mjs'] }],
+    ['scope (#1446/#1447)', { scope: 'scripts/y.mjs' }],
+  ])('makes a migrated gotcha with its path in %s reconcile-eligible (#900 end-to-end)', (_column, legacyPath) => {
+    const legacyGotcha = { ...BASE(), id: 'mig-elig-900-1', type: 'gotcha', ...legacyPath };
     expect(classifyLearning(legacyGotcha).eligible).toBe(false); // pre-migration: unknown type + no file_paths
     const migrated = migrateLegacyLearning(legacyGotcha);
     expect(migrated.type).toBe('anti-pattern');
     expect(migrated.file_paths).toEqual(['scripts/y.mjs']);
     expect(classifyLearning(migrated).eligible).toBe(true); // post-migration: canonical type + file_paths present
+  });
+});
+
+// ---------------------------------------------------------------------------
+// migrateLegacyLearning — GitLab #1447 path-scope coercions (./ prefix, array scope)
+// ---------------------------------------------------------------------------
+
+describe('migrateLegacyLearning — #1447 path-scope coercions', () => {
+  it.each([
+    ['strips a ./ run, keeps case', { scope: '././Src/Banner.tsx' }, ['Src/Banner.tsx']],
+    [
+      'moves an array of paths, merged and deduped with file_paths',
+      { scope: ['src/a.ts', './CLAUDE.md', 'skills/**'], file_paths: ['src/a.ts'] },
+      ['src/a.ts', 'CLAUDE.md', 'skills/**'],
+    ],
+    ['turns an empty array into private, no file_paths', { scope: [] }, undefined],
+  ])('%s', (_label, input, expectedPaths) => {
+    const migrated = migrateLegacyLearning({ ...BASE(), schema_version: 1, ...input });
+    expect(migrated.scope).toBe('private');
+    expect(migrated.file_paths).toEqual(expectedPaths);
+    expect(() => validateLearning(migrated)).not.toThrow();
+    expect(migrateLegacyLearning(migrated)).toEqual(migrated);
+  });
+
+  it.each([
+    ['an absolute path', ['/etc/runner/config.toml', 'src/a.ts']],
+    ['a scope word', ['public', 'src/a.ts']],
+    ['only a non-canonical scope word', ['project']],
+    ['a non-canonical scope word beside a path', ['src/x.mjs', 'repo']],
+    ['a non-string', [7, 'src/a.ts']],
+  ])('leaves an array scope holding %s untouched (nothing dropped, record stays invalid)', (_label, scope) => {
+    const migrated = migrateLegacyLearning({ ...BASE(), schema_version: 1, scope });
+    expect(migrated.scope).toEqual(scope);
+    expect('file_paths' in migrated).toBe(false);
+    expect(() => validateLearning(migrated)).toThrow(/scope must be one of/);
   });
 });

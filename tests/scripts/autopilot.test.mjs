@@ -121,6 +121,35 @@ function readAutopilotJsonl(tmp) {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: wrap the stub claude so `stampSource` (an ESM script) rewrites the
+// ledger after each child run. Returns the bin dir to pass as `pathPrefix`.
+// ---------------------------------------------------------------------------
+
+function stampWrapper(tmp, stampSource) {
+  const binDir = join(tmp, 'stamp-bin');
+  mkdirSync(binDir);
+  const stamp = join(binDir, 'stamp.mjs');
+  writeFileSync(stamp, stampSource);
+  const wrapper = join(binDir, 'claude');
+  writeFileSync(wrapper, '#!/usr/bin/env bash\n' +
+    `"${STUB_CLAUDE}" "$@" || exit $?\n` +
+    `exec "${process.execPath}" "${stamp}"\n`);
+  chmodSync(wrapper, 0o755);
+  return binDir;
+}
+
+// Turns the child's own (last) record into an `abandoned` backfill stub: the
+// placeholder a backfill writes when a session never closed — no waves.
+const OWN_RECORD_TO_STUB = `
+  import { readFileSync, writeFileSync } from 'node:fs';
+  const p = process.env.STUB_SESSIONS_JSONL;
+  const lines = readFileSync(p, 'utf8').trim().split('\\n');
+  const own = JSON.parse(lines.pop());
+  lines.push(JSON.stringify({ ...own, _backfill_source: 'abandoned', total_waves: 0 }));
+  writeFileSync(p, lines.join('\\n') + '\\n');
+`;
+
+// ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
 
@@ -286,15 +315,19 @@ describe('scripts/autopilot.mjs integration', () => {
   // A nonzero child exit must fail before an iteration is counted.
   // Missing raw identity must never fall back to a foreign ledger tail (#1457).
   // Multiple canonical identities with the child's raw UUID must fail closed (#1457).
+  // An own record that is only a backfill stub has UNKNOWN usage, not 0 tokens —
+  // read as a healthy iteration it would reach max-sessions-reached instead (#1457 F2).
   it.each([
     ['stub STUB_EXIT_CODE=1 causes sessionRunner to throw', { STUB_EXIT_CODE: '1' }, 'claude exit 1'],
     ['missing child raw_session_id fails closed', { STUB_RAW_ID_MODE: 'omit' }, 'no session record carries raw_session_id'],
     ['ambiguous child raw_session_id fails closed', { STUB_DUP_RAW: '1' }, 'ambiguous'],
-  ])('kill-switch failed-wave: %s', (_name, env, detail) => {
+    ['own record is a backfill stub (usage unknown, not 0)', {}, 'is a backfill stub', OWN_RECORD_TO_STUB],
+  ])('kill-switch failed-wave: %s', (_name, env, detail, stampSource) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+    const pathPrefix = stampSource ? stampWrapper(tmp, stampSource) : null;
     const result = runAutopilot(
       ['--headless', '--max-sessions=2', '--confidence-threshold=0.4'],
-      { tmp, env }
+      { tmp, env, pathPrefix }
     );
     const records = readAutopilotJsonl(tmp);
     expect(records).toHaveLength(1);
@@ -488,10 +521,7 @@ describe('scripts/autopilot.mjs integration', () => {
   // #1457: canonicalization must discard a later backfill stub sharing the child's raw UUID.
   it('uses the authoritative own record when a later raw-ID stub canonicalizes away', () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
-    const binDir = join(tmp, 'canonical-bin');
-    mkdirSync(binDir);
-    const stamp = join(binDir, 'stamp.mjs');
-    writeFileSync(stamp, `
+    const binDir = stampWrapper(tmp, `
       import { readFileSync, appendFileSync } from 'node:fs';
       const p = process.env.STUB_SESSIONS_JSONL;
       const own = JSON.parse(readFileSync(p, 'utf8').trim());
@@ -499,11 +529,6 @@ describe('scripts/autopilot.mjs integration', () => {
         total_waves: 0, total_token_output: 900000, total_tokens: 900000 };
       appendFileSync(p, JSON.stringify(stub) + '\\n');
     `);
-    const wrapper = join(binDir, 'claude');
-    writeFileSync(wrapper, '#!/usr/bin/env bash\n' +
-      `"${STUB_CLAUDE}" "$@" || exit $?\n` +
-      `exec "${process.execPath}" "${stamp}"\n`);
-    chmodSync(wrapper, 0o755);
     const result = runAutopilot(
       ['--headless', '--max-sessions=1', '--confidence-threshold=0.4', '--max-tokens=100000'],
       { tmp, pathPrefix: binDir, env: { STUB_OWN_TOKENS: '5000' } }

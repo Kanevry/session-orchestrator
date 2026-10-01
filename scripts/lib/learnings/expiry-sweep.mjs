@@ -62,7 +62,7 @@
 import { existsSync } from 'node:fs';
 import { mkdir, appendFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readLearnings, rewriteLearnings } from './io.mjs';
+import { readLearnings, rewriteLearnings, withLearningsLock } from './io.mjs';
 
 /**
  * Composite-key separator for the in-memory consolidation Map.
@@ -284,7 +284,22 @@ async function archiveThenRewrite({ filePath, archivePath, keep, archiveBatch, n
  *   `filePath` and `archivePath` are required; a missing/invalid `filePath`
  *   throws a plain `Error` (programmer error, not a runtime data condition).
  */
-export async function sweepExpiredLearnings({
+export async function sweepExpiredLearnings(opts = {}) {
+  const { filePath, dryRun = true } = opts;
+  // The read → rewrite runs under the store lock (#1447 point 8). A run that
+  // cannot write takes no lock: a dry run, an absent store (zeroed shape, see
+  // below), or an unusable `filePath` (the body owns that error).
+  if (dryRun || typeof filePath !== 'string' || !existsSync(filePath)) {
+    return sweepExpiredLearningsUnlocked(opts);
+  }
+  return withLearningsLock(filePath, () => sweepExpiredLearningsUnlocked(opts));
+}
+
+/**
+ * Body of {@link sweepExpiredLearnings}; the caller holds the store lock or
+ * runs a pass that cannot write.
+ */
+async function sweepExpiredLearningsUnlocked({
   filePath,
   archivePath,
   now,
@@ -399,7 +414,23 @@ export async function sweepExpiredLearnings({
  * @returns {Promise<{scanned: number, kept: number, archived: number,
  *   byReason: Record<string, number>, dryRun: boolean, archivePath: string}>}
  */
-export async function pruneLearnings({
+export async function pruneLearnings(opts = {}) {
+  const { filePath, dryRun = true } = opts;
+  // The read → archive → rewrite runs under the store lock (#1447 point 8): an
+  // append landing after the read below would otherwise vanish in the rename
+  // with no archive line. A dry run writes nothing and takes no lock; an
+  // unusable `filePath` goes straight to the body, which owns that error.
+  if (dryRun || typeof filePath !== 'string' || filePath.length === 0) {
+    return pruneLearningsUnlocked(opts);
+  }
+  return withLearningsLock(filePath, () => pruneLearningsUnlocked(opts));
+}
+
+/**
+ * Body of {@link pruneLearnings}; the caller holds the store lock or runs a
+ * dry run.
+ */
+async function pruneLearningsUnlocked({
   filePath,
   archivePath,
   entries,

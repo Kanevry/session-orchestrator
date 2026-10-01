@@ -621,17 +621,27 @@ describe('mirrorNarrative', () => {
       expect(String(guardLines[0][0])).not.toContain(vaultDir);
     });
 
-    it('refuses a vault with no git origin and writes nothing', async () => {
-      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'NoOrigin' });
+    // The file:// row (#1479): the refusal line must never print the local
+    // path of a file:// origin — it lands in a public CI log.
+    it.each([
+      ['with no git origin', 'NoOrigin', '', 'no git origin'],
+      ['with a local file:// origin, without printing its path', 'FileOrigin', 'file:///home/someone/vault.git', 'file://<local path>'],
+    ])('refuses a vault %s and writes nothing', async (_label, repoDirName, origin, got) => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName });
       const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
       let result;
+      let lines;
       try {
-        result = await mirrorNarrative({ repoRoot, hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => '' } });
+        result = await mirrorNarrative({ repoRoot, hostPaths: { ...HERMETIC_HOST_PATHS, readOriginUrl: () => origin } });
       } finally {
+        lines = stderrSpy.mock.calls.map(([chunk]) => String(chunk));
         stderrSpy.mockRestore();
       }
       expect(result).toEqual({ action: 'skipped-vault-not-canonical' });
-      expect(fs.existsSync(narrativeTarget(vaultDir, 'NoOrigin'))).toBe(false);
+      expect(fs.existsSync(narrativeTarget(vaultDir, repoDirName))).toBe(false);
+      expect(lines.filter((l) => l.startsWith('narrative-mirror: refusing'))).toEqual([
+        `narrative-mirror: refusing to write — vault is not the canonical Meta-Vault (expected git origin ending in one of: /agents/vault; got ${got})\n`,
+      ]);
     });
 
     it('honours the VAULT_MIRROR_SKIP_CANONICAL_CHECK escape hatch even without an origin', async () => {

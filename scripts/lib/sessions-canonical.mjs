@@ -196,14 +196,16 @@ const REPAIR_PROVENANCE_PREFIX = 'repair-invalid-sessions/';
  * record once the repair overwrote its origin). Legacy records repaired before
  * F2 lost that origin irrecoverably and read as real.
  *
- * Module-local on purpose. `session-close-backfill.mjs::isSupersedableStub()`
- * asks a narrower WRITER question ("may this be overwritten?" — `abandoned`
- * only), and that module imports this one, so importing back would be a cycle.
+ * Exported for `scripts/autopilot.mjs`, which must not read a stub as a
+ * healthy 0-token iteration (#1457 F2). Not shared with
+ * `session-close-backfill.mjs::isSupersedableStub()` on purpose: that asks a
+ * narrower WRITER question ("may this be overwritten?" — `abandoned` only), and
+ * that module imports this one, so reusing it here would be a cycle.
  *
  * @param {object} rec
  * @returns {boolean}
  */
-function isBackfillStub(rec) {
+export function isBackfillStub(rec) {
   if (!isNonEmptyString(rec._backfill_source)) return false;
   if (rec._backfill_source.startsWith(REPAIR_PROVENANCE_PREFIX)) return false;
   const hasWork = (Array.isArray(rec.waves) && rec.waves.length > 0)
@@ -216,6 +218,13 @@ function isBackfillStub(rec) {
  * non-empty `raw_session_id` with at least one non-stub. A group of stubs only
  * (or of non-stubs only) is left intact: with no non-stub to prefer there is no
  * evidence which record is the artefact. Mutates `byId`.
+ *
+ * LIMIT (#1457 point 9): the join assumes one raw_session_id = one physical
+ * session. A raw id can also span a CLOSED session and a later, separate
+ * abandoned tail (measured: a stub starting 4 minutes after its partner's
+ * `completed_at`, LeadPipeDACH `main-2026-09-03-session-11`) — that stub is
+ * dropped too, so the tail is invisible to every reader. No time-window check
+ * guards against it; adding one is a separate decision.
  * @param {Map<string, object>} byId
  * @returns {void}
  */

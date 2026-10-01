@@ -27,20 +27,32 @@ import { createHash } from 'node:crypto';
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readFileSync,
+  renameSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
 
-import { DEFAULT_KILL_GRACE_MS } from './wave-executor/dispatch-common.mjs';
-
 /**
- * Re-exported, never re-defined: the SIGTERM→SIGKILL grace is a repo
- * convention with its own named ceiling in `dispatch-common.mjs`. A second
- * literal here would drift from it silently.
+ * Grace period between SIGTERM and SIGKILL, in ms — the repo's one definition,
+ * used by the gate's group ladder here and by `wave-executor/foreign-dispatch.mjs`
+ * and `remote-dispatch.mjs` through `runChild` (`dispatch-common.mjs`).
+ *
+ * `child.kill('SIGTERM')` is a REQUEST: a child that installs a handler and
+ * ignores it never emits `close`, and `runChild`'s only resolve paths are
+ * `close` and `error` — so without escalation a wedged `cursor-agent` hangs
+ * `dispatchForeign` forever and takes the whole wave with it. SIGKILL is not
+ * catchable, so the escalation always terminates.
+ *
+ * Named ceiling (BV-004): 10 s is enough for a cooperative child to flush its
+ * stream-json tail and exit. Revisit if a well-behaved `cursor-agent` is ever
+ * measured needing longer than that to shut down — raise the constant, never
+ * drop the escalation.
  */
-export { DEFAULT_KILL_GRACE_MS };
+export const DEFAULT_KILL_GRACE_MS = 10_000;
 
 /** Append-only ledger of every gate process THIS repo's orchestrator started.
  * Gitignored via `.gitignore:125` (`.orchestrator/runtime/`), verified with
@@ -572,7 +584,42 @@ export function readGateProcessLedger(repoRoot, {
 }
 
 /**
- * Drop expired and unusable lines from the ledger, rewriting it in place.
+ * Replace a regular file's contents atomically: write `<target>.tmp-<pid>` in
+ * the same directory, then rename it over the target. Throws instead of
+ * writing when the target is a symlink or not a regular file — the caller turns
+ * that into its one WARN line.
+ *
+ * Why not `writeFileSync(target)`: that truncates first, so a kill between the
+ * truncate and the write leaves the file empty, and it FOLLOWS a symlink — a
+ * ledger linked to `events.jsonl` emptied the link's target (CWE-59, reproduced
+ * 2026-10-01). `rename` replaces the directory entry itself, never a link's
+ * target, and the `wx` flag refuses a pre-planted file or link at the tmp name.
+ * Kept local, not imported, because this module deliberately has no local
+ * imports; `orphan-reaper/reaper-audit.mjs` carries the same few lines.
+ *
+ * @param {string} target
+ * @param {string} body
+ * @param {{lstatSync: Function, writeFileSync: Function, renameSync: Function, unlinkSync: Function}} io
+ */
+function replaceRegularFile(target, body, io) {
+  if (!io.lstatSync(target).isFile()) {
+    throw new Error('not a regular file (a symlink is never written through) — left untouched');
+  }
+  const tmp = `${target}.tmp-${process.pid}`;
+  try {
+    io.writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
+    io.renameSync(tmp, target);
+  } catch (err) {
+    // EEXIST: the tmp name belongs to someone else — never remove it.
+    if (err?.code !== 'EEXIST') {
+      try { io.unlinkSync(tmp); } catch { /* nothing was created */ }
+    }
+    throw err;
+  }
+}
+
+/**
+ * Drop expired and unusable lines from the ledger, rewriting it atomically.
  * "Unusable" is {@link isValidLedgerRecord}'s verdict — the same one
  * {@link readGateProcessLedger} applies, so nothing the reader skips survives
  * the pruner.
@@ -583,6 +630,8 @@ export function readGateProcessLedger(repoRoot, {
  *
  * In-process fs only — never a shell `rm`/`mv` (PSA-003, and
  * `.orchestrator/metrics/**` deletions are a blocked-command rule for a reason).
+ * The rewrite goes through {@link replaceRegularFile}: a symlinked or
+ * non-regular ledger is refused with one WARN and left untouched.
  *
  * Named ceiling (BV-004): read-filter-write is not atomic against a concurrent
  * append, so a line appended between the read and the write is lost. Acceptable
@@ -595,16 +644,18 @@ export function readGateProcessLedger(repoRoot, {
  * @param {object} [opts]
  * @param {number} [opts.nowMs]
  * @param {number} [opts.maxAgeMs]
- * @param {{existsSync: Function, readFileSync: Function, writeFileSync: Function}} [opts.fs]  fs seam.
+ * @param {{existsSync: Function, readFileSync: Function, writeFileSync: Function,
+ *   lstatSync: Function, renameSync: Function, unlinkSync: Function}} [opts.fs]  fs seam;
+ *   replaces `node:fs` wholesale, so a partial seam fails closed (WARN, 0).
  * @returns {number} Number of lines removed (expired + malformed). 0 when the
- *   ledger is absent, empty, or unreadable.
+ *   ledger is absent, empty, unreadable, or not a regular file.
  */
 export function pruneGateProcessLedger(repoRoot, {
   nowMs = Date.now(),
   maxAgeMs = DEFAULT_LEDGER_MAX_AGE_MS,
   fs: fsSeam,
 } = {}) {
-  const io = fsSeam ?? { existsSync, readFileSync, writeFileSync };
+  const io = fsSeam ?? { existsSync, readFileSync, writeFileSync, lstatSync, renameSync, unlinkSync };
   const target = ledgerPathFor(repoRoot);
   let raw;
   try {
@@ -634,7 +685,7 @@ export function pruneGateProcessLedger(repoRoot, {
 
   if (removed === 0) return 0;
   try {
-    io.writeFileSync(target, kept.length > 0 ? `${kept.join('\n')}\n` : '', 'utf8');
+    replaceRegularFile(target, kept.length > 0 ? `${kept.join('\n')}\n` : '', io);
   } catch (err) {
     process.stderr.write(
       `process-group: could not prune ${GATE_PROCESS_LEDGER_RELPATH}: ${err?.message ?? String(err)}\n`,

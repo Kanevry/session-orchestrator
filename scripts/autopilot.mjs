@@ -52,7 +52,7 @@ import { selectMode } from './lib/mode-selector.mjs';
 import { probe, evaluate, DEFAULT_RESOURCE_THRESHOLDS } from './lib/resource-probe.mjs';
 import { detectPeers } from './lib/session-registry.mjs';
 import { normalizeSession } from './lib/session-schema.mjs';
-import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
+import { isBackfillStub, readCanonicalSessions } from './lib/sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI-level flag extraction
@@ -188,6 +188,14 @@ const SESSIONS_JSONL_PATH = resolve('.orchestrator/metrics/sessions.jsonl');
  * Read the child's canonical record by its raw harness UUID, independent of
  * semantic session IDs and peer append order. Zero or multiple matches throw;
  * only the unique record supplies normalized fields and finite token usage.
+ *
+ * A unique record that is a BACKFILL STUB throws too (#1457 F2): a stub is a
+ * placeholder some backfill wrote because the child never closed — no waves,
+ * agents or token totals. Its usage is UNKNOWN, not 0, and its empty
+ * agent_summary/effectiveness would blind the post-session kill-switches as
+ * well, so it fails closed like the zero-match case above: the loop records
+ * kill_switch=failed-wave with a detail naming the stub, instead of counting a
+ * healthy 0-token iteration that silently undercounts --max-tokens.
  * @returns {{session_id: string, agent_summary?: object, effectiveness?: object,
  *   usage?: {output_tokens?: number, total_tokens?: number}}}
  */
@@ -201,6 +209,13 @@ function readOwnSession(childSessionId) {
   }
   if (own.length > 1) {
     throw new Error(`ambiguous: ${own.length} canonical records carry raw_session_id=${childSessionId} (#1457)`);
+  }
+  if (isBackfillStub(own[0])) {
+    throw new Error(
+      `the only record with raw_session_id=${childSessionId} is a backfill stub ` +
+        `(_backfill_source=${own[0]._backfill_source}, no waves/agents/token totals) — token usage unknown, ` +
+        'refusing to count it as a 0-token iteration (#1457 F2)'
+    );
   }
   const normalized = normalizeSession(own[0]);
   const result = {

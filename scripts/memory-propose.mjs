@@ -35,6 +35,7 @@
  * Related modules:
  *   scripts/lib/memory-proposals/schema.mjs — createProposalRecord, PROPOSAL_TYPES
  *   scripts/lib/memory-proposals/store.mjs  — appendProposal
+ *   scripts/lib/learnings/schema.mjs        — isRepoRelativePathEntry (--file-paths)
  *   scripts/lib/state-md.mjs               — resolveStateMdPath, parseStateMd
  *   scripts/parse-config.mjs               — Session Config subprocess
  */
@@ -42,9 +43,10 @@
 import { parseArgs } from 'node:util';
 import { readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { dirname, join, isAbsolute } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { isRepoRelativePathEntry } from './lib/learnings/schema.mjs';
 import { isWaveAgentContext, WAVE_AGENT_ENV_VAR, WAVE_AGENT_ENV_VALUE } from './lib/wave-context.mjs';
 import { readProcessLocalSessionIds, manifestSessionBinding } from './lib/session-identity/own-session.mjs';
 import { readLockDetailed } from './lib/session-lock.mjs';
@@ -197,6 +199,14 @@ if (confidenceRaw !== undefined) {
 // (Step 6) — so a malformed --file-paths value produces the same exit-4
 // argv-error contract as every other required/optional flag, never a
 // downstream schema-validation surprise.
+//
+// The repo-relative rule is `isRepoRelativePathEntry` from learnings/schema.mjs
+// — the predicate strict validateLearning() applies to `file_paths` at write
+// time. A looser rule here (it was `path.isAbsolute`, blind to `~/x`, `C:\x`,
+// UNC and URL entries) queued proposals that the operator approved and
+// appendLearning() then refused, so the learning never landed. The checks below
+// it (newline, glob metacharacters, count, length) are this CLI's own, stricter
+// additions.
 
 const FILE_PATHS_MAX_COUNT = 20;
 const FILE_PATH_MAX_CHARS = 256;
@@ -219,10 +229,13 @@ if (filePaths !== undefined) {
     );
   }
   for (const p of filePaths) {
-    if (isAbsolute(p)) {
-      argErrors.push(`--file-paths must be repo-relative — absolute path rejected: "${p}"`);
-    } else if (p.split(/[\\/]/).includes('..')) {
-      argErrors.push(`--file-paths must not contain ".." path segments: "${p}"`);
+    if (!isRepoRelativePathEntry(p)) {
+      // The `..` probe only picks the message; the predicate decides.
+      argErrors.push(
+        p.split(/[\\/]/).includes('..')
+          ? `--file-paths must not contain ".." path segments: "${p}"`
+          : `--file-paths must be repo-relative — absolute path rejected (leading /, \\ or ~, Windows drive, UNC or URL): "${p}"`,
+      );
     } else if (/[\r\n]/.test(p)) {
       argErrors.push(`--file-paths entries must not contain newline characters: "${p}"`);
     } else if (/[*?[\]{}]/.test(p)) {

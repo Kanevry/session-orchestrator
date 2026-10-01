@@ -74,6 +74,10 @@
  *  20. B5's echo check widens to the whole file → a sibling test that asserts
  *      the same date hides a real bomb (the two 2026-08-05 bombs of fa57ee66^
  *      vanished in all 8 realistic variants measured 2026-09-30).
+ *  21. B5's seam proof reads the WIDE clock form of the controlled-block check →
+ *      a helper whose only clock token is a shorthand/positional `now` becomes a
+ *      "subject", and a date pinned next to it is reported (+20 seamed pairs in
+ *      15 files measured 2026-10-01, e.g. `expectDeny` in enforce-scope, #1478).
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -601,6 +605,30 @@ describe('check-test-value-bans — B5 counter-examples', () => {
         ...SEAM_BLOCK,
         '',
         ...SHORTHAND_CLOCK_BLOCK,
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  it('does not prove a seam from a clock handed over only as a bare `now` value', () => {
+    // Catches a seam proof that reads the wide controlled-block form (#1478): `manifestMtimeMs: now }`
+    // (shape of enforce-scope.test.mjs) would make the helper `expectDeny` a clock-seamed subject.
+    const { json } = scan({
+      'tests/helper.test.mjs': [
+        "import { expectDeny } from '../_helpers/hook-decision.mjs';",
+        '',
+        "it('denies an edit once the manifest went stale', () => {",
+        '  const now = Date.now();',
+        '  writeManifest(dir, { sessionStartedAtMs: now - HOUR_MS, manifestMtimeMs: now });',
+        '  expectDeny(runHook(dir));',
+        '});',
+        '',
+        "it('stamps the deny record with its day', () => {",
+        '  expectDeny(runHook(dir));',
+        "  expect(readLedger(dir)[0].day).toBe('2026-08-05');",
+        '});',
         '',
       ].join('\n'),
     });

@@ -3,31 +3,36 @@
 # Usage: bash mutate.sh <mutations-dir>   from the offload worktree root, never a live checkout.
 # Reads <mutations-dir>/<lane>/manifest.tsv (tab-separated):
 #   id  patch  testfiles  pattern  contract  ledger_refs
-# Env, defaults fit vitest: MUTATE_CMD, MUTATE_PATTERN_FLAG, MUTATE_RED_RE.
+# Env: MUTATE_CMD (default vitest via pnpm when pnpm-lock.yaml exists, else node_modules/.bin), MUTATE_PATTERN_FLAG, MUTATE_RED_RE.
+# patch=EXTERN:<lane> and patch=NOCONTRACT rows are listed, never run. testfiles=- and pattern=- run CMD alone.
 # Exit 0 only when the control run is green and every mutation is CAUGHT; 1 otherwise,
 # 2 red control, 3 restore mismatch (aborts at once). CMD and testfiles split on spaces.
 set -u
 MDIR="${1:?usage: mutate.sh <mutations-dir>}"
-CMD="${MUTATE_CMD:-pnpm exec vitest run}"
+if [ -n "${MUTATE_CMD:-}" ]; then CMD="$MUTATE_CMD"; elif [ -f pnpm-lock.yaml ]; then CMD="pnpm exec vitest run"; else CMD="node_modules/.bin/vitest run"; fi  # never npx: it may download
 PFLAG="${MUTATE_PATTERN_FLAG:--t}"
 RED_RE="${MUTATE_RED_RE:-Tests +[0-9]+ failed}"
 export NO_COLOR=1; ESC=$(printf '\033')  # colour codes are stripped too: a runner may force colour
 sha() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$@"; else shasum -a 256 "$@"; fi; }
-echo "SHA=$(git rev-parse HEAD) HOST=$(hostname) START=$(date -u +%FT%TZ)"
+echo "SHA=$(git rev-parse HEAD) HOST=$(hostname) CMD=[$CMD] START=$(date -u +%FT%TZ)"
 $CMD >"$MDIR/control.out" 2>&1 </dev/null || { echo "CONTROLRED rc=$? see $MDIR/control.out"; exit 2; }
 echo "CONTROL green"
-bad=0; n=0
+bad=0; n=0; nc=0
 for M in "$MDIR"/*/manifest.tsv; do
   [ -f "$M" ] || continue
   L=$(dirname "$M"); lane=$(basename "$L")
   while IFS=$'\t' read -r id patch testfiles pattern contract refs || [ -n "${id:-}" ]; do
     case "$id" in (''|\#*|id) continue ;; esac
-    case "$patch" in (EXTERN:*) echo "REF $lane $id -> ${patch#EXTERN:} refs=$refs"; continue ;; esac
+    case "$patch" in
+      (EXTERN:*) echo "REF $lane $id -> ${patch#EXTERN:} refs=$refs"; continue ;;
+      (NOCONTRACT) nc=$((nc + 1)); echo "NOCONTRACT $lane $id refs=$refs"; continue ;;
+    esac
     n=$((n + 1)); P="$L/$patch"
     files=$(git apply --numstat "$P" 2>/dev/null | awk '{print $3}')
     if [ -z "$files" ] || ! before=$(sha $files) || ! git apply "$P" 2>"$L/$id.apply.err"; then
       echo "APPLYFAIL $lane $id patch=$patch (see $id.apply.err if present)"; bad=1; continue
     fi
+    [ "$testfiles" = "-" ] && testfiles=""
     if [ "$pattern" = "-" ]; then $CMD $testfiles; else $CMD $testfiles "$PFLAG" "$pattern"; fi >"$L/$id.out" 2>&1 </dev/null
     rc=$?
     git apply -R "$P" 2>"$L/$id.revert.err"; rrc=$?
@@ -40,6 +45,6 @@ for M in "$MDIR"/*/manifest.tsv; do
     echo "$v $lane $id rc=$rc restore=OK [$red] files=[$files] refs=$refs"
   done <"$M"
 done
-[ "$n" -gt 0 ] || { echo "NOMUTATIONS in $MDIR"; bad=1; }
-echo "END=$(date -u +%FT%TZ) mutations=$n"; git status --porcelain
+[ "$n" -gt 0 ] || [ "$nc" -gt 0 ] || { echo "NOMUTATIONS in $MDIR"; bad=1; }
+echo "END=$(date -u +%FT%TZ) mutations=$n nocontract=$nc"; git status --porcelain
 exit "$bad"

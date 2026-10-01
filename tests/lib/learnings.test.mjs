@@ -209,6 +209,28 @@ describe('validateLearning — extended field shape', () => {
     const v = validateLearning(entry);
     expect(v.anonymization_version).toBe(5);
   });
+
+  // GitLab #1447: a bare string passed strict validation, and every reader
+  // iterates file_paths as a list.
+  it.each([
+    ['a bare string', 'src/x.ts'],
+    ['an absolute entry', ['/abs/x.ts']],
+    ['a home-relative entry', ['~/x.ts']],
+    ['a .. segment', ['src/../x.ts']],
+    ['an empty entry', ['src/x.ts', '']],
+    ['a non-string entry', [42]],
+  ])('rejects file_paths holding %s', (_label, filePaths) => {
+    expect(() => validateLearning({ ...LEGACY(), file_paths: filePaths })).toThrow(/file_paths/);
+  });
+
+  it('accepts root files, dirs and globs in file_paths, null as absent, and anything under legacyTolerant', () => {
+    // Measured live: these shapes sit in real stores, so the strict scope
+    // predicate (two segments + known extension) must not be reused here.
+    const ok = { ...LEGACY(), file_paths: ['CLAUDE.md', 'docs/prd', 'skills/**', './src/x.ts'] };
+    expect(() => validateLearning(ok)).not.toThrow();
+    expect(() => validateLearning({ ...LEGACY(), file_paths: null })).not.toThrow();
+    expect(() => validateLearning({ ...LEGACY(), file_paths: 'src/x.ts' }, { legacyTolerant: true })).not.toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------

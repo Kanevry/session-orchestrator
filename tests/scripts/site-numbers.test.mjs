@@ -757,7 +757,7 @@ describe('page and receipt — the two served artefacts must agree', () => {
    * both from ONE measurement (that invariant is already pinned, in "writes the
    * snapshot from the same measurement as the HTML cells"), but NOTHING made
    * them travel together afterwards. `release.mjs --set-version` even prints
-   * "commit BOTH" — prose, addressed to whoever is reading. This is that
+   * "commit ALL of them" — prose, addressed to whoever is reading. This is that
    * sentence made mechanical.
    *
    * WHY THIS IS NOT A FRESHNESS GATE — the thing `release.mjs` explicitly
@@ -1299,5 +1299,96 @@ describe('the census line shape', () => {
     expect(matches).toHaveLength(1);
     expect(matches[0][1]).toBe(current.version);
     expect(line).not.toMatch(/Version:/);
+  });
+});
+
+describe('sitemap lastmod — dated by the counting stamp on the page (#1484)', () => {
+  /**
+   * The real `site/sitemap.xml` shape, lastmods parameterised (golden record,
+   * `testing.md` § Fixtures Mirror Production Data). The defaults are the values
+   * MR !69 set by hand on 2026-10-01.
+   */
+  const ORIGIN = 'https://session-orchestrator.com';
+  function sitemapXml(lastmod = {}) {
+    const d = { '/': '2026-09-22', '/de': '2026-09-22', '/guide': '2026-09-16', '/impressum': '2026-09-07', '/datenschutz': '2026-09-07', ...lastmod };
+    const alt = [
+      `    <xhtml:link rel="alternate" hreflang="en" href="${ORIGIN}/"/>`,
+      `    <xhtml:link rel="alternate" hreflang="de" href="${ORIGIN}/de"/>`,
+      `    <xhtml:link rel="alternate" hreflang="x-default" href="${ORIGIN}/"/>`,
+    ];
+    const url = (path, freq, prio, extra = []) =>
+      ['  <url>', `    <loc>${ORIGIN}${path}</loc>`, `    <lastmod>${d[path]}</lastmod>`, `    <changefreq>${freq}</changefreq>`, `    <priority>${prio}</priority>`, ...extra, '  </url>'];
+    return [
+      '<?xml version="1.0" encoding="UTF-8"?>',
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:xhtml="http://www.w3.org/1999/xhtml">',
+      ...url('/', 'weekly', '1.0', alt),
+      ...url('/de', 'weekly', '0.9', alt),
+      ...url('/guide', 'weekly', '0.8'),
+      ...url('/impressum', 'yearly', '0.3'),
+      ...url('/datenschutz', 'yearly', '0.3'),
+      '</urlset>',
+      '',
+    ].join('\n');
+  }
+
+  /**
+   * BUG CAUGHT (#1484): the release `--write` re-stamps the numbers and the
+   * "Counted on" date on `/` but leaves its sitemap `lastmod` behind — measured
+   * 2026-10-01: `/` said 2026-09-08 while its content was counted 2026-09-22.
+   * Whole-file equality also pins that every other entry stays byte-identical.
+   */
+  it('moves the lastmod of a page whose content the run changed to the counting date', () => {
+    const site = writeSiteFixture(current, { sessions: '210', 'counted-at': '2026-09-22', 'counted-sha': 'd2de3ca' });
+    writeFileSync(join(site, 'sitemap.xml'), sitemapXml(), 'utf8');
+    const res = run(['--write', '--site', site]);
+    expect(res.code).toBe(0);
+    expect(readFileSync(join(site, 'sitemap.xml'), 'utf8')).toBe(sitemapXml({ '/': current['counted-at'] }));
+  });
+
+  /**
+   * BUG CAUGHT: two over-eager datings. (a) A header version bump on the guide
+   * — its only cell — counted as a content change (#1484: version bumps in the
+   * page header do not count). (b) A `/` lastmod that a hand edit dated AFTER
+   * the count, rewound to the counting stamp: lastmod must never move backwards.
+   */
+  it('leaves every lastmod byte-identical when the run changed no page content', () => {
+    const site = writeSiteFixture(current);
+    const guide = join(site, 'guide', 'index.html');
+    writeFileSync(guide, '<html><body><a>v<span class="num" data-metric="version">0.0.1</span></a></body></html>', 'utf8');
+    const before = sitemapXml({ '/': '2999-12-31' });
+    writeFileSync(join(site, 'sitemap.xml'), before, 'utf8');
+    const res = run(['--write', '--site', site]);
+    expect(res.code).toBe(0);
+    expect(readFileSync(guide, 'utf8')).toContain(`data-metric="version">${current.version}<`); // the run DID rewrite the guide
+    expect(readFileSync(join(site, 'sitemap.xml'), 'utf8')).toBe(before);
+  });
+
+  /**
+   * BUG CAUGHT: a stale lastmod the CI guard cannot see. `--check` must fail on
+   * a sitemap that predates the content already on the page, exactly as it
+   * fails on a stale number — clock-free, so it never goes red on its own.
+   */
+  it('--check exits 1 and names the loc when a lastmod predates the counting stamp on its page', () => {
+    const site = writeSiteFixture(current);
+    writeFileSync(join(site, 'sitemap.xml'), sitemapXml({ '/': '2026-09-08' }), 'utf8');
+    const res = run(['--check', '--site', site]);
+    expect(res.code).toBe(1);
+    expect(res.stdout).toContain(
+      `DRIFT ${join(site, 'sitemap.xml')}:5 lastmod ${ORIGIN}/: sitemap says "2026-09-08", page counted "${current['counted-at']}"`,
+    );
+  });
+
+  /**
+   * BUG CAUGHT: a sitemap entry with no page mapping, silently skipped — a new
+   * page whose lastmod nothing ever dates (this file's own rule for metric ids).
+   */
+  it('exits 1 on a sitemap loc with no page mapping and leaves the sitemap untouched', () => {
+    const site = writeSiteFixture(current, { sessions: '210' });
+    const before = sitemapXml().replace('</urlset>', `  <url>\n    <loc>${ORIGIN}/blog</loc>\n    <lastmod>2026-09-01</lastmod>\n  </url>\n</urlset>`);
+    writeFileSync(join(site, 'sitemap.xml'), before, 'utf8');
+    const res = run(['--write', '--site', site]);
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain(`unknown sitemap <loc> "${ORIGIN}/blog"`);
+    expect(readFileSync(join(site, 'sitemap.xml'), 'utf8')).toBe(before);
   });
 });

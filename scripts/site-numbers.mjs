@@ -91,6 +91,13 @@
  * silent skip — a generator that quietly stops filling a surface is the exact
  * failure this file exists to end.
  *
+ * ## The sitemap `<lastmod>` (`site/sitemap.xml`, #1484)
+ *
+ * `--write` changes what `/` and `/de` SHOW, so it also dates them in the
+ * sitemap: `lastmod` becomes max(lastmod, the page's own `counted-at` cell).
+ * `--check` reports a `lastmod` older than that cell as drift. Rule, mapping and
+ * reasons: `SITEMAP_PAGES`.
+ *
  * Exit codes (`.claude/rules/cli-design.md`):
  *   0 — no drift (--check) / files updated or already current (--write)
  *   1 — drift found (--check), or a contract violation in either mode
@@ -99,7 +106,7 @@
  */
 
 import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs';
-import { join, resolve, relative } from 'node:path';
+import { join, resolve, relative, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
@@ -964,6 +971,118 @@ export function syncCensusBlocks(siteDir, values, { write = false } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// The sitemap <lastmod> in site/sitemap.xml (#1484)
+// ---------------------------------------------------------------------------
+
+/** The sitemap, relative to the SITE directory. */
+export const SITEMAP_FILE = 'sitemap.xml';
+
+/**
+ * Every page ↔ sitemap `<loc>`, explicitly.
+ *
+ * Why the sitemap is this generator's business: `--write` changes what `/` and
+ * `/de` show (version card, number cards, "Counted on … at commit …"), and the
+ * release that ran it left their `lastmod` behind. Measured 2026-10-01: `/`
+ * claimed 2026-09-08 while its content was counted 2026-09-22.
+ *
+ * The rule takes no second clock. A page's `counted-at` cell is the date this
+ * script last changed that page — `rewrite()` stamps every cell in one pass —
+ * so `lastmod` becomes max(lastmod, that cell), and never moves backwards. A
+ * page without a `counted-at` cell (the guide and the legal pages, whose only
+ * cell is the header version) is never dated: a version bump in a page header
+ * is not a content change.
+ *
+ * Unknown either way is an ERROR, never a skip (the `METRIC_IDS` rule): a
+ * sitemap `<loc>` missing here would never be dated, and a page carrying cells
+ * that is missing here would drift unseen.
+ */
+export const SITEMAP_PAGES = Object.freeze([
+  { page: 'index.html', loc: 'https://session-orchestrator.com/' },
+  { page: 'de/index.html', loc: 'https://session-orchestrator.com/de' },
+  { page: 'guide/index.html', loc: 'https://session-orchestrator.com/guide' },
+  { page: 'impressum/index.html', loc: 'https://session-orchestrator.com/impressum' },
+  { page: 'datenschutz/index.html', loc: 'https://session-orchestrator.com/datenschutz' },
+]);
+
+const URL_BLOCK_RE = /<url>([\s\S]*?)<\/url>/g;
+const ISO_DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * Judge (and optionally rewrite) the `<lastmod>` of every sitemap entry. Only the
+ * date text of an entry that moves is rewritten; the rest of the file is handed
+ * back byte-for-byte.
+ *
+ * @param {string} siteDir
+ * @param {Array<{page:string, metrics:string[], countedAt:string|null}>} pages
+ *   every HTML file under `siteDir` carrying metric cells: its site-relative path
+ *   (`/`-separated), its metric ids, and its `counted-at` cell as it stands AFTER
+ *   this run (`null` when it has none)
+ * @param {{write?: boolean}} [opts]
+ * @returns {{present:boolean, file:string, errors?:string[],
+ *            drift?:Array<{loc:string, line:number, actual:string, expected:string}>,
+ *            written?:boolean}}
+ */
+export function syncSitemapLastmod(siteDir, pages, { write = false } = {}) {
+  const abs = join(siteDir, SITEMAP_FILE);
+  // Absent file: like the census blocks, not this generator's to create.
+  if (!existsSync(abs) || !statSync(abs).isFile()) return { present: false, file: abs };
+
+  const errors = [];
+  const dated = new Map(); // loc → the counting date its page carries
+  for (const p of pages) {
+    const entry = SITEMAP_PAGES.find((e) => e.page === p.page);
+    if (!entry) {
+      errors.push(
+        `${p.page} carries metric cells but has no sitemap mapping — known pages: ` +
+          SITEMAP_PAGES.map((e) => e.page).join(', '),
+      );
+    } else if (p.countedAt !== null) {
+      if (ISO_DAY_RE.test(p.countedAt)) dated.set(entry.loc, p.countedAt);
+      else errors.push(`${p.page}: counted-at cell "${p.countedAt}" is not a YYYY-MM-DD date`);
+    } else if (p.metrics.some((m) => m !== 'version')) {
+      // Counted cells with no stamp to date them by: their changes would never
+      // reach the sitemap.
+      errors.push(`${p.page} carries counted cells but no counted-at cell — its lastmod cannot be dated`);
+    }
+  }
+
+  const text = readFileSync(abs, 'utf8');
+  const drift = [];
+  const seen = new Set();
+  const next = text.replace(URL_BLOCK_RE, (block, inner, offset) => {
+    const loc = /<loc>([^<]*)<\/loc>/.exec(inner)?.[1].trim();
+    if (loc === undefined || !SITEMAP_PAGES.some((e) => e.loc === loc)) {
+      errors.push(
+        `unknown sitemap <loc> "${loc ?? '(none)'}" — known: ${SITEMAP_PAGES.map((e) => e.loc).join(', ')}`,
+      );
+      return block;
+    }
+    seen.add(loc);
+    const lm = /<lastmod>([^<]*)<\/lastmod>/.exec(block);
+    if (!lm || !ISO_DAY_RE.test(lm[1])) {
+      errors.push(`<lastmod> of ${loc} is missing or not a YYYY-MM-DD date`);
+      return block;
+    }
+    const date = dated.get(loc);
+    // ISO days compare as strings. Never backwards: a lastmod a hand edit dated
+    // after the count stays.
+    if (date === undefined || date <= lm[1]) return block;
+    drift.push({ loc, line: lineOf(text, offset + lm.index), actual: lm[1], expected: date });
+    return `${block.slice(0, lm.index)}<lastmod>${date}</lastmod>${block.slice(lm.index + lm[0].length)}`;
+  });
+  for (const loc of dated.keys()) {
+    if (!seen.has(loc)) errors.push(`${loc} carries a counted-at cell but has no sitemap <url> entry`);
+  }
+
+  const out = { present: true, file: abs, errors, drift, written: false };
+  if (write && errors.length === 0 && next !== text) {
+    writeFileSync(abs, next, 'utf8');
+    out.written = true;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Markup
 // ---------------------------------------------------------------------------
 
@@ -1134,6 +1253,7 @@ function printHelp() {
   writeStdoutLineSync('  --check        (default) report drift, change nothing; exit 1 on drift');
   writeStdoutLineSync(`  --write        rewrite the cells in place; also refreshes ${CENSUS_FILE.join('/')}`);
   writeStdoutLineSync('                 (skipped when --site points outside the repo\'s own site/)');
+  writeStdoutLineSync(`                 and dates each counted page's <lastmod> in <site>/${SITEMAP_FILE}`);
   writeStdoutLineSync('  --json         machine-readable envelope on stdout');
   writeStdoutLineSync('  --site <dir>   site directory (default <repo-root>/site)');
   writeStdoutLineSync('  --version      print the package version');
@@ -1208,12 +1328,18 @@ export function main(argv = process.argv.slice(2), env = {}) {
   // the source producing it is corrupt, and writing the rest would be a
   // partial write reported as success.
   let rejectedTotal = 0;
+  // Every page carrying cells, for the sitemap's <lastmod> (syncSitemapLastmod).
+  const pages = [];
+
+  // Repo-relative when the file is inside the repo; absolute otherwise (a
+  // `--site` fixture in $TMPDIR would otherwise render as ../../../../var/...).
+  const display = (abs) => {
+    const r = relative(root, abs);
+    return r && !r.startsWith('..') ? r : abs;
+  };
 
   for (const abs of files) {
-    // Repo-relative when the file is inside the repo; absolute otherwise (a
-    // `--site` fixture in $TMPDIR would otherwise render as ../../../../var/...).
-    const r = relative(root, abs);
-    const rel = r && !r.startsWith('..') ? r : abs;
+    const rel = display(abs);
     const html = readFileSync(abs, 'utf8');
     const spans = inspectHtml(html, values);
     spanTotal += spans.length;
@@ -1248,6 +1374,16 @@ export function main(argv = process.argv.slice(2), env = {}) {
         written = res.replaced;
         writtenTotal += res.replaced;
       }
+    }
+
+    if (spans.length > 0) {
+      const stamp = spans.find((s) => s.metric === 'counted-at');
+      pages.push({
+        page: relative(siteDir, abs).split(sep).join('/'),
+        metrics: spans.map((s) => s.metric),
+        // As the page stands AFTER this run: a written file carries every value.
+        countedAt: stamp ? (written > 0 ? values['counted-at'] : stamp.actual.trim()) : null,
+      });
     }
 
     report.push({
@@ -1293,6 +1429,17 @@ export function main(argv = process.argv.slice(2), env = {}) {
   // Kept as its own name in the --json envelope for the consumers that already
   // read `llmsFull`; `censusBlocks` below carries all of them.
   const llms = censusBlocks[CENSUS_BLOCK_FILES.indexOf(LLMS_FULL_FILE)];
+
+  // The sitemap <lastmod>: a date older than the counting stamp on its page is
+  // drift, like a stale number. Written from the pages as they stand after the
+  // loop above, so page and sitemap come from the same run.
+  const sitemap = syncSitemapLastmod(siteDir, pages, { write: args.write });
+  const sitemapRel = display(sitemap.file);
+  for (const e of sitemap.errors ?? []) {
+    stderr(`Error: ${sitemapRel}: ${e}`);
+    contractTotal += 1;
+  }
+  driftTotal += sitemap.drift?.length ?? 0;
 
   // The named silent-failure class: a generator that matches nothing, changes
   // nothing, and reports success. Zero spans means the markup contract is not in
@@ -1390,6 +1537,13 @@ export function main(argv = process.argv.slice(2), env = {}) {
             stale: b.stale === true,
             written: b.written === true,
           })),
+          sitemap: {
+            file: sitemap.present ? sitemapRel : null,
+            present: sitemap.present,
+            errors: sitemap.errors ?? [],
+            drift: sitemap.drift ?? [],
+            written: sitemap.written === true,
+          },
           censusWritten,
           ok,
         },
@@ -1404,6 +1558,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
         censusBlocks
           .map((b, i) => (b.written ? ` + ${CENSUS_BLOCK_FILES[i]}` : ''))
           .join('') +
+        (sitemap.written ? ` + ${SITEMAP_FILE}` : '') +
         (censusWritten ? ` + ${CENSUS_FILE.join('/')}` : ''),
     );
   } else {
@@ -1416,6 +1571,9 @@ export function main(argv = process.argv.slice(2), env = {}) {
       }
     }
     for (const l of censusDriftLines) stdout(l);
+    for (const d of sitemap.drift ?? []) {
+      stdout(`DRIFT ${sitemapRel}:${d.line} lastmod ${d.loc}: sitemap says "${d.actual}", page counted "${d.expected}"`);
+    }
     stdout(
       driftTotal === 0 && !noSpans && contractTotal === 0
         ? `site-numbers: ${spanTotal} metric cell(s) current across ${files.length} file(s)`

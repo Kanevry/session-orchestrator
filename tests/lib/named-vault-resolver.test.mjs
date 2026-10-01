@@ -29,6 +29,7 @@ import {
   findRepoRoot,
   resolveNamedVault,
   normalizeRemote,
+  describeOriginForLog,
   checkCanonicalVault,
 } from '../../scripts/lib/named-vault-resolver.mjs';
 
@@ -717,6 +718,22 @@ describe('normalizeRemote', () => {
     expect(normalizeRemote('https://gitlab.example.com/agents/vault.git\n')).toBe('gitlab.example.com/agents/vault');
     expect(normalizeRemote('ssh://git@gitlab.example.com/agents/vault/')).toBe('git@gitlab.example.com/agents/vault');
     expect(normalizeRemote(undefined)).toBe('');
+  });
+});
+
+// #1479: the writers' refusal line lands in CI logs and transcripts, so a local
+// origin must not print its path and a remote one must not print a credential.
+describe('describeOriginForLog', () => {
+  it.each([
+    ['file:// URL', 'file:///srv/vaults/agents/other.git', 'file://<local path>'],
+    ['bare absolute path', '/srv/vaults/other', 'file://<local path>'],
+    ['relative path', '../other-vault', 'file://<local path>'],
+    ['https with user:token', 'https://user:token@gitlab.example.com/agents/vault.git', 'https://***@gitlab.example.com/agents/vault.git'],
+    ['scp-like ssh', 'git@gitlab.example.com:agents/vault.git', 'git@gitlab.example.com:agents/vault.git'],
+    ['ssh:// URL', 'ssh://git@gitlab.example.com/agents/vault', 'ssh://git@gitlab.example.com/agents/vault'],
+    ['absent origin', undefined, ''],
+  ])('%s', (_label, url, expected) => {
+    expect(describeOriginForLog(url)).toBe(expected);
   });
 });
 

@@ -416,18 +416,13 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
   // plain `gateKillFields(result)` reports the quiet outer ladder
   // (`timed_out: false`, `kill_signals: []`) and every row goes red.
   //
-  // KNOWN GAP (#1459, open owner decision 2026-09-30): baseline / incremental /
-  // per-file are reporting variants that end in an unconditional
-  // `process.exit(0)`, and the event name is derived from that exit code — so a
-  // KILLED reporting-variant gate is recorded as `passed` (with `timed_out: true`)
-  // while full-gate reads `failed`. Whether it should read `failed` is undecided.
-  // These rows pin today's behaviour so a change becomes visible; do not "fix"
-  // the expectations here without that decision.
+  // Rule (#1459, owner decision 2026-10-01): a killed gate is `failed` in every
+  // variant, although the reporting variants still exit 0.
   it.each([
     { variant: 'full-gate', extra: [], name: 'failed' },
-    { variant: 'baseline', extra: [], name: 'passed' },
-    { variant: 'incremental', extra: ['--files', 'tests/dummy.test.mjs'], name: 'passed' },
-    { variant: 'per-file', extra: ['--files', 'tests/dummy.test.mjs'], name: 'passed' },
+    { variant: 'baseline', extra: [], name: 'failed' },
+    { variant: 'incremental', extra: ['--files', 'tests/dummy.test.mjs'], name: 'failed' },
+    { variant: 'per-file', extra: ['--files', 'tests/dummy.test.mjs'], name: 'failed' },
   ])('carries an INNER per-command kill into the $name event of the $variant variant (#1457)', ({ variant, extra, name }) => {
     const config = JSON.stringify({ 'typecheck-command': 'sleep 30', 'test-command': 'skip', 'lint-command': 'skip' });
     const r = run(['--variant', variant, ...extra, '--config', config], { CLAUDE_PROJECT_DIR: tmp, SO_GATE_TIMEOUT_MS: '300' });

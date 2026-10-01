@@ -25,6 +25,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readSubagents } from '@lib/subagents-schema.mjs';
+import { rollupSessionTokens } from '@lib/session-token-rollup.mjs';
 
 const HOOK = new URL('../../hooks/subagent-telemetry.mjs', import.meta.url).pathname;
 const JSONL_REL = join('.orchestrator', 'metrics', 'subagents.jsonl');
@@ -694,6 +695,7 @@ describe('subagent-telemetry hook', () => {
       const result = runHook(
         JSON.stringify({
           hook_event_name: 'SubagentStop',
+          session_id: 'S',
           agent_id: agentId,
           duration_ms: 3000,
           transcript_path: transcriptPath,
@@ -718,6 +720,16 @@ describe('subagent-telemetry hook', () => {
       expect(record.token_cache_creation).toBe(600);
       expect(record.token_output).toBe(90);
       expect(record.token_input).toBe(3630);
+      // Bug caught: without a per-model breakdown the record could only be
+      // priced at one model or not at all; the rollup prices each part.
+      expect(record.models_usage).toEqual([
+        { model: 'claude-opus-5-5', token_input_uncached: 10, token_cache_read: 1000, token_cache_creation: 200, token_output: 30 },
+        { model: 'claude-sonnet-5-5', token_input_uncached: 20, token_cache_read: 2000, token_cache_creation: 400, token_output: 60 },
+      ]);
+      // Producer→rollup contract on the record the hook really wrote (the
+      // rollup's own test prices a hand-built record): 1840 µ$ opus + 2040 µ$ sonnet.
+      const rollup = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: join(tmp, JSONL_REL) });
+      expect(rollup.total_cost_usd).toBeCloseTo(0.00388, 12);
     });
 
     it('keeps the real model when the LAST turn is a zero-token <synthetic> turn', async () => {
@@ -744,6 +756,9 @@ describe('subagent-telemetry hook', () => {
 
       expect(record.model).toBeNull();
       expect(record.token_output).toBe(1_000_010);
+      // A breakdown here would carry only the named part, so the rollup would
+      // price the record without the model-less turn's tokens.
+      expect(record.models_usage).toBeUndefined();
     });
 
     it('falls back to the last model when no turn carries any billable token', async () => {

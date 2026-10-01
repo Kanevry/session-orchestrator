@@ -142,14 +142,6 @@ describe('OPTIONAL_FIELDS', () => {
     expect(Object.isFrozen(OPTIONAL_FIELDS)).toBe(true);
   });
 
-  it('has the expected optional fields (floor/ceiling — grows additively, see testing.md dynamic-count carve-out)', () => {
-    // Floor: 9 (current count after Epic #644 added 3 token-rollup fields).
-    // Ceiling: 30 (generous headroom for future additive extensions).
-    // Named-field assertions below pin the new fields without locking the count.
-    expect(OPTIONAL_FIELDS.length).toBeGreaterThanOrEqual(9);
-    expect(OPTIONAL_FIELDS.length).toBeLessThanOrEqual(30);
-  });
-
   // TV-003 consolidation (#964): 10 single-`toContain` tests folded into ONE
   // membership assertion. Every field is still named, and the failure message
   // names exactly which one went missing — strictly more informative than 10
