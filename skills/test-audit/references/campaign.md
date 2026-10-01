@@ -71,7 +71,7 @@ Every number carries the command that produced it and the SHA it was measured at
 | Coverage | total and per production file, on all four metrics (lines, branches, functions, statements); thresholds and config unchanged |
 | tests:src ratio | per TV-003 (`test-value.md`); by hand when the script below does not know the stack |
 
-`scripts/lib/tests-src-ratio.mjs` counts only `.mjs`/`.js`/`.cjs`, with only `tests/` as the test side, so a TypeScript repo comes out as ratio 0 (or null) and "within corridor". Until that is fixed, compute the ratio by hand with the TV-003 recipe: numerator the physical lines of `git ls-files '<testdir>/**'` (code files), denominator every other tracked code file. State both numbers and the globs.
+`scripts/lib/tests-src-ratio.mjs` counts JavaScript and TypeScript (`.mjs`/`.js`/`.cjs`/`.jsx`/`.ts`/`.tsx`/`.mts`/`.cts`; `*.d.ts` on neither side). Its test side is a top-level `tests/` plus co-located tests anywhere: `*.test.<ext>`, `*.spec.<ext>`, and files under `__tests__/`. Its `--json` envelope prints that definition; quote it with the number. Two limits remain. A nested test directory (`packages/x/tests/`) whose helpers are not named `*.test.*` counts as src. Other stacks (Python, Swift, Go, …) are invisible to it: the envelope then says `reason: "no-tests-found"` (ratio `null`) or measures only the JS/TS code it happens to find. There, `null` or a low ratio means not measurable, never within the corridor. Compute those by hand with the TV-003 recipe: numerator the physical lines of the tracked test files (`git ls-files '<testdir>/**'`, code files only), denominator every other tracked code file. State both numbers and the globs.
 
 Stack recipes (check each flag against the installed version before use):
 
