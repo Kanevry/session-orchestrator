@@ -16,7 +16,8 @@
  *   without interpreting the session key's shape (#1027 Nachtrag 7).
  * - Malformed JSONL lines are silently skipped (resilience over strictness).
  * - `subagents_with_tokens` counts distinct agent_ids that have at least one
- *   TOKEN-BEARING record (coverage metric).
+ *   TOKEN-BEARING record (coverage metric); every total counts each agent once
+ *   (§ One record per agent).
  *
  * ## Token provenance — why a bare Σ over token_input is wrong (#949)
  *
@@ -66,10 +67,28 @@
  * `total_token_*` and reports the excluded ones as `legacy_v1_records`: the
  * boundary is DECLARED, never silent.
  *
- * `total_cost_usd` is computed per record via `costUsd()` and is null whenever
+ * ## One record per agent — a stop record carries a RUNNING total
+ *
+ * `hooks/subagent-telemetry.mjs` re-reads the agent's WHOLE transcript at every
+ * stop, so an agent that stops twice (resumed via SendMessage, for one) writes
+ * its running total twice, and summing both counts the first part again. Every
+ * total below therefore takes ONE v2 record per `agent_id`: its tokens come from
+ * the agent's last stop that found its transcript and carried tokens, its cost
+ * candidacy from its last stop that found its transcript ("last" = latest
+ * `timestamp`, ties and unparseable timestamps by file order). Those two differ
+ * only when the last read yielded no tokens — an oversized transcript: the
+ * earlier running total is then a lower bound for the tokens and the cost is
+ * unknown. Measured 2026-10-01 over the 31 local fleet ledgers (1,002 distinct
+ * session/agent pairs with two or more found stops, 407 sessions): no v2 token
+ * bucket ever decreased from one found stop to the next, so the last record is
+ * also the largest; 2 pairs end in a token-less stop, both transcripts now past
+ * the hook's 50 MiB read limit. FORWARD-ONLY like the #949 cut: totals already
+ * in `sessions.jsonl` are not recomputed.
+ *
+ * `total_cost_usd` is computed per agent via `costUsd()` and is null whenever
  * `cost_records_priced < cost_records_total` (#1475) — a partial cost is worse
- * than no cost, because it reads as a complete one. A record is unpriced when its
- * model is unknown to the price table, when it has no model (a token-bearing turn
+ * than no cost, because it reads as a complete one. An agent is unpriced when the
+ * model of its last found record is unknown to the price table, when it has no model (a token-bearing turn
  * named none), when it has no tokens at all (transcript found but oversized,
  * without usage turns, or unreadable, #1474), or when the agent has a start
  * record but its stop found no transcript of its own and no other record of the
@@ -154,6 +173,31 @@ function isV2(record) {
 }
 
 /**
+ * Does this record carry a token count on either side?
+ * @param {object} record
+ * @returns {boolean}
+ */
+function hasTokens(record) {
+  const { token_input: inp, token_output: out } = record;
+  return (typeof inp === 'number' && inp >= 0) || (typeof out === 'number' && out >= 0);
+}
+
+/**
+ * Was `candidate` written at a later stop than `current`? Ordered by
+ * `timestamp`; a tie or an unparseable timestamp falls back to file order, and
+ * the caller reads in file order, so the candidate then wins.
+ * @param {object} candidate — read after `current` in the ledger
+ * @param {object} current
+ * @returns {boolean}
+ */
+function isLaterStop(candidate, current) {
+  const a = Date.parse(candidate.timestamp);
+  const b = Date.parse(current.timestamp);
+  if (Number.isNaN(a) || Number.isNaN(b) || a === b) return true;
+  return a > b;
+}
+
+/**
  * USD cost of one v2 record, or null when it cannot be priced. A record whose
  * token-bearing turns span several models carries `models_usage` (#1470): each
  * part is priced at its own model's rates, and one unknown part leaves the whole
@@ -186,17 +230,17 @@ function recordCostUsd(record) {
  * @typedef {Object} TokenRollupResult
  * @property {'invalid-key'|'ledger-absent'|'ledger-empty'|'unmatched'|'matched'} match_status - Distinguishes absent telemetry from an unmatched key (#1027 Nachtrag 7).
  * @property {number|null} ledger_records - Count of parsed non-null, non-array objects; null when the ledger was not read (#1027 Nachtrag 7).
- * @property {number|null} total_token_input  - Sum of token_input across TOKEN-BEARING matched records; null when none had a non-null value.
- * @property {number|null} total_token_output - Sum of token_output across TOKEN-BEARING matched records; null when none had a non-null value.
+ * @property {number|null} total_token_input  - Sum of token_input over one v2 token-bearing record per agent (its last stop that carried tokens — § One record per agent); null when none had a non-null value.
+ * @property {number|null} total_token_output - Sum of token_output over the same one record per agent; null when none had a non-null value.
  * @property {number|null} total_tokens       - total_token_input + total_token_output (#1436); a null side counts as absent, null only when BOTH are null.
  * @property {number}      subagents_with_tokens - Count of distinct agent_ids with at least one token-bearing record. This is the numerator of the honest coverage ratio.
  * @property {number}      matched_records    - Total count of JSONL records matched by parentSessionId. Counts start records, phantom stops and pre-#949 records alike, so it is NOT the denominator for a token-coverage ratio — dividing by it is what made healthy sessions read as 12% covered.
- * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached across v2 token-bearing records.
- * @property {number|null}  total_token_cache_read     - Sum of token_cache_read across v2 token-bearing records.
- * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation across v2 token-bearing records.
- * @property {number|null}  total_cost_usd     - Σ cost over the records counted in cost_records_priced; null when cost_records_priced < cost_records_total (#1475 — any unpriced candidate: unknown model, no model, no tokens, or a started agent without a transcript), null when there is nothing to price (cost_records_total 0), and null when no record with a non-zero bucket was priced (all-zero records alone never yield a fabricated $0). Never 0 for unknown — see telemetry/pricing.mjs.
- * @property {number}       cost_records_priced - How many v2 token-bearing records carry a known cost: priced by the table (per model part when the record carries models_usage, #1470), or all four token buckets 0 (priced at $0 whatever the model, #1474).
- * @property {number}       cost_records_total  - How many v2 records were candidates for pricing: every v2 token-bearing record — including one with no tokens (transcript found but oversized, without usage turns, or unreadable, #1474) — plus every v2 stop of a started agent whose own transcript was not found (`start_record_found: true`, `subagent_transcript_found: false`) and that has no token-bearing record in the session. Both latter kinds have an unknown cost. Phantom stops (no start record, #939) are never candidates. priced < total nulls total_cost_usd.
+ * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached over the same one record per agent.
+ * @property {number|null}  total_token_cache_read     - Sum of token_cache_read over the same one record per agent.
+ * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation over the same one record per agent.
+ * @property {number|null}  total_cost_usd     - Σ cost over the agents counted in cost_records_priced; null when cost_records_priced < cost_records_total (#1475 — any unpriced candidate: unknown model, no model, no tokens, or a started agent without a transcript), null when there is nothing to price (cost_records_total 0), and null when no record with a non-zero bucket was priced (all-zero records alone never yield a fabricated $0). Never 0 for unknown — see telemetry/pricing.mjs.
+ * @property {number}       cost_records_priced - How many agents of cost_records_total carry a known cost on their last found v2 record: priced by the table (per model part when the record carries models_usage, #1470), or all four token buckets 0 (priced at $0 whatever the model, #1474).
+ * @property {number}       cost_records_total  - How many agents were candidates for pricing, each counted once however often it stopped: every agent with a v2 record whose own transcript was found — priced on its LAST such record, so one whose last read yielded no tokens (transcript oversized, without usage turns, or unreadable, #1474) is unpriced — plus every started agent whose v2 stops found no transcript of its own (`start_record_found: true`, `subagent_transcript_found: false`) and that has no token-bearing record in the session. Both latter kinds have an unknown cost. Phantom stops (no start record, #939) are never candidates. priced < total nulls total_cost_usd.
  * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every total above because their schema_version < 2 (their token_input is a different quantity).
  * @property {2}            _token_schema      - The token contract these totals were computed under.
  */
@@ -305,6 +349,19 @@ export function rollupSessionTokens({
     matched.filter(isTokenBearing).map((r) => r.agent_id).filter((id) => typeof id === 'string'),
   );
 
+  // One agent, one count (see module header § One record per agent). Per agent:
+  // `last` is its last stop that found its transcript — the cost candidate —
+  // and `lastWithTokens` its last such stop that carried tokens — the token
+  // contribution. They differ only when the last read yielded no tokens (an
+  // oversized transcript): the earlier running total is then a known lower bound
+  // for the tokens, while the cost stays unknown. A record without an agent_id
+  // cannot be joined to another and stands alone.
+  /** @type {Map<unknown, {last: object, lastWithTokens: object|null}>} */
+  const agents = new Map();
+  /** Started agents whose stops found no transcript — each counts once. */
+  const startedWithoutTranscript = new Set();
+  let unkeyedStartedWithoutTranscript = 0;
+
   for (const record of matched) {
     // Provenance gate (#949) — a record whose tokens describe the PARENT
     // transcript, or no transcript at all, contributes no TOKENS. Skipping it
@@ -320,7 +377,11 @@ export function rollupSessionTokens({
         isStartedWithoutTranscript(record) &&
         !agentsWithTranscript.has(record.agent_id)
       ) {
-        costTotal += 1;
+        if (record.agent_id === undefined || record.agent_id === null) {
+          unkeyedStartedWithoutTranscript += 1;
+        } else {
+          startedWithoutTranscript.add(record.agent_id);
+        }
       }
       continue;
     }
@@ -333,54 +394,65 @@ export function rollupSessionTokens({
       continue;
     }
 
-    const inp = record.token_input;
-    const out = record.token_output;
+    const withTokens = hasTokens(record) ? record : null;
+    const key = record.agent_id ?? Symbol('unkeyed');
+    const seen = agents.get(key);
+    if (!seen) {
+      agents.set(key, { last: record, lastWithTokens: withTokens });
+      continue;
+    }
+    // A token-bearing `last` is always `lastWithTokens` too — set together, so
+    // an unparseable timestamp (no transitive order) cannot split them.
+    if (isLaterStop(record, seen.last)) {
+      seen.last = record;
+      if (withTokens) seen.lastWithTokens = withTokens;
+    } else if (withTokens && (!seen.lastWithTokens || isLaterStop(withTokens, seen.lastWithTokens))) {
+      seen.lastWithTokens = withTokens;
+    }
+  }
 
-    sumInput = addNonNegative(sumInput, inp);
-    sumOutput = addNonNegative(sumOutput, out);
-    sumUncached = addNonNegative(sumUncached, record.token_input_uncached);
-    sumCacheRead = addNonNegative(sumCacheRead, record.token_cache_read);
-    sumCacheCreation = addNonNegative(sumCacheCreation, record.token_cache_creation);
+  for (const [key, { last, lastWithTokens }] of agents) {
+    if (lastWithTokens) {
+      sumInput = addNonNegative(sumInput, lastWithTokens.token_input);
+      sumOutput = addNonNegative(sumOutput, lastWithTokens.token_output);
+      sumUncached = addNonNegative(sumUncached, lastWithTokens.token_input_uncached);
+      sumCacheRead = addNonNegative(sumCacheRead, lastWithTokens.token_cache_read);
+      sumCacheCreation = addNonNegative(sumCacheCreation, lastWithTokens.token_cache_creation);
+      if (typeof key !== 'symbol') agentsWithTokens.add(key);
+    }
 
-    // Count this agent as having tokens if either field is a non-null number.
-    const hasTokens =
-      (typeof inp === 'number' && inp >= 0) || (typeof out === 'number' && out >= 0);
-    if (hasTokens) {
-      if (record.agent_id !== undefined && record.agent_id !== null) {
-        agentsWithTokens.add(record.agent_id);
-      }
-
-      // Cost: every token-bearing v2 record is a pricing candidate. One unpriced
-      // record poisons the SESSION total — a cost covering some of the agents
-      // reads as covering all of them.
-      costTotal += 1;
-      // #1474 — all four buckets 0 costs $0 whatever the model says. The hook
-      // names such a record by its last turn, typically `<synthetic>`, which
-      // the price table does not know; pricing it would null the session total
-      // for a record that added nothing to it.
-      const allZero = [
-        record.token_input_uncached,
-        record.token_cache_read,
-        record.token_cache_creation,
-        record.token_output,
-      ].every((v) => v === 0);
-      const cost = allZero ? 0 : recordCostUsd(record);
-      if (cost !== null) {
-        costPriced += 1;
-        // An all-zero record adds nothing, so it must not be what turns
-        // `sumCost` from null into a number: next to a token-less record it
-        // would persist a fabricated $0 for a session whose real cost is unknown.
-        if (!allZero) sumCost = (sumCost ?? 0) + cost;
-      }
-    } else {
-      // #1474 — the subagent's own transcript was found but yielded no tokens:
+    // Cost: every agent with a found transcript is ONE pricing candidate. One
+    // unpriced agent poisons the SESSION total — a cost covering some of the
+    // agents reads as covering all of them.
+    costTotal += 1;
+    if (last !== lastWithTokens) {
+      // #1474 — the agent's last read of its own transcript yielded no tokens:
       // it exceeded the hook's MAX_TRANSCRIPT_BYTES and was not read, it held no
       // usage turns, or it was unreadable. Either way the agent ran and its cost
       // is unknown, so it counts as an unpriced candidate (total, not priced),
       // and priced < total nulls `total_cost_usd` (#1475).
-      costTotal += 1;
+      continue;
+    }
+    // #1474 — all four buckets 0 costs $0 whatever the model says. The hook
+    // names such a record by its last turn, typically `<synthetic>`, which
+    // the price table does not know; pricing it would null the session total
+    // for a record that added nothing to it.
+    const allZero = [
+      last.token_input_uncached,
+      last.token_cache_read,
+      last.token_cache_creation,
+      last.token_output,
+    ].every((v) => v === 0);
+    const cost = allZero ? 0 : recordCostUsd(last);
+    if (cost !== null) {
+      costPriced += 1;
+      // An all-zero record adds nothing, so it must not be what turns
+      // `sumCost` from null into a number: next to a token-less record it
+      // would persist a fabricated $0 for a session whose real cost is unknown.
+      if (!allZero) sumCost = (sumCost ?? 0) + cost;
     }
   }
+  costTotal += startedWithoutTranscript.size + unkeyedStartedWithoutTranscript;
 
   return {
     match_status: 'matched',
