@@ -210,7 +210,8 @@ export async function loadBaselineArchetypes(options = {}) {
     let manifest;
     try { manifest = validateBaselineContract(JSON.parse(projection(root, ['export'], options))); }
     catch (error) { if (error instanceof BaselineContractError) throw error; fail(); }
-    for (const item of manifest.archetypes) baselineSourcePath(root, item.templatePath, true);
+    // An absent declared source is an incomplete baseline, not a security refusal (#1447 3a).
+    for (const item of manifest.archetypes) baselineSourcePath(root, item.templatePath, true, { missingReason: 'invalid-contract' });
     const facts = collectFacts(repoRoot);
     const ordered = [...manifest.archetypes].sort((a, b) => a.order - b.order);
     const archetypes = ordered.map(({ id, order, runtimes, packageManagers, ui, api, deploy }) => ({ id, order, runtimes, packageManagers, ui, api, deploy }));
@@ -235,7 +236,7 @@ export async function loadBaselineArchetypes(options = {}) {
       if (!ruleTargets.includes(name) || seen.has(name)) fail('invalid-rule-projection');
       seen.add(name);
       if (owned.includes(name)) continue;
-      baselineSourcePath(root, source);
+      baselineSourcePath(root, source, false, { missingReason: 'invalid-rule-projection' });
       baselineRules.push({ source, target: `.claude/rules/${name}` });
     }
     if (ruleTargets.some((name) => !seen.has(name))) fail('invalid-rule-projection');
@@ -358,7 +359,7 @@ export async function scaffoldBaselineArchetype(options = {}) {
     const { repoRoot = process.cwd(), projectName } = options;
     if (typeof projectName !== 'string' || !ID.test(projectName)) fail('invalid-project-name');
     const { root, selected } = await selectedContext(options);
-    const template = baselineSourcePath(root, selected.templatePath, true);
+    const template = baselineSourcePath(root, selected.templatePath, true, { missingReason: 'invalid-contract' });
     sourceFiles(template);
     const shared = baselineSourcePath(root, 'templates/shared', true);
     sourceFiles(shared);
