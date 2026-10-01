@@ -16,15 +16,20 @@
  * Flags:
  *   --repos <comma-list>  Comma-separated repo paths (absolute or ~-prefixed).
  *                         When omitted, uses the hardcoded ROLLOUT_REPOS list.
- *   --apply               Write migrated records back to each file (atomic).
- *                         DEFAULT is dry-run (no writes).
+ *   --apply               Write migrated records back to each file (atomic),
+ *                         under that store's lock (`withLearningsLock`, the
+ *                         `<store>.lock` every learnings writer takes), so a
+ *                         live session appending in that repo is never lost.
+ *                         DEFAULT is dry-run (no writes, no lock).
  *   --json                Output machine-readable JSON instead of Markdown table.
  *   --out <path>          Write output to file instead of stdout.
  *
  * Exit codes:
  *   0  Success (including repos with no learnings.jsonl — gracefully skipped)
  *   1  Input/argument error
- *   2  I/O error
+ *   2  I/O error — incl. a store lock not acquired under --apply: that repo
+ *      is left unwritten and reported `status: 'error'`, the run continues
+ *      with the next repo, and exits 2 at the end
  */
 
 import { existsSync, readFileSync, writeFileSync, copyFileSync, renameSync } from 'node:fs';
@@ -35,6 +40,7 @@ import {
   migrateLegacyLearning,
   validateLearning,
 } from './lib/learnings.mjs';
+import { LearningsLockError, withLearningsLock } from './lib/learnings/io.mjs';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 
@@ -168,47 +174,74 @@ function bump(counts, cls) {
 }
 
 /**
+ * A RepoResult that counted nothing.
+ *
+ * @param {string} repoPath
+ * @param {string} status
+ * @param {string|null} error
+ * @returns {RepoResult}
+ */
+function emptyResult(repoPath, status, error) {
+  return {
+    repo: repoPath,
+    status,
+    total: 0,
+    invalidPre: 0,
+    invalidPost: 0,
+    fixedByV2: 0,
+    malformed: 0,
+    errorClassesPre: {},
+    errorClassesPost: {},
+    error,
+  };
+}
+
+/** Repos whose store lock was not acquired under --apply (nothing written there). */
+const lockFailedRepos = [];
+
+/**
  * Process a single repo. Returns a RepoResult.
+ *
+ * Under --apply the WHOLE read → backup → rename runs inside the store lock:
+ * these are other repos, where a live session may append between this read
+ * and the rename — outside the lock that record would be silently replaced.
+ * A dry run writes nothing and takes no lock.
  *
  * @param {string} repoPath - resolved absolute path to the repo
  * @param {boolean} apply   - whether to write changes back
- * @returns {RepoResult}
+ * @returns {Promise<RepoResult>}
  */
-function processRepo(repoPath, apply) {
+async function processRepo(repoPath, apply) {
   const learningsPath = join(repoPath, LEARNINGS_REL);
 
-  if (!existsSync(learningsPath)) {
-    return {
-      repo: repoPath,
-      status: 'skipped',
-      total: 0,
-      invalidPre: 0,
-      invalidPost: 0,
-      fixedByV2: 0,
-      malformed: 0,
-      errorClassesPre: {},
-      errorClassesPost: {},
-      error: null,
-    };
-  }
+  if (!existsSync(learningsPath)) return emptyResult(repoPath, 'skipped', null);
+  if (!apply) return migrateStore(repoPath, learningsPath, false);
 
+  try {
+    return await withLearningsLock(learningsPath, () => migrateStore(repoPath, learningsPath, true));
+  } catch (err) {
+    if (!(err instanceof LearningsLockError)) throw err;
+    lockFailedRepos.push(repoPath);
+    return emptyResult(repoPath, 'error', err.message);
+  }
+}
+
+/**
+ * Read, migrate and (when `apply`) atomically rewrite one store. Under --apply
+ * the caller holds the store lock.
+ *
+ * @param {string} repoPath
+ * @param {string} learningsPath
+ * @param {boolean} apply
+ * @returns {RepoResult}
+ */
+function migrateStore(repoPath, learningsPath, apply) {
   // Read
   let raw;
   try {
     raw = readFileSync(learningsPath, 'utf8');
   } catch (err) {
-    return {
-      repo: repoPath,
-      status: 'error',
-      total: 0,
-      invalidPre: 0,
-      invalidPost: 0,
-      fixedByV2: 0,
-      malformed: 0,
-      errorClassesPre: {},
-      errorClassesPost: {},
-      error: `read failed: ${err.message}`,
-    };
+    return emptyResult(repoPath, 'error', `read failed: ${err.message}`);
   }
 
   const lines = raw.split('\n').filter((l) => l.trim().length > 0);
@@ -323,7 +356,10 @@ function processRepo(repoPath, apply) {
 // Run across all repos
 // ---------------------------------------------------------------------------
 
-const results = repos.map((r) => processRepo(r, applyFlag));
+// Sequential: one store lock at a time, and a lock failure in one repo never
+// stops the next.
+const results = [];
+for (const r of repos) results.push(await processRepo(r, applyFlag));
 
 // ---------------------------------------------------------------------------
 // Aggregate
@@ -465,5 +501,13 @@ process.stderr.write(
     `${aggregate.totalFixedByV2} fixed-by-v2, ` +
     `${aggregate.totalStillInvalidPost} still-invalid\n`
 );
+
+if (lockFailedRepos.length > 0) {
+  process.stderr.write(
+    `run-migrate-v2: ERROR learnings store lock not acquired, nothing written in ${lockFailedRepos.length} repo(s): ` +
+      `${lockFailedRepos.join(', ')}\n`
+  );
+  process.exit(2);
+}
 
 process.exit(0);

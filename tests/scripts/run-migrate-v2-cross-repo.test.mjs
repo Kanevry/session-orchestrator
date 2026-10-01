@@ -18,11 +18,13 @@ import {
   rmSync,
   existsSync,
   readdirSync,
+  realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { validateLearning } from '@lib/learnings.mjs';
+import { releaseFileLock, tryAcquireFileLock } from '@lib/file-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -532,4 +534,35 @@ describe('run-migrate-v2-cross-repo', () => {
     const rerun = run(['--repos', repo, '--json']);
     expect(JSON.parse(rerun.stdout).repos[0].invalidPre).toBe(0);
   });
+
+  // Bug pinned (REFUTE review MED): --apply rewrote another repo's store
+  // outside the learnings store lock, so a live session appending between the
+  // read and the rename lost its record. A held lock must leave that store
+  // byte-identical, report the repo, still migrate the next repo, and exit 2.
+  // The child waits the full LEARNINGS_LOCK_TIMEOUT_MS (10 s) — hence 30 s.
+  it('9. --apply never writes a store whose lock is held: repo reported, next repo migrated, exit 2', () => {
+    const base = makeTmpBase();
+    const locked = makeFakeRepo(base, 'repo-locked', [legacyDescriptionLine('id-locked')]);
+    const free = makeFakeRepo(base, 'repo-free', [legacyDescriptionLine('id-free')]);
+    const lockedStore = join(locked, '.orchestrator', 'metrics', 'learnings.jsonl');
+    const before = readFileSync(lockedStore, 'utf8');
+    const lockPath = join(realpathSync(dirname(lockedStore)), 'learnings.jsonl.lock');
+    const holder = 'test-live-session';
+    expect(tryAcquireFileLock(lockPath, { holder }).acquired).toBe(true);
+    let result;
+    try {
+      result = run(['--repos', `${locked},${free}`, '--apply', '--json']);
+    } finally {
+      releaseFileLock(lockPath, { holder });
+    }
+
+    expect(result.status).toBe(2);
+    expect(readFileSync(lockedStore, 'utf8')).toBe(before);
+    expect(listBackups(locked)).toHaveLength(0);
+    const [lockedResult, freeResult] = JSON.parse(result.stdout).repos;
+    expect(lockedResult).toMatchObject({ repo: locked, status: 'error' });
+    expect(lockedResult.error).toContain('not acquired');
+    expect(freeResult.status).toBe('applied');
+    expect(readLearnings(free)[0].insight).toBe('legacy description text');
+  }, 30_000);
 });
