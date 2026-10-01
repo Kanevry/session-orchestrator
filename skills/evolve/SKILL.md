@@ -173,13 +173,13 @@ Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rol
 
 1. Read all lines from `learnings.jsonl`
 2. Apply the selected operation to selected learnings:
-   - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to +`learning-expiry-days`
+   - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to `deriveExpiresAt(now, type)` (per-type TTL, `scripts/lib/learnings/schema.mjs`)
    - **Reduce:** -0.2 confidence
    - **Delete:** omit the selected entries from the next generation — do NOT delete them by hand.
      `pruneLearnings()` detects every **record** that left the store — reconciled by `id`, or by a
      content fingerprint when a record carries no usable `id` — and archives it with
      `_archive_reason: "pruned"`, so a `learning-id` referenced by a rendered rule stays resolvable.
-   - **Extend:** reset expires_at to current date + `learning-expiry-days`
+   - **Extend:** reset expires_at to `deriveExpiresAt(now, type)` — `learning-expiry-days` is parsed but read by no script (`skills/_shared/config-reading.md` § Learning Expiry Semantics)
 3. Steps 3–5 of the old prose (prune / consolidate / rewrite) are `pruneLearnings()` — run the
    **exact** Step 3.5(5) invocation, writing the post-operation entry set to the `--entries`
    sidecar. It prunes

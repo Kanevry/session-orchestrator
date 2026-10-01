@@ -133,14 +133,14 @@ Learnings live exclusively in `.orchestrator/metrics/learnings.jsonl`. The pre-`
 
 The learning lifecycle states are:
 
-- **Created**: `confidence: 0.5`, `expires_at`: current date + `learning-expiry-days` (default: 30)
-- **Confirmed** (same type+subject seen again): `confidence += 0.15` (cap 1.0), `expires_at` reset
+- **Created**: `confidence: 0.5`, `expires_at` = `created_at` + a per-TYPE TTL — `deriveExpiresAt(created_at, type)` with `LEARNING_TTL_DAYS[type] ?? LEARNING_TTL_DAYS.default` (`scripts/lib/learnings/schema.mjs`; 30–90 days per type, 60 for an unknown type). A caller-supplied `expires_at` is kept. `learning-expiry-days` does NOT set it: `scripts/lib/config.mjs` still parses that key (default 30), but no script or hook reads the parsed value — it survives only in skill prose (the `/evolve` Review-mode *Extend* action).
+- **Confirmed** (same type+subject seen again): `confidence += 0.15` (cap 1.0), `expires_at` reset to `deriveExpiresAt(now, type)`
 - **Contradicted** (evidence against): `confidence -= 0.2` — do NOT reset `expires_at` (let the learning decay naturally if contradicted)
 - **Decayed** (untouched this session): `confidence -= learning-decay-rate` (from Session Config, default `0.05`). Applied at session-end after touched-set update, before prune. Clamped to 0.0. Does NOT reset `expires_at`.
 - **Expired**: `expires_at < current date` — removed on next write
 - **Dead**: `confidence <= 0.0` — removed on next write
 
-**Expiration check semantics:** Compare `expires_at` by date portion only (ignore time-of-day) to avoid intra-day jitter. When writing `expires_at`, set it to `<current_date>T00:00:00Z + learning-expiry-days` (midnight UTC).
+**Expiration check semantics:** The code compares full timestamps, not dates: `pruneLearnings()` (`scripts/lib/learnings/expiry-sweep.mjs`) archives when `expires_at < now`; the time-driven sweep archives only after a 14-day grace window past `expires_at`. When writing `expires_at`, derive it with `deriveExpiresAt()` (full ISO timestamp, no midnight rounding) — never from `learning-expiry-days`.
 
 **Confidence bounds enforcement:** After EVERY increment or decrement, clamp confidence to [0.0, 1.0]. A learning at 0.95 confirmed becomes 1.0 (not 1.10). A learning at 0.1 contradicted becomes 0.0 and is pruned.
 

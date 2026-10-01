@@ -32,7 +32,15 @@
  *      `expires_at` untouched
  *   5. prune (expired, confidence ≤ 0) + consolidate (type+subject, highest
  *      confidence wins) + archive the losers + atomic rewrite with `.bak-<ISO>`
- *      → `pruneLearnings()` (expiry-sweep.mjs)
+ *      → `pruneLearnings()` (expiry-sweep.mjs). Archived records carry this
+ *      run's DECAYED confidence, a value never stored in the live file: decay
+ *      (step 4) runs before prune by design, so a record pruned at
+ *      `confidence <= 0` is archived with the value that pruned it.
+ *
+ * On `--apply`, steps 1-5 run as ONE critical section under the store lock
+ * (`withLearningsLock()`, io.mjs; lock file `<store>.lock`): a parallel
+ * `--apply` or an `appendLearning()` cannot land between the read and the
+ * rewrite and be lost. A lock not acquired within 10 s exits 2, nothing written.
  *
  * Usage:
  *   node scripts/apply-session-learnings.mjs [--input PATH] [--file PATH]
@@ -61,12 +69,12 @@
  *   0  Success (including a no-op)
  *   1  Usage/input/validation error — nothing written
  *   2  Library/IO error (unreadable store, malformed store lines on --apply,
- *      a failure inside the prune/rewrite)
+ *      a failure inside the prune/rewrite, store lock not acquired)
  */
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { readLearnings } from './lib/learnings/io.mjs';
+import { LearningsLockError, readLearnings, withLearningsLock } from './lib/learnings/io.mjs';
 import { pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -359,46 +367,65 @@ async function main(argv) {
   const now = new Date();
   const nowIso = now.toISOString();
 
-  let read;
-  try {
-    read = await readLearnings(filePath);
-  } catch (err) {
-    process.stderr.write(`apply-session-learnings: cannot read ${filePath}: ${err.message}\n`);
-    return 2;
-  }
-  if (opts.apply && read.malformed.length > 0) {
-    // pruneLearnings rewrites from parsed entries only — a malformed line
-    // would vanish without an archive record.
-    process.stderr.write(
-      `apply-session-learnings: refusing to rewrite — ${read.malformed.length} malformed line(s) in ${filePath}\n`,
-    );
-    return 2;
-  }
+  // Read → build → prune/rewrite: one critical section on --apply (see header).
+  // Returns `{ code }` for an early exit, else the three results.
+  const readBuildPrune = async () => {
+    let read;
+    try {
+      read = await readLearnings(filePath);
+    } catch (err) {
+      process.stderr.write(`apply-session-learnings: cannot read ${filePath}: ${err.message}\n`);
+      return { code: 2 };
+    }
+    if (opts.apply && read.malformed.length > 0) {
+      // pruneLearnings rewrites from parsed entries only — a malformed line
+      // would vanish without an archive record.
+      process.stderr.write(
+        `apply-session-learnings: refusing to rewrite — ${read.malformed.length} malformed line(s) in ${filePath}\n`,
+      );
+      return { code: 2 };
+    }
 
-  let built;
+    let built;
+    try {
+      built = buildNextGeneration({
+        current: read.entries,
+        updates: input.updates,
+        newLearnings: input.newLearnings,
+        decayRate,
+        nowIso,
+      });
+    } catch (err) {
+      if (err instanceof UsageError) {
+        process.stderr.write(`apply-session-learnings: ${err.message} — nothing written\n`);
+        return { code: 1 };
+      }
+      throw err;
+    }
+
+    let res;
+    try {
+      // Joins the lock held below reentrantly; takes none on a dry run.
+      res = await pruneLearnings({ filePath, archivePath, entries: built.next, now, dryRun: !opts.apply });
+    } catch (err) {
+      process.stderr.write(`apply-session-learnings: prune/rewrite failed: ${err.message}\n`);
+      return { code: 2 };
+    }
+    return { read, built, res };
+  };
+
+  let outcome;
   try {
-    built = buildNextGeneration({
-      current: read.entries,
-      updates: input.updates,
-      newLearnings: input.newLearnings,
-      decayRate,
-      nowIso,
-    });
+    outcome = opts.apply ? await withLearningsLock(filePath, readBuildPrune) : await readBuildPrune();
   } catch (err) {
-    if (err instanceof UsageError) {
-      process.stderr.write(`apply-session-learnings: ${err.message} — nothing written\n`);
-      return 1;
+    if (err instanceof LearningsLockError) {
+      process.stderr.write(`apply-session-learnings: ${err.message}\n`);
+      return 2;
     }
     throw err;
   }
-
-  let res;
-  try {
-    res = await pruneLearnings({ filePath, archivePath, entries: built.next, now, dryRun: !opts.apply });
-  } catch (err) {
-    process.stderr.write(`apply-session-learnings: prune/rewrite failed: ${err.message}\n`);
-    return 2;
-  }
+  if ('code' in outcome) return outcome.code;
+  const { read, built, res } = outcome;
 
   const byReason = res.byReason ?? {};
   const pruned = (byReason.expired ?? 0) + (byReason.pruned ?? 0);
