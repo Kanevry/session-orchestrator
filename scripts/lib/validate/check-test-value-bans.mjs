@@ -93,7 +93,8 @@
  *                     pure input→output date function is out of scope by
  *                     construction rather than by exception list.
  *
- *                     NOT flagged: blocks that control the clock (`now:` arg,
+ *                     NOT flagged: blocks that control the clock (`now:`, `{ now }`
+ *                     or a positional `now` — wider than the seam proof, #1478 —
  *                     `vi.useFakeTimers` / `vi.setSystemTime`); date literals in
  *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
  *                     expected values are read), which leaves the passthrough
@@ -352,12 +353,31 @@ const keyLiteralRe = (key) => new RegExp(`["'\\\\]+${key}["'\\\\]+\\s*:`);
 const DATE_EXPECTATION =
   /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
 
+/** A clock-named token not read off an object (`Date.now`, `opts.now`) — shared head of the two below. */
+const CLOCK_NAME = String.raw`(?<![.\w$])(?:now|nowMs|nowIso|clock|currentDate)\s*`;
+
 /**
- * An explicit clock handed to a callee — the seam this ban asks tests to use.
- * Property shorthand (`{ now }`, `{ repoRoot, now }`) and a positional `now`
- * count too; `Date.now()` and `const now =` do not.
+ * Pass 1, the seam PROOF: a NAMED clock key (`{ now: … }`) — only that shape says
+ * the callee's API takes a clock. Every line it matches also matches
+ * CONTROL_CLOCK_ARG, so a block that proves a seam is never flagged itself.
  */
-const CLOCK_ARG = /(?<![.\w$])(?:now|nowMs|nowIso|clock|currentDate)\s*(?::|,|\}|\))/;
+const SEAM_CLOCK_ARG = new RegExp(`${CLOCK_NAME}:`);
+
+/**
+ * Pass 2, is this block clock-CONTROLLED: any clock handover. Property shorthand
+ * (`{ now }`, `{ repoRoot, now }`) and a positional `now` count too; `Date.now()`
+ * and `const now =` do not. Wider is the safe direction here — it can only
+ * remove findings.
+ *
+ * CEILING (#1478): pass 1 reads only the named form, because the wide form also
+ * turns helpers into seams — +20 seamed (file, id) pairs in 15 files
+ * (172 → 192, measured 2026-10-01 @ ffc5929f), e.g. `expectDeny` via a
+ * `{ manifestMtimeMs: now }` fixture. Cost: a file whose ONLY clock handover is
+ * `{ now }` or a positional `now` loses its seam proof and its bombs go unseen.
+ * REVISIT on the first B5 finding whose subject is a helper, or the first CI
+ * `test-value-bans` B5 finding the ±days clock-shift probe shows to be false.
+ */
+const CONTROL_CLOCK_ARG = new RegExp(String.raw`${CLOCK_NAME}(?::|,|\}|\))`);
 
 /** Freezing the global clock — equally valid control, but not a seam PROOF. */
 const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
@@ -654,8 +674,9 @@ function callsIdentifier(lines, id) {
  *
  * Two passes over the file's `it`/`test` blocks:
  *   1. PROVE the seam — an imported id called from a block that also hands over
- *      an explicit clock argument is clock-seamed. A public API only grows a
- *      `now` parameter because the function reads the clock on its main path.
+ *      a NAMED clock key (SEAM_CLOCK_ARG) is clock-seamed. A public API only
+ *      grows a `now` parameter because the function reads the clock on its
+ *      main path.
  *   2. FLAG — in blocks with NO clock control at all, any equality assertion
  *      pinning an absolute date against such a subject is a time bomb.
  *
@@ -679,7 +700,8 @@ function scanClockBombs(relPath, content, lines) {
     return {
       start,
       body,
-      hasClockArg: live.some((l) => CLOCK_ARG.test(l)),
+      provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
+      hasClockArg: live.some((l) => CONTROL_CLOCK_ARG.test(l)),
       hasFakeTimer: live.some((l) => FAKE_TIMER.test(l)),
     };
   });
@@ -687,7 +709,7 @@ function scanClockBombs(relPath, content, lines) {
   /** @type {Set<string>} */
   const seamed = new Set();
   for (const b of blocks) {
-    if (!b.hasClockArg) continue;
+    if (!b.provesSeam) continue;
     for (const id of sutIds) if (callsIdentifier(b.body, id)) seamed.add(id);
   }
   if (seamed.size === 0) return findings;
