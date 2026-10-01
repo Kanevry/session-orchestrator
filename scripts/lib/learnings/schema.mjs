@@ -527,7 +527,7 @@ function looksLikeRepoRelativePath(s) {
  * Loose predicate for ONE `file_paths` entry (GitLab #1447): a non-empty string
  * that is not absolute (`/`, `\`, `~`, a Windows drive), not a URL, and has no
  * `..` segment. Deliberately looser than {@link looksLikeRepoRelativePath}:
- * root-level files (`CLAUDE.md`), directories (`docs/prd`) and globs
+ * root-level files (`package.json`), directories (`docs/prd`) and globs
  * (`skills/**`) are legitimate `file_paths` values.
  *
  * @param {unknown} s — candidate entry
