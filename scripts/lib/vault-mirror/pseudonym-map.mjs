@@ -28,12 +28,14 @@
  *     once per record — the file is read+parsed at most once per path).
  *
  * Privacy: this module never writes the map anywhere; it only reads the operator's
- * host-local file. WARN messages carry the map PATH (the operator's own config
- * path, shown transiently on their terminal) but never the real slugs or rejected
- * pseudonym values.
+ * host-local file. WARN messages carry the map PATH with the home directory
+ * collapsed to `~` (`redactHomeDir` — they are echoed at `/close`), and never the
+ * real slugs or rejected pseudonym values: a JSON parse error contributes only
+ * its position, because V8's message quotes the map content around the error.
  */
 
 import { readFileSync, existsSync } from 'node:fs';
+import { redactHomeDir } from '../common.mjs';
 import { isValidSlug } from './utils.mjs';
 import { isOwnerLeakySegment } from '../validate/check-owner-leakage.mjs';
 
@@ -74,8 +76,11 @@ function parseMap(raw, mapPath, d) {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
+    // Only the position: V8's message quotes the map around the error
+    // (`Unexpected token 'x', ..."te-repo": x}"`), i.e. a real slug.
+    const where = /at position \d+(?: \(line \d+ column \d+\))?/.exec(String(err?.message))?.[0];
     d.warn(
-      `WARN vault-mirror/pseudonym-map: malformed JSON in namespace map ${mapPath}: ${err.message}; ignoring the map (owner-leaky repos fall back to 'redacted-repo')\n`,
+      `WARN vault-mirror/pseudonym-map: malformed JSON in namespace map ${mapPath}${where ? ` ${where}` : ''}; ignoring the map (owner-leaky repos fall back to 'redacted-repo')\n`,
     );
     return null;
   }
@@ -131,7 +136,11 @@ function parseMap(raw, mapPath, d) {
  * @returns {Map<string,string>|null} the validated map, or null when unconfigured/unusable.
  */
 export function loadPseudonymMap({ mapPath, deps = {} } = {}) {
-  const d = { ...DEFAULT_DEPS, ...deps };
+  const merged = { ...DEFAULT_DEPS, ...deps };
+  // Every WARN passes through here, so none prints the home directory — neither
+  // in `mapPath` nor in an fs error message that embeds it. The redaction is
+  // display-only: `mapPath` itself still drives the cache and the I/O.
+  const d = { ...merged, warn: (msg) => merged.warn(redactHomeDir(msg)) };
 
   // Unconfigured → no map, no noise. This is the normal case for public repos and
   // for any host that has not opted into pseudonym mapping.

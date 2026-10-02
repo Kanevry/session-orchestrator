@@ -10,6 +10,8 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import os from 'node:os';
+import { join } from 'node:path';
 import { loadPseudonymMap, _resetPseudonymMapCache } from '@lib/vault-mirror/pseudonym-map.mjs';
 
 beforeEach(() => {
@@ -115,6 +117,31 @@ describe('loadPseudonymMap — fallback with WARN', () => {
     expect(loadPseudonymMap({ mapPath: path, deps })).toBeNull();
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0][0]).toMatch(/must be a JSON object/);
+  });
+
+  // BUG (2026-10-02 review): each WARN printed the absolute map path and the
+  // raw error message to stderr, echoed at /close — the home directory, and on
+  // a parse error V8's quote of the map content, i.e. a real slug. The path is
+  // under the real home dir only as a string: every fs call is injected.
+  it.each([
+    { label: 'a missing file', over: {} },
+    {
+      label: 'a read error naming the path',
+      over: { existsSync: () => true, readFileSync: (p) => { throw new Error(`EACCES: permission denied, open '${p}'`); } },
+    },
+    { label: 'malformed JSON', over: { existsSync: () => true, readFileSync: () => '{"acme-secret": x}' } },
+  ])('WARN for $label shows neither the home directory nor map content', ({ over }) => {
+    const warn = vi.fn();
+    const mapPath = join(os.homedir(), '.config', 'acme', 'map.json');
+    const deps = { existsSync: () => false, readFileSync: () => '', isLeaky: () => null, warn, ...over };
+
+    expect(loadPseudonymMap({ mapPath, deps })).toBeNull();
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0][0];
+    expect(msg).toContain(join('~', '.config', 'acme', 'map.json'));
+    expect(msg).not.toContain(os.homedir());
+    expect(msg).not.toContain('acme-secret');
   });
 });
 
