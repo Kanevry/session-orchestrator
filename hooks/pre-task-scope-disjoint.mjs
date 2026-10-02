@@ -280,11 +280,43 @@ const HOOK_NAME = 'pre-task-scope-disjoint';
  */
 const DISPATCH_TOOL = 'Agent';
 
-/** Ledger location, relative to the project dir. */
-const LEDGER_REL = path.join('.orchestrator', 'wave-dispatch-scopes.json');
+/**
+ * Ledger location (#1493.3): ONE FILE PER SESSION,
+ * `.orchestrator/wave-dispatch-scopes.<session>.json`, each with its own lock
+ * `.orchestrator/wave-dispatch-scopes.<session>.lock` (§ Ledger concurrency).
+ *
+ * Until #1493 every session of the working copy shared ONE file holding ONE
+ * `waveKey`, and `decide()` keeps prior agents only under the same key — whose
+ * first segment IS the session id. So cross-session claims were never compared
+ * (nothing is lost by splitting), but a peer session's dispatch reset the file
+ * and erased this session's live claims, and the deny's "delete the ledger"
+ * remedy erased the peer's. One file per session removes both.
+ *
+ * A flat sibling, not a directory, on purpose: bootstrap's `store-lock-ignore`
+ * step (#1495) ignores `.orchestrator/wave-dispatch-scopes.*` in consumer repos,
+ * which covers this name; a directory would surface untracked in each of them.
+ */
+const LEDGER_DIR_REL = '.orchestrator';
+const LEDGER_STEM = 'wave-dispatch-scopes';
 
-/** Mutex for the ledger's read-modify-write cycle — see § Ledger concurrency. */
-const LEDGER_LOCK_REL = path.join('.orchestrator', 'wave-dispatch-scopes.lock');
+/**
+ * The pre-#1493 single shared ledger. READ only, for migration: adopted when
+ * this session has no file yet AND its `waveKey` names this session; never
+ * written and never deleted — it may still be a peer's live state.
+ * Revisit-Trigger: remove this read one minor release after the split ships,
+ * when no session that recorded claims in the old file can still be running.
+ */
+const LEGACY_LEDGER_REL = path.join(LEDGER_DIR_REL, `${LEDGER_STEM}.json`);
+
+/**
+ * Longest session token a ledger file name carries. Harness session ids are
+ * UUIDs (36 chars) and pass through unchanged; the cap only keeps a pathological
+ * id below the 255-byte file-name limit. Two ids that sanitise to ONE token
+ * share a file again — degraded to the pre-#1493 behaviour, never worse, since
+ * `waveKey` still carries the raw id. Revisit if a harness ships ids that are
+ * not path-safe.
+ */
+const MAX_SESSION_TOKEN_CHARS = 128;
 
 /**
  * Ledger-lock budget. Short on purpose: the whole locked region is a read, a
@@ -1428,6 +1460,56 @@ export function waveKeyOf(projectDir, sessionId, readFn) {
 }
 
 /**
+ * The session id this dispatch is keyed under — the payload's own, never a
+ * lock or env read (§ 6 limit 10 of `docs/scope-collision-guard.md`).
+ *
+ * @param {object} input parsed PreToolUse payload
+ * @returns {string}
+ */
+function sessionIdOf(input) {
+  return typeof input?.session_id === 'string' ? input.session_id : 'no-session';
+}
+
+/**
+ * The repo-relative paths of THIS session's ledger and its lock (#1493.3).
+ * The session id is reduced to a path-safe token (`[A-Za-z0-9._-]`, capped at
+ * `MAX_SESSION_TOKEN_CHARS`), so no id can name a file outside `.orchestrator/`;
+ * an id with no usable character falls back to `no-session`.
+ *
+ * @param {string} sessionId
+ * @returns {{ ledgerRel: string, lockRel: string }}
+ */
+export function ledgerPathsFor(sessionId) {
+  const token = String(sessionId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, MAX_SESSION_TOKEN_CHARS);
+  const safe = /[A-Za-z0-9]/.test(token) ? token : 'no-session';
+  const base = path.join(LEDGER_DIR_REL, `${LEDGER_STEM}.${safe}`);
+  return { ledgerRel: `${base}.json`, lockRel: `${base}.lock` };
+}
+
+/**
+ * Migration read of the pre-#1493 shared ledger: the parsed legacy ledger when
+ * its `waveKey` belongs to THIS session (first `|` segment equals the id), else
+ * `null`. An unparseable or foreign legacy file is not this session's state —
+ * it is neither adopted nor reported as corruption (row 7 is about OUR file).
+ *
+ * @param {string|null} raw legacy file contents (`null` = absent)
+ * @param {string} sessionId
+ * @returns {object|null}
+ */
+function adoptLegacyLedger(raw, sessionId) {
+  if (typeof raw !== 'string') return null;
+  try {
+    const legacy = JSON.parse(raw);
+    return legacy !== null && typeof legacy === 'object' && typeof legacy.waveKey === 'string'
+      && legacy.waveKey.startsWith(`${sessionId}|`)
+      ? legacy
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The wave NUMBER out of a `waveKeyOf()` key, for the telemetry record (#1092).
  *
  * Returns `null` — never `0` — when the key carries the `w?` fallback or a
@@ -2223,7 +2305,8 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     'Two agents editing one file at the same time race each other (PSA-002). ' +
     'Give the file exactly ONE owner in the wave plan, or wait for the named ' +
     `agent(s) to finish and re-dispatch — a finished agent no longer blocks. ` +
-    `If the ledger is stale, delete ${LEDGER_REL}.`;
+    `If the ledger is stale, delete this session's ${ledgerPathsFor(sessionIdOf(input)).ledgerRel} ` +
+    '— never another session\'s file beside it, which holds that session\'s live claims.';
 
   // Deliberately NOT persisting the ledger on deny: the dispatch did not happen,
   // so recording it would make the retry-after-fix look like a duplicate.
@@ -2245,7 +2328,7 @@ async function main() {
   const cwd = typeof input.cwd === 'string' && input.cwd !== ''
     ? input.cwd
     : bannerProjectDir();
-  const sessionId = typeof input.session_id === 'string' ? input.session_id : 'no-session';
+  const sessionId = sessionIdOf(input);
 
   // Cheap pre-check: skip all I/O for the overwhelmingly common non-dispatch call.
   if (input.tool_name !== DISPATCH_TOOL) return emitAllow();
@@ -2261,7 +2344,8 @@ async function main() {
   // `selfUseId`: this dispatch's own tool_use may already stand in the transcript
   // and must not make a finished same-named predecessor look alive (#1480 A).
   const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path, selfUseId: input.tool_use_id });
-  const ledgerPath = path.join(sessionRoot, LEDGER_REL);
+  const { ledgerRel, lockRel } = ledgerPathsFor(sessionId);
+  const ledgerPath = path.join(sessionRoot, ledgerRel);
 
   // #1485 — the stale-worktree-base verdict, computed BEFORE the ledger cycle
   // (and outside the lock: its git spawns hold nobody up there). It never
@@ -2305,7 +2389,15 @@ async function main() {
     } catch (err) {
       // Absent ledger is the normal first-dispatch case, NOT corruption (row 7
       // must not fire on every wave's first agent).
-      if (err?.code !== 'ENOENT') ledgerCorrupt = true;
+      if (err?.code !== 'ENOENT') {
+        ledgerCorrupt = true;
+      } else {
+        // #1493.3 migration: claims this session recorded in the shared
+        // pre-#1493 file before the split still bind. Read, never touched.
+        let legacyRaw = null;
+        try { legacyRaw = readFileSync(path.join(sessionRoot, LEGACY_LEDGER_REL), 'utf8'); } catch { /* absent */ }
+        ledger = adoptLegacyLedger(legacyRaw, sessionId);
+      }
     }
 
     const verdict = decide({
@@ -2332,7 +2424,7 @@ async function main() {
   };
 
   let verdict;
-  const lockPath = path.join(sessionRoot, LEDGER_LOCK_REL);
+  const lockPath = path.join(sessionRoot, lockRel);
   try {
     mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch { /* the unlocked fallback below still works */ }

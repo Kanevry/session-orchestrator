@@ -27,7 +27,9 @@ import { expectDeny, expectAllow, expectWarn, isDeny } from '../_helpers/hook-de
 
 const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-task-scope-disjoint.mjs');
-const LEDGER_REL = path.join('.orchestrator', 'wave-dispatch-scopes.json');
+// One ledger per session since #1493.3; every payload below defaults to `s1`.
+const LEDGER_REL = path.join('.orchestrator', 'wave-dispatch-scopes.s1.json');
+const LEGACY_LEDGER_REL = path.join('.orchestrator', 'wave-dispatch-scopes.json');
 
 /** Every temp dir THIS file created, removed — exact paths only — after each test. */
 const tempDirs = [];
@@ -339,6 +341,50 @@ describe('pre-task-scope-disjoint — the allow paths, asserted positively', () 
     // Wave advances → prior wave's records no longer bind.
     writeFileSync(scopeFile, JSON.stringify({ wave: 2, role: 'Quality' }));
     expectAllow(dispatch(dir, 'Agent B', ['scripts/foo.mjs']));
+  });
+});
+
+describe('pre-task-scope-disjoint — one ledger per session (#1493.3)', () => {
+  it('a PEER session dispatching in the same working copy no longer erases this session\'s live claims', () => {
+    // Bug caught: ONE shared ledger held ONE waveKey (`<session>|w<N>|<role>`).
+    // The peer's dispatch reset it to its own key, `decide()` then found no
+    // prior agents under ours, and the collision below was ALLOWED.
+    const dir = makeProjectDir();
+    expectAllow(dispatch(dir, 'Agent A', ['scripts/foo.mjs']));
+    expectAllow(dispatch(dir, 'Agent X', ['scripts/bar.mjs'], { sessionId: 's2' }));
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/foo.mjs']), ['Agent B', 'Agent A', 'scripts/foo.mjs']);
+  });
+
+  it('adopts THIS session\'s claims from the pre-split shared ledger, and never writes that file', () => {
+    // Bug caught (migration): a plugin upgrade mid-wave would drop every claim
+    // still recorded in the old single file, so a colliding dispatch right after
+    // it was allowed. And the old file may be a peer's live state: rewriting it
+    // (as the single-ledger hook did on every dispatch) erases that peer.
+    const dir = makeProjectDir();
+    const now = new Date().toISOString();
+    const legacy = JSON.stringify({
+      waveKey: 's1|w?|?', updated: now,
+      agents: [{ id: 'Agent A (code-implementer)', desc: 'Agent A', files: ['scripts/foo.mjs'], at: now }],
+    });
+    writeFileSync(path.join(dir, LEGACY_LEDGER_REL), legacy);
+
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/foo.mjs']), ['Agent B', 'Agent A']);
+    // A peer session's view of the same file: not its key, not adopted.
+    expectAllow(dispatch(dir, 'Agent B', ['scripts/foo.mjs'], { sessionId: 's2' }));
+    expect(readFileSync(path.join(dir, LEGACY_LEDGER_REL), 'utf8')).toBe(legacy);
+  });
+
+  it('keeps every session id inside .orchestrator/ as ONE path-safe file name', async () => {
+    // Bug caught: the session id is spliced into a file name; a `/` in it would
+    // let `path.join` climb out of `.orchestrator/` (or into a missing subdir,
+    // where the write fails and the guard silently stops recording).
+    const { ledgerPathsFor } = await import(pathToFileURL(HOOK).href);
+    const { ledgerRel, lockRel } = ledgerPathsFor('a/../../../etc/passwd');
+    for (const rel of [ledgerRel, lockRel]) {
+      expect(path.dirname(rel)).toBe('.orchestrator');
+      expect(path.basename(rel).startsWith('wave-dispatch-scopes.')).toBe(true);
+    }
+    expect(ledgerPathsFor('s1').ledgerRel).toBe(LEDGER_REL);
   });
 });
 
@@ -1726,7 +1772,7 @@ describe('stale worktree base (#1485)', () => {
     expectAllow(runWorktree(dir, worktreePayload(dir, { isolation: null, files: ['a.txt'], toolUseId: 'toolu_wt_2' })));
 
     // The ledger holds the dispatch that HAPPENED, and only that one.
-    const ledger = JSON.parse(readFileSync(path.join(dir, LEDGER_REL), 'utf8'));
+    const ledger = JSON.parse(readFileSync(path.join(dir, '.orchestrator', 'wave-dispatch-scopes.sess-own.json'), 'utf8'));
     expect(ledger.agents.map((a) => a.useId)).toEqual(['toolu_wt_2']);
 
     // Bug caught (#1489 Pkt 8): `decide()` never sees the stale-base check, so

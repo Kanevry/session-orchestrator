@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-02T10:47:39.959Z",
-  "head": "84c107a1a8ebaaa359f43f8dcfa6d62a3aa743dc",
+  "generated_at": "2026-10-02T16:57:38.231Z",
+  "head": "317015cecdbd0819a859d4d1717ade6a0d230e1d",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -315,7 +315,8 @@
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-staging-fence.mjs",
-        "pre-bash-templates-first.mjs"
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs"
       ]
     },
     {
@@ -1306,7 +1307,8 @@
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-task-scope-disjoint.mjs"
       ]
     },
     {

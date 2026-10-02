@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -664,5 +664,38 @@ describe('resolveSessionRoot (#1492)', () => {
     // Control: the lift itself still lands on the repo root without a launch dir.
     vi.stubEnv('CLAUDE_PROJECT_DIR', '');
     expect(resolveSessionRoot(agentWt)).toBe(mono);
+  });
+
+  it('clamps on $CLAUDE_PROJECT_DIR only — never on a bridge-set *_PROJECT_DIR', () => {
+    // Bug caught: the Cursor and Pi bridges set their `*_PROJECT_DIR` to the
+    // payload `cwd` on EVERY call, so a clamp on the generic launch-dir env
+    // would follow each `cd` into a subdirectory without a manifest.
+    const repo = dirAt('repo', { dotGit: true });
+    const sub = dirAt(path.join('repo', 'sub'));
+    vi.stubEnv('CURSOR_PROJECT_DIR', sub);
+
+    expect(resolveSessionRoot(sub)).toBe(repo);
+  });
+
+  it('clamps when $CLAUDE_PROJECT_DIR and cwd spell one directory differently (symlink vs realpath)', () => {
+    // Bug caught: compared as resolved strings, an unresolved launch spelling
+    // (macOS mkdtemp `/var/…` vs the realpath `/private/var/…` in `cwd`) is not
+    // "inside" the canonical repo root, so the clamp lapsed and a subdirectory
+    // launch resolved to the repo root above its manifest. An explicit symlink
+    // reproduces the split on every OS, not only where `$TMPDIR` is one.
+    const mono = dirAt('mono', { dotGit: true });
+    const pkg = dirAt(path.join('mono', 'packages', 'foo'));
+    const linkParent = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-session-root-link-')));
+    try {
+      const link = path.join(linkParent, 'via-link');
+      symlinkSync(sandbox, link);
+      const launchViaLink = path.join(link, 'mono', 'packages', 'foo');
+      vi.stubEnv('CLAUDE_PROJECT_DIR', launchViaLink);
+
+      expect(resolveSessionRoot(pkg)).toBe(launchViaLink);
+      expect(resolveSessionRoot(pkg)).not.toBe(mono);
+    } finally {
+      rmSync(linkParent, { recursive: true, force: true });
+    }
   });
 });

@@ -97,9 +97,13 @@ coverage/
 # marker and must stay out of this list.
 .orchestrator/state.lock
 .orchestrator/rules.lock
-# Issue #1020: per-dispatch scope ledger written by hooks/pre-task-scope-disjoint.mjs
-.orchestrator/wave-dispatch-scopes.json
-.orchestrator/wave-dispatch-scopes.lock
+# Issue #1020: per-dispatch scope ledger written by hooks/pre-task-scope-disjoint.mjs —
+# one wave-dispatch-scopes.<session>.json + .lock per session since #1493 (the
+# bare wave-dispatch-scopes.json is the pre-split legacy file), plus the lock's
+# .wave-dispatch-scopes.lock.* tmp files. Same globs bootstrap's store-lock-ignore
+# step writes into consumer repos (#1495).
+.orchestrator/wave-dispatch-scopes.*
+.orchestrator/.wave-dispatch-scopes.*
 
 # Auto-dream + auto-dialectic sidecars — never commit LLM-derived consolidation proposals (#502, #506)
 .orchestrator/pending-dream.md
