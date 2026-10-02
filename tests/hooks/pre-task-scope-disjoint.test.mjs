@@ -1053,7 +1053,9 @@ describe('pre-task-scope-disjoint — fake regression (proves the guard bites)',
     );
 
     // The defect's signature: a warn (allow) where a deny belongs.
-    expect(isDeny(shouldHaveBeenDenied)).toBe(false);
+    // A substring negative, not `isDeny(...) === false`: negating the strict
+    // envelope predicate also passes on a MALFORMED deny, which is no allow.
+    expect(shouldHaveBeenDenied.stdout).not.toContain('"permissionDecision":"deny"');
     expect(() => expectDeny(shouldHaveBeenDenied, 'scripts/foo.mjs')).toThrow();
 
     // ...and the real hook, same inputs, denies.
@@ -1079,7 +1081,7 @@ describe('pre-task-scope-disjoint — fake regression (proves the guard bites)',
       dispatchPayload({ cwd: dir, id: 'Agent B', files: ['scripts/foo.mjs'] }),
       { hook: brokenHook },
     );
-    expect(isDeny(leaked)).toBe(false);
+    expect(leaked.stdout).not.toContain('"permissionDecision":"deny"');
     expect(() => expectDeny(leaked, 'scripts/foo.mjs')).toThrow();
   });
 });
@@ -1407,17 +1409,23 @@ describe('stale worktree base (#1485)', () => {
     return { dir, first, head, ahead };
   }
 
-  /** A dispatch payload with (or without) the `isolation` key. */
-  function worktreePayload(dir, { isolation = 'worktree' } = {}) {
+  /**
+   * A dispatch payload with (or without) the `isolation` key. `cwd` is the hook
+   * payload's own field — it follows the session's `cd`, so it can differ from
+   * the session root. `files` adds a declared scope; `toolUseId` an exact id.
+   */
+  function worktreePayload(dir, { isolation = 'worktree', cwd = dir, files, toolUseId } = {}) {
+    const scope = files === undefined ? '' : `\n\n## DEIN DATEI-SCOPE\n\`\`\`\n${files.join('\n')}\n\`\`\``;
     return JSON.stringify({
       hook_event_name: 'PreToolUse',
       tool_name: 'Agent',
+      ...(toolUseId === undefined ? {} : { tool_use_id: toolUseId }),
       session_id: 'sess-own',
-      cwd: dir,
+      cwd,
       tool_input: {
         description: 'w4-f2 fix',
         model: 'opus',
-        prompt: 'Repariere den Commit.',
+        prompt: `Repariere den Commit.${scope}`,
         subagent_type: 'code-implementer',
         ...(isolation === null ? {} : { isolation }),
       },
@@ -1428,11 +1436,47 @@ describe('stale worktree base (#1485)', () => {
    * Run the hook with the USER settings dir pointed at an empty temp dir: the
    * hook reads `$CLAUDE_CONFIG_DIR/settings.json`, and the operator's real one
    * may well carry `worktree.baseRef: "head"` — which would turn every deny
-   * case here green-for-the-wrong-reason red on one machine only.
+   * case here green-for-the-wrong-reason red on one machine only. For the same
+   * reason `CLAUDE_PROJECT_DIR` (the session root a live session exports to its
+   * hooks) is blanked unless a test sets it.
    */
-  function runWorktree(dir, payload) {
+  function runWorktree(dir, payload, env = {}) {
     const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
-    return runHook(payload, { cwd: dir, env: { CLAUDE_CONFIG_DIR: userDir } });
+    return runHook(payload, { cwd: dir, env: { CLAUDE_CONFIG_DIR: userDir, CLAUDE_PROJECT_DIR: '', ...env } });
+  }
+
+  /** Write `<dir>/.claude/<name>` with `worktree.baseRef` set to `baseRef`. */
+  function writeBaseRef(dir, name, baseRef) {
+    mkdirSync(path.join(dir, '.claude'), { recursive: true });
+    writeFileSync(path.join(dir, '.claude', name), JSON.stringify({ worktree: { baseRef } }));
+  }
+
+  /**
+   * A SHALLOW clone whose HEAD IS an ancestor of origin/HEAD, but whose cut-off
+   * history cannot show it: clone `--depth 1` at A, then origin gains B and a
+   * `fetch --depth 1` grafts B without its parent. Measured 2026-10-02: here
+   * `merge-base --is-ancestor HEAD origin/HEAD` exits 1, in the full source 0.
+   */
+  function makeShallowClone() {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-shallow-'));
+    const src = path.join(root, 'src');
+    const dir = path.join(root, 'clone');
+    const env = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org',
+      GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org',
+    };
+    const git = (cwd, ...args) => execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    git(root, 'init', '-q', '-b', 'main', src);
+    writeFileSync(path.join(src, 'a.txt'), 'one\n');
+    git(src, 'add', 'a.txt');
+    git(src, 'commit', '-q', '-m', 'A');
+    git(root, 'clone', '-q', '--depth', '1', pathToFileURL(src).href, dir);
+    writeFileSync(path.join(src, 'a.txt'), 'two\n');
+    git(src, 'commit', '-q', '-am', 'B');
+    git(dir, 'fetch', '-q', '--depth', '1', 'origin');
+    mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
+    return { dir, head: git(dir, 'rev-parse', 'HEAD') };
   }
 
   /** Every `worktree_base_checked` record written into `dir`. */
@@ -1471,6 +1515,7 @@ describe('stale worktree base (#1485)', () => {
       head,
       base: first,
       base_ref: 'fresh',
+      base_ref_source: 'default',
       missing_commits: 1,
       subagent_type: 'code-implementer',
     });
@@ -1538,5 +1583,76 @@ describe('stale worktree base (#1485)', () => {
 
     expectAllow(res);
     expect(baseEvents(dir)).toEqual([]);
+  });
+
+  it('reads project settings at the SESSION ROOT, not at a cwd the session cd-ed into', () => {
+    // Bug caught: hook `cwd` follows the session's `cd` (code.claude.com/docs/
+    // en/hooks § "cwd follows Claude"); project settings belong to the root.
+    // Read relative to `<root>/sub`, a `baseRef: "head"` the harness honours was
+    // invisible and the hook DENIED, its remedy 2 asking for what was set.
+    const { dir, head } = makeGitRepo();
+    const sub = path.join(dir, 'sub');
+    mkdirSync(path.join(sub, '.orchestrator'), { recursive: true });
+
+    // 1. CLAUDE_PROJECT_DIR decides, even where cwd's own repo has no settings:
+    //    after entering a worktree, cwd is the worktree and the gitignored
+    //    settings.local.json exists only at the session root it started in.
+    const sessionRoot = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-root-'));
+    writeBaseRef(sessionRoot, 'settings.local.json', 'head');
+    expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub }), { CLAUDE_PROJECT_DIR: sessionRoot }));
+    // 2. Without it (no harness env), the git toplevel of cwd.
+    writeBaseRef(dir, 'settings.json', 'head');
+    expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub })));
+
+    const events = baseEvents(sub);
+    expect(events.map((ev) => ev.base_ref_source)).toEqual(['local', 'project']);
+    for (const ev of events) {
+      expect(ev).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base: head });
+    }
+  });
+
+  it('lets the FIRST settings file that sets worktree.baseRef decide — local "fresh" beats project "head"', () => {
+    // Bug caught: "head anywhere wins" read a project `"head"` shadowed by a
+    // higher-precedence local `"fresh"` as head — the harness branches from
+    // origin/HEAD, the hook saw no mismatch, and the agent got OLD code.
+    const { dir, first } = makeGitRepo();
+    writeBaseRef(dir, 'settings.local.json', 'fresh');
+    writeBaseRef(dir, 'settings.json', 'head');
+
+    expectDeny(runWorktree(dir, worktreePayload(dir)), ['STALE WORKTREE BASE (#1485)', 'settings.local.json']);
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stale: true, decision: 'deny', base_ref: 'fresh', base_ref_source: 'local', base: first });
+  });
+
+  it('ALLOWS and records the skip in a SHALLOW clone, where is-ancestor answers "no" falsely', () => {
+    // Bug caught: a shallow clone's cut history makes `merge-base --is-ancestor`
+    // exit 1 although HEAD IS an ancestor of origin/HEAD (measured in the
+    // fixture's full source: exit 0). Read as a mismatch that was a wrong deny.
+    const { dir } = makeShallowClone();
+
+    expectAllow(runWorktree(dir, worktreePayload(dir)));
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stale: null, skipped: 'shallow', decision: 'allow' });
+    expect(events[0].head).toBeUndefined();
+  });
+
+  it('a stale-base DENY leaves no ledger claim — the in-place re-dispatch it advises is allowed', () => {
+    // Bug caught: the collision cycle persisted the dispatch into the ledger
+    // BEFORE the stale check denied it. The deny's own remedy — the same agent
+    // in place, a new tool_use_id, no transcript yet — then collided with that
+    // phantom claim for up to the in-flight TTL.
+    const { dir } = makeGitRepo();
+
+    expectDeny(
+      runWorktree(dir, worktreePayload(dir, { files: ['a.txt'], toolUseId: 'toolu_wt_1' })),
+      'STALE WORKTREE BASE (#1485)',
+    );
+    expectAllow(runWorktree(dir, worktreePayload(dir, { isolation: null, files: ['a.txt'], toolUseId: 'toolu_wt_2' })));
+
+    // The ledger holds the dispatch that HAPPENED, and only that one.
+    const ledger = JSON.parse(readFileSync(path.join(dir, LEDGER_REL), 'utf8'));
+    expect(ledger.agents.map((a) => a.useId)).toEqual(['toolu_wt_2']);
   });
 });
