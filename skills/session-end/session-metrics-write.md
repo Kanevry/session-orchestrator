@@ -105,7 +105,7 @@
      # a display path, so one helper serves every echo; if node cannot load the
      # module it falls back to `…/<basename>` (vault-mirror's #1479 form),
      # never to the raw path. The `--` is load-bearing: without it a value that
-     # starts with `-` (vault-dir comes from a committed CLAUDE.md) is parsed as
+     # starts with `-` (vault-dir comes from the committed CLAUDE.md / AGENTS.md) is parsed as
      # a node option, and `--import=data:…` would execute code at /close.
      so_tilde() {
        node --input-type=module -e "import { redactHomeDir } from '$PLUGIN_ROOT/scripts/lib/common.mjs'; process.stdout.write(redactHomeDir(process.argv[1]))" -- "$1" 2>/dev/null \
