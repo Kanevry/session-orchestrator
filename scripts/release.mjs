@@ -1681,6 +1681,7 @@ export function printPublishOutcome(outcome, target, io = {}) {
   log('\nPost-release checklist (manual):');
   log('  1. Rotate/delete the npm token: https://www.npmjs.com/settings/<user>/tokens');
   log('  2. pi.dev gallery indexes asynchronously — do not block on it.');
+  log('  3. Install the release on this host: npm run update:local -- --skip-pull, then restart the harness.');
   return 0;
 }
 

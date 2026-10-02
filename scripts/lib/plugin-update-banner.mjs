@@ -260,7 +260,9 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
  * @type {Record<"claude"|"codex"|"cursor"|"pi", string>}
  */
 const PLATFORM_UPDATE_INSTRUCTIONS = {
-  claude: '/plugin update session-orchestrator@kanevry, then restart Claude Code',
+  claude:
+    '/plugin update session-orchestrator@kanevry, then restart Claude Code ' +
+    '(from a clone: `npm run update:local` also installs the deps Claude Code refuses — docs/install.md § Upgrade)',
   codex:
     'run `codex plugin marketplace upgrade kanevry && codex plugin add session-orchestrator@kanevry` ' +
     '(docs/codex-setup.md), then restart Codex',
