@@ -173,15 +173,18 @@
  *
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
  * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
- * `sessionRootOf()` resolves, which is also where the ledger and its lock live,
- * never the payload `cwd` a `cd` moved (#1489 Pkt 6). The reason it
+ * `sessionRootOf()` resolves (the git toplevel of the payload `cwd`, so neither
+ * the subdirectory a `cd` moved to, #1489 Pkt 6, nor the launch dir a worktree
+ * session left), which is also where the ledger and its lock live. The reason it
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
  * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
  * it cannot say WHICH dispatch carried a scope. Payload: `wave` (omitted, never
  * `0`, when unknown), `agent_id`, `declared_path_count`, `injected`, `shape`,
  * `signal`, `ledger_result`, `collision_count`, `hook`, `known_files_skipped`
- * (only when the tracked-file listing degraded, matrix row 8), plus
- * `session_id` / `semantic_session_id` when a session lock is readable.
+ * (only when the tracked-file listing degraded, matrix row 8), `collision_result`
+ * (only beside `ledger_result: 'deny-stale-base'` — the collision verdict it
+ * replaced), plus `session_id` / `semantic_session_id` when a session lock is
+ * readable.
  *
  * WHAT IT PROVES: this hook SAW (or did not see) a `FILE-SCOPE` declaration in
  * the prompt the coordinator handed to the dispatch tool, and what the guard
@@ -1545,26 +1548,47 @@ export function listTrackedFiles(cwd) {
 /**
  * The SESSION ROOT (#1489 Pkt 6) — where this session's own state lives: the
  * scope ledger and its lock, the `wave-scope.json` the wave key is read from,
- * the event records, and (#1485) the project settings.
+ * the event records and their session attribution. NOT where project settings
+ * are read — that is `settingsRootOf()`, a different directory on purpose.
  *
  * NOT the payload `cwd`: that one follows the session's `cd` (docs/en/hooks
  * § "cwd follows Claude"). Keyed on it, a dispatch made after `cd sub` read and
  * wrote `<root>/sub/.orchestrator/wave-dispatch-scopes.json` — a second, empty
  * ledger holding none of the wave's earlier claims — so its collision with an
  * agent dispatched before the `cd` was ALLOWED, and its records left the
- * session's `events.jsonl`.
+ * session's `events.jsonl`. The git toplevel of `cwd` undoes exactly that `cd`.
  *
- * ONE resolution, the one #1485 introduced for the settings read:
- * `$CLAUDE_PROJECT_DIR` — exported by the harness to every hook and kept put
- * across `cd` and worktree entry (docs/en/hooks § "Worktrees are different"),
- * and the key `enforce-scope.mjs` already resolves its project dir from — else
- * the git toplevel of `cwd`, else `cwd` itself.
+ * NOT `$CLAUDE_PROJECT_DIR` first either: it stays on the LAUNCH dir after the
+ * session enters a worktree (docs/en/hooks § "Worktrees are different"), while
+ * the coordinator writes `wave-scope.json` into the worktree and
+ * `scope-echo --verify` reads that worktree's `events.jsonl`. Preferred here, it
+ * (measured on be6a2e3e) dropped every wave key to `w?`, left the worktree's
+ * records empty, and gave every worktree session of one launch dir ONE shared
+ * ledger — where a peer session's dispatch wipes this session's claims and lets
+ * the collision through. It is the fallback only when `cwd` is in no repo.
+ *
+ * Precedence: the git toplevel of `cwd`, else `$CLAUDE_PROJECT_DIR`, else `cwd`.
  *
  * @param {string} cwd — the payload `cwd`
  * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
  * @returns {string}
  */
 function sessionRootOf(cwd, cwdToplevel) {
+  return cwdToplevel || (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwd;
+}
+
+/**
+ * The SETTINGS ROOT (#1485) — where `harnessBaseRef()` reads the project's
+ * `.claude/settings{,.local}.json`: `$CLAUDE_PROJECT_DIR`, else the git toplevel
+ * of `cwd`, else `cwd`. The launch dir FIRST, unlike `sessionRootOf()`: it is the
+ * root the harness applies project settings from, and after entering a worktree
+ * the gitignored `settings.local.json` exists only there.
+ *
+ * @param {string} cwd — the payload `cwd`
+ * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
+ * @returns {string}
+ */
+function settingsRootOf(cwd, cwdToplevel) {
   return (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwdToplevel || cwd;
 }
 
@@ -1699,8 +1723,9 @@ const BASE_REF_SOURCE_LABEL = {
  * TWO DIRECTORIES, deliberately different: git measures in `cwd` (the payload's,
  * which follows the session's `cd` — git finds the enclosing repo from any
  * subdirectory, and inside an entered worktree `"head"` means THAT worktree's
- * HEAD); settings are read at `sessionRoot` (`sessionRootOf()` — the root the
- * harness applies project settings from).
+ * HEAD); settings are read at `settingsRoot` (`settingsRootOf()` — the root the
+ * harness applies project settings from, which is NOT where the record lands:
+ * that is `sessionRootOf()`).
  *
  * Every git call draws on the hook fire's ONE shared deadline (`GIT_BUDGET_MS`).
  * A call the budget cut short is no measurement: each skip then reads
@@ -1709,13 +1734,13 @@ const BASE_REF_SOURCE_LABEL = {
  *
  * @param {{tool_input?: unknown}} input — the raw hook payload
  * @param {string} cwd — the hook payload's `cwd`
- * @param {string} sessionRoot — `sessionRootOf()`
+ * @param {string} settingsRoot — `settingsRootOf()`
  * @param {ReturnType<typeof makeGitRunner>} gitRunner — the fire's shared runner
  * @returns {{head: string, base: string, base_ref: 'head'|'fresh',
  *   base_ref_source: 'local'|'project'|'user'|'default', stale: boolean,
  *   missing_commits?: number, subagent_type?: string}|{stale: null, skipped: string}|null}
  */
-function worktreeBaseFacts(input, cwd, sessionRoot, gitRunner) {
+function worktreeBaseFacts(input, cwd, settingsRoot, gitRunner) {
   // The applicability gate sits OUTSIDE the try on purpose: everything below it
   // resolves to a `skipped` RECORD, so a throw here must not be able to mint one
   // for a dispatch that was never on the `worktree` branch at all.
@@ -1733,7 +1758,7 @@ function worktreeBaseFacts(input, cwd, sessionRoot, gitRunner) {
     try { head = git(['rev-parse', '--verify', 'HEAD^{commit}']); } catch { /* below */ }
     if (head === '') return skip('git-error');
 
-    const { baseRef, source } = harnessBaseRef(sessionRoot);
+    const { baseRef, source } = harnessBaseRef(settingsRoot);
     const facts = { head, base_ref: baseRef, base_ref_source: source };
     if (typeof toolInput.subagent_type === 'string' && toolInput.subagent_type !== '') {
       facts.subagent_type = toolInput.subagent_type;
@@ -2239,7 +2264,8 @@ async function main() {
   if (!input) return emitAllow();
 
   // The payload `cwd` follows the session's `cd`; it names the repo git measures
-  // in, never where this session's state lives (`sessionRootOf()`).
+  // in, and only through its git toplevel where this session's state lives
+  // (`sessionRootOf()`) — a `cd sub` must not move the ledger.
   const cwd = typeof input.cwd === 'string' && input.cwd !== ''
     ? input.cwd
     : bannerProjectDir();
@@ -2273,14 +2299,16 @@ async function main() {
   // It draws on the shared budget BEFORE the tracked-file listing: a missed
   // stale base has no later gate (matrix row 15), a missed listing only
   // degrades glob expansion, and three later gates still see a collision.
-  const worktreeBase = worktreeBaseFacts(input, cwd, sessionRoot, git);
+  const worktreeBase = worktreeBaseFacts(input, cwd, settingsRootOf(cwd, cwdToplevel), git);
   const staleDeny = worktreeBase?.stale === true ? staleWorktreeDeny(worktreeBase) : null;
 
-  // Listed in `cwd`'s repo, not at the session root: the declared paths are
-  // repo-relative to the repo the agents edit, which is the one the session
-  // works in (after entering a worktree: that worktree), and the toplevel is
-  // already resolved — `sessionRoot` may be a subdirectory, from which
-  // `ls-files` answers subdir-relative (the review-MED class above).
+  // Listed at `cwd`'s toplevel ONLY: the declared paths are repo-relative to the
+  // repo the agents edit, which is the one the session works in (after entering
+  // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot`;
+  // when git could not, `sessionRoot` falls back to `$CLAUDE_PROJECT_DIR` or a
+  // bare `cwd` — another repo, or a subdirectory from which `ls-files` answers
+  // subdir-relative (the review-MED class above) — so the listing degrades
+  // (matrix row 8) instead of following it there.
   const known = trackedFilesIn(cwdToplevel, git);
   const knownFiles = known.files;
 
@@ -2361,11 +2389,15 @@ async function main() {
   // the COLLISION verdict alone. When the stale base is what actually blocks the
   // dispatch (no collision deny beside it — that one keeps `deny`), the record
   // says so (#1489 Pkt 8): recorded as `allow`, a refused dispatch counted as a
-  // dispatched one in every later query.
+  // dispatched one in every later query. The replaced value survives as
+  // `collision_result`, so a `warn-ledger-corrupt` / `warn-not-evaluable` behind
+  // a stale-base deny is not reported on stderr alone.
   if (verdict.telemetry) {
     const telemetry = {
       ...verdict.telemetry,
-      ...(staleDeny !== null && verdict.action !== 'deny' ? { ledger_result: 'deny-stale-base' } : {}),
+      ...(staleDeny !== null && verdict.action !== 'deny'
+        ? { ledger_result: 'deny-stale-base', collision_result: verdict.telemetry.ledger_result }
+        : {}),
       ...(known.skipped === undefined ? {} : { known_files_skipped: known.skipped }),
     };
     try {

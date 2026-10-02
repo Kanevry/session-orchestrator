@@ -184,9 +184,10 @@ function writeTranscript(dir, rows) {
  * would make the spawned hook inherit the OPERATOR's real session id — any
  * assertion about session attribution would then pass for the wrong reason, and
  * differently on CI (where the var is absent). CLAUDE_PROJECT_DIR is the hook's
- * session root (#1489 Pkt 6): inherited, it would put this file's ledgers and
- * events into the real project instead of the test's temp dir. A test that needs
- * either sets it explicitly.
+ * state root whenever the payload `cwd` is in no git repo — most temp dirs here
+ * are not — and its settings root always: inherited, it would put this file's
+ * ledgers and events into the real project and read the operator's settings. A
+ * test that needs either sets it explicitly.
  */
 function hookEnv(extraEnv = {}) {
   const env = { ...process.env };
@@ -1447,7 +1448,7 @@ describe('stale worktree base (#1485)', () => {
   /**
    * A dispatch payload with (or without) the `isolation` key. `cwd` is the hook
    * payload's own field — it follows the session's `cd`, so it can differ from
-   * the session root. `files` adds a declared scope; `toolUseId` an exact id.
+   * the repo toplevel. `files` adds a declared scope; `toolUseId` an exact id.
    */
   function worktreePayload(dir, { isolation = 'worktree', cwd = dir, files, toolUseId } = {}) {
     const scope = files === undefined ? '' : `\n\n## DEIN DATEI-SCOPE\n\`\`\`\n${files.join('\n')}\n\`\`\``;
@@ -1472,8 +1473,8 @@ describe('stale worktree base (#1485)', () => {
    * hook reads `$CLAUDE_CONFIG_DIR/settings.json`, and the operator's real one
    * may well carry `worktree.baseRef: "head"` — which would turn every deny
    * case here green-for-the-wrong-reason red on one machine only. For the same
-   * reason `CLAUDE_PROJECT_DIR` (the session root a live session exports to its
-   * hooks) is blanked unless a test sets it.
+   * reason `CLAUDE_PROJECT_DIR` (the launch dir a live session exports to its
+   * hooks, where the project settings are read) is blanked unless a test sets it.
    */
   function runWorktree(dir, payload, env = {}) {
     const userDir = makeTempDir('ptsd-wt-user-');
@@ -1612,10 +1613,10 @@ describe('stale worktree base (#1485)', () => {
 
     // 1. CLAUDE_PROJECT_DIR decides, even where cwd's own repo has no settings:
     //    after entering a worktree, cwd is the worktree and the gitignored
-    //    settings.local.json exists only at the session root it started in.
-    const sessionRoot = makeTempDir('ptsd-wt-root-');
-    writeBaseRef(sessionRoot, 'settings.local.json', 'head');
-    expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub }), { CLAUDE_PROJECT_DIR: sessionRoot }));
+    //    settings.local.json exists only at the launch dir it started in.
+    const launchRoot = makeTempDir('ptsd-wt-root-');
+    writeBaseRef(launchRoot, 'settings.local.json', 'head');
+    expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub }), { CLAUDE_PROJECT_DIR: launchRoot }));
     // 2. Without it (no harness env), the git toplevel of cwd. Also the plain
     //    project-settings case: a check that ignores the setting denies every
     //    worktree dispatch after the first commit in exactly the repos that
@@ -1624,9 +1625,11 @@ describe('stale worktree base (#1485)', () => {
     writeBaseRef(dir, 'settings.json', 'head');
     expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub })));
 
-    // The records follow the same root as the settings (#1489 Pkt 6): each lands
-    // at the root that decided, and nothing — lock, ledger, events — under `sub`.
-    const events = [...baseEvents(sessionRoot), ...baseEvents(dir)];
+    // The records do NOT follow the settings: both land at cwd's git toplevel —
+    // the repo the session works in — and nothing under `sub` (#1489 Pkt 6) or
+    // at the launch dir the session left (the be6a2e3e review HIGH).
+    expect(existsSync(path.join(launchRoot, '.orchestrator'))).toBe(false);
+    const events = baseEvents(dir);
     expect(events.map((ev) => ev.base_ref_source)).toEqual(['local', 'project']);
     for (const ev of events) {
       expect(ev).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base: head });
@@ -1728,8 +1731,11 @@ describe('stale worktree base (#1485)', () => {
 
     // Bug caught (#1489 Pkt 8): `decide()` never sees the stale-base check, so
     // the refused dispatch was recorded as `ledger_result: 'allow'` — counted as
-    // dispatched in every later query of the event stream.
-    expect(scopeEvents(dir).map((ev) => ev.ledger_result)).toEqual(['deny-stale-base', 'allow']);
+    // dispatched in every later query of the event stream. And the value it
+    // replaced stays in `collision_result` — overwritten, a `warn-ledger-corrupt`
+    // behind a stale-base deny reached stderr only (be6a2e3e review LOW).
+    expect(scopeEvents(dir).map((ev) => [ev.ledger_result, ev.collision_result]))
+      .toEqual([['deny-stale-base', 'allow'], ['allow', undefined]]);
   });
 });
 
@@ -1750,6 +1756,38 @@ describe('pre-task-scope-disjoint — session root and git budget (#1489)', () =
 
     expect(existsSync(path.join(sub, '.orchestrator'))).toBe(false);
     expect(scopeEvents(root).map((ev) => ev.ledger_result)).toEqual(['allow', 'deny']);
+  });
+
+  it('keys state on the worktree a session ENTERED, not on the launch dir $CLAUDE_PROJECT_DIR keeps', () => {
+    // Bug caught (review HIGH on be6a2e3e): `$CLAUDE_PROJECT_DIR` stays on the
+    // LAUNCH dir after the session enters a worktree. Preferred for state, every
+    // worktree session from one launch dir shared ONE ledger there, the wave key
+    // fell back to `w?` (the wave-scope.json lives in the worktree), and the
+    // records left the worktree's events.jsonl `scope-echo --verify` reads. A
+    // second session's dispatch then wiped the first one's claims (`decide()`
+    // keeps prior agents only under the same wave key) — and the collision below
+    // was ALLOWED.
+    const launch = makeProjectDir();
+    const worktree = (wave) => {
+      const dir = makeProjectDir();
+      execFileSync('git', ['init', '-q'], { cwd: dir, stdio: 'ignore' });
+      mkdirSync(path.join(dir, '.claude'));
+      writeFileSync(path.join(dir, '.claude', 'wave-scope.json'), JSON.stringify({ wave, role: 'impl' }));
+      return dir;
+    };
+    const w1 = worktree(3);
+    const w2 = worktree(1);
+    const run = (cwd, id, files, sessionId) =>
+      runHook(dispatchPayload({ cwd, id, files, sessionId }), { env: { CLAUDE_PROJECT_DIR: launch } });
+
+    expectAllow(run(w1, 'Agent A', ['scripts/foo.mjs'], 's1'));
+    expectAllow(run(w2, 'Agent X', ['scripts/bar.mjs'], 's2'));
+    expectDeny(run(w1, 'Agent B', ['scripts/foo.mjs'], 's1'), ['Agent B', 'Agent A', 'scripts/foo.mjs']);
+
+    expect(existsSync(path.join(launch, LEDGER_REL))).toBe(false);
+    expect(scopeEvents(launch)).toEqual([]);
+    expect(JSON.parse(readFileSync(path.join(w1, LEDGER_REL), 'utf8')).waveKey).toBe('s1|w3|impl');
+    expect(scopeEvents(w1).map((ev) => [ev.ledger_result, ev.wave])).toEqual([['allow', 3], ['deny', 3]]);
   });
 
   it('answers inside the harness timeout when git HANGS — ALLOW, with the cut recorded', () => {

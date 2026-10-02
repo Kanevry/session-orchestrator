@@ -83,6 +83,20 @@ function renderPrompt(files, { echoFiles = files, withEcho = true } = {}) {
     + '\nMach die Arbeit.\n';
 }
 
+/**
+ * The ambient env minus what a live session leaks into it (the shape of
+ * `hookEnv()` in `pre-task-scope-disjoint.test.mjs`). `project` is no git repo,
+ * so an inherited CLAUDE_PROJECT_DIR becomes the hook's state root: this file's
+ * ledger and events would land in the real project (`.husky/pre-push` unsets it
+ * for its own gate for that reason).
+ */
+function hookEnv() {
+  const env = { ...process.env };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_PROJECT_DIR;
+  return env;
+}
+
 /** Drive the REAL hook binary with a PreToolUse dispatch payload. */
 function dispatch(project, id, prompt) {
   return spawnSync(process.execPath, [HOOK], {
@@ -95,6 +109,7 @@ function dispatch(project, id, prompt) {
     }),
     encoding: 'utf8',
     cwd: REPO_ROOT,
+    env: hookEnv(),
     timeout: 20_000,
   });
 }
