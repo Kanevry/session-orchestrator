@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`events-retention` session-start probe** (`scripts/lib/events-retention-banner.mjs`, #1401 part 3, variant a). Each reader of the rotated events ledger declares `REQUIRED_EVENTS_WINDOW_DAYS` next to its call (`telemetry/sync` = 1 day, a chosen ceiling; the eval engine and `telemetry-stats` = `null`, they have no finite window). The probe warns only when the archive ring is full and covers less than the largest finite window; an unmeasured or unlistable source never records as clean. No new config key. The probe family has 20 members.
+- **`excludedScope.shell` in the tests:src envelope** (`scripts/lib/tests-src-ratio.mjs`, #1488, variant B). Shell code (`.sh`/`.bash`/`.bats`) still counts in neither bucket, so the ratio is unchanged, but its volume (split into test and src shell) is now reported. Additive; the schema stays `tests-src-ratio/2`.
+- **`orchestrator.scope.refused_grant_allowed`** (`hooks/enforce-scope.mjs`, #1485 point 1): the first Gate-5b WARN of a wave (an absolute grant the wave-scope validator would refuse) emits one event, deduplicated per session and wave.
+- **`isDeny` / `isAllow` predicates** in `tests/_helpers/hook-decision.mjs` (#1027 Nachtrag 8), sharing one contract with `expectDeny` / `expectAllow`.
+
+### Changed
+
+- **Subagent worktrees branch from the session HEAD** (`.claude/settings.json` `worktree.baseRef: "head"`, #1485 point 2). Per the Claude Code docs this setting also governs `--worktree` and background sessions in this repo.
+- **The worktree base check denies only a measured stale base** (`hooks/pre-task-scope-disjoint.mjs`, #1485). It reads `worktree.baseRef` in precedence order (local → project → user) at the session root, records the deciding layer as `base_ref_source`, denies an `isolation: "worktree"` dispatch only when `git merge-base --is-ancestor HEAD origin/HEAD` exits 1, skips shallow clones, unknown bases and a cached remote ref the harness would refresh first (`FETCH_HEAD` older than 24 h or absent, `skipped: 'stale-remote-ref'`), and writes no scope-ledger claim for a denied dispatch. The STATE.md `session-start-ref` prediction it replaced was wrong per the docs.
+- **The `/evolve` prune flow snapshots first** (`scripts/sweep-expired-learnings.mjs --prune --snapshot`, `skills/evolve/**`, `.cursor/rules/060-evolve.mdc`, #1486). The sidecar's first line carries the store generation and path; `--entries` needs that header.
+
+### Fixed
+
+- **A prune no longer archives learnings appended after the snapshot** (#1486). `--prune --entries --apply` compares the store generation inside the store lock and refuses on drift (exit 3, the current token is not printed); applying a sidecar to a different store, a sidecar without a header, a `--snapshot` onto the store or archive (also via a symlinked directory or a different letter case), and a snapshot of a store with malformed lines all exit 1. The Cursor `/evolve` rule had not been migrated and is now.
+- **The ci-status banner resolves its SHAs inside the probe budget** (`scripts/lib/session-start-probes.mjs`, #1396); the renderer no longer spawns git.
+- **Orphan reaper file safety** (`scripts/lib/orphan-reaper/`, `scripts/lib/tail-window.mjs`, #1487 items 5–7): the audit append refuses symlinks and hard links; the reader opens with `O_NOFOLLOW|O_NONBLOCK` (a planted FIFO no longer hangs scan children) and is capped at 1 MiB; the throttle marker is read without following symlinks and a future mtime fails toward a scan; the false-alarm window reads N decisions, not N lines.
+- **Vault logs no longer print absolute vault paths or scp login users** (`scripts/lib/vault-mirror/process.mjs`, `scripts/lib/named-vault-resolver.mjs`, #1487 items 9–10), including bracketed IPv6 remotes; the vault-relative helper matches the root by whole path segment.
+- **B5 no longer counts a real-clock value as clock control** (`scripts/lib/validate/check-test-value-bans.mjs`, #1487 item 8).
+- **The vault learnings backfill checks and appends under the store lock** (`scripts/backfill-learnings-from-vault.mjs`, #1487 item 12); bootstrap Step 3b ignores the lock artefacts in consumer repos (#1487 item 11).
+
 ## [5.4.0] - 2026-10-01
 
 ### Added
