@@ -171,9 +171,11 @@ describe('commitlint job lints the merge-request range', () => {
     // git-local shapes (unquoted target, remote-tracking) sit inside MR ranges whenever a
     // branch takes in main: 4 of the 25 merge subjects in the last 200 main commits
     // (measured 2026-10-02 @ ff3e43b5), which a GitLab-only pattern would have failed.
+    // The apostrophe branch is a legal ref name that `'[^']+'` rejected.
     const { dir, base, head } = makeRepo([
       'fix: fine',
       "Merge branch 'fix/x' into 'main'",
+      "Merge branch 'fix/it's' into 'main'",
       "Merge branch 'main' into fix/x",
       "Merge remote-tracking branch 'origin/main' into fix/x",
       'Revert "fix: fine"',
@@ -186,13 +188,15 @@ describe('commitlint job lints the merge-request range', () => {
   // commitlint's default ignores (@commitlint/is-ignored 19.8.1) pass every one of these:
   // exit 0 under commitlint.config.mjs, measured 2026-10-02. The body-line case matters
   // because the default merge pattern is multiline: one `Merge branch` line anywhere in
-  // the body exempted the whole message.
+  // the body exempted the whole message. The trailing-text case pins the whole-line
+  // anchoring of the CI merge pattern: a header only STARTING like a merge is linted.
   it.each([
     'fixup! fix: fine',
     'Reapply x',
     'v1.2.3',
     'revert anything goes',
     "bad header\n\nMerge branch 'foo'",
+    "Merge branch 'x' feat: hidden",
   ])('the CI rule set rejects %j, which only the default ignores let through', (message) => {
     const { dir, base, head } = makeRepo([message]);
     const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });

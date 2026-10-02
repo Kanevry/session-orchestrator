@@ -21,8 +21,15 @@ import base from './commitlint.config.mjs';
 //   Merge remote-tracking branch 'origin/main' into fix/x (git merge origin/main)
 //   Merge branch 'main' of host:group/project             (git pull)
 // The git-local shapes occur inside MR ranges whenever a branch takes in main.
+// The quoted part is `'.+?'`, not `'[^']+'`: git allows an apostrophe in a
+// branch name (`git check-ref-format "refs/heads/fix/it's"` exits 0), and the
+// default ignores this file replaces accepted such a merge. `'.+?'` also spans a
+// list (`'a', 'b' and 'c'`), so there is no separate repetition group for one —
+// with `.+?` inside a `(…)*` the match backtracks exponentially on a long
+// non-matching header (measured 2026-10-02: 87 ms at 128 chars, doubling per
+// extra `, 'a'`), a pipeline hang a commit message could trigger.
 const MERGE_HEADER =
-  /^Merge (branch|branches|remote-tracking branch|remote-tracking branches|tag|tags|commit) '[^']+'((, | and )'[^']+')*( of \S+)?( into \S+)?$/;
+  /^Merge (branch|branches|remote-tracking branch|remote-tracking branches|tag|tags|commit) '.+?'( of \S+)?( into \S+)?$/;
 
 // git revert / GitLab's revert button, and git >= 2.44 reverting a revert:
 //   Revert "fix: x"    Reapply "fix: x"
