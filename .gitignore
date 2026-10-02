@@ -85,18 +85,32 @@ Thumbs.db
 # Vitest coverage artifacts (#263)
 coverage/
 
-# Per-session runtime state (machine-specific, never committable)
-.orchestrator/host.json
+# Per-session runtime state (machine-specific, never committable). The globs
+# below are the SAME patterns bootstrap's store-lock-ignore step writes into
+# consumer repos (skills/bootstrap/_shared-template.md § #store-lock-ignore):
+# each covers one writer's file, its `.acquire` guard and the temp files a crash
+# mid-write leaves behind. tests/skills/bootstrap-store-lock-ignore.test.mjs
+# checks the two lists against each other in both directions.
+.orchestrator/host.json*
 .orchestrator/current-session.json
+.orchestrator/.current-session.*
 .orchestrator/STATE.md
-# Issue #330: distributed session-lock
+# Issue #330: distributed session-lock, plus its create/tmp files and the
+# `.session.lock.reclaim.<x>` stale-takeover tombstone (#1494)
 .orchestrator/session.lock
+.orchestrator/.session.lock.*
 # Issue #1180: per-repo mutexes — STATE.md write-lock (scripts/lib/locks/state-md-lock.mjs)
 # and the reconcile rules lock (scripts/lib/reconcile/writer.mjs). Runtime state,
 # never committable. NOTE: .orchestrator/bootstrap.lock is a deliberately TRACKED
 # marker and must stay out of this list.
-.orchestrator/state.lock
-.orchestrator/rules.lock
+.orchestrator/state.lock*
+.orchestrator/.state.lock.*
+.orchestrator/rules.lock*
+# memory-proposals store lock (scripts/lib/memory-proposals/store.mjs)
+.orchestrator/metrics/proposals-write.lock*
+.orchestrator/metrics/.proposals-write.lock.*
+# zero-byte cold-start marker (scripts/migrate-cold-start-seed.mjs)
+.orchestrator/welcome-banner-pending
 # Issue #1020: per-dispatch scope ledger written by hooks/pre-task-scope-disjoint.mjs —
 # one wave-dispatch-scopes.<session>.json + .lock per session since #1493 (the
 # bare wave-dispatch-scopes.json is the pre-split legacy file), plus the lock's
@@ -206,7 +220,8 @@ sig-audit.err
 .semgrep_logs/
 
 # wave-transcript-tail singleton lock (#1114) — host-local, carries the hostname
-.orchestrator/wave-transcript-tail.lock
+.orchestrator/wave-transcript-tail.lock*
+.orchestrator/.wave-transcript-tail.lock.*
 
 # worktree-promotion marker written by enterWorktree (#1069/#1067) — per-worktree fact, not source
 .orchestrator/promoted-from.json

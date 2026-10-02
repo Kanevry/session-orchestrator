@@ -138,7 +138,15 @@ const root = ${JSON.stringify(repoRoot)};
 const counter = ${JSON.stringify(counterPath)};
 const role = process.argv[2];
 const lock = path.join(root, '.orchestrator', 'state.lock');
-const mark = (name, value = 'ready') => fs.writeFileSync(path.join(root, name), value);
+// Atomic: writeFileSync creates the file EMPTY before it writes, and the parent
+// reads a marker the moment it exists — so it could read '' (seen once under
+// load: \`expected ['created','EEXIST'] to include ''\`). A rename makes the name
+// appear only with its full content.
+const mark = (name, value = 'ready') => {
+  const tmp = path.join(root, name + '.tmp-' + process.pid);
+  fs.writeFileSync(tmp, value);
+  fs.renameSync(tmp, path.join(root, name));
+};
 const wait = async (name) => {
   const deadline = Date.now() + 10000;
   while (!fs.existsSync(path.join(root, name))) {

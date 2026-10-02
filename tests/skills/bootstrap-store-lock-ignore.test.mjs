@@ -9,6 +9,8 @@
  *     `.gitignore`, missing from the consumer block (the pinned list this test
  *     carried before could not see it: it compared the block with itself) —
  *     e.g. `pending-dream.md`, a full body of the operator's private MEMORY.md;
+ *     or covered here only by a root line (`*.log`) the census cannot read;
+ *   - the reverse drift: a block pattern this repo's own `.gitignore` lacks;
  *   - the append fusing its comment onto a last line without a newline
  *     (`.env` + `# …` → `.env# …`), which UN-ignores `.env`;
  *   - a second run appending the block again;
@@ -77,8 +79,26 @@ const NOT_IN_CONSUMER_BLOCK = {
   '.orchestrator/session-notes/': 'this repo\'s internal design notes — no plugin writer',
 };
 
-/** Plugin runtime files this repo's `.gitignore` does not name (it never receives them). */
-const RUNTIME_NOT_IN_REPO_GITIGNORE = ['.orchestrator/welcome-banner-pending'];
+/**
+ * Plugin runtime files this repo's `.gitignore` covers only through a line
+ * OUTSIDE `.orchestrator/` — the root `*.log` — so the census, which reads the
+ * `.orchestrator/` lines, cannot see them. The writers: `session-close-backfill.mjs`
+ * (its `error` text carries fs messages with absolute paths), `reconcile/writer.mjs`
+ * and `memory-proposals/sink.mjs` (the declined-proposal archives).
+ */
+const RUNTIME_COVERED_BY_ROOT_LINE = [
+  '.orchestrator/metrics/session-close-backfill.log',
+  '.orchestrator/reconcile.rejected.log',
+  '.orchestrator/proposals.rejected.log',
+];
+
+/** The `.orchestrator/` files this repo tracks (`git ls-files .orchestrator`) — its own `.gitignore` must leave them versioned. */
+const REPO_VERSIONED = [
+  '.orchestrator/bootstrap.lock',
+  '.orchestrator/peers/AGENT.md',
+  '.orchestrator/policy/blocked-commands.json',
+  '.orchestrator/steering/tech.md',
+];
 
 /** The `.orchestrator/` ignore lines of this repo's own `.gitignore`. */
 function repoOrchestratorIgnoreLines() {
@@ -104,6 +124,15 @@ function loadSnippet() {
 }
 
 const SNIPPET = loadSnippet();
+
+/** The block's `_GI_PATTERNS`, as bash itself expands the array — loud failure when the array is gone. */
+function blockPatterns() {
+  const array = SNIPPET.match(/^_GI_PATTERNS=\([\s\S]*?^\)$/m)?.[0];
+  if (!array) throw new Error(`no _GI_PATTERNS=( … ) array in the store-lock-ignore block of ${TEMPLATE}`);
+  const r = spawnSync('/bin/bash', ['-c', `${array}\nprintf '%s\\n' "\${_GI_PATTERNS[@]}"`], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`bash could not expand _GI_PATTERNS: ${r.stderr}`);
+  return r.stdout.split('\n').filter(Boolean);
+}
 
 const tmpRoots = [];
 afterEach(() => {
@@ -186,10 +215,30 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
     expect(r.status, r.stderr).toBe(0);
     // A last line without a newline must not fuse with the comment (`.env# …` un-ignores `.env`).
     expect(readFileSync(gi, 'utf8').split('\n').slice(0, 2)).toEqual(['node_modules/', '.env']);
-    const mustIgnore = ['.env', ...census.map(samplePath), ...RUNTIME_NOT_IN_REPO_GITIGNORE];
+    // The diagnostic logs (MED-1 on b57e572c) were missed this way: covered here
+    // by the root `*.log`, invisible to a census of `.orchestrator/` lines.
+    const mustIgnore = ['.env', ...census.map(samplePath), ...RUNTIME_COVERED_BY_ROOT_LINE];
     const status = ignoreStatus(root, repo, [...mustIgnore, ...CONSUMER_VERSIONED]);
     expect(mustIgnore.filter((p) => status[p] !== 0)).toEqual([]);
     expect(CONSUMER_VERSIONED.filter((p) => status[p] !== 1)).toEqual([]);
+  });
+
+  it('this repo\'s own .gitignore ignores every pattern the block writes, and none of its tracked files (reverse census)', () => {
+    // Bug (LOW-1 on b57e572c): the block grew runtime classes — #1494's
+    // `.session.lock.reclaim.<x>` tombstone, the `.acquire` guards, the lock
+    // temp files — that this repo's own `.gitignore` never got, so a `git add -A`
+    // HERE committed what consumers were already protected from. The tracked
+    // half catches the opposite slip: a widened glob here swallowing a marker
+    // this repo versions (`bootstrap.lock`).
+    const patterns = blockPatterns();
+    expect(patterns).toContain(LOCK_PATTERN);
+    const { root, repo } = repoWith(readFileSync(REPO_GITIGNORE, 'utf8'));
+
+    const samples = patterns.map(samplePath);
+    const status = ignoreStatus(root, repo, [...samples, ...REPO_VERSIONED]);
+
+    expect(samples.filter((p) => status[p] !== 0)).toEqual([]);
+    expect(REPO_VERSIONED.filter((p) => status[p] !== 1)).toEqual([]);
   });
 
   it('classifies only lines this repo\'s .gitignore still carries', () => {

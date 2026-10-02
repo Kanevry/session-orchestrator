@@ -372,6 +372,7 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 | `.orchestrator/metrics/repo-audit-*.json` | the `/repo-audit` JSON sidecar of each run |
 | `.orchestrator/metrics/proposals-summary-*.json` | the per-wave memory-proposals summary sidecars (`scripts/lib/memory-proposals/sink.mjs`) |
 | `.orchestrator/metrics/.backfilled-*.marker` | the session-close-backfill idempotency markers (`scripts/lib/session-close-backfill.mjs`) |
+| `.orchestrator/*.log`, `.orchestrator/metrics/*.log` | the append-only diagnostic logs: the declined-proposal archives `reconcile.rejected.log` (`scripts/lib/reconcile/writer.mjs`) and `proposals.rejected.log` (`scripts/lib/memory-proposals/sink.mjs`), and `metrics/session-close-backfill.log`, whose `error` text carries fs error messages with absolute paths (`scripts/lib/session-close-backfill.mjs`) |
 
 Append the missing patterns:
 
@@ -407,6 +408,7 @@ _GI_PATTERNS=(
   '.orchestrator/metrics/repo-audit-*.json'
   '.orchestrator/metrics/proposals-summary-*.json'
   '.orchestrator/metrics/.backfilled-*.marker'
+  '.orchestrator/*.log' '.orchestrator/metrics/*.log'
 )
 if [[ -z "$_GI_ROOT" ]]; then
   # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).

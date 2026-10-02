@@ -367,17 +367,26 @@ function _isStrictlyInside(child, parent) {
  *      timed-out git (review MED on 63f35e8c) nor a hot-path budget can send a
  *      worktree session back to the launch dir — lifted to `<P>` when it is a
  *      harness subagent worktree `<P>/.claude/worktrees/agent-<hex>` (below),
- *      then replaced by `$CLAUDE_PROJECT_DIR` when it lies strictly ABOVE it;
+ *      then replaced by the launch dir from env (`_launchDirFromEnv`) when it
+ *      lies strictly ABOVE it;
  *   3. the launch dir from env (`CLAUDE_PROJECT_DIR` → `CODEX_PROJECT_DIR` →
  *      `CURSOR_PROJECT_DIR` → `PI_PROJECT_DIR`), only when `cwd` is in no repo;
  *   4. `cwd`.
  *
- * Only `$CLAUDE_PROJECT_DIR` clamps in rung 2: the Cursor and Pi bridges set
- * their `*_PROJECT_DIR` to the payload `cwd` on every call
- * (`cursor-hook-bridge.mjs`, `pi-hook-bridge.mjs`), so a clamp on those would
- * follow every `cd` again. The clamp does not ask whether `cwd` lies inside the
- * launch dir: an `isolation: "worktree"` agent's `cwd` never does, and it must
- * clamp too (see THE LIFT).
+ * The clamp reads the SAME launch-dir chain as rung 3, not `$CLAUDE_PROJECT_DIR`
+ * alone. The Cursor and Pi bridges delete `CLAUDE_PROJECT_DIR` and set their
+ * own `*_PROJECT_DIR` to the payload `cwd` on every call (`cursor-hook-bridge.mjs`,
+ * `pi-hook-bridge.mjs`); a clamp on `$CLAUDE_PROJECT_DIR` alone therefore never
+ * fired there, and a Cursor/Pi workspace in a repo SUBDIRECTORY climbed to the
+ * repo root, found no manifest and allowed every write (review HIGH-1 on
+ * b57e572c, measured end-to-end through `cursor-hook-bridge.mjs`: DENY at
+ * ff3e43b5 → ALLOW). For a Claude session nothing changes — `$CLAUDE_PROJECT_DIR`
+ * is first in the chain. For a bridge session the answer is the payload `cwd`
+ * whenever it sits in a repo, which is exactly what the bridges resolved before
+ * #1492 (`resolveProjectDir()` → their `*_PROJECT_DIR` → the payload `cwd`).
+ * The clamp does not ask whether `cwd` lies inside the launch dir: an
+ * `isolation: "worktree"` agent's `cwd` never does, and it must clamp too (see
+ * THE LIFT).
  *
  * THE LIFT. An `isolation: "worktree"` subagent's hook payload carries the
  * worktree the harness made for it, `<P>/.claude/worktrees/agent-<hex>`. That
@@ -407,6 +416,12 @@ function _isStrictlyInside(child, parent) {
  *  - A session worktree NAMED like a harness one (`agent-` + 8 or more hex) is
  *    lifted to its parent — the pre-#1492 launch-dir behaviour for that one
  *    session, not a new failure. Revisit if the harness changes its naming.
+ *  - A Cursor/Pi bridge session follows its payload `cwd`, as it did before
+ *    #1492: the bridges hand over no launch dir distinct from that `cwd`, so a
+ *    bridge session whose `cwd` moves into a subdirectory without a manifest is
+ *    unenforced there. Not a new failure — the pre-#1492 bridge answer. Revisit
+ *    when a bridge hands over a stable workspace root separately from the
+ *    payload `cwd` — then clamp on that instead.
  *
  * @param {string|undefined} cwd       the hook payload's `cwd`
  * @param {string} [toplevel]          `git rev-parse --show-toplevel` of `cwd`, `''` when unknown
@@ -417,7 +432,7 @@ export function resolveSessionRoot(cwd, toplevel = '') {
   const repoRoot = (typeof toplevel === 'string' ? toplevel : '') || _dotGitAncestor(cwd);
   if (!repoRoot) return _launchDirFromEnv() || cwd;
   const root = _liftHarnessAgentWorktree(repoRoot);
-  const launch = (process.env.CLAUDE_PROJECT_DIR || '').trim();
+  const launch = _launchDirFromEnv();
   return launch !== '' && _isStrictlyInside(launch, root) ? launch : root;
 }
 

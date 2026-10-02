@@ -29,6 +29,9 @@ import {
   resolveStateDir,
   resolveConfigFile,
 } from '@lib/platform.mjs';
+import { runCursorHookEvent } from '@lib/cursor-hook-bridge.mjs';
+
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 const ENV_KEYS = [
   'SO_PLATFORM',
@@ -677,16 +680,53 @@ describe('resolveSessionRoot (#1492)', () => {
     expect(resolveSessionRoot(wt)).toBe(wt);
   });
 
-  it('clamps on $CLAUDE_PROJECT_DIR only — never on a bridge-set *_PROJECT_DIR', () => {
-    // Bug caught: the Cursor and Pi bridges set their `*_PROJECT_DIR` to the
-    // payload `cwd` on EVERY call, so a clamp on the generic launch-dir env
-    // would follow each `cd` into a subdirectory without a manifest.
+  it.each([
+    ['CURSOR_PROJECT_DIR'],
+    ['PI_PROJECT_DIR'],
+  ])('clamps on a bridge-set %s too — a bridge workspace in a repo subdirectory keeps its manifest', (envName) => {
+    // Bug caught (review HIGH-1 on b57e572c): the Cursor and Pi bridges delete
+    // CLAUDE_PROJECT_DIR and set their own `*_PROJECT_DIR` to the payload `cwd`.
+    // A clamp on CLAUDE_PROJECT_DIR alone never fired there, so a workspace in
+    // `<repo>/sub` climbed to `<repo>`, found no manifest, and every scope gate
+    // allowed — where before #1492 the bridges resolved `<repo>/sub`.
     const repo = dirAt('repo', { dotGit: true });
     const sub = dirAt(path.join('repo', 'sub'));
-    vi.stubEnv('CURSOR_PROJECT_DIR', sub);
+    vi.stubEnv(envName, sub);
 
+    expect(resolveSessionRoot(sub)).toBe(sub);
+    // Control: the same cwd without any launch dir still resolves the repo root.
+    vi.stubEnv(envName, '');
     expect(resolveSessionRoot(sub)).toBe(repo);
   });
+
+  it('denies an out-of-scope Write end-to-end through the Cursor bridge for a workspace in a repo subdirectory', async () => {
+    // Bug caught (review HIGH-1 on b57e572c): the resolver row above, wired
+    // through the real bridge env (CLAUDE_PROJECT_DIR deleted, CURSOR_PROJECT_DIR
+    // = payload cwd) into the real enforce-scope hook. With the clamp on
+    // CLAUDE_PROJECT_DIR alone the hook resolved `<mono>`, which holds no
+    // manifest, and allowed the write.
+    dirAt('mono', { dotGit: true });
+    const pkg = dirAt(path.join('mono', 'packages', 'foo', '.cursor'));
+    writeFileSync(path.join(pkg, 'wave-scope.json'), JSON.stringify({
+      wave: 1,
+      role: 'impl',
+      enforcement: 'strict',
+      allowedPaths: ['src/**'],
+    }));
+    const cwd = path.dirname(pkg);
+
+    const result = await runCursorHookEvent(
+      'preToolUse',
+      { tool_name: 'Write', tool_input: { file_path: 'other/x.mjs', content: 'x' } },
+      { cwd },
+      { pluginRoot: REPO_ROOT },
+    );
+
+    expect(result.payload.cwd).toBe(cwd);
+    expect(result.block).toBe(true);
+    // A scope-violation reason, not a fail-closed hook timeout under load.
+    expect(result.reason).toMatch(/Scope violation: 'other\/x\.mjs'/);
+  }, 30000);
 
   it('clamps when $CLAUDE_PROJECT_DIR and cwd spell one directory differently (symlink vs realpath)', () => {
     // Bug caught: compared as resolved strings, an unresolved launch spelling
