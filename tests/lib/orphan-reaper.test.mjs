@@ -971,6 +971,14 @@ describe('shouldScanNow', () => {
     expect(shouldScanNow('/repo/.orchestrator/tmp/reaper-last-scan', NOW + 21_000, 30, { statFn })).toBe(true);
   });
 
+  it('scans when the marker is stamped in the future — a negative age throttled every fire, and the marker is only re-stamped after a scan', () => {
+    // Bug (#1487 review, reproduced 2026-10-02 with `utimes` +1 year): the age
+    // went negative, so the reaper never scanned again — a disabled reaper
+    // nothing can falsify (HR-105).
+    const statFn = () => ({ mtimeMs: NOW + 3_600_000 });
+    expect(shouldScanNow('/repo/.orchestrator/tmp/reaper-last-scan', NOW, 30, { statFn })).toBe(true);
+  });
+
   it('allows the very first scan when the marker does not exist — an absent throttle file must not disable the reaper', () => {
     const statFn = () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
     expect(shouldScanNow('/repo/.orchestrator/tmp/reaper-last-scan', NOW, 30, { statFn })).toBe(true);

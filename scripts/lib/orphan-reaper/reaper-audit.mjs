@@ -55,7 +55,8 @@ const REAPER_AUDIT_MAX_BYTES = 1024 * 1024;
 const REAPER_AUDIT_KEEP_BYTES = 512 * 1024;
 
 /** First tail window {@link readAuditRecords} tries; it grows ×4 only while the
- *  window holds fewer complete lines, or fewer rate decisions, than requested. */
+ *  window holds fewer complete lines, or fewer rate decisions, than requested,
+ *  and never past {@link REAPER_AUDIT_MAX_BYTES}. */
 const AUDIT_TAIL_START_BYTES = 64 * 1024;
 
 /** The one refusal both writers share — the prune's {@link replaceRegularFile}
@@ -66,7 +67,11 @@ const NOT_A_REGULAR_FILE = 'not a regular file (a symlink is never written throu
  * `open(2)` flags of the audit append. `O_NOFOLLOW` makes the kernel refuse a
  * symlink as the last path component (ELOOP) in the same call that opens the
  * file, so there is no lstat-then-open window; `O_NONBLOCK` turns a planted FIFO
- * with no reader into ENXIO instead of a scan child blocked in `open` for good.
+ * with no reader into ENXIO instead of blocking in `open`. That protects THIS
+ * open only: the scan child then READS the same path for the rate and opens it
+ * again to prune, and a plain `'r'` open of the FIFO blocked it for good
+ * (reproduced 2026-10-02, #1487) — both reads therefore go through
+ * `readTailWindow`'s `noFollow` open, the read-side twin of these flags.
  * Named ceiling (BV-004): both are POSIX-only — Node leaves them undefined on
  * Windows, where a linked audit is still followed; revisit if the reaper ever
  * runs there (it shells out to `ps`, so today it does not).
@@ -153,7 +158,11 @@ export function buildAuditRecord(entry, decision, {
  * does: `appendFileSync(path)` follows a link, so `ln -s events.jsonl
  * reaper-audit.jsonl` routed every kill record into the link target (CWE-59,
  * #1487). The check is the open itself ({@link AUDIT_APPEND_FLAGS}) plus an
- * `fstat` of the descriptor that was opened — never a separate lstat.
+ * `fstat` of the descriptor that was opened — never a separate lstat. The same
+ * `fstat` refuses a HARD-linked audit (`nlink !== 1`): `ln <victim>
+ * reaper-audit.jsonl` passes every symlink check, and each append then lands in
+ * the victim (reproduced 2026-10-02). The prune is immune — it renames a new
+ * inode over the name.
  *
  * @param {string} repoRoot
  * @param {object} record
@@ -165,7 +174,11 @@ export function appendAuditRecord(repoRoot, record) {
   try {
     mkdirSync(path.dirname(target), { recursive: true });
     fd = openSync(target, AUDIT_APPEND_FLAGS);
-    if (!fstatSync(fd).isFile()) throw new Error(NOT_A_REGULAR_FILE);
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new Error(NOT_A_REGULAR_FILE);
+    if (stats.nlink !== 1) {
+      throw new Error(`hard-linked (${stats.nlink} names) — an append would write into every one of them; left untouched`);
+    }
     appendFileSync(fd, `${JSON.stringify(record)}\n`, 'utf8');
   } catch (err) {
     const why = err?.code === 'ELOOP' ? NOT_A_REGULAR_FILE : (err?.message ?? String(err));
@@ -196,9 +209,16 @@ export function appendAuditRecord(repoRoot, record) {
  * Read from a tail window that grows ×4 only while it holds fewer than `limit`
  * lines or decisions; the first line of a window that does not start at byte 0
  * is a fragment and is dropped before anything is parsed. Named ceiling
- * (BV-004): an audit holding fewer than `limit` decisions is read and returned
- * whole — bounded by {@link pruneReaperAudit} at ~1 MiB, ~3,700 report records
- * of 285 bytes; revisit if that ceiling is raised.
+ * (BV-004): the window stops at {@link REAPER_AUDIT_MAX_BYTES} (1 MiB, ~3,700
+ * report records of 285 bytes) — the prune's own ceiling, enforced HERE rather
+ * than assumed from the prune, because the prune refuses a linked audit and
+ * runs only after this read (a 40 MB link target was read whole, 64 MB window,
+ * 293 MB RSS per scan — #1487). Decisions older than the newest 1 MiB are not
+ * read; revisit if that ceiling is raised.
+ *
+ * The open is `readTailWindow`'s `noFollow` form: a symlinked, FIFO or other
+ * non-regular audit reads as `[]` — refused like the writers refuse it — and a
+ * planted FIFO can no longer block the scan child in `open`.
  *
  * A malformed line is dropped from the rate's population rather than counted,
  * because an unreadable record carries no decision to classify — and the rate
@@ -216,12 +236,12 @@ export function readAuditRecords(repoRoot, limit = REAPER_DEFAULTS.falseAlarmWin
   try {
     let windowBytes = AUDIT_TAIL_START_BYTES;
     for (;;) {
-      const { text, cut } = readTailWindow(target, windowBytes);
+      const { text, cut } = readTailWindow(target, windowBytes, { noFollow: true });
       const all = text.split('\n');
       if (cut) all.shift();
       span = newestSpan(all.filter((l) => l.trim().length > 0), want);
-      if (!cut || span.complete) break;
-      windowBytes *= 4;
+      if (!cut || span.complete || windowBytes >= REAPER_AUDIT_MAX_BYTES) break;
+      windowBytes = Math.min(windowBytes * 4, REAPER_AUDIT_MAX_BYTES);
     }
   } catch {
     return [];
@@ -318,7 +338,9 @@ export function pruneReaperAudit(repoRoot, {
   }
   if (size <= maxBytes) return 0;
   try {
-    const { text, cut } = readTailWindow(target, Math.min(keepBytes, maxBytes));
+    // `noFollow`: `statSync` above follows a link, so without it the prune read
+    // a linked target's tail before `replaceRegularFile` refused the write.
+    const { text, cut } = readTailWindow(target, Math.min(keepBytes, maxBytes), { noFollow: true });
     // A cut window starts mid-record; with no newline at all it is ONE record
     // larger than the window, and keeping any part of it would keep a fragment.
     const newline = text.indexOf('\n');
@@ -326,9 +348,10 @@ export function pruneReaperAudit(repoRoot, {
     replaceRegularFile(target, kept);
     return size - Buffer.byteLength(kept, 'utf8');
   } catch (err) {
-    process.stderr.write(
-      `orphan-reaper: could not prune ${REAPER_AUDIT_RELPATH}: ${err?.message ?? String(err)}\n`,
-    );
+    const why = err?.code === 'ELOOP' || err?.code === 'ERR_NOT_REGULAR_FILE'
+      ? NOT_A_REGULAR_FILE
+      : (err?.message ?? String(err));
+    process.stderr.write(`orphan-reaper: could not prune ${REAPER_AUDIT_RELPATH}: ${why}\n`);
     return 0;
   }
 }

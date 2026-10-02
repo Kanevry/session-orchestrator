@@ -57,6 +57,11 @@ export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEF
   if (typeof stats?.isFile === 'function' && !stats.isFile()) return true;
   const mtimeMs = stats?.mtimeMs;
   if (typeof mtimeMs !== 'number' || Number.isNaN(mtimeMs)) return true;
+  // A marker stamped in the future (`touch -t`, a clock stepped backwards) made
+  // the age negative, so every fire read "too soon" — and the marker is only
+  // re-stamped AFTER a scan, so the reaper never scanned again (#1487). Fail
+  // toward a scan, the same direction as every other unreadable marker here.
+  if (mtimeMs > nowMs) return true;
   return (nowMs - mtimeMs) >= minIntervalSeconds * 1000;
 }
 
@@ -64,8 +69,11 @@ export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEF
  * Stamp the throttle marker. Best-effort and never throws — a marker that could
  * not be written means the next scan runs, which is the safe direction for a
  * read-only probe (the reasoning is on {@link shouldScanNow}). Callers must not
- * read a `false` as a stamped throttle: the hooks report it as
- * `reason: 'spawned-unthrottled'`.
+ * read a `false` as a stamped throttle: the hooks' `maybeTriggerOrphanScan`
+ * returns it as `reason: 'spawned-unthrottled'`. That return value is the whole
+ * record — both hook entrypoints discard it, and nothing writes it to an event
+ * or a log — so in production an unwritable marker shows only as one detached
+ * scan child per hook fire.
  *
  * A marker path that is a symlink or not a regular file is left alone and
  * reported as not written: `writeFileSync` follows a link, so a marker linked to

@@ -392,7 +392,9 @@ function loadReaperConfig(projectDir) {
  * @returns {Promise<{spawned: boolean, reason: string}>} `reason` is
  *   `'spawned-unthrottled'` when the scan ran but the marker could not be
  *   stamped — the next fire will scan again, and the result must not read like
- *   a throttled spawn.
+ *   a throttled spawn. The value reaches in-process callers (tests) only:
+ *   `main()` below discards it and nothing records it, so it is no production
+ *   signal (HR-105).
  */
 export async function maybeTriggerOrphanScan({
   projectDir,
