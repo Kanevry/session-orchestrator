@@ -332,13 +332,14 @@ For confirmed learnings, use atomic rewrite strategy:
 
    b. Resolve the vault directory: use `$CONFIG."vault-integration"."vault-dir"` if non-null, otherwise fall back to the `$VAULT_DIR` environment variable. If neither is set, emit a warning and skip. Report `vault-dir=<path> (Quelle: <source>)`, where `<source>` is `$CONFIG."vault-integration"."vault-dir-source"` (`env`, `match`, `owner`, `committed`), or `env VAULT_DIR` when the fallback was used.
 
-   c. Invoke the mirror script. Derive a synthetic `EVOLVE_SESSION_ID` so the vault-mirror auto-commit phase (#31) produces a traceable commit subject (`chore(vault): mirror evolve-<date> — N learnings + 0 sessions`). Pass `--vault-name` when `vault-integration.vault-name` is set in Session Config:
+   c. Invoke the mirror script from the repo root, by its plugin path — `--repo-root "$PWD"` plus an absolute `--source` make the vault namespace this repo's identity, and a ledger from a different repo is refused (exit 2, `source-repo-mismatch`, #1503) instead of overwriting another project's notes. Derive a synthetic `EVOLVE_SESSION_ID` so the vault-mirror auto-commit phase (#31) produces a traceable commit subject (`chore(vault): mirror evolve-<date> — N learnings + 0 sessions`). Pass `--vault-name` when `vault-integration.vault-name` is set in Session Config:
       ```bash
       EVOLVE_SESSION_ID="evolve-$(date -u +%Y-%m-%d-%H%M)"
       EVOLVE_VAULT_NAME=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-name" // empty')
       node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
         --vault-dir "<vault-dir>" \
-        --source .orchestrator/metrics/learnings.jsonl \
+        --repo-root "$PWD" \
+        --source "$PWD/.orchestrator/metrics/learnings.jsonl" \
         --kind learning \
         --session-id "$EVOLVE_SESSION_ID" \
         ${EVOLVE_VAULT_NAME:+--vault-name "$EVOLVE_VAULT_NAME"}

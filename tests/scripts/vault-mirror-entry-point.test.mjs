@@ -794,3 +794,134 @@ describe('vault-mirror secret-masker telemetry (#1025)', () => {
     );
   });
 });
+
+// ── #1503: the namespace comes from the ledger's repo, never from the cwd ─────
+//
+// The incident, reproduced: a session ran this CLI from ANOTHER repo's checkout
+// with `--source <ThisRepo>/.orchestrator/metrics/…jsonl`. The namespace was the
+// cwd's, so 130 notes landed under the wrong project and 3 of its notes were
+// overwritten (same learning subject / semantic session id). Two real git repos
+// with distinct remotes stand in for the two projects; `cwd` is passed to
+// spawnSync, which is the variable the bug keyed on.
+describe('vault-mirror repo root (#1503)', () => {
+  let dirs = [];
+
+  afterEach(() => {
+    for (const d of dirs) {
+      try {
+        removeTree(d);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    dirs = [];
+  });
+
+  function tmp() {
+    const d = mkdtempSync(join(tmpdir(), 'vault-mirror-1503-'));
+    dirs.push(d);
+    return d;
+  }
+
+  /** A git repo with one origin and a learnings ledger holding `record`. */
+  function repoWithLedger(remoteName, record) {
+    const root = join(tmp(), remoteName);
+    fixtureGit(['init', '-q', root], tmpdir(), { stdio: ['ignore', 'pipe', 'pipe'] });
+    fixtureGit(['remote', 'add', 'origin', `git@gitlab.example.com:acme-group/${remoteName}.git`], root, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const metrics = join(root, '.orchestrator', 'metrics');
+    mkdirSync(metrics, { recursive: true });
+    const ledger = join(metrics, 'learnings.jsonl');
+    writeFileSync(ledger, JSON.stringify(record) + '\n', 'utf8');
+    return { root, ledger };
+  }
+
+  function runIn(cwd, args, projectDir) {
+    return spawnSync('node', [MIRROR, ...args], {
+      cwd,
+      encoding: 'utf8',
+      env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1', ...pinnedLedgerEnv(projectDir) },
+    });
+  }
+
+  // Same subject in both repos → same slug → same filename in a shared folder.
+  const WIDGET_RECORD = { ...JSON.parse(VALID_LEARNING), subject: 'shared-subject' };
+  const GADGET_RECORD = {
+    ...WIDGET_RECORD,
+    id: 'b2b2b2b2-0002-4000-8000-000000000002',
+    insight: 'Gadget insight from the other project',
+    created_at: '2026-04-01T10:00:00Z', // OLDER — pre-fix it still overwrote on content mismatch
+  };
+
+  function seededVault(widget) {
+    const vaultDir = tmp();
+    const seed = runIn(widget.root, ['--vault-dir', vaultDir, '--source', widget.ledger, '--kind', 'learning']);
+    expect(seed.status).toBe(0);
+    const note = join(vaultDir, '40-learnings', 'widget-service', 'shared-subject.md');
+    expect(existsSync(note)).toBe(true);
+    return { vaultDir, note };
+  }
+
+  it('cwd = repo A, --source in repo B, no --repo-root: B is mirrored under B, A is untouched', () => {
+    const widget = repoWithLedger('widget-service', WIDGET_RECORD);
+    const gadget = repoWithLedger('gadget-service', GADGET_RECORD);
+    const { vaultDir, note } = seededVault(widget);
+    const before = readFileSync(note, 'utf8');
+
+    const result = runIn(widget.root, ['--vault-dir', vaultDir, '--source', gadget.ledger, '--kind', 'learning']);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({
+      action: 'created',
+      path: '40-learnings/gadget-service/shared-subject.md',
+    });
+    expect(readFileSync(note, 'utf8')).toBe(before);
+  });
+
+  it('cwd = repo A, --repo-root "$PWD", --source in repo B: exit 2 source-repo-mismatch, nothing written', () => {
+    const widget = repoWithLedger('widget-service', WIDGET_RECORD);
+    const gadget = repoWithLedger('gadget-service', GADGET_RECORD);
+    const { vaultDir, note } = seededVault(widget);
+    const before = readFileSync(note, 'utf8');
+    const projectDir = tmp();
+
+    const result = runIn(
+      widget.root,
+      ['--vault-dir', vaultDir, '--source', gadget.ledger, '--kind', 'learning', '--repo-root', widget.root],
+      projectDir,
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain("belongs to repo namespace 'gadget-service'");
+    expect(result.stderr).not.toContain(dirname(gadget.ledger)); // basename only (#1479)
+    expect(readFileSync(note, 'utf8')).toBe(before);
+    expect(existsSync(join(vaultDir, '40-learnings', 'gadget-service'))).toBe(false);
+    const runEvents = readEvents(projectDir, 'orchestrator.vault.mirror_run_completed');
+    expect(runEvents).toHaveLength(1);
+    expect(runEvents[0]).toMatchObject({ aborted: 'source-repo-mismatch', total: 0 });
+  });
+
+  it('--repo-root is honoured for a source outside any git repo, from an unrelated cwd', () => {
+    const gadget = repoWithLedger('gadget-service', GADGET_RECORD);
+    const looseSource = writeJsonlTo(tmp(), JSON.stringify(GADGET_RECORD));
+    const vaultDir = tmp();
+
+    const result = runIn(tmp(), [
+      '--vault-dir', vaultDir, '--source', looseSource, '--kind', 'learning', '--repo-root', gadget.root,
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({
+      action: 'created',
+      path: '40-learnings/gadget-service/shared-subject.md',
+    });
+  });
+
+  function writeJsonlTo(dir, content) {
+    const p = join(dir, 'source.jsonl');
+    writeFileSync(p, content + '\n', 'utf8');
+    return p;
+  }
+});

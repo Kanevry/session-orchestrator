@@ -532,6 +532,27 @@ describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable f
     expect(resolveRepoNamespace({ repoRoot: dirA })).toBe('acme-tool');
     expect(resolveRepoNamespace({ repoRoot: dirB })).toBe('beta-tool');
   });
+
+  it('C1 (#1503): deriveRepo resolves the REMOTE of repoRoot, never the cwd — and caches per root', async () => {
+    // BUG CAUGHT: B6 above only covers the `.vault.yaml` half. A repoRoot with
+    // NO declared slug fell through to deriveRepo(), which read the CWD's remote
+    // and cached it in one process-wide slot — so mirroring repo B from repo A's
+    // checkout namespaced B's notes as A. That is the #1503 overwrite.
+    const repoA = initRepo(join(makeDir('ns-root-a-'), 'checkout-a'));
+    const repoB = initRepo(join(makeDir('ns-root-b-'), 'checkout-b'));
+    git(['remote', 'add', 'origin', 'git@gitlab.example.com:acme-group/widget-service.git'], repoA);
+    git(['remote', 'add', 'origin', 'git@gitlab.example.com:acme-group/gadget-service.git'], repoB);
+
+    process.chdir(repoA);
+    const mod = await freshNamespaceModule();
+
+    // A first, so a single-slot cache would answer B with A's identity.
+    expect(mod.deriveRepo({ repoRoot: repoA })).toBe('acme-group/widget-service');
+    expect(mod.deriveRepo({ repoRoot: repoB })).toBe('acme-group/gadget-service');
+    expect(mod.resolveRepoNamespace({ repoRoot: repoB })).toBe('gadget-service');
+    // The no-argument default is still the cwd.
+    expect(mod.deriveRepo()).toBe('acme-group/widget-service');
+  });
 });
 
 // ---------------------------------------------------------------------------

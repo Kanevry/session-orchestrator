@@ -1,7 +1,8 @@
 /**
  * render-sessions.mjs — Session markdown generators for vault-mirror (Issue #283 split).
  *
- * Exports: detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3
+ * Exports: detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3,
+ *          sessionSourceRecord (#1503)
  *
  * #732: all three generators accept `options.repoNs` (the leak-guarded /
  * pseudonym-mapped namespace segment from resolveRepoNamespace(), threaded
@@ -15,6 +16,7 @@
  */
 
 import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
+import { sourceRecordValue, sourceRecordLine } from './render-learnings.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -283,6 +285,28 @@ function fmLine(key, value) {
 }
 
 /**
+ * The `source-record` of a session note (#1503): the physical session the note
+ * was rendered from — `raw_session_id` (the harness's session uuid) when the
+ * record carries one, else `started_at`. `session_id` itself cannot serve: it is
+ * the FILENAME, and semantic ids such as `main-2026-10-02-session-1` recur across
+ * repos by construction, which is exactly the collision this field exists to
+ * detect. All three generators require `started_at`, so every renderable record
+ * has a key.
+ *
+ * Named ceiling: a record whose key changes between runs — a later backfill
+ * adding `raw_session_id` to a record first mirrored under its `started_at` —
+ * reads as a different record, and process.mjs then refuses the rewrite
+ * (`skipped-foreign-owner`, visible on stdout). Revisit if that is ever observed
+ * on a same-repo record.
+ *
+ * @param {object} entry - normalized session entry.
+ * @returns {string|null}
+ */
+export function sessionSourceRecord(entry) {
+  return sourceRecordValue(entry?.raw_session_id) ?? sourceRecordValue(entry?.started_at);
+}
+
+/**
  * Session JSONL has three producer schemas in production:
  *   v1 (legacy):  total_waves, total_agents, total_files_changed, agent_summary, waves[{agent_count, files_changed, quality}]
  *   v2 (S69+):    files_changed (top-level), waves[{agents, agents_done, agents_partial, agents_failed, dispatch, duration_s}]
@@ -521,7 +545,7 @@ status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
+${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
@@ -606,7 +630,7 @@ status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
+${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
@@ -731,7 +755,7 @@ status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('source-repo', repoNs)}_generator: ${GENERATOR_MARKER}
+${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}

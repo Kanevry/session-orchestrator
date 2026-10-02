@@ -121,9 +121,14 @@
      VM_QUALITY_CONFIDENCE=$(echo "$CONFIG" | jq -r '."vault-mirror".quality."min-confidence" // 0.5')
      VM_VAULT_NAME=$(echo "$CONFIG" | jq -r '."vault-integration"."vault-name" // empty')
 
+     # #1503: name the repo being mirrored and pass the ledger ABSOLUTE. The
+     # namespace is that repo's identity, never the cwd's; a --source that lies in
+     # a different repo than --repo-root is refused (exit 2, source-repo-mismatch)
+     # instead of being written over another project's notes.
      VM_OUTPUT=$(node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
        --vault-dir "$VM_DIR" \
-       --source .orchestrator/metrics/sessions.jsonl \
+       --repo-root "$PWD" \
+       --source "$PWD/.orchestrator/metrics/sessions.jsonl" \
        --kind session \
        --session-id "$SESSION_ID" \
        ${VM_VAULT_NAME:+--vault-name "$VM_VAULT_NAME"} \
@@ -224,4 +229,4 @@
 
    > **Host-local overrides.** `enabled`/`mode` above are the values AFTER the host switch: env `SO_VAULT_INTEGRATION=off|warn|strict` > owner.yaml `vault-integration: { enabled: false | mode: … }` > committed. The host may only lower the committed level, never raise it; `."vault-integration"."host-override"` names the tier that lowered it (`env:SO_VAULT_INTEGRATION`, `owner.yaml`) and is `null` otherwise. `."vault-integration"."vault-dir-source"` (`env`, `match`, `owner`, `committed`) says where the vault path came from. See `docs/session-config-reference.md` § Vault Integration.
 
-   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-invalid` (entry failed required-field validation, or the mapper crashed rendering an otherwise-parseable record — the latter case carries `reason: "mapper-crash"`, #718), `skipped-quality-low` (entry failed quality gate — PRD F1.2; line carries a `reason` field).
+   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-foreign-owner` (a generator note at the target path belongs to another repo or record — its `source-repo` / `source-record` frontmatter differs, or a session note names a different id; file left untouched, line carries a `reason`, #1503), `skipped-invalid` (entry failed required-field validation, or the mapper crashed rendering an otherwise-parseable record — the latter case carries `reason: "mapper-crash"`, #718), `skipped-quality-low` (entry failed quality gate — PRD F1.2; line carries a `reason` field).
