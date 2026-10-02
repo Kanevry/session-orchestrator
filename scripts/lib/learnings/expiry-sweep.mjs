@@ -244,12 +244,11 @@ function countByReason(batch) {
  * @param {string} filePath
  * @param {string[]} malformed - raw text of the lines that did not parse
  * @param {number[]} lineNumbers - their 1-based store lines (`malformedLineNumbers`)
- * @param {boolean} dryRun
  * @returns {{malformed?: number}}
  */
-function malformedField(filePath, malformed, lineNumbers, dryRun) {
+function malformedField(filePath, malformed, lineNumbers) {
   if (malformed.length === 0) return {};
-  warnUnparseableLines(filePath, malformed, lineNumbers, { dryRun });
+  warnUnparseableLines(filePath, malformed, lineNumbers);
   return { malformed: malformed.length };
 }
 
@@ -271,9 +270,12 @@ const warnedUnparseable = new Set();
  * @param {string} filePath
  * @param {string[]} malformed - raw text of the lines that did not parse
  * @param {number[]} [lineNumbers] - their 1-based store lines; at most ten listed
- * @param {{dryRun?: boolean}} [opts]
+ *
+ * The text names no dry-run state: one WARN per process is shared by the
+ * planner's dry run and the apply that follows it in a /close, so a dry-run
+ * qualifier would be printed for — and contradict — the applied rewrite.
  */
-export function warnUnparseableLines(filePath, malformed, lineNumbers = [], { dryRun = false } = {}) {
+export function warnUnparseableLines(filePath, malformed, lineNumbers = []) {
   if (malformed.length === 0) return;
   const key = `${path.resolve(filePath)}\0${malformed.join('\n')}`;
   if (warnedUnparseable.has(key)) return;
@@ -282,7 +284,7 @@ export function warnUnparseableLines(filePath, malformed, lineNumbers = [], { dr
   const where = lineNumbers.length > 0 ? ` (line(s) ${lineNumbers.slice(0, 10).join(', ')}${more})` : '';
   console.error(
     `[learnings] WARN: ${malformed.length} unparseable line(s) in ${filePath}${where} kept verbatim, ` +
-      `never archived${dryRun ? ' (dry run — nothing written)' : ''}; report them to the operator — ` +
+      `never archived; report them to the operator — ` +
       `never hand-edit the store`
   );
 }
@@ -331,7 +333,7 @@ async function archiveThenRewrite({
     kept: keep.length,
     archived: archiveBatch.length,
     byReason,
-    malformedField: malformedField(filePath, malformed, malformedLineNumbers, dryRun),
+    malformedField: malformedField(filePath, malformed, malformedLineNumbers),
   };
   if (dryRun) return result;
 
@@ -591,7 +593,7 @@ async function pruneLearningsUnlocked({
       byReason: {},
       dryRun,
       archivePath,
-      ...malformedField(filePath, malformed, malformedLineNumbers, dryRun),
+      ...malformedField(filePath, malformed, malformedLineNumbers),
     };
   }
 
