@@ -103,6 +103,13 @@
  *  27. B5 lets a freeze exempt a block that hands over a clock read at
  *      COLLECTION time (module level, `describe` body) — before any hook ran,
  *      so the freeze never reaches that value (#1499 item 9).
+ *  28. B5 counts a helper function's local `now = Date.now()` as read at
+ *      collection time → a block that freezes the clock and then calls the
+ *      helper is reported (12 of 13 such corpus bindings were helper locals,
+ *      review of ac3ded47). Only module level and a `describe` body count.
+ *  29. B5 reads `vi.setSystemTime(now)` / `useFakeTimers({ now })` as a pin
+ *      although the scanner knows `now` was bound to the real clock → a real
+ *      bomb stays exempt (review of ac3ded47).
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -536,6 +543,16 @@ const SETUP_CLOCK_BLOCK = [
   '});',
 ];
 
+/** A block that freezes the clock, then takes its `now` from a helper `make()` it calls after the freeze. */
+const FROZEN_HELPER_BLOCK = [
+  "it('derives the per-type expiry', () => {",
+  "  vi.setSystemTime(new Date('2026-07-05T00:00:00Z'));",
+  '  const { now } = make();',
+  '  const meta = toActivationMetadata(learning, { now });',
+  "  expect(meta.expiresAt).toBe('2026-08-05');",
+  '});',
+];
+
 /** A seamed sibling that happens to assert the same date — its assertion is no input of the bomb's block. */
 const SIBLING_SAME_DATE_BLOCK = [
   "it('reports the expiry inside the metadata object', () => {",
@@ -697,6 +714,14 @@ describe('check-test-value-bans — B5 date-literal time bombs', () => {
     ['`useFakeTimers` faking only setTimeout', [], ["  vi.useFakeTimers({ toFake: ['setTimeout'] });"]],
     ['`useFakeTimers` installed at `now: Date.now()`', [], ['  vi.useFakeTimers({ now: Date.now() });']],
     ['`setSystemTime` to the real clock', [], ['  vi.setSystemTime(new Date());']],
+    // Review of ac3ded47: the pin value names a binding the scanner already knows reads the real clock.
+    ['`setSystemTime` to a real-clock binding of the block', [], ['  const now = new Date();', '  vi.setSystemTime(now);']],
+    [
+      '`setSystemTime` to a real-clock binding of a beforeEach',
+      ['let now;', 'beforeEach(() => {', '  now = Date.now();', '  vi.setSystemTime(now);', '});'],
+      [],
+    ],
+    ['`useFakeTimers({ now })` shorthand of a real-clock binding', [], ['  const now = Date.now();', '  vi.useFakeTimers({ now });']],
   ])('flags a pinned date when the fake timer it relies on leaves the date real (%s)', (_shape, setup, installer) => {
     const { json } = scan({
       'tests/unpinned-timer.test.mjs': [
@@ -926,6 +951,39 @@ describe('check-test-value-bans — B5 counter-examples', () => {
       ],
     ],
     [
+      // Catches a collection-time read that counts a helper's local (review of ac3ded47): `make()`
+      // runs when the block calls it, after the block's own freeze — not when the file is collected.
+      'a module-level helper binds `now` in its body and runs after the freeze',
+      ['function make() {', '  const now = Date.now();', '  return { now };', '}', '', ...SEAM_BLOCK, '', ...FROZEN_HELPER_BLOCK],
+    ],
+    [
+      'a `describe`-level helper binds `now` in its body and runs after the freeze',
+      [
+        ...SEAM_BLOCK,
+        "describe('per type', () => {",
+        '  function make() {',
+        '    const now = Date.now();',
+        '    return { now };',
+        '  }',
+        ...FROZEN_HELPER_BLOCK.map((l) => `  ${l}`),
+        '});',
+      ],
+    ],
+    [
+      // Catches dropping the hook test once the indent rule exists: a one-line, expression-bodied hook
+      // sits at the hook's own indentation, yet runs after the freeze registered before it.
+      'a one-line hook binds `now` after a one-line freeze',
+      [
+        'let now;',
+        "beforeEach(() => vi.setSystemTime(new Date('2026-07-05T00:00:00Z')));",
+        'beforeEach(() => (now = Date.now()));',
+        '',
+        ...SEAM_BLOCK,
+        '',
+        ...SETUP_CLOCK_BLOCK,
+      ],
+    ],
+    [
       // Catches a setup read that ignores a frozen clock: `Date.now()` after setSystemTime is fixed.
       'the setup freezes the clock before binding `now`',
       [
@@ -1032,6 +1090,11 @@ describe('check-test-value-bans — B5 counter-examples', () => {
   it.each([
     ['`useFakeTimers({ now })` at a fixed date', ["  vi.useFakeTimers({ now: new Date('2026-07-05T00:00:00Z') });"]],
     ['a `useFakeTimers` config spread over lines', ['  vi.useFakeTimers({', "    now: new Date('2026-07-05T00:00:00Z'),", '  });']],
+    [
+      '`useFakeTimers({ now })` shorthand of a fixed date',
+      ["  const now = new Date('2026-07-05T00:00:00Z');", '  vi.useFakeTimers({ now });'],
+    ],
+    ['a quoted `now` key the line scan does not read', ["  vi.useFakeTimers({ 'now': new Date('2026-07-05T00:00:00Z') });"]],
   ])('does not flag a block a setup fake timer pins the date for (%s)', (_shape, installer) => {
     const { json } = scan({
       'tests/pinned-timer.test.mjs': [

@@ -847,26 +847,31 @@ function namesAny(value, names) {
  * Date.now()` — the real clock unless a date was set first — so only
  * `setSystemTime(<date>)` or a `useFakeTimers` config naming `now` pins a day;
  * `{ toFake: ['setTimeout'] }` leaves Date real. A pin whose value reads the wall
- * clock (`setSystemTime(new Date())`, `{ now: Date.now() }`) pins nothing. An
- * argument the line cannot read — a variable, a config spread over lines, a
- * shorthand `{ now }` — counts as a pin: precision first, as everywhere in B5.
- * CEILING: a pin value laundered through a binding (`const t = new Date();
- * vi.setSystemTime(t)`) still counts — the {@link clockBindings} ceiling.
+ * clock pins nothing: inline (`setSystemTime(new Date())`, `{ now: Date.now() }`)
+ * or through a clock-named binding the scanner knows reads it
+ * (`const now = new Date(); vi.setSystemTime(now)`, `useFakeTimers({ now })` —
+ * review of ac3ded47). An argument the line cannot read — a variable, a config
+ * spread over lines, a quoted key — counts as a pin: precision first, as
+ * everywhere in B5. CEILING: a pin value laundered through a NON-clock name
+ * (`const t = new Date(); vi.setSystemTime(t)`) still counts — the
+ * {@link clockBindings} ceiling.
  * @param {string} line
+ * @param {Set<string>} realClock names bound to the real clock in this line's scope
  */
-function pinsDate(line) {
+function pinsDate(line, realClock) {
   for (const m of line.matchAll(DATE_PIN_CALL)) {
     const arg = valueExpressionAt(line, m.index + m[0].length).trim();
     let value = arg;
     if (m[1] === 'useFakeTimers') {
       if (arg === '') continue;
       if (!arg.startsWith('{') || !arg.endsWith('}')) return true;
-      const key = /(?<![\w$])now(?![\w$])\s*(:)?/.exec(arg);
+      const key = /(?<![\w$])now(?![\w$])\s*([:,}])?/.exec(arg);
       if (!key) continue;
       if (!key[1]) return true;
-      value = valueExpressionAt(arg, key.index + key[0].length);
+      // `now:` hands over the expression after it; shorthand `{ now }` hands over the binding `now`.
+      value = key[1] === ':' ? valueExpressionAt(arg, key.index + key[0].length) : 'now';
     }
-    if (!REAL_CLOCK_READ.test(value)) return true;
+    if (!REAL_CLOCK_READ.test(value) && !namesAny(value, realClock)) return true;
   }
   return false;
 }
@@ -930,34 +935,58 @@ function scanClockBombs(relPath, content, lines) {
   // `describe` exempted every block in the file until 2026-10-02 and kept a
   // genuine bomb silent (review of 3206ab24). `null` = module level.
   const describes = describeBlocks(lines);
+  /**
+   * Innermost `describe` holding line q — ranges nest, so the latest start that
+   * still holds it — or `null` at module level.
+   * @param {number} q
+   */
+  const innermostDescribe = (q) => {
+    const holders = describes.filter((d) => d.start <= q && q < d.end);
+    return holders.length > 0 ? holders[holders.length - 1] : null;
+  };
+  const setupRealClock = realClockNames(new Map(), setupBindings);
   /** @type {Array<{start: number, end: number}|null>} */
   const setupTimerScopes = [];
   lines.forEach((l, q) => {
-    if (inBlock.has(q) || isCommentLine(l) || !pinsDate(l)) return;
-    // Innermost enclosing describe: ranges nest, so the latest start that still holds q.
-    const holders = describes.filter((d) => d.start <= q && q < d.end);
-    setupTimerScopes.push(holders.length > 0 ? holders[holders.length - 1] : null);
+    if (inBlock.has(q) || isCommentLine(l) || !pinsDate(l, setupRealClock)) return;
+    setupTimerScopes.push(innermostDescribe(q));
   });
   /** @param {number} start */
   const setupFreezes = (start) =>
     setupTimerScopes.some((d) => d === null || (d.start < start && start < d.end));
-  // A real-clock name bound OUTSIDE every hook callback — module level, a
-  // `describe` body — is read at COLLECTION time, before vitest runs any hook
+  // A real-clock name bound by a statement of the module itself or of a
+  // `describe` body is read at COLLECTION time, before vitest runs any hook
   // (#1499 item 9). No freeze, in the setup or in the block, reaches that value,
-  // so a block handing it over is not exempted by one. Only names with no hook
-  // binding at all qualify: a hook rebinding may run after a freeze — read as
-  // control, the precision-first direction. A hook range that over-extends (a
-  // one-line `beforeEach(…);`) only moves names out of this set, never in.
-  // CEILING: a freeze that itself runs at collection time (a module-level
-  // `vi.setSystemTime` above the binding) is not read, so such a binding is
-  // reported; measured 2026-10-02 over 722 test files: 0 installers stand
-  // outside a hook or test block. REVISIT on the first such B5 finding.
+  // so a block handing it over is not exempted by one. Every other setup binding
+  // is DEFERRED — a hook callback, or a helper function's body (`validRecord()`,
+  // `writeLock()`), which runs when called, after any freeze: 12 of the 13 setup
+  // real-clock bindings outside a hook were such helper locals (measured
+  // 2026-10-02 over 722 test files, review of ac3ded47). A name qualifies only
+  // with no deferred binding at all — anything else reads as control, the
+  // precision-first direction. "Statement of" is read from indentation: column 0
+  // at module level, the enclosing `describe`'s column + 2 inside one (the
+  // prettier indent of this repo). A misread only moves names OUT of the set: a
+  // deeper or other indent style counts as deferred, and a hook range that
+  // over-extends (a one-line `beforeEach(…);`) does the same. CEILINGS: a
+  // one-line helper (`function f() { const now = Date.now(); … }`) at
+  // `describe`-body indent counts as collection time; a freeze that itself runs
+  // at collection time (a module-level `vi.setSystemTime` above the binding) is
+  // not read. Measured 2026-10-02 over 722 test files: 1 collection-time binding
+  // (tests/hooks/lock-reconcile.test.mjs:24), 0 installers outside a hook or test
+  // block. REVISIT on the first B5 finding traced to either shape.
   const hooks = callRanges(lines, /^(\s*)(?:before|after)(?:Each|All)\s*\(/, null);
-  const hookBindings = clockBindings(
-    lines.filter((l, q) => !inBlock.has(q) && !isCommentLine(l) && hooks.some((h) => h.start <= q && q < h.end)),
+  const indentOf = (/** @type {string} */ l) => /^\s*/.exec(l)[0].length;
+  /** @param {number} q */
+  const atCollection = (q) => {
+    if (hooks.some((h) => h.start <= q && q < h.end)) return false;
+    const d = innermostDescribe(q);
+    return indentOf(lines[q]) === (d ? indentOf(lines[d.start]) + 2 : 0);
+  };
+  const deferredBindings = clockBindings(
+    lines.filter((l, q) => !inBlock.has(q) && !isCommentLine(l) && !atCollection(q)),
   );
   const collectionClock = [...setupBindings]
-    .filter(([name, b]) => b.real && !b.other && !hookBindings.has(name))
+    .filter(([name, b]) => b.real && !b.other && !deferredBindings.has(name))
     .map(([name]) => name);
 
   const blocks = ranges.map(({ start, end }) => {
@@ -972,7 +1001,7 @@ function scanClockBombs(relPath, content, lines) {
       body,
       provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
       hasClockArg: live.some((l) => handsOverControlledClock(l, realClock)),
-      freezesDate: !handsOverUnfrozen && (setupFreezes(start) || live.some(pinsDate)),
+      freezesDate: !handsOverUnfrozen && (setupFreezes(start) || live.some((l) => pinsDate(l, realClock))),
     };
   });
 
