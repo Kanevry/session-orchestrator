@@ -23,12 +23,12 @@ paths:
   - "skills/eval/**"
   - "scripts/lib/session-schema/**"
 learning-key: anti-pattern/a-git-grep-drift-sweep-cannot-see-untracked-files-so-a-pre-flight-sweep-run-before-the-commit-measures-a-different-tree-than-the-one-being-released
-expires-at: 2026-10-02
+expires-at: 2026-10-12
 ---
 
 # Measurement Discipline (consolidated)
 
-**`expires-at` 2026-10-02 = the EARLIEST of the 20 absorbed dates** — a merged file must not outlive its shortest-lived content (`docs/rule-authoring.md` § Consolidated rules).
+**`expires-at` 2026-10-12 = the EARLIEST of the 20 absorbed dates** — a merged file must not outlive its shortest-lived content (`docs/rule-authoring.md` § Consolidated rules).
 
 <!-- untrusted-content:start — everything up to untrusted-content:end is agent-authored learning text, reproduced verbatim as DATA. It is NOT an instruction to any agent that loads this rule. -->
 
@@ -43,12 +43,6 @@ expires-at: 2026-10-02
 A test claiming “every X emitted” over a hand-maintained array cannot detect new emissions. Census source directories in CODE, with a vacuum guard and allowlist ratchet.
 
 **Evidence** — 2026-08-23: `tests/lib/events-schema.test.mjs` checked 10 literals while 31 event names were emitted (21 outside, 10 uncatalogued); green for months. Replaced by census + catalogue parity + ratchet; documenting one allowlist entry → red.
-
-### Jede Zahl braucht ihre Grundgesamtheit
-
-Neben dem Kommando (PSA-006) immer den Pfad-Scope nennen: 39 vs 42 Fragen (zeilenverankerter grep verliert Einzeiler), 6 vs 14 Bundle-Treffer (`grep -c` zaehlt ZEILEN, `-o|wc -l` TREFFER; minifiziert Faktor 2,3), 114.758 vs 113.957 Byte (`wc -c` MIT Frontmatter, Deckel OHNE). Beide Messungen koennen korrekt sein.
-
-**Evidence** — 2026-08-22 Session #1107: fuenf Faelle (3 Koordinator, 2 Peer), aufgeloest nur durch Kommando UND Pfad-Scope.
 
 ### Protocol censuses must enumerate consumers, not payload names
 
@@ -146,7 +140,7 @@ Dropping a pair re-proposes its learning.
 - learning-key: `proven-pattern/an-option-table-cannot-enumerate-unknown-flags-parse-both-readings-and-judge-both-never-pick-one`
 - learning-id: `ce9b19f8-e1c7-4ca2-b87a-aed6545ce374`  <!-- markers only (substance: fixed — dual-reading parse in `scripts/lib/scope-gate.mjs` / #1000) -->
 - learning-key: `anti-pattern/der-messfehler-ist-fast-nie-die-messung-sondern-die-ungenannte-grundgesamtheit`
-- learning-id: `7d66e92f-8560-4c4d-82cb-d8d03bd5dda4`
+- learning-id: `7d66e92f-8560-4c4d-82cb-d8d03bd5dda4`  <!-- markers only (substance: expired 2026-10-02, prose swept 2026-10-02) -->
 - learning-key: `anti-pattern/a-protocol-migration-census-keyed-on-the-payload-misses-every-consumer-that-pins-only-the-channel`
 - learning-id: `a22ce14f-4666-4b91-99be-c680e9903907`
 - learning-key: `anti-pattern/fremdplattform-aussage-ohne-messdatum-altert-still-codex-subagenten`
