@@ -399,6 +399,21 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
     expect(out.bannerLines.join('\n')).not.toContain('never rendered');
   });
 
+  // BUG (2026-10-02 review of c5c06239): the error reason was built with
+  // String() of the probe-supplied thrown value outside any guard, so a probe
+  // throwing a prototype-less object rejected the runner after all.
+  it('records a probe that throws an unprintable value as an error instead of rejecting the run', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const probes = [await fakeProbe(dir, 'unprintable', 'export function probe() { throw Object.create(null); }\n')];
+
+    await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
+
+    expect(calls[0].payload.probes).toEqual([
+      { id: 'unprintable', outcome: 'error', reason: 'probe-threw-unprintable' },
+    ]);
+  });
+
   // BUG: the opt-in escape hatch is documented but dead, so an operator who
   // sets it gets the same silent exclusion and no way to find out.
   it('runs network probes when SO_PROBES_INCLUDE_NETWORK=1', async () => {

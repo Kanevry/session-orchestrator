@@ -1144,7 +1144,16 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         if (raced.__absent || raced.__probeError?.code === 'ERR_MODULE_NOT_FOUND') {
           record('skipped', { reason: 'module-absent' });
         } else {
-          record('error', { reason: String(raced.__probeError?.message ?? raced.__probeError).slice(0, 200) });
+          // The thrown value is probe-supplied: String() of an object without a
+          // prototype (or with a throwing toString) throws itself, which would
+          // reject the runner — the contract is that it never rejects.
+          let reason;
+          try {
+            reason = String(raced.__probeError?.message ?? raced.__probeError).slice(0, 200);
+          } catch {
+            reason = 'probe-threw-unprintable';
+          }
+          record('error', { reason });
         }
         return;
       }

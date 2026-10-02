@@ -650,9 +650,15 @@ function testBlocks(lines) {
 /**
  * Split a file into `describe(` blocks, segmented like {@link testBlocks} but
  * with no sibling fallback: a `describe` without its own same-indentation `});`
- * runs to the end of the file. Over-inclusion is again the safe direction for
- * its one consumer (B5's setup fake-timer scope): a wider `describe` can only
- * exempt more blocks, never invent a finding.
+ * runs to the end of the file. For its one consumer (B5's setup fake-timer
+ * scope) over-inclusion is NOT safe: a wider `describe` exempts more blocks, so
+ * a fake timer in it hides a sibling describe's time bomb — the false negative
+ * this scoping exists to remove. Ceiling (BV-004): two shapes still widen —
+ * a `describe` closed with options (`}, 10_000);`) runs to end of file, and a
+ * tagged-template `describe.each\`…\`` never matches the opener, so its timer
+ * reads as module level. Measured 2026-10-02 over 722 test files: 0 of the 13
+ * fake-timer files use either shape. Revisit when one appears in a fake-timer
+ * file, or when a B5 miss traces to one.
  * @param {string[]} lines
  * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
  */
