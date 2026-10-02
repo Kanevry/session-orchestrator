@@ -93,6 +93,9 @@ function runCodex(args) {
   const result = spawnSync('codex', args, {
     encoding: 'utf8',
     timeout: CODEX_COMMAND_TIMEOUT_MS,
+    // 'codex plugin list --available --json' exceeds the 1 MiB default once a
+    // few marketplaces are registered (measured 2026-09-22: 2.19 MB → ENOBUFS).
+    maxBuffer: 64 * 1024 * 1024,
   });
 
   if (result.error) {

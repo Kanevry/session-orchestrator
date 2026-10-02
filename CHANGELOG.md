@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`excludedScope.shell` in the tests:src envelope** (`scripts/lib/tests-src-ratio.mjs`, #1488, variant B). Shell code (`.sh`/`.bash`/`.bats`) still counts in neither bucket, so the ratio is unchanged, but its volume (split into test and src shell) is now reported. Additive; the schema stays `tests-src-ratio/2`.
 - **`orchestrator.scope.refused_grant_allowed`** (`hooks/enforce-scope.mjs`, #1485 point 1): the first Gate-5b WARN of a wave (an absolute grant the wave-scope validator would refuse) emits one event, deduplicated per session and wave.
 - **`isDeny` / `isAllow` predicates** in `tests/_helpers/hook-decision.mjs` (#1027 Nachtrag 8), sharing one contract with `expectDeny` / `expectAllow`.
+- **`npm run update:local` — one command updates every local install** (`scripts/self-update.mjs`). Fast-forwards the clone (`git merge --ff-only origin/main`, `npm ci` when HEAD moved), updates the Claude Code marketplace and plugin, reads `claude plugin list --json` back and runs `npm ci --omit=dev` in the reported `installPath` when runtime dependencies are missing, and re-runs `scripts/codex-install.mjs` only when the plugin is already installed in Codex. `--dry-run` prints the mutating commands, `--skip-pull` leaves the clone alone, `--json` reports per step; old cache folders are never deleted because the running session loads them until the restart. The `release.mjs --publish` checklist names it as step 3, the Claude Code update banner points to it.
 
 ### Changed
 
@@ -28,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Vault logs no longer print absolute vault paths or scp login users** (`scripts/lib/vault-mirror/process.mjs`, `scripts/lib/named-vault-resolver.mjs`, #1487 items 9–10), including bracketed IPv6 remotes; the vault-relative helper matches the root by whole path segment.
 - **B5 no longer counts a real-clock value as clock control** (`scripts/lib/validate/check-test-value-bans.mjs`, #1487 item 8).
 - **The vault learnings backfill checks and appends under the store lock** (`scripts/backfill-learnings-from-vault.mjs`, #1487 item 12); bootstrap Step 3b ignores the lock artefacts in consumer repos (#1487 item 11).
+- **`codex-install.mjs` failed with `ENOBUFS` on hosts with several Codex marketplaces** — `codex plugin list --available --json` returned 2.56 MB against `spawnSync`'s 1 MiB default (measured 2026-10-02); the buffer is now 64 MiB.
+- **Claude Code skipped the plugin's dependency install** — Claude Code 2.1.287 refuses to install dependencies for a package that sets `overrides` and reports it only as `noteDetails: dependencies-refused`, leaving the 5.4.0 cache without `node_modules` (hooks still ran; skill scripts and the MCP server did not). The `overrides` block (vite, fast-uri, brace-expansion) is removed: without it npm resolves the same or newer versions and `npm audit` reports 0 vulnerabilities, full and `--omit=dev` (measured 2026-10-02); the lockfile is unchanged. `docs/install.md` § Upgrade documents the check and the manual fallback.
 
 ## [5.4.0] - 2026-10-01
 

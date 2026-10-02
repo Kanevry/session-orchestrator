@@ -75,8 +75,20 @@ Setup guides: [Codex](codex-setup.md) · [Cursor IDE](cursor-setup.md) ·
 /plugin update session-orchestrator@kanevry     # Claude Code
 ```
 
-Restart the harness afterwards, and re-run `npm install` in the plugin directory
-when the release adds dependencies. On Cursor and the Pi clone fallback, upgrade
+Restart the harness afterwards. Then check that the plugin directory (the
+`installPath` from `claude plugin list --json`) has a `node_modules/`: since
+Claude Code 2.1.287 the harness refuses to install dependencies for a package
+whose `package.json` sets `overrides` — releases up to and including 5.4.0 do —
+and reports it only as `noteDetails: [{"type": "dependencies-refused"}]` in that
+JSON (measured 2026-10-02). Later releases dropped the `overrides` block. If
+`node_modules/` is missing, run `npm ci --omit=dev` in that directory.
+
+**From a clone, one command does all of it:** `npm run update:local`
+(`scripts/self-update.mjs`) fast-forwards the clone, updates the Claude Code
+marketplace and plugin, installs missing runtime dependencies in the plugin
+directory, and re-runs the Codex installer if the plugin is installed in Codex.
+`--dry-run` shows the commands first; old cache folders are never deleted,
+because the running session still uses them until the restart. On Cursor and the Pi clone fallback, upgrade
 with `git pull` in your clone followed by the same install script you originally
 ran. Manage npm-installed Pi packages through Pi's package manager. For Codex,
 follow the [refresh instructions](codex-setup.md#refresh-and-explicit-cache-invalidation)

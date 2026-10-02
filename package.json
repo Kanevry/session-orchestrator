@@ -54,6 +54,7 @@
     "!**/.DS_Store"
   ],
   "scripts": {
+    "update:local": "node scripts/self-update.mjs",
     "test": "node scripts/check-package-manager.mjs && vitest --run",
     "test:coverage": "node scripts/check-package-manager.mjs && vitest --run --coverage",
     "test:watch": "node scripts/check-package-manager.mjs && vitest",
@@ -91,11 +92,6 @@
     "lint-staged": "^15.2.10",
     "prettier": "^3.0.0",
     "vitest": "^4.1.11"
-  },
-  "overrides": {
-    "vite": "^8.0.16",
-    "fast-uri": "^3.1.8",
-    "brace-expansion": "^5.0.12"
   },
   "license": "MIT",
   "repository": {
