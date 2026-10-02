@@ -31,6 +31,7 @@ import { join } from 'node:path';
 import {
   ARCHIVE_REASONS,
   StoreGenerationMismatchError,
+  dropMalformedLines,
   pruneLearnings,
   sweepExpiredLearnings,
 } from '@lib/learnings/expiry-sweep.mjs';
@@ -774,5 +775,44 @@ describe('pruneLearnings — expectedGeneration is compared under the store lock
     await expect(prune).rejects.toBeInstanceOf(StoreGenerationMismatchError);
     expect(readJsonl(filePath).map((e) => e.id)).toEqual(['alive', 'peer']);
     expect(existsSync(archivePath)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// dropMalformedLines reads, checks and rewrites under ONE store lock (#1500)
+// ---------------------------------------------------------------------------
+
+describe('dropMalformedLines — the generation and the line are judged under the store lock', () => {
+  // TV-001 — the bug: a drop that reads and checks BEFORE taking the lock
+  // passes its generation check, then rewrites from that stale read once it
+  // holds the lock — the record a peer appended in between is gone, with no
+  // archive record. Same fixed-delay shape as the pruneLearnings test above.
+  it('a record written while the drop waits for the lock throws a mismatch and survives', async () => {
+    const future = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    const alive = learning({ id: 'alive', subject: 'a', expires_at: future });
+    const peer = learning({ id: 'peer', subject: 'p', expires_at: future });
+    writeFileSync(filePath, `${JSON.stringify(alive)}\nnot json\n`, 'utf8');
+    const { generation } = await readLearningsSnapshot(filePath);
+    const lockPath = join(realpathSync(tmp), 'learnings.jsonl.lock');
+    const holder = 'peer-writer';
+    expect(tryAcquireFileLock(lockPath, { holder }).acquired).toBe(true);
+
+    let drop;
+    try {
+      drop = dropMalformedLines({ filePath, lines: [2], expectedGeneration: generation, dryRun: false });
+      drop.catch(() => {}); // awaited below; no unhandled rejection meanwhile
+      await new Promise((r) => setTimeout(r, 150));
+      appendFileSync(filePath, `${JSON.stringify(peer)}\n`);
+    } finally {
+      releaseFileLock(lockPath, { holder });
+    }
+
+    await expect(drop).rejects.toBeInstanceOf(StoreGenerationMismatchError);
+    expect(readFileSync(filePath, 'utf8').split('\n').filter(Boolean)).toEqual([
+      JSON.stringify(alive),
+      'not json',
+      JSON.stringify(peer),
+    ]);
+    expect(readdirSync(tmp).filter((n) => n.includes('pre-drop-malformed'))).toEqual([]);
   });
 });

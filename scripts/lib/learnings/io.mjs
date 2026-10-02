@@ -258,6 +258,10 @@ export async function readLearningsSnapshot(filePath) {
  * lines are kept verbatim by every rewrite and WARNed on every close, so a
  * stray blank would otherwise be reported forever (#1489).
  *
+ * A line that parses but is not a JSON object (`null`, `42`, `[]`, `"x"`) is
+ * malformed too (#1500): `normalizeLearning` turned it into a record of
+ * defaults alone, and every rewrite wrote that invented record back.
+ *
  * @param {string} raw
  * @returns {{entries: object[], malformed: string[], malformedLineNumbers: number[]}}
  *   `malformedLineNumbers[i]` is the 1-based line of `malformed[i]` in `raw`
@@ -270,6 +274,9 @@ export function parseLearningsText(raw) {
     if (line.trim().length === 0) return;
     try {
       const parsed = JSON.parse(line);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new TypeError('not a JSON object');
+      }
       entries.push(normalizeLearning(parsed));
     } catch {
       malformed.push(line);

@@ -357,6 +357,19 @@ describe('readLearnings', () => {
     expect(r.malformedLineNumbers).toEqual([2]);
   });
 
+  // TV-001 — the bug (#1500 item 2): a line that parses as JSON but is no
+  // object went through normalizeLearning and came back as a record (`null`,
+  // `42`, `[]` as `{schema_version, scope, host_class, anonymized}`, a string
+  // spread into index keys) — and every rewrite then wrote that record back.
+  it.each([['null'], ['42'], ['[]'], ['"text"']])('counts the JSON non-object line %s as malformed', async (line) => {
+    const path = join(tmp, 'learnings.jsonl');
+    writeFileSync(path, JSON.stringify(LEGACY()) + '\n' + line + '\n');
+    const r = await readLearnings(path);
+    expect(r.malformed).toEqual([line]);
+    expect(r.malformedLineNumbers).toEqual([2]);
+    expect(r.entries.map((e) => e.id)).toEqual([LEGACY().id]);
+  });
+
   // Rows 2-3 are the bug (#1489 LOW-2): only EMPTY lines were filtered, so a
   // whitespace-only line or a CRLF blank line (`\r`) counted as malformed —
   // kept verbatim by every rewrite and WARNed on every close, forever.

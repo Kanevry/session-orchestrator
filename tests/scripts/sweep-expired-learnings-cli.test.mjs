@@ -1009,3 +1009,146 @@ describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the name
     expect(events[0]).toMatchObject({ appended: 0, boosted: 0, pruned: 1, promoted: 0 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// --drop-malformed (#1500) — the one sanctioned removal of an unparseable line
+// ---------------------------------------------------------------------------
+
+describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
+  const BAD1 = '{"id":"torn-1","type":"recurr';
+  const BAD2 = 'not json at all';
+
+  /** Names of `.pre-drop-malformed` snapshots beside the store. */
+  function dropSnapshots() {
+    return readdirSync(workdir).filter((n) => n.includes('.pre-drop-malformed.'));
+  }
+
+  /** `orchestrator.learnings.malformed_dropped` records under workdir. */
+  function dropEvents() {
+    return readJsonl(path.join(workdir, '.orchestrator', 'metrics', 'events.jsonl')).filter(
+      (r) => r.event === 'orchestrator.learnings.malformed_dropped',
+    );
+  }
+
+  /** Store lines as raw text, blank lines dropped. */
+  function storeLines() {
+    return readFileSync(learningsPath, 'utf8').split('\n').filter(Boolean);
+  }
+
+  // TV-001 — the gap: the WARN and learning-patterns.md §f forbid hand edits,
+  // and the only opt-out was a library call. The bugs this pins: dropping the
+  // wrong line, a rewrite with no snapshot to restore from, and a drop that no
+  // ledger record proves.
+  it('the dry run names the line and the generation; the apply with it drops exactly that line after a snapshot and records one event', () => {
+    const alive = liveLearning({ id: 'alive' });
+    writeFileSync(learningsPath, `${JSON.stringify(alive)}\n${BAD1}\n${BAD2}\n`, 'utf8');
+    const original = readFileSync(learningsPath, 'utf8');
+
+    const preview = runSweep(['--drop-malformed', '--line', '2', '--file', learningsPath, '--json']);
+    expect(preview.status).toBe(0);
+    const plan = JSON.parse(preview.stdout);
+    expect(plan).toMatchObject({
+      dropped: [{ line: 2, preview: BAD1 }],
+      records: 1,
+      remaining_malformed: 1,
+      dry_run: true,
+      snapshot: null,
+    });
+    expect(readFileSync(learningsPath, 'utf8')).toBe(original);
+
+    const applied = runSweep([
+      '--drop-malformed', '--line', '2', '--generation', plan.generation,
+      '--apply', '--repo-root', workdir, '--file', learningsPath, '--json',
+    ]);
+    expect(applied.status).toBe(0);
+    const lines = storeLines();
+    expect(JSON.parse(lines[0]).id).toBe('alive');
+    expect(lines.slice(1)).toEqual([BAD2]);
+    const snapshots = dropSnapshots();
+    expect(snapshots).toHaveLength(1);
+    expect(readFileSync(path.join(workdir, snapshots[0]), 'utf8')).toBe(original);
+    expect(dropEvents()).toEqual([
+      expect.objectContaining({
+        file: 'learnings.jsonl',
+        dropped: 1,
+        lines: [2],
+        remaining_malformed: 1,
+        snapshot: snapshots[0],
+        source: 'sweep-expired-learnings-cli',
+      }),
+    ]);
+  });
+
+  // TV-001 — the bug: a --line naming a record "succeeded" — the rewrite is
+  // built from the parsed records, so nothing was dropped, yet the run exited
+  // 0 and its event claimed a drop.
+  it('refuses a --line that holds a record: exit 1, store byte-identical, no snapshot, no event', () => {
+    writeFileSync(learningsPath, `${JSON.stringify(liveLearning({ id: 'alive' }))}\n${BAD1}\n`, 'utf8');
+    const before = sha256(learningsPath);
+    const { generation } = JSON.parse(
+      runSweep(['--drop-malformed', '--line', '2', '--file', learningsPath, '--json']).stdout,
+    );
+
+    const result = runSweep([
+      '--drop-malformed', '--line', '1', '--generation', generation,
+      '--apply', '--repo-root', workdir, '--file', learningsPath,
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('line 1');
+    expect(sha256(learningsPath)).toBe(before);
+    expect(dropSnapshots()).toEqual([]);
+    expect(dropEvents()).toEqual([]);
+  });
+
+  // TV-001 — the bug a membership check alone misses: every rewrite moves the
+  // malformed lines to the END of the store, so after the /close sweep the
+  // line number the operator chose names ANOTHER malformed line. It is still
+  // malformed, so only the generation tells the two apart.
+  it('exits 3 and drops nothing when a rewrite moved a different malformed line onto --line after the dry run', () => {
+    writeFileSync(
+      learningsPath,
+      `${JSON.stringify(liveLearning({ id: 'a' }))}\n${BAD1}\n${BAD2}\n${JSON.stringify(liveLearning({ id: 'b', subject: 'b' }))}\n`,
+      'utf8',
+    );
+    const plan = JSON.parse(runSweep(['--drop-malformed', '--line', '3', '--file', learningsPath, '--json']).stdout);
+    expect(plan.dropped).toEqual([{ line: 3, preview: BAD2 }]);
+    expect(runSweep(['--apply', '--file', learningsPath, '--archive', archivePath]).status).toBe(0);
+    expect(storeLines()[2]).toBe(BAD1); // line 3 now names BAD1
+    const afterSweep = sha256(learningsPath);
+
+    const result = runSweep([
+      '--drop-malformed', '--line', '3', '--generation', plan.generation,
+      '--apply', '--repo-root', workdir, '--file', learningsPath,
+    ]);
+
+    expect(result.status).toBe(3);
+    expect(sha256(learningsPath)).toBe(afterSweep);
+    expect(dropSnapshots()).toEqual([]);
+    expect(dropEvents()).toEqual([]);
+  });
+
+  // TV-001 — the bypass: a guard that runs only when its token is passed is
+  // skipped by every caller that forgets it, and a drop without --repo-root
+  // leaves no record.
+  it.each([
+    ['--generation', ['--repo-root']],
+    ['--repo-root', ['--generation']],
+  ])('--apply without %s exits 1 and writes nothing', (_missing, present) => {
+    writeFileSync(learningsPath, `${JSON.stringify(liveLearning({ id: 'alive' }))}\n${BAD1}\n`, 'utf8');
+    const before = sha256(learningsPath);
+    const { generation } = JSON.parse(
+      runSweep(['--drop-malformed', '--line', '2', '--file', learningsPath, '--json']).stdout,
+    );
+    const values = { '--repo-root': workdir, '--generation': generation };
+
+    const result = runSweep([
+      '--drop-malformed', '--line', '2', '--apply', '--file', learningsPath,
+      ...present.flatMap((flag) => [flag, values[flag]]),
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(sha256(learningsPath)).toBe(before);
+    expect(dropSnapshots()).toEqual([]);
+  });
+});

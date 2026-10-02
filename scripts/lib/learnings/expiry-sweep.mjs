@@ -59,13 +59,16 @@
  *     (the incident that destroyed 107 live learnings via a bespoke writer
  *     with no backup/dry-run safety net).
  *
+ * #1500 — {@link dropMalformedLines}, the one sanctioned removal of an
+ * unparseable store line: the lines the two writers above keep verbatim.
+ *
  * Sibling-module import convention (learnings.mjs barrel doc): import
  * directly from `./io.mjs`, never from `../learnings.mjs`, to preserve the
  * acyclic dependency graph.
  */
 
-import { existsSync } from 'node:fs';
-import { mkdir, appendFile } from 'node:fs/promises';
+import { constants as fsConstants, existsSync } from 'node:fs';
+import { mkdir, appendFile, copyFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readLearnings, readLearningsSnapshot, rewriteLearnings, withLearningsLock } from './io.mjs';
 import { redactHomeDir } from '../common.mjs';
@@ -93,6 +96,27 @@ export class StoreGenerationMismatchError extends Error {
     this.filePath = filePath;
     this.expected = expected;
     this.actual = actual;
+  }
+}
+
+/**
+ * Thrown by {@link dropMalformedLines} when a requested line is not an
+ * unparseable line of the store as read — a record, a blank line, or past the
+ * end. Nothing is written.
+ */
+export class MalformedLineRefusedError extends Error {
+  /**
+   * @param {string} filePath
+   * @param {number[]} lines - the requested lines that are not unparseable
+   */
+  constructor(filePath, lines) {
+    super(
+      `drop-malformed refused: line ${lines.join(', ')} of ${redactHomeDir(filePath)} is not an ` +
+        `unparseable line (a record, a blank line, or past the end) — nothing written`
+    );
+    this.name = 'MalformedLineRefusedError';
+    this.code = 'malformed-line-refused';
+    this.lines = lines;
   }
 }
 
@@ -287,7 +311,9 @@ export function warnUnparseableLines(filePath, malformed, lineNumbers = []) {
     // The store path is absolute and lands in every /close transcript (#1490).
     `[learnings] WARN: ${malformed.length} unparseable line(s) in ${redactHomeDir(filePath)}${where} kept verbatim, ` +
       `never archived; report them to the operator — ` +
-      `never hand-edit the store`
+      `never hand-edit the store. Once the operator decides, remove one with ` +
+      `\`node scripts/sweep-expired-learnings.mjs --drop-malformed --line N --file ${redactHomeDir(filePath)}\` ` +
+      `(dry run; it prints the --generation its --apply needs)`
   );
 }
 
@@ -700,4 +726,109 @@ async function pruneLearningsUnlocked({
     archivePath,
     ...malformedCount,
   };
+}
+
+/** Characters of a dropped line shown in the dry-run preview. */
+const DROP_PREVIEW_CHARS = 80;
+
+/**
+ * Where {@link dropMalformedLines} snapshots the store before its rewrite:
+ * `<stem>.pre-drop-malformed.jsonl.bak-<ISO>` beside it. The name is chosen
+ * twice over: `.orchestrator/metrics/*.jsonl.bak-*` gitignores it, and it does
+ * NOT start with `<store>.bak`, so the keep-3 rotation of `rewriteLearnings()`
+ * never prunes it — the line's text outlives any number of later closes.
+ *
+ * @param {string} filePath
+ * @param {number} nowMs
+ * @returns {string}
+ */
+function dropSnapshotPath(filePath, nowMs) {
+  const base = path.basename(filePath);
+  const stem = base.endsWith('.jsonl') ? base.slice(0, -'.jsonl'.length) : base;
+  const ts = new Date(nowMs).toISOString().replace(/[:.]/g, '-');
+  return path.join(path.dirname(filePath), `${stem}.pre-drop-malformed.jsonl.bak-${ts}`);
+}
+
+/**
+ * Remove unparseable lines from a learnings store — the ONE sanctioned way
+ * (#1500). Every rewrite keeps such lines verbatim (#1489) and the WARN forbids
+ * hand edits, so without this the only removal was a library call.
+ *
+ * `lines` are 1-based store lines as the WARN or a dry run of this function
+ * reported them. Line numbers move: every rewrite puts the unparseable lines at
+ * the END of the store, so after the next /close sweep a number can name a
+ * different unparseable line. Hence an apply needs `expectedGeneration` — the
+ * `generation` a dry run returned — and the store read, the generation check,
+ * the line check, the snapshot and the rewrite all run under ONE store lock;
+ * read outside it, a record a peer appended meanwhile is lost to the rewrite.
+ *
+ * The rewrite goes through `rewriteLearnings()` (validation, `.bak-<ISO>`,
+ * atomic rename) after a full copy of the store to {@link dropSnapshotPath}.
+ *
+ * @param {object} opts
+ * @param {string} opts.filePath - the learnings store
+ * @param {number[]} opts.lines - 1-based lines to drop; each must be unparseable in the store as read
+ * @param {string} [opts.expectedGeneration] - generation the line numbers were read from;
+ *   REQUIRED to apply, checked on a dry run when given
+ * @param {boolean} [opts.dryRun=true] - check and validate, write nothing
+ * @param {Date|number} [opts.now] - injectable clock (snapshot name)
+ * @returns {Promise<{generation: string, dropped: {line: number, preview: string}[], records: number,
+ *   remainingMalformed: number, dryRun: boolean, snapshot: string|null}>} `generation` is the
+ *   store's as read; `preview` the line's first {@link DROP_PREVIEW_CHARS} characters, home dir as `~`
+ * @throws {StoreGenerationMismatchError} the store is not at `expectedGeneration` — nothing written
+ * @throws {MalformedLineRefusedError} a line is not unparseable — nothing written
+ */
+export async function dropMalformedLines({ filePath, lines, expectedGeneration, dryRun = true, now } = {}) {
+  if (typeof filePath !== 'string' || filePath.length === 0) {
+    throw new Error('dropMalformedLines: filePath is required');
+  }
+  if (!Array.isArray(lines) || lines.length === 0 || !lines.every((n) => Number.isInteger(n) && n > 0)) {
+    throw new Error('dropMalformedLines: lines must be a non-empty array of positive integers');
+  }
+  if (!dryRun && (typeof expectedGeneration !== 'string' || expectedGeneration.length === 0)) {
+    throw new Error('dropMalformedLines: expectedGeneration is required to apply');
+  }
+  const run = () => dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, dryRun, now });
+  // An absent store has no line to drop — the body refuses without a lock.
+  return dryRun || !existsSync(filePath) ? run() : withLearningsLock(filePath, run);
+}
+
+/**
+ * Body of {@link dropMalformedLines}; the caller holds the store lock or runs
+ * a pass that cannot write.
+ */
+async function dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, dryRun, now }) {
+  const snap = await readLearningsSnapshot(filePath);
+  if (expectedGeneration !== undefined && snap.generation !== expectedGeneration) {
+    throw new StoreGenerationMismatchError(filePath, expectedGeneration, snap.generation);
+  }
+  const wanted = [...new Set(lines)].sort((a, b) => a - b);
+  const notMalformed = wanted.filter((n) => !snap.malformedLineNumbers.includes(n));
+  if (notMalformed.length > 0) throw new MalformedLineRefusedError(filePath, notMalformed);
+
+  const drop = new Set(wanted);
+  const keepMalformed = snap.malformed.filter((_, i) => !drop.has(snap.malformedLineNumbers[i]));
+  const dropped = wanted.map((line) => {
+    const text = snap.malformed[snap.malformedLineNumbers.indexOf(line)];
+    const cut = text.length > DROP_PREVIEW_CHARS ? `${text.slice(0, DROP_PREVIEW_CHARS)}…` : text;
+    return { line, preview: redactHomeDir(cut) };
+  });
+  // Validate the next generation before anything touches disk, dry run too:
+  // a record the tolerant gate rejects throws here, before the snapshot.
+  await rewriteLearnings(filePath, snap.entries, { dryRun: true, malformedLines: keepMalformed });
+  const result = {
+    generation: snap.generation,
+    dropped,
+    records: snap.entries.length,
+    remainingMalformed: keepMalformed.length,
+    dryRun,
+    snapshot: null,
+  };
+  if (dryRun) return result;
+
+  const snapshot = dropSnapshotPath(filePath, resolveNowMs(now));
+  // COPYFILE_EXCL: never overwrite an earlier snapshot.
+  await copyFile(filePath, snapshot, fsConstants.COPYFILE_EXCL);
+  await rewriteLearnings(filePath, snap.entries, { malformedLines: keepMalformed });
+  return { ...result, snapshot };
 }
