@@ -1025,6 +1025,31 @@ describe('vault-mirror repo root (#1503)', () => {
     });
   });
 
+  it('a remote-less repo reached through a symlinked --repo-root is not refused against its own ledger', () => {
+    // #1503 cycle 3: --source was realpath'd but --repo-root was not, and a
+    // remote-less, slug-less repo is named by its DIRECTORY — so the link's
+    // name was compared with the real name and the run refused (exit 2).
+    const base = tmp();
+    const real = join(base, 'real-name-dir');
+    fixtureGit(['init', '-q', real], tmpdir(), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const link = join(base, 'link-name-dir');
+    symlinkSync(real, link);
+    const metrics = join(real, '.orchestrator', 'metrics');
+    mkdirSync(metrics, { recursive: true });
+    writeFileSync(join(metrics, 'learnings.jsonl'), JSON.stringify(WIDGET_RECORD) + '\n', 'utf8');
+
+    const result = runIn(link, [
+      '--vault-dir', tmp(), '--source', join(link, '.orchestrator', 'metrics', 'learnings.jsonl'),
+      '--kind', 'learning', '--repo-root', link, '--dry-run',
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({
+      action: 'created',
+      path: '40-learnings/real-name-dir/shared-subject.md',
+    });
+  });
+
   function writeJsonlTo(dir, content) {
     const p = join(dir, 'source.jsonl');
     writeFileSync(p, content + '\n', 'utf8');

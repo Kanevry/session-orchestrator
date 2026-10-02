@@ -7,6 +7,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
+import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createSecretValueMasker } from '../secret-masker.mjs';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
@@ -282,8 +283,12 @@ function maskerWouldChange(text) {
  * a writer whose record key cannot be represented (`recordKey: null`), proves
  * nothing either way — refusing those would freeze every pre-#1503 note.
  *
- * Callers skip this check when the on-disk note still leaks under the current
- * masker: the secret self-heal wins over the owner guard.
+ * A foreign note that still leaks under the current masker is NOT rewritten
+ * from the writer's record — that would be the #1503 overwrite again, merely
+ * triggered by a secret. It is masked IN PLACE instead (see
+ * {@link maskForeignNoteInPlace}): owner, content and `source-record` stay, only
+ * the secret goes, and the writer's record is routed exactly as for any foreign
+ * note.
  *
  * NAMED LIMITATION — this is defence in depth, never the fix. It cannot protect
  * a note written before `source-record` existed (no field, nothing to compare).
@@ -311,9 +316,87 @@ export function foreignOwnerReason(fm, { recordKey = null, ownRecordKeys = null 
  * action carrying `meta.reason`.
  * @returns {Promise<string>} the action string.
  */
-function skipForeignOwner(lineNum, ctx, { path, id, reason }) {
+function skipForeignOwner(lineNum, ctx, { path, id, reason, healedLeak = false }) {
   process.stderr.write(`SKIP foreign owner (${reason}): ${toVaultRelative(path, ctx.vaultDir)}\n`);
-  return emitEntryAction(lineNum, ctx, { action: 'skipped-foreign-owner', path, id, meta: { reason } });
+  return emitEntryAction(lineNum, ctx, {
+    action: 'skipped-foreign-owner',
+    path,
+    id,
+    meta: { reason, ...(healedLeak ? { healed_leak: true } : {}) },
+  });
+}
+
+/** Lazily resolved js-yaml (null when not installed) — same pattern as vault-yaml.mjs. */
+let _yaml;
+function getYaml() {
+  if (_yaml === undefined) {
+    try {
+      _yaml = createRequire(import.meta.url)('js-yaml');
+    } catch {
+      _yaml = null;
+    }
+  }
+  return _yaml;
+}
+
+/**
+ * Mask the secrets of a note that belongs to ANOTHER record, in place (#1503).
+ *
+ * The note keeps its owner, its content and its `source-record`; only the
+ * values the current masker knows become `[REDACTED]`. Re-rendering it from the
+ * writer's record instead would overwrite another project's note — the #1503
+ * incident, triggered by a secret (cycle-3 review: an older foreign record
+ * replaced the newer note and froze it).
+ *
+ * Masking finished Markdown is what `maskEntrySecrets` deliberately avoids
+ * (its reason 3): a frontmatter value that STARTS with the secret becomes a
+ * bare `[REDACTED]…`, which YAML reads as a flow sequence, and a secret inside
+ * a flow list breaks the list. So the masked frontmatter must still parse as
+ * YAML, or nothing is written: one stderr WARN, and the leak stays — loudly
+ * rather than replaced by a note the vault-sync gate rejects. Without js-yaml
+ * the check cannot run and the same refusal applies.
+ *
+ * @param {string} path - absolute note path.
+ * @param {string} content - the note as read from disk.
+ * @param {{ vaultDir: string, dryRun: boolean }} ctx
+ * @returns {boolean} true when masked (or would be, in dry-run).
+ */
+function maskForeignNoteInPlace(path, content, { vaultDir, dryRun }) {
+  const masked = ensureMasker().mask(content);
+  if (masked === content) return false;
+  const yaml = getYaml();
+  let parses = false;
+  if (yaml !== null && masked.startsWith('---')) {
+    const end = masked.indexOf('\n---', 3);
+    try {
+      const fm = end === -1 ? null : yaml.load(masked.slice(3, end));
+      parses = fm !== null && typeof fm === 'object' && !Array.isArray(fm);
+    } catch {
+      parses = false;
+    }
+  }
+  if (!parses) {
+    process.stderr.write(
+      `WARN vault-mirror: a leaked secret in a note owned by another record could not be masked in place (the masked frontmatter would not parse); left unchanged: ${toVaultRelative(path, vaultDir)}\n`,
+    );
+    return false;
+  }
+  if (!dryRun) writeFileSync(path, masked, 'utf8');
+  return true;
+}
+
+/**
+ * The boolean heal flags for an action's meta, or nothing when neither is set.
+ * @param {boolean} healedLegacyFlat - our own legacy flat note re-rendered masked.
+ * @param {boolean} healedForeignLeak - another record's note masked in place.
+ * @returns {{ meta?: Record<string, boolean> }}
+ */
+function healMeta(healedLegacyFlat, healedForeignLeak) {
+  const meta = {
+    ...(healedLegacyFlat ? { healed_legacy_flat: true } : {}),
+    ...(healedForeignLeak ? { healed_leak: true } : {}),
+  };
+  return Object.keys(meta).length > 0 ? { meta } : {};
 }
 
 // ── repo derivation ───────────────────────────────────────────────────────────
@@ -789,6 +872,8 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // Set when a still-leaking legacy flat note was healed in place below, so the
   // action emitted for THIS entry can say so (see the write sites at the end).
   let healedLegacyFlat = false;
+  // #1503: set when a leaking note owned by ANOTHER record was masked in place.
+  let healedForeignLeak = false;
   if (!existsSync(targetPath) && existsSync(legacyFlatPath)) {
     const legacyContent = readFileSync(legacyFlatPath, 'utf8');
     const legacyFm = parseFrontmatter(legacyContent);
@@ -801,15 +886,15 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     const legacyStillLeaks = legacyFm !== null && maskerWouldChange(legacyContent);
     // Only skip if the flat note is ours (has our generator marker and matching id).
     // #1503: a flat note rendered from another record is NOT ours either — it is
-    // neither a duplicate to skip on nor a file to heal in place with THIS
-    // record's content; this entry proceeds to its own namespaced path (a
-    // different file). Unless it still leaks: the self-heal wins over the guard.
-    if (
-      legacyFm &&
-      legacyFm['_generator'] === GENERATOR_MARKER &&
-      legacyFm['id'] === slug &&
-      (legacyStillLeaks || foreignOwnerReason(legacyFm, writer) === null)
-    ) {
+    // neither a duplicate to skip on nor a file to rewrite with THIS record's
+    // content; this entry proceeds to its own namespaced path (a different
+    // file). A leak in it is masked in place, keeping its owner and content.
+    const legacyMarked = Boolean(legacyFm) && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === slug;
+    const legacyForeign = legacyMarked && foreignOwnerReason(legacyFm, writer) !== null;
+    if (legacyForeign && legacyStillLeaks) {
+      healedForeignLeak = maskForeignNoteInPlace(legacyFlatPath, legacyContent, ctx);
+    }
+    if (legacyMarked && !legacyForeign) {
       const entryUpdated = toDate(dateSource);
       if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         // Date has not advanced — but content may have changed (confidence, insight, etc.).
@@ -860,12 +945,22 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // recurs across repos AND within one repo (an expired learning re-learned
     // under a new id). A note rendered from a different record is therefore a
     // slug collision: the new record goes to the disambiguated path, the note on
-    // disk is never overwritten, and `--force` does not change that. Exception:
-    // a note that still leaks under the current masker is overwritten (healed)
-    // below — the secret self-heal wins over the owner guard.
-    const existingLeaks = maskerWouldChange(existingContent);
+    // disk is never overwritten, and `--force` does not change that. A leak in
+    // that note is masked in place first — never by rewriting it from THIS
+    // record, which would be the #1503 overwrite triggered by a secret.
+    //
+    // BV-004 ceiling: (1) the main `<slug>.md` keeps the FIRST record that
+    // claimed it — after a re-learn it goes stale while the current record lives
+    // at `<slug>-<uuid8>.md`; (2) disambiguation is ONE level deep — a
+    // `-<uuid8>` file owned by yet another record is skipped-foreign-owner.
+    // Fine while re-learns are rare (fleet census at review time: 39 slugs in 12
+    // repos). Revisit-Trigger: a stale main note is read as current, or a
+    // skipped-foreign-owner is reported on a `-<uuid8>` path.
     const recordMismatch = foreignOwnerReason(fm, writer);
-    const routedByRecord = recordMismatch !== null && !existingLeaks;
+    const routedByRecord = recordMismatch !== null;
+    if (routedByRecord && maskerWouldChange(existingContent)) {
+      healedForeignLeak = maskForeignNoteInPlace(targetPath, existingContent, ctx);
+    }
 
     if (fm['id'] !== slug || routedByRecord) {
       // Different id (or different record) → collision: disambiguate
@@ -879,11 +974,23 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         const disambigFm = parseFrontmatter(disambigContent);
         if (!disambigFm || !disambigFm['_generator']) {
           process.stderr.write(`SKIP hand-written (disambig): ${toVaultRelative(targetPath, vaultDir)}\n`);
-          return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
+          return emitEntryAction(_lineNum, ctx, {
+            action: 'skipped-handwritten',
+            path: targetPath,
+            id: entryId,
+            ...healMeta(false, healedForeignLeak),
+          });
         }
         const disambigForeign = foreignOwnerReason(disambigFm, writer);
-        if (disambigForeign !== null && !maskerWouldChange(disambigContent)) {
-          return skipForeignOwner(_lineNum, ctx, { path: targetPath, id: disambigSlug, reason: disambigForeign });
+        if (disambigForeign !== null) {
+          const healedDisambig =
+            maskerWouldChange(disambigContent) && maskForeignNoteInPlace(targetPath, disambigContent, ctx);
+          return skipForeignOwner(_lineNum, ctx, {
+            path: targetPath,
+            id: disambigSlug,
+            reason: disambigForeign,
+            healedLeak: healedDisambig || healedForeignLeak,
+          });
         }
         // Check updated advancement; if date has not advanced, also diff content.
         // #1028 residue 1: this guard previously lacked the `!force &&` that the
@@ -897,7 +1004,14 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
             // masker before trusting the five-field match — see maskerWouldChange.
             const stillLeaks = maskerWouldChange(disambigContent);
             if (!stillLeaks) {
-              return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: disambigSlug });
+              // #1503: the main note's in-place heal must stay visible even when
+              // this record's own disambiguated note is unchanged.
+              return emitEntryAction(_lineNum, ctx, {
+                action: 'skipped-noop',
+                path: targetPath,
+                id: disambigSlug,
+                ...healMeta(false, healedForeignLeak),
+              });
             }
           }
           // Content differs, or the on-disk note still leaks under the current
@@ -911,7 +1025,9 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         action: 'skipped-collision-resolved',
         path: targetPath,
         id: slug,
-        ...(routedByRecord ? { meta: { reason: recordMismatch } } : {}),
+        ...(routedByRecord
+          ? { meta: { reason: recordMismatch, ...(healedForeignLeak ? { healed_leak: true } : {}) } }
+          : {}),
       });
     }
 
@@ -936,13 +1052,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // Overwrite with advanced updated date (or forced re-render)
     const content = generator(entry, slug, generatorOpts);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-    return emitEntryAction(_lineNum, ctx, {
-      action: 'updated',
-      path: targetPath,
-      id: slug,
-      // #1503: a leaking note from a different record was healed over its owner.
-      ...(recordMismatch !== null ? { meta: { healed_leak: true } } : {}),
-    });
+    return emitEntryAction(_lineNum, ctx, { action: 'updated', path: targetPath, id: slug });
   }
 
   // File does not exist — create
@@ -955,7 +1065,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // No PATH in the meta: the stdout payload's `path` is vault-relative on
     // purpose (emitAction relativises it), a raw absolute path here would put
     // the operator's home dir on stdout and into the ledger record.
-    ...(healedLegacyFlat ? { meta: { healed_legacy_flat: true } } : {}),
+    ...healMeta(healedLegacyFlat, healedForeignLeak),
   });
 }
 
@@ -1094,6 +1204,8 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // (pre-namespace migration), skip creating a duplicate.
   const legacyFlatPath = join(resolve(vaultDir), '50-sessions', `${session_id}.md`);
   let healedLegacyFlat = false;
+  // #1503: set when a leaking note owned by ANOTHER record was masked in place.
+  let healedForeignLeak = false;
   if (!existsSync(targetPath) && existsSync(legacyFlatPath)) {
     const legacyContent = readFileSync(legacyFlatPath, 'utf8');
     const legacyFm = parseFrontmatter(legacyContent);
@@ -1104,13 +1216,13 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     // learning channel carries; see that function above.
     const legacyStillLeaks = legacyFm !== null && maskerWouldChange(legacyContent);
     // #1503: a flat note from a foreign record is not ours — see processLearning's
-    // dual-probe. The self-heal still wins over that guard.
-    if (
-      legacyFm &&
-      legacyFm['_generator'] === GENERATOR_MARKER &&
-      legacyFm['id'] === session_id &&
-      (legacyStillLeaks || foreignOwnerReason(legacyFm, writer) === null)
-    ) {
+    // dual-probe. A leak in it is masked in place, keeping its owner and content.
+    const legacyMarked = Boolean(legacyFm) && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === session_id;
+    const legacyForeign = legacyMarked && foreignOwnerReason(legacyFm, writer) !== null;
+    if (legacyForeign && legacyStillLeaks) {
+      healedForeignLeak = maskForeignNoteInPlace(legacyFlatPath, legacyContent, ctx);
+    }
+    if (legacyMarked && !legacyForeign) {
       const entryUpdated = toDate(entry.completed_at);
       if (!force && !legacyStillLeaks && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: session_id });
@@ -1144,42 +1256,30 @@ export async function processSession(rawEntry, _lineNum, ctx) {
 
     // #1028 residue 1, session channel (W4 review HIGH-1): probe the on-disk
     // content against the CURRENT masker — the session note's narrative body is
-    // the larger free-text leak surface of the two channels. A still-leaking
-    // note is rewritten whatever the guards below say (#1503: the secret
-    // self-heal wins over the owner guard).
+    // the larger free-text leak surface of the two channels.
     const existingLeaks = maskerWouldChange(existingContent);
-    const sameSession = fm['id'] === session_id || fm['id'] === renderedId;
 
-    if (!existingLeaks) {
-      // #1503: session ids are semantic (`main-<date>-session-<n>`) and recur
-      // across repos, so a matching id proves nothing about ownership. Checked
-      // before the date comparison, and `--force` does not bypass it.
-      const foreign = foreignOwnerReason(fm, writer);
-      if (foreign !== null) {
-        return skipForeignOwner(_lineNum, ctx, { path: targetPath, id: session_id, reason: foreign });
-      }
-      // #1503 latent bug: OUR generator, but the note names a DIFFERENT
-      // session. This used to fall through to the create path below —
-      // overwriting another session's note and reporting it `created`. Sessions
-      // have no disambiguation scheme, so the note is left alone.
-      if (!sameSession) {
-        return skipForeignOwner(_lineNum, ctx, { path: targetPath, id: session_id, reason: 'id mismatch' });
-      }
-      const entryUpdated = toDate(entry.completed_at);
-      if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-        return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: session_id });
-      }
+    // #1503: session ids are semantic (`main-<date>-session-<n>`) and recur
+    // across repos, so a matching id proves nothing about ownership — the
+    // record key decides. And a note naming a DIFFERENT session (latent bug:
+    // this used to fall through to the create path below, overwriting another
+    // session's note and reporting it `created`) is foreign too; sessions have
+    // no disambiguation scheme. Checked before the date comparison; `--force`
+    // does not bypass it. A leak in a foreign note is masked in place, never
+    // rewritten from this record.
+    const sameSession = fm['id'] === session_id || fm['id'] === renderedId;
+    const foreign = foreignOwnerReason(fm, writer) ?? (sameSession ? null : 'id mismatch');
+    if (foreign !== null) {
+      const healed = existingLeaks && maskForeignNoteInPlace(targetPath, existingContent, ctx);
+      return skipForeignOwner(_lineNum, ctx, { path: targetPath, id: session_id, reason: foreign, healedLeak: healed });
     }
 
+    const entryUpdated = toDate(entry.completed_at);
+    if (!force && !existingLeaks && fm['updated'] && fm['updated'] >= entryUpdated) {
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: session_id });
+    }
     if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');
-    const overrodeOwner = !sameSession || foreignOwnerReason(fm, writer) !== null;
-    return emitEntryAction(_lineNum, ctx, {
-      action: 'updated',
-      path: targetPath,
-      id: session_id,
-      // #1503: a leaking note owned by another session/record was healed over its owner.
-      ...(existingLeaks && overrodeOwner ? { meta: { healed_leak: true } } : {}),
-    });
+    return emitEntryAction(_lineNum, ctx, { action: 'updated', path: targetPath, id: session_id });
   }
 
   // File does not exist — create. Reuse the rendered body computed during the
@@ -1190,6 +1290,6 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     path: targetPath,
     id: session_id,
     // Boolean only — never a path; see the same note in processLearning.
-    ...(healedLegacyFlat ? { meta: { healed_legacy_flat: true } } : {}),
+    ...healMeta(healedLegacyFlat, healedForeignLeak),
   });
 }

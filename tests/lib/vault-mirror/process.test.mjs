@@ -2557,28 +2557,150 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
     expect(read(NOTE)).toContain('source-repo: alpha-tool');
   });
 
-  it('the secret self-heal wins over the owner guard (learning and session)', async () => {
-    // #1503 review F1: a note that still leaks under the current masker must be
-    // rewritten masked even when another record owns it — otherwise the leak
-    // stays published with no plain re-run able to reach it.
+  const SESSION = {
+    session_id: 'main-2026-09-01-session-1',
+    raw_session_id: '11111111-aaaa-4000-8000-000000000001',
+    session_type: 'feature',
+    started_at: '2026-09-01T08:00:00Z',
+    completed_at: '2026-09-01T10:00:00Z',
+    duration_seconds: 7200,
+    waves: 1,
+    agents_dispatched: 2,
+    effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
+    notes: 'n'.repeat(500),
+  };
+
+  // #1503 cycle 3: a leak in a note owned by ANOTHER record is masked IN PLACE —
+  // the note keeps its owner, content and source-record — and the writer's
+  // record is routed as for any foreign note. The previous fix rewrote the note
+  // from the writer's record instead: an OLDER foreign record replaced the newer
+  // note, which is the #1503 overwrite triggered by a secret. One case per site.
+  const SESSION_REL = '50-sessions/alpha-tool/main-2026-09-01-session-1.md';
+  const FOREIGN_SESSION = { ...SESSION, raw_session_id: '22222222-bbbb-4000-8000-000000000002', completed_at: '2026-08-01T10:00:00Z' };
+  const flatten = (nsRel, flatRel) => {
+    fs.renameSync(join(vault, nsRel), join(vault, flatRel));
+  };
+  it.each([
+    {
+      site: 'learning, same slug',
+      kind: 'learning',
+      note: NOTE,
+      own: () => ALPHA_LEARNING,
+      foreign: () => BETA_LEARNING,
+      expectAction: { action: 'skipped-collision-resolved', reason: 'source-record mismatch', healed_leak: true },
+      ownMarker: 'Alpha insight',
+      ownKey: ALPHA_LEARNING.id,
+    },
+    {
+      // The reviewer's replay: the foreign record's own `-<uuid8>` note already
+      // exists and is unchanged, so its line is a skip-noop — the heal of the
+      // MAIN note must still be reported on it.
+      site: 'learning, same slug, disambiguated note already mirrored',
+      kind: 'learning',
+      note: NOTE,
+      own: () => ALPHA_LEARNING,
+      foreign: () => BETA_LEARNING,
+      preForeign: true,
+      expectAction: { action: 'skipped-noop', path: '40-learnings/alpha-tool/shared-subject-bbbbbbbb.md', healed_leak: true },
+      ownMarker: 'Alpha insight',
+      ownKey: ALPHA_LEARNING.id,
+    },
+    {
+      site: 'learning, legacy flat',
+      kind: 'learning',
+      note: '40-learnings/shared-subject.md',
+      own: () => ALPHA_LEARNING,
+      foreign: () => BETA_LEARNING,
+      prepare: () => flatten(NOTE, '40-learnings/shared-subject.md'),
+      expectAction: { action: 'created', path: NOTE, healed_leak: true },
+      ownMarker: 'Alpha insight',
+      ownKey: ALPHA_LEARNING.id,
+    },
+    {
+      site: 'session, same id',
+      kind: 'session',
+      note: SESSION_REL,
+      own: () => SESSION,
+      foreign: () => FOREIGN_SESSION,
+      expectAction: { action: 'skipped-foreign-owner', reason: 'source-record mismatch', healed_leak: true },
+      ownMarker: '2026-09-01T10:00:00Z',
+      ownKey: SESSION.raw_session_id,
+    },
+    {
+      site: 'session, different id',
+      kind: 'session',
+      note: '50-sessions/alpha-tool/releaseprep.md',
+      own: () => ({ ...SESSION, session_id: 'release prep' }),
+      foreign: () => ({ ...FOREIGN_SESSION, session_id: 'releaseprep' }),
+      // pre-#1503 shape, so only the id can tell the two apart
+      prepare: () => {
+        const rel = '50-sessions/alpha-tool/releaseprep.md';
+        fs.writeFileSync(join(vault, rel), read(rel).replace(/^source-record: .*\n/m, ''));
+      },
+      expectAction: { action: 'skipped-foreign-owner', reason: 'id mismatch', healed_leak: true },
+      ownMarker: 'id: release-prep',
+      ownKey: null,
+    },
+    {
+      site: 'session, legacy flat',
+      kind: 'session',
+      note: '50-sessions/main-2026-09-01-session-1.md',
+      own: () => SESSION,
+      foreign: () => FOREIGN_SESSION,
+      prepare: () => flatten(SESSION_REL, '50-sessions/main-2026-09-01-session-1.md'),
+      expectAction: { action: 'created', path: SESSION_REL, healed_leak: true },
+      ownMarker: '2026-09-01T10:00:00Z',
+      ownKey: SESSION.raw_session_id,
+    },
+  ])('$site: a leaking note owned by another record is masked in place, its content and owner survive', async (c) => {
     quietStderr();
     const needle = `so-test-needle-${randomUUID()}`;
     vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
     try {
-      const { processLearning, processSession } = await load();
-      await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
-      fs.writeFileSync(join(vault, NOTE), read(NOTE).replace('alpha evidence', `alpha evidence ${needle}`));
-      const learning = await captureStdout(() => processLearning(BETA_LEARNING, 1, ctxFor('learning', alphaRoot)));
-      expect(learning.lines[0]).toMatchObject({ action: 'updated', healed_leak: true });
-      expect(read(NOTE)).not.toContain(needle);
+      const mod = await load();
+      const proc = c.kind === 'learning' ? mod.processLearning : mod.processSession;
+      await captureStdout(() => proc(c.own(), 1, ctxFor(c.kind, alphaRoot)));
+      c.prepare?.();
+      if (c.preForeign) await captureStdout(() => proc(c.foreign(), 1, ctxFor(c.kind, alphaRoot)));
+      // The raw secret got in while the env did not carry it (body line).
+      fs.writeFileSync(join(vault, c.note), read(c.note).replace(/\n## /, `\n${needle} leaked here\n\n## `));
+      expect(read(c.note)).toContain(needle);
 
-      const rel = '50-sessions/alpha-tool/main-2026-09-01-session-1.md';
-      await captureStdout(() => processSession(SESSION, 1, ctxFor('session', alphaRoot)));
-      fs.writeFileSync(join(vault, rel), read(rel).replace('nnnn', `nn ${needle} nn`));
-      const foreign = { ...SESSION, raw_session_id: '22222222-bbbb-4000-8000-000000000002' };
-      const session = await captureStdout(() => processSession(foreign, 1, ctxFor('session', alphaRoot)));
-      expect(session.lines[0]).toMatchObject({ action: 'updated', healed_leak: true });
-      expect(read(rel)).not.toContain(needle);
+      const { lines } = await captureStdout(() => proc(c.foreign(), 1, ctxFor(c.kind, alphaRoot)));
+
+      expect(lines[0]).toMatchObject(c.expectAction);
+      const after = read(c.note);
+      expect(after).not.toContain(needle);
+      expect(after).toContain('[REDACTED] leaked here');
+      expect(after).toContain(c.ownMarker);
+      if (c.ownKey) expect(after).toContain(`source-record: "${c.ownKey}"`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('a leak that would break the frontmatter when masked is left unchanged, loudly', async () => {
+    // maskEntrySecrets reason 3: a value that STARTS with the secret becomes a
+    // bare `[REDACTED]…`, which YAML reads as a flow sequence.
+    const writes = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((m) => {
+      writes.push(String(m));
+      return true;
+    });
+    const needle = `so-test-needle-${randomUUID()}`;
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    try {
+      const { processLearning } = await load();
+      await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+      fs.writeFileSync(join(vault, NOTE), read(NOTE).replace(/^title: .*$/m, `title: ${needle} leaked into the title`));
+      const before = read(NOTE);
+
+      const { lines } = await captureStdout(() => processLearning(BETA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+
+      expect(lines[0]).toMatchObject({ action: 'skipped-collision-resolved', reason: 'source-record mismatch' });
+      expect(lines[0]).not.toHaveProperty('healed_leak');
+      expect(read(NOTE)).toBe(before);
+      expect(writes.filter((w) => w.includes('could not be masked in place'))).toHaveLength(1);
     } finally {
       vi.unstubAllEnvs();
     }
@@ -2603,18 +2725,6 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
     expect(read(NOTE)).toContain(`source-record: "${ALPHA_LEARNING.id}"`);
   });
 
-  const SESSION = {
-    session_id: 'main-2026-09-01-session-1',
-    raw_session_id: '11111111-aaaa-4000-8000-000000000001',
-    session_type: 'feature',
-    started_at: '2026-09-01T08:00:00Z',
-    completed_at: '2026-09-01T10:00:00Z',
-    duration_seconds: 7200,
-    waves: 1,
-    agents_dispatched: 2,
-    effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
-    notes: 'n'.repeat(500),
-  };
 
   it('a same-id session from another repo with an advanced completed_at cannot overwrite the note', async () => {
     quietStderr();

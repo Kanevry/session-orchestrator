@@ -31,8 +31,10 @@
  *   5. File exists, has _generator, but its `source-record` names a different record
  *      than this write (#1503): learnings → collision-disambiguate as in rule 4;
  *      sessions → skipped-foreign-owner unless the key occurs in this --source ledger.
- *      A note that still leaks under the current masker is rewritten regardless —
- *      the secret self-heal wins over the owner guard.
+ *      A leak in such a foreign note is masked IN PLACE (owner, content and
+ *      source-record kept; `healed_leak: true` on the action) — never rewritten
+ *      from this record. If the masked frontmatter would not parse, it is left
+ *      unchanged with a stderr WARN.
  *
  * Repo root (#1503): the namespace is the identity of the repo the --source
  * ledger belongs to — `--repo-root` when given, else the project holding
@@ -552,15 +554,20 @@ async function main() {
   // inside repo A that points at repo B's ledger is B's ledger. `realpathSync`
   // falls back to the lexical path only when it throws (the file was just
   // proven to exist, so that is a race or a permission edge, not a normal case).
-  let sourceRealPath;
-  try {
-    sourceRealPath = realpathSync(resolve(source));
-  } catch {
-    sourceRealPath = resolve(source);
-  }
+  // The same holds for `--repo-root`: a remote-less, slug-less repo is named by
+  // its directory, so a root reached through a symlink would otherwise carry the
+  // LINK's name and be refused against its own ledger.
+  const realOrLexical = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const sourceRealPath = realOrLexical(resolve(source));
   const sourceRepoRoot = ledgerOwnerRoot(sourceRealPath);
   const repoRoot = repoRootArg
-    ? resolve(expandTilde(repoRootArg))
+    ? realOrLexical(resolve(expandTilde(repoRootArg)))
     : (sourceRepoRoot ?? process.cwd());
 
   // A source with no owning project cannot be checked against anything: the
