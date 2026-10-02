@@ -15,15 +15,27 @@
  * date fixtures (avoids future TTL-expiry time bombs).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import {
+  mkdtempSync,
+  writeFileSync,
+  appendFileSync,
+  rmSync,
+  existsSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   ARCHIVE_REASONS,
+  StoreGenerationMismatchError,
   pruneLearnings,
   sweepExpiredLearnings,
 } from '@lib/learnings/expiry-sweep.mjs';
+import { readLearningsSnapshot } from '@lib/learnings/io.mjs';
+import { tryAcquireFileLock, releaseFileLock } from '@lib/file-lock.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 
 const DAY_MS = 86_400_000;
@@ -683,5 +695,84 @@ describe('pruneLearnings — archive-reason enum is fail-closed', () => {
 
   it('ARCHIVE_REASONS is the closed four-value vocabulary', async () => {
     expect([...ARCHIVE_REASONS]).toEqual(['expired', 'pruned', 'superseded', 'merged']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unparseable store lines survive the rewrite (#1489 point 4)
+// ---------------------------------------------------------------------------
+
+describe('sweep + prune — an unparseable store line is kept, never silently deleted (#1489)', () => {
+  // TV-001 — the bug: both rewrites were built from the parsed records alone,
+  // so `--apply` over a store with one truncated line (a crash mid-append)
+  // deleted that line with no archive record and no count anywhere; only the
+  // keep-3 `.bak` still held it. The session-end tail runs the sweep on every
+  // close, so each close pushed it one `.bak` closer to rotation.
+  it.each([
+    ['sweepExpiredLearnings', sweepExpiredLearnings],
+    ['pruneLearnings', pruneLearnings],
+  ])('%s --apply keeps a truncated line verbatim and reports its count', async (_name, rewrite) => {
+    const truncated = '{"id":"cut-off","type":"recurring-issue","subject":"half a rec';
+    const future = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    const alive = learning({ id: 'alive', subject: 'a', expires_at: future });
+    const old = learning({ id: 'old', subject: 'o', expires_at: new Date(Date.now() - 30 * DAY_MS).toISOString() });
+    // No trailing newline: the shape a crash mid-append leaves behind.
+    writeFileSync(filePath, `${JSON.stringify(alive)}\n${JSON.stringify(old)}\n${truncated}`, 'utf8');
+    const warn = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    let result;
+    let warnings;
+    try {
+      result = await rewrite({ filePath, archivePath, dryRun: false });
+    } finally {
+      warnings = warn.mock.calls.map(([m]) => String(m)); // mockRestore clears the calls
+      warn.mockRestore();
+    }
+
+    expect(result).toMatchObject({ kept: 1, archived: 1, malformed: 1 });
+    const lines = readFileSync(filePath, 'utf8').split('\n').filter(Boolean);
+    expect(lines.slice(1)).toEqual([truncated]);
+    expect(JSON.parse(lines[0]).id).toBe('alive');
+    expect(readJsonl(archivePath).map((e) => e.id)).toEqual(['old']);
+    expect(warnings.filter((m) => m.includes('1 unparseable line(s)'))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expectedGeneration is judged under the store lock (#1486, #1489 point 5)
+// ---------------------------------------------------------------------------
+
+describe('pruneLearnings — expectedGeneration is compared under the store lock', () => {
+  // TV-001 — the bug: a generation check that reads the store BEFORE taking
+  // the lock passes, then the locked read sees a record a peer wrote while
+  // this prune waited — absent from the caller's generation, so it is archived
+  // `pruned`, a delete nobody decided. The CLI exit-3 test cannot see this:
+  // its peer append lands before the CLI process even starts.
+  it('a record written while the prune waits for the lock throws a mismatch and is not archived', async () => {
+    const future = new Date(Date.now() + 30 * DAY_MS).toISOString();
+    const alive = learning({ id: 'alive', subject: 'a', expires_at: future });
+    writeJsonl(filePath, [alive]);
+    const { generation } = await readLearningsSnapshot(filePath);
+    const lockPath = join(realpathSync(tmp), 'learnings.jsonl.lock');
+    const holder = 'peer-writer';
+    expect(tryAcquireFileLock(lockPath, { holder }).acquired).toBe(true);
+
+    let prune;
+    try {
+      prune = pruneLearnings({ filePath, archivePath, entries: [alive], expectedGeneration: generation, dryRun: false });
+      prune.catch(() => {}); // awaited below; no unhandled rejection meanwhile
+      // Fixed delay, no observable to wait on: it lets a pre-lock read land
+      // before the peer write. Correct code reads only after the release
+      // below, so it throws whatever the delay — a short one can only let the
+      // defect slip through, never fail a correct implementation.
+      await new Promise((r) => setTimeout(r, 150));
+      appendFileSync(filePath, `${JSON.stringify(learning({ id: 'peer', subject: 'p', expires_at: future }))}\n`);
+    } finally {
+      releaseFileLock(lockPath, { holder });
+    }
+
+    await expect(prune).rejects.toBeInstanceOf(StoreGenerationMismatchError);
+    expect(readJsonl(filePath).map((e) => e.id)).toEqual(['alive', 'peer']);
+    expect(existsSync(archivePath)).toBe(false);
   });
 });

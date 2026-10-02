@@ -450,17 +450,30 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
  *   `NaN`) is still caught by the #662 checked serializer regardless of this
  *   flag — see {@link serializeLearningLineChecked}. Pass `false` to restore
  *   the fully-strict behaviour from before EventDrop #386.
+ * - `malformedLines` (default `[]`, #1489): raw text of store lines that did
+ *   not parse — the `malformed` array {@link readLearnings} returns. Written
+ *   back verbatim, one per line, AFTER the validated records. A round-trip
+ *   writer that rewrites from parsed entries alone deletes every such line
+ *   with no archive record (only the keep-3 `.bak` still holds it). Each must
+ *   be a non-empty string without a newline; anything else throws a TypeError
+ *   before any disk access, dry run included.
  *
  * @param {string} filePath
  * @param {object[]} entries
- * @param {{dryRun?: boolean, backup?: boolean, legacyTolerant?: boolean}} [opts]
+ * @param {{dryRun?: boolean, backup?: boolean, legacyTolerant?: boolean, malformedLines?: string[]}} [opts]
  * @returns {Promise<object[]>} validated entries (always returned, even dryRun)
  */
 export async function rewriteLearnings(
   filePath,
   entries,
-  { dryRun = false, backup = true, legacyTolerant = true } = {}
+  { dryRun = false, backup = true, legacyTolerant = true, malformedLines = [] } = {}
 ) {
+  if (
+    !Array.isArray(malformedLines) ||
+    malformedLines.some((l) => typeof l !== 'string' || l.length === 0 || l.includes('\n'))
+  ) {
+    throw new TypeError('rewriteLearnings: malformedLines must be an array of non-empty single-line strings');
+  }
   const validated = entries.map((e) =>
     validateLearning(
       {
@@ -481,7 +494,9 @@ export async function rewriteLearnings(
   // rewrite, no backup — and hand the validated entries back to the caller.
   if (dryRun) return validated;
 
-  const body = lines.join('');
+  // Malformed lines last, each newline-terminated: a truncated final line
+  // otherwise fuses with the next append into one more unparseable line.
+  const body = lines.join('') + malformedLines.map((l) => `${l}\n`).join('');
 
   // Under the store lock (#1447 point 8) so no append lands between the backup
   // and the rename. The CALLER's read must sit inside the same lock for a
