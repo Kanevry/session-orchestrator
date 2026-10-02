@@ -22,7 +22,7 @@
  *
  * Usage:
  *   node scripts/sweep-expired-learnings.mjs [--prune] [--dry-run|--apply] [--json]
- *     [--grace-days N] [--entries PATH] [--file PATH] [--archive PATH]
+ *     [--grace-days N] [--snapshot PATH|--entries PATH] [--file PATH] [--archive PATH]
  *     [--appended N] [--boosted M] [--duration-ms D] [--skipped a,b] [--repo-root PATH]
  *
  * Flags:
@@ -39,6 +39,8 @@
  *                      naming the exact store state they came from. This is
  *                      the sidecar to edit into the next generation. Writes
  *                      nothing else; takes no --entries/--apply/telemetry flag.
+ *                      A PATH that would replace the --file store or the
+ *                      --archive sidecar exits 1 untouched.
  *   --entries PATH    JSONL sidecar holding the caller's next store generation.
  *                      PRUNE ONLY. Must exist, parse cleanly, and hold at least
  *                      one record — absent/malformed/empty all exit 1 untouched.
@@ -79,10 +81,12 @@
  *   2  Sweep/prune error (I/O or validation failure inside the lib)
  *   3  store-generation-mismatch (#1486): the store changed after the
  *      `--entries` sidecar was snapshotted — nothing written. Re-run
- *      `--snapshot`, re-apply the edits to the fresh sidecar, apply again.
+ *      `--snapshot` into a FRESH path, re-apply the edits to the records in
+ *      that file, apply it. Never copy the new header onto the old sidecar:
+ *      its records lack exactly the peer change the token exists to protect.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -91,7 +95,7 @@ import {
   pruneLearnings,
   StoreGenerationMismatchError,
 } from './lib/learnings/expiry-sweep.mjs';
-import { readLearnings, readLearningsSnapshot, parseLearningsText } from './lib/learnings/io.mjs';
+import { readLearningsSnapshot, parseLearningsText } from './lib/learnings/io.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
 
@@ -118,7 +122,8 @@ Options:
   --grace-days N    Days past expiry before archiving (default: ${DEFAULT_GRACE_DAYS}); sweep only
   --snapshot PATH   Prune only. Write the store's records to PATH, headed by a
                     ${GENERATION_KEY} line; edit that file into the next
-                    generation and pass it as --entries. Writes nothing else
+                    generation and pass it as --entries. Writes nothing else;
+                    a PATH that is the --file store or --archive sidecar exits 1
   --entries PATH    JSONL sidecar with the next store generation; prune only.
                     Must exist, parse cleanly, start with the --snapshot
                     header, and hold >= 1 record; a NEW record (id not in the
@@ -130,7 +135,8 @@ Options:
 Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries record)
              2 sweep/prune error
              3 store-generation-mismatch: the store changed after the --entries
-               snapshot; nothing written — re-snapshot, re-apply edits, re-run
+               snapshot; nothing written — re-snapshot into a fresh path,
+               re-apply the edits there, re-run with that path
 `
   );
 }
@@ -139,6 +145,16 @@ Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries reco
 function usageError(message) {
   process.stderr.write(`sweep-expired-learnings: ${message}\n`);
   process.exit(1);
+}
+
+/**
+ * The value of a PATH flag, or a usage error (exit 1) when it is missing. An
+ * absent value used to surface later as a lib TypeError — exit 2, which the
+ * exit-code contract reserves for a failure inside the sweep/prune itself.
+ */
+function pathValue(flag, raw) {
+  if (typeof raw !== 'string' || raw.length === 0) usageError(`${flag} requires a PATH`);
+  return raw;
 }
 
 function parseArgs(argv) {
@@ -186,13 +202,13 @@ function parseArgs(argv) {
       args.graceDays = v;
       args.graceDaysExplicit = true;
     } else if (a === '--entries') {
-      args.entries = argv[++i];
+      args.entries = pathValue(a, argv[++i]);
     } else if (a === '--snapshot') {
-      args.snapshot = argv[++i];
+      args.snapshot = pathValue(a, argv[++i]);
     } else if (a === '--file') {
-      args.file = argv[++i];
+      args.file = pathValue(a, argv[++i]);
     } else if (a === '--archive') {
-      args.archive = argv[++i];
+      args.archive = pathValue(a, argv[++i]);
     } else if (a === '--appended') {
       const raw = argv[++i];
       const v = Number(raw);
@@ -223,7 +239,7 @@ function parseArgs(argv) {
       args.telemetryExplicit = true;
     } else if (a === '--repo-root') {
       // Absolute on purpose: emitEvent refuses a relative root (#1468).
-      args.repoRoot = path.resolve(argv[++i]);
+      args.repoRoot = path.resolve(pathValue(a, argv[++i]));
       args.telemetryExplicit = true;
     } else if (a === '--help' || a === '-h') {
       printHelp();
@@ -328,7 +344,12 @@ async function runSweep(args) {
  * would be archived `pruned`; the header lets `pruneLearnings()` refuse under
  * the store lock instead. A headerless sidecar is refused, not trusted: a check
  * that runs only when the token is present is bypassed by every producer that
- * forgets it, and `/evolve` is the only producer (census in #1486).
+ * forgets it. The producers are prose, so every one must say `--snapshot`:
+ * `skills/evolve/references/evolve-analyze-mode.md` § 3.5, `skills/evolve/SKILL.md`
+ * § 4.4, and `.cursor/rules/060-evolve.mdc` (analyze Step 5 + review Step 3),
+ * which `scripts/cursor-install.mjs` installs into consumer repos. Census
+ * 2026-10-02: `rg --hidden -e --entries` over the tracked tree; plain `rg`
+ * skips `.cursor/`, which is how the first census missed the third producer.
  *
  * @param {string} entriesPath
  * @returns {Promise<{entries: object[], generation: string}>} the validated,
@@ -392,6 +413,53 @@ function generationFromHeader(line) {
 }
 
 /**
+ * The directory entry a write-then-rename onto `p` replaces: its parent
+ * resolved through symlinks, plus its basename. A parent that does not exist
+ * yet stays as given — `mkdir` creates it, so nothing existing sits there.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function renameTargetEntry(p) {
+  const abs = path.resolve(p);
+  try {
+    return path.join(realpathSync(path.dirname(abs)), path.basename(abs));
+  } catch {
+    return abs;
+  }
+}
+
+/**
+ * Exit 1 when `--snapshot` would replace the store or the archive. The rename
+ * lands the header as the store's line 1 with no `.bak` (and drops malformed
+ * lines), or replaces the append-only archive with the store's records —
+ * measured on 91b35d4b, both exit 0. Compared as the entry the rename
+ * replaces, against both the ledger's own entry and the file it resolves to,
+ * so a symlinked directory or a symlinked `--file` cannot route around a plain
+ * string compare. Hard links need no check: rename replaces the directory
+ * entry, never the inode behind it.
+ *
+ * @param {ReturnType<typeof parseArgs>} args
+ */
+function refuseLedgerSnapshotTarget(args) {
+  const target = renameTargetEntry(args.snapshot);
+  for (const [label, ledger] of [['store', args.file], ['archive', args.archive]]) {
+    const protectedEntries = [renameTargetEntry(ledger)];
+    try {
+      protectedEntries.push(realpathSync(ledger));
+    } catch {
+      // absent ledger: its own entry is the only thing a rename could hit
+    }
+    if (protectedEntries.includes(target)) {
+      usageError(
+        `--snapshot ${args.snapshot} would replace the learnings ${label} ${ledger} (refusing — ` +
+          `nothing written; snapshot into a sidecar such as .orchestrator/tmp/learnings-next.jsonl)`
+      );
+    }
+  }
+}
+
+/**
  * `--prune --snapshot PATH` (#1486): write the store's current records to PATH
  * behind a `_store_generation` header, token and records from ONE read. This
  * is the sidecar `/evolve` edits into its next generation; `--entries` later
@@ -401,6 +469,7 @@ function generationFromHeader(line) {
  * @param {ReturnType<typeof parseArgs>} args
  */
 async function runSnapshot(args) {
+  refuseLedgerSnapshotTarget(args);
   let snap;
   try {
     snap = await readLearningsSnapshot(args.file);
@@ -446,20 +515,29 @@ async function runSnapshot(args) {
  * id-less subset, fine while such records stay rare; revisit if a store holds
  * hundreds of them). Runs before any write, in dry run and apply alike.
  *
+ * A failure is judged against the store's generation first: a peer that
+ * dropped a snapshotted legacy record turns it "new", and strict validation
+ * then reported exit 1 ("re-write the sidecar") for what is a stale snapshot —
+ * exit 3 (measured on 91b35d4b). The generation decides ONLY on a failure, so
+ * a stale sidecar that validates still reaches the authoritative re-read under
+ * the lock in `pruneLearnings()`; an unconditional comparison here pre-empted
+ * that check and left it untested (disabled, the suite stayed 32/32 green).
+ *
  * @param {object[]} entries - the parsed `--entries` generation
- * @param {string} filePath - the learnings store
+ * @param {string} expectedGeneration - the sidecar's `_store_generation`
+ * @param {ReturnType<typeof parseArgs>} args
  */
-async function rejectInvalidNewRecords(entries, filePath) {
+async function rejectInvalidNewRecords(entries, expectedGeneration, args) {
   let store;
   try {
-    ({ entries: store } = await readLearnings(filePath));
+    store = await readLearningsSnapshot(args.file);
   } catch (err) {
-    process.stderr.write(`sweep-expired-learnings: prune failed: cannot read ${filePath}: ${err.message}\n`);
+    process.stderr.write(`sweep-expired-learnings: prune failed: cannot read ${args.file}: ${err.message}\n`);
     process.exit(2);
   }
   const idOf = (e) => (typeof e?.id === 'string' && e.id.length > 0 ? e.id : null);
-  const storeIds = new Set(store.map(idOf).filter((id) => id !== null));
-  const storeIdless = store.filter((e) => idOf(e) === null);
+  const storeIds = new Set(store.entries.map(idOf).filter((id) => id !== null));
+  const storeIdless = store.entries.filter((e) => idOf(e) === null);
   for (const entry of entries) {
     const id = idOf(entry);
     const known = id !== null ? storeIds.has(id) : storeIdless.some((s) => isDeepStrictEqual(s, entry));
@@ -467,9 +545,27 @@ async function rejectInvalidNewRecords(entries, filePath) {
     try {
       validateLearning(entry);
     } catch (err) {
+      if (store.generation !== expectedGeneration) exitGenerationMismatch(args);
       usageError(`--entries: new record ${id ?? '(no id)'} is invalid: ${err.message} — nothing written`);
     }
   }
+}
+
+/**
+ * Exit 3 for a stale `--entries` sidecar (#1486). The recovery names a FRESH
+ * snapshot path and prints no generation token: the current token copied onto
+ * this sidecar's line 1 would carry its stale records past the guard.
+ *
+ * @param {ReturnType<typeof parseArgs>} args
+ */
+function exitGenerationMismatch(args) {
+  process.stderr.write(
+    `sweep-expired-learnings: store-generation-mismatch: ${args.file} changed after ${args.entries} ` +
+      `was snapshotted — nothing written. Run --prune --snapshot into a FRESH path, re-apply this ` +
+      `run's edits to the records in that file, and pass it as --entries; never copy a newer ` +
+      `${GENERATION_KEY} header onto ${args.entries}\n`
+  );
+  process.exit(3);
 }
 
 /**
@@ -483,7 +579,7 @@ async function runPrune(args) {
     return;
   }
   const sidecar = args.entries === null ? undefined : await loadEntriesSidecar(args.entries);
-  if (sidecar !== undefined) await rejectInvalidNewRecords(sidecar.entries, args.file);
+  if (sidecar !== undefined) await rejectInvalidNewRecords(sidecar.entries, sidecar.generation, args);
 
   let result;
   try {
@@ -495,14 +591,7 @@ async function runPrune(args) {
       dryRun: args.dryRun,
     });
   } catch (err) {
-    if (err instanceof StoreGenerationMismatchError) {
-      process.stderr.write(
-        `sweep-expired-learnings: ${err.message}. ${args.entries} was snapshotted before ` +
-          `another writer changed the store; re-run --prune --snapshot, re-apply your edits ` +
-          `to the fresh sidecar, then --apply again\n`
-      );
-      process.exit(3);
-    }
+    if (err instanceof StoreGenerationMismatchError) exitGenerationMismatch(args);
     process.stderr.write(`sweep-expired-learnings: prune failed: ${err.message}\n`);
     process.exit(2);
   }

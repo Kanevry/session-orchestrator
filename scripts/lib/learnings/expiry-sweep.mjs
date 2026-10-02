@@ -77,10 +77,11 @@ export class StoreGenerationMismatchError extends Error {
    * @param {string} actual - token of the store as read under the lock
    */
   constructor(filePath, expected, actual) {
-    super(
-      `store-generation-mismatch: ${filePath} changed since the next generation was derived ` +
-        `(expected ${expected}, found ${actual}) — nothing written`,
-    );
+    // The tokens live on the object, never in the message: callers print the
+    // message, and the CURRENT token copied onto the stale sidecar's line 1 is
+    // exactly what gets that sidecar past this check — measured, the copy
+    // archived the peer's record `pruned`, exit 0.
+    super(`store-generation-mismatch: ${filePath} changed since the next generation was derived — nothing written`);
     this.name = 'StoreGenerationMismatchError';
     this.code = 'store-generation-mismatch';
     this.filePath = filePath;

@@ -281,15 +281,19 @@ For confirmed learnings, use atomic rewrite strategy:
    > independently of the write it reported on. Do not re-inline either, and do not hand-roll a
    > `jq | ... > learnings.jsonl` pass — that bypasses every #721 safety net.
 
-   **Exit codes are the no-op rule.** `0` = applied (or a clean no-op). `1` = input error: the
-   sidecar is absent, carries a malformed line, holds no records, or lacks its line-1
-   `_store_generation` header — the store and the archive were **not touched**;
-   re-write the sidecar and re-run. `2` = the prune itself failed inside the lib. `3` =
-   `store-generation-mismatch`: the store changed after step 1, nothing was written — re-run
-   step 1's snapshot into the same path, re-apply this run's edits to the fresh sidecar, and
-   re-run the line above. On any non-zero
-   exit, surface the error and stop — never retry with a shell rewrite, and never delete `$NEXT`
-   (the `&&` above already withholds the `rm`, so the assembled generation survives for a retry).
+   **Exit codes are the no-op rule.** `0` = applied (or a clean no-op). On `1` and `2`, surface
+   the error and stop. `1` = input error: the sidecar is absent, carries a malformed line, holds
+   no records, or lacks its line-1 `_store_generation` header — the store and the archive were
+   **not touched**. `2` = the prune itself failed inside the lib. `3` =
+   `store-generation-mismatch`: the store changed after step 1 and nothing was written. This one
+   is a retry, not a stop: snapshot into a FRESH path
+   (`--prune --snapshot .orchestrator/tmp/learnings-next-retry.jsonl`), re-apply this run's
+   decisions to the records in THAT file — they now include the peer's change — and run the block
+   above with its `NEXT` set to the fresh path. Never move the fresh header onto the old
+   sidecar's records: they lack exactly the peer change the header exists to protect, so the
+   prune would archive it `pruned` (the error prints no token for that reason). On every exit,
+   never retry with a shell rewrite and never delete `$NEXT` — the `&&` above withholds the `rm`,
+   so the assembled generation survives as the record of this run's decisions.
 
    `pruneLearnings()` — the function the subcommand calls — performs steps 6 + 7 + 8 mechanically
    and archives **every** record that

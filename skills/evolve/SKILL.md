@@ -183,8 +183,11 @@ Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rol
    - **Extend:** reset expires_at to `deriveExpiresAt(now, type)` — `learning-expiry-days` is parsed but read by no script (`skills/_shared/config-reading.md` § Learning Expiry Semantics)
 3. Steps 3–5 of the old prose (prune / consolidate / rewrite) are `pruneLearnings()` — run the
    **exact** Step 3.5(5) invocation, writing the post-operation entry set to the `--entries`
-   sidecar below its line-1 `_store_generation` header. Exit `3` means the store changed after
-   the snapshot and nothing was written — Step 3.5(5) names the recovery. It prunes
+   sidecar below its line-1 `_store_generation` header. Exit `1` or `2`: surface the error and
+   stop. Exit `3` means the store changed after the snapshot and nothing was written: snapshot
+   into a FRESH path, re-apply the selected operations to the records in that file, and apply it
+   — never move the fresh header onto the old sidecar's records, whose missing peer change the
+   prune would archive `pruned` (Step 3.5(5) carries the full exit-code rule). It prunes
    (`expires_at` < now → `expired`; `confidence <= 0.0` → `pruned`), consolidates duplicates
    (same `type` + non-empty `subject`, highest confidence wins, loser archived `superseded` with
    `_superseded_by`; null-subject entries preserved individually per #284), and rewrites through
