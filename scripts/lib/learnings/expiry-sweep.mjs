@@ -62,7 +62,32 @@
 import { existsSync } from 'node:fs';
 import { mkdir, appendFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readLearnings, rewriteLearnings, withLearningsLock } from './io.mjs';
+import { readLearnings, readLearningsSnapshot, rewriteLearnings, withLearningsLock } from './io.mjs';
+
+/**
+ * Thrown by {@link pruneLearnings} when `expectedGeneration` no longer matches
+ * the store (#1486): the caller's next generation was derived from a store
+ * state that has since changed, so every record added after that derivation
+ * would read as caller-dropped and be archived `pruned`. Nothing is written.
+ */
+export class StoreGenerationMismatchError extends Error {
+  /**
+   * @param {string} filePath
+   * @param {string} expected - token the caller derived its generation from
+   * @param {string} actual - token of the store as read under the lock
+   */
+  constructor(filePath, expected, actual) {
+    super(
+      `store-generation-mismatch: ${filePath} changed since the next generation was derived ` +
+        `(expected ${expected}, found ${actual}) — nothing written`,
+    );
+    this.name = 'StoreGenerationMismatchError';
+    this.code = 'store-generation-mismatch';
+    this.filePath = filePath;
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
 
 /**
  * Composite-key separator for the in-memory consolidation Map.
@@ -411,8 +436,16 @@ async function sweepExpiredLearningsUnlocked({
  * @param {string|Function} [opts.dropReason='pruned'] - verdict for case 3
  *   above: a reason string, or `(entry) => reason|{reason, supersededBy, mergedInto}`
  *   for per-record routing (this is the seam a later `merged` producer uses).
+ * @param {string} [opts.expectedGeneration] - generation token
+ *   (`readLearningsSnapshot().generation`) of the store state `entries` was
+ *   derived from (#1486). Compared against the store as read here — under the
+ *   lock on apply — and a mismatch throws {@link StoreGenerationMismatchError}
+ *   before anything is written. Required whenever `entries` was derived in an
+ *   earlier read, outside the lock (the `/evolve` sidecar); a caller that
+ *   reads and prunes inside one `withLearningsLock` section may omit it.
  * @returns {Promise<{scanned: number, kept: number, archived: number,
  *   byReason: Record<string, number>, dryRun: boolean, archivePath: string}>}
+ * @throws {StoreGenerationMismatchError} when `expectedGeneration` is stale
  */
 export async function pruneLearnings(opts = {}) {
   const { filePath, dryRun = true } = opts;
@@ -437,6 +470,7 @@ async function pruneLearningsUnlocked({
   now,
   dryRun = true,
   dropReason = 'pruned',
+  expectedGeneration,
 } = {}) {
   if (typeof filePath !== 'string' || filePath.length === 0) {
     throw new Error('pruneLearnings: filePath is required');
@@ -447,9 +481,20 @@ async function pruneLearningsUnlocked({
   if (entries !== undefined && !Array.isArray(entries)) {
     throw new Error('pruneLearnings: entries must be an array when provided');
   }
+  if (
+    expectedGeneration !== undefined &&
+    (typeof expectedGeneration !== 'string' || expectedGeneration.length === 0)
+  ) {
+    throw new Error('pruneLearnings: expectedGeneration must be a non-empty string when provided');
+  }
 
   const nowMs = resolveNowMs(now);
-  const { entries: current } = await readLearnings(filePath);
+  // Token and records come from ONE read, so the comparison judges exactly the
+  // records loop (3) reconciles against.
+  const { entries: current, generation } = await readLearningsSnapshot(filePath);
+  if (expectedGeneration !== undefined && generation !== expectedGeneration) {
+    throw new StoreGenerationMismatchError(filePath, expectedGeneration, generation);
+  }
   const next = entries ?? current;
 
   if (next.length === 0 && current.length === 0) {

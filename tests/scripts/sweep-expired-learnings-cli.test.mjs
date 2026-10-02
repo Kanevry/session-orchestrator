@@ -42,6 +42,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
+import { appendLearning, readLearningsSnapshot } from '../../scripts/lib/learnings/io.mjs';
 
 const SCRIPT = path.resolve(process.cwd(), 'scripts/sweep-expired-learnings.mjs');
 const DAY_MS = 86_400_000;
@@ -322,6 +323,18 @@ function liveLearning(overrides = {}) {
   return learning({ expires_at: new Date(Date.now() + 60 * DAY_MS).toISOString(), ...overrides });
 }
 
+/**
+ * Write an `--entries` sidecar headed the way `--prune --snapshot` heads it:
+ * line 1 carries the generation token of the store as it stands NOW (#1486),
+ * then the records. The token comes from the production reader, so these
+ * tests do not pin its format.
+ */
+async function writeSidecar(nextPath, entries) {
+  const { generation } = await readLearningsSnapshot(learningsPath);
+  const lines = [JSON.stringify({ _store_generation: generation }), ...entries.map((e) => JSON.stringify(e))];
+  writeFileSync(nextPath, lines.join('\n') + '\n', 'utf8');
+}
+
 describe('sweep-expired-learnings.mjs — --prune dry-run', () => {
   // TV-001 — the bug: a prune path that computes the right partition but leaks
   // a write on the dry-run branch destroys the live corpus. That is the #1017
@@ -433,6 +446,58 @@ describe('sweep-expired-learnings.mjs — --prune --entries empty-sidecar guard'
   });
 });
 
+describe('sweep-expired-learnings.mjs — --prune --entries store-generation guard (#1486)', () => {
+  // TV-001 — the bug: /evolve derives the sidecar minutes before the prune, in
+  // another process. A record a peer session appends in between is on disk but
+  // absent from the sidecar, so the caller-drop loop archived it `pruned` — a
+  // delete nobody decided. The store lock cannot help: the read sat before it.
+  it('exits 3 and touches nothing when a record was appended after the snapshot', async () => {
+    writeJsonl(learningsPath, [liveLearning({ id: 'old-1', subject: 'old' })]);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+    expect(runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]).status).toBe(0);
+
+    await appendLearning(learningsPath, liveLearning({ id: 'appended-by-peer-close', subject: 'peer' }));
+    const before = sha256(learningsPath);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readdirSync(workdir).filter((f) => f.includes('.bak-'))).toHaveLength(0);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('store-generation-mismatch');
+  });
+
+  // TV-001 — the bug: a check that runs only when the sidecar carries a token is
+  // bypassed by any producer that omits it — the #1486 delete again, exit 0.
+  it('exits 1 and touches nothing when the --entries sidecar carries no generation header', () => {
+    writeJsonl(learningsPath, [
+      liveLearning({ id: 'keep', subject: 'k' }),
+      liveLearning({ id: 'appended-by-peer-close', subject: 'peer' }),
+    ]);
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [liveLearning({ id: 'keep', subject: 'k' })]);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('_store_generation');
+  });
+});
+
 describe('sweep-expired-learnings.mjs — --prune --entries strict validation of NEW records (GH#69)', () => {
   // TV-001 — the bug: pruneLearnings() rewrites through a legacyTolerant
   // rewriteLearnings(), so a NEW sidecar record with a garbage `scope` or an
@@ -441,12 +506,12 @@ describe('sweep-expired-learnings.mjs — --prune --entries strict validation of
   it.each([
     ['an out-of-enum scope', '--apply', { scope: 'project' }, 'scope must be one of local|private|public, got: project'],
     ['schema_version 2', '--dry-run', { schema_version: 2 }, 'schema_version must be 0 (legacy) or 1, got: 2'],
-  ])('exits 1 and touches nothing when a new record has %s (%s)', (_label, mode, override, message) => {
+  ])('exits 1 and touches nothing when a new record has %s (%s)', async (_label, mode, override, message) => {
     const survivor = liveLearning({ id: 'survivor', subject: 's' });
     writeJsonl(learningsPath, [survivor]);
     const before = sha256(learningsPath);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f', ...override })]);
+    await writeSidecar(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f', ...override })]);
 
     const result = runSweep([
       '--prune', mode,
@@ -463,12 +528,12 @@ describe('sweep-expired-learnings.mjs — --prune --entries strict validation of
     expect(result.stderr).toContain(`--entries: new record fresh is invalid: ${message} — nothing written`);
   });
 
-  it('carries an in-store legacy record (no source_session) through the tolerant path', () => {
+  it('carries an in-store legacy record (no source_session) through the tolerant path', async () => {
     const legacy = liveLearning({ id: 'legacy', subject: 'l' });
     delete legacy.source_session;
     writeJsonl(learningsPath, [legacy]);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [legacy]);
+    await writeSidecar(nextPath, [legacy]);
 
     const result = runSweep([
       '--prune', '--apply', '--json',
@@ -483,11 +548,11 @@ describe('sweep-expired-learnings.mjs — --prune --entries strict validation of
     expect(remaining[0]).not.toHaveProperty('source_session');
   });
 
-  it('writes a valid new record alongside the survivors', () => {
+  it('writes a valid new record alongside the survivors', async () => {
     const survivor = liveLearning({ id: 'survivor', subject: 's' });
     writeJsonl(learningsPath, [survivor]);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f' })]);
+    await writeSidecar(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f' })]);
 
     const result = runSweep([
       '--prune', '--apply', '--json',
@@ -507,12 +572,12 @@ describe('sweep-expired-learnings.mjs — --prune --apply', () => {
   // into pruneLearnings() reports success while the store is untouched (or,
   // inverted, writes on the dry-run path). This is the wiring proof for the one
   // call shape /evolve actually invokes.
-  it('archives an id the --entries sidecar omits and rewrites the store to the sidecar set', () => {
+  it('archives an id the --entries sidecar omits and rewrites the store to the sidecar set', async () => {
     const keep = liveLearning({ id: 'keep-me', subject: 'kept' });
     const drop = liveLearning({ id: 'drop-me', subject: 'dropped' });
     writeJsonl(learningsPath, [keep, drop]);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [keep]);
+    await writeSidecar(nextPath, [keep]);
 
     const result = runSweep([
       '--prune', '--apply',
@@ -717,10 +782,16 @@ describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the name
     // red rather than silently pruning against a different file.
     // #1453: the sidecar lives in .orchestrator/tmp/ (outside the ledger
     // guard's delete denylist), not in metrics/.
-    const tmpDir = path.join(workdir, '.orchestrator', 'tmp');
-    mkdirSync(tmpDir, { recursive: true });
-    const sidecar = path.join(tmpDir, 'learnings-next.jsonl');
-    writeJsonl(sidecar, [keep]);
+    // #1486: the sidecar starts as a `--snapshot` of the store (default
+    // --file, fixture cwd) and is then edited with line 1 — the generation
+    // header — kept, exactly as Step 3.5(1)/(5) describe.
+    const sidecar = path.join(workdir, '.orchestrator', 'tmp', 'learnings-next.jsonl');
+    execFileSync('node', [SCRIPT, '--prune', '--snapshot', '.orchestrator/tmp/learnings-next.jsonl'], {
+      cwd: workdir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const header = readFileSync(sidecar, 'utf8').split('\n')[0];
+    writeFileSync(sidecar, `${header}\n${JSON.stringify(keep)}\n`, 'utf8');
 
     let run;
     try {

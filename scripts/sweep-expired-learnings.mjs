@@ -34,9 +34,17 @@
  *                      (default: human-readable one-liner)
  *   --grace-days N    Days past expiry before archiving (default: 14).
  *                      SWEEP ONLY — `--prune` has no grace window by design.
+ *   --snapshot PATH   PRUNE ONLY (#1486). Write the store's current records to
+ *                      PATH, line 1 a `{"_store_generation": "<token>"}` header
+ *                      naming the exact store state they came from. This is
+ *                      the sidecar to edit into the next generation. Writes
+ *                      nothing else; takes no --entries/--apply/telemetry flag.
  *   --entries PATH    JSONL sidecar holding the caller's next store generation.
  *                      PRUNE ONLY. Must exist, parse cleanly, and hold at least
  *                      one record — absent/malformed/empty all exit 1 untouched.
+ *                      Line 1 must be the `_store_generation` header written by
+ *                      --snapshot, else exit 1 untouched; a store that changed
+ *                      since that snapshot exits 3 untouched (#1486).
  *                      A NEW record (its `id` not in the store) must pass strict
  *                      `validateLearning()`, else exit 1 untouched (GH#69);
  *                      records already in the store keep the tolerant path.
@@ -66,25 +74,36 @@
  *   0  Success (including no-op when nothing is archive-eligible)
  *   1  Usage/input error (bad flag/value, flag used in the wrong mode, an
  *      absent/malformed/empty `--entries` sidecar, or a NEW `--entries` record
- *      that fails strict schema validation — dry run and apply alike)
+ *      that fails strict schema validation, or an `--entries` sidecar without
+ *      its `_store_generation` header — dry run and apply alike)
  *   2  Sweep/prune error (I/O or validation failure inside the lib)
+ *   3  store-generation-mismatch (#1486): the store changed after the
+ *      `--entries` sidecar was snapshotted — nothing written. Re-run
+ *      `--snapshot`, re-apply the edits to the fresh sidecar, apply again.
  */
 
 import { existsSync } from 'node:fs';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { sweepExpiredLearnings, pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
-import { readLearnings } from './lib/learnings/io.mjs';
+import {
+  sweepExpiredLearnings,
+  pruneLearnings,
+  StoreGenerationMismatchError,
+} from './lib/learnings/expiry-sweep.mjs';
+import { readLearnings, readLearningsSnapshot, parseLearningsText } from './lib/learnings/io.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/learnings.jsonl';
 const DEFAULT_ARCHIVE = '.orchestrator/metrics/learnings-archive.jsonl';
 const DEFAULT_GRACE_DAYS = 14;
+/** Key of the `--entries` sidecar's first line, written by `--snapshot` (#1486). */
+const GENERATION_KEY = '_store_generation';
 
 function printHelp() {
   process.stdout.write(
-    `Usage: node scripts/sweep-expired-learnings.mjs [--prune] [--dry-run|--apply] [--json] [--grace-days N] [--entries PATH] [--file PATH] [--archive PATH]
+    `Usage: node scripts/sweep-expired-learnings.mjs [--prune] [--dry-run|--apply] [--json] [--grace-days N] [--snapshot PATH|--entries PATH] [--file PATH] [--archive PATH]
 
 Modes:
   (default)         Expiry sweep — archive entries expired past the grace window
@@ -97,15 +116,21 @@ Options:
   --apply           Perform the archive append + store rewrite
   --json            Emit a single machine-parseable JSON summary line
   --grace-days N    Days past expiry before archiving (default: ${DEFAULT_GRACE_DAYS}); sweep only
+  --snapshot PATH   Prune only. Write the store's records to PATH, headed by a
+                    ${GENERATION_KEY} line; edit that file into the next
+                    generation and pass it as --entries. Writes nothing else
   --entries PATH    JSONL sidecar with the next store generation; prune only.
-                    Must exist, parse cleanly, and hold >= 1 record; a NEW
-                    record (id not in the store) must pass strict schema
-                    validation, else exit 1 with nothing written
+                    Must exist, parse cleanly, start with the --snapshot
+                    header, and hold >= 1 record; a NEW record (id not in the
+                    store) must pass strict schema validation, else exit 1
+                    with nothing written
   --file PATH       Learnings store (default: ${DEFAULT_FILE})
   --archive PATH    Archive sidecar (default: ${DEFAULT_ARCHIVE})
 
 Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries record)
              2 sweep/prune error
+             3 store-generation-mismatch: the store changed after the --entries
+               snapshot; nothing written — re-snapshot, re-apply edits, re-run
 `
   );
 }
@@ -124,6 +149,7 @@ function parseArgs(argv) {
     graceDays: DEFAULT_GRACE_DAYS,
     graceDaysExplicit: false,
     entries: null,
+    snapshot: null,
     file: DEFAULT_FILE,
     archive: DEFAULT_ARCHIVE,
     appended: 0,
@@ -161,6 +187,8 @@ function parseArgs(argv) {
       args.graceDaysExplicit = true;
     } else if (a === '--entries') {
       args.entries = argv[++i];
+    } else if (a === '--snapshot') {
+      args.snapshot = argv[++i];
     } else if (a === '--file') {
       args.file = argv[++i];
     } else if (a === '--archive') {
@@ -214,6 +242,12 @@ function parseArgs(argv) {
   }
   if (!args.prune && args.entries !== null) {
     usageError('--entries is only valid with --prune');
+  }
+  if (!args.prune && args.snapshot !== null) {
+    usageError('--snapshot is only valid with --prune');
+  }
+  if (args.snapshot !== null && (args.entries !== null || !args.dryRun || args.telemetryExplicit)) {
+    usageError('--snapshot writes only the sidecar — it takes no --entries, --apply, or telemetry flag');
   }
   if (!args.prune && args.telemetryExplicit) {
     usageError(
@@ -288,8 +322,17 @@ async function runSweep(args) {
  * explicit `entries: []` written in CODE is a statement, and the lib keeps it
  * expressible. Only the FILE is ambiguous, so only the file is guarded.
  *
+ * A fourth guard (#1486): line 1 must be the `_store_generation` header that
+ * `--snapshot` wrote. The sidecar is derived minutes before the prune, in
+ * another process, so a record a peer appends in between is absent from it and
+ * would be archived `pruned`; the header lets `pruneLearnings()` refuse under
+ * the store lock instead. A headerless sidecar is refused, not trusted: a check
+ * that runs only when the token is present is bypassed by every producer that
+ * forgets it, and `/evolve` is the only producer (census in #1486).
+ *
  * @param {string} entriesPath
- * @returns {Promise<object[]>} the validated, non-empty next generation
+ * @returns {Promise<{entries: object[], generation: string}>} the validated,
+ *   non-empty next generation and the store generation it was derived from
  */
 async function loadEntriesSidecar(entriesPath) {
   if (!existsSync(entriesPath)) {
@@ -298,12 +341,15 @@ async function loadEntriesSidecar(entriesPath) {
         `next generation would archive the whole store)`
     );
   }
-  let read;
+  let raw;
   try {
-    read = await readLearnings(entriesPath);
+    raw = await readFile(entriesPath, 'utf8');
   } catch (err) {
     usageError(`--entries sidecar unreadable: ${entriesPath}: ${err.message}`);
   }
+  const firstLine = raw.split('\n').find((l) => l.length > 0) ?? '';
+  const generation = generationFromHeader(firstLine);
+  const read = parseLearningsText(generation === null ? raw : raw.slice(raw.indexOf(firstLine) + firstLine.length));
   if (read.malformed.length > 0) {
     usageError(
       `refusing to prune — ${read.malformed.length} malformed line(s) in ${entriesPath}`
@@ -316,7 +362,75 @@ async function loadEntriesSidecar(entriesPath) {
         `pure prune+consolidate pass)`
     );
   }
-  return read.entries;
+  if (generation === null) {
+    usageError(
+      `--entries sidecar has no "${GENERATION_KEY}" header line: ${entriesPath} (refusing ` +
+        `to prune — without it a record appended after the sidecar was derived would be ` +
+        `archived as pruned; create the sidecar with --prune --snapshot ${entriesPath}, ` +
+        `edit it keeping line 1, then re-run)`
+    );
+  }
+  return { entries: read.entries, generation };
+}
+
+/**
+ * The generation token from a sidecar's first line, or `null` when that line
+ * is not a `{"_store_generation": "<non-empty string>"}` header.
+ *
+ * @param {string} line
+ * @returns {string|null}
+ */
+function generationFromHeader(line) {
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  const token = parsed !== null && typeof parsed === 'object' ? parsed[GENERATION_KEY] : undefined;
+  return typeof token === 'string' && token.length > 0 ? token : null;
+}
+
+/**
+ * `--prune --snapshot PATH` (#1486): write the store's current records to PATH
+ * behind a `_store_generation` header, token and records from ONE read. This
+ * is the sidecar `/evolve` edits into its next generation; `--entries` later
+ * refuses it if the store moved in between. Write-then-rename, so a crash
+ * never leaves a header over a truncated record list.
+ *
+ * @param {ReturnType<typeof parseArgs>} args
+ */
+async function runSnapshot(args) {
+  let snap;
+  try {
+    snap = await readLearningsSnapshot(args.file);
+    const lines = [
+      JSON.stringify({ [GENERATION_KEY]: snap.generation }),
+      ...snap.entries.map((e) => JSON.stringify(e)),
+    ];
+    await mkdir(path.dirname(args.snapshot), { recursive: true });
+    const tmp = `${args.snapshot}.tmp-${process.pid}`;
+    await writeFile(tmp, lines.join('\n') + '\n', 'utf8');
+    await rename(tmp, args.snapshot);
+  } catch (err) {
+    process.stderr.write(`sweep-expired-learnings: snapshot failed: ${err.message}\n`);
+    process.exit(2);
+  }
+  const summary = {
+    file: args.file,
+    snapshot: args.snapshot,
+    generation: snap.generation,
+    records: snap.entries.length,
+    malformed: snap.malformed.length,
+  };
+  if (args.json) {
+    process.stdout.write(JSON.stringify(summary) + '\n');
+  } else {
+    process.stdout.write(
+      `sweep-expired-learnings: snapshot records=${summary.records} malformed=${summary.malformed} ` +
+        `generation=${summary.generation} -> ${summary.snapshot}\n`
+    );
+  }
 }
 
 /**
@@ -364,18 +478,31 @@ async function rejectInvalidNewRecords(entries, filePath) {
  * @param {ReturnType<typeof parseArgs>} args
  */
 async function runPrune(args) {
-  const entries = args.entries === null ? undefined : await loadEntriesSidecar(args.entries);
-  if (entries !== undefined) await rejectInvalidNewRecords(entries, args.file);
+  if (args.snapshot !== null) {
+    await runSnapshot(args);
+    return;
+  }
+  const sidecar = args.entries === null ? undefined : await loadEntriesSidecar(args.entries);
+  if (sidecar !== undefined) await rejectInvalidNewRecords(sidecar.entries, args.file);
 
   let result;
   try {
     result = await pruneLearnings({
       filePath: args.file,
       archivePath: args.archive,
-      entries,
+      entries: sidecar?.entries,
+      expectedGeneration: sidecar?.generation,
       dryRun: args.dryRun,
     });
   } catch (err) {
+    if (err instanceof StoreGenerationMismatchError) {
+      process.stderr.write(
+        `sweep-expired-learnings: ${err.message}. ${args.entries} was snapshotted before ` +
+          `another writer changed the store; re-run --prune --snapshot, re-apply your edits ` +
+          `to the fresh sidecar, then --apply again\n`
+      );
+      process.exit(3);
+    }
     process.stderr.write(`sweep-expired-learnings: prune failed: ${err.message}\n`);
     process.exit(2);
   }
