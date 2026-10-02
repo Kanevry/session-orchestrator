@@ -65,8 +65,10 @@ Operations-Route). Schreiber: `node scripts/fleet-checkin.mjs` liest das JSON vo
 `zeit` (überschreibt immer), validiert (`validateCheckin()`), schreibt atomar mit Modus 0600 und
 emittiert `orchestrator.fleet.checkin` (Payload `session`, `repo`, `modus`, `kandidaten`,
 `navigator_state` — keine Pfade, keine Quota, kein `auftrag_ref`). stdout: eine JSON-Zeile
-`{ ok, path, navigator_state, event }`. Exit 0 geschrieben, 2 ungültige Eingabe (Fehlerliste auf
-stderr, keine Datei), 1 Schreibfehler.
+`{ ok, path, navigator_state, navigator_adresse, event }`; `navigator_adresse` ist die vom
+Lease-Validator akzeptierte `adresse` einer aktiven Lease, sonst `null` (keine aktive Lease, kein
+Eintrag oder ein abgelehnter Wert — nie ein ungeprüfter String). Exit 0 geschrieben, 2 ungültige
+Eingabe (Fehlerliste auf stderr, keine Datei), 1 Schreibfehler.
 
 | Feld | Inhalt |
 |---|---|
@@ -86,7 +88,8 @@ stderr, keine Datei), 1 Schreibfehler.
 | `zeit` | von der CLI gesetzt |
 
 Eine `SendMessage` an den Navigator ist optional und nur ein Hinweis auf die Datei: höchstens eine,
-nur wenn die Lease aktiv ist und ihre `adresse` per `ListAgents` erreichbar ist; nie eine Antwort
+nur wenn die Lease aktiv ist und `navigator_adresse` (stdout der Check-in-CLI) nicht `null` und per
+`ListAgents` erreichbar ist, und nur an genau diesen Namen; nie eine Antwort
 erwarten, nie darauf warten (CSM-004).
 
 ## `auflagen/<session_id>.json` — Navigator an Session
