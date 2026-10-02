@@ -214,12 +214,19 @@ export async function bootstrapLock({
   if (!acquireResult.ok && shouldForce) {
     const reclaimingCorrupt = acquireResult.reason === 'corrupt';
     const forcedFrom = acquireResult.reason;
+    // A session resuming its OWN stale lock (same raw id after > ttl idle) is
+    // a refresh, not a takeover — counting it would inflate the very figure
+    // `reclaimed` exists to make countable.
+    const priorOwner = acquireResult.existingLock?.session_id;
     try {
       acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot });
     } catch {
       return null;
     }
-    if (acquireResult?.ok === true && (forcedFrom === 'stale-heartbeat' || forcedFrom === 'corrupt')) {
+    if (
+      acquireResult?.ok === true &&
+      (forcedFrom === 'corrupt' || (forcedFrom === 'stale-heartbeat' && priorOwner !== sessionId))
+    ) {
       reclaimed = forcedFrom;
     }
     if (reclaimingCorrupt) {

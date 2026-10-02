@@ -223,6 +223,29 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
     expect(forceAcquire).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a foreign stale lock is a takeover', 'old-session', 'stale-heartbeat'],
+    ['the own stale lock (same raw id after > ttl idle) is a refresh', 'main-2026-05-27-deep-2', undefined],
+  ])('records `reclaimed` on the acquired event only for a real takeover: %s', async (_label, priorOwner, expected) => {
+    // Bug: `reclaimed: 'stale-heartbeat'` was also set when a session resumed
+    // its OWN stale lock, inflating the takeover count the field exists for.
+    const events = [];
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-2',
+      mode: 'deep',
+      _acquireImpl: vi.fn(() => ({
+        ok: false,
+        reason: 'stale-heartbeat',
+        existingLock: { session_id: priorOwner, started_at: '2026-05-26T00:00:00.000Z', mode: 'deep', pid: 1, host: 'test-host', ttl_hours: 4 },
+      })),
+      _forceAcquireImpl: makeAcquireStub(),
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.reclaimed).toBe(expected);
+  });
+
   it('force-overwrites a stale-heartbeat lock', async () => {
     const staleAcquire = vi.fn(() => ({
       ok: false,
