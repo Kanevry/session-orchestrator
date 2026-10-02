@@ -284,9 +284,12 @@ export async function bootstrapLock({
   // wins. Enriching that lock would stamp OUR label onto ITS record and write
   // an owner proof that verifies against it, so a foreign lock is left as is.
   // Ceiling (BV-004): this closes the misattribution, not the race itself —
-  // both sessions still believe they forced the lock; revisit with a
-  // single-winner takeover (tombstone rename + link-create) if a double
-  // reclaim is ever observed in `reclaimed` events.
+  // both sessions still believe they forced the lock, and only the winner
+  // emits `lock.acquired`, so an overlapping double reclaim leaves no
+  // countable trace in events. Revisit with a single-winner takeover
+  // (tombstone rename + link-create) when two sessions are seen working one
+  // checkout right after a reclaim (a `conflict_with_session_id` in
+  // current-session.json, or an operator report).
   if (baseLock.session_id !== sessionId) return null;
 
   const startedAt = typeof baseLock.started_at === 'string'

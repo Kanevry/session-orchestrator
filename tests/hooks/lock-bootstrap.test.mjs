@@ -266,7 +266,7 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
     const onDisk = readLock();
     expect(onDisk.session_id).toBe('session-b');
     expect(onDisk.semantic_session_id).toBeUndefined();
-    expect(existsSync(join(sandbox, '.orchestrator', 'lock-owner-proof.json'))).toBe(false);
+    expect(existsSync(join(sandbox, '.orchestrator', 'runtime', 'lock-owner-proof.json'))).toBe(false);
     expect(events).toEqual([]);
   });
 
