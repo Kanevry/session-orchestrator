@@ -1539,32 +1539,37 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
     expect(isLockLive(after)).toBe(false);
   });
 
-  // L4: Old-schema lock (no last_heartbeat) is read with last_heartbeat == started_at.
-  //
-  // #595 (2026-08-15): this tolerance was evaluated for removal and RETAINED —
-  // the same normalisation is mirrored in
-  // scripts/lib/harness-audit/categories/category4.mjs `lockIsLive()` and
-  // pinned by tests/lib/lock-ttl-parity.test.mjs, so the SSOT cannot drop it
-  // alone. See skills/_shared/state-ownership.md § Schema v1 Sunset.
-  it('L4: old-schema v1 lock (no last_heartbeat) is normalised with last_heartbeat = started_at', () => {
-    // Write a v1 lock manually (no last_heartbeat field).
-    const v1Lock = {
-      session_id: 'sess-L4',
-      started_at: '2026-05-27T11:04:39.516Z',
+  // #595 sunset (2026-10-02): a lock WITHOUT last_heartbeat is no longer
+  // normalised to started_at. The bug this catches is either wrong
+  // disposition: (a) the started_at fallback creeping back, so a lock nothing
+  // heartbeats holds the repo as `active` for a whole TTL window; or (b)
+  // parseLock() rejecting the lock, so readLock() returns null, acquire() loses
+  // the create race to the file that is still there and answers `active` with
+  // `existingLock: null` on every attempt. Required: visible, but not live.
+  it('#595: a heartbeat-less lock with a fresh started_at is visible but stale, never active', () => {
+    const heartbeatless = {
+      session_id: 'sess-595-no-heartbeat',
+      started_at: new Date().toISOString(), // fresh — the old fallback read this as live
       mode: 'deep',
       pid: process.pid,
       host: hostname(),
       ttl_hours: 4,
-      // last_heartbeat intentionally absent — pre-#583 schema v1.
     };
     const orchDir = join(repoRoot, '.orchestrator');
     mkdirSync(orchDir, { recursive: true });
-    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify(v1Lock) + '\n');
+    writeFileSync(join(orchDir, 'session.lock'), JSON.stringify(heartbeatless) + '\n');
 
+    expect(readLockDetailed({ repoRoot }).status).toBe('ok');
     const lock = readLock({ repoRoot });
-    expect(lock).not.toBeNull();
-    expect(lock.last_heartbeat).toBe(lock.started_at);
-    expect(lock.started_at).toBe('2026-05-27T11:04:39.516Z');
+    expect(lock.last_heartbeat).toBeUndefined();
+    expect(isLockLive(lock)).toBe(false);
+    expect(checkStale({ repoRoot })).toMatchObject({ exists: true, isLive: false, heartbeatAgeMinutes: null });
+
+    const result = acquire({ sessionId: 'sess-595-newcomer', mode: 'deep', repoRoot });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('stale-heartbeat');
+    expect(result.existingLock.session_id).toBe('sess-595-no-heartbeat');
+    expect(result.heartbeatAgeMinutes).toBeNull();
   });
 
   // Bonus: isLockLive helper contract.

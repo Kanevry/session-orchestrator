@@ -72,9 +72,14 @@ function writeLockRaw(wtPath, raw) {
 
 /** Lock body factory — all required fields with sensible defaults. */
 function lockBody(overrides = {}) {
+  // #595: a v2 lock always carries last_heartbeat; default it to started_at
+  // (the old reader fallback) so a fixture that only shifts started_at keeps
+  // its meaning.
+  const started_at = overrides.started_at ?? new Date().toISOString();
   return {
     session_id: 'test-session',
-    started_at: new Date().toISOString(),
+    started_at,
+    last_heartbeat: started_at,
     mode:       'deep',
     pid:        process.pid,   // alive by default (current process)
     host:       hostname(),    // same-host by default
