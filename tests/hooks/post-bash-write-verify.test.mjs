@@ -992,7 +992,9 @@ describe('post-bash-write-verify — session launched from a repo SUBDIRECTORY',
     // failed `src/**` (false positive) while `<mono>/src/evil.mjs` matched it and
     // stayed silent (false negative). `<mono>/NOTES.md` pins the second half of
     // the fix: rebased to `../../NOTES.md` it would still match the broad
-    // `**/*.md` grant unless outside-root paths are never in scope.
+    // `**/*.md` grant unless outside-root paths are never in scope — and the
+    // same `**/*.md` in a PEER record filed it as an agreed "peer write" until
+    // the peer matcher applied the same outside-root guard (REFUTE LOW-1).
     const mono = makeTmpDir('pbwv-subdir-');
     const git = (...args) => fixtureGit(args, mono);
     git('init', '-q');
@@ -1005,10 +1007,14 @@ describe('post-bash-write-verify — session launched from a repo SUBDIRECTORY',
     writeFileSync(join(mono, 'src', 'root.mjs'), '//\n');
     git('add', '-A');
     git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed');
-    mkdirSync(join(pkg, '.claude'));
+    mkdirSync(join(pkg, '.claude', 'filescopes'), { recursive: true });
     writeFileSync(
       join(pkg, '.claude', 'wave-scope.json'),
-      JSON.stringify({ enforcement: 'warn', allowedPaths: ['src/**', '**/*.md'] }),
+      JSON.stringify({ wave: 4, enforcement: 'warn', allowedPaths: ['src/**', '**/*.md'] }),
+    );
+    writeFileSync(
+      join(pkg, '.claude', 'filescopes', 'wave-4.scopes.json'),
+      JSON.stringify([{ id: 'peer-session-b', files: ['**/*.md'] }]),
     );
     const snap = snapshotPathFor(realpathSync(pkg));
     const run = () => spawnSync(process.execPath, [HOOK], {
@@ -1028,6 +1034,7 @@ describe('post-bash-write-verify — session launched from a repo SUBDIRECTORY',
       expect(res.status).toBe(0);
       expect(res.stderr).toContain('../../src/evil.mjs (outside project root)');
       expect(res.stderr).toContain('../../NOTES.md (outside project root)');
+      expect(res.stderr).not.toContain('peer write');
       expect(res.stderr).not.toContain('new.mjs');
     } finally {
       if (existsSync(snap)) rmSync(snap, { force: true });

@@ -361,7 +361,8 @@ describe('readLearnings', () => {
   // object went through normalizeLearning and came back as a record (`null`,
   // `42`, `[]` as `{schema_version, scope, host_class, anonymized}`, a string
   // spread into index keys) — and every rewrite then wrote that record back.
-  it.each([['null'], ['42'], ['[]'], ['"text"']])('counts the JSON non-object line %s as malformed', async (line) => {
+  // `42` and `"text"` take the same `typeof parsed !== 'object'` branch — one row covers both.
+  it.each([['null'], ['[]'], ['"text"']])('counts the JSON non-object line %s as malformed', async (line) => {
     const path = join(tmp, 'learnings.jsonl');
     writeFileSync(path, JSON.stringify(LEGACY()) + '\n' + line + '\n');
     const r = await readLearnings(path);

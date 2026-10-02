@@ -200,6 +200,18 @@ describe('wave-scope-commit-guard — PSA-004 sub-mode B', { timeout: 15000 }, (
     expect(result.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*docs\/out\.md/);
   });
 
+  it('passes silently under enforcement: off, even with an out-of-scope staged path', async () => {
+    // Bug caught: if the `off` rung stops being honoured, a wave the operator
+    // switched off still blocks every commit that stages a path outside
+    // allowedPaths — no other test reaches this rung.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ enforcement: 'off', allowedPaths: ['src/'] }));
+    await stageFile(dir, 'docs/out.md');
+    const result = await runHook(dir);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+  });
+
   it('only REPORTS an empty writing-role union under enforcement: warn (#1493.1)', async () => {
     // Bug caught: the empty-union verdict judges the coordinator's bookkeeping,
     // not a staged foreign file; blocking it in a warn-mode wave would stop every

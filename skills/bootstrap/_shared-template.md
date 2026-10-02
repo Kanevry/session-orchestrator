@@ -342,7 +342,7 @@ On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per
 
 Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refresh-Lock Flow in `SKILL.md` — the last two because a repo bootstrapped before this step existed never gets it otherwise: both flows write no `.gitignore` of their own.
 
-`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, and every store rewrite leaves a full backup copy of the ledger beside it. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write):
+`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state or a per-run artifact that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, every store rewrite leaves a full backup copy of the ledger beside it, the auto-dream sidecar is a full replacement body of the operator's private MEMORY.md, and the quality-gate and ux-grill artifacts can carry secrets or a rendered password. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write). Rotated and archived ledger copies (`*.jsonl.[0-9]*`, `*.jsonl.archive-*`, `metrics/_archive/`) are not on this list: they carry ledger history, and whether that is versioned is the consumer's call.
 
 | Pattern(s) | Written by |
 |---|---|
@@ -359,6 +359,19 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 | `.orchestrator/metrics/proposals-write.lock*`, `.orchestrator/metrics/.proposals-write.lock.*` | the memory-proposals store lock |
 | `.orchestrator/staging-fence/` | the staging-fence commit mutex and intent log |
 | `.orchestrator/tmp/` | machine-local scratch: lock-reaper archives of reaped session locks (`tmp/reaped-locks/`, carrying host name, pid and session ids), worktree metadata (`tmp/worktree-meta/`), the orphan-reaper throttle marker (`tmp/reaper-last-scan`) |
+| `.orchestrator/metrics/*.jsonl.bak.*` | the legacy evolve backup `learnings.jsonl.bak.evolve-<ts>`, a full store copy still on disk in older repos (`scripts/lib/learnings/io.mjs`) |
+| `.orchestrator/metrics/*.jsonl.tmp-*` | atomic-write temp files of the ledgers (`scripts/lib/autopilot/telemetry.mjs`), left behind only by a crash |
+| `.orchestrator/pending-dream.md` | the auto-dream sidecar — a full replacement body of the private MEMORY.md (`scripts/lib/auto-dream.mjs`) |
+| `.orchestrator/dialectic-pending.md`, `.orchestrator/dialectic-last-run`, `.orchestrator/consumed/` | the auto-dialectic sidecar, its last-run timestamp and the archive of consumed sidecars (`scripts/lib/auto-dialectic.mjs`) |
+| `.orchestrator/promoted-from.json` | the worktree-promotion marker, a per-worktree fact (`scripts/lib/autopilot/worktree-pipeline.mjs`, read by `scripts/lib/session-end/worktree-cleanup.mjs`) |
+| `.orchestrator/welcome-banner-pending` | the zero-byte cold-start marker (`scripts/migrate-cold-start-seed.mjs`, read by `scripts/lib/cold-start-detector.mjs`) |
+| `.orchestrator/debug/` | the `/debug` Phase-1 investigation artifacts |
+| `.orchestrator/eval/` | the eval HTML run reports, rebuildable from `eval.jsonl` (`scripts/lib/eval/report.mjs`) |
+| `.orchestrator/metrics/verification-failures/` | the quality-gate auto-fix diagnostics bundles, which can carry secrets from gate output (`scripts/lib/quality-gate.mjs`) |
+| `.orchestrator/metrics/ux-grill/`, `.orchestrator/metrics/test-runs/` | the per-run artifact directories of `/ux-grill` and `/test`, screenshots included — ux-grill takes one after every journey step, including the step after a password fill (`scripts/lib/ux-grill/paths.mjs`, `scripts/lib/test-runner/artifact-paths.mjs`); their `*.jsonl` rollups stay versioned |
+| `.orchestrator/metrics/repo-audit-*.json` | the `/repo-audit` JSON sidecar of each run |
+| `.orchestrator/metrics/proposals-summary-*.json` | the per-wave memory-proposals summary sidecars (`scripts/lib/memory-proposals/sink.mjs`) |
+| `.orchestrator/metrics/.backfilled-*.marker` | the session-close-backfill idempotency markers (`scripts/lib/session-close-backfill.mjs`) |
 
 Append the missing patterns:
 
@@ -382,6 +395,18 @@ _GI_PATTERNS=(
   '.orchestrator/metrics/proposals-write.lock*' '.orchestrator/metrics/.proposals-write.lock.*'
   '.orchestrator/staging-fence/'
   '.orchestrator/tmp/'
+  '.orchestrator/metrics/*.jsonl.bak.*' '.orchestrator/metrics/*.jsonl.tmp-*'
+  '.orchestrator/pending-dream.md'
+  '.orchestrator/dialectic-pending.md' '.orchestrator/dialectic-last-run' '.orchestrator/consumed/'
+  '.orchestrator/promoted-from.json'
+  '.orchestrator/welcome-banner-pending'
+  '.orchestrator/debug/'
+  '.orchestrator/eval/'
+  '.orchestrator/metrics/verification-failures/'
+  '.orchestrator/metrics/ux-grill/' '.orchestrator/metrics/test-runs/'
+  '.orchestrator/metrics/repo-audit-*.json'
+  '.orchestrator/metrics/proposals-summary-*.json'
+  '.orchestrator/metrics/.backfilled-*.marker'
 )
 if [[ -z "$_GI_ROOT" ]]; then
   # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).

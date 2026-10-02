@@ -1721,28 +1721,6 @@ describe('Schema v2 — last_heartbeat + semantic_session_id (Epic #583, W2-I3)'
     expect(isLockLive(lock, heartbeatMs + ttlMs + 1)).toBe(false);
   });
 
-  // #1494: `now - heartbeat` went negative for a heartbeat stamped in the
-  // future and stayed below every TTL — a year-ahead stamp held the repo for a
-  // year. Beyond the 5-minute tolerance it is not live; within it (a clock
-  // stepped back a little) a live lock must stay live, or the next start
-  // reclaims a running session's lock.
-  it('isLockLive: a heartbeat > 5 min in the future is not live, 1 min ahead still is', () => {
-    const nowMs = Date.parse('2026-10-02T12:00:00.000Z');
-    const lockAt = (iso) => ({
-      session_id: 'x',
-      started_at: '2026-10-02T11:00:00.000Z',
-      last_heartbeat: iso,
-      mode: 'deep',
-      pid: process.pid,
-      host: hostname(),
-      ttl_hours: 4,
-    });
-
-    expect(isLockLive(lockAt('2027-10-02T12:00:00.000Z'), nowMs)).toBe(false);
-    expect(isLockLive(lockAt('2026-10-02T12:05:00.001Z'), nowMs)).toBe(false);
-    expect(isLockLive(lockAt('2026-10-02T12:01:00.000Z'), nowMs)).toBe(true);
-  });
-
   // semantic_session_id propagation: acquire() persists it when provided.
   it('acquire() persists semantic_session_id when provided', () => {
     const result = acquire({

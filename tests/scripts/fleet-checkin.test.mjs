@@ -170,11 +170,16 @@ describe('fleet-checkin CLI', () => {
   });
 
   it('a caller-supplied zeit is overwritten by the CLI stamp (never trusted)', async () => {
+    // Second-precision stamp: compare against the run's own window, floored to
+    // the second — never against a calendar field (the year flips at midnight).
+    const before = Math.floor(Date.now() / 1000) * 1000;
     const r = await runCli(JSON.stringify(checkin({ zeit: '1999-01-01T00:00:00Z' })));
+    const after = Date.now();
     expect(r.code, r.stderr).toBe(0);
     const content = JSON.parse(await fs.readFile(path.join(navDir, 'checkin', 'sess-1.json'), 'utf8'));
-    expect(content.zeit).not.toBe('1999-01-01T00:00:00Z');
-    expect(content.zeit.slice(0, 4)).toBe(String(new Date().getUTCFullYear()));
+    expect(content.zeit).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    expect(Date.parse(content.zeit)).toBeGreaterThanOrEqual(before);
+    expect(Date.parse(content.zeit)).toBeLessThanOrEqual(after);
   });
 
   it('a symlink planted at checkin/ → exit 1, nothing written through it', async () => {

@@ -765,18 +765,19 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
     expect(bootWarns()).toHaveLength(1);
   });
 
-  it('a second start that saw the same stale lock does not take it from the start that reclaimed it first (#1494)', async () => {
-    // Bug: two SessionStarts that both read the stale lock both forced it and
-    // both got ok:true — the later rename won, and the loser ran on as if it
-    // held the lock. Start B's acquire() read is replayed here as it happened
-    // BEFORE start A's reclaim; B's force (real forceAcquire) runs after it.
+  it.each(['stale-heartbeat', 'corrupt'])('a second start that saw the same %s lock does not take it from the start that reclaimed it first (#1494)', async (reason) => {
+    // Bug: two SessionStarts that both read the stale (or corrupt) lock both
+    // forced it and both got ok:true — the later rename won, and the loser ran
+    // on as if it held the lock. Start B's acquire() read is replayed here as it
+    // happened BEFORE start A's reclaim; B's force (real forceAcquire) runs
+    // after it. The corrupt row pins that a corrupt reclaim is single-winner too.
     const prevAliases = process.env.SO_HOST_ALIASES_FILE;
     process.env.SO_HOST_ALIASES_FILE = join(sandbox, 'host-aliases.json');
     try {
       const old = '2026-01-01T00:00:00.000Z';
       const staleLock = { session_id: 'crashed-session', started_at: old, last_heartbeat: old, mode: 'deep', pid: 999999, host: hostname(), ttl_hours: 4 };
       mkdirSync(join(sandbox, '.orchestrator'), { recursive: true });
-      writeFileSync(join(sandbox, '.orchestrator', 'session.lock'), JSON.stringify(staleLock));
+      writeFileSync(join(sandbox, '.orchestrator', 'session.lock'), reason === 'corrupt' ? '{not json' : JSON.stringify(staleLock));
 
       const winner = await bootstrapLock({ repoRoot: sandbox, sessionId: 'start-a', mode: 'deep', _emitEventImpl: noopEmit });
       const events = [];
@@ -784,7 +785,7 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
         repoRoot: sandbox,
         sessionId: 'start-b',
         mode: 'deep',
-        _acquireImpl: () => ({ ok: false, reason: 'stale-heartbeat', existingLock: staleLock }),
+        _acquireImpl: () => (reason === 'corrupt' ? { ok: false, reason } : { ok: false, reason, existingLock: staleLock }),
         _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
       });
 

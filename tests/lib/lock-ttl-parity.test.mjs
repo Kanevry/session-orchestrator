@@ -71,7 +71,7 @@ describe('lock TTL/liveness parity — session-lock.mjs (SSOT) vs category4.mjs 
     const verdicts = (lock) => [isLockLive(lock, NOW), lockIsLive(lock, NOW)];
 
     expect(verdicts(at(365 * 24 * 3600 * 1000))).toEqual([false, false]);
-    expect(verdicts(at(6 * 60 * 1000))).toEqual([false, false]);
+    expect(verdicts(at(5 * 60 * 1000 + 1))).toEqual([false, false]); // 1 ms past the 5-min tolerance
     expect(verdicts(at(60 * 1000))).toEqual([true, true]);
   });
 });

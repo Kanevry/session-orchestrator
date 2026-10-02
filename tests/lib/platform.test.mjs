@@ -666,6 +666,17 @@ describe('resolveSessionRoot (#1492)', () => {
     expect(resolveSessionRoot(agentWt)).toBe(mono);
   });
 
+  it('keeps a worktree entered directly inside the launch dir (`git worktree add wt`) — the launch dir is its parent, not a descendant', () => {
+    // Bug caught: `path.relative(<launch>/wt, <launch>)` is the bare `..`, which
+    // neither equals '' nor starts with `../`. Read as "inside", the clamp sent
+    // the session back to the launch dir, where it has no manifest (#1492).
+    const launch = dirAt('main', { dotGit: true });
+    const wt = dirAt(path.join('main', 'wt'), { dotGit: true });
+    vi.stubEnv('CLAUDE_PROJECT_DIR', launch);
+
+    expect(resolveSessionRoot(wt)).toBe(wt);
+  });
+
   it('clamps on $CLAUDE_PROJECT_DIR only — never on a bridge-set *_PROJECT_DIR', () => {
     // Bug caught: the Cursor and Pi bridges set their `*_PROJECT_DIR` to the
     // payload `cwd` on EVERY call, so a clamp on the generic launch-dir env

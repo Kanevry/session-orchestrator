@@ -20,7 +20,7 @@ import {parseStateMd} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 import {resolveBaselineRange, isQueryFailure} from '${PLUGIN_ROOT}/scripts/lib/vcs-repo-spec.mjs';
 let ref = '';
 try { ref = String(parseStateMd(readFileSync('<state-dir>/STATE.md', 'utf8')).frontmatter['session-start-ref'] ?? '').trim(); } catch {}
-if (/^[^\s]+$/.test(ref)) process.stdout.write(ref + ' ' + ref + '..HEAD');
+if (/^[0-9a-f]{7,64}$/.test(ref)) process.stdout.write(ref + ' ' + ref + '..HEAD');
 else {
   const r = resolveBaselineRange({ repoRoot: process.cwd() });
   if (r.ok) process.stdout.write(r.base + ' ' + r.range);
@@ -34,6 +34,8 @@ SESSION_RANGE=${SESSION_SPEC#* }        # diff range: <sha>..HEAD (pinned), else
 **Empty `$SESSION_RANGE` is an explicit skip, never "no changes".** The accessor names the reason on stderr, split by `isQueryFailure()`:
 - `no-baseline-ref` — the repo genuinely has no base to measure against (no remote, no `main`/`master`). A real, benign state: report "no session range" and skip each diff-based step below.
 - `unresolvable-ref` — git could not be asked (not a repo, git missing or failing). A degraded measurement: report it as such and skip; never read the empty file list as a clean session.
+
+On either skip `$SESSION_START_REF` is empty too, so skip every LOG-based step as well: `git log --oneline "$SESSION_START_REF..HEAD"` then becomes `git log ..HEAD`, which git reads as `HEAD..HEAD` — it prints nothing and exits 0, an empty log indistinguishable from "no commits this session". The pinned value is accepted only as a hex object name (`/^[0-9a-f]{7,64}$/`), so a STATE.md value such as `--output=x` is never handed to git as an option; anything else falls through to the resolved base.
 
 Read back the session plan that was agreed at the start. For EACH planned item:
 

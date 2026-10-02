@@ -5,6 +5,10 @@
  * executed by `/bin/bash` in temp dirs, so the test judges the text agents run.
  *
  * Defects caught (each landed or was found only by review, #1487/#1489):
+ *   - a runtime file the plugin writes, named "never commit" in this repo's own
+ *     `.gitignore`, missing from the consumer block (the pinned list this test
+ *     carried before could not see it: it compared the block with itself) —
+ *     e.g. `pending-dream.md`, a full body of the operator's private MEMORY.md;
  *   - the append fusing its comment onto a last line without a newline
  *     (`.env` + `# …` → `.env# …`), which UN-ignores `.env`;
  *   - a second run appending the block again;
@@ -35,30 +39,60 @@ import { join, resolve } from 'node:path';
 import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
 
 const TEMPLATE = resolve(import.meta.dirname, '..', '..', 'skills', 'bootstrap', '_shared-template.md');
+const REPO_GITIGNORE = resolve(import.meta.dirname, '..', '..', '.gitignore');
 const LOCK_PATTERN = '.orchestrator/metrics/*.jsonl.lock*';
-/** Every line the block appends, in order (#1487 store locks, #1500 store backups, #1495 runtime locks and state). */
-const ALL_PATTERNS = [
-  LOCK_PATTERN,
-  '.file.lock.*',
-  '.orchestrator/metrics/*.jsonl.bak-*',
-  '.orchestrator/session.lock',
-  '.orchestrator/.session.lock.*',
-  '.orchestrator/runtime/',
-  '.orchestrator/current-session.json',
-  '.orchestrator/.current-session.*',
-  '.orchestrator/host.json*',
-  '.orchestrator/state.lock*',
-  '.orchestrator/.state.lock.*',
-  '.orchestrator/rules.lock*',
-  '.orchestrator/wave-dispatch-scopes.*',
-  '.orchestrator/.wave-dispatch-scopes.*',
-  '.orchestrator/wave-transcript-tail.lock*',
-  '.orchestrator/.wave-transcript-tail.lock.*',
-  '.orchestrator/metrics/proposals-write.lock*',
-  '.orchestrator/metrics/.proposals-write.lock.*',
-  '.orchestrator/staging-fence/',
-  '.orchestrator/tmp/',
+
+/**
+ * Durable project data consumers commit — the block must leave it versioned.
+ * The ledgers are ignored in THIS repo only; the other four are the files
+ * `git ls-files .orchestrator` lists here (bootstrap.lock, peers/, policy/, steering/).
+ */
+const CONSUMER_VERSIONED = [
+  '.orchestrator/metrics/sessions.jsonl',
+  '.orchestrator/metrics/learnings.jsonl',
+  '.orchestrator/bootstrap.lock',
+  '.orchestrator/peers/AGENT.md',
+  '.orchestrator/policy/quality-gates.json',
+  '.orchestrator/steering/tech.md',
 ];
+
+/**
+ * `.orchestrator/` lines of this repo's own `.gitignore` deliberately NOT in the
+ * consumer block, each with its reason. A NEW line there fails the census until
+ * it is either added to the block or classified here.
+ */
+const NOT_IN_CONSUMER_BLOCK = {
+  '.orchestrator/metrics/*.jsonl': 'the ledgers — consumers version them',
+  '.orchestrator/metrics/*.jsonl.[0-9]*': 'ledger history (events rotation) — versioning it is the consumer\'s call',
+  '.orchestrator/metrics/*.jsonl.archive-*': 'ledger history (events archive)',
+  '.orchestrator/metrics/_archive/': 'ledger history (expired learnings)',
+  '.orchestrator/STATE.md': 'no writer — STATE.md lives under .claude/',
+  '.orchestrator/metrics/sweep.log': 'no writer — the registry sweep log lives in the private config dir',
+  '.orchestrator/metrics/context-overhead-*.json': 'a hand-made measurement artifact of this repo',
+  '.orchestrator/audits/': 'this repo\'s own session drafts — no plugin writer',
+  '.orchestrator/drafts/': 'this repo\'s own session drafts — no plugin writer',
+  '.orchestrator/scratch/': 'this repo\'s own session scratch — no plugin writer',
+  '.orchestrator/session-artifacts/': 'this repo\'s own session scratch — no plugin writer',
+  '.orchestrator/research/': 'this repo\'s own research scratch — no plugin writer',
+  '.orchestrator/session-notes/': 'this repo\'s internal design notes — no plugin writer',
+};
+
+/** Plugin runtime files this repo's `.gitignore` does not name (it never receives them). */
+const RUNTIME_NOT_IN_REPO_GITIGNORE = ['.orchestrator/welcome-banner-pending'];
+
+/** The `.orchestrator/` ignore lines of this repo's own `.gitignore`. */
+function repoOrchestratorIgnoreLines() {
+  return readFileSync(REPO_GITIGNORE, 'utf8')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('.orchestrator/'));
+}
+
+/** One concrete path an ignore pattern matches: `[0-9]` → `0`, `*`/`?` → `x`, a directory gets a file. */
+function samplePath(pattern) {
+  const p = pattern.replace(/\[(.)[^\]]*\]/g, '$1').replace(/[*?]/g, 'x');
+  return p.endsWith('/') ? `${p}sample` : p;
+}
 
 /** The one bash block of the template that appends the store-lock patterns — loud failure otherwise. */
 function loadSnippet() {
@@ -139,36 +173,29 @@ function ignoreStatus(root, repo, paths) {
 const isRoot = process.getuid?.() === 0;
 
 describe('bootstrap template § store-lock-ignore — the shell block as agents run it', () => {
-  it('keeps `.env` ignored when the .gitignore ends without a newline, and adds every pattern', () => {
+  it('ignores every runtime path this repo\'s own .gitignore names, keeps consumer data and `.env` (census)', () => {
+    // Bug: four runtime files the plugin writes — the auto-dream sidecar (a full
+    // body of the private MEMORY.md), the dialectic sidecar and its timestamp,
+    // the worktree-promotion marker — were "never commit" here and missing from
+    // the consumer block; a `git add -A` in a consumer repo committed them.
+    const census = repoOrchestratorIgnoreLines().filter((l) => !Object.hasOwn(NOT_IN_CONSUMER_BLOCK, l));
     const { root, repo, gi } = repoWith('node_modules/\n.env');
 
     const r = runSnippet({ root, cwd: repo, repoRoot: repo });
 
     expect(r.status, r.stderr).toBe(0);
-    const patterns = readFileSync(gi, 'utf8').split('\n').filter((l) => !l.startsWith('#'));
-    expect(patterns).toEqual(['node_modules/', '.env', ...ALL_PATTERNS, '']);
-    expect(
-      ignoreStatus(root, repo, [
-        '.env',
-        '.orchestrator/metrics/learnings.jsonl.lock',
-        '.orchestrator/metrics/.file.lock.ab12',
-        '.orchestrator/metrics/learnings.jsonl.bak-2026-10-02T16-54-33-971Z',
-        '.orchestrator/metrics/learnings.pre-drop-malformed.jsonl.bak-2026-10-02T16-54-33-971Z',
-        '.orchestrator/metrics/learnings.jsonl',
-        '.orchestrator/metrics/sessions.jsonl',
-      ]),
-    ).toEqual({
-      '.env': 0,
-      '.orchestrator/metrics/learnings.jsonl.lock': 0,
-      '.orchestrator/metrics/.file.lock.ab12': 0,
-      // #1500 F5: the keep-3 rewrite backups and the --drop-malformed snapshot
-      // copy a whole store each; a `git add -A` committed them in consumer repos.
-      '.orchestrator/metrics/learnings.jsonl.bak-2026-10-02T16-54-33-971Z': 0,
-      '.orchestrator/metrics/learnings.pre-drop-malformed.jsonl.bak-2026-10-02T16-54-33-971Z': 0,
-      // The ledgers themselves are durable project data and stay versioned.
-      '.orchestrator/metrics/learnings.jsonl': 1,
-      '.orchestrator/metrics/sessions.jsonl': 1,
-    });
+    // A last line without a newline must not fuse with the comment (`.env# …` un-ignores `.env`).
+    expect(readFileSync(gi, 'utf8').split('\n').slice(0, 2)).toEqual(['node_modules/', '.env']);
+    const mustIgnore = ['.env', ...census.map(samplePath), ...RUNTIME_NOT_IN_REPO_GITIGNORE];
+    const status = ignoreStatus(root, repo, [...mustIgnore, ...CONSUMER_VERSIONED]);
+    expect(mustIgnore.filter((p) => status[p] !== 0)).toEqual([]);
+    expect(CONSUMER_VERSIONED.filter((p) => status[p] !== 1)).toEqual([]);
+  });
+
+  it('classifies only lines this repo\'s .gitignore still carries', () => {
+    // A stale exemption would silently shelter a pattern re-added later under its name.
+    const lines = new Set(repoOrchestratorIgnoreLines());
+    expect(Object.keys(NOT_IN_CONSUMER_BLOCK).filter((l) => !lines.has(l))).toEqual([]);
   });
 
   it('appends the block once across two runs', () => {
@@ -245,7 +272,9 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
   });
 
   it('leaves a CRLF .gitignore that already holds every pattern byte-identical', () => {
-    const before = `node_modules/\r\n${ALL_PATTERNS.join('\r\n')}\r\n`;
+    const lf = repoWith('node_modules/\n');
+    expect(runSnippet({ root: lf.root, cwd: lf.repo, repoRoot: lf.repo }).status).toBe(0);
+    const before = readFileSync(lf.gi, 'utf8').replaceAll('\n', '\r\n');
     const { root, repo, gi } = repoWith(before);
 
     const r = runSnippet({ root, cwd: repo, repoRoot: repo });

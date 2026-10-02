@@ -427,14 +427,17 @@ export function readPeerScopeRecords(stateDir, wave) {
  * Which peer record — if any — declared this path?
  *
  * Same matcher as `isInScope`, so a peer's declaration is read exactly the way
- * the wave's own `allowedPaths` are.
+ * the wave's own `allowedPaths` are — and the same outside-root guard as
+ * `computeReport`: a `../…` path is outside the project root, which no peer
+ * record can grant any more than `allowedPaths` can (a peer glob over every
+ * `.md` file would otherwise file `<mono>/NOTES.md` as an agreed peer write).
  *
  * @param {string} relPath
  * @param {Array<{ id: string, files: string[] }>} peerRecords
  * @returns {string|null} the peer record id, or null
  */
 export function peerRecordFor(relPath, peerRecords) {
-  if (!Array.isArray(peerRecords)) return null;
+  if (!Array.isArray(peerRecords) || isOutsideSessionRoot(relPath)) return null;
   for (const record of peerRecords) {
     if (record.files.some((p) => pathMatchesPattern(relPath, p))) return record.id;
   }
