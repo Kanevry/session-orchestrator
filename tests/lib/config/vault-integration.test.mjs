@@ -91,6 +91,22 @@ describe('_parseVaultIntegration', () => {
       content: '- vault-integration: { enabled: true, gitlab-groups: [a, b/c], mode: strict }\n',
       expected: vi({ enabled: true, mode: 'strict', 'gitlab-groups': ['a', 'b/c'] }),
     },
+    // YAML semantics: a null scalar is unset (9d50a9cf scanned a group named
+    // "null" / "~"), and flow-array elements lose their quotes as block-list
+    // items already did (9d50a9cf kept them: ['"a"', "'b/c'"]).
+    { why: '#1094: block form reads gitlab-groups: null as unset', content: 'vault-integration:\n  gitlab-groups: null\n', expected: VI_DEFAULTS },
+    { why: '#1094: block form reads gitlab-groups: ~ as unset', content: 'vault-integration:\n  gitlab-groups: ~\n', expected: VI_DEFAULTS },
+    { why: '#1094: inline form reads gitlab-groups: null as unset', content: '- vault-integration: { enabled: true, gitlab-groups: null }\n', expected: vi({ enabled: true }) },
+    {
+      why: '#1094: flow-array elements are unquoted and null elements dropped',
+      content: 'vault-integration:\n  gitlab-groups: ["a", \'b/c\', ~]\n',
+      expected: vi({ 'gitlab-groups': ['a', 'b/c'] }),
+    },
+    {
+      why: '#1094: a null block-list item is dropped, a quoted "null" stays a group name',
+      content: 'vault-integration:\n  gitlab-groups:\n    - null\n    - "null"\n',
+      expected: vi({ 'gitlab-groups': ['null'] }),
+    },
     {
       why: 'block ends at the first non-indented line',
       content: 'vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: strict\ndocs-orchestrator:\n  enabled: false\n',

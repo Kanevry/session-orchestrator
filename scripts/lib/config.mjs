@@ -103,11 +103,15 @@ import { expandTilde } from './common.mjs';
  *
  * `cwd` in the ctx is a test-only DI seam; production reads `process.cwd()`.
  *
+ * Exported for vault writers that read only the `vault-integration` block and
+ * cannot afford `parseSessionConfig`, which throws on an invalid value in any
+ * unrelated block (scripts/vault-backfill.mjs, #1094).
+ *
  * @param {string|null|undefined} committed — value the committed Session Config produced
  * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object, cwd?: string }} [ctx] — from loadHostPaths()
  * @returns {{ value: string|null|undefined, source: 'env'|'match'|'owner'|'committed' }}
  */
-function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}) {
+export function resolveVaultDir(committed, { env = process.env, ownerConfig, cwd } = {}) {
   const isNonBlank = (v) => typeof v === 'string' && v.trim() !== '';
 
   const envVal = env?.SO_VAULT_DIR;

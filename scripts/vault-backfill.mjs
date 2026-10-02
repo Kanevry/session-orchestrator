@@ -39,6 +39,8 @@ import {
 
 import { validateManifest, SLUG_RE } from './lib/vault-backfill/manifest.mjs';
 import { _parseVaultIntegration } from './lib/config/vault-integration.mjs';
+import { loadHostPaths } from './lib/config/host-paths.mjs';
+import { resolveVaultDir } from './lib/config.mjs';
 import { expandTilde } from './lib/common.mjs';
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
@@ -93,7 +95,13 @@ if (flagVerbose) setGlabVerbose(true);
  * Read vault-integration.{gitlab-groups,vault-dir} from CLAUDE.md / AGENTS.md in
  * CWD through the canonical Session Config parser (#1094), so every form it
  * accepts (block, inline object, dash/bold bullet) reaches this CLI too.
- * `vault-dir` is the COMMITTED value — no host-local resolution here.
+ *
+ * `vault-dir` resolves HOST-LOCALLY like every other vault writer:
+ * SO_VAULT_DIR > owner.yaml `vault-dirs:` cwd match > owner.yaml
+ * `paths.vault-dir` > the committed value (`resolveVaultDir`). The committed
+ * value alone would put `--apply` stubs into whatever vault the committed file
+ * names, even on a host whose owner.yaml points elsewhere. Not
+ * `parseSessionConfig`: it throws on an invalid value in any unrelated block.
  *
  * @returns {{'gitlab-groups': string[]|null, 'vault-dir': string|null}}
  */
@@ -108,7 +116,8 @@ function readVaultIntegrationConfig() {
   }
 
   const parsed = _parseVaultIntegration(content ?? '');
-  return { 'gitlab-groups': parsed['gitlab-groups'], 'vault-dir': parsed['vault-dir'] };
+  const vaultDir = resolveVaultDir(parsed['vault-dir'], loadHostPaths()).value ?? null;
+  return { 'gitlab-groups': parsed['gitlab-groups'], 'vault-dir': vaultDir };
 }
 
 // ── Vault-dir folder stub ─────────────────────────────────────────────────────

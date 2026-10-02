@@ -67,7 +67,9 @@ const MODE_ALLOWED = ['warn', 'strict', 'off'];
  * in block form only, a YAML block list (`gitlab-groups:` + indented `- a`
  * lines — the shape docs/session-config-template.md documents). Inside the
  * inline-object form more than one group needs the `[a, b]` array, because the
- * literal is split on commas.
+ * literal is split on commas. YAML semantics throughout: `null` / `~` / empty
+ * mean unset (also as a list element), and each element loses one pair of
+ * matching quotes.
  *
  * @param {string} content — full file contents
  * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null}}
@@ -131,8 +133,8 @@ export function _parseVaultIntegration(content) {
     if (groupItems !== null) {
       const item = clean.match(/^\s+-(?:\s+(.*))?$/);
       if (item) {
-        const value = _stripQuotes((item[1] ?? '').trim());
-        if (value !== '') groupItems.push(value);
+        const value = _groupName((item[1] ?? '').trim());
+        if (value !== null) groupItems.push(value);
         continue;
       }
     }
@@ -202,23 +204,45 @@ function _stripQuotes(v) {
 }
 
 /**
- * Normalise a scalar `gitlab-groups` value to a group list — byte-for-byte the
- * normalisation `scripts/vault-backfill.mjs` applied before #1094: drop one
- * leading `[` and one trailing `]`, split on commas, trim, drop empty entries.
- * Elements are NOT unquoted and `none`/`null` are NOT sentinels here (both were
- * literal group names to the backfill CLI); an empty result is `null`, the
- * documented default.
+ * The YAML 1.2 core-schema null scalars, plus the empty value. `none` is NOT
+ * one: YAML reads it as a string, so it stays a literal group name.
+ */
+const YAML_NULL_RE = /^(?:|null|Null|NULL|~)$/;
+
+/**
+ * One `gitlab-groups` element as YAML reads it: an unquoted null scalar (or an
+ * empty element) is no group at all → `null`; otherwise ONE pair of matching
+ * quotes is stripped, so `"null"` stays the string `null` exactly as in YAML.
+ *
+ * @param {string} raw — an already-trimmed element
+ * @returns {string|null}
+ */
+function _groupName(raw) {
+  if (YAML_NULL_RE.test(raw)) return null;
+  const name = _stripQuotes(raw).trim();
+  return name === '' ? null : name;
+}
+
+/**
+ * Normalise a scalar `gitlab-groups` value to a group list with YAML semantics:
+ * a null scalar (`null`, `~`, empty) is unset → `null`; otherwise drop one
+ * leading `[` and one trailing `]`, split on commas, trim, and read each element
+ * through `_groupName` (null elements dropped, one quote pair stripped). An
+ * empty result is `null`, the documented default. Before this, `null` scanned a
+ * GitLab group named "null" and `["a"]` one named `"a"` with the quotes.
  *
  * @param {string} v
  * @returns {string[]|null}
  */
 function _groupsFromScalar(v) {
-  const groups = v
+  const trimmed = v.trim();
+  if (YAML_NULL_RE.test(trimmed)) return null;
+  const groups = trimmed
     .replace(/^\[/, '')
     .replace(/\]$/, '')
     .split(',')
-    .map((g) => g.trim())
-    .filter(Boolean);
+    .map((g) => _groupName(g.trim()))
+    .filter((g) => g !== null);
   return groups.length > 0 ? groups : null;
 }
 

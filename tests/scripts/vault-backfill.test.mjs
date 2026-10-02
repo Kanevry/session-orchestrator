@@ -86,6 +86,9 @@ function writeManifest(dir, manifest) {
  * cwd defaults to the per-test tmpdir, NEVER the repo root: the CLI reads
  * vault-integration from CLAUDE.md in its cwd, and the repo's own `vault-dir`
  * would point every --apply test's folder stubs at a real vault.
+ * SO_CONFIG_HOME defaults to an empty dir under the tmpdir for the same reason:
+ * the CLI resolves vault-dir host-locally, and HOME is the real one, so the
+ * host's owner.yaml `paths.vault-dir` would otherwise win over every fixture.
  */
 function run(args, { env = {}, cwd } = {}) {
   const result = spawnSync(NODE, [SCRIPT_PATH, ...args], {
@@ -94,6 +97,7 @@ function run(args, { env = {}, cwd } = {}) {
     env: {
       HOME: homedir(),
       PATH: '/usr/bin:/bin:/usr/local/bin',
+      SO_CONFIG_HOME: join(tmpBase, 'no-owner-config'),
       ...env,
     },
   });
@@ -112,6 +116,7 @@ function runInteractive(args, { env = {}, cwd } = {}) {
       env: {
         HOME: homedir(),
         PATH: '/usr/bin:/bin:/usr/local/bin',
+        SO_CONFIG_HOME: join(tmpBase, 'no-owner-config'),
         ...env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -273,14 +278,17 @@ describe('flag validation', () => {
 // ---------------------------------------------------------------------------
 
 describe('Session Config reading (#1094)', () => {
-  it('reads gitlab-groups and vault-dir from a bold-bullet inline vault-integration', () => {
+  it('reads gitlab-groups from a bold-bullet inline vault-integration and lets SO_VAULT_DIR override its vault-dir', () => {
     // The pre-#1094 hand-parser knew only the plain block header, so this form
     // (19 of 56 instruction files measured on one host) yielded no groups → exit 1.
+    // SO_VAULT_DIR differs from the committed vault-dir: 9d50a9cf read only the
+    // committed value, so its stubs ignored the host-local tier.
     setupTemplateDir(tmpBase);
-    const vaultDir = join(tmpBase, 'vault');
+    const committedVaultDir = join(tmpBase, 'committed-vault');
+    const vaultDir = join(tmpBase, 'sovault');
     writeFileSync(
       join(tmpBase, 'CLAUDE.md'),
-      `## Session Config\n\n- **vault-integration:** { enabled: true, vault-dir: ${vaultDir}, gitlab-groups: [engineering/platform] }\n`,
+      `## Session Config\n\n- **vault-integration:** { enabled: true, vault-dir: ${committedVaultDir}, gitlab-groups: [engineering/platform] }\n`,
       'utf8',
     );
     const binDir = join(tmpBase, 'bin');
@@ -321,7 +329,36 @@ exit 2
     expect(stderr).toContain(
       `[dry-run] would create vault folder stub: ${join(vaultDir, '01-projects', 'edge-proxy')}`,
     );
+    expect(stderr).not.toContain(committedVaultDir);
     expect(existsSync(vaultDir)).toBe(false);
+    expect(existsSync(committedVaultDir)).toBe(false);
+  });
+
+  it('--apply puts the stub into the owner.yaml paths.vault-dir, not the committed vault-dir', () => {
+    setupTemplateDir(tmpBase);
+    const committedVaultDir = join(tmpBase, 'committed-vault');
+    const ownerVaultDir = join(tmpBase, 'owner-vault');
+    const configHome = join(tmpBase, 'config-home');
+    mkdirSync(configHome);
+    writeFileSync(join(configHome, 'owner.yaml'), `paths:\n  vault-dir: ${ownerVaultDir}\n`, 'utf8');
+    writeFileSync(
+      join(tmpBase, 'CLAUDE.md'),
+      `## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ${committedVaultDir}\n`,
+      'utf8',
+    );
+    const manifestPath = writeManifest(tmpBase, {
+      version: 1,
+      repos: [{ id: 42, path: 'mygroup/my-test', slug: 'my-test', tier: 'active', visibility: 'internal' }],
+    });
+
+    const { status, stderr } = run(['--yes', manifestPath, '--apply', '--out-dir', outDir], {
+      env: { PROJECTS_BASELINE_DIR: tmpBase, SO_CONFIG_HOME: configHome },
+    });
+
+    expect(status).toBe(0);
+    expect(stderr).toContain(`created vault folder stub: ${join(ownerVaultDir, '01-projects', 'my-test')}`);
+    expect(existsSync(join(ownerVaultDir, '01-projects', 'my-test'))).toBe(true);
+    expect(existsSync(committedVaultDir)).toBe(false);
   });
 
   it('expands a ~-prefixed vault-dir to HOME instead of creating a literal ./~ tree in the cwd', () => {
