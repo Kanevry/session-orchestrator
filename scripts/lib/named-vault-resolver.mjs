@@ -555,16 +555,23 @@ export function normalizeRemote(url) {
  * - `file:` URL, or a bare/relative path (git's rule: no `://` and no `:`
  *   before the first `/`, a Windows drive letter counting as a path)
  *   → `file://<local path>`.
- * - A URL form (`https://`, `ssh://`) keeps its host/path and goes through
- *   {@link redactUrlCredentials}, so an `https://user:token@host/…` origin
- *   cannot leak its credential either.
- * - A scp-like `[user@]host:path` (#1487 item 10) keeps the host and a RELATIVE
- *   path — the repo shape the canonical-suffix comparison is about. A path
- *   starting with `/` or `~` is a filesystem path on that host (typically a
- *   home dir) → `<remote path>`. A login user other than the forge-shared `git`
+ * - Login rule, both remote forms: a userinfo other than the forge-shared `git`
  *   is the operator's account (or a password-shaped `user:pass`) → `***@`, the
  *   same marker {@link redactUrlCredentials} uses; it never takes part in the
- *   suffix match, so dropping it costs the line no diagnostic value. A
+ *   suffix match, so dropping it costs the line no diagnostic value.
+ * - A URL form (`ssh://`, `https://`, … #1490 item 5) applies the login rule,
+ *   keeps its host/port, and keeps its path UNLESS the path has the absolute
+ *   home-dir shape (`/home/<u>…`, `/Users/<u>…`, `/root…`, `/~…`) →
+ *   `/<remote path>`. In URL form every path starts with `/`, so a forge's
+ *   `/org/repo` and a plain `/srv/vault` cannot be told from a filesystem path;
+ *   only the home-dir shape is the owner leak, and the forge shape is what the
+ *   suffix comparison is about. The result still goes through
+ *   {@link redactUrlCredentials}, so a bare `https://git@` (a token slot there)
+ *   is redacted as before.
+ * - A scp-like `[user@]host:path` (#1487 item 10) applies the login rule and
+ *   keeps the host and a RELATIVE path — the repo shape the canonical-suffix
+ *   comparison is about. Here a path starting with `/` or `~` is unambiguous: a
+ *   filesystem path on that host (typically a home dir) → `<remote path>`. A
  *   bracketed IPv6 host (`[::1]:path`, `user@[::1]:path`, `[user@::1]:path`)
  *   follows the same two rules.
  *
@@ -576,7 +583,19 @@ export function describeOriginForLog(url) {
   const s = String(url ?? '').trim();
   if (!s) return '';
   if (/^file:/i.test(s)) return 'file://<local path>';
-  if (s.includes('://')) return redactUrlCredentials(s);
+  const login = (u) => (u === undefined ? '' : u === 'git' ? 'git@' : '***@');
+  if (s.includes('://')) {
+    const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*)(.*)$/is.exec(s);
+    if (!m) return redactUrlCredentials(s);
+    const [, scheme, authority, urlPath] = m;
+    // userinfo runs to the LAST '@' of the authority (a password may hold one).
+    const at = authority.lastIndexOf('@');
+    const user = at === -1 ? undefined : authority.slice(0, at);
+    const homeShaped = /^\/(?:~|(?:home|Users)\/[^/]+(?:\/|$)|root(?:\/|$))/.test(urlPath);
+    return redactUrlCredentials(
+      `${scheme}${login(user)}${authority.slice(at + 1)}${homeShaped ? '/<remote path>' : urlPath}`,
+    );
+  }
   const scpLike = /^[^/\\]*:/.test(s) && !/^[a-z]:[\\/]/i.test(s);
   if (!scpLike) return 'file://<local path>';
   // Split host from path the way git's connect.c host_end() does: a host in
@@ -587,7 +606,6 @@ export function describeOriginForLog(url) {
   // pattern always matches.
   const [, user, host, path] =
     /^(?:([^[]*)@)?(\[[^\]]*\]):(.*)$/s.exec(s) ?? /^(?:(.*)@)?([^@:]*):(.*)$/s.exec(s);
-  const login = (u) => (u === undefined ? '' : u === 'git' ? 'git@' : '***@');
   // A login inside the brackets is the same account as one before them.
   const shownHost = host.replace(/^\[([^\]]*)@/, (_, u) => `[${login(u)}`);
   const where = /^[/~]/.test(path) ? '<remote path>' : path;

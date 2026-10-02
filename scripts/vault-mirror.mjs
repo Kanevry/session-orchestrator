@@ -68,7 +68,7 @@ import { checkCanonicalVault, describeOriginForLog, normalizeRemote } from './li
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
-import { expandTilde } from './lib/common.mjs';
+import { expandTilde, redactHomeDir } from './lib/common.mjs';
 
 // ── Canonical-vault helpers (#600 D2 / #607 D2) ────────────────────────────────
 // These are module-level (above the CLI bootstrap) so the module is import-safe
@@ -192,7 +192,7 @@ if (_isDirectInvocation) {
   });
 } catch (err) {
   if (err instanceof CliFlagError) {
-    process.stderr.write(`vault-mirror: ${err.message}\n`);
+    process.stderr.write(`vault-mirror: ${redactHomeDir(err.message)}\n`);
     process.exit(1);
   }
   throw err;
@@ -541,7 +541,7 @@ async function main() {
     } catch (err) {
       // Validation errors (missing required fields) → per-entry skip, not a global failure
       if (err.message.startsWith('vault-mirror:')) {
-        process.stderr.write(`${err.message}\n`);
+        process.stderr.write(`${redactHomeDir(err.message)}\n`);
         const entryId = entry?.id ?? entry?.session_id ?? null;
         process.stdout.write(
           JSON.stringify({ action: 'skipped-invalid', path: null, kind, id: entryId }) + '\n',
@@ -554,7 +554,7 @@ async function main() {
           line: entryLineNum,
           recordId: entryId,
           skipClass: 'validation',
-          reason: err.message,
+          reason: redactHomeDir(err.message),
           dryRun,
         });
         return;
@@ -573,7 +573,7 @@ async function main() {
         (typeof err.code === 'string' && err.code.length > 0) || Boolean(err.syscall);
       if (!isSystemError) {
         process.stderr.write(
-          `vault-mirror: mapper crash on line ${entryLineNum} (${err.message}) — record skipped\n`,
+          `vault-mirror: mapper crash on line ${entryLineNum} (${redactHomeDir(err.message)}) — record skipped\n`,
         );
         const entryId = entry?.id ?? entry?.session_id ?? null;
         process.stdout.write(
@@ -593,13 +593,13 @@ async function main() {
           line: entryLineNum,
           recordId: entryId,
           skipClass: 'mapper-crash',
-          reason: err.message,
+          reason: redactHomeDir(err.message),
           dryRun,
         });
         return;
       }
       // Unexpected filesystem errors → fatal
-      process.stderr.write(`vault-mirror: filesystem error on line ${entryLineNum}: ${err.message}\n`);
+      process.stderr.write(`vault-mirror: filesystem error on line ${entryLineNum}: ${redactHomeDir(err.message)}\n`);
       await finishRun('filesystem-error');
       process.exit(2);
     }
@@ -625,7 +625,7 @@ async function main() {
     try {
       entry = JSON.parse(trimmed);
     } catch (err) {
-      process.stderr.write(`vault-mirror: malformed JSON on line ${lineNum}: ${err.message}\n`);
+      process.stderr.write(`vault-mirror: malformed JSON on line ${lineNum}: ${redactHomeDir(err.message)}\n`);
       // Close the run out BEFORE exiting: `process.exit` runs no `finally`, so
       // without this the abort is the one outcome that leaves no run record —
       // exactly the shape reserved for a broken emitter.
@@ -732,7 +732,7 @@ async function main() {
 }
 
   main().catch(async (err) => {
-    process.stderr.write(`vault-mirror: unexpected error: ${err.message}\n`);
+    process.stderr.write(`vault-mirror: unexpected error: ${redactHomeDir(err.message)}\n`);
     // Same reason as the two in-loop aborts: an unexpected throw is a run that
     // ENDED, and the ledger has to say so. `finishRun` never throws, so this
     // cannot turn a diagnosable crash into a silent one.

@@ -22,6 +22,7 @@ import {
   writeJson,
   appendJsonl,
   expandTilde,
+  redactHomeDir,
 } from '@lib/common.mjs';
 
 // ---------------------------------------------------------------------------
@@ -127,6 +128,17 @@ describe('expandTilde', () => {
 
   it('does not expand a mid-string "~" (only a leading "~/" or bare "~")', () => {
     expect(expandTilde('/some/~/path')).toBe('/some/~/path');
+  });
+});
+
+// #1490: a plain string prefix replace turns `/Users/bobby` into `~by` and a
+// root home into a `~` on every absolute path — the boundary is the contract.
+describe('redactHomeDir', () => {
+  it('replaces every home-dir occurrence in free text, but never a longer sibling name or a root home', () => {
+    const msg = "ENOENT: no such file or directory, open '/Users/bob/vault/x.md' (cwd /Users/bob)";
+    expect(redactHomeDir(msg, '/Users/bob')).toBe("ENOENT: no such file or directory, open '~/vault/x.md' (cwd ~)");
+    expect(redactHomeDir('/Users/bobby/x and /Users/bob.old/y', '/Users/bob')).toBe('/Users/bobby/x and /Users/bob.old/y');
+    expect(redactHomeDir('/srv/vault', '/')).toBe('/srv/vault');
   });
 });
 

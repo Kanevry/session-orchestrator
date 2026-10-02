@@ -160,6 +160,14 @@ export function stripUrlCredentials(url) {
  * `--repo <spec>` override path, which bypasses the source-level strip in
  * {@link resolveRawRemoteUrl}. Never throws; a non-string returns unchanged.
  *
+ * Scope is CREDENTIALS only, as {@link userinfoIsCredential} classifies them.
+ * A bare login on a non-HTTP scheme (`ssh://alice@host/…`) is left verbatim,
+ * the URL path is never touched (`ssh://***@host/home/alice/vault` keeps the
+ * remote home dir), and the scp-like `user@host:path` form is not matched at
+ * all. So this is NOT the scp-consistent origin renderer: `describeOriginForLog`
+ * (`named-vault-resolver.mjs`) redacts every non-`git` login in both forms and
+ * hides a home-dir path (#1490) — use that for a git origin in a log line.
+ *
  * @param {string} text
  * @returns {string}
  */

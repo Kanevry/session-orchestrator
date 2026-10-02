@@ -98,7 +98,18 @@
        VM_DIR="$VAULT_DIR"
        VM_DIR_SOURCE="env VAULT_DIR"
      fi
-     echo "vault-dir=$VM_DIR (Quelle: $VM_DIR_SOURCE)"
+     # SO#1490: display form for echo lines only — the home dir becomes `~`
+     # through the ONE redactor (`redactHomeDir`, scripts/lib/common.mjs,
+     # path-boundary aware: `/Users/bob` never rewrites `/Users/bobby`). The
+     # commands below still get the real value. VM_DIR has no producer to emit
+     # a display path, so one helper serves every echo; if node cannot load the
+     # module it falls back to `…/<basename>` (vault-mirror's #1479 form),
+     # never to the raw path.
+     so_tilde() {
+       node --input-type=module -e "import { redactHomeDir } from '$PLUGIN_ROOT/scripts/lib/common.mjs'; process.stdout.write(redactHomeDir(process.argv[1]))" "$1" 2>/dev/null \
+         || printf '…/%s' "${1##*/}"
+     }
+     echo "vault-dir=$(so_tilde "$VM_DIR") (Quelle: $VM_DIR_SOURCE)"
 
      # Quality-gate thresholds (PRD F1.2). Defaults match
      # scripts/vault-mirror.mjs (400 chars / 0.5 confidence). The nested key
@@ -175,7 +186,7 @@
 
      if [[ $NM_EXIT -ne 0 ]]; then
        if [[ "$VM_MODE" == "strict" ]]; then
-         echo "ERROR: narrative-mirror failed (exit $NM_EXIT) — session close blocked (vault-integration.mode=strict): $NM_OUTPUT"
+         echo "ERROR: narrative-mirror failed (exit $NM_EXIT) — session close blocked (vault-integration.mode=strict): $(so_tilde "$NM_OUTPUT")"
          echo "Fix the narrative mirror issue or set vault-integration.mode: warn to downgrade to a warning."
          exit 1
        else
@@ -185,7 +196,9 @@
      else
        # Surface the JSON result so the operator can see skipped-* / written outcomes.
        NM_ACTION=$(echo "$NM_OUTPUT" | jq -r '.action // empty' 2>/dev/null)
+       # `.path` is absolute (under the vault, i.e. the home dir) — display form only.
        NM_PATH=$(echo "$NM_OUTPUT" | jq -r '.path // empty' 2>/dev/null)
+       [[ -n "$NM_PATH" ]] && NM_PATH=$(so_tilde "$NM_PATH")
        if [[ "$NM_ACTION" == "written" && -n "$NM_PATH" ]]; then
          echo "Mirrored durable session narrative to $NM_PATH"
        elif [[ -n "$NM_ACTION" ]]; then
