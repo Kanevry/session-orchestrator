@@ -346,13 +346,20 @@ The `.orchestrator/metrics/*.jsonl` ledgers are durable project data and stay ve
 
 ```bash
 # The Upgrade and Refresh-Lock flows run in a fresh shell where REPO_ROOT may be unset.
-_GI="${REPO_ROOT:-$(git rev-parse --show-toplevel)}/.gitignore"
+_GI_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+_GI="$_GI_ROOT/.gitignore"
 _GI_MISSING=()
-for _pat in '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'; do
-  # A CRLF .gitignore stores "pattern\r" — count that as present, or every run appends a duplicate block.
-  grep -qxF -- "$_pat" "$_GI" 2>/dev/null || grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
-done
-if [[ ! -L "$_GI" && ${#_GI_MISSING[@]} -gt 0 ]]; then
+if [[ -z "$_GI_ROOT" ]]; then
+  # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).
+  echo "store-lock-ignore: no repository root (REPO_ROOT unset, not inside a repo) — skipped" >&2
+else
+  for _pat in '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'; do
+    # A CRLF .gitignore stores "pattern\r" — count that as present, or every run appends a duplicate block.
+    grep -qxF -- "$_pat" "$_GI" 2>/dev/null || grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
+  done
+fi
+# An unreadable .gitignore (e.g. mode 0200) defeats both the presence check and the newline check — leave it alone.
+if [[ -n "$_GI_ROOT" && ! -L "$_GI" && ( ! -e "$_GI" || -r "$_GI" ) && ${#_GI_MISSING[@]} -gt 0 ]]; then
   # A last line without a trailing newline would fuse with the comment below: `.env` + `# …`
   # becomes `.env# …`, which git no longer reads as `.env` — the append would UN-ignore it.
   if [[ -s "$_GI" && -n "$(tail -c1 "$_GI")" ]]; then printf '\n' >> "$_GI"; fi
