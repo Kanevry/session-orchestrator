@@ -908,6 +908,36 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
     expectWarn(result, ['validate-wave-scope.mjs would REFUSE', 'filesystem root', 'ALLOWED']);
   });
 
+  it('records ONE refused_grant_allowed event per wave, not one per WARN (#1485 point 1)', async () => {
+    // Bug caught: #1485 point 1. `scripts/validate-wave-scope.mjs` has no
+    // mechanical caller, and the Gate 5b WARN is a `systemMessage` — nothing
+    // countable, so "how many waves ran on a manifest the validator refuses" had
+    // no answer. One event per wave makes it a ledger query; one per WARN would
+    // put a ledger append on every write of such a wave.
+    const vault = await mkVault();
+    const dir = await mkProjectTracked({ wave: 3, enforcement: 'strict', allowedPaths: ['/'] });
+    const env = { CLAUDE_CODE_SESSION_ID: 'g5b-catch-event-session' };
+    const refused = async () => (await readEvents(dir))
+      .filter((e) => e.event === 'orchestrator.scope.refused_grant_allowed');
+
+    for (const name of ['a.md', 'b.md']) {
+      const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(vault, name)), env });
+      expectWarn(result, ['validate-wave-scope.mjs would REFUSE']); // the WARN stays per write
+    }
+    const once = await refused();
+    expect(once).toHaveLength(1);
+    expect(once[0]).toMatchObject({ wave: 3, grant: '/', code: 'filesystem-root' });
+
+    // The NEXT wave of the same session reports again.
+    await fs.writeFile(
+      path.join(dir, '.claude/wave-scope.json'),
+      JSON.stringify({ wave: 4, enforcement: 'strict', allowedPaths: ['/'] }),
+    );
+    const next = await runHook({ projectDir: dir, stdin: editPayload(path.join(vault, 'c.md')), env });
+    expectWarn(next, ['validate-wave-scope.mjs would REFUSE']);
+    expect((await refused()).map((e) => e.wave)).toEqual([3, 4]);
+  });
+
   // -------------------------------------------------------------------------
   // #1398 cond. 4 — the WIRING, on an absolute HOME sub-path grant
   // -------------------------------------------------------------------------

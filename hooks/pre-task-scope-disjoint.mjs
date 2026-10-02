@@ -229,6 +229,7 @@ import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 
@@ -307,14 +308,14 @@ const SHAPE_NONE = 'none';
 const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
 
 /**
- * The worktree-base observability record (#1413).
+ * The worktree-base observability record (#1413; carries the #1485 `decision`).
  *
  * Same `wave_dispatch` domain and same `_checked` verb as `SCOPE_EVENT`, and
  * written for EVERY `isolation: "worktree"` dispatch rather than only the
  * alarming one. That is HR-105 applied at the source: a numerator-only stream
- * cannot tell "genuinely rare" from "silently broken", and the firing rate this
- * warning must stay under is then unfalsifiable. With every outcome in one
- * stream the rate is `stale:true / all records of this name`.
+ * cannot tell "genuinely rare" from "silently broken", and the firing rate of
+ * the #1485 deny is then unfalsifiable. With every outcome in one stream the
+ * rate is `decision:"deny" / all records of this name`.
  *
  * #1424 widened "every outcome" from two to three: the `stale: true|false`
  * split was already covered, but each NON-measurement (peer STATE.md, no
@@ -325,9 +326,6 @@ const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
  * stays silent (HR-101: it is ~90% of all dispatches).
  */
 const WORKTREE_BASE_EVENT = 'orchestrator.wave_dispatch.worktree_base_checked';
-
-/** State-dir candidates, in the same order `waveKeyOf()` probes them. */
-const STATE_DIR_CANDIDATES = ['.pi', '.cursor', '.codex', '.claude'];
 
 /**
  * The receive-side instruction line `renderScopeEchoInstruction()` renders and
@@ -1440,61 +1438,86 @@ export function listTrackedFiles(cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Stale worktree base (#1413) — a WARNING, never a decision
+// Stale worktree base (#1413 → #1485) — a MEASURED mismatch DENIES the dispatch
 //
 // `isolation: "worktree"` makes the HARNESS create `<repo>/.claude/worktrees/
 // agent-<hex>`; no code in this repo creates it and the `Agent` payload carries
-// no base-ref field (the 147-dispatch key census in the module docblock). The
-// base is the SESSION-START commit, and it does not follow a mid-session commit:
-// measured 2026-09-19 (session s18), worktrees created 25 minutes AFTER commit
-// `240efda6` still stood on its parent `8f15f77b`. A fix agent then silently
-// edits the OLD code, and its test run is structurally red on top — `validate-
-// plugin` is vitest's globalSetup and `check-guard-requires-parity.mjs` compares
-// against `git show HEAD:` inside the stale worktree.
+// no base-ref field (the 147-dispatch key census in the module docblock). Which
+// commit it branches from is documented harness behaviour (code.claude.com/docs
+// /en/worktrees § "Choose the base branch", read 2026-10-02): "Subagent worktrees
+// use the same base branch as `--worktree`, so they branch from your repository's
+// default branch unless `worktree.baseRef` is set to `"head"`" — `"fresh"` (the
+// default) is `origin/HEAD`, `"head"` is the current local HEAD.
 //
-// We have no lever on the base, so the only available fix is to be LOUD. This
-// never touches the verdict: the two functions below are TOTAL (every failure
-// resolves to silence), and the caller ignores their result for the decision.
+// That REPLACES the #1413 model ("the base is the session-start commit"): it fit
+// s18 only because that session ran on `main`, where origin/main WAS the start
+// commit. #1485 measured the general case on a feature branch — agent worktrees
+// stood on `main` (`0efb3e97`), six commits behind the branch HEAD (`47c49652`),
+// so the agents silently edited old code. Owner decision 2026-10-02, option (a):
+// check with `git merge-base --is-ancestor` before dispatch and stop on mismatch.
+//
+// FAIL-SAFE IN BOTH DIRECTIONS: only a MEASURED mismatch (`is-ancestor` exit 1)
+// denies. Every non-measurement — no origin/HEAD, a git failure, an exit code
+// other than 0/1, a throw — is `stale: null` + `skipped`, recorded and ALLOWED:
+// unknown is not mismatch, and this hook guards the dispatch path, where a wrong
+// deny is a session outage (§ the fail-open note at the bottom of this file).
 // ---------------------------------------------------------------------------
+
+/**
+ * The harness's effective `worktree.baseRef`, as far as this hook can see it:
+ * `'head'` when ANY readable settings file says `"head"`, else `'fresh'`.
+ *
+ * Read only on the rare `worktree` branch (14 of 147 measured dispatches carried
+ * `isolation` at all), so the hot dispatch path never pays these reads.
+ *
+ * NAMED CEILING (BV-004): a UNION over three files, not the harness's precedence
+ * chain, and blind to managed settings and the `--settings` CLI flag. The error
+ * this buys points one way only — a higher-precedence `"fresh"` shadowed by a
+ * lower `"head"` reads as `head`, i.e. a MISSED mismatch, never a wrong deny.
+ * Revisit if a session that DID get a stale worktree is found with `base_ref:
+ * "head"` in its `worktree_base_checked` record.
+ *
+ * @param {string} projectDir
+ * @returns {'head'|'fresh'}
+ */
+function harnessBaseRef(projectDir) {
+  const userDir = (process.env.CLAUDE_CONFIG_DIR || '').trim() || path.join(homedir(), '.claude');
+  for (const file of [
+    path.join(projectDir, '.claude', 'settings.local.json'),
+    path.join(projectDir, '.claude', 'settings.json'),
+    path.join(userDir, 'settings.json'),
+  ]) {
+    try {
+      if (JSON.parse(readFileSync(file, 'utf8'))?.worktree?.baseRef === 'head') return 'head';
+    } catch { /* absent or unparseable — the next source decides */ }
+  }
+  return 'fresh';
+}
 
 /**
  * Facts for the worktree-base check, as a DISCRIMINATED record with three
  * outcomes rather than two (#1424):
  *
- *   - `{stale: true|false, head, session_start_ref, subagent_type?}` — measured.
+ *   - `{stale: true|false, head, base, base_ref, missing_commits?, subagent_type?}`
+ *     — measured. `stale` means "the worktree would MISS commits of HEAD":
+ *     `git merge-base --is-ancestor HEAD <base>` exited 1. A base AHEAD of HEAD
+ *     (origin moved on, HEAD contained) is not stale — nothing of HEAD is lost.
  *   - `{stale: null, skipped: <reason>}` — the dispatch WAS on the `worktree`
  *     branch, but the question could not be answered honestly. Still emitted,
- *     because HR-105 needs the denominator: while every such case returned bare
- *     `null` and the caller emitted nothing, "the check never had anything to
- *     say" and "the check was silently disarmed" both read as zero records —
- *     precisely the shape this event exists to close.
- *   - `null` — `isolation !== 'worktree'`. SILENT by construction, and the one
- *     outcome that must stay so: `isolation` appeared in 14 of 147 measured
- *     dispatches, so recording the other ~90% would put the denominator on the
- *     whole hot dispatch path (HR-101).
+ *     because HR-105 needs the denominator, and never denied (unknown ≠ mismatch).
+ *   - `null` — `isolation !== 'worktree'`. SILENT by construction: recording the
+ *     other ~90% of dispatches would put the denominator on the hot path (HR-101).
  *
- * IDENTITY GATE (`.claude/rules/identity-and-locks.md`): `session-start-ref`
- * lives in STATE.md, a SHARED working-copy artefact that routinely belongs to a
- * peer session. It is read only when STATE.md's own `session-id` equals this
- * process's raw id (hook payload `session_id`, else `CLAUDE_CODE_SESSION_ID`) —
- * a process-local witness REPLACES the shared one, never unions with it. On
- * mismatch, absence or any read failure this reports `stale: null`: a confident
- * warning about somebody else's session is worse than no warning at all. The
- * test runs PER CANDIDATE (`continue`, not `break`) — see the loop below.
- *
- * `parseStateMd` is imported DYNAMICALLY and only on the rare `worktree` branch
- * (14 of 147 measured dispatches carried `isolation` at all): it is a leaf module
- * with zero imports and already inside the committed hook-import closure, so
- * reuse costs no new edge, and binding it late keeps a load failure catchable
- * instead of disarming the guard at ESM link time (§ #993 late-bound deps).
+ * No STATE.md and no session identity are read any more: the base is a fact of
+ * git plus harness settings, not of `session-start-ref`, so the #1424 identity
+ * gate over a shared STATE.md has nothing left to protect.
  *
  * @param {{tool_input?: unknown}} input — the raw hook payload
  * @param {string} projectDir
- * @param {string} sessionId — `input.session_id`, or `'no-session'`
- * @returns {Promise<{head: string, session_start_ref: string, stale: boolean,
- *   subagent_type?: string}|{stale: null, skipped: string}|null>}
+ * @returns {{head: string, base: string, base_ref: 'head'|'fresh', stale: boolean,
+ *   missing_commits?: number, subagent_type?: string}|{stale: null, skipped: string}|null}
  */
-async function worktreeBaseFacts(input, projectDir, sessionId) {
+function worktreeBaseFacts(input, projectDir) {
   // The applicability gate sits OUTSIDE the try on purpose: everything below it
   // resolves to a `skipped` RECORD, so a throw here must not be able to mint one
   // for a dispatch that was never on the `worktree` branch at all.
@@ -1503,97 +1526,77 @@ async function worktreeBaseFacts(input, projectDir, sessionId) {
   if (toolInput.isolation !== 'worktree') return null;
 
   try {
-    const ownId = sessionId && sessionId !== 'no-session'
-      ? sessionId
-      : (process.env.CLAUDE_CODE_SESSION_ID || '');
-    if (!ownId) return { stale: null, skipped: 'no-own-id' };
-
-    const { parseStateMd } = await import(
-      pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'state-md', 'yaml-parser.mjs')).href
-    );
-
-    // #1424: the identity test lives INSIDE the loop. Breaking at the first
-    // PARSEABLE STATE.md and testing `session-id` afterwards meant a single
-    // left-over `.pi/STATE.md` — `.pi` sorts before `.claude` in
-    // STATE_DIR_CANDIDATES — disarmed the check for a session whose own
-    // `.claude/STATE.md` sat right there, readable and matching. `sawStateMd`
-    // keeps the two silences apart afterwards: "nothing to read" is a different
-    // fact from "read, and none of it was mine".
-    let frontmatter = null;
-    let sawStateMd = false;
-    for (const dir of STATE_DIR_CANDIDATES) {
-      try {
-        const parsed = parseStateMd(readFileSync(path.join(projectDir, dir, 'STATE.md'), 'utf8'));
-        if (!parsed?.frontmatter) continue;
-        sawStateMd = true;
-        if (parsed.frontmatter['session-id'] !== ownId) continue;
-        frontmatter = parsed.frontmatter;
-        break;
-      } catch { /* try the next state dir */ }
-    }
-    if (frontmatter === null) {
-      return { stale: null, skipped: sawStateMd ? 'identity-mismatch' : 'no-state-md' };
-    }
-
-    const startRef = typeof frontmatter['session-start-ref'] === 'string'
-      ? frontmatter['session-start-ref'].trim()
-      : '';
-    if (startRef === '') return { stale: null, skipped: 'no-start-ref' };
+    /** @param {string[]} args */
+    const git = (args) => execFileSync('git', args, {
+      cwd: projectDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim();
 
     let head = '';
-    try {
-      head = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: projectDir,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      return { stale: null, skipped: 'git-error' };
-    }
+    try { head = git(['rev-parse', '--verify', 'HEAD^{commit}']); } catch { /* below */ }
     if (head === '') return { stale: null, skipped: 'git-error' };
 
-    const facts = { head, session_start_ref: startRef, stale: head !== startRef };
+    const baseRef = harnessBaseRef(projectDir);
+    const facts = { head, base_ref: baseRef };
     if (typeof toolInput.subagent_type === 'string' && toolInput.subagent_type !== '') {
       facts.subagent_type = toolInput.subagent_type;
     }
-    return facts;
+    // `"head"` inside a worktree resolves to THAT worktree's HEAD (docs, same
+    // section) — the very `git rev-parse HEAD` above, run in `projectDir`.
+    if (baseRef === 'head') return { ...facts, base: head, stale: false };
+
+    // `"fresh"`: origin/HEAD. Not cached locally → the harness fetches (≤5 s)
+    // or falls back to HEAD; neither outcome is knowable here → skip, not deny.
+    let base = '';
+    try { base = git(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD^{commit}']); } catch { /* below */ }
+    if (base === '') return { stale: null, skipped: 'no-origin-head' };
+    if (base === head) return { ...facts, base, stale: false };
+
+    try {
+      git(['merge-base', '--is-ancestor', head, base]);
+      return { ...facts, base, stale: false };
+    } catch (e) {
+      // Exit 1 is the ONE measured "no"; 128 (bad object), a timeout or a
+      // signal is a non-measurement and must not accuse anybody.
+      if (e?.status !== 1) return { stale: null, skipped: 'git-error' };
+    }
+    let missing = Number.NaN;
+    try { missing = Number.parseInt(git(['rev-list', '--count', `${base}..${head}`]), 10); } catch { /* optional */ }
+    return { ...facts, base, stale: true, ...(Number.isInteger(missing) ? { missing_commits: missing } : {}) };
   } catch {
-    // Total by construction: no parser, an unreadable state dir, anything else.
-    // Still a RECORD rather than silence — the dispatch WAS on the `worktree`
-    // branch, and a broken probe that emits nothing is indistinguishable from a
-    // probe that had nothing to report (#1424 / HR-105).
+    // Total by construction. Still a RECORD rather than silence (#1424 / HR-105).
     return { stale: null, skipped: 'probe-error' };
   }
 }
 
 /**
- * The operator-facing warning. It names the ACTION, not just the condition —
- * a warning the coordinator cannot act on is noise (HR-106).
+ * The deny reason + suggestion for a measured stale base. Names the ACTION, not
+ * just the condition (HR-106). The reason stays ONE line: `emitDeny` lifts the
+ * first line into the operator-visible `systemMessage` headline.
  *
- * NO `⚠ ` PREFIX HERE: this text is handed to `emitWarn`, which prefixes it on
- * both channels it writes (stderr and the `systemMessage` payload). Prefixing
- * here too produced `⚠ ⚠ …`.
- *
- * @param {{head: string, session_start_ref: string}} facts
- * @returns {string}
+ * @param {{head: string, base: string, missing_commits?: number}} facts
+ * @returns {{reason: string, suggestion: string}}
  */
-function staleWorktreeWarning(facts) {
-  const head = facts.head.slice(0, 12);
-  const base = facts.session_start_ref.slice(0, 12);
-  return [
-    `${HOOK_NAME}: STALE WORKTREE BASE (#1413) — this dispatch uses `
-      + `isolation: "worktree", but HEAD (${head}) has moved past this session's `
-      + `session-start-ref (${base}).`,
-    '  The harness bases a new agent worktree on the SESSION-START commit and offers',
-    '  no base-ref field, so the agent will silently get the OLDER code — and its test',
-    '  run is structurally red on top (check-guard-requires-parity compares against',
-    '  `git show HEAD:`, and validate-plugin is vitest\'s globalSetup).',
-    '  DO ONE OF: dispatch this wave IN-PLACE (omit `isolation`) — or verify the base',
-    '  before trusting the agent\'s result:',
-    '    git worktree list --porcelain | awk -v h="$(git rev-parse HEAD)" '
-      + '\'/^worktree /{w=$2} /^HEAD /{if (w ~ /\\.claude\\/worktrees\\/agent-/ && $2 != h) '
-      + 'print "STALE " substr($2,1,12) " " w}\'',
-  ].join('\n');
+function staleWorktreeDeny(facts) {
+  const missing = Number.isInteger(facts.missing_commits)
+    ? `${facts.missing_commits} commit(s)`
+    : 'commits';
+  return {
+    reason:
+      `${HOOK_NAME}: STALE WORKTREE BASE (#1485) — isolation: "worktree" would branch this `
+      + `agent from origin/HEAD ${facts.base.slice(0, 12)} (worktree.baseRef "fresh"), which is `
+      + `missing ${missing} of HEAD ${facts.head.slice(0, 12)}; the agent would silently edit OLD code.`,
+    suggestion: [
+      'DO ONE OF:',
+      '  1. re-dispatch IN-PLACE — omit `isolation` (isolation "none");',
+      '  2. set `"worktree": {"baseRef": "head"}` in .claude/settings.json so agent',
+      '     worktrees branch from your local HEAD (code.claude.com/docs/en/worktrees);',
+      '  3. get HEAD into the default branch on origin and fetch, then re-dispatch.',
+      'Uncommitted changes reach no worktree under any base — commit first or go in-place.',
+    ].join('\n'),
+  };
 }
 
 /**
@@ -2107,59 +2110,50 @@ async function main() {
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }
 
-  // #1413 — the stale-worktree-base warning, also awaited BEFORE the terminal
-  // emit for the same process.exit() reason as the block above. It reads
-  // `verdict` not at all: it can never turn an allow into a deny, and a git or
-  // STATE.md failure resolves to silence rather than to a wrong accusation.
-  //
-  // ROUTED TO THE OPERATOR, not to stderr alone (w3-5): under the exit-0
-  // PreToolUse protocol stderr goes nowhere — `io.mjs:545` calls it the "Debug
-  // channel … Invisible under exit 0" — so the first cut of this check announced
-  // the s18 incident class to a log and to nobody. The visible channel is the
-  // top-level `systemMessage`, i.e. `emitWarn`, which carries NO
-  // `permissionDecision` and therefore still means ALLOW (io.mjs § "which is
-  // precisely what keeps warn non-blocking").
-  //
-  // The note is CARRIED to the single terminal emit below rather than emitted
-  // here, because `emitWarn` calls `process.exit(0)` and never returns — warning
-  // inline would terminate the process before a collision DENY could be emitted,
-  // flipping a block into an allow (§ stdout discipline, the same reason
-  // `decide()` is pure).
+  // #1485 — the stale-worktree-base check, awaited BEFORE the terminal emit for
+  // the same process.exit() reason as the block above. It never reads `verdict`
+  // and a collision DENY always wins; on its own it denies ONLY a measured
+  // mismatch (`stale === true`). Every skip is recorded and allowed.
   //
   // `null` here means "not a worktree dispatch" and stays silent; ANY other
   // shape is emitted, including the `{stale: null, skipped: …}` non-measurements
-  // (#1424). The warning still fires on `stale === true` alone — a skipped probe
-  // accuses nobody.
-  const worktreeBase = await worktreeBaseFacts(input, projectDir, sessionId);
-  let staleNote = null;
+  // (#1424), with this check's own `decision` folded into the SAME record
+  // rather than a second event.
+  const worktreeBase = worktreeBaseFacts(input, projectDir);
+  const staleDeny = worktreeBase?.stale === true ? staleWorktreeDeny(worktreeBase) : null;
   if (worktreeBase !== null) {
-    if (worktreeBase.stale === true) staleNote = staleWorktreeWarning(worktreeBase);
     try {
       const { emitEvent, sessionAttribution } = await import(
         pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
       );
       await emitEvent(
         WORKTREE_BASE_EVENT,
-        { hook: HOOK_NAME, ...worktreeBase, ...sessionAttribution(projectDir) },
+        {
+          hook: HOOK_NAME,
+          ...worktreeBase,
+          decision: staleDeny === null ? 'allow' : 'deny',
+          ...sessionAttribution(projectDir),
+        },
         { repoRoot: projectDir }
       );
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }
 
-  // ONE terminal emit, with the #1413 note folded in where a visible channel is
-  // free. On DENY the dispatch does not happen and `systemMessage` already
-  // carries the ⛔ headline, so the note stays on the debug channel — a stale
-  // base is moot for a dispatch that was just blocked.
+  // ONE terminal emit. A collision DENY keeps its own reason — the dispatch is
+  // blocked either way — and the stale base goes to the debug channel beside it.
   if (verdict.action === 'deny') {
-    if (staleNote !== null) {
-      try { console.error(`⚠ ${staleNote}`); } catch { /* stderr may be closed */ }
+    if (staleDeny !== null) {
+      try { console.error(`⚠ ${staleDeny.reason}`); } catch { /* stderr may be closed */ }
     }
     return emitDeny(verdict.reason, verdict.suggestion);
   }
-  if (verdict.action === 'warn') {
-    return emitWarn(staleNote === null ? verdict.note : `${verdict.note}\n\n${staleNote}`);
+  if (staleDeny !== null) {
+    if (verdict.action === 'warn') {
+      try { console.error(`⚠ ${verdict.note}`); } catch { /* stderr may be closed */ }
+    }
+    return emitDeny(staleDeny.reason, staleDeny.suggestion);
   }
-  if (staleNote !== null) return emitWarn(staleNote);
+  if (verdict.action === 'warn') return emitWarn(verdict.note);
   return emitAllow();
 }
 

@@ -489,6 +489,7 @@ async function main() {
   if (matchedGrant !== null) {
     const grade = gradeScopeEntry(matchedGrant, { resolve: canonicalizeGrantPrefix });
     if (grade?.verdict === 'error') {
+      await recordRefusedGrantOncePerWave({ scope, scopePath, projectRoot, input, grant: matchedGrant, grade, filePath: resolvedPath });
       return emitWarn(
         `Gate 5b honoured an out-of-repo grant that scripts/validate-wave-scope.mjs would REFUSE ` +
           `before dispatch — allowedPaths ${grade.message}. The write to '${resolvedPath}' is ` +
@@ -650,6 +651,67 @@ async function main() {
 
   // Gate 8 / all gates passed → allow
   return emitAllow();
+}
+
+/**
+ * #1485 point 1 — the catch event for Gate 5b's WARN branch, ONCE per wave.
+ *
+ * `scripts/validate-wave-scope.mjs` has no mechanical caller; the Gate 5b WARN
+ * is the only place a refused grant is seen at all, and a `systemMessage` is not
+ * countable. Owner decision 2026-10-02, option (b): the FIRST WARN of a wave
+ * writes `orchestrator.scope.refused_grant_allowed`, so "how many waves ran on
+ * a manifest the validator would refuse" becomes a ledger query (HR-105). The
+ * WARN itself is unchanged and still fires on every write.
+ *
+ * DEDUPE: a marker `.orchestrator/tmp/gate5b-refused-grant/<session>-w<wave>`
+ * created with `flag: 'wx'` (O_CREAT|O_EXCL). Exclusive create is atomic, so of
+ * two hook processes racing on the first WARN exactly one wins and emits — no
+ * lock, no read-modify-write. The session joins the key because wave numbers
+ * restart in every session sharing this working copy. `.orchestrator/tmp/` is
+ * gitignored; one marker per (session, wave) that ever hit a refused grant.
+ *
+ * Any marker failure OTHER than EEXIST (unwritable dir, ENOTDIR) still emits:
+ * over-reporting a rare event beats re-creating the silent gap this closes.
+ *
+ * COST: runs only on the Gate 5b `error` branch — an ordinary in-repo write
+ * never reaches it, so the hot path pays nothing. NAMED CEILING (BV-004): a
+ * legacy manifest without a session id and a payload without one share the key
+ * `no-session-w<N>` across sessions; revisit if such manifests are still seen.
+ *
+ * Never throws — observability must not change the WARN.
+ *
+ * @param {{scope: Record<string, unknown>, scopePath: string, projectRoot: string,
+ *   input: Record<string, unknown>, grant: string, grade: {code?: string},
+ *   filePath: string}} facts
+ * @returns {Promise<void>}
+ */
+async function recordRefusedGrantOncePerWave({ scope, scopePath, projectRoot, input, grant, grade, filePath }) {
+  try {
+    const session = String(
+      scope.session_id ?? scope.session ?? input?.session_id ?? process.env.CLAUDE_CODE_SESSION_ID ?? 'no-session',
+    );
+    const key = `${session}-w${scope.wave ?? 'unknown'}`.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 160);
+    const markerDir = path.join(projectRoot, '.orchestrator', 'tmp', 'gate5b-refused-grant');
+    try { await fs.mkdir(markerDir, { recursive: true }); } catch { /* the create below decides */ }
+    try {
+      await fs.writeFile(path.join(markerDir, key), `${new Date().toISOString()}\n`, { flag: 'wx' });
+    } catch (e) {
+      if (e?.code === 'EEXIST') return; // this wave already reported
+    }
+    const { emitEvent } = await import('../scripts/lib/events.mjs');
+    await emitEvent(
+      'orchestrator.scope.refused_grant_allowed',
+      {
+        hook: HOOK_NAME,
+        manifest: scopePath,
+        wave: scope.wave,
+        grant,
+        code: grade?.code,
+        file_path: filePath,
+      },
+      { repoRoot: projectRoot },
+    );
+  } catch { /* observability is best-effort — never changes the WARN */ }
 }
 
 /**

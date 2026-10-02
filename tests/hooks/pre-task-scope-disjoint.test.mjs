@@ -23,7 +23,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 
-import { expectDeny, expectAllow, expectWarn } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectWarn, isDeny } from '../_helpers/hook-decision.mjs';
 
 const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-task-scope-disjoint.mjs');
@@ -163,12 +163,12 @@ function writeTranscript(dir, rows) {
 }
 
 /** Run a hook binary with a payload on stdin. Returns the spawnSync result. */
-function runHook(stdin, { hook = HOOK, cwd = REPO_ROOT } = {}) {
+function runHook(stdin, { hook = HOOK, cwd = REPO_ROOT, env: extraEnv = {} } = {}) {
   // A live Claude Code session exports CLAUDE_CODE_SESSION_ID into the ambient
   // env, so a spawned hook inherits the OPERATOR's real session id — any
   // assertion about session attribution would then pass for the wrong reason,
   // and differently on CI (where the var is absent). Scrub it here, once.
-  const env = { ...process.env };
+  const env = { ...process.env, ...extraEnv };
   delete env.CLAUDE_CODE_SESSION_ID;
   return spawnSync(process.execPath, [hook], {
     input: stdin,
@@ -914,12 +914,9 @@ describe('pre-task-scope-disjoint — ledger concurrency', () => {
       runHookAsync(dispatchPayload({ cwd: dir, id: 'R2', files: ['scripts/shared.mjs', 'scripts/r2.mjs'], transcriptPath })),
     ]);
 
-    // Deliberate inline envelope reference, not a lazy copy: we must SELECT which
-    // of two concurrent results denied before we can assert on it, and the shared
-    // helper offers assertions only (expectDeny/expectAllow/expectWarn), no
-    // predicate form. Closing this properly means adding an `isDeny(result)`
-    // predicate to tests/_helpers/hook-decision.mjs — tracked, not papered over.
-    const denied = [r1, r2].filter((r) => r.stdout.includes('"permissionDecision":"deny"'));
+    // We must SELECT which of two concurrent results denied before asserting on
+    // it — the predicate form of the shared envelope contract (#1027 N8).
+    const denied = [r1, r2].filter(isDeny);
     expect(denied).toHaveLength(1);
     expectDeny(denied[0], 'scripts/shared.mjs');
   }, 30_000);
@@ -1056,7 +1053,7 @@ describe('pre-task-scope-disjoint — fake regression (proves the guard bites)',
     );
 
     // The defect's signature: a warn (allow) where a deny belongs.
-    expect(shouldHaveBeenDenied.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(isDeny(shouldHaveBeenDenied)).toBe(false);
     expect(() => expectDeny(shouldHaveBeenDenied, 'scripts/foo.mjs')).toThrow();
 
     // ...and the real hook, same inputs, denies.
@@ -1082,7 +1079,7 @@ describe('pre-task-scope-disjoint — fake regression (proves the guard bites)',
       dispatchPayload({ cwd: dir, id: 'Agent B', files: ['scripts/foo.mjs'] }),
       { hook: brokenHook },
     );
-    expect(leaked.stdout).not.toContain('"permissionDecision":"deny"');
+    expect(isDeny(leaked)).toBe(false);
     expect(() => expectDeny(leaked, 'scripts/foo.mjs')).toThrow();
   });
 });
@@ -1357,22 +1354,28 @@ describe('pre-task-scope-disjoint — per-dispatch scope_checked event (#1092)',
 });
 
 // ---------------------------------------------------------------------------
-// Stale worktree base (#1413)
+// Stale worktree base (#1413 → #1485)
 //
-// The bug every `it` here names: a dispatch with `isolation: "worktree"` made
-// AFTER a mid-session commit passes SILENTLY, and the agent edits the
-// session-start code. Measured 2026-09-19 (s18): worktrees created 25 minutes
-// after commit `240efda6` still stood on its parent `8f15f77b`.
+// The bug every `it` here names: a dispatch with `isolation: "worktree"` whose
+// harness-chosen base is missing commits of HEAD lets the agent edit OLD code.
+// #1485 measured it on a feature branch: agent worktrees stood on `main`
+// (`0efb3e97`), six commits behind the branch HEAD (`47c49652`). The base is
+// documented harness behaviour (code.claude.com/docs/en/worktrees, read
+// 2026-10-02): `worktree.baseRef` "fresh" (default) = origin/HEAD, "head" = HEAD.
 //
-// Identity is the sharp edge here, not the git comparison: `session-start-ref`
-// lives in STATE.md, a shared working-copy artefact that routinely belongs to a
-// PEER session (`.claude/rules/identity-and-locks.md`). A warning derived from a
-// peer's STATE.md is worse than no warning, so three of the five cases below are
-// SILENCE controls.
+// Two directions are pinned, because both are failures on the dispatch path:
+// a MEASURED mismatch must DENY, and a base the hook cannot determine — or one
+// the settings make equal to HEAD — must NOT.
 // ---------------------------------------------------------------------------
-describe('stale worktree base (#1413)', () => {
-  /** A disposable git repo with two commits, plus `.orchestrator/`. */
-  function makeGitRepo() {
+describe('stale worktree base (#1485)', () => {
+  /**
+   * A disposable repo: commit `first`, then `head` on top, with origin/HEAD
+   * (`refs/remotes/origin/main`) pinned to `first` — the #1485 shape, a branch
+   * whose newest commit the default branch on origin does not have. No real
+   * remote: the hook reads only the cached ref, exactly as the harness does
+   * before it decides whether to fetch.
+   */
+  function makeGitRepo({ originAt = 'first' } = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-'));
     mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
     const git = (...args) => execFileSync('git', args, {
@@ -1384,42 +1387,32 @@ describe('stale worktree base (#1413)', () => {
         GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.org',
         GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.org',
       },
-    });
-    git('init', '-q', '-b', 'main');
+    }).trim();
+    git('init', '-q', '-b', 'feature');
     writeFileSync(path.join(dir, 'a.txt'), 'one\n');
     git('add', 'a.txt');
     git('commit', '-q', '-m', 'first');
-    const first = git('rev-parse', 'HEAD').trim();
+    const first = git('rev-parse', 'HEAD');
     writeFileSync(path.join(dir, 'a.txt'), 'two\n');
     git('add', 'a.txt');
     git('commit', '-q', '-m', 'second');
-    const head = git('rev-parse', 'HEAD').trim();
-    return { dir, first, head };
-  }
-
-  /**
-   * Write `<dir>/<stateDir>/STATE.md` with the two fields the check reads.
-   *
-   * `stateDir` defaults to `.claude` but is a PARAMETER since #1424: the hook
-   * probes `['.pi', '.cursor', '.codex', '.claude']` in that order, and until
-   * #1424 no case here wrote a second one — which is why a loop that broke at
-   * the first PARSEABLE file instead of the first MATCHING one passed all five.
-   */
-  function writeStateMd(dir, { sessionId, startRef, stateDir = '.claude' }) {
-    mkdirSync(path.join(dir, stateDir), { recursive: true });
-    writeFileSync(
-      path.join(dir, stateDir, 'STATE.md'),
-      `---\nschema-version: 1\nsession: main-2026-09-20-session-3\n`
-        + `session-id: ${sessionId}\nsession-start-ref: ${startRef}\n---\n\n## Current Wave\n\nWave 2.\n`,
-    );
+    const head = git('rev-parse', 'HEAD');
+    // A DESCENDANT of HEAD that HEAD does not point at: origin moved on past us.
+    const ahead = git('commit-tree', 'HEAD^{tree}', '-p', 'HEAD', '-m', 'ahead');
+    const at = { first, head, ahead }[originAt];
+    if (at !== undefined) {
+      git('update-ref', 'refs/remotes/origin/main', at);
+      git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+    }
+    return { dir, first, head, ahead };
   }
 
   /** A dispatch payload with (or without) the `isolation` key. */
-  function worktreePayload(dir, { sessionId = 'sess-own', isolation = 'worktree' } = {}) {
+  function worktreePayload(dir, { isolation = 'worktree' } = {}) {
     return JSON.stringify({
       hook_event_name: 'PreToolUse',
       tool_name: 'Agent',
-      session_id: sessionId,
+      session_id: 'sess-own',
       cwd: dir,
       tool_input: {
         description: 'w4-f2 fix',
@@ -1429,6 +1422,17 @@ describe('stale worktree base (#1413)', () => {
         ...(isolation === null ? {} : { isolation }),
       },
     });
+  }
+
+  /**
+   * Run the hook with the USER settings dir pointed at an empty temp dir: the
+   * hook reads `$CLAUDE_CONFIG_DIR/settings.json`, and the operator's real one
+   * may well carry `worktree.baseRef: "head"` — which would turn every deny
+   * case here green-for-the-wrong-reason red on one machine only.
+   */
+  function runWorktree(dir, payload) {
+    const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
+    return runHook(payload, { cwd: dir, env: { CLAUDE_CONFIG_DIR: userDir } });
   }
 
   /** Every `worktree_base_checked` record written into `dir`. */
@@ -1442,166 +1446,97 @@ describe('stale worktree base (#1413)', () => {
       .filter((rec) => rec.event === 'orchestrator.wave_dispatch.worktree_base_checked');
   }
 
-  it('WARNS VISIBLY — and still ALLOWS — when a worktree dispatch follows a mid-session commit', () => {
-    // Bug caught: the s18 incident. HEAD has moved past session-start-ref, the
-    // harness will base the agent's worktree on session-start, and before this
-    // check the dispatch produced no signal of any kind.
+  it('DENIES a worktree dispatch whose fresh base (origin/HEAD) is missing commits of HEAD', () => {
+    // Bug caught: #1485. Before, the check only WARNED — and only when HEAD had
+    // moved past STATE.md's session-start-ref, a proxy that is silent on any
+    // feature branch whose start commit was already ahead of origin/HEAD. The
+    // agent then edited code six commits old.
     const { dir, first, head } = makeGitRepo();
-    writeStateMd(dir, { sessionId: 'sess-own', startRef: first });
 
-    const res = runHook(worktreePayload(dir), { cwd: dir });
+    const res = runWorktree(dir, worktreePayload(dir));
 
-    // SECOND bug caught (w3-5): a stderr-only notice reaches nobody. Under the
-    // exit-0 PreToolUse protocol stderr is the debug channel
-    // (`scripts/lib/io.mjs:545` — "Invisible under exit 0"), so the first cut of
-    // this check announced the incident class to a log and to no operator.
-    // `expectWarn` pins the visible channel AND its exclusivity: the top-level
-    // key set must be EXACTLY `['systemMessage']`, so routing this through
-    // `emitDeny` — i.e. turning the notice into a BLOCK on the hot dispatch path
-    // of every session on the host — fails here instead of passing silently.
-    expectWarn(res, ['STALE WORKTREE BASE (#1413)', 'omit `isolation`']);
-    // stderr parity is retained by `emitWarn` for log/CI capture.
-    expect(res.stderr).toContain('STALE WORKTREE BASE (#1413)');
-    expect(res.stderr).toContain(head.slice(0, 12));
-    expect(res.stderr).toContain(first.slice(0, 12));
-    // It must say what to DO, not only what is wrong (HR-106).
-    expect(res.stderr).toContain('omit `isolation`');
-    expect(res.stderr).toContain('git worktree list --porcelain');
-
+    expectDeny(res, [
+      'STALE WORKTREE BASE (#1485)',
+      first.slice(0, 12),
+      head.slice(0, 12),
+      'missing 1 commit(s)',
+      'omit `isolation`',
+      '"baseRef": "head"',
+    ]);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].stale).toBe(true);
-    expect(events[0].head).toBe(head);
-    expect(events[0].session_start_ref).toBe(first);
-    expect(events[0].subagent_type).toBe('code-implementer');
+    expect(events[0]).toMatchObject({
+      stale: true,
+      decision: 'deny',
+      head,
+      base: first,
+      base_ref: 'fresh',
+      missing_commits: 1,
+      subagent_type: 'code-implementer',
+    });
   });
 
-  it('stays silent for an in-place dispatch — no `isolation` key, no warning', () => {
-    // Bug caught: warning on EVERY dispatch after the first commit would fire on
-    // ~every wave of every session (HR-101: a class above ~10% is a broken
-    // instrument). The `isolation` key is the whole population.
-    const { dir, first } = makeGitRepo();
-    writeStateMd(dir, { sessionId: 'sess-own', startRef: first });
-
-    const res = runHook(worktreePayload(dir, { isolation: null }), { cwd: dir });
-
-    expectAllow(res);
-    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
-    expect(baseEvents(dir)).toEqual([]);
-  });
-
-  it('records `stale: false` without warning when HEAD still equals session-start-ref', () => {
-    // Bug caught (HR-105): a numerator-only stream makes the firing rate
-    // unfalsifiable — "never fired" and "silently broken" look identical. The
-    // quiet case must leave a record, and must NOT warn.
+  it('ALLOWS the same dispatch when .claude/settings.json sets worktree.baseRef "head"', () => {
+    // Bug caught: a check that ignores the setting denies every worktree
+    // dispatch after the first commit in exactly the repos that already applied
+    // the root-cause fix — this repo's own `.claude/settings.json` among them.
     const { dir, head } = makeGitRepo();
-    writeStateMd(dir, { sessionId: 'sess-own', startRef: head });
-
-    const res = runHook(worktreePayload(dir), { cwd: dir });
-
-    expectAllow(res);
-    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
-    const events = baseEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].stale).toBe(false);
-  });
-
-  it('warns NOT AT ALL when STATE.md belongs to a PEER session — but records the skip', () => {
-    // Bug caught: STATE.md is a shared working-copy artefact. Reading a peer's
-    // `session-start-ref` would produce a confident warning about a ref that was
-    // never this session's start — the identity trap in
-    // `.claude/rules/identity-and-locks.md`. Refs differ here, so ONLY the
-    // identity gate can produce the silence.
-    //
-    // SECOND bug caught (#1424): that silence used to extend to the LEDGER. A
-    // peer STATE.md produced 0 records, 0 output, rc 0 — indistinguishable from
-    // a check that had been disarmed, which is the exact ambiguity HR-105 and
-    // this event's own docblock claim to have closed. The operator-visible
-    // channel stays quiet; the denominator does not.
-    const { dir, first } = makeGitRepo();
-    writeStateMd(dir, { sessionId: 'sess-PEER', startRef: first });
-
-    const res = runHook(worktreePayload(dir, { sessionId: 'sess-own' }), { cwd: dir });
-
-    expectAllow(res);
-    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
-    const events = baseEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].stale).toBe(null);
-    expect(events[0].skipped).toBe('identity-mismatch');
-    // A skip carries no accusation: never a ref, never a head.
-    expect(events[0].session_start_ref).toBeUndefined();
-  });
-
-  it('reads PAST a foreign `.pi/STATE.md` to the OWN `.claude/STATE.md`', () => {
-    // Bug caught (#1424, the disarming one): the candidate loop broke at the
-    // first PARSEABLE STATE.md and tested `session-id` only afterwards. `.pi`
-    // sorts before `.claude` in STATE_DIR_CANDIDATES, so ONE left-over Pi,
-    // Cursor or Codex STATE.md switched the whole #1413 check off for the
-    // session — 0 records, no warning — while a perfectly good, matching
-    // `.claude/STATE.md` sat right beside it. Reproduced in a temp repo
-    // 2026-09-20; without the `.pi` file the same dispatch warned.
-    const { dir, first, head } = makeGitRepo();
-    writeStateMd(dir, { sessionId: 'sess-OTHER-777', startRef: head, stateDir: '.pi' });
-    writeStateMd(dir, { sessionId: 'sess-own', startRef: first, stateDir: '.claude' });
-
-    const res = runHook(worktreePayload(dir, { sessionId: 'sess-own' }), { cwd: dir });
-
-    expectWarn(res, ['STALE WORKTREE BASE (#1413)']);
-    const events = baseEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0].stale).toBe(true);
-    // The identity came from `.claude`, not from the file that sorts first:
-    // `.pi` carries `startRef: head`, which would have measured `stale: false`.
-    expect(events[0].session_start_ref).toBe(first);
-    expect(events[0].head).toBe(head);
-  });
-
-  it('records `skipped: "no-start-ref"` when the OWN STATE.md carries no session-start-ref', () => {
-    // Bug caught (#1424): a STATE.md that is mine but has no `session-start-ref`
-    // yet — the state of every session between its first STATE.md write and its
-    // start-ref write — fell through the same silent `return null`. It is a
-    // non-measurement, not a non-event.
-    const { dir } = makeGitRepo();
     mkdirSync(path.join(dir, '.claude'), { recursive: true });
     writeFileSync(
-      path.join(dir, '.claude', 'STATE.md'),
-      '---\nschema-version: 1\nsession-id: sess-own\n---\n\n## Current Wave\n\nWave 1.\n',
+      path.join(dir, '.claude', 'settings.json'),
+      JSON.stringify({ worktree: { baseRef: 'head' } }),
     );
 
-    const res = runHook(worktreePayload(dir, { sessionId: 'sess-own' }), { cwd: dir });
+    const res = runWorktree(dir, worktreePayload(dir));
 
     expectAllow(res);
-    expect(res.stderr).not.toContain('STALE WORKTREE BASE');
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
-    expect(events[0].stale).toBe(null);
-    expect(events[0].skipped).toBe('no-start-ref');
+    expect(events[0]).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base: head });
   });
 
-  it('stays silent — and never throws — when STATE.md is absent or unparseable', () => {
-    // Bug caught: this check runs on the hot dispatch path of every session on
-    // the host. A throw past the decision would hit `main().catch` (matrix row
-    // 12), and the FAIL-OPEN house rule means the guard stops denying real
-    // collisions. No STATE.md, then a byte-garbage one — both must be silent.
+  it('ALLOWS when origin/HEAD is AHEAD of HEAD — nothing of HEAD is missing', () => {
+    // Bug caught: an equality test (`base !== head`) instead of `merge-base
+    // --is-ancestor` denies every worktree dispatch made while origin's default
+    // branch has moved on past a fully merged HEAD — the agent would get all of
+    // HEAD's commits there.
+    const { dir, ahead } = makeGitRepo({ originAt: 'ahead' });
+
+    const res = runWorktree(dir, worktreePayload(dir));
+
+    expectAllow(res);
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stale: false, decision: 'allow', base: ahead, base_ref: 'fresh' });
+  });
+
+  it('ALLOWS and records the skip when origin/HEAD is not cached — unknown is not mismatch', () => {
+    // Bug caught: the fail-safe direction. Without a cached origin/HEAD the
+    // harness fetches or falls back to HEAD, so the base is UNKNOWN here; a deny
+    // on that would block worktree dispatches in every remote-less repo. Still a
+    // RECORD (#1424 / HR-105) — a skip that emits nothing reads as "disarmed".
+    const { dir } = makeGitRepo({ originAt: 'none' });
+
+    const res = runWorktree(dir, worktreePayload(dir));
+
+    expectAllow(res);
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stale: null, skipped: 'no-origin-head', decision: 'allow' });
+    // A skip accuses nobody: never a base, never a head.
+    expect(events[0].base).toBeUndefined();
+    expect(events[0].head).toBeUndefined();
+  });
+
+  it('stays silent for an in-place dispatch — no `isolation` key, no record', () => {
+    // Bug caught: checking EVERY dispatch would put git calls and a ledger write
+    // on the whole hot dispatch path (HR-101). The `isolation` key is the whole
+    // population — and the in-place re-dispatch is the deny's own remedy.
     const { dir } = makeGitRepo();
 
-    const noFile = runHook(worktreePayload(dir), { cwd: dir });
-    expectAllow(noFile);
-    expect(noFile.stderr).not.toContain('STALE WORKTREE BASE');
+    const res = runWorktree(dir, worktreePayload(dir, { isolation: null }));
 
-    mkdirSync(path.join(dir, '.claude'), { recursive: true });
-    writeFileSync(path.join(dir, '.claude', 'STATE.md'), '\u0000not frontmatter at all');
-    const garbage = runHook(worktreePayload(dir), { cwd: dir });
-    expectAllow(garbage);
-    expect(garbage.stderr).not.toContain('STALE WORKTREE BASE');
-
-    // #1424: both runs are non-measurements, and a non-measurement is recorded
-    // rather than swallowed — otherwise the firing rate's denominator counts
-    // only the dispatches that happened to succeed.
-    const events = baseEvents(dir);
-    expect(events).toHaveLength(2);
-    expect(events.map((rec) => rec.skipped)).toEqual(['no-state-md', 'no-state-md']);
-    expect(events.every((rec) => rec.stale === null)).toBe(true);
+    expectAllow(res);
+    expect(baseEvents(dir)).toEqual([]);
   });
 });

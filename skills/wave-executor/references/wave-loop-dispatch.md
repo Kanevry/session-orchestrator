@@ -427,6 +427,13 @@ The helper is stdlib-only and cross-platform. `mode=block` is recommended when t
 
 This is a downstream backstop: the underlying worktree merge-back strategy lives in the Claude Code harness and is outside this plugin's control. The correct fix (preserve untracked coordinator files during merge-back) must come upstream. Until then, this check is the only defense.
 
+#### Worktree Base Check (#1485)
+
+The harness, not this plugin, picks the commit an `isolation: "worktree"` agent branches from. Per the Claude Code docs (code.claude.com/docs/en/worktrees § "Choose the base branch", read 2026-10-02), subagent worktrees follow `worktree.baseRef`: `"fresh"` (the default) branches from `origin/HEAD`, `"head"` from the current local HEAD. On a feature branch with commits the default branch on origin lacks, `"fresh"` hands the agent OLD code — #1485 measured worktrees on `main`, six commits behind the branch HEAD.
+
+- **Root cause, removed here:** this repo's `.claude/settings.json` sets `"worktree": {"baseRef": "head"}`. Uncommitted coordinator work still reaches no worktree under either base — a wave that builds on uncommitted predecessor results runs in-place.
+- **Mechanical guard:** `hooks/pre-task-scope-disjoint.mjs` checks every `isolation: "worktree"` dispatch before it runs. When the settings it can read select `"fresh"`, it runs `git merge-base --is-ancestor HEAD origin/HEAD`; exit 1 (the worktree would miss commits) DENIES the dispatch, naming the remedies: re-dispatch in-place (omit `isolation`), set `baseRef: "head"`, or get HEAD into origin's default branch. Anything it cannot measure (no cached `origin/HEAD`, a git error) is allowed. Every worktree dispatch leaves one `orchestrator.wave_dispatch.worktree_base_checked` record carrying `decision` (`docs/events-schema.md`).
+
 #### Pre-Dispatch Coordinator Snapshot (#196)
 
 Before dispatching agents for this wave, checkpoint any uncommitted coordinator work as a git stash snapshot. This is a backup — it does NOT touch the working tree and does NOT block dispatch on failure.
