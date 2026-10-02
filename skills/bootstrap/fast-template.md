@@ -173,7 +173,7 @@ build/
 Note: `.orchestrator/` is NOT gitignored — `bootstrap.lock` must be committed. Only the platform state dirs (`.claude/`, `.codex/`, `.cursor/`) are excluded.
 
 <!-- @include _shared-template.md#store-lock-ignore -->
-**Then ignore the store-lock artifacts** — whether `.gitignore` was just written or already existed. Execute the bash block in [`_shared-template.md#store-lock-ignore`](_shared-template.md): it appends `.orchestrator/metrics/*.jsonl.lock*` and `.file.lock.*` when missing (idempotent, a symlinked `.gitignore` is left alone). The ledgers stay versioned; only their lock artifacts are ignored. Standard and Deep inherit this through their Fast steps.
+**Then ignore the store-lock artifacts** — whether `.gitignore` was just written or already existed. Execute the bash block in [`_shared-template.md#store-lock-ignore`](_shared-template.md): it appends the missing store-lock patterns (`.orchestrator/metrics/*.jsonl.lock*`, `.file.lock.*`) and the runtime-lock and state patterns (`.orchestrator/session.lock`, `runtime/`, `current-session.json`, … — the full list and their writers are in that section; idempotent, a symlinked `.gitignore` is left alone). `bootstrap.lock`, `policy/`, `steering/` and the ledgers stay versioned. Standard and Deep inherit this through their Fast steps.
 
 ## Step 3a: Install Canonical Rules
 

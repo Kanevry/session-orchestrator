@@ -36,6 +36,27 @@ import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
 
 const TEMPLATE = resolve(import.meta.dirname, '..', '..', 'skills', 'bootstrap', '_shared-template.md');
 const LOCK_PATTERN = '.orchestrator/metrics/*.jsonl.lock*';
+/** Every line the block appends, in order (#1487 store locks, #1495 runtime locks and state). */
+const ALL_PATTERNS = [
+  LOCK_PATTERN,
+  '.file.lock.*',
+  '.orchestrator/session.lock',
+  '.orchestrator/.session.lock.*',
+  '.orchestrator/runtime/',
+  '.orchestrator/current-session.json',
+  '.orchestrator/.current-session.*',
+  '.orchestrator/host.json*',
+  '.orchestrator/state.lock*',
+  '.orchestrator/.state.lock.*',
+  '.orchestrator/rules.lock*',
+  '.orchestrator/wave-dispatch-scopes.*',
+  '.orchestrator/.wave-dispatch-scopes.*',
+  '.orchestrator/wave-transcript-tail.lock*',
+  '.orchestrator/.wave-transcript-tail.lock.*',
+  '.orchestrator/metrics/proposals-write.lock*',
+  '.orchestrator/metrics/.proposals-write.lock.*',
+  '.orchestrator/staging-fence/',
+];
 
 /** The one bash block of the template that appends the store-lock patterns — loud failure otherwise. */
 function loadSnippet() {
@@ -116,14 +137,14 @@ function ignoreStatus(root, repo, paths) {
 const isRoot = process.getuid?.() === 0;
 
 describe('bootstrap template § store-lock-ignore — the shell block as agents run it', () => {
-  it('keeps `.env` ignored when the .gitignore ends without a newline, and adds both patterns', () => {
+  it('keeps `.env` ignored when the .gitignore ends without a newline, and adds every pattern', () => {
     const { root, repo, gi } = repoWith('node_modules/\n.env');
 
     const r = runSnippet({ root, cwd: repo, repoRoot: repo });
 
     expect(r.status, r.stderr).toBe(0);
     const patterns = readFileSync(gi, 'utf8').split('\n').filter((l) => !l.startsWith('#'));
-    expect(patterns).toEqual(['node_modules/', '.env', LOCK_PATTERN, '.file.lock.*', '']);
+    expect(patterns).toEqual(['node_modules/', '.env', ...ALL_PATTERNS, '']);
     expect(
       ignoreStatus(root, repo, [
         '.env',
@@ -151,8 +172,67 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
     expect(afterFirst.split('\n').filter((l) => l === '.file.lock.*')).toEqual(['.file.lock.*']);
   });
 
-  it('leaves a CRLF .gitignore that already holds both patterns byte-identical', () => {
-    const before = `node_modules/\r\n${LOCK_PATTERN}\r\n.file.lock.*\r\n`;
+  it('a repo upgraded from the two store-lock lines ignores the runtime locks and state, never the committed files (#1495)', () => {
+    // Bug: bootstrap ignored only the ledger store locks, so a `git add -A` in a
+    // consumer repo committed the session lock rewritten on every SessionStart,
+    // the owner proof, current-session.json and the other runtime locks. Every
+    // repo bootstrapped since #1487 carries exactly the two old lines, so the
+    // block must append the rest without repeating those.
+    const { root, repo, gi } = repoWith(`node_modules/\n${LOCK_PATTERN}\n.file.lock.*\n`);
+
+    const r = runSnippet({ root, cwd: repo, repoRoot: repo });
+
+    expect(r.status, r.stderr).toBe(0);
+    const lines = readFileSync(gi, 'utf8').split('\n');
+    expect(lines.filter((l) => l === LOCK_PATTERN || l === '.file.lock.*')).toEqual([LOCK_PATTERN, '.file.lock.*']);
+    expect(
+      ignoreStatus(root, repo, [
+        '.orchestrator/session.lock',
+        '.orchestrator/.session.lock.reclaim.0a1b',
+        '.orchestrator/runtime/lock-owner-proof.json',
+        '.orchestrator/current-session.json',
+        '.orchestrator/host.json',
+        '.orchestrator/state.lock',
+        '.orchestrator/state.lock.acquire',
+        '.orchestrator/.state.lock.tmp.create.tmp.0a1b',
+        '.orchestrator/rules.lock',
+        '.orchestrator/wave-dispatch-scopes.json',
+        '.orchestrator/wave-dispatch-scopes.lock',
+        '.orchestrator/.wave-dispatch-scopes.lock.create.tmp.0a1b',
+        '.orchestrator/wave-transcript-tail.lock',
+        '.orchestrator/metrics/proposals-write.lock',
+        '.orchestrator/staging-fence/.commit.lock',
+        '.orchestrator/bootstrap.lock',
+        '.orchestrator/policy/quality-gates.json',
+        '.orchestrator/steering/tech.md',
+        '.orchestrator/metrics/sessions.jsonl',
+      ]),
+    ).toEqual({
+      '.orchestrator/session.lock': 0,
+      '.orchestrator/.session.lock.reclaim.0a1b': 0,
+      '.orchestrator/runtime/lock-owner-proof.json': 0,
+      '.orchestrator/current-session.json': 0,
+      '.orchestrator/host.json': 0,
+      '.orchestrator/state.lock': 0,
+      '.orchestrator/state.lock.acquire': 0,
+      '.orchestrator/.state.lock.tmp.create.tmp.0a1b': 0,
+      '.orchestrator/rules.lock': 0,
+      '.orchestrator/wave-dispatch-scopes.json': 0,
+      '.orchestrator/wave-dispatch-scopes.lock': 0,
+      '.orchestrator/.wave-dispatch-scopes.lock.create.tmp.0a1b': 0,
+      '.orchestrator/wave-transcript-tail.lock': 0,
+      '.orchestrator/metrics/proposals-write.lock': 0,
+      '.orchestrator/staging-fence/.commit.lock': 0,
+      // Durable project data consumers commit — must stay versioned.
+      '.orchestrator/bootstrap.lock': 1,
+      '.orchestrator/policy/quality-gates.json': 1,
+      '.orchestrator/steering/tech.md': 1,
+      '.orchestrator/metrics/sessions.jsonl': 1,
+    });
+  });
+
+  it('leaves a CRLF .gitignore that already holds every pattern byte-identical', () => {
+    const before = `node_modules/\r\n${ALL_PATTERNS.join('\r\n')}\r\n`;
     const { root, repo, gi } = repoWith(before);
 
     const r = runSnippet({ root, cwd: repo, repoRoot: repo });
