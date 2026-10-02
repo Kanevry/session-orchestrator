@@ -1521,25 +1521,6 @@ describe('stale worktree base (#1485)', () => {
     });
   });
 
-  it('ALLOWS the same dispatch when .claude/settings.json sets worktree.baseRef "head"', () => {
-    // Bug caught: a check that ignores the setting denies every worktree
-    // dispatch after the first commit in exactly the repos that already applied
-    // the root-cause fix — this repo's own `.claude/settings.json` among them.
-    const { dir, head } = makeGitRepo();
-    mkdirSync(path.join(dir, '.claude'), { recursive: true });
-    writeFileSync(
-      path.join(dir, '.claude', 'settings.json'),
-      JSON.stringify({ worktree: { baseRef: 'head' } }),
-    );
-
-    const res = runWorktree(dir, worktreePayload(dir));
-
-    expectAllow(res);
-    const events = baseEvents(dir);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base: head });
-  });
-
   it('ALLOWS when origin/HEAD is AHEAD of HEAD — nothing of HEAD is missing', () => {
     // Bug caught: an equality test (`base !== head`) instead of `merge-base
     // --is-ancestor` denies every worktree dispatch made while origin's default
@@ -1600,7 +1581,11 @@ describe('stale worktree base (#1485)', () => {
     const sessionRoot = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-root-'));
     writeBaseRef(sessionRoot, 'settings.local.json', 'head');
     expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub }), { CLAUDE_PROJECT_DIR: sessionRoot }));
-    // 2. Without it (no harness env), the git toplevel of cwd.
+    // 2. Without it (no harness env), the git toplevel of cwd. Also the plain
+    //    project-settings case: a check that ignores the setting denies every
+    //    worktree dispatch after the first commit in exactly the repos that
+    //    already applied the root-cause fix — this repo's own
+    //    `.claude/settings.json` among them.
     writeBaseRef(dir, 'settings.json', 'head');
     expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub })));
 
@@ -1623,6 +1608,35 @@ describe('stale worktree base (#1485)', () => {
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ stale: true, decision: 'deny', base_ref: 'fresh', base_ref_source: 'local', base: first });
+  });
+
+  it('honours the USER settings layer — a global "head" in $CLAUDE_CONFIG_DIR/settings.json ALLOWS', () => {
+    // Bug caught: a mis-pathed or dropped user row reads an operator's global
+    // `"head"` (~/.claude/settings.json) as `default` → `fresh`, and every
+    // worktree dispatch with HEAD ahead of origin/HEAD is wrongly DENIED.
+    const { dir, head } = makeGitRepo();
+    const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
+    writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
+
+    expectAllow(runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir }));
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base_ref_source: 'user', base: head });
+  });
+
+  it('lets project "fresh" beat a user "head" — the user layer is consulted LAST', () => {
+    // Bug caught: user read before project, or "head anywhere wins", lets a
+    // global `"head"` override the repo's own `"fresh"` — the harness branches
+    // from origin/HEAD, the hook sees no mismatch, the agent gets OLD code.
+    const { dir, first } = makeGitRepo();
+    writeBaseRef(dir, 'settings.json', 'fresh');
+    const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
+    writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
+
+    expectDeny(runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir }), ['STALE WORKTREE BASE (#1485)', '.claude/settings.json']);
+    const events = baseEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ stale: true, decision: 'deny', base_ref: 'fresh', base_ref_source: 'project', base: first });
   });
 
   it('ALLOWS and records the skip in a SHALLOW clone, where is-ancestor answers "no" falsely', () => {

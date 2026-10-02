@@ -31,7 +31,8 @@ afterEach(async () => {
 
 /**
  * A repo root whose `_archive/` holds one archive per entry of `startsAgoH`
- * (hours before NOW), each one hour long, plus a live `events.jsonl`.
+ * (hours before NOW), each one hour long, plus a live `events.jsonl`. A string
+ * entry is written verbatim as the archive's file name.
  */
 async function repoWithArchives(startsAgoH) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'events-retention-'));
@@ -41,7 +42,8 @@ async function repoWithArchives(startsAgoH) {
   await fs.writeFile(path.join(metrics, 'events.jsonl'), '{}\n');
   for (const h of startsAgoH) {
     const from = NOW - h * HOUR;
-    await fs.writeFile(path.join(metrics, '_archive', `events-${stamp(from)}_${stamp(from + HOUR)}.jsonl`), '{}\n');
+    const name = typeof h === 'string' ? h : `events-${stamp(from)}_${stamp(from + HOUR)}.jsonl`;
+    await fs.writeFile(path.join(metrics, '_archive', name), '{}\n');
   }
   return root;
 }
@@ -63,9 +65,20 @@ describe('checkEventsRetention', () => {
   // BUG this catches (HR-101): judged without the ring-full guard, every young
   // repo — whose whole history is a few hours — "covers less than a day" and
   // the banner fires on every start although nothing was ever pruned.
+  // The `unknown_` row: an archive whose first stamp the rotator could not
+  // derive must fall back to its LAST stamp. Without it the start is NaN,
+  // `Math.min` turns NaN, `NaN >= 1` is false and the banner warns "covers
+  // NaNd" on every start — permanently, since the rotator sorts `unknown_`
+  // newest and never prunes it. The dated archives are 12h/6h old, so
+  // dropping the unknown archive instead would warn too.
   it.each([
     { label: 'the ring is not full, however young the ledger', startsAgoH: [3, 2], maxBackups: 3 },
     { label: 'a full ring covers the window', startsAgoH: [72, 48, 24], maxBackups: 3 },
+    {
+      label: 'a full ring covers the window from an archive whose first stamp is unknown',
+      startsAgoH: [`events-unknown_${stamp(NOW - 72 * HOUR)}.jsonl`, 12, 6],
+      maxBackups: 3,
+    },
   ])('stays silent when $label', async ({ startsAgoH, maxBackups }) => {
     const root = await repoWithArchives(startsAgoH);
     expect(await checkEventsRetention({ repoRoot: root, config: { 'events-rotation': { 'max-backups': maxBackups } }, now: NOW })).toBeNull();

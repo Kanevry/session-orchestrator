@@ -208,6 +208,25 @@ process.stdout.write(JSON.stringify(readAuditRecords(${JSON.stringify(root)}, 50
     expect(child.stdout).toBe('[]');
   });
 
+  it.skipIf(process.platform === 'win32')('warns and returns when APPENDING to a planted FIFO — without O_NONBLOCK the append open blocked the scan child for good', () => {
+    // Bug (#1487 review, measured 2026-10-02): the scan child appends once per
+    // `report` record BEFORE it reads the rate; an append open without
+    // O_NONBLOCK waits for a FIFO reader that never comes, leaving a hung
+    // detached child at PPID 1 (the HR-107 class). With the flag the kernel
+    // answers ENXIO at once. Child process for the same reason as the read twin.
+    mkdirSync(dirname(auditPath(root)), { recursive: true });
+    execFileSync('mkfifo', [auditPath(root)]);
+    const moduleUrl = pathToFileURL(join(process.cwd(), 'scripts/lib/orphan-reaper/reaper-audit.mjs')).href;
+    const probe = `import { appendAuditRecord } from ${JSON.stringify(moduleUrl)};
+appendAuditRecord(${JSON.stringify(root)}, ${JSON.stringify(killRecord(1))});`;
+
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { encoding: 'utf8', timeout: 5000 });
+
+    expect(child.signal).toBeNull();
+    expect(child.status).toBe(0);
+    expect(child.stderr).toMatch(/^orphan-reaper: could not append to \.orchestrator\/metrics\/reaper-audit\.jsonl: ENXIO/);
+  });
+
   it('does not read the rate through a symlinked audit — the link target was read as the audit', () => {
     // Bug (#1487 review): the writers refuse a linked audit, the reader followed
     // it — a link to any file of decision-shaped lines set the HR-101 rate, and a
