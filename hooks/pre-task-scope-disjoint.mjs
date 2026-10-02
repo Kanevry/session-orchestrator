@@ -173,9 +173,10 @@
  *
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
  * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
- * `sessionRootOf()` resolves (the git toplevel of the payload `cwd`, so neither
- * the subdirectory a `cd` moved to, #1489 Pkt 6, nor the launch dir a worktree
- * session left), which is also where the ledger and its lock live. The reason it
+ * `sessionRootOf()` resolves (the git toplevel of the payload `cwd` — its nearest
+ * `.git` ancestor when git cannot answer — so neither the subdirectory a `cd`
+ * moved to, #1489 Pkt 6, nor the launch dir a worktree session left), which is
+ * also where the ledger and its lock live. The reason it
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
  * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
  * it cannot say WHICH dispatch carried a scope. Payload: `wave` (omitted, never
@@ -241,7 +242,7 @@
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -1567,14 +1568,44 @@ export function listTrackedFiles(cwd) {
  * ledger — where a peer session's dispatch wipes this session's claims and lets
  * the collision through. It is the fallback only when `cwd` is in no repo.
  *
- * Precedence: the git toplevel of `cwd`, else `$CLAUDE_PROJECT_DIR`, else `cwd`.
+ * NOR `$CLAUDE_PROJECT_DIR` merely because GIT could not answer (review MED on
+ * 63f35e8c): `gitToplevel()` returns `''` on ANY error, and the toplevel lookup
+ * is the first spawn against the shared `GIT_BUDGET_MS` — one `rev-parse`
+ * hanging past it sent a worktree session's dispatch back to the launch-root
+ * ledger, the exact bug above narrowed to the timeout. `dotGitAncestorOf()`
+ * answers the same question without a spawn, so no budget can cut it.
+ *
+ * Precedence: the git toplevel of `cwd`, else the nearest `.git` ancestor of
+ * `cwd`, else `$CLAUDE_PROJECT_DIR`, else `cwd`.
+ *
+ * Remaining limit (not a regression — main keyed state on `cwd` itself): a `cd`
+ * into a NESTED toplevel — an agent worktree under `.claude/worktrees/`, a
+ * submodule, a nested repo — still gets that toplevel's own ledger, by either
+ * rung, because it IS a repo root of its own.
  *
  * @param {string} cwd — the payload `cwd`
  * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
  * @returns {string}
  */
 function sessionRootOf(cwd, cwdToplevel) {
-  return cwdToplevel || (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwd;
+  return cwdToplevel || dotGitAncestorOf(cwd) || (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwd;
+}
+
+/**
+ * The nearest directory at or above `cwd` holding a `.git` entry — a directory,
+ * or the FILE a linked worktree carries — or `''` when none does. The no-spawn
+ * rung under `gitToplevel()` in `sessionRootOf()`: git's own repo discovery
+ * walks up looking for exactly this entry, so where git answers, both agree.
+ * Existence only — the entry is not validated, which git would do.
+ *
+ * @param {string} cwd
+ * @returns {string}
+ */
+function dotGitAncestorOf(cwd) {
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, '.git'))) return dir;
+    if (path.dirname(dir) === dir) return '';
+  }
 }
 
 /**
@@ -2305,10 +2336,11 @@ async function main() {
   // Listed at `cwd`'s toplevel ONLY: the declared paths are repo-relative to the
   // repo the agents edit, which is the one the session works in (after entering
   // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot`;
-  // when git could not, `sessionRoot` falls back to `$CLAUDE_PROJECT_DIR` or a
-  // bare `cwd` — another repo, or a subdirectory from which `ls-files` answers
-  // subdir-relative (the review-MED class above) — so the listing degrades
-  // (matrix row 8) instead of following it there.
+  // when git could not, `sessionRoot` falls back to a `.git` ancestor (git just
+  // failed there), `$CLAUDE_PROJECT_DIR` or a bare `cwd` — another repo, or a
+  // subdirectory from which `ls-files` answers subdir-relative (the review-MED
+  // class above) — so the listing degrades (matrix row 8) instead of following
+  // it there.
   const known = trackedFilesIn(cwdToplevel, git);
   const knownFiles = known.files;
 

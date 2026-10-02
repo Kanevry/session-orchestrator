@@ -1822,4 +1822,40 @@ describe('pre-task-scope-disjoint — session root and git budget (#1489)', () =
     expect(scopeEvents(dir, 'orchestrator.wave_dispatch.worktree_base_checked'))
       .toMatchObject([{ stale: null, skipped: 'git-budget', decision: 'allow' }]);
   }, 30_000);
+
+  it('keeps state at the .git ancestor of cwd when the toplevel lookup TIMES OUT, never at $CLAUDE_PROJECT_DIR', () => {
+    // Bug caught (review MED on 63f35e8c): `gitToplevel()` answers '' on ANY
+    // error — the shared-budget timeout too — and `sessionRootOf()` then fell
+    // back to `$CLAUDE_PROJECT_DIR`, the LAUNCH dir of a session that entered a
+    // worktree. One hanging `rev-parse` put this dispatch's claim into the launch
+    // root's ledger (under wave key `w?`, wiping a main-checkout session's claims)
+    // and left it out of the worktree's — the next collision there ALLOWED.
+    const launch = makeProjectDir();
+    const repo = makeProjectDir();
+    // A linked worktree's `.git` is a FILE; the fallback only checks it exists.
+    writeFileSync(path.join(repo, '.git'), 'gitdir: /nonexistent/.git/worktrees/wt\n');
+    mkdirSync(path.join(repo, '.claude'));
+    writeFileSync(path.join(repo, '.claude', 'wave-scope.json'), JSON.stringify({ wave: 2, role: 'impl' }));
+    const sub = path.join(repo, 'sub');
+    mkdirSync(sub);
+    const bin = path.join(repo, 'fake-bin');
+    mkdirSync(bin);
+    // The same hanging fake git as the test above: `git rev-parse …` runs the
+    // never-ending `<cwd>/rev-parse` through a symlink to node.
+    symlinkSync(process.execPath, path.join(bin, 'git'));
+    writeFileSync(path.join(sub, 'rev-parse'), 'setInterval(() => {}, 1000);\n');
+
+    const res = runHook(dispatchPayload({ cwd: sub, id: 'Agent T', files: ['scripts/t.mjs'] }), {
+      env: { CLAUDE_PROJECT_DIR: launch, PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+    });
+
+    expectAllow(res);
+    expect(existsSync(path.join(launch, LEDGER_REL))).toBe(false);
+    expect(scopeEvents(launch)).toEqual([]);
+    const ledger = JSON.parse(readFileSync(path.join(repo, LEDGER_REL), 'utf8'));
+    expect(ledger.waveKey).toBe('s1|w2|impl');
+    expect(ledger.agents.map((a) => a.id)).toEqual(['Agent T (code-implementer)']);
+    // `budget-exhausted` proves the toplevel lookup really timed out.
+    expect(scopeEvents(repo)).toMatchObject([{ ledger_result: 'allow', wave: 2, known_files_skipped: 'budget-exhausted' }]);
+  }, 30_000);
 });
