@@ -96,7 +96,8 @@
  *                     NOT flagged: blocks that control the clock (`now:`, `{ now }`
  *                     or a positional `now` — wider than the seam proof, #1478 —
  *                     `vi.useFakeTimers` / `vi.setSystemTime`, also when called
- *                     in the shared setup). A handover whose value IS the real
+ *                     in the setup at module level or in a `describe` that
+ *                     encloses the block). A handover whose value IS the real
  *                     clock is no control (#1487): inline (`{ now: Date.now() }`)
  *                     or through a binding in the same block
  *                     (`const now = new Date(); fn(now)`) or in the shared setup
@@ -402,8 +403,13 @@ const REAL_CLOCK_READ = /\bDate\.now\(\)|\bnew Date\(\s*\)|\bperformance\.now\(\
  */
 const CLOCK_BINDING = new RegExp(String.raw`${CLOCK_NAME}=(?![=>])(.*)`);
 
-/** Freezing the global clock — equally valid control, but not a seam PROOF. */
-const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
+/**
+ * Freezing the global clock — equally valid control, but not a seam PROOF. Only
+ * the INSTALLERS count: `advanceTimersByTime` / `runAllTimers` move a clock some
+ * installer already faked and freeze nothing on their own, so a block that only
+ * advances timers is controlled exactly when an installer reaches it.
+ */
+const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime)\b/;
 
 /**
  * Vitest aliases that resolve to the repo's own modules — source of truth is
@@ -638,16 +644,40 @@ function declaredHookSubjects(lines) {
  * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
  */
 function testBlocks(lines) {
-  const OPENER = /^(\s*)(?:it|test)(?:\.\w+)*\s*\(/;
-  const SIBLING = /^\s*(?:it|test|describe)(?:\.\w+)*\s*\(/;
+  return callRanges(lines, /^(\s*)(?:it|test)(?:\.\w+)*\s*\(/, /^\s*(?:it|test|describe)(?:\.\w+)*\s*\(/);
+}
+
+/**
+ * Split a file into `describe(` blocks, segmented like {@link testBlocks} but
+ * with no sibling fallback: a `describe` without its own same-indentation `});`
+ * runs to the end of the file. Over-inclusion is again the safe direction for
+ * its one consumer (B5's setup fake-timer scope): a wider `describe` can only
+ * exempt more blocks, never invent a finding.
+ * @param {string[]} lines
+ * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
+ */
+function describeBlocks(lines) {
+  return callRanges(lines, /^(\s*)describe(?:\.\w+)*\s*\(/, null);
+}
+
+/**
+ * Shared segmenter: every line matching `opener` (group 1 = its indentation)
+ * opens a range that ends after the first later line closing at the SAME
+ * indentation (`});`), or before the first `sibling` line, or at end of file.
+ * @param {string[]} lines
+ * @param {RegExp} opener
+ * @param {RegExp|null} sibling
+ * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
+ */
+function callRanges(lines, opener, sibling) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = OPENER.exec(lines[i]);
+    const m = opener.exec(lines[i]);
     if (!m) continue;
     const closer = new RegExp(`^${m[1]}\\}\\)`);
     let end = lines.length;
     for (let j = i + 1; j < lines.length; j++) {
-      if (SIBLING.test(lines[j])) {
+      if (sibling?.test(lines[j])) {
         end = j;
         break;
       }
@@ -813,9 +843,15 @@ function scanClockBombs(relPath, content, lines) {
   // beforeEach): where an echo may come from, and where a clock may be bound or
   // frozen for the blocks below it. Never a sibling test — its assertions,
   // titles and clock literals say nothing about this block's inputs.
-  // A block without its own `});` (a one-line it) runs on to the next sibling
-  // and takes the setup lines in between out of sharedSetup — that direction can
-  // only add a finding, never hide one (1.4% of blocks, measured 2026-09-30).
+  // CEILING (BV-004): a block without its own same-indentation `});` (a
+  // `}, 10_000);` close, an expression-bodied arrow) runs on to the next sibling
+  // and takes the setup lines in between out of sharedSetup. Both directions
+  // follow: a swallowed `now = Date.now()` hides a finding, a swallowed fake
+  // timer adds one. Measured 2026-10-02 @ 46e6695b over 722 test files: 221 of
+  // 15,644 blocks lack the closer, 1 of them swallows a beforeAll/beforeEach,
+  // none a fake-timer install; 0 blocks are one-line its. REVISIT when a
+  // swallowed setup line binds or freezes a clock — then end such blocks on
+  // their own close instead of the sibling (testBlocks() also feeds B2/B3).
   /** @type {Set<number>} */
   const inBlock = new Set();
   for (const { start, end } of ranges) for (let q = start; q < end; q++) inBlock.add(q);
@@ -823,10 +859,23 @@ function scanClockBombs(relPath, content, lines) {
   const setupLive = sharedSetup.filter((l) => !isCommentLine(l));
   const setupBindings = clockBindings(setupLive);
   // A clock frozen in setup (`beforeEach(() => vi.setSystemTime(…))`) controls
-  // every block, including a `now = Date.now()` bound after it. File-wide like
-  // sharedSetup, so a fake timer in one `describe` also exempts the others —
-  // the precision-first direction, it can only remove findings (#1489 item 16).
-  const setupFakeTimer = setupLive.some((l) => FAKE_TIMER.test(l));
+  // every block it reaches, including a `now = Date.now()` bound after it — and
+  // it reaches only the blocks vitest runs it for: all of them from module level,
+  // only its own `describe`'s from inside one. A fake timer in a SIBLING
+  // `describe` exempted every block in the file until 2026-10-02 and kept a
+  // genuine bomb silent (review of 3206ab24). `null` = module level.
+  const describes = describeBlocks(lines);
+  /** @type {Array<{start: number, end: number}|null>} */
+  const setupTimerScopes = [];
+  lines.forEach((l, q) => {
+    if (inBlock.has(q) || isCommentLine(l) || !FAKE_TIMER.test(l)) return;
+    // Innermost enclosing describe: ranges nest, so the latest start that still holds q.
+    const holders = describes.filter((d) => d.start <= q && q < d.end);
+    setupTimerScopes.push(holders.length > 0 ? holders[holders.length - 1] : null);
+  });
+  /** @param {number} start */
+  const setupFreezes = (start) =>
+    setupTimerScopes.some((d) => d === null || (d.start < start && start < d.end));
 
   const blocks = ranges.map(({ start, end }) => {
     const body = lines.slice(start, end);
@@ -837,7 +886,7 @@ function scanClockBombs(relPath, content, lines) {
       body,
       provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
       hasClockArg: live.some((l) => handsOverControlledClock(l, realClock)),
-      hasFakeTimer: setupFakeTimer || live.some((l) => FAKE_TIMER.test(l)),
+      hasFakeTimer: setupFreezes(start) || live.some((l) => FAKE_TIMER.test(l)),
     };
   });
 

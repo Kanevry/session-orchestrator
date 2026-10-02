@@ -87,6 +87,11 @@
  *      stays silent (#1489 item 16). The counter-examples pin the precision side
  *      of reading the setup: a block's own rebinding, a clock frozen in setup,
  *      and a name the file-wide setup binds both ways.
+ *  24. B5 lets a setup fake timer exempt the whole file → a `vi.useFakeTimers()`
+ *      in one `describe`'s beforeEach silences a real-clock bomb in a SIBLING
+ *      `describe` it never runs for (review of 3206ab24); or counts a bare
+ *      `advanceTimersByTime` as freezing the clock. The counter-example pins the
+ *      other side: a fake timer in an ENCLOSING `describe` still exempts.
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -614,6 +619,41 @@ describe('check-test-value-bans — B5 date-literal time bombs', () => {
     expect(json.findings[0]).toMatchObject({ file: 'tests/setup-clock.test.mjs', line, ban: 'B5-date-time-bomb' });
   });
 
+  // Review of 3206ab24: the fake timer lives in a SIBLING describe's beforeEach, which vitest never runs for the bomb.
+  it.each([
+    ['the block only reads the real clock', [], 16],
+    ['the block also advances timers no installer of its own faked', ['    vi.advanceTimersByTime(1_000);'], 17],
+  ])('flags a real-clock bomb although a sibling `describe` installs a fake timer (%s)', (_shape, extra, line) => {
+    const { json } = scan({
+      'tests/sibling-timer.test.mjs': [
+        EMITTER_IMPORT,
+        "describe('under a frozen clock', () => {",
+        '  beforeEach(() => {',
+        '    vi.useFakeTimers();',
+        '  });',
+        ...SEAM_BLOCK.map((l) => `  ${l}`),
+        '});',
+        '',
+        "describe('against the live clock', () => {",
+        "  it('derives the per-type expiry', () => {",
+        '    const now = Date.now();',
+        ...extra,
+        '    const meta = toActivationMetadata(learning, { now });',
+        "    expect(meta.expiresAt).toBe('2026-08-05');",
+        '  });',
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/sibling-timer.test.mjs',
+      line,
+      ban: 'B5-date-time-bomb',
+    });
+  });
+
   it('says nothing when no block in the file ever injects a clock', () => {
     // The seam proof is what puts a subject in scope. A pure input→output date
     // function never grows a `now` parameter, so it is out of scope by
@@ -800,6 +840,38 @@ describe('check-test-value-bans — B5 counter-examples', () => {
     ],
   ])('does not flag a block whose `now` is controlled although the setup binds it too (%s)', (_shape, body) => {
     const { json } = scan({ 'tests/setup-control.test.mjs': [EMITTER_IMPORT, ...body, ''].join('\n') });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  // Precision side of the describe scope: vitest runs a describe's beforeEach for every block it encloses.
+  it.each([
+    ['the block sits directly in that describe', ["  it('derives the per-type expiry', () => {"], ['  });']],
+    [
+      // Catches a scope check that demands the timer's describe be the block's INNERMOST one.
+      'the block sits in a describe nested inside it',
+      ["  describe('per type', () => {", "    it('derives the per-type expiry', () => {"],
+      ['    });', '  });'],
+    ],
+  ])('does not flag a real-clock block an enclosing `describe` freezes the clock for (%s)', (_shape, open, close) => {
+    const { json } = scan({
+      'tests/enclosing-timer.test.mjs': [
+        EMITTER_IMPORT,
+        ...SEAM_BLOCK,
+        '',
+        "describe('under a frozen clock', () => {",
+        '  beforeEach(() => {',
+        "    vi.setSystemTime(new Date('2026-07-05T00:00:00Z'));",
+        '  });',
+        ...open,
+        '    const now = Date.now();',
+        '    const meta = toActivationMetadata(learning, { now });',
+        "    expect(meta.expiresAt).toBe('2026-08-05');",
+        ...close,
+        '});',
+        '',
+      ].join('\n'),
+    });
 
     expect(json.counts['B5-date-time-bomb']).toBe(0);
   });
