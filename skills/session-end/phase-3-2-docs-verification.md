@@ -31,11 +31,12 @@ process.stdout.write(JSON.stringify(tasks));
 ⚠ Phase 3.2: docs-tasks parse error — <reason>. Manual docs verification required.
 ```
 
-## Step 2 — Read SESSION_START_REF
+## Step 2 — Resolve SESSION_RANGE
 
-Read `session-start-ref` from STATE.md frontmatter. Full accessor and fallback chain are documented in `plan-verification.md § SESSION_START_REF accessor`. Summary:
-- Primary: `session-start-ref` field in STATE.md frontmatter.
-- Fallback: `git diff --name-only origin/main...HEAD` (no specific base SHA).
+Run the accessor in `plan-verification.md § SESSION_START_REF accessor`; it exports `$SESSION_RANGE`, one complete diff range. Summary:
+- Primary: the pinned `session-start-ref` from STATE.md frontmatter → `<sha>..HEAD`.
+- Field absent: the baseline `resolveBaselineRange()` resolves → `<base>...HEAD` (never a hard-coded `origin/main`).
+- Nothing resolves: `$SESSION_RANGE` is empty and the accessor names `no-baseline-ref` or `unresolvable-ref` — log `⚠ Phase 3.2: no session range (<reason>). Docs verification skipped.` and skip Phase 3.2. Never treat the empty range as "no docs changed".
 
 If `git diff` itself fails (network issue, corrupt repo), log:
 ```
@@ -46,7 +47,7 @@ and skip Phase 3.2. This is an explicit error, not a silent skip.
 ## Step 3 — Compute changed files
 
 ```bash
-CHANGED_FILES=$(git diff --name-only "$SESSION_START_REF..HEAD")
+CHANGED_FILES=$(git diff --name-only "$SESSION_RANGE")
 ```
 
 Cache this list for the per-task loop below. If the command exits non-zero, surface the error per the guard above and skip Phase 3.2.
@@ -75,7 +76,7 @@ For each `task` in `docs-tasks`:
 
 3. **Matched → inspect diff:**
    ```bash
-   git diff "$SESSION_START_REF..HEAD" -- <matched-file>
+   git diff "$SESSION_RANGE" -- <matched-file>
    ```
    - **Substantive content change** (non-whitespace, non-comment-only lines added/removed): outcome `ok`.
    - **Whitespace-only or structural-only diff** (no prose or code content changed): outcome `gap`.
