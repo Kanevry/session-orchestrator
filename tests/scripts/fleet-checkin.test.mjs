@@ -8,7 +8,9 @@
  *   - a traversal session id writing outside `checkin/`;
  *   - the event leaking `auftrag_ref`, or misreporting the navigator state;
  *   - stdout lacking the navigator address session-start must address its hint
- *     to, or carrying one the lease validator refused.
+ *     to, or carrying one the lease validator refused;
+ *   - stdout lacking the fallback deadline, or one that waits for a navigator
+ *     that is not active (#1501 item 8: the deadline lived only as prose).
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -91,12 +93,20 @@ describe('fleet-checkin CLI', () => {
     expect(r.code, r.stderr).toBe(0);
     const out = JSON.parse(r.stdout.trim());
     const file = path.join(navDir, 'checkin', 'sess-1.json');
-    expect(out).toEqual({ ok: true, path: file, navigator_state: 'none', navigator_adresse: null, event: true });
+    const content = JSON.parse(await fs.readFile(file, 'utf8'));
+    // No active navigator: nobody will write auflagen/, so the fallback is due at once.
+    expect(out).toEqual({
+      ok: true,
+      path: file,
+      navigator_state: 'none',
+      navigator_adresse: null,
+      fallback_due_at: content.zeit,
+      event: true,
+    });
 
     expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
     expect((await fs.stat(path.join(navDir, 'checkin'))).mode & 0o777).toBe(0o700);
 
-    const content = JSON.parse(await fs.readFile(file, 'utf8'));
     expect(content.zeit).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(validateCheckin(content)).toEqual([]);
 
@@ -131,11 +141,12 @@ describe('fleet-checkin CLI', () => {
 
   // navigator_adresse is what session-start addresses its one hint to: only a
   // value the lease validator accepted may ever reach it, never a raw string.
+  // fallback_due_at: 10 min after zeit only while a navigator is active; an unreadable lease is no navigator.
   it.each([
-    ['a lease without adresse', {}, 'active', null],
-    ['a lease with a peer-name adresse', { adresse: 'navigator-d7' }, 'active', 'navigator-d7'],
-    ['an adresse the validator refuses', { adresse: 'navigator-d7\u001b[2J; rm' }, 'unreadable', null],
-  ])('%s → navigator_state + navigator_adresse on stdout', async (_shape, extra, state, adresse) => {
+    ['a lease without adresse', {}, 'active', null, 600_000],
+    ['a lease with a peer-name adresse', { adresse: 'navigator-d7' }, 'active', 'navigator-d7', 600_000],
+    ['an adresse the validator refuses', { adresse: 'navigator-d7\u001b[2J; rm' }, 'unreadable', null, 0],
+  ])('%s → navigator_state, navigator_adresse and the fallback deadline on stdout', async (_shape, extra, state, adresse, fallbackAfterMs) => {
     const now = Date.now();
     await fs.mkdir(path.join(navDir, 'leases'), { recursive: true });
     await fs.writeFile(
@@ -152,6 +163,8 @@ describe('fleet-checkin CLI', () => {
     expect(r.code, r.stderr).toBe(0);
     const out = JSON.parse(r.stdout.trim());
     expect(out).toMatchObject({ navigator_state: state, navigator_adresse: adresse });
+    const content = JSON.parse(await fs.readFile(path.join(navDir, 'checkin', 'sess-1.json'), 'utf8'));
+    expect(Date.parse(out.fallback_due_at) - Date.parse(content.zeit)).toBe(fallbackAfterMs);
     const events = (await readEvents()).filter((e) => e.event === 'orchestrator.fleet.checkin');
     expect(events[0].navigator_state).toBe(state);
   });

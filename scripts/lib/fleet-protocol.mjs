@@ -10,8 +10,11 @@
  *   <navigatorDir>/auflagen/<session_id>.json   — conditions issued to a session
  *
  * `<navigatorDir>` is `NAVIGATOR_CONFIG_DIR` (trimmed; empty/whitespace counts as
- * unset) or `<home>/.config/navigator`. Files are 0600, directories 0700,
- * timestamps `date -u +%FT%TZ` (`YYYY-MM-DDTHH:MM:SSZ`).
+ * unset) or `<home>/.config/navigator`. Files are 0600, directories 0700.
+ * Check-in and lease timestamps are UTC with `Z`, in a form per file: the
+ * check-in's `zeit` is seconds, `date -u +%FT%TZ` (`YYYY-MM-DDTHH:MM:SSZ`,
+ * stamped by the CLI); the lease's `seit` / `laeuft_ab` are seconds or
+ * milliseconds (`LEASE_TS_RE`); the auflagen content belongs to the navigator.
  *
  * "A navigator is active" means exactly one thing: a readable, well-formed lease
  * whose `laeuft_ab` lies in the future. Everything else is fail-closed — an
@@ -120,6 +123,21 @@ export function auflagenPath(sessionId, opts) {
  */
 export function utcSecondsTimestamp(date = new Date()) {
   return date.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+/**
+ * When the Standard-Auflagen apply to a check-in written at `zeit` if no
+ * `auflagen/<session_id>.json` has appeared: {@link CHECKIN_FALLBACK_MIN} later
+ * while a navigator is active (it may still write one), and at `zeit` itself
+ * otherwise — with no active navigator nobody will, so the fallback is due at
+ * once (#1501 item 8: this deadline lived only as prose in session-start).
+ * @param {string} zeit the check-in's `zeit`, as {@link utcSecondsTimestamp} writes it
+ * @param {'active'|'none'|'unreadable'} navigatorState from {@link readNavigatorLease}
+ * @returns {string} same form as `zeit`
+ */
+export function fallbackDueAt(zeit, navigatorState) {
+  if (navigatorState !== 'active') return zeit;
+  return utcSecondsTimestamp(new Date(Date.parse(zeit) + CHECKIN_FALLBACK_MIN * 60_000));
 }
 
 /** @param {unknown} v */

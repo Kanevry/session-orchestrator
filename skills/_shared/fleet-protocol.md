@@ -22,8 +22,11 @@ Feld, sondern ein Zustand ohne Beleg.
   eine „aktive" Lease vortäuschen.
 - Verzeichnisse Modus `0700`, Dateien Modus `0600`. Schreiben immer atomar (tmp-Datei im
   Zielverzeichnis, dann `rename`).
-- Jede Datei trägt `zeit` aus `date -u +%FT%TZ` (Sekunden, `YYYY-MM-DDTHH:MM:SSZ`); nie geschätzt,
-  nie aus einer anderen Uhr. Code: `utcSecondsTimestamp()`.
+- Zeiten in Check-in und Lease stehen in UTC mit `Z`; eine Zeit ohne `Z` oder mit Offset ist dort
+  ungültig. Die Form hängt an der Datei: Nur der Check-in trägt `zeit`, in Sekunden wie `date -u +%FT%TZ`
+  (`YYYY-MM-DDTHH:MM:SSZ`), gesetzt von der CLI, nie geschätzt, nie aus einer anderen Uhr (Code:
+  `utcSecondsTimestamp()`). Die Lease trägt `seit` und `laeuft_ab` in Sekunden oder Millisekunden
+  (Tabelle unten, Code: `LEASE_TS_RE`). Inhalt und Form der Auflagen gehören dem Navigator.
 - Dateinamen aus einer `session_id` sind pfadsicher: nur `[A-Za-z0-9._-]`, 1–128 Zeichen, nicht
   `.` oder `..`, kein `/`. Code: `isSafeSessionId()`; `checkinPath()` und `auflagenPath()` werfen
   sonst.
@@ -65,10 +68,12 @@ Operations-Route). Schreiber: `node scripts/fleet-checkin.mjs` liest das JSON vo
 `zeit` (überschreibt immer), validiert (`validateCheckin()`), schreibt atomar mit Modus 0600 und
 emittiert `orchestrator.fleet.checkin` (Payload `session`, `repo`, `modus`, `kandidaten`,
 `navigator_state` — keine Pfade, keine Quota, kein `auftrag_ref`). stdout: eine JSON-Zeile
-`{ ok, path, navigator_state, navigator_adresse, event }`; `navigator_adresse` ist die vom
-Lease-Validator akzeptierte `adresse` einer aktiven Lease, sonst `null` (keine aktive Lease, kein
-Eintrag oder ein abgelehnter Wert — nie ein ungeprüfter String). Exit 0 geschrieben, 2 ungültige
-Eingabe (Fehlerliste auf stderr, keine Datei), 1 Schreibfehler.
+`{ ok, path, navigator_state, navigator_adresse, fallback_due_at, event }`; `navigator_adresse` ist
+die vom Lease-Validator akzeptierte `adresse` einer aktiven Lease, sonst `null` (keine aktive
+Lease, kein Eintrag oder ein abgelehnter Wert — nie ein ungeprüfter String). `fallback_due_at` ist
+der Zeitpunkt, ab dem die Standard-Auflagen (unten) gelten, in der Form von `zeit` (Code:
+`fallbackDueAt()`); er steht nur auf stdout, die Check-in-Datei behält ihr Schema. Exit 0
+geschrieben, 2 ungültige Eingabe (Fehlerliste auf stderr, keine Datei), 1 Schreibfehler.
 
 | Feld | Inhalt |
 |---|---|
@@ -98,8 +103,10 @@ Bedingungen, die der Navigator einer Session schreibt (z. B. Agent-Caps, volle P
 Offload-Regel, Merge- und Zeitregeln, Besitzkonflikte); Inhalt und Form gehören dem Navigator. Die
 Session **liest** die Datei; sie wartet auf keine Nachricht. Keine Auflage ist eine Freigabe.
 
-**Standard-Auflagen (konservative Stufe).** Sie gelten, wenn `CHECKIN_FALLBACK_MIN` = 10 Minuten
-nach `checkin.zeit` keine Auflagen-Datei liegt — und sofort, wenn kein Navigator aktiv ist:
+**Standard-Auflagen (konservative Stufe).** Sie gelten ab `fallback_due_at` (stdout der
+Check-in-CLI), wenn bis dahin keine Auflagen-Datei liegt. Die Frist rechnet `fallbackDueAt()`:
+`CHECKIN_FALLBACK_MIN` = 10 Minuten nach `checkin.zeit`, solange ein Navigator aktiv ist; ohne
+aktiven Navigator ist `fallback_due_at` gleich `zeit`, die Auflagen gelten also sofort:
 
 - Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host ≥ 50 % Speicher frei hat.
 - Pipelines: ≤ 2 volle je Repo; Nachzug-Pushes vorher im Check-in (`bedarf`) benennen.

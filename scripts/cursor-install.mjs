@@ -15,7 +15,17 @@
  *   1 — source rules not found, or TARGET is not an existing directory
  */
 
-import { existsSync, mkdirSync, readdirSync, symlinkSync, statSync, lstatSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readlinkSync,
+  symlinkSync,
+  statSync,
+  lstatSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -66,7 +76,9 @@ function _isDir(p) {
 function linkPath(source, dest, label) {
   mkdirSync(path.dirname(dest), { recursive: true });
   if (_isSymlink(dest)) {
-    process.stdout.write(`  SKIP: ${label} (symlink exists)\n`);
+    // existsSync follows the link: false means it points at nothing.
+    const state = existsSync(dest) ? 'symlink exists' : 'dangling symlink — not replacing';
+    process.stdout.write(`  SKIP: ${label} (${state})\n`);
     return 'skip';
   }
   if (existsSync(dest)) {
@@ -118,6 +130,38 @@ if (_isDir(SOURCE_SKILLS_DIR)) {
     if (result === 'link') skillLinks += 1;
   }
 }
+
+/**
+ * Remove the links an earlier install left for a wrapper this plugin no longer
+ * ships (#1501 item 6: 05c0264f dropped `commands/navigator.md` and
+ * `skills/navigator`, and every installed project kept a dead link). An entry is
+ * removed only when it is a symlink, dangles, AND resolves inside this plugin's
+ * `.cursor/<kind>/` — so it is provably ours. Regular files and live links are
+ * the project's own; a dangling link into another root is not ours to delete
+ * and gets a WARN — unless this plugin ships that name, where linkPath() has
+ * already reported it as dangling.
+ * @param {'rules'|'commands'|'skills'} kind
+ */
+function pruneDeadLinks(kind) {
+  const sourceDir = path.join(SO_ROOT, '.cursor', kind);
+  const targetDir = path.join(TARGET, '.cursor', kind);
+  if (!_isDir(targetDir)) return;
+  for (const name of readdirSync(targetDir)) {
+    const dest = path.join(targetDir, name);
+    if (!_isSymlink(dest) || existsSync(dest)) continue;
+    const pointsTo = path.resolve(path.dirname(dest), readlinkSync(dest));
+    const rel = path.relative(sourceDir, pointsTo);
+    const ours = rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+    if (ours) {
+      unlinkSync(dest);
+      process.stdout.write(`  PRUNE: ${kind}/${name} (dangling link into ${sourceDir})\n`);
+    } else if (!existsSync(path.join(sourceDir, name))) {
+      process.stdout.write(`  WARN: ${kind}/${name} (dangling link outside this plugin, left alone: ${pointsTo})\n`);
+    }
+  }
+}
+
+for (const kind of ['rules', 'commands', 'skills']) pruneDeadLinks(kind);
 
 function renderHooksJson(soRoot) {
   const runNode = shQuote(path.join(soRoot, 'hooks', 'run-node.sh'));
