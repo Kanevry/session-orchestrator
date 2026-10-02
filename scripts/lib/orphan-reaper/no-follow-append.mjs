@@ -65,6 +65,15 @@ export function appendNoFollow(target, data) {
   try {
     const stats = fstatSync(fd);
     if (!stats.isFile()) throw notARegularFile();
+    // nlink 0: the name was replaced between open and fstat (a concurrent prune
+    // renames a fresh inode over it). Not a planted link — say so, so the
+    // operator does not go hunting for one.
+    if (stats.nlink === 0) {
+      throw Object.assign(
+        new Error('replaced while being opened (a concurrent rewrite renamed a new file over it) — this record was not written'),
+        { code: 'ERR_UNLINKED' },
+      );
+    }
     if (stats.nlink !== 1) {
       throw Object.assign(
         new Error(`hard-linked (${stats.nlink} names) — an append would write into every one of them; left untouched`),

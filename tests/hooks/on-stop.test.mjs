@@ -256,6 +256,10 @@ describe('Stop event with session_id', { timeout: 15000 }, () => {
     // is why 8.127 of 8.127 fleet records carried a fabricated zero.
     expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
     expect(Object.hasOwn(record, 'duration_source')).toBe(false);
+    // #1489 — the reaper is disabled by default, so the trigger outcome key is
+    // ABSENT, never `"disabled"`: a value on every record of every host would be
+    // the always-on signal HR-101 rejects.
+    expect(Object.hasOwn(record, 'reaper_trigger')).toBe(false);
     expect(Number.isInteger(record.wave)).toBe(true);
   });
 });
@@ -445,6 +449,8 @@ describe('issue #32 — legacy agent_name is ignored', { timeout: 15000 }, () =>
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.agent.stopped');
     expect(Object.hasOwn(record, 'agent')).toBe(false);
+    // #1489 — default config: no reaper_trigger key on SubagentStop either.
+    expect(Object.hasOwn(record, 'reaper_trigger')).toBe(false);
   });
 });
 
