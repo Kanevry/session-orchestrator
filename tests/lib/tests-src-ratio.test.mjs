@@ -91,6 +91,13 @@ const FIXTURE = {
   'tests/fixtures/golden.json': '{\n"a":1\n}\n',
   'tests/README.md': 'x\n'.repeat(50),
   'docs/guide.md': 'y\n'.repeat(99),
+  // Shell — counted in NEITHER bucket (#1488 variant B), reported under
+  // excludedScope.shell instead. Every existing ratio assertion above doubles as
+  // the "shell never moves the ratio" pin. src-shell 11 + 2 = 13, test-shell 4 + 6 = 10.
+  'scripts/deploy.sh': 's\n'.repeat(11), // src-shell
+  'hooks/pre.bash': 's\n'.repeat(2), // src-shell
+  'tests/helpers/setup.sh': 't\n'.repeat(4), // test-shell: top-level tests/
+  'ci/smoke.bats': 't\n'.repeat(6), // test-shell: .bats anywhere
 };
 
 const EXPECTED_SRC_LOC = 19;
@@ -340,6 +347,16 @@ describe('CLI contract', () => {
     expect(parsed.definition.numerator).toMatch(/__tests__\//);
     expect(parsed.definition.denominator).toMatch(/negation/);
     expect(parsed.definition.lineRule).toMatch(/physical lines/);
+  });
+
+  it('reports tracked shell under excludedScope.shell instead of dropping it silently (#1488)', () => {
+    // The bug: .sh/.bash/.bats sat in neither bucket AND nowhere in the envelope,
+    // so a reader could not tell "no shell" from "2.5k shell lines unmeasured".
+    const parsed = JSON.parse(runCli(['--json']));
+    expect(parsed.ratio).toBe(1.4737); // variant B: the ratio itself does not move
+    expect(parsed.excludedScope).toEqual({
+      shell: { files: 4, loc: 23, testFiles: 2, testLoc: 10, srcFiles: 2, srcLoc: 13, skipped: 0 },
+    });
   });
 
   it('exits 0 under --check while inside the corridor', () => {

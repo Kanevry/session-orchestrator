@@ -28,6 +28,8 @@
  *                anywhere: basename `*.test.<ext>` / `*.spec.<ext>`, or any file
  *                under a `__tests__/` directory
  *   denominator  every OTHER tracked code file
+ *   reported     tracked shell (EXCLUDED_SHELL_EXTENSIONS) — in NEITHER bucket,
+ *                its volume shipped as `excludedScope.shell` (#1488, variant B)
  *
  * ## The four questions, answered in code rather than left open
  *
@@ -123,10 +125,30 @@ export const DECLARATION_SUFFIXES = Object.freeze(['.d.ts', '.d.mts', '.d.cts'])
 export const TEST_PREFIX = 'tests/';
 
 /**
+ * Shell extensions the ratio deliberately does NOT count (#1488, owner decision
+ * 2026-10-02, variant B): they stay out of numerator and denominator, but their
+ * volume is MEASURED and reported under `excludedScope.shell`, so "this repo has
+ * no shell" and "this repo has 2.5k unmeasured shell lines" stop looking alike.
+ * Detection is by extension only — an extensionless shebang script (`.husky/*`)
+ * is not seen; sniffing shebangs would mean reading every extensionless tracked
+ * file inside a synchronous session-start probe.
+ */
+export const EXCLUDED_SHELL_EXTENSIONS = Object.freeze(['.sh', '.bash', '.bats']);
+
+/**
  * Co-located test files, wherever they sit: a `*.test.<ext>` / `*.spec.<ext>`
  * basename (the vitest/jest default include shape) or a `__tests__/` segment.
  */
 const COLOCATED_TEST_RE = /\.(test|spec)\.[^./]+$|(^|\/)__tests__\//;
+
+/**
+ * The one test-corpus rule, shared by the counted code buckets and the reported
+ * shell scope so the two can never split a path differently.
+ * @param {string} p normalised repo-relative path
+ */
+function isTestCorpusPath(p) {
+  return p.startsWith(TEST_PREFIX) || COLOCATED_TEST_RE.test(p);
+}
 
 /**
  * A tracked path that LOOKS like a test, counted or not: a `*.test.*` / `*.spec.*`
@@ -168,7 +190,21 @@ export function classifyPath(relPath) {
   const p = String(relPath).replace(/\\/g, '/').replace(/^\.\//, '');
   if (!CODE_EXTENSIONS.some((ext) => p.endsWith(ext))) return null;
   if (DECLARATION_SUFFIXES.some((ext) => p.endsWith(ext))) return null;
-  return p.startsWith(TEST_PREFIX) || COLOCATED_TEST_RE.test(p) ? 'test' : 'src';
+  return isTestCorpusPath(p) ? 'test' : 'src';
+}
+
+/**
+ * Which half of the EXCLUDED shell scope a path falls into — reported, never
+ * counted in the ratio. `.bats` is a test framework's own extension, so it is
+ * test-shell anywhere; any other shell file follows the code rule above.
+ *
+ * @param {string} relPath repo-relative path
+ * @returns {'test'|'src'|null} null = not shell
+ */
+function classifyShellPath(relPath) {
+  const p = String(relPath).replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!EXCLUDED_SHELL_EXTENSIONS.some((ext) => p.endsWith(ext))) return null;
+  return p.endsWith('.bats') || isTestCorpusPath(p) ? 'test' : 'src';
 }
 
 /**
@@ -209,7 +245,9 @@ export function countPhysicalLines(content) {
  * @param {number} [opts.ceiling]
  * @returns {{testFiles:number,testLoc:number,srcFiles:number,srcLoc:number,ratio:number|null,
  *            ceiling:number,withinCorridor:boolean|null,consolidationWaveRequired:boolean|null,
- *            skipped:number,testLikeFilesSeen:number,reason:'no-tests-found'|null}}
+ *            skipped:number,testLikeFilesSeen:number,reason:'no-tests-found'|null,
+ *            excludedScope:{shell:{files:number,loc:number,testFiles:number,testLoc:number,
+ *                                  srcFiles:number,srcLoc:number,skipped:number}}}}
  */
 export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
   let testFiles = 0;
@@ -218,9 +256,31 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
   let srcLoc = 0;
   let skipped = 0;
   let testLikeFilesSeen = 0;
+  // Reported only — never added to testLoc/srcLoc (#1488 variant B). Always
+  // present, zeros included: a measured zero, not an absent measurement.
+  const shell = { files: 0, loc: 0, testFiles: 0, testLoc: 0, srcFiles: 0, srcLoc: 0, skipped: 0 };
 
   for (const rel of files) {
     if (isTestLikePath(rel)) testLikeFilesSeen++;
+    const shellBucket = classifyShellPath(rel);
+    if (shellBucket !== null) {
+      const content = readFile(rel);
+      if (content === null || content === undefined) {
+        shell.skipped++;
+        continue;
+      }
+      const lines = countPhysicalLines(content);
+      shell.files++;
+      shell.loc += lines;
+      if (shellBucket === 'test') {
+        shell.testFiles++;
+        shell.testLoc += lines;
+      } else {
+        shell.srcFiles++;
+        shell.srcLoc += lines;
+      }
+      continue;
+    }
     const bucket = classifyPath(rel);
     if (bucket === null) continue;
     const content = readFile(rel);
@@ -257,6 +317,7 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
       skipped,
       testLikeFilesSeen,
       reason: 'no-tests-found',
+      excludedScope: { shell },
     };
   }
 
@@ -275,6 +336,7 @@ export function measure({ files, readFile, ceiling = DEFAULT_CEILING }) {
     skipped,
     testLikeFilesSeen,
     reason: null,
+    excludedScope: { shell },
   };
 }
 
@@ -297,6 +359,11 @@ export function definitionOf(source) {
       `declaration files (${DECLARATION_SUFFIXES.map((x) => `*${x}`).join(', ')}: types, not ` +
       'executable code) and non-code extensions (.md, .json, .jsonl, .yml) on BOTH sides; ' +
       'untracked files (node_modules/, coverage/, scratch)',
+    excludedScope:
+      `shell (${EXCLUDED_SHELL_EXTENSIONS.join(' ')}, by extension only — extensionless shebang ` +
+      'scripts such as .husky/ hooks are not seen): counted in NEITHER bucket, its volume ' +
+      'reported under excludedScope.shell (#1488). test-shell = .bats anywhere, or the ' +
+      'numerator path rule above; every other shell file is src-shell. Same line rule.',
   };
 }
 
@@ -506,6 +573,9 @@ function main() {
     console.log('  denominator  every other tracked code file (src by negation)');
     console.log(`  code exts    ${CODE_EXTENSIONS.join(' ')}   (.md / .json never counted)`);
     console.log(`  excluded     declaration files ${DECLARATION_SUFFIXES.join(' ')} on both sides`);
+    console.log(
+      `  shell        ${EXCLUDED_SHELL_EXTENSIONS.join(' ')} counted nowhere, volume reported (excludedScope.shell)`,
+    );
     console.log('  lines        physical; blanks + comments counted; EOF-newline-insensitive');
     console.log('');
     console.log('  --json         machine-readable envelope on stdout');
@@ -575,9 +645,14 @@ function main() {
         ? 'within corridor'
         : `ABOVE ceiling ${result.ceiling} — TV-003 consolidation wave required`;
     const at = envelope.ref ? ` @ ${envelope.ref}${dirty ? '+dirty' : ''}` : '';
+    const sh = result.excludedScope.shell;
     writeStdoutLineSync(
       `tests:src = ${r}  (${result.testLoc} test LOC / ${result.srcLoc} src LOC` +
         `; ${result.testFiles} test + ${result.srcFiles} src files${at}) — ${verdict}` +
+        (sh.files > 0
+          ? `\n  excluded: shell ${sh.files} files / ${sh.loc} lines ` +
+            `(${sh.testFiles} test + ${sh.srcFiles} src files) — in neither bucket (#1488)`
+          : '') +
         (dirty ? '\n  NOTE: working tree is dirty — this number is NOT reproducible at that SHA' : ''),
     );
   }
