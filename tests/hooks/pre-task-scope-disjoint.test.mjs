@@ -17,7 +17,7 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync, spawn, execFileSync } from 'node:child_process';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, utimesSync, rmSync,
 } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1376,8 +1376,12 @@ describe('stale worktree base (#1485)', () => {
    * whose newest commit the default branch on origin does not have. No real
    * remote: the hook reads only the cached ref, exactly as the harness does
    * before it decides whether to fetch.
+   *
+   * `FETCH_HEAD` is written `fetchAgeMs` old: the harness refetches before it
+   * branches when that file is older than 24 h or absent, so only a FRESH one
+   * makes the cached ref the base a deny may be measured against.
    */
-  function makeGitRepo({ originAt = 'first' } = {}) {
+  function makeGitRepo({ originAt = 'first', fetchAgeMs = 0 } = {}) {
     const dir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-'));
     mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
     const git = (...args) => execFileSync('git', args, {
@@ -1405,6 +1409,10 @@ describe('stale worktree base (#1485)', () => {
     if (at !== undefined) {
       git('update-ref', 'refs/remotes/origin/main', at);
       git('symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main');
+      const fetchHead = path.resolve(dir, git('rev-parse', '--git-path', 'FETCH_HEAD'));
+      writeFileSync(fetchHead, `${at}\t\tbranch 'main' of https://example.org/repo\n`);
+      const fetchedAt = new Date(Date.now() - fetchAgeMs);
+      utimesSync(fetchHead, fetchedAt, fetchedAt);
     }
     return { dir, first, head, ahead };
   }
@@ -1649,6 +1657,25 @@ describe('stale worktree base (#1485)', () => {
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ stale: null, skipped: 'shallow', decision: 'allow' });
+    expect(events[0].head).toBeUndefined();
+  });
+
+  it('ALLOWS and records the skip when FETCH_HEAD is >24 h old or absent — the harness refetches first', () => {
+    // Bug caught: the hook compared HEAD against the CACHED origin/HEAD while
+    // the harness (Claude Code 2.1.287) first runs `git fetch origin <default>`
+    // when FETCH_HEAD is older than 24 h or missing, and branches from the
+    // FETCHED tip. After an upstream merge of HEAD with a stale local fetch the
+    // real base contains HEAD — and the hook DENIED a dispatch that was fine.
+    const { dir } = makeGitRepo({ fetchAgeMs: 25 * 60 * 60 * 1000 });
+
+    expectAllow(runWorktree(dir, worktreePayload(dir)));
+    // Never fetched since the clone: no FETCH_HEAD at all reads as stale too.
+    rmSync(path.join(dir, '.git', 'FETCH_HEAD'));
+    expectAllow(runWorktree(dir, worktreePayload(dir)));
+
+    const events = baseEvents(dir);
+    expect(events.map((ev) => ev.skipped)).toEqual(['stale-remote-ref', 'stale-remote-ref']);
+    expect(events[0]).toMatchObject({ stale: null, decision: 'allow' });
     expect(events[0].head).toBeUndefined();
   });
 

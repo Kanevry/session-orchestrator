@@ -114,10 +114,14 @@
  *
  * A deny-capable hook on the DISPATCH path has an asymmetric blast radius: a
  * false positive blocks every agent of the session (the guard becomes a session
- * outage), while a false negative is a double-assignment that three later gates
- * still catch (`validate-wave-scope.mjs`, `enforce-scope.mjs` at write time, and
- * the W5 verification pass). Fail-closed is right for a WRITE guard; it is wrong
- * here. Each row below is a deliberate choice, not an oversight:
+ * outage), while a false negative of the COLLISION check is a double-assignment
+ * that three later gates still catch (`validate-wave-scope.mjs`,
+ * `enforce-scope.mjs` at write time, and the W5 verification pass). The #1485
+ * stale-base check (row 15) has no such later gate — a missed stale base is an
+ * agent editing old code — so it is kept fail-open by a different rule: it
+ * denies only on a MEASUREMENT, and every unknown is ALLOW plus a record.
+ * Fail-closed is right for a WRITE guard; it is wrong here. Each row below is a
+ * deliberate choice, not an oversight:
  *
  *   | # | Condition                              | Decision            | Why |
  *   |---|----------------------------------------|---------------------|-----|
@@ -132,14 +136,17 @@
  *   | 9 | `findScopeCollisions` → not evaluable   | WARN + ALLOW        | the library says "not evaluable". Denying on a verdict with no witness is an assertion without evidence |
  *   |10 | same agent id re-dispatched         | ALLOW; predecessor pruned only when FINISHED | a retry after a failed agent is legitimate (a failed agent is finished), so the guard must not self-lock. #1480 B4: an unfinished predecessor is KEPT as a claim — a third agent hitting only its scope still collides. With distinct `tool_use_id`s on both it is an ordinary partner (row 11); without them it never collides with its own retry. Replaced WITHOUT a probe only where no claim is lost: the same `tool_use_id` (the same dispatch evaluated again), or — neither carrying an id — a predecessor wholly covered by the retry's scope |
  *   |10a| collision, but EVERY colliding prior agent has FINISHED (positive evidence) | ALLOW (+ prune) | the sequential repair pass. Its ledger records are pruned, so the state cannot re-block the next one either |
- *   |11 | collision with a prior agent still IN FLIGHT | **DENY**       | the one case this hook exists for |
+ *   |11 | collision with a prior agent still IN FLIGHT | **DENY**       | the case this hook was built for (#1020) |
  *   |12 | unexpected throw                       | ALLOW + stderr      | as row 2 |
  *   |13 | liveness probe throws / no positive evidence (no record, unknown result form) | treat as IN FLIGHT | keeps row 11 biting; the blind case is bounded by `IN_FLIGHT_TTL_MS`, never unbounded. A dispatch re-opened by a SendMessage with no completion after it is in flight outright, without TTL |
  *   |14 | ledger lock not acquirable in `LEDGER_LOCK_TIMEOUT_MS` | run UNLOCKED (degraded) | the lock removes the read-modify-write race (below); failing to take it must not deny, so the cycle degrades to the pre-lock behaviour |
+ *   |15 | `isolation: "worktree"`, `worktree.baseRef` not `"head"`, `merge-base --is-ancestor HEAD origin/HEAD` exits 1 in a full-history repo whose FETCH_HEAD is < 24 h old | **DENY**, no ledger write | #1485: the agent would branch from a base missing commits of HEAD and edit OLD code. Every non-measurement — no origin/HEAD, shallow, `stale-remote-ref`, git error — is ALLOW + a `skipped` record. No ledger write, so the in-place re-dispatch the deny advises meets no phantom claim. A collision DENY (row 11) wins the terminal emit; this one then goes to stderr |
  *
  * Every row that reaches a verdict from `decide()` — 5–11 and 13–14 — also
  * leaves an event record (§ Observability), so "which row fired" is answerable
- * after the fact and not only in the moment. Rows 1–4 emit nothing (no decision
+ * after the fact and not only in the moment. Row 15 is decided outside
+ * `decide()` and leaves its own `worktree_base_checked` record for EVERY
+ * worktree dispatch, allow and skip included. Rows 1–4 emit nothing (no decision
  * was made), and neither do the two crash rows 2 and 12: a hook that fell over
  * cannot describe itself, which is precisely why the GUARD INACTIVE banner on
  * stderr is the signal there.
@@ -1456,17 +1463,38 @@ export function listTrackedFiles(cwd) {
 // so the agents silently edited old code. Owner decision 2026-10-02, option (a):
 // check with `git merge-base --is-ancestor` before dispatch and stop on mismatch.
 //
-// ONLY A MEASURED MISMATCH DENIES (`is-ancestor` exit 1 in a full-history repo).
-// Every non-measurement — no origin/HEAD, a shallow clone, a git failure, an exit
-// code other than 0/1, a throw — is `stale: null` + `skipped`, recorded and
-// ALLOWED: unknown is not mismatch, and this hook guards the dispatch path, where
-// a wrong deny is a session outage (§ the fail-open note at the bottom of this
-// file). The one residual wrong-deny source is a settings layer this hook cannot
-// read — see `harnessBaseRef()`; its records carry `base_ref_source: "default"`.
+// ONLY A MEASURED MISMATCH DENIES (`is-ancestor` exit 1 in a full-history repo,
+// against a cached origin ref the harness will branch from as-is). Every
+// non-measurement — no origin/HEAD, a shallow clone, a cached ref the harness
+// refetches first (`stale-remote-ref`), a git failure, an exit code other than
+// 0/1, a throw — is `stale: null` + `skipped`, recorded and ALLOWED: unknown is
+// not mismatch, and this hook guards the dispatch path, where a wrong deny is a
+// session outage (§ the fail-open note at the bottom of this file).
+//
+// Where the hook's base and the harness's can still DIVERGE (Claude Code
+// 2.1.287 bundle, read 2026-10-02):
+//   - a settings layer this hook cannot read (`harnessBaseRef()`) — either way,
+//     wrong deny or missed mismatch, from any `base_ref_source`;
+//   - no `refs/remotes/origin/HEAD` symref: the harness falls back to
+//     `origin/main|master`, the hook skips `no-origin-head` — a missed mismatch
+//     only, never a wrong deny (measured 2026-10-02: 0 of 28 local repos lack
+//     the symref);
+//   - a stale FETCH_HEAD whose refetch then FAILS (offline): the harness keeps
+//     the cached ref, so the skipped deny would have been right — the price of
+//     not knowing in advance whether a fetch will succeed.
 // ---------------------------------------------------------------------------
 
 /** `worktree.baseRef` values the docs define; anything else sets nothing here. */
 const BASE_REF_VALUES = new Set(['head', 'fresh']);
+
+/**
+ * The harness refetches origin before branching a `"fresh"` worktree when
+ * FETCH_HEAD is older than this (Claude Code 2.1.287 bundle, read 2026-10-02:
+ * `Date.now() - mtimeMs > 86400000`, then `git fetch origin <default>` with a
+ * 5 s timeout). Revisit when the harness changes that constant — a mismatch
+ * either skips a real deny or lets a refetched base be denied again.
+ */
+const FETCH_REFRESH_MS = 24 * 60 * 60 * 1000;
 
 /**
  * The harness's effective `worktree.baseRef`, as far as this hook can see it,
@@ -1492,10 +1520,12 @@ const BASE_REF_VALUES = new Set(['head', 'fresh']);
  * from the claude.ai console, an embedding host's SDK option — docs settings
  * § "Managed settings"), combined by their own intra-tier rules; reading the one
  * file among them would turn an honest "invisible" into a partial view that
- * still decides. The wrong-deny population is countable instead (HR-105): it is
- * a subset of `decision:"deny"` records with `base_ref_source:"default"`.
- * Revisit if such a deny is reported in a session whose `/status` names a
- * managed or `--settings` source carrying `worktree.baseRef`.
+ * still decides. The wrong-deny population is countable instead (HR-105): a
+ * hidden `"head"` with no visible file setting the key yields `decision:"deny"`
+ * records with `base_ref_source:"default"`; a hidden `"head"` shadowed by a
+ * visible `"fresh"` yields them under that file's source instead. Revisit if
+ * such a deny is reported in a session whose `/status` names a managed or
+ * `--settings` source carrying `worktree.baseRef`.
  *
  * @param {string} settingsRoot
  * @returns {{baseRef: 'head'|'fresh', source: 'local'|'project'|'user'|'default'}}
@@ -1530,7 +1560,9 @@ const BASE_REF_SOURCE_LABEL = {
  *   - `{stale: true|false, head, base, base_ref, base_ref_source, missing_commits?,
  *     subagent_type?}` — measured. `stale` means "the worktree would MISS commits
  *     of HEAD": `git merge-base --is-ancestor HEAD <base>` exited 1 in a repo
- *     with full history. A base AHEAD of HEAD (origin moved on, HEAD contained)
+ *     with full history and a FETCH_HEAD younger than `FETCH_REFRESH_MS` (so
+ *     the harness branches from that cached ref without refetching it first).
+ *     A base AHEAD of HEAD (origin moved on, HEAD contained)
  *     is not stale — nothing of HEAD is lost. `base_ref_source` names the
  *     settings layer that decided `base_ref` (`harnessBaseRef()`), so a wrong
  *     deny from a layer this hook cannot read stays countable (HR-105).
@@ -1588,8 +1620,8 @@ function worktreeBaseFacts(input, cwd) {
     // section) — the very `git rev-parse HEAD` above, run in `cwd`.
     if (baseRef === 'head') return { ...facts, base: head, stale: false };
 
-    // `"fresh"`: origin/HEAD. Not cached locally → the harness fetches (≤5 s)
-    // or falls back to HEAD; neither outcome is knowable here → skip, not deny.
+    // `"fresh"`: origin/HEAD. Not cached locally → the harness fetches, or
+    // falls back to HEAD; neither outcome is knowable here → skip, not deny.
     let base = '';
     try { base = git(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD^{commit}']); } catch { /* below */ }
     if (base === '') return { stale: null, skipped: 'no-origin-head' };
@@ -1612,6 +1644,15 @@ function worktreeBaseFacts(input, cwd) {
     let shallow = '';
     try { shallow = git(['rev-parse', '--is-shallow-repository']); } catch { /* below */ }
     if (shallow !== 'false') return { stale: null, skipped: shallow === 'true' ? 'shallow' : 'git-error' };
+
+    // ...and only over a ref the harness will actually branch from. With
+    // FETCH_HEAD older than `FETCH_REFRESH_MS` (or absent — the harness reads
+    // that as mtime 0) it first fetches origin and branches from the FETCHED
+    // tip, which may well contain HEAD by now; this hook never fetches (network
+    // inside a 5 s PreToolUse budget), so the cached ref decides nothing here.
+    let fetchedMs = 0;
+    try { fetchedMs = statSync(path.resolve(cwd, git(['rev-parse', '--git-path', 'FETCH_HEAD']))).mtimeMs; } catch { /* absent → stale */ }
+    if (Date.now() - fetchedMs > FETCH_REFRESH_MS) return { stale: null, skipped: 'stale-remote-ref' };
 
     let missing = Number.NaN;
     try { missing = Number.parseInt(git(['rev-list', '--count', `${base}..${head}`]), 10); } catch { /* optional */ }
@@ -2267,9 +2308,10 @@ if (invokedAsScript()) {
   //      `enforce-scope`'s fail-closed handler — and the reason is the asymmetry
   //      named in the matrix header: enforce-scope guards a WRITE (denying one
   //      write is cheap), this guards the DISPATCH path (denying every dispatch
-  //      is a session outage). The bug this could hide is caught downstream by
+  //      is a session outage). A hidden COLLISION is caught downstream by
   //      `validate-wave-scope.mjs` and by `enforce-scope` at write time; a
-  //      wrongly-denied dispatch is caught by nothing.
+  //      hidden #1485 stale base is not (matrix row 15) — the accepted cost of
+  //      the same asymmetry; a wrongly-denied dispatch is caught by nothing.
   // -------------------------------------------------------------------------
   try {
     await bootstrap();

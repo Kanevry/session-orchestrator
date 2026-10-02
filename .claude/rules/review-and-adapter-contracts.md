@@ -85,7 +85,7 @@ Zwischen zwei Fix-Wellen an derselben Guard-Flaeche unabhaengig reviewen: ein gr
 
 ### Ein Review-Panel im frischen Worktree prueft den ALTEN Code
 
-Read-only-Review und Fix-Pass in-place (`isolation: none`) dispatchen, auch bei Shape `worktree`: uncommittete Wellenarbeit fehlt im Worktree. Selbst nach einem Mid-Session-Commit kann dessen Base noch der Session-Start sein (2026-09-19: 25 Minuten nach `240efda6` weiter `8f15f77b`); Fixes treffen alten Code, `check-guard-requires-parity.mjs` vergleicht gegen dessen `git show HEAD:`, vitest-globalSetup scheitert. Vor Vertrauen in Worktree-Ergebnisse Base pruefen (#1413 warnt beim Dispatch):
+Read-only-Review und Fix-Pass in-place (`isolation: none`) dispatchen, auch bei Shape `worktree`: uncommittete Wellenarbeit fehlt im Worktree. Ohne `worktree.baseRef: "head"` ist die Base `origin/HEAD`, auch nach einem Mid-Session-Commit (2026-09-19 auf `main`: 25 Minuten nach `240efda6` weiter `8f15f77b`); Fixes treffen alten Code, `check-guard-requires-parity.mjs` vergleicht gegen dessen `git show HEAD:`, vitest-globalSetup scheitert. Vor Vertrauen in Worktree-Ergebnisse Base pruefen (#1485 blockt beim Dispatch):
 `git worktree list --porcelain | awk -v h="$(git rev-parse HEAD)" '/^worktree /{w=$2} /^HEAD /{if (w ~ /\.claude\/worktrees\/agent-/ && $2 != h) print "STALE " substr($2,1,12) " " w}'`
 
 **Evidence** — Session `main-2026-09-12-session-26`: das W4-Manifest zeigte alle 8 Agent-Worktrees auf Base `c99970af`, waehrend 27 geaenderte Dateien uncommittet im Hauptbaum lagen; in-place nachdispatched fand dasselbe Panel 6 MED.
