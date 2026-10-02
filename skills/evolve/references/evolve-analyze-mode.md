@@ -208,7 +208,7 @@ If user selects "Skip all" or selects nothing, abort gracefully: "No learnings s
 
 For confirmed learnings, use atomic rewrite strategy:
 
-1. Snapshot the store into the sidecar: `node scripts/sweep-expired-learnings.mjs --prune --snapshot .orchestrator/tmp/learnings-next.jsonl`. It writes every record of `.orchestrator/metrics/learnings.jsonl` to that file behind a line-1 `{"_store_generation": "sha256:…"}` header naming the exact store state they came from. Read the SIDECAR, not the store, as your starting set — step 5 explains why. If the snapshot holds zero records, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback and add its records below line 1; they are migrated to the v2 path on write (step 5).
+1. Snapshot the store into the sidecar: `node scripts/sweep-expired-learnings.mjs --prune --snapshot .orchestrator/tmp/learnings-next.jsonl`. It writes every record of `.orchestrator/metrics/learnings.jsonl` to that file behind a line-1 `{"_store_generation": "sha256:…", "_store_path": "…"}` header naming the exact store state and the store they came from. Read the SIDECAR, not the store, as your starting set — step 5 explains why. On a non-default store, pass the SAME `--file` / `--archive` here as to the step-5 apply: the apply refuses (exit `1`) a sidecar snapshotted from another store. The snapshot itself exits `1`, writing nothing, when the store holds a malformed line (the sidecar would drop it, and the apply would then rewrite the store without it and without an archive record) — surface the reported line numbers and stop; the store needs repair first. If the snapshot holds zero records, check `<state-dir>/metrics/learnings.jsonl` as a legacy fallback and add its records below line 1; they are migrated to the v2 path on write (step 5).
 2. Apply confidence updates for confirmed existing learnings:
    - Increment confidence by +0.15
    - Cap at 1.0
@@ -266,7 +266,8 @@ For confirmed learnings, use atomic rewrite strategy:
    ```
 
    `--file` / `--archive` default to the canonical store + archive paths — pass them only when
-   operating on a non-default pair. The command prints ONE JSON line; capture it as `$PRUNE` and
+   operating on a non-default pair, and then pass the same pair to the step-1 `--snapshot` too.
+   The command prints ONE JSON line; capture it as `$PRUNE` and
    report its `{scanned, kept, archived, byReason}` in the final summary — `$PRUNE.archived` is
    also the `pruned` counter the emit above just wrote, so there is nothing left to compute for
    the telemetry after this line. Preview first with `--prune --dry-run --json` (same counts,
@@ -283,13 +284,16 @@ For confirmed learnings, use atomic rewrite strategy:
 
    **Exit codes are the no-op rule.** `0` = applied (or a clean no-op). On `1` and `2`, surface
    the error and stop. `1` = input error: the sidecar is absent, carries a malformed line, holds
-   no records, or lacks its line-1 `_store_generation` header — the store and the archive were
-   **not touched**. `2` = the prune itself failed inside the lib. `3` =
+   no records, lacks its line-1 `_store_generation` header, or was snapshotted from another store
+   than this call's `--file` — the store and the archive were **not touched**. `2` = the prune
+   itself failed inside the lib. `3` =
    `store-generation-mismatch`: the store changed after step 1 and nothing was written. This one
    is a retry, not a stop: snapshot into a FRESH path
-   (`--prune --snapshot .orchestrator/tmp/learnings-next-retry.jsonl`), re-apply this run's
+   (`--prune --snapshot .orchestrator/tmp/learnings-next-retry.jsonl`, with the same `--file` /
+   `--archive` as the apply), re-apply this run's
    decisions to the records in THAT file — they now include the peer's change — and run the block
-   above with its `NEXT` set to the fresh path. Never move the fresh header onto the old
+   above with its `NEXT` set to the fresh path. Retry once: a second consecutive `3` means the
+   store keeps moving under you — stop and report it. Never move the fresh header onto the old
    sidecar's records: they lack exactly the peer change the header exists to protect, so the
    prune would archive it `pruned` (the error prints no token for that reason). On every exit,
    never retry with a shell rewrite and never delete `$NEXT` — the `&&` above withholds the `rm`,

@@ -97,7 +97,7 @@ If zero patterns were extracted, report: "No patterns found in session history."
 ### Step 5: Write Confirmed Learnings
 
 Write through the archive-safe pipeline — never a shell redirect (#1017, #1446):
-1. Snapshot the store into the sidecar: `node scripts/sweep-expired-learnings.mjs --prune --snapshot .orchestrator/tmp/learnings-next.jsonl`. It writes every record of `learnings.jsonl` behind a line-1 `{"_store_generation": "sha256:…"}` header naming the exact store state they came from (#1486). Work on the SIDECAR, never on a separate read of `learnings.jsonl`
+1. Snapshot the store into the sidecar: `node scripts/sweep-expired-learnings.mjs --prune --snapshot .orchestrator/tmp/learnings-next.jsonl`. It writes every record of `learnings.jsonl` behind a line-1 `{"_store_generation": "sha256:…", "_store_path": "…"}` header naming the exact store state and the store they came from (#1486). Work on the SIDECAR, never on a separate read of `learnings.jsonl`. On a non-default store pass the same `--file` / `--archive` here as to the apply below. Exit `1` here (a malformed store line, or a PATH that would replace a ledger) wrote nothing: report it and stop
 2. Apply confidence updates for confirmed existing learnings (+0.15, cap at 1.0; reset `expires_at` via `deriveExpiresAt(now, type)`)
 3. Apply confidence decrements for contradicted learnings (-0.2; `expires_at` unchanged)
 4. Add new learnings with confidence 0.5 in the canonical shape (see Learning JSONL Format below)
@@ -111,7 +111,7 @@ Write through the archive-safe pipeline — never a shell redirect (#1017, #1446
      --repo-root "$(pwd)" && rm -f "$NEXT"
    ```
 
-   Exit `1` = the sidecar is absent, malformed, empty, or lacks its line-1 header; `2` = the prune failed inside the helper. On `1` and `2`, report the error and stop — store and archive untouched. Exit `3` = the store changed after step 1, nothing written. Retry, do not stop: snapshot into a FRESH path (`--prune --snapshot .orchestrator/tmp/learnings-next-retry.jsonl`), re-apply this run's decisions to the records in that file, and run the block above with `NEXT` set to it. Never move the fresh header onto the old sidecar's records — they lack the peer change the header protects. Never delete `$NEXT` by hand: the `&&` keeps it on failure as the record of this run's decisions.
+   Exit `1` = the sidecar is absent, malformed, empty, lacks its line-1 header, or was snapshotted from another store than `--file`; `2` = the prune failed inside the helper. On `1` and `2`, report the error and stop — store and archive untouched. Exit `3` = the store changed after step 1, nothing written. Retry once: snapshot into a FRESH path (`--prune --snapshot .orchestrator/tmp/learnings-next-retry.jsonl`, same `--file` / `--archive` as the apply), re-apply this run's decisions to the records in that file, and run the block above with `NEXT` set to it; a second consecutive `3`: stop and report. Never move the fresh header onto the old sidecar's records — they lack the peer change the header protects. Never delete `$NEXT` by hand: the `&&` keeps it on failure as the record of this run's decisions.
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 

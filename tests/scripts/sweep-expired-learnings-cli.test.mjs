@@ -520,6 +520,34 @@ describe('sweep-expired-learnings.mjs — --prune --entries store-generation gua
     });
   });
 
+  // TV-001 — the bug: a sidecar snapshotted from one store and applied with
+  // another --file can never match that store's generation, so it exited 3,
+  // whose documented retry (snapshot again, apply again) repeats the mismatch
+  // forever while naming the wrong file (measured 2026-10-02).
+  it('exits 1, not 3, and touches nothing when the sidecar was snapshotted from another store', () => {
+    writeJsonl(learningsPath, [liveLearning({ id: 'snapshotted', subject: 's' })]);
+    const otherStore = path.join(workdir, 'custom', 'learn.jsonl');
+    mkdirSync(path.dirname(otherStore), { recursive: true });
+    writeJsonl(otherStore, [liveLearning({ id: 'other', subject: 'o' })]);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+    expect(runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]).status).toBe(0);
+    const before = sha256(otherStore);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', otherStore,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(otherStore)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect({ status: result.status, wrongStore: result.stderr.includes('was snapshotted from') }).toEqual({
+      status: 1,
+      wrongStore: true,
+    });
+  });
+
   // TV-001 — the bug: a check that runs only when the sidecar carries a token is
   // bypassed by any producer that omits it — the #1486 delete again, exit 0.
   it('exits 1 and touches nothing when the --entries sidecar carries no generation header', () => {
@@ -545,12 +573,39 @@ describe('sweep-expired-learnings.mjs — --prune --entries store-generation gua
   });
 });
 
+/** Whether the temp volume folds letter case (default APFS) — measured, never assumed. */
+function tmpVolumeFoldsCase() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sweep-case-'));
+  try {
+    writeFileSync(path.join(dir, 'Probe'), '');
+    return existsSync(path.join(dir, 'probe'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 describe('sweep-expired-learnings.mjs — --prune --snapshot never replaces a ledger', () => {
   // TV-001 — the bug: --snapshot write-then-renames onto any PATH. Named as the
   // store, it put the header on the store's line 1 with no .bak; named as the
   // archive, it replaced the append-only history with the store's records —
   // both exit 0 on 91b35d4b. The symlinked-directory row is the bug a plain
   // string compare of the two paths would let through.
+  function expectRefused(target) {
+    writeJsonl(learningsPath, [liveLearning({ id: 'live', subject: 'l' })]);
+    writeJsonl(archivePath, [{ ...liveLearning({ id: 'history', subject: 'h' }), _archive_reason: 'pruned' }]);
+    const before = [sha256(learningsPath), sha256(archivePath)];
+
+    const result = runSweep([
+      '--prune', '--snapshot', target,
+      '--file', learningsPath,
+      '--archive', archivePath,
+    ]);
+
+    expect([sha256(learningsPath), sha256(archivePath)]).toEqual(before);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('would replace the learnings');
+  }
+
   it.each([
     ['the --file store', () => learningsPath],
     ['the --archive sidecar', () => archivePath],
@@ -559,19 +614,38 @@ describe('sweep-expired-learnings.mjs — --prune --snapshot never replaces a le
       return path.join(workdir, 'link', 'learnings.jsonl');
     }],
   ])('exits 1 and leaves both ledgers byte-identical when --snapshot names %s', (_label, target) => {
-    writeJsonl(learningsPath, [liveLearning({ id: 'live', subject: 'l' })]);
-    writeJsonl(archivePath, [{ ...liveLearning({ id: 'history', subject: 'h' }), _archive_reason: 'pruned' }]);
-    const before = [sha256(learningsPath), sha256(archivePath)];
+    expectRefused(target());
+  });
 
-    const result = runSweep([
-      '--prune', '--snapshot', target(),
-      '--file', learningsPath,
-      '--archive', archivePath,
-    ]);
+  // TV-001 — the bug: on a case-insensitive volume a different letter case
+  // names the same entry, and the path-string compare of 44fc80e4 let it
+  // through — store overwritten, exit 0 (measured 2026-10-02). One row per
+  // half of the key: the case-folded name, and the parent directory compared
+  // by identity rather than by its typed spelling.
+  it.skipIf(!tmpVolumeFoldsCase()).each([
+    ['the store in another letter case', () => path.join(workdir, 'Learnings.jsonl')],
+    ['the store via its directory in another letter case', () =>
+      path.join(path.dirname(workdir), path.basename(workdir).toUpperCase(), 'learnings.jsonl')],
+  ])('exits 1 and leaves both ledgers byte-identical when --snapshot names %s', (_label, target) => {
+    expectRefused(target());
+  });
 
-    expect([sha256(learningsPath), sha256(archivePath)]).toEqual(before);
+  // TV-001 — the bug: the snapshot parse drops a malformed store line, and the
+  // prune applying that sidecar rewrote the store without it and without an
+  // archive record — every /evolve run laundered it again (measured
+  // 2026-10-02: snapshot exit 0, apply exit 0, line gone).
+  it('exits 1 and writes no sidecar when the store holds a malformed line', () => {
+    writeFileSync(learningsPath, `${JSON.stringify(liveLearning({ id: 'live', subject: 'l' }))}\n{ torn\n`, 'utf8');
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+
+    const result = runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(nextPath)).toBe(false);
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain('would replace the learnings');
+    expect(result.stderr).toContain('malformed line(s)');
+    expect(result.stderr).toContain('line(s) 2');
   });
 });
 

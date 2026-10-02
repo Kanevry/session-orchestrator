@@ -35,18 +35,23 @@
  *   --grace-days N    Days past expiry before archiving (default: 14).
  *                      SWEEP ONLY — `--prune` has no grace window by design.
  *   --snapshot PATH   PRUNE ONLY (#1486). Write the store's current records to
- *                      PATH, line 1 a `{"_store_generation": "<token>"}` header
- *                      naming the exact store state they came from. This is
- *                      the sidecar to edit into the next generation. Writes
- *                      nothing else; takes no --entries/--apply/telemetry flag.
- *                      A PATH that would replace the --file store or the
- *                      --archive sidecar exits 1 untouched.
+ *                      PATH, line 1 a `{"_store_generation": "<token>",
+ *                      "_store_path": "<store>"}` header naming the exact store
+ *                      state and the store they came from. This is the sidecar
+ *                      to edit into the next generation. Writes nothing else;
+ *                      takes no --entries/--apply/telemetry flag. A PATH that
+ *                      would replace the --file store or the --archive sidecar
+ *                      exits 1 untouched, and so does a store holding a
+ *                      malformed line (the snapshot would drop it, and the
+ *                      prune applying it would rewrite the store without it).
  *   --entries PATH    JSONL sidecar holding the caller's next store generation.
  *                      PRUNE ONLY. Must exist, parse cleanly, and hold at least
  *                      one record — absent/malformed/empty all exit 1 untouched.
  *                      Line 1 must be the `_store_generation` header written by
- *                      --snapshot, else exit 1 untouched; a store that changed
- *                      since that snapshot exits 3 untouched (#1486).
+ *                      --snapshot, else exit 1 untouched; a sidecar snapshotted
+ *                      from another store than --file exits 1 untouched; a
+ *                      store that changed since that snapshot exits 3
+ *                      untouched (#1486).
  *                      A NEW record (its `id` not in the store) must pass strict
  *                      `validateLearning()`, else exit 1 untouched (GH#69);
  *                      records already in the store keep the tolerant path.
@@ -77,7 +82,9 @@
  *   1  Usage/input error (bad flag/value, flag used in the wrong mode, an
  *      absent/malformed/empty `--entries` sidecar, or a NEW `--entries` record
  *      that fails strict schema validation, or an `--entries` sidecar without
- *      its `_store_generation` header — dry run and apply alike)
+ *      its `_store_generation` header or snapshotted from another store than
+ *      `--file` — dry run and apply alike; at `--snapshot`, a PATH that would
+ *      replace a ledger or a store holding a malformed line)
  *   2  Sweep/prune error (I/O or validation failure inside the lib)
  *   3  store-generation-mismatch (#1486): the store changed after the
  *      `--entries` sidecar was snapshotted — nothing written. Re-run
@@ -86,7 +93,7 @@
  *      its records lack exactly the peer change the token exists to protect.
  */
 
-import { existsSync, realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
@@ -104,6 +111,8 @@ const DEFAULT_ARCHIVE = '.orchestrator/metrics/learnings-archive.jsonl';
 const DEFAULT_GRACE_DAYS = 14;
 /** Key of the `--entries` sidecar's first line, written by `--snapshot` (#1486). */
 const GENERATION_KEY = '_store_generation';
+/** Header key naming the store the snapshot was read from (resolved path). */
+const STORE_PATH_KEY = '_store_path';
 
 function printHelp() {
   process.stdout.write(
@@ -123,16 +132,19 @@ Options:
   --snapshot PATH   Prune only. Write the store's records to PATH, headed by a
                     ${GENERATION_KEY} line; edit that file into the next
                     generation and pass it as --entries. Writes nothing else;
-                    a PATH that is the --file store or --archive sidecar exits 1
+                    a PATH that is the --file store or --archive sidecar, or a
+                    store holding a malformed line, exits 1
   --entries PATH    JSONL sidecar with the next store generation; prune only.
                     Must exist, parse cleanly, start with the --snapshot
-                    header, and hold >= 1 record; a NEW record (id not in the
-                    store) must pass strict schema validation, else exit 1
-                    with nothing written
+                    header of the same --file store, and hold >= 1 record; a
+                    NEW record (id not in the store) must pass strict schema
+                    validation, else exit 1 with nothing written
   --file PATH       Learnings store (default: ${DEFAULT_FILE})
   --archive PATH    Archive sidecar (default: ${DEFAULT_ARCHIVE})
 
-Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries record)
+Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries record,
+               a sidecar from another --file store, a --snapshot of a store
+               holding a malformed line)
              2 sweep/prune error
              3 store-generation-mismatch: the store changed after the --entries
                snapshot; nothing written — re-snapshot into a fresh path,
@@ -351,9 +363,15 @@ async function runSweep(args) {
  * 2026-10-02: `rg --hidden -e --entries` over the tracked tree; plain `rg`
  * skips `.cursor/`, which is how the first census missed the third producer.
  *
+ * The header also names the store it was snapshotted from (`_store_path`);
+ * `runPrune()` refuses a sidecar applied to another `--file`. A header without
+ * that key is the earlier format of this same unreleased flag and is accepted
+ * on its token alone.
+ *
  * @param {string} entriesPath
- * @returns {Promise<{entries: object[], generation: string}>} the validated,
- *   non-empty next generation and the store generation it was derived from
+ * @returns {Promise<{entries: object[], generation: string, storePath: string|null}>}
+ *   the validated, non-empty next generation, the store generation it was
+ *   derived from, and the store it was snapshotted from (null: not recorded)
  */
 async function loadEntriesSidecar(entriesPath) {
   if (!existsSync(entriesPath)) {
@@ -369,8 +387,8 @@ async function loadEntriesSidecar(entriesPath) {
     usageError(`--entries sidecar unreadable: ${entriesPath}: ${err.message}`);
   }
   const firstLine = raw.split('\n').find((l) => l.length > 0) ?? '';
-  const generation = generationFromHeader(firstLine);
-  const read = parseLearningsText(generation === null ? raw : raw.slice(raw.indexOf(firstLine) + firstLine.length));
+  const header = parseHeader(firstLine);
+  const read = parseLearningsText(header === null ? raw : raw.slice(raw.indexOf(firstLine) + firstLine.length));
   if (read.malformed.length > 0) {
     usageError(
       `refusing to prune — ${read.malformed.length} malformed line(s) in ${entriesPath}`
@@ -383,49 +401,86 @@ async function loadEntriesSidecar(entriesPath) {
         `pure prune+consolidate pass)`
     );
   }
-  if (generation === null) {
+  if (header === null) {
+    // The recovery names a FRESH path: snapshotting onto the --entries path
+    // would overwrite the decisions this run assembled there.
     usageError(
       `--entries sidecar has no "${GENERATION_KEY}" header line: ${entriesPath} (refusing ` +
         `to prune — without it a record appended after the sidecar was derived would be ` +
-        `archived as pruned; create the sidecar with --prune --snapshot ${entriesPath}, ` +
-        `edit it keeping line 1, then re-run)`
+        `archived as pruned; run --prune --snapshot into a FRESH path, re-apply this run's ` +
+        `edits to the records in that file keeping its line 1, and pass it as --entries)`
     );
   }
-  return { entries: read.entries, generation };
+  return { entries: read.entries, generation: header.generation, storePath: header.storePath };
 }
 
 /**
- * The generation token from a sidecar's first line, or `null` when that line
- * is not a `{"_store_generation": "<non-empty string>"}` header.
+ * The header a sidecar's first line carries, or `null` when that line is not
+ * a `{"_store_generation": "<non-empty string>"}` header. `_store_path` may be
+ * absent (earlier format, `storePath: null`); present, it must be a non-empty
+ * string, else the whole header is refused — a mangled line 1 is not trusted.
  *
  * @param {string} line
- * @returns {string|null}
+ * @returns {{generation: string, storePath: string|null}|null}
  */
-function generationFromHeader(line) {
+function parseHeader(line) {
   let parsed;
   try {
     parsed = JSON.parse(line);
   } catch {
     return null;
   }
-  const token = parsed !== null && typeof parsed === 'object' ? parsed[GENERATION_KEY] : undefined;
-  return typeof token === 'string' && token.length > 0 ? token : null;
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const isToken = (v) => typeof v === 'string' && v.length > 0;
+  const generation = parsed[GENERATION_KEY];
+  const storePath = parsed[STORE_PATH_KEY];
+  if (!isToken(generation) || (storePath !== undefined && !isToken(storePath))) return null;
+  return { generation, storePath: storePath ?? null };
 }
 
 /**
- * The directory entry a write-then-rename onto `p` replaces: its parent
- * resolved through symlinks, plus its basename. A parent that does not exist
- * yet stays as given — `mkdir` creates it, so nothing existing sits there.
+ * A comparable key for the directory entry a write-then-rename onto `p`
+ * replaces: the nearest EXISTING ancestor directory by `dev`+`ino` (so a
+ * symlinked directory, a firmlink, or a differently-cased spelling of it is
+ * the same key), then the rest of the path case-folded. Case-folding the rest
+ * is what a case-insensitive volume (default APFS, NTFS) does to the name;
+ * on a case-sensitive volume it can only over-match — two names differing in
+ * case alone get refused, which costs a re-run with another name. Deliberate
+ * ceiling: the fold is `NFC` + `toLowerCase()`, so a name differing only by a
+ * fold outside that (`ß`/`SS`) is not caught — revisit if a ledger name ever
+ * leaves ASCII.
  *
  * @param {string} p
  * @returns {string}
  */
-function renameTargetEntry(p) {
+function renameTargetKey(p) {
   const abs = path.resolve(p);
+  const rest = [path.basename(abs)];
+  for (let dir = path.dirname(abs); ; ) {
+    try {
+      const { dev, ino } = statSync(dir, { bigint: true });
+      return `${dev}:${ino}/${rest.join('/').normalize('NFC').toLowerCase()}`;
+    } catch {
+      const parent = path.dirname(dir);
+      if (parent === dir) return abs.normalize('NFC').toLowerCase(); // not even the root stats
+      rest.unshift(path.basename(dir));
+      dir = parent;
+    }
+  }
+}
+
+/**
+ * A ledger path resolved to the file it names: through symlinks when it
+ * exists, else absolute as given.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function resolveLedger(p) {
   try {
-    return path.join(realpathSync(path.dirname(abs)), path.basename(abs));
+    return realpathSync(p);
   } catch {
-    return abs;
+    return path.resolve(p);
   }
 }
 
@@ -433,24 +488,21 @@ function renameTargetEntry(p) {
  * Exit 1 when `--snapshot` would replace the store or the archive. The rename
  * lands the header as the store's line 1 with no `.bak` (and drops malformed
  * lines), or replaces the append-only archive with the store's records —
- * measured on 91b35d4b, both exit 0. Compared as the entry the rename
- * replaces, against both the ledger's own entry and the file it resolves to,
- * so a symlinked directory or a symlinked `--file` cannot route around a plain
- * string compare. Hard links need no check: rename replaces the directory
- * entry, never the inode behind it.
+ * measured on 91b35d4b, both exit 0. The target is compared by
+ * {@link renameTargetKey} against the ledger's own entry and the file it
+ * resolves to. A path-string compare (44fc80e4) closed the symlinked-directory
+ * spelling but not letter case: on this host's case-insensitive APFS,
+ * `--snapshot <metrics>/Learnings.jsonl`, `METRICS/learnings.jsonl` and
+ * `LEARNINGS-ARCHIVE.jsonl` each replaced a ledger, exit 0 (measured
+ * 2026-10-02). Hard links need no check: rename replaces the directory entry,
+ * never the inode behind it.
  *
  * @param {ReturnType<typeof parseArgs>} args
  */
 function refuseLedgerSnapshotTarget(args) {
-  const target = renameTargetEntry(args.snapshot);
+  const target = renameTargetKey(args.snapshot);
   for (const [label, ledger] of [['store', args.file], ['archive', args.archive]]) {
-    const protectedEntries = [renameTargetEntry(ledger)];
-    try {
-      protectedEntries.push(realpathSync(ledger));
-    } catch {
-      // absent ledger: its own entry is the only thing a rename could hit
-    }
-    if (protectedEntries.includes(target)) {
+    if ([renameTargetKey(ledger), renameTargetKey(resolveLedger(ledger))].includes(target)) {
       usageError(
         `--snapshot ${args.snapshot} would replace the learnings ${label} ${ledger} (refusing — ` +
           `nothing written; snapshot into a sidecar such as .orchestrator/tmp/learnings-next.jsonl)`
@@ -466,6 +518,13 @@ function refuseLedgerSnapshotTarget(args) {
  * refuses it if the store moved in between. Write-then-rename, so a crash
  * never leaves a header over a truncated record list.
  *
+ * A store holding a malformed line exits 1 with nothing written. The parse
+ * drops that line from the snapshot, and the prune applying the sidecar then
+ * rewrites the store without it and without an archive record — only the
+ * keep-3 `.bak` still has it, and every /evolve run laundered it again
+ * (measured 2026-10-02: snapshot exit 0, apply exit 0, line gone).
+ * `scripts/apply-session-learnings.mjs` refuses on apply for the same reason.
+ *
  * @param {ReturnType<typeof parseArgs>} args
  */
 async function runSnapshot(args) {
@@ -473,8 +532,21 @@ async function runSnapshot(args) {
   let snap;
   try {
     snap = await readLearningsSnapshot(args.file);
+  } catch (err) {
+    process.stderr.write(`sweep-expired-learnings: snapshot failed: ${err.message}\n`);
+    process.exit(2);
+  }
+  if (snap.malformed.length > 0) {
+    usageError(
+      `refusing to snapshot — ${snap.malformed.length} malformed line(s) in ${args.file}` +
+        `${await malformedLineNumbers(args.file, snap.malformed)}: the snapshot would drop ` +
+        `them and the prune applying it would rewrite the store without them and without an ` +
+        `archive record. Repair the store first, then re-run --snapshot — nothing written`
+    );
+  }
+  try {
     const lines = [
-      JSON.stringify({ [GENERATION_KEY]: snap.generation }),
+      JSON.stringify({ [GENERATION_KEY]: snap.generation, [STORE_PATH_KEY]: resolveLedger(args.file) }),
       ...snap.entries.map((e) => JSON.stringify(e)),
     ];
     await mkdir(path.dirname(args.snapshot), { recursive: true });
@@ -490,16 +562,38 @@ async function runSnapshot(args) {
     snapshot: args.snapshot,
     generation: snap.generation,
     records: snap.entries.length,
-    malformed: snap.malformed.length,
   };
   if (args.json) {
     process.stdout.write(JSON.stringify(summary) + '\n');
   } else {
     process.stdout.write(
-      `sweep-expired-learnings: snapshot records=${summary.records} malformed=${summary.malformed} ` +
+      `sweep-expired-learnings: snapshot records=${summary.records} ` +
         `generation=${summary.generation} -> ${summary.snapshot}\n`
     );
   }
+}
+
+/**
+ * ` (line(s) 3, 7)` — the 1-based store lines holding `malformed`, for the
+ * refusal message; at most ten listed. A second read, diagnostic only: an
+ * unreadable store yields an empty string, never a different exit.
+ *
+ * @param {string} filePath
+ * @param {string[]} malformed - the malformed lines' text, as parsed
+ * @returns {Promise<string>}
+ */
+async function malformedLineNumbers(filePath, malformed) {
+  const bad = new Set(malformed);
+  let lines;
+  try {
+    lines = (await readFile(filePath, 'utf8')).split('\n');
+  } catch {
+    return '';
+  }
+  const numbers = lines.flatMap((l, i) => (bad.has(l) ? [i + 1] : []));
+  if (numbers.length === 0) return '';
+  const more = numbers.length > 10 ? `, +${numbers.length - 10} more` : '';
+  return ` (line(s) ${numbers.slice(0, 10).join(', ')}${more})`;
 }
 
 /**
@@ -579,7 +673,23 @@ async function runPrune(args) {
     return;
   }
   const sidecar = args.entries === null ? undefined : await loadEntriesSidecar(args.entries);
-  if (sidecar !== undefined) await rejectInvalidNewRecords(sidecar.entries, sidecar.generation, args);
+  if (sidecar !== undefined) {
+    // Before any generation comparison: a sidecar applied to another store can
+    // never match it, so exit 3 sent the documented retry — snapshot without
+    // that --file, apply with it — round the loop forever (measured
+    // 2026-10-02), its message naming the wrong file.
+    if (
+      sidecar.storePath !== null &&
+      renameTargetKey(resolveLedger(sidecar.storePath)) !== renameTargetKey(resolveLedger(args.file))
+    ) {
+      usageError(
+        `--entries ${args.entries} was snapshotted from ${sidecar.storePath}, not from the --file ` +
+          `store ${args.file} (refusing — nothing written; pass the same --file/--archive to ` +
+          `--snapshot and to this call)`
+      );
+    }
+    await rejectInvalidNewRecords(sidecar.entries, sidecar.generation, args);
+  }
 
   let result;
   try {
