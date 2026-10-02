@@ -38,6 +38,7 @@ function clampNumber(value, { min, max, fallback }) {
  * @property {string|null} kill_switch @property {string|null} kill_switch_detail @property {string[]} sessions
  * @property {string|null} host_class @property {string|null} resource_verdict_at_start
  * @property {boolean} fallback_to_manual @property {boolean} dry_run @property {number} total_tokens_used
+ * @property {number} tokens_unknown_sessions — #1487 Pkt 4: iterations whose own record carried no token figure; > 0 makes total_tokens_used a lower bound
  * @property {string|null} worktree_path @property {string|null} parent_run_id @property {number} stall_recovery_count
  * @property {number|null} blocked_by_issue — Phase D (#341): issue number this loop was waiting on (OPEN-4 commit-deps); null when not blocked
  * @property {boolean} aborted_by_cohort — Phase D (#341): set by cohort-abort policy (OPEN-5); mutated by W3 P5 orchestration-glue, not by runLoop itself
@@ -138,7 +139,12 @@ export async function runLoop(opts = {}) {
     // totals as `usage`; the accumulator sums them into `total_tokens_used`.
     // Zero or multiple matches throw → FAILED_WAVE, never foreign token usage.
     // CEILING: an own record without token totals adds 0 — the budget
-    // undercounts, it never over-fires.
+    // undercounts, it never over-fires. Such sessions are counted in
+    // `tokens_unknown_sessions` (#1487 Pkt 4), and the switch still fires on the
+    // known lower bound: every fire stays correct, none is lost. Failing closed on
+    // an unknown session instead would stop an armed run on every
+    // coordinator-direct session (no subagents → no rollup totals); revisit if
+    // the session record ever carries the coordinator's own usage.
     max_tokens: opts.maxTokens ?? 0,
     iterations_completed: 0,
     kill_switch: null,
@@ -149,6 +155,9 @@ export async function runLoop(opts = {}) {
     fallback_to_manual: false,
     dry_run: dryRun,
     total_tokens_used: 0,
+    // #1487 Pkt 4 — completed iterations whose own record carried no token
+    // figure; non-zero means `total_tokens_used` is a lower bound.
+    tokens_unknown_sessions: 0,
     // ADR-364 additive fields — forward-compat; callers may omit, defaults are null/0.
     worktree_path: opts.worktreePath ?? null,
     parent_run_id: opts.parentRunId ?? null,
@@ -274,15 +283,21 @@ export async function runLoop(opts = {}) {
     }
     state.iterations_completed += 1;
 
-    // Accumulate own-record output tokens (total_tokens fallback); missing totals
-    // add 0. An unassignable child record already threw → FAILED_WAVE above.
-    if (sessionResult && typeof sessionResult.usage === 'object' && sessionResult.usage !== null) {
-      const outTokens = Number(
-        sessionResult.usage.output_tokens ?? sessionResult.usage.total_tokens
-      );
-      if (Number.isFinite(outTokens) && outTokens > 0) {
-        cumulativeTokens += outTokens;
-      }
+    // Accumulate own-record output tokens (total_tokens fallback). An unassignable
+    // child record already threw → FAILED_WAVE above. An own record carrying
+    // neither figure has UNKNOWN usage, not 0 (#1487 Pkt 4): it adds nothing, so
+    // `total_tokens_used` is a lower bound, and it is counted in
+    // `tokens_unknown_sessions` so the record says how much the sum cannot see.
+    const usage = sessionResult?.usage;
+    const rawTokens = usage !== null && typeof usage === 'object'
+      ? (usage.output_tokens ?? usage.total_tokens)
+      : undefined;
+    // `Number(null)` is 0 — a null figure is a missing one, never a measured 0.
+    const outTokens = rawTokens === null || rawTokens === undefined ? NaN : Number(rawTokens);
+    if (Number.isFinite(outTokens) && outTokens >= 0) {
+      cumulativeTokens += outTokens;
+    } else {
+      state.tokens_unknown_sessions += 1;
     }
     state.total_tokens_used = cumulativeTokens;
 

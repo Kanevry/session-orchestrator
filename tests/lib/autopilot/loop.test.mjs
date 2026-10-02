@@ -725,6 +725,34 @@ describe('runLoop — state shape and telemetry record', () => {
     });
     expect(state.total_tokens_used).toBe(0);
     expect(state.kill_switch).toBe(KILL_SWITCHES.MAX_SESSIONS_REACHED);
+    // Bug caught (#1487 Pkt 4): both sessions' usage is unknown, yet the record
+    // read as a complete 0-token run.
+    expect(state.tokens_unknown_sessions).toBe(2);
+
+    // Unknown sessions never weaken the budget: it still fires on the known
+    // lower bound. A null figure is missing, not a measured 0.
+    const usages = [undefined, { output_tokens: null, total_tokens: null }, { output_tokens: 300_000 }];
+    let runs = 0;
+    const mixed = await runLoop({
+      maxSessions: 10,
+      maxHours: 4,
+      confidenceThreshold: 0.5,
+      maxTokens: 250_000,
+      sessionRunner: async ({ autopilotRunId }) => {
+        const usage = usages[runs];
+        runs += 1;
+        return { session_id: `${autopilotRunId}-r${runs}`, ...(usage ? { usage } : {}) };
+      },
+      modeSelector,
+      resourceEvaluator,
+      peerCounter,
+      jsonlPath,
+      runId: 'token-unknown-mixed',
+    });
+    expect(runs).toBe(3);
+    expect(mixed.kill_switch).toBe(KILL_SWITCHES.TOKEN_BUDGET_EXCEEDED);
+    expect(mixed.total_tokens_used).toBe(300_000);
+    expect(mixed.tokens_unknown_sessions).toBe(2);
   });
 });
 

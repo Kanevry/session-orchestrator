@@ -669,6 +669,31 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(r._token_schema).toBe(2);
     expect(r.total_token_cache_read).toBe(1000);
     expect(r.total_token_input_uncached).toBe(100);
+    // Bug caught (#1487 Pkt 1): the v1 agent ran but was no cost candidate, so
+    // the v2 half's cost was persisted as the whole session's (priced 1 of 1).
+    expect(r.total_cost_usd).toBeNull();
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(2);
+
+    // The same holds for a v1 agent that started but whose stop found no
+    // transcript (fleet 2026-10-02: 57 such v1 stops in 28 ledgers).
+    const startedV1 = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([
+        stop({ agent_id: 'v2' }),
+        stop({
+          agent_id: 'v1-wf',
+          schema_version: 1,
+          start_record_found: true,
+          subagent_transcript_found: false,
+          token_input: null,
+          token_output: null,
+        }),
+      ]),
+    });
+    expect(startedV1.total_cost_usd).toBeNull();
+    expect(startedV1.cost_records_priced).toBe(1);
+    expect(startedV1.cost_records_total).toBe(2);
   });
 
   it('total_cost_usd is null when any priced record has an unknown model, with priced/total counts', () => {
