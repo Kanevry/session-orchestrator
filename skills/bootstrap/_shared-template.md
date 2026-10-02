@@ -345,12 +345,17 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 The `.orchestrator/metrics/*.jsonl` ledgers are durable project data and stay versioned. Their LOCK artifacts are per-process runtime state that a `git add .` would otherwise commit: `<store>.lock`, its `.acquire` guard and the `.file.lock.*` temp files that `scripts/lib/file-lock.mjs` creates beside each lock. Append the two patterns when missing:
 
 ```bash
-_GI="$REPO_ROOT/.gitignore"
+# The Upgrade and Refresh-Lock flows run in a fresh shell where REPO_ROOT may be unset.
+_GI="${REPO_ROOT:-$(git rev-parse --show-toplevel)}/.gitignore"
 _GI_MISSING=()
 for _pat in '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'; do
-  grep -qxF -- "$_pat" "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
+  # A CRLF .gitignore stores "pattern\r" — count that as present, or every run appends a duplicate block.
+  grep -qxF -- "$_pat" "$_GI" 2>/dev/null || grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
 done
 if [[ ! -L "$_GI" && ${#_GI_MISSING[@]} -gt 0 ]]; then
+  # A last line without a trailing newline would fuse with the comment below: `.env` + `# …`
+  # becomes `.env# …`, which git no longer reads as `.env` — the append would UN-ignore it.
+  if [[ -s "$_GI" && -n "$(tail -c1 "$_GI")" ]]; then printf '\n' >> "$_GI"; fi
   printf '%s\n' '# session-orchestrator store-lock artifacts (runtime state, never versioned)' "${_GI_MISSING[@]}" >> "$_GI"
 fi
 ```
