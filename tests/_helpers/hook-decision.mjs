@@ -49,7 +49,9 @@
  *     `expectDeny` and `expectWarn` take their contains-needle as either a single
  *     substring (the original form, unchanged) or an ARRAY of substrings that must
  *     ALL be present, and both accept a trailing `{ systemMessage }` option that
- *     pins the operator-visible headline by EQUALITY. Both additions exist so a
+ *     pins the operator-visible headline by EQUALITY (`expectDeny` also takes
+ *     `{ systemMessageContains }` — the warn notice IS `expectWarn`'s needle
+ *     target already, the deny headline is not). Both additions exist so a
  *     caller never has to hand-roll a second assertion beside the contract — the
  *     hand-rolled ones are what drift when the protocol changes.
  *   - `expectGuardInactive` — the #992/#993 module-load-failure contract: a
@@ -203,7 +205,9 @@ function expectContainsAll(actual, expected) {
  * the rule id and the target, and pinning only one of the two forced callers to
  * hand-roll a second assertion outside this contract. Pass `{ systemMessage }` to
  * additionally pin the operator-visible headline EXACTLY (the base `⛔` prefix
- * check above still runs; the exact pin is strictly narrower, never a relaxation).
+ * check above still runs; the exact pin is strictly narrower, never a relaxation),
+ * or `{ systemMessageContains }` to pin only the part of the headline a test is
+ * about (e.g. WHICH limit broke) without freezing its prose.
  *
  * All four call shapes below are equivalent-or-narrower supersets of each other,
  * and the two legacy ones behave exactly as they always did:
@@ -215,13 +219,15 @@ function expectContainsAll(actual, expected) {
  *   expectDeny(res, { reasonContains: ['PSA-003'], systemMessage: '⛔ Blocked' })
  *
  * @param {{code?: number|null, status?: number|null, stdout: string}} result
- * @param {string|string[]|{reasonContains?: string|string[], systemMessage?: string}} [expectedReason] -
+ * @param {string|string[]|{reasonContains?: string|string[], systemMessage?: string, systemMessageContains?: string|string[]}} [expectedReason] -
  *   substring(s) the `permissionDecisionReason` must ALL contain; either bare
  *   (string or array) or as `{reasonContains}`. The object form may also carry
- *   `systemMessage`, identically to the `opts` argument.
- * @param {{systemMessage?: string}} [opts] - when `systemMessage` is given, the
- *   envelope's `systemMessage` must EQUAL it exactly. Takes precedence over a
- *   `systemMessage` supplied via the object form of `expectedReason`.
+ *   `systemMessage` / `systemMessageContains`, identically to the `opts` argument.
+ * @param {{systemMessage?: string, systemMessageContains?: string|string[]}} [opts] -
+ *   when `systemMessage` is given, the envelope's `systemMessage` must EQUAL it
+ *   exactly; `systemMessageContains` must ALL be contained in it (same needle
+ *   rules as the reason). Each takes precedence over the same key supplied via
+ *   the object form of `expectedReason`.
  * @returns {{hookSpecificOutput: {hookEventName: string, permissionDecision: string, permissionDecisionReason: string}, systemMessage: string}}
  */
 export function expectDeny(result, expectedReason, opts = {}) {
@@ -240,6 +246,10 @@ export function expectDeny(result, expectedReason, opts = {}) {
   if (systemMessage !== undefined) {
     expect(obj.systemMessage).toBe(systemMessage);
   }
+  expectContainsAll(
+    obj.systemMessage,
+    opts.systemMessageContains ?? (isOptionBag ? expectedReason.systemMessageContains : undefined),
+  );
 
   return obj;
 }

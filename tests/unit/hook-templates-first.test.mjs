@@ -415,10 +415,9 @@ describe('block message content', { timeout: 15000 }, () => {
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo'),
     });
-    expectDeny(result);
-    expect(JSON.parse(result.stdout).systemMessage).toBe(
-      '⛔ pre-bash-templates-first: gitlab create call detected without prior template Read.',
-    );
+    expectDeny(result, undefined, {
+      systemMessage: '⛔ pre-bash-templates-first: gitlab create call detected without prior template Read.',
+    });
   });
 });
 

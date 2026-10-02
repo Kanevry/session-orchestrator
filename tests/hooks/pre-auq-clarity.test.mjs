@@ -305,11 +305,12 @@ describe('pre-auq-clarity — hard limits block', () => {
     // land — the model rewrites something else, gets denied again, and the
     // operator's question never appears. The reason must carry the addressable
     // JSON path, the measured value and the limit.
-    const env = expectDeny(runHook(envelope([h2Question()])), ['questions[0]', H2_MEASURED]);
-
+    //
     // The operator-visible headline names WHICH limit broke, not a preamble
     // identical for every deny (`emitDeny` derives it from the first line).
-    expect(env.systemMessage).toContain('H2');
+    expectDeny(runHook(envelope([h2Question()])), ['questions[0]', H2_MEASURED], {
+      systemMessageContains: 'H2',
+    });
   });
 
   it('renders the option cap from the threshold instead of spelling it out in words', () => {

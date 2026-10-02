@@ -1649,11 +1649,12 @@ describe('#995 — aggregated allow-with-notice never fail-opens', { timeout: 15
     // expectWarn pins the full allow-with-notice contract: exit 0, exactly ONE
     // stdout line, top-level keys EXACTLY ['systemMessage'] (so a regression that
     // routed this through emitDeny — adding hookSpecificOutput — fails here).
-    const { systemMessage } = expectWarn(result);
     // BOTH distinct notices must survive the join — dropping notices[1..] loses
     // the second substring and turns this red (fake-regression verified).
-    expect(systemMessage).toContain("'git revert' (rule: git-revert-commit)");
-    expect(systemMessage).toContain('unresolved redirect target (variable/substitution)');
+    const { systemMessage } = expectWarn(result, [
+      "'git revert' (rule: git-revert-commit)",
+      'unresolved redirect target (variable/substitution)',
+    ]);
     // The join itself: two notices, one message, split on the '\n' separator.
     expect(systemMessage.split('\n')).toHaveLength(2);
   });

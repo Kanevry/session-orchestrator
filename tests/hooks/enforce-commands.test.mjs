@@ -726,11 +726,9 @@ describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 3
       stdin: bashPayload('ls -la'),
       execArgv: brokenModuleBoot(DEGRADED_BOOT),
     });
-    const warn = expectWarn(result, 'DEGRADED');
     // The notice must NAME the recovered module and the hook, else the operator
     // cannot tell which uncommitted edit is not in effect.
-    expect(warn.systemMessage).toContain('enforce-commands');
-    expect(warn.systemMessage).toContain('blocker');
+    expectWarn(result, ['DEGRADED', 'enforce-commands', 'blocker']);
   });
 
   it('still DENIES a blocked command while degraded — the notice never preempts the deny', async () => {

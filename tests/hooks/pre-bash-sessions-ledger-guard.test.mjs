@@ -76,14 +76,14 @@ describe('pre-bash-sessions-ledger-guard', () => {
       // The bug: this exact command class put a schema-invalid record into the
       // ledger. Without the guard it runs and the corruption is silent.
       const env = runHook({ command: `echo '{"session_id":"x"}' >> ${LEDGER}` });
-      const denial = expectDeny(env, [
-        'emit-session.mjs',
-        'node scripts/check-sessions-integrity.mjs --session-id',
-      ]);
       // The operator must be told the sanctioned path, not just "blocked":
       // a deny whose text carries no route is what agents read as a crash and
       // route around (the #906 failure mode).
-      expect(denial.hookSpecificOutput.permissionDecisionReason).toContain(LEDGER);
+      expectDeny(env, [
+        'emit-session.mjs',
+        'node scripts/check-sessions-integrity.mjs --session-id',
+        LEDGER,
+      ]);
     });
 
     it.each([
@@ -371,8 +371,7 @@ describe('#998 — depth-cut is fail-VISIBLE', () => {
     const inner = `tee -a ${LEDGER}`;
     const mid = `env -S "${inner}"`;
     const outer = `env -S 'env -S "${mid.replace(/"/g, '\\"')}"'`;
-    const warn = expectWarn(runHook({ command: outer }), 'depth-exceeded');
-    expect(warn.systemMessage).toContain('pre-bash-sessions-ledger-guard');
+    expectWarn(runHook({ command: outer }), ['depth-exceeded', 'pre-bash-sessions-ledger-guard']);
   });
 
   it('does NOT mark a deep-but-benign command (the basename filter is load-bearing)', () => {
@@ -406,8 +405,7 @@ describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 3
       command: 'ls -la',
       execArgv: brokenModuleBoot({ moduleBasename: 'command-blocker.mjs' }),
     });
-    const warn = expectWarn(result, 'DEGRADED');
-    expect(warn.systemMessage).toContain('pre-bash-sessions-ledger-guard');
+    expectWarn(result, ['DEGRADED', 'pre-bash-sessions-ledger-guard']);
   });
 });
 
@@ -700,12 +698,10 @@ describe('#1408 — interpreter eval payloads', () => {
   it('routes the operator to the validating writer instead of just blocking', () => {
     // Bug: a deny with no route is what a hurried agent reads as a crash and
     // works around — which is how the prose prohibition failed in the first place.
-    const denial = expectDeny(
+    expectDeny(
       runHook({ command: `node -e "require('fs').appendFileSync('${LEDGER}','x')"` }),
-      'emit-session.mjs',
+      ['emit-session.mjs', LEDGER, 'appendFileSync'],
     );
-    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain(LEDGER);
-    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain('appendFileSync');
   });
 
   it('does NOT let a second statement ride the #385 exact-match bypass', () => {
@@ -753,14 +749,16 @@ describe('#1005 — unavailable Node grammar denies repair apply', () => {
   ])('denies visibly on %s instead of allowing', (_label, childProcessSource, reason) => {
     // Bug: treating an unavailable runtime grammar as an empty Map makes this
     // valid Node 24 option stop resolution and silently allow the repair apply.
-    const denial = expectDeny(
+    expectDeny(
       runHook({
         command: 'node --track-heap-objects scripts/repair-invalid-sessions.mjs --apply',
         execArgv: childProcessBoot(childProcessSource),
       }),
-      'repair-invalid-sessions.mjs --apply',
+      [
+        'repair-invalid-sessions.mjs --apply',
+        `Node option grammar unavailable: ${reason}`,
+        'denied fail-closed',
+      ],
     );
-    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain(`Node option grammar unavailable: ${reason}`);
-    expect(denial.hookSpecificOutput.permissionDecisionReason).toContain('denied fail-closed');
   });
 });
