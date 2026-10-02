@@ -94,18 +94,26 @@
  *                     construction rather than by exception list.
  *
  *                     NOT flagged: blocks that control the clock (`now:`, `{ now }`
- *                     or a positional `now` — wider than the seam proof, #1478 —
- *                     `vi.useFakeTimers` / `vi.setSystemTime`, also when called
- *                     in the setup at module level or in a `describe` that
- *                     encloses the block). A handover whose value IS the real
- *                     clock is no control (#1487): inline (`{ now: Date.now() }`)
- *                     or through a binding in the same block
- *                     (`const now = new Date(); fn(now)`) or in the shared setup
- *                     — module level, `describe` body, `beforeEach` (#1489
- *                     item 16). Date literals in
- *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
- *                     expected values are read), which leaves the passthrough
- *                     class (input date === output date) untouched.
+ *                     or a positional `now` — wider than the seam proof, #1478;
+ *                     SCREAMING_CASE `NOW` / `FIXED_NOW` / `NOW_MS` count as
+ *                     clock names too, #1499 item 7 — or a fake timer that pins
+ *                     the DATE: `vi.setSystemTime(<date>)`,
+ *                     `vi.useFakeTimers({ now: <date> })`, also when called in
+ *                     the setup at module level or in a `describe` that
+ *                     encloses the block; a bare `vi.useFakeTimers()` installs
+ *                     at the real clock and pins nothing, #1499 item 8). A
+ *                     handover whose value IS the real clock is no control
+ *                     (#1487): inline (`{ now: Date.now() }`) or through a
+ *                     binding in the same block (`const now = new Date();
+ *                     fn(now)`) or in the shared setup — module level,
+ *                     `describe` body, `beforeEach` (#1489 item 16). A freeze
+ *                     does not exempt a block that hands over a real clock bound
+ *                     at collection time (module level, `describe` body): that
+ *                     value was read before any hook ran (#1499 item 9). Date
+ *                     literals in INPUT position (only `.toBe`/`.toEqual`/
+ *                     `.toStrictEqual` expected values are read), which leaves
+ *                     the passthrough class (input date === output date)
+ *                     untouched.
  *
  * Per-file opt-out: `// @test-value-bans-allowed` in the first 5 lines skips
  * the file entirely (same convention as check-test-fixture-shapes.mjs's
@@ -363,8 +371,15 @@ const DATE_EXPECTATION =
 /**
  * A clock-named token not read off an object (`Date.now`, `opts.now`) — shared
  * head of the patterns below. Group 1 is the name.
+ *
+ * SCREAMING_CASE module constants are clock names too (#1499 item 7): `NOW`,
+ * `NOW_MS`, `NOW_ISO`, and any `<WORD>_`-prefixed form (`FIXED_NOW`,
+ * `FROZEN_NOW`). An `i` flag would not reach them — `_` is a `\w`, so the
+ * lookbehind and the terminators below never see a `FIXED_NOW` boundary.
+ * Measured 2026-10-02 over 722 test files: `NOW` is handed over in 29 files,
+ * `FIXED_NOW` in 10, `NOW_MS` in 5, `NOW_ISO` in 2.
  */
-const CLOCK_NAME = String.raw`(?<![.\w$])(now|nowMs|nowIso|clock|currentDate)\s*`;
+const CLOCK_NAME = String.raw`(?<![.\w$])(now|nowMs|nowIso|clock|currentDate|(?:[A-Z][A-Z0-9]*_)*(?:NOW(?:_MS|_ISO)?|CLOCK|CURRENT_DATE))\s*`;
 
 /**
  * Pass 1, the seam PROOF: a NAMED clock key (`{ now: … }`) — only that shape says
@@ -407,9 +422,10 @@ const CLOCK_BINDING = new RegExp(String.raw`${CLOCK_NAME}=(?![=>])(.*)`);
  * Freezing the global clock — equally valid control, but not a seam PROOF. Only
  * the INSTALLERS count: `advanceTimersByTime` / `runAllTimers` move a clock some
  * installer already faked and freeze nothing on their own, so a block that only
- * advances timers is controlled exactly when an installer reaches it.
+ * advances timers is controlled exactly when an installer reaches it. Whether an
+ * installer pins the DATE is {@link pinsDate}'s call. Group 1 is the installer.
  */
-const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime)\b/;
+const DATE_PIN_CALL = /\b(useFakeTimers|setSystemTime)\s*\(/g;
 
 /**
  * Vitest aliases that resolve to the repo's own modules — source of truth is
@@ -801,13 +817,61 @@ function valueExpressionAt(line, from) {
  * @param {Set<string>} realClock names bound to the real clock in this block's scope
  */
 function handsOverControlledClock(line, realClock) {
-  for (const m of line.matchAll(CONTROL_CLOCK_ARG)) {
-    const [, name, terminator] = m;
-    const value = terminator === ':' ? valueExpressionAt(line, m.index + m[0].length) : name;
-    const readsRealClock =
-      REAL_CLOCK_READ.test(value) ||
-      [...realClock].some((n) => new RegExp(String.raw`(?<![.\w$])${n}(?![\w$])`).test(value));
-    if (!readsRealClock) return true;
+  return handoverValues(line).some((v) => !REAL_CLOCK_READ.test(v) && !namesAny(v, realClock));
+}
+
+/**
+ * The values this line hands over as a clock (CONTROL_CLOCK_ARG): after a
+ * `name:` key the expression that follows it, otherwise the name itself.
+ * @param {string} line
+ * @returns {string[]}
+ */
+function handoverValues(line) {
+  return [...line.matchAll(CONTROL_CLOCK_ARG)].map((m) =>
+    m[2] === ':' ? valueExpressionAt(line, m.index + m[0].length) : m[1],
+  );
+}
+
+/**
+ * True when `value` names one of `names` as a whole identifier.
+ * @param {string} value
+ * @param {Iterable<string>} names
+ */
+function namesAny(value, names) {
+  return [...names].some((n) => new RegExp(String.raw`(?<![.\w$])${n}(?![\w$])`).test(value));
+}
+
+/**
+ * True when this line freezes the calendar DATE, not just the timers (#1499
+ * item 8). vitest 4.1 installs `useFakeTimers()` at `this._fakingDate ||
+ * Date.now()` — the real clock unless a date was set first — so only
+ * `setSystemTime(<date>)` or a `useFakeTimers` config naming `now` pins a day;
+ * `{ toFake: ['setTimeout'] }` leaves Date real. A pin whose value reads the wall
+ * clock pins nothing: inline (`setSystemTime(new Date())`, `{ now: Date.now() }`)
+ * or through a clock-named binding the scanner knows reads it
+ * (`const now = new Date(); vi.setSystemTime(now)`, `useFakeTimers({ now })` —
+ * review of ac3ded47). An argument the line cannot read — a variable, a config
+ * spread over lines, a quoted key — counts as a pin: precision first, as
+ * everywhere in B5. CEILING: a pin value laundered through a NON-clock name
+ * (`const t = new Date(); vi.setSystemTime(t)`) still counts — the
+ * {@link clockBindings} ceiling.
+ * @param {string} line
+ * @param {Set<string>} realClock names bound to the real clock in this line's scope
+ */
+function pinsDate(line, realClock) {
+  for (const m of line.matchAll(DATE_PIN_CALL)) {
+    const arg = valueExpressionAt(line, m.index + m[0].length).trim();
+    let value = arg;
+    if (m[1] === 'useFakeTimers') {
+      if (arg === '') continue;
+      if (!arg.startsWith('{') || !arg.endsWith('}')) return true;
+      const key = /(?<![\w$])now(?![\w$])\s*([:,}])?/.exec(arg);
+      if (!key) continue;
+      if (!key[1]) return true;
+      // `now:` hands over the expression after it; shorthand `{ now }` hands over the binding `now`.
+      value = key[1] === ':' ? valueExpressionAt(arg, key.index + key[0].length) : 'now';
+    }
+    if (!REAL_CLOCK_READ.test(value) && !namesAny(value, realClock)) return true;
   }
   return false;
 }
@@ -871,28 +935,73 @@ function scanClockBombs(relPath, content, lines) {
   // `describe` exempted every block in the file until 2026-10-02 and kept a
   // genuine bomb silent (review of 3206ab24). `null` = module level.
   const describes = describeBlocks(lines);
+  /**
+   * Innermost `describe` holding line q — ranges nest, so the latest start that
+   * still holds it — or `null` at module level.
+   * @param {number} q
+   */
+  const innermostDescribe = (q) => {
+    const holders = describes.filter((d) => d.start <= q && q < d.end);
+    return holders.length > 0 ? holders[holders.length - 1] : null;
+  };
+  const setupRealClock = realClockNames(new Map(), setupBindings);
   /** @type {Array<{start: number, end: number}|null>} */
   const setupTimerScopes = [];
   lines.forEach((l, q) => {
-    if (inBlock.has(q) || isCommentLine(l) || !FAKE_TIMER.test(l)) return;
-    // Innermost enclosing describe: ranges nest, so the latest start that still holds q.
-    const holders = describes.filter((d) => d.start <= q && q < d.end);
-    setupTimerScopes.push(holders.length > 0 ? holders[holders.length - 1] : null);
+    if (inBlock.has(q) || isCommentLine(l) || !pinsDate(l, setupRealClock)) return;
+    setupTimerScopes.push(innermostDescribe(q));
   });
   /** @param {number} start */
   const setupFreezes = (start) =>
     setupTimerScopes.some((d) => d === null || (d.start < start && start < d.end));
+  // A real-clock name bound by a statement of the module itself or of a
+  // `describe` body is read at COLLECTION time, before vitest runs any hook
+  // (#1499 item 9). No freeze, in the setup or in the block, reaches that value,
+  // so a block handing it over is not exempted by one. Every other setup binding
+  // is DEFERRED — a hook callback, or a helper function's body (`validRecord()`,
+  // `writeLock()`), which runs when called, after any freeze: 12 of the 13 setup
+  // real-clock bindings outside a hook were such helper locals (measured
+  // 2026-10-02 over 722 test files, review of ac3ded47). A name qualifies only
+  // with no deferred binding at all — anything else reads as control, the
+  // precision-first direction. "Statement of" is read from indentation: column 0
+  // at module level, the enclosing `describe`'s column + 2 inside one (the
+  // prettier indent of this repo). A misread only moves names OUT of the set: a
+  // deeper or other indent style counts as deferred, and a hook range that
+  // over-extends (a one-line `beforeEach(…);`) does the same. CEILINGS: a
+  // one-line helper (`function f() { const now = Date.now(); … }`) at
+  // `describe`-body indent counts as collection time; a freeze that itself runs
+  // at collection time (a module-level `vi.setSystemTime` above the binding) is
+  // not read. Measured 2026-10-02 over 722 test files: 1 collection-time binding
+  // (tests/hooks/lock-reconcile.test.mjs:24), 0 installers outside a hook or test
+  // block. REVISIT on the first B5 finding traced to either shape.
+  const hooks = callRanges(lines, /^(\s*)(?:before|after)(?:Each|All)\s*\(/, null);
+  const indentOf = (/** @type {string} */ l) => /^\s*/.exec(l)[0].length;
+  /** @param {number} q */
+  const atCollection = (q) => {
+    if (hooks.some((h) => h.start <= q && q < h.end)) return false;
+    const d = innermostDescribe(q);
+    return indentOf(lines[q]) === (d ? indentOf(lines[d.start]) + 2 : 0);
+  };
+  const deferredBindings = clockBindings(
+    lines.filter((l, q) => !inBlock.has(q) && !isCommentLine(l) && !atCollection(q)),
+  );
+  const collectionClock = [...setupBindings]
+    .filter(([name, b]) => b.real && !b.other && !deferredBindings.has(name))
+    .map(([name]) => name);
 
   const blocks = ranges.map(({ start, end }) => {
     const body = lines.slice(start, end);
     const live = body.filter((l) => !isCommentLine(l));
-    const realClock = realClockNames(clockBindings(live), setupBindings);
+    const own = clockBindings(live);
+    const realClock = realClockNames(own, setupBindings);
+    const unfrozen = collectionClock.filter((name) => !own.has(name));
+    const handsOverUnfrozen = live.some((l) => handoverValues(l).some((v) => namesAny(v, unfrozen)));
     return {
       start,
       body,
       provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
       hasClockArg: live.some((l) => handsOverControlledClock(l, realClock)),
-      hasFakeTimer: setupFreezes(start) || live.some((l) => FAKE_TIMER.test(l)),
+      freezesDate: !handsOverUnfrozen && (setupFreezes(start) || live.some((l) => pinsDate(l, realClock))),
     };
   });
 
@@ -905,7 +1014,7 @@ function scanClockBombs(relPath, content, lines) {
   if (seamed.size === 0) return findings;
 
   for (const b of blocks) {
-    if (b.hasClockArg || b.hasFakeTimer) continue;
+    if (b.hasClockArg || b.freezesDate) continue;
     const subject = [...seamed].find((id) => callsIdentifier(b.body, id));
     if (!subject) continue;
     const echoSources = [...b.body, ...sharedSetup].filter(

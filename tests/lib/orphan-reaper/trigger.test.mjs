@@ -10,10 +10,12 @@
  * No case spawns a real child: every spawn goes through an injected `spawnFn`.
  */
 
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -197,6 +199,26 @@ describe('maybeTriggerOrphanScan', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it.skipIf(process.platform === 'win32')('reads an unresolvable project dir as disabled, not as error (#1498)', () => {
+    // Bug: `getProjectDir()` ran inside the catch-all BEFORE the enabled check,
+    // so a hook started in a deleted cwd (process.cwd() → ENOENT, no
+    // *_PROJECT_DIR) answered `error` — and on-stop stamps `reaper_trigger`
+    // for every reason but `disabled`, on a host whose reaper is OFF.
+    // Production shape: a real process whose cwd is gone before node starts.
+    const gone = mkdtempSync(join(tmpdir(), 'reaper-trigger-cwd-'));
+    const env = { ...process.env };
+    for (const k of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) delete env[k];
+    const url = pathToFileURL(join(process.cwd(), 'scripts', 'lib', 'orphan-reaper', 'trigger.mjs')).href;
+    // A script FILE, like the hooks: `node -e` itself dies on the missing cwd.
+    const probe = join(rtmp, 'probe.mjs');
+    writeFileSync(probe, `const { maybeTriggerOrphanScan } = await import(${JSON.stringify(url)});\n`
+      + 'process.stdout.write(JSON.stringify(await maybeTriggerOrphanScan()));\n');
+    const r = spawnSync('/bin/sh', ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3"',
+      'sh', gone, process.execPath, probe], { env, encoding: 'utf8', timeout: 30_000 });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ spawned: false, reason: 'disabled' });
   });
 
   it('degrades silently when the spawn throws', async () => {

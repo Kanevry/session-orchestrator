@@ -525,6 +525,25 @@ describe('config-protection hook', () => {
     expect(events[0].reasons.some((r) => r.startsWith('rule-relaxed'))).toBe(true);
   });
 
+  // The CI-only commitlint config (MR ranges) went unprotected: the basename
+  // pattern named only `commitlint.config.*`, so turning a rule off there —
+  // the config that actually gates main — raised no warning.
+  it.each(['commitlint.config.mjs', 'commitlint.ci.config.mjs'])(
+    'Edit that turns a commitlint rule off (2→0) in %s → warn + event',
+    (name) => {
+      writeClaudeMd(CLAUDE_MD_DEFAULT);
+      const file = writeFixture(name, "export default { rules: { 'subject-case': [2, 'always', 'sentence-case'] } };\n");
+
+      const result = runHook(editPayload(file, "'subject-case': [2,", "'subject-case': [0,"));
+
+      expectNoDeny(result);
+      const events = readEvents();
+      expect(events).toHaveLength(1);
+      expect(events[0].file).toBe(name);
+      expect(events[0].reasons.some((r) => r.startsWith('rule-relaxed'))).toBe(true);
+    },
+  );
+
   // (F2b) word severity "error"→0 (numeric off) also caught.
   it('Edit that changes a rule "error"→0 is now CAUGHT → warn + event', () => {
     writeClaudeMd(CLAUDE_MD_DEFAULT);

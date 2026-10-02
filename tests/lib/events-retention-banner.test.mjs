@@ -183,6 +183,16 @@ describe('checkEventsRetention', () => {
       },
       outcome: 'ran-warn',
     },
+    {
+      // BUG (#1498): no archive and no stamp in the live ledger's head answered
+      // `ring-not-full` with `coverageDays: null` — an unmeasured span, ran-clean.
+      label: 'a stampless events.jsonl without archives',
+      setup: async (m) => {
+        await fs.mkdir(m, { recursive: true });
+        await fs.writeFile(path.join(m, 'events.jsonl'), '{"event":"no-stamp"}\n');
+      },
+      outcome: 'ran-warn',
+    },
   ])('records $label as $outcome through the real runner', async ({ setup, outcome }) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'events-retention-'));
     dirs.push(root);

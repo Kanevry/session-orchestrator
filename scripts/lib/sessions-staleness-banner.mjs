@@ -192,7 +192,9 @@ const CLOSING_DIAGNOSTIC_EVENTS = new Map([
   // scripts/lib/autopilot/worktree-pipeline.mjs (release_failed/released only).
   ['orchestrator.session.lock.released', null],
   ['orchestrator.session.lock.release_failed', null],
-  // Only emitter: hooks/on-session-end.mjs — reading the lock during teardown.
+  // hooks/on-session-end.mjs — reading the lock during teardown. Since #1494 also
+  // hooks/_lib/lock-bootstrap.mjs at SessionStart (`unreadable` only); skipping that
+  // one too loses nothing, because the same start emits orchestrator.session.started.
   ['orchestrator.session.lock.read_anomaly', null],
   // Wave lifecycle: hooks/post-tool-batch-wave-signal.mjs emits wave.completed MID-session
   // (real activity, still counted); only the SessionEnd final-wave stamp is a closing

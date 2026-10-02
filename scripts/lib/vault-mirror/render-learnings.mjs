@@ -1,7 +1,8 @@
 /**
  * render-learnings.mjs — Learning markdown generators for vault-mirror (Issue #283 split).
  *
- * Exports: detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2
+ * Exports: detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2,
+ *          sourceRecordValue, learningSourceRecord, sourceRecordLine (#1503)
  */
 
 import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, isValidSlug, buildTag, resolveSourceSessionLink } from './utils.mjs';
@@ -16,6 +17,63 @@ const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
  */
 export function detectLearningSchema(entry) {
   return entry && typeof entry.text === 'string' ? 'v2' : 'v1';
+}
+
+/**
+ * Characters a `source-record:` value may carry (#1503). The value is always
+ * written double-quoted, and BOTH readers of it — the vault-sync YAML loader and
+ * the line-based `parseFrontmatter` in utils.mjs, which only strips the
+ * surrounding quotes and never unescapes — must read back exactly the string
+ * that was rendered. Excluding `"`, `\`, whitespace and anything non-ASCII is
+ * what makes that round trip lossless without an escaping scheme. Record uuids,
+ * kebab ids, session uuids and ISO timestamps all fit.
+ */
+const SOURCE_RECORD_RE = /^[A-Za-z0-9][A-Za-z0-9._:+@/-]{0,199}$/;
+
+/**
+ * Normalise one candidate `source-record` value (#1503): the identity of the
+ * JSONL record a vault note was rendered from. Returns `null` for anything that
+ * cannot round-trip through the frontmatter (see {@link SOURCE_RECORD_RE}) — the
+ * line is then omitted and the record-level ownership check is skipped for that
+ * entry, which is the same "absent = allow" reading an old note gets.
+ *
+ * Shared by both renderers so the rendered value and the value process.mjs
+ * compares against come from ONE derivation.
+ *
+ * @param {unknown} value
+ * @returns {string|null}
+ */
+export function sourceRecordValue(value) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return SOURCE_RECORD_RE.test(trimmed) ? trimmed : null;
+}
+
+/**
+ * The `source-record` of a learning note: the record's own `id` (a uuid for v1
+ * producers, the kebab id for v2 and for alias producers whose id was derived
+ * from the subject by {@link normalizeLearningEntry}).
+ *
+ * Named ceiling: a derived id IS the subject slug, so two repos holding the same
+ * subject under derived ids render the same `source-record` and this field
+ * cannot tell them apart — `source-repo` and the CLI's repo-root resolution are
+ * what separate those.
+ *
+ * @param {object} entry - normalized learning entry.
+ * @returns {string|null}
+ */
+export function learningSourceRecord(entry) {
+  return sourceRecordValue(entry?.id);
+}
+
+/**
+ * Render the `source-record:` frontmatter line, or `''` when the entry has no
+ * representable record key.
+ * @param {string|null} value - output of {@link sourceRecordValue}.
+ * @returns {string}
+ */
+export function sourceRecordLine(value) {
+  return value === null ? '' : `source-record: "${value}"\n`;
 }
 
 const firstString = (...vals) => vals.find((v) => typeof v === 'string' && v.length > 0);
@@ -112,6 +170,9 @@ export function generateLearningNote(entry, slug, opts = {}) {
   // vault-sync schema declares source-repo OPTIONAL).
   const sourceRepoLine =
     typeof opts.repoNs === 'string' && opts.repoNs.length > 0 ? `source-repo: ${opts.repoNs}\n` : '';
+  // #1503: the record this note was rendered from — process.mjs refuses to
+  // overwrite a note whose `source-record` names a different record.
+  const recordLine = sourceRecordLine(learningSourceRecord(entry));
 
   // source_session is emitted as an Obsidian wikilink ONLY when source_session
   // resolves to a real, mirror-able session id (semantic or UUID-v4). Anything
@@ -132,7 +193,7 @@ created: ${created}
 updated: ${updated}
 tags: ${tags}
 source_session: ${sourceSessionLink}
-${expiresLine}${sourceRepoLine}_generator: ${GENERATOR_MARKER}
+${expiresLine}${sourceRepoLine}${recordLine}_generator: ${GENERATOR_MARKER}
 ---
 
 # ${titleRaw}
@@ -176,6 +237,8 @@ export function generateLearningNoteV2(entry, slug, opts = {}) {
   // opts.repoNs (see generateLearningNote for the full contract). Backward-compatible.
   const sourceRepoLine =
     typeof opts.repoNs === 'string' && opts.repoNs.length > 0 ? `source-repo: ${opts.repoNs}\n` : '';
+  // #1503: see generateLearningNote.
+  const recordLine = sourceRecordLine(learningSourceRecord(entry));
 
   return `---
 id: ${slug}
@@ -185,7 +248,7 @@ status: ${status}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${sourceRepoLine}_generator: ${GENERATOR_MARKER}
+${sourceRepoLine}${recordLine}_generator: ${GENERATOR_MARKER}
 ---
 
 # ${titleRaw}

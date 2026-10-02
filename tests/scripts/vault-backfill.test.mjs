@@ -370,6 +370,40 @@ describe('Session Config reading (#1094)', () => {
     expect(existsSync(committedVaultDir)).toBe(false);
   });
 
+  // #1496 item 1: the CLI read vault-dir host-locally but never the switch, so
+  // a repo that never enabled vault-integration got stubs from the host's
+  // owner.yaml alone, and SO_VAULT_INTEGRATION=off changed nothing.
+  it.each([
+    ['no committed vault-integration block', '## Session Config\n\npersistence: true\n', {}],
+    [
+      'SO_VAULT_INTEGRATION=off over a committed enabled: true',
+      '## Session Config\n\nvault-integration:\n  enabled: true\n  mode: warn\n',
+      { SO_VAULT_INTEGRATION: 'off' },
+    ],
+  ])('--apply creates no vault stub when vault-integration is off (%s)', (_label, claudeMd, extraEnv) => {
+    setupTemplateDir(tmpBase);
+    const ownerVaultDir = join(tmpBase, 'owner-vault');
+    const configHome = join(tmpBase, 'config-home');
+    mkdirSync(configHome);
+    writeFileSync(join(configHome, 'owner.yaml'), `paths:\n  vault-dir: ${ownerVaultDir}\n`, 'utf8');
+    writeFileSync(join(tmpBase, 'CLAUDE.md'), claudeMd, 'utf8');
+    const manifestPath = writeManifest(tmpBase, {
+      version: 1,
+      repos: [{ id: 42, path: 'mygroup/my-test', slug: 'my-test', tier: 'active', visibility: 'internal' }],
+    });
+
+    const { status, stdout, stderr } = run(['--yes', manifestPath, '--apply', '--out-dir', outDir], {
+      env: { PROJECTS_BASELINE_DIR: tmpBase, SO_CONFIG_HOME: configHome, ...extraEnv },
+    });
+
+    expect(status).toBe(0);
+    expect(parseActions(stdout).map(({ action, slug }) => ({ action, slug }))).toEqual([
+      { action: 'wrote', slug: 'my-test' },
+    ]);
+    expect(stderr).not.toContain('created vault folder stub');
+    expect(existsSync(ownerVaultDir)).toBe(false);
+  });
+
   it('expands a ~-prefixed vault-dir to HOME instead of creating a literal ./~ tree in the cwd', () => {
     // Pre-fix, resolve('~/…') made the stub `<cwd>/~/…/01-projects/<slug>` — a
     // directory hidden from git by the `*~` ignore rule.

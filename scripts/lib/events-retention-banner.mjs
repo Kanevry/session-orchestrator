@@ -61,10 +61,13 @@
  *     exactly these inputs, so the runner records them as `skipped`, never as
  *     `ran-clean` — which is what severity ok would otherwise become.
  *   - **unmeasurable** — `_archive/` exists but cannot be listed, a reader's
- *     declaration cannot be read, or the oldest retained stamp lies after now
+ *     declaration cannot be read, the oldest retained stamp lies after now
  *     (a future-dated archive or a clock set back — the span would be
- *     negative): `{severity:'warn', degraded:true}`. An unreadable source must
- *     never read as "retention is fine".
+ *     negative), or no source carries a stamp at all (no archive, and no
+ *     parseable `timestamp` in the head of the active file or a legacy-ring
+ *     file — #1498: it answered `ring-not-full` with `coverageDays: null` and
+ *     recorded as `ran-clean`): `{severity:'warn', degraded:true}`. An
+ *     unreadable source must never read as "retention is fine".
  *   - **measured** — `{severity:'ok', kind:'ring-not-full'|'no-finite-window'|'covered', …}`
  *     or `{severity:'warn', kind:'retention-short', message, …}`.
  *
@@ -74,9 +77,9 @@
  * pruned predecessor — of the active file and of each legacy-ring file, and — on EVERY measured start,
  * before the ring check, because `requiredDays` is part of the silent
  * measurement — the import of every reader module to read its declaration:
- * 22-32 ms cold for all six in a fresh process (measured 2026-10-02, load
- * average ~5); two of them are session-start probes already loaded in that
- * process. So a reader module that fails to import degrades this probe on
+ * 20-28 ms cold for all seven in a fresh process (measured 2026-10-02, load
+ * average ~8); two of them are session-start probes and two the SessionStart
+ * backfill, already loaded in that process. So a reader module that fails to import degrades this probe on
  * every start, not only on a full ring.
  *
  * @module scripts/lib/events-retention-banner
@@ -104,8 +107,9 @@ const HEAD_BYTES = 64 * 1024;
  * Every module that reads the rotated ledger. Census 2026-10-02 @ `84c107a1`:
  * `rg -n "readEventsWithRotations\(|scanEventsBackwards\(|listEventSourcesNewestFirst\(" --glob '!tests/**' scripts hooks skills`
  * → 6 call sites beside the definitions in `events.mjs` (and its internal
- * `listEventSourcesNewestFirst` call). A test re-runs that census, so a
- * seventh reader cannot join unlisted.
+ * `listEventSourcesNewestFirst` call); the seventh, `session-close-backfill`,
+ * joined with #1498. A test re-runs that census, so an eighth reader cannot
+ * join unlisted.
  */
 export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'eval/engine', spec: './eval/engine.mjs' },
@@ -114,6 +118,7 @@ export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'maintenance-due-banner', spec: './maintenance-due-banner.mjs' },
   { label: 'instruction-budget-guard', spec: './instruction-budget-guard.mjs' },
   { label: 'backfill-abandoned-sessions', spec: '../backfill-abandoned-sessions.mjs' },
+  { label: 'session-close-backfill', spec: './session-close-backfill.mjs' },
 ]);
 
 /**
@@ -197,9 +202,19 @@ function firstTimestampMs(file) {
  * carries the rotation record written when its predecessor was archived, and
  * that record's `archived_as` names the predecessor: an archive name absent
  * from `names` was pruned — under a smaller ring, before `max-backups` was
- * raised — or deleted. `false` when the head holds no rotation record (the
- * first archive after the legacy ring, which wrote none): the hole then goes
- * unseen, it is never invented.
+ * raised — or deleted. `false` when the head holds no rotation record: the
+ * hole then goes unseen, it is never invented.
+ *
+ * Named ceiling (BV-004, #1498). A head without a rotation record is the FIRST
+ * archive a ledger ever wrote (its file predates any rotation, and the legacy
+ * ring wrote none) — no archive can have been pruned before it, so nothing is
+ * missed there. The tombstone is appended right after the rename, so it sits on
+ * the first lines, far inside {@link HEAD_BYTES}. The blind case is a later
+ * archive whose tombstone was never written (`maybeRotate` → `recordWritten:
+ * false`) AND whose predecessor is gone. Measured 2026-10-02 over the 5 fleet
+ * `_archive/` dirs: 4 of 4 first archives carry no tombstone, 2 of 2 later
+ * archives carry it on line 0. Revisit if a census finds a later archive
+ * without one.
  *
  * @param {string} archiveDir
  * @param {string} oldest — a member of `names`
@@ -247,8 +262,8 @@ async function maxRequiredWindow(readers) {
  * @param {object} [opts.config] — parsed Session Config (`events-rotation.max-backups`)
  * @param {number} [opts.now=Date.now()] — injectable clock, epoch ms
  * @returns {Promise<null|{severity: 'ok'|'warn', kind: string, message?: string,
- *   degraded?: boolean, reason?: string, coverageDays?: number|null,
- *   oldestEventAt?: string|null, requiredDays?: number|null, requiredBy?: string|null,
+ *   degraded?: boolean, reason?: string, coverageDays?: number,
+ *   oldestEventAt?: string, requiredDays?: number|null, requiredBy?: string|null,
  *   archives?: number, maxBackups?: number}>} `null` only without a `repoRoot`.
  */
 export async function checkEventsRetention({ repoRoot, config, now = Date.now() } = {}) {
@@ -334,9 +349,24 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
     };
   }
 
+  // No stamp at all (#1498) — reachable only without archives (every archive
+  // dates itself by name), when the first 64 KiB of the active file and of
+  // every legacy-ring file carry no parseable `timestamp`. That span was not
+  // measured; answered `ring-not-full` with `coverageDays: null` it recorded
+  // as `ran-clean`. Census 2026-10-02: 0 of 37 fleet `events.jsonl` heads are
+  // stampless, so this degrades rarely (HR-101) — and visibly (HR-105).
+  if (!Number.isFinite(oldestMs)) {
+    return {
+      severity: 'warn',
+      degraded: true,
+      kind: 'unmeasurable',
+      message: `⚠ events-retention: no parseable timestamp in the first ${HEAD_BYTES / 1024} KiB of events.jsonl (or of a legacy events.jsonl.N) and no ${ARCHIVE_DIR_NAME}/ archive — retention span not measured, which is not the same as covered.`,
+    };
+  }
+
   const measured = {
-    coverageDays: Number.isFinite(oldestMs) ? (nowMs - oldestMs) / DAY_MS : null,
-    oldestEventAt: Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null,
+    coverageDays: (nowMs - oldestMs) / DAY_MS,
+    oldestEventAt: new Date(oldestMs).toISOString(),
     requiredDays: required.days,
     requiredBy: required.by,
     archives: names.length,

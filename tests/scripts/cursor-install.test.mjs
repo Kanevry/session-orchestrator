@@ -23,6 +23,7 @@ import {
   existsSync,
   writeFileSync,
   readFileSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,11 +57,13 @@ function runCursorInstall(args = [], { cwd } = {}) {
 // Helper: count symlinks in a directory
 // ---------------------------------------------------------------------------
 
+function isSymlink(p) {
+  try { return lstatSync(p).isSymbolicLink(); } catch { return false; }
+}
+
 function countSymlinks(dir) {
   if (!existsSync(dir)) return 0;
-  return readdirSync(dir).filter((f) => {
-    try { return lstatSync(join(dir, f)).isSymbolicLink(); } catch { return false; }
-  }).length;
+  return readdirSync(dir).filter((f) => isSymlink(join(dir, f))).length;
 }
 
 // ---------------------------------------------------------------------------
@@ -227,5 +230,61 @@ describe('scripts/cursor-install.mjs integration', () => {
     expect(hooks.version).toBe(1);
     expect(hooks.hooks.beforeShellExecution[0].command).toContain('cursor-hook-bridge.mjs');
     expect(hooks.hooks.beforeShellExecution[0].command).toContain('--event beforeShellExecution');
+  });
+
+  // -------------------------------------------------------------------------
+  // #1501 item 6 — a wrapper the plugin stopped shipping (05c0264f removed
+  // commands/navigator.md and skills/navigator) left a dead link in every
+  // installed project, and a re-run skipped it as "symlink exists" forever.
+  // -------------------------------------------------------------------------
+
+  it.each([
+    ['rules', 'so-test-retired.mdc'],
+    ['commands', 'so-test-retired.md'],
+    ['skills', 'so-test-retired'],
+  ])('prunes a dangling %s link into this plugin that the plugin no longer ships', (kind, name) => {
+    const target = join(tmp, 'prune-check');
+    const dest = join(target, '.cursor', kind, name);
+    mkdirSync(join(target, '.cursor', kind), { recursive: true });
+    symlinkSync(join(REPO_ROOT, '.cursor', kind, name), dest);
+
+    const result = runCursorInstall([target]);
+
+    expect(result.status).toBe(0);
+    expect(isSymlink(dest)).toBe(false);
+    expect(result.stdout).toContain(`PRUNE: ${kind}/${name}`);
+  });
+
+  it('leaves a regular file, a live link and a dangling link into another root alone — and WARNs the dangling one', () => {
+    const target = join(tmp, 'keep-check');
+    const commandsDir = join(target, '.cursor', 'commands');
+    mkdirSync(commandsDir, { recursive: true });
+    writeFileSync(join(commandsDir, 'mine.md'), 'operator-owned');
+    writeFileSync(join(tmp, 'own.md'), 'live target');
+    symlinkSync(join(tmp, 'own.md'), join(commandsDir, 'own.md'));
+    symlinkSync(join(tmp, 'other-root', '.cursor', 'commands', 'foreign.md'), join(commandsDir, 'foreign.md'));
+
+    const result = runCursorInstall([target]);
+
+    expect(result.status).toBe(0);
+    expect(lstatSync(join(commandsDir, 'mine.md')).isFile()).toBe(true);
+    expect(isSymlink(join(commandsDir, 'own.md'))).toBe(true);
+    expect(isSymlink(join(commandsDir, 'foreign.md'))).toBe(true);
+    expect(result.stdout).not.toContain('PRUNE:');
+    expect(result.stdout).toContain('WARN: commands/foreign.md');
+  });
+
+  it('reports a dangling link at a shipped name as dangling, not as an existing symlink', () => {
+    const target = join(tmp, 'dangling-check');
+    const dest = join(target, '.cursor', 'commands', 'session.md');
+    mkdirSync(join(target, '.cursor', 'commands'), { recursive: true });
+    symlinkSync(join(tmp, 'gone', 'session.md'), dest);
+
+    const result = runCursorInstall([target]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('SKIP: commands/session.md (dangling symlink');
+    expect(result.stdout).not.toContain('commands/session.md (symlink exists)');
+    expect(result.stdout).not.toContain('WARN: commands/session.md');
   });
 });

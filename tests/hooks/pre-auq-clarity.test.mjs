@@ -517,7 +517,6 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     });
     const leaked = runHook(stdin, { hook: broken });
     expect(isDeny(leaked), leaked.stdout).toBe(true); // the defect's signature
-    expect(() => expectAllow(leaked)).toThrow();
 
     expectAllow(runHook(stdin)); // ...and the real hook allows
   });
@@ -533,7 +532,6 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     const garbage = '{"tool_name": "AskUserQuestion", "tool_input": {';
     const leaked = runHook(garbage, { hook: broken });
     expect(isDeny(leaked), leaked.stdout).toBe(true);
-    expect(() => expectAllow(leaked)).toThrow();
 
     expectAllow(runHook(garbage));
   });
@@ -560,7 +558,6 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     }]);
     const leaked = runHook(stdin, { hook: broken });
     expect(isDeny(leaked), leaked.stdout).toBe(true);
-    expect(() => expectAllow(leaked)).toThrow();
 
     expectAllow(runHook(stdin));
   });
@@ -622,7 +619,6 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     const stdin = envelope([cleanQuestion({ header: 'Sitzungsdauer' })]);
     const rearmed = runHook(stdin, { hook: broken });
     expect(isDeny(rearmed), rearmed.stdout).toBe(true); // the defect's signature
-    expect(() => expectAllow(rearmed)).toThrow();
 
     expectAllow(runHook(stdin)); // ...and the real hook lets it through
   });

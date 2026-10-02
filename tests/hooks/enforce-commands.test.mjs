@@ -859,3 +859,24 @@ describe('foreign-session manifest (#1153 P1)', { timeout: 15000 }, () => {
     expectDeny(result, 'npm test');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1492 — the SESSION root, not the launch dir
+// ---------------------------------------------------------------------------
+
+describe('session root after entering a worktree (#1492)', { timeout: 15000 }, () => {
+  it("enforces the blockedCommands of the working copy the payload cwd names, not the launch dir's", async () => {
+    // Bug caught (#1492): the root came from `$CLAUDE_PROJECT_DIR`, which stays
+    // on the LAUNCH dir after `EnterWorktree`. The manifest lives in the worktree,
+    // so G3 found none and every blocked command of the wave was ALLOWED.
+    const worktree = await mkProjectTracked({ enforcement: 'strict', blockedCommands: ['rm -rf'] });
+    const launch = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-cmd-launch-'));
+    tmpDirs.push(launch);
+    const result = await runHook({
+      projectDir: launch,
+      stdin: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'rm -rf build' }, cwd: worktree }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, 'rm -rf');
+  });
+});

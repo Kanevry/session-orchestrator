@@ -22,17 +22,34 @@
 //   agent's fence — i.e. another agent's intent to stage that path.
 //
 // Behavior summary
-//   - No .orchestrator/wave-scope.json → exit 0 (no active wave; sub-mode B
-//     short-circuits). Sub-mode C still runs if a fence directory exists.
-//   - Allowed paths violation → exit 1 with restore hint.
+//   - No wave-scope.json → exit 0 (no active wave; sub-mode B short-circuits).
+//     Sub-mode C still runs if a fence directory exists.
+//   - Sub-mode B, in order (#1493.1): a manifest bound to ANOTHER session is
+//     not this commit's scope (stand down, one stderr note); `enforcement:
+//     "off"` skips.
+//   - Non-empty allowedPaths: a staged path outside it BLOCKS (exit 1) under
+//     every enforcement level, `warn` included. Deliberately not tied to
+//     `enforcement`: in a warn-mode wave enforce-scope lets out-of-scope writes
+//     through, so this guard is the only hard PSA-004 stop left for a
+//     lint-staged sweep — softening it would weaken detection for the very
+//     class it exists to catch.
+//   - EMPTY allowedPaths is no longer a silent pass: a Discovery (read-only)
+//     manifest means no agent is committing, i.e. a coordinator commit between
+//     waves → allow with a note; a manifest older than the newest session
+//     clock may be a leftover or a parallel session's live one → report,
+//     never block; any other role means the `--union` step never completed →
+//     `strict` (the default when the field is absent, as in enforce-scope)
+//     blocks, `warn` reports and lets the commit through. Only this new
+//     verdict follows `enforcement`: it judges the coordinator's own
+//     bookkeeping, not a staged foreign file.
 //   - Cross-agent fence overlap → exit 1 with "staging-fence: cross-agent
 //     overlap" stderr.
 //   - --no-verify bypass: this hook is invoked as a git pre-commit hook;
 //     `git commit --no-verify` skips it entirely (operator opts out by name).
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 
 // Re-use existing helpers from scripts/lib/hardening.mjs.
 // IMPORTANT: import is resolved relative to THIS file's location (the hook
@@ -42,6 +59,11 @@ import { join } from 'node:path';
 import { pathMatchesPattern, findScopeFile } from '../scripts/lib/hardening.mjs';
 import { withStagingFenceLock } from '../scripts/lib/session-lock.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
+import { classifyEmptyScope, sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
+import {
+  classifyManifestSession,
+  readProcessLocalSessionIds,
+} from '../scripts/lib/session-identity/own-session.mjs';
 
 // Resolve the "current" agent id from SO_WAVE_AGENT_ID (when set by the
 // caller) or fall back to a PID-derived marker. The fence files themselves
@@ -165,6 +187,111 @@ function findOverlaps(fenceJsonPath, ourStaged) {
   return matches;
 }
 
+/** mtime of a file in ms, or `null` when it cannot be stat'ed. */
+function mtimeMsOf(file) {
+  try {
+    return statSync(file).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sub-mode B's decision, pure: which lines to print and whether to block.
+ *
+ * Until #1493.1 an empty `allowedPaths` skipped the check outright, the
+ * manifest's `role` and `enforcement: "off"` were never read, and a PEER
+ * session's manifest governed this session's commits. Each rung below closes
+ * one of those; the order is load-bearing — ownership first (a foreign
+ * manifest's enforcement level is not ours to honour), then `off`, then the
+ * verdict. `warn` softens ONLY the empty-union verdict; a non-empty violation
+ * blocks at every level (header § Behavior summary).
+ *
+ * @param {object} p
+ * @param {Record<string, unknown>} p.scope parsed manifest
+ * @param {string[]} p.stagedFiles
+ * @param {string} p.scopeRel manifest path for messages, repo-relative
+ * @param {Set<string>} p.ownIds this process's session ids
+ * @param {number|null} p.scopeMtimeMs
+ * @param {number|null} p.sessionAge ms since the newest session clock
+ * @returns {{action: 'pass'|'report'|'block', lines: string[]}}
+ */
+function scopeCommitVerdict({ scope, stagedFiles, scopeRel, ownIds, scopeMtimeMs, sessionAge }) {
+  if (stagedFiles.length === 0) return { action: 'pass', lines: [] };
+
+  // Same classifier and same disposition as enforce-scope Gate 3b: only a
+  // PROVABLY foreign manifest stands down; unknown ownership enforces.
+  if (classifyManifestSession(scope, ownIds).verdict === 'foreign') {
+    return {
+      action: 'pass',
+      lines: [`wave-scope-commit-guard: ${scopeRel} belongs to another session — its allowedPaths do not apply to this commit.`],
+    };
+  }
+
+  const enforcement = scope.enforcement ?? 'strict';
+  if (enforcement === 'off') return { action: 'pass', lines: [] };
+
+  const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
+  if (allowedPaths.length > 0) {
+    const violations = stagedFiles.filter(
+      (f) => !allowedPaths.some((pattern) => pathMatchesPattern(f, pattern)),
+    );
+    if (violations.length === 0) return { action: 'pass', lines: [] };
+    // Blocks under `warn` too — see the header: in a warn-mode wave this is
+    // the only hard stop a lint-staged sweep meets before the commit exists.
+    return {
+      action: 'block',
+      lines: [
+        '✗ wave-scope-commit-guard: staged paths outside wave-scope.allowedPaths:',
+        ...violations.map((v) => `  - ${v}`),
+        '',
+        'These files were likely added by lint-staged eslint --fix / prettier --write.',
+        'To proceed:',
+        '  1) git restore --staged <path>   # for each foreign path',
+        '  2) git commit                    # retry',
+      ],
+    };
+  }
+
+  // From here on the verdict judges the coordinator's own bookkeeping (an empty
+  // union), not a staged foreign file — only this part follows `enforcement`.
+  const failAction = enforcement === 'strict' ? 'block' : 'report';
+
+  const role = typeof scope.role === 'string' ? scope.role.trim() : '';
+  const reason = classifyEmptyScope({
+    role,
+    parseOk: true,
+    scopeMtimeMs,
+    sessionStartMs: typeof sessionAge === 'number' ? Date.now() - sessionAge : null,
+  });
+  if (reason === 'read-only-role') {
+    // No wave agent commits (PSA-007), so a commit under a read-only manifest
+    // is the coordinator's own, between waves.
+    return {
+      action: 'pass',
+      lines: [`wave-scope-commit-guard: ${scopeRel} is a ${role} (read-only) manifest — treated as a coordinator commit between waves; allowedPaths not checked.`],
+    };
+  }
+  if (reason === 'stale-manifest') {
+    // Older than the newest session clock of this working copy: a leftover OR a
+    // parallel session's live manifest, which the clocks cannot tell apart
+    // (scope-gate.mjs § "…and the reader may not be the OWNER") — so it is
+    // never grounds to block this commit.
+    return {
+      action: 'report',
+      lines: [`⚠ wave-scope-commit-guard: ${scopeRel} grants no paths and predates the newest session start in this working copy — a leftover or a parallel session's live manifest; allowedPaths not checked for this commit.`],
+    };
+  }
+  return {
+    action: failAction,
+    lines: [
+      `${failAction === 'block' ? '✗' : '⚠'} wave-scope-commit-guard: ${scopeRel} grants no paths${role ? ` for role \`${role}\`` : ''} — the coordinator's \`--union\` step did not complete, so none of the ${stagedFiles.length} staged path(s) can be checked against this wave's scope.`,
+      'Re-run the union step (skills/wave-executor/references/wave-loop-scope-manifest.md § 3.3), then retry the commit; do not hand-edit allowedPaths.',
+      ...(failAction === 'block' ? [] : ['(enforcement: warn — reported, the commit proceeds)']),
+    ],
+  };
+}
+
 /**
  * Both sub-modes, in the order the pre-commit hook needs them. Every statement
  * here used to sit at module top level, which meant a bare `import()` of this
@@ -200,22 +327,18 @@ async function main() {
       process.exit(1);
     }
 
-    const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
-    if (allowedPaths.length > 0) {
-      const violations = stagedFiles.filter(
-        (f) => !allowedPaths.some((pattern) => pathMatchesPattern(f, pattern)),
-      );
-
-      if (violations.length > 0) {
-        process.stderr.write('✗ wave-scope-commit-guard: staged paths outside wave-scope.allowedPaths:\n');
-        for (const v of violations) process.stderr.write(`  - ${v}\n`);
-        process.stderr.write('\nThese files were likely added by lint-staged eslint --fix / prettier --write.\n');
-        process.stderr.write('To proceed:\n');
-        process.stderr.write('  1) git restore --staged <path>   # for each foreign path\n');
-        process.stderr.write('  2) git commit                    # retry\n');
-        process.exit(1);
-      }
-    }
+    const verdict = scopeCommitVerdict({
+      scope: scope !== null && typeof scope === 'object' ? scope : {},
+      stagedFiles,
+      scopeRel: relative(repoRoot, scopePath) || scopePath,
+      // The git process inherits the committing session's env; there is no hook
+      // payload here, so the env tier is the only process-local identity.
+      ownIds: new Set(readProcessLocalSessionIds()),
+      scopeMtimeMs: mtimeMsOf(scopePath),
+      sessionAge: sessionAgeMs(repoRoot),
+    });
+    for (const line of verdict.lines) process.stderr.write(`${line}\n`);
+    if (verdict.action === 'block') process.exit(1);
   }
 
   // -------------------------------------------------------------------------

@@ -941,6 +941,53 @@ export function isPeerRecordId(id) {
 }
 
 /**
+ * Record id of the COORDINATOR's own planned direct edits (#1020): one
+ * `{id: 'coordinator', files}` record in a wave's aggregate sidecar, and
+ * `<state-dir>/filescopes/wave-<N>/coordinator.json` in the per-agent shape.
+ * Exactly lowercase — `materialize-wave-scope.mjs` rejects any other casing.
+ *
+ * The coordinator is a declarant but never a DISPATCH: no `FILE-SCOPE` block is
+ * injected for it, no digest is echoed back, no agent is counted for it. Every
+ * consumer that joins scope files against dispatches must skip it, or it reports
+ * the coordinator's own scope as an omitted injection (#1493.2). SSOT beside
+ * {@link PEER_RECORD_PREFIX} for the same reason that one lives here.
+ */
+export const COORDINATOR_RECORD_ID = 'coordinator';
+
+/**
+ * Is this record id the coordinator's (see {@link COORDINATOR_RECORD_ID})?
+ * Exact match; a non-string id is not the coordinator.
+ *
+ * @param {unknown} id
+ * @returns {boolean}
+ */
+export function isCoordinatorRecordId(id) {
+  return id === COORDINATOR_RECORD_ID;
+}
+
+/**
+ * Is this repo-relative path inside a wave's per-agent scope declarations,
+ * `<state-dir>/filescopes/` (shape (a) and the aggregate sidecar, #1020)?
+ *
+ * Those files are coordinator CONTROL STATE like `wave-scope.json` itself,
+ * written by `materialize-wave-scope.mjs` once per wave — never a wave
+ * territory, so a write there is not a scope violation (#1027 Pkt 5). The
+ * caller passes the manifest's own repo-relative path, so the state dir is the
+ * one THIS manifest lives in, never a guessed `.claude/`.
+ *
+ * @param {string} relPath repo-relative, forward slashes
+ * @param {string} scopeRelPath repo-relative path of the active `wave-scope.json`
+ * @returns {boolean}
+ */
+export function isScopeDeclarationPath(relPath, scopeRelPath) {
+  if (typeof relPath !== 'string' || typeof scopeRelPath !== 'string') return false;
+  const scopeRel = scopeRelPath.replace(/\\/g, '/');
+  const cut = scopeRel.lastIndexOf('/');
+  if (cut <= 0) return false;
+  return relPath.startsWith(`${scopeRel.slice(0, cut)}/filescopes/`);
+}
+
+/**
  * Merge many agents' declared file scopes into ONE deduplicated, order-stable
  * list — the mechanical form of "allowedPaths is the UNION of all agent file
  * scopes" (#1020, wave-loop.md § Scope Manifest #3).

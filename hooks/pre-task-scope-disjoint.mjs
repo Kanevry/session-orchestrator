@@ -173,8 +173,9 @@
  *
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
  * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
- * `sessionRootOf()` resolves (the git toplevel of the payload `cwd` — its nearest
- * `.git` ancestor when git cannot answer — so neither the subdirectory a `cd`
+ * `resolveSessionRoot()` resolves (`scripts/lib/platform.mjs`: the git toplevel
+ * of the payload `cwd` — its nearest `.git` ancestor when git cannot answer —
+ * but never above a launch dir inside it; so neither the subdirectory a `cd`
  * moved to, #1489 Pkt 6, nor the launch dir a worktree session left), which is
  * also where the ledger and its lock live. The reason it
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
@@ -242,7 +243,7 @@
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -264,6 +265,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 /** @type {typeof import('../scripts/lib/io.mjs').writeJsonAtomicSync} */ let writeJsonAtomicSync;
 /** @type {typeof import('../scripts/lib/file-lock.mjs').withFileLock} */ let withFileLock;
 /** @type {typeof import('../scripts/lib/scope-echo.mjs').scopeDigest} */ let scopeDigest;
+/** @type {typeof import('../scripts/lib/platform.mjs').resolveSessionRoot} */ let resolveSessionRoot;
 let findScopeCollisions;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
@@ -278,11 +280,43 @@ const HOOK_NAME = 'pre-task-scope-disjoint';
  */
 const DISPATCH_TOOL = 'Agent';
 
-/** Ledger location, relative to the project dir. */
-const LEDGER_REL = path.join('.orchestrator', 'wave-dispatch-scopes.json');
+/**
+ * Ledger location (#1493.3): ONE FILE PER SESSION,
+ * `.orchestrator/wave-dispatch-scopes.<session>.json`, each with its own lock
+ * `.orchestrator/wave-dispatch-scopes.<session>.lock` (§ Ledger concurrency).
+ *
+ * Until #1493 every session of the working copy shared ONE file holding ONE
+ * `waveKey`, and `decide()` keeps prior agents only under the same key — whose
+ * first segment IS the session id. So cross-session claims were never compared
+ * (nothing is lost by splitting), but a peer session's dispatch reset the file
+ * and erased this session's live claims, and the deny's "delete the ledger"
+ * remedy erased the peer's. One file per session removes both.
+ *
+ * A flat sibling, not a directory, on purpose: bootstrap's `store-lock-ignore`
+ * step (#1495) ignores `.orchestrator/wave-dispatch-scopes.*` in consumer repos,
+ * which covers this name; a directory would surface untracked in each of them.
+ */
+const LEDGER_DIR_REL = '.orchestrator';
+const LEDGER_STEM = 'wave-dispatch-scopes';
 
-/** Mutex for the ledger's read-modify-write cycle — see § Ledger concurrency. */
-const LEDGER_LOCK_REL = path.join('.orchestrator', 'wave-dispatch-scopes.lock');
+/**
+ * The pre-#1493 single shared ledger. READ only, for migration: adopted when
+ * this session has no file yet AND its `waveKey` names this session; never
+ * written and never deleted — it may still be a peer's live state.
+ * Revisit-Trigger: remove this read one minor release after the split ships,
+ * when no session that recorded claims in the old file can still be running.
+ */
+const LEGACY_LEDGER_REL = path.join(LEDGER_DIR_REL, `${LEDGER_STEM}.json`);
+
+/**
+ * Longest session token a ledger file name carries. Harness session ids are
+ * UUIDs (36 chars) and pass through unchanged; the cap only keeps a pathological
+ * id below the 255-byte file-name limit. Two ids that sanitise to ONE token
+ * share a file again — degraded to the pre-#1493 behaviour, never worse, since
+ * `waveKey` still carries the raw id. Revisit if a harness ships ids that are
+ * not path-safe.
+ */
+const MAX_SESSION_TOKEN_CHARS = 128;
 
 /**
  * Ledger-lock budget. Short on purpose: the whole locked region is a read, a
@@ -529,6 +563,10 @@ async function bootstrap() {
       // names. Late-bound like every other repo module so a load failure
       // banners instead of disarming the guard silently (#993).
       scopeEcho: { specifier: lib('scope-echo.mjs') },
+      // #1492: ONE session-root resolver for every hook that reads the
+      // session's control files — this ledger, and `wave-scope.json` in
+      // enforce-scope / enforce-commands / post-bash-write-verify.
+      platform: { specifier: lib('platform.mjs') },
     },
     {
       hookName: HOOK_NAME,
@@ -542,6 +580,7 @@ async function bootstrap() {
   ({ findScopeCollisions } = modules.scopeGate);
   ({ withFileLock } = modules.fileLock);
   ({ scopeDigest } = modules.scopeEcho);
+  ({ resolveSessionRoot } = modules.platform);
 }
 
 // ---------------------------------------------------------------------------
@@ -1421,6 +1460,56 @@ export function waveKeyOf(projectDir, sessionId, readFn) {
 }
 
 /**
+ * The session id this dispatch is keyed under — the payload's own, never a
+ * lock or env read (§ 6 limit 10 of `docs/scope-collision-guard.md`).
+ *
+ * @param {object} input parsed PreToolUse payload
+ * @returns {string}
+ */
+function sessionIdOf(input) {
+  return typeof input?.session_id === 'string' ? input.session_id : 'no-session';
+}
+
+/**
+ * The repo-relative paths of THIS session's ledger and its lock (#1493.3).
+ * The session id is reduced to a path-safe token (`[A-Za-z0-9._-]`, capped at
+ * `MAX_SESSION_TOKEN_CHARS`), so no id can name a file outside `.orchestrator/`;
+ * an id with no usable character falls back to `no-session`.
+ *
+ * @param {string} sessionId
+ * @returns {{ ledgerRel: string, lockRel: string }}
+ */
+export function ledgerPathsFor(sessionId) {
+  const token = String(sessionId).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, MAX_SESSION_TOKEN_CHARS);
+  const safe = /[A-Za-z0-9]/.test(token) ? token : 'no-session';
+  const base = path.join(LEDGER_DIR_REL, `${LEDGER_STEM}.${safe}`);
+  return { ledgerRel: `${base}.json`, lockRel: `${base}.lock` };
+}
+
+/**
+ * Migration read of the pre-#1493 shared ledger: the parsed legacy ledger when
+ * its `waveKey` belongs to THIS session (first `|` segment equals the id), else
+ * `null`. An unparseable or foreign legacy file is not this session's state —
+ * it is neither adopted nor reported as corruption (row 7 is about OUR file).
+ *
+ * @param {string|null} raw legacy file contents (`null` = absent)
+ * @param {string} sessionId
+ * @returns {object|null}
+ */
+function adoptLegacyLedger(raw, sessionId) {
+  if (typeof raw !== 'string') return null;
+  try {
+    const legacy = JSON.parse(raw);
+    return legacy !== null && typeof legacy === 'object' && typeof legacy.waveKey === 'string'
+      && legacy.waveKey.startsWith(`${sessionId}|`)
+      ? legacy
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The wave NUMBER out of a `waveKeyOf()` key, for the telemetry record (#1092).
  *
  * Returns `null` — never `0` — when the key carries the `w?` fallback or a
@@ -1547,71 +1636,9 @@ export function listTrackedFiles(cwd) {
 }
 
 /**
- * The SESSION ROOT (#1489 Pkt 6) — where this session's own state lives: the
- * scope ledger and its lock, the `wave-scope.json` the wave key is read from,
- * the event records and their session attribution. NOT where project settings
- * are read — that is `settingsRootOf()`, a different directory on purpose.
- *
- * NOT the payload `cwd`: that one follows the session's `cd` (docs/en/hooks
- * § "cwd follows Claude"). Keyed on it, a dispatch made after `cd sub` read and
- * wrote `<root>/sub/.orchestrator/wave-dispatch-scopes.json` — a second, empty
- * ledger holding none of the wave's earlier claims — so its collision with an
- * agent dispatched before the `cd` was ALLOWED, and its records left the
- * session's `events.jsonl`. The git toplevel of `cwd` undoes exactly that `cd`.
- *
- * NOT `$CLAUDE_PROJECT_DIR` first either: it stays on the LAUNCH dir after the
- * session enters a worktree (docs/en/hooks § "Worktrees are different"), while
- * the coordinator writes `wave-scope.json` into the worktree and
- * `scope-echo --verify` reads that worktree's `events.jsonl`. Preferred here, it
- * (measured on be6a2e3e) dropped every wave key to `w?`, left the worktree's
- * records empty, and gave every worktree session of one launch dir ONE shared
- * ledger — where a peer session's dispatch wipes this session's claims and lets
- * the collision through. It is the fallback only when `cwd` is in no repo.
- *
- * NOR `$CLAUDE_PROJECT_DIR` merely because GIT could not answer (review MED on
- * 63f35e8c): `gitToplevel()` returns `''` on ANY error, and the toplevel lookup
- * is the first spawn against the shared `GIT_BUDGET_MS` — one `rev-parse`
- * hanging past it sent a worktree session's dispatch back to the launch-root
- * ledger, the exact bug above narrowed to the timeout. `dotGitAncestorOf()`
- * answers the same question without a spawn, so no budget can cut it.
- *
- * Precedence: the git toplevel of `cwd`, else the nearest `.git` ancestor of
- * `cwd`, else `$CLAUDE_PROJECT_DIR`, else `cwd`.
- *
- * Remaining limit (not a regression — main keyed state on `cwd` itself): a `cd`
- * into a NESTED toplevel — an agent worktree under `.claude/worktrees/`, a
- * submodule, a nested repo — still gets that toplevel's own ledger, by either
- * rung, because it IS a repo root of its own.
- *
- * @param {string} cwd — the payload `cwd`
- * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
- * @returns {string}
- */
-function sessionRootOf(cwd, cwdToplevel) {
-  return cwdToplevel || dotGitAncestorOf(cwd) || (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwd;
-}
-
-/**
- * The nearest directory at or above `cwd` holding a `.git` entry — a directory,
- * or the FILE a linked worktree carries — or `''` when none does. The no-spawn
- * rung under `gitToplevel()` in `sessionRootOf()`: git's own repo discovery
- * walks up looking for exactly this entry, so where git answers, both agree.
- * Existence only — the entry is not validated, which git would do.
- *
- * @param {string} cwd
- * @returns {string}
- */
-function dotGitAncestorOf(cwd) {
-  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
-    if (existsSync(path.join(dir, '.git'))) return dir;
-    if (path.dirname(dir) === dir) return '';
-  }
-}
-
-/**
  * The SETTINGS ROOT (#1485) — where `harnessBaseRef()` reads the project's
  * `.claude/settings{,.local}.json`: `$CLAUDE_PROJECT_DIR`, else the git toplevel
- * of `cwd`, else `cwd`. The launch dir FIRST, unlike `sessionRootOf()`: it is the
+ * of `cwd`, else `cwd`. The launch dir FIRST, unlike `resolveSessionRoot()`: it is the
  * root the harness applies project settings from, and after entering a worktree
  * the gitignored `settings.local.json` exists only there.
  *
@@ -1756,7 +1783,7 @@ const BASE_REF_SOURCE_LABEL = {
  * subdirectory, and inside an entered worktree `"head"` means THAT worktree's
  * HEAD); settings are read at `settingsRoot` (`settingsRootOf()` — the root the
  * harness applies project settings from, which is NOT where the record lands:
- * that is `sessionRootOf()`).
+ * that is `resolveSessionRoot()`).
  *
  * Every git call draws on the hook fire's ONE shared deadline (`GIT_BUDGET_MS`).
  * A call the budget cut short is no measurement: each skip then reads
@@ -2278,7 +2305,8 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
     'Two agents editing one file at the same time race each other (PSA-002). ' +
     'Give the file exactly ONE owner in the wave plan, or wait for the named ' +
     `agent(s) to finish and re-dispatch — a finished agent no longer blocks. ` +
-    `If the ledger is stale, delete ${LEDGER_REL}.`;
+    `If the ledger is stale, delete this session's ${ledgerPathsFor(sessionIdOf(input)).ledgerRel} ` +
+    '— never another session\'s file beside it, which holds that session\'s live claims.';
 
   // Deliberately NOT persisting the ledger on deny: the dispatch did not happen,
   // so recording it would make the retry-after-fix look like a duplicate.
@@ -2296,11 +2324,11 @@ async function main() {
 
   // The payload `cwd` follows the session's `cd`; it names the repo git measures
   // in, and only through its git toplevel where this session's state lives
-  // (`sessionRootOf()`) — a `cd sub` must not move the ledger.
+  // (`resolveSessionRoot()`) — a `cd sub` must not move the ledger.
   const cwd = typeof input.cwd === 'string' && input.cwd !== ''
     ? input.cwd
     : bannerProjectDir();
-  const sessionId = typeof input.session_id === 'string' ? input.session_id : 'no-session';
+  const sessionId = sessionIdOf(input);
 
   // Cheap pre-check: skip all I/O for the overwhelmingly common non-dispatch call.
   if (input.tool_name !== DISPATCH_TOOL) return emitAllow();
@@ -2310,13 +2338,14 @@ async function main() {
   // origin/HEAD, is-ancestor, shallow+FETCH_HEAD, rev-list) and `ls-files`.
   const git = makeGitRunner(Date.now() + GIT_BUDGET_MS);
   const cwdToplevel = gitToplevel(cwd, git);
-  const sessionRoot = sessionRootOf(cwd, cwdToplevel);
+  const sessionRoot = resolveSessionRoot(cwd, cwdToplevel);
 
   const waveKey = waveKeyOf(sessionRoot, sessionId, readFileSync);
   // `selfUseId`: this dispatch's own tool_use may already stand in the transcript
   // and must not make a finished same-named predecessor look alive (#1480 A).
   const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path, selfUseId: input.tool_use_id });
-  const ledgerPath = path.join(sessionRoot, LEDGER_REL);
+  const { ledgerRel, lockRel } = ledgerPathsFor(sessionId);
+  const ledgerPath = path.join(sessionRoot, ledgerRel);
 
   // #1485 — the stale-worktree-base verdict, computed BEFORE the ledger cycle
   // (and outside the lock: its git spawns hold nobody up there). It never
@@ -2335,7 +2364,11 @@ async function main() {
 
   // Listed at `cwd`'s toplevel ONLY: the declared paths are repo-relative to the
   // repo the agents edit, which is the one the session works in (after entering
-  // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot`;
+  // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot` —
+  // except inside a harness agent worktree, which `sessionRoot` lifts to its
+  // parent (#1492) and which lists the same repo's files from its own HEAD, and
+  // in a session launched in a repo SUBDIRECTORY, where `sessionRoot` is that
+  // launch dir and the listing stays at the toplevel above it;
   // when git could not, `sessionRoot` falls back to a `.git` ancestor (git just
   // failed there), `$CLAUDE_PROJECT_DIR` or a bare `cwd` — another repo, or a
   // subdirectory from which `ls-files` answers subdir-relative (the review-MED
@@ -2356,7 +2389,15 @@ async function main() {
     } catch (err) {
       // Absent ledger is the normal first-dispatch case, NOT corruption (row 7
       // must not fire on every wave's first agent).
-      if (err?.code !== 'ENOENT') ledgerCorrupt = true;
+      if (err?.code !== 'ENOENT') {
+        ledgerCorrupt = true;
+      } else {
+        // #1493.3 migration: claims this session recorded in the shared
+        // pre-#1493 file before the split still bind. Read, never touched.
+        let legacyRaw = null;
+        try { legacyRaw = readFileSync(path.join(sessionRoot, LEGACY_LEDGER_REL), 'utf8'); } catch { /* absent */ }
+        ledger = adoptLegacyLedger(legacyRaw, sessionId);
+      }
     }
 
     const verdict = decide({
@@ -2383,7 +2424,7 @@ async function main() {
   };
 
   let verdict;
-  const lockPath = path.join(sessionRoot, LEDGER_LOCK_REL);
+  const lockPath = path.join(sessionRoot, lockRel);
   try {
     mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch { /* the unlocked fallback below still works */ }

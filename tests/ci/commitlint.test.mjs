@@ -21,6 +21,11 @@ const job = doc[JOB_NAME];
 //  3. A squash merge commits the MR TITLE, which no linted range contains — the
 //     only pipeline that saw it was main's, after the merge (#1477 item 1). An
 //     MR that will squash must lint its title; one that will not must not.
+//  4. commitlint's built-in default ignores pass `fixup!`, `Reapply x`, version
+//     headers and any message with a `Merge …` body line (#1477 item 4); CI must
+//     run the stricter commitlint.ci.config.mjs at both call sites.
+//  5. A force-pushed branch without an open MR loses its before-sha (#1477 item 3);
+//     the job must fall back to the merge-base, and fail closed if it cannot.
 // These are behavioral tests: the committed script block is lifted out of the
 // YAML and executed against a real git repo with the CI variables set by hand.
 
@@ -60,7 +65,7 @@ function git(cwd, args) {
 /**
  * Build a temp repo: an initial `chore: base` commit, then one empty commit per
  * message. commitlint resolves from the worktree's node_modules (symlinked) and
- * the committed config (copied), exactly the two things `npm ci` + checkout give CI.
+ * the committed configs (copied), exactly the two things `npm ci` + checkout give CI.
  * @param {string[]} messages commit messages after the base commit
  * @returns {{dir: string, base: string, head: string}}
  */
@@ -70,7 +75,9 @@ function makeRepo(messages) {
   git(dir, ['init', '-q', '-b', 'main']);
   git(dir, ['config', 'user.name', 'Test']);
   git(dir, ['config', 'user.email', 'test@example.org']);
-  copyFileSync(join(ROOT, 'commitlint.config.mjs'), join(dir, 'commitlint.config.mjs'));
+  for (const f of ['commitlint.config.mjs', 'commitlint.ci.config.mjs']) {
+    copyFileSync(join(ROOT, f), join(dir, f));
+  }
   symlinkSync(join(ROOT, 'node_modules'), join(dir, 'node_modules'));
   git(dir, ['commit', '-q', '--allow-empty', '-m', 'chore: base']);
   const base = git(dir, ['rev-parse', 'HEAD']);
@@ -79,14 +86,18 @@ function makeRepo(messages) {
 }
 
 /**
- * Execute the committed script block with an explicit CI environment. The range
- * and MR-title variables are always set (empty string = unset) so a real GitLab
- * runner running this suite cannot leak its own values in.
+ * Execute the committed script block with an explicit CI environment. The range,
+ * branch and MR-title variables are always set (empty string = unset) so a real
+ * GitLab runner running this suite cannot leak its own values in.
  * @param {string} dir
- * @param {{mrBase?: string, before?: string, sha: string, squash?: string, title?: string}} ci
+ * @param {{mrBase?: string, before?: string, sha: string, squash?: string, title?: string,
+ *   branch?: string, defaultBranch?: string}} ci
  * @returns {{status: number|null, out: string}}
  */
-function runJob(dir, { mrBase = '', before = '', sha, squash = '', title = '' }) {
+function runJob(
+  dir,
+  { mrBase = '', before = '', sha, squash = '', title = '', branch = '', defaultBranch = '' },
+) {
   const res = spawnSync('sh', ['-c', scriptBlock], {
     cwd: dir,
     encoding: 'utf8',
@@ -97,6 +108,8 @@ function runJob(dir, { mrBase = '', before = '', sha, squash = '', title = '' })
       CI_COMMIT_SHA: sha,
       CI_MERGE_REQUEST_SQUASH_ON_MERGE: squash,
       CI_MERGE_REQUEST_TITLE: title,
+      CI_COMMIT_BRANCH: branch,
+      CI_DEFAULT_BRANCH: defaultBranch,
     },
   });
   return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
@@ -153,17 +166,42 @@ describe('commitlint job lints the merge-request range', () => {
     expect(out).toContain('type-enum');
   });
 
-  it('valid commits plus a GitLab merge commit and a Revert pass', () => {
-    // Catches a config that starts rejecting the merge commits GitLab itself creates
-    // (commitlint's built-in default ignores, @commitlint/is-ignored; measured 2026-09-29).
+  it('valid commits plus GitLab and git-local merge commits and a Revert pass', () => {
+    // Catches a CI ignore list that rejects merges git or GitLab write themselves. The
+    // git-local shapes (unquoted target, remote-tracking) sit inside MR ranges whenever a
+    // branch takes in main: 4 of the 25 merge subjects in the last 200 main commits
+    // (measured 2026-10-02 @ ff3e43b5), which a GitLab-only pattern would have failed.
+    // The apostrophe branch is a legal ref name that `'[^']+'` rejected.
     const { dir, base, head } = makeRepo([
       'fix: fine',
       "Merge branch 'fix/x' into 'main'",
+      "Merge branch 'fix/it's' into 'main'",
+      "Merge branch 'main' into fix/x",
+      "Merge remote-tracking branch 'origin/main' into fix/x",
       'Revert "fix: fine"',
     ]);
     const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).toBe(0);
     expect(out).toContain('[commitlint] range');
+  });
+
+  // commitlint's default ignores (@commitlint/is-ignored 19.8.1) pass every one of these:
+  // exit 0 under commitlint.config.mjs, measured 2026-10-02. The body-line case matters
+  // because the default merge pattern is multiline: one `Merge branch` line anywhere in
+  // the body exempted the whole message. The trailing-text case pins the whole-line
+  // anchoring of the CI merge pattern: a header only STARTING like a merge is linted.
+  it.each([
+    'fixup! fix: fine',
+    'Reapply x',
+    'v1.2.3',
+    'revert anything goes',
+    "bad header\n\nMerge branch 'foo'",
+    "Merge branch 'x' feat: hidden",
+  ])('the CI rule set rejects %j, which only the default ignores let through', (message) => {
+    const { dir, base, head } = makeRepo([message]);
+    const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
+    expect(status, out).toBe(1);
+    expect(out).toContain('type-empty');
   });
 });
 
@@ -188,11 +226,36 @@ describe('commitlint job lints the MR title when the MR will squash (#1477 item 
     expect(out).toContain('linting it: feat: add x');
   });
 
-  it('ignores the title of an MR that will not squash', () => {
-    // Its commits are what lands, so a free-form title must not block it.
-    const { status, out } = runMr({ squash: 'false', title: 'Update the readme' });
+  it('lints the title with the CI rule set, so a fixup! title fails', () => {
+    // Pins `-g commitlint.ci.config.mjs` on the stdin call site: the default ignores pass it.
+    const { status, out } = runMr({ squash: 'true', title: 'fixup! feat: add x' });
+    expect(status, out).toBe(1);
+    expect(out).toContain('type-empty');
+  });
+
+  // A free-form title must not block any of these (an MR that does not squash lands its
+  // commits), and the log must say which case applied (#1502): it used to print "this
+  // pipeline does not squash on merge" on every branch and main pipeline too.
+  it.each([
+    ['a branch pipeline', 'before', '', 'MR title not linted: not a merge-request pipeline'],
+    [
+      'an MR without the squash variable',
+      'mrBase',
+      '',
+      'MR title not linted: CI_MERGE_REQUEST_SQUASH_ON_MERGE is unset',
+    ],
+    [
+      'an MR that does not squash',
+      'mrBase',
+      'false',
+      'MR title not linted: this MR does not squash on merge',
+    ],
+  ])('%s: the title is not linted and the log says why', (_label, baseVar, squash, expected) => {
+    const { dir, base, head } = makeRepo(['fix: fine']);
+    const ci = { before: head, [baseVar]: base, sha: head, squash, title: 'Update the readme' };
+    const { status, out } = runJob(dir, ci);
     expect(status, out).toBe(0);
-    expect(out).toContain('MR title not linted');
+    expect(out).toContain(expected);
   });
 
   // Unstripped, each title parses as type "Draft"/"[Draft]"/"(draft)" and fails type-enum.
@@ -248,5 +311,79 @@ describe('commitlint job range fallbacks on non-MR pipelines', () => {
     const { dir, head } = makeRepo(['fix: fine']);
     const { status, out } = runJob(dir, { before: ZERO_SHA, sha: head });
     expect(status, out).toBe(0);
+  });
+});
+
+describe('commitlint job on a force-pushed branch without an open MR (#1477 item 3)', () => {
+  // A force-push leaves a before-sha the fresh clone does not have. Branches with an open
+  // MR run only MR pipelines, so this hits plain branch pipelines, which went red with
+  // "not in this clone" although the branch's own commits were perfectly lintable.
+  const MISSING = 'ab'.repeat(20);
+
+  /**
+   * main: base, a non-conventional commit, `chore: main tip`; then branch `feature`
+   * with the given commits. The non-conventional commit below the merge-base makes a
+   * range that starts too early go red.
+   * @param {string[]} featureMessages
+   */
+  function makeBranchRepo(featureMessages) {
+    const { dir, head: mainTip } = makeRepo(['not conventional', 'chore: main tip']);
+    git(dir, ['checkout', '-q', '-b', 'feature']);
+    for (const m of featureMessages) git(dir, ['commit', '-q', '--allow-empty', '-m', m]);
+    return { dir, mainTip, head: git(dir, ['rev-parse', 'HEAD']) };
+  }
+
+  it.each([
+    [['fix: one'], 0],
+    [['fix: one', 'build: nope'], 1],
+  ])(
+    'lints %j from the merge-base with the fetched default branch -> exit %i',
+    (msgs, expected) => {
+      const { dir, mainTip, head } = makeBranchRepo(msgs);
+      // `origin` is the repo itself: refs/remotes/origin/main exists only once the job fetched it.
+      git(dir, ['remote', 'add', 'origin', dir]);
+      const ci = { before: MISSING, sha: head, branch: 'feature', defaultBranch: 'main' };
+      const { status, out } = runJob(dir, ci);
+      expect(status, out).toBe(expected);
+      expect(out).toContain(`range ${mainTip}..${head} (merge-base with origin/main`);
+    },
+  );
+
+  it('fails closed when the default branch cannot be fetched', () => {
+    const { dir, head } = makeBranchRepo(['fix: one']); // no `origin` remote
+    const ci = { before: MISSING, sha: head, branch: 'feature', defaultBranch: 'main' };
+    const { status, out } = runJob(dir, ci);
+    expect(status, out).toBe(1);
+    expect(out).toContain('FAIL: could not fetch origin/main');
+  });
+});
+
+describe('a red range on the default branch prints the revert remedy (#1502)', () => {
+  // main cannot be force-pushed, so a non-conventional commit that reached it (squash box
+  // ticked after the last MR pipeline, message edited in the merge dialog) can only be
+  // reverted and re-landed. The hint must name the command that fits the commit shape.
+  it('names `git revert -m 1 <sha>` for a merge commit', () => {
+    const { dir, head: before } = makeRepo(['fix: fine']);
+    git(dir, ['checkout', '-q', '-b', 'feature']);
+    git(dir, ['commit', '-q', '--allow-empty', '-m', 'Update the readme']);
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--no-ff', '-m', "Merge branch 'feature' into 'main'", 'feature']);
+    const sha = git(dir, ['rev-parse', 'HEAD']);
+    const { status, out } = runJob(dir, { before, sha, branch: 'main', defaultBranch: 'main' });
+    expect(status, out).toBe(1);
+    expect(out).toContain(`git revert -m 1 ${sha}`);
+  });
+
+  it('names `git revert <from>..<sha>` for directly pushed commits', () => {
+    // `-m 1` on a non-merge commit makes git refuse the revert outright.
+    const { dir, base, head } = makeRepo(['Update the readme']);
+    const { status, out } = runJob(dir, {
+      before: base,
+      sha: head,
+      branch: 'main',
+      defaultBranch: 'main',
+    });
+    expect(status, out).toBe(1);
+    expect(out).toContain(`git revert ${base}..${head}`);
   });
 });

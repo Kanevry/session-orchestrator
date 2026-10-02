@@ -109,6 +109,10 @@
  * observed actor could rewrite the gate unreported. Because the file is
  * typically gitignored, `git status` cannot see it anyway — change detection
  * for it is content-hash-based against the snapshot (`formatControlNotice`).
+ * Its sibling control state `<state-dir>/filescopes/**` (the per-agent scope
+ * declarations, #1020) is likewise not on the list: `computeReport` drops it
+ * from the violation set beside the manifest itself, keyed on the ACTIVE
+ * manifest's state dir (`isScopeDeclarationPath`, #1027 Pkt 5).
  *
  * The hook's OWN snapshot lives in `$TMPDIR`, never inside the repo, so it is
  * structurally incapable of reporting its own bookkeeping.
@@ -149,10 +153,10 @@ import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
-import { resolveProjectDir } from '../scripts/lib/platform.mjs';
+import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
 // hooks/enforce-scope.mjs can read the same session clock without a hook->hook
@@ -160,7 +164,7 @@ import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs'
 // tests/hooks/post-bash-write-verify.test.mjs, which imports the named export —
 // is unchanged. Two byte-identical copies of a clock is exactly the one-fact-two-
 // copies class this repo keeps paying for.
-import { sessionAgeMs, PEER_RECORD_PREFIX, isPeerRecordId } from '../scripts/lib/scope-gate.mjs';
+import { sessionAgeMs, PEER_RECORD_PREFIX, isPeerRecordId, isScopeDeclarationPath } from '../scripts/lib/scope-gate.mjs';
 // #1153 P1 — the same process-local ownership check hooks/enforce-scope.mjs
 // applies at Gate 3b. This hook reads the SAME working-copy `wave-scope.json`,
 // so without it a peer session's manifest drives this session's advisories.
@@ -314,6 +318,45 @@ export function parsePorcelainZ(raw) {
 }
 
 /**
+ * Rebase toplevel-relative porcelain paths onto the SESSION ROOT.
+ *
+ * `git status --porcelain` names paths relative to the git TOPLEVEL, while
+ * `allowedPaths`, the ignore list and the manifest path are relative to the
+ * session root — since #1492 the LAUNCH DIR, which in a session started from a
+ * repo subdirectory (`<mono>/packages/foo`) sits below the toplevel. Judged
+ * unrebased, an in-scope write to `packages/foo/src/new.mjs` failed `src/**`
+ * (false positive) and a write to `<mono>/src/evil.mjs` matched it (false
+ * negative). A path under the prefix loses it; every other path is outside the
+ * project root and is spelled `../…` from the session root — the same category
+ * enforce-scope Gate 6 denies, and a spelling no allowedPaths entry can grant
+ * (see {@link isOutsideSessionRoot}).
+ *
+ * @param {string[]} paths toplevel-relative, forward slashes
+ * @param {string} prefix session root relative to the toplevel ('' = same dir)
+ * @returns {string[]}
+ */
+export function rebaseToSessionRoot(paths, prefix) {
+  const clean = typeof prefix === 'string' ? prefix.replace(/\/+$/, '') : '';
+  // '' = the session root IS the toplevel; '..'/absolute cannot come from
+  // `--show-prefix` and would make the arithmetic meaningless — leave as is.
+  if (clean === '' || clean.startsWith('..') || clean.startsWith('/')) return paths;
+  const head = `${clean}/`;
+  const ups = clean.split('/').map(() => '..').join('/');
+  return paths.map((p) => (p.startsWith(head) ? p.slice(head.length) : `${ups}/${p}`));
+}
+
+/**
+ * Is this (session-root-relative) path outside the project root — a `../…`
+ * spelling produced by {@link rebaseToSessionRoot}? Never in scope.
+ *
+ * @param {string} relPath
+ * @returns {boolean}
+ */
+export function isOutsideSessionRoot(relPath) {
+  return relPath === '..' || relPath.startsWith('../');
+}
+
+/**
  * Is a repo-relative path covered by the wave's `allowedPaths`?
  *
  * Reuses `pathMatchesPattern` — the same matcher `enforce-scope.mjs` Gate 7
@@ -384,14 +427,17 @@ export function readPeerScopeRecords(stateDir, wave) {
  * Which peer record — if any — declared this path?
  *
  * Same matcher as `isInScope`, so a peer's declaration is read exactly the way
- * the wave's own `allowedPaths` are.
+ * the wave's own `allowedPaths` are — and the same outside-root guard as
+ * `computeReport`: a `../…` path is outside the project root, which no peer
+ * record can grant any more than `allowedPaths` can (a peer glob over every
+ * `.md` file would otherwise file `<mono>/NOTES.md` as an agreed peer write).
  *
  * @param {string} relPath
  * @param {Array<{ id: string, files: string[] }>} peerRecords
  * @returns {string|null} the peer record id, or null
  */
 export function peerRecordFor(relPath, peerRecords) {
-  if (!Array.isArray(peerRecords)) return null;
+  if (!Array.isArray(peerRecords) || isOutsideSessionRoot(relPath)) return null;
   for (const record of peerRecords) {
     if (record.files.some((p) => pathMatchesPattern(relPath, p))) return record.id;
   }
@@ -466,14 +512,22 @@ export function snapshotPathFor(repoRoot) {
 export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null, scopeRelPath = null }) {
   const outOfScope = dirtyPaths
     .filter((p) => !isIgnoredPath(p))
-    .filter((p) => !isInScope(p, allowedPaths))
+    // A `../…` path (outside the project root, see rebaseToSessionRoot) is never
+    // in scope — not even under a broad glob that would happen to match it.
+    .filter((p) => isOutsideSessionRoot(p) || !isInScope(p, allowedPaths))
     // The wave-scope.json control file is out-of-scope by construction (it is
     // never under allowedPaths) but its CHANGES are reported via the content-hash
     // control-notice path, not here. Excluding it keeps the mtime re-baseline
     // filter from reporting the scope file against ITSELF — its mtime always
     // equals scopeMtimeMs, so the MED-3 `>=` boundary would otherwise flag it on
     // every first run (#938 MED-3 follow-through).
-    .filter((p) => p !== scopeRelPath);
+    .filter((p) => p !== scopeRelPath)
+    // Its sibling control state, `<state-dir>/filescopes/` (the per-agent scope
+    // declarations `materialize-wave-scope.mjs` writes once per wave), is no
+    // wave territory either — excluded the same way, not via
+    // IGNORED_PATH_PATTERNS, so the exemption follows THIS manifest's state dir
+    // instead of granting all four harness dirs (#1027 Pkt 5).
+    .filter((p) => !isScopeDeclarationPath(p, scopeRelPath));
 
   const rebaselined = !snapshot || snapshot.signature !== signature;
   const seen = rebaselined || !Array.isArray(snapshot?.paths) ? new Set() : new Set(snapshot.paths);
@@ -515,7 +569,9 @@ export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, s
  * @returns {string}
  */
 export function formatMessage(report, allowedCount) {
-  const shown = report.slice(0, MAX_REPORTED_PATHS);
+  const shown = report
+    .slice(0, MAX_REPORTED_PATHS)
+    .map((p) => (isOutsideSessionRoot(p) ? `${p} (outside project root)` : p));
   const more = report.length - shown.length;
   const tail = more > 0 ? ` (+${more} more)` : '';
   const msg =
@@ -608,12 +664,13 @@ export function formatSnapshotMissingNotice({ sessionAge = null, scopeAge = null
 // ---------------------------------------------------------------------------
 
 /**
- * Collect the working-tree dirty set. Returns null when git is unavailable, the
+ * Collect the working-tree dirty set, rebased onto the session root
+ * ({@link rebaseToSessionRoot}). Returns null when git is unavailable, the
  * directory is not a repo, or the call times out — all of which mean "no signal
  * to report", never a warning.
  *
- * @param {string} repoRoot
- * @returns {string[]|null}
+ * @param {string} repoRoot the session root
+ * @returns {string[]|null} session-root-relative paths (`../…` = outside it)
  */
 function readDirtyPaths(repoRoot) {
   try {
@@ -630,7 +687,16 @@ function readDirtyPaths(repoRoot) {
       ['--no-optional-locks', 'status', '--porcelain', '-z', '--no-renames', '--untracked-files=all'],
       { cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, maxBuffer: GIT_MAX_BUFFER, stdio: ['ignore', 'pipe', 'ignore'] },
     );
-    return parsePorcelainZ(raw);
+    // Porcelain paths are toplevel-relative; everything they are judged against
+    // is session-root-relative. A `.git` AT the session root makes it the
+    // toplevel (prefix ''), so the extra spawn is paid only by a session
+    // launched from a repo subdirectory.
+    const prefix = existsSync(path.join(repoRoot, '.git'))
+      ? ''
+      : execFileSync('git', ['rev-parse', '--show-prefix'], {
+        cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+    return rebaseToSessionRoot(parsePorcelainZ(raw), prefix);
   } catch {
     return null;
   }
@@ -807,7 +873,10 @@ async function main() {
   // G2 — only Bash calls carry the bypass risk this hook watches.
   if (input.tool_name !== 'Bash') return;
 
-  const repoRootRaw = resolveProjectDir();
+  // #1492 — the SESSION's working copy, not the launch dir `$CLAUDE_PROJECT_DIR`
+  // keeps after `EnterWorktree` (the manifest lives in the worktree). See
+  // `resolveSessionRoot` in scripts/lib/platform.mjs.
+  const repoRootRaw = resolveSessionRoot(input.cwd);
   let repoRoot;
   try {
     repoRoot = realpathSync(repoRootRaw);

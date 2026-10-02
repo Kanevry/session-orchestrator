@@ -177,9 +177,15 @@ No Docs task generated for this audience.
 documents what the docs-writer MUST do when executing a dispatched Docs task.
 
 Before writing any documentation, the docs-writer MUST read and ingest the actual
-source material provided in the task prompt. The canonical four source types are:
+source material provided in the task prompt. The canonical four source types are
+below. `$SESSION_RANGE` is ONE complete diff range: inside a wave run it is
+`"$SESSION_START_REF..HEAD"` (the SHA wave-executor pins at Pre-Wave 1a); at
+session end it is what the accessor in `skills/session-end/plan-verification.md`
+§ SESSION_START_REF accessor exports — the pinned SHA, else the resolved
+`<base>...HEAD`, never a hard-coded `origin/main`. Diffs take the range; the log
+keeps the two-dot `$SESSION_START_REF..HEAD`, which is the correct form for `git log`.
 
-1. **diff** — `git diff $SESSION_START_REF..HEAD` — the verbatim diff of all changes
+1. **diff** — `git diff "$SESSION_RANGE"` — the verbatim diff of all changes
    made during this session. This is the primary authoritative source for what changed.
 2. **git-log** — `git log $SESSION_START_REF..HEAD --format="%H %s%n%b"` — commit
    messages and associated bodies. Secondary context for all audiences; use to
@@ -284,9 +290,10 @@ The docs-writer MUST emit a brief structured output summary:
 1. Collect every task classified as `Docs` in the plan.
 2. For each task, resolve the expected `file-pattern` target and check for a diff:
    ```bash
-   git diff --name-only $SESSION_START_REF..HEAD
+   git diff --name-only "$SESSION_RANGE"
    ```
-   Match the output against the task's file-pattern using glob matching.
+   (`$SESSION_RANGE` from the session-end accessor above; an empty range is a skip
+   with a named reason, never "no docs changed".) Match the output against the task's file-pattern using glob matching.
 3. Classify gaps by severity:
    - **missing diff** — no matching file was changed; the task did not run or produced
      no output.

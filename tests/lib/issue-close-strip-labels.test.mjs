@@ -11,10 +11,10 @@
  *     in the module under test route through the configured mock.
  */
 
-import { chmodSync, writeFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { installNodeCli } from '../_helpers/executable-fixture.mjs';
 import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
@@ -517,7 +517,9 @@ describe('closeIssues — strip → close → verify', () => {
 // ---------------------------------------------------------------------------
 // CLI — the exit code is what session-end Phase 5 reads. A real `node` child
 // runs the module's own main(); `glab` is a fake on PATH that reports the
-// state from FAKE_GLAB_STATE, so no real GitLab call can happen.
+// state from FAKE_GLAB_STATE, so no real GitLab call can happen. The fake is a
+// symlink to node (installNodeCli), not a freshly written executable (#1497);
+// the child runs in binDir because the fake's `issue` script lives there.
 // ---------------------------------------------------------------------------
 
 describe('issue-close-strip-labels CLI (--close)', () => {
@@ -526,18 +528,11 @@ describe('issue-close-strip-labels CLI (--close)', () => {
 
   beforeAll(() => {
     binDir = makeTmpDir('so-issue-close-cli-');
-    writeFileSync(
-      join(binDir, 'glab'),
-      [
-        '#!/bin/sh',
-        'if [ "$2" = "view" ]; then',
-        '  printf \'{"iid":%s,"labels":[],"state":"%s"}\' "$3" "$FAKE_GLAB_STATE"',
-        'fi',
-        'exit 0',
-        '',
-      ].join('\n'),
-    );
-    chmodSync(join(binDir, 'glab'), 0o755);
+    installNodeCli(binDir, 'glab', binDir, {
+      issue:
+        "if (ARGS[1] === 'view') process.stdout.write(" +
+        'JSON.stringify({ iid: Number(ARGS[2]), labels: [], state: process.env.FAKE_GLAB_STATE }));\n',
+    });
   });
 
   afterAll(() => {
@@ -562,6 +557,7 @@ describe('issue-close-strip-labels CLI (--close)', () => {
       process.execPath,
       [SCRIPT, '--close', '--vcs', 'gitlab', '-R', 'example-group/example-project', '7'],
       {
+        cwd: binDir,
         encoding: 'utf8',
         env: { ...process.env, PATH: `${binDir}${delimiter}${process.env.PATH}`, FAKE_GLAB_STATE: state },
         timeout: 8000,

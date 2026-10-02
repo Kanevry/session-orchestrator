@@ -169,10 +169,14 @@ entirely. Source: `docs/session-config-reference.md` § Docs Orchestrator.
 The `docs-writer` agent operates under a **hallucination ban**: every
 substantive paragraph must trace to one of the canonical four sources, or
 carry an inline `<!-- REVIEW: source needed -->` marker. The four sources are
-defined once and reused everywhere:
+defined once — in `skills/docs-orchestrator/SKILL.md` — and reused everywhere.
+Diffs take `"$SESSION_RANGE"`, ONE complete range (the pinned SHA's
+`<sha>..HEAD`, else the resolved `<base>...HEAD` from the accessor in
+`skills/session-end/plan-verification.md`); only the log keeps the two-dot
+`$SESSION_START_REF..HEAD`. An empty range or ref is a skip, never "no changes":
 
-1. **diff** — `git diff $SESSION_START_REF..HEAD`
-2. **git-log** — `git log $SESSION_START_REF..HEAD --format="%H %s%n%b"`
+1. **diff** — `git diff "$SESSION_RANGE"`
+2. **git-log** — `git log "$SESSION_START_REF..HEAD" --format="%H %s%n%b"`
 3. **session-memory** — `~/.claude/projects/<project>/memory/session-*.md` and
    `.orchestrator/` outputs
 4. **affected-files** — files in the wave-scope `allowedPaths` block

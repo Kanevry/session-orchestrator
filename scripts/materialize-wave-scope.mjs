@@ -26,7 +26,7 @@ import { existsSync, readdirSync, readFileSync, unlinkSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { writeJsonAtomicSync } from './lib/io.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
-import { isPeerRecordId } from './lib/scope-gate.mjs';
+import { COORDINATOR_RECORD_ID, isCoordinatorRecordId, isPeerRecordId } from './lib/scope-gate.mjs';
 import { SCOPE_MATERIALIZED_EVENT, scopeDigest } from './lib/scope-echo.mjs';
 import {
   MANIFEST_SESSION_KEYS,
@@ -214,8 +214,8 @@ export function validateScopeRecords(value) {
       throw new InputError(`record #${recordIndex} has duplicate id (case-insensitive): ${record.id}`);
     }
     seenIds.add(idKey);
-    if (idKey === 'coordinator') {
-      if (record.id !== 'coordinator') {
+    if (idKey === COORDINATOR_RECORD_ID) {
+      if (!isCoordinatorRecordId(record.id)) {
         throw new InputError(`record #${recordIndex} id must be exactly coordinator (lowercase)`);
       }
       coordinatorCount++;
@@ -537,7 +537,10 @@ export function transportObservable(pluginRoot = resolve(import.meta.dirname, '.
 async function emitScopeMaterialized({ stateDir, wave, records }) {
   try {
     const repoRoot = dirname(resolve(stateDir));
-    const agentRecords = records.filter((r) => !isPeerRecordId(r.id));
+    // Dispatched agents only: a peer's record gets no per-agent file, and the
+    // coordinator's is a declaration no dispatch carries — counted, its empty
+    // `files` (the common case) read as "two agents share one scope" (#1493.2).
+    const agentRecords = records.filter((r) => !isPeerRecordId(r.id) && !isCoordinatorRecordId(r.id));
     const digests = new Set();
     for (const record of agentRecords) {
       if (Array.isArray(record.files) && record.files.length > 0) digests.add(scopeDigest(record.files));

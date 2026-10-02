@@ -26,6 +26,16 @@ rm -f <state-dir>/wave-scope.json
 
 This should have been cleaned up by wave-executor after the final wave, but crashed sessions or interrupted executions may leave it behind. A stale scope manifest from a previous session could incorrectly restrict the next session's enforcement hooks.
 
+Delete THIS session's dispatch ledger the same way (`hooks/pre-task-scope-disjoint.mjs`, one file per session since #1493 — `skills/wave-executor/references/wave-loop-scope-manifest.md` step 7). Never a file named after another session id: that is a peer's live state.
+
+```bash
+SID="${CLAUDE_CODE_SESSION_ID:-}"
+case "$SID" in
+  ''|*[!A-Za-z0-9._-]*) ;;  # no id on this harness, or not path-safe: leave the file (inert)
+  *) rm -f ".orchestrator/wave-dispatch-scopes.$SID.json" ".orchestrator/wave-dispatch-scopes.$SID.lock" ;;
+esac
+```
+
 ### 3.1 SSOT Files
 - Update `STATUS.md` / `STATE.md` if they exist (metrics, dates, status)
 - Update `CLAUDE.md` (or `AGENTS.md` on Codex CLI) if patterns or conventions changed during this session
@@ -35,7 +45,7 @@ This should have been cleaned up by wave-executor after the final wave, but cras
 
 > Skip this subsection if `docs-orchestrator.enabled` config is not `true` (default: `false`). Also skip entirely if `docs-orchestrator.mode` is `off`.
 
-Reads `docs-tasks` from STATE.md frontmatter (written by wave-executor Pre-Wave 1b), computes `CHANGED_FILES` via `git diff --name-only "$SESSION_START_REF..HEAD"`, and runs a per-task verification loop (outcome: `ok`/`partial`/`gap`). In `warn` mode logs results non-blocking; in `strict` mode blocks on any gap and presents an AskUserQuestion override prompt. Emits a `### Documentation Coverage (docs-orchestrator)` block for inclusion in the Phase 6 Final Report.
+Reads `docs-tasks` from STATE.md frontmatter (written by wave-executor Pre-Wave 1b), computes `CHANGED_FILES` via `git diff --name-only "$SESSION_RANGE"` (the `plan-verification.md` accessor; an empty range skips with its named reason), and runs a per-task verification loop (outcome: `ok`/`partial`/`gap`). In `warn` mode logs results non-blocking; in `strict` mode blocks on any gap and presents an AskUserQuestion override prompt. Emits a `### Documentation Coverage (docs-orchestrator)` block for inclusion in the Phase 6 Final Report.
 
 **See `phase-3-2-docs-verification.md` for full details.**
 

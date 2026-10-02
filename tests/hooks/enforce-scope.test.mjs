@@ -28,7 +28,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1885,5 +1885,128 @@ describe('memory-dir carveout (#1295)', { timeout: 15000 }, () => {
       (e) => e.event === 'orchestrator.scope.memory_dir_allowed',
     );
     expect(record).toMatchObject({ discriminator: 'absent' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1492 — the SESSION root, not the launch dir
+//
+// After `EnterWorktree`, `$CLAUDE_PROJECT_DIR` stays on the dir the session was
+// LAUNCHED in while the coordinator writes `wave-scope.json` into the worktree.
+// Resolved from the launch dir, Gate 3 found no manifest and allowed every
+// write for the whole session, silently (measured in session
+// main-2026-10-02-session-21). The payload `cwd` names the working copy.
+// ---------------------------------------------------------------------------
+
+describe('session root after entering a worktree (#1492)', { timeout: 20000 }, () => {
+  const SCOPE = { enforcement: 'strict', allowedPaths: ['src/**'] };
+  /** The id shape measured on this host: `a` + 16 hex. */
+  const AGENT_ID = 'a0123456789abcdef0';
+
+  /** git with a throwaway identity and no host hooks (`core.hooksPath` may be global). */
+  function git(cwd, ...args) {
+    execFileSync(
+      'git',
+      ['-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false',
+        '-c', 'core.hooksPath=/dev/null', ...args],
+      { cwd, stdio: 'ignore' },
+    );
+  }
+
+  /** `<tmp>/main` with one commit — `git worktree add` needs a commit to branch from. */
+  async function mkLaunchRepo() {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-1492-'));
+    tmpDirs.push(dir);
+    const launch = path.join(dir, 'main');
+    await fs.mkdir(launch);
+    git(launch, 'init', '-q');
+    git(launch, 'commit', '-q', '--allow-empty', '-m', 'seed');
+    return { dir, launch };
+  }
+
+  /** A LINKED worktree of `launch` at `wtPath` (its `.git` is a file), with `scope` in it. */
+  async function addWorktree(launch, wtPath, scope) {
+    git(launch, 'worktree', 'add', '-q', '--detach', wtPath);
+    if (scope) {
+      await fs.mkdir(path.join(wtPath, '.claude'), { recursive: true });
+      await fs.writeFile(path.join(wtPath, '.claude', 'wave-scope.json'), JSON.stringify(scope));
+    }
+    return wtPath;
+  }
+
+  it.each([
+    ['a sibling checkout', (dir) => path.join(dir, 'wt')],
+    // Where `EnterWorktree` / `claude --worktree <name>` put it — the SAME
+    // directory harness agent worktrees live in, under a chosen name.
+    ['.claude/worktrees/<name> of the launch dir', (dir) => path.join(dir, 'main', '.claude', 'worktrees', 'feature-x')],
+  ])('enforces the manifest of the worktree the session ENTERED (%s), not the launch dir', async (_where, wtOf) => {
+    // Bug caught (#1492): the root came from `$CLAUDE_PROJECT_DIR` = the launch
+    // dir, which holds no manifest, so this out-of-scope write was ALLOWED. The
+    // second row also catches a harness-worktree lift keyed on the directory
+    // alone: it would send this session back to the launch dir the same way.
+    const { dir, launch } = await mkLaunchRepo();
+    const wt = await addWorktree(launch, wtOf(dir), SCOPE);
+    const result = await runHook({
+      projectDir: launch,
+      stdin: editPayload(path.join(wt, 'other', 'x.mjs'), 'Write', { cwd: wt }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    // Relative to the WORKTREE: the root is the working copy, not the launch dir.
+    expectDeny(result, ["'other/x.mjs' not in allowed paths"]);
+  });
+
+  it('keeps an isolation:"worktree" agent on the launch checkout manifest — its harness worktree is no root of its own', async () => {
+    // Bug caught: the agent's payload `cwd` is `<root>/.claude/worktrees/agent-<hex>`,
+    // a repo root holding no manifest. Resolved as-is, every isolation:"worktree"
+    // agent was allowed everything; before #1492 it resolved `$CLAUDE_PROJECT_DIR`
+    // = the launch checkout it sits under, and met that manifest — what this pins.
+    const { launch } = await mkLaunchRepo();
+    await fs.mkdir(path.join(launch, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(launch, '.claude', 'wave-scope.json'), JSON.stringify(SCOPE));
+    const agentWt = await addWorktree(launch, path.join(launch, '.claude', 'worktrees', `agent-${AGENT_ID}`));
+    const result = await runHook({
+      projectDir: launch,
+      stdin: editPayload(path.join(launch, 'elsewhere', 'x.mjs'), 'Write', { cwd: agentWt, agent_id: AGENT_ID }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, ["'elsewhere/x.mjs' not in allowed paths"]);
+  });
+
+  it('never resolves ABOVE a launch dir in a repo subdirectory — a monorepo package keeps its manifest', async () => {
+    // Bug caught (review HIGH-1 on 4fdbc469): launched in `/mono/packages/foo`,
+    // the `.git` walk climbed to `/mono`, which holds no manifest, so Gate 3
+    // ALLOWED this out-of-scope write — before #1492 the launch dir was the root
+    // and it was denied. Same shape: a project under a git-tracked `$HOME`.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-1492-mono-'));
+    tmpDirs.push(dir);
+    git(dir, 'init', '-q');
+    const pkg = path.join(dir, 'packages', 'foo');
+    await fs.mkdir(path.join(pkg, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(pkg, '.claude', 'wave-scope.json'), JSON.stringify(SCOPE));
+    const result = await runHook({
+      projectDir: pkg,
+      stdin: editPayload(path.join(pkg, 'other', 'x.mjs'), 'Write', { cwd: pkg }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, ["'other/x.mjs' not in allowed paths"]);
+  });
+
+  it("still ALLOWS the coordinator's auto-memory dir, which the harness keys on the LAUNCH path", async () => {
+    // Bug caught: with the root moved to the worktree, the #1295 carve-out
+    // encoded only the worktree's path. The harness names the memory dir after
+    // the path it was launched with, so the coordinator of a worktree session
+    // was denied writes to its own memory as soon as its manifest was found.
+    const { dir, launch } = await mkLaunchRepo();
+    const wt = await addWorktree(launch, path.join(dir, 'wt'), SCOPE);
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-home-'));
+    tmpDirs.push(home);
+    const { encodeProjectDir } = await import('../../scripts/lib/wave-transcript-tail.mjs');
+    const target = path.join(home, '.claude', 'projects', encodeProjectDir(launch), 'memory', 'MEMORY.md');
+    const result = await runHook({
+      projectDir: launch,
+      stdin: editPayload(target, 'Write', { cwd: wt }),
+      env: { HOME: home, USERPROFILE: home, CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectAllow(result);
   });
 });

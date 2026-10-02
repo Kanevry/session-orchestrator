@@ -119,8 +119,18 @@ export async function maybeTriggerOrphanScan({
       );
     }
   };
+  let root;
   try {
-    const root = typeof projectDir === 'string' && projectDir ? projectDir : getProjectDir();
+    root = typeof projectDir === 'string' && projectDir ? projectDir : getProjectDir();
+  } catch {
+    // No project dir, no config to read (#1498): `process.cwd()` throws ENOENT
+    // when the hook starts in a deleted directory with no `*_PROJECT_DIR` set.
+    // That is an unreadable config — the parser defaults, DISABLED — and not a
+    // failure of an armed reaper, so it must not surface as `error`: on-stop
+    // stamps `reaper_trigger` only for a reaper that is enabled.
+    return { spawned: false, reason: 'disabled' };
+  }
+  try {
     const cfg = loadReaperConfig(root);
     // Cheapest gate first: disabled means no stat, no spawn, no module load.
     if (cfg.enabled !== true) return { spawned: false, reason: 'disabled' };

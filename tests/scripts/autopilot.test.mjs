@@ -84,13 +84,12 @@ function createTmpLayout(tmp) {
 // Helper: spawn scripts/autopilot.mjs
 // ---------------------------------------------------------------------------
 
-function runAutopilot(args, { tmp, env = {}, pathPrefix = null, script = SCRIPT, nodeArgs = [] } = {}) {
+function runAutopilot(args, { tmp, env = {}, script = SCRIPT, nodeArgs = [] } = {}) {
   const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
   const spawnEnv = {
     ...process.env,
-    // Override PATH so stub claude is found first. `pathPrefix` lets a single
-    // test put its OWN stub ahead of the shared fixture (used to record argv).
-    PATH: `${pathPrefix ? `${pathPrefix}:` : ''}${FIXTURES_DIR}:${process.env.PATH}`,
+    // Override PATH so stub claude is found first.
+    PATH: `${FIXTURES_DIR}:${process.env.PATH}`,
     // Required by stub
     STUB_SESSIONS_JSONL: sessionsJsonl,
     // Disable any real resource probing side-effects in CI
@@ -121,21 +120,16 @@ function readAutopilotJsonl(tmp) {
 }
 
 // ---------------------------------------------------------------------------
-// Helper: wrap the stub claude so `stampSource` (an ESM script) rewrites the
-// ledger after each child run. Returns the bin dir to pass as `pathPrefix`.
+// Helper: make the stub claude run `stampSource` (an ESM script) after each
+// successful child run, to rewrite the ledger. Returns env for runAutopilot.
+// The committed stub runs it (STUB_AFTER) — a wrapper written per test would
+// pay macOS's first-launch check on every first exec (#1497).
 // ---------------------------------------------------------------------------
 
-function stampWrapper(tmp, stampSource) {
-  const binDir = join(tmp, 'stamp-bin');
-  mkdirSync(binDir);
-  const stamp = join(binDir, 'stamp.mjs');
+function stampEnv(tmp, stampSource) {
+  const stamp = join(tmp, 'stamp.mjs');
   writeFileSync(stamp, stampSource);
-  const wrapper = join(binDir, 'claude');
-  writeFileSync(wrapper, '#!/usr/bin/env bash\n' +
-    `"${STUB_CLAUDE}" "$@" || exit $?\n` +
-    `exec "${process.execPath}" "${stamp}"\n`);
-  chmodSync(wrapper, 0o755);
-  return binDir;
+  return { STUB_AFTER: stamp, STUB_NODE: process.execPath };
 }
 
 // Turns the child's own (last) record into an `abandoned` backfill stub: the
@@ -324,10 +318,9 @@ describe('scripts/autopilot.mjs integration', () => {
     ['own record is a backfill stub (usage unknown, not 0)', {}, 'is a backfill stub', OWN_RECORD_TO_STUB],
   ])('kill-switch failed-wave: %s', (_name, env, detail, stampSource) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
-    const pathPrefix = stampSource ? stampWrapper(tmp, stampSource) : null;
     const result = runAutopilot(
       ['--headless', '--max-sessions=2', '--confidence-threshold=0.4'],
-      { tmp, env, pathPrefix }
+      { tmp, env: stampSource ? { ...env, ...stampEnv(tmp, stampSource) } : env }
     );
     const records = readAutopilotJsonl(tmp);
     expect(records).toHaveLength(1);
@@ -353,26 +346,14 @@ describe('scripts/autopilot.mjs integration', () => {
   it('spawns the NAMESPACED command with --plugin-dir pointing at the real plugin root', () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
 
-    // A stub that records its own argv, then delegates to the shared fixture
-    // stub so the loop still gets its sessions.jsonl record.
-    const binDir = join(tmp, 'argv-bin');
-    mkdirSync(binDir, { recursive: true });
+    // The shared stub records its own argv (STUB_ARGV_LOG), one argument per
+    // line — the driver passes no argument containing a newline — and still
+    // appends the loop's sessions.jsonl record.
     const argvLog = join(tmp, 'argv.json');
-    const recorder = join(binDir, 'claude');
-    // One argument per line — the driver passes no argument containing a newline,
-    // and this avoids a second quoting layer inside the stub.
-    writeFileSync(
-      recorder,
-      '#!/usr/bin/env bash\n' +
-      'printf \'%s\\n\' "$@" > "$ARGV_LOG"\n' +
-      `exec "${STUB_CLAUDE}" "$@"\n`,
-      'utf8'
-    );
-    chmodSync(recorder, 0o755);
 
     const result = runAutopilot(
       ['--headless', '--max-sessions=1', '--confidence-threshold=0.4'],
-      { tmp, pathPrefix: binDir, env: { ARGV_LOG: argvLog } }
+      { tmp, env: { STUB_ARGV_LOG: argvLog } }
     );
 
     expect(result.status).toBe(0);
@@ -518,10 +499,26 @@ describe('scripts/autopilot.mjs integration', () => {
     expect(rec.iterations_completed).toBe(iterations);
   });
 
+  // #1498: `tokens_unknown_sessions` reached autopilot.jsonl but no report read
+  // it, so the run summary's token figure looked like the whole sum. Without
+  // STUB_OWN_TOKENS the own record carries no token figure.
+  it.each([
+    ['names the unknown-token iterations, so the total reads as a lower bound', {}, /tokens=0 tokens_unknown_sessions=1 \(the token total is a lower bound\)$/m],
+    ['prints a known total without the lower-bound note', { STUB_OWN_TOKENS: '5000' }, /tokens=5000$/m],
+  ])('run summary %s', (_name, env, line) => {
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+    const result = runAutopilot(
+      ['--headless', '--max-sessions=1', '--confidence-threshold=0.4'],
+      { tmp, env }
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(line);
+  });
+
   // #1457: canonicalization must discard a later backfill stub sharing the child's raw UUID.
   it('uses the authoritative own record when a later raw-ID stub canonicalizes away', () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
-    const binDir = stampWrapper(tmp, `
+    const stamp = stampEnv(tmp, `
       import { readFileSync, appendFileSync } from 'node:fs';
       const p = process.env.STUB_SESSIONS_JSONL;
       const own = JSON.parse(readFileSync(p, 'utf8').trim());
@@ -531,7 +528,7 @@ describe('scripts/autopilot.mjs integration', () => {
     `);
     const result = runAutopilot(
       ['--headless', '--max-sessions=1', '--confidence-threshold=0.4', '--max-tokens=100000'],
-      { tmp, pathPrefix: binDir, env: { STUB_OWN_TOKENS: '5000' } }
+      { tmp, env: { STUB_OWN_TOKENS: '5000', ...stamp } }
     );
     expect(result.status).toBe(0);
     const raw = readFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8')

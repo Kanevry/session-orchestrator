@@ -32,20 +32,21 @@ Both call sites are conditional: vault-mirror runs only when `vault-integration.
 
 ## Inputs
 
-`scripts/vault-mirror.mjs` is the implementation. All arguments are required except `--dry-run`.
+`scripts/vault-mirror.mjs` is the implementation (call it by its plugin path, `"$PLUGIN_ROOT/scripts/vault-mirror.mjs"` — never `cd` into the plugin checkout to run it). `--vault-dir`, `--source` and `--kind` are required; `node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" --help` lists every flag.
 
 | Flag | Type | Required | Description |
 |---|---|---|---|
 | `--vault-dir` | path | yes | Absolute path to the Meta-Vault root directory. Must exist. |
-| `--source` | path | yes | Path to the JSONL file to read (one JSON object per line). Must exist. |
+| `--source` | path | yes | Path to the JSONL file to read (one JSON object per line). Must exist. Pass it absolute — a relative path resolves against the cwd. |
 | `--kind` | `session` or `learning` | yes | Determines which generator and target path are used. |
+| `--repo-root` | path | no | The repo whose ledger `--source` is (#1503). Its `.vault.yaml` slug / git remote decides the vault namespace. Default: the project holding `--source` (`<root>/.orchestrator/metrics/<file>` → `<root>`, so a monorepo package with its own `.orchestrator/` keeps its own namespace), else the git repo containing it, else the cwd (only for a loose source outside any git repo, with a stderr `WARN`). Callers pass `--repo-root "$PWD"` from the repo root. |
 | `--dry-run` | flag | no | Parse and resolve paths but do not write any files. Emits action lines as normal. |
 
 Empty lines in the JSONL source are silently skipped.
 
 ## Outputs
 
-One JSON line is written to stdout for each non-empty JSONL entry processed. Exit code reflects the run outcome.
+One JSON line is written to stdout for each non-empty JSONL entry processed. Exit code reflects the run outcome. Diagnostics (`SKIP …`, `WARN …`, refusals) go to stderr and are NOT JSON — a caller that captures `2>&1` must parse line by line (`jq -R -r 'fromjson? | objects | …'`), or one `SKIP` line ends the parse and drops every action after it.
 
 ### Action values
 
@@ -56,6 +57,7 @@ One JSON line is written to stdout for each non-empty JSONL entry processed. Exi
 | `skipped-noop` | Entry existed, same id, `updated` date not advanced; file unchanged. |
 | `skipped-handwritten` | A file at the target path has no `_generator` marker (or an unknown generator); left untouched. |
 | `skipped-collision-resolved` | A file at the target path has the generator marker but a different `id`; a disambiguated slug was used instead. |
+| `skipped-foreign-owner` | A generator note at the target path was rendered from another record (#1503), and this write must not replace it. **Sessions:** its `source-record` differs from this write and occurs nowhere in this `--source` ledger (`reason: "source-record mismatch"`), or its `id` names a different session (`reason: "id mismatch"`). **Learnings:** only for the disambiguated `<slug>-<uuid8>.md` file — a mismatch on the main `<slug>.md` is routed to disambiguation instead (`skipped-collision-resolved`, see Idempotency rule 6). One `SKIP foreign owner` line goes to stderr; `--force` does not bypass it. A leak in the foreign note is masked in place — owner, content and `source-record` kept — and the line carries `healed_leak: true`. A note without `source-record` (written before #1503) stays writable. |
 | `skipped-invalid` | Entry is missing one or more required fields; entry skipped, processing continues. |
 | `skipped-quality-low` | Entry failed the quality gate (PRD F1.2): learning `confidence` below `vault-mirror.quality.min-confidence` (CLI: `--quality-min-confidence`, default `0.5`), or session rendered-narrative length below `vault-mirror.quality.min-narrative-chars` (CLI: `--quality-min-narrative-chars`, default `400`). The emitted JSON line includes a `reason` field describing the violated threshold and `path: null` (no file was created). The quality gate runs **before** `--force`; `--force` does not bypass it. |
 
@@ -73,7 +75,7 @@ One JSON line is written to stdout for each non-empty JSONL entry processed. Exi
 |---|---|
 | `0` | Success (including idempotent no-ops and per-entry skips). |
 | `1` | Malformed JSON on a JSONL line — fatal, processing stops. Also returned when required CLI args are missing. |
-| `2` | Filesystem error: `--vault-dir` not found, `--source` not found, or an unexpected write error. |
+| `2` | Filesystem error or pre-loop refusal: `--vault-dir` not found, vault not canonical, `--source` not found, `--source` in a different repo than `--repo-root` (`source-repo-mismatch`, #1503), or an unexpected write error. |
 
 ## Target Paths
 
@@ -86,7 +88,7 @@ Subdirectories are created automatically with `mkdirSync({ recursive: true })` w
 
 The numeric prefix (`50-sessions/`, `40-learnings/`) follows the vault folder ordering convention so that sessions and learnings appear in the correct position in the vault tree relative to other note types.
 
-**Per-project namespacing (#660).** New writes are namespaced under a per-repo subdirectory `<repo>/`, so a single shared vault can hold notes from multiple projects without cross-repo slug/id collisions. `<repo>` is resolved by `resolveRepoNamespace()` (`scripts/lib/vault-mirror/namespace.mjs`): the optional `vault-integration.vault-name` Session Config key (CLI: `--vault-name`) when set, else the git-origin repo slug via `deriveRepo()`, sanitised to a single kebab segment. Owner-privacy leaks (personal home path / private project slug / personal name) are redacted to `redacted-repo` before any write. The legacy **flat** layout (`40-learnings/<slug>.md`) is still read — the writer dual-probes the flat path so a pre-existing flat note is never duplicated; a one-time relocation of the historical flat corpus is tracked as a follow-up.
+**Per-project namespacing (#660).** New writes are namespaced under a per-repo subdirectory `<repo>/`, so a single shared vault can hold notes from multiple projects without cross-repo slug/id collisions. `<repo>` is resolved by `resolveRepoNamespace()` (`scripts/lib/vault-mirror/namespace.mjs`): the optional `vault-integration.vault-name` Session Config key (CLI: `--vault-name`) when set, else the repo root's `.vault.yaml` slug, else its preferred git remote via `deriveRepo()`, sanitised to a single kebab segment. The repo root is `--repo-root`, else the project holding `--source` (`<root>/.orchestrator/metrics/`), else the git repo containing it, else the cwd — never the cwd when the source belongs to a project (#1503: running from another repo's checkout once wrote one project's ledger over another project's notes). Owner-privacy leaks (personal home path / private project slug / personal name) are redacted to `redacted-repo` before any write. The legacy **flat** layout (`40-learnings/<slug>.md`) is still read — the writer dual-probes the flat path so a pre-existing flat note is never duplicated; a one-time relocation of the historical flat corpus is tracked as a follow-up.
 
 **Path contract note:** Issue #187 shipped the flat numeric-prefix layout (deferring the per-`<repo>` subfolder it sketched). Issue #660 adds that per-repo subfolder for write-isolation (above) while keeping the numeric-prefix ordering. If you need a different layout, file a new issue — do NOT silently change the script.
 
@@ -102,7 +104,8 @@ vault-mirror is safe to run multiple times against the same JSONL source:
 2. **File exists, `_generator` marker present, same id, `updated` date not advanced** → `skipped-noop`, file unchanged.
 3. **File exists, `_generator` marker present, same id, `updated` date advanced** → `updated`, file overwritten.
 4. **File exists, no `_generator` marker** → `skipped-handwritten`, file untouched. The absence of the marker means the file was written by a human and must not be overwritten automatically.
-5. **File exists, `_generator` marker present, different id** → slug collision. A disambiguated slug is derived by appending `-<first-8-chars-of-entry-uuid>` (hyphens stripped from the UUID before taking the prefix). The original file is left unchanged; the new note is written at the disambiguated path with action `skipped-collision-resolved`.
+5. **File exists, `_generator` marker present, different id** → slug collision. A disambiguated slug is derived by appending `-<first-8-chars-of-entry-uuid>` (hyphens stripped from the UUID before taking the prefix). The original file is left unchanged; the new note is written at the disambiguated path with action `skipped-collision-resolved`. Sessions have no disambiguation: a different-id session note is `skipped-foreign-owner`.
+6. **File exists, `_generator` marker present, different record** (#1503). Every note records the record it was rendered from in `source-record` (learnings: the record `id`; sessions: `raw_session_id`, else `started_at`). Checked before rules 2–3, because an id match proves nothing — subjects and semantic session ids recur across repos, and an expired learning re-learned in the same repo gets a new id. **Learnings:** handled as the slug collision of rule 5 — the new record lands at `<slug>-<uuid8>.md` (`skipped-collision-resolved` with `reason: "source-record mismatch"`), the existing note is not overwritten. **Sessions:** `skipped-foreign-owner`, unless the note's key occurs on any line of this `--source` ledger (superseded duplicates included — a backfill stub replaced by its real record stays this repo's note). `source-repo` is deliberately not an owner signal: a note at the target path already sits in the writer's namespace folder, so a different `source-repo` only means the note was moved or the repo relabelled. **A leak in a foreign note is masked in place, never rewritten from this record:** the note keeps its owner, content and `source-record`, only the values the current masker knows become `[REDACTED]`, and this record is routed exactly as for any foreign note (the action carries `healed_leak: true`). If the masked frontmatter would no longer parse as YAML (a value that starts with the secret), the note is left unchanged and one stderr `WARN` names it. Rewriting it from this record would be the #1503 overwrite, triggered by a secret. Limitation: this cannot protect a note written before `source-record` existed; the repo-root resolution and the `source-repo-mismatch` refusal are what prevent the incident class.
 
 The generator marker value is `session-orchestrator-vault-mirror@1` and appears in the YAML frontmatter as `_generator: session-orchestrator-vault-mirror@1`.
 
@@ -127,30 +130,37 @@ Per `.claude/rules/development.md` Git Safety Protocol — *"Never skip hooks (`
 | Malformed JSON on a JSONL line | Error written to stderr, exit 1 (processing stops). |
 | `--vault-dir` not found | Error written to stderr, exit 2. |
 | `--source` file not found | Error written to stderr, exit 2. |
+| `--source` lies in a different repo than `--repo-root` | Refusal written to stderr (both namespaces named), exit 2, nothing written; run event `aborted: "source-repo-mismatch"`. |
+| Session note rendered from a record outside this ledger | `skipped-foreign-owner` emitted on stdout with a `reason`, `SKIP foreign owner` line on stderr, file left unchanged. |
+| `--source` outside any git repo | One `WARN` line on stderr naming the namespace used (it comes from the cwd or an unverifiable `--repo-root`); the run proceeds. |
 | Hand-written file at target path | `skipped-handwritten` emitted on stdout, note written to stderr, file left unchanged. |
 | Unknown `_generator` value in existing file | Treated as hand-written: `skipped-handwritten`, file left unchanged. |
 | Unexpected filesystem write error | Error written to stderr, exit 2. |
 
 ## Examples
 
-Mirror the sessions.jsonl for the current project into a vault:
+Mirror the sessions.jsonl for the current project into a vault — run from the project's repo root, call the script by its plugin path:
 
 ```bash
-node scripts/vault-mirror.mjs \
+node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
   --vault-dir ~/Projects/vault \
-  --source .orchestrator/metrics/sessions.jsonl \
+  --repo-root "$PWD" \
+  --source "$PWD/.orchestrator/metrics/sessions.jsonl" \
   --kind session
 ```
 
 Dry-run a learnings mirror to preview actions without writing:
 
 ```bash
-node scripts/vault-mirror.mjs \
+node "$PLUGIN_ROOT/scripts/vault-mirror.mjs" \
   --vault-dir ~/Projects/vault \
-  --source .orchestrator/metrics/learnings.jsonl \
+  --repo-root "$PWD" \
+  --source "$PWD/.orchestrator/metrics/learnings.jsonl" \
   --kind learning \
   --dry-run
 ```
+
+Never `cd` into the plugin checkout to run it: the namespace comes from the repo the ledger belongs to, and an explicit `--repo-root` that disagrees with `--source` is refused with exit 2 (`source-repo-mismatch`).
 
 ## Live State
 

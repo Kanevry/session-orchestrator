@@ -122,9 +122,12 @@ export const PRICING_TABLE = Object.freeze({
   //
   // Ceiling: a model absent from this table prices as null, never at a neighbour's rate, so the
   // rollup reports `total_cost_usd: null` and `cost_records_priced < cost_records_total` — the
-  // intended way missing evidence shows up. That ratio also drops below 1 for records no row can
+  // intended way missing evidence shows up. That ratio also drops below 1 for agents no row can
   // fix: a token-less record (transcript over the hook's size cap, without usage turns, or
-  // unreadable) and a record with a token-bearing turn that names no model (#1475). Revisit when
+  // unreadable), a record with a token-bearing turn that names no model (#1475), a started agent
+  // whose stop found no transcript of its own, and an agent seen only in schema_version 1 records
+  // (#1487 Pkt 1). The one complete list is the `session-token-rollup.mjs` module doc — the code
+  // that decides; this comment and `emit-session.mjs` only point at it (#1498). Revisit when
   // an unpriced record names a model id absent from this table: add that model as its own
   // evidenced row, never as a family prefix or an alias to another generation.
   'claude-fable-5-1': usd({ input: 10.0, cache_read: 0.25, cache_creation: 12.5, output: 50.0 }),

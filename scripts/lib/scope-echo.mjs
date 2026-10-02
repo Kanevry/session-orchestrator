@@ -51,6 +51,7 @@ import { join, resolve } from 'node:path';
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { isCoordinatorRecordId } from './scope-gate.mjs';
 
 /** Marker the agent must emit. Case-sensitive by design — a lowercase lookalike is not an echo. */
 export const SCOPE_ECHO_MARKER = 'SCOPE-DIGEST:';
@@ -329,6 +330,11 @@ function parseJsonl(raw) {
  * only iterates the entries is unaffected. (A file that parses to a non-array or
  * to an empty scope stays a silent skip: an empty scope is legitimate.)
  *
+ * `coordinator.json` is skipped too (#1493.2): the coordinator's planned direct
+ * edits are a declaration, never a dispatch, so no injection or echo can ever
+ * claim its digest — digesting it reported the coordinator's own scope as
+ * `injection-missing` on every wave where it planned an edit.
+ *
  * @param {string} stateDir
  * @param {number} wave
  * @param {{readDir?: typeof readdirSync, readFile?: typeof readFileSync}} [io]
@@ -347,6 +353,7 @@ export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFi
   for (const name of names) {
     const file = typeof name === 'string' ? name : name?.name;
     if (typeof file !== 'string' || !file.endsWith('.json')) continue;
+    if (isCoordinatorRecordId(file.slice(0, -'.json'.length))) continue;
     let parsed;
     try {
       parsed = JSON.parse(readFile(join(dir, file), 'utf8'));

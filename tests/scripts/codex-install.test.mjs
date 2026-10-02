@@ -10,6 +10,7 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { installScriptCli } from '../_helpers/executable-fixture.mjs';
 
 const REPO_ROOT = join(fileURLToPath(new URL('../../', import.meta.url)), '.');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'codex-install.mjs');
@@ -106,9 +107,11 @@ function makeScenario(options = {}) {
   };
 }
 
-function writeFakeCodex(fakePath) {
-  writeFileSync(fakePath, `#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+// The fake `codex` runs through the committed launcher (installScriptCli): its
+// first call is `codex --version`, and a freshly written executable per test
+// would pay macOS's first-launch check (#1497).
+function installFakeCodex(binDir) {
+  installScriptCli(binDir, 'codex', `import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
 const key = JSON.stringify(argv);
@@ -143,13 +146,12 @@ if (response.stdout !== undefined) {
 }
 if (response.stderr) process.stderr.write(response.stderr);
 process.exit(response.status ?? 0);
-`, { mode: 0o755 });
+`);
 }
 
 describe('scripts/codex-install.mjs', () => {
   let tempRoot;
   let fakeBin;
-  let fakeCodex;
   let scenarioPath;
   let statePath;
   let logPath;
@@ -159,7 +161,6 @@ describe('scripts/codex-install.mjs', () => {
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), 'codex-install-test-'));
     fakeBin = join(tempRoot, 'bin');
-    fakeCodex = join(fakeBin, 'codex');
     scenarioPath = join(tempRoot, 'scenario.json');
     statePath = join(tempRoot, 'state.json');
     logPath = join(tempRoot, 'argv.jsonl');
@@ -168,7 +169,7 @@ describe('scripts/codex-install.mjs', () => {
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(homePath, { recursive: true });
     mkdirSync(codexHomePath, { recursive: true });
-    writeFakeCodex(fakeCodex);
+    installFakeCodex(fakeBin);
   });
 
   afterEach(() => {

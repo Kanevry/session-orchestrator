@@ -9,18 +9,33 @@
 
 > Referenced by Phase 3.2 (Docs Verification) and Phase 1.1a (File-Level Grounding). Canonical definition lives here.
 
-Read `session-start-ref` from STATE.md frontmatter. If the field is missing (older session or persistence disabled), fall back to `git diff --name-only origin/main...HEAD` (compares current HEAD against origin/main rather than a pinned SHA). The fallback is less precise but functional. Always prefer the pinned SHA when available.
+Read `session-start-ref` from STATE.md frontmatter; it is the pinned session-start SHA and always wins. If the field is missing (older session or persistence disabled), RESOLVE the base with `resolveBaselineRange()` (`scripts/lib/vcs-repo-spec.mjs`, #1039 — preferred remote → `<R>/HEAD` → `<R>/{main,master}` → local `main`/`master`), the same chain `computeDrift()` uses. Never assume `origin/main`: in a repo whose remote is not named `origin` or whose default branch is not `main` that literal fails every diff below.
+
+The accessor exports two variables. Consumers that DIFF use `"$SESSION_RANGE"` as one complete range — never `"$SESSION_START_REF..HEAD"`, which turned the old fallback into a TWO-dot `origin/main..HEAD` (a diff that also counts everything `main` gained since the branch point). `$SESSION_START_REF` stays the log base (`git log "$SESSION_START_REF..HEAD"`).
 
 ```bash
-SESSION_START_REF=$(node --input-type=module -e "
+SESSION_SPEC=$(node --input-type=module -e "
 import {readFileSync} from 'node:fs';
 import {parseStateMd} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-const fm = parseStateMd(readFileSync('<state-dir>/STATE.md', 'utf8')).frontmatter;
-process.stdout.write(fm['session-start-ref'] ?? '');
-" 2>/dev/null)
-# Fallback when field absent
-[ -z "$SESSION_START_REF" ] && SESSION_START_REF="origin/main"
+import {resolveBaselineRange, isQueryFailure} from '${PLUGIN_ROOT}/scripts/lib/vcs-repo-spec.mjs';
+let ref = '';
+try { ref = String(parseStateMd(readFileSync('<state-dir>/STATE.md', 'utf8')).frontmatter['session-start-ref'] ?? '').trim(); } catch {}
+if (/^[0-9a-f]{7,64}$/.test(ref)) process.stdout.write(ref + ' ' + ref + '..HEAD');
+else {
+  const r = resolveBaselineRange({ repoRoot: process.cwd() });
+  if (r.ok) process.stdout.write(r.base + ' ' + r.range);
+  else process.stderr.write('SESSION_RANGE skipped: ' + (isQueryFailure(r.reason) ? 'unresolvable-ref' : 'no-baseline-ref') + ' (' + r.reason + ')\n');
+}
+")
+SESSION_START_REF=${SESSION_SPEC%% *}   # log base: the pinned SHA, else the resolved base ref
+SESSION_RANGE=${SESSION_SPEC#* }        # diff range: <sha>..HEAD (pinned), else <base>...HEAD
 ```
+
+**Empty `$SESSION_RANGE` is an explicit skip, never "no changes".** The accessor names the reason on stderr, split by `isQueryFailure()`:
+- `no-baseline-ref` — the repo genuinely has no base to measure against (no remote, no `main`/`master`). A real, benign state: report "no session range" and skip each diff-based step below.
+- `unresolvable-ref` — git could not be asked (not a repo, git missing or failing). A degraded measurement: report it as such and skip; never read the empty file list as a clean session.
+
+On either skip `$SESSION_START_REF` is empty too, so skip every LOG-based step as well: `git log --oneline "$SESSION_START_REF..HEAD"` then becomes `git log ..HEAD`, which git reads as `HEAD..HEAD` — it prints nothing and exits 0, an empty log indistinguishable from "no commits this session". The pinned value is accepted only as a hex object name (`/^[0-9a-f]{7,64}$/`), so a STATE.md value such as `--output=x` is never handed to git as an option; anything else falls through to the resolved base.
 
 Read back the session plan that was agreed at the start. For EACH planned item:
 
@@ -36,7 +51,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 Compare the files the plan said would be touched against the files actually changed in the session. Catches both **scope creep** (files changed that were not in any agent's prompt scope) and **incomplete coverage** (files in the plan that were never edited).
 
 1. **Planned files** = union of all file paths from agent prompt scopes across all waves. Source: STATE.md Wave History, falling back to the original session plan's per-agent "Files:" specs. Glob patterns are expanded against the working tree at session-start time.
-2. **Actual files** = `git diff --name-only $SESSION_START_REF..HEAD`, where `$SESSION_START_REF` comes from the `session-start-ref` field in STATE.md frontmatter. If the field is missing (older session), fall back to `git diff --name-only origin/main...HEAD`.
+2. **Actual files** = `git diff --name-only "$SESSION_RANGE"` (accessor above: the pinned `session-start-ref`, else the resolved baseline range). Empty `$SESSION_RANGE` → skip 1.1a with the accessor's reason.
 3. **Compute discrepancies:**
    - **Touched** = files in both Planned and Actual
    - **Unplanned (scope creep)** = files in Actual but not in Planned

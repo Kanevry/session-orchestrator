@@ -37,10 +37,13 @@ const HOOK = path.join(REPO_ROOT, 'hooks/wave-scope-commit-guard.mjs');
  * via `git rev-parse --show-toplevel`, so the tmp repo must be a real git
  * repo. Returns { code, stdout, stderr }.
  */
-async function runHook(cwd) {
+async function runHook(cwd, env = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       cwd,
+      // The setup file already scrubbed the ambient session ids; a test that
+      // needs one names it here.
+      env: { ...process.env, ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -131,12 +134,94 @@ describe('wave-scope-commit-guard — PSA-004 sub-mode B', { timeout: 15000 }, (
     expect(result.stderr).toBe('');
   });
 
-  it('exits 0 when wave-scope.json has empty allowedPaths (permissive default)', async () => {
+  // Changed deliberately (#1493.1). This used to pin "empty allowedPaths →
+  // exit 0 (permissive default)": a writing wave whose `--union` step never
+  // completed let EVERY staged path through, while enforce-scope denied the same
+  // paths at write time. An empty manifest is now judged by its role instead.
+  it('blocks a commit under an EMPTY manifest of a writing role — the union never completed (#1493.1)', async () => {
     const dir = await mkRepoTracked();
-    await writeScope(dir, JSON.stringify({ allowedPaths: [] }));
+    await writeScope(dir, JSON.stringify({ wave: 2, role: 'Impl-Core', allowedPaths: [] }));
+    await stageFile(dir, 'README.md');
+    const result = await runHook(dir);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/grants no paths for role `Impl-Core`.*--union/);
+  });
+
+  it('lets the coordinator commit between waves under an empty Discovery manifest, with a note', async () => {
+    // Bug caught (the deny-all shape of the fix above): Discovery's `[]` is its
+    // read-only contract and no agent commits, so blocking here would block
+    // every coordinator commit made while the Discovery manifest is still in place.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ wave: 1, role: 'Discovery', allowedPaths: [] }));
     await stageFile(dir, 'README.md');
     const result = await runHook(dir);
     expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/Discovery \(read-only\) manifest/);
+  });
+
+  it('never blocks on an empty manifest older than the newest session start — it may be a peer\'s', async () => {
+    // Bug caught: a crashed session's leftover (or a parallel session's live,
+    // unbound) empty manifest would block every later commit under strict.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ wave: 2, role: 'Impl-Core', allowedPaths: [] }));
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    await fs.utimes(path.join(dir, '.claude', 'wave-scope.json'), past, past);
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ timestamp: new Date().toISOString() }),
+    );
+    await stageFile(dir, 'README.md');
+    const result = await runHook(dir);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/predates the newest session start/);
+  });
+
+  it('stands down on a manifest bound to ANOTHER session (#1493.1)', async () => {
+    // Bug caught: the guard had no session check, so a peer session's manifest
+    // in the same working copy blocked this session's commit of its own files.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ session_id: 'sess-peer', allowedPaths: ['src/'] }));
+    await stageFile(dir, 'docs/mine.md');
+    const result = await runHook(dir, { CLAUDE_CODE_SESSION_ID: 'sess-mine' });
+    expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/belongs to another session/);
+  });
+
+  it('keeps BLOCKING an out-of-scope staged path under enforcement: warn', async () => {
+    // Bug caught: tying this verdict to `enforcement` turned the only hard
+    // PSA-004 stop of a warn-mode wave (enforce-scope lets the write through
+    // there) into a stderr line, so a lint-staged sweep reached the commit.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ enforcement: 'warn', allowedPaths: ['src/'] }));
+    await stageFile(dir, 'docs/out.md');
+    const result = await runHook(dir);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*docs\/out\.md/);
+  });
+
+  it('passes silently under enforcement: off, even with an out-of-scope staged path', async () => {
+    // Bug caught: if the `off` rung stops being honoured, a wave the operator
+    // switched off still blocks every commit that stages a path outside
+    // allowedPaths — no other test reaches this rung.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ enforcement: 'off', allowedPaths: ['src/'] }));
+    await stageFile(dir, 'docs/out.md');
+    const result = await runHook(dir);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toBe('');
+  });
+
+  it('only REPORTS an empty writing-role union under enforcement: warn (#1493.1)', async () => {
+    // Bug caught: the empty-union verdict judges the coordinator's bookkeeping,
+    // not a staged foreign file; blocking it in a warn-mode wave would stop every
+    // coordinator commit until the union is re-run.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ enforcement: 'warn', role: 'Impl-Core', allowedPaths: [] }));
+    await stageFile(dir, 'README.md');
+    const result = await runHook(dir);
+    expect(result.code).toBe(0);
+    expect(result.stderr).toMatch(/grants no paths[\s\S]*enforcement: warn/);
   });
 
   it('exits 0 when all staged paths are inside allowedPaths', async () => {

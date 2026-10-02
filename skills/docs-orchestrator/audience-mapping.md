@@ -23,14 +23,16 @@ traceable source gets `<!-- REVIEW: source needed -->` — the agent NEVER inven
 
 | Source | Command / Path | Primary audience(s) | Notes |
 |--------|---------------|---------------------|-------|
-| **diff** | `git diff $SESSION_START_REF..HEAD` | Dev, Vault | Authoritative for what changed and when. Preferred primary source for Dev. |
+| **diff** | `git diff "$SESSION_RANGE"` | Dev, Vault | Authoritative for what changed and when. Preferred primary source for Dev. |
 | **git-log** | `git log $SESSION_START_REF..HEAD --format="%H %s%n%b"` | All | Secondary context; use to reconstruct the "why" when diffs alone are ambiguous. |
 | **session-memory** | `~/.claude/projects/<project>/memory/session-*.md`, `.orchestrator/` outputs | Vault, User | Primary for Vault narratives (status updates, decisions made in conversation). Also primary for User tasks designed interactively. |
 | **affected-files** | Files in wave-scope `allowedPaths` / coordinator `affected-files` context block | User, Dev | Primary for understanding updated interfaces, config schemas, or module structures. |
 
+`$SESSION_RANGE` is one complete diff range — `"$SESSION_START_REF..HEAD"` inside a wave run, the session-end accessor's export at close (`../session-end/plan-verification.md` § SESSION_START_REF accessor; never a hard-coded `origin/main`). The log keeps the two-dot `$SESSION_START_REF..HEAD`, the correct form for `git log`.
+
 **Detailed source descriptions:**
 
-1. **diff** — Direct code changes from `git diff $SESSION_START_REF..HEAD`. Authoritative
+1. **diff** — Direct code changes from `git diff "$SESSION_RANGE"`. Authoritative
    for Dev narratives (what changed and why) and Vault decisions (what was decided, when).
    Preferred primary source for Dev audience tasks.
 2. **git-log** — Commit messages and associated PR/MR bodies from
@@ -90,7 +92,7 @@ Trigger: New `coordinator-snapshot.mjs` module added; CWD-drift guard introduced
 ## Allowed Sources
 Only these four sources are permitted. Do not use general knowledge.
 
-- diff: `git diff $SESSION_START_REF..HEAD` (provided below)
+- diff: `git diff "$SESSION_RANGE"` (provided below)
 - git-log: `git log $SESSION_START_REF..HEAD --format="%H %s%n%b"` (provided below)
 - session-memory: wave summaries and agent outputs from
   ~/.claude/projects/<project>/memory/session-*.md and .orchestrator/ (provided below)

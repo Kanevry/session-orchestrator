@@ -17,6 +17,8 @@ import {
   RENDERABLE_SESSION_FIELDS_V2,
   RENDERABLE_SESSION_FIELDS_V3,
 } from '@lib/vault-mirror/render-sessions.mjs';
+import { parseFrontmatter } from '@lib/vault-mirror/utils.mjs';
+import YAML from 'js-yaml';
 import { REQUIRED_FIELDS } from '@lib/session-schema/constants.mjs';
 import { validateSession, ValidationError } from '@lib/session-schema/validator.mjs';
 
@@ -155,6 +157,16 @@ describe('generateSessionNote (v1)', () => {
   it('emits the generator marker', () => {
     const out = generateSessionNote(makeV1Entry());
     expect(out).toContain('_generator: session-orchestrator-vault-mirror@1');
+  });
+
+  it('#1503: source-record is raw_session_id, else started_at — a string to both frontmatter readers', () => {
+    // BUG CAUGHT: session_id cannot identify the record (semantic ids recur
+    // across repos), and an UNQUOTED ISO timestamp is typed as a Date by YAML.
+    const raw = 'f3e2d1c0-0000-4000-8000-000000000009';
+    expect(parseFrontmatter(generateSessionNote(makeV1Entry({ raw_session_id: raw })))['source-record']).toBe(raw);
+    const fallback = generateSessionNote(makeV1Entry());
+    expect(parseFrontmatter(fallback)['source-record']).toBe('2026-04-13T08:00:00Z');
+    expect(YAML.load(fallback.split('---')[1])['source-record']).toBe('2026-04-13T08:00:00Z');
   });
 });
 

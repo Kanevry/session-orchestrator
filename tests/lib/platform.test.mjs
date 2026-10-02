@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -25,9 +25,13 @@ import {
   detectPlatform,
   resolvePluginRoot,
   resolveProjectDir,
+  resolveSessionRoot,
   resolveStateDir,
   resolveConfigFile,
 } from '@lib/platform.mjs';
+import { runCursorHookEvent } from '@lib/cursor-hook-bridge.mjs';
+
+const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 
 const ENV_KEYS = [
   'SO_PLATFORM',
@@ -596,5 +600,153 @@ describe('deprecated compat bindings', () => {
     // Control: the plain constants that were KEPT are still exported, so a
     // wholesale export-list breakage cannot make the assertion above pass.
     expect(names).toEqual(expect.arrayContaining(['SO_SHARED_DIR', 'SO_OS', 'SO_PATH_SEP']));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSessionRoot (#1492) — the rungs the hook-level tests do not reach.
+// Existence-only `.git` entries: the resolver never asks git, so neither does this.
+// ---------------------------------------------------------------------------
+
+describe('resolveSessionRoot (#1492)', () => {
+  /** @type {string} */
+  let sandbox;
+
+  beforeEach(() => {
+    // realpath: the clamp compares canonical paths (macOS /var -> /private/var).
+    sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-session-root-')));
+  });
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  /** mkdir -p `rel` inside the sandbox; with `dotGit`, mark it a repo root. */
+  const dirAt = (rel, { dotGit = false } = {}) => {
+    const dir = path.join(sandbox, rel);
+    mkdirSync(dir, { recursive: true });
+    if (dotGit) mkdirSync(path.join(dir, '.git'));
+    return dir;
+  };
+
+  const AGENT = 'agent-a0123456789abcdef0';
+
+  it('falls back to $CLAUDE_PROJECT_DIR when cwd is in no repo — a `cd sub` in a non-git project keeps its manifest', () => {
+    // Bug caught: without the env rung a non-git project resolved to the
+    // subdirectory the session `cd`-ed into, which holds no manifest — every
+    // scope gate allowed everything from then on.
+    const proj = dirAt('proj');
+    const sub = dirAt(path.join('proj', 'sub'));
+    vi.stubEnv('CLAUDE_PROJECT_DIR', proj);
+
+    expect(resolveSessionRoot(sub)).toBe(proj);
+  });
+
+  it('does not lift an agent-shaped worktree whose parent is no working copy', () => {
+    // Bug caught: the lift would leave every repository — for a checkout at
+    // `~/.claude/worktrees/agent-<hex>` (the harness layout, inside Claude's own
+    // config dir) the session root became `$HOME`, where pre-task-scope-disjoint
+    // writes its ledger and events unconditionally.
+    const agentWt = dirAt(path.join('home', '.claude', 'worktrees', AGENT), { dotGit: true });
+
+    expect(resolveSessionRoot(path.join(agentWt, 'src'))).toBe(agentWt);
+  });
+
+  it('clamps a lifted agent worktree to a launch dir in a subdirectory of the repo', () => {
+    // Bug caught: the harness puts agent worktrees under the repo root, so an
+    // agent of a session launched in `/mono/packages/foo` lifted to `/mono` —
+    // above the launch dir, no manifest — and was unenforced. Before #1492 it
+    // resolved the launch dir. A clamp that also required `cwd` inside the launch
+    // dir would miss exactly this case: the agent's `cwd` never is.
+    const mono = dirAt('mono', { dotGit: true });
+    const pkg = dirAt(path.join('mono', 'packages', 'foo'));
+    const agentWt = dirAt(path.join('mono', '.claude', 'worktrees', AGENT), { dotGit: true });
+    vi.stubEnv('CLAUDE_PROJECT_DIR', pkg);
+
+    expect(resolveSessionRoot(agentWt)).toBe(pkg);
+    // Control: the lift itself still lands on the repo root without a launch dir.
+    vi.stubEnv('CLAUDE_PROJECT_DIR', '');
+    expect(resolveSessionRoot(agentWt)).toBe(mono);
+  });
+
+  it('keeps a worktree entered directly inside the launch dir (`git worktree add wt`) — the launch dir is its parent, not a descendant', () => {
+    // Bug caught: `path.relative(<launch>/wt, <launch>)` is the bare `..`, which
+    // neither equals '' nor starts with `../`. Read as "inside", the clamp sent
+    // the session back to the launch dir, where it has no manifest (#1492).
+    const launch = dirAt('main', { dotGit: true });
+    const wt = dirAt(path.join('main', 'wt'), { dotGit: true });
+    vi.stubEnv('CLAUDE_PROJECT_DIR', launch);
+
+    expect(resolveSessionRoot(wt)).toBe(wt);
+  });
+
+  it.each([
+    ['CURSOR_PROJECT_DIR'],
+    ['PI_PROJECT_DIR'],
+  ])('clamps on a bridge-set %s too — a bridge workspace in a repo subdirectory keeps its manifest', (envName) => {
+    // Bug caught (review HIGH-1 on b57e572c): the Cursor and Pi bridges delete
+    // CLAUDE_PROJECT_DIR and set their own `*_PROJECT_DIR` to the payload `cwd`.
+    // A clamp on CLAUDE_PROJECT_DIR alone never fired there, so a workspace in
+    // `<repo>/sub` climbed to `<repo>`, found no manifest, and every scope gate
+    // allowed — where before #1492 the bridges resolved `<repo>/sub`.
+    const repo = dirAt('repo', { dotGit: true });
+    const sub = dirAt(path.join('repo', 'sub'));
+    vi.stubEnv(envName, sub);
+
+    expect(resolveSessionRoot(sub)).toBe(sub);
+    // Control: the same cwd without any launch dir still resolves the repo root.
+    vi.stubEnv(envName, '');
+    expect(resolveSessionRoot(sub)).toBe(repo);
+  });
+
+  it('denies an out-of-scope Write end-to-end through the Cursor bridge for a workspace in a repo subdirectory', async () => {
+    // Bug caught (review HIGH-1 on b57e572c): the resolver row above, wired
+    // through the real bridge env (CLAUDE_PROJECT_DIR deleted, CURSOR_PROJECT_DIR
+    // = payload cwd) into the real enforce-scope hook. With the clamp on
+    // CLAUDE_PROJECT_DIR alone the hook resolved `<mono>`, which holds no
+    // manifest, and allowed the write.
+    dirAt('mono', { dotGit: true });
+    const pkg = dirAt(path.join('mono', 'packages', 'foo', '.cursor'));
+    writeFileSync(path.join(pkg, 'wave-scope.json'), JSON.stringify({
+      wave: 1,
+      role: 'impl',
+      enforcement: 'strict',
+      allowedPaths: ['src/**'],
+    }));
+    const cwd = path.dirname(pkg);
+
+    const result = await runCursorHookEvent(
+      'preToolUse',
+      { tool_name: 'Write', tool_input: { file_path: 'other/x.mjs', content: 'x' } },
+      { cwd },
+      { pluginRoot: REPO_ROOT },
+    );
+
+    expect(result.payload.cwd).toBe(cwd);
+    expect(result.block).toBe(true);
+    // A scope-violation reason, not a fail-closed hook timeout under load.
+    expect(result.reason).toMatch(/Scope violation: 'other\/x\.mjs'/);
+  }, 30000);
+
+  it('clamps when $CLAUDE_PROJECT_DIR and cwd spell one directory differently (symlink vs realpath)', () => {
+    // Bug caught: compared as resolved strings, an unresolved launch spelling
+    // (macOS mkdtemp `/var/…` vs the realpath `/private/var/…` in `cwd`) is not
+    // "inside" the canonical repo root, so the clamp lapsed and a subdirectory
+    // launch resolved to the repo root above its manifest. An explicit symlink
+    // reproduces the split on every OS, not only where `$TMPDIR` is one.
+    const mono = dirAt('mono', { dotGit: true });
+    const pkg = dirAt(path.join('mono', 'packages', 'foo'));
+    const linkParent = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-session-root-link-')));
+    try {
+      const link = path.join(linkParent, 'via-link');
+      symlinkSync(sandbox, link);
+      const launchViaLink = path.join(link, 'mono', 'packages', 'foo');
+      vi.stubEnv('CLAUDE_PROJECT_DIR', launchViaLink);
+
+      expect(resolveSessionRoot(pkg)).toBe(launchViaLink);
+      expect(resolveSessionRoot(pkg)).not.toBe(mono);
+    } finally {
+      rmSync(linkParent, { recursive: true, force: true });
+    }
   });
 });

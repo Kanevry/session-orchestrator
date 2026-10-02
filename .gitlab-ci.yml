@@ -359,8 +359,8 @@ lint:
 # skipped by `--no-verify`. An MR's pipeline re-lints the whole MR range on
 # every push; a direct push to a branch is linted per push only, so a push
 # pipeline auto-cancelled before this job finishes can leave its commits
-# unlinted (see docs/ci-setup.md § commitlint for the measured gap and its
-# revisit trigger).
+# unlinted (accepted ceiling, #1477 item 5 — see docs/ci-setup.md § commitlint
+# for the measurement and its revisit trigger).
 #
 # GIT_DEPTH "0": the project default clone depth is 20, so the range base can be
 # missing from a shallow clone (same setting as `semgrep`, for its baseline).
@@ -369,13 +369,25 @@ lint:
 # (MR pipelines), else the push's before-sha (branch pipelines), else the first
 # parent of the pipeline commit (new branch or API/web run: before-sha is all
 # zeroes; on a merge commit `^1..` still covers every merged-in commit).
+# Force-pushed branch without an open MR (#1477 item 3): the old before-sha is
+# not in the fresh clone, so on a non-default branch the range starts at the
+# merge-base with origin/$CI_DEFAULT_BRANCH instead (fetched first). `main` is
+# protected against force-push, so a missing base there stays a red job.
 #
 # Fail-closed: `commitlint --from X --to Y` exits 0 over an EMPTY range (measured
-# 2026-09-29, @commitlint/cli 19.8.1), so the script rejects an empty range and a
-# base missing from the clone itself — "nothing was checked" is not a pass.
-# Merge commits, `Revert "..."`, `fixup!`/`squash!` and version-only headers are
-# skipped by commitlint's built-in default ignores (@commitlint/is-ignored, not
-# config-conventional; measured 2026-09-29), so GitLab's merge commits pass.
+# 2026-09-29, @commitlint/cli 19.8.1), so the script rejects an empty range, a
+# base missing from the clone, and a failed fetch/merge-base itself — "nothing
+# was checked" is not a pass.
+#
+# Rule set: commitlint.ci.config.mjs (#1477 item 4) = commitlint.config.mjs with
+# commitlint's built-in default ignores OFF. Those defaults also skip `fixup!`,
+# `Reapply x`, version headers and any message with a `Merge …` BODY line; the CI
+# config accepts only the merge and `Revert "…"`/`Reapply "…"` first lines git or
+# GitLab generate. The husky hook keeps the lenient defaults, so local
+# `git revert`/`--fixup` work.
+#
+# Default branch (#1502): a red range on `main` prints the remedy — `main` cannot
+# be force-pushed, so the landed commit is reverted and the change re-landed.
 #
 # MR title (#1477 item 1): a squash merge commits the MR TITLE (squash commit
 # template unset = `%{title}`), which no range above contains. When the MR will
@@ -386,8 +398,10 @@ lint:
 # non-squash MR keeps a free-form title: its commits are what lands. An empty
 # title fails in commitlint itself (`[input] is required`, exit 1, measured
 # 2026-10-02). The title reaches commitlint as data via printf, never as code.
-# Rule set: commitlint.config.mjs. `<<: *node-setup` provides `npm ci`, hence the
-# local @commitlint/cli; `--no` stops npx from fetching anything else.
+# The log names why a title was not linted (#1502): not an MR pipeline, variable
+# unset, or the MR does not squash.
+# `<<: *node-setup` provides `npm ci`, hence the local @commitlint/cli; `--no`
+# stops npx from fetching anything else.
 commitlint:
   stage: validate
   <<: *node-setup
@@ -400,12 +414,23 @@ commitlint:
     - >
       set -eu;
       zero=0000000000000000000000000000000000000000;
+      branch="${CI_COMMIT_BRANCH:-}"; def="${CI_DEFAULT_BRANCH:-}";
       if [ -n "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
         from="$CI_MERGE_REQUEST_DIFF_BASE_SHA"; src="merge-request diff base";
       elif [ -n "${CI_COMMIT_BEFORE_SHA:-}" ] && [ "$CI_COMMIT_BEFORE_SHA" != "$zero" ]; then
         from="$CI_COMMIT_BEFORE_SHA"; src="push before-sha";
       else
         from="${CI_COMMIT_SHA}^1"; src="first parent of the pipeline commit";
+      fi;
+      if [ "$src" = "push before-sha" ] && [ -n "$def" ] && [ "$branch" != "$def" ] && ! git cat-file -e "$from^{commit}" 2>/dev/null; then
+        echo "[commitlint] push before-sha $from is not in this clone (force-push on a branch without an open MR) - linting the branch from its merge-base with origin/$def instead";
+        if ! git fetch --no-tags origin "+refs/heads/$def:refs/remotes/origin/$def"; then
+          echo "[commitlint] FAIL: could not fetch origin/$def for the merge-base - nothing was checked"; exit 1;
+        fi;
+        if ! from=$(git merge-base "origin/$def" "$CI_COMMIT_SHA"); then
+          echo "[commitlint] FAIL: $CI_COMMIT_SHA shares no history with origin/$def - nothing was checked"; exit 1;
+        fi;
+        src="merge-base with origin/$def, force-pushed branch";
       fi;
       echo "[commitlint] range $from..$CI_COMMIT_SHA ($src)";
       if ! git cat-file -e "$from^{commit}" 2>/dev/null; then
@@ -415,14 +440,27 @@ commitlint:
         echo "[commitlint] FAIL: empty range - nothing was checked, which is not a pass"; exit 1;
       fi;
       git log --format='[commitlint]   %h %s' "$from..$CI_COMMIT_SHA";
-      npx --no -- commitlint --from "$from" --to "$CI_COMMIT_SHA" --verbose;
-      if [ "${CI_MERGE_REQUEST_SQUASH_ON_MERGE:-}" = "true" ]; then
-        title=$(printf '%s\n' "${CI_MERGE_REQUEST_TITLE:-}" | sed -E 's/^((\[[Dd][Rr][Aa][Ff][Tt]\]|\([Dd][Rr][Aa][Ff][Tt]\)|[Dd][Rr][Aa][Ff][Tt]:)[[:space:]]*)+//');
-        printf '[commitlint] squash merge - the MR title becomes the commit message, linting it: %s\n' "$title";
-        printf '%s\n' "$title" | npx --no -- commitlint --verbose;
-      else
-        echo "[commitlint] MR title not linted: this pipeline does not squash on merge";
-      fi
+      if ! npx --no -- commitlint -g commitlint.ci.config.mjs --from "$from" --to "$CI_COMMIT_SHA" --verbose; then
+        if [ -n "$branch" ] && [ "$branch" = "$def" ]; then
+          if git rev-parse -q --verify "$CI_COMMIT_SHA^2" >/dev/null; then undo="git revert -m 1 $CI_COMMIT_SHA"; else undo="git revert $from..$CI_COMMIT_SHA"; fi;
+          echo "[commitlint] REMEDY: $def cannot be force-pushed, so these messages cannot be rewritten in place. Revert what landed ($undo) via an MR, then re-land the change from a new branch with a conventional message (git revert --no-commit <the revert commit>; git commit -m 'fix: ...'). See docs/ci-setup.md, commitlint job.";
+        fi;
+        exit 1;
+      fi;
+      case "${CI_MERGE_REQUEST_SQUASH_ON_MERGE:-}" in
+        true)
+          title=$(printf '%s\n' "${CI_MERGE_REQUEST_TITLE:-}" | sed -E 's/^((\[[Dd][Rr][Aa][Ff][Tt]\]|\([Dd][Rr][Aa][Ff][Tt]\)|[Dd][Rr][Aa][Ff][Tt]:)[[:space:]]*)+//');
+          printf '[commitlint] squash merge - the MR title becomes the commit message, linting it: %s\n' "$title";
+          printf '%s\n' "$title" | npx --no -- commitlint -g commitlint.ci.config.mjs --verbose;;
+        false)
+          echo "[commitlint] MR title not linted: this MR does not squash on merge, so its commits (linted above) are what lands";;
+        *)
+          if [ -z "${CI_MERGE_REQUEST_DIFF_BASE_SHA:-}" ]; then
+            echo "[commitlint] MR title not linted: not a merge-request pipeline";
+          else
+            echo "[commitlint] MR title not linted: CI_MERGE_REQUEST_SQUASH_ON_MERGE is unset, so whether this MR squashes is unknown";
+          fi;;
+      esac
   rules: *gate-rules
 
 typecheck:

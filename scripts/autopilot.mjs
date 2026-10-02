@@ -400,12 +400,19 @@ async function main() {
   });
 
   const sessionIds = state.sessions.join(', ') || '(none)';
+  // #1498: `tokens_unknown_sessions` (#1487 Pkt 4) reached state, return value
+  // and autopilot.jsonl, but no report showed it — so the token total read as
+  // the whole sum. Printed only when non-zero: then the total is a lower bound.
+  const unknownTokens = state.tokens_unknown_sessions > 0
+    ? ` tokens_unknown_sessions=${state.tokens_unknown_sessions} (the token total is a lower bound)`
+    : '';
   const summary =
     `${state.autopilot_run_id} ` +
     `kill_switch=${state.kill_switch ?? 'none'} ` +
     `iterations=${state.iterations_completed} ` +
     `sessions=[${sessionIds}] ` +
-    `duration=${state.duration_seconds}s`;
+    `duration=${state.duration_seconds}s ` +
+    `tokens=${state.total_tokens_used}${unknownTokens}`;
   process.stdout.write(summary + '\n');
 
   if (state.kill_switch === KILL_SWITCHES.FAILED_WAVE) {

@@ -10,13 +10,18 @@
  *   - Pure + deterministic (given the same vaultName, the same `.vault.yaml`
  *     under `repoRoot`, the same git remote, and the same host-local pseudonym
  *     map).
- *   - `repoRoot` (#1389) selects the directory whose `.vault.yaml` is read;
- *     it defaults to `process.cwd()`. Named limit: it scopes ONLY that lookup —
- *     the {@link deriveRepo} fallback still resolves from the process cwd and
- *     is cached per process, so a `repoRoot` that differs from the cwd AND has
- *     no declared slug falls back to the cwd's git identity. Every production
- *     caller passes its own cwd today; revisit if a caller ever mirrors a repo
- *     other than the one it runs in.
+ *   - `repoRoot` (#1389, #1503) selects the repo whose identity is resolved —
+ *     BOTH the `.vault.yaml` lookup and the {@link deriveRepo} fallback (its
+ *     preferred git remote, else its directory name). It defaults to
+ *     `process.cwd()`. Until #1503 only the `.vault.yaml` half honoured it: the
+ *     git fallback still read the process cwd, cached once per process, so a
+ *     caller mirroring a repo other than the one it ran in got the CWD's
+ *     namespace — which is how one repo's ledger overwrote another repo's vault
+ *     notes. The revisit trigger this comment used to name ("a caller mirrors a
+ *     repo other than the one it runs in") fired; the cache is now keyed per
+ *     root. Remaining ceiling: a caller that passes NO `repoRoot` still gets the
+ *     cwd's identity — `scripts/vault-mirror.mjs` derives a root from
+ *     `--source` precisely so that it never relies on that default.
  *   - Returns a lowercase kebab slug safe for use as a filesystem path segment.
  *   - Host-local pseudonym mapping (Epic #725 D5): consulted ONLY at the redaction
  *     site (only when a segment is owner-leaky). If such a repo (raw or sanitised)
@@ -48,7 +53,7 @@
  * (itself a leaf — `node:child_process` only) — never the pipeline.
  */
 
-import { basename } from 'node:path';
+import { basename, resolve } from 'node:path';
 
 import { subjectToSlug } from './utils.mjs';
 import { isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs';
@@ -97,7 +102,13 @@ function currentMapPath() {
 
 // ── Repo identity (issue #343; moved here from process.mjs for #734b) ────────
 
-let _cachedRepo = null;
+/**
+ * Resolved repo root → derived identity. Keyed per root (#1503): a single
+ * process-wide slot answered every later caller with the FIRST root's identity,
+ * whichever root that caller asked about.
+ * @type {Map<string, string>}
+ */
+const _cachedRepos = new Map();
 
 /** scp-like SSH remote: `git@host:org/name.git` (no `://`, an `@` before any `/`). */
 const SCP_LIKE_REMOTE_RE = /^[^@/\s]+@[^:/\s]+:(.+)$/;
@@ -177,7 +188,7 @@ function repoIdentifierFromRemoteUrl(url) {
  *      {@link resolveRepoNamespace} returned `'unknown-repo'`. Measured
  *      2026-08-19; it turned a namespace assertion red and blocked a push.
  *
- * Fallback: `path.basename(process.cwd())`, as before — but the two reasons for
+ * Fallback: `path.basename(<root>)` — but the two reasons for
  * reaching it are no longer indistinguishable. A QUERY FAILURE (not a git repo,
  * git not on PATH, git errored — {@link isQueryFailure}) emits a stderr WARN,
  * because the identity under which vault notes are written was GUESSED. A real
@@ -186,8 +197,11 @@ function repoIdentifierFromRemoteUrl(url) {
  * An `ok` resolution whose URL yields no usable identifier also falls back
  * silently — the query succeeded and the answer was simply unusable.
  *
- * Cached per-process — repo identity does not change mid-run, and the cache also
- * keeps the WARN to at most one line per process.
+ * `<root>` is `repoRoot` when given, else `process.cwd()` (#1503: the remote is
+ * read with `git -C <root>`, so the identity is the root's, never the cwd's).
+ *
+ * Cached per resolved root — repo identity does not change mid-run, and the
+ * cache also keeps the WARN to at most one line per root.
  *
  * NOTE — this is the RAW identifier and is NOT leak-guarded. Never write its
  * output to the vault directly; route it through {@link resolveRepoNamespace}
@@ -198,18 +212,25 @@ function repoIdentifierFromRemoteUrl(url) {
  * until the #734b cycle break, and the module-level cache means there must remain
  * exactly ONE definition.
  *
+ * @param {object} [opts]
+ * @param {string|null} [opts.repoRoot] - Repo whose identity to derive;
+ *   `undefined`/`null` → `process.cwd()`.
  * @returns {string} e.g. 'Kanevry/session-orchestrator' or a bare directory name.
  */
-export function deriveRepo() {
-  if (_cachedRepo !== null) return _cachedRepo;
+export function deriveRepo({ repoRoot = null } = {}) {
+  const root = resolve(repoRoot ?? process.cwd());
+  const cached = _cachedRepos.get(root);
+  if (cached !== undefined) return cached;
 
-  const resolved = resolvePreferredRemote({});
+  const remember = (identity) => {
+    _cachedRepos.set(root, identity);
+    return identity;
+  };
+
+  const resolved = resolvePreferredRemote({ repoRoot: root });
   if (resolved.ok) {
     const identifier = repoIdentifierFromRemoteUrl(resolved.url);
-    if (identifier !== '') {
-      _cachedRepo = identifier;
-      return _cachedRepo;
-    }
+    if (identifier !== '') return remember(identifier);
   } else if (isQueryFailure(resolved.reason)) {
     process.stderr.write(
       `WARN vault-mirror/namespace: could not query git remotes (${resolved.reason}); ` +
@@ -218,8 +239,7 @@ export function deriveRepo() {
     );
   }
 
-  _cachedRepo = basename(process.cwd());
-  return _cachedRepo;
+  return remember(basename(root));
 }
 
 /**
@@ -249,9 +269,9 @@ function lookupPseudonym(base, seg) {
  *   When non-empty and non-whitespace, used in place of the declared/git-derived
  *   repo name. When absent, the base is the repo's declared `.vault.yaml`
  *   `metadata.slug` (#1131), else the git origin via deriveRepo().
- * @param {string|null} [opts.repoRoot] - Directory whose `.vault.yaml` supplies
- *   the declared slug (#1389). `undefined`/`null` → `process.cwd()`. Does NOT
- *   redirect the deriveRepo() fallback (see the module header's named limit).
+ * @param {string|null} [opts.repoRoot] - Repo whose identity is resolved: its
+ *   `.vault.yaml` supplies the declared slug (#1389), and its git remote feeds
+ *   the deriveRepo() fallback (#1503). `undefined`/`null` → `process.cwd()`.
  * @returns {string} A single kebab-slug path segment, e.g. 'session-orchestrator'.
  *   Special returns:
  *   - 'unknown-repo'  — slug derivation produced an empty string.
@@ -284,10 +304,11 @@ export function resolveRepoNamespace({ vaultName = null, repoRoot = null } = {})
   // guard below deliberately — a declared slug is operator data flowing into a
   // written path and is checked by CP1/CP6/CP10 and the pseudonym map exactly
   // like any git-derived identifier.
-  const declaredSlug = readVaultSlug(repoRoot ?? process.cwd());
+  const root = repoRoot ?? process.cwd();
+  const declaredSlug = readVaultSlug(root);
   const base = (vaultName && typeof vaultName === 'string' && vaultName.trim())
     ? vaultName.trim()
-    : (declaredSlug ?? deriveRepo());
+    : (declaredSlug ?? deriveRepo({ repoRoot: root }));
 
   // Sanitise: collapse to last path segment, lowercase, strip non-[a-z0-9-].
   const seg = subjectToSlug(base);

@@ -40,6 +40,7 @@ import {
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { installScriptCli } from '../_helpers/executable-fixture.mjs';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/vault-consolidate.mjs');
 
@@ -722,17 +723,16 @@ describe('vault-consolidate CLI', () => {
     mkdirSync(canonical, { recursive: true });
     mkdirSync(fakeBin, { recursive: true });
 
-    // Fake `tar` that prints a fake error and exits 1. Bash shebang is portable
-    // on the macOS test host and the Linux CI runners; we need an executable
-    // file (not a node script) so spawnSync('tar', ...) resolves it via PATH.
-    const fakeTar = join(fakeBin, 'tar');
-    writeFileSync(
-      fakeTar,
-      '#!/bin/sh\necho "fake-tar: simulated archive failure" >&2\nexit 1\n',
-      'utf8',
+    // Fake `tar` that prints a fake error and exits 1, found via PATH by the
+    // script's bare-name spawnSync('tar', ...). It runs through the committed
+    // launcher (installScriptCli) — tar's first argument is an option, and a
+    // freshly written executable would pay macOS's first-launch check (#1497).
+    // The launcher needs neither node nor anything else on this test's PATH.
+    installScriptCli(
+      fakeBin,
+      'tar',
+      "process.stderr.write('fake-tar: simulated archive failure\\n');\nprocess.exit(1);\n",
     );
-    // chmod +x — required for spawn to find it as an executable on PATH.
-    spawnSync('chmod', ['+x', fakeTar]);
 
     // A copy action triggers backup staging + the (now-failing) compression.
     writeFileSync(join(source, 'note.md'), 'will-be-copied\n', 'utf8');

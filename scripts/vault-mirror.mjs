@@ -8,23 +8,40 @@
  * CLI usage:
  *   node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session>
  *                         [--dry-run] [--strict-schema] [--no-commit] [--force]
- *                         [--session-id <id>]
+ *                         [--session-id <id>] [--repo-root <path>] [--vault-name <name>]
  *                         [--quality-min-narrative-chars <int>]  (sessions only; default 400)
  *                         [--quality-min-confidence <float>]     (learnings only; default 0.5)
  *
  * Exit codes:
  *   0 — success (including idempotent no-op)
  *   1 — validation error (malformed JSON line, bad slug, etc.)
- *   2 — filesystem error
+ *   2 — filesystem error, or a pre-loop refusal (missing vault-dir / source,
+ *       non-canonical vault, `--source` belonging to a different repo than
+ *       `--repo-root` — #1503)
  *
  * Output: one JSON line per action on stdout:
- *   {"action":"created|updated|skipped-noop|skipped-handwritten|skipped-collision-resolved|skipped-invalid|skipped-quality-low|skipped-abandoned|skipped-duplicate-session","path":"...","kind":"...","id":"..."}
+ *   {"action":"created|updated|skipped-noop|skipped-handwritten|skipped-collision-resolved|skipped-foreign-owner|skipped-invalid|skipped-quality-low|skipped-abandoned|skipped-duplicate-session","path":"...","kind":"...","id":"..."}
  *
  * Idempotency rules:
  *   1. File does not exist → create.
  *   2. File exists, has _generator marker, id matches → overwrite only if updated would advance; else skipped-noop.
  *   3. File exists, lacks _generator → skip (hand-written). Log to stderr.
  *   4. File exists, has _generator, id differs → collision-disambiguate by appending -<first8 of uuid>.
+ *      (Sessions have no disambiguation: a different-id note is skipped-foreign-owner.)
+ *   5. File exists, has _generator, but its `source-record` names a different record
+ *      than this write (#1503): learnings → collision-disambiguate as in rule 4;
+ *      sessions → skipped-foreign-owner unless the key occurs in this --source ledger.
+ *      A leak in such a foreign note is masked IN PLACE (owner, content and
+ *      source-record kept; `healed_leak: true` on the action) — never rewritten
+ *      from this record. If the masked frontmatter would not parse, it is left
+ *      unchanged with a stderr WARN.
+ *
+ * Repo root (#1503): the namespace is the identity of the repo the --source
+ * ledger belongs to — `--repo-root` when given, else the project holding
+ * --source (`<root>/.orchestrator/metrics/`), else the git repo containing it,
+ * else the cwd (a loose source outside any git repo). It is never the cwd
+ * when the source sits in a repo: running from another repo's checkout used to
+ * write one project's records over another project's notes.
  *
  * Quality gate (PRD F1.2):
  *   Learnings with confidence < --quality-min-confidence emit `skipped-quality-low`.
@@ -48,8 +65,8 @@
  * Part of session-orchestrator vault-mirror (Issue #14).
  */
 
-import { existsSync } from 'node:fs';
-import { basename, resolve } from 'node:path';
+import { existsSync, realpathSync } from 'node:fs';
+import { basename, dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
 
@@ -64,7 +81,8 @@ import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
-import { checkCanonicalVault, describeOriginForLog, normalizeRemote } from './lib/named-vault-resolver.mjs';
+import { sessionSourceRecord } from './lib/vault-mirror/render-sessions.mjs';
+import { checkCanonicalVault, describeOriginForLog, findRepoRoot, normalizeRemote } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -131,9 +149,10 @@ export function _normalizeRemote(url) {
 //     is always measured.
 //   - Same ledger as the masker emit: `emitEvent` is called 2-arg so both events
 //     from one run resolve the SAME destination (`SO_PROJECT_DIR`, i.e.
-//     `CLAUDE_PROJECT_DIR` or the CWD walk-up). This CLI has no repo-root flag
-//     and deriving one from `--source` would split a single run's telemetry
-//     across two ledgers.
+//     `CLAUDE_PROJECT_DIR` or the CWD walk-up). The repo root that decides the
+//     vault NAMESPACE (#1503: `--repo-root`, else derived from `--source`) is
+//     deliberately NOT used for the ledger — routing telemetry by it would split
+//     a single run's records across two ledgers.
 //
 // #1147 moved both emitters into `scripts/lib/vault-mirror/telemetry.mjs` and
 // widened the coverage from "the two skipped-invalid branches" to "every entry,
@@ -186,6 +205,7 @@ if (_isDirectInvocation) {
       kind: null,
       'session-id': null,
       'vault-name': null,
+      'repo-root': null,
       'quality-min-narrative-chars': null,
       'quality-min-confidence': null,
     },
@@ -206,7 +226,7 @@ if (flagValues.help === true) {
     [
       'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session>',
       '                              [--dry-run] [--strict-schema] [--no-commit] [--force]',
-      '                              [--session-id <id>]',
+      '                              [--session-id <id>] [--repo-root <path>] [--vault-name <name>]',
       '                              [--quality-min-narrative-chars <int>]',
       '                              [--quality-min-confidence <float>]',
       '',
@@ -224,6 +244,11 @@ if (flagValues.help === true) {
       '                                        When set, mirrors write under <vault-name>/ instead of the',
       '                                        git-derived repo identifier. Maps to vault-integration.vault-name',
       '                                        in Session Config. Sanitised to a lowercase kebab slug.',
+      '  --repo-root <path>                    The repo whose ledger --source is (#1503). Its .vault.yaml',
+      '                                        slug / git remote decides the vault namespace. Default: the',
+      '                                        project holding --source (<root>/.orchestrator/metrics/), else',
+      '                                        the git repo containing it, else the cwd. Refused (exit 2,',
+      '                                        "source-repo-mismatch") when --source lies in a different repo.',
       '  --quality-min-narrative-chars <int>   Sessions: minimum rendered-narrative length (default 400).',
       '                                        Entries below the threshold emit "skipped-quality-low".',
       '  --quality-min-confidence <float>      Learnings: minimum confidence threshold (default 0.5).',
@@ -249,6 +274,7 @@ const noCommit = flagValues['no-commit'] === true;
 const force = flagValues.force === true;
 const sessionIdArg = flagValues['session-id'];
 const vaultName = flagValues['vault-name'] ?? null;
+const repoRootArg = flagValues['repo-root'] ?? null;
 
 // Quality-gate thresholds (PRD F1.2). Parse as numbers; reject malformed input
 // loudly so CI cannot accidentally pass a string ("400px") and silently fall
@@ -289,7 +315,7 @@ const qualityMinConfidence = parseFloatFlag(
 
 if (!vaultDir || !source || !kind) {
   process.stderr.write(
-    'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session> [--dry-run] [--strict-schema] [--no-commit] [--force] [--session-id <id>] [--quality-min-narrative-chars <int>] [--quality-min-confidence <float>]\n',
+    'Usage: node vault-mirror.mjs --vault-dir <path> --source <jsonl-path> --kind <learning|session> [--dry-run] [--strict-schema] [--no-commit] [--force] [--session-id <id>] [--repo-root <path>] [--vault-name <name>] [--quality-min-narrative-chars <int>] [--quality-min-confidence <float>]\n',
   );
   process.exit(1);
 }
@@ -343,16 +369,47 @@ function pathForLog(p) {
   return `.../${basename(String(p ?? ''))}`;
 }
 
+/**
+ * The project a ledger belongs to (#1503): the directory that holds it under
+ * the `.orchestrator/metrics/` convention, else the git repo containing it,
+ * else `null`.
+ *
+ * The convention comes FIRST because the git toplevel is the wrong answer for
+ * a project nested inside a repo — a monorepo package with its own
+ * `.orchestrator/` and `.vault.yaml` (measured: `--repo-root <package>` was
+ * refused against the monorepo's namespace, and without the flag the package's
+ * notes moved to the monorepo's folder). Every producer writes the ledgers to
+ * `<project>/.orchestrator/metrics/`, which is also exactly the directory whose
+ * `.vault.yaml` named the namespace before #1503 (callers ran from it).
+ *
+ * Named ceiling: a ledger stored under some project's `.orchestrator/metrics/`
+ * is attributed to that project whoever wrote its records — a foreign ledger
+ * COPIED there is not detected here; the session `source-record` guard in
+ * process.mjs is the remaining defence for that shape.
+ *
+ * @param {string} realSource - the source path after `realpathSync`.
+ * @returns {string|null}
+ */
+function ledgerOwnerRoot(realSource) {
+  const metricsDir = dirname(realSource);
+  const orchestratorDir = dirname(metricsDir);
+  if (basename(metricsDir) === 'metrics' && basename(orchestratorDir) === '.orchestrator') {
+    return dirname(orchestratorDir);
+  }
+  return findRepoRoot(dirname(realSource));
+}
+
 // ── Run-level accounting + run close-out (#1147) ──────────────────────────────
 //
 // Deliberately OUTSIDE main(): the run event's whole contract is that it is
 // written ONCE PER RUN and that its ABSENCE is the broken-emitter signal
-// (HR-105). Six exits bypass main's normal tail — the three PRE-LOOP aborts at
-// the top of main (missing vault-dir, non-canonical vault, missing source), the
-// malformed-JSON abort and the filesystem-error abort inside the loop (all five
-// `process.exit`, which no `finally` and no `catch` can intercept), and the
-// top-level `main().catch`, which runs in a scope where main's locals no longer
-// exist. Keeping the counters and the emitter out here is what lets all six
+// (HR-105). Seven exits bypass main's normal tail — the four PRE-LOOP aborts at
+// the top of main (missing vault-dir, non-canonical vault, missing source,
+// source/repo-root mismatch), the malformed-JSON abort and the filesystem-error
+// abort inside the loop (all six `process.exit`, which no `finally` and no
+// `catch` can intercept), and the top-level `main().catch`, which runs in a
+// scope where main's locals no longer exist. Keeping the counters and the
+// emitter out here is what lets all seven
 // close the run out through ONE function instead of each re-deriving the
 // payload.
 const runState = {
@@ -381,10 +438,10 @@ const tally = (action) => {
  * counted were the ones that vanished from the ledger, in the one shape
  * ("no record") that the docstring reserves for a broken emitter.
  *
- * @param {'missing-vault-dir'|'vault-not-canonical'|'missing-source'|'malformed-json'|'filesystem-error'|'unexpected-error'} [aborted]
+ * @param {'missing-vault-dir'|'vault-not-canonical'|'missing-source'|'source-repo-mismatch'|'malformed-json'|'filesystem-error'|'unexpected-error'} [aborted]
  *   Omitted on a complete run. When present it LABELS the counters as partial:
  *   every line after the abort was never attempted, so the classes no longer
- *   partition `total`. On the three PRE-LOOP values (#1151) nothing was
+ *   partition `total`. On the PRE-LOOP values (#1151, #1503) nothing was
  *   attempted at all — `total` is a measured 0 and the label is what separates
  *   "never started" from "ran over an empty source".
  * @returns {Promise<void>}
@@ -442,7 +499,7 @@ async function finishRun(aborted) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
-  // The three PRE-LOOP aborts below (#1151) close the run out through the same
+  // The PRE-LOOP aborts below (#1151, #1503) close the run out through the same
   // `finishRun` every other exit uses. They are the runs that never reached
   // their first entry — a bad vault-dir, a wrong vault, a missing source — and
   // until now they were the only outcomes that left NO record at all, which is
@@ -477,6 +534,80 @@ async function main() {
     process.exit(2);
   }
 
+  // ── Repo root + source/repo-root agreement (#1503) ──────────────────────────
+  //
+  // The namespace every note is written under is the identity of `repoRoot`.
+  // Until #1503 that was hard-wired to the invocation cwd, while `--source` was
+  // free to name ANY ledger: a session that ran this CLI from another repo's
+  // checkout with `--source <ThisRepo>/.orchestrator/metrics/sessions.jsonl`
+  // wrote 130 of this repo's records under the OTHER repo's namespace and
+  // overwrote 3 of its notes — slug and session-id collisions are routine across
+  // repos. The fix is to stop asking the cwd:
+  //   1. `--repo-root` when given — the caller states which repo it mirrors;
+  //   2. else the ledger's own project — see {@link ledgerOwnerRoot};
+  //   3. else the cwd — only for a source that is neither a project ledger nor
+  //      inside a git repo (a copied ledger, the test suites' mkdtemp sources),
+  //      where nothing better is knowable.
+  // Step 2's answer is also what an explicit `--repo-root` is checked against.
+  //
+  // The ledger's REAL path decides, not the path it was handed under: a symlink
+  // inside repo A that points at repo B's ledger is B's ledger. `realpathSync`
+  // falls back to the lexical path only when it throws (the file was just
+  // proven to exist, so that is a race or a permission edge, not a normal case).
+  // The same holds for `--repo-root`: a remote-less, slug-less repo is named by
+  // its directory, so a root reached through a symlink would otherwise carry the
+  // LINK's name and be refused against its own ledger.
+  const realOrLexical = (p) => {
+    try {
+      return realpathSync(p);
+    } catch {
+      return p;
+    }
+  };
+  const sourceRealPath = realOrLexical(resolve(source));
+  const sourceRepoRoot = ledgerOwnerRoot(sourceRealPath);
+  const repoRoot = repoRootArg
+    ? realOrLexical(resolve(expandTilde(repoRootArg)))
+    : (sourceRepoRoot ?? process.cwd());
+
+  // A source with no owning project cannot be checked against anything: the
+  // namespace then rests on the cwd or on an unverifiable `--repo-root`, and a
+  // ledger copied out of ANOTHER repo would be written over this repo's notes
+  // without a refusal. Say so once — the run proceeds, because a loose ledger
+  // (a copy, a test fixture) is a legitimate input.
+  if (sourceRepoRoot === null) {
+    const ns = resolveRepoNamespace({ vaultName, repoRoot });
+    process.stderr.write(
+      repoRootArg
+        ? `WARN vault-mirror: --source ${pathForLog(source)} is neither a project ledger (.orchestrator/metrics/) nor inside a git repo, so --repo-root cannot be checked against it; writing under namespace '${ns}'\n`
+        : `WARN vault-mirror: --source ${pathForLog(source)} is neither a project ledger (.orchestrator/metrics/) nor inside a git repo; the namespace '${ns}' comes from the cwd — pass --repo-root to state which repo this ledger belongs to\n`,
+    );
+  }
+
+  // Fail closed when the two disagree: an explicit `--repo-root` whose identity
+  // differs from the repo the ledger lives in is exactly the incident shape
+  // (callers pass `--repo-root "$PWD"`, so a run from the wrong checkout lands
+  // here instead of in another project's notes). NAMESPACES are compared, not
+  // paths — a worktree and its main checkout are different directories that
+  // share one `.vault.yaml` slug and one remote. `vaultName` is left out on
+  // purpose: it overrides the FOLDER, and the question here is whether the
+  // ledger belongs to the repo being mirrored. Named ceiling: two owner-leaky
+  // repos without a pseudonym-map entry both resolve to `redacted-repo` and pass
+  // this check — they already share that one folder (#725 D5), so the refusal
+  // could not keep them apart anyway.
+  if (repoRootArg && sourceRepoRoot !== null) {
+    const repoNs = resolveRepoNamespace({ repoRoot });
+    const sourceNs = resolveRepoNamespace({ repoRoot: sourceRepoRoot });
+    if (repoNs !== sourceNs) {
+      // Both values are leak-guarded namespaces — safe for logs, unlike the paths.
+      process.stderr.write(
+        `vault-mirror: refusing to mirror — --source ${pathForLog(source)} belongs to repo namespace '${sourceNs}', but --repo-root resolves to '${repoNs}'. Run with the repo root the ledger belongs to.\n`,
+      );
+      await finishRun('source-repo-mismatch');
+      process.exit(2);
+    }
+  }
+
   const rl = createInterface({
     input: createReadStream(resolve(source), 'utf8'),
     crlfDelay: Infinity,
@@ -502,10 +633,14 @@ async function main() {
     kind,
     force,
     vaultName,
-    // #1389: the repo whose `.vault.yaml` declares the namespace slug. This CLI
-    // has no repo-root flag, so it is the invocation cwd — bound ONCE here and
-    // shared by every processor call and the auto-commit below.
-    repoRoot: process.cwd(),
+    // #1389/#1503: the repo whose identity (`.vault.yaml` slug, else git remote)
+    // is the namespace — resolved ONCE above from `--repo-root` / `--source`,
+    // and shared by every processor call and the auto-commit below.
+    repoRoot,
+    // #1503: every `source-record` key the `--kind session` source carries,
+    // superseded duplicates included — filled while buffering below, read by
+    // processSession's owner guard (a key from this ledger is never foreign).
+    sourceRecordKeys: new Set(),
     qualityMinNarrativeChars,
     qualityMinConfidence,
   };
@@ -635,6 +770,8 @@ async function main() {
 
     if (kind === 'session') {
       sessionEntries.push(entry);
+      const recordKey = sessionSourceRecord(entry);
+      if (recordKey !== null) ctx.sourceRecordKeys.add(recordKey);
       sessionLineNums.push(lineNum);
       continue;
     }

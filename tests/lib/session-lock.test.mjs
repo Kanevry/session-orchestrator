@@ -294,6 +294,9 @@ describe('acquire() — #744 heartbeat-first liveness', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('active');
     expect(result.existingLock.session_id).toBe('sess-744-long-running');
+    // #1494: the Phase-1.2 "active" prompt renders "started <ageHours>h ago";
+    // the active shape carried no ageHours, so the prompt had nothing to show.
+    expect(result.ageHours).toBeCloseTo(6, 1);
   });
 
   it('case 3: expired heartbeat + dead PID classifies stale-heartbeat', () => {
@@ -1192,6 +1195,73 @@ describe('forceAcquire', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1494 — forceAcquire({ onlyIfNotLive }) under a real two-start race. Both
+// starts read the same stale lock; start B's whole reclaim then runs INSIDE
+// start A's — triggered from a spy on A's own tombstone I/O, so the
+// interleaving is exact and repeatable. Bug both tests name: two reclaimers
+// both answered ok:true (last writer won, the loser ran on as owner).
+// Invariants: exactly one ok:true, the loser's 'active' names the winner, and
+// no `.session.lock.reclaim.*` tombstone is left behind.
+// ---------------------------------------------------------------------------
+
+describe('forceAcquire({ onlyIfNotLive }) — two starts reclaiming one stale lock (#1494)', () => {
+  const orchDir = () => join(repoRoot, '.orchestrator');
+  const tombstones = () => readdirSync(orchDir()).filter((f) => f.startsWith('.session.lock.reclaim.'));
+  const reclaim = (sessionId) => forceAcquire({ sessionId, mode: 'deep', repoRoot, onlyIfNotLive: true });
+
+  beforeEach(() => {
+    const old = new Date(Date.now() - 10 * 3600 * 1000).toISOString();
+    mkdirSync(orchDir(), { recursive: true });
+    writeFileSync(join(orchDir(), 'session.lock'), JSON.stringify({
+      session_id: 'crashed', started_at: old, last_heartbeat: old, mode: 'deep', pid: DEAD_PID, host: hostname(), ttl_hours: 4,
+    }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('B inside A\'s tombstone window: B\'s rename finds nothing and re-acquires, A\'s create finds B\'s lock and re-acquires', () => {
+    // A has moved the stale lock aside and is judging it; the lock path is
+    // empty. B's rename → ENOENT → fresh acquire() creates B's lock. A's
+    // create-or-fail → EEXIST → fresh acquire() → 'active' naming B.
+    const originalRead = fs.readFileSync.bind(fs);
+    let b;
+    let bStarted = false; // set BEFORE B runs: B's own tombstone I/O must not re-trigger it
+    vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+      if (!bStarted && typeof p === 'string' && p.includes('.session.lock.reclaim.')) { bStarted = true; b = reclaim('start-b'); }
+      return originalRead(p, ...rest);
+    });
+
+    const a = reclaim('start-a');
+
+    expect(b).toMatchObject({ ok: true, lock: { session_id: 'start-b' } });
+    expect(a).toMatchObject({ ok: false, reason: 'active', existingLock: { session_id: 'start-b' } });
+    expect(readLock({ repoRoot }).session_id).toBe('start-b');
+    expect(tombstones()).toEqual([]);
+  });
+
+  it('B after A\'s create: B moves A\'s fresh lock, finds it live, links it back and re-acquires', () => {
+    // Triggered when A unlinks its tombstone (A's lock is already created). B's
+    // rename takes A's LIVE lock; it must be restored, never replaced.
+    const originalUnlink = fs.unlinkSync.bind(fs);
+    let b;
+    let bStarted = false; // set BEFORE B runs: B unlinks its own tombstone too
+    vi.spyOn(fs, 'unlinkSync').mockImplementation((p) => {
+      if (!bStarted && typeof p === 'string' && p.includes('.session.lock.reclaim.')) { bStarted = true; b = reclaim('start-b'); }
+      return originalUnlink(p);
+    });
+
+    const a = reclaim('start-a');
+
+    expect(a).toMatchObject({ ok: true, lock: { session_id: 'start-a' }, replacedLock: { session_id: 'crashed' } });
+    expect(b).toMatchObject({ ok: false, reason: 'active', existingLock: { session_id: 'start-a' } });
+    expect(readLock({ repoRoot }).session_id).toBe('start-a');
+    expect(tombstones()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // acquire() with exclusivity-matrix integration (P1.2 #570)
 // ---------------------------------------------------------------------------
 
@@ -1834,31 +1904,23 @@ describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() 
   //
   // Scenario: a REAL same-host, live-PID lock already sits on disk (it would
   // classify as 'active' if readable). Then `fs.readFileSync` is forced to throw
-  // EACCES *persistently* for the lock path. The SUT reaches the lock check in
-  // this order:
-  //   1. acquire() up-front readLock({repoRoot}) (~L512): spy throws EACCES →
-  //      readLock's blanket-catch (~L348-350) swallows → returns null.
-  //   2. existing === null → create-path: createSessionLockExclusive writes the
-  //      tmp file, then `fs.linkSync(tmp, lockFile)` → the lock file ALREADY
-  //      EXISTS → EEXIST → { reason: 'exists' } (~L322-323).
-  //   3. acquire() re-reads via readLock({repoRoot}) (~L534): spy STILL throws →
-  //      null again → vanish-race fallback (~L535-540) returns
-  //      { ok:false, reason:'active', existingLock:null }.
-  //
-  // Two reads occur, so the spy MUST be persistent (mockImplementation, NOT
-  // mockImplementationOnce). The terminal reason was OBSERVED to be 'active'
-  // (not 'fs-error') — the EACCES is swallowed by readLock at both read sites,
-  // and the EEXIST create-or-fail PRESERVES the existing lock content.
+  // EACCES *persistently* for the lock path. readLockDetailed() reports
+  // 'unreadable', and acquire() answers `{ ok:false, reason:'unreadable',
+  // existingLock:null, error }` without attempting the create (#1494). Until
+  // #1494 the case fell through to the create-or-fail, hit EEXIST, re-read
+  // 'unreadable' again and answered 'active' / existingLock:null — a state the
+  // bootstrap neither forced nor reported, so every session ran lockless
+  // without a trace.
   //
   // Surviving mutations this test kills:
-  //   M1 (remove readLock's blanket-catch → it rethrows EACCES): the throw would
-  //   propagate out of acquire()'s outer try into the catch (~L543), flipping the
-  //   reason to 'fs-error' → the reason assertion FAILS.
-  //   M2 (no-existing-lock branch silently overwrites via rename instead of
-  //   linkSync create-or-fail): the on-disk session_id would become the NEW
-  //   caller's id → the lock-preservation assertion FAILS.
+  //   M1 (remove readLockDetailed's catch → it rethrows EACCES): the throw would
+  //   propagate into acquire()'s outer catch, flipping the reason to 'fs-error'
+  //   → the reason assertion FAILS.
+  //   M2 (the unreadable path silently overwrites via rename): the on-disk
+  //   session_id would become the NEW caller's id → the preservation assertion
+  //   FAILS.
   // -------------------------------------------------------------------------
-  it('#599 MED: unreadable existing lock (EACCES swallowed) → reason=active, existing lock preserved, no silent overwrite', () => {
+  it('#599/#1494: unreadable existing lock (EACCES) → reason=unreadable with the error, existing lock preserved, no silent overwrite', () => {
     // Pre-write a REAL same-host, live-PID lock that WOULD classify as 'active'.
     const existingLock = {
       session_id: 'sess-existing-winner',
@@ -1876,8 +1938,8 @@ describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() 
 
     // Capture the original BEFORE mocking so the post-assertion read bypasses the spy.
     const originalRead = fs.readFileSync.bind(fs);
-    // Persistent (mockImplementation) — the SUT reads the lock path TWICE
-    // (up-front + EEXIST re-read). Other reads (package.json, etc.) pass through.
+    // Persistent (mockImplementation): every read of the lock path fails.
+    // Other reads (package.json, etc.) pass through.
     const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
       if (typeof p === 'string' && p.endsWith('session.lock')) {
         const e = new Error('EACCES: permission denied, open');
@@ -1896,18 +1958,44 @@ describe('Issue #596 fault-injection — createSessionLockExclusive & acquire() 
     // Spy fired (proves the lock read was intercepted).
     expect(readSpy).toHaveBeenCalled();
 
-    // Terminal reason is the conservative 'active' (NOT 'fs-error') — readLock's
-    // blanket-catch swallowed EACCES at both read sites. existingLock is null
-    // because the re-read also failed.
     expect(result.ok).toBe(false);
-    expect(result.reason).toBe('active');
+    expect(result.reason).toBe('unreadable');
     expect(result.existingLock).toBeNull();
+    expect(result.error).toBe('EACCES: permission denied, open');
 
-    // No silent overwrite: the create-or-fail (linkSync) refused to clobber the
-    // pre-existing lock, so its content is byte-for-byte preserved on disk.
+    // No silent overwrite: the pre-existing lock is preserved on disk.
     const onDisk = JSON.parse(originalRead(lockFile, 'utf8'));
     expect(onDisk.session_id).toBe('sess-existing-winner');
     expect(onDisk.mode).toBe('feature');
+  });
+
+  // -------------------------------------------------------------------------
+  // #1494 item 4 — the LOST-RACE branch of 'corrupt'. Up front the lock is
+  // absent; between that read and our link-create a racer leaves an
+  // unparseable file at the path. The re-read after EEXIST must answer
+  // 'corrupt' (reclaimable by the bootstrap), not fall into the vanished-race
+  // 'active' / existingLock:null, which nothing reclaims and which wedged
+  // every new session before the 'corrupt' reason existed.
+  // The racer is simulated with real fs state: the linkSync spy writes the
+  // corrupt file at the lock path, then lets the REAL link run — which fails
+  // with a genuine EEXIST.
+  // Mutation killed: dropping `if (raced.status === 'corrupt') return corrupt();`
+  // → reason 'active'.
+  // -------------------------------------------------------------------------
+  it('#1494: a corrupt file appearing between the up-front read and the create → reason=corrupt', () => {
+    const originalLink = fs.linkSync.bind(fs);
+    const lockFile = join(repoRoot, '.orchestrator', 'session.lock');
+    vi.spyOn(fs, 'linkSync').mockImplementation((src, dest) => {
+      if (dest === lockFile) writeFileSync(lockFile, '{not json');
+      return originalLink(src, dest);
+    });
+
+    const result = acquire({ sessionId: 'sess-corrupt-race', mode: 'feature', repoRoot });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('corrupt');
+    expect(result.existingLock).toBeNull();
+    expect(readFileSync(lockFile, 'utf8')).toBe('{not json');
   });
 });
 

@@ -278,6 +278,21 @@ describe('computeReport', () => {
     expect(r.rebaselined).toBe(true);
   });
 
+  it('does not report the coordinator\'s per-agent scope declarations as a violation (#1027 Pkt 5)', () => {
+    // Bug caught: `materialize-wave-scope.mjs` writes `<state-dir>/filescopes/`
+    // once per wave — control state like wave-scope.json, never in allowedPaths —
+    // and every rollover reported it as an out-of-scope write. A filescopes dir
+    // of ANOTHER state dir is not this manifest's control state and still reports.
+    const r = computeReport({
+      dirtyPaths: ['.claude/filescopes/wave-3/w3-a1.json', '.claude/filescopes/wave-3.scopes.json', '.codex/filescopes/x.json'],
+      allowedPaths: allowed,
+      snapshot: { signature: sig, paths: [] },
+      signature: sig,
+      scopeRelPath: '.claude/wave-scope.json',
+    });
+    expect(r.report).toEqual(['.codex/filescopes/x.json']);
+  });
+
   it('scopeSignature is order-insensitive so a reordered plan does not force a re-baseline', () => {
     expect(scopeSignature(['a/**', 'b/**'])).toBe(scopeSignature(['b/**', 'a/**']));
   });
@@ -962,5 +977,127 @@ describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () =>
     writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
     const res = runHook('OWN-UUID-2222');
     expect(`${res.stdout}\n${res.stderr}`).not.toContain('SESSION BINDING');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1492 — the SESSION root, not the launch dir
+// ---------------------------------------------------------------------------
+
+describe('post-bash-write-verify — session launched from a repo SUBDIRECTORY', () => {
+  it('judges porcelain paths from the launch dir: in-scope silent, writes above it reported', () => {
+    // Bug caught (review MED-1): `git status --porcelain` names paths from the
+    // git TOPLEVEL, allowedPaths are relative to the session root — the launch
+    // dir `<mono>/packages/foo`. Unrebased, the in-scope `packages/foo/src/new.mjs`
+    // failed `src/**` (false positive) while `<mono>/src/evil.mjs` matched it and
+    // stayed silent (false negative). `<mono>/NOTES.md` pins the second half of
+    // the fix: rebased to `../../NOTES.md` it would still match the broad
+    // `**/*.md` grant unless outside-root paths are never in scope — and the
+    // same `**/*.md` in a PEER record filed it as an agreed "peer write" until
+    // the peer matcher applied the same outside-root guard (REFUTE LOW-1).
+    const mono = makeTmpDir('pbwv-subdir-');
+    const git = (...args) => fixtureGit(args, mono);
+    git('init', '-q');
+    git('config', 'user.email', 't@e.st');
+    git('config', 'user.name', 'T');
+    const pkg = join(mono, 'packages', 'foo');
+    mkdirSync(join(pkg, 'src'), { recursive: true });
+    writeFileSync(join(pkg, 'src', 'keep.mjs'), '//\n');
+    mkdirSync(join(mono, 'src'));
+    writeFileSync(join(mono, 'src', 'root.mjs'), '//\n');
+    git('add', '-A');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed');
+    mkdirSync(join(pkg, '.claude', 'filescopes'), { recursive: true });
+    writeFileSync(
+      join(pkg, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, enforcement: 'warn', allowedPaths: ['src/**', '**/*.md'] }),
+    );
+    writeFileSync(
+      join(pkg, '.claude', 'filescopes', 'wave-4.scopes.json'),
+      JSON.stringify([{ id: 'peer-session-b', files: ['**/*.md'] }]),
+    );
+    const snap = snapshotPathFor(realpathSync(pkg));
+    const run = () => spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x' }, cwd: pkg }),
+      encoding: 'utf8',
+      env: { ...process.env, CLAUDE_PROJECT_DIR: pkg, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '', CLAUDE_CODE_SESSION_ID: '' },
+      timeout: 20_000,
+    });
+    try {
+      if (existsSync(snap)) rmSync(snap, { force: true });
+      expect(run().stderr).toBe(''); // silent baseline of the clean tree
+      writeFileSync(join(pkg, 'src', 'new.mjs'), 'in scope\n');
+      writeFileSync(join(mono, 'src', 'evil.mjs'), 'outside the launch dir\n');
+      writeFileSync(join(mono, 'NOTES.md'), 'outside the launch dir\n');
+
+      const res = run();
+      expect(res.status).toBe(0);
+      expect(res.stderr).toContain('../../src/evil.mjs (outside project root)');
+      expect(res.stderr).toContain('../../NOTES.md (outside project root)');
+      expect(res.stderr).not.toContain('peer write');
+      expect(res.stderr).not.toContain('new.mjs');
+    } finally {
+      if (existsSync(snap)) rmSync(snap, { force: true });
+      removeTree(mono);
+    }
+  });
+});
+
+describe('post-bash-write-verify — session root after entering a worktree (#1492)', () => {
+  let launch;
+  let worktree;
+
+  // Payload `cwd` = the worktree; `$CLAUDE_PROJECT_DIR` = the launch dir the
+  // harness keeps after `EnterWorktree`.
+  const runHook = () => spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x > out-of-scope.mjs' }, cwd: worktree }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: launch, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '', CLAUDE_CODE_SESSION_ID: '' },
+    timeout: 20_000,
+  });
+
+  const dropSnapshots = () => {
+    for (const dir of [launch, worktree]) {
+      const snap = snapshotPathFor(realpathSync(dir));
+      if (existsSync(snap)) rmSync(snap, { force: true });
+    }
+  };
+
+  beforeEach(() => {
+    launch = makeTmpDir('pbwv-1492-launch-');
+    fixtureGit(['init', '-q'], launch);
+    worktree = makeTmpDir('pbwv-1492-wt-');
+    const git = (...args) => fixtureGit(args, worktree);
+    git('init', '-q');
+    git('config', 'user.email', 't@e.st');
+    git('config', 'user.name', 'T');
+    mkdirSync(join(worktree, 'hooks'), { recursive: true });
+    writeFileSync(join(worktree, 'hooks', 'keep.mjs'), '// seed\n');
+    git('add', '-A');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed');
+    mkdirSync(join(worktree, '.claude'), { recursive: true });
+    writeFileSync(
+      join(worktree, '.claude', 'wave-scope.json'),
+      JSON.stringify({ enforcement: 'warn', allowedPaths: ['hooks/**'] }),
+    );
+    dropSnapshots();
+  });
+
+  afterEach(() => {
+    dropSnapshots();
+    removeTree(launch);
+    removeTree(worktree);
+  });
+
+  it("WARNS for an out-of-scope Bash write in the worktree the session entered, whose manifest the launch dir lacks", () => {
+    // Bug caught (#1492): the root came from `$CLAUDE_PROJECT_DIR` = the launch
+    // dir. No manifest there, so G3 returned silently on every call and this
+    // bypass write was never reported.
+    runHook(); // silent baseline of the clean worktree
+    writeFileSync(join(worktree, 'out-of-scope.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('out-of-scope.mjs');
   });
 });

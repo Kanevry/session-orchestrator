@@ -634,7 +634,7 @@ fi
 
 **Gitignore guidance:** Do NOT add `.orchestrator/metrics/*.jsonl` to `.gitignore`. The files are intentionally visible in version control — they carry project learnings and session history that future contributors benefit from.
 
-The store's LOCK artifacts are the opposite case and DO get ignored (#1487): Fast Step 3, inherited above, already appended `.orchestrator/metrics/*.jsonl.lock*` and `.file.lock.*` via [`_shared-template.md#store-lock-ignore`](_shared-template.md) — the one canonical snippet, also run by the `--upgrade` and `--refresh-lock` flows. Nothing to repeat here.
+The store's LOCK artifacts are the opposite case and DO get ignored (#1487), together with the plugin's other runtime locks and state under `.orchestrator/` (#1495): Fast Step 3, inherited above, already appended `.orchestrator/metrics/*.jsonl.lock*`, `.file.lock.*`, `.orchestrator/session.lock` and the rest of the list via [`_shared-template.md#store-lock-ignore`](_shared-template.md) — the one canonical snippet, also run by the `--upgrade` and `--refresh-lock` flows. Nothing to repeat here.
 
 <!-- @include _shared-template.md#baseline-fetch -->
 ## Step S99: (Optional) Fetch Canonical Rules + Agents from Baseline

@@ -146,15 +146,18 @@ node scripts/cursor-install.mjs /path/to/your-project    # links NEW commands/ru
 # Restart Cursor
 ```
 
-**The installer adds new files; it never overwrites or removes an existing one.** `linkPath()`
-skips whenever the destination already exists as a symlink or a file
-(`scripts/cursor-install.mjs:69-73`), and the `hooks.json` writer skips outright when one is
-already there (`:139-140`). Two consequences on this upgrade: the malformed `argument-hint` fix
-(the 3.x generator wrote it into 24 of 28 command files, GH#54) reaches you for free through
-your existing symlinks the moment `git pull` updates this checkout — no re-run needed for that.
-But the three retired commands do **not** disappear from `.cursor/commands/` on their own, and a
-`hooks.json` written before 4.0.0 is never synchronised with a new hook event automatically.
-Both need the manual step in § 5 ("Cursor still shows the removed commands") below.
+**The installer adds new files; it never overwrites an existing one.** `linkPath()` in
+`scripts/cursor-install.mjs` skips whenever the destination already exists as a symlink or a
+file, and the `hooks.json` writer below it skips outright when one is already there. The only
+thing it removes is its own dead link: `pruneDeadLinks()` deletes a symlink that dangles into
+this checkout's `.cursor/` (printed as `PRUNE:`) and leaves a regular file, a live link and a
+link into another checkout alone (#1501). Two consequences on this upgrade: the malformed
+`argument-hint` fix (the 3.x generator wrote it into 24 of 28 command files, GH#54) reaches you
+for free through your existing symlinks the moment `git pull` updates this checkout — no re-run
+needed for that. But the three retired commands do **not** disappear from `.cursor/commands/`
+until you re-run the installer from this checkout, and a `hooks.json` written before 4.0.0 is
+never synchronised with a new hook event automatically. § 5 ("Cursor still shows the removed
+commands") below covers both.
 
 Cursor's plugin metadata now lives at `.cursor-plugin/plugin.json`, replacing the initial
 4.0.0 standard root `plugin.json`. The native manifest retains the canonical skills and
@@ -261,9 +264,11 @@ inside Claude Code with `!node --version`. This is unchanged from v3.
 
 ### Cursor still shows the removed commands
 
-Re-running the installer does **not** fix this: `linkPath()` skips any destination that already
-exists (`scripts/cursor-install.mjs:69-73`), including a stale symlink pointing at a command
-that no longer exists in this repo. Remove only the three dead **symlinks** from your project —
+Re-running the installer from the checkout that created the links fixes this: `pruneDeadLinks()`
+in `scripts/cursor-install.mjs` removes a symlink that dangles into that checkout's
+`.cursor/commands/` (#1501). A link into another checkout is left alone and reported as `WARN:`;
+`linkPath()` never replaces an existing destination. For those, remove only the three dead
+**symlinks** from your project —
 never an unconditional `rm -f`, which would just as happily delete a regular file, including a
 command you wrote yourself under one of these three names (the installer itself never overwrites
 or deletes a regular file; this recipe must not either):
@@ -281,9 +286,10 @@ names, this recipe deletes that symlink too; a regular (non-symlink) file is the
 leaves untouched.
 
 Then restart Cursor. Same story for `.cursor/hooks.json`: the installer skips it outright once
-it exists (`:139-140`), so a `hooks.json` written before 4.0.0 is never re-synced with a new hook
-event automatically — re-check it by hand (diff it against a fresh `node scripts/cursor-install.mjs`
-run in an empty scratch directory if you suspect drift).
+it exists (the `hooks.json` writer in `scripts/cursor-install.mjs`), so a `hooks.json` written
+before 4.0.0 is never re-synced with a new hook event automatically — re-check it by hand (diff
+it against a fresh `node scripts/cursor-install.mjs` run in an empty scratch directory if you
+suspect drift).
 
 ## 6. Rollback
 
@@ -318,7 +324,8 @@ node scripts/pi-install.mjs /path/to/your-project --settings-only   # Pi — sam
 ```
 
 Run only the line for your platform. `cursor-install.mjs` and `pi-install.mjs` both default their
-target to `process.cwd()` when no argument is given (`scripts/cursor-install.mjs:24-51`) — omit
+target to `process.cwd()` when no argument is given (the `TARGET` constant in
+`scripts/cursor-install.mjs`) — omit
 the project path here and the installer links into `/path/to/session-orchestrator` itself, not
 into your project.
 
@@ -339,7 +346,7 @@ What you get back, and what you do not:
 - **What does NOT roll back automatically** is anything an installer wrote into YOUR project:
   `.cursor/commands/`, `.cursor/hooks.json`, Pi settings. The two installers behave
   differently: `cursor-install.mjs` skips any destination that already exists — a symlink or a
-  file (`scripts/cursor-install.mjs:69-73`; the `hooks.json` writer at `:139-140`) — and
+  file (`linkPath()` in `scripts/cursor-install.mjs`, and the `hooks.json` writer below it) — and
   re-creates only the ones that are MISSING, so re-running it from the 3.24.0 checkout only
   **adds** command links missing from your project; it does not restore a link you removed
   yourself and does not resync an existing `hooks.json`.

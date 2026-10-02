@@ -338,22 +338,83 @@ On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per
 
 ---
 
-## #store-lock-ignore — Store-Lock Artifacts in .gitignore (#1487, #1489 Pkt 17)
+## #store-lock-ignore — Store-Lock and Runtime-Lock Artifacts in .gitignore (#1487, #1489 Pkt 17, #1495, #1500)
 
 Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refresh-Lock Flow in `SKILL.md` — the last two because a repo bootstrapped before this step existed never gets it otherwise: both flows write no `.gitignore` of their own.
 
-The `.orchestrator/metrics/*.jsonl` ledgers are durable project data and stay versioned. Their LOCK artifacts are per-process runtime state that a `git add .` would otherwise commit: `<store>.lock`, its `.acquire` guard and the `.file.lock.*` temp files that `scripts/lib/file-lock.mjs` creates beside each lock. Append the two patterns when missing:
+`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state or a per-run artifact that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, every store rewrite leaves a full backup copy of the ledger beside it, the auto-dream sidecar is a full replacement body of the operator's private MEMORY.md, and the quality-gate and ux-grill artifacts can carry secrets or a rendered password. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write). Rotated and archived ledger copies (`*.jsonl.[0-9]*`, `*.jsonl.archive-*`, `metrics/_archive/`) are not on this list: they carry ledger history, and whether that is versioned is the consumer's call.
+
+| Pattern(s) | Written by |
+|---|---|
+| `.orchestrator/metrics/*.jsonl.lock*`, `.file.lock.*` | the store locks of the ledgers (`scripts/lib/file-lock.mjs` temps sit beside every lock) |
+| `.orchestrator/metrics/*.jsonl.bak-*` | the store backups: the keep-3 `<store>.bak-<ISO>` copy before every learnings rewrite (`scripts/lib/learnings/io.mjs`) and the `<stem>.pre-drop-malformed.jsonl.bak-<ISO>` snapshot of `sweep-expired-learnings --drop-malformed` (`scripts/lib/learnings/expiry-sweep.mjs`); the `*.jsonl` ledgers themselves stay versioned |
+| `.orchestrator/session.lock`, `.orchestrator/.session.lock.*` | the session lock, every SessionStart (`scripts/lib/session-lock.mjs`, `hooks/_lib/lock-bootstrap.mjs`) |
+| `.orchestrator/runtime/` | the lock-owner proof written beside it on every SessionStart, plus agent-status and cache files |
+| `.orchestrator/current-session.json`, `.orchestrator/.current-session.*` | the SessionStart hook |
+| `.orchestrator/host.json*` | the host-identity cache |
+| `.orchestrator/state.lock*`, `.orchestrator/.state.lock.*` | the STATE.md write lock |
+| `.orchestrator/rules.lock*` | the `/reconcile` rules lock |
+| `.orchestrator/wave-dispatch-scopes.*`, `.orchestrator/.wave-dispatch-scopes.*` | the dispatch-scope ledger and its lock (`hooks/pre-task-scope-disjoint.mjs`) |
+| `.orchestrator/wave-transcript-tail.lock*`, `.orchestrator/.wave-transcript-tail.lock.*` | the wave-transcript-tail singleton |
+| `.orchestrator/metrics/proposals-write.lock*`, `.orchestrator/metrics/.proposals-write.lock.*` | the memory-proposals store lock |
+| `.orchestrator/staging-fence/` | the staging-fence commit mutex and intent log |
+| `.orchestrator/tmp/` | machine-local scratch: lock-reaper archives of reaped session locks (`tmp/reaped-locks/`, carrying host name, pid and session ids), worktree metadata (`tmp/worktree-meta/`), the orphan-reaper throttle marker (`tmp/reaper-last-scan`) |
+| `.orchestrator/metrics/*.jsonl.bak.*` | the legacy evolve backup `learnings.jsonl.bak.evolve-<ts>`, a full store copy still on disk in older repos (`scripts/lib/learnings/io.mjs`) |
+| `.orchestrator/metrics/*.jsonl.tmp-*` | atomic-write temp files of the ledgers (`scripts/lib/autopilot/telemetry.mjs`), left behind only by a crash |
+| `.orchestrator/pending-dream.md` | the auto-dream sidecar — a full replacement body of the private MEMORY.md (`scripts/lib/auto-dream.mjs`) |
+| `.orchestrator/dialectic-pending.md`, `.orchestrator/dialectic-last-run`, `.orchestrator/consumed/` | the auto-dialectic sidecar, its last-run timestamp and the archive of consumed sidecars (`scripts/lib/auto-dialectic.mjs`) |
+| `.orchestrator/promoted-from.json` | the worktree-promotion marker, a per-worktree fact (`scripts/lib/autopilot/worktree-pipeline.mjs`, read by `scripts/lib/session-end/worktree-cleanup.mjs`) |
+| `.orchestrator/welcome-banner-pending` | the zero-byte cold-start marker (`scripts/migrate-cold-start-seed.mjs`, read by `scripts/lib/cold-start-detector.mjs`) |
+| `.orchestrator/debug/` | the `/debug` Phase-1 investigation artifacts |
+| `.orchestrator/eval/` | the eval HTML run reports, rebuildable from `eval.jsonl` (`scripts/lib/eval/report.mjs`) |
+| `.orchestrator/metrics/verification-failures/` | the quality-gate auto-fix diagnostics bundles, which can carry secrets from gate output (`scripts/lib/quality-gate.mjs`) |
+| `.orchestrator/metrics/ux-grill/`, `.orchestrator/metrics/test-runs/` | the per-run artifact directories of `/ux-grill` and `/test`, screenshots included — ux-grill takes one after every journey step, including the step after a password fill (`scripts/lib/ux-grill/paths.mjs`, `scripts/lib/test-runner/artifact-paths.mjs`); their `*.jsonl` rollups stay versioned |
+| `.orchestrator/metrics/repo-audit-*.json` | the `/repo-audit` JSON sidecar of each run |
+| `.orchestrator/metrics/proposals-summary-*.json` | the per-wave memory-proposals summary sidecars (`scripts/lib/memory-proposals/sink.mjs`) |
+| `.orchestrator/metrics/.backfilled-*.marker` | the session-close-backfill idempotency markers (`scripts/lib/session-close-backfill.mjs`) |
+| `.orchestrator/*.log`, `.orchestrator/metrics/*.log` | the append-only diagnostic logs: the declined-proposal archives `reconcile.rejected.log` (`scripts/lib/reconcile/writer.mjs`) and `proposals.rejected.log` (`scripts/lib/memory-proposals/sink.mjs`), and `metrics/session-close-backfill.log`, whose `error` text carries fs error messages with absolute paths (`scripts/lib/session-close-backfill.mjs`) |
+
+Append the missing patterns:
 
 ```bash
 # The Upgrade and Refresh-Lock flows run in a fresh shell where REPO_ROOT may be unset.
 _GI_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 _GI="$_GI_ROOT/.gitignore"
 _GI_MISSING=()
+# Never add a file consumers COMMIT here: .orchestrator/bootstrap.lock, policy/, steering/, the *.jsonl ledgers.
+_GI_PATTERNS=(
+  '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'
+  '.orchestrator/metrics/*.jsonl.bak-*'
+  '.orchestrator/session.lock' '.orchestrator/.session.lock.*'
+  '.orchestrator/runtime/'
+  '.orchestrator/current-session.json' '.orchestrator/.current-session.*'
+  '.orchestrator/host.json*'
+  '.orchestrator/state.lock*' '.orchestrator/.state.lock.*'
+  '.orchestrator/rules.lock*'
+  '.orchestrator/wave-dispatch-scopes.*' '.orchestrator/.wave-dispatch-scopes.*'
+  '.orchestrator/wave-transcript-tail.lock*' '.orchestrator/.wave-transcript-tail.lock.*'
+  '.orchestrator/metrics/proposals-write.lock*' '.orchestrator/metrics/.proposals-write.lock.*'
+  '.orchestrator/staging-fence/'
+  '.orchestrator/tmp/'
+  '.orchestrator/metrics/*.jsonl.bak.*' '.orchestrator/metrics/*.jsonl.tmp-*'
+  '.orchestrator/pending-dream.md'
+  '.orchestrator/dialectic-pending.md' '.orchestrator/dialectic-last-run' '.orchestrator/consumed/'
+  '.orchestrator/promoted-from.json'
+  '.orchestrator/welcome-banner-pending'
+  '.orchestrator/debug/'
+  '.orchestrator/eval/'
+  '.orchestrator/metrics/verification-failures/'
+  '.orchestrator/metrics/ux-grill/' '.orchestrator/metrics/test-runs/'
+  '.orchestrator/metrics/repo-audit-*.json'
+  '.orchestrator/metrics/proposals-summary-*.json'
+  '.orchestrator/metrics/.backfilled-*.marker'
+  '.orchestrator/*.log' '.orchestrator/metrics/*.log'
+)
 if [[ -z "$_GI_ROOT" ]]; then
   # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).
   echo "store-lock-ignore: no repository root (REPO_ROOT unset, not inside a repo) — skipped" >&2
 else
-  for _pat in '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'; do
+  for _pat in "${_GI_PATTERNS[@]}"; do
     # A CRLF .gitignore stores "pattern\r" — count that as present, or every run appends a duplicate block.
     grep -qxF -- "$_pat" "$_GI" 2>/dev/null || grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
   done
@@ -363,8 +424,8 @@ if [[ -n "$_GI_ROOT" && ! -L "$_GI" && ( ! -e "$_GI" || -r "$_GI" ) && ${#_GI_MI
   # A last line without a trailing newline would fuse with the comment below: `.env` + `# …`
   # becomes `.env# …`, which git no longer reads as `.env` — the append would UN-ignore it.
   if [[ -s "$_GI" && -n "$(tail -c1 "$_GI")" ]]; then printf '\n' >> "$_GI"; fi
-  printf '%s\n' '# session-orchestrator store-lock artifacts (runtime state, never versioned)' "${_GI_MISSING[@]}" >> "$_GI"
+  printf '%s\n' '# session-orchestrator runtime locks and state (never versioned)' "${_GI_MISSING[@]}" >> "$_GI"
 fi
 ```
 
-Idempotent (only missing patterns are appended), and a symlinked `.gitignore` is left alone. A `.gitignore` created earlier in the same run is already in `BOOTSTRAP_FILES` and is committed with that run; an append to a pre-existing one stays an unstaged change, because no bootstrap commit stages a file bootstrap did not create (the Upgrade Flow stages only its delta files, the Refresh-Lock Flow commits nothing). Name the append in the flow's report so the operator commits it.
+Idempotent (only missing patterns are appended — a repo that already carries the two store-lock lines from before #1495 gets just the runtime lines), and a symlinked `.gitignore` is left alone. A `.gitignore` created earlier in the same run is already in `BOOTSTRAP_FILES` and is committed with that run; an append to a pre-existing one stays an unstaged change, because no bootstrap commit stages a file bootstrap did not create (the Upgrade Flow stages only its delta files, the Refresh-Lock Flow commits nothing). Name the append in the flow's report so the operator commits it.

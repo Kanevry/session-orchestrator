@@ -28,22 +28,37 @@
  * - `<name> --version` is answered by node (prints its own version, exit 0);
  * - the code under test must run the fake with `cwd` as its working directory;
  * - an unknown first word fails with node's MODULE_NOT_FOUND (non-zero exit).
- * Revisit if a call site needs any of these: that needs a production seam
- * (a binary + args override), not a cleverer fake.
+ * A call site that hits any of these uses installScriptCli instead.
+ *
+ * ## installScriptCli — a fake CLI whose arguments may start with an option
+ *
+ * `<binDir>/<name>` is a symlink to the COMMITTED launcher
+ * `tests/fixtures/bin/node-script-launcher` (`exec "$0.node" "$0.mjs" "$@"`).
+ * The kernel hands a script's interpreter the path the script was invoked by,
+ * not the symlink target, so `$0` is `<binDir>/<name>` — measured 2026-10-02
+ * for a PATH lookup from sh, dash and node's spawn on macOS. Linux's script
+ * loader hands over the execve pathname as well (not measured here); were it
+ * ever the target, every fake fails loudly with ENOENT on `<name>.node`, never
+ * silently. Its siblings `<name>.node` (a symlink to the
+ * running node) and `<name>.mjs` (the fake's ES module, not executable) hold
+ * the rest, so every argument reaches the module as `process.argv.slice(2)`.
+ * The launcher pays the first-launch check once per checkout, not once per
+ * test. Costs one extra `sh` exec over installNodeCli.
  *
  * ## installGitHook — a hook git runs on `<event>`
  *
  * Where the git on PATH supports config-based hooks (`hook.<name>.command`, see
  * `git help config`), the body goes into a plain file run as `sh <file>` — the
- * same interpreter a `#!/usr/bin/env sh` hook gets. Older git (e.g. 2.39 in the
- * Debian CI images) has no such channel, so the fallback writes the classic
- * executable `.git/hooks/<event>`: unchanged behaviour, and those hosts do not
- * carry the macOS cost anyway. Support is PROBED (a hook that must block a
- * commit), never inferred from a version number.
+ * same interpreter a `#!/usr/bin/env sh` hook gets. Older git has no such
+ * channel, so the fallback writes the classic executable `.git/hooks/<event>`:
+ * unchanged behaviour, paying the macOS cost only where git is that old.
+ * Support is PROBED (a hook that must block a commit), never inferred from a
+ * version number.
  */
 
 import { chmodSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from './tmp-fixture.mjs';
 
 const PRELUDE =
@@ -65,6 +80,24 @@ export function installNodeCli(binDir, name, cwd, scripts) {
   for (const [word, source] of Object.entries(scripts)) {
     writeFileSync(join(cwd, word), PRELUDE + source);
   }
+  return bin;
+}
+
+const LAUNCHER = fileURLToPath(new URL('../fixtures/bin/node-script-launcher', import.meta.url));
+
+/**
+ * Install a fake CLI `name` in `binDir` that runs `source` for every call.
+ *
+ * @param {string} binDir  existing directory to hold `name`, `name.node`, `name.mjs`.
+ * @param {string} name    binary name the code under test looks up.
+ * @param {string} source  ES module source; the fake's argv is `process.argv.slice(2)`.
+ * @returns {string} absolute path of the fake binary.
+ */
+export function installScriptCli(binDir, name, source) {
+  const bin = join(binDir, name);
+  symlinkSync(LAUNCHER, bin);
+  symlinkSync(process.execPath, `${bin}.node`);
+  writeFileSync(`${bin}.mjs`, source);
   return bin;
 }
 

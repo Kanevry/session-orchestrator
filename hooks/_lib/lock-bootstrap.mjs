@@ -55,6 +55,10 @@ import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
  */
 export const SAME_LOGICAL_SESSION_SOURCES = new Set(['resume', 'clear', 'compact']);
 
+/** Re-reads of a just-acquired lock that answers ENOENT, and the pause between them (#1494). */
+const ENRICH_READ_RETRIES = 5;
+const ENRICH_READ_RETRY_MS = 10;
+
 /**
  * Bootstrap the session.lock for this hook invocation.
  *
@@ -219,7 +223,13 @@ export async function bootstrapLock({
     // `reclaimed` exists to make countable.
     const priorOwner = acquireResult.existingLock?.session_id;
     try {
-      acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot });
+      // A stale or corrupt lock is reclaimed single-winner (#1494): two starts
+      // that both saw it used to force it, both got ok:true, and the later
+      // rename won. With onlyIfNotLive the loser gets the winner's live lock
+      // back as 'active' and bails into the conflict signal below. The same-
+      // session refresh of a LIVE lock keeps the unconditional overwrite.
+      const reclaim = forcedFrom === 'stale-heartbeat' || forcedFrom === 'corrupt';
+      acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot, ...(reclaim ? { onlyIfNotLive: true } : {}) });
     } catch {
       return null;
     }
@@ -251,6 +261,20 @@ export async function bootstrapLock({
   // failure is swallowed and the bail proceeds. The return contract is unchanged —
   // bootstrapLock STILL returns null on this path.
   if (!acquireResult || acquireResult.ok !== true) {
+    // #1494 / #599: a lock path that exists but cannot be read (EACCES, or a
+    // directory) is never reclaimed — but it is no longer silent either. The
+    // WARN is discarded by the harness, so the read_anomaly event (the one
+    // SessionEnd already emits for the same state) is the countable trace.
+    if (acquireResult && acquireResult.reason === 'unreadable') {
+      process.stderr.write(
+        `⚠ lock-bootstrap: .orchestrator/session.lock exists but cannot be read (${acquireResult.error ?? 'unknown'}) — this session runs without a lock\n`,
+      );
+      await emitBestEffort(_emitEventImpl, 'orchestrator.session.lock.read_anomaly', {
+        session_id: sessionId,
+        status: 'unreadable',
+        ...(typeof acquireResult.error === 'string' ? { error: acquireResult.error } : {}),
+      });
+    }
     if (
       acquireResult &&
       acquireResult.reason === 'active' &&
@@ -270,26 +294,41 @@ export async function bootstrapLock({
   // last_heartbeat (Epic #583 W2-I3), so that half of the overlay re-writes an
   // identical value; semantic_session_id is the half that adds information.
   const lockFile = path.join(repoRoot, '.orchestrator', 'session.lock');
+  let raw;
+  // ENOENT right after ok:true is most likely a racer holding OUR fresh lock in
+  // its tombstone: a second start that saw the same stale lock renames it
+  // aside, finds it live and links it back within microseconds
+  // (session-lock.mjs reclaimIfNotLive). Reading once and giving up left the
+  // lock ours but without semantic_session_id, owner proof and lock.acquired
+  // (#1494 review: two racers are enough). Bounded: 5 retries × 10 ms, so a lock
+  // that is really gone costs this hook at most ~50 ms. Measured 2026-10-02
+  // (2000 live-restore reclaims, load average ~9): the racer's rename→link-back
+  // window was p50 0.34 ms, p99 2.4 ms, max 31.7 ms. Ceiling (BV-004): a window
+  // longer than ~50 ms still ends in the lockless-enrichment null above;
+  // revisit if lock.acquired goes missing for sessions that own the lock.
+  for (let attempt = 0; raw === undefined; attempt += 1) {
+    try {
+      raw = fs.readFileSync(lockFile, 'utf8');
+    } catch (err) {
+      if (err?.code !== 'ENOENT' || attempt >= ENRICH_READ_RETRIES) return null;
+      await new Promise((resolve) => setTimeout(resolve, ENRICH_READ_RETRY_MS));
+    }
+  }
   let baseLock;
   try {
-    const raw = fs.readFileSync(lockFile, 'utf8');
     baseLock = JSON.parse(raw);
     if (typeof baseLock !== 'object' || baseLock === null) return null;
   } catch {
-    // Lock vanished between write and read — best-effort, return null.
     return null;
   }
-  // The file can belong to another session by now: two SessionStarts that
-  // both forced a stale or corrupt lock each get ok:true, and the later rename
-  // wins. Enriching that lock would stamp OUR label onto ITS record and write
-  // an owner proof that verifies against it, so a foreign lock is left as is.
-  // Ceiling (BV-004): this closes the misattribution, not the race itself —
-  // both sessions still believe they forced the lock, and only the winner
-  // emits `lock.acquired`, so an overlapping double reclaim leaves no
-  // countable trace in events. Revisit with a single-winner takeover
-  // (tombstone rename + link-create) when two sessions are seen working one
-  // checkout right after a reclaim (a `conflict_with_session_id` in
-  // current-session.json, or an operator report).
+  // The file can belong to another session by now. The reclaim above is
+  // single-winner since #1494 (tombstone rename + link-create in
+  // forceAcquire's onlyIfNotLive), but a plain forceAcquire — the same-session
+  // refresh, an operator's Phase-1.2 force-take — still overwrites
+  // unconditionally, and a link-back that loses to a third writer drops the
+  // lock it was restoring (session-lock.mjs reclaimIfNotLive, ceiling 2).
+  // Enriching a foreign lock would stamp OUR label onto ITS record and write
+  // an owner proof that verifies against it, so it is left as is.
   if (baseLock.session_id !== sessionId) return null;
 
   const startedAt = typeof baseLock.started_at === 'string'
@@ -343,28 +382,38 @@ export async function bootstrapLock({
     }
   } catch { /* best-effort — a missing proof never breaks session-start */ }
 
-  // Step 3: best-effort observability breadcrumb. Failures are swallowed
-  // so a missing events module never breaks the hook.
+  // Step 3: best-effort observability breadcrumb.
+  await emitBestEffort(_emitEventImpl, 'orchestrator.session.lock.acquired', {
+    session_id: enriched.session_id,
+    semantic_session_id: enriched.semantic_session_id,
+    mode: enriched.mode,
+    pid: enriched.pid,
+    host: enriched.host,
+    ttl_hours: enriched.ttl_hours,
+    ...(reclaimed ? { reclaimed } : {}),
+  });
+
+  return enriched;
+}
+
+/**
+ * Emit one event; every failure is swallowed so a missing events module never
+ * breaks the hook (observability is best-effort).
+ *
+ * @param {Function|undefined} emitImpl — the `_emitEventImpl` test seam.
+ * @param {string} name
+ * @param {object} payload
+ * @returns {Promise<void>}
+ */
+async function emitBestEffort(emitImpl, name, payload) {
   try {
-    let emitFn = _emitEventImpl;
+    let emitFn = emitImpl;
     if (!emitFn) {
       const eventsMod = await import('../../scripts/lib/events.mjs');
       emitFn = eventsMod.emitEvent;
     }
-    if (typeof emitFn === 'function') {
-      await emitFn('orchestrator.session.lock.acquired', {
-        session_id: enriched.session_id,
-        semantic_session_id: enriched.semantic_session_id,
-        mode: enriched.mode,
-        pid: enriched.pid,
-        host: enriched.host,
-        ttl_hours: enriched.ttl_hours,
-        ...(reclaimed ? { reclaimed } : {}),
-      });
-    }
+    if (typeof emitFn === 'function') await emitFn(name, payload);
   } catch { /* observability is best-effort */ }
-
-  return enriched;
 }
 
 /**

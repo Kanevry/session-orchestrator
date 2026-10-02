@@ -10,6 +10,8 @@ import {
   generateLearningNote,
   generateLearningNoteV2,
 } from '@lib/vault-mirror/render-learnings.mjs';
+import { parseFrontmatter } from '@lib/vault-mirror/utils.mjs';
+import YAML from 'js-yaml';
 
 // ── detectLearningSchema ──────────────────────────────────────────────────────
 
@@ -151,6 +153,24 @@ describe('generateLearningNote (v1)', () => {
   it('#725 D2: omits source-repo line when opts.repoNs is absent (backward-compatible)', () => {
     const out = generateLearningNote(makeV1Entry(), 'my-slug');
     expect(out).not.toContain('source-repo:');
+  });
+
+  // ── #1503: source-record provenance ─────────────────────────────────────────
+
+  it('#1503: source-record carries the record id and reads back identically through BOTH frontmatter readers', () => {
+    // BUG CAUGHT: process.mjs compares the parsed value with the writer's key. A
+    // value that reads back differently (quoting, YAML typing) would make every
+    // same-record rewrite look foreign and freeze the note.
+    const entry = makeV1Entry();
+    const out = generateLearningNote(entry, 'my-slug');
+    expect(parseFrontmatter(out)['source-record']).toBe(entry.id);
+    expect(YAML.load(out.split('---')[1])['source-record']).toBe(entry.id);
+    expect(out.indexOf('source-record:')).toBeLessThan(out.indexOf('_generator:'));
+  });
+
+  it('#1503: an id that cannot round-trip renders no source-record line (no broken YAML)', () => {
+    const out = generateLearningNote(makeV1Entry({ id: 'has "quotes" inside' }), 'my-slug');
+    expect(out).not.toContain('source-record:');
   });
 });
 

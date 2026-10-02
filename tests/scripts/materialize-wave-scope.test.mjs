@@ -13,6 +13,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { materializeWaveScope } from '../../scripts/materialize-wave-scope.mjs';
 import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
+import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../..');
@@ -58,6 +59,33 @@ function agentPath(stateDir, id, wave = 7) {
 }
 
 describe('materialize-wave-scope.mjs — canonical two-shape materialization', () => {
+  it('counts dispatched agents only in scope_materialized — never the coordinator (#1493.2)', () => {
+    // Bug caught: the coordinator record was counted as an agent while its
+    // (usually empty) files added no digest, so `digest_count < agent_count` —
+    // documented as "two agents were handed the identical scope" — fired on a
+    // wave whose agent scopes were all distinct.
+    const repo = makeStateDir();
+    const stateDir = join(repo, '.claude');
+    mkdirSync(stateDir);
+    const env = { ...process.env, ...telemetryIsolationEnv() };
+    delete env.CLAUDE_CODE_SESSION_ID;
+    const result = spawnSync(process.execPath, [SCRIPT, '--state-dir', stateDir, '--wave', '7'], {
+      input: JSON.stringify([
+        { id: 'W7-I1', files: ['scripts/alpha.mjs'] },
+        { id: 'W7-I2', files: ['scripts/beta.mjs'] },
+        { id: 'coordinator', files: [] },
+      ]),
+      encoding: 'utf8',
+      cwd: REPO_ROOT,
+      env,
+    });
+    expect(result.status).toBe(0);
+    const record = readFileSync(join(repo, '.orchestrator', 'metrics', 'events.jsonl'), 'utf8')
+      .split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      .find((r) => r.event === 'orchestrator.wave_dispatch.scope_materialized');
+    expect(record).toMatchObject({ wave: 7, agent_count: 2, digest_count: 2 });
+  });
+
   it('writes bare per-agent arrays and an order-preserving aggregate including coordinator', () => {
     const stateDir = makeStateDir();
 

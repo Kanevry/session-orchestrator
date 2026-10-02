@@ -425,6 +425,21 @@ describe('--verify (the per-wave join)', () => {
     expect(report.agents[0].agent_id).toBe('w2-a1');
   });
 
+  it('does not accuse the coordinator\'s own scope file of a missing injection (#1493.2)', () => {
+    // Catches: `coordinator.json` sits beside the agents' files and was digested
+    // with them, but the coordinator is never dispatched — nothing can claim its
+    // digest, so every wave where it planned an edit reported `injection-missing`.
+    const paths = ['scripts/lib/alpha.mjs'];
+    const digest = scopeDigest(paths);
+    const { stateDir, events } = fixture({
+      scopes: { 'w2-a1': paths, coordinator: ['skills/wave-executor/wave-loop.md'] },
+      lines: [{ event: SCOPE_CHECKED_EVENT, wave: 2, agent_id: 'w2-a1', injected: true, scope_digest: digest }],
+    });
+
+    const report = verifyWaveScope({ wave: 2, stateDir, eventsPath: events });
+    expect(report.agents).toEqual([{ agent_id: 'w2-a1', verdict: 'injected-not-echoed', digest }]);
+  });
+
   it('surfaces dropped ledger lines in the human table instead of printing a clean wave', () => {
     // Catches: a crashed writer's truncated append was skipped SILENTLY, so the
     // table read `1/1 injected, 1 echoed` with every digest `matched` — a clean

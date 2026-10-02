@@ -64,6 +64,9 @@ import { serializeSessionLineChecked as defaultSerialize } from './session-schem
 import { resolveStateMdPath as defaultResolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs';
 import { canonicalizeSessions } from './sessions-canonical.mjs';
+// Already in the hook import set (`emitEvent` lives there): the rotation-aware
+// reader adds no new file to the SessionStart/SessionEnd hook graph.
+import { scanEventsBackwards } from './events.mjs';
 // Leaf constants module (no imports of its own) and ALREADY in the hook import
 // set via session-schema/validator.mjs — importing it here adds no new file to
 // the SessionStart/SessionEnd hook graph. The profile enum must not be
@@ -324,6 +327,107 @@ function collectSessionEvents(events, { sessionId, semanticSessionId }) {
     earliestMs,
     lastEventMs,
   };
+}
+
+/**
+ * Events-ledger window for the #1401 census (`events-retention-banner.mjs`):
+ * `null` — {@link gatherSessionEvents} reads back as far as a candidate's own
+ * `session.started`, however old, so no day count bounds it. A cut history
+ * leaves the candidate's oldest events unread: its record then lists
+ * `started_at` among `_backfill_incomplete_fields` — the same answer as before
+ * this reader existed, never a guessed time.
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+
+/**
+ * Every record of the ledger — rotated archives included — whose raw line
+ * contains `id`, oldest first. A backward scan in the existing rotation-aware
+ * reader (`scanEventsBackwards`), reversed: one scan's order is global, so the
+ * file order {@link collectSessionEvents} depends on survives.
+ *
+ * @param {string} eventsPath
+ * @param {string} id
+ * @param {number|null} deadlineMs — epoch ms the scan must end by; `null` = unbounded
+ * @returns {Array<object>|null} `null` when the deadline had passed before the
+ *   scan or cut it short — a partial history is never handed on as a whole one.
+ */
+function recordsMentioning(eventsPath, id, deadlineMs) {
+  let budgetMs;
+  if (deadlineMs !== null) {
+    budgetMs = deadlineMs - Date.now();
+    if (!(budgetMs > 0)) return null;
+  }
+  const newestFirst = [];
+  const { truncated } = scanEventsBackwards({
+    filePath: eventsPath,
+    filter: id,
+    budgetMs,
+    onRecord: (record) => {
+      newestFirst.push(record);
+      return false;
+    },
+  });
+  return truncated ? null : newestFirst.reverse();
+}
+
+/**
+ * {@link collectSessionEvents} over the ACTIVE events.jsonl, and — when that
+ * holds no `session.started` for the candidate — over the whole rotated ledger.
+ *
+ * #1498: `planSessions` reads every archive since #1414, but this core read only
+ * the active file, so a candidate whose events had rotated away gathered
+ * nothing: no `lastEventMs`, hence never dead-by-age and skipped behind a live
+ * foreign lock on every run — or, without a lock, written with `started_at` and
+ * `completed_at` set to NOW. The active read stays first and cheap; the scan
+ * runs only for such a candidate, and once its record is written the CLI's
+ * sessions.jsonl pre-filter skips it on every later run.
+ *
+ * Cost (#1498 review): ≈0.55-0.8 ms per MB of ledger per such candidate —
+ * measured 2026-10-02: 25 candidates over a synthetic 58 MB ledger of six
+ * sources took 1.17-1.20 s, active reads included, at load average ~20; the
+ * review measured +0.80-0.87 s for the scans alone at 60 MB and load ~7. That
+ * does not fit the 5 s SessionStart hook unbounded, so a caller may pass
+ * `deadlineMs`: ONE epoch-ms deadline shared by every candidate of a run. A
+ * scan the deadline skipped or cut returns `historyUnread: true` instead of a
+ * partial answer, and the caller defers the candidate — never the active-file
+ * answer, which for such a candidate is a record dated NOW (see above) that the
+ * dedupe would then keep forever.
+ *
+ * One filtered scan keeps the order exact: a native UUID appears on every event
+ * of its session. Without one, the semantic label is scanned for the UUID
+ * bridge, then that UUID's events. Named ceiling (BV-004): a label bridging to
+ * SEVERAL UUIDs would need several scans merged without a shared order, so it
+ * keeps the active-file answer — revisit if a backfill record shows
+ * `started_at` among its incomplete fields while the archive holds it.
+ *
+ * @param {Function} readFileSync
+ * @param {string} eventsPath
+ * @param {{ sessionId: string|null, semanticSessionId: string|null }} ids
+ * @param {number|null} [deadlineMs=null] — shared scan deadline (epoch ms); `null` = unbounded
+ * @returns {ReturnType<typeof collectSessionEvents> & { historyUnread?: true }}
+ */
+function gatherSessionEvents(readFileSync, eventsPath, ids, deadlineMs = null) {
+  const gathered = collectSessionEvents(readJsonlSafe(readFileSync, eventsPath), ids);
+  if (gathered.startedAt !== null) return gathered;
+  try {
+    let uuid = isUuid(ids.sessionId) ? ids.sessionId : null;
+    if (uuid === null) {
+      const label = ids.semanticSessionId || ids.sessionId;
+      if (!label) return gathered;
+      const bridge = recordsMentioning(eventsPath, label, deadlineMs);
+      if (bridge === null) return { ...gathered, historyUnread: true };
+      const bridged = collectSessionEvents(bridge, ids).uuids;
+      if (bridged.size !== 1) return gathered;
+      [uuid] = bridged;
+    }
+    const history = recordsMentioning(eventsPath, uuid, deadlineMs);
+    if (history === null) return { ...gathered, historyUnread: true };
+    // Empty only when the scan found no source at all — e.g. a reader seam the
+    // filesystem does not back; the active answer stands.
+    return history.length > 0 ? collectSessionEvents(history, ids) : gathered;
+  } catch {
+    return gathered;
+  }
 }
 
 /**
@@ -724,6 +828,11 @@ function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId 
  *   `lastEventMs` strictly predates this value bypasses a foreign live lock
  *   regardless of `relaxDeadByAge`. Corresponds to the CLI's
  *   `--assume-dead-before <ISO>` flag.
+ * @param {number|null} [args.archiveScanDeadlineMs=null]
+ *   #1498 — epoch ms by which a scan of the ROTATED ledger must end; one value
+ *   shared by every candidate of a run (see `gatherSessionEvents`). A candidate
+ *   whose history the deadline left unread returns `skipped-history-unread`
+ *   and is retried by the next run. `null` (CLI, SessionEnd) = unbounded.
  * @param {object}  [args.deps]                   DI overrides (fs, appendJsonl, readLock, …)
  * @returns {Promise<object>}
  */
@@ -736,6 +845,7 @@ export async function backfillAbandonedSession({
   relaxDeadByAge = false,
   ownSessionIsEnding = false,
   assumeDeadBeforeMs = null,
+  archiveScanDeadlineMs = null,
   deps = {},
 } = {}) {
   const {
@@ -795,8 +905,14 @@ export async function backfillAbandonedSession({
       }
 
       // -- Read events (needed to synthesize, and to bridge UUID→semantic) ----
-      const events = readJsonlSafe(readFileSync, eventsPath);
-      const gathered = collectSessionEvents(events, { sessionId, semanticSessionId });
+      const gathered = gatherSessionEvents(
+        readFileSync, eventsPath, { sessionId, semanticSessionId }, archiveScanDeadlineMs,
+      );
+      // Deferred, never answered from the active file alone: for this candidate
+      // that answer is a record dated NOW, which the dedupe keeps forever.
+      if (gathered.historyUnread) {
+        return { action: 'skipped-history-unread', sessionId: recordId ?? sessionId };
+      }
 
       // -- Resolve a deferred id from the lock bridge or a synthetic mint ------
       if (recordId === null) {
@@ -1153,8 +1269,7 @@ export async function backfillCompletedFromStateMd({
 
       // -- Derive whatever is derivable from events.jsonl (never STATE.md body) -
       const eventsPath = path.join(repoRoot, ...EVENTS_REL);
-      const events = readJsonlSafe(readFileSync, eventsPath);
-      const gathered = collectSessionEvents(events, { sessionId: nativeId, semanticSessionId });
+      const gathered = gatherSessionEvents(readFileSync, eventsPath, { sessionId: nativeId, semanticSessionId });
 
       // -- Synthesize + validate (round-trip gate) BEFORE any disk mutation ----
       const record = synthesizeRecord({

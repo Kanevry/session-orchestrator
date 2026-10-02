@@ -15,6 +15,12 @@
  *     a `--kind session` line whose `session_id` a later line in the same
  *     source superseded, so it was never dispatched. It carries `record_id`
  *     and `line` and never `path` — no target file exists for it.
+ *     `skipped-foreign-owner` (#1503) is another: the generator note at the
+ *     target path names a different owner (a `source-record` the writer's
+ *     ledger does not carry, or a different session id), so it was left
+ *     untouched — unless it still leaks a secret, which is healed over the
+ *     guard. It carries the refused note's `path` and a constant `reason`
+ *     (`source-record mismatch` / `id mismatch`).
  *   - `orchestrator.vault.mirror_run_completed` — ONE record per CLI run,
  *     carrying the DENOMINATOR (`total` plus the per-class counts).
  *
@@ -25,8 +31,8 @@
  * "a rule you cannot falsify is not a rule"). The run event is emitted
  * unconditionally — including on every abort path, where it carries an
  * `aborted` discriminator (`missing-vault-dir` | `vault-not-canonical` |
- * `missing-source` | `malformed-json` | `filesystem-error` |
- * `unexpected-error`). So `total: 0` is a MEASURED zero, a partial count is a
+ * `missing-source` | `source-repo-mismatch` | `malformed-json` |
+ * `filesystem-error` | `unexpected-error`). So `total: 0` is a MEASURED zero, a partial count is a
  * LABELLED partial rather than a silent one, and the record's absence — and
  * nothing else — is the broken-emitter signal.
  *
@@ -36,9 +42,10 @@
  *
  * Ledger destination: `emitEvent` is called 2-arg, so every event from one run
  * resolves the SAME destination (`SO_PROJECT_DIR`, i.e. `CLAUDE_PROJECT_DIR` or
- * the CWD walk-up) as the masker emit. This CLI has no repo-root flag and
- * deriving one from `--source` would split a single run's telemetry across two
- * ledgers.
+ * the CWD walk-up) as the masker emit. The repo root that decides the vault
+ * NAMESPACE (#1503: `--repo-root`, else the git repo containing `--source`) is
+ * deliberately NOT used for the ledger — routing telemetry by it would split a
+ * single run's records across two ledgers.
  */
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
@@ -166,7 +173,7 @@ export async function emitMirrorEvent({
  * @param {number} opts.updated — entries whose action was `updated`.
  * @param {number} opts.skipped — entries skipped for a NON-failure reason
  *   (`skipped-noop`, `skipped-handwritten`, `skipped-quality-low`,
- *   `skipped-collision-resolved`, `skipped-abandoned`,
+ *   `skipped-collision-resolved`, `skipped-foreign-owner`, `skipped-abandoned`,
  *   `skipped-duplicate-session`). The last one (#1291) is what keeps
  *   `created + updated + skipped + failed === total` true for a `--kind
  *   session` run whose dedup pass collapsed a duplicate `session_id` line.
@@ -176,13 +183,13 @@ export async function emitMirrorEvent({
  * @param {Record<string, number>} [opts.actionBreakdown] — per-action counts;
  *   only actions observed at least once appear.
  * @param {boolean} opts.dryRun — whether this run wrote anything at all.
- * @param {'missing-vault-dir'|'vault-not-canonical'|'missing-source'|'malformed-json'|'filesystem-error'|'unexpected-error'} [opts.aborted]
+ * @param {'missing-vault-dir'|'vault-not-canonical'|'missing-source'|'source-repo-mismatch'|'malformed-json'|'filesystem-error'|'unexpected-error'} [opts.aborted]
  *   Present ONLY when the run exited before its normal tail. OMITTED on a
  *   complete run — absent means "ran to the end", never "unknown". The first
- *   three values are PRE-LOOP aborts (#1151): the run never reached its first
- *   entry, so all five counters are `0` and that zero is the point — without a
- *   record, a mirror that never started is indistinguishable from one that was
- *   never invoked.
+ *   four values are PRE-LOOP aborts (#1151, #1503): the run never reached its
+ *   first entry, so all five counters are `0` and that zero is the point —
+ *   without a record, a mirror that never started is indistinguishable from one
+ *   that was never invoked.
  * @returns {Promise<void>}
  */
 export async function emitMirrorRunEvent({

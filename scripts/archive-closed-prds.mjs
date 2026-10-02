@@ -383,7 +383,9 @@ EXIT CODES
 function printHuman(archived, skipped, isDryRun, vaultDir, vaultSubdir) {
   // Runs as a custom phase at every session start and end, so this line lands
   // in every transcript — home dir as `~` (#1490). `--json` keeps the real
-  // value: that output is a machine contract, not a log line.
+  // `vaultDir`: that field is a machine contract, not a log line. A
+  // `skipped[].reason` is redacted in BOTH outputs — it carries fs error text,
+  // and main() redacts it before it enters the array (8273d97a).
   process.stdout.write(
     `Doc archive ${isDryRun ? '(dry-run)' : '(apply)'} → ${redactHomeDir(`${vaultDir}/${vaultSubdir}`)}\n`,
   );
@@ -496,13 +498,32 @@ export function main({
   }
 
   let vaultDir;
+  let vaultIntegration;
   try {
     const content = readFileSync(instr.path, 'utf8');
     const config = parseSessionConfig(content, hostPaths ? { hostPaths } : undefined);
-    vaultDir = config?.['vault-integration']?.['vault-dir'];
+    vaultIntegration = config?.['vault-integration'];
+    vaultDir = vaultIntegration?.['vault-dir'];
   } catch (err) {
     process.stderr.write(`archive-closed-prds: failed to parse Session Config: ${redactHomeDir(err.message)}\n`);
     return { code: 2, archived: [], skipped: [] };
+  }
+  // The switch every vault writer obeys (board-writer, narrative-mirror): off
+  // → nothing archived, exit 0. parseSessionConfig has already applied the
+  // host-local lowering (resolveVaultIntegrationHost: env SO_VAULT_INTEGRATION
+  // > owner.yaml > committed). This runs with --apply at every session start
+  // and end, so ignoring it wrote PRDs into the vault and git-rm'd them (#1496).
+  if (vaultIntegration?.enabled !== true) {
+    const override = vaultIntegration?.['host-override'];
+    const disabled = `vault-integration is ${override ? `switched off by ${override}` : 'not enabled'} — nothing archived`;
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({ dryRun: isDryRun, vaultDir: null, vaultSubdir, archived: [], skipped: [], disabled }, null, 2) + '\n',
+      );
+    } else {
+      process.stdout.write(`Doc archive: ${disabled}\n`);
+    }
+    return { code: 0, archived: [], skipped: [] };
   }
   if (!vaultDir || typeof vaultDir !== 'string' || vaultDir.trim() === '') {
     process.stderr.write(

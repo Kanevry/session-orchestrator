@@ -14,7 +14,7 @@
  *   - Error path (bad-arg) proves the exit-code contract from cli-design.md.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -601,6 +601,115 @@ describe('backfill-abandoned-sessions — reads across rotation boundaries (#141
     expect(records[0].session_id).toBe(SEM_1);
     expect(records.some((x) => x.status === 'abandoned')).toBe(false);
     expect(records.some((x) => x._synthetic_session_id !== undefined)).toBe(false);
+  });
+
+  it('defers archived candidates an exhausted SessionStart scan budget left unread, then records them from the archive (#1498 review)', async () => {
+    // BUG THIS CATCHES: the rotated-ledger scan ran with NO budget inside the
+    // 5 s SessionStart hook (+0.80-0.87 s measured at 60 MB). An exhausted
+    // budget must defer the candidate — never fall back to the active-file
+    // answer, which for it is a record dated NOW that the dedupe keeps forever.
+    // Budget 0 is exhausted before the first scan: no clock, no timing.
+    seedArchive('events-20260701T000000Z_20260702T120000Z.jsonl', TWO_ABANDONED_EVENTS);
+    seedEvents([{ timestamp: '2026-07-03T09:00:00.000Z', event: 'orchestrator.agent.stopped' }]);
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    const deferred = await backfillOnSessionStart({ repoRoot: tmp, archiveScanBudgetMs: 0 });
+    expect(deferred.skipped).toEqual({ 'skipped-history-unread': 2 });
+    expect(readSessions()).toHaveLength(0);
+
+    const next = await backfillOnSessionStart({ repoRoot: tmp });
+    expect(next.backfilled).toBe(2);
+    expect(readSessions().map((r) => r.started_at).sort()).toEqual([STARTED_AT, '2026-07-02T11:00:00.000Z']);
+  });
+
+  it('counts a pruned archive as a history gap instead of silently planning fewer candidates (#1498)', () => {
+    // BUG THIS CATCHES: a tombstone naming an archive the ring had pruned left
+    // no trace in the summary, so a cut history planned fewer candidates and
+    // read as complete. The retained archive's tombstone must NOT count.
+    const kept = 'events-20260701T000000Z_20260702T120000Z.jsonl';
+    seedArchive(kept, TWO_ABANDONED_EVENTS);
+    const archiveDir = join(tmp, '.orchestrator', 'metrics', '_archive');
+    seedEvents([
+      { timestamp: '2026-07-02T12:00:01.000Z', event: 'orchestrator.events.rotated', archived_as: join(archiveDir, kept) },
+      { timestamp: '2026-07-03T09:00:00.000Z', event: 'orchestrator.events.rotated', archived_as: join(archiveDir, 'events-20260601T000000Z_20260630T000000Z.jsonl') },
+    ]);
+
+    const r = runCli(['--repo-root', tmp, '--json']);
+
+    expect(r.status).toBe(0);
+    expect(summaryOf(r)).toMatchObject({ total: 2, history_gaps: 1 });
+  });
+
+  describe('the SessionStart scan budget (#1498 review)', () => {
+    const UUID_3 = 'dddddddd-eeee-4fff-8aaa-bbbbbbbbbbbb';
+    const SEM_3 = 'main-2026-07-02-session-3';
+    const ARCHIVE = 'events-20260701T000000Z_20260702T140000Z.jsonl';
+    const ACTIVE_ONLY = [{ timestamp: '2026-07-03T09:00:00.000Z', event: 'orchestrator.agent.stopped' }];
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.doUnmock('@lib/events.mjs');
+      vi.resetModules();
+    });
+
+    it('is applied by DEFAULT — the hook calls backfillOnSessionStart({ repoRoot }) with no budget', async () => {
+      // BUG THIS CATCHES: losing the SESSION_START_ARCHIVE_SCAN_BUDGET_MS
+      // default. hooks/on-session-start.mjs passes no budget, so the default
+      // IS the hook's budget; the sibling test above passes 0 explicitly.
+      // Clock: every Date.now() read advances one minute — past any budget a
+      // 5 s hook can carry — so a budgeted run defers both candidates and an
+      // unbudgeted one records them (pins "budgeted", not the 500 ms value).
+      seedArchive(ARCHIVE, TWO_ABANDONED_EVENTS);
+      seedEvents(ACTIVE_ONLY);
+      let t = Date.parse('2026-10-02T12:00:00.000Z');
+      vi.spyOn(Date, 'now').mockImplementation(() => (t += 60_000));
+      const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+      const summary = await backfillOnSessionStart({ repoRoot: tmp });
+
+      expect(summary.skipped).toEqual({ 'skipped-history-unread': 2 });
+      expect(readSessions()).toEqual([]);
+    });
+
+    it('is ONE deadline for the whole run — once earlier scans spent it, the oldest candidate waits for the next start', async () => {
+      // BUG THIS CATCHES: computing the deadline per candidate. Every candidate
+      // then gets a fresh budget and a start with N archived candidates spends
+      // N × budget inside the 5 s hook. Double: the real scanner, plus a clock
+      // each scan advances 300 ms (every other read 1 ms, so nothing waiting on
+      // the clock can hang). Budget 500, newest first: SEM_3 and SEM_2 scan
+      // (0 → 300 → 600 ms), SEM_1 finds the shared deadline passed.
+      seedArchive(ARCHIVE, [
+        ...TWO_ABANDONED_EVENTS,
+        { timestamp: '2026-07-02T13:00:00.000Z', event: 'orchestrator.session.started', session_id: UUID_3, branch: 'main' },
+        {
+          timestamp: '2026-07-02T13:01:00.000Z',
+          event: 'orchestrator.session.lock.acquired',
+          session_id: UUID_3,
+          semantic_session_id: SEM_3,
+          mode: 'feature',
+        },
+      ]);
+      seedEvents(ACTIVE_ONLY);
+      const clock = { t: Date.parse('2026-10-02T12:00:00.000Z') };
+      vi.spyOn(Date, 'now').mockImplementation(() => (clock.t += 1));
+      vi.resetModules();
+      vi.doMock('@lib/events.mjs', async (importOriginal) => {
+        const actual = await importOriginal();
+        const scanEventsBackwards = (opts) => {
+          const result = actual.scanEventsBackwards(opts);
+          clock.t += 300;
+          return result;
+        };
+        return { ...actual, scanEventsBackwards };
+      });
+      const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+      const summary = await backfillOnSessionStart({ repoRoot: tmp, archiveScanBudgetMs: 500 });
+
+      expect(summary.backfilled).toBe(2);
+      expect(summary.skipped).toEqual({ 'skipped-history-unread': 1 });
+      expect(readSessions().map((r) => r.session_id).sort()).toEqual([SEM_2, SEM_3]);
+    });
   });
 });
 

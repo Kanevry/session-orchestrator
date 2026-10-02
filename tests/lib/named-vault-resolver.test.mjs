@@ -749,6 +749,10 @@ describe('describeOriginForLog', () => {
     // home-dir path even with the credential redacted — the scp rules apply.
     ['ssh:// URL, login user + home path', 'ssh://alice@nas.example.org/home/alice/vault', 'ssh://***@nas.example.org/<remote path>'],
     ['ssh:// URL, user:pw + home path', 'ssh://alice:pw@nas.example.org/home/alice/vault', 'ssh://***@nas.example.org/<remote path>'],
+    // #1496 item 3: a `://` with no scheme before it is no URL (git's is_url),
+    // yet any such string was printed verbatim — home dir included.
+    ['local path containing ://', '/home/alice/vault://x', 'file://<local path>'],
+    ['scp-like path containing ://', 'alice@nas.example.org:/home/alice/a://b', '***@nas.example.org:<remote path>'],
     ['absent origin', undefined, ''],
   ])('%s', (_label, url, expected) => {
     expect(describeOriginForLog(url)).toBe(expected);

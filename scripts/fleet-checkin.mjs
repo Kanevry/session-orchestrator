@@ -16,11 +16,15 @@
  * payload `{ session, repo, modus, kandidaten, navigator_state }` — no paths, no
  * quota, no `auftrag_ref`.
  *
- * stdout: one JSON line `{ ok, path, navigator_state, navigator_adresse, event }`.
+ * stdout: one JSON line
+ * `{ ok, path, navigator_state, navigator_adresse, fallback_due_at, event }`.
  * `navigator_adresse` is the active lease's `adresse` exactly as
  * `readNavigatorLease()` validated it (a ListAgents peer name), else `null` — no
  * active lease, no address in it, or one the validator refused. It is the only
  * value the caller may address a hint to; an unvalidated string never reaches it.
+ * `fallback_due_at` is `fallbackDueAt(zeit, navigator_state)`: when the
+ * Standard-Auflagen apply if no `auflagen/` file has appeared by then. It is
+ * stdout only — the check-in FILE schema, which the navigator reads, is unchanged.
  *
  * Exit codes:
  *   0 — check-in written (an event failure only WARNs; `event: false` on stdout)
@@ -35,6 +39,7 @@ import path from 'node:path';
 import { emitEvent } from './lib/events.mjs';
 import {
   checkinPath,
+  fallbackDueAt,
   navigatorDir,
   readNavigatorLease,
   utcSecondsTimestamp,
@@ -147,6 +152,7 @@ async function main() {
       path: shownPath,
       navigator_state: navigatorState,
       navigator_adresse: navigatorAdresse,
+      fallback_due_at: fallbackDueAt(record.zeit, navigatorState),
       event,
     }) + '\n',
   );

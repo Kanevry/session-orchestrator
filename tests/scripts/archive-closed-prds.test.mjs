@@ -36,6 +36,7 @@ import {
   existsSync,
   rmSync,
   realpathSync,
+  readdirSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -93,14 +94,15 @@ const HOST_PATHS = { env: {}, ownerConfig: undefined };
  * Build a repo fixture with a CLAUDE.md (vault-dir → tmp vault) and 5 PRDs.
  * @param {object} [opts]
  * @param {boolean} [opts.withVaultDir=true]
+ * @param {boolean} [opts.enabled=true] - the committed vault-integration.enabled
  * @returns {{ repo: string, vault: string, prdRelPaths: string[] }}
  */
-function makeRepo({ withVaultDir = true } = {}) {
+function makeRepo({ withVaultDir = true, enabled = true } = {}) {
   const repo = mkTmp('acp-repo-');
   const vault = mkTmp('acp-vault-');
 
   const vaultBlock = withVaultDir
-    ? ['vault-integration:', '  enabled: true', `  vault-dir: ${vault}`, '  mode: warn', '']
+    ? ['vault-integration:', `  enabled: ${enabled}`, `  vault-dir: ${vault}`, '  mode: warn', '']
     : ['vault-integration:', '  enabled: true', '  mode: warn', ''];
 
   writeFile(
@@ -488,6 +490,28 @@ describe('main (--apply)', () => {
 });
 
 describe('main (config + flag errors)', () => {
+  // #1496 F2 — the bug: the vault-integration off switch was ignored. This
+  // CLI runs as a custom phase with --apply at every session start AND end, so
+  // a host switched off (SO_VAULT_INTEGRATION=off) or a repo that never enabled
+  // the integration still got its closed PRDs written into the vault and
+  // git-rm'd from the repo.
+  it.each([
+    ['SO_VAULT_INTEGRATION=off over a committed enabled: true', true, { env: { SO_VAULT_INTEGRATION: 'off' }, ownerConfig: undefined }],
+    ['a committed enabled: false', false, HOST_PATHS],
+  ])('--apply archives nothing and exits 0 when vault-integration is off (%s)', (_label, enabled, hostPaths) => {
+    const { repo, vault, prdRelPaths } = makeRepo({ enabled });
+    const glab = makeGlab();
+    const git = makeGit(prdRelPaths);
+
+    const res = main({ argv: ['--apply'], repoRoot: repo, glabRunFn: glab.fn, gitRunFn: git.fn, now: FIXED_NOW, hostPaths });
+
+    expect(res.code).toBe(0);
+    expect(res.archived).toEqual([]);
+    expect(git.rmCalls).toEqual([]);
+    expect(glab.calls).toEqual([]);
+    expect(readdirSync(vault)).toEqual([]);
+  });
+
   it('exits 1 when vault-dir is not configured', () => {
     const { repo, prdRelPaths } = makeRepo({ withVaultDir: false });
     const glab = makeGlab();

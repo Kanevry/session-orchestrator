@@ -2446,3 +2446,334 @@ describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal'
     expect(writeFileSyncSpy).not.toHaveBeenCalled();
   });
 });
+
+// ── #1503: provenance guard ───────────────────────────────────────────────────
+//
+// Real fs on a throwaway vault (no fs spies): the bug class is "a write lands on
+// a file that belongs to someone else", which only the file on disk can show.
+// The namespace comes from a `.vault.yaml` slug under `ctx.repoRoot`, so no git
+// double is needed — the repoRoot path is the production path since #1389.
+describe('#1503 provenance guard: a note owned by another repo/record is never overwritten', () => {
+  const dirs = [];
+  let vault;
+  let alphaRoot;
+  let betaRoot;
+
+  function tmp(prefix) {
+    const d = mkdtempSync(join(tmpdir(), prefix));
+    dirs.push(d);
+    return d;
+  }
+
+  function repoWithSlug(slug) {
+    const d = tmp('vm-1503-repo-');
+    fs.writeFileSync(
+      join(d, '.vault.yaml'),
+      `apiVersion: vault.example/v1\nkind: Repository\n\nmetadata:\n  name: Fixture\n  slug: "${slug}"\n  tier: active\n`,
+    );
+    return d;
+  }
+
+  beforeEach(() => {
+    vault = tmp('vm-1503-vault-');
+    alphaRoot = repoWithSlug('alpha-tool');
+    betaRoot = repoWithSlug('beta-tool');
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  async function load() {
+    vi.resetModules();
+    return import('@lib/vault-mirror/process.mjs');
+  }
+
+  const ctxFor = (kind, repoRoot) => ({ vaultDir: vault, dryRun: false, kind, repoRoot });
+  const read = (rel) => fs.readFileSync(join(vault, rel), 'utf8');
+  const quietStderr = () => vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+  const ALPHA_LEARNING = {
+    id: 'aaaaaaaa-0001-4000-8000-000000000001',
+    type: 'architectural',
+    subject: 'shared-subject',
+    insight: 'Alpha insight — the newer record',
+    evidence: 'alpha evidence',
+    confidence: 0.9,
+    source_session: 'session-2026-09-01',
+    created_at: '2026-09-01T10:00:00Z',
+  };
+  // Same subject → same slug → same file. OLDER and with different content:
+  // pre-fix, the content mismatch alone made it overwrite the newer note.
+  const BETA_LEARNING = {
+    ...ALPHA_LEARNING,
+    id: 'bbbbbbbb-0002-4000-8000-000000000002',
+    insight: 'Beta insight — an older record from another repo',
+    created_at: '2026-08-01T10:00:00Z',
+  };
+  const NOTE = '40-learnings/alpha-tool/shared-subject.md';
+
+  // Two shapes, one route (#1503 review F2): an OLDER record from another repo
+  // mirrored under the wrong namespace (the incident), and a NEWER record of the
+  // same repo — an expired learning re-learned under a new id. Pre-fix the first
+  // overwrote the note; skipping instead froze the second forever. Both now
+  // land at the disambiguated path and leave the existing note untouched.
+  it.each([
+    ['an older record from another repo', BETA_LEARNING],
+    [
+      'a re-learned record of the same repo (new id, newer)',
+      { ...ALPHA_LEARNING, id: 'cccccccc-0003-4000-8000-000000000003', insight: 'Re-learned', created_at: '2026-09-20T10:00:00Z' },
+    ],
+  ])('%s never overwrites the note and still reaches the vault (source-record → disambiguation)', async (_label, record) => {
+    quietStderr();
+    const { processLearning } = await load();
+    await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    const before = read(NOTE);
+
+    const { lines } = await captureStdout(() => processLearning(record, 1, ctxFor('learning', alphaRoot)));
+
+    const disambig = `40-learnings/alpha-tool/shared-subject-${record.id.slice(0, 8)}.md`;
+    expect(lines[0]).toMatchObject({ action: 'skipped-collision-resolved', path: disambig, reason: 'source-record mismatch' });
+    expect(read(NOTE)).toBe(before);
+    expect(read(disambig)).toContain(record.insight);
+    expect(read(disambig)).toContain(`source-record: "${record.id}"`);
+  });
+
+  it('a relabelled note (source-repo differs from its folder) is still the repo\'s own note and gets updated', async () => {
+    // #1503 review F1: the note sits in the writer's namespace folder, so a stale
+    // `source-repo` only means a move or a `.vault.yaml` relabel. Treating it as
+    // foreign dropped the repo's own updates and blocked their secret self-heal.
+    quietStderr();
+    const { processLearning } = await load();
+    await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', betaRoot)));
+    fs.mkdirSync(join(vault, '40-learnings', 'alpha-tool'), { recursive: true });
+    fs.copyFileSync(join(vault, '40-learnings/beta-tool/shared-subject.md'), join(vault, NOTE));
+
+    const updated = { ...ALPHA_LEARNING, insight: 'changed', created_at: '2026-09-15T10:00:00Z' };
+    const { lines } = await captureStdout(() => processLearning(updated, 1, ctxFor('learning', alphaRoot)));
+
+    expect(lines[0].action).toBe('updated');
+    expect(read(NOTE)).toContain('source-repo: alpha-tool');
+  });
+
+  const SESSION = {
+    session_id: 'main-2026-09-01-session-1',
+    raw_session_id: '11111111-aaaa-4000-8000-000000000001',
+    session_type: 'feature',
+    started_at: '2026-09-01T08:00:00Z',
+    completed_at: '2026-09-01T10:00:00Z',
+    duration_seconds: 7200,
+    waves: 1,
+    agents_dispatched: 2,
+    effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
+    notes: 'n'.repeat(500),
+  };
+
+  // #1503 cycle 3: a leak in a note owned by ANOTHER record is masked IN PLACE —
+  // the note keeps its owner, content and source-record — and the writer's
+  // record is routed as for any foreign note. The previous fix rewrote the note
+  // from the writer's record instead: an OLDER foreign record replaced the newer
+  // note, which is the #1503 overwrite triggered by a secret. One case per site.
+  const SESSION_REL = '50-sessions/alpha-tool/main-2026-09-01-session-1.md';
+  const FOREIGN_SESSION = { ...SESSION, raw_session_id: '22222222-bbbb-4000-8000-000000000002', completed_at: '2026-08-01T10:00:00Z' };
+  const flatten = (nsRel, flatRel) => {
+    fs.renameSync(join(vault, nsRel), join(vault, flatRel));
+  };
+  it.each([
+    {
+      site: 'learning, same slug',
+      kind: 'learning',
+      note: NOTE,
+      own: () => ALPHA_LEARNING,
+      foreign: () => BETA_LEARNING,
+      expectAction: { action: 'skipped-collision-resolved', reason: 'source-record mismatch', healed_leak: true },
+      ownMarker: 'Alpha insight',
+      ownKey: ALPHA_LEARNING.id,
+    },
+    {
+      // The reviewer's replay: the foreign record's own `-<uuid8>` note already
+      // exists and is unchanged, so its line is a skip-noop — the heal of the
+      // MAIN note must still be reported on it.
+      site: 'learning, same slug, disambiguated note already mirrored',
+      kind: 'learning',
+      note: NOTE,
+      own: () => ALPHA_LEARNING,
+      foreign: () => BETA_LEARNING,
+      preForeign: true,
+      expectAction: { action: 'skipped-noop', path: '40-learnings/alpha-tool/shared-subject-bbbbbbbb.md', healed_leak: true },
+      ownMarker: 'Alpha insight',
+      ownKey: ALPHA_LEARNING.id,
+    },
+    {
+      site: 'learning, legacy flat',
+      kind: 'learning',
+      note: '40-learnings/shared-subject.md',
+      own: () => ALPHA_LEARNING,
+      foreign: () => BETA_LEARNING,
+      prepare: () => flatten(NOTE, '40-learnings/shared-subject.md'),
+      expectAction: { action: 'created', path: NOTE, healed_leak: true },
+      ownMarker: 'Alpha insight',
+      ownKey: ALPHA_LEARNING.id,
+    },
+    {
+      site: 'session, same id',
+      kind: 'session',
+      note: SESSION_REL,
+      own: () => SESSION,
+      foreign: () => FOREIGN_SESSION,
+      expectAction: { action: 'skipped-foreign-owner', reason: 'source-record mismatch', healed_leak: true },
+      ownMarker: '2026-09-01T10:00:00Z',
+      ownKey: SESSION.raw_session_id,
+    },
+    {
+      site: 'session, different id',
+      kind: 'session',
+      note: '50-sessions/alpha-tool/releaseprep.md',
+      own: () => ({ ...SESSION, session_id: 'release prep' }),
+      foreign: () => ({ ...FOREIGN_SESSION, session_id: 'releaseprep' }),
+      // pre-#1503 shape, so only the id can tell the two apart
+      prepare: () => {
+        const rel = '50-sessions/alpha-tool/releaseprep.md';
+        fs.writeFileSync(join(vault, rel), read(rel).replace(/^source-record: .*\n/m, ''));
+      },
+      expectAction: { action: 'skipped-foreign-owner', reason: 'id mismatch', healed_leak: true },
+      ownMarker: 'id: release-prep',
+      ownKey: null,
+    },
+    {
+      site: 'session, legacy flat',
+      kind: 'session',
+      note: '50-sessions/main-2026-09-01-session-1.md',
+      own: () => SESSION,
+      foreign: () => FOREIGN_SESSION,
+      prepare: () => flatten(SESSION_REL, '50-sessions/main-2026-09-01-session-1.md'),
+      expectAction: { action: 'created', path: SESSION_REL, healed_leak: true },
+      ownMarker: '2026-09-01T10:00:00Z',
+      ownKey: SESSION.raw_session_id,
+    },
+  ])('$site: a leaking note owned by another record is masked in place, its content and owner survive', async (c) => {
+    quietStderr();
+    const needle = `so-test-needle-${randomUUID()}`;
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    try {
+      const mod = await load();
+      const proc = c.kind === 'learning' ? mod.processLearning : mod.processSession;
+      await captureStdout(() => proc(c.own(), 1, ctxFor(c.kind, alphaRoot)));
+      c.prepare?.();
+      if (c.preForeign) await captureStdout(() => proc(c.foreign(), 1, ctxFor(c.kind, alphaRoot)));
+      // The raw secret got in while the env did not carry it (body line).
+      fs.writeFileSync(join(vault, c.note), read(c.note).replace(/\n## /, `\n${needle} leaked here\n\n## `));
+      expect(read(c.note)).toContain(needle);
+
+      const { lines } = await captureStdout(() => proc(c.foreign(), 1, ctxFor(c.kind, alphaRoot)));
+
+      expect(lines[0]).toMatchObject(c.expectAction);
+      const after = read(c.note);
+      expect(after).not.toContain(needle);
+      expect(after).toContain('[REDACTED] leaked here');
+      expect(after).toContain(c.ownMarker);
+      if (c.ownKey) expect(after).toContain(`source-record: "${c.ownKey}"`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('a leak that would break the frontmatter when masked is left unchanged, loudly', async () => {
+    // maskEntrySecrets reason 3: a value that STARTS with the secret becomes a
+    // bare `[REDACTED]…`, which YAML reads as a flow sequence.
+    const writes = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((m) => {
+      writes.push(String(m));
+      return true;
+    });
+    const needle = `so-test-needle-${randomUUID()}`;
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    try {
+      const { processLearning } = await load();
+      await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+      fs.writeFileSync(join(vault, NOTE), read(NOTE).replace(/^title: .*$/m, `title: ${needle} leaked into the title`));
+      const before = read(NOTE);
+
+      const { lines } = await captureStdout(() => processLearning(BETA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+
+      expect(lines[0]).toMatchObject({ action: 'skipped-collision-resolved', reason: 'source-record mismatch' });
+      expect(lines[0]).not.toHaveProperty('healed_leak');
+      expect(read(NOTE)).toBe(before);
+      expect(writes.filter((w) => w.includes('could not be masked in place'))).toHaveLength(1);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('a pre-#1503 note (no owner fields) neither churns nor freezes', async () => {
+    // Two bugs this pins: (1) the new field rewriting every existing note on the
+    // next run; (2) "absent" read as "foreign", freezing every old note forever.
+    quietStderr();
+    const { processLearning } = await load();
+    await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    const legacy = read(NOTE).replace(/^source-record: .*\n/m, '').replace(/^source-repo: .*\n/m, '');
+    fs.writeFileSync(join(vault, NOTE), legacy);
+
+    const rerun = await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    expect(rerun.lines[0].action).toBe('skipped-noop');
+    expect(read(NOTE)).toBe(legacy);
+
+    const newer = { ...ALPHA_LEARNING, insight: 'Alpha, revised', created_at: '2026-09-20T10:00:00Z' };
+    const update = await captureStdout(() => processLearning(newer, 1, ctxFor('learning', alphaRoot)));
+    expect(update.lines[0].action).toBe('updated');
+    expect(read(NOTE)).toContain(`source-record: "${ALPHA_LEARNING.id}"`);
+  });
+
+
+  it('a same-id session from another repo with an advanced completed_at cannot overwrite the note', async () => {
+    quietStderr();
+    const { processSession } = await load();
+    await captureStdout(() => processSession(SESSION, 1, ctxFor('session', alphaRoot)));
+    const rel = '50-sessions/alpha-tool/main-2026-09-01-session-1.md';
+    const before = read(rel);
+
+    // Semantic session ids recur across repos by construction.
+    const foreign = {
+      ...SESSION,
+      raw_session_id: '22222222-bbbb-4000-8000-000000000002',
+      completed_at: '2026-09-02T10:00:00Z',
+    };
+    const { lines } = await captureStdout(() => processSession(foreign, 1, ctxFor('session', alphaRoot)));
+
+    expect(lines[0]).toMatchObject({ action: 'skipped-foreign-owner', reason: 'source-record mismatch' });
+    expect(read(rel)).toBe(before);
+  });
+
+  it('a generator note naming a DIFFERENT session is not overwritten and reported "created" (latent bug)', async () => {
+    quietStderr();
+    const { processSession } = await load();
+    // 'release prep' → file `releaseprep.md` (subjectToSlug strips the space),
+    // note id `release-prep` (slugifyIdSafe hyphenates it).
+    const first = { ...SESSION, session_id: 'release prep' };
+    await captureStdout(() => processSession(first, 1, ctxFor('session', alphaRoot)));
+    const rel = '50-sessions/alpha-tool/releaseprep.md';
+    // Pre-#1503 shape: no owner fields, so only the id can tell the two apart.
+    const legacy = read(rel).replace(/^source-record: .*\n/m, '').replace(/^source-repo: .*\n/m, '');
+    fs.writeFileSync(join(vault, rel), legacy);
+
+    // A different session whose raw id IS the slug lands on the same file.
+    const second = { ...SESSION, session_id: 'releaseprep', raw_session_id: undefined };
+    const { lines } = await captureStdout(() => processSession(second, 1, ctxFor('session', alphaRoot)));
+
+    expect(lines[0]).toMatchObject({ action: 'skipped-foreign-owner', reason: 'id mismatch' });
+    expect(read(rel)).toBe(legacy);
+  });
+
+  it('a session whose note id differs from its filename id still recognises its own note', async () => {
+    // Guards the fix above from freezing these notes — and pins the old
+    // misreport: pre-#1503 every re-run rewrote this note and called it `created`.
+    quietStderr();
+    const { processSession } = await load();
+    const entry = { ...SESSION, session_id: 'release prep' };
+    await captureStdout(() => processSession(entry, 1, ctxFor('session', alphaRoot)));
+
+    const { lines } = await captureStdout(() => processSession(entry, 1, ctxFor('session', alphaRoot)));
+    expect(lines[0]).toMatchObject({ action: 'skipped-noop', id: 'releaseprep' });
+  });
+});

@@ -49,7 +49,8 @@ describe('wave scope producer handoff (#1083)', () => {
     const aggregatePath = join(stateDir, 'filescopes', 'wave-42.scopes.json');
     const firstAgentPath = join(stateDir, 'filescopes', 'wave-42', 'W42-I1.json');
     const secondAgentPath = join(stateDir, 'filescopes', 'wave-42', 'W42-I2.json');
-    const ledgerPath = join(projectRoot, '.orchestrator', 'wave-dispatch-scopes.json');
+    // One ledger per session since #1493.3, named after the payload's session_id.
+    const ledgerPath = join(projectRoot, '.orchestrator', 'wave-dispatch-scopes.integration-session.json');
     tempRoots.push(projectRoot);
     mkdirSync(join(projectRoot, '.orchestrator'), { recursive: true });
     mkdirSync(stateDir, { recursive: true });

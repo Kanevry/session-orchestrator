@@ -40,10 +40,10 @@
  *
  * ## Helpers exported here
  *
- *   - `isDeny` / `isAllow` — PREDICATE forms (#1027 N8) for a test that must first
- *     SELECT which of several results denied (`[r1, r2].filter(isDeny)`) before it
- *     asserts. `expectDeny` / `expectAllow` are built on the SAME contract
- *     checks, so the envelope shape lives once — an inline `stdout.includes(
+ *   - `isDeny` — PREDICATE form (#1027 N8) for a test that must first SELECT
+ *     which of several results denied (`[r1, r2].filter(isDeny)`) before it
+ *     asserts. `expectDeny` is built on the SAME contract check, so the
+ *     envelope shape lives once — an inline `stdout.includes(
  *     '"permissionDecision":"deny"')` copy is the B4 finding this replaces.
  *   - `expectDeny` / `expectAllow` / `expectWarn` — the three decision classes.
  *     `expectDeny` and `expectWarn` take their contains-needle as either a single
@@ -146,17 +146,6 @@ function allowViolation(result) {
  */
 export function isDeny(result) {
   return denyViolation(result) === null;
-}
-
-/**
- * Predicate: did this PreToolUse hook result ALLOW (exit 0, empty stdout)?
- * A WARN is NOT an allow here — it carries a `systemMessage` on stdout.
- *
- * @param {{code?: number|null, status?: number|null, stdout: string}} result
- * @returns {boolean}
- */
-export function isAllow(result) {
-  return allowViolation(result) === null;
 }
 
 /**

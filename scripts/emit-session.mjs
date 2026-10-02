@@ -480,9 +480,11 @@ async function main() {
   // explicit `total_tokens` means the caller already rolled up, so nothing is
   // merged. No matching records or a failed read OMITS the fields with a WARN —
   // never a fabricated 0; a null total is omitted rather than written — for
-  // `total_cost_usd` that is any session with an unpriced subagent record
-  // (#1475: unknown model, no model, or no tokens), which the persisted
-  // `cost_records_priced < cost_records_total` then explains.
+  // `total_cost_usd` that is any session with an unpriced cost candidate
+  // (unknown model, no model, no tokens, a started agent without a transcript,
+  // or a v1 agent — the complete list is the `session-token-rollup.mjs` module
+  // doc, #1498), which the persisted `cost_records_priced < cost_records_total`
+  // then explains.
   // match_status explains the omission; diagnostic fields stay out of the record.
   if (ownUuid !== null && !hasOwn('total_tokens')) {
     let rollup = null;

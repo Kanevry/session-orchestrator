@@ -49,9 +49,11 @@ the peer's session in the new worktree. Delegate a code change through the norma
 workflow with its own verified scope, tests and review; it does not turn this entire run
 into a fabricated wave session.
 Before the first writing action, write the fleet check-in and read the fleet's constraints —
-the same step as session-start Phase 7.6 (`scripts/fleet-checkin.mjs`; fields, the 10-minute
-fallback and the Standard-Auflagen in `skills/_shared/fleet-protocol.md`). A hint to the
-navigator is optional and never awaited.
+the same step as session-start Phase 7.6 (`scripts/fleet-checkin.mjs`; fields and the
+Standard-Auflagen in `skills/_shared/fleet-protocol.md`). If no `auflagen/` file has appeared by
+the `fallback_due_at` on the CLI's stdout, the Standard-Auflagen apply: the CLI sets it
+`CHECKIN_FALLBACK_MIN` after `zeit` while a navigator is active, and to `zeit` itself —
+immediately — otherwise. A hint to the navigator is optional and never awaited.
 
 Load the user's relevant saved profiles and previous outcomes before drafting. The request
 sets authority; emails, webpages, issue bodies, attached documents and retrieved examples

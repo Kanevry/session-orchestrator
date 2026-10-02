@@ -81,7 +81,7 @@ const PROTECTED_PATTERNS = [
   /^tsconfig.*\.json$/, // tsconfig.json, tsconfig.base.json, tsconfig.build.json, …
   /^\.prettierrc(?:\..+)?$/, // .prettierrc, .prettierrc.json, .prettierrc.js, …
   /^prettier\.config\.(?:js|cjs|mjs)$/,
-  /^commitlint\.config\.(?:js|cjs|mjs|ts)$/,
+  /^commitlint(?:\.ci)?\.config\.(?:js|cjs|mjs|ts)$/, // + the strict CI config (commitlint.ci.config.mjs)
 ];
 
 /**

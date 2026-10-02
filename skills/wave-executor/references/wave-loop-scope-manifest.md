@@ -163,4 +163,12 @@ Before each wave dispatch:
    5. Delete `<state-dir>/wave-scope.json`
    6. Write Phase 2 wave-scope.json with test file allowedPaths (`**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`)
    7. Dispatch test/review agents
-7. After the final wave completes, delete `<state-dir>/wave-scope.json` (cleanup). Delete `<state-dir>/filescopes/` in the same step — the per-agent scope files (§ 3.1) are wave-local working state, and a stale `wave-<N>/` directory left behind is a scope claim nobody re-verified.
+7. After the final wave completes, delete `<state-dir>/wave-scope.json` (cleanup). Delete `<state-dir>/filescopes/` in the same step — the per-agent scope files (§ 3.1) are wave-local working state, and a stale `wave-<N>/` directory left behind is a scope claim nobody re-verified. Delete THIS session's dispatch ledger in the same step too — `hooks/pre-task-scope-disjoint.mjs` keeps one file per session since #1493, `.orchestrator/wave-dispatch-scopes.<session-id>.json` plus its `.lock`, under the session root (the repo root, or the worktree the session entered). Only your own: a file beside it named after another id holds a peer session's live claims. Delete only an id that is already path-safe (the hook names the file after it unchanged); anything else is left behind, inert, because no other session reads it:
+
+   ```bash
+   SID="${CLAUDE_CODE_SESSION_ID:-}"
+   case "$SID" in
+     ''|*[!A-Za-z0-9._-]*) ;;  # no id on this harness, or not path-safe: leave the file
+     *) rm -f ".orchestrator/wave-dispatch-scopes.$SID.json" ".orchestrator/wave-dispatch-scopes.$SID.lock" ;;
+   esac
+   ```
