@@ -421,64 +421,119 @@ do not make it `allow_failure`, which would restore the silent hole.
 
 ## `commitlint` job (#1458)
 
-Runs `commitlint` (rule set: `commitlint.config.mjs`, Conventional Commits with
-`header-max-length 120`) over the commits a pipeline introduces. CI is needed in
-addition to the husky `commit-msg` hook because the hook is inactive in a fresh
-clone until `npx husky` has run, absent for Codex / web edits, and skipped by
-`--no-verify`.
+Runs `commitlint` over the commits a pipeline introduces, with the CI-only rule
+set `commitlint.ci.config.mjs` (= `commitlint.config.mjs`, Conventional Commits
+with `header-max-length 120`, plus stricter ignores). CI is needed in addition to
+the husky `commit-msg` hook because the hook is inactive in a fresh clone until
+`npx husky` has run, absent for Codex / web edits, and skipped by `--no-verify`.
 
 - **Range** `<from>..$CI_COMMIT_SHA`, first match wins: `CI_MERGE_REQUEST_DIFF_BASE_SHA`
   (MR pipelines), else `CI_COMMIT_BEFORE_SHA` (branch pipelines), else the first
-  parent of the pipeline commit (a new branch has an all-zero before-sha). The
-  job logs the range and the commits it lints.
+  parent of the pipeline commit (a new branch has an all-zero before-sha, so only
+  its tip is linted until its MR pipeline lints the whole range). The job logs
+  the range and the commits it lints.
+- **Force-pushed branch without an open MR (#1477 item 3, closed).** The old
+  before-sha is not in the fresh clone. On a branch other than
+  `$CI_DEFAULT_BRANCH` the job fetches `origin/$CI_DEFAULT_BRANCH` and lints from
+  the merge-base instead, and says so in the log. Only plain branch pipelines can
+  hit this: a branch with an open MR runs MR pipelines only, and `main` is
+  protected against force-push, so a missing base on `main` stays a red job.
+  The all-zero before-sha of a new branch deliberately keeps the tip-only range:
+  a branch created at `main`'s tip (GitLab UI, `git push origin main:x`) would
+  otherwise lint an empty range and go red.
 - **Fail-closed.** `commitlint --from X --to Y` exits 0 over an *empty* range
   (measured 2026-09-29, `@commitlint/cli` 19.8.1), so the script itself fails
-  when the range is empty or its base is missing from the clone. "Nothing was
+  when the range is empty, its base is missing from the clone, or the fallback
+  cannot fetch `origin/$CI_DEFAULT_BRANCH` or find a merge-base. "Nothing was
   checked" is never a pass.
 - **`GIT_DEPTH: "0"`.** The project default clone depth is 20, so the range base
   can be absent from a shallow clone. `semgrep` uses the same setting for its
   baseline commit.
-- **Skipped headers.** Merge commits, `Revert "..."`, `fixup!`/`squash!` and
-  version-only headers are skipped by commitlint's built-in default ignores
-  (`@commitlint/is-ignored`, not `config-conventional`; measured 2026-09-29), so
-  GitLab's own merge commits pass. The husky hook applies the same ignores.
+- **Stricter ignores in CI (#1477 item 4, closed).** commitlint's built-in default
+  ignores (`@commitlint/is-ignored` 19.8.1) skip far more than git's own merge and
+  revert messages: any message with a `Merge …` line *anywhere* (the pattern is
+  multiline, so one body line exempts the whole message), `revert <anything>`,
+  `Reapply <anything>`, `amend!`/`fixup!`/`squash!`, version headers (`v1.2.3`)
+  and `Merged …` / `Automatic merge…` / `Auto-merged … into …`. The CI config sets
+  `defaultIgnores: false` and accepts only first lines git or GitLab generate:
+  merges (`Merge branch 'x' into 'main'` from GitLab, and git's
+  `Merge branch 'main' into x`, `Merge remote-tracking branch 'origin/main' into x`,
+  `Merge branch 'main' of <remote>`), and `Revert "…"` / `Reapply "…"`. Both CI
+  call sites (range and squash title) pass `-g commitlint.ci.config.mjs`. The
+  husky hook keeps the lenient defaults on purpose, so a local `git revert`,
+  `git commit --fixup` or `git pull` merge is not blocked mid-work; a `fixup!`
+  commit has to be autosquashed before its MR pipeline goes green.
+  History check (2026-10-02 @ `ff3e43b5`): the 200 most recent `main` commits
+  all pass the CI config (0 failures, as under the husky config). Over the full
+  history (1277 commits) it fails 10, 6 of which already failed under the old
+  config; the 4 new ones are hand-written merge subjects from 2026-04-30 to
+  2026-06-11 (e.g. `Merge branch 'x' (MR !21, …)`). The job only lints new
+  ranges, so old history cannot turn a pipeline red.
 - **MR title on a squash merge (#1477 item 1, closed).** A squash merge commits
   the MR title (the project's squash commit template is unset, so GitLab uses
   `%{title}`), which no linted range contains. When
   `CI_MERGE_REQUEST_SQUASH_ON_MERGE` is `"true"` (GitLab renders
   `squash_on_merge?`, so the project's `always`/`never` option is included),
-  the job also lints `CI_MERGE_REQUEST_TITLE` with the same config, after
-  stripping GitLab's Draft prefixes (`Draft:`, `[Draft]`, `(Draft)`, any case,
-  repeated). An MR that will not squash keeps a free-form title, because its
-  commits are what lands. A red title blocks the merge, since the project only
-  merges with a green pipeline. Two cases stay open. The variable is fixed when
-  the pipeline is created, and neither editing the title nor ticking squash
-  starts a new one, so a box ticked after the last pipeline merges an unlinted
-  title. A squash message edited in the merge dialog is not linted either. After
-  fixing a title, run a new pipeline for the MR.
-- **Open gaps (#1477, measured 2026-09-29).**
-  - *Suggestion commits (item 2):* `suggestion_commit_message` is unset in the
-    project, so GitLab's default "Apply 1 suggestion(s) to 1 file(s)" fails
-    `type-empty`. The fix is a project setting (owner).
-  - *Force-push without an open MR (item 3):* the old before-sha is missing from
-    the fresh clone, so the job goes red. 0 of 100 push pipelines were affected,
-    and the next push heals it.
-  - *Breadth of the default ignores (item 4):* `@commitlint/is-ignored` also
-    accepts `fixup! …`, bare version numbers and any message with a `Merge …`
-    line in its body. `defaultIgnores: false` would change the husky hook too.
-  - *Cancelled push pipelines (item 5):* an MR pipeline re-lints the whole MR
-    range on every push. A direct push is linted per push only
-    (`before-sha..sha`), and every job here is `interruptible`, so a push
-    pipeline auto-cancelled by the next push can leave its commits unlinted
-    when that push lands before the validate stage finishes. Of the last 100
-    `main` pipelines, 11 were cancelled (7 of them with direct-push commits),
-    and in all 11 every security and validate job had already finished. None
-    were exposed.
+  the job also lints `CI_MERGE_REQUEST_TITLE`, after stripping GitLab's Draft
+  prefixes (`Draft:`, `[Draft]`, `(Draft)`, any case, repeated). An MR that will
+  not squash keeps a free-form title, because its commits are what lands. A red
+  title blocks the merge, since the project only merges with a green pipeline.
+  After fixing a title, run a new pipeline for the MR. When the title is not
+  linted the log says why (#1502): not a merge-request pipeline, the variable is
+  unset (GitLab did not provide it), or the MR does not squash.
+- **A non-conventional commit that reaches `main` (#1502).** Two cases slip past
+  every MR pipeline: the squash box ticked after the last pipeline (the variable
+  is fixed when the pipeline is created, and neither ticking squash nor editing
+  the title starts a new one), and a squash or merge commit message edited in
+  the merge dialog. `main` push pipelines run this job over `before-sha..sha`,
+  which contains the squash commit as the merge's second parent (measured
+  2026-10-02: job 152074, pipeline 16004, range `84c107a1..ff3e43b5`), so the
+  commit is caught after the fact. `main` cannot be force-pushed, so on the
+  default branch a red job prints the remedy: revert what landed via an MR
+  (`git revert -m 1 <sha>` for a merge commit, `git revert <from>..<sha>` for
+  directly pushed commits), then re-land the change from a new branch with a
+  conventional message (`git revert --no-commit <the revert commit>`, then
+  `git commit -m 'fix: …'`).
+  Closing these before the merge is an **owner decision** (project settings,
+  not changed here):
+  - `squash_option: never` removes the squash case entirely. Cost: low,
+    measured 2026-10-02: 3 of 71 merged MRs were squashed, the newest on
+    2026-05-22. The setting is `default_off` today.
+  - A push rule (`commit_message_regex`) would reject an edited message at
+    merge time, but push rules are not available on this instance's tier
+    (the push-rule API answers 404).
+  A merge-commit message hand-edited in the dialog stays detectable only after
+  the fact, as above.
+- **Suggestion commits (#1477 item 2, owner setting).** `suggestion_commit_message`
+  is unset in the project, so GitLab commits "Apply 1 suggestion(s) to 1 file(s)",
+  which fails `type-empty` / `subject-empty`. A template that passes (measured
+  exit 0 against the CI config, 2026-10-02):
+  `chore: Apply %{suggestions_count} suggestion(s) to %{files_count} file(s)`.
+  Keep `%{file_paths}` out of it: the template is the header, and a few paths
+  break `header-max-length 120`. Setting it is an owner action (project
+  setting `suggestion_commit_message`, under the merge-request settings).
+- **Cancelled push pipelines (#1477 item 5, accepted ceiling).** An MR pipeline
+  re-lints the whole MR range on every push. A direct push is linted per push
+  only (`before-sha..sha`), and every job here is `interruptible` with
+  `auto_cancel_pending_pipelines` enabled, so a push pipeline auto-cancelled by
+  the next push could leave its commits unlinted if that happened before the
+  validate stage finished. Measured: of the last 100 `main` pipelines, 11 were
+  cancelled (7 with direct-push commits), and in all 11 every security and
+  validate job had already finished (2026-09-29); re-measured 0 of 11 affected
+  on 2026-10-02. No CI change: making the job non-interruptible on `main` would
+  stop auto-cancel for every merge and cost a full 30–40 minute pipeline each on
+  the constrained runner. Remedy if it recurs: lint `main` from the previous
+  successful `main` pipeline's SHA (needs a token that can read the pipeline
+  list) or from the last release tag, instead of the before-sha, which
+  re-covers a cancelled predecessor.
+  **Revisit trigger:** a non-conventional commit is found on `main` that no
+  pipeline linted because its pipeline was cancelled. Check with
+  `npx --no -- commitlint -g commitlint.ci.config.mjs --from <sha> --to origin/main`.
 
   Two non-conforming commits reached `main` after `commitlint.config.mjs` was
   added and before this job (`c99f57d9`, a 126-character header; `c5252e68`, a
-  `merge:` type). Revisit when a non-conforming commit lands on `main`
-  after this job: `npx --no -- commitlint --from <sha that added this job> --to origin/main`.
+  `merge:` type). The same command from the commit that added this job shows
+  whether anything has slipped through since.
 - Hard-`needs`-ed by `pipeline-gate` and on the shared gate rules, so it runs on
   every non-scheduled pipeline. Behavioural tests: `tests/ci/commitlint.test.mjs`
   (they execute the committed script block against temp git repos).
