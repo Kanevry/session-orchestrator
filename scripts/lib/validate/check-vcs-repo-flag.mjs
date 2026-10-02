@@ -41,7 +41,7 @@
  *     a string literal counts only when the command STARTS the literal (after
  *     optional whitespace) AND the literal carries no `${` interpolation. That
  *     second half is what separates
- *     `'  glab ci status --pipeline-id LATEST'` (a real command handed to a
+ *     `'  glab ci status --branch main'` (a real command handed to a
  *     shell) from `` `glab note add spawn error: ${err}` `` (a log message).
  *  4. **The first token after the CLI must be a REAL top-level subcommand** of
  *     that CLI, measured from `gh --help` / `glab --help` (gh 2.86.0,

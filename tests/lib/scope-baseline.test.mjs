@@ -706,6 +706,48 @@ describe('computeDrift()', () => {
     expect(result.filesRatio).toBe(1);
   });
 
+  // #1027: the numerator was `git diff --name-only <ref>..HEAD` alone — commits
+  // only. Mid-session nothing is committed yet, and a NEW module is untracked,
+  // so the overshoot below read 1 of 4 files and never breached. The same
+  // working tree also carries the plugin's own writes (a tracked metrics
+  // ledger a consumer repo versions, an untracked lock and filescope), which
+  // must NOT count once the working tree is read.
+  it('#1027: counts staged, unstaged and NEW untracked files — but not the plugin\'s own runtime writes', () => {
+    const root = makeTmpRepo();
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(join(root, 'src', 'existing.mjs'), 'export const a = 1;\n', 'utf8');
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'events.jsonl'), '{"e":1}\n', 'utf8');
+    const sha = initialCommit(root);
+    writeFilesAndCommit(root, ['src/committed.mjs'], 'wave 1');
+
+    // The session's uncommitted work: 3 more deliverables (committed.mjs is
+    // edited again and must be counted once, not twice).
+    writeFileSync(join(root, 'src', 'committed.mjs'), 'edited after commit\n', 'utf8');
+    writeFileSync(join(root, 'src', 'existing.mjs'), 'export const a = 2;\n', 'utf8');
+    writeFileSync(join(root, 'src', 'staged.mjs'), 'staged\n', 'utf8');
+    fixtureGit(['add', 'src/staged.mjs'], root);
+    writeFileSync(join(root, 'src', 'new-module.mjs'), 'untracked\n', 'utf8');
+
+    // The plugin's own runtime writes in the same working tree.
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'events.jsonl'), '{"e":1}\n{"e":2}\n', 'utf8');
+    writeFileSync(join(root, '.orchestrator', 'session.lock'), '{}\n', 'utf8');
+    mkdirSync(join(root, '.claude', 'filescopes', 'wave-1'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'filescopes', 'wave-1', 'w1-a.json'), '[]\n', 'utf8');
+    seedState(root, driftStateFixture({ session: 'session-A', baselineSession: 'session-A', sessionStartRef: sha, plannedFiles: 2 }));
+
+    expect(computeDrift({ repoRoot: root })).toEqual({
+      ok: true,
+      skipped: false,
+      filesRatio: 2,
+      plannedFiles: 2,
+      actualFiles: 4,
+      breached: true,
+      threshold: 2,
+      refUsed: sha,
+    });
+  });
+
   it('no STATE.md → skipped with reason no-state-md', () => {
     const root = makeTmpRepo();
     initialCommit(root);

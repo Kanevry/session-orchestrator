@@ -141,8 +141,8 @@ import { resolveBaselineRange, isQueryFailure } from './vcs-repo-spec.mjs';
 // F1 bug this filter exists to prevent — a caller could hand
 // `writeBaseline()` an unfiltered count with no `filterExcluded()` pass at
 // all). `computeDrift()` filters the numerator at measure time by running
-// the live `git diff --name-only` output through the same
-// `filterExcluded()` helper.
+// the live change set (committed range ∪ working tree ∪ untracked, see its
+// JSDoc) through the same `filterExcluded()` helper.
 // Deliberately narrows skills/session-end/plan-verification.md:42-45's
 // per-session-state exclusion from "the whole .claude/ directory" down to
 // just the session ARTEFACTS — `.claude/rules/**` stays COUNTED because a
@@ -165,6 +165,19 @@ export const DRIFT_EXCLUDE_PATTERNS = [
   '.codex/STATE.md', '.codex/wave-scope.json', '.codex/metrics/**',
   '.cursor/STATE.md', '.cursor/wave-scope.json', '.cursor/metrics/**',
   '.pi/STATE.md', '.pi/wave-scope.json', '.pi/metrics/**',
+  // The plugin's OWN mid-session writes. They only became visible to the
+  // numerator when it started reading the working tree and untracked files
+  // (#1027): a consumer repo keeps `.orchestrator/metrics/*.jsonl` TRACKED by
+  // design (skills/bootstrap/standard-template.md "Gitignore guidance") and
+  // hooks append to it all session, and bootstrap writes no ignore line for
+  // the per-agent filescopes or the top-level `.orchestrator/` runtime files
+  // (session.lock, current-session.json, state.lock, ...). `.orchestrator/*`
+  // is ONE segment only, so tracked deliverables in its subdirectories
+  // (`steering/`, `policy/`) stay counted. Ceiling (BV-004): other
+  // `.orchestrator/<subdir>/` runtime dirs (tmp/, debug/) still count when a
+  // repo does not ignore them; revisit if a drift WARN traces to one.
+  '.claude/filescopes/**', '.codex/filescopes/**', '.cursor/filescopes/**', '.pi/filescopes/**',
+  '.orchestrator/metrics/**', '.orchestrator/*',
 ];
 
 // ---------------------------------------------------------------------------
@@ -471,6 +484,14 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
  * only). Never throws, never denies — this is a WARN-only tripwire; the
  * CALLER decides whether/how to surface `breached`.
  *
+ * Numerator (#1027): the deduplicated union of three git queries — the
+ * committed range diff, the working tree against HEAD (staged + unstaged),
+ * and untracked files (`ls-files --others --exclude-standard`). Until #1027
+ * only the first was read, so uncommitted edits and every NEW module — the
+ * typical shape of an overshoot — were invisible until someone committed
+ * them. All three must succeed: if any fails the result is the
+ * `unresolvable-ref` skip, never a ratio over a partial numerator.
+ *
  * Skip precedence (first match wins, so `reason` is deterministic):
  *   `no-state-md` → `unreadable-state-md` → `no-baseline` →
  *   `stale-baseline` → (`no-baseline-ref` | `unresolvable-ref`)
@@ -578,26 +599,37 @@ export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
     refUsed = resolved.range;
   }
 
-  let stdout;
+  // Untracked files can be numerous, so the 1 MiB default buffer would turn
+  // a large tree into an ENOBUFS skip.
+  const gitOpts = { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 };
+  const changedFiles = new Set();
   try {
-    stdout = execFileSync('git', ['diff', '--name-only', diffRange], { cwd, encoding: 'utf8' });
+    const outputs = [
+      execFileSync('git', ['diff', '--name-only', diffRange], gitOpts),
+      execFileSync('git', ['diff', '--name-only', 'HEAD'], gitOpts),
+      // `--full-name` + `:/` keep these paths in the same repo-root-relative
+      // space as `git diff --name-only`, even if `cwd` is a subdirectory.
+      execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--full-name', '--', ':/'], gitOpts),
+    ];
+    for (const stdout of outputs) {
+      for (const line of stdout.split('\n')) {
+        const file = line.trim();
+        if (file.length > 0) changedFiles.add(file);
+      }
+    }
   } catch {
-    // The range resolved but the diff against it failed — a present-but-dead
-    // `session-start-ref` (rebase, force-push, deleted commit), or a
-    // resolved base that vanished between resolution and diff. Neither can
-    // produce a trustworthy numerator.
+    // The range resolved but a numerator query failed — a present-but-dead
+    // `session-start-ref` (rebase, force-push, deleted commit), a resolved
+    // base that vanished between resolution and diff, or a working-tree
+    // query that git could not answer. None can produce a trustworthy
+    // numerator, and a partial one must not be reported as measured.
     return { ok: true, skipped: true, reason: 'unresolvable-ref' };
   }
-
-  const changedFiles = stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
 
   // Same `filterExcluded()` primitive `writeBaseline()`'s denominator
   // (`countPlannedFiles()`) calls (#894 review finding F1) — both sides of
   // the ratio are provably produced by one function.
-  const actualFiles = filterExcluded(changedFiles).length;
+  const actualFiles = filterExcluded([...changedFiles]).length;
 
   const plannedFilesRaw = baseline.plannedFiles;
   const plannedFiles = typeof plannedFilesRaw === 'number' && Number.isFinite(plannedFilesRaw)

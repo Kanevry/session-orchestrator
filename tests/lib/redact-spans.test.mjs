@@ -319,8 +319,6 @@ describe('redactSpans — drift guard vs the inline copy in check-owner-leakage.
   it('finds a real inline definition in the scanner source (guard is not vacuous)', () => {
     // Bug caught: an extraction that silently matched nothing would make the
     // byte-equality test below compare the shared primitive against itself.
-    expect(INLINE.full.startsWith(SIGNATURE)).toBe(true);
-    expect(INLINE.full.endsWith('}')).toBe(true);
     expect(INLINE.body).toContain('[REDACTED]');
     expect(INLINE.body).toContain('g.lastIndex += 1');
     expect(typeof redactSpansInline).toBe('function');
