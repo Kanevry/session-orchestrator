@@ -826,7 +826,13 @@ export function listEventSourcesNewestFirst(opts = {}) {
  *   a stop, the walk ends with `truncated: true` — which is NOT "not found":
  *   the caller must report undeterminable, never a clean negative.
  * @returns {{stopped: boolean, truncated: boolean, malformed_lines: number,
- *            sources: string[], unreadable: string[]}}
+ *            sources: string[], unreadable: string[], gaps: object[]}} `gaps`
+ *   (#1489): a source read to its FIRST line that begins with a rotation
+ *   tombstone whose archive is not one of this walk's sources — pruned
+ *   (`missing-archive`) or renamed out of `ARCHIVE_NAME_RE`
+ *   (`unindexed-archive`), the same two kinds and fields
+ *   {@link readEventsWithRotations} reports. Non-empty ⇒ the history the walk
+ *   read is CUT, so a walk that found nothing has not proven "never happened".
  */
 export function scanEventsBackwards(opts = {}) {
   const { onRecord, filter, budgetMs } = opts;
@@ -840,9 +846,46 @@ export function scanEventsBackwards(opts = {}) {
 
   const scanned = [];
   const unreadable = [];
+  const gaps = [];
   let malformed = 0;
   let stopped = false;
   let truncated = false;
+
+  const sources = listEventSourcesNewestFirst(opts);
+  const listed = new Set(sources.map((s) => s.path));
+  // Same construction as `discoverArchives`, so a listed archive matches by string.
+  const ownArchiveDir = path.join(
+    path.dirname(opts.filePath ?? eventsFilePath(opts.repoRoot)),
+    ARCHIVE_DIR_NAME,
+  );
+
+  /**
+   * Rotation writes its tombstone as the new file's FIRST line, so only first
+   * lines are checked — and only of sources read that far. Resolved by basename
+   * against this ledger's own `_archive/`, never by the absolute provenance
+   * value (#1411, see {@link readEventsWithRotations}).
+   */
+  const noteCut = (firstLine, source) => {
+    if (!firstLine.includes(ROTATION_EVENT)) return;
+    let record;
+    try {
+      record = JSON.parse(firstLine.toString('utf8'));
+    } catch {
+      return; // counted by `consume` like every other malformed line
+    }
+    const target = record?.event === ROTATION_EVENT ? record.archived_as : null;
+    if (typeof target !== 'string' || target.length === 0) return;
+    const sibling = path.join(ownArchiveDir, path.basename(target));
+    if (listed.has(sibling)) return;
+    gaps.push({
+      kind: existsSync(sibling) ? 'unindexed-archive' : 'missing-archive',
+      path: sibling,
+      archived_as: target,
+      first_ts: record.first_ts ?? null,
+      last_ts: record.last_ts ?? null,
+      reported_by: source.path,
+    });
+  };
 
   /** @returns {boolean} true ⇒ the caller accepted a record; stop everything. */
   const consume = (block, source) => {
@@ -863,7 +906,7 @@ export function scanEventsBackwards(opts = {}) {
     return false;
   };
 
-  for (const source of listEventSourcesNewestFirst(opts)) {
+  for (const source of sources) {
     if (stopped || truncated) break;
     if (outOfTime()) {
       truncated = true;
@@ -898,7 +941,10 @@ export function scanEventsBackwards(opts = {}) {
         carry = block.subarray(0, firstNewline);
       }
       // pos === 0: the carry is this source's FIRST line, complete by construction.
-      if (!stopped && !truncated && consume(carry, source)) stopped = true;
+      if (!stopped && !truncated) {
+        noteCut(carry, source);
+        if (consume(carry, source)) stopped = true;
+      }
     } catch (err) {
       // An unreadable source is a FINDING, not an empty one: it is exactly the
       // case where "no record found" must not be reported as "never happened".
@@ -915,5 +961,5 @@ export function scanEventsBackwards(opts = {}) {
     }
   }
 
-  return { stopped, truncated, malformed_lines: malformed, sources: scanned, unreadable };
+  return { stopped, truncated, malformed_lines: malformed, sources: scanned, unreadable, gaps };
 }

@@ -31,15 +31,19 @@ afterEach(async () => {
 
 /**
  * A repo root whose `_archive/` holds one archive per entry of `startsAgoH`
- * (hours before NOW), each one hour long, plus a live `events.jsonl`. A string
+ * (hours before NOW), each one hour long, plus a live `events.jsonl` — stamped
+ * `activeAgoH` hours before NOW when given, stampless otherwise. A string
  * entry is written verbatim as the archive's file name.
  */
-async function repoWithArchives(startsAgoH) {
+async function repoWithArchives(startsAgoH, activeAgoH) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'events-retention-'));
   dirs.push(root);
   const metrics = path.join(root, '.orchestrator', 'metrics');
   await fs.mkdir(path.join(metrics, '_archive'), { recursive: true });
-  await fs.writeFile(path.join(metrics, 'events.jsonl'), '{}\n');
+  const active = activeAgoH === undefined
+    ? '{}\n'
+    : `${JSON.stringify({ event: 'subagent_stop', timestamp: new Date(NOW - activeAgoH * HOUR).toISOString() })}\n`;
+  await fs.writeFile(path.join(metrics, 'events.jsonl'), active);
   for (const h of startsAgoH) {
     const from = NOW - h * HOUR;
     const name = typeof h === 'string' ? h : `events-${stamp(from)}_${stamp(from + HOUR)}.jsonl`;
@@ -71,17 +75,37 @@ describe('checkEventsRetention', () => {
   // NaNd" on every start — permanently, since the rotator sorts `unknown_`
   // newest and never prunes it. The dated archives are 12h/6h old, so
   // dropping the unknown archive instead would warn too.
+  // BUG this also catches (HR-105, #1489): a silent answer that drops the
+  // measurement — `null` — makes a probe that never fires indistinguishable
+  // from a dead one. The no-archive row is where 31 of 35 fleet ledgers sit
+  // (2026-10-02): coverage must come from the active file's first stamp there.
   it.each([
-    { label: 'the ring is not full, however young the ledger', startsAgoH: [3, 2], maxBackups: 3 },
-    { label: 'a full ring covers the window', startsAgoH: [72, 48, 24], maxBackups: 3 },
+    { label: 'the ring is not full, however young the ledger', startsAgoH: [3, 2], maxBackups: 3, kind: 'ring-not-full', coverageDays: 0.125, oldestEventAt: '2026-10-02T09:00:00.000Z', archives: 2 },
+    { label: 'no archive exists yet', startsAgoH: [], activeAgoH: 36, maxBackups: 3, kind: 'ring-not-full', coverageDays: 1.5, oldestEventAt: '2026-10-01T00:00:00.000Z', archives: 0 },
+    { label: 'a full ring covers the window', startsAgoH: [72, 48, 24], maxBackups: 3, kind: 'covered', coverageDays: 3, oldestEventAt: '2026-09-29T12:00:00.000Z', archives: 3 },
     {
       label: 'a full ring covers the window from an archive whose first stamp is unknown',
       startsAgoH: [`events-unknown_${stamp(NOW - 72 * HOUR)}.jsonl`, 12, 6],
       maxBackups: 3,
+      kind: 'covered',
+      coverageDays: 3,
+      oldestEventAt: '2026-09-29T12:00:00.000Z',
+      archives: 3,
     },
-  ])('stays silent when $label', async ({ startsAgoH, maxBackups }) => {
-    const root = await repoWithArchives(startsAgoH);
-    expect(await checkEventsRetention({ repoRoot: root, config: { 'events-rotation': { 'max-backups': maxBackups } }, now: NOW })).toBeNull();
+  ])('stays silent but carries the coverage when $label', async ({ startsAgoH, activeAgoH, maxBackups, kind, coverageDays, oldestEventAt, archives }) => {
+    const root = await repoWithArchives(startsAgoH, activeAgoH);
+    const out = await checkEventsRetention({ repoRoot: root, config: { 'events-rotation': { 'max-backups': maxBackups } }, now: NOW });
+
+    expect(out).toEqual({
+      severity: 'ok',
+      kind,
+      coverageDays,
+      oldestEventAt,
+      requiredDays: 1,
+      requiredBy: 'telemetry/sync',
+      archives,
+      maxBackups,
+    });
   });
 
   // BUG this catches (three-state honesty): an absent ledger or an unlistable
@@ -139,25 +163,32 @@ describe('checkEventsRetention', () => {
 });
 
 describe('EVENTS_WINDOW_READERS census', () => {
-  // BUG this catches: a hand-typed reader list cannot prove a census. A fourth
-  // `readEventsWithRotations(` caller joining without a declared window would
-  // be silently ignored by the probe; a listed reader dropping its constant
-  // would leave the probe judging against a stale requirement.
-  it('lists exactly the code callers of readEventsWithRotations, each declaring a window', async () => {
+  // BUG this catches: a hand-typed reader list cannot prove a census. A caller
+  // of any of the three rotated-ledger readers joining without a declared
+  // window would be silently ignored by the probe; a listed reader dropping its
+  // constant would leave the probe judging against a stale requirement. #1489:
+  // the census once matched `readEventsWithRotations(` only, so the three
+  // `scanEventsBackwards(` / `listEventSourcesNewestFirst(` callers went unlisted.
+  it('lists exactly the code callers of the rotated-ledger readers, each declaring a window', async () => {
+    const READER_CALL = /\b(readEventsWithRotations|scanEventsBackwards|listEventSourcesNewestFirst)\(/;
+    // The library that DEFINES the three readers; its internal call is the
+    // implementation, not a reader of the ledger.
+    const definingModule = path.join(REPO_ROOT, 'scripts', 'lib', 'events.mjs');
     const callers = [];
     const walk = (dir) => {
       for (const e of readdirSync(dir, { withFileTypes: true })) {
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
-        if (!e.name.endsWith('.mjs')) continue;
+        if (!e.name.endsWith('.mjs') || p === definingModule) continue;
         const code = readFileSync(p, 'utf8').split('\n').filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l));
-        if (code.some((l) => /readEventsWithRotations\(/.test(l) && !/export function readEventsWithRotations/.test(l))) {
+        if (code.some((l) => READER_CALL.test(l))) {
           callers.push(path.relative(path.join(REPO_ROOT, 'scripts', 'lib'), p));
         }
       }
     };
     walk(path.join(REPO_ROOT, 'scripts'));
     walk(path.join(REPO_ROOT, 'hooks'));
+    walk(path.join(REPO_ROOT, 'skills'));
 
     expect(callers.length).toBeGreaterThan(0);
     expect(callers.sort()).toEqual(EVENTS_WINDOW_READERS.map((r) => r.spec.replace(/^\.\//, '')).sort());

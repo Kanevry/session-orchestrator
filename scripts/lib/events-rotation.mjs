@@ -6,7 +6,8 @@
  * synchronous fs calls (the hook is short-lived; async adds complexity).
  *
  * Issue #251 (CRITICAL). Rotation fires only at session-start, not per-append —
- * per-append overhead is wasteful given ~6 KiB/day growth.
+ * a size check per append buys nothing when one 10 MiB file takes days to
+ * weeks to fill (measured growth: see {@link pruneArchives}).
  *
  * Rename safety (POSIX): atomic rename is safe with in-flight writers. Old fds
  * continue writing to the original inode (now the archive); new writers will
@@ -104,8 +105,9 @@ function uniqueArchivePath(dir, firstTs, lastTs) {
   const to = lastTs ? compactStamp(lastTs) : compactStamp(new Date().toISOString());
   const base = `events-${from}_${to}`;
   let candidate = path.join(dir, `${base}.jsonl`);
-  // Ceiling (BV-004): 999 same-range archives. Rotation fires 2-3x/year at the
-  // measured ~6 KiB/day growth, and the range is content-derived, so a second
+  // Ceiling (BV-004): 999 same-range archives. Rotation fires every ~52 days in
+  // this repo and every ~5 days in the busiest fleet repo (measured 2026-10-02,
+  // see `pruneArchives`), and the range is content-derived, so a second
   // collision already implies something is re-rotating identical content.
   // Revisit if a `pruned`-less archive dir is ever seen holding a `-3` suffix.
   for (let n = 2; existsSync(candidate); n += 1) {
@@ -122,8 +124,19 @@ function uniqueArchivePath(dir, firstTs, lastTs) {
  *
  * The cap is kept rather than dropped because `events-rotation.max-backups` is
  * a live, documented config key: a key whose reader silently stops enforcing it
- * is the "config key nobody produces" defect in reverse. At the measured
- * rotation rate `max-backups: 5` is roughly two years of history.
+ * is the "config key nobody produces" defect in reverse.
+ *
+ * What `max-backups: 5` retains, measured 2026-10-02 (line bytes summed per
+ * calendar day of each record's `timestamp`, via a `node` read of
+ * `.orchestrator/metrics/events.jsonl` and `_archive/`): this repo's active
+ * ledger grew 2,770,612 B over 13.7 days (2026-09-18 → 2026-10-02), i.e.
+ * ~202,570 B/day with a 1,207,177 B peak day; across 35 fleet ledgers the median
+ * active-file rate was 59,388 B/day, and the busiest repo averaged ~2.1 MB/day
+ * (43,978,706 B over 2026-09-11 → 2026-10-02) with a 10,248,010 B peak day.
+ * One archive holds ≥10 MiB, so five archives retain ~8.5 months here and ~3.5
+ * weeks in the busiest repo — not the "roughly two years" this comment used to
+ * claim from a ~6 KiB/day figure. Whether that suffices is judged per reader
+ * window by `events-retention-banner.mjs`.
  *
  * Only names matching {@link ARCHIVE_NAME_RE} are eligible, and the archive
  * just written is never a candidate. A failed unlink is swallowed: leaving one
@@ -221,7 +234,9 @@ export function maybeRotate({ logPath, maxSizeMb, maxBackups, enabled } = {}) {
 
     // Read BEFORE the rename: the content is what names the archive. Cost
     // ceiling (BV-004): one full read of a file at the rotation threshold —
-    // ~50 ms and ~40 MB transient at the default 10 MB cap, paid 2-3x/year.
+    // ~50 ms and ~40 MB transient at the default 10 MB cap, paid once per
+    // rotation (every ~52 days here, ~5 days in the busiest fleet repo —
+    // measured 2026-10-02, see `pruneArchives`).
     // Revisit if `max-size-mb` is ever raised past ~100.
     const { records, malformedLines } = parseEventLines(readFileSync(logPath, 'utf8'));
     const { firstTs, lastTs } = summarizeEventRecords(records);
