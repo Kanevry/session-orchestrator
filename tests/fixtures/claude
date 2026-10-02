@@ -15,10 +15,22 @@
 #   STUB_PEER_APPEND         — 1 appends a foreign record after the own record
 #   STUB_PEER_TOKENS         — peer token count, defaults to 900000
 #   STUB_DUP_RAW             — 1 appends another identity with the own raw UUID
+#   STUB_ARGV_LOG            — optional path; receives this call's argv, one argument
+#                              per line, before anything else (also on a non-zero exit)
+#   STUB_AFTER               — optional node script run after a successful append; its
+#                              exit status becomes the stub's (run by $STUB_NODE, else node)
 #
 # Output: appends schema_version=1 records; optional peer/duplicate follows own.
 #
 # Exits with $STUB_EXIT_CODE (default 0). When STUB_EXIT_CODE != 0, no append.
+#
+# Tests extend THIS committed file instead of writing a wrapper per test: a
+# freshly written executable pays macOS's first-launch check on every first
+# exec, a committed one only once per checkout (#1497).
+
+if [ -n "${STUB_ARGV_LOG:-}" ]; then
+  printf '%s\n' "$@" > "$STUB_ARGV_LOG"
+fi
 
 EXIT_CODE="${STUB_EXIT_CODE:-0}"
 
@@ -84,6 +96,10 @@ if [ "${STUB_PEER_APPEND:-0}" = "1" ]; then
 fi
 if [ "${STUB_DUP_RAW:-0}" = "1" ]; then
   append_record "duplicate-session-$$" "$RAW_FIELD" "$TOKEN_FIELDS"
+fi
+
+if [ -n "${STUB_AFTER:-}" ]; then
+  exec "${STUB_NODE:-node}" "$STUB_AFTER"
 fi
 
 exit 0

@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { load as loadYaml } from 'js-yaml';
 import vitestConfig from '../../vitest.config.mjs';
+import { installNodeCli, installScriptCli } from '../_helpers/executable-fixture.mjs';
 
 const YAML_PATH = resolve(process.cwd(), '.gitlab-ci.yml');
 const doc = loadYaml(readFileSync(YAML_PATH, 'utf8'));
@@ -118,10 +119,16 @@ describe('schema-drift-check CI job (#279)', () => {
     //       surfacing as a bare git exit — indistinguishable from drift to the
     //       first responder, who then hunts a diff that does not exist.
     // `git` is shimmed to fail, so this needs no network and no private repo.
+    // The shim is a symlink to node running `<shimDir>/clone` (installNodeCli),
+    // not a freshly written executable (#1497); it records its argv as proof
+    // that the clone step reached IT rather than a real git.
     const shimDir = mkdtempSync(join(tmpdir(), 'so-git-shim-'));
     tmpDirs.push(shimDir);
-    writeFileSync(join(shimDir, 'git'), '#!/bin/sh\necho "fatal: authentication failed" >&2\nexit 128\n', {
-      mode: 0o755,
+    installNodeCli(shimDir, 'git', shimDir, {
+      clone:
+        "fs.writeFileSync('clone.argv', ARGS.join('\\n'));\n" +
+        "process.stderr.write('fatal: authentication failed\\n');\n" +
+        'process.exitCode = 128;\n',
     });
 
     const res = runSteps(
@@ -136,9 +143,11 @@ describe('schema-drift-check CI job (#279)', () => {
         CI_SERVER_HOST: 'gitlab.invalid',
       },
       shimDir,
+      shimDir,
     );
 
     expect(res.status).toBe(5);
+    expect(readFileSync(join(shimDir, 'clone.argv'), 'utf8')).toContain('https://oauth2:glpat-PLACEHOLDER@gitlab.invalid/');
     expect(res.stdout).toContain('RESULT: UNAVAILABLE');
     expect(res.stdout).not.toContain('RESULT: SKIPPED');
   });
@@ -184,15 +193,18 @@ function runCoverageJob({ summary = coverageSummary(), xml, log = '', stale = fa
     mkdirSync(join(dir, '.ci-markers'));
     writeFileSync(join(dir, '.ci-markers/coverage.ok'), 'stale marker');
   }
-  writeFileSync(join(dir, 'write-results.mjs'), `
+  // The job's `timeout … npm run test:coverage` is replaced by a fake `timeout`
+  // that writes the results itself. It goes through the committed launcher
+  // (installScriptCli): the call starts with an option, and a freshly written
+  // executable would pay macOS's first-launch check per test (#1497).
+  installScriptCli(join(dir, 'bin'), 'timeout', `
     import { writeFileSync } from 'node:fs';
     if (process.env.COV_SUMMARY !== undefined) writeFileSync('coverage/coverage-summary.json', process.env.COV_SUMMARY);
     if (process.env.COV_XML !== undefined) writeFileSync('coverage/cobertura-coverage.xml', process.env.COV_XML);
     writeFileSync('cov-result.json', JSON.stringify({ success: true, numTotalTests: 6000, numPassedTests: 6000, numFailedTests: 0, numFailedTestSuites: 0 }));
     process.stdout.write(process.env.COV_LOG);
   `);
-  writeFileSync(join(dir, 'bin/timeout'), '#!/bin/sh\nexec "$TEST_NODE" write-results.mjs\n', { mode: 0o755 });
-  const env = { TEST_NODE: process.execPath, COV_LOG: log };
+  const env = { COV_LOG: log };
   if (summary !== null) env.COV_SUMMARY = typeof summary === 'string' ? summary : JSON.stringify(summary);
   if (xml !== null) env.COV_XML = xml ?? cobertura(typeof summary === 'object' && summary?.total ? summary : coverageSummary());
   const steps = coverageJob.script.map((step) => step

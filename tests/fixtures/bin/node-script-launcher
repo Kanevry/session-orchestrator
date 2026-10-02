@@ -1,0 +1,8 @@
+#!/bin/sh
+# Committed launcher for test fakes - see installScriptCli in
+# tests/_helpers/executable-fixture.mjs (#1497). A fake `<dir>/<name>` is a
+# SYMLINK to this file; the interpreter receives the path it was invoked by, so
+# "$0" is the symlink, and its siblings `<name>.node` (a symlink to node) and
+# `<name>.mjs` (the fake's plain, non-executable source) sit next to it.
+# Every argument, a leading option included, reaches the script untouched.
+exec "$0.node" "$0.mjs" "$@"
