@@ -346,9 +346,12 @@ function writeLockAtomic(lockFile, lock) {
  * the file-lock primitive (tryAcquireFileLock) backing the state-lock and
  * staging-fence-lock modules.
  *
- * Used ONLY by the no-existing-lock branch of {@link acquire}. The
- * intentional-overwrite paths (`forceAcquire`, `updateHeartbeat`) keep using
- * `writeLockAtomic` because they MUST replace an existing lock, not fail on it.
+ * Used by the no-existing-lock branch of {@link acquire} and by the
+ * single-winner reclaim (`forceAcquire({ onlyIfNotLive: true })` →
+ * `reclaimIfNotLive()`), which moves the old lock aside first and then needs
+ * exactly this create-or-fail. The unconditional overwrite paths (a plain
+ * `forceAcquire`, `updateHeartbeat`) keep using `writeLockAtomic` because they
+ * MUST replace an existing lock, not fail on it.
  *
  * @param {string} lockFile  Absolute path to .orchestrator/session.lock.
  * @param {object} lock      Lock object to serialize.
@@ -853,13 +856,21 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
  * ONE fresh `acquire()`, which reads whatever sits at the path now and answers
  * as on a first look (normally `active` with the winner's lock).
  *
- * Ceilings (BV-004): (1) a racer's fresh lock that we move and link back is
- * absent for that window; a reader in it sees no lock. (2) A third session that
- * creates a lock inside that window makes the link-back fail with EEXIST; the
- * displaced lock is dropped and its owner learns it at its next heartbeat
- * (updateHeartbeat() returns false on the session mismatch). Both need three
- * SessionStarts in one checkout within microseconds. Revisit if a `reclaimed`
- * event pair within one second shows up in events.jsonl again.
+ * Ceilings (BV-004), both reachable with TWO SessionStarts:
+ * (1) A racer's fresh lock that we move and link back is absent for that
+ * window, and any reader in it sees no lock. The reader most likely to land
+ * there is the winner's own bootstrap re-reading the lock it just acquired, so
+ * `hooks/_lib/lock-bootstrap.mjs` re-reads on ENOENT (5 × 10 ms) instead of
+ * giving up the enrichment; a third reader just sees "absent" briefly.
+ * (2) A lock that turned LIVE after both starts read it stale — its own owner
+ * heartbeated in between — is moved by one start while the other's rename
+ * finds nothing and its fresh `acquire()` creates a lock in the empty path. The
+ * link-back then fails with EEXIST and the owner's lock is dropped; the owner
+ * learns it at its next heartbeat (updateHeartbeat() returns false on the
+ * session mismatch). Not a regression: the plain force overwrote that live lock
+ * unconditionally. Revisit if a `reclaimed` event pair within one second shows
+ * up in events.jsonl again, or a session's heartbeat starts failing right after
+ * another start reclaimed its lock.
  *
  * @param {{ sessionId: string, mode: string, ttlHours: number, repoRoot?: string, semanticSessionId?: string }} args
  * @returns {object} forceAcquire()'s `{ ok: true, lock, replacedLock? }` or

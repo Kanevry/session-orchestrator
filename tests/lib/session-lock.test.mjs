@@ -1195,6 +1195,73 @@ describe('forceAcquire', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1494 — forceAcquire({ onlyIfNotLive }) under a real two-start race. Both
+// starts read the same stale lock; start B's whole reclaim then runs INSIDE
+// start A's — triggered from a spy on A's own tombstone I/O, so the
+// interleaving is exact and repeatable. Bug both tests name: two reclaimers
+// both answered ok:true (last writer won, the loser ran on as owner).
+// Invariants: exactly one ok:true, the loser's 'active' names the winner, and
+// no `.session.lock.reclaim.*` tombstone is left behind.
+// ---------------------------------------------------------------------------
+
+describe('forceAcquire({ onlyIfNotLive }) — two starts reclaiming one stale lock (#1494)', () => {
+  const orchDir = () => join(repoRoot, '.orchestrator');
+  const tombstones = () => readdirSync(orchDir()).filter((f) => f.startsWith('.session.lock.reclaim.'));
+  const reclaim = (sessionId) => forceAcquire({ sessionId, mode: 'deep', repoRoot, onlyIfNotLive: true });
+
+  beforeEach(() => {
+    const old = new Date(Date.now() - 10 * 3600 * 1000).toISOString();
+    mkdirSync(orchDir(), { recursive: true });
+    writeFileSync(join(orchDir(), 'session.lock'), JSON.stringify({
+      session_id: 'crashed', started_at: old, last_heartbeat: old, mode: 'deep', pid: DEAD_PID, host: hostname(), ttl_hours: 4,
+    }));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('B inside A\'s tombstone window: B\'s rename finds nothing and re-acquires, A\'s create finds B\'s lock and re-acquires', () => {
+    // A has moved the stale lock aside and is judging it; the lock path is
+    // empty. B's rename → ENOENT → fresh acquire() creates B's lock. A's
+    // create-or-fail → EEXIST → fresh acquire() → 'active' naming B.
+    const originalRead = fs.readFileSync.bind(fs);
+    let b;
+    let bStarted = false; // set BEFORE B runs: B's own tombstone I/O must not re-trigger it
+    vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+      if (!bStarted && typeof p === 'string' && p.includes('.session.lock.reclaim.')) { bStarted = true; b = reclaim('start-b'); }
+      return originalRead(p, ...rest);
+    });
+
+    const a = reclaim('start-a');
+
+    expect(b).toMatchObject({ ok: true, lock: { session_id: 'start-b' } });
+    expect(a).toMatchObject({ ok: false, reason: 'active', existingLock: { session_id: 'start-b' } });
+    expect(readLock({ repoRoot }).session_id).toBe('start-b');
+    expect(tombstones()).toEqual([]);
+  });
+
+  it('B after A\'s create: B moves A\'s fresh lock, finds it live, links it back and re-acquires', () => {
+    // Triggered when A unlinks its tombstone (A's lock is already created). B's
+    // rename takes A's LIVE lock; it must be restored, never replaced.
+    const originalUnlink = fs.unlinkSync.bind(fs);
+    let b;
+    let bStarted = false; // set BEFORE B runs: B unlinks its own tombstone too
+    vi.spyOn(fs, 'unlinkSync').mockImplementation((p) => {
+      if (!bStarted && typeof p === 'string' && p.includes('.session.lock.reclaim.')) { bStarted = true; b = reclaim('start-b'); }
+      return originalUnlink(p);
+    });
+
+    const a = reclaim('start-a');
+
+    expect(a).toMatchObject({ ok: true, lock: { session_id: 'start-a' }, replacedLock: { session_id: 'crashed' } });
+    expect(b).toMatchObject({ ok: false, reason: 'active', existingLock: { session_id: 'start-a' } });
+    expect(readLock({ repoRoot }).session_id).toBe('start-a');
+    expect(tombstones()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // acquire() with exclusivity-matrix integration (P1.2 #570)
 // ---------------------------------------------------------------------------
 

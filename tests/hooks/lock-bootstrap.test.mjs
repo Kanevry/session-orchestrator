@@ -12,11 +12,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, linkSync, unlinkSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 
 import { bootstrapLock, SAME_LOGICAL_SESSION_SOURCES } from '../../hooks/_lib/lock-bootstrap.mjs';
+import { forceAcquire as realForceAcquire } from '../../scripts/lib/session-lock.mjs';
 
 // ── sandbox helpers ──────────────────────────────────────────────────────────
 
@@ -792,6 +793,51 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
       expect(readLock().session_id).toBe('start-a');
       expect(readCurrentSession()?.conflict_with_session_id).toBe('start-a');
       expect(events).toEqual([]);
+    } finally {
+      if (prevAliases === undefined) delete process.env.SO_HOST_ALIASES_FILE;
+      else process.env.SO_HOST_ALIASES_FILE = prevAliases;
+    }
+  });
+
+  it('enriches its reclaimed lock although a racer briefly holds it in a tombstone (#1494 review)', async () => {
+    // Bug: two starts suffice. A wins the reclaim; B, which also saw the lock
+    // stale, renames A's fresh lock into its tombstone, finds it live and links
+    // it back. A's enrichment read landed in that window (ENOENT) and gave up:
+    // the lock stayed A's but without semantic_session_id, owner proof and
+    // lock.acquired. B's window is replayed by hand exactly as
+    // reclaimIfNotLive's live path does it (rename aside, link back, unlink),
+    // with the link-back 1 ms later — inside A's bounded re-read.
+    const prevAliases = process.env.SO_HOST_ALIASES_FILE;
+    process.env.SO_HOST_ALIASES_FILE = join(sandbox, 'host-aliases.json');
+    try {
+      const old = '2026-01-01T00:00:00.000Z';
+      const dir = join(sandbox, '.orchestrator');
+      const lockFile = join(dir, 'session.lock');
+      const tomb = join(dir, '.session.lock.reclaim.racer');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(lockFile, JSON.stringify({ session_id: 'crashed', started_at: old, last_heartbeat: old, mode: 'deep', pid: 999999, host: hostname(), ttl_hours: 4 }));
+      const events = [];
+
+      const result = await bootstrapLock({
+        repoRoot: sandbox,
+        sessionId: 'start-a',
+        semanticSessionId: 'main-2026-10-02-deep-1',
+        mode: 'deep',
+        _forceAcquireImpl: (args) => {
+          const won = realForceAcquire(args);
+          renameSync(lockFile, tomb);
+          setTimeout(() => { linkSync(tomb, lockFile); unlinkSync(tomb); }, 1);
+          return won;
+        },
+        _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+      });
+
+      expect(result?.semantic_session_id).toBe('main-2026-10-02-deep-1');
+      expect(readLock()).toMatchObject({ session_id: 'start-a', semantic_session_id: 'main-2026-10-02-deep-1' });
+      expect(existsSync(join(dir, 'runtime', 'lock-owner-proof.json'))).toBe(true);
+      expect(events).toEqual([
+        { name: 'orchestrator.session.lock.acquired', payload: expect.objectContaining({ session_id: 'start-a', reclaimed: 'stale-heartbeat' }) },
+      ]);
     } finally {
       if (prevAliases === undefined) delete process.env.SO_HOST_ALIASES_FILE;
       else process.env.SO_HOST_ALIASES_FILE = prevAliases;

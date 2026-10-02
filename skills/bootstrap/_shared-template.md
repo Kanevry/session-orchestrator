@@ -357,6 +357,7 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 | `.orchestrator/wave-transcript-tail.lock*`, `.orchestrator/.wave-transcript-tail.lock.*` | the wave-transcript-tail singleton |
 | `.orchestrator/metrics/proposals-write.lock*`, `.orchestrator/metrics/.proposals-write.lock.*` | the memory-proposals store lock |
 | `.orchestrator/staging-fence/` | the staging-fence commit mutex and intent log |
+| `.orchestrator/tmp/` | machine-local scratch: lock-reaper archives of reaped session locks (`tmp/reaped-locks/`, carrying host name, pid and session ids), worktree metadata (`tmp/worktree-meta/`), the orphan-reaper throttle marker (`tmp/reaper-last-scan`) |
 
 Append the missing patterns:
 
@@ -378,6 +379,7 @@ _GI_PATTERNS=(
   '.orchestrator/wave-transcript-tail.lock*' '.orchestrator/.wave-transcript-tail.lock.*'
   '.orchestrator/metrics/proposals-write.lock*' '.orchestrator/metrics/.proposals-write.lock.*'
   '.orchestrator/staging-fence/'
+  '.orchestrator/tmp/'
 )
 if [[ -z "$_GI_ROOT" ]]; then
   # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).

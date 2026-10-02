@@ -56,6 +56,7 @@ const ALL_PATTERNS = [
   '.orchestrator/metrics/proposals-write.lock*',
   '.orchestrator/metrics/.proposals-write.lock.*',
   '.orchestrator/staging-fence/',
+  '.orchestrator/tmp/',
 ];
 
 /** The one bash block of the template that appends the store-lock patterns — loud failure otherwise. */
@@ -202,6 +203,7 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
         '.orchestrator/wave-transcript-tail.lock',
         '.orchestrator/metrics/proposals-write.lock',
         '.orchestrator/staging-fence/.commit.lock',
+        '.orchestrator/tmp/reaped-locks/session.lock.20261002T120000Z',
         '.orchestrator/bootstrap.lock',
         '.orchestrator/policy/quality-gates.json',
         '.orchestrator/steering/tech.md',
@@ -223,6 +225,8 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
       '.orchestrator/wave-transcript-tail.lock': 0,
       '.orchestrator/metrics/proposals-write.lock': 0,
       '.orchestrator/staging-fence/.commit.lock': 0,
+      // F8: reaped lock copies carry host name, pid and session ids.
+      '.orchestrator/tmp/reaped-locks/session.lock.20261002T120000Z': 0,
       // Durable project data consumers commit — must stay versioned.
       '.orchestrator/bootstrap.lock': 1,
       '.orchestrator/policy/quality-gates.json': 1,
