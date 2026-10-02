@@ -107,6 +107,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 let isPathInside;
 let relativeFromRoot;
 let resolveProjectDir;
+let resolveSessionRoot;
 let findScopeFile;
 let pathMatchesPattern;
 let suggestForScopeViolation;
@@ -197,7 +198,7 @@ async function bootstrap() {
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   ({ isPathInside, relativeFromRoot } = modules.pathUtils);
-  ({ resolveProjectDir } = modules.platform);
+  ({ resolveProjectDir, resolveSessionRoot } = modules.platform);
   ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({
@@ -224,7 +225,12 @@ async function main() {
   // Gate 2: file_path must be a non-empty string
   if (!filePath || typeof filePath !== 'string') return emitAllow();
 
-  const projectRootRaw = resolveProjectDir();
+  // #1492 — the SESSION's working copy, not the launch dir: after
+  // `EnterWorktree`, `$CLAUDE_PROJECT_DIR` still names the dir the session was
+  // launched in, while the manifest lives in the worktree. A harness subagent
+  // worktree (`isolation: "worktree"`) is lifted to the coordinator's root.
+  // See `resolveSessionRoot` in scripts/lib/platform.mjs.
+  const projectRootRaw = resolveSessionRoot(input.cwd);
 
   // Resolve symlinks in the project root itself so that realpath(file) comparisons
   // are consistent. On macOS /tmp → /private/tmp; mismatches would cause false denials.
@@ -539,7 +545,9 @@ async function main() {
     // dispatched wave agent's. See {@link classifyCaller} for the measurement.
     // A subagent falls through to the gates below — under a manifest that does
     // not grant the path (Discovery's `allowedPaths: []`) that is a DENY.
-    const memoryDirs = await ownMemoryDirs(projectRootRaw, projectRoot);
+    // #1492: the LAUNCH dir too — the harness keys auto-memory on the path it
+    // was launched with, which after `EnterWorktree` is no longer the root.
+    const memoryDirs = await ownMemoryDirs([resolveProjectDir(), projectRootRaw, projectRoot]);
     const caller = classifyCaller(input);
     if (caller !== 'subagent' && memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
       // One event per decision point, awaited before emitAllow() —
@@ -741,21 +749,22 @@ async function mtimeMsOf(file) {
 /**
  * #1295 — the Claude Code auto-memory directories that belong to THIS repo.
  *
- * Returns at most two paths, both naming the SAME repo: the encoding of the
- * project root as the harness saw it (`CLAUDE_PROJECT_DIR` / cwd) and — when it
- * differs — the encoding of its realpath. Both are needed because Claude Code
- * encodes the path it was LAUNCHED with, while this hook compares against the
- * canonical root (on macOS `/tmp` → `/private/tmp`). Two encodings of one repo
- * is not a wider grant: a sibling repo's root encodes to neither.
+ * One path per distinct root (per home spelling): the encoding of the launch
+ * dir the harness saw (`CLAUDE_PROJECT_DIR` / cwd), of the session root
+ * (#1492 — a worktree the session entered) and of its realpath. All are needed
+ * because Claude Code encodes the path it was LAUNCHED with, while this hook
+ * compares against the canonical session root (on macOS `/tmp` →
+ * `/private/tmp`). Keeping the launch dir keeps the pre-#1492 grant exactly
+ * (the launch dir WAS the root then); the session-root entries name the
+ * worktree this session works in. A sibling repo's root encodes to none of them.
  *
  * Returns `[]` when the encoder cannot be loaded, so the caller falls through to
  * its deny (fail-closed).
  *
- * @param {string} projectRootRaw — project root as resolved from env/cwd
- * @param {string} projectRoot — its realpath
+ * @param {string[]} candidateRoots — launch dir, session root, its realpath
  * @returns {Promise<string[]>}
  */
-async function ownMemoryDirs(projectRootRaw, projectRoot) {
+async function ownMemoryDirs(candidateRoots) {
   try {
     const [{ encodeProjectDir }, { homedir }] = await Promise.all([
       import('../scripts/lib/wave-transcript-tail.mjs'),
@@ -772,7 +781,7 @@ async function ownMemoryDirs(projectRootRaw, projectRoot) {
     } catch { /* non-existent home — the raw form is all there is */ }
     const homes = new Set([home, homeReal]);
     const roots = new Set(
-      [projectRootRaw, projectRoot].filter((p) => typeof p === 'string' && p.length > 0),
+      candidateRoots.filter((p) => typeof p === 'string' && p.length > 0),
     );
     const dirs = [];
     for (const h of homes) {

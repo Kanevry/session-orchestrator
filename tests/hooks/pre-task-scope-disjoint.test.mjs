@@ -1825,7 +1825,8 @@ describe('pre-task-scope-disjoint — session root and git budget (#1489)', () =
 
   it('keeps state at the .git ancestor of cwd when the toplevel lookup TIMES OUT, never at $CLAUDE_PROJECT_DIR', () => {
     // Bug caught (review MED on 63f35e8c): `gitToplevel()` answers '' on ANY
-    // error — the shared-budget timeout too — and `sessionRootOf()` then fell
+    // error — the shared-budget timeout too — and the session-root resolver
+    // (then `sessionRootOf()`, now `resolveSessionRoot()` in platform.mjs) fell
     // back to `$CLAUDE_PROJECT_DIR`, the LAUNCH dir of a session that entered a
     // worktree. One hanging `rev-parse` put this dispatch's claim into the launch
     // root's ledger (under wave key `w?`, wiping a main-checkout session's claims)

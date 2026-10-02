@@ -964,3 +964,66 @@ describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () =>
     expect(`${res.stdout}\n${res.stderr}`).not.toContain('SESSION BINDING');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1492 — the SESSION root, not the launch dir
+// ---------------------------------------------------------------------------
+
+describe('post-bash-write-verify — session root after entering a worktree (#1492)', () => {
+  let launch;
+  let worktree;
+
+  // Payload `cwd` = the worktree; `$CLAUDE_PROJECT_DIR` = the launch dir the
+  // harness keeps after `EnterWorktree`.
+  const runHook = () => spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'echo x > out-of-scope.mjs' }, cwd: worktree }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: launch, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '', CLAUDE_CODE_SESSION_ID: '' },
+    timeout: 20_000,
+  });
+
+  const dropSnapshots = () => {
+    for (const dir of [launch, worktree]) {
+      const snap = snapshotPathFor(realpathSync(dir));
+      if (existsSync(snap)) rmSync(snap, { force: true });
+    }
+  };
+
+  beforeEach(() => {
+    launch = makeTmpDir('pbwv-1492-launch-');
+    fixtureGit(['init', '-q'], launch);
+    worktree = makeTmpDir('pbwv-1492-wt-');
+    const git = (...args) => fixtureGit(args, worktree);
+    git('init', '-q');
+    git('config', 'user.email', 't@e.st');
+    git('config', 'user.name', 'T');
+    mkdirSync(join(worktree, 'hooks'), { recursive: true });
+    writeFileSync(join(worktree, 'hooks', 'keep.mjs'), '// seed\n');
+    git('add', '-A');
+    git('-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed');
+    mkdirSync(join(worktree, '.claude'), { recursive: true });
+    writeFileSync(
+      join(worktree, '.claude', 'wave-scope.json'),
+      JSON.stringify({ enforcement: 'warn', allowedPaths: ['hooks/**'] }),
+    );
+    dropSnapshots();
+  });
+
+  afterEach(() => {
+    dropSnapshots();
+    removeTree(launch);
+    removeTree(worktree);
+  });
+
+  it("WARNS for an out-of-scope Bash write in the worktree the session entered, whose manifest the launch dir lacks", () => {
+    // Bug caught (#1492): the root came from `$CLAUDE_PROJECT_DIR` = the launch
+    // dir. No manifest there, so G3 returned silently on every call and this
+    // bypass write was never reported.
+    runHook(); // silent baseline of the clean worktree
+    writeFileSync(join(worktree, 'out-of-scope.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('out-of-scope.mjs');
+  });
+});

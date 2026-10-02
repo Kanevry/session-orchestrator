@@ -8,7 +8,7 @@
  *   - plain constants (no filesystem work): SO_SHARED_DIR, SO_OS, SO_IS_WINDOWS,
  *     SO_IS_WSL, SO_PATH_SEP
  *   - pure resolvers: detectPlatform, resolvePluginRoot, resolveProjectDir,
- *     resolveStateDir, resolveConfigFile
+ *     resolveSessionRoot, resolveStateDir, resolveConfigFile
  *
  * NOTHING in this module touches the filesystem at import time.
  */
@@ -247,6 +247,130 @@ export function resolveProjectDir(platform) {
 
   // 3. Default
   return cwd;
+}
+
+// ---------------------------------------------------------------------------
+// resolveSessionRoot (#1492)
+// ---------------------------------------------------------------------------
+
+/**
+ * Basename of a worktree the HARNESS creates for an `isolation: "worktree"`
+ * subagent: `agent-` + the agent id. Measured 2026-10-02 over this host's
+ * transcripts: 13481 `.claude/worktrees/agent-<hex>` hits, every agent id of the
+ * form `a` + 16 hex (`agent-a00828908cdd83bd8`). A worktree a SESSION enters
+ * (`EnterWorktree`, `claude --worktree <name>`) lives in the same directory under
+ * a chosen name (`landing-produktschau`, `s71-politur`), so the name is the only
+ * discriminator the path offers.
+ */
+const HARNESS_AGENT_WORKTREE_RE = /^agent-[0-9a-f]{8,}$/;
+
+/**
+ * The first non-blank launch-dir env var, in `resolveProjectDir()` order, or `''`.
+ * Trimmed: a whitespace-only value is truthy and would otherwise win
+ * (`development.md` § Error Handling, env-var fallback whitespace trap).
+ *
+ * @returns {string}
+ */
+function _launchDirFromEnv() {
+  for (const name of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) {
+    const value = (process.env[name] || '').trim();
+    if (value !== '') return value;
+  }
+  return '';
+}
+
+/**
+ * The nearest directory at or above `cwd` holding a `.git` entry — a directory,
+ * or the FILE a linked worktree carries — or `''` when none does. Git's own repo
+ * discovery walks up looking for exactly this entry, so where git answers, both
+ * agree (measured 2026-10-02: same answer, 0.017 ms here vs 4.57 ms for a
+ * `git rev-parse --show-toplevel` spawn). Existence only — the entry is not
+ * validated, which git would do.
+ *
+ * Not `walkUpFor(cwd, '.git', 'any')`: its home-directory boundary exists for
+ * PLATFORM markers (#1139); a repo whose root is `$HOME` is still a repo root.
+ *
+ * @param {string} cwd
+ * @returns {string}
+ */
+function _dotGitAncestor(cwd) {
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, '.git'))) return dir;
+    if (path.dirname(dir) === dir) return '';
+  }
+}
+
+/**
+ * `<P>` when `root` is a harness subagent worktree `<P>/.claude/worktrees/agent-<hex>`
+ * whose parent `<P>` is itself a working copy; otherwise `root` unchanged.
+ *
+ * @param {string} root
+ * @returns {string}
+ */
+function _liftHarnessAgentWorktree(root) {
+  if (!HARNESS_AGENT_WORKTREE_RE.test(path.basename(root))) return root;
+  const worktreesDir = path.dirname(root);
+  if (path.basename(worktreesDir) !== 'worktrees') return root;
+  const stateDir = path.dirname(worktreesDir);
+  if (path.basename(stateDir) !== '.claude') return root;
+  const parent = path.dirname(stateDir);
+  return existsSync(path.join(parent, '.git')) ? parent : root;
+}
+
+/**
+ * The SESSION ROOT (#1492) — the working copy whose control files belong to the
+ * session a hook fires in: `wave-scope.json`, the `.orchestrator/` ledgers, the
+ * event records. NOT the launch dir: `$CLAUDE_PROJECT_DIR` stays on the dir the
+ * session was LAUNCHED in after it enters a worktree (docs/en/hooks § "Worktrees
+ * are different"), while the coordinator writes `wave-scope.json` into that
+ * worktree. Read from the launch dir, the manifest was absent and every scope
+ * gate allowed everything for the whole session, silently (#1492, measured in
+ * session main-2026-10-02-session-21). NOT the payload `cwd` itself either: it
+ * follows the session's `cd` (docs/en/hooks § "cwd follows Claude"), and a
+ * `cd sub` must not move the session's state into `<root>/sub` (#1489 Pkt 6).
+ *
+ * Precedence:
+ *   1. no payload `cwd` → `resolveProjectDir()`, the pre-#1492 answer unchanged;
+ *   2. the repo root of `cwd` — `toplevel` when the caller already holds
+ *      `git rev-parse --show-toplevel` of it, else the nearest `.git` ancestor
+ *      (`_dotGitAncestor`), which answers the same without a spawn, so neither a
+ *      timed-out git nor a hot-path budget can send a worktree session back to
+ *      the launch dir (review MED on 63f35e8c) — lifted to the coordinator's
+ *      working copy when it is a harness subagent worktree (below);
+ *   3. the launch dir from env (`CLAUDE_PROJECT_DIR` → `CODEX_PROJECT_DIR` →
+ *      `CURSOR_PROJECT_DIR` → `PI_PROJECT_DIR`), only when `cwd` is in no repo;
+ *   4. `cwd`.
+ *
+ * THE LIFT. An `isolation: "worktree"` subagent's hook payload carries the
+ * worktree the harness made for it, `<root>/.claude/worktrees/agent-<hex>`. That
+ * worktree is a repo root of its own and holds no manifest, so rung 2 alone
+ * would disarm scope enforcement for every such agent. Before #1492 they
+ * resolved `$CLAUDE_PROJECT_DIR` and were checked against the coordinator's
+ * manifest; the lift keeps exactly that. It is keyed on the PATH SHAPE, never on
+ * which candidate holds a manifest — a root picked because a control file is
+ * readable there would let any directory that lacks one become the deciding
+ * root.
+ *
+ * Ceilings (BV-004):
+ *  - Rung 2 is `cd`-relocatable: a session whose `cwd` sits in ANOTHER repo (a
+ *    submodule, a nested or sibling checkout) is checked against that repo's
+ *    manifest — usually none, so its gates allow — where the launch dir's
+ *    manifest used to apply. Same relocation `pre-task-scope-disjoint` has
+ *    keyed its ledger on since #1489. Revisit if an `orchestrator.scope.*`
+ *    record or a review ever shows an out-of-scope write made after such a `cd`.
+ *  - A session worktree NAMED like a harness one (`agent-` + 8 or more hex) is
+ *    lifted to its parent — the pre-#1492 launch-dir behaviour for that one
+ *    session, not a new failure. Revisit if the harness changes its naming.
+ *
+ * @param {string|undefined} cwd       the hook payload's `cwd`
+ * @param {string} [toplevel]          `git rev-parse --show-toplevel` of `cwd`, `''` when unknown
+ * @returns {string}  Absolute path
+ */
+export function resolveSessionRoot(cwd, toplevel = '') {
+  if (typeof cwd !== 'string' || cwd.trim() === '') return resolveProjectDir();
+  const repoRoot = (typeof toplevel === 'string' ? toplevel : '') || _dotGitAncestor(cwd);
+  if (repoRoot) return _liftHarnessAgentWorktree(repoRoot);
+  return _launchDirFromEnv() || cwd;
 }
 
 // ---------------------------------------------------------------------------

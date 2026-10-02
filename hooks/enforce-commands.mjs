@@ -95,7 +95,7 @@ import { pathToFileURL } from 'node:url';
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
-let resolveProjectDir;
+let resolveSessionRoot;
 let readJson;
 let findScopeFile;
 let extractBashWriteTargets;
@@ -203,7 +203,7 @@ async function bootstrap() {
   );
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
-  ({ resolveProjectDir } = modules.platform);
+  ({ resolveSessionRoot } = modules.platform);
   ({ readJson } = modules.common);
   ({ findScopeFile, extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
@@ -275,7 +275,10 @@ async function main() {
     );
   }
 
-  const projectRoot = resolveProjectDir();
+  // #1492 — the SESSION's working copy, not the launch dir `$CLAUDE_PROJECT_DIR`
+  // keeps after `EnterWorktree` (the manifest lives in the worktree). See
+  // `resolveSessionRoot` in scripts/lib/platform.mjs.
+  const projectRoot = resolveSessionRoot(input.cwd);
 
   // G3 — no scope file → allow
   const scopePath = findScopeFile(projectRoot);

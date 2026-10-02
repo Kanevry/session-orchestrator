@@ -173,9 +173,10 @@
  *
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
  * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
- * `sessionRootOf()` resolves (the git toplevel of the payload `cwd` — its nearest
- * `.git` ancestor when git cannot answer — so neither the subdirectory a `cd`
- * moved to, #1489 Pkt 6, nor the launch dir a worktree session left), which is
+ * `resolveSessionRoot()` resolves (`scripts/lib/platform.mjs`: the git toplevel
+ * of the payload `cwd` — its nearest `.git` ancestor when git cannot answer — so
+ * neither the subdirectory a `cd` moved to, #1489 Pkt 6, nor the launch dir a
+ * worktree session left), which is
  * also where the ledger and its lock live. The reason it
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
  * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
@@ -242,7 +243,7 @@
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -264,6 +265,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 /** @type {typeof import('../scripts/lib/io.mjs').writeJsonAtomicSync} */ let writeJsonAtomicSync;
 /** @type {typeof import('../scripts/lib/file-lock.mjs').withFileLock} */ let withFileLock;
 /** @type {typeof import('../scripts/lib/scope-echo.mjs').scopeDigest} */ let scopeDigest;
+/** @type {typeof import('../scripts/lib/platform.mjs').resolveSessionRoot} */ let resolveSessionRoot;
 let findScopeCollisions;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
@@ -529,6 +531,10 @@ async function bootstrap() {
       // names. Late-bound like every other repo module so a load failure
       // banners instead of disarming the guard silently (#993).
       scopeEcho: { specifier: lib('scope-echo.mjs') },
+      // #1492: ONE session-root resolver for every hook that reads the
+      // session's control files — this ledger, and `wave-scope.json` in
+      // enforce-scope / enforce-commands / post-bash-write-verify.
+      platform: { specifier: lib('platform.mjs') },
     },
     {
       hookName: HOOK_NAME,
@@ -542,6 +548,7 @@ async function bootstrap() {
   ({ findScopeCollisions } = modules.scopeGate);
   ({ withFileLock } = modules.fileLock);
   ({ scopeDigest } = modules.scopeEcho);
+  ({ resolveSessionRoot } = modules.platform);
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,11 +1553,14 @@ export function listTrackedFiles(cwd) {
   return trackedFilesIn(gitToplevel(cwd, git), git).files;
 }
 
-/**
+/*
  * The SESSION ROOT (#1489 Pkt 6) — where this session's own state lives: the
  * scope ledger and its lock, the `wave-scope.json` the wave key is read from,
  * the event records and their session attribution. NOT where project settings
  * are read — that is `settingsRootOf()`, a different directory on purpose.
+ * Resolved by `resolveSessionRoot(cwd, cwdToplevel)` in
+ * `scripts/lib/platform.mjs` — ONE resolver shared with every hook that reads
+ * the session's control files (#1492). Why each rung is where it is:
  *
  * NOT the payload `cwd`: that one follows the session's `cd` (docs/en/hooks
  * § "cwd follows Claude"). Keyed on it, a dispatch made after `cd sub` read and
@@ -1572,46 +1582,26 @@ export function listTrackedFiles(cwd) {
  * 63f35e8c): `gitToplevel()` returns `''` on ANY error, and the toplevel lookup
  * is the first spawn against the shared `GIT_BUDGET_MS` — one `rev-parse`
  * hanging past it sent a worktree session's dispatch back to the launch-root
- * ledger, the exact bug above narrowed to the timeout. `dotGitAncestorOf()`
- * answers the same question without a spawn, so no budget can cut it.
+ * ledger, the exact bug above narrowed to the timeout. The resolver's `.git`
+ * ancestor walk answers the same question without a spawn, so no budget can
+ * cut it.
  *
  * Precedence: the git toplevel of `cwd`, else the nearest `.git` ancestor of
- * `cwd`, else `$CLAUDE_PROJECT_DIR`, else `cwd`.
+ * `cwd` — either one lifted to the coordinator's root when it is a harness
+ * subagent worktree `<root>/.claude/worktrees/agent-<hex>` (#1492) — else the
+ * launch dir from env, else `cwd`.
  *
  * Remaining limit (not a regression — main keyed state on `cwd` itself): a `cd`
- * into a NESTED toplevel — an agent worktree under `.claude/worktrees/`, a
- * submodule, a nested repo — still gets that toplevel's own ledger, by either
- * rung, because it IS a repo root of its own.
- *
- * @param {string} cwd — the payload `cwd`
- * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
- * @returns {string}
+ * into a NESTED toplevel that is not a harness agent worktree — a worktree the
+ * session entered under `.claude/worktrees/<name>`, a submodule, a nested repo —
+ * gets that toplevel's own ledger, by either rung, because it IS a repo root of
+ * its own.
  */
-function sessionRootOf(cwd, cwdToplevel) {
-  return cwdToplevel || dotGitAncestorOf(cwd) || (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwd;
-}
-
-/**
- * The nearest directory at or above `cwd` holding a `.git` entry — a directory,
- * or the FILE a linked worktree carries — or `''` when none does. The no-spawn
- * rung under `gitToplevel()` in `sessionRootOf()`: git's own repo discovery
- * walks up looking for exactly this entry, so where git answers, both agree.
- * Existence only — the entry is not validated, which git would do.
- *
- * @param {string} cwd
- * @returns {string}
- */
-function dotGitAncestorOf(cwd) {
-  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
-    if (existsSync(path.join(dir, '.git'))) return dir;
-    if (path.dirname(dir) === dir) return '';
-  }
-}
 
 /**
  * The SETTINGS ROOT (#1485) — where `harnessBaseRef()` reads the project's
  * `.claude/settings{,.local}.json`: `$CLAUDE_PROJECT_DIR`, else the git toplevel
- * of `cwd`, else `cwd`. The launch dir FIRST, unlike `sessionRootOf()`: it is the
+ * of `cwd`, else `cwd`. The launch dir FIRST, unlike `resolveSessionRoot()`: it is the
  * root the harness applies project settings from, and after entering a worktree
  * the gitignored `settings.local.json` exists only there.
  *
@@ -1756,7 +1746,7 @@ const BASE_REF_SOURCE_LABEL = {
  * subdirectory, and inside an entered worktree `"head"` means THAT worktree's
  * HEAD); settings are read at `settingsRoot` (`settingsRootOf()` — the root the
  * harness applies project settings from, which is NOT where the record lands:
- * that is `sessionRootOf()`).
+ * that is `resolveSessionRoot()`).
  *
  * Every git call draws on the hook fire's ONE shared deadline (`GIT_BUDGET_MS`).
  * A call the budget cut short is no measurement: each skip then reads
@@ -2296,7 +2286,7 @@ async function main() {
 
   // The payload `cwd` follows the session's `cd`; it names the repo git measures
   // in, and only through its git toplevel where this session's state lives
-  // (`sessionRootOf()`) — a `cd sub` must not move the ledger.
+  // (`resolveSessionRoot()`) — a `cd sub` must not move the ledger.
   const cwd = typeof input.cwd === 'string' && input.cwd !== ''
     ? input.cwd
     : bannerProjectDir();
@@ -2310,7 +2300,7 @@ async function main() {
   // origin/HEAD, is-ancestor, shallow+FETCH_HEAD, rev-list) and `ls-files`.
   const git = makeGitRunner(Date.now() + GIT_BUDGET_MS);
   const cwdToplevel = gitToplevel(cwd, git);
-  const sessionRoot = sessionRootOf(cwd, cwdToplevel);
+  const sessionRoot = resolveSessionRoot(cwd, cwdToplevel);
 
   const waveKey = waveKeyOf(sessionRoot, sessionId, readFileSync);
   // `selfUseId`: this dispatch's own tool_use may already stand in the transcript
@@ -2335,7 +2325,9 @@ async function main() {
 
   // Listed at `cwd`'s toplevel ONLY: the declared paths are repo-relative to the
   // repo the agents edit, which is the one the session works in (after entering
-  // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot`;
+  // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot` —
+  // except inside a harness agent worktree, which `sessionRoot` lifts to its
+  // parent (#1492) and which lists the same repo's files from its own HEAD;
   // when git could not, `sessionRoot` falls back to a `.git` ancestor (git just
   // failed there), `$CLAUDE_PROJECT_DIR` or a bare `cwd` — another repo, or a
   // subdirectory from which `ls-files` answers subdir-relative (the review-MED

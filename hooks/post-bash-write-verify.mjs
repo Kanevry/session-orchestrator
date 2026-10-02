@@ -152,7 +152,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
-import { resolveProjectDir } from '../scripts/lib/platform.mjs';
+import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
 // hooks/enforce-scope.mjs can read the same session clock without a hook->hook
@@ -807,7 +807,10 @@ async function main() {
   // G2 — only Bash calls carry the bypass risk this hook watches.
   if (input.tool_name !== 'Bash') return;
 
-  const repoRootRaw = resolveProjectDir();
+  // #1492 — the SESSION's working copy, not the launch dir `$CLAUDE_PROJECT_DIR`
+  // keeps after `EnterWorktree` (the manifest lives in the worktree). See
+  // `resolveSessionRoot` in scripts/lib/platform.mjs.
+  const repoRootRaw = resolveSessionRoot(input.cwd);
   let repoRoot;
   try {
     repoRoot = realpathSync(repoRootRaw);
