@@ -97,11 +97,11 @@ If zero patterns were extracted, report: "No patterns found in session history."
 ### Step 5: Write Confirmed Learnings
 
 Write through the archive-safe pipeline — never a shell redirect (#1017, #1446):
-1. Read ALL existing lines from `learnings.jsonl` into memory
+1. Snapshot the store into the sidecar: `node scripts/sweep-expired-learnings.mjs --prune --snapshot .orchestrator/tmp/learnings-next.jsonl`. It writes every record of `learnings.jsonl` behind a line-1 `{"_store_generation": "sha256:…", "_store_path": "…"}` header naming the exact store state and the store they came from (#1486). Work on the SIDECAR, never on a separate read of `learnings.jsonl`. On a non-default store pass the same `--file` / `--archive` here as to the apply below. Exit `1` here (a malformed store line, or a PATH that would replace a ledger) wrote nothing: report it and stop
 2. Apply confidence updates for confirmed existing learnings (+0.15, cap at 1.0; reset `expires_at` via `deriveExpiresAt(now, type)`)
 3. Apply confidence decrements for contradicted learnings (-0.2; `expires_at` unchanged)
 4. Add new learnings with confidence 0.5 in the canonical shape (see Learning JSONL Format below)
-5. Write that full next generation as JSONL to a sidecar via the file-write tool at `.orchestrator/tmp/learnings-next.jsonl` (under `tmp/`, never `metrics/`: a metrics-dir sidecar makes the cleanup `rm` a blocked command, #1453), then let the `/evolve` helper prune (`expires_at` < now OR `confidence` <= 0.0), consolidate duplicates (same `type` + `subject`, highest confidence wins), archive every removed record and rewrite the store with a `.bak-<ISO>` snapshot. The `--apply` call is also `/evolve`'s only `orchestrator.evolve.completed` emit (#1206): export `N` (new learnings from item 4), `M` (existing learnings confirmed in item 2) and `DURATION_MS` (elapsed ms since this `/evolve` run started) first — without them the event records zero counters. Preview first, then apply:
+5. Edit the sidecar `.orchestrator/tmp/learnings-next.jsonl` into that full next generation via the file-write or edit tool, **keeping line 1 — the `_store_generation` header — unchanged and first** (under `tmp/`, never `metrics/`: a metrics-dir sidecar makes the cleanup `rm` a blocked command, #1453). A peer session may append to the store while you edit; the helper compares the store with the header under its lock and refuses on any difference, because such a record is absent from your sidecar and would otherwise be archived `pruned`. Then let the `/evolve` helper prune (`expires_at` < now OR `confidence` <= 0.0), consolidate duplicates (same `type` + `subject`, highest confidence wins), archive every removed record and rewrite the store with a `.bak-<ISO>` snapshot. The `--apply` call is also `/evolve`'s only `orchestrator.evolve.completed` emit (#1206): export `N` (new learnings from item 4), `M` (existing learnings confirmed in item 2) and `DURATION_MS` (elapsed ms since this `/evolve` run started) first — without them the event records zero counters. Preview first, then apply:
 
    ```bash
    NEXT=".orchestrator/tmp/learnings-next.jsonl"
@@ -111,7 +111,7 @@ Write through the archive-safe pipeline — never a shell redirect (#1017, #1446
      --repo-root "$(pwd)" && rm -f "$NEXT"
    ```
 
-   Exit `1` = the sidecar is absent, malformed or empty; store and archive untouched.
+   Exit `1` = the sidecar is absent, malformed, empty, lacks its line-1 header, or was snapshotted from another store than `--file`; `2` = the prune failed inside the helper. On `1` and `2`, report the error and stop — store and archive untouched. Exit `3` = the store changed after step 1, nothing written. Retry once: snapshot into a FRESH path (`--prune --snapshot .orchestrator/tmp/learnings-next-retry.jsonl`, same `--file` / `--archive` as the apply), re-apply this run's decisions to the records in that file, and run the block above with `NEXT` set to it; a second consecutive `3`: stop and report. Never move the fresh header onto the old sidecar's records — they lack the peer change the header protects. Never delete `$NEXT` by hand: the `&&` keeps it on failure as the record of this run's decisions.
 
 Report: "Saved N new learnings, updated M existing. Total active: K."
 
@@ -148,7 +148,7 @@ Present as a numbered Markdown list (see Cursor Adaptation above):
 
 ### Step 3: Apply Changes
 
-Same pipeline as analyze mode Step 5: read all, modify the selected entries (a deleted entry is simply left out of the sidecar — the helper archives it), write the next generation to the sidecar, then run `node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT" --repo-root "$(pwd)"` followed by `--prune --apply --json --entries "$NEXT" --repo-root "$(pwd)"`.
+Same pipeline as analyze mode Step 5, exit codes included: snapshot the store into the sidecar with `--prune --snapshot "$NEXT"`, modify the selected entries in the sidecar keeping its line-1 header (a deleted entry is simply left out of the sidecar — the helper archives it), then run `node scripts/sweep-expired-learnings.mjs --prune --dry-run --json --entries "$NEXT" --repo-root "$(pwd)"` followed by `--prune --apply --json --entries "$NEXT" --repo-root "$(pwd)"`.
 
 Report: "Updated N learnings. Total active: K."
 
@@ -241,7 +241,7 @@ Each line in `.orchestrator/metrics/learnings.jsonl` is a JSON object:
 - NEVER write learnings without user confirmation
 - ALWAYS use uuid-v4 for new learning IDs (generate via `uuidgen`)
 - ALWAYS derive `expires_at` per type via `deriveExpiresAt()` unless the candidate supplies one
-- ALWAYS write through `scripts/sweep-expired-learnings.mjs --prune` (read all, modify, sidecar, prune) — NEVER a shell rewrite of the store
+- ALWAYS write through `scripts/sweep-expired-learnings.mjs --prune` (snapshot, modify the sidecar keeping its header line, prune) — NEVER a shell rewrite of the store
 - ALWAYS cap confidence at 1.0
 - NEVER fabricate patterns -- only extract from actual session data with verifiable evidence
 - NEVER append to `learnings.jsonl` with `>>` -- the only write is the prune helper's atomic tmp-file + rename, which keeps a `.bak-<ISO>` snapshot

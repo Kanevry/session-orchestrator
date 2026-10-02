@@ -730,6 +730,20 @@ describe('describeOriginForLog', () => {
     ['relative path', '../other-vault', 'file://<local path>'],
     ['https with user:token', 'https://user:token@gitlab.example.com/agents/vault.git', 'https://***@gitlab.example.com/agents/vault.git'],
     ['scp-like ssh', 'git@gitlab.example.com:agents/vault.git', 'git@gitlab.example.com:agents/vault.git'],
+    // #1487 item 10: a scp-like origin printed its login user and its remote
+    // filesystem path (often a home dir) verbatim. The forge `git` user and a
+    // relative repo path carry the suffix-comparison shape and stay.
+    ['scp-like, login user + absolute path', 'alice@nas.example.org:/home/alice/vault', '***@nas.example.org:<remote path>'],
+    ['scp-like, home-relative path', 'git@nas.example.org:~/vault.git', 'git@nas.example.org:<remote path>'],
+    ['scp-like, no user + absolute path', 'nas.example.org:/srv/vault', 'nas.example.org:<remote path>'],
+    ['scp-like, login user + relative path', 'alice@nas.example.org:vault.git', '***@nas.example.org:vault.git'],
+    ['scp-like, password-shaped userinfo', 'alice:hunter2@nas.example.org:vault.git', '***@nas.example.org:vault.git'],
+    // The ':' inside a bracketed IPv6 host split host from path at the wrong
+    // colon, so the absolute path survived. git's own bracket forms: leading,
+    // after `user@`, and with the login INSIDE the brackets (t5601-clone).
+    ['scp-like, IPv6 host + absolute path', '[::1]:/home/alice/vault', '[::1]:<remote path>'],
+    ['scp-like, login user + IPv6 host', 'alice@[::1]:/home/alice/vault', '***@[::1]:<remote path>'],
+    ['scp-like, login user inside IPv6 brackets', '[alice@::1]:/home/alice/vault', '[***@::1]:<remote path>'],
     ['ssh:// URL', 'ssh://git@gitlab.example.com/agents/vault', 'ssh://git@gitlab.example.com/agents/vault'],
     ['absent origin', undefined, ''],
   ])('%s', (_label, url, expected) => {

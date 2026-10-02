@@ -42,6 +42,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
+import { appendLearning, readLearningsSnapshot } from '../../scripts/lib/learnings/io.mjs';
 
 const SCRIPT = path.resolve(process.cwd(), 'scripts/sweep-expired-learnings.mjs');
 const DAY_MS = 86_400_000;
@@ -322,6 +323,22 @@ function liveLearning(overrides = {}) {
   return learning({ expires_at: new Date(Date.now() + 60 * DAY_MS).toISOString(), ...overrides });
 }
 
+/**
+ * Write an `--entries` sidecar headed the way `--prune --snapshot` heads it:
+ * line 1 carries the generation token of the store as it stands NOW (#1486),
+ * then the records. The token comes from the production reader, so these
+ * tests do not pin its format. A string entry is written as a raw line, so a
+ * guard behind the header check (malformed, empty) can be reached with it.
+ */
+async function writeSidecar(nextPath, entries) {
+  const { generation } = await readLearningsSnapshot(learningsPath);
+  const lines = [
+    JSON.stringify({ _store_generation: generation }),
+    ...entries.map((e) => (typeof e === 'string' ? e : JSON.stringify(e))),
+  ];
+  writeFileSync(nextPath, lines.join('\n') + '\n', 'utf8');
+}
+
 describe('sweep-expired-learnings.mjs — --prune dry-run', () => {
   // TV-001 — the bug: a prune path that computes the right partition but leaks
   // a write on the dry-run branch destroys the live corpus. That is the #1017
@@ -376,11 +393,16 @@ describe('sweep-expired-learnings.mjs — --prune --entries fail-closed guards',
   // `node --input-type=module -e` block in skills/evolve/SKILL.md. If it did not
   // survive the move into the CLI, a half-written sidecar would read as a
   // shorter next generation and prune every record the truncated tail omitted.
-  it('exits 1 and touches nothing when the --entries sidecar has a malformed line', () => {
-    writeJsonl(learningsPath, [liveLearning({ id: 'survivor' })]);
+  // The sidecar carries its #1486 header, so this guard — not the header
+  // guard — is what stands between the truncated tail and the `tail` record.
+  it('exits 1 and touches nothing when the --entries sidecar has a malformed line', async () => {
+    writeJsonl(learningsPath, [
+      liveLearning({ id: 'survivor', subject: 's' }),
+      liveLearning({ id: 'tail', subject: 't' }),
+    ]);
     const before = sha256(learningsPath);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeFileSync(nextPath, JSON.stringify(liveLearning({ id: 'survivor' })) + '\n{ truncated\n', 'utf8');
+    await writeSidecar(nextPath, [liveLearning({ id: 'survivor', subject: 's' }), '{ truncated']);
 
     const result = runSweep([
       '--prune', '--apply',
@@ -402,19 +424,21 @@ describe('sweep-expired-learnings.mjs — --prune --entries empty-sidecar guard'
   // and parses to `{entries: [], malformed: []}` — a legitimate-looking empty
   // next generation that makes pruneLearnings treat the ENTIRE store as
   // caller-dropped. Measured before the guard on a 3-record fixture: archived=3,
-  // store emptied, exit 0. Remove the `read.entries.length === 0` check in
+  // store emptied, exit 0. The fixtures carry the #1486 header — a headerless
+  // empty file is refused by the header guard first, which would leave this
+  // guard untested. Remove the `read.entries.length === 0` check in
   // loadEntriesSidecar and both cases below go RED (exit 0, hash changed).
   it.each([
-    ['0-byte', ''],
-    ['blank-lines-only', '\n\n\n'],
-  ])('exits 1 and touches nothing when the --entries sidecar is %s', (_label, body) => {
+    ['header-only', []],
+    ['header + blank lines only', ['', '', '']],
+  ])('exits 1 and touches nothing when the --entries sidecar is %s', async (_label, body) => {
     writeJsonl(learningsPath, [
       liveLearning({ id: 'survivor-a', subject: 'a' }),
       liveLearning({ id: 'survivor-b', subject: 'b' }),
     ]);
     const before = sha256(learningsPath);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeFileSync(nextPath, body, 'utf8');
+    await writeSidecar(nextPath, body);
 
     const result = runSweep([
       '--prune', '--apply',
@@ -433,6 +457,198 @@ describe('sweep-expired-learnings.mjs — --prune --entries empty-sidecar guard'
   });
 });
 
+describe('sweep-expired-learnings.mjs — --prune --entries store-generation guard (#1486)', () => {
+  // TV-001 — the bug: /evolve derives the sidecar minutes before the prune, in
+  // another process. A record a peer session appends in between is on disk but
+  // absent from the sidecar, so the caller-drop loop archived it `pruned` — a
+  // delete nobody decided. The store lock cannot help: the read sat before it.
+  it('exits 3 and touches nothing when a record was appended after the snapshot', async () => {
+    writeJsonl(learningsPath, [liveLearning({ id: 'old-1', subject: 'old' })]);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+    expect(runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]).status).toBe(0);
+
+    await appendLearning(learningsPath, liveLearning({ id: 'appended-by-peer-close', subject: 'peer' }));
+    const before = sha256(learningsPath);
+    const { generation: current } = await readLearningsSnapshot(learningsPath);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readdirSync(workdir).filter((f) => f.includes('.bak-'))).toHaveLength(0);
+    expect(result.status).toBe(3);
+    expect(result.stderr).toContain('store-generation-mismatch');
+    // The refusal must not hand out its own bypass: the CURRENT token pasted
+    // onto this stale sidecar's line 1 archived the peer's record `pruned`,
+    // exit 0 (measured on 91b35d4b, where stderr printed `found <token>`).
+    expect(result.stderr).not.toContain(current);
+  });
+
+  // TV-001 — the bug: the strict new-record check read the store BEFORE the
+  // generation was compared. A peer that drops a snapshotted legacy record
+  // (no source_session) makes it "new", so the stale sidecar exited 1 —
+  // "re-write the sidecar and re-run", the recovery that re-uses the stale
+  // snapshot — instead of 3. Measured on 91b35d4b: exit 1, "new record legacy
+  // is invalid".
+  it('exits 3, not 1, when the peer change makes a snapshotted legacy record look new', () => {
+    const legacy = liveLearning({ id: 'legacy', subject: 'l' });
+    delete legacy.source_session;
+    writeJsonl(learningsPath, [legacy]);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+    expect(runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]).status).toBe(0);
+
+    writeJsonl(learningsPath, [liveLearning({ id: 'peer-rewrite', subject: 'p' })]);
+    const before = sha256(learningsPath);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect({ status: result.status, invalid: result.stderr.includes('is invalid') }).toEqual({
+      status: 3,
+      invalid: false,
+    });
+  });
+
+  // TV-001 — the bug: a sidecar snapshotted from one store and applied with
+  // another --file can never match that store's generation, so it exited 3,
+  // whose documented retry (snapshot again, apply again) repeats the mismatch
+  // forever while naming the wrong file (measured 2026-10-02).
+  it('exits 1, not 3, and touches nothing when the sidecar was snapshotted from another store', () => {
+    writeJsonl(learningsPath, [liveLearning({ id: 'snapshotted', subject: 's' })]);
+    const otherStore = path.join(workdir, 'custom', 'learn.jsonl');
+    mkdirSync(path.dirname(otherStore), { recursive: true });
+    writeJsonl(otherStore, [liveLearning({ id: 'other', subject: 'o' })]);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+    expect(runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]).status).toBe(0);
+    const before = sha256(otherStore);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', otherStore,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(otherStore)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect({ status: result.status, wrongStore: result.stderr.includes('was snapshotted from') }).toEqual({
+      status: 1,
+      wrongStore: true,
+    });
+  });
+
+  // TV-001 — the bug: a check that runs only when the sidecar carries a token is
+  // bypassed by any producer that omits it — the #1486 delete again, exit 0.
+  it('exits 1 and touches nothing when the --entries sidecar carries no generation header', () => {
+    writeJsonl(learningsPath, [
+      liveLearning({ id: 'keep', subject: 'k' }),
+      liveLearning({ id: 'appended-by-peer-close', subject: 'peer' }),
+    ]);
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'next.jsonl');
+    writeJsonl(nextPath, [liveLearning({ id: 'keep', subject: 'k' })]);
+
+    const result = runSweep([
+      '--prune', '--apply',
+      '--file', learningsPath,
+      '--archive', archivePath,
+      '--entries', nextPath,
+    ]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(archivePath)).toBe(false);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('_store_generation');
+  });
+});
+
+/** Whether the temp volume folds letter case (default APFS) — measured, never assumed. */
+function tmpVolumeFoldsCase() {
+  const dir = mkdtempSync(path.join(tmpdir(), 'sweep-case-'));
+  try {
+    writeFileSync(path.join(dir, 'Probe'), '');
+    return existsSync(path.join(dir, 'probe'));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+describe('sweep-expired-learnings.mjs — --prune --snapshot never replaces a ledger', () => {
+  // TV-001 — the bug: --snapshot write-then-renames onto any PATH. Named as the
+  // store, it put the header on the store's line 1 with no .bak; named as the
+  // archive, it replaced the append-only history with the store's records —
+  // both exit 0 on 91b35d4b. The symlinked-directory row is the bug a plain
+  // string compare of the two paths would let through.
+  function expectRefused(target) {
+    writeJsonl(learningsPath, [liveLearning({ id: 'live', subject: 'l' })]);
+    writeJsonl(archivePath, [{ ...liveLearning({ id: 'history', subject: 'h' }), _archive_reason: 'pruned' }]);
+    const before = [sha256(learningsPath), sha256(archivePath)];
+
+    const result = runSweep([
+      '--prune', '--snapshot', target,
+      '--file', learningsPath,
+      '--archive', archivePath,
+    ]);
+
+    expect([sha256(learningsPath), sha256(archivePath)]).toEqual(before);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('would replace the learnings');
+  }
+
+  it.each([
+    ['the --file store', () => learningsPath],
+    ['the --archive sidecar', () => archivePath],
+    ['the store via a symlinked directory', () => {
+      symlinkSync(workdir, path.join(workdir, 'link'), 'dir');
+      return path.join(workdir, 'link', 'learnings.jsonl');
+    }],
+  ])('exits 1 and leaves both ledgers byte-identical when --snapshot names %s', (_label, target) => {
+    expectRefused(target());
+  });
+
+  // TV-001 — the bug: on a case-insensitive volume a different letter case
+  // names the same entry, and the path-string compare of 44fc80e4 let it
+  // through — store overwritten, exit 0 (measured 2026-10-02). One row per
+  // half of the key: the case-folded name, and the parent directory compared
+  // by identity rather than by its typed spelling.
+  it.skipIf(!tmpVolumeFoldsCase()).each([
+    ['the store in another letter case', () => path.join(workdir, 'Learnings.jsonl')],
+    ['the store via its directory in another letter case', () =>
+      path.join(path.dirname(workdir), path.basename(workdir).toUpperCase(), 'learnings.jsonl')],
+  ])('exits 1 and leaves both ledgers byte-identical when --snapshot names %s', (_label, target) => {
+    expectRefused(target());
+  });
+
+  // TV-001 — the bug: the snapshot parse drops a malformed store line, and the
+  // prune applying that sidecar rewrote the store without it and without an
+  // archive record — every /evolve run laundered it again (measured
+  // 2026-10-02: snapshot exit 0, apply exit 0, line gone).
+  it('exits 1 and writes no sidecar when the store holds a malformed line', () => {
+    writeFileSync(learningsPath, `${JSON.stringify(liveLearning({ id: 'live', subject: 'l' }))}\n{ torn\n`, 'utf8');
+    const before = sha256(learningsPath);
+    const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
+
+    const result = runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]);
+
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(nextPath)).toBe(false);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('malformed line(s)');
+    expect(result.stderr).toContain('line(s) 2');
+  });
+});
+
 describe('sweep-expired-learnings.mjs — --prune --entries strict validation of NEW records (GH#69)', () => {
   // TV-001 — the bug: pruneLearnings() rewrites through a legacyTolerant
   // rewriteLearnings(), so a NEW sidecar record with a garbage `scope` or an
@@ -441,12 +657,12 @@ describe('sweep-expired-learnings.mjs — --prune --entries strict validation of
   it.each([
     ['an out-of-enum scope', '--apply', { scope: 'project' }, 'scope must be one of local|private|public, got: project'],
     ['schema_version 2', '--dry-run', { schema_version: 2 }, 'schema_version must be 0 (legacy) or 1, got: 2'],
-  ])('exits 1 and touches nothing when a new record has %s (%s)', (_label, mode, override, message) => {
+  ])('exits 1 and touches nothing when a new record has %s (%s)', async (_label, mode, override, message) => {
     const survivor = liveLearning({ id: 'survivor', subject: 's' });
     writeJsonl(learningsPath, [survivor]);
     const before = sha256(learningsPath);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f', ...override })]);
+    await writeSidecar(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f', ...override })]);
 
     const result = runSweep([
       '--prune', mode,
@@ -463,12 +679,12 @@ describe('sweep-expired-learnings.mjs — --prune --entries strict validation of
     expect(result.stderr).toContain(`--entries: new record fresh is invalid: ${message} — nothing written`);
   });
 
-  it('carries an in-store legacy record (no source_session) through the tolerant path', () => {
+  it('carries an in-store legacy record (no source_session) through the tolerant path', async () => {
     const legacy = liveLearning({ id: 'legacy', subject: 'l' });
     delete legacy.source_session;
     writeJsonl(learningsPath, [legacy]);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [legacy]);
+    await writeSidecar(nextPath, [legacy]);
 
     const result = runSweep([
       '--prune', '--apply', '--json',
@@ -483,11 +699,11 @@ describe('sweep-expired-learnings.mjs — --prune --entries strict validation of
     expect(remaining[0]).not.toHaveProperty('source_session');
   });
 
-  it('writes a valid new record alongside the survivors', () => {
+  it('writes a valid new record alongside the survivors', async () => {
     const survivor = liveLearning({ id: 'survivor', subject: 's' });
     writeJsonl(learningsPath, [survivor]);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f' })]);
+    await writeSidecar(nextPath, [survivor, liveLearning({ id: 'fresh', subject: 'f' })]);
 
     const result = runSweep([
       '--prune', '--apply', '--json',
@@ -507,12 +723,12 @@ describe('sweep-expired-learnings.mjs — --prune --apply', () => {
   // into pruneLearnings() reports success while the store is untouched (or,
   // inverted, writes on the dry-run path). This is the wiring proof for the one
   // call shape /evolve actually invokes.
-  it('archives an id the --entries sidecar omits and rewrites the store to the sidecar set', () => {
+  it('archives an id the --entries sidecar omits and rewrites the store to the sidecar set', async () => {
     const keep = liveLearning({ id: 'keep-me', subject: 'kept' });
     const drop = liveLearning({ id: 'drop-me', subject: 'dropped' });
     writeJsonl(learningsPath, [keep, drop]);
     const nextPath = path.join(workdir, 'next.jsonl');
-    writeJsonl(nextPath, [keep]);
+    await writeSidecar(nextPath, [keep]);
 
     const result = runSweep([
       '--prune', '--apply',
@@ -717,10 +933,16 @@ describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the name
     // red rather than silently pruning against a different file.
     // #1453: the sidecar lives in .orchestrator/tmp/ (outside the ledger
     // guard's delete denylist), not in metrics/.
-    const tmpDir = path.join(workdir, '.orchestrator', 'tmp');
-    mkdirSync(tmpDir, { recursive: true });
-    const sidecar = path.join(tmpDir, 'learnings-next.jsonl');
-    writeJsonl(sidecar, [keep]);
+    // #1486: the sidecar starts as a `--snapshot` of the store (default
+    // --file, fixture cwd) and is then edited with line 1 — the generation
+    // header — kept, exactly as Step 3.5(1)/(5) describe.
+    const sidecar = path.join(workdir, '.orchestrator', 'tmp', 'learnings-next.jsonl');
+    execFileSync('node', [SCRIPT, '--prune', '--snapshot', '.orchestrator/tmp/learnings-next.jsonl'], {
+      cwd: workdir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const header = readFileSync(sidecar, 'utf8').split('\n')[0];
+    writeFileSync(sidecar, `${header}\n${JSON.stringify(keep)}\n`, 'utf8');
 
     let run;
     try {

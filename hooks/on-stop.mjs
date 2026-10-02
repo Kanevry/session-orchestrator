@@ -852,11 +852,16 @@ function loadReaperConfig(projectDir) {
  * @param {string} [opts.projectDir]  Repo root; defaults to `getProjectDir()`.
  * @param {number} [opts.now]         Injected clock (ms).
  * @param {Function} [opts.spawnFn]   Injected `spawn` (tests).
- * @param {Function} [opts.statFn]    Injected `statSync` (tests).
+ * @param {Function} [opts.statFn]    Injected marker `lstatSync` (tests).
  * @param {Function} [opts.writeFn]   Injected marker writer (tests).
  * @param {() => number} [opts.clockFn]  Injected monotonic clock for the latency
  *   budget (tests); defaults to `performance.now`.
- * @returns {Promise<{spawned: boolean, reason: string}>}
+ * @returns {Promise<{spawned: boolean, reason: string}>} `reason` is
+ *   `'spawned-unthrottled'` when the scan ran but the marker could not be
+ *   stamped — the next fire will scan again, and the result must not read like
+ *   a throttled spawn. The value reaches in-process callers (tests) only:
+ *   `main()` below discards it and nothing records it, so it is no production
+ *   signal (HR-105).
  */
 export async function maybeTriggerOrphanScan({
   projectDir,
@@ -893,7 +898,10 @@ export async function maybeTriggerOrphanScan({
       checkLatency(cfg['max-hook-latency-ms']);
       return { spawned: false, reason: 'throttled' };
     }
-    reaper.touchScanMarker(markerPath, { writeFn });
+    // An unwritable marker does not cancel the scan — the throttle fails toward
+    // scanning (see shouldScanNow) — but the result says the throttle is off.
+    // No output: this runs on every Stop in every session on the host.
+    const stamped = reaper.touchScanMarker(markerPath, { writeFn });
 
     const child = spawnFn(
       process.execPath,
@@ -910,7 +918,7 @@ export async function maybeTriggerOrphanScan({
     );
     if (child && typeof child.unref === 'function') child.unref();
     checkLatency(cfg['max-hook-latency-ms']);
-    return { spawned: true, reason: 'spawned' };
+    return { spawned: true, reason: stamped ? 'spawned' : 'spawned-unthrottled' };
   } catch {
     return { spawned: false, reason: 'error' };
   }

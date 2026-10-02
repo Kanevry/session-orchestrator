@@ -841,6 +841,19 @@ function resolveModel(model, env, resolveModelFromEnv) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Events window this reader needs retained (#1401 part 3): NONE FIXED, hence
+ * `null` rather than a made-up number. `evaluateSession` reads the whole
+ * ledger through `readEventsWithRotations` to score ONE named past session,
+ * arbitrarily old (`computeWindow`, #1407) — the window it needs is that
+ * session's own age, which no finite retention can be sized for. A session
+ * older than the retained ledger surfaces through `ledgerGapNote` instead.
+ * Read by `scripts/lib/events-retention-banner.mjs`.
+ *
+ * @type {number|null}
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+
+/**
  * Evaluate one completed session against the rubric-v2 dimensions.
  *
  * @param {object} opts

@@ -555,9 +555,18 @@ export function normalizeRemote(url) {
  * - `file:` URL, or a bare/relative path (git's rule: no `://` and no `:`
  *   before the first `/`, a Windows drive letter counting as a path)
  *   → `file://<local path>`.
- * - Every other form (`https://`, `ssh://`, scp-like `git@host:path`) keeps its
- *   host/path and goes through {@link redactUrlCredentials}, so an
- *   `https://user:token@host/…` origin cannot leak its credential either.
+ * - A URL form (`https://`, `ssh://`) keeps its host/path and goes through
+ *   {@link redactUrlCredentials}, so an `https://user:token@host/…` origin
+ *   cannot leak its credential either.
+ * - A scp-like `[user@]host:path` (#1487 item 10) keeps the host and a RELATIVE
+ *   path — the repo shape the canonical-suffix comparison is about. A path
+ *   starting with `/` or `~` is a filesystem path on that host (typically a
+ *   home dir) → `<remote path>`. A login user other than the forge-shared `git`
+ *   is the operator's account (or a password-shaped `user:pass`) → `***@`, the
+ *   same marker {@link redactUrlCredentials} uses; it never takes part in the
+ *   suffix match, so dropping it costs the line no diagnostic value. A
+ *   bracketed IPv6 host (`[::1]:path`, `user@[::1]:path`, `[user@::1]:path`)
+ *   follows the same two rules.
  *
  * Returns `''` for an empty/absent origin; callers supply their own wording.
  * @param {string|undefined|null} url
@@ -569,7 +578,20 @@ export function describeOriginForLog(url) {
   if (/^file:/i.test(s)) return 'file://<local path>';
   if (s.includes('://')) return redactUrlCredentials(s);
   const scpLike = /^[^/\\]*:/.test(s) && !/^[a-z]:[\\/]/i.test(s);
-  return scpLike ? redactUrlCredentials(s) : 'file://<local path>';
+  if (!scpLike) return 'file://<local path>';
+  // Split host from path the way git's connect.c host_end() does: a host in
+  // brackets — leading, or right after `user@` — runs to its `]`, so the ':'
+  // inside an IPv6 literal (`[::1]`, `[alice@::1]`) is never the separator.
+  // Otherwise the userinfo runs to the last '@' and the host to the next ':';
+  // `scpLike` guarantees a ':' with no '/' or '\' before it, so that second
+  // pattern always matches.
+  const [, user, host, path] =
+    /^(?:([^[]*)@)?(\[[^\]]*\]):(.*)$/s.exec(s) ?? /^(?:(.*)@)?([^@:]*):(.*)$/s.exec(s);
+  const login = (u) => (u === undefined ? '' : u === 'git' ? 'git@' : '***@');
+  // A login inside the brackets is the same account as one before them.
+  const shownHost = host.replace(/^\[([^\]]*)@/, (_, u) => `[${login(u)}`);
+  const where = /^[/~]/.test(path) ? '<remote path>' : path;
+  return redactUrlCredentials(`${login(user)}${shownHost}:${where}`);
 }
 
 /**

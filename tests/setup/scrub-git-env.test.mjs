@@ -25,7 +25,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -124,13 +124,21 @@ describe('scrubGitEnv — sweeps the GIT_ namespace, not a list of names', () =>
     // enumerated channel makes a fixture commit execute hooks from a directory
     // the fixture never chose. The A/B is the proof the assertion discriminates:
     // the SAME commit with the unscrubbed env fires the hook.
+    //
+    // The foreign hook is a SYMLINK to the system `env` binary, never a script
+    // written here: `env` prints the environment it was started with, so the
+    // probe variable in the commit output proves the hook RAN. Why not a fresh
+    // `#!/bin/sh` file: on macOS the first exec of a newly written executable
+    // waits on a system-wide exec-policy check that queues across the host.
+    // Measured 2026-10-02: 223 ms alone, p50 2014 / max 3461 ms with 24 such
+    // launches in parallel, against 62 / 135 ms for this symlink. It was the one
+    // cost here that grows with host-wide contention, and this test hit the
+    // 10 s timeout under the full pre-push suite at load ~45 the same day.
     const root = mkTmp('so-scrub-git-env-');
     const hooks = join(root, 'foreignhooks');
-    const evidence = join(root, 'evidence.txt');
     const repo = join(root, 'repo');
     mkdirSync(hooks, { recursive: true });
-    writeFileSync(join(hooks, 'pre-commit'), `#!/bin/sh\necho FIRED >> ${JSON.stringify(evidence)}\nexit 0\n`);
-    chmodSync(join(hooks, 'pre-commit'), 0o755);
+    symlinkSync('/usr/bin/env', join(hooks, 'pre-commit'));
 
     execFileSync('git', ['init', '-q', repo], { env: baseEnv() });
     for (const [k, v] of [['user.email', 't@e.com'], ['user.name', 'T'], ['commit.gpgsign', 'false']]) {
@@ -139,26 +147,30 @@ describe('scrubGitEnv — sweeps the GIT_ namespace, not a list of names', () =>
 
     const injected = {
       ...baseEnv(),
+      SO_SCRUB_PROBE: 'foreign-hook-ran',
       GIT_CONFIG_COUNT: '1',
       GIT_CONFIG_KEY_0: 'core.hooksPath',
       GIT_CONFIG_VALUE_0: hooks,
     };
 
-    // Control: the unscrubbed environment DOES reach git.
+    // Control: the unscrubbed environment DOES reach git. Hook stdout goes to
+    // git's stderr, so read both.
     writeFileSync(join(repo, 'a.txt'), 'a\n');
     execFileSync('git', ['-C', repo, 'add', 'a.txt'], { env: baseEnv() });
-    spawnSync('git', ['-C', repo, 'commit', '-q', '-m', 'control'], { env: { ...injected } });
-    expect(existsSync(evidence)).toBe(true);
-    expect(readFileSync(evidence, 'utf8')).toContain('FIRED');
-    rmSync(evidence);
+    const control = spawnSync('git', ['-C', repo, 'commit', '-q', '-m', 'control'], {
+      env: { ...injected },
+      encoding: 'utf8',
+    });
+    expect(`${control.stdout}${control.stderr}`).toContain('SO_SCRUB_PROBE=foreign-hook-ran');
 
     // The same commit, with the same variables, after the scrub.
     const scrubbed = { ...injected };
     scrubGitEnv(scrubbed);
     writeFileSync(join(repo, 'b.txt'), 'b\n');
     execFileSync('git', ['-C', repo, 'add', 'b.txt'], { env: baseEnv() });
-    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'scrubbed'], { env: scrubbed });
+    const after = spawnSync('git', ['-C', repo, 'commit', '-q', '-m', 'scrubbed'], { env: scrubbed, encoding: 'utf8' });
 
-    expect(existsSync(evidence)).toBe(false);
+    expect(after.status).toBe(0);
+    expect(`${after.stdout}${after.stderr}`).not.toContain('SO_SCRUB_PROBE=');
   });
 });

@@ -6,8 +6,12 @@
 
 import {
   appendFileSync,
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -42,15 +46,53 @@ const ARGS_HEAD_CHARS = 80;
  * a `kill` record with `args_head` and `result` serialises to 505 bytes, a
  * `report` record to 285 (measured on {@link buildAuditRecord} output 2026-10-01;
  * no real audit file existed on this host), so the kept 512 KiB hold ~1,000-1,800
- * decisions against the 50 the false-alarm window reads. Revisit if
+ * records against the 50 decisions the false-alarm window reads — fewer
+ * decisions where reports dominate: a scan re-reporting R processes keeps
+ * ~1,800/(R+1) of them, below 50 from R ≈ 35. Revisit if
  * `reaper.false-alarm-window` is ever configured above ~1,000.
  */
 const REAPER_AUDIT_MAX_BYTES = 1024 * 1024;
 const REAPER_AUDIT_KEEP_BYTES = 512 * 1024;
 
 /** First tail window {@link readAuditRecords} tries; it grows ×4 only while the
- *  window holds fewer complete lines than requested. */
+ *  window holds fewer complete lines, or fewer rate decisions, than requested,
+ *  and never past {@link REAPER_AUDIT_MAX_BYTES}. */
 const AUDIT_TAIL_START_BYTES = 64 * 1024;
+
+/** The one refusal both writers share — the prune's {@link replaceRegularFile}
+ *  and the append's `O_NOFOLLOW` open. */
+const NOT_A_REGULAR_FILE = 'not a regular file (a symlink is never written through) — left untouched';
+
+/**
+ * `open(2)` flags of the audit append. `O_NOFOLLOW` makes the kernel refuse a
+ * symlink as the last path component (ELOOP) in the same call that opens the
+ * file, so there is no lstat-then-open window; `O_NONBLOCK` turns a planted FIFO
+ * with no reader into ENXIO instead of blocking in `open`. That protects THIS
+ * open only: the scan child then READS the same path for the rate and opens it
+ * again to prune, and a plain `'r'` open of the FIFO blocked it for good
+ * (reproduced 2026-10-02, #1487) — both reads therefore go through
+ * `readTailWindow`'s `noFollow` open, the read-side twin of these flags.
+ * Named ceiling (BV-004): both are POSIX-only — Node leaves them undefined on
+ * Windows, where a linked audit is still followed; revisit if the reaper ever
+ * runs there (it shells out to `ps`, so today it does not).
+ */
+const AUDIT_APPEND_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT
+  | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
+
+/**
+ * Whether an audit record is one of the HR-101 rate's DECISIONS: the reaper
+ * judged a process a reapable orphan (`kill` | `dry-run` | `reject`). The one
+ * definition {@link readAuditRecords} (how far back to read) and
+ * {@link falseAlarmRate} (what to count) share — if they disagreed, the reader
+ * would stop growing at a population the rate does not count.
+ *
+ * @param {{decision?: unknown}|null|undefined} record
+ * @returns {boolean}
+ */
+function isRateDecision(record) {
+  const decision = record?.decision;
+  return decision === 'kill' || decision === 'dry-run' || decision === 'reject';
+}
 
 /** Absolute path of the kill audit for a repo. One constant per path.
  *  @param {string} repoRoot @returns {string} */
@@ -112,19 +154,39 @@ export function buildAuditRecord(entry, decision, {
  * rule). Best-effort — an audit write must never fail a scan — but a failure
  * prints one WARN line rather than vanishing.
  *
+ * Refuses a symlinked or non-regular audit exactly as {@link pruneReaperAudit}
+ * does: `appendFileSync(path)` follows a link, so `ln -s events.jsonl
+ * reaper-audit.jsonl` routed every kill record into the link target (CWE-59,
+ * #1487). The check is the open itself ({@link AUDIT_APPEND_FLAGS}) plus an
+ * `fstat` of the descriptor that was opened — never a separate lstat. The same
+ * `fstat` refuses a HARD-linked audit (`nlink !== 1`): `ln <victim>
+ * reaper-audit.jsonl` passes every symlink check, and each append then lands in
+ * the victim (reproduced 2026-10-02). The prune is immune — it renames a new
+ * inode over the name.
+ *
  * @param {string} repoRoot
  * @param {object} record
  * @returns {void}
  */
 export function appendAuditRecord(repoRoot, record) {
   const target = auditPath(repoRoot);
+  let fd = null;
   try {
     mkdirSync(path.dirname(target), { recursive: true });
-    appendFileSync(target, `${JSON.stringify(record)}\n`, 'utf8');
+    fd = openSync(target, AUDIT_APPEND_FLAGS);
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new Error(NOT_A_REGULAR_FILE);
+    if (stats.nlink !== 1) {
+      throw new Error(`hard-linked (${stats.nlink} names) — an append would write into every one of them; left untouched`);
+    }
+    appendFileSync(fd, `${JSON.stringify(record)}\n`, 'utf8');
   } catch (err) {
-    process.stderr.write(
-      `orphan-reaper: could not append to ${REAPER_AUDIT_RELPATH}: ${err?.message ?? String(err)}\n`,
-    );
+    const why = err?.code === 'ELOOP' ? NOT_A_REGULAR_FILE : (err?.message ?? String(err));
+    process.stderr.write(`orphan-reaper: could not append to ${REAPER_AUDIT_RELPATH}: ${why}\n`);
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd); } catch { /* nothing left to release */ }
+    }
   }
 }
 
@@ -133,13 +195,30 @@ export function appendAuditRecord(repoRoot, record) {
  * data source {@link falseAlarmRate} needs (B5: "Dieselbe Datei ist die
  * Datenquelle für `reaper.false-alarm-window`").
  *
- * Returns the parsed records among the LAST `limit` non-empty lines, oldest
- * first — the same population a whole-file read sliced to `limit` lines yields,
- * read from a tail window instead. The window grows only while it holds fewer
- * complete lines than `limit`, so records larger than expected cannot shrink the
- * population; {@link pruneReaperAudit} bounds the worst case at the whole file.
- * The first line of a window that does not start at byte 0 is a fragment and is
- * dropped before anything is parsed.
+ * Returns the parsed records of the newest `limit` non-empty lines, oldest
+ * first, EXTENDED BACKWARDS until they hold the newest `limit` rate decisions
+ * ({@link isRateDecision}) or reach the start of the file. `limit` is
+ * `reaper.false-alarm-window`, which counts DECISIONS; a line window let
+ * `report` records — re-written by every scan for every long-lived foreign or
+ * unattributed process — push the decisions out, so the rate was judged on the
+ * newest handful (measured on HEAD 3479e1bf: 30 scans of 4 reports + 1 decision,
+ * window 50 → n 10, rate 0 against a true 6/30; #1487). Widened, never
+ * narrowed: the newest `limit` lines are always the suffix of the result, so a
+ * caller that wanted lines still finds them there.
+ *
+ * Read from a tail window that grows ×4 only while it holds fewer than `limit`
+ * lines or decisions; the first line of a window that does not start at byte 0
+ * is a fragment and is dropped before anything is parsed. Named ceiling
+ * (BV-004): the window stops at {@link REAPER_AUDIT_MAX_BYTES} (1 MiB, ~3,700
+ * report records of 285 bytes) — the prune's own ceiling, enforced HERE rather
+ * than assumed from the prune, because the prune refuses a linked audit and
+ * runs only after this read (a 40 MB link target was read whole, 64 MB window,
+ * 293 MB RSS per scan — #1487). Decisions older than the newest 1 MiB are not
+ * read; revisit if that ceiling is raised.
+ *
+ * The open is `readTailWindow`'s `noFollow` form: a symlinked, FIFO or other
+ * non-regular audit reads as `[]` — refused like the writers refuse it — and a
+ * planted FIFO can no longer block the scan child in `open`.
  *
  * A malformed line is dropped from the rate's population rather than counted,
  * because an unreadable record carries no decision to classify — and the rate
@@ -153,30 +232,49 @@ export function appendAuditRecord(repoRoot, record) {
 export function readAuditRecords(repoRoot, limit = REAPER_DEFAULTS.falseAlarmWindow) {
   const target = auditPath(repoRoot);
   const want = Math.max(1, limit);
-  let lines;
+  let span;
   try {
     let windowBytes = AUDIT_TAIL_START_BYTES;
     for (;;) {
-      const { text, cut } = readTailWindow(target, windowBytes);
+      const { text, cut } = readTailWindow(target, windowBytes, { noFollow: true });
       const all = text.split('\n');
       if (cut) all.shift();
-      lines = all.filter((l) => l.trim().length > 0);
-      if (!cut || lines.length >= want) break;
-      windowBytes *= 4;
+      span = newestSpan(all.filter((l) => l.trim().length > 0), want);
+      if (!cut || span.complete || windowBytes >= REAPER_AUDIT_MAX_BYTES) break;
+      windowBytes = Math.min(windowBytes * 4, REAPER_AUDIT_MAX_BYTES);
     }
   } catch {
     return [];
   }
-  const records = [];
-  for (const line of lines.slice(-want)) {
+  return span.records;
+}
+
+/**
+ * Walk a window's complete lines newest-first until the walk has covered `want`
+ * lines AND `want` rate decisions — the population {@link readAuditRecords}
+ * documents. `complete: false` means the window ran out first.
+ *
+ * @param {string[]} lines  Complete, non-empty lines in file order.
+ * @param {number} want
+ * @returns {{records: object[], complete: boolean}} records in file order
+ */
+function newestSpan(lines, want) {
+  const newestFirst = [];
+  let taken = 0;
+  let decisions = 0;
+  for (let i = lines.length - 1; i >= 0 && (taken < want || decisions < want); i -= 1) {
+    taken += 1;
+    let parsed;
     try {
-      const parsed = JSON.parse(line);
-      if (parsed && typeof parsed === 'object') records.push(parsed);
+      parsed = JSON.parse(lines[i]);
     } catch {
-      /* an unreadable line carries no decision to classify */
+      continue; // an unreadable line carries no decision to classify
     }
+    if (!parsed || typeof parsed !== 'object') continue;
+    newestFirst.push(parsed);
+    if (isRateDecision(parsed)) decisions += 1;
   }
-  return records;
+  return { records: newestFirst.reverse(), complete: taken >= want && decisions >= want };
 }
 
 /**
@@ -194,9 +292,7 @@ export function readAuditRecords(repoRoot, limit = REAPER_DEFAULTS.falseAlarmWin
  * @param {string} body
  */
 function replaceRegularFile(target, body) {
-  if (!lstatSync(target).isFile()) {
-    throw new Error('not a regular file (a symlink is never written through) — left untouched');
-  }
+  if (!lstatSync(target).isFile()) throw new Error(NOT_A_REGULAR_FILE);
   const tmp = `${target}.tmp-${process.pid}`;
   try {
     writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
@@ -242,7 +338,9 @@ export function pruneReaperAudit(repoRoot, {
   }
   if (size <= maxBytes) return 0;
   try {
-    const { text, cut } = readTailWindow(target, Math.min(keepBytes, maxBytes));
+    // `noFollow`: `statSync` above follows a link, so without it the prune read
+    // a linked target's tail before `replaceRegularFile` refused the write.
+    const { text, cut } = readTailWindow(target, Math.min(keepBytes, maxBytes), { noFollow: true });
     // A cut window starts mid-record; with no newline at all it is ONE record
     // larger than the window, and keeping any part of it would keep a fragment.
     const newline = text.indexOf('\n');
@@ -250,9 +348,10 @@ export function pruneReaperAudit(repoRoot, {
     replaceRegularFile(target, kept);
     return size - Buffer.byteLength(kept, 'utf8');
   } catch (err) {
-    process.stderr.write(
-      `orphan-reaper: could not prune ${REAPER_AUDIT_RELPATH}: ${err?.message ?? String(err)}\n`,
-    );
+    const why = err?.code === 'ELOOP' || err?.code === 'ERR_NOT_REGULAR_FILE'
+      ? NOT_A_REGULAR_FILE
+      : (err?.message ?? String(err));
+    process.stderr.write(`orphan-reaper: could not prune ${REAPER_AUDIT_RELPATH}: ${why}\n`);
     return 0;
   }
 }
@@ -264,9 +363,10 @@ export function pruneReaperAudit(repoRoot, {
  *
  * POPULATION (the number's denominator, stated because a rate without one is a
  * claim): audit records where the reaper judged a process a reapable orphan —
- * `decision` in `kill` | `dry-run` | `reject`. `report` records are excluded:
- * reporting a foreign or non-read-only process is the correct outcome, not a
- * firing of the kill signal.
+ * `decision` in `kill` | `dry-run` | `reject` ({@link isRateDecision}, the same
+ * predicate {@link readAuditRecords} reads back far enough for). `report`
+ * records are excluded: reporting a foreign or non-read-only process is the
+ * correct outcome, not a firing of the kill signal.
  *
  * FALSE ALARM: a record where that judgement was refuted afterwards —
  * `decision: 'reject'` (the identity re-check withdrew the candidate) or a kill
@@ -282,7 +382,7 @@ export function pruneReaperAudit(repoRoot, {
  */
 export function falseAlarmRate(auditRecords, windowSize = REAPER_DEFAULTS.falseAlarmWindow) {
   const all = Array.isArray(auditRecords) ? auditRecords : [];
-  const firings = all.filter((r) => r && (r.decision === 'kill' || r.decision === 'dry-run' || r.decision === 'reject'));
+  const firings = all.filter(isRateDecision);
   const window = windowSize > 0 ? firings.slice(-windowSize) : firings;
   const n = window.length;
   if (n < 10) return { rate: null, n };

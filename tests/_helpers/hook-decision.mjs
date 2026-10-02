@@ -40,6 +40,11 @@
  *
  * ## Helpers exported here
  *
+ *   - `isDeny` / `isAllow` — PREDICATE forms (#1027 N8) for a test that must first
+ *     SELECT which of several results denied (`[r1, r2].filter(isDeny)`) before it
+ *     asserts. `expectDeny` / `expectAllow` are built on the SAME contract
+ *     checks, so the envelope shape lives once — an inline `stdout.includes(
+ *     '"permissionDecision":"deny"')` copy is the B4 finding this replaces.
  *   - `expectDeny` / `expectAllow` / `expectWarn` — the three decision classes.
  *     `expectDeny` and `expectWarn` take their contains-needle as either a single
  *     substring (the original form, unchanged) or an ARRAY of substrings that must
@@ -69,6 +74,87 @@ import { expect } from 'vitest';
  */
 function exitCodeOf(result) {
   return result.code ?? result.status;
+}
+
+/** @param {{stdout: string}} result @returns {string[]} the non-blank stdout lines */
+function stdoutLines(result) {
+  return result.stdout.split('\n').filter((l) => l.trim().length > 0);
+}
+
+/**
+ * The deny-envelope contract, ONCE: `null` for a valid deny, else what broke it.
+ *
+ *   - exit 0 (never 2: `exit 2` throws the reason away)
+ *   - stdout carries exactly ONE non-blank line, and it parses as a JSON object
+ *   - top-level keys are EXACTLY `hookSpecificOutput` + `systemMessage`
+ *   - `hookEventName` is `PreToolUse`, `permissionDecision` is `deny`
+ *   - `permissionDecisionReason` is a non-empty string
+ *   - `systemMessage` opens with the ⛔ headline
+ *
+ * @param {{code?: number|null, status?: number|null, stdout: string}} result
+ * @returns {string|null}
+ */
+function denyViolation(result) {
+  const code = exitCodeOf(result);
+  if (code !== 0) return `exit code ${code}, want 0`;
+  if (typeof result.stdout !== 'string') return 'stdout was not captured';
+  const lines = stdoutLines(result);
+  if (lines.length !== 1) return `${lines.length} non-blank stdout lines, want exactly 1`;
+  let obj;
+  try { obj = JSON.parse(lines[0]); } catch { return 'stdout line is not JSON'; }
+  if (obj === null || typeof obj !== 'object') return 'stdout line is not a JSON object';
+  const keys = Object.keys(obj).sort().join(',');
+  if (keys !== 'hookSpecificOutput,systemMessage') {
+    return `top-level keys [${keys}], want [hookSpecificOutput,systemMessage]`;
+  }
+  const out = obj.hookSpecificOutput;
+  if (out?.hookEventName !== 'PreToolUse') return `hookEventName ${out?.hookEventName}, want PreToolUse`;
+  if (out?.permissionDecision !== 'deny') return `decision ${out?.permissionDecision}, want deny`;
+  if (typeof out.permissionDecisionReason !== 'string' || out.permissionDecisionReason.length === 0) {
+    return 'decision reason is not a non-empty string';
+  }
+  if (typeof obj.systemMessage !== 'string' || !obj.systemMessage.startsWith('⛔')) {
+    return 'systemMessage does not open with the ⛔ headline';
+  }
+  return null;
+}
+
+/**
+ * The allow contract, ONCE: exit 0 AND nothing decision-shaped on stdout.
+ *
+ * @param {{code?: number|null, status?: number|null, stdout: string}} result
+ * @returns {string|null}
+ */
+function allowViolation(result) {
+  const code = exitCodeOf(result);
+  if (code !== 0) return `exit code ${code}, want 0`;
+  // Uncaptured stdout is NOT empty stdout: reading it as an allow would turn a
+  // spawn that never piped stdout into an assert-nothing.
+  if (typeof result.stdout !== 'string') return 'stdout was not captured';
+  if (result.stdout.trim() !== '') return 'stdout is not empty';
+  return null;
+}
+
+/**
+ * Predicate: did this PreToolUse hook result DENY under the full envelope contract?
+ * For SELECTING among results; assert with `expectDeny`, which shares the check.
+ *
+ * @param {{code?: number|null, status?: number|null, stdout: string}} result
+ * @returns {boolean}
+ */
+export function isDeny(result) {
+  return denyViolation(result) === null;
+}
+
+/**
+ * Predicate: did this PreToolUse hook result ALLOW (exit 0, empty stdout)?
+ * A WARN is NOT an allow here — it carries a `systemMessage` on stdout.
+ *
+ * @param {{code?: number|null, status?: number|null, stdout: string}} result
+ * @returns {boolean}
+ */
+export function isAllow(result) {
+  return allowViolation(result) === null;
 }
 
 /**
@@ -139,18 +225,8 @@ function expectContainsAll(actual, expected) {
  * @returns {{hookSpecificOutput: {hookEventName: string, permissionDecision: string, permissionDecisionReason: string}, systemMessage: string}}
  */
 export function expectDeny(result, expectedReason, opts = {}) {
-  expect(exitCodeOf(result)).toBe(0);
-
-  const lines = result.stdout.split('\n').filter((l) => l.trim().length > 0);
-  expect(lines).toHaveLength(1);
-
-  const obj = JSON.parse(lines[0]);
-  expect(Object.keys(obj).sort()).toEqual(['hookSpecificOutput', 'systemMessage']);
-  expect(obj.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-  expect(obj.hookSpecificOutput.permissionDecision).toBe('deny');
-  expect(typeof obj.hookSpecificOutput.permissionDecisionReason).toBe('string');
-  expect(obj.hookSpecificOutput.permissionDecisionReason.length).toBeGreaterThan(0);
-  expect(obj.systemMessage.startsWith('⛔')).toBe(true);
+  expect(denyViolation(result), `not a deny envelope — stdout: ${result.stdout}`).toBeNull();
+  const obj = JSON.parse(stdoutLines(result)[0]);
 
   const isOptionBag =
     expectedReason !== null &&
@@ -178,8 +254,7 @@ export function expectDeny(result, expectedReason, opts = {}) {
  * @param {{code?: number|null, status?: number|null, stdout: string}} result
  */
 export function expectAllow(result) {
-  expect(exitCodeOf(result)).toBe(0);
-  expect(result.stdout.trim()).toBe('');
+  expect(allowViolation(result), `not an allow — stdout: ${result.stdout}`).toBeNull();
 }
 
 /**

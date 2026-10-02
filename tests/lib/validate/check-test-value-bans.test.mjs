@@ -78,6 +78,10 @@
  *      a helper whose only clock token is a shorthand/positional `now` becomes a
  *      "subject", and a date pinned next to it is reported (+20 seamed pairs in
  *      15 files measured 2026-10-01, e.g. `expectDeny` in enforce-scope, #1478).
+ *  22. B5 counts a handover of the REAL clock as clock control — `const now =
+ *      Date.now(); fn(now)`, `{ now }` from `new Date()`, `{ now: new Date() }`
+ *      — so a block that reads the wall clock and pins a date stays silent: a
+ *      genuine time bomb hidden by the rule built to find it (#1487 item 8).
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -534,6 +538,53 @@ describe('check-test-value-bans — B5 date-literal time bombs', () => {
       line: 10,
       ban: 'B5-date-time-bomb',
       match: ".toBe('2026-08-05') — toActivationMetadata() called without its clock seam",
+    });
+  });
+
+  // #1487 item 8: each body hands over a clock-named value that IS the wall clock.
+  it.each([
+    [
+      'positional `now` from Date.now()',
+      ['  const now = Date.now();', '  const meta = toActivationMetadata(learning, now);'],
+    ],
+    [
+      '`{ now }` from new Date()',
+      ['  const now = new Date();', '  const meta = toActivationMetadata(learning, { now });'],
+    ],
+    [
+      '`now:` reading the clock inline',
+      [
+        '  const learning = makeLearning();',
+        '  const meta = toActivationMetadata(learning, { now: new Date() });',
+      ],
+    ],
+    [
+      '`now:` fed from a real-clock binding',
+      [
+        '  const nowMs = Date.now();',
+        '  const meta = toActivationMetadata(learning, { now: nowMs - DAY_MS });',
+      ],
+    ],
+  ])('flags a pinned date when the clock it hands over is the real one (%s)', (_shape, body) => {
+    const { json } = scan({
+      'tests/real-clock.test.mjs': [
+        EMITTER_IMPORT,
+        '',
+        ...SEAM_BLOCK,
+        '',
+        "it('derives the per-type expiry', () => {",
+        ...body,
+        "  expect(meta.expiresAt).toBe('2026-08-05');",
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/real-clock.test.mjs',
+      line: 11,
+      ban: 'B5-date-time-bomb',
     });
   });
 

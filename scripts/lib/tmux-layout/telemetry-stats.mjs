@@ -24,6 +24,18 @@ const EVENTS_PATH = '.orchestrator/metrics/events.jsonl';
 const TMUX_EVENT_PREFIX = 'tmux-layout.';
 
 /**
+ * Events window this reader needs retained (#1401 part 3): UNBOUNDED, hence
+ * `null`. The stats are an ALL-TIME rate, so every record ever written is in
+ * scope and no finite `events-rotation` retention satisfies it — a number here
+ * could only be invented. Truncation is reported by the envelope's own
+ * `complete: false` (pruned archives leave rotation tombstones), not by a
+ * retention floor. Read by `scripts/lib/events-retention-banner.mjs`.
+ *
+ * @type {number|null}
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+
+/**
  * Read the tmux-layout events ACROSS rotation boundaries, together with the
  * honesty verdict of that read.
  *

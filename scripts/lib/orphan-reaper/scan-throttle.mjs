@@ -7,7 +7,7 @@
  * `ps` or kill-ladder code the detached scan child loads.
  */
 
-import { lstatSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { REAPER_DEFAULTS, underRepo } from './defaults.mjs';
@@ -24,31 +24,56 @@ export const SCAN_MARKER_RELPATH = '.orchestrator/tmp/reaper-last-scan';
  * file. Writing the marker is the CALLER's job ({@link touchScanMarker}), so
  * this stays a read-only predicate a hook can call cheaply.
  *
+ * `lstat`, never `stat`: a symlinked (or otherwise non-regular) marker is not
+ * one {@link touchScanMarker} wrote, and `stat` read the TARGET's mtime — so a
+ * link to any often-written file (`events.jsonl`) throttled every scan for good
+ * (#1487). Such a marker counts as absent, i.e. "scan". That is the fail-safe
+ * direction for this throttle: too many scans cost one detached child per hook
+ * fire — visible in the process table, and in the `scan_completed` rate
+ * whenever a scan finds anything — in an opt-in state (`reaper.enabled`
+ * defaults false); too few silently disable the reaper, whose
+ * orphans were measured at 86-588 % CPU and up to 8 GB RSS (HR-107), and a
+ * disabled reaper is a state nothing can falsify (HR-105).
+ *
  * @param {string} markerPath   Absolute path — build it with {@link scanMarkerPath}.
  * @param {number} nowMs
  * @param {number} [minIntervalSeconds]
  * @param {object} [opts]
- * @param {(p: string) => {mtimeMs: number}} [opts.statFn]
+ * @param {(p: string) => {mtimeMs: number, isFile?: () => boolean}} [opts.statFn]
+ *   Defaults to `lstatSync`; an injected stat without `isFile` skips the
+ *   regular-file check (test seam).
  * @returns {boolean}
  */
 export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEFAULTS.minScanIntervalSeconds, {
-  statFn = statSync,
+  statFn = lstatSync,
 } = {}) {
   if (typeof markerPath !== 'string' || markerPath.length === 0) return false;
-  let mtimeMs;
+  let stats;
   try {
-    mtimeMs = statFn(markerPath)?.mtimeMs;
+    stats = statFn(markerPath);
   } catch {
     return true; // no marker yet → first scan
   }
+  if (typeof stats?.isFile === 'function' && !stats.isFile()) return true;
+  const mtimeMs = stats?.mtimeMs;
   if (typeof mtimeMs !== 'number' || Number.isNaN(mtimeMs)) return true;
+  // A marker stamped in the future (`touch -t`, a clock stepped backwards) made
+  // the age negative, so every fire read "too soon" — and the marker is only
+  // re-stamped AFTER a scan, so the reaper never scanned again (#1487). Fail
+  // toward a scan, the same direction as every other unreadable marker here.
+  if (mtimeMs > nowMs) return true;
   return (nowMs - mtimeMs) >= minIntervalSeconds * 1000;
 }
 
 /**
  * Stamp the throttle marker. Best-effort and never throws — a marker that could
  * not be written means the next scan runs, which is the safe direction for a
- * read-only probe.
+ * read-only probe (the reasoning is on {@link shouldScanNow}). Callers must not
+ * read a `false` as a stamped throttle: the hooks' `maybeTriggerOrphanScan`
+ * returns it as `reason: 'spawned-unthrottled'`. That return value is the whole
+ * record — both hook entrypoints discard it, and nothing writes it to an event
+ * or a log — so in production an unwritable marker shows only as one detached
+ * scan child per hook fire.
  *
  * A marker path that is a symlink or not a regular file is left alone and
  * reported as not written: `writeFileSync` follows a link, so a marker linked to

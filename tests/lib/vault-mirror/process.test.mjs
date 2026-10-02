@@ -211,6 +211,114 @@ describe('emitAction', () => {
     // path alongside the relativized `path` (e.g. { path: rel, filePath: path }).
     expect(lines[0]).not.toHaveProperty('filePath');
   });
+
+  // BUG CAUGHT: a plain `startsWith(vaultDir)` + `slice(len + 1)` treated a
+  // sibling dir sharing the root as a string prefix as inside the vault, and
+  // dropped the first character of the relative path when the root is `/`.
+  it.each([
+    ['sibling dir sharing the root as a prefix stays unchanged', '/vault', '/vault2/x.md', '/vault2/x.md'],
+    ['filesystem-root vault keeps the first path character', '/', '/40-learnings/r/x.md', '40-learnings/r/x.md'],
+  ])('%s', async (_label, vaultDir, filePath, expected) => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
+    });
+    const { emitAction } = await import('@lib/vault-mirror/process.mjs');
+    const { lines } = await captureStdout(() =>
+      emitAction({ action: 'created', path: filePath, kind: 'learning', id: 'my-id', vaultDir }),
+    );
+    expect(lines[0].path).toBe(expected);
+  });
+});
+
+// ── SKIP stderr lines (#1487 item 9) ──────────────────────────────────────────
+
+// BUG CAUGHT: the five `SKIP …:` stderr lines printed the ABSOLUTE vault path
+// (the vault lives under the operator's home dir) while the stdout record for
+// the same skip already carried the vault-relative one. session-end pipes
+// stderr into its own output, so the home path reached session transcripts.
+describe('SKIP stderr lines carry the vault-relative path, never the vault root', () => {
+  const VAULT = '/home/operator/vault';
+  const HANDWRITTEN = '---\nid: x\ntitle: Manual\n---\n\nHand written.\n';
+  const FOREIGN_GENERATOR = '---\nid: x\n_generator: some-other-tool@2\n---\n';
+  // Same generator, different id → the learning branch takes the disambig path.
+  const OURS_OTHER_ID = '---\nid: someone-else\nupdated: 2026-04-13\n_generator: session-orchestrator-vault-mirror@1\n---\n';
+
+  const LEARNING = {
+    id: 'a1b2c3d4-0001-4000-8000-000000000001',
+    type: 'architectural',
+    subject: 'explicit-contracts',
+    insight: 'Prefer explicit contracts',
+    evidence: 'Three modules broke',
+    confidence: 0.9,
+    source_session: 'session-2026-04-13',
+    created_at: '2026-04-13T10:00:00Z',
+  };
+  const SESSION = {
+    session_id: 'session-2026-04-13',
+    session_type: 'feature',
+    started_at: '2026-04-13T08:00:00Z',
+    completed_at: '2026-04-13T10:00:00Z',
+    duration_seconds: 7200,
+    total_waves: 1,
+    total_agents: 2,
+    total_files_changed: 4,
+    agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
+    waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
+    effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+  };
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock('node:child_process');
+  });
+
+  it.each([
+    ['learning hand-written', 'learning', 'SKIP hand-written: ', () => HANDWRITTEN],
+    ['learning unknown generator', 'learning', 'SKIP unknown generator: ', () => FOREIGN_GENERATOR],
+    [
+      'learning hand-written (disambig)',
+      'learning',
+      'SKIP hand-written (disambig): ',
+      (p) => (p.endsWith('explicit-contracts.md') ? OURS_OTHER_ID : HANDWRITTEN),
+    ],
+    ['session hand-written', 'session', 'SKIP hand-written: ', () => HANDWRITTEN],
+    ['session unknown generator', 'session', 'SKIP unknown generator: ', () => FOREIGN_GENERATOR],
+  ])('%s', async (_label, kind, prefix, contentFor) => {
+    const actualExists = fs.existsSync;
+    const actualRead = fs.readFileSync;
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => (String(p).startsWith(VAULT) ? true : actualExists(p)));
+    vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) =>
+      String(p).startsWith(VAULT) ? contentFor(String(p)) : actualRead(p, ...rest),
+    );
+    vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
+    vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
+    const stderr = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      stderr.push(String(chunk));
+      return true;
+    });
+
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
+    });
+    const { processLearning, processSession } = await import('@lib/vault-mirror/process.mjs');
+    const run = kind === 'learning'
+      ? () => processLearning(LEARNING, 1, { vaultDir: VAULT, dryRun: true, kind })
+      : () => processSession(SESSION, 1, { vaultDir: VAULT, dryRun: true, kind });
+    const { lines } = await captureStdout(run);
+
+    expect(lines).toHaveLength(1);
+    expect(lines[0].action).toBe('skipped-handwritten');
+    const skipLines = stderr.filter((s) => s.startsWith('SKIP '));
+    // Both channels name the SAME vault-relative file; the vault root appears in neither.
+    expect(skipLines).toEqual([`${prefix}${lines[0].path}\n`]);
+    expect(lines[0].path.startsWith(kind === 'learning' ? '40-learnings/' : '50-sessions/')).toBe(true);
+    expect(stderr.join('')).not.toContain(VAULT);
+  });
 });
 
 // ── processLearning ───────────────────────────────────────────────────────────

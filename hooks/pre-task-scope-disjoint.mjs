@@ -114,10 +114,14 @@
  *
  * A deny-capable hook on the DISPATCH path has an asymmetric blast radius: a
  * false positive blocks every agent of the session (the guard becomes a session
- * outage), while a false negative is a double-assignment that three later gates
- * still catch (`validate-wave-scope.mjs`, `enforce-scope.mjs` at write time, and
- * the W5 verification pass). Fail-closed is right for a WRITE guard; it is wrong
- * here. Each row below is a deliberate choice, not an oversight:
+ * outage), while a false negative of the COLLISION check is a double-assignment
+ * that three later gates still catch (`validate-wave-scope.mjs`,
+ * `enforce-scope.mjs` at write time, and the W5 verification pass). The #1485
+ * stale-base check (row 15) has no such later gate — a missed stale base is an
+ * agent editing old code — so it is kept fail-open by a different rule: it
+ * denies only on a MEASUREMENT, and every unknown is ALLOW plus a record.
+ * Fail-closed is right for a WRITE guard; it is wrong here. Each row below is a
+ * deliberate choice, not an oversight:
  *
  *   | # | Condition                              | Decision            | Why |
  *   |---|----------------------------------------|---------------------|-----|
@@ -132,14 +136,17 @@
  *   | 9 | `findScopeCollisions` → not evaluable   | WARN + ALLOW        | the library says "not evaluable". Denying on a verdict with no witness is an assertion without evidence |
  *   |10 | same agent id re-dispatched         | ALLOW; predecessor pruned only when FINISHED | a retry after a failed agent is legitimate (a failed agent is finished), so the guard must not self-lock. #1480 B4: an unfinished predecessor is KEPT as a claim — a third agent hitting only its scope still collides. With distinct `tool_use_id`s on both it is an ordinary partner (row 11); without them it never collides with its own retry. Replaced WITHOUT a probe only where no claim is lost: the same `tool_use_id` (the same dispatch evaluated again), or — neither carrying an id — a predecessor wholly covered by the retry's scope |
  *   |10a| collision, but EVERY colliding prior agent has FINISHED (positive evidence) | ALLOW (+ prune) | the sequential repair pass. Its ledger records are pruned, so the state cannot re-block the next one either |
- *   |11 | collision with a prior agent still IN FLIGHT | **DENY**       | the one case this hook exists for |
+ *   |11 | collision with a prior agent still IN FLIGHT | **DENY**       | the case this hook was built for (#1020) |
  *   |12 | unexpected throw                       | ALLOW + stderr      | as row 2 |
  *   |13 | liveness probe throws / no positive evidence (no record, unknown result form) | treat as IN FLIGHT | keeps row 11 biting; the blind case is bounded by `IN_FLIGHT_TTL_MS`, never unbounded. A dispatch re-opened by a SendMessage with no completion after it is in flight outright, without TTL |
  *   |14 | ledger lock not acquirable in `LEDGER_LOCK_TIMEOUT_MS` | run UNLOCKED (degraded) | the lock removes the read-modify-write race (below); failing to take it must not deny, so the cycle degrades to the pre-lock behaviour |
+ *   |15 | `isolation: "worktree"`, `worktree.baseRef` not `"head"`, `merge-base --is-ancestor HEAD origin/HEAD` exits 1 in a full-history repo whose FETCH_HEAD is < 24 h old | **DENY**, no ledger write | #1485: the agent would branch from a base missing commits of HEAD and edit OLD code. Every non-measurement — no origin/HEAD, shallow, `stale-remote-ref`, git error — is ALLOW + a `skipped` record. No ledger write, so the in-place re-dispatch the deny advises meets no phantom claim. A collision DENY (row 11) wins the terminal emit; this one then goes to stderr |
  *
  * Every row that reaches a verdict from `decide()` — 5–11 and 13–14 — also
  * leaves an event record (§ Observability), so "which row fired" is answerable
- * after the fact and not only in the moment. Rows 1–4 emit nothing (no decision
+ * after the fact and not only in the moment. Row 15 is decided outside
+ * `decide()` and leaves its own `worktree_base_checked` record for EVERY
+ * worktree dispatch, allow and skip included. Rows 1–4 emit nothing (no decision
  * was made), and neither do the two crash rows 2 and 12: a hook that fell over
  * cannot describe itself, which is precisely why the GUARD INACTIVE banner on
  * stderr is the signal there.
@@ -229,6 +236,7 @@ import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 
@@ -307,14 +315,14 @@ const SHAPE_NONE = 'none';
 const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
 
 /**
- * The worktree-base observability record (#1413).
+ * The worktree-base observability record (#1413; carries the #1485 `decision`).
  *
  * Same `wave_dispatch` domain and same `_checked` verb as `SCOPE_EVENT`, and
  * written for EVERY `isolation: "worktree"` dispatch rather than only the
  * alarming one. That is HR-105 applied at the source: a numerator-only stream
- * cannot tell "genuinely rare" from "silently broken", and the firing rate this
- * warning must stay under is then unfalsifiable. With every outcome in one
- * stream the rate is `stale:true / all records of this name`.
+ * cannot tell "genuinely rare" from "silently broken", and the firing rate of
+ * the #1485 deny is then unfalsifiable. With every outcome in one stream the
+ * rate is `decision:"deny" / all records of this name`.
  *
  * #1424 widened "every outcome" from two to three: the `stale: true|false`
  * split was already covered, but each NON-measurement (peer STATE.md, no
@@ -325,9 +333,6 @@ const SCOPE_EVENT = 'orchestrator.wave_dispatch.scope_checked';
  * stays silent (HR-101: it is ~90% of all dispatches).
  */
 const WORKTREE_BASE_EVENT = 'orchestrator.wave_dispatch.worktree_base_checked';
-
-/** State-dir candidates, in the same order `waveKeyOf()` probes them. */
-const STATE_DIR_CANDIDATES = ['.pi', '.cursor', '.codex', '.claude'];
 
 /**
  * The receive-side instruction line `renderScopeEchoInstruction()` renders and
@@ -1440,61 +1445,148 @@ export function listTrackedFiles(cwd) {
 }
 
 // ---------------------------------------------------------------------------
-// Stale worktree base (#1413) — a WARNING, never a decision
+// Stale worktree base (#1413 → #1485) — a MEASURED mismatch DENIES the dispatch
 //
 // `isolation: "worktree"` makes the HARNESS create `<repo>/.claude/worktrees/
 // agent-<hex>`; no code in this repo creates it and the `Agent` payload carries
-// no base-ref field (the 147-dispatch key census in the module docblock). The
-// base is the SESSION-START commit, and it does not follow a mid-session commit:
-// measured 2026-09-19 (session s18), worktrees created 25 minutes AFTER commit
-// `240efda6` still stood on its parent `8f15f77b`. A fix agent then silently
-// edits the OLD code, and its test run is structurally red on top — `validate-
-// plugin` is vitest's globalSetup and `check-guard-requires-parity.mjs` compares
-// against `git show HEAD:` inside the stale worktree.
+// no base-ref field (the 147-dispatch key census in the module docblock). Which
+// commit it branches from is documented harness behaviour (code.claude.com/docs
+// /en/worktrees § "Choose the base branch", read 2026-10-02): "Subagent worktrees
+// use the same base branch as `--worktree`, so they branch from your repository's
+// default branch unless `worktree.baseRef` is set to `"head"`" — `"fresh"` (the
+// default) is `origin/HEAD`, `"head"` is the current local HEAD.
 //
-// We have no lever on the base, so the only available fix is to be LOUD. This
-// never touches the verdict: the two functions below are TOTAL (every failure
-// resolves to silence), and the caller ignores their result for the decision.
+// That REPLACES the #1413 model ("the base is the session-start commit"): it fit
+// s18 only because that session ran on `main`, where origin/main WAS the start
+// commit. #1485 measured the general case on a feature branch — agent worktrees
+// stood on `main` (`0efb3e97`), six commits behind the branch HEAD (`47c49652`),
+// so the agents silently edited old code. Owner decision 2026-10-02, option (a):
+// check with `git merge-base --is-ancestor` before dispatch and stop on mismatch.
+//
+// ONLY A MEASURED MISMATCH DENIES (`is-ancestor` exit 1 in a full-history repo,
+// against a cached origin ref the harness will branch from as-is). Every
+// non-measurement — no origin/HEAD, a shallow clone, a cached ref the harness
+// refetches first (`stale-remote-ref`), a git failure, an exit code other than
+// 0/1, a throw — is `stale: null` + `skipped`, recorded and ALLOWED: unknown is
+// not mismatch, and this hook guards the dispatch path, where a wrong deny is a
+// session outage (§ the fail-open note at the bottom of this file).
+//
+// Where the hook's base and the harness's can still DIVERGE (Claude Code
+// 2.1.287 bundle, read 2026-10-02):
+//   - a settings layer this hook cannot read (`harnessBaseRef()`) — either way,
+//     wrong deny or missed mismatch, from any `base_ref_source`;
+//   - no `refs/remotes/origin/HEAD` symref: the harness falls back to
+//     `origin/main|master`, the hook skips `no-origin-head` — a missed mismatch
+//     only, never a wrong deny (measured 2026-10-02: 0 of 28 local repos lack
+//     the symref);
+//   - a stale FETCH_HEAD whose refetch then FAILS (offline): the harness keeps
+//     the cached ref, so the skipped deny would have been right — the price of
+//     not knowing in advance whether a fetch will succeed.
 // ---------------------------------------------------------------------------
+
+/** `worktree.baseRef` values the docs define; anything else sets nothing here. */
+const BASE_REF_VALUES = new Set(['head', 'fresh']);
+
+/**
+ * The harness refetches origin before branching a `"fresh"` worktree when
+ * FETCH_HEAD is older than this (Claude Code 2.1.287 bundle, read 2026-10-02:
+ * `Date.now() - mtimeMs > 86400000`, then `git fetch origin <default>` with a
+ * 5 s timeout). Revisit when the harness changes that constant — a mismatch
+ * either skips a real deny or lets a refetched base be denied again.
+ */
+const FETCH_REFRESH_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The harness's effective `worktree.baseRef`, as far as this hook can see it,
+ * and WHICH layer decided it — read in the documented precedence order (code.
+ * claude.com/docs/en/settings § "Settings precedence", read 2026-10-02): local
+ * → project → user, the FIRST file that sets the key to a defined value wins.
+ * No file sets it → `'fresh'` from `'default'`.
+ *
+ * `settingsRoot` is the SESSION ROOT, not the hook payload's `cwd`: that `cwd`
+ * follows the session's `cd` (docs/en/hooks § "cwd follows Claude"), while the
+ * project settings the harness applies belong to the root it started in.
+ *
+ * Read only on the rare `worktree` branch (14 of 147 measured dispatches carried
+ * `isolation` at all), so the hot dispatch path never pays these reads.
+ *
+ * NAMED CEILING (BV-004): blind to the two layers ABOVE local — managed settings
+ * and the `--settings` CLI flag. The error points BOTH ways: a `"head"` there
+ * with no visible file setting the key reads as `default` → `fresh` → a WRONG
+ * DENY when HEAD is ahead of origin/HEAD; a `"fresh"` there shadowing a visible
+ * `"head"` → a MISSED mismatch. Not read on purpose: `--settings` reaches no
+ * hook, and managed settings arrive through several delivery mechanisms (a
+ * `managed-settings.json` in a system dir, MDM/OS policy, server-managed settings
+ * from the claude.ai console, an embedding host's SDK option — docs settings
+ * § "Managed settings"), combined by their own intra-tier rules; reading the one
+ * file among them would turn an honest "invisible" into a partial view that
+ * still decides. The wrong-deny population is countable instead (HR-105): a
+ * hidden `"head"` with no visible file setting the key yields `decision:"deny"`
+ * records with `base_ref_source:"default"`; a hidden `"head"` shadowed by a
+ * visible `"fresh"` yields them under that file's source instead. Revisit if
+ * such a deny is reported in a session whose `/status` names a managed or
+ * `--settings` source carrying `worktree.baseRef`.
+ *
+ * @param {string} settingsRoot
+ * @returns {{baseRef: 'head'|'fresh', source: 'local'|'project'|'user'|'default'}}
+ */
+function harnessBaseRef(settingsRoot) {
+  const userDir = (process.env.CLAUDE_CONFIG_DIR || '').trim() || path.join(homedir(), '.claude');
+  for (const [source, file] of [
+    ['local', path.join(settingsRoot, '.claude', 'settings.local.json')],
+    ['project', path.join(settingsRoot, '.claude', 'settings.json')],
+    ['user', path.join(userDir, 'settings.json')],
+  ]) {
+    try {
+      const value = JSON.parse(readFileSync(file, 'utf8'))?.worktree?.baseRef;
+      if (BASE_REF_VALUES.has(value)) return { baseRef: value, source };
+    } catch { /* absent or unparseable — the next layer decides */ }
+  }
+  return { baseRef: 'fresh', source: 'default' };
+}
+
+/** Where each `base_ref_source` lives, for the operator-facing deny text. */
+const BASE_REF_SOURCE_LABEL = {
+  local: '.claude/settings.local.json',
+  project: '.claude/settings.json',
+  user: 'user settings.json',
+  default: 'the default — no settings file this hook can read sets it',
+};
 
 /**
  * Facts for the worktree-base check, as a DISCRIMINATED record with three
  * outcomes rather than two (#1424):
  *
- *   - `{stale: true|false, head, session_start_ref, subagent_type?}` — measured.
+ *   - `{stale: true|false, head, base, base_ref, base_ref_source, missing_commits?,
+ *     subagent_type?}` — measured. `stale` means "the worktree would MISS commits
+ *     of HEAD": `git merge-base --is-ancestor HEAD <base>` exited 1 in a repo
+ *     with full history and a FETCH_HEAD younger than `FETCH_REFRESH_MS` (so
+ *     the harness branches from that cached ref without refetching it first).
+ *     A base AHEAD of HEAD (origin moved on, HEAD contained)
+ *     is not stale — nothing of HEAD is lost. `base_ref_source` names the
+ *     settings layer that decided `base_ref` (`harnessBaseRef()`), so a wrong
+ *     deny from a layer this hook cannot read stays countable (HR-105).
  *   - `{stale: null, skipped: <reason>}` — the dispatch WAS on the `worktree`
  *     branch, but the question could not be answered honestly. Still emitted,
- *     because HR-105 needs the denominator: while every such case returned bare
- *     `null` and the caller emitted nothing, "the check never had anything to
- *     say" and "the check was silently disarmed" both read as zero records —
- *     precisely the shape this event exists to close.
- *   - `null` — `isolation !== 'worktree'`. SILENT by construction, and the one
- *     outcome that must stay so: `isolation` appeared in 14 of 147 measured
- *     dispatches, so recording the other ~90% would put the denominator on the
- *     whole hot dispatch path (HR-101).
+ *     because HR-105 needs the denominator, and never denied (unknown ≠ mismatch).
+ *   - `null` — `isolation !== 'worktree'`. SILENT by construction: recording the
+ *     other ~90% of dispatches would put the denominator on the hot path (HR-101).
  *
- * IDENTITY GATE (`.claude/rules/identity-and-locks.md`): `session-start-ref`
- * lives in STATE.md, a SHARED working-copy artefact that routinely belongs to a
- * peer session. It is read only when STATE.md's own `session-id` equals this
- * process's raw id (hook payload `session_id`, else `CLAUDE_CODE_SESSION_ID`) —
- * a process-local witness REPLACES the shared one, never unions with it. On
- * mismatch, absence or any read failure this reports `stale: null`: a confident
- * warning about somebody else's session is worse than no warning at all. The
- * test runs PER CANDIDATE (`continue`, not `break`) — see the loop below.
- *
- * `parseStateMd` is imported DYNAMICALLY and only on the rare `worktree` branch
- * (14 of 147 measured dispatches carried `isolation` at all): it is a leaf module
- * with zero imports and already inside the committed hook-import closure, so
- * reuse costs no new edge, and binding it late keeps a load failure catchable
- * instead of disarming the guard at ESM link time (§ #993 late-bound deps).
+ * TWO DIRECTORIES, deliberately different: git measures in `cwd` (the payload's,
+ * which follows the session's `cd` — git finds the enclosing repo from any
+ * subdirectory, and inside an entered worktree `"head"` means THAT worktree's
+ * HEAD); settings are read at the session root — `$CLAUDE_PROJECT_DIR`, which
+ * the harness exports to every hook and keeps put across `cd` and worktree entry
+ * (docs/en/hooks § "Worktrees are different"), else the git toplevel of `cwd`,
+ * else `cwd` itself.
  *
  * @param {{tool_input?: unknown}} input — the raw hook payload
- * @param {string} projectDir
- * @param {string} sessionId — `input.session_id`, or `'no-session'`
- * @returns {Promise<{head: string, session_start_ref: string, stale: boolean,
- *   subagent_type?: string}|{stale: null, skipped: string}|null>}
+ * @param {string} cwd — the hook payload's `cwd`
+ * @returns {{head: string, base: string, base_ref: 'head'|'fresh',
+ *   base_ref_source: 'local'|'project'|'user'|'default', stale: boolean,
+ *   missing_commits?: number, subagent_type?: string}|{stale: null, skipped: string}|null}
  */
-async function worktreeBaseFacts(input, projectDir, sessionId) {
+function worktreeBaseFacts(input, cwd) {
   // The applicability gate sits OUTSIDE the try on purpose: everything below it
   // resolves to a `skipped` RECORD, so a throw here must not be able to mint one
   // for a dispatch that was never on the `worktree` branch at all.
@@ -1503,97 +1595,105 @@ async function worktreeBaseFacts(input, projectDir, sessionId) {
   if (toolInput.isolation !== 'worktree') return null;
 
   try {
-    const ownId = sessionId && sessionId !== 'no-session'
-      ? sessionId
-      : (process.env.CLAUDE_CODE_SESSION_ID || '');
-    if (!ownId) return { stale: null, skipped: 'no-own-id' };
-
-    const { parseStateMd } = await import(
-      pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'state-md', 'yaml-parser.mjs')).href
-    );
-
-    // #1424: the identity test lives INSIDE the loop. Breaking at the first
-    // PARSEABLE STATE.md and testing `session-id` afterwards meant a single
-    // left-over `.pi/STATE.md` — `.pi` sorts before `.claude` in
-    // STATE_DIR_CANDIDATES — disarmed the check for a session whose own
-    // `.claude/STATE.md` sat right there, readable and matching. `sawStateMd`
-    // keeps the two silences apart afterwards: "nothing to read" is a different
-    // fact from "read, and none of it was mine".
-    let frontmatter = null;
-    let sawStateMd = false;
-    for (const dir of STATE_DIR_CANDIDATES) {
-      try {
-        const parsed = parseStateMd(readFileSync(path.join(projectDir, dir, 'STATE.md'), 'utf8'));
-        if (!parsed?.frontmatter) continue;
-        sawStateMd = true;
-        if (parsed.frontmatter['session-id'] !== ownId) continue;
-        frontmatter = parsed.frontmatter;
-        break;
-      } catch { /* try the next state dir */ }
-    }
-    if (frontmatter === null) {
-      return { stale: null, skipped: sawStateMd ? 'identity-mismatch' : 'no-state-md' };
-    }
-
-    const startRef = typeof frontmatter['session-start-ref'] === 'string'
-      ? frontmatter['session-start-ref'].trim()
-      : '';
-    if (startRef === '') return { stale: null, skipped: 'no-start-ref' };
+    /** @param {string[]} args */
+    const git = (args) => execFileSync('git', args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 5_000,
+    }).trim();
 
     let head = '';
-    try {
-      head = execFileSync('git', ['rev-parse', 'HEAD'], {
-        cwd: projectDir,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'ignore'],
-      }).trim();
-    } catch {
-      return { stale: null, skipped: 'git-error' };
-    }
+    try { head = git(['rev-parse', '--verify', 'HEAD^{commit}']); } catch { /* below */ }
     if (head === '') return { stale: null, skipped: 'git-error' };
 
-    const facts = { head, session_start_ref: startRef, stale: head !== startRef };
+    let settingsRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim();
+    if (settingsRoot === '') {
+      try { settingsRoot = git(['rev-parse', '--show-toplevel']); } catch { /* below */ }
+    }
+    const { baseRef, source } = harnessBaseRef(settingsRoot || cwd);
+    const facts = { head, base_ref: baseRef, base_ref_source: source };
     if (typeof toolInput.subagent_type === 'string' && toolInput.subagent_type !== '') {
       facts.subagent_type = toolInput.subagent_type;
     }
-    return facts;
+    // `"head"` inside a worktree resolves to THAT worktree's HEAD (docs, same
+    // section) — the very `git rev-parse HEAD` above, run in `cwd`.
+    if (baseRef === 'head') return { ...facts, base: head, stale: false };
+
+    // `"fresh"`: origin/HEAD. Not cached locally → the harness fetches, or
+    // falls back to HEAD; neither outcome is knowable here → skip, not deny.
+    let base = '';
+    try { base = git(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD^{commit}']); } catch { /* below */ }
+    if (base === '') return { stale: null, skipped: 'no-origin-head' };
+    if (base === head) return { ...facts, base, stale: false };
+
+    try {
+      git(['merge-base', '--is-ancestor', head, base]);
+      return { ...facts, base, stale: false };
+    } catch (e) {
+      // Exit 1 is the ONE candidate "no"; 128 (bad object), a timeout or a
+      // signal is a non-measurement and must not accuse anybody.
+      if (e?.status !== 1) return { stale: null, skipped: 'git-error' };
+    }
+    // ...and exit 1 is a MEASUREMENT only over full history. A shallow clone's
+    // cut-off graph answers "no" for a HEAD that IS an ancestor (measured
+    // 2026-10-02: `clone --depth 1` + `fetch --depth 1` → exit 1, the full source
+    // → exit 0). Probed only here, on the rare "no": an exit 0, which no missing
+    // history can fake, never pays for it. A failed probe cannot rule shallow
+    // out, so it skips as well.
+    let shallow = '';
+    try { shallow = git(['rev-parse', '--is-shallow-repository']); } catch { /* below */ }
+    if (shallow !== 'false') return { stale: null, skipped: shallow === 'true' ? 'shallow' : 'git-error' };
+
+    // ...and only over a ref the harness will actually branch from. With
+    // FETCH_HEAD older than `FETCH_REFRESH_MS` (or absent — the harness reads
+    // that as mtime 0) it first fetches origin and branches from the FETCHED
+    // tip, which may well contain HEAD by now; this hook never fetches (network
+    // inside a 5 s PreToolUse budget), so the cached ref decides nothing here.
+    let fetchedMs = 0;
+    try { fetchedMs = statSync(path.resolve(cwd, git(['rev-parse', '--git-path', 'FETCH_HEAD']))).mtimeMs; } catch { /* absent → stale */ }
+    if (Date.now() - fetchedMs > FETCH_REFRESH_MS) return { stale: null, skipped: 'stale-remote-ref' };
+
+    let missing = Number.NaN;
+    try { missing = Number.parseInt(git(['rev-list', '--count', `${base}..${head}`]), 10); } catch { /* optional */ }
+    return { ...facts, base, stale: true, ...(Number.isInteger(missing) ? { missing_commits: missing } : {}) };
   } catch {
-    // Total by construction: no parser, an unreadable state dir, anything else.
-    // Still a RECORD rather than silence — the dispatch WAS on the `worktree`
-    // branch, and a broken probe that emits nothing is indistinguishable from a
-    // probe that had nothing to report (#1424 / HR-105).
+    // Total by construction. Still a RECORD rather than silence (#1424 / HR-105).
     return { stale: null, skipped: 'probe-error' };
   }
 }
 
 /**
- * The operator-facing warning. It names the ACTION, not just the condition —
- * a warning the coordinator cannot act on is noise (HR-106).
+ * The deny reason + suggestion for a measured stale base. Names the ACTION, not
+ * just the condition (HR-106), and the settings layer that chose `"fresh"`: an
+ * operator whose `"head"` lives where this hook cannot read (managed settings,
+ * `--settings`) then reads "the default" and knows the deny rests on that blind
+ * spot. The reason stays ONE line: `emitDeny` lifts the first line into the
+ * operator-visible `systemMessage` headline.
  *
- * NO `⚠ ` PREFIX HERE: this text is handed to `emitWarn`, which prefixes it on
- * both channels it writes (stderr and the `systemMessage` payload). Prefixing
- * here too produced `⚠ ⚠ …`.
- *
- * @param {{head: string, session_start_ref: string}} facts
- * @returns {string}
+ * @param {{head: string, base: string, base_ref_source?: string, missing_commits?: number}} facts
+ * @returns {{reason: string, suggestion: string}}
  */
-function staleWorktreeWarning(facts) {
-  const head = facts.head.slice(0, 12);
-  const base = facts.session_start_ref.slice(0, 12);
-  return [
-    `${HOOK_NAME}: STALE WORKTREE BASE (#1413) — this dispatch uses `
-      + `isolation: "worktree", but HEAD (${head}) has moved past this session's `
-      + `session-start-ref (${base}).`,
-    '  The harness bases a new agent worktree on the SESSION-START commit and offers',
-    '  no base-ref field, so the agent will silently get the OLDER code — and its test',
-    '  run is structurally red on top (check-guard-requires-parity compares against',
-    '  `git show HEAD:`, and validate-plugin is vitest\'s globalSetup).',
-    '  DO ONE OF: dispatch this wave IN-PLACE (omit `isolation`) — or verify the base',
-    '  before trusting the agent\'s result:',
-    '    git worktree list --porcelain | awk -v h="$(git rev-parse HEAD)" '
-      + '\'/^worktree /{w=$2} /^HEAD /{if (w ~ /\\.claude\\/worktrees\\/agent-/ && $2 != h) '
-      + 'print "STALE " substr($2,1,12) " " w}\'',
-  ].join('\n');
+function staleWorktreeDeny(facts) {
+  const missing = Number.isInteger(facts.missing_commits)
+    ? `${facts.missing_commits} commit(s)`
+    : 'commits';
+  const from = BASE_REF_SOURCE_LABEL[facts.base_ref_source] ?? BASE_REF_SOURCE_LABEL.default;
+  return {
+    reason:
+      `${HOOK_NAME}: STALE WORKTREE BASE (#1485) — isolation: "worktree" would branch this `
+      + `agent from origin/HEAD ${facts.base.slice(0, 12)} (worktree.baseRef "fresh" from ${from}), `
+      + `which is missing ${missing} of HEAD ${facts.head.slice(0, 12)}; the agent would silently edit OLD code.`,
+    suggestion: [
+      'DO ONE OF:',
+      '  1. re-dispatch IN-PLACE — omit `isolation` (isolation "none");',
+      '  2. set `"worktree": {"baseRef": "head"}` in .claude/settings.json so agent',
+      '     worktrees branch from your local HEAD (code.claude.com/docs/en/worktrees) —',
+      '     a higher layer setting "fresh" (local settings, --settings, managed) overrides it;',
+      '  3. get HEAD into the default branch on origin and fetch, then re-dispatch.',
+      'Uncommitted changes reach no worktree under any base — commit first or go in-place.',
+    ].join('\n'),
+  };
 }
 
 /**
@@ -2024,6 +2124,17 @@ async function main() {
   const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path, selfUseId: input.tool_use_id });
   const ledgerPath = path.join(projectDir, LEDGER_REL);
 
+  // #1485 — the stale-worktree-base verdict, computed BEFORE the ledger cycle
+  // (and outside the lock: up to four git spawns hold nobody up there). It never
+  // reads the collision verdict and a collision DENY always wins; on its own it
+  // denies ONLY a measured mismatch (`stale === true`). Every skip is allowed.
+  // It must be known before the cycle because a dispatch this check will deny
+  // never happens, so the cycle must not persist it: a phantom claim would make
+  // the deny's own remedy — the same agent re-dispatched in place under a new
+  // tool_use_id — collide with it for up to `IN_FLIGHT_TTL_MS`.
+  const worktreeBase = worktreeBaseFacts(input, projectDir);
+  const staleDeny = worktreeBase?.stale === true ? staleWorktreeDeny(worktreeBase) : null;
+
   // The read-modify-write CYCLE, run under the ledger lock below. Everything
   // inside is synchronous and emits NOTHING — an emit here would `process.exit()`
   // past the lock's release `finally` and leave a lock file behind.
@@ -2049,7 +2160,9 @@ async function main() {
       isFinished,
     });
 
-    if (verdict.ledger) {
+    // Not on a stale-base deny — the same rule as the collision deny path
+    // (`decide()`, "Deliberately NOT persisting the ledger on deny").
+    if (verdict.ledger && staleDeny === null) {
       try {
         writeJsonAtomicSync(ledgerPath, verdict.ledger);
       } catch {
@@ -2107,59 +2220,47 @@ async function main() {
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }
 
-  // #1413 — the stale-worktree-base warning, also awaited BEFORE the terminal
-  // emit for the same process.exit() reason as the block above. It reads
-  // `verdict` not at all: it can never turn an allow into a deny, and a git or
-  // STATE.md failure resolves to silence rather than to a wrong accusation.
-  //
-  // ROUTED TO THE OPERATOR, not to stderr alone (w3-5): under the exit-0
-  // PreToolUse protocol stderr goes nowhere — `io.mjs:545` calls it the "Debug
-  // channel … Invisible under exit 0" — so the first cut of this check announced
-  // the s18 incident class to a log and to nobody. The visible channel is the
-  // top-level `systemMessage`, i.e. `emitWarn`, which carries NO
-  // `permissionDecision` and therefore still means ALLOW (io.mjs § "which is
-  // precisely what keeps warn non-blocking").
-  //
-  // The note is CARRIED to the single terminal emit below rather than emitted
-  // here, because `emitWarn` calls `process.exit(0)` and never returns — warning
-  // inline would terminate the process before a collision DENY could be emitted,
-  // flipping a block into an allow (§ stdout discipline, the same reason
-  // `decide()` is pure).
+  // #1485 — the stale-worktree-base record (verdict computed above, before the
+  // cycle), awaited BEFORE the terminal emit for the same process.exit() reason
+  // as the block above.
   //
   // `null` here means "not a worktree dispatch" and stays silent; ANY other
   // shape is emitted, including the `{stale: null, skipped: …}` non-measurements
-  // (#1424). The warning still fires on `stale === true` alone — a skipped probe
-  // accuses nobody.
-  const worktreeBase = await worktreeBaseFacts(input, projectDir, sessionId);
-  let staleNote = null;
+  // (#1424), with this check's own `decision` folded into the SAME record
+  // rather than a second event.
   if (worktreeBase !== null) {
-    if (worktreeBase.stale === true) staleNote = staleWorktreeWarning(worktreeBase);
     try {
       const { emitEvent, sessionAttribution } = await import(
         pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
       );
       await emitEvent(
         WORKTREE_BASE_EVENT,
-        { hook: HOOK_NAME, ...worktreeBase, ...sessionAttribution(projectDir) },
+        {
+          hook: HOOK_NAME,
+          ...worktreeBase,
+          decision: staleDeny === null ? 'allow' : 'deny',
+          ...sessionAttribution(projectDir),
+        },
         { repoRoot: projectDir }
       );
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }
 
-  // ONE terminal emit, with the #1413 note folded in where a visible channel is
-  // free. On DENY the dispatch does not happen and `systemMessage` already
-  // carries the ⛔ headline, so the note stays on the debug channel — a stale
-  // base is moot for a dispatch that was just blocked.
+  // ONE terminal emit. A collision DENY keeps its own reason — the dispatch is
+  // blocked either way — and the stale base goes to the debug channel beside it.
   if (verdict.action === 'deny') {
-    if (staleNote !== null) {
-      try { console.error(`⚠ ${staleNote}`); } catch { /* stderr may be closed */ }
+    if (staleDeny !== null) {
+      try { console.error(`⚠ ${staleDeny.reason}`); } catch { /* stderr may be closed */ }
     }
     return emitDeny(verdict.reason, verdict.suggestion);
   }
-  if (verdict.action === 'warn') {
-    return emitWarn(staleNote === null ? verdict.note : `${verdict.note}\n\n${staleNote}`);
+  if (staleDeny !== null) {
+    if (verdict.action === 'warn') {
+      try { console.error(`⚠ ${verdict.note}`); } catch { /* stderr may be closed */ }
+    }
+    return emitDeny(staleDeny.reason, staleDeny.suggestion);
   }
-  if (staleNote !== null) return emitWarn(staleNote);
+  if (verdict.action === 'warn') return emitWarn(verdict.note);
   return emitAllow();
 }
 
@@ -2207,9 +2308,10 @@ if (invokedAsScript()) {
   //      `enforce-scope`'s fail-closed handler — and the reason is the asymmetry
   //      named in the matrix header: enforce-scope guards a WRITE (denying one
   //      write is cheap), this guards the DISPATCH path (denying every dispatch
-  //      is a session outage). The bug this could hide is caught downstream by
+  //      is a session outage). A hidden COLLISION is caught downstream by
   //      `validate-wave-scope.mjs` and by `enforce-scope` at write time; a
-  //      wrongly-denied dispatch is caught by nothing.
+  //      hidden #1485 stale base is not (matrix row 15) — the accepted cost of
+  //      the same asymmetry; a wrongly-denied dispatch is caught by nothing.
   // -------------------------------------------------------------------------
   try {
     await bootstrap();

@@ -95,7 +95,10 @@
  *
  *                     NOT flagged: blocks that control the clock (`now:`, `{ now }`
  *                     or a positional `now` — wider than the seam proof, #1478 —
- *                     `vi.useFakeTimers` / `vi.setSystemTime`); date literals in
+ *                     `vi.useFakeTimers` / `vi.setSystemTime`). A handover whose
+ *                     value IS the real clock is no control (#1487): inline
+ *                     (`{ now: Date.now() }`) or through a binding in the same
+ *                     block (`const now = new Date(); fn(now)`). Date literals in
  *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
  *                     expected values are read), which leaves the passthrough
  *                     class (input date === output date) untouched.
@@ -353,13 +356,18 @@ const keyLiteralRe = (key) => new RegExp(`["'\\\\]+${key}["'\\\\]+\\s*:`);
 const DATE_EXPECTATION =
   /\.(?:toBe|toEqual|toStrictEqual)\(\s*(['"`])(\d{4}-\d{2}-\d{2}(?:[T ][^'"`]*)?)\1\s*\)/;
 
-/** A clock-named token not read off an object (`Date.now`, `opts.now`) — shared head of the two below. */
-const CLOCK_NAME = String.raw`(?<![.\w$])(?:now|nowMs|nowIso|clock|currentDate)\s*`;
+/**
+ * A clock-named token not read off an object (`Date.now`, `opts.now`) — shared
+ * head of the patterns below. Group 1 is the name.
+ */
+const CLOCK_NAME = String.raw`(?<![.\w$])(now|nowMs|nowIso|clock|currentDate)\s*`;
 
 /**
  * Pass 1, the seam PROOF: a NAMED clock key (`{ now: … }`) — only that shape says
- * the callee's API takes a clock. Every line it matches also matches
- * CONTROL_CLOCK_ARG, so a block that proves a seam is never flagged itself.
+ * the callee's API takes a clock, whatever value it is handed. Every line it
+ * matches also matches CONTROL_CLOCK_ARG, so a block that proves a seam is never
+ * flagged itself — UNLESS the value it hands over is the real clock (#1487):
+ * then the block proves the seam and is a bomb in the same breath.
  */
 const SEAM_CLOCK_ARG = new RegExp(`${CLOCK_NAME}:`);
 
@@ -367,7 +375,10 @@ const SEAM_CLOCK_ARG = new RegExp(`${CLOCK_NAME}:`);
  * Pass 2, is this block clock-CONTROLLED: any clock handover. Property shorthand
  * (`{ now }`, `{ repoRoot, now }`) and a positional `now` count too; `Date.now()`
  * and `const now =` do not. Wider is the safe direction here — it can only
- * remove findings.
+ * remove findings. Group 2 is the terminator: `:` means the name is a KEY and
+ * the handed-over value follows it; any other terminator means the name IS the
+ * value. A handover only counts when that value is not the real clock — see
+ * {@link handsOverControlledClock}.
  *
  * CEILING (#1478): pass 1 reads only the named form, because the wide form also
  * turns helpers into seams — +20 seamed (file, id) pairs in 15 files
@@ -377,7 +388,16 @@ const SEAM_CLOCK_ARG = new RegExp(`${CLOCK_NAME}:`);
  * REVISIT on the first B5 finding whose subject is a helper, or the first CI
  * `test-value-bans` B5 finding the ±days clock-shift probe shows to be false.
  */
-const CONTROL_CLOCK_ARG = new RegExp(String.raw`${CLOCK_NAME}(?::|,|\}|\))`);
+const CONTROL_CLOCK_ARG = new RegExp(String.raw`${CLOCK_NAME}(:|,|\}|\))`, 'g');
+
+/** A read of the real wall clock: `Date.now()`, an argument-less `new Date()`, `performance.now()`. */
+const REAL_CLOCK_READ = /\bDate\.now\(\)|\bnew Date\(\s*\)|\bperformance\.now\(\)/;
+
+/**
+ * `const now = <rhs>` / `now = <rhs>` — a clock-named binding (not `==`, not an
+ * arrow `now =>`). Group 1 is the name, group 2 the right-hand side.
+ */
+const CLOCK_BINDING = new RegExp(String.raw`${CLOCK_NAME}=(?![=>])(.*)`);
 
 /** Freezing the global clock — equally valid control, but not a seam PROOF. */
 const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
@@ -663,6 +683,70 @@ function importedLocalIdentifiers(content) {
   return [...ids];
 }
 
+/**
+ * The clock-named variables a block binds to the REAL clock
+ * (`const now = Date.now()`, `let nowMs = new Date().getTime()`). Handing one of
+ * them over is reading the wall clock with an extra step, not controlling it.
+ *
+ * CEILING (#1487): only bindings inside the block itself are read — a
+ * module-level or `beforeEach` `now = Date.now()` still counts as control, and
+ * so does a real-clock value laundered through a non-clock name
+ * (`const t = Date.now(); fn({ now: t })`). REVISIT when a clock-shift run of
+ * the suite finds a bomb fed by either route.
+ * @param {string[]} live the block's non-comment lines
+ * @returns {Set<string>}
+ */
+function realClockBindings(live) {
+  /** @type {Set<string>} */
+  const names = new Set();
+  for (const line of live) {
+    const m = CLOCK_BINDING.exec(line);
+    if (m && REAL_CLOCK_READ.test(m[2])) names.add(m[1]);
+  }
+  return names;
+}
+
+/**
+ * The value expression starting at `from`, up to the first `,` or closing
+ * bracket at nesting depth 0 (`now: new Date(x), other` → `new Date(x)`).
+ * Brackets inside string literals are not tracked; a cut-short value can only
+ * hide a real-clock read, which leaves the block counted as controlled — the
+ * pre-#1487 behaviour, never a new finding.
+ */
+function valueExpressionAt(line, from) {
+  let depth = 0;
+  for (let i = from; i < line.length; i++) {
+    const c = line[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) return line.slice(from, i);
+      depth--;
+    } else if (c === ',' && depth === 0) return line.slice(from, i);
+  }
+  return line.slice(from);
+}
+
+/**
+ * True when this line hands over a clock that is NOT the real one: a clock-named
+ * handover (CONTROL_CLOCK_ARG) whose value neither reads the wall clock inline
+ * (`{ now: Date.now() }`) nor names a real-clock binding of the same block
+ * (`const now = Date.now(); fn(now)`). #1487: before this, both shapes counted
+ * as control and kept a genuine time bomb silent.
+ * @param {string} line
+ * @param {Set<string>} realClock names bound to the real clock in this block
+ */
+function handsOverControlledClock(line, realClock) {
+  for (const m of line.matchAll(CONTROL_CLOCK_ARG)) {
+    const [, name, terminator] = m;
+    const value = terminator === ':' ? valueExpressionAt(line, m.index + m[0].length) : name;
+    const readsRealClock =
+      REAL_CLOCK_READ.test(value) ||
+      [...realClock].some((n) => new RegExp(String.raw`(?<![.\w$])${n}(?![\w$])`).test(value));
+    if (!readsRealClock) return true;
+  }
+  return false;
+}
+
 /** True when `id` is invoked anywhere in these lines. */
 function callsIdentifier(lines, id) {
   const re = new RegExp(`\\b${id}\\s*\\(`);
@@ -697,11 +781,12 @@ function scanClockBombs(relPath, content, lines) {
   const blocks = testBlocks(lines).map(({ start, end }) => {
     const body = lines.slice(start, end);
     const live = body.filter((l) => !isCommentLine(l));
+    const realClock = realClockBindings(live);
     return {
       start,
       body,
       provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
-      hasClockArg: live.some((l) => CONTROL_CLOCK_ARG.test(l)),
+      hasClockArg: live.some((l) => handsOverControlledClock(l, realClock)),
       hasFakeTimer: live.some((l) => FAKE_TIMER.test(l)),
     };
   });

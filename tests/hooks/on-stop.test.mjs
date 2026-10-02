@@ -1939,6 +1939,23 @@ describe('maybeTriggerOrphanScan — Stop + SubagentStop', () => {
     expect(calls).toHaveLength(1);
   });
 
+  it('reports an unstamped throttle instead of a normal spawn when the marker could not be written', async () => {
+    // Bug (#1487 item 6): touchScanMarker's `false` was dropped, so a marker the
+    // hook can never stamp (a planted link, a read-only tmp dir) — every fire
+    // spawning a scan — returned exactly what a throttled spawn returns. The
+    // scan still runs: the throttle fails toward scanning, never toward a
+    // silently disabled reaper.
+    writeClaudeMd('reaper:\n  enabled: true\n');
+    const calls = [];
+    const r = await maybeTriggerOrphanScan({
+      projectDir: rtmp,
+      spawnFn: recordingSpawn(calls),
+      writeFn: () => { throw new Error('EACCES'); },
+    });
+    expect(r).toEqual({ spawned: true, reason: 'spawned-unthrottled' });
+    expect(calls).toHaveLength(1);
+  });
+
   it('passes mode: kill through to the child', async () => {
     writeClaudeMd('reaper:\n  enabled: true\n  mode: kill\n  min-age-seconds: 600\n');
     const calls = [];

@@ -171,7 +171,10 @@ If user selects "Confidence ändern", "Ablauf verlängern", or "Delete specific 
 
 Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rolled `>` rewrite (#1017):
 
-1. Read all lines from `learnings.jsonl`
+1. Snapshot the store into the sidecar exactly as Phase 3, Step 3.5(1) does (`--prune --snapshot`,
+   with the same `--file` / `--archive` the apply will use) and work on the sidecar, never on a
+   separate read of `learnings.jsonl` (#1486). A snapshot exit `1` (a malformed store line, or a
+   PATH that would replace a ledger) wrote nothing: surface it and stop
 2. Apply the selected operation to selected learnings:
    - **Boost:** +0.15 confidence (cap 1.0), reset expires_at to `deriveExpiresAt(now, type)` (per-type TTL, `scripts/lib/learnings/schema.mjs`)
    - **Reduce:** -0.2 confidence
@@ -182,7 +185,13 @@ Use the same archive-safe pipeline as Phase 3, Step 3.5 — **never** a hand-rol
    - **Extend:** reset expires_at to `deriveExpiresAt(now, type)` — `learning-expiry-days` is parsed but read by no script (`skills/_shared/config-reading.md` § Learning Expiry Semantics)
 3. Steps 3–5 of the old prose (prune / consolidate / rewrite) are `pruneLearnings()` — run the
    **exact** Step 3.5(5) invocation, writing the post-operation entry set to the `--entries`
-   sidecar. It prunes
+   sidecar below its line-1 `_store_generation` header. Exit `1` or `2`: surface the error and
+   stop (`1` includes a sidecar snapshotted from another store than `--file`). Exit `3` means the
+   store changed after the snapshot and nothing was written: snapshot into a FRESH path,
+   re-apply the selected operations to the records in that file, and apply it once more — a
+   second consecutive `3`: stop and report. Never move the fresh header onto the old sidecar's
+   records, whose missing peer change the prune would archive `pruned` (Step 3.5(5) carries the
+   full exit-code rule). It prunes
    (`expires_at` < now → `expired`; `confidence <= 0.0` → `pruned`), consolidates duplicates
    (same `type` + non-empty `subject`, highest confidence wins, loser archived `superseded` with
    `_superseded_by`; null-subject entries preserved individually per #284), and rewrites through

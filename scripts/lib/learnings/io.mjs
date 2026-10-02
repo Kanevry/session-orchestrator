@@ -20,6 +20,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { withFileLock } from '../file-lock.mjs';
+import { digestSha256 } from '../crypto-digest-utils.mjs';
 import {
   validateLearning,
   normalizeLearning,
@@ -226,7 +227,33 @@ function serializeLearningLineChecked(validated, { legacyTolerant = false } = {}
  */
 export async function readLearnings(filePath) {
   if (!existsSync(filePath)) return { entries: [], malformed: [] };
-  const raw = await readFile(filePath, 'utf8');
+  return parseLearningsText(await readFile(filePath, 'utf8'));
+}
+
+/**
+ * Read a learnings store together with its generation token (#1486), both
+ * from ONE read, so the token describes exactly the records returned.
+ *
+ * The token is `sha256:<hex>` over the file's full text: any append, rewrite
+ * or sweep changes it. An absent store reads as empty text — zero records
+ * either way, so the two states share a token.
+ *
+ * @param {string} filePath
+ * @returns {Promise<{entries: object[], malformed: string[], generation: string}>}
+ */
+export async function readLearningsSnapshot(filePath) {
+  const raw = existsSync(filePath) ? await readFile(filePath, 'utf8') : '';
+  return { ...parseLearningsText(raw), generation: `sha256:${digestSha256(raw)}` };
+}
+
+/**
+ * Parse learnings JSONL text — the line parser behind {@link readLearnings},
+ * exported for callers that must split a header off the text first.
+ *
+ * @param {string} raw
+ * @returns {{entries: object[], malformed: string[]}}
+ */
+export function parseLearningsText(raw) {
   const lines = raw.split('\n').filter((l) => l.length > 0);
   const entries = [];
   const malformed = [];

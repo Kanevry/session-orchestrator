@@ -971,9 +971,36 @@ describe('shouldScanNow', () => {
     expect(shouldScanNow('/repo/.orchestrator/tmp/reaper-last-scan', NOW + 21_000, 30, { statFn })).toBe(true);
   });
 
+  it('scans when the marker is stamped in the future — a negative age throttled every fire, and the marker is only re-stamped after a scan', () => {
+    // Bug (#1487 review, reproduced 2026-10-02 with `utimes` +1 year): the age
+    // went negative, so the reaper never scanned again — a disabled reaper
+    // nothing can falsify (HR-105).
+    const statFn = () => ({ mtimeMs: NOW + 3_600_000 });
+    expect(shouldScanNow('/repo/.orchestrator/tmp/reaper-last-scan', NOW, 30, { statFn })).toBe(true);
+  });
+
   it('allows the very first scan when the marker does not exist — an absent throttle file must not disable the reaper', () => {
     const statFn = () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
     expect(shouldScanNow('/repo/.orchestrator/tmp/reaper-last-scan', NOW, 30, { statFn })).toBe(true);
+  });
+
+  it('does not let a symlinked marker steer the throttle through its target — a link to a busy file throttled every scan forever', () => {
+    // Bug (#1487 item 6): `statSync` followed a symlinked marker, so a link to
+    // any often-written file (events.jsonl) read as "scanned just now" on every
+    // hook and silently disabled the reaper. A link is not a marker this module
+    // wrote; like a missing marker it fails toward scanning.
+    const dir = mkdtempSync(join(tmpdir(), 'reaper-marker-'));
+    try {
+      const busy = join(dir, 'events.jsonl');
+      writeFileSync(busy, 'x\n', 'utf8');
+      const marker = join(dir, 'reaper-last-scan');
+      symlinkSync(busy, marker);
+      const now = statSync(busy).mtimeMs + 1_000;
+
+      expect(shouldScanNow(marker, now, 30)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('writes the marker through the injected sink and builds both repo paths from one constant each', () => {
