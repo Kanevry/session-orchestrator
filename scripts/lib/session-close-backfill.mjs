@@ -347,19 +347,27 @@ export const REQUIRED_EVENTS_WINDOW_DAYS = null;
  *
  * @param {string} eventsPath
  * @param {string} id
- * @returns {Array<object>}
+ * @param {number|null} deadlineMs — epoch ms the scan must end by; `null` = unbounded
+ * @returns {Array<object>|null} `null` when the deadline had passed before the
+ *   scan or cut it short — a partial history is never handed on as a whole one.
  */
-function recordsMentioning(eventsPath, id) {
+function recordsMentioning(eventsPath, id, deadlineMs) {
+  let budgetMs;
+  if (deadlineMs !== null) {
+    budgetMs = deadlineMs - Date.now();
+    if (!(budgetMs > 0)) return null;
+  }
   const newestFirst = [];
-  scanEventsBackwards({
+  const { truncated } = scanEventsBackwards({
     filePath: eventsPath,
     filter: id,
+    budgetMs,
     onRecord: (record) => {
       newestFirst.push(record);
       return false;
     },
   });
-  return newestFirst.reverse();
+  return truncated ? null : newestFirst.reverse();
 }
 
 /**
@@ -372,11 +380,18 @@ function recordsMentioning(eventsPath, id) {
  * foreign lock on every run — or, without a lock, written with `started_at` and
  * `completed_at` set to NOW. The active read stays first and cheap; the scan
  * runs only for such a candidate, and once its record is written the CLI's
- * sessions.jsonl pre-filter skips it on every later run. Cost measured
- * 2026-10-02 (load average ~8) over a synthetic 43 MB ledger of four sources:
- * ~60 ms per such candidate against ~30 ms for the active read alone — so at
- * most ~0.75 s more for the SessionStart path's 25-candidate cap, paid once,
- * where before the same candidate cost its ~30 ms on every start, forever.
+ * sessions.jsonl pre-filter skips it on every later run.
+ *
+ * Cost (#1498 review): ≈0.55-0.8 ms per MB of ledger per such candidate —
+ * measured 2026-10-02: 25 candidates over a synthetic 58 MB ledger of six
+ * sources took 1.17-1.20 s, active reads included, at load average ~20; the
+ * review measured +0.80-0.87 s for the scans alone at 60 MB and load ~7. That
+ * does not fit the 5 s SessionStart hook unbounded, so a caller may pass
+ * `deadlineMs`: ONE epoch-ms deadline shared by every candidate of a run. A
+ * scan the deadline skipped or cut returns `historyUnread: true` instead of a
+ * partial answer, and the caller defers the candidate — never the active-file
+ * answer, which for such a candidate is a record dated NOW (see above) that the
+ * dedupe would then keep forever.
  *
  * One filtered scan keeps the order exact: a native UUID appears on every event
  * of its session. Without one, the semantic label is scanned for the UUID
@@ -388,8 +403,10 @@ function recordsMentioning(eventsPath, id) {
  * @param {Function} readFileSync
  * @param {string} eventsPath
  * @param {{ sessionId: string|null, semanticSessionId: string|null }} ids
+ * @param {number|null} [deadlineMs=null] — shared scan deadline (epoch ms); `null` = unbounded
+ * @returns {ReturnType<typeof collectSessionEvents> & { historyUnread?: true }}
  */
-function gatherSessionEvents(readFileSync, eventsPath, ids) {
+function gatherSessionEvents(readFileSync, eventsPath, ids, deadlineMs = null) {
   const gathered = collectSessionEvents(readJsonlSafe(readFileSync, eventsPath), ids);
   if (gathered.startedAt !== null) return gathered;
   try {
@@ -397,11 +414,14 @@ function gatherSessionEvents(readFileSync, eventsPath, ids) {
     if (uuid === null) {
       const label = ids.semanticSessionId || ids.sessionId;
       if (!label) return gathered;
-      const bridged = collectSessionEvents(recordsMentioning(eventsPath, label), ids).uuids;
+      const bridge = recordsMentioning(eventsPath, label, deadlineMs);
+      if (bridge === null) return { ...gathered, historyUnread: true };
+      const bridged = collectSessionEvents(bridge, ids).uuids;
       if (bridged.size !== 1) return gathered;
       [uuid] = bridged;
     }
-    const history = recordsMentioning(eventsPath, uuid);
+    const history = recordsMentioning(eventsPath, uuid, deadlineMs);
+    if (history === null) return { ...gathered, historyUnread: true };
     // Empty only when the scan found no source at all — e.g. a reader seam the
     // filesystem does not back; the active answer stands.
     return history.length > 0 ? collectSessionEvents(history, ids) : gathered;
@@ -808,6 +828,11 @@ function checkAlreadyRecorded(readFileSync, sessionsPath, { recordId, sessionId 
  *   `lastEventMs` strictly predates this value bypasses a foreign live lock
  *   regardless of `relaxDeadByAge`. Corresponds to the CLI's
  *   `--assume-dead-before <ISO>` flag.
+ * @param {number|null} [args.archiveScanDeadlineMs=null]
+ *   #1498 — epoch ms by which a scan of the ROTATED ledger must end; one value
+ *   shared by every candidate of a run (see `gatherSessionEvents`). A candidate
+ *   whose history the deadline left unread returns `skipped-history-unread`
+ *   and is retried by the next run. `null` (CLI, SessionEnd) = unbounded.
  * @param {object}  [args.deps]                   DI overrides (fs, appendJsonl, readLock, …)
  * @returns {Promise<object>}
  */
@@ -820,6 +845,7 @@ export async function backfillAbandonedSession({
   relaxDeadByAge = false,
   ownSessionIsEnding = false,
   assumeDeadBeforeMs = null,
+  archiveScanDeadlineMs = null,
   deps = {},
 } = {}) {
   const {
@@ -879,7 +905,14 @@ export async function backfillAbandonedSession({
       }
 
       // -- Read events (needed to synthesize, and to bridge UUID→semantic) ----
-      const gathered = gatherSessionEvents(readFileSync, eventsPath, { sessionId, semanticSessionId });
+      const gathered = gatherSessionEvents(
+        readFileSync, eventsPath, { sessionId, semanticSessionId }, archiveScanDeadlineMs,
+      );
+      // Deferred, never answered from the active file alone: for this candidate
+      // that answer is a record dated NOW, which the dedupe keeps forever.
+      if (gathered.historyUnread) {
+        return { action: 'skipped-history-unread', sessionId: recordId ?? sessionId };
+      }
 
       // -- Resolve a deferred id from the lock bridge or a synthetic mint ------
       if (recordId === null) {

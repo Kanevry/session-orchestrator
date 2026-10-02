@@ -771,10 +771,13 @@ export const PROBES = [
     // #1489: the coverage reaches the ledger on every measured answer, warn or
     // not — a warning that never fires is otherwise indistinguishable from a
     // dead one (HR-105). Counts and day spans only: no path, no timestamp.
-    // A degraded answer carries no `archives`, so it persists no measure.
+    // A degraded answer carries no `archives`, so it persists no measure. Every
+    // measured answer has a finite `coverageDays` — a span with no stamp is
+    // degraded since #1498 — and `probeMeasure` drops a non-finite value, so a
+    // regression there reads as "not measured", never as a number.
     telemetry: (r) => (Number.isInteger(r?.archives)
       ? {
-          coverage_days: Number.isFinite(r.coverageDays) ? Math.round(r.coverageDays * 1000) / 1000 : null,
+          coverage_days: Math.round(r.coverageDays * 1000) / 1000,
           archives: r.archives,
           max_backups: r.maxBackups,
           required_days: r.requiredDays ?? null,

@@ -588,6 +588,16 @@ describe('gate-process ledger', () => {
     expect(read).toEqual({ records: [], malformedLines: 0, expired: 0, state: 'absent' });
   });
 
+  it('reads a DANGLING symlinked ledger as unreadable, not absent (#1498 review)', () => {
+    // Bug: an `existsSync` pre-check followed the link, so a link to nowhere
+    // read as "no ledger yet" while `appendNoFollow` refused it on every
+    // registration — a refused ledger that looked clean.
+    const ledger = path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH);
+    mkdirSync(path.dirname(ledger), { recursive: true });
+    symlinkSync(path.join(repoRoot, 'nowhere.jsonl'), ledger);
+    expect(readGateProcessLedger(repoRoot, { nowMs: Date.now() }).state).toBe('unreadable');
+  });
+
   it('prunes expired and malformed lines in-process, keeping the fresh ones', () => {
     const now = Date.now();
     recordGateProcess(repoRoot, rec(301, now - 1000));

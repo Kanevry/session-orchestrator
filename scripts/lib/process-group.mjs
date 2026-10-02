@@ -586,12 +586,15 @@ export function readGateProcessLedger(repoRoot, {
   const target = ledgerPathFor(repoRoot);
   let raw;
   try {
-    if (readFn) raw = readFn(target) ?? '';
-    else if (existsSync(target)) raw = readLedgerNoFollow(target);
-    else return { records: [], malformedLines: 0, expired: 0, state: 'absent' };
+    // No `existsSync` pre-check: it FOLLOWS a link, so a dangling symlink read
+    // as "no ledger yet" while `appendNoFollow` refused it on every
+    // registration (#1498 review). The no-follow open itself tells the cases
+    // apart — ENOENT only when nothing is at the path.
+    raw = readFn ? (readFn(target) ?? '') : readLedgerNoFollow(target);
   } catch (err) {
-    // ENOENT is a ledger that vanished (or a `readFn` reporting a missing
-    // file); anything else — ELOOP, ERR_NOT_REGULAR_FILE, EACCES — was refused.
+    // ENOENT: no ledger yet, or one that vanished (or a `readFn` reporting a
+    // missing file). Anything else — ELOOP (a symlink, dangling or not),
+    // ERR_NOT_REGULAR_FILE, EACCES — was refused.
     const state = err?.code === 'ENOENT' ? 'absent' : 'unreadable';
     return { records: [], malformedLines: 0, expired: 0, state };
   }

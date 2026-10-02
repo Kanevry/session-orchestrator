@@ -70,6 +70,25 @@ export const REQUIRED_EVENTS_WINDOW_DAYS = null;
 export const SESSION_START_LIMIT = 25;
 
 /**
+ * Total wall-clock budget, per SessionStart run, for scanning the ROTATED
+ * ledger on behalf of candidates whose events left the active file (#1498).
+ * ONE deadline shared by every candidate; a candidate it leaves unread is
+ * `skipped-history-unread` and retried by the next start — recorded ones drop
+ * out through the sessions.jsonl pre-filter, so the backlog drains.
+ *
+ * Named ceiling (BV-004): at ≈0.55-0.8 ms per MB per candidate (measured
+ * 2026-10-02, see `gatherSessionEvents` in `session-close-backfill.mjs`) a full
+ * default ledger (6 × 10 MB) fits ~10-15 scans per start. Measured the same
+ * day over 58 MB with 25 archived candidates (dry run, load ~5): unbudgeted
+ * 1.41 s; budget 0 — planning and active-file reads only — 0.55 s; budget 500
+ * 0.83-0.84 s, 10 candidates answered and 15 deferred. A single scan longer
+ * than the budget — a ledger past ~600 MB — never completes here; the CLI path
+ * is unbudgeted and still records it. Revisit if `skipped-history-unread`
+ * appears on more than a few consecutive starts of one repo.
+ */
+export const SESSION_START_ARCHIVE_SCAN_BUDGET_MS = 500;
+
+/**
  * Read a JSONL file into parsed objects; MISSING (ENOENT) → `[]` silently,
  * UNREADABLE (EACCES/EISDIR/…) → `[]` with a stderr WARN (#1188); malformed
  * lines skipped.
@@ -400,6 +419,10 @@ function cheapRecordId({ sessionId, semanticSessionId }) {
  *   those ancient candidates exhaust the whole budget before the run ever
  *   reaches the genuinely-abandoned recent ones. Measured on a copy of this
  *   repo's live store: first-seen order → backfilled 0, truncated true.
+ * @param {number|null} [args.archiveScanBudgetMs=null]
+ *   #1498 — total budget for rotated-ledger scans across the whole run, turned
+ *   into ONE deadline before the first candidate. Candidates it leaves unread
+ *   count as `skipped.skipped-history-unread`. `null` (CLI default) = unbounded.
  * @returns {Promise<object>} aggregate summary
  */
 export async function runMigration({
@@ -408,6 +431,7 @@ export async function runMigration({
   assumeDeadBeforeMs = null,
   limit = null,
   newestFirst = false,
+  archiveScanBudgetMs = null,
 }) {
   const { plan: planned, historyGaps } = planWithGaps({ repoRoot });
   const plan = newestFirst ? [...planned].reverse() : planned;
@@ -435,6 +459,10 @@ export async function runMigration({
   // here so the dry-run total matches what --apply actually writes.
   const projected = new Set();
 
+  const archiveScanDeadlineMs = Number.isFinite(archiveScanBudgetMs)
+    ? Date.now() + archiveScanBudgetMs
+    : null;
+
   for (const item of plan) {
     // -- Cheap pre-filter: already recorded → skip WITHOUT entering the core --
     const known = cheapRecordId(item);
@@ -461,6 +489,7 @@ export async function runMigration({
       dryRun: !apply,
       relaxDeadByAge: true,
       assumeDeadBeforeMs,
+      archiveScanDeadlineMs,
     });
     switch (res.action) {
       case 'backfilled':
@@ -567,16 +596,21 @@ async function emitBackfillCompleted(repoRoot, item, res) {
  * @param {object} args
  * @param {string} args.repoRoot
  * @param {number|null} [args.limit=SESSION_START_LIMIT]
+ * @param {number|null} [args.archiveScanBudgetMs=SESSION_START_ARCHIVE_SCAN_BUDGET_MS]
  * @returns {Promise<object|null>} the summary, or null when disabled/failed
  */
-export async function backfillOnSessionStart({ repoRoot, limit = SESSION_START_LIMIT } = {}) {
+export async function backfillOnSessionStart({
+  repoRoot,
+  limit = SESSION_START_LIMIT,
+  archiveScanBudgetMs = SESSION_START_ARCHIVE_SCAN_BUDGET_MS,
+} = {}) {
   try {
     // Escape hatch for operators who never want ledger writes at session start.
     if (process.env.SO_DISABLE_STARTUP_BACKFILL === '1') return null;
     if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
     // newestFirst is mandatory here — see runMigration's param docs for the
     // measured failure (budget burned on ancient already-recorded candidates).
-    const summary = await runMigration({ repoRoot, apply: true, limit, newestFirst: true });
+    const summary = await runMigration({ repoRoot, apply: true, limit, newestFirst: true, archiveScanBudgetMs });
     // The telemetry flush rides the SAME start-time trigger, for the same reason
     // the backfill does — see flushTelemetryOnSessionStart.
     await flushTelemetryOnSessionStart(repoRoot);

@@ -603,6 +603,25 @@ describe('backfill-abandoned-sessions — reads across rotation boundaries (#141
     expect(records.some((x) => x._synthetic_session_id !== undefined)).toBe(false);
   });
 
+  it('defers archived candidates an exhausted SessionStart scan budget left unread, then records them from the archive (#1498 review)', async () => {
+    // BUG THIS CATCHES: the rotated-ledger scan ran with NO budget inside the
+    // 5 s SessionStart hook (+0.80-0.87 s measured at 60 MB). An exhausted
+    // budget must defer the candidate — never fall back to the active-file
+    // answer, which for it is a record dated NOW that the dedupe keeps forever.
+    // Budget 0 is exhausted before the first scan: no clock, no timing.
+    seedArchive('events-20260701T000000Z_20260702T120000Z.jsonl', TWO_ABANDONED_EVENTS);
+    seedEvents([{ timestamp: '2026-07-03T09:00:00.000Z', event: 'orchestrator.agent.stopped' }]);
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    const deferred = await backfillOnSessionStart({ repoRoot: tmp, archiveScanBudgetMs: 0 });
+    expect(deferred.skipped).toEqual({ 'skipped-history-unread': 2 });
+    expect(readSessions()).toHaveLength(0);
+
+    const next = await backfillOnSessionStart({ repoRoot: tmp });
+    expect(next.backfilled).toBe(2);
+    expect(readSessions().map((r) => r.started_at).sort()).toEqual([STARTED_AT, '2026-07-02T11:00:00.000Z']);
+  });
+
   it('counts a pruned archive as a history gap instead of silently planning fewer candidates (#1498)', () => {
     // BUG THIS CATCHES: a tombstone naming an archive the ring had pruned left
     // no trace in the summary, so a cut history planned fewer candidates and
