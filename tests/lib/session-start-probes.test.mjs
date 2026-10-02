@@ -659,11 +659,12 @@ describe('the built-in registry', () => {
     const dir = await mkTmp();
     const headSha = initRepoWithUpstream(dir, { ahead: false });
     const { emit } = captureEmit();
+    // The REAL follow-up resolves the HEAD sha inside the budget (#1396).
     const fake = await fakeProbe(
       dir,
       'ci-status',
       `export function probe() { return ${JSON.stringify(reading)}; }`,
-      { render: registryProbe.render, severityOf: registryProbe.severityOf },
+      { followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
     );
 
     const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
@@ -760,7 +761,7 @@ describe('the built-in registry', () => {
       'ci-status',
       `export async function probe(opts) {
         if (opts.sha !== undefined) {
-          await new Promise((r) => setTimeout(r, 900));
+          await new Promise((r) => setTimeout(r, 4000));
           return { status: 'red', ok: false, details: { currentPipelineId: 1, cliUsed: 'glab' } };
         }
         return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
@@ -770,7 +771,9 @@ describe('the built-in registry', () => {
     await import(fake.spec);
 
     const out = await runSessionStartProbes(
-      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' }, timeoutMs: 300 },
+      // 1500 ms: the async `git rev-parse` now spends this budget too (#1396),
+      // so it must fit under host load while the 4 s requery cannot.
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' }, timeoutMs: 1500 },
       { probes: [fake], emit },
     );
 
@@ -786,6 +789,31 @@ describe('the built-in registry', () => {
     // The ledger field the runner's BV-004 revisit trigger reads — the outcome
     // alone (`ran-warn`) cannot tell a fallen-back follow-up from a clean one.
     expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'budget-exceeded' });
+  });
+
+  // BUG this catches (#1396): the renderer ran `git rev-parse` itself — for
+  // the pushed SHA after a fallen-back follow-up, and for HEAD beside a
+  // set-aside failed pipeline — AFTER the budget race, where
+  // `orchestrator.probes.completed` could never score it `timed_out`. Handed
+  // a repo that DOES have an upstream, the renderer may name only SHAs the
+  // result carries: a result without `pushed` / `head` renders the sha-less
+  // form. On the pre-#1396 renderer both rows printed a git-resolved sha.
+  it.each([
+    {
+      label: 'an unknown reading without `pushed`',
+      reading: { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', cliUsed: 'glab' } },
+      line: '⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — run `glab ci status` on demand',
+    },
+    {
+      label: 'a green reading without `head`',
+      reading: { status: 'green', ok: true, details: { cliUsed: 'glab', matchedRef: 'main', droppedStatuses: ['failed'] } },
+      line: '⚠ CI green on main, but 1 other pipeline(s) for the same commit FAILED (set-aside statuses: failed) — check `glab ci list --status=failed`',
+    },
+  ])('renders $label without asking git (#1396)', async ({ reading, line }) => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    initRepoWithUpstream(dir, { ahead: true });
+    expect(registryProbe.render(reading, { repoRoot: dir })).toBe(line);
   });
 
   // BUG this catches (#1332 review): a follow-up that THROWS turned the

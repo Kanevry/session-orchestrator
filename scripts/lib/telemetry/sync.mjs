@@ -313,6 +313,20 @@ export function readSessionProfileForMetricsDir(metricsDir) {
 }
 
 /**
+ * Events window this reader needs retained (#1401 part 3), in days, derived
+ * from {@link DAILY_FLUSH_MS} = 1. `deriveSessionFromEvents` reads back to the
+ * LATEST `orchestrator.session.started`, and `buildBatch` scores that
+ * reconstruction over `[started_at, now]` — or `[now - DAILY_FLUSH_MS, now]`
+ * when no start is found. The flush horizon is `DAILY_FLUSH_MS`, so a ledger
+ * that retains one of it covers the read. CEILING (BV-004): a single session
+ * running longer than a day reads further back; revisit if that becomes
+ * common. Read by `scripts/lib/events-retention-banner.mjs`.
+ *
+ * @type {number}
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = DAILY_FLUSH_MS / (24 * 60 * 60 * 1000);
+
+/**
  * Reconstruct the session facts a ping needs (`session_type`, `started_at`,
  * `completed_at`) from `<metricsDir>/events.jsonl` when `sessions.jsonl` has no
  * usable record.

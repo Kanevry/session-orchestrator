@@ -3,11 +3,11 @@
  *
  * ## Why this module exists
  *
- * `skills/session-start/SKILL.md` § Phase 4 names 19 measurement probes, each
- * with a module path and an entry function (re-measured 2026-09-11 — see the
+ * `skills/session-start/SKILL.md` § Phase 4 names 20 measurement probes, each
+ * with a module path and an entry function (re-measured 2026-10-02 — see the
  * registry Census below; the family stood at 18 when this module was written
- * on 2026-08-23 and one probe was registered since without updating this
- * count, the exact drift this header now warns readers not to repeat).
+ * on 2026-08-23, at 19 on 2026-09-11, and gained `events-retention` with
+ * #1401 — update this count with every registration).
  * Measured 2026-08-23 at `4f6404e`, NONE of them had a mechanical caller:
  *
  * ```
@@ -44,10 +44,11 @@
  * @module scripts/lib/session-start-probes
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
 
 import { emitEvent } from './events.mjs';
 
@@ -65,6 +66,8 @@ import { emitEvent } from './events.mjs';
  * @returns {string}
  */
 const local = (rel) => pathToFileURL(path.join(import.meta.dirname, rel)).href;
+
+const execFileAsync = promisify(execFile);
 
 /** Fallback hint when nothing cheaper than an on-demand CLI call is available. */
 const CI_UNKNOWN_HINT_DEFAULT = 'run `glab ci status` on demand';
@@ -93,24 +96,30 @@ const PUSHED_FOLLOW_UP_REASONS = new Set([
  * missing). Full, not short: `checkCiStatus({ sha })` matches against GitLab's
  * full pipeline SHAs and refuses anything shorter.
  *
- * NAMED CEILING (BV-004): one `git rev-parse` with a 2s timeout, run only on
- * the {@link PUSHED_FOLLOW_UP_REASONS} branch — i.e. only when the `ci-status`
- * probe already ran (network opt-in) and already found no data for HEAD.
+ * NAMED CEILING (BV-004): one `git rev-parse` with a 2s timeout, called only
+ * from {@link ciStatusFollowUp} — i.e. only when the `ci-status` probe already
+ * ran (network opt-in) and its reading needs a commit SHA.
+ *
+ * ASYNC on purpose (#1396): it runs inside the probe's budget race, and only a
+ * call that yields the event loop is (a) counted as the probe's OWN work time
+ * and (b) preemptible by the race. A synchronous spawn is subtracted from
+ * `workMs` as loop-blocked time (see {@link startLoopBlockedMeter}), so a 2s
+ * hang would never have scored `budget-exceeded`. An abandoned child is not
+ * waited for: the hook ends with `process.exit(0)`.
  *
  * @param {string|undefined} repoRoot
  * @param {string[]} refs
- * @returns {string[]|null}
+ * @returns {Promise<string[]|null>}
  */
-function revParseShas(repoRoot, refs) {
+async function revParseShas(repoRoot, refs) {
   if (!repoRoot || typeof repoRoot !== 'string') return null;
   try {
-    const out = execFileSync('git', ['rev-parse', ...refs], {
+    const { stdout } = await execFileAsync('git', ['rev-parse', ...refs], {
       cwd: repoRoot,
       encoding: 'utf8',
       timeout: 2000,
-      stdio: ['ignore', 'pipe', 'ignore'],
     });
-    const shas = String(out).trim().split('\n').map((s) => s.trim());
+    const shas = String(stdout).trim().split('\n').map((s) => s.trim());
     const valid = shas.length === refs.length
       && shas.every((s) => /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(s));
     return valid ? shas : null;
@@ -119,16 +128,6 @@ function revParseShas(repoRoot, refs) {
     // surfacing here.
     return null;
   }
-}
-
-/**
- * Full SHA of the last PUSHED commit (`@{upstream}`), or `null`.
- *
- * @param {string|undefined} repoRoot
- * @returns {string|null}
- */
-function lastPushedSha(repoRoot) {
-  return revParseShas(repoRoot, ['@{upstream}'])?.[0] ?? null;
 }
 
 /**
@@ -154,25 +153,28 @@ function lastPushedSha(repoRoot) {
  * the local HEAD — there the pushed SHA is a different question even when it
  * equals local HEAD.
  *
+ * The resolved SHA is handed to the runner through `deliver` BEFORE the CLI
+ * round trip, so a requery that overruns the budget or throws still leaves
+ * the pushed SHA in the reading the renderer receives (#1396).
+ *
  * @param {*} result   The HEAD reading from `checkCiStatus`
  * @param {{repoRoot?: string}} ctx
  * @param {(extra: object) => Promise<*>} requery  Re-invokes the probe with extra options
+ * @param {(partial: *) => void} deliver  Records a partial result as the fallback
  * @returns {Promise<*>}
  */
-async function ciPushedFollowUp(result, ctx, requery) {
+async function ciPushedFollowUp(result, ctx, requery, deliver) {
   const reason = result?.details?.reason;
-  if (result?.status !== 'unknown' || !PUSHED_FOLLOW_UP_REASONS.has(reason)) {
-    return result;
-  }
   // One spawn for both: an unresolvable `@{upstream}` fails the whole call,
   // which is exactly the "no upstream" answer.
-  const shas = revParseShas(ctx?.repoRoot, ['HEAD', '@{upstream}']);
-  // `pushed.sha: null` records "no upstream" so the renderer does not ask git again.
+  const shas = await revParseShas(ctx?.repoRoot, ['HEAD', '@{upstream}']);
+  // `pushed.sha: null` records "no upstream" as DATA — the renderer never asks git.
   if (!shas) return { ...result, pushed: { sha: null } };
   const [head, sha] = shas;
   if (reason === 'no-pipeline-for-head-sha' && sha === head) {
     return { ...result, pushed: { sha, sameAsHead: true } };
   }
+  deliver({ ...result, pushed: { sha } });
   let verdict;
   try {
     verdict = await requery({ sha });
@@ -181,6 +183,36 @@ async function ciPushedFollowUp(result, ctx, requery) {
     verdict = null;
   }
   return { ...result, pushed: { sha, verdict } };
+}
+
+/**
+ * The `ci-status` follow-up (#1332, #1396): every git fact a `ci-status`
+ * banner names is resolved HERE, inside the probe's budget race, and carried
+ * on the result as data — the renderer stays a pure function of the result.
+ * #1396: the renderer used to run `git rev-parse` itself after a fallen-back
+ * follow-up, outside the budget, where `orchestrator.probes.completed` could
+ * never score it `timed_out`.
+ *
+ *   - an `unknown` reading on a {@link PUSHED_FOLLOW_UP_REASONS} reason →
+ *     {@link ciPushedFollowUp} (`pushed`)
+ *   - a `green` reading beside a set-aside FAILED same-commit pipeline →
+ *     `head: { sha }` for {@link droppedFailedLine} (#1390 P5)
+ *
+ * @param {*} result
+ * @param {{repoRoot?: string}} ctx
+ * @param {(extra: object) => Promise<*>} requery
+ * @param {(partial: *) => void} deliver
+ * @returns {Promise<*>}
+ */
+async function ciStatusFollowUp(result, ctx, requery, deliver) {
+  if (result?.status === 'unknown' && PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) {
+    return ciPushedFollowUp(result, ctx, requery, deliver);
+  }
+  if (result?.status === 'green' && droppedFailedCount(result) > 0) {
+    const sha = (await revParseShas(ctx?.repoRoot, ['HEAD']))?.[0] ?? null;
+    return { ...result, head: { sha } };
+  }
+  return result;
 }
 
 /**
@@ -222,18 +254,18 @@ function commitRunsCommand(gh, sha) {
  *
  * @param {object} result   The probe result (possibly carrying `pushed` from
  *   {@link ciPushedFollowUp})
- * @param {{repoRoot?: string}} [ctx]
  * @returns {string}
  */
-function ciUnknownHint(result, ctx) {
+function ciUnknownHint(result) {
   if (!PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) return CI_UNKNOWN_HINT_DEFAULT;
   // The GitHub reason names the gh CLI; a glab command there would be wrong.
   const gh = result.details.cliUsed === 'gh';
   const onDemand = gh ? 'run `gh run list` on demand' : CI_UNKNOWN_HINT_DEFAULT;
   const pushed = result.pushed && typeof result.pushed === 'object' ? result.pushed : null;
-  // The follow-up already resolved the SHA (or its absence) — never re-ask git.
-  // Without `pushed` (follow-up overran or threw) this is the only git call.
-  const sha = pushed ? pushed.sha : lastPushedSha(ctx?.repoRoot);
+  // Pure (#1396): the SHA is whatever the follow-up resolved inside the budget.
+  // Without `pushed` (the follow-up overran or threw before resolving it) the
+  // hint degrades to the on-demand command — it never asks git itself.
+  const sha = pushed ? pushed.sha : null;
   if (!sha) return onDemand;
   const short = sha.slice(0, 8);
   if (pushed?.sameAsHead) return `last pushed: ${short} = HEAD — ${onDemand}`;
@@ -277,22 +309,22 @@ function droppedFailedCount(r) {
  * #857 ref-preference result; this only stops the failure from vanishing
  * behind a silent green.
  *
- * NAMED CEILING (BV-004): one `git rev-parse HEAD` (2s timeout), run only on
- * this branch — a green reading WITH a set-aside `failed` run, behind the
- * network opt-in. The reading carries no sha, and the GitLab path read the
- * local HEAD, so HEAD is the commit it spoke for. REVISIT TRIGGER: once
- * `checkCiStatus` publishes the sha it read, take it from the reading.
+ * The HEAD sha comes from `r.head.sha`, resolved by {@link ciStatusFollowUp}
+ * inside the budget (#1396) — the reading carries no sha, and the GitLab path
+ * read the local HEAD, so HEAD is the commit it spoke for. Without it (the
+ * follow-up fell back) the line names the CLI's failed-run listing instead.
+ * REVISIT TRIGGER: once `checkCiStatus` publishes the sha it read, take it
+ * from the reading.
  *
  * Only the GitLab path publishes `droppedStatuses` today (`candidateEvidence`
  * is called from `checkGitlab` alone); the gh form exists so a GitHub producer
  * can never print a glab command (#1339 P1 class) — see {@link commitRunsCommand}.
  *
  * @param {*} r  A green reading with `droppedFailedCount(r) > 0`
- * @param {{repoRoot?: string}} [ctx]
  * @returns {string}
  */
-function droppedFailedLine(r, ctx) {
-  const sha = revParseShas(ctx?.repoRoot, ['HEAD'])?.[0] ?? null;
+function droppedFailedLine(r) {
+  const sha = typeof r.head?.sha === 'string' ? r.head.sha : null;
   const gh = r.details.cliUsed === 'gh';
   let check;
   if (sha) check = commitRunsCommand(gh, sha);
@@ -432,11 +464,15 @@ function startLoopBlockedMeter() {
  * — the #1157 SKILL.md-size split extracted Phase 4's procedure out of
  * `SKILL.md` itself, so the original 2026-08-23 citation of SKILL.md lines
  * 693-835 no longer resolves; re-run the census against the reference file):
- *   grep -oE 'via `(await )?check[A-Za-z]+' \
- *     skills/session-start/references/phase-4-ssot-environment-check.md   # -> 17
- * plus two probes the prose introduces with different phrasing —
- * `checkBootstrapLockFreshness` ("invoke the bootstrap-lock-freshness probe")
- * and `checkVaultStaleness` ("read the most recent line via …") — for 19.
+ *   grep -oE "fn: 'check[A-Za-z]+'" scripts/lib/session-start-probes.mjs \
+ *     | sed "s/fn: '//;s/'//" > fns.txt                                  # -> 20
+ *   grep -oFf fns.txt \
+ *     skills/session-start/references/phase-4-ssot-environment-check.md \
+ *     | sort -u | wc -l                                                    # -> 20
+ * i.e. every registered entry function is named in the reference file
+ * (2026-10-02, after `events-retention` / #1401; 19 on 2026-09-11). The older
+ * census `grep -oE 'via \`(await )?check[A-Za-z]+'` returned 0 at `86e636a9`
+ * — the prose no longer says "via" — so it is retired, not re-counted.
  * (Prior census, 2026-08-23 at `4f6404e`: 16 + 2 = 18 — one probe was
  * registered since without a matching update here. This count is deliberately
  * NOT pinned by an exact-equality test against `PROBES.length` — the registry
@@ -456,11 +492,15 @@ function startLoopBlockedMeter() {
  *   - `precondition` optional; returns a skip-reason string to skip the probe
  *   - `render`     optional; maps a result to a banner line. Default:
  *                  `result.message` when severity is warn/alert.
- *   - `followUp`   optional; `async (result, ctx, requery) => result'` run
- *                  INSIDE the budget race after the entry function, where
- *                  `requery(extra)` re-invokes it with `{...args, ...extra}`.
- *                  If it throws or overruns the budget, the entry function's
- *                  result stands (recorded `followUp: 'threw'|'budget-exceeded'`).
+ *   - `followUp`   optional; `async (result, ctx, requery, deliver) => result'`
+ *                  run INSIDE the budget race after the entry function, where
+ *                  `requery(extra)` re-invokes it with `{...args, ...extra}`
+ *                  and `deliver(partial)` replaces the fallback result. If it
+ *                  throws or overruns the budget, the last delivered result
+ *                  stands (recorded `followUp: 'threw'|'budget-exceeded'`).
+ *   - `render` is a PURE function of the result (#1396): anything it names
+ *     that the entry function does not return is resolved in `followUp`,
+ *     inside the budget — never in the renderer.
  */
 export const PROBES = [
   {
@@ -514,8 +554,8 @@ export const PROBES = [
     args: ({ repoRoot }) => ({ repoRoot }),
     // #1332: on `no-pipeline-for-head-sha` / `no-check-runs-for-head`, query
     // the last PUSHED commit's verdict via `checkCiStatus({ sha })` — see the
-    // ceiling on the function.
-    followUp: ciPushedFollowUp,
+    // ceiling on the function. #1396: also resolves every SHA the renderer names.
+    followUp: ciStatusFollowUp,
     // Bespoke shape: `{status, ok, details, …}` with no `message` field. The
     // banner text is prescribed by SKILL.md § Phase 4.
     //
@@ -525,7 +565,7 @@ export const PROBES = [
     // probe. Without these two lines a degraded ci-status result scored `'ok'`
     // and rendered nothing — "could not read" displayed exactly like "green",
     // which is the confusion the probe's own migration removed one layer down.
-    render: (r, ctx) => {
+    render: (r) => {
       if (!r || typeof r !== 'object') return null;
       if (r.degraded) return typeof r.message === 'string' && r.message ? r.message : null;
       // `status: 'unknown'` is the SAME collapse one level over: HEAD carries
@@ -539,7 +579,7 @@ export const PROBES = [
         // #1337: a RED pushed commit is an alert, and the banner says what the
         // rule judges (HR-106) — same 🚨 as a red HEAD.
         const mark = r.pushed?.verdict?.status === 'red' ? '🚨' : '⚠';
-        return `${mark} ci-status: CI status for HEAD could not be determined (${reason}) — ${ciUnknownHint(r, ctx)}`;
+        return `${mark} ci-status: CI status for HEAD could not be determined (${reason}) — ${ciUnknownHint(r)}`;
       }
       if (r.status === 'red') {
         const pid = r.details?.currentPipelineId ?? '?';
@@ -556,7 +596,7 @@ export const PROBES = [
           lines.push(`⚠ CI green on HEAD, but ${r.allowFailureJobs.length} allow_failure job(s) FAILED: ${names}. A pipeline reports success regardless of these.`);
         }
         // #1390 P5: a failed same-commit pipeline the ref preference set aside.
-        if (droppedFailedCount(r) > 0) lines.push(droppedFailedLine(r, ctx));
+        if (droppedFailedCount(r) > 0) lines.push(droppedFailedLine(r));
         // Both findings can hold at once; `pushBanner` takes a multi-line
         // string verbatim, so neither swallows the other.
         return lines.length > 0 ? lines.join('\n') : null;
@@ -704,6 +744,22 @@ export const PROBES = [
     fn: 'checkGitConfigDrift',
     network: false,
     args: ({ repoRoot, env }) => ({ repoRoot, env }),
+  },
+  {
+    // #1401 part 3: archive COUNT retention vs the TIME window the ledger's
+    // readers declare (`REQUIRED_EVENTS_WINDOW_DAYS`). Without any ledger there
+    // is nothing to measure — recorded as `skipped`, never as `ran-clean`.
+    id: 'events-retention',
+    spec: local('./events-retention-banner.mjs'),
+    fn: 'checkEventsRetention',
+    network: false,
+    precondition: ({ repoRoot }) => {
+      const metrics = path.join(repoRoot, '.orchestrator', 'metrics');
+      return existsSync(path.join(metrics, 'events.jsonl')) || existsSync(path.join(metrics, '_archive'))
+        ? null
+        : 'no-events-ledger';
+    },
+    args: ({ repoRoot, config }) => ({ repoRoot, config }),
   },
 ];
 
@@ -973,7 +1029,12 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         // the race below: a timeout with `delivered` set is `delivered`.
         try {
           return {
-            __probeResult: await probe.followUp(first, ctx, (extra) => fn({ ...probe.args(ctx), ...extra })),
+            __probeResult: await probe.followUp(
+              first,
+              ctx,
+              (extra) => fn({ ...probe.args(ctx), ...extra }),
+              (partial) => { delivered = { __probeResult: partial }; },
+            ),
           };
         } catch {
           followUpFailure = 'threw';
@@ -1008,12 +1069,12 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
 
       const result = raced?.__probeResult;
       const severity = severityOf(result, probe);
-      // `ctx` (repoRoot/config/env) is passed as a SECOND argument so a
-      // renderer can name a repo-local fact the probe result does not carry
-      // (the `ci-status` unknown branch names the last pushed SHA). Every
-      // existing renderer takes one parameter and ignores it.
+      // The renderer gets the RESULT only (#1396): no `ctx`, so it has no repo
+      // to spawn git against. It runs after the budget race, where nothing it
+      // did would be measured; a repo-local fact a banner names is resolved in
+      // the probe's `followUp`, inside the race, and carried as data.
       const line = typeof probe.render === 'function'
-        ? probe.render(result, ctx)
+        ? probe.render(result)
         : defaultRender(result, severity);
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,
