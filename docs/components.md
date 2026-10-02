@@ -7,8 +7,8 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>52 user-facing]
-    COORD -->|invokes| CMD[Commands<br/>28 slash-cmds]
+    COORD -->|reads| SK[Skills<br/>51 user-facing]
+    COORD -->|invokes| CMD[Commands<br/>27 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
     AG -.-> W2[test-writer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (52 user-facing)
+## Skills (51 user-facing)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`
@@ -26,17 +26,17 @@ flowchart LR
 - **Architecture:** `architecture` (carries the former `domain-model` grilling flow plus the `CONTEXT.md`/ADR formats under `skills/architecture/references/`)
 - **Cross-session:** `evolve`, `convergence-monitoring`, `memory-cleanup`, `reconcile`, `sunset-review`, `eval`
 - **Vault & docs:** `vault-sync`, `vault-mirror`, `docs-orchestrator`
-- **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `navigator`, `spinout`, `npm-publish`
+- **Ecosystem:** `bootstrap`, `gitlab-ops`, `gitlab-portfolio`, `ecosystem-health`, `mode-selector`, `autopilot`, `dispatcher`, `remote-offload`, `spinout`, `npm-publish`
 - **Testing:** `test-runner`, `playwright-driver`, `peekaboo-driver`, `ux-grill`, `test-audit`
 - **Content review:** `persona-panel`
 - **Operator ergonomics:** `eli5` (plain-language restatement of the last answer)
 - **Visualization:** `tmux-layout` (opt-in operator side-channel — [ADR-0007](adr/0007-tmux-visualization-substrate.md))
 
-## Commands (28)
+## Commands (27)
 
-A slash command has exactly ONE definition. 26 are skills with explicit `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin.
+A slash command has exactly ONE definition. 25 are skills with explicit `user-invocable: true` in `skills/<name>/SKILL.md` (the same file the model dispatches; `argument-hint` and `disable-model-invocation` live there too), and 2 are plain `commands/*.md` files without a same-named skill. Claude Code registers both shapes as `/session-orchestrator:<name>`, so a name that exists as both a command file and a user-invocable skill is listed twice in the `/` picker — `tests/commands/headless-bare-command-availability.test.mjs` forbids that twin.
 
-- **Skills (26):** `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/navigator`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/ux-grill`.
+- **Skills (25):** `/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/ux-grill`.
 - **Command files (2):** `/session` (its skill is `session-start`) and `/templates-ack` (an in-session hook bypass with no skill body).
 
 Under `claude -p`, `/session` and `/plan` are reserved terminal built-ins; use `/session-orchestrator:session` and `/session-orchestrator:plan` there.

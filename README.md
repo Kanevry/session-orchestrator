@@ -95,7 +95,7 @@ When you type `/session feature`:
 .claude/STATE.md                    # wave progress and deviations (harness-specific directory)
 ```
 
-The plugin is **52 skills, 28 slash commands, 14 typed subagents and 29 hook files across 10 event types**. A slash command is a skill whose frontmatter says `user-invocable: true` (26 of them) or one of the two remaining `commands/*.md` files (`/session`, `/templates-ack`) — one definition per name, so nothing is listed twice in the `/` picker. Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. There is no build step and no compiled artifact — when a session does something you did not expect, you can open the file that decided it. Full inventory: [`docs/components.md`](docs/components.md).
+The plugin is **51 skills, 27 slash commands, 14 typed subagents and 29 hook files across 10 event types**. A slash command is a skill whose frontmatter says `user-invocable: true` (25 of them) or one of the two remaining `commands/*.md` files (`/session`, `/templates-ack`) — one definition per name, so nothing is listed twice in the `/` picker. Skills, commands and agents are Markdown with YAML frontmatter; the code that dispatches, validates and records runs in `scripts/lib/*.mjs` and `hooks/*.mjs`. There is no build step and no compiled artifact — when a session does something you did not expect, you can open the file that decided it. Full inventory: [`docs/components.md`](docs/components.md).
 
 ## Why it is built this way
 
@@ -113,7 +113,7 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 | Feature | Claude Code | Codex CLI | Cursor IDE | Pi |
 |---|---|---|---|---|
-| All 28 commands | Native slash commands | Generated skills (`$session-orchestrator:<name>`) | Native `.cursor/commands` slash commands | Prompt templates |
+| All 27 commands | Native slash commands | Generated skills (`$session-orchestrator:<name>`) | Native `.cursor/commands` slash commands | Prompt templates |
 | Parallel agents | Agent tool | Multi-agent roles | Sequential only | Sequential (parallel planned) |
 | Session persistence | `.claude/STATE.md` | `.codex/STATE.md` | `.cursor/STATE.md` | `.pi/STATE.md` |
 | Scope enforcement | Active PreToolUse hook; blocking in `strict`, reporting in `warn` | Instructions only; no compatible `apply_patch` handler | `preToolUse` + `beforeShellExecution` bridge; scope blocking requires `strict`; `afterFileEdit` is post-hoc | `tool_call` bridge; scope blocking requires `strict` |
@@ -127,7 +127,7 @@ All four platforms share the same skills, commands and scripts; only the hooks d
 
 Highlights of the v5.4.0 line:
 
-- **Fleet protocol v1 and the `navigator` skill.** Parallel sessions now check in through files instead of chat messages: `scripts/lib/fleet-protocol.mjs` owns the layout under `~/.config/navigator/`, session-start writes a check-in (Phase 7.6), and the SessionStart banner shows in one line whether a navigator lease is active, absent or unreadable. `/navigator` runs the coordinator role on operator command only and grants no approvals (#1462).
+- **Fleet protocol v1.** Parallel sessions now check in through files instead of chat messages: `scripts/lib/fleet-protocol.mjs` owns the layout under `~/.config/navigator/`, session-start writes a check-in (Phase 7.6), and the SessionStart banner shows in one line whether a navigator lease is active, absent or unreadable. The coordinator role itself runs outside this plugin and grants no approvals; `skills/_shared/fleet-protocol.md` is the file contract (#1462, #1491).
 - **`offload-first` places work before pressure forces it.** With the new Session Config key set to `true`, offloadable wave roles go to a ready declared remote host on a `proceed` verdict too, not only when resources are short. Default `false` changes nothing (#1465).
 - **A `test-audit` skill for shrinking a suite without losing proof.** A four-question gate before a new test, a focused audit, and a lane-based campaign; every delete, merge or repair needs written evidence and a production mutation the remaining test catches.
 - **The sessions ledger and the vault writers are honest again.** Backfill stubs no longer hide real records, token totals are rolled up mechanically so the autopilot token-budget kill-switch fires again once `--max-tokens` is set (its default is now `0`, off), and the board writer and narrative mirror refuse a vault that is not the canonical one. `vault-dir` gains a per-directory tier in `owner.yaml` (#1443, #1436, #1450, #1448).

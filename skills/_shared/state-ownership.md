@@ -107,8 +107,9 @@ layer.
 - **Registry `role` (`'navigator'`) is display, never ownership.** The
   authoritative claim is the navigator lease (`leases/navigator.json` under
   `~/.config/navigator/`, see `skills/_shared/fleet-protocol.md`); `registerSelf()`
-  does not carry the field across a repeated SessionStart, so the `/navigator`
-  skill re-sets it each ticker round via `heartbeat(id, { role })` (#1462).
+  does not carry the field across a repeated SessionStart, so a navigator
+  (operated outside this plugin) has to re-set it on every round via
+  `heartbeat(id, { role })` (#1462).
 
 The peer-discovery and issue-budget procedures below apply these rules at their
 narrow surfaces; neither creates a second ownership model.
