@@ -136,9 +136,11 @@
        --quality-min-confidence "$VM_QUALITY_CONFIDENCE" 2>&1)
      VM_EXIT=$?
 
-     # Surface script output so user can see skipped-handwritten results
+     # Surface script output so user can see skipped-handwritten results.
+     # `printf '%s\n'`, not `echo`: zsh's echo expands the `\n` escapes inside
+     # JSON strings and would split an action line in two.
      if [[ -n "$VM_OUTPUT" ]]; then
-       echo "$VM_OUTPUT"
+       printf '%s\n' "$VM_OUTPUT"
      fi
 
      if [[ $VM_EXIT -ne 0 ]]; then
@@ -151,17 +153,30 @@
          echo "WARNING: vault-mirror exited $VM_EXIT — session metrics were NOT mirrored to the vault. Set vault-integration.mode: strict to block on this error."
        fi
      else
-       # Parse the destination path from the script's JSON output (one JSON line per action)
-       VM_DEST=$(echo "$VM_OUTPUT" | jq -r 'select(.action == "created" or .action == "updated") | .path' 2>/dev/null | head -1)
+       # Parse the action lines. stdout carries one JSON object per entry, but
+       # this capture also holds stderr (`2>&1`): `SKIP …` / `WARN …` lines,
+       # routine since #1503. A plain `jq` stops at the first non-JSON line
+       # (exit 5) and silently loses every action after it, so read raw lines
+       # and keep only the ones that parse as JSON objects.
+       vm_actions() { printf '%s\n' "$VM_OUTPUT" | jq -R -r "fromjson? | objects | $1" 2>/dev/null; }
+
+       VM_DEST=$(vm_actions 'select(.action == "created" or .action == "updated") | .path' | head -1)
        if [[ -n "$VM_DEST" ]]; then
          echo "Mirrored session summary to $VM_DEST"
        fi
 
        # Quality gate summary (PRD F1.2): count entries skipped because they
        # failed the quality filter, so the operator can tune thresholds.
-       VM_QUALITY_SKIP=$(echo "$VM_OUTPUT" | jq -rc 'select(.action == "skipped-quality-low")' 2>/dev/null | wc -l | tr -d ' ')
+       VM_QUALITY_SKIP=$(vm_actions 'select(.action == "skipped-quality-low") | .action' | wc -l | tr -d ' ')
        if [[ "${VM_QUALITY_SKIP:-0}" -gt 0 ]]; then
          echo "vault-mirror: ${VM_QUALITY_SKIP} entry/entries skipped by quality gate (set vault-mirror.quality.min-narrative-chars / min-confidence to tune)"
+       fi
+
+       # #1503: session notes left untouched because they were rendered from a
+       # record that is not in this ledger (another repo's, or an id collision).
+       VM_FOREIGN_SKIP=$(vm_actions 'select(.action == "skipped-foreign-owner") | .action' | wc -l | tr -d ' ')
+       if [[ "${VM_FOREIGN_SKIP:-0}" -gt 0 ]]; then
+         echo "vault-mirror: ${VM_FOREIGN_SKIP} note(s) left untouched — owned by a session record outside this ledger (skipped-foreign-owner; see the SKIP lines above)"
        fi
      fi
 
@@ -229,4 +244,4 @@
 
    > **Host-local overrides.** `enabled`/`mode` above are the values AFTER the host switch: env `SO_VAULT_INTEGRATION=off|warn|strict` > owner.yaml `vault-integration: { enabled: false | mode: … }` > committed. The host may only lower the committed level, never raise it; `."vault-integration"."host-override"` names the tier that lowered it (`env:SO_VAULT_INTEGRATION`, `owner.yaml`) and is `null` otherwise. `."vault-integration"."vault-dir-source"` (`env`, `match`, `owner`, `committed`) says where the vault path came from. See `docs/session-config-reference.md` § Vault Integration.
 
-   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-foreign-owner` (a generator note at the target path belongs to another repo or record — its `source-repo` / `source-record` frontmatter differs, or a session note names a different id; file left untouched, line carries a `reason`, #1503), `skipped-invalid` (entry failed required-field validation, or the mapper crashed rendering an otherwise-parseable record — the latter case carries `reason: "mapper-crash"`, #718), `skipped-quality-low` (entry failed quality gate — PRD F1.2; line carries a `reason` field).
+   > **Hand-written note protection:** `vault-mirror.mjs` checks for a `_generator: session-orchestrator-vault-mirror@1` marker before overwriting any existing file. When it skips an existing hand-written note it emits a JSON line `{"action":"skipped-handwritten","path":"<path>","kind":"<kind>","id":"<id>"}` — the step above surfaces this output so the user can see the result. Action names: `created`, `updated`, `skipped-noop`, `skipped-handwritten`, `skipped-collision-resolved`, `skipped-foreign-owner` (sessions: the note at the target path was rendered from a record outside this ledger — `source-record` mismatch — or names a different session id; file left untouched, line carries a `reason`, counted by the step above, #1503), `skipped-invalid` (entry failed required-field validation, or the mapper crashed rendering an otherwise-parseable record — the latter case carries `reason: "mapper-crash"`, #718), `skipped-quality-low` (entry failed quality gate — PRD F1.2; line carries a `reason` field).

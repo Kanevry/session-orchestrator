@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -916,6 +916,112 @@ describe('vault-mirror repo root (#1503)', () => {
     expect(JSON.parse(result.stdout.trim())).toMatchObject({
       action: 'created',
       path: '40-learnings/gadget-service/shared-subject.md',
+    });
+    // #1503 review F4: an unverifiable --repo-root is said out loud, once.
+    expect(result.stderr).toContain('cannot be checked against it');
+  });
+
+  it('a source outside any git repo with no --repo-root warns that the namespace comes from the cwd', () => {
+    // #1503 review F4: a ledger COPIED out of another repo has no repo to check
+    // against, so it lands in the cwd's namespace — the one shape the refusal
+    // cannot catch. The run proceeds (a loose ledger is legitimate), but not silently.
+    const widget = repoWithLedger('widget-service', WIDGET_RECORD);
+    const looseSource = writeJsonlTo(tmp(), JSON.stringify(GADGET_RECORD));
+    const result = runIn(widget.root, ['--vault-dir', tmp(), '--source', looseSource, '--kind', 'learning', '--dry-run']);
+
+    expect(result.status).toBe(0);
+    const warns = result.stderr.split('\n').filter((l) => l.startsWith('WARN vault-mirror: --source'));
+    expect(warns).toHaveLength(1);
+    expect(warns[0]).toContain("the namespace 'widget-service' comes from the cwd");
+    expect(warns[0]).not.toContain(dirname(looseSource)); // basename only (#1479)
+  });
+
+  it('a symlink inside repo A pointing at repo B\'s ledger is mirrored under B', () => {
+    // #1503 review: findRepoRoot took the dirname of the LINK, so the ledger was
+    // attributed to the repo holding the link, not the repo owning the file.
+    const widget = repoWithLedger('widget-service', WIDGET_RECORD);
+    const gadget = repoWithLedger('gadget-service', GADGET_RECORD);
+    const link = join(widget.root, 'linked-ledger.jsonl');
+    symlinkSync(gadget.ledger, link);
+    const vaultDir = tmp();
+
+    const result = runIn(widget.root, ['--vault-dir', vaultDir, '--source', link, '--kind', 'learning']);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({
+      action: 'created',
+      path: '40-learnings/gadget-service/shared-subject.md',
+    });
+    expect(existsSync(join(vaultDir, '40-learnings', 'widget-service'))).toBe(false);
+  });
+
+  it('a session whose record key changed in the SAME ledger (stub → real record) is updated, not frozen', () => {
+    // #1503 review F2: the note was written from the first record (no
+    // raw_session_id → keyed by started_at); the real record that superseded it
+    // carries raw_session_id, so the keys differ. The superseded line is still in
+    // the ledger, and the CLI hands every key in it to the owner guard.
+    const repo = repoWithLedger('widget-service', WIDGET_RECORD);
+    const sessions = join(repo.root, '.orchestrator', 'metrics', 'sessions.jsonl');
+    const first = { ...JSON.parse(VALID_SESSION), session_id: 'main-2026-05-23-session-1' };
+    const real = {
+      ...first,
+      raw_session_id: '33333333-cccc-4000-8000-000000000003',
+      completed_at: '2026-05-24T10:00:00Z',
+    };
+    const vaultDir = tmp();
+    writeFileSync(sessions, JSON.stringify(first) + '\n', 'utf8');
+    expect(runIn(repo.root, ['--vault-dir', vaultDir, '--source', sessions, '--kind', 'session']).status).toBe(0);
+
+    writeFileSync(sessions, JSON.stringify(first) + '\n' + JSON.stringify(real) + '\n', 'utf8');
+    const result = runIn(repo.root, ['--vault-dir', vaultDir, '--source', sessions, '--kind', 'session']);
+
+    expect(result.status).toBe(0);
+    const actions = result.stdout.trim().split('\n').map((l) => JSON.parse(l).action);
+    expect(actions).toEqual(['skipped-duplicate-session', 'updated']);
+    const note = readFileSync(join(vaultDir, '50-sessions', 'widget-service', 'main-2026-05-23-session-1.md'), 'utf8');
+    expect(note).toContain('source-record: "33333333-cccc-4000-8000-000000000003"');
+  });
+
+  it('a monorepo package with its own .orchestrator/ and .vault.yaml keeps its namespace (no abort)', () => {
+    // Cross-commit panel: findRepoRoot answered the monorepo TOPLEVEL for the
+    // package's ledger, so session-end's `--repo-root "$PWD"` (= the package)
+    // was refused as a mismatch, and without the flag the notes moved to the
+    // monorepo's folder. The ledger's own project decides.
+    const mono = repoWithLedger('mono-repo', WIDGET_RECORD);
+    const pkg = join(mono.root, 'packages', 'foo');
+    const pkgMetrics = join(pkg, '.orchestrator', 'metrics');
+    mkdirSync(pkgMetrics, { recursive: true });
+    writeFileSync(
+      join(pkg, '.vault.yaml'),
+      'apiVersion: vault.example/v1\nkind: Repository\n\nmetadata:\n  name: Foo\n  slug: "foo-package"\n  tier: active\n',
+    );
+    const ledger = join(pkgMetrics, 'learnings.jsonl');
+    writeFileSync(ledger, JSON.stringify(GADGET_RECORD) + '\n', 'utf8');
+    const expected = { action: 'created', path: '40-learnings/foo-package/shared-subject.md' };
+
+    const withFlag = runIn(pkg, ['--vault-dir', tmp(), '--source', ledger, '--kind', 'learning', '--repo-root', pkg, '--dry-run']);
+    expect(withFlag.status).toBe(0);
+    expect(JSON.parse(withFlag.stdout.trim())).toMatchObject(expected);
+
+    const withoutFlag = runIn(pkg, ['--vault-dir', tmp(), '--source', ledger, '--kind', 'learning', '--dry-run']);
+    expect(withoutFlag.status).toBe(0);
+    expect(JSON.parse(withoutFlag.stdout.trim())).toMatchObject(expected);
+  });
+
+  it('a remote-less repo mirrors with --repo-root "$PWD" (no abort)', () => {
+    const root = join(tmp(), 'lonely-repo');
+    fixtureGit(['init', '-q', root], tmpdir(), { stdio: ['ignore', 'pipe', 'pipe'] });
+    const metrics = join(root, '.orchestrator', 'metrics');
+    mkdirSync(metrics, { recursive: true });
+    const ledger = join(metrics, 'learnings.jsonl');
+    writeFileSync(ledger, JSON.stringify(WIDGET_RECORD) + '\n', 'utf8');
+
+    const result = runIn(root, ['--vault-dir', tmp(), '--source', ledger, '--kind', 'learning', '--repo-root', root, '--dry-run']);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim())).toMatchObject({
+      action: 'created',
+      path: '40-learnings/lonely-repo/shared-subject.md',
     });
   });
 

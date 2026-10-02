@@ -28,12 +28,16 @@
  *   3. File exists, lacks _generator → skip (hand-written). Log to stderr.
  *   4. File exists, has _generator, id differs → collision-disambiguate by appending -<first8 of uuid>.
  *      (Sessions have no disambiguation: a different-id note is skipped-foreign-owner.)
- *   5. File exists, has _generator, but its `source-repo` / `source-record` names a
- *      different owner than this write → skipped-foreign-owner, file untouched (#1503).
+ *   5. File exists, has _generator, but its `source-record` names a different record
+ *      than this write (#1503): learnings → collision-disambiguate as in rule 4;
+ *      sessions → skipped-foreign-owner unless the key occurs in this --source ledger.
+ *      A note that still leaks under the current masker is rewritten regardless —
+ *      the secret self-heal wins over the owner guard.
  *
  * Repo root (#1503): the namespace is the identity of the repo the --source
- * ledger belongs to — `--repo-root` when given, else the git repo containing
- * --source, else the cwd (a source outside any git repo). It is never the cwd
+ * ledger belongs to — `--repo-root` when given, else the project holding
+ * --source (`<root>/.orchestrator/metrics/`), else the git repo containing it,
+ * else the cwd (a loose source outside any git repo). It is never the cwd
  * when the source sits in a repo: running from another repo's checkout used to
  * write one project's records over another project's notes.
  *
@@ -59,7 +63,7 @@
  * Part of session-orchestrator vault-mirror (Issue #14).
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
@@ -75,6 +79,7 @@ import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
+import { sessionSourceRecord } from './lib/vault-mirror/render-sessions.mjs';
 import { checkCanonicalVault, describeOriginForLog, findRepoRoot, normalizeRemote } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
 import { canonicalizeSessions } from './lib/sessions-canonical.mjs';
@@ -239,7 +244,8 @@ if (flagValues.help === true) {
       '                                        in Session Config. Sanitised to a lowercase kebab slug.',
       '  --repo-root <path>                    The repo whose ledger --source is (#1503). Its .vault.yaml',
       '                                        slug / git remote decides the vault namespace. Default: the',
-      '                                        git repo containing --source, else the cwd. Refused (exit 2,',
+      '                                        project holding --source (<root>/.orchestrator/metrics/), else',
+      '                                        the git repo containing it, else the cwd. Refused (exit 2,',
       '                                        "source-repo-mismatch") when --source lies in a different repo.',
       '  --quality-min-narrative-chars <int>   Sessions: minimum rendered-narrative length (default 400).',
       '                                        Entries below the threshold emit "skipped-quality-low".',
@@ -359,6 +365,36 @@ if (kind !== 'learning' && kind !== 'session') {
  */
 function pathForLog(p) {
   return `.../${basename(String(p ?? ''))}`;
+}
+
+/**
+ * The project a ledger belongs to (#1503): the directory that holds it under
+ * the `.orchestrator/metrics/` convention, else the git repo containing it,
+ * else `null`.
+ *
+ * The convention comes FIRST because the git toplevel is the wrong answer for
+ * a project nested inside a repo — a monorepo package with its own
+ * `.orchestrator/` and `.vault.yaml` (measured: `--repo-root <package>` was
+ * refused against the monorepo's namespace, and without the flag the package's
+ * notes moved to the monorepo's folder). Every producer writes the ledgers to
+ * `<project>/.orchestrator/metrics/`, which is also exactly the directory whose
+ * `.vault.yaml` named the namespace before #1503 (callers ran from it).
+ *
+ * Named ceiling: a ledger stored under some project's `.orchestrator/metrics/`
+ * is attributed to that project whoever wrote its records — a foreign ledger
+ * COPIED there is not detected here; the session `source-record` guard in
+ * process.mjs is the remaining defence for that shape.
+ *
+ * @param {string} realSource - the source path after `realpathSync`.
+ * @returns {string|null}
+ */
+function ledgerOwnerRoot(realSource) {
+  const metricsDir = dirname(realSource);
+  const orchestratorDir = dirname(metricsDir);
+  if (basename(metricsDir) === 'metrics' && basename(orchestratorDir) === '.orchestrator') {
+    return dirname(orchestratorDir);
+  }
+  return findRepoRoot(dirname(realSource));
 }
 
 // ── Run-level accounting + run close-out (#1147) ──────────────────────────────
@@ -506,13 +542,40 @@ async function main() {
   // overwrote 3 of its notes — slug and session-id collisions are routine across
   // repos. The fix is to stop asking the cwd:
   //   1. `--repo-root` when given — the caller states which repo it mirrors;
-  //   2. else the git repo that contains `--source` — the ledger says whose it is;
-  //   3. else the cwd — only for a source outside any git repo (a copied ledger,
-  //      the test suites' mkdtemp sources), where nothing better is knowable.
-  const sourceRepoRoot = findRepoRoot(dirname(resolve(source)));
+  //   2. else the ledger's own project — see {@link ledgerOwnerRoot};
+  //   3. else the cwd — only for a source that is neither a project ledger nor
+  //      inside a git repo (a copied ledger, the test suites' mkdtemp sources),
+  //      where nothing better is knowable.
+  // Step 2's answer is also what an explicit `--repo-root` is checked against.
+  //
+  // The ledger's REAL path decides, not the path it was handed under: a symlink
+  // inside repo A that points at repo B's ledger is B's ledger. `realpathSync`
+  // falls back to the lexical path only when it throws (the file was just
+  // proven to exist, so that is a race or a permission edge, not a normal case).
+  let sourceRealPath;
+  try {
+    sourceRealPath = realpathSync(resolve(source));
+  } catch {
+    sourceRealPath = resolve(source);
+  }
+  const sourceRepoRoot = ledgerOwnerRoot(sourceRealPath);
   const repoRoot = repoRootArg
     ? resolve(expandTilde(repoRootArg))
     : (sourceRepoRoot ?? process.cwd());
+
+  // A source with no owning project cannot be checked against anything: the
+  // namespace then rests on the cwd or on an unverifiable `--repo-root`, and a
+  // ledger copied out of ANOTHER repo would be written over this repo's notes
+  // without a refusal. Say so once — the run proceeds, because a loose ledger
+  // (a copy, a test fixture) is a legitimate input.
+  if (sourceRepoRoot === null) {
+    const ns = resolveRepoNamespace({ vaultName, repoRoot });
+    process.stderr.write(
+      repoRootArg
+        ? `WARN vault-mirror: --source ${pathForLog(source)} is neither a project ledger (.orchestrator/metrics/) nor inside a git repo, so --repo-root cannot be checked against it; writing under namespace '${ns}'\n`
+        : `WARN vault-mirror: --source ${pathForLog(source)} is neither a project ledger (.orchestrator/metrics/) nor inside a git repo; the namespace '${ns}' comes from the cwd — pass --repo-root to state which repo this ledger belongs to\n`,
+    );
+  }
 
   // Fail closed when the two disagree: an explicit `--repo-root` whose identity
   // differs from the repo the ledger lives in is exactly the incident shape
@@ -567,6 +630,10 @@ async function main() {
     // is the namespace — resolved ONCE above from `--repo-root` / `--source`,
     // and shared by every processor call and the auto-commit below.
     repoRoot,
+    // #1503: every `source-record` key the `--kind session` source carries,
+    // superseded duplicates included — filled while buffering below, read by
+    // processSession's owner guard (a key from this ledger is never foreign).
+    sourceRecordKeys: new Set(),
     qualityMinNarrativeChars,
     qualityMinConfidence,
   };
@@ -696,6 +763,8 @@ async function main() {
 
     if (kind === 'session') {
       sessionEntries.push(entry);
+      const recordKey = sessionSourceRecord(entry);
+      if (recordKey !== null) ctx.sourceRecordKeys.add(recordKey);
       sessionLineNums.push(lineNum);
       continue;
     }

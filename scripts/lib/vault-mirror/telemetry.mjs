@@ -16,9 +16,11 @@
  *     source superseded, so it was never dispatched. It carries `record_id`
  *     and `line` and never `path` — no target file exists for it.
  *     `skipped-foreign-owner` (#1503) is another: the generator note at the
- *     target path names a different owner (`source-repo` / `source-record`,
- *     or a different session id), so it was left untouched. It carries the
- *     refused note's `path` and the mismatch as `reason`.
+ *     target path names a different owner (a `source-record` the writer's
+ *     ledger does not carry, or a different session id), so it was left
+ *     untouched — unless it still leaks a secret, which is healed over the
+ *     guard. It carries the refused note's `path` and a constant `reason`
+ *     (`source-record mismatch` / `id mismatch`).
  *   - `orchestrator.vault.mirror_run_completed` — ONE record per CLI run,
  *     carrying the DENOMINATOR (`total` plus the per-class counts).
  *
