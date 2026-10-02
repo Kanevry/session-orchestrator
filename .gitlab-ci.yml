@@ -376,6 +376,16 @@ lint:
 # Merge commits, `Revert "..."`, `fixup!`/`squash!` and version-only headers are
 # skipped by commitlint's built-in default ignores (@commitlint/is-ignored, not
 # config-conventional; measured 2026-09-29), so GitLab's merge commits pass.
+#
+# MR title (#1477 item 1): a squash merge commits the MR TITLE (squash commit
+# template unset = `%{title}`), which no range above contains. When the MR will
+# squash (`CI_MERGE_REQUEST_SQUASH_ON_MERGE` = "true"/"false", GitLab renders
+# `squash_on_merge?`, so the project's `always`/`never` option is included), the
+# title is linted too, after GitLab's Draft prefixes (`Draft:`, `[Draft]`,
+# `(Draft)`, any case, repeated) are stripped the way `draftless_title` does. A
+# non-squash MR keeps a free-form title: its commits are what lands. An empty
+# title fails in commitlint itself (`[input] is required`, exit 1, measured
+# 2026-10-02). The title reaches commitlint as data via printf, never as code.
 # Rule set: commitlint.config.mjs. `<<: *node-setup` provides `npm ci`, hence the
 # local @commitlint/cli; `--no` stops npx from fetching anything else.
 commitlint:
@@ -405,7 +415,14 @@ commitlint:
         echo "[commitlint] FAIL: empty range - nothing was checked, which is not a pass"; exit 1;
       fi;
       git log --format='[commitlint]   %h %s' "$from..$CI_COMMIT_SHA";
-      npx --no -- commitlint --from "$from" --to "$CI_COMMIT_SHA" --verbose
+      npx --no -- commitlint --from "$from" --to "$CI_COMMIT_SHA" --verbose;
+      if [ "${CI_MERGE_REQUEST_SQUASH_ON_MERGE:-}" = "true" ]; then
+        title=$(printf '%s\n' "${CI_MERGE_REQUEST_TITLE:-}" | sed -E 's/^((\[[Dd][Rr][Aa][Ff][Tt]\]|\([Dd][Rr][Aa][Ff][Tt]\)|[Dd][Rr][Aa][Ff][Tt]:)[[:space:]]*)+//');
+        printf '[commitlint] squash merge - the MR title becomes the commit message, linting it: %s\n' "$title";
+        printf '%s\n' "$title" | npx --no -- commitlint --verbose;
+      else
+        echo "[commitlint] MR title not linted: this pipeline does not squash on merge";
+      fi
   rules: *gate-rules
 
 typecheck:
