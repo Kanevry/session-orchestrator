@@ -45,12 +45,13 @@
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
 import { emitEvent } from './events.mjs';
+import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE } from './events-schema.mjs';
 
 /**
  * Resolve a sibling module to an absolute `file:` URL.
@@ -748,14 +749,17 @@ export const PROBES = [
   {
     // #1401 part 3: archive COUNT retention vs the TIME window the ledger's
     // readers declare (`REQUIRED_EVENTS_WINDOW_DAYS`). Without any ledger there
-    // is nothing to measure — recorded as `skipped`, never as `ran-clean`.
+    // is nothing to measure — recorded as `skipped`, never as `ran-clean`. A
+    // bare, empty or foreign-only `_archive/` is no ledger either: the probe
+    // answers those `not-measured` at severity ok, which the runner would
+    // record as `ran-clean` (see {@link hasRotationArchive}).
     id: 'events-retention',
     spec: local('./events-retention-banner.mjs'),
     fn: 'checkEventsRetention',
     network: false,
     precondition: ({ repoRoot }) => {
       const metrics = path.join(repoRoot, '.orchestrator', 'metrics');
-      return existsSync(path.join(metrics, 'events.jsonl')) || existsSync(path.join(metrics, '_archive'))
+      return existsSync(path.join(metrics, 'events.jsonl')) || hasRotationArchive(metrics)
         ? null
         : 'no-events-ledger';
     },
@@ -783,6 +787,29 @@ function pluginVersion() {
     return typeof parsed.version === 'string' ? parsed.version : undefined;
   } catch {
     return undefined;
+  }
+}
+
+/**
+ * Does `<metricsDir>/_archive/` hold at least one rotated events archive? The
+ * `events-retention` precondition's second half.
+ *
+ * It lists the directory exactly as `checkEventsRetention` does (same
+ * `ARCHIVE_NAME_RE` filter), so the precondition skips precisely the inputs the
+ * probe would answer `not-measured`. The directory existing is not a ledger
+ * (#1401 review: an empty or foreign-only `_archive/` was recorded
+ * `ran-clean`). Any listing error other than ENOENT answers `true`: the probe
+ * then runs and reports the unlistable directory as `degraded`, because an
+ * unreadable source must never be skipped as absent.
+ *
+ * @param {string} metricsDir — `<repoRoot>/.orchestrator/metrics`
+ * @returns {boolean}
+ */
+function hasRotationArchive(metricsDir) {
+  try {
+    return readdirSync(path.join(metricsDir, ARCHIVE_DIR_NAME)).some((n) => ARCHIVE_NAME_RE.test(n));
+  } catch (err) {
+    return err?.code !== 'ENOENT';
   }
 }
 

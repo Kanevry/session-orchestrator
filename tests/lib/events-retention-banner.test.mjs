@@ -16,7 +16,7 @@ import {
   checkEventsRetention,
   EVENTS_WINDOW_READERS,
 } from '../../scripts/lib/events-retention-banner.mjs';
-import { PROBES } from '../../scripts/lib/session-start-probes.mjs';
+import { PROBES, runSessionStartProbes } from '../../scripts/lib/session-start-probes.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..', '..');
 const NOW = Date.UTC(2026, 9, 2, 12, 0, 0);
@@ -56,7 +56,7 @@ describe('checkEventsRetention', () => {
 
     expect(out).toMatchObject({ severity: 'warn', kind: 'retention-short', requiredDays: 1, requiredBy: 'telemetry/sync', archives: 3, maxBackups: 3 });
     expect(out.message).toBe(
-      '⚠ events-retention: the rotated events ledger covers 0.5d (3 archives at events-rotation.max-backups: 3), but telemetry/sync reads a 1d window — older events are pruned before it reads them; raise events-rotation.max-backups or max-size-mb.',
+      '⚠ events-retention: the rotated events ledger covers 0.5d (3 archives at events-rotation.max-backups: 3), less than the 1d window telemetry/sync declares as REQUIRED_EVENTS_WINDOW_DAYS — events older than 0.5d are not retained; raise events-rotation.max-backups or max-size-mb.',
     );
   });
 
@@ -78,14 +78,50 @@ describe('checkEventsRetention', () => {
     const empty = await fs.mkdtemp(path.join(os.tmpdir(), 'events-retention-'));
     dirs.push(empty);
     expect(await checkEventsRetention({ repoRoot: empty, now: NOW })).toEqual({ severity: 'ok', kind: 'not-measured', reason: 'no-events-ledger' });
-    // The runner-visible half: recorded as `skipped`, never `ran-clean`.
-    expect(PROBES.find((p) => p.id === 'events-retention').precondition({ repoRoot: empty })).toBe('no-events-ledger');
 
     const broken = await fs.mkdtemp(path.join(os.tmpdir(), 'events-retention-'));
     dirs.push(broken);
     await fs.mkdir(path.join(broken, '.orchestrator', 'metrics'), { recursive: true });
     await fs.writeFile(path.join(broken, '.orchestrator', 'metrics', '_archive'), 'not a directory');
     expect(await checkEventsRetention({ repoRoot: broken, now: NOW })).toMatchObject({ severity: 'warn', degraded: true, kind: 'unmeasurable' });
+  });
+
+  // BUG this catches (#1401 review): the registry precondition took the mere
+  // existence of `_archive/` for a ledger, so an empty or foreign-only archive
+  // directory ran the probe, whose `not-measured` answer (severity ok) the
+  // runner recorded as `ran-clean` — a measurement that never happened, scored
+  // clean. The unlistable row pins the other direction: the stricter
+  // precondition must not skip a directory it cannot read.
+  it.each([
+    { label: 'no metrics directory', setup: async () => {}, outcome: 'skipped' },
+    { label: 'an empty _archive/', setup: (m) => fs.mkdir(path.join(m, '_archive'), { recursive: true }), outcome: 'skipped' },
+    {
+      label: 'an _archive/ holding only a foreign file',
+      setup: async (m) => {
+        await fs.mkdir(path.join(m, '_archive'), { recursive: true });
+        await fs.writeFile(path.join(m, '_archive', 'events-wt-x-20261001T000000Z.jsonl'), '{}\n');
+      },
+      outcome: 'skipped',
+    },
+    {
+      label: 'an unlistable _archive/',
+      setup: async (m) => {
+        await fs.mkdir(m, { recursive: true });
+        await fs.writeFile(path.join(m, '_archive'), 'not a directory');
+      },
+      outcome: 'ran-warn',
+    },
+  ])('records $label as $outcome through the real runner', async ({ setup, outcome }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'events-retention-'));
+    dirs.push(root);
+    await setup(path.join(root, '.orchestrator', 'metrics'));
+    const probe = PROBES.find((p) => p.id === 'events-retention');
+
+    const out = await runSessionStartProbes({ repoRoot: root, config: {} }, { probes: [probe], emit: async () => {} });
+
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0].outcome).toBe(outcome);
+    if (outcome === 'skipped') expect(out.results[0].reason).toBe('no-events-ledger');
   });
 });
 

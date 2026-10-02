@@ -1098,8 +1098,10 @@ async function main() {
 
   // Phase 4 measurement probes — the mechanical caller (#1128).
   //
-  // `skills/session-start/SKILL.md` § Phase 4 names 19 probes with module paths
-  // and entry functions. Measured 2026-08-23 at `4f6404e`, not one of them had
+  // `skills/session-start/SKILL.md` § Phase 4 names 20 probes with module paths
+  // and entry functions (2026-10-02; the `PROBES` registry in
+  // `scripts/lib/session-start-probes.mjs` is the count's source of truth).
+  // Measured 2026-08-23 at `4f6404e` (a smaller family then), not one of them had
   // a caller anywhere in hooks/, npm scripts, .gitlab-ci.yml or .husky/ — the
   // only caller was the prose itself, and across 336 recorded session starts
   // there was no event proving any of them had ever run. Built, documented,

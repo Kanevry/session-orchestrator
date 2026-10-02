@@ -313,18 +313,21 @@ export function readSessionProfileForMetricsDir(metricsDir) {
 }
 
 /**
- * Events window this reader needs retained (#1401 part 3), in days, derived
- * from {@link DAILY_FLUSH_MS} = 1. `deriveSessionFromEvents` reads back to the
- * LATEST `orchestrator.session.started`, and `buildBatch` scores that
- * reconstruction over `[started_at, now]` — or `[now - DAILY_FLUSH_MS, now]`
- * when no start is found. The flush horizon is `DAILY_FLUSH_MS`, so a ledger
- * that retains one of it covers the read. CEILING (BV-004): a single session
- * running longer than a day reads further back; revisit if that becomes
- * common. Read by `scripts/lib/events-retention-banner.mjs`.
+ * Events window this reader needs retained (#1401 part 3), in days — a CHOSEN
+ * ceiling, not a derived value. `deriveSessionFromEvents` loads the whole
+ * rotated ledger (no time filter) and keeps the LATEST
+ * `orchestrator.session.started`, so what it needs retained is that one
+ * record; 1 day is the assumed maximum age of that record when a flush reads
+ * it. Nothing in this module bounds that age: `buildBatch`'s
+ * `[now - DAILY_FLUSH_MS, now]` cutoff filters `skill-invocations.jsonl`, not
+ * the events ledger. CEILING (BV-004): a latest `session.started` older than a
+ * day at flush time (a session running longer than that) is found only if
+ * retention happens to reach it; revisit if that becomes common. Read by
+ * `scripts/lib/events-retention-banner.mjs`.
  *
  * @type {number}
  */
-export const REQUIRED_EVENTS_WINDOW_DAYS = DAILY_FLUSH_MS / (24 * 60 * 60 * 1000);
+export const REQUIRED_EVENTS_WINDOW_DAYS = 1;
 
 /**
  * Reconstruct the session facts a ping needs (`session_type`, `started_at`,

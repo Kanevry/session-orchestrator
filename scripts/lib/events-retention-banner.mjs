@@ -29,17 +29,22 @@
  *
  * ## Three states, never two
  *
- *   - **not measured** — no live ledger and no archive directory:
- *     `{severity:'ok', kind:'not-measured', reason:'no-events-ledger'}` (the
- *     registry's precondition records this as `skipped`, never `ran-clean`).
- *   - **unmeasurable** — the archive directory exists but cannot be listed, or
- *     a reader's declaration cannot be read: `{severity:'warn', degraded:true}`.
+ *   - **not measured** — no live ledger and no `ARCHIVE_NAME_RE` archive in
+ *     `_archive/` (absent, empty, or holding only foreign files):
+ *     `{severity:'ok', kind:'not-measured', reason:'no-events-ledger'}`. The
+ *     registry's precondition (`hasRotationArchive` in
+ *     `session-start-probes.mjs`) lists `_archive/` the same way and skips
+ *     exactly these inputs, so the runner records them as `skipped`, never as
+ *     `ran-clean` — which is what severity ok would otherwise become.
+ *   - **unmeasurable** — `_archive/` exists but cannot be listed, or a
+ *     reader's declaration cannot be read: `{severity:'warn', degraded:true}`.
  *     An unreadable source must never read as "retention is fine".
  *   - **measured** — `null` (covered, ring not full, or no finite requirement)
  *     or `{severity:'warn', kind:'retention-short', message, …}`.
  *
- * Cost: one `readdirSync` per session start. The reader modules are imported
- * ONLY on the rare full-ring branch, so the common start pays no import.
+ * Cost: two `readdirSync` of `_archive/` per session start (the registry
+ * precondition, then this probe). The reader modules are imported ONLY on the
+ * rare full-ring branch, so the common start pays no import.
  *
  * @module scripts/lib/events-retention-banner
  */
@@ -72,8 +77,13 @@ export const EVENTS_WINDOW_READERS = Object.freeze([
  * `unknown` first stamp falls back to the LAST stamp — a later instant, so the
  * covered span is understated and the probe errs toward reporting.
  *
+ * Total over `ARCHIVE_NAME_RE` matches, the only names it is given: the regex
+ * guarantees two digit stamps, and `Date.UTC` normalizes an out-of-range field
+ * (month 13 → January of the next year) instead of returning NaN. The NaN
+ * return exists only to type the regex miss; no caller can reach it.
+ *
  * @param {string} name — matches `ARCHIVE_NAME_RE`
- * @returns {number} NaN when unparseable
+ * @returns {number} epoch ms; NaN only for a name outside `ARCHIVE_NAME_RE`
  */
 function archiveStartMs(name) {
   const m = /^events-(\d{8}T\d{6}Z|unknown)_(\d{8}T\d{6}Z)/.exec(name);
@@ -140,6 +150,8 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
     }
     names = [];
   }
+  // Mirrored by the registry precondition, which skips these inputs before the
+  // runner could record this severity-ok answer as `ran-clean`.
   if (names.length === 0 && !existsSync(path.join(metricsDir, 'events.jsonl'))) {
     return { severity: 'ok', kind: 'not-measured', reason: 'no-events-ledger' };
   }
@@ -150,6 +162,8 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
   // the whole history. See the module header (HR-101).
   if (names.length < maxBackups) return null;
 
+  // Finite: `names` is non-empty here (length >= maxBackups >= 1) and
+  // `archiveStartMs` is total over `ARCHIVE_NAME_RE` matches.
   const oldestMs = Math.min(...names.map(archiveStartMs));
   let required;
   try {
@@ -162,14 +176,6 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
       message: `⚠ events-retention: required window not readable (${String(err?.message ?? err).slice(0, 120)}) — retention span not judged, which is not the same as covered.`,
     };
   }
-  if (!Number.isFinite(oldestMs)) {
-    return {
-      severity: 'warn',
-      degraded: true,
-      kind: 'unmeasurable',
-      message: `⚠ events-retention: no archive name in ${ARCHIVE_DIR_NAME}/ carries a parseable date — retention span not measured, which is not the same as covered.`,
-    };
-  }
   if (required.days === null) return null;
 
   const coverageDays = (nowMs - oldestMs) / DAY_MS;
@@ -178,7 +184,9 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
   return {
     severity: 'warn',
     kind: 'retention-short',
-    message: `⚠ events-retention: the rotated events ledger covers ${cov}d (${names.length} archives at events-rotation.max-backups: ${maxBackups}), but ${required.by} reads a ${required.days}d window — older events are pruned before it reads them; raise events-rotation.max-backups or max-size-mb.`,
+    // Names what the rule judged (HR-106): the measured span against the
+    // reader's DECLARED window — not a claim about how the reader reads.
+    message: `⚠ events-retention: the rotated events ledger covers ${cov}d (${names.length} archives at events-rotation.max-backups: ${maxBackups}), less than the ${required.days}d window ${required.by} declares as REQUIRED_EVENTS_WINDOW_DAYS — events older than ${cov}d are not retained; raise events-rotation.max-backups or max-size-mb.`,
     coverageDays,
     requiredDays: required.days,
     requiredBy: required.by,
