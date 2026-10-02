@@ -232,14 +232,21 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
     session_id: sessionId,
     started_at: startedAt,
     last_heartbeat: startedAt,
-    mode,
+    // mode and ttl_hours are coerced here because acquire()/forceAcquire() take
+    // them from hand-written callers (dispatcher claimRepo, the phase-1.2 prose)
+    // unchecked: `mode: undefined` vanished from the JSON and `ttlHours: null`
+    // or "4" had the wrong type, so the lock failed isLockShape() — and a lock
+    // that fails the shape is reclaimed as 'corrupt' by the next session even
+    // while its heartbeat is fresh. 'unknown' classifies like any unknown mode
+    // (parallel-ok, see the acquire() wrapper).
+    mode: typeof mode === 'string' && mode.trim().length > 0 ? mode : 'unknown',
     pid: process.pid,
     // `host` stays the RAW hostname — it is an on-the-wire event field
     // (orchestrator.session.lock.acquired) and feeds the privacy-hash contract.
     // `host_id` is the additive normalised twin every comparison reads (#1072).
     host: os.hostname(),
     host_id: stableHostname(),
-    ttl_hours: ttlHours,
+    ttl_hours: Number.isFinite(ttlHours) && ttlHours > 0 ? ttlHours : DEFAULT_TTL_HOURS,
   };
   if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
     lock.semantic_session_id = semanticSessionId;

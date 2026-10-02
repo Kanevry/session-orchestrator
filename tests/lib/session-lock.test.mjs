@@ -496,6 +496,24 @@ describe('acquire() — quiet unknown-mode option (#592 MED-2)', () => {
     expect(readLock({ repoRoot }).mode).toBe('my-custom-mode');
   });
 
+  it.each([
+    ['mode undefined', { mode: undefined }],
+    ['ttlHours null', { mode: 'deep', ttlHours: null }],
+    ['ttlHours as a string', { mode: 'deep', ttlHours: '4' }],
+  ])('a lock acquired with %s still has the lock shape, so the next session sees it live, not corrupt', (_label, args) => {
+    // Bug: buildLock wrote the caller's values unchecked — `mode: undefined`
+    // vanished from the JSON, a null/string ttl had the wrong type — so the
+    // lock failed isLockShape() and the next session's acquire() reported it
+    // 'corrupt', which the SessionStart bootstrap reclaims while its owner is live.
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(acquire({ sessionId: 'sess-owner', repoRoot, ...args }).ok).toBe(true);
+
+    expect(readLockDetailed({ repoRoot }).status).toBe('ok');
+    const next = acquire({ sessionId: 'sess-next', mode: 'deep', repoRoot });
+    expect(next).toMatchObject({ ok: false, reason: 'active' });
+    expect(next.existingLock.session_id).toBe('sess-owner');
+  });
+
   it('quiet acquire() defaults exclusivityClass to parallel-ok for an unknown mode', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
 

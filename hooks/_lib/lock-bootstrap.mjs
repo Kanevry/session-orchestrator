@@ -208,12 +208,19 @@ export async function bootstrapLock({
             acquireResult.existingLock.session_id === predecessorSessionId)))
     );
 
+  // Recorded on the acquired event below, so a takeover of a stale or corrupt
+  // lock is countable — its stderr WARN is discarded by the harness (#1401).
+  let reclaimed = null;
   if (!acquireResult.ok && shouldForce) {
     const reclaimingCorrupt = acquireResult.reason === 'corrupt';
+    const forcedFrom = acquireResult.reason;
     try {
       acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot });
     } catch {
       return null;
+    }
+    if (acquireResult?.ok === true && (forcedFrom === 'stale-heartbeat' || forcedFrom === 'corrupt')) {
+      reclaimed = forcedFrom;
     }
     if (reclaimingCorrupt) {
       // The file's content is not echoed: it is unbounded and may be anything.
@@ -333,6 +340,7 @@ export async function bootstrapLock({
         pid: enriched.pid,
         host: enriched.host,
         ttl_hours: enriched.ttl_hours,
+        ...(reclaimed ? { reclaimed } : {}),
       });
     }
   } catch { /* observability is best-effort */ }

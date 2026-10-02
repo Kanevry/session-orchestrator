@@ -684,16 +684,21 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
     const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const bootWarns = () => stderrSpy.mock.calls.map((c) => String(c[0])).filter((s) => s.includes('lock-bootstrap'));
 
+    const events = [];
     const reclaimed = await bootstrapLock({
       repoRoot: sandbox,
       sessionId: 'my-session-corrupt',
       mode: 'deep',
-      _emitEventImpl: noopEmit,
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
     });
 
     expect(reclaimed?.session_id).toBe('my-session-corrupt');
     expect(readLock().session_id).toBe('my-session-corrupt');
     expect(bootWarns()).toEqual([expect.stringContaining('not a valid lock record — reclaimed')]);
+    // The WARN is discarded by the harness; the acquired event is the countable trace.
+    expect(events).toEqual([
+      { name: 'orchestrator.session.lock.acquired', payload: expect.objectContaining({ reclaimed: 'corrupt' }) },
+    ]);
 
     // The well-formed live lock of a DIFFERENT session stays fully protected:
     // classified 'active' (the conflict signal is only recorded on that reason),
