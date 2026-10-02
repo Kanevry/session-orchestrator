@@ -1017,6 +1017,8 @@ describe('skills/evolve/references/evolve-analyze-mode.md § 3.5(5) — the name
 describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
   const BAD1 = '{"id":"torn-1","type":"recurr';
   const BAD2 = 'not json at all';
+  // Built, not typed: a literal U+FEFF in source fails validate-plugin's unicode-safety check.
+  const BOM = String.fromCharCode(0xfeff);
 
   /** Names of `.pre-drop-malformed` snapshots beside the store. */
   function dropSnapshots() {
@@ -1096,6 +1098,9 @@ describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain('line 1');
+    // F3 — the WARN's numbers are pre-rewrite; the refusal names where the
+    // unparseable lines are NOW, or the operator is left guessing.
+    expect(result.stderr).toContain('unparseable lines now: 2');
     expect(sha256(learningsPath)).toBe(before);
     expect(dropSnapshots()).toEqual([]);
     expect(dropEvents()).toEqual([]);
@@ -1112,7 +1117,7 @@ describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
       'utf8',
     );
     const plan = JSON.parse(runSweep(['--drop-malformed', '--line', '3', '--file', learningsPath, '--json']).stdout);
-    expect(plan.dropped).toEqual([{ line: 3, preview: BAD2 }]);
+    expect(plan.dropped).toEqual([{ line: 3, chars: 15, preview: BAD2, bom: false, embedded_record: null }]);
     expect(runSweep(['--apply', '--file', learningsPath, '--archive', archivePath]).status).toBe(0);
     expect(storeLines()[2]).toBe(BAD1); // line 3 now names BAD1
     const afterSweep = sha256(learningsPath);
@@ -1150,5 +1155,85 @@ describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
     expect(result.status).toBe(1);
     expect(sha256(learningsPath)).toBe(before);
     expect(dropSnapshots()).toEqual([]);
+  });
+
+  // F1 — the bug: a crash mid-append leaves a torn record with the NEXT record
+  // fused onto it (#1489), and a UTF-8 BOM makes a whole record unparseable.
+  // Both lines are "malformed", both still carry a readable learning, and the
+  // 80-char preview showed neither — the apply deleted the record (only the
+  // snapshot kept it).
+  it.each([
+    [
+      'a record fused after a torn one',
+      () => `${JSON.stringify(liveLearning({ id: 'alive' }))}\n{"id":"torn-1","type":"recurr${JSON.stringify(liveLearning({ id: 'fused', subject: 'f' }))}\n`,
+      2,
+      { bom: false, embedded_record: { offset: 29, id: 'fused' } },
+    ],
+    [
+      'a record behind a UTF-8 BOM',
+      () => `${BOM}${JSON.stringify(liveLearning({ id: 'first' }))}\n${JSON.stringify(liveLearning({ id: 'alive', subject: 'a' }))}\n`,
+      1,
+      { bom: true, embedded_record: null },
+    ],
+  ])('the dry run flags %s and --apply refuses that line without --accept-embedded', (_label, body, line, flags) => {
+    writeFileSync(learningsPath, body(), 'utf8');
+    const before = sha256(learningsPath);
+    const lineLength = readFileSync(learningsPath, 'utf8').split('\n')[line - 1].length;
+
+    const plan = JSON.parse(runSweep(['--drop-malformed', '--line', String(line), '--file', learningsPath, '--json']).stdout);
+    expect(plan.dropped).toEqual([expect.objectContaining({ line, chars: lineLength, ...flags })]);
+
+    const result = runSweep([
+      '--drop-malformed', '--line', String(line), '--generation', plan.generation,
+      '--apply', '--repo-root', workdir, '--file', learningsPath,
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--accept-embedded');
+    expect(sha256(learningsPath)).toBe(before);
+    expect(dropSnapshots()).toEqual([]);
+    expect(dropEvents()).toEqual([]);
+  });
+
+  // F1 — the escape hatch must work, and the ledger must say a readable
+  // record went with the line: otherwise the loss is invisible after the fact.
+  it('--accept-embedded drops the fused line and the event counts the record it carried', () => {
+    const torn = `{"id":"torn-1","type":"recurr${JSON.stringify(liveLearning({ id: 'fused', subject: 'f' }))}`;
+    writeFileSync(learningsPath, `${JSON.stringify(liveLearning({ id: 'alive' }))}\n${torn}\n`, 'utf8');
+    const plan = JSON.parse(runSweep(['--drop-malformed', '--line', '2', '--file', learningsPath, '--json']).stdout);
+
+    const result = runSweep([
+      '--drop-malformed', '--line', '2', '--generation', plan.generation, '--accept-embedded',
+      '--apply', '--repo-root', workdir, '--file', learningsPath,
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(storeLines().map((l) => JSON.parse(l).id)).toEqual(['alive']);
+    expect(dropEvents()).toEqual([expect.objectContaining({ dropped: 1, lines: [2], record_bearing: 1 })]);
+  });
+
+  // F4 — the bug: the "--file inside --repo-root" check was lexical, so a
+  // root spelled through a symlink (macOS: /var → /private/var) refused a
+  // store that lies inside it.
+  it('accepts a --file inside a --repo-root spelled through a symlink', () => {
+    const real = path.join(workdir, 'real');
+    const link = path.join(workdir, 'link');
+    mkdirSync(real);
+    symlinkSync(real, link);
+    const store = path.join(real, 'learnings.jsonl');
+    writeFileSync(store, `${JSON.stringify(liveLearning({ id: 'alive' }))}\n${BAD1}\n`, 'utf8');
+    const plan = JSON.parse(runSweep(['--drop-malformed', '--line', '2', '--file', store, '--json']).stdout);
+
+    const result = runSweep([
+      '--drop-malformed', '--line', '2', '--generation', plan.generation,
+      '--apply', '--repo-root', link, '--file', store,
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(store, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l).id)).toEqual(['alive']);
+    const events = readJsonl(path.join(real, '.orchestrator', 'metrics', 'events.jsonl'));
+    expect(events).toEqual([
+      expect.objectContaining({ event: 'orchestrator.learnings.malformed_dropped', file: 'learnings.jsonl' }),
+    ]);
   });
 });

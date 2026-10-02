@@ -25,7 +25,7 @@
  *     [--grace-days N] [--snapshot PATH|--entries PATH] [--file PATH] [--archive PATH]
  *     [--appended N] [--boosted M] [--duration-ms D] [--skipped a,b] [--repo-root PATH]
  *   node scripts/sweep-expired-learnings.mjs --drop-malformed --line N [--line M ...]
- *     [--file PATH] [--json] [--apply --generation TOKEN --repo-root PATH]
+ *     [--file PATH] [--json] [--apply --generation TOKEN --repo-root PATH [--accept-embedded]]
  *
  * Flags:
  *   --prune           Decision-driven prune+consolidate+rewrite instead of the
@@ -77,9 +77,10 @@
  *   --drop-malformed  Remove unparseable store lines (#1500) — the one sanctioned
  *                      repair; the store keeps such lines verbatim through every
  *                      rewrite. Takes --line (required), --generation, --file,
- *                      --json, --apply, --repo-root; nothing else. A dry run
- *                      (default) checks each line and prints its preview and the
- *                      store generation. --apply re-reads the store under its
+ *                      --json, --apply, --repo-root, --accept-embedded; nothing
+ *                      else. A dry run (default) checks each line and prints its
+ *                      length, preview, any readable record it still carries
+ *                      (bom / embedded_record) and the store generation. --apply re-reads the store under its
  *                      lock, copies it to <stem>.pre-drop-malformed.jsonl.bak-<ISO>
  *                      beside it, rewrites it without those lines, and records
  *                      one orchestrator.learnings.malformed_dropped event.
@@ -88,8 +89,12 @@
  *   --generation TOKEN  DROP-MALFORMED ONLY; required with --apply. The
  *                      generation the dry run printed: line numbers move with
  *                      every rewrite, so a changed store exits 3.
+ *   --accept-embedded DROP-MALFORMED ONLY. Apply even to a line that still
+ *                      holds a readable record (behind a BOM, or fused after a
+ *                      torn record) — without it such a line exits 1.
  *   --repo-root PATH  With --drop-malformed --apply: REQUIRED, the repo the
- *                      event is pinned to; --file must lie inside it.
+ *                      event is pinned to; --file must lie inside it (judged
+ *                      on realpaths).
  *                      Otherwise PRUNE ONLY (#1206). Repo root the
  *                      `orchestrator.evolve.completed` record is pinned to.
  *                      No default and NO process.cwd() fallback (#1119) — when
@@ -100,7 +105,8 @@
  * Exit codes:
  *   0  Success (including no-op when nothing is archive-eligible)
  *   1  Usage/input error (bad flag/value, flag used in the wrong mode, a
- *      --drop-malformed --line that is not an unparseable line, an
+ *      --drop-malformed --line that is not an unparseable line or, without
+ *      --accept-embedded, still holds a readable record, an
  *      absent/malformed/empty `--entries` sidecar, or a NEW `--entries` record
  *      that fails strict schema validation, or an `--entries` sidecar without
  *      its `_store_generation` header or snapshotted from another store than
@@ -130,6 +136,7 @@ import {
 } from './lib/learnings/expiry-sweep.mjs';
 import { readLearningsSnapshot, parseLearningsText } from './lib/learnings/io.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
+import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/learnings.jsonl';
@@ -145,7 +152,7 @@ const DROP_MALFORMED_EVENT = 'orchestrator.learnings.malformed_dropped';
 function printHelp() {
   process.stdout.write(
     `Usage: node scripts/sweep-expired-learnings.mjs [--prune] [--dry-run|--apply] [--json] [--grace-days N] [--snapshot PATH|--entries PATH] [--file PATH] [--archive PATH]
-       node scripts/sweep-expired-learnings.mjs --drop-malformed --line N [--line M ...] [--file PATH] [--json] [--apply --generation TOKEN --repo-root PATH]
+       node scripts/sweep-expired-learnings.mjs --drop-malformed --line N [--line M ...] [--file PATH] [--json] [--apply --generation TOKEN --repo-root PATH [--accept-embedded]]
 
 Modes:
   (default)         Expiry sweep — archive entries expired past the grace window
@@ -181,6 +188,8 @@ Options:
                     an unparseable line of the store as read, else exit 1
   --generation TOKEN  Drop-malformed only, required with --apply: the dry
                     run's generation; a store changed since exits 3
+  --accept-embedded  Drop-malformed only: apply even to a line that still holds
+                    a readable record (bom / embedded_record in the dry run)
   --repo-root PATH  Drop-malformed --apply: required, --file must lie inside it
 
 Exit codes:  0 success  1 usage/input error (incl. a --line that is not unparseable,
@@ -245,6 +254,7 @@ function parseArgs(argv) {
     dropMalformed: false,
     lines: [],
     generation: null,
+    acceptEmbedded: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -263,6 +273,8 @@ function parseArgs(argv) {
       const raw = argv[++i];
       if (typeof raw !== 'string' || raw.length === 0) usageError('--generation requires a TOKEN');
       args.generation = raw;
+    } else if (a === '--accept-embedded') {
+      args.acceptEmbedded = true;
     } else if (a === '--apply') {
       args.dryRun = false;
     } else if (a === '--dry-run') {
@@ -364,15 +376,18 @@ function parseArgs(argv) {
             'pinned there (#1119: no cwd fallback); nothing written'
         );
       }
-      const rel = path.relative(args.repoRoot, path.resolve(args.file));
-      if (rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+      // Canonical, not lexical (#1500 F4): a root spelled through a symlink
+      // (macOS /var → /private/var) refused a store inside it. The file goes
+      // through resolveLedger (realpath when it exists), because
+      // canonicalizeRoot realpaths only the root.
+      if (!validatePathInsideProject(resolveLedger(args.file), args.repoRoot, { canonicalizeRoot: true }).ok) {
         usageError(`--file ${args.file} lies outside --repo-root ${args.repoRoot} — nothing written`);
       }
     }
     return args;
   }
-  if (args.lines.length > 0 || args.generation !== null) {
-    usageError('--line/--generation are only valid with --drop-malformed');
+  if (args.lines.length > 0 || args.generation !== null || args.acceptEmbedded) {
+    usageError('--line/--generation/--accept-embedded are only valid with --drop-malformed');
   }
   if (args.prune && args.graceDaysExplicit) {
     usageError('--grace-days is not valid with --prune (the prune path has no grace window)');
@@ -839,7 +854,10 @@ async function runPrune(args) {
  * @param {Awaited<ReturnType<typeof dropMalformedLines>>} result
  */
 async function emitMalformedDropped(args, result) {
-  const rel = (p) => path.relative(args.repoRoot, path.resolve(p));
+  // Both sides canonical, as the parseArgs check judged them: a lexical
+  // relative() across /var vs /private/var reads `../../private/...`.
+  const root = resolveLedger(args.repoRoot);
+  const rel = (p) => path.relative(root, resolveLedger(p));
   try {
     const { emitEvent, sessionAttribution } = await import('./lib/events.mjs');
     await emitEvent(
@@ -849,6 +867,7 @@ async function emitMalformedDropped(args, result) {
         dropped: result.dropped.length,
         lines: result.dropped.map((d) => d.line),
         remaining_malformed: result.remainingMalformed,
+        record_bearing: result.recordBearing,
         snapshot: rel(result.snapshot),
         source: 'sweep-expired-learnings-cli',
         ...sessionAttribution(args.repoRoot),
@@ -878,6 +897,7 @@ async function runDropMalformed(args) {
       filePath: args.file,
       lines: args.lines,
       expectedGeneration: args.generation ?? undefined,
+      acceptEmbedded: args.acceptEmbedded,
       dryRun: args.dryRun,
     });
   } catch (err) {
@@ -902,6 +922,7 @@ async function runDropMalformed(args) {
     dropped: result.dropped,
     records: result.records,
     remaining_malformed: result.remainingMalformed,
+    record_bearing: result.recordBearing,
     dry_run: result.dryRun,
     snapshot: result.snapshot,
   };
@@ -909,13 +930,22 @@ async function runDropMalformed(args) {
     process.stdout.write(JSON.stringify(summary) + '\n');
     return;
   }
+  // The flags say what the 80-char preview cannot show (#1500 F1).
+  const flags = (d) =>
+    (d.bom ? ' [a readable record behind a UTF-8 BOM]' : '') +
+    (d.embedded_record
+      ? ` [a readable record (id ${d.embedded_record.id ?? 'none'}) at offset ${d.embedded_record.offset}]`
+      : '');
   process.stdout.write(
     `sweep-expired-learnings: drop-malformed lines=${JSON.stringify(summary.dropped.map((d) => d.line))} ` +
       `records=${summary.records} remaining_malformed=${summary.remaining_malformed} ` +
-      `dry_run=${summary.dry_run} generation=${summary.generation}` +
+      `record_bearing=${summary.record_bearing} dry_run=${summary.dry_run} generation=${summary.generation}` +
       (summary.snapshot ? ` snapshot=${summary.snapshot}` : '') +
       '\n' +
-      summary.dropped.map((d) => `  line ${d.line}: ${d.preview}\n`).join('')
+      summary.dropped.map((d) => `  line ${d.line} (${d.chars} chars): ${d.preview}${flags(d)}\n`).join('') +
+      (summary.dry_run && summary.record_bearing > 0
+        ? '  --apply refuses a line that holds a readable record unless --accept-embedded is given\n'
+        : '')
   );
 }
 

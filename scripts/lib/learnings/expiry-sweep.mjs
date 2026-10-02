@@ -100,22 +100,38 @@ export class StoreGenerationMismatchError extends Error {
 }
 
 /**
- * Thrown by {@link dropMalformedLines} when a requested line is not an
- * unparseable line of the store as read — a record, a blank line, or past the
- * end. Nothing is written.
+ * Thrown by {@link dropMalformedLines} when a requested line may not be
+ * dropped. Nothing is written. Two reasons:
+ *   - `not-unparseable`: a record, a blank line, or past the end. The message
+ *     names where the unparseable lines are NOW — every rewrite moves them to
+ *     the end, so a number from an earlier WARN is often stale (#1500 F3).
+ *   - `holds-a-record`: the line still carries a readable record (behind a
+ *     BOM, or fused after a torn one) and `acceptEmbedded` was not given.
  */
 export class MalformedLineRefusedError extends Error {
   /**
    * @param {string} filePath
-   * @param {number[]} lines - the requested lines that are not unparseable
+   * @param {number[]} lines - the requested lines that may not be dropped
+   * @param {{ reason?: 'not-unparseable'|'holds-a-record', unparseable?: number[] }} [opts]
+   *   `unparseable`: the store's unparseable lines as read (for `not-unparseable`)
    */
-  constructor(filePath, lines) {
+  constructor(filePath, lines, { reason = 'not-unparseable', unparseable = [] } = {}) {
+    const where = `line ${lines.join(', ')} of ${redactHomeDir(filePath)}`;
+    const now =
+      unparseable.length === 0
+        ? 'none'
+        : unparseable.slice(0, 10).join(', ') + (unparseable.length > 10 ? `, +${unparseable.length - 10} more` : '');
     super(
-      `drop-malformed refused: line ${lines.join(', ')} of ${redactHomeDir(filePath)} is not an ` +
-        `unparseable line (a record, a blank line, or past the end) — nothing written`
+      reason === 'holds-a-record'
+        ? `drop-malformed refused: ${where} still holds a readable record (see bom / embedded_record ` +
+            `in the dry run) — dropping it loses that record; nothing written. Pass --accept-embedded ` +
+            `to drop it anyway (the pre-drop snapshot keeps the line)`
+        : `drop-malformed refused: ${where} is not an unparseable line (a record, a blank line, or ` +
+            `past the end) — nothing written; unparseable lines now: ${now}`
     );
     this.name = 'MalformedLineRefusedError';
     this.code = 'malformed-line-refused';
+    this.reason = reason;
     this.lines = lines;
   }
 }
@@ -731,12 +747,55 @@ async function pruneLearningsUnlocked({
 /** Characters of a dropped line shown in the dry-run preview. */
 const DROP_PREVIEW_CHARS = 80;
 
+/** U+FEFF — built, not typed: a literal BOM in source fails validate-plugin's unicode-safety check. */
+const BOM = String.fromCharCode(0xfeff);
+
+/**
+ * The readable record an unparseable line may still carry (#1500 F1) — the
+ * line counts as malformed, yet dropping it would delete a learning:
+ *   - `bom`: the line is a JSON object behind a UTF-8 BOM (an editor's save);
+ *   - `embedded_record`: a `{` after the line's start (after the BOM, if any)
+ *     begins a suffix that parses as a JSON object — the #1489 fusion shape, a
+ *     torn record with the next complete record appended to it. The smallest
+ *     such offset wins; `id` is the record's id, or null.
+ *
+ * Ceiling (BV-004): one JSON.parse of the suffix per `{`, so quadratic in the
+ * line length — a few ms for the KB-sized lines a store holds; revisit if an
+ * unparseable line ever passes ~1 MB.
+ *
+ * @param {string} text - one unparseable store line
+ * @returns {{bom: boolean, embedded_record: {offset: number, id: string|null}|null}}
+ */
+function inspectMalformedLine(text) {
+  const asObject = (s) => {
+    try {
+      const v = JSON.parse(s);
+      return v !== null && typeof v === 'object' && !Array.isArray(v) ? v : null;
+    } catch {
+      return null;
+    }
+  };
+  const hasBom = text.startsWith(BOM);
+  const bom = hasBom && asObject(text.slice(1)) !== null;
+  let embedded = null;
+  for (let i = text.indexOf('{', hasBom ? 2 : 1); i !== -1; i = text.indexOf('{', i + 1)) {
+    const record = asObject(text.slice(i));
+    if (record !== null) {
+      embedded = { offset: i, id: typeof record.id === 'string' ? record.id : null };
+      break;
+    }
+  }
+  return { bom, embedded_record: embedded };
+}
+
 /**
  * Where {@link dropMalformedLines} snapshots the store before its rewrite:
  * `<stem>.pre-drop-malformed.jsonl.bak-<ISO>` beside it. The name is chosen
- * twice over: `.orchestrator/metrics/*.jsonl.bak-*` gitignores it, and it does
- * NOT start with `<store>.bak`, so the keep-3 rotation of `rewriteLearnings()`
- * never prunes it — the line's text outlives any number of later closes.
+ * twice over: `.orchestrator/metrics/*.jsonl.bak-*` gitignores it (here; in a
+ * consumer repo once bootstrap's `#store-lock-ignore` snippet has run), and it
+ * does NOT start with `<store>.bak`, so the keep-3 rotation of
+ * `rewriteLearnings()` never prunes it — the line's text outlives any number
+ * of later closes.
  *
  * @param {string} filePath
  * @param {number} nowMs
@@ -765,20 +824,37 @@ function dropSnapshotPath(filePath, nowMs) {
  * The rewrite goes through `rewriteLearnings()` (validation, `.bak-<ISO>`,
  * atomic rename) after a full copy of the store to {@link dropSnapshotPath}.
  *
+ * An unparseable line can still carry a readable record — fused after a torn
+ * one, or behind a BOM ({@link inspectMalformedLine}). The dry run flags it;
+ * an apply refuses such a line unless `acceptEmbedded` is set (#1500 F1): an
+ * 80-character preview hid a record at offset 250, and the apply deleted it.
+ *
  * @param {object} opts
  * @param {string} opts.filePath - the learnings store
  * @param {number[]} opts.lines - 1-based lines to drop; each must be unparseable in the store as read
  * @param {string} [opts.expectedGeneration] - generation the line numbers were read from;
  *   REQUIRED to apply, checked on a dry run when given
+ * @param {boolean} [opts.acceptEmbedded=false] - apply even to a line that still holds a readable record
  * @param {boolean} [opts.dryRun=true] - check and validate, write nothing
  * @param {Date|number} [opts.now] - injectable clock (snapshot name)
- * @returns {Promise<{generation: string, dropped: {line: number, preview: string}[], records: number,
- *   remainingMalformed: number, dryRun: boolean, snapshot: string|null}>} `generation` is the
- *   store's as read; `preview` the line's first {@link DROP_PREVIEW_CHARS} characters, home dir as `~`
+ * @returns {Promise<{generation: string, dropped: {line: number, chars: number, preview: string,
+ *   bom: boolean, embedded_record: {offset: number, id: string|null}|null}[], records: number,
+ *   remainingMalformed: number, recordBearing: number, dryRun: boolean, snapshot: string|null}>}
+ *   `generation` is the store's as read; `chars` the line's full length, `preview` its first
+ *   {@link DROP_PREVIEW_CHARS} characters with the home dir as `~`; `recordBearing` counts the
+ *   dropped lines that held a readable record
  * @throws {StoreGenerationMismatchError} the store is not at `expectedGeneration` — nothing written
- * @throws {MalformedLineRefusedError} a line is not unparseable — nothing written
+ * @throws {MalformedLineRefusedError} a line is not unparseable, or (apply without
+ *   `acceptEmbedded`) still holds a readable record — nothing written
  */
-export async function dropMalformedLines({ filePath, lines, expectedGeneration, dryRun = true, now } = {}) {
+export async function dropMalformedLines({
+  filePath,
+  lines,
+  expectedGeneration,
+  acceptEmbedded = false,
+  dryRun = true,
+  now,
+} = {}) {
   if (typeof filePath !== 'string' || filePath.length === 0) {
     throw new Error('dropMalformedLines: filePath is required');
   }
@@ -788,7 +864,7 @@ export async function dropMalformedLines({ filePath, lines, expectedGeneration, 
   if (!dryRun && (typeof expectedGeneration !== 'string' || expectedGeneration.length === 0)) {
     throw new Error('dropMalformedLines: expectedGeneration is required to apply');
   }
-  const run = () => dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, dryRun, now });
+  const run = () => dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, acceptEmbedded, dryRun, now });
   // An absent store has no line to drop — the body refuses without a lock.
   return dryRun || !existsSync(filePath) ? run() : withLearningsLock(filePath, run);
 }
@@ -797,22 +873,28 @@ export async function dropMalformedLines({ filePath, lines, expectedGeneration, 
  * Body of {@link dropMalformedLines}; the caller holds the store lock or runs
  * a pass that cannot write.
  */
-async function dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, dryRun, now }) {
+async function dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, acceptEmbedded, dryRun, now }) {
   const snap = await readLearningsSnapshot(filePath);
   if (expectedGeneration !== undefined && snap.generation !== expectedGeneration) {
     throw new StoreGenerationMismatchError(filePath, expectedGeneration, snap.generation);
   }
   const wanted = [...new Set(lines)].sort((a, b) => a - b);
   const notMalformed = wanted.filter((n) => !snap.malformedLineNumbers.includes(n));
-  if (notMalformed.length > 0) throw new MalformedLineRefusedError(filePath, notMalformed);
+  if (notMalformed.length > 0) {
+    throw new MalformedLineRefusedError(filePath, notMalformed, { unparseable: snap.malformedLineNumbers });
+  }
 
   const drop = new Set(wanted);
   const keepMalformed = snap.malformed.filter((_, i) => !drop.has(snap.malformedLineNumbers[i]));
   const dropped = wanted.map((line) => {
     const text = snap.malformed[snap.malformedLineNumbers.indexOf(line)];
     const cut = text.length > DROP_PREVIEW_CHARS ? `${text.slice(0, DROP_PREVIEW_CHARS)}…` : text;
-    return { line, preview: redactHomeDir(cut) };
+    return { line, chars: text.length, preview: redactHomeDir(cut), ...inspectMalformedLine(text) };
   });
+  const recordBearing = dropped.filter((d) => d.bom || d.embedded_record !== null);
+  if (!dryRun && !acceptEmbedded && recordBearing.length > 0) {
+    throw new MalformedLineRefusedError(filePath, recordBearing.map((d) => d.line), { reason: 'holds-a-record' });
+  }
   // Validate the next generation before anything touches disk, dry run too:
   // a record the tolerant gate rejects throws here, before the snapshot.
   await rewriteLearnings(filePath, snap.entries, { dryRun: true, malformedLines: keepMalformed });
@@ -821,6 +903,7 @@ async function dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration,
     dropped,
     records: snap.entries.length,
     remainingMalformed: keepMalformed.length,
+    recordBearing: recordBearing.length,
     dryRun,
     snapshot: null,
   };

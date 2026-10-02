@@ -338,15 +338,16 @@ On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per
 
 ---
 
-## #store-lock-ignore — Store-Lock and Runtime-Lock Artifacts in .gitignore (#1487, #1489 Pkt 17, #1495)
+## #store-lock-ignore — Store-Lock and Runtime-Lock Artifacts in .gitignore (#1487, #1489 Pkt 17, #1495, #1500)
 
 Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refresh-Lock Flow in `SKILL.md` — the last two because a repo bootstrapped before this step existed never gets it otherwise: both flows write no `.gitignore` of their own.
 
-`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write):
+`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, and every store rewrite leaves a full backup copy of the ledger beside it. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write):
 
 | Pattern(s) | Written by |
 |---|---|
 | `.orchestrator/metrics/*.jsonl.lock*`, `.file.lock.*` | the store locks of the ledgers (`scripts/lib/file-lock.mjs` temps sit beside every lock) |
+| `.orchestrator/metrics/*.jsonl.bak-*` | the store backups: the keep-3 `<store>.bak-<ISO>` copy before every learnings rewrite (`scripts/lib/learnings/io.mjs`) and the `<stem>.pre-drop-malformed.jsonl.bak-<ISO>` snapshot of `sweep-expired-learnings --drop-malformed` (`scripts/lib/learnings/expiry-sweep.mjs`); the `*.jsonl` ledgers themselves stay versioned |
 | `.orchestrator/session.lock`, `.orchestrator/.session.lock.*` | the session lock, every SessionStart (`scripts/lib/session-lock.mjs`, `hooks/_lib/lock-bootstrap.mjs`) |
 | `.orchestrator/runtime/` | the lock-owner proof written beside it on every SessionStart, plus agent-status and cache files |
 | `.orchestrator/current-session.json`, `.orchestrator/.current-session.*` | the SessionStart hook |
@@ -369,6 +370,7 @@ _GI_MISSING=()
 # Never add a file consumers COMMIT here: .orchestrator/bootstrap.lock, policy/, steering/, the *.jsonl ledgers.
 _GI_PATTERNS=(
   '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'
+  '.orchestrator/metrics/*.jsonl.bak-*'
   '.orchestrator/session.lock' '.orchestrator/.session.lock.*'
   '.orchestrator/runtime/'
   '.orchestrator/current-session.json' '.orchestrator/.current-session.*'

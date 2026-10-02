@@ -36,10 +36,11 @@ import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
 
 const TEMPLATE = resolve(import.meta.dirname, '..', '..', 'skills', 'bootstrap', '_shared-template.md');
 const LOCK_PATTERN = '.orchestrator/metrics/*.jsonl.lock*';
-/** Every line the block appends, in order (#1487 store locks, #1495 runtime locks and state). */
+/** Every line the block appends, in order (#1487 store locks, #1500 store backups, #1495 runtime locks and state). */
 const ALL_PATTERNS = [
   LOCK_PATTERN,
   '.file.lock.*',
+  '.orchestrator/metrics/*.jsonl.bak-*',
   '.orchestrator/session.lock',
   '.orchestrator/.session.lock.*',
   '.orchestrator/runtime/',
@@ -151,14 +152,22 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
         '.env',
         '.orchestrator/metrics/learnings.jsonl.lock',
         '.orchestrator/metrics/.file.lock.ab12',
+        '.orchestrator/metrics/learnings.jsonl.bak-2026-10-02T16-54-33-971Z',
+        '.orchestrator/metrics/learnings.pre-drop-malformed.jsonl.bak-2026-10-02T16-54-33-971Z',
         '.orchestrator/metrics/learnings.jsonl',
+        '.orchestrator/metrics/sessions.jsonl',
       ]),
     ).toEqual({
       '.env': 0,
       '.orchestrator/metrics/learnings.jsonl.lock': 0,
       '.orchestrator/metrics/.file.lock.ab12': 0,
-      // The ledger itself is durable project data and stays versioned.
+      // #1500 F5: the keep-3 rewrite backups and the --drop-malformed snapshot
+      // copy a whole store each; a `git add -A` committed them in consumer repos.
+      '.orchestrator/metrics/learnings.jsonl.bak-2026-10-02T16-54-33-971Z': 0,
+      '.orchestrator/metrics/learnings.pre-drop-malformed.jsonl.bak-2026-10-02T16-54-33-971Z': 0,
+      // The ledgers themselves are durable project data and stay versioned.
       '.orchestrator/metrics/learnings.jsonl': 1,
+      '.orchestrator/metrics/sessions.jsonl': 1,
     });
   });
 

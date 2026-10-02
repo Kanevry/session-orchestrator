@@ -498,13 +498,32 @@ export function main({
   }
 
   let vaultDir;
+  let vaultIntegration;
   try {
     const content = readFileSync(instr.path, 'utf8');
     const config = parseSessionConfig(content, hostPaths ? { hostPaths } : undefined);
-    vaultDir = config?.['vault-integration']?.['vault-dir'];
+    vaultIntegration = config?.['vault-integration'];
+    vaultDir = vaultIntegration?.['vault-dir'];
   } catch (err) {
     process.stderr.write(`archive-closed-prds: failed to parse Session Config: ${redactHomeDir(err.message)}\n`);
     return { code: 2, archived: [], skipped: [] };
+  }
+  // The switch every vault writer obeys (board-writer, narrative-mirror): off
+  // → nothing archived, exit 0. parseSessionConfig has already applied the
+  // host-local lowering (resolveVaultIntegrationHost: env SO_VAULT_INTEGRATION
+  // > owner.yaml > committed). This runs with --apply at every session start
+  // and end, so ignoring it wrote PRDs into the vault and git-rm'd them (#1496).
+  if (vaultIntegration?.enabled !== true) {
+    const override = vaultIntegration?.['host-override'];
+    const disabled = `vault-integration is ${override ? `switched off by ${override}` : 'not enabled'} — nothing archived`;
+    if (json) {
+      process.stdout.write(
+        JSON.stringify({ dryRun: isDryRun, vaultDir: null, vaultSubdir, archived: [], skipped: [], disabled }, null, 2) + '\n',
+      );
+    } else {
+      process.stdout.write(`Doc archive: ${disabled}\n`);
+    }
+    return { code: 0, archived: [], skipped: [] };
   }
   if (!vaultDir || typeof vaultDir !== 'string' || vaultDir.trim() === '') {
     process.stderr.write(
