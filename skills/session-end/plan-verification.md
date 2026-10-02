@@ -56,6 +56,7 @@ Compare the files the plan said would be touched against the files actually chan
    - Untouched (planned but not edited): N files [list first 5]
    - Scope drift: filesRatio X.X (Y actual / Z planned, threshold 2.0) — [breached | ok | skipped: <reason>]
    ```
+   Read `skipped: unresolvable-ref` as "a git query the numerator needs failed", not only "the ref is dead": besides a `session-start-ref` lost to a rebase or force-push it also covers a checkout git cannot read, the working-tree or untracked query failing, output over 64 MiB (ENOBUFS) and the 10 s per-query timeout. Run `git rev-parse --verify <session-start-ref>` before concluding the ref is gone. `skipped: no-baseline-ref` means the repo has no base to measure against (no remotes, no `main`/`master`). A `breached` result can also be an over-report: files already dirty at session start, or a same-checkout peer's files, count as drift (see `computeDrift()`'s JSDoc).
 6. **Append to session metrics** (`grounding` field in the Phase 1.7 JSONL entry):
    ```json
    "grounding": {

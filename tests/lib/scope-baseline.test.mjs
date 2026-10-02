@@ -100,6 +100,13 @@ function setSessionField(statePath, newSession) {
   return updated;
 }
 
+/** Writes `content` to `<root>/<rel>`, creating parent dirs. No git side effect. */
+function writeAt(root, rel, content) {
+  const abs = join(root, rel);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content, 'utf8');
+}
+
 /** Writes each relPath (creating parent dirs) and commits them all in one commit. */
 function writeFilesAndCommit(root, relPaths, message) {
   for (const rel of relPaths) {
@@ -746,6 +753,46 @@ describe('computeDrift()', () => {
       threshold: 2,
       refUsed: sha,
     });
+  });
+
+  // #1027 review (MED-2, LOW-3): in a consumer repo `.orchestrator/` is not
+  // ignored, so the plugin's own runtime writes sat in the untracked source
+  // and counted as drift, while the one-segment `.orchestrator/*` pattern
+  // hid a TRACKED `bootstrap.lock` edit. Each row starts from one untracked
+  // deliverable (src/feature.mjs) and adds one write of the named class.
+  it.each([
+    {
+      name: 'untracked .orchestrator/runtime/ (gate-processes.jsonl, every wave) is not drift',
+      write: (root) => writeAt(root, '.orchestrator/runtime/gate-processes.jsonl', '{}\n'),
+      actualFiles: 1,
+    },
+    {
+      name: 'untracked .orchestrator/tmp/ (coordinator scratch) is not drift',
+      write: (root) => writeAt(root, '.orchestrator/tmp/dialectic-prompt.txt', 'scratch\n'),
+      actualFiles: 1,
+    },
+    {
+      name: 'an isolated agent worktree under .claude/worktrees/ is not drift',
+      write: (root) => {
+        mkdirSync(join(root, '.claude', 'worktrees'), { recursive: true });
+        fixtureGit(['worktree', 'add', '-q', '-b', 'agent-a', join(root, '.claude', 'worktrees', 'agent-a')], root);
+      },
+      actualFiles: 1,
+    },
+    {
+      name: 'an edit to the TRACKED .orchestrator/bootstrap.lock deliverable still counts',
+      write: (root) => writeAt(root, '.orchestrator/bootstrap.lock', 'version: 1\ntier: standard\n'),
+      actualFiles: 2,
+    },
+  ])('#1027 review: $name', ({ write, actualFiles }) => {
+    const root = makeTmpRepo();
+    writeAt(root, '.orchestrator/bootstrap.lock', 'version: 1\ntier: fast\n');
+    const sha = initialCommit(root);
+    seedState(root, driftStateFixture({ session: 'session-A', baselineSession: 'session-A', sessionStartRef: sha, plannedFiles: 1 }));
+    writeAt(root, 'src/feature.mjs', 'export const f = 1;\n');
+    write(root);
+
+    expect(computeDrift({ repoRoot: root }).actualFiles).toBe(actualFiles);
   });
 
   it('no STATE.md → skipped with reason no-state-md', () => {

@@ -389,7 +389,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
      > **What is NOT on the event, and stays hand-written:** `suite_platform` — the payload has no platform field, so keep writing it from the § 3a header as before. Likewise, the auto-fix-loop producer (`scripts/lib/quality-gate.mjs`, active only under `verification-auto-fix.enabled: true`) emits `counts` WITHOUT `wave_number`, so its retry records correctly never match the selector above; they are mid-wave attempts, not the wave's verdict. If the wave's gate ran outside `run-quality-gate.mjs` entirely, no event exists — fall back to the gate output you read, and say so in the progress update. The reader side (`skills/session-end/metrics-collection.md` § 1.7) reads the event first and this hand-written trio second, so keep writing the trio: it is the compatibility path for those two cases and for sessions already in flight.
    Append this wave record to the session metrics `waves` array.
 
-7a. **Scope drift tripwire (S2 — #896, warn-only)**: session-cumulative (since `session-start-ref`) and filtered through `DRIFT_EXCLUDE_PATTERNS`, so its `filesRatio` is NOT expected to agree with this wave's unfiltered `files_changed` from step 7. Call `computeDrift()` from the same `scripts/lib/scope-baseline.mjs` module as `wave-loop-dispatch.md` § 0a Scope Baseline Freeze. Never blocks — exit code stays 0 and the next wave is dispatched regardless of the result.
+7a. **Scope drift tripwire (S2 — #896, warn-only)**: session-cumulative and filtered through `DRIFT_EXCLUDE_PATTERNS`, so its `filesRatio` is NOT expected to agree with this wave's unfiltered `files_changed` from step 7. Only the committed part of its numerator starts at `session-start-ref`; the uncommitted and untracked parts read the checkout as it is now, so files already dirty at session start and a same-checkout peer's files count too (an over-report, named as a ceiling in `computeDrift()`'s JSDoc). Call `computeDrift()` from the same `scripts/lib/scope-baseline.mjs` module as `wave-loop-dispatch.md` § 0a Scope Baseline Freeze. Never blocks — exit code stays 0 and the next wave is dispatched regardless of the result.
 
    ```js
    import { computeDrift } from '$PLUGIN_ROOT/scripts/lib/scope-baseline.mjs';
@@ -403,7 +403,7 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
    }
    ```
 
-   Include the WARN line verbatim in the wave progress update when `breached` is true — name `filesRatio`, `plannedFiles`, `actualFiles`, and the configured `threshold`, not merely the word "drift". `drift.skipped === true` (`no-state-md`, `unreadable-state-md`, `no-baseline`, `stale-baseline`, or `unresolvable-ref` — see `computeDrift()`'s JSDoc for the precedence order) is silent: no WARN, no progress-update line. `persistence: false` implies `no-state-md`, so this step degrades to a silent no-op in that mode without a separate gate check.
+   Include the WARN line verbatim in the wave progress update when `breached` is true — name `filesRatio`, `plannedFiles`, `actualFiles`, and the configured `threshold`, not merely the word "drift". `drift.skipped === true` (`no-state-md`, `unreadable-state-md`, `no-baseline`, `stale-baseline`, `no-baseline-ref`, or `unresolvable-ref` — see `computeDrift()`'s JSDoc for the precedence order) is silent: no WARN, no progress-update line. `persistence: false` implies `no-state-md`, so this step degrades to a silent no-op in that mode without a separate gate check.
 
 ### 3. Adapt Plan (if needed)
 
