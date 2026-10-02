@@ -392,6 +392,8 @@ Rückfall (session-D1): schreibende erst nach deiner Antwort oder nach 10 min oh
 
 ### A.2 Auflagen (navigator-A1 an alle fünf, Inhalt gleich; v1-Form, in v2 durch 3.3/3.4 ersetzt)
 
+> Historischer Wortlaut. Die Lastschwelle „5-min-Load < 12" gilt nicht mehr: ob m5-remote nutzbar ist, entscheidet allein `navigator m5-ersatz --quiet` (Exit 0 = nutzbar), siehe `skills/_shared/fleet-protocol.md` § Standard-Auflagen.
+
 ```
 Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host >= 50 % Speicher frei hat.
 Pipelines: <= 2 volle je Repo; Nachzug-Pushes vorher anmelden.
