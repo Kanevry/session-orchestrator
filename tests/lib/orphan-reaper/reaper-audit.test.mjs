@@ -15,6 +15,7 @@ import {
   appendAuditRecord,
   auditPath,
   buildAuditRecord,
+  falseAlarmRate,
   pruneReaperAudit,
   readAuditRecords,
 } from '../../../scripts/lib/orphan-reaper/reaper-audit.mjs';
@@ -37,6 +38,16 @@ function killRecord(pid) {
       sessionId: 'main-2026-10-01-session-42',
       result: { ok: true, signalsSent: ['SIGTERM'], survivors: [], survivedSigkill: false, verifiedAfterMs: 500, verified: 'gone' },
     },
+  );
+}
+
+/** A `report` record for a process the reaper may not touch, as every scan
+ *  re-writes it for each long-lived foreign or unattributed process. */
+function reportRecord(pid) {
+  return buildAuditRecord(
+    { pid, pgid: pid, reason: 'unattributed', ageSeconds: 900 },
+    'report',
+    { timestamp: '2026-10-01T12:00:00.000Z', sessionId: 'main-2026-10-01-session-42' },
   );
 }
 
@@ -112,5 +123,60 @@ describe('reaper audit — bounded reader and prune', () => {
     } finally {
       rmSync(victimDir, { recursive: true, force: true });
     }
+  });
+
+  it('refuses to APPEND through a symlinked audit too — appendFileSync wrote every record into the link target', () => {
+    // Bug (CWE-59, #1487 item 5): MR !70 closed the symlink-follow for the
+    // prune, but the append kept following the link, so `ln -s events.jsonl
+    // reaper-audit.jsonl` routed every kill record into events.jsonl.
+    const victimDir = mkdtempSync(join(tmpdir(), 'reaper-audit-victim-'));
+    try {
+      const victim = join(victimDir, 'events.jsonl');
+      writeFileSync(victim, 'keep me\n', 'utf8');
+      mkdirSync(dirname(auditPath(root)), { recursive: true });
+      symlinkSync(victim, auditPath(root));
+      const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      let warnings;
+      try {
+        appendAuditRecord(root, killRecord(1));
+        warnings = warn.mock.calls.map((c) => String(c[0]));
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(readFileSync(victim, 'utf8')).toBe('keep me\n');
+      expect(lstatSync(auditPath(root)).isSymbolicLink()).toBe(true);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/not a regular file/);
+    } finally {
+      rmSync(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reads back the newest `limit` DECISIONS, not the newest `limit` lines — report lines pushed every reject out of the rate', () => {
+    // Bug (#1487 item 7, HR-105): every scan re-reports each long-lived foreign
+    // or unattributed process, so reports outnumber decisions and a 50-LINE
+    // window held only the newest 10 of 30 decisions — none a reject — so the
+    // rate read 0 while 6 of 30 decisions were rejects. Each scan writes its
+    // reports first, then its decision, the order `runOrphanScan` uses.
+    for (let scan = 1; scan <= 30; scan += 1) {
+      for (let pid = 1000; pid < 1004; pid += 1) appendAuditRecord(root, reportRecord(pid));
+      const decision = buildAuditRecord(
+        { pid: scan, pgid: scan, trigger: 'orphan-ppid1', commandSignature: 'tsgo:6f1c0a2b9d' },
+        scan <= 6 ? 'reject' : 'dry-run',
+        { timestamp: '2026-10-01T12:00:00.000Z', sessionId: 'main-2026-10-01-session-42', ...(scan <= 6 ? { reason: 'gone' } : {}) },
+      );
+      appendAuditRecord(root, decision);
+    }
+    const newestLines = readFileSync(auditPath(root), 'utf8')
+      .split('\n').filter(Boolean).slice(-50).map((l) => JSON.parse(l));
+
+    const got = readAuditRecords(root, 50);
+
+    expect(falseAlarmRate(got, 50)).toEqual({ rate: 0.2, n: 30 });
+    // Widened, never narrowed: the old population (the newest 50 lines) is
+    // still the suffix, so a caller that read lines finds them where they were.
+    expect(got.slice(-50)).toEqual(newestLines);
   });
 });
