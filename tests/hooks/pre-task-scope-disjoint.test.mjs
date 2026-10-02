@@ -14,7 +14,7 @@
  * test alone never proves a guard bites.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync, spawn, execFileSync } from 'node:child_process';
 import {
   mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, utimesSync, rmSync,
@@ -29,9 +29,26 @@ const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-task-scope-disjoint.mjs');
 const LEDGER_REL = path.join('.orchestrator', 'wave-dispatch-scopes.json');
 
+/** Every temp dir THIS file created, removed — exact paths only — after each test. */
+const tempDirs = [];
+
+/** `mkdtempSync` under `$TMPDIR`, registered for removal after the current test. */
+function makeTempDir(prefix) {
+  const dir = mkdtempSync(path.join(os.tmpdir(), prefix));
+  tempDirs.push(dir);
+  return dir;
+}
+
+// Without this every run left its repos, ledgers and hook copies behind (#1489
+// Pkt 14). The hook-copy dirs hold symlinks into `scripts/` and `hooks/_lib/`:
+// `rmSync` unlinks a symlink, it never follows one into its target.
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
 /** A disposable project dir with the `.orchestrator/` the ledger lives in. */
 function makeProjectDir() {
-  const dir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-'));
+  const dir = makeTempDir('ptsd-');
   mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
   return dir;
 }
@@ -162,20 +179,30 @@ function writeTranscript(dir, rows) {
   return p;
 }
 
-/** Run a hook binary with a payload on stdin. Returns the spawnSync result. */
-function runHook(stdin, { hook = HOOK, cwd = REPO_ROOT, env: extraEnv = {} } = {}) {
-  // A live Claude Code session exports CLAUDE_CODE_SESSION_ID into the ambient
-  // env, so a spawned hook inherits the OPERATOR's real session id — any
-  // assertion about session attribution would then pass for the wrong reason,
-  // and differently on CI (where the var is absent). Scrub it here, once.
-  const env = { ...process.env, ...extraEnv };
+/**
+ * The ambient env minus what a live session leaks into it. CLAUDE_CODE_SESSION_ID
+ * would make the spawned hook inherit the OPERATOR's real session id — any
+ * assertion about session attribution would then pass for the wrong reason, and
+ * differently on CI (where the var is absent). CLAUDE_PROJECT_DIR is the hook's
+ * session root (#1489 Pkt 6): inherited, it would put this file's ledgers and
+ * events into the real project instead of the test's temp dir. A test that needs
+ * either sets it explicitly.
+ */
+function hookEnv(extraEnv = {}) {
+  const env = { ...process.env };
   delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_PROJECT_DIR;
+  return { ...env, ...extraEnv };
+}
+
+/** Run a hook binary with a payload on stdin. Returns the spawnSync result. */
+function runHook(stdin, { hook = HOOK, cwd = REPO_ROOT, env: extraEnv = {}, timeout = 20_000 } = {}) {
   return spawnSync(process.execPath, [hook], {
     input: stdin,
     encoding: 'utf8',
     cwd,
-    env,
-    timeout: 20_000,
+    env: hookEnv(extraEnv),
+    timeout,
   });
 }
 
@@ -184,14 +211,14 @@ function runHook(stdin, { hook = HOOK, cwd = REPO_ROOT, env: extraEnv = {} } = {
  * in ITS OWN project dir (#1092). The hook pins `emitEvent` to `repoRoot:
  * projectDir`, so a test can never append to this repo's real ledger.
  */
-function scopeEvents(projectDir) {
+function scopeEvents(projectDir, event = 'orchestrator.wave_dispatch.scope_checked') {
   const file = path.join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
   if (!existsSync(file)) return [];
   return readFileSync(file, 'utf8')
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line))
-    .filter((rec) => rec.event === 'orchestrator.wave_dispatch.scope_checked');
+    .filter((rec) => rec.event === event);
 }
 
 /** Dispatch `id` with `files` into `projectDir`. */
@@ -856,7 +883,7 @@ describe('pre-task-scope-disjoint — ledger concurrency', () => {
   /** Spawn the hook WITHOUT blocking, so several dispatches genuinely overlap. */
   function runHookAsync(stdin) {
     return new Promise((resolve) => {
-      const child = spawn(process.execPath, [HOOK], { cwd: REPO_ROOT });
+      const child = spawn(process.execPath, [HOOK], { cwd: REPO_ROOT, env: hookEnv() });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', (d) => { stdout += d; });
@@ -1020,7 +1047,7 @@ describe('pre-task-scope-disjoint — fake regression (proves the guard bites)',
    * copy can then be defect-injected without touching the tracked file.
    */
   function stageHookCopy(mutate) {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'ptsd-fake-'));
+    const root = makeTempDir('ptsd-fake-');
     mkdirSync(path.join(root, 'hooks'), { recursive: true });
     symlinkSync(path.join(REPO_ROOT, 'scripts'), path.join(root, 'scripts'), 'dir');
     symlinkSync(path.join(REPO_ROOT, 'hooks', '_lib'), path.join(root, 'hooks', '_lib'), 'dir');
@@ -1382,7 +1409,7 @@ describe('stale worktree base (#1485)', () => {
    * makes the cached ref the base a deny may be measured against.
    */
   function makeGitRepo({ originAt = 'first', fetchAgeMs = 0 } = {}) {
-    const dir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-'));
+    const dir = makeTempDir('ptsd-wt-');
     mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
     const git = (...args) => execFileSync('git', args, {
       cwd: dir,
@@ -1449,7 +1476,7 @@ describe('stale worktree base (#1485)', () => {
    * hooks) is blanked unless a test sets it.
    */
   function runWorktree(dir, payload, env = {}) {
-    const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
+    const userDir = makeTempDir('ptsd-wt-user-');
     return runHook(payload, { cwd: dir, env: { CLAUDE_CONFIG_DIR: userDir, CLAUDE_PROJECT_DIR: '', ...env } });
   }
 
@@ -1466,7 +1493,7 @@ describe('stale worktree base (#1485)', () => {
    * `merge-base --is-ancestor HEAD origin/HEAD` exits 1, in the full source 0.
    */
   function makeShallowClone() {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-shallow-'));
+    const root = makeTempDir('ptsd-wt-shallow-');
     const src = path.join(root, 'src');
     const dir = path.join(root, 'clone');
     const env = {
@@ -1581,12 +1608,12 @@ describe('stale worktree base (#1485)', () => {
     // invisible and the hook DENIED, its remedy 2 asking for what was set.
     const { dir, head } = makeGitRepo();
     const sub = path.join(dir, 'sub');
-    mkdirSync(path.join(sub, '.orchestrator'), { recursive: true });
+    mkdirSync(sub);
 
     // 1. CLAUDE_PROJECT_DIR decides, even where cwd's own repo has no settings:
     //    after entering a worktree, cwd is the worktree and the gitignored
     //    settings.local.json exists only at the session root it started in.
-    const sessionRoot = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-root-'));
+    const sessionRoot = makeTempDir('ptsd-wt-root-');
     writeBaseRef(sessionRoot, 'settings.local.json', 'head');
     expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub }), { CLAUDE_PROJECT_DIR: sessionRoot }));
     // 2. Without it (no harness env), the git toplevel of cwd. Also the plain
@@ -1597,11 +1624,14 @@ describe('stale worktree base (#1485)', () => {
     writeBaseRef(dir, 'settings.json', 'head');
     expectAllow(runWorktree(dir, worktreePayload(dir, { cwd: sub })));
 
-    const events = baseEvents(sub);
+    // The records follow the same root as the settings (#1489 Pkt 6): each lands
+    // at the root that decided, and nothing — lock, ledger, events — under `sub`.
+    const events = [...baseEvents(sessionRoot), ...baseEvents(dir)];
     expect(events.map((ev) => ev.base_ref_source)).toEqual(['local', 'project']);
     for (const ev of events) {
       expect(ev).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base: head });
     }
+    expect(existsSync(path.join(sub, '.orchestrator'))).toBe(false);
   });
 
   it('lets the FIRST settings file that sets worktree.baseRef decide — local "fresh" beats project "head"', () => {
@@ -1623,7 +1653,7 @@ describe('stale worktree base (#1485)', () => {
     // `"head"` (~/.claude/settings.json) as `default` → `fresh`, and every
     // worktree dispatch with HEAD ahead of origin/HEAD is wrongly DENIED.
     const { dir, head } = makeGitRepo();
-    const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
+    const userDir = makeTempDir('ptsd-wt-user-');
     writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
 
     expectAllow(runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir }));
@@ -1638,7 +1668,7 @@ describe('stale worktree base (#1485)', () => {
     // from origin/HEAD, the hook sees no mismatch, the agent gets OLD code.
     const { dir, first } = makeGitRepo();
     writeBaseRef(dir, 'settings.json', 'fresh');
-    const userDir = mkdtempSync(path.join(os.tmpdir(), 'ptsd-wt-user-'));
+    const userDir = makeTempDir('ptsd-wt-user-');
     writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
 
     expectDeny(runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir }), ['STALE WORKTREE BASE (#1485)', '.claude/settings.json']);
@@ -1695,5 +1725,63 @@ describe('stale worktree base (#1485)', () => {
     // The ledger holds the dispatch that HAPPENED, and only that one.
     const ledger = JSON.parse(readFileSync(path.join(dir, LEDGER_REL), 'utf8'));
     expect(ledger.agents.map((a) => a.useId)).toEqual(['toolu_wt_2']);
+
+    // Bug caught (#1489 Pkt 8): `decide()` never sees the stale-base check, so
+    // the refused dispatch was recorded as `ledger_result: 'allow'` — counted as
+    // dispatched in every later query of the event stream.
+    expect(scopeEvents(dir).map((ev) => ev.ledger_result)).toEqual(['deny-stale-base', 'allow']);
   });
+});
+
+describe('pre-task-scope-disjoint — session root and git budget (#1489)', () => {
+  it('keeps ONE ledger per session across a `cd` — a dispatch from a subdirectory still collides', () => {
+    // Bug caught (Pkt 6): ledger, lock, wave key and events were keyed on the
+    // payload `cwd`, which follows the session's `cd`. A dispatch made from
+    // `<root>/sub` read and wrote `<root>/sub/.orchestrator/` — a second, empty
+    // ledger — and was ALLOWED although it claims a file the agent dispatched
+    // from the root still holds.
+    const root = makeProjectDir();
+    execFileSync('git', ['init', '-q'], { cwd: root, stdio: 'ignore' });
+    const sub = path.join(root, 'sub');
+    mkdirSync(sub);
+
+    expectAllow(dispatch(root, 'Agent A', ['scripts/foo.mjs']));
+    expectDeny(dispatch(sub, 'Agent B', ['scripts/foo.mjs']), ['Agent B', 'Agent A', 'scripts/foo.mjs']);
+
+    expect(existsSync(path.join(sub, '.orchestrator'))).toBe(false);
+    expect(scopeEvents(root).map((ev) => ev.ledger_result)).toEqual(['allow', 'deny']);
+  });
+
+  it('answers inside the harness timeout when git HANGS — ALLOW, with the cut recorded', () => {
+    // Bug caught (Pkt 7): `listTrackedFiles` spawned git with NO timeout and the
+    // worktree check gave each of its calls 5 s, while hooks.json gives the whole
+    // hook 5 s. One hanging git outlived the harness, which killed the hook: a
+    // silent fail-open, the verdict and its record both lost.
+    const manifest = JSON.parse(readFileSync(path.join(REPO_ROOT, 'hooks', 'hooks.json'), 'utf8'));
+    const registered = manifest.hooks.PreToolUse
+      .flatMap((m) => m.hooks)
+      .find((h) => h.command.includes('pre-task-scope-disjoint.mjs'));
+
+    const dir = makeProjectDir();
+    const bin = path.join(dir, 'fake-bin');
+    mkdirSync(bin);
+    // `git <sub> …` becomes `node <sub> …`, and node runs the file `<cwd>/<sub>`.
+    // A SYMLINK to the running node binary: no freshly written executable, so no
+    // macOS first-launch check to flake on.
+    symlinkSync(process.execPath, path.join(bin, 'git'));
+    writeFileSync(path.join(dir, 'rev-parse'), 'setInterval(() => {}, 1000);\n');
+    const payload = JSON.parse(dispatchPayload({ cwd: dir, id: 'Agent H', files: ['scripts/h.mjs'] }));
+    payload.tool_input.isolation = 'worktree';
+
+    const res = runHook(JSON.stringify(payload), {
+      env: { PATH: `${bin}${path.delimiter}${process.env.PATH}` },
+      timeout: registered.timeout * 1000, // the harness kills the hook here
+    });
+
+    expect(res.signal).toBeNull();
+    expectAllow(res);
+    expect(scopeEvents(dir)).toMatchObject([{ ledger_result: 'allow', known_files_skipped: 'budget-exhausted' }]);
+    expect(scopeEvents(dir, 'orchestrator.wave_dispatch.worktree_base_checked'))
+      .toMatchObject([{ stale: null, skipped: 'git-budget', decision: 'allow' }]);
+  }, 30_000);
 });
