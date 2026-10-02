@@ -608,13 +608,20 @@ describe('promoteHwLearnings', () => {
     expect(pub.evidence).not.toMatch(/github\.com\/alice/);
   });
 
-  it('returns flags when learnings.jsonl contains malformed lines', async () => {
+  // TV-001 — the bug (#1489 MED-2): the promote rewrite passed no
+  // `malformedLines`, so a real run deleted every unparseable store line while
+  // its own flag called them "skipped"; only the keep-3 `.bak` still held them.
+  it('flags malformed lines and keeps them verbatim through the promote rewrite', async () => {
     const input = join(tmp, 'learnings.jsonl');
     writeFileSync(input, 'not-json\n' + JSON.stringify(privateHwLearning()) + '\n');
 
-    const result = await promoteHwLearnings({ input, dryRun: true });
+    const result = await promoteHwLearnings({ input, dryRun: false });
 
     expect(result.flags.some((f) => f.includes('malformed'))).toBe(true);
+    expect(result.promoted).toBe(1);
+    const lines = readFileSync(input, 'utf8').split('\n').filter(Boolean);
+    expect(lines).toContain('not-json');
+    expect(lines).toHaveLength(3);
   });
 });
 

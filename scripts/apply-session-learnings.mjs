@@ -68,8 +68,10 @@
  * Exit codes:
  *   0  Success (including a no-op)
  *   1  Usage/input/validation error — nothing written
- *   2  Library/IO error (unreadable store, malformed store lines on --apply,
- *      a failure inside the prune/rewrite, store lock not acquired)
+ *   2  Library/IO error (unreadable store, a failure inside the
+ *      prune/rewrite, store lock not acquired). Unparseable store lines are
+ *      NOT an error: they are kept verbatim, counted as `malformed` in the
+ *      summary, and WARNed on stderr with their line numbers.
  */
 
 import { readFileSync } from 'node:fs';
@@ -377,14 +379,11 @@ async function main(argv) {
       process.stderr.write(`apply-session-learnings: cannot read ${filePath}: ${err.message}\n`);
       return { code: 2 };
     }
-    if (opts.apply && read.malformed.length > 0) {
-      // pruneLearnings rewrites from parsed entries only — a malformed line
-      // would vanish without an archive record.
-      process.stderr.write(
-        `apply-session-learnings: refusing to rewrite — ${read.malformed.length} malformed line(s) in ${filePath}\n`,
-      );
-      return { code: 2 };
-    }
+    // A malformed store line is no reason to refuse (#1489): pruneLearnings()
+    // keeps it verbatim at the end of the rewritten store, never archives it,
+    // and prints the WARN; the count rides on the summary as `malformed`.
+    // Refusing here blocked the session-end learnings write on every close,
+    // because nothing on the sanctioned write path ever removes such a line.
 
     let built;
     try {

@@ -243,16 +243,48 @@ function countByReason(batch) {
  *
  * @param {string} filePath
  * @param {string[]} malformed - raw text of the lines that did not parse
+ * @param {number[]} lineNumbers - their 1-based store lines (`malformedLineNumbers`)
  * @param {boolean} dryRun
  * @returns {{malformed?: number}}
  */
-function malformedField(filePath, malformed, dryRun) {
+function malformedField(filePath, malformed, lineNumbers, dryRun) {
   if (malformed.length === 0) return {};
-  console.error(
-    `[learnings] WARN: ${malformed.length} unparseable line(s) in ${filePath} kept verbatim, ` +
-      `never archived${dryRun ? ' (dry run — nothing written)' : ''}; repair them by hand`
-  );
+  warnUnparseableLines(filePath, malformed, lineNumbers, { dryRun });
   return { malformed: malformed.length };
+}
+
+/**
+ * Store + line set already WARNed about in this process. One `/close` reads the
+ * same store twice in one process — the planner's dry run, then the apply — and
+ * printed the identical WARN twice. Grows by one key per distinct store+line
+ * set, so it stays tiny; revisit if a long-lived process ever sweeps many stores.
+ * @type {Set<string>}
+ */
+const warnedUnparseable = new Set();
+
+/**
+ * Print the one stderr WARN for a store's unparseable lines — at most once per
+ * store and identical line set per process. The policy it states is the store
+ * policy since #1489: such lines are kept verbatim at the end of every rewrite,
+ * never archived, and never a reason to refuse a write.
+ *
+ * @param {string} filePath
+ * @param {string[]} malformed - raw text of the lines that did not parse
+ * @param {number[]} [lineNumbers] - their 1-based store lines; at most ten listed
+ * @param {{dryRun?: boolean}} [opts]
+ */
+export function warnUnparseableLines(filePath, malformed, lineNumbers = [], { dryRun = false } = {}) {
+  if (malformed.length === 0) return;
+  const key = `${path.resolve(filePath)}\0${malformed.join('\n')}`;
+  if (warnedUnparseable.has(key)) return;
+  warnedUnparseable.add(key);
+  const more = lineNumbers.length > 10 ? `, +${lineNumbers.length - 10} more` : '';
+  const where = lineNumbers.length > 0 ? ` (line(s) ${lineNumbers.slice(0, 10).join(', ')}${more})` : '';
+  console.error(
+    `[learnings] WARN: ${malformed.length} unparseable line(s) in ${filePath}${where} kept verbatim, ` +
+      `never archived${dryRun ? ' (dry run — nothing written)' : ''}; report them to the operator — ` +
+      `never hand-edit the store`
+  );
 }
 
 /** Resolve the `now` parameter (Date | epoch ms | undefined) to epoch ms. */
@@ -278,18 +310,28 @@ function resolveNowMs(now) {
  * @param {{entry: object, verdict: {reason: string, tombstone: object|null}}[]} opts.archiveBatch
  * @param {string[]} opts.malformed — unparseable store lines, written back
  *   verbatim after `keep` (see the module header)
+ * @param {number[]} opts.malformedLineNumbers — their 1-based store lines (WARN only)
  * @param {number} opts.nowMs
  * @param {boolean} opts.dryRun
  * @returns {Promise<{kept: number, archived: number, byReason: Record<string, number>,
  *   malformedField: {malformed?: number}}>}
  */
-async function archiveThenRewrite({ filePath, archivePath, keep, archiveBatch, malformed, nowMs, dryRun }) {
+async function archiveThenRewrite({
+  filePath,
+  archivePath,
+  keep,
+  archiveBatch,
+  malformed,
+  malformedLineNumbers,
+  nowMs,
+  dryRun,
+}) {
   const byReason = countByReason(archiveBatch);
   const result = {
     kept: keep.length,
     archived: archiveBatch.length,
     byReason,
-    malformedField: malformedField(filePath, malformed, dryRun),
+    malformedField: malformedField(filePath, malformed, malformedLineNumbers, dryRun),
   };
   if (dryRun) return result;
 
@@ -384,7 +426,7 @@ async function sweepExpiredLearningsUnlocked({
   const graceMs =
     (Number.isFinite(graceDays) && graceDays >= 0 ? graceDays : DEFAULT_GRACE_DAYS) * MS_PER_DAY;
 
-  const { entries, malformed } = await readLearnings(filePath);
+  const { entries, malformed, malformedLineNumbers } = await readLearnings(filePath);
 
   const keep = [];
   const archiveBatch = [];
@@ -411,6 +453,7 @@ async function sweepExpiredLearningsUnlocked({
     keep,
     archiveBatch,
     malformed,
+    malformedLineNumbers,
     nowMs,
     dryRun,
   });
@@ -533,7 +576,7 @@ async function pruneLearningsUnlocked({
   const nowMs = resolveNowMs(now);
   // Token and records come from ONE read, so the comparison judges exactly the
   // records loop (3) reconciles against.
-  const { entries: current, malformed, generation } = await readLearningsSnapshot(filePath);
+  const { entries: current, malformed, malformedLineNumbers, generation } = await readLearningsSnapshot(filePath);
   if (expectedGeneration !== undefined && generation !== expectedGeneration) {
     throw new StoreGenerationMismatchError(filePath, expectedGeneration, generation);
   }
@@ -548,7 +591,7 @@ async function pruneLearningsUnlocked({
       byReason: {},
       dryRun,
       archivePath,
-      ...malformedField(filePath, malformed, dryRun),
+      ...malformedField(filePath, malformed, malformedLineNumbers, dryRun),
     };
   }
 
@@ -639,6 +682,7 @@ async function pruneLearningsUnlocked({
     keep,
     archiveBatch,
     malformed,
+    malformedLineNumbers,
     nowMs,
     dryRun,
   });

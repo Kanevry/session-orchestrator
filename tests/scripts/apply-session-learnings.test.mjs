@@ -213,22 +213,23 @@ describe('apply-session-learnings CLI', () => {
     expect(eventsIn(metrics)).toBe(false);
   });
 
-  it('refuses --apply on a store with a malformed line, which a dry run only reports', () => {
-    const { repo, metrics, store } = makeRepo();
-    const malformedStore = `${JSON.stringify(STORE[0])}\n{broken\n`;
-    writeFileSync(store, malformedStore, 'utf8');
-
-    const dryRun = runCli(repo, ['--json'], {});
-    expect(dryRun.status).toBe(0);
-    expect(JSON.parse(dryRun.stdout)).toMatchObject({ dry_run: true, read: 1, malformed: 1, written: 0 });
+  // TV-001 — the bug (#1489): --apply refused (exit 2) any store holding an
+  // unparseable line. Since pruneLearnings() keeps such lines verbatim the
+  // refusal guarded nothing, and as nothing on the sanctioned write path ever
+  // removes the line, it blocked the session-end learnings write on every close.
+  it('--apply on a store with a malformed line proceeds with a WARN and keeps the line verbatim', () => {
+    const { repo, store } = makeRepo();
+    writeFileSync(store, `${JSON.stringify(STORE[0])}\n{broken\n`, 'utf8');
 
     const applied = runCli(repo, ['--apply', '--json'], {});
-    expect(applied.status).toBe(2);
-    expect(applied.stderr).toMatch(/refusing to rewrite — 1 malformed line\(s\)/);
-    expect(readFileSync(store, 'utf8')).toBe(malformedStore);
-    expect(backupsIn(metrics)).toEqual([]);
-    expect(existsSync(path.join(metrics, 'learnings-archive.jsonl'))).toBe(false);
-    expect(eventsIn(metrics)).toBe(false);
+
+    expect(applied.status).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ dry_run: false, read: 1, malformed: 1 });
+    expect(applied.stderr).toMatch(/WARN: 1 unparseable line\(s\) in .* \(line\(s\) 2\) kept verbatim/);
+    const lines = readFileSync(store, 'utf8').split('\n').filter(Boolean);
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0]).id).toBe(STORE[0].id);
+    expect(lines[1]).toBe('{broken');
   });
 
   it('--apply with no store and an empty input writes nothing and emits no event', () => {

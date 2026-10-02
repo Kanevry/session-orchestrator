@@ -41,9 +41,11 @@
  *                      to edit into the next generation. Writes nothing else;
  *                      takes no --entries/--apply/telemetry flag. A PATH that
  *                      would replace the --file store or the --archive sidecar
- *                      exits 1 untouched, and so does a store holding a
- *                      malformed line (the snapshot would drop it, and the
- *                      prune applying it would rewrite the store without it).
+ *                      exits 1 untouched. A store holding a malformed line is
+ *                      snapshotted with a stderr WARN (line numbers) and a
+ *                      `malformed` count: the sidecar carries records only, and
+ *                      the prune applying it keeps the store's malformed lines
+ *                      verbatim (#1489).
  *   --entries PATH    JSONL sidecar holding the caller's next store generation.
  *                      PRUNE ONLY. Must exist, parse cleanly, and hold at least
  *                      one record — absent/malformed/empty all exit 1 untouched.
@@ -84,7 +86,7 @@
  *      that fails strict schema validation, or an `--entries` sidecar without
  *      its `_store_generation` header or snapshotted from another store than
  *      `--file` — dry run and apply alike; at `--snapshot`, a PATH that would
- *      replace a ledger or a store holding a malformed line)
+ *      replace a ledger)
  *   2  Sweep/prune error (I/O or validation failure inside the lib)
  *   3  store-generation-mismatch (#1486): the store changed after the
  *      `--entries` sidecar was snapshotted — nothing written. Re-run
@@ -101,6 +103,7 @@ import {
   sweepExpiredLearnings,
   pruneLearnings,
   StoreGenerationMismatchError,
+  warnUnparseableLines,
 } from './lib/learnings/expiry-sweep.mjs';
 import { readLearningsSnapshot, parseLearningsText } from './lib/learnings/io.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
@@ -132,8 +135,9 @@ Options:
   --snapshot PATH   Prune only. Write the store's records to PATH, headed by a
                     ${GENERATION_KEY} line; edit that file into the next
                     generation and pass it as --entries. Writes nothing else;
-                    a PATH that is the --file store or --archive sidecar, or a
-                    store holding a malformed line, exits 1
+                    a PATH that is the --file store or --archive sidecar
+                    exits 1. Malformed store lines are WARNed and counted,
+                    never put in the sidecar; the prune keeps them verbatim
   --entries PATH    JSONL sidecar with the next store generation; prune only.
                     Must exist, parse cleanly, start with the --snapshot
                     header of the same --file store, and hold >= 1 record; a
@@ -143,8 +147,8 @@ Options:
   --archive PATH    Archive sidecar (default: ${DEFAULT_ARCHIVE})
 
 Exit codes:  0 success  1 usage/input error (incl. an invalid new --entries record,
-               a sidecar from another --file store, a --snapshot of a store
-               holding a malformed line)
+               a sidecar from another --file store, a --snapshot PATH that
+               would replace the store or the archive)
              2 sweep/prune error
              3 store-generation-mismatch: the store changed after the --entries
                snapshot; nothing written — re-snapshot into a fresh path,
@@ -518,12 +522,13 @@ function refuseLedgerSnapshotTarget(args) {
  * refuses it if the store moved in between. Write-then-rename, so a crash
  * never leaves a header over a truncated record list.
  *
- * A store holding a malformed line exits 1 with nothing written. The parse
- * drops that line from the snapshot, and the prune applying the sidecar then
- * rewrites the store without it and without an archive record — only the
- * keep-3 `.bak` still has it, and every /evolve run laundered it again
- * (measured 2026-10-02: snapshot exit 0, apply exit 0, line gone).
- * `scripts/apply-session-learnings.mjs` refuses on apply for the same reason.
+ * A store holding a malformed line is snapshotted with a WARN (its line
+ * numbers) and a `malformed` count in the summary. The sidecar holds records
+ * only — a malformed line is no record — and the prune applying it keeps the
+ * store's malformed lines verbatim at the end of the rewrite, never archived
+ * (`pruneLearnings()` reads them under the lock, #1489). Refusing here, as
+ * before 26746202 made the rewrite keep them, would block every `/evolve`
+ * write on that store with no sanctioned repair path.
  *
  * @param {ReturnType<typeof parseArgs>} args
  */
@@ -536,14 +541,7 @@ async function runSnapshot(args) {
     process.stderr.write(`sweep-expired-learnings: snapshot failed: ${err.message}\n`);
     process.exit(2);
   }
-  if (snap.malformed.length > 0) {
-    usageError(
-      `refusing to snapshot — ${snap.malformed.length} malformed line(s) in ${args.file}` +
-        `${await malformedLineNumbers(args.file, snap.malformed)}: the snapshot would drop ` +
-        `them and the prune applying it would rewrite the store without them and without an ` +
-        `archive record. Repair the store first, then re-run --snapshot — nothing written`
-    );
-  }
+  warnUnparseableLines(args.file, snap.malformed, snap.malformedLineNumbers);
   try {
     const lines = [
       JSON.stringify({ [GENERATION_KEY]: snap.generation, [STORE_PATH_KEY]: resolveLedger(args.file) }),
@@ -562,6 +560,8 @@ async function runSnapshot(args) {
     snapshot: args.snapshot,
     generation: snap.generation,
     records: snap.entries.length,
+    // Present only when non-zero — the convention of the sweep/prune results.
+    ...(snap.malformed.length > 0 ? { malformed: snap.malformed.length } : {}),
   };
   if (args.json) {
     process.stdout.write(JSON.stringify(summary) + '\n');
@@ -571,29 +571,6 @@ async function runSnapshot(args) {
         `generation=${summary.generation} -> ${summary.snapshot}\n`
     );
   }
-}
-
-/**
- * ` (line(s) 3, 7)` — the 1-based store lines holding `malformed`, for the
- * refusal message; at most ten listed. A second read, diagnostic only: an
- * unreadable store yields an empty string, never a different exit.
- *
- * @param {string} filePath
- * @param {string[]} malformed - the malformed lines' text, as parsed
- * @returns {Promise<string>}
- */
-async function malformedLineNumbers(filePath, malformed) {
-  const bad = new Set(malformed);
-  let lines;
-  try {
-    lines = (await readFile(filePath, 'utf8')).split('\n');
-  } catch {
-    return '';
-  }
-  const numbers = lines.flatMap((l, i) => (bad.has(l) ? [i + 1] : []));
-  if (numbers.length === 0) return '';
-  const more = numbers.length > 10 ? `, +${numbers.length - 10} more` : '';
-  return ` (line(s) ${numbers.slice(0, 10).join(', ')}${more})`;
 }
 
 /**

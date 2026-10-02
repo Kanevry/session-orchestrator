@@ -354,11 +354,19 @@ describe('readLearnings', () => {
     const r = await readLearnings(path);
     expect(r.entries.length).toBe(2);
     expect(r.malformed).toEqual(['not json']);
+    expect(r.malformedLineNumbers).toEqual([2]);
   });
 
-  it('ignores blank lines between valid entries', async () => {
+  // Rows 2-3 are the bug (#1489 LOW-2): only EMPTY lines were filtered, so a
+  // whitespace-only line or a CRLF blank line (`\r`) counted as malformed —
+  // kept verbatim by every rewrite and WARNed on every close, forever.
+  it.each([
+    ['empty lines', '\n\n\n'],
+    ['a whitespace-only line', '\n  \t\n'],
+    ['a CRLF blank line', '\r\n\r\n'],
+  ])('ignores %s between valid entries', async (_label, gap) => {
     const path = join(tmp, 'learnings.jsonl');
-    writeFileSync(path, JSON.stringify(LEGACY()) + '\n\n\n' + JSON.stringify(LEGACY()) + '\n');
+    writeFileSync(path, JSON.stringify(LEGACY()) + gap + JSON.stringify(LEGACY()) + '\n');
     const r = await readLearnings(path);
     expect(r.entries.length).toBe(2);
     expect(r.malformed).toEqual([]);
@@ -375,6 +383,18 @@ describe('appendLearning', () => {
     const bad = { ...LEGACY(), scope: 'public', anonymized: false, host_class: 'x' };
     await expect(appendLearning(path, bad)).rejects.toThrow(ValidationError);
     expect(existsSync(path)).toBe(false);
+  });
+
+  // TV-001 — the bug (#1489 LOW-1): a torn last line without a trailing
+  // newline made the next append fuse onto it — one unparseable line, and the
+  // valid record it carried was never seen by any reader.
+  it('starts a new line when the store ends in a torn line without a newline', async () => {
+    const path = join(tmp, 'learnings.jsonl');
+    writeFileSync(path, JSON.stringify(LEGACY()) + '\n{"id":"torn","type":"recurr');
+    await appendLearning(path, { ...LEGACY(), id: 'after-torn' });
+    const r = await readLearnings(path);
+    expect(r.entries.map((e) => e.id)).toEqual([LEGACY().id, 'after-torn']);
+    expect(r.malformed).toEqual(['{"id":"torn","type":"recurr']);
   });
 
   it('appends one JSONL line per call', async () => {

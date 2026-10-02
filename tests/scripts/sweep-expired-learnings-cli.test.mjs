@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   writeFileSync,
@@ -85,20 +85,14 @@ function sha256(filePath) {
 }
 
 /** Run the CLI. Returns { stdout, stderr, status } (never throws on non-zero exit). */
+// spawnSync, not execFileSync: a WARN on a SUCCESSFUL run (exit 0) must be
+// readable too — execFileSync hands back stdout only when the child succeeds.
 function runSweep(args) {
-  try {
-    const stdout = execFileSync('node', [SCRIPT, ...args], {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    return { stdout, stderr: '', status: 0 };
-  } catch (err) {
-    return {
-      stdout: typeof err.stdout === 'string' ? err.stdout : (err.stdout?.toString?.() ?? ''),
-      stderr: typeof err.stderr === 'string' ? err.stderr : (err.stderr?.toString?.() ?? ''),
-      status: typeof err.status === 'number' ? err.status : 1,
-    };
-  }
+  const r = spawnSync('node', [SCRIPT, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: typeof r.status === 'number' ? r.status : 1 };
 }
 
 let workdir;
@@ -630,22 +624,35 @@ describe('sweep-expired-learnings.mjs — --prune --snapshot never replaces a le
     expectRefused(target());
   });
 
-  // TV-001 — the bug: the snapshot parse drops a malformed store line, and the
-  // prune applying that sidecar rewrote the store without it and without an
-  // archive record — every /evolve run laundered it again (measured
-  // 2026-10-02: snapshot exit 0, apply exit 0, line gone).
-  it('exits 1 and writes no sidecar when the store holds a malformed line', () => {
-    writeFileSync(learningsPath, `${JSON.stringify(liveLearning({ id: 'live', subject: 'l' }))}\n{ torn\n`, 'utf8');
+  // TV-001 — the bug (#1489): --snapshot refused (exit 1) a store holding an
+  // unparseable line, on the premise that the prune applying the sidecar would
+  // drop it. Since 26746202 the prune keeps it, so the refusal only blocked
+  // every /evolve write on that store. Pinned end to end: snapshot WARNs and
+  // proceeds, and the apply of that sidecar still leaves the torn line in place.
+  it('snapshots a store holding a malformed line with a WARN, and the prune applying it keeps the line', () => {
+    const live = liveLearning({ id: 'live', subject: 'l' });
+    writeFileSync(learningsPath, `${JSON.stringify(live)}\n{ torn\n`, 'utf8');
     const before = sha256(learningsPath);
     const nextPath = path.join(workdir, 'tmp', 'next.jsonl');
 
-    const result = runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath]);
+    const snap = runSweep(['--prune', '--snapshot', nextPath, '--file', learningsPath, '--json']);
 
+    expect(snap.status).toBe(0);
+    expect(JSON.parse(snap.stdout)).toMatchObject({ records: 1, malformed: 1 });
+    expect(snap.stderr).toContain('1 unparseable line(s)');
+    expect(snap.stderr).toContain('(line(s) 2)');
     expect(sha256(learningsPath)).toBe(before);
-    expect(existsSync(nextPath)).toBe(false);
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain('malformed line(s)');
-    expect(result.stderr).toContain('line(s) 2');
+
+    const applied = runSweep([
+      '--prune', '--apply', '--json',
+      '--entries', nextPath,
+      '--file', learningsPath,
+      '--archive', archivePath,
+    ]);
+
+    expect(applied.status).toBe(0);
+    expect(JSON.parse(applied.stdout)).toMatchObject({ kept: 1, archived: 0, malformed: 1 });
+    expect(readFileSync(learningsPath, 'utf8').split('\n').filter(Boolean).slice(1)).toEqual(['{ torn']);
   });
 });
 

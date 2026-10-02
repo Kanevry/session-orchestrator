@@ -60,7 +60,7 @@ import {
   CURRENT_ANONYMIZATION_VERSION,
 } from './lib/learnings.mjs';
 import { withLearningsLock } from './lib/learnings/io.mjs';
-import { findProjectRoot, resolveInstructionFile, expandTilde } from './lib/common.mjs';
+import { findProjectRoot, resolveInstructionFile, expandTilde, redactHomeDir } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { createSecretValueMasker } from './lib/secret-masker.mjs';
 import { stableHostname, readHostAliases } from './lib/host-identity.mjs';
@@ -661,7 +661,9 @@ async function promoteHwLearningsUnlocked(opts) {
 
   const flags = [];
   if (malformed.length > 0) {
-    flags.push(`${malformed.length} malformed line(s) in learnings.jsonl were skipped`);
+    // Not promoted, and kept verbatim by the rewrite below (rewriteLearnings
+    // re-reads them under the lock — #1489); a WARN, not a loss.
+    flags.push(`${malformed.length} malformed line(s) in learnings.jsonl were not read (kept verbatim)`);
   }
 
   if (hwPrivate.length === 0) {
@@ -763,7 +765,8 @@ if (isMain) {
   };
 
   run().catch((err) => {
-    process.stderr.write(`export failed: ${err.message}\n`);
+    // The message can carry absolute store/output paths — never print the home dir.
+    process.stderr.write(`export failed: ${redactHomeDir(String(err?.message ?? err))}\n`);
     process.exit(1);
   });
 }

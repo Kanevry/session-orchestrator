@@ -14,6 +14,7 @@ import {
   copyFile,
   readdir,
   unlink,
+  open,
 } from 'node:fs/promises';
 import { existsSync, realpathSync } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -220,13 +221,14 @@ function serializeLearningLineChecked(validated, { legacyTolerant = false } = {}
 /**
  * Read all learnings from the given JSONL path. Returns normalized entries
  * (missing extended fields are defaulted). Malformed lines are skipped with
- * their raw text preserved in the result's `malformed` array.
+ * their raw text preserved in the result's `malformed` array, and their
+ * 1-based line numbers in `malformedLineNumbers` (same order).
  *
  * @param {string} filePath — absolute or project-relative path to learnings.jsonl
- * @returns {Promise<{entries: object[], malformed: string[]}>}
+ * @returns {Promise<{entries: object[], malformed: string[], malformedLineNumbers: number[]}>}
  */
 export async function readLearnings(filePath) {
-  if (!existsSync(filePath)) return { entries: [], malformed: [] };
+  if (!existsSync(filePath)) return { entries: [], malformed: [], malformedLineNumbers: [] };
   return parseLearningsText(await readFile(filePath, 'utf8'));
 }
 
@@ -239,7 +241,8 @@ export async function readLearnings(filePath) {
  * either way, so the two states share a token.
  *
  * @param {string} filePath
- * @returns {Promise<{entries: object[], malformed: string[], generation: string}>}
+ * @returns {Promise<{entries: object[], malformed: string[], malformedLineNumbers: number[],
+ *   generation: string}>}
  */
 export async function readLearningsSnapshot(filePath) {
   const raw = existsSync(filePath) ? await readFile(filePath, 'utf8') : '';
@@ -250,22 +253,30 @@ export async function readLearningsSnapshot(filePath) {
  * Parse learnings JSONL text — the line parser behind {@link readLearnings},
  * exported for callers that must split a header off the text first.
  *
+ * A blank line — empty, whitespace-only, or a lone `\r` from a CRLF blank line
+ * — carries no record and is skipped, never counted as malformed: malformed
+ * lines are kept verbatim by every rewrite and WARNed on every close, so a
+ * stray blank would otherwise be reported forever (#1489).
+ *
  * @param {string} raw
- * @returns {{entries: object[], malformed: string[]}}
+ * @returns {{entries: object[], malformed: string[], malformedLineNumbers: number[]}}
+ *   `malformedLineNumbers[i]` is the 1-based line of `malformed[i]` in `raw`
  */
 export function parseLearningsText(raw) {
-  const lines = raw.split('\n').filter((l) => l.length > 0);
   const entries = [];
   const malformed = [];
-  for (const line of lines) {
+  const malformedLineNumbers = [];
+  raw.split('\n').forEach((line, i) => {
+    if (line.trim().length === 0) return;
     try {
       const parsed = JSON.parse(line);
       entries.push(normalizeLearning(parsed));
     } catch {
       malformed.push(line);
+      malformedLineNumbers.push(i + 1);
     }
-  }
-  return { entries, malformed };
+  });
+  return { entries, malformed, malformedLineNumbers };
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +300,11 @@ export function parseLearningsText(raw) {
  * The append runs under the store lock ({@link withLearningsLock}): an append
  * that landed between a rewriter's read and its rename was silently lost.
  * Validation runs first, outside the lock — a rejected record never waits.
+ *
+ * A store whose last line is torn (a crash mid-append left no trailing
+ * newline) gets a `\n` written first, inside the same append: without it the
+ * new record fused onto the torn text into ONE unparseable line, and no reader
+ * ever saw the record (#1489).
  *
  * @param {string} filePath
  * @param {object} entry
@@ -323,11 +339,44 @@ export async function appendLearning(filePath, entry, { lockTimeoutMs } = {}) {
   // parses back AND re-validates before any append touches disk. Throws
   // ValidationError on a non-round-tripping record — file is left untouched.
   const line = serializeLearningLineChecked(validated);
-  // The lock path resolution creates the parent directory.
-  await withLearningsLock(filePath, () => appendFile(filePath, line, 'utf8'), {
-    timeoutMs: lockTimeoutMs,
-  });
+  // The lock path resolution creates the parent directory. The torn-tail check
+  // reads inside the lock, so no other writer can change the tail in between.
+  await withLearningsLock(
+    filePath,
+    async () => {
+      const lead = (await endsWithoutNewline(filePath)) ? '\n' : '';
+      await appendFile(filePath, lead + line, 'utf8');
+    },
+    { timeoutMs: lockTimeoutMs }
+  );
   return validated;
+}
+
+/**
+ * True when `filePath` is a non-empty file whose last byte is not `\n`. An
+ * absent file is `false` (the append creates it). Reads one byte, so the cost
+ * does not grow with the store.
+ *
+ * @param {string} filePath
+ * @returns {Promise<boolean>}
+ */
+async function endsWithoutNewline(filePath) {
+  let fh;
+  try {
+    fh = await open(filePath, 'r');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return false;
+    throw err;
+  }
+  try {
+    const { size } = await fh.stat();
+    if (size === 0) return false;
+    const buf = Buffer.alloc(1);
+    await fh.read(buf, 0, 1, size - 1);
+    return buf[0] !== 0x0a;
+  } finally {
+    await fh.close();
+  }
 }
 
 /**
@@ -450,12 +499,16 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
  *   `NaN`) is still caught by the #662 checked serializer regardless of this
  *   flag — see {@link serializeLearningLineChecked}. Pass `false` to restore
  *   the fully-strict behaviour from before EventDrop #386.
- * - `malformedLines` (default `[]`, #1489): raw text of store lines that did
- *   not parse — the `malformed` array {@link readLearnings} returns. Written
- *   back verbatim, one per line, AFTER the validated records. A round-trip
- *   writer that rewrites from parsed entries alone deletes every such line
- *   with no archive record (only the keep-3 `.bak` still holds it). Each must
- *   be a non-empty string without a newline; anything else throws a TypeError
+ * - `malformedLines` (#1489): raw text of store lines that did not parse —
+ *   the `malformed` array {@link readLearnings} returns. Written back
+ *   verbatim, one per line, AFTER the validated records. A round-trip writer
+ *   that rewrites from parsed entries alone deletes every such line with no
+ *   archive record (only the keep-3 `.bak` still holds it). OMITTED (the
+ *   default), the store's OWN malformed lines are re-read under the lock and
+ *   kept — so a caller that forgets this option no longer deletes them
+ *   (`export-hw-learnings` did). Pass an array to write exactly those lines;
+ *   `[]` is the explicit opt-out that drops them. Each entry must be a
+ *   non-empty string without a newline; anything else throws a TypeError
  *   before any disk access, dry run included.
  *
  * @param {string} filePath
@@ -466,11 +519,12 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
 export async function rewriteLearnings(
   filePath,
   entries,
-  { dryRun = false, backup = true, legacyTolerant = true, malformedLines = [] } = {}
+  { dryRun = false, backup = true, legacyTolerant = true, malformedLines } = {}
 ) {
   if (
-    !Array.isArray(malformedLines) ||
-    malformedLines.some((l) => typeof l !== 'string' || l.length === 0 || l.includes('\n'))
+    malformedLines !== undefined &&
+    (!Array.isArray(malformedLines) ||
+      malformedLines.some((l) => typeof l !== 'string' || l.length === 0 || l.includes('\n')))
   ) {
     throw new TypeError('rewriteLearnings: malformedLines must be an array of non-empty single-line strings');
   }
@@ -494,14 +548,20 @@ export async function rewriteLearnings(
   // rewrite, no backup — and hand the validated entries back to the caller.
   if (dryRun) return validated;
 
-  // Malformed lines last, each newline-terminated: a truncated final line
-  // otherwise fuses with the next append into one more unparseable line.
-  const body = lines.join('') + malformedLines.map((l) => `${l}\n`).join('');
-
   // Under the store lock (#1447 point 8) so no append lands between the backup
   // and the rename. The CALLER's read must sit inside the same lock for a
   // read-modify-write to be safe — this call joins it reentrantly.
   await withLearningsLock(filePath, async () => {
+    // Default: the store's own malformed lines as they stand right now, read
+    // under the lock that guards the rename below.
+    const kept =
+      malformedLines ??
+      (existsSync(filePath) ? parseLearningsText(await readFile(filePath, 'utf8')).malformed : []);
+    // Malformed lines last, each newline-terminated: a truncated final line
+    // otherwise fuses with the next append into one more unparseable line.
+    const body = lines.join('') + kept.map((l) => `${l}\n`).join('');
+
+
     // Backup-before-rewrite (#721): snapshot the current store to a timestamped
     // sidecar BEFORE the destructive rename, then prune to keep-N. Only meaningful
     // when the target already exists (a first-time write has nothing to lose).
