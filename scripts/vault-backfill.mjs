@@ -38,6 +38,8 @@ import {
 } from './lib/vault-backfill/template.mjs';
 
 import { validateManifest, SLUG_RE } from './lib/vault-backfill/manifest.mjs';
+import { _parseVaultIntegration } from './lib/config/vault-integration.mjs';
+import { expandTilde } from './lib/common.mjs';
 
 // ── CLI argument parsing ──────────────────────────────────────────────────────
 
@@ -85,9 +87,16 @@ let hadWriteError = false;
 
 if (flagVerbose) setGlabVerbose(true);
 
-// ── Session Config reader (inline) ───────────────────────────────────────────
+// ── Session Config reader ─────────────────────────────────────────────────────
 
-/** Read vault-integration.{gitlab-groups,vault-dir} from CLAUDE.md / AGENTS.md in CWD. */
+/**
+ * Read vault-integration.{gitlab-groups,vault-dir} from CLAUDE.md / AGENTS.md in
+ * CWD through the canonical Session Config parser (#1094), so every form it
+ * accepts (block, inline object, dash/bold bullet) reaches this CLI too.
+ * `vault-dir` is the COMMITTED value — no host-local resolution here.
+ *
+ * @returns {{'gitlab-groups': string[]|null, 'vault-dir': string|null}}
+ */
 function readVaultIntegrationConfig() {
   const candidates = [join(process.cwd(), 'CLAUDE.md'), join(process.cwd(), 'AGENTS.md')];
 
@@ -98,45 +107,17 @@ function readVaultIntegrationConfig() {
     }
   }
 
-  if (!content) return { 'gitlab-groups': null, 'vault-dir': null };
-
-  let inBlock = false;
-  let gitlabGroups = null;
-  let vaultDir = null;
-
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.replace(/\r$/, '');
-
-    if (!inBlock && /^vault-integration:\s*$/.test(line)) { inBlock = true; continue; }
-    if (inBlock) {
-      if (line.length > 0 && !/^\s/.test(line)) break;
-
-      const m = line.match(/^\s+([a-zA-Z_-]+):\s*(.*)/);
-      if (!m) continue;
-
-      const k = m[1].trim();
-      let v = m[2].trim().replace(/\s*#.*$/, '').trim();
-      if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-        v = v.slice(1, -1);
-      }
-
-      if (k === 'gitlab-groups' && v) {
-        gitlabGroups = v.replace(/^\[/, '').replace(/\]$/, '').trim() || null;
-      }
-      if (k === 'vault-dir' && v && v !== 'none' && v !== 'null') {
-        vaultDir = v;
-      }
-    }
-  }
-
-  return { 'gitlab-groups': gitlabGroups, 'vault-dir': vaultDir };
+  const parsed = _parseVaultIntegration(content ?? '');
+  return { 'gitlab-groups': parsed['gitlab-groups'], 'vault-dir': parsed['vault-dir'] };
 }
 
 // ── Vault-dir folder stub ─────────────────────────────────────────────────────
 
 function createVaultFolderStub(vaultDir, slug) {
   if (!vaultDir) return;
-  const stubDir = join(resolve(vaultDir), '01-projects', slug);
+  // `~/…` is the documented vault-dir shape; resolve() alone does not expand it
+  // and would put the stub under `<cwd>/~/…`.
+  const stubDir = join(resolve(expandTilde(vaultDir)), '01-projects', slug);
   try {
     if (!existsSync(stubDir)) {
       if (applyWrites) {
@@ -399,7 +380,7 @@ async function main() {
   if (flagGroups) {
     groups = flagGroups.split(',').map((g) => g.trim()).filter(Boolean);
   } else if (cfgConfig['gitlab-groups']) {
-    groups = cfgConfig['gitlab-groups'].split(',').map((g) => g.trim()).filter(Boolean);
+    groups = cfgConfig['gitlab-groups'];
   }
 
   const vaultDir = flagVaultDir ?? cfgConfig['vault-dir'] ?? null;

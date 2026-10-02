@@ -30,6 +30,7 @@ const VI_DEFAULTS = {
   'vault-dir': null,
   mode: 'warn',
   'vault-name': null,
+  'gitlab-groups': null,
 };
 
 const vi = (overrides) => ({ ...VI_DEFAULTS, ...overrides });
@@ -72,10 +73,23 @@ describe('_parseVaultIntegration', () => {
       content: 'vault-integration:\n  enabled: true   # primary toggle\n  vault-dir: ~/v   # comment\n  mode: warn      # warn|strict|off\n',
       expected: vi({ enabled: true, 'vault-dir': '~/v' }),
     },
+    // ── #1094 — gitlab-groups (the vault-backfill input) ─────────────────────
     {
-      why: 'block form ignores nested keys like a `gitlab-groups:` list',
-      content: 'vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: warn\n  gitlab-groups:\n    - infrastructure\n    - clients\n',
-      expected: vi({ enabled: true, 'vault-dir': '~/v' }),
+      // The shape docs/session-config-template.md documents; vault-backfill's
+      // old hand-parser read it as "no groups" and exited 1.
+      why: '#1094: block form parses the documented `gitlab-groups:` YAML list',
+      content: 'vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: warn\n  gitlab-groups:   # optional\n    - infrastructure\n    - "clients"\n',
+      expected: vi({ enabled: true, 'vault-dir': '~/v', 'gitlab-groups': ['infrastructure', 'clients'] }),
+    },
+    {
+      why: '#1094: block form normalises a flow-array value exactly as vault-backfill did',
+      content: 'vault-integration:\n  gitlab-groups: [infra, clients/sub ,]\n  vault-dir: ~/v\n',
+      expected: vi({ 'vault-dir': '~/v', 'gitlab-groups': ['infra', 'clients/sub'] }),
+    },
+    {
+      why: '#1094: an inline-object flow array is not cut apart by the comma split, and later pairs still parse',
+      content: '- vault-integration: { enabled: true, gitlab-groups: [a, b/c], mode: strict }\n',
+      expected: vi({ enabled: true, mode: 'strict', 'gitlab-groups': ['a', 'b/c'] }),
     },
     {
       why: 'block ends at the first non-indented line',

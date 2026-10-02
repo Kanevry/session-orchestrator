@@ -83,11 +83,14 @@ function writeManifest(dir, manifest) {
 /**
  * Run the CLI script and return { status, stdout, stderr }.
  * env merges PROJECTS_BASELINE_DIR + HOME on top of a minimal PATH.
+ * cwd defaults to the per-test tmpdir, NEVER the repo root: the CLI reads
+ * vault-integration from CLAUDE.md in its cwd, and the repo's own `vault-dir`
+ * would point every --apply test's folder stubs at a real vault.
  */
 function run(args, { env = {}, cwd } = {}) {
   const result = spawnSync(NODE, [SCRIPT_PATH, ...args], {
     encoding: 'utf8',
-    cwd: cwd ?? REPO_ROOT,
+    cwd: cwd ?? tmpBase,
     env: {
       HOME: homedir(),
       PATH: '/usr/bin:/bin:/usr/local/bin',
@@ -101,11 +104,11 @@ function run(args, { env = {}, cwd } = {}) {
   };
 }
 
-/** Run the interactive CLI and answer prompts one at a time over stdin. */
+/** Run the interactive CLI and answer prompts one at a time over stdin (cwd: see run()). */
 function runInteractive(args, { env = {}, cwd } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(NODE, [SCRIPT_PATH, ...args], {
-      cwd: cwd ?? REPO_ROOT,
+      cwd: cwd ?? tmpBase,
       env: {
         HOME: homedir(),
         PATH: '/usr/bin:/bin:/usr/local/bin',
@@ -262,6 +265,89 @@ describe('flag validation', () => {
     );
     expect(status).toBe(1);
     expect(stderr).toContain('groups');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Session Config reading (#1094) — through the canonical parser
+// ---------------------------------------------------------------------------
+
+describe('Session Config reading (#1094)', () => {
+  it('reads gitlab-groups and vault-dir from a bold-bullet inline vault-integration', () => {
+    // The pre-#1094 hand-parser knew only the plain block header, so this form
+    // (19 of 56 instruction files measured on one host) yielded no groups → exit 1.
+    setupTemplateDir(tmpBase);
+    const vaultDir = join(tmpBase, 'vault');
+    writeFileSync(
+      join(tmpBase, 'CLAUDE.md'),
+      `## Session Config\n\n- **vault-integration:** { enabled: true, vault-dir: ${vaultDir}, gitlab-groups: [engineering/platform] }\n`,
+      'utf8',
+    );
+    const binDir = join(tmpBase, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    const glabPath = join(binDir, 'glab');
+    writeFileSync(glabPath, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'glab version 1.0.0\\n'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
+  printf '%s\\n' '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z"}]]'
+  exit 0
+fi
+if [ "$1" = "api" ] && [ "$2" = "projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw" ]; then
+  printf '404 File Not Found\\n' >&2
+  exit 1
+fi
+printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
+exit 2
+`, 'utf8');
+    chmodSync(glabPath, 0o755);
+
+    const { status, stdout, stderr } = run([], {
+      cwd: tmpBase,
+      env: {
+        PROJECTS_BASELINE_DIR: tmpBase,
+        HOME: homedir(),
+        PATH: `${binDir}:/usr/bin:/bin`,
+        SO_VAULT_DIR: vaultDir,
+      },
+    });
+
+    expect(status).toBe(0);
+    expect(parseActions(stdout).map(({ action, path, group }) => ({ action, path, group }))).toEqual([
+      { action: 'vault-yaml-rendered', path: 'engineering/platform/edge-proxy', group: 'engineering/platform' },
+    ]);
+    expect(stderr).toContain(
+      `[dry-run] would create vault folder stub: ${join(vaultDir, '01-projects', 'edge-proxy')}`,
+    );
+    expect(existsSync(vaultDir)).toBe(false);
+  });
+
+  it('expands a ~-prefixed vault-dir to HOME instead of creating a literal ./~ tree in the cwd', () => {
+    // Pre-fix, resolve('~/…') made the stub `<cwd>/~/…/01-projects/<slug>` — a
+    // directory hidden from git by the `*~` ignore rule.
+    setupTemplateDir(tmpBase);
+    const home = join(tmpBase, 'home');
+    mkdirSync(home);
+    writeFileSync(
+      join(tmpBase, 'CLAUDE.md'),
+      '## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ~/test-vault\n',
+      'utf8',
+    );
+    const manifestPath = writeManifest(tmpBase, {
+      version: 1,
+      repos: [{ id: 42, path: 'mygroup/my-test', slug: 'my-test', tier: 'active', visibility: 'internal' }],
+    });
+
+    const { status } = run(['--yes', manifestPath, '--apply', '--out-dir', outDir], {
+      cwd: tmpBase,
+      env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: home, PATH: '/usr/bin:/bin' },
+    });
+
+    expect(status).toBe(0);
+    expect(existsSync(join(tmpBase, '~'))).toBe(false);
+    expect(existsSync(join(home, 'test-vault', '01-projects', 'my-test'))).toBe(true);
   });
 });
 
