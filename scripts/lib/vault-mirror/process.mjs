@@ -264,6 +264,27 @@ export { deriveRepo } from './namespace.mjs';
 // ── Action output ─────────────────────────────────────────────────────────────
 
 /**
+ * Render a vault file path relative to the vault root — the ONE form either
+ * output channel (stdout action records, stderr `SKIP …` lines) may carry. The
+ * vault lives under the operator's home dir, and both channels reach CI logs
+ * and session transcripts (session-end pipes stderr into its own output), so an
+ * absolute path there is an owner-privacy leak (#1487 item 9,
+ * `.claude/rules/security.md` § Owner-Privacy).
+ *
+ * A path outside the vault is returned unchanged; every caller in this module
+ * builds its path from `resolve(vaultDir)`, so that branch is unreached today.
+ *
+ * @param {string|null|undefined} path — absolute path under `vaultDir`, or null
+ * @param {string} vaultDir — vault root
+ * @returns {string|null} vault-relative path, or null for a null/absent path
+ */
+function toVaultRelative(path, vaultDir) {
+  if (path === null || path === undefined) return null;
+  const resolvedVaultDir = resolve(vaultDir);
+  return path.startsWith(resolvedVaultDir) ? path.slice(resolvedVaultDir.length + 1) : path;
+}
+
+/**
  * Emit a JSON action line to stdout.
  *
  * Takes a single self-documenting options object (issue #511). `emitAction` is a
@@ -315,15 +336,7 @@ export async function emitAction({
   skipClass,
   reason,
 }) {
-  let rel;
-  if (path === null || path === undefined) {
-    rel = null;
-  } else {
-    const resolvedVaultDir = resolve(vaultDir);
-    rel = path.startsWith(resolvedVaultDir)
-      ? path.slice(resolvedVaultDir.length + 1)
-      : path;
-  }
+  const rel = toVaultRelative(path, vaultDir);
   const payload = { action, path: rel, kind, id };
   if (meta && typeof meta === 'object') {
     Object.assign(payload, meta);
@@ -740,13 +753,13 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
     if (!fm || !fm['_generator']) {
       // Hand-written: skip
-      process.stderr.write(`SKIP hand-written: ${targetPath}\n`);
+      process.stderr.write(`SKIP hand-written: ${toVaultRelative(targetPath, vaultDir)}\n`);
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
     }
 
     if (fm['_generator'] !== GENERATOR_MARKER) {
       // Different generator — treat as hand-written to be safe
-      process.stderr.write(`SKIP unknown generator: ${targetPath}\n`);
+      process.stderr.write(`SKIP unknown generator: ${toVaultRelative(targetPath, vaultDir)}\n`);
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
     }
 
@@ -761,7 +774,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         const disambigContent = readFileSync(targetPath, 'utf8');
         const disambigFm = parseFrontmatter(disambigContent);
         if (!disambigFm || !disambigFm['_generator']) {
-          process.stderr.write(`SKIP hand-written (disambig): ${targetPath}\n`);
+          process.stderr.write(`SKIP hand-written (disambig): ${toVaultRelative(targetPath, vaultDir)}\n`);
           return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
         }
         // Check updated advancement; if date has not advanced, also diff content.
@@ -980,12 +993,12 @@ export async function processSession(rawEntry, _lineNum, ctx) {
 
     if (!fm || !fm['_generator']) {
       // Hand-written: skip
-      process.stderr.write(`SKIP hand-written: ${targetPath}\n`);
+      process.stderr.write(`SKIP hand-written: ${toVaultRelative(targetPath, vaultDir)}\n`);
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: session_id });
     }
 
     if (fm['_generator'] !== GENERATOR_MARKER) {
-      process.stderr.write(`SKIP unknown generator: ${targetPath}\n`);
+      process.stderr.write(`SKIP unknown generator: ${toVaultRelative(targetPath, vaultDir)}\n`);
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: session_id });
     }
 
