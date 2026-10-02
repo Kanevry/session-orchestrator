@@ -1,6 +1,6 @@
 # Bootstrap — Refresh-Lock Flow (`--refresh-lock`)
 
-> Reference of the `bootstrap` skill, split out of `SKILL.md` (#1246). Body moved **byte-identical**; only this header is new.
+> Reference of the `bootstrap` skill, split out of `SKILL.md` (#1246). Body moved **byte-identical**; only this header is new. Later addition: step 3a (#1489 Pkt 17, 2026-10-02).
 > **Sibling-file paths inside this body are relative to the parent directory, not to `references/`**: `SKILL.md` → `../SKILL.md`. They were deliberately NOT rewritten, so the moved bytes stay verifiable against the pre-split file.
 
 ## Refresh-Lock Flow (`--refresh-lock`)
@@ -27,9 +27,11 @@ Entered when `$ARGUMENTS` contains `--refresh-lock`. No scaffolding questions ar
 
    `refreshBootstrapLock` writes (or replaces, if already present) exactly two lines — `refreshed-at: <ISO 8601 UTC>` and `refreshed-plugin-version: <current plugin version>` — via the same atomic tmp-file + rename pattern used by the Retroactive Flow's lock write: write to a sibling tmp file, then rename over the target so the lock is never observed half-written. **Every other line of the lock — `bootstrapped-at`, `timestamp`, `plugin-version`, `tier`, `archetype`, `source`, … — is left byte-identical.** This is the provenance-honesty guarantee: a refresh is an acknowledgement, not a re-bootstrap. On failure (`result.ok === false`), surface `result.message` and stop — do not retry with a fabricated lock.
 
-4. **No auto-commit.** Unlike the Retroactive Flow, `--refresh-lock` does not stage or commit. The refreshed lock is a small, reviewable diff (two changed/added lines); the user commits it alongside their own work at their own cadence.
+3a. **Ignore the store-lock artifacts (#1489 Pkt 17, added 2026-10-02).** Execute the bash block in [`_shared-template.md#store-lock-ignore`](../_shared-template.md) (link relative to `references/` — new in this step, not moved). The freshness probe sends every drifted repo here, so this is the one path on which a repo bootstrapped before that step existed — any tier, Deep included — picks up the two `.gitignore` patterns. Idempotent; it touches nothing but missing ignore lines.
 
-5. **Report.** Print: `Lock refreshed (refreshed-at: <now>, plugin-version: <current>). Original bootstrap provenance unchanged.`
+4. **No auto-commit.** Unlike the Retroactive Flow, `--refresh-lock` does not stage or commit. The refreshed lock (two changed/added lines) and any `.gitignore` append from step 3a are small, reviewable diffs; the user commits them alongside their own work at their own cadence.
+
+5. **Report.** Print: `Lock refreshed (refreshed-at: <now>, plugin-version: <current>). Original bootstrap provenance unchanged.` When step 3a appended to `.gitignore`, add: `.gitignore: store-lock patterns appended (unstaged).`
 
 **Idempotency.** Running `/bootstrap --refresh-lock` twice in a row replaces the same two lines in place — it never duplicates them.
 

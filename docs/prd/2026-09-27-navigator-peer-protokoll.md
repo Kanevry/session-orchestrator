@@ -393,6 +393,8 @@ Rückfall (session-D1): schreibende erst nach deiner Antwort oder nach 10 min oh
 ### A.2 Auflagen (navigator-A1 an alle fünf, Inhalt gleich; v1-Form, in v2 durch 3.3/3.4 ersetzt)
 
 > Historischer Wortlaut. Die Lastschwelle „5-min-Load < 12" gilt nicht mehr: ob m5-remote nutzbar ist, entscheidet allein `navigator m5-ersatz --quiet` (Exit 0 = nutzbar), siehe `skills/_shared/fleet-protocol.md` § Standard-Auflagen.
+>
+> Nachtrag 2026-10-02: Seit 05c0264f ist `skills/_shared/fleet-protocol.md` ein generischer Dateivertrag und nennt weder den Alias noch `m5-ersatz`; seine Standard-Auflagen verlangen nur noch einen unmittelbar davor als bereit belegten Remote-Host (`skills/remote-offload/SKILL.md`). Die `m5-ersatz`-Prüfung selbst gehört zur Navigator-CLI.
 
 ```
 Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host >= 50 % Speicher frei hat.
