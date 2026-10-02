@@ -64,6 +64,12 @@ Thumbs.db
 .orchestrator/metrics/*.jsonl.bak.*
 .orchestrator/metrics/*.jsonl.archive-*
 .orchestrator/metrics/*.jsonl.lock*
+# scripts/lib/file-lock.mjs temp files, created in the LOCK's own directory
+# (any lock, not only the learnings store): `.file.lock.create.tmp.<hex>`,
+# `.file.lock.acquire.create.tmp.<hex>` (acquire/release guard) and
+# `.file.lock.<hex>` (stale-lock override). Unlinked in a `finally`, so only a
+# crash mid-acquisition leaves one behind (#1487 item 11).
+.file.lock.*
 .orchestrator/metrics/*.jsonl.tmp-*
 .orchestrator/metrics/repo-audit-*.json
 .orchestrator/metrics/sweep.log

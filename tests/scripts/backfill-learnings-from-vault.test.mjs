@@ -434,6 +434,24 @@ describe('write discipline', () => {
     expect(sha(storePath)).toBe(hashAfterFirst);
   });
 
+  // Bug (#1487 item 12): the "not already present" re-check and the append ran
+  // outside the store lock, so two concurrent --apply runs both saw the orphan
+  // absent and both appended it — a duplicate record in the store.
+  it('two concurrent --apply runs restore an orphan exactly once', async () => {
+    const l = learningOf({ id: '99999999-0000-4000-8000-000000000004' });
+    const { repoRoot, vaultDir, storePath } = makeFixture([{ learning: l }]);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const argv = ['--vault-dir', vaultDir, '--apply'];
+    const [a, b] = await Promise.all([main(argv, { repoRoot, now: NOW }), main(argv, { repoRoot, now: NOW })]);
+
+    const ids = readFileSync(storePath, 'utf8').trim().split('\n').map((line) => JSON.parse(line).id);
+    expect(ids.filter((id) => id === l.id)).toHaveLength(1);
+    expect(a.report.summary.applied + b.report.summary.applied).toBe(1);
+    expect(a.report.summary.skipped_already_present + b.report.summary.skipped_already_present).toBe(1);
+  });
+
   // Bug: an append that fails being swallowed, so the run reports success while
   // nothing was restored.
   it('surfaces an append failure instead of reporting a silent success', async () => {

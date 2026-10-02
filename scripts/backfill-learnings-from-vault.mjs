@@ -43,8 +43,9 @@
  * a record that never left.
  *
  * Idempotence: dry-run is pure (reads only). `--apply` re-checks store+archive
- * membership per record immediately before appending, so a second `--apply`
- * appends nothing and a later dry-run reports 0 orphans.
+ * membership and appends inside ONE store-lock section (`withLearningsLock`),
+ * so a second `--apply` — sequential or concurrent — appends nothing and a
+ * later dry-run reports 0 orphans.
  *
  * NOTE on discovery: every file here is read through `node:fs`, never grep — a
  * single NUL byte makes a tracked file invisible to grep (silent skip, exit 1,
@@ -70,7 +71,7 @@ import { parseSessionConfig } from './lib/config.mjs';
 import { subjectToSlug, parseFrontmatter } from './lib/vault-mirror/utils.mjs';
 import { kebab } from './lib/learnings/kebab.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
-import { appendLearning, isBackupOf } from './lib/learnings/io.mjs';
+import { appendLearning, isBackupOf, withLearningsLock } from './lib/learnings/io.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_RULES_DIR = '.claude/rules';
@@ -907,28 +908,54 @@ export async function main(argv = [], deps = {}) {
     });
   }
 
-  // ── Apply (append-only, re-checked) ──────────────────────────────────────
+  // ── Apply (append-only, re-checked under the store lock) ─────────────────
   let applied = 0;
   let skippedAlreadyPresent = 0;
   if (apply) {
-    for (const r of records) {
-      if (r.status !== 'orphan' || !r.restorable || !r.record) continue;
-      // Re-check membership at apply time — this is what makes a second
-      // --apply a no-op rather than a duplicate append.
-      if (idsInStore(storeAbs).has(r.learning_id) || idsInStore(archiveAbs).has(r.learning_id)) {
-        skippedAlreadyPresent += 1;
-        r.applied = false;
-        continue;
-      }
-      try {
-        await appendLearning(storeAbs, r.record);
-        applied += 1;
-        r.applied = true;
-      } catch (err) {
-        r.applied = false;
-        r.apply_error = err.message;
-        process.stderr.write(`backfill-learnings-from-vault: append failed for ${r.learning_id}: ${err.message}\n`);
-      }
+    const candidates = records.filter((r) => r.status === 'orphan' && r.restorable && r.record);
+    const failApply = (r, err) => {
+      r.applied = false;
+      r.apply_error = err.message;
+      process.stderr.write(`backfill-learnings-from-vault: append failed for ${r.learning_id}: ${err.message}\n`);
+    };
+    try {
+      // The membership re-check and the append are ONE critical section
+      // (#1487 item 12): checked outside the lock, two concurrent --apply runs
+      // — or one racing a session-end append — both saw "absent" and both
+      // appended. One section for the whole loop, not one per record: a single
+      // acquisition and a single read of store + archive instead of N of each.
+      // Hold time is linear in N small appends — fine for the tens of orphans a
+      // backfill restores; revisit (per-record sections) if a run ever holds
+      // the lock near the 10 s other writers wait. Archive movers (sweep/prune)
+      // also write under this lock, so the archive read is consistent too.
+      // appendLearning() re-enters the held lock (reentrant per async call
+      // chain, io.mjs).
+      await withLearningsLock(storeAbs, async () => {
+        const present = new Set([...idsInStore(storeAbs), ...idsInStore(archiveAbs)]);
+        for (const r of candidates) {
+          // This is what makes a second --apply a no-op rather than a
+          // duplicate append; `present.add` below covers two rules naming one id.
+          if (present.has(r.learning_id)) {
+            skippedAlreadyPresent += 1;
+            r.applied = false;
+            continue;
+          }
+          try {
+            await appendLearning(storeAbs, r.record);
+            applied += 1;
+            r.applied = true;
+            present.add(r.learning_id);
+          } catch (err) {
+            failApply(r, err);
+          }
+        }
+      });
+    } catch (err) {
+      // Lock not acquired (LearningsLockError), its directory not creatable, or
+      // a store read failed inside the section: no candidate still unhandled
+      // was written. Surface it per record, like any other append failure,
+      // instead of reporting a silent success.
+      for (const r of candidates) if (r.applied === undefined) failApply(r, err);
     }
   }
 
