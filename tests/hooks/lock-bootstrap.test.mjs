@@ -246,6 +246,30 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
     expect(events[0].payload.reclaimed).toBe(expected);
   });
 
+  it('leaves a lock alone that another session forced in between, instead of stamping its own label on it', async () => {
+    // Bug: two starts forcing the same stale/corrupt lock both got ok:true; the
+    // enrichment then re-read the OTHER session's lock and wrote our semantic
+    // label and owner proof onto it.
+    const events = [];
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'session-a',
+      semanticSessionId: 'label-a',
+      mode: 'deep',
+      _acquireImpl: vi.fn(() => ({ ok: false, reason: 'corrupt', existingLock: null })),
+      // The forced write "succeeds", but the file ends up owned by session-b.
+      _forceAcquireImpl: (args) => makeAcquireStub()({ ...args, sessionId: 'session-b' }),
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+    });
+
+    expect(result).toBeNull();
+    const onDisk = readLock();
+    expect(onDisk.session_id).toBe('session-b');
+    expect(onDisk.semantic_session_id).toBeUndefined();
+    expect(existsSync(join(sandbox, '.orchestrator', 'lock-owner-proof.json'))).toBe(false);
+    expect(events).toEqual([]);
+  });
+
   it('force-overwrites a stale-heartbeat lock', async () => {
     const staleAcquire = vi.fn(() => ({
       ok: false,

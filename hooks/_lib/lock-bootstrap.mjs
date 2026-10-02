@@ -279,6 +279,15 @@ export async function bootstrapLock({
     // Lock vanished between write and read — best-effort, return null.
     return null;
   }
+  // The file can belong to another session by now: two SessionStarts that
+  // both forced a stale or corrupt lock each get ok:true, and the later rename
+  // wins. Enriching that lock would stamp OUR label onto ITS record and write
+  // an owner proof that verifies against it, so a foreign lock is left as is.
+  // Ceiling (BV-004): this closes the misattribution, not the race itself —
+  // both sessions still believe they forced the lock; revisit with a
+  // single-winner takeover (tombstone rename + link-create) if a double
+  // reclaim is ever observed in `reclaimed` events.
+  if (baseLock.session_id !== sessionId) return null;
 
   const startedAt = typeof baseLock.started_at === 'string'
     ? baseLock.started_at
