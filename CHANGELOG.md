@@ -35,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- **`/session-orchestrator:navigator` skill and command** (#1491, owner decision): the 5.4.0 package shipped fleet internals (a private host alias, internal references, calls to a CLI other users do not have). `skills/_shared/fleet-protocol.md` remains as a generic file contract; `scripts/fleet-checkin.mjs`, `scripts/lib/fleet-protocol.mjs` and the SessionStart navigator banner stay. Removing a public command is a semver-relevant change — decided at release.
+- **`/session-orchestrator:navigator` skill and command** (#1491, owner decision): the 5.4.0 package shipped fleet internals (a private host alias, internal references, calls to a CLI other users do not have). `skills/_shared/fleet-protocol.md` remains as a generic file contract; `scripts/fleet-checkin.mjs`, `scripts/lib/fleet-protocol.mjs` and the SessionStart navigator banner stay. **Not a breaking change (owner decision 2026-10-02):** a skill or slash command is not an API export under `.claude/rules/development.md` § Package Lifecycle, and this command only worked with a private CLI that other users do not have — so it ships in a minor release without a migration guide.
 - **The v1 session-lock fallback** (`scripts/lib/session-lock.mjs`, harness-audit category 4, #595; sunset target was 2026-08-25): a lock without `last_heartbeat` is still visible but never live: `acquire()` reports it as `stale-heartbeat` and the SessionStart bootstrap reclaims it. Measured 2026-10-02: 8 of 8 locks and 10 of 10 registry entries on the measuring host carry the field.
 
 ### Fixed
