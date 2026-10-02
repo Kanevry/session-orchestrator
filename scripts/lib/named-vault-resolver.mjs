@@ -564,7 +564,9 @@ export function normalizeRemote(url) {
  *   home dir) → `<remote path>`. A login user other than the forge-shared `git`
  *   is the operator's account (or a password-shaped `user:pass`) → `***@`, the
  *   same marker {@link redactUrlCredentials} uses; it never takes part in the
- *   suffix match, so dropping it costs the line no diagnostic value.
+ *   suffix match, so dropping it costs the line no diagnostic value. A
+ *   bracketed IPv6 host (`[::1]:path`, `user@[::1]:path`, `[user@::1]:path`)
+ *   follows the same two rules.
  *
  * Returns `''` for an empty/absent origin; callers supply their own wording.
  * @param {string|undefined|null} url
@@ -577,12 +579,19 @@ export function describeOriginForLog(url) {
   if (s.includes('://')) return redactUrlCredentials(s);
   const scpLike = /^[^/\\]*:/.test(s) && !/^[a-z]:[\\/]/i.test(s);
   if (!scpLike) return 'file://<local path>';
-  // `scpLike` guarantees a ':' with no '/' or '\' before it, so this always
-  // matches: userinfo up to the last '@' before the host, host up to the ':'.
-  const [, user, host, path] = /^(?:(.*)@)?([^@:]*):(.*)$/s.exec(s);
-  const who = user === undefined ? '' : user === 'git' ? 'git@' : '***@';
+  // Split host from path the way git's connect.c host_end() does: a host in
+  // brackets — leading, or right after `user@` — runs to its `]`, so the ':'
+  // inside an IPv6 literal (`[::1]`, `[alice@::1]`) is never the separator.
+  // Otherwise the userinfo runs to the last '@' and the host to the next ':';
+  // `scpLike` guarantees a ':' with no '/' or '\' before it, so that second
+  // pattern always matches.
+  const [, user, host, path] =
+    /^(?:([^[]*)@)?(\[[^\]]*\]):(.*)$/s.exec(s) ?? /^(?:(.*)@)?([^@:]*):(.*)$/s.exec(s);
+  const login = (u) => (u === undefined ? '' : u === 'git' ? 'git@' : '***@');
+  // A login inside the brackets is the same account as one before them.
+  const shownHost = host.replace(/^\[([^\]]*)@/, (_, u) => `[${login(u)}`);
   const where = /^[/~]/.test(path) ? '<remote path>' : path;
-  return redactUrlCredentials(`${who}${host}:${where}`);
+  return redactUrlCredentials(`${login(user)}${shownHost}:${where}`);
 }
 
 /**

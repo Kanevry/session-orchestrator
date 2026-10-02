@@ -6,7 +6,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join, resolve, sep } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createSecretValueMasker } from '../secret-masker.mjs';
 import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
@@ -271,8 +271,12 @@ export { deriveRepo } from './namespace.mjs';
  * absolute path there is an owner-privacy leak (#1487 item 9,
  * `.claude/rules/security.md` § Owner-Privacy).
  *
- * A path outside the vault is returned unchanged; every caller in this module
- * builds its path from `resolve(vaultDir)`, so that branch is unreached today.
+ * "Inside" is decided per path segment, not per string prefix: a sibling dir
+ * such as `/vault2` is outside `/vault`, and a vault at the filesystem root
+ * keeps every character of the relative path. A path outside the vault is
+ * returned unchanged; the vault root itself becomes `''`. Every caller in this
+ * module builds its path from `resolve(vaultDir)`, so the outside branch is
+ * unreached today.
  *
  * @param {string|null|undefined} path — absolute path under `vaultDir`, or null
  * @param {string} vaultDir — vault root
@@ -280,8 +284,10 @@ export { deriveRepo } from './namespace.mjs';
  */
 function toVaultRelative(path, vaultDir) {
   if (path === null || path === undefined) return null;
-  const resolvedVaultDir = resolve(vaultDir);
-  return path.startsWith(resolvedVaultDir) ? path.slice(resolvedVaultDir.length + 1) : path;
+  const root = resolve(vaultDir);
+  if (path === root) return '';
+  const prefix = root.endsWith(sep) ? root : root + sep;
+  return path.startsWith(prefix) ? path.slice(prefix.length) : path;
 }
 
 /**

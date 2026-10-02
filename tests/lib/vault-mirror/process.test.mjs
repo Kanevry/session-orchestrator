@@ -211,6 +211,25 @@ describe('emitAction', () => {
     // path alongside the relativized `path` (e.g. { path: rel, filePath: path }).
     expect(lines[0]).not.toHaveProperty('filePath');
   });
+
+  // BUG CAUGHT: a plain `startsWith(vaultDir)` + `slice(len + 1)` treated a
+  // sibling dir sharing the root as a string prefix as inside the vault, and
+  // dropped the first character of the relative path when the root is `/`.
+  it.each([
+    ['sibling dir sharing the root as a prefix stays unchanged', '/vault', '/vault2/x.md', '/vault2/x.md'],
+    ['filesystem-root vault keeps the first path character', '/', '/40-learnings/r/x.md', '40-learnings/r/x.md'],
+  ])('%s', async (_label, vaultDir, filePath, expected) => {
+    vi.resetModules();
+    vi.doMock('node:child_process', async () => {
+      const actual = await vi.importActual('node:child_process');
+      return { ...actual, execFileSync: vi.fn(() => remoteV('git@x:o/r.git')) };
+    });
+    const { emitAction } = await import('@lib/vault-mirror/process.mjs');
+    const { lines } = await captureStdout(() =>
+      emitAction({ action: 'created', path: filePath, kind: 'learning', id: 'my-id', vaultDir }),
+    );
+    expect(lines[0].path).toBe(expected);
+  });
 });
 
 // ── SKIP stderr lines (#1487 item 9) ──────────────────────────────────────────
