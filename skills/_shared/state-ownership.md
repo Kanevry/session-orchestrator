@@ -251,7 +251,10 @@ The `.orchestrator/session.lock` file is written mechanically by `hooks/_lib/loc
 
 ```
 isAlive = (Date.now() - Date.parse(last_heartbeat)) < ttl_hours * 3600 * 1000
+          && Date.parse(last_heartbeat) <= Date.now() + 5 * 60 * 1000
 ```
+
+The second conjunct (#1494): a heartbeat stamped more than 5 minutes in the future is not live. Without it the age went negative and stayed below every TTL, so a hand-edited or clock-skewed lock held the repo until the wall clock caught up. The 5 minutes absorb a clock stepped back a little; the `category4.mjs` mirror carries the same guard.
 
 This replaces the v1 PID-liveness check (`process.kill(pid, 0)`) which was fundamentally broken because the recorded `pid` belongs to the ephemeral hook subprocess (dies in <1s), not the long-lived Claude coordinator process. The PostgreSQL pattern — use a heartbeat timestamp rather than PID to establish liveness — is the authoritative reference (see W1-D4 best-practices §1.5).
 
@@ -313,4 +316,8 @@ Rejecting such a lock outright was considered and refused. At the time, a reject
 
 The Phase-1.2 stale-lock prompt (`skills/session-start/references/phase-1-2-session-lock.md`) renders a `null` `heartbeatAgeMinutes` as "last heartbeat: never (lock has no last_heartbeat)" and drops the "ttl has expired" clause in that case, instead of `Math.round(null)` = "0 minutes ago".
 
-**Corrupt lock (2026-10-02).** A `session.lock` that fails `parseLock()` (invalid JSON, or JSON without the six-field shape) makes `acquire()` return `reason: 'corrupt'` (`existingLock: null`), and the SessionStart bootstrap reclaims it with one stderr WARN. Before this, the file wedged the repo: `readLock()` returned `null`, the create-or-fail hit `EEXIST`, and the vanished-race branch answered `active` with `existingLock: null` on every attempt, which the bootstrap never forces. Reclaiming is safe because such a file can never be a live lock: all four production writers write a full `buildLock()` body atomically (tmp+link / tmp+rename). An `unreadable` lock (EACCES) still answers the conservative `active`.
+**Corrupt lock (2026-10-02).** A `session.lock` that fails `parseLock()` (invalid JSON, or JSON without the six-field shape) makes `acquire()` return `reason: 'corrupt'` (`existingLock: null`), and the SessionStart bootstrap reclaims it with one stderr WARN. Before this, the file wedged the repo: `readLock()` returned `null`, the create-or-fail hit `EEXIST`, and the vanished-race branch answered `active` with `existingLock: null` on every attempt, which the bootstrap never forces. Reclaiming is safe because such a file can never be a live lock: all four production writers write a full `buildLock()` body atomically (tmp+link / tmp+rename).
+
+**Unreadable lock (#1494).** A lock path that exists but cannot be read (`EACCES`, or a directory: `EISDIR`) makes `acquire()` return `reason: 'unreadable'` (`existingLock: null`, `error`). It used to answer `active` / `existingLock: null`, which the bootstrap neither forced nor reported, so every session ran without a lock and left no trace. It is still never reclaimed (no lock writer produces it, and a directory may hold content nobody here created), but the SessionStart bootstrap now prints one stderr WARN and emits `orchestrator.session.lock.read_anomaly` with `status: 'unreadable'`.
+
+**Single-winner reclaim (#1494).** The bootstrap reclaims a `stale-heartbeat` or `corrupt` lock with `forceAcquire({ onlyIfNotLive: true })`. The lock is renamed to a unique tombstone first, so only one caller can hold the moved file; a moved lock that is not live is replaced by the create-or-fail link, a live one (a racer's fresh lock) is linked back. Every lost path returns a fresh `acquire()` result, normally `active` with the winner's lock, so the loser records `conflict_with_session_id` instead of running on as the owner. Before, two starts that saw the same stale lock both forced it, both got `ok: true`, and the later rename won. A plain `forceAcquire()` (the operator-approved force-take of a live lock in Phase 1.2) still overwrites unconditionally.

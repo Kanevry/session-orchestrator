@@ -763,6 +763,69 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
     expect(readCurrentSession()?.conflict_with_session_id).toBe('foreign-live-corrupt-case');
     expect(bootWarns()).toHaveLength(1);
   });
+
+  it('a second start that saw the same stale lock does not take it from the start that reclaimed it first (#1494)', async () => {
+    // Bug: two SessionStarts that both read the stale lock both forced it and
+    // both got ok:true — the later rename won, and the loser ran on as if it
+    // held the lock. Start B's acquire() read is replayed here as it happened
+    // BEFORE start A's reclaim; B's force (real forceAcquire) runs after it.
+    const prevAliases = process.env.SO_HOST_ALIASES_FILE;
+    process.env.SO_HOST_ALIASES_FILE = join(sandbox, 'host-aliases.json');
+    try {
+      const old = '2026-01-01T00:00:00.000Z';
+      const staleLock = { session_id: 'crashed-session', started_at: old, last_heartbeat: old, mode: 'deep', pid: 999999, host: hostname(), ttl_hours: 4 };
+      mkdirSync(join(sandbox, '.orchestrator'), { recursive: true });
+      writeFileSync(join(sandbox, '.orchestrator', 'session.lock'), JSON.stringify(staleLock));
+
+      const winner = await bootstrapLock({ repoRoot: sandbox, sessionId: 'start-a', mode: 'deep', _emitEventImpl: noopEmit });
+      const events = [];
+      const loser = await bootstrapLock({
+        repoRoot: sandbox,
+        sessionId: 'start-b',
+        mode: 'deep',
+        _acquireImpl: () => ({ ok: false, reason: 'stale-heartbeat', existingLock: staleLock }),
+        _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+      });
+
+      expect(winner?.session_id).toBe('start-a');
+      expect(loser).toBeNull();
+      expect(readLock().session_id).toBe('start-a');
+      expect(readCurrentSession()?.conflict_with_session_id).toBe('start-a');
+      expect(events).toEqual([]);
+    } finally {
+      if (prevAliases === undefined) delete process.env.SO_HOST_ALIASES_FILE;
+      else process.env.SO_HOST_ALIASES_FILE = prevAliases;
+    }
+  });
+
+  it('reports a lock path it cannot read (a directory) with one WARN and a read_anomaly event, and leaves it alone (#1494)', async () => {
+    // Bug: acquire() answered 'active' / existingLock:null, the bootstrap
+    // neither forced nor reported, and every session ran without a lock —
+    // silently. A directory fails the read with EISDIR for every uid (no
+    // chmod/root pitfall).
+    mkdirSync(join(sandbox, '.orchestrator', 'session.lock'), { recursive: true });
+    writeFileSync(join(sandbox, '.orchestrator', 'session.lock', 'keep.txt'), 'not ours');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const events = [];
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'session-unreadable',
+      mode: 'deep',
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+    });
+
+    expect(result).toBeNull();
+    const warns = stderrSpy.mock.calls.map((c) => String(c[0])).filter((s) => s.includes('lock-bootstrap'));
+    expect(warns).toEqual([expect.stringContaining('exists but cannot be read')]);
+    expect(events).toEqual([
+      {
+        name: 'orchestrator.session.lock.read_anomaly',
+        payload: { session_id: 'session-unreadable', status: 'unreadable', error: expect.stringContaining('EISDIR') },
+      },
+    ]);
+    expect(readFileSync(join(sandbox, '.orchestrator', 'session.lock', 'keep.txt'), 'utf8')).toBe('not ours');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

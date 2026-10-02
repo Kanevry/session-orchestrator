@@ -62,4 +62,16 @@ describe('lock TTL/liveness parity — session-lock.mjs (SSOT) vs category4.mjs 
     expect(isLockLive(lock, NOW)).toBe(false);
     expect(lockIsLive(lock, NOW)).toBe(false);
   });
+
+  it('judges a heartbeat stamped in the future identically (#1494 — > 5 min ahead is not live)', () => {
+    // A copy without the future guard computes a negative age, stays below the
+    // TTL and calls a year-ahead lock live — the audit then reports a live
+    // lease that acquire() treats as reclaimable.
+    const at = (offsetMs) => ({ last_heartbeat: new Date(NOW + offsetMs).toISOString(), ttl_hours: 4 });
+    const verdicts = (lock) => [isLockLive(lock, NOW), lockIsLive(lock, NOW)];
+
+    expect(verdicts(at(365 * 24 * 3600 * 1000))).toEqual([false, false]);
+    expect(verdicts(at(6 * 60 * 1000))).toEqual([false, false]);
+    expect(verdicts(at(60 * 1000))).toEqual([true, true]);
+  });
 });

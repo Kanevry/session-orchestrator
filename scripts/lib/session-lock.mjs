@@ -87,6 +87,18 @@ export const DEFAULT_TTL_HOURS = 4;
 export const LOCK_PATH = '.orchestrator/session.lock';
 
 /**
+ * How far in the future a `last_heartbeat` may lie and still count as live
+ * (#1494). Every heartbeat is stamped by `Date.now()` on the writing host, so
+ * on one host it is never ahead of the clock unless that clock was stepped
+ * backwards (NTP at boot, a manual change) — the tolerance absorbs such a step
+ * and cross-host skew on a shared checkout. Ceiling (BV-004): a clock stepped
+ * back by more than 5 minutes makes every live lock written just before it read
+ * as stale, and the next SessionStart reclaims it. Revisit if a `reclaimed`
+ * event follows a clock step on a host whose previous session was still running.
+ */
+const FUTURE_HEARTBEAT_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
  * Where the durable lock-ownership proof lives, relative to the repo root
  * (#987 Part 1). `.orchestrator/runtime/` is machine-local, gitignored state —
  * the proof must survive across hook subprocesses of the SAME logical session
@@ -271,6 +283,15 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
  * `tests/lib/lock-ttl-parity.test.mjs` holds the two to identical verdicts.
  * See `skills/_shared/state-ownership.md` § Schema v1 Sunset.
  *
+ * A heartbeat stamped more than {@link FUTURE_HEARTBEAT_TOLERANCE_MS} in the
+ * future is NOT live either (#1494): `now - heartbeat` went negative, stayed
+ * below every TTL, and such a lock — a hand edit, a clock stepped backwards —
+ * held the repo until the wall clock caught up, a year for a year-ahead stamp.
+ * Same rule as the orphan-reaper's throttle marker (#1487,
+ * `orphan-reaper/scan-throttle.mjs` `shouldScanNow`), plus a tolerance: a
+ * marker in the future only costs one extra scan, a lock misread as dead is
+ * taken over while its owner still runs.
+ *
  * @param {{ last_heartbeat: string, ttl_hours?: number }} lock
  * @param {number} [nowMs]
  * @returns {boolean}
@@ -280,6 +301,7 @@ export function isLockLive(lock, nowMs = Date.now()) {
   if (typeof lock.last_heartbeat !== 'string' || lock.last_heartbeat.length === 0) return false;
   const heartbeatMs = Date.parse(lock.last_heartbeat);
   if (Number.isNaN(heartbeatMs)) return false;
+  if (heartbeatMs > nowMs + FUTURE_HEARTBEAT_TOLERANCE_MS) return false;
   const ttlHours = typeof lock.ttl_hours === 'number' ? lock.ttl_hours : DEFAULT_TTL_HOURS;
   const ttlMs = ttlHours * 3600 * 1000;
   return (nowMs - heartbeatMs) < ttlMs;
@@ -477,8 +499,11 @@ export function readLockDetailed(opts = {}) {
  * Returns one of:
  *   { ok: true, lock, exclusivityClass? }
  *       — lock created
- *   { ok: false, reason: 'active', existingLock, exclusivityClass? }
- *       — local lock held (live TTL, live PID)
+ *   { ok: false, reason: 'active', existingLock, ageHours, exclusivityClass? }
+ *       — local lock held: its last_heartbeat is within ttl_hours. `ageHours`
+ *         is the age from `started_at` (null when unparseable). `existingLock`
+ *         is null, `ageHours` null, only when a lost create race found the
+ *         winner's lock already gone.
  *   { ok: false, reason: 'stale-heartbeat', existingLock, ageHours, heartbeatAgeMinutes, exclusivityClass? }
  *       — local lock stale: its last_heartbeat is older than ttl_hours. This is
  *         the ONLY stale reason (#1137). It replaced the `stale-pid-dead` /
@@ -494,6 +519,12 @@ export function readLockDetailed(opts = {}) {
  *         writer writes atomically — so the SessionStart bootstrap reclaims it
  *         with one stderr WARN. Before 2026-10-02 this case answered 'active'
  *         with `existingLock: null` on every attempt and wedged the repo.
+ *   { ok: false, reason: 'unreadable', existingLock: null, error, exclusivityClass? }
+ *       — the lock path exists but cannot be read (EACCES, or a directory at
+ *         the path: EISDIR). Nothing was written and the path is left as it
+ *         is; the SessionStart bootstrap reports it (stderr WARN + a
+ *         `orchestrator.session.lock.read_anomaly` event) instead of reclaiming
+ *         it. Until #1494 this answered 'active' / existingLock:null silently.
  *   { ok: false, reason: 'missing-session-id' }
  *       — no usable `sessionId` given; NOTHING was written. Same reason string
  *         and same predicate as forceAcquire() (see its docblock for why an
@@ -636,7 +667,16 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
       // produced the #744 incident: a live heartbeating session was
       // misclassified 'stale-pid-dead' mid-wave.
       if (isLockLive(existing)) {
-        return { ok: false, reason: 'active', existingLock: existing, exclusivityClass: callerClass };
+        // ageHours is the figure the Phase-1.2 "active" prompt renders
+        // ("started <ageHours>h ago"); it was missing from this shape, so the
+        // prompt printed a value nothing had computed (#1494).
+        return {
+          ok: false,
+          reason: 'active',
+          existingLock: existing,
+          ageHours: lockAgeHours(existing),
+          exclusivityClass: callerClass,
+        };
       }
 
       // Heartbeat expired — ONE stale reason, derived from the same signal the
@@ -677,6 +717,15 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     // schema ever changes a required field's type or name.
     const corrupt = () => ({ ok: false, reason: 'corrupt', existingLock: null, exclusivityClass: callerClass });
 
+    // A lock path that exists but cannot be read — EACCES, or a DIRECTORY at
+    // the path (EISDIR) — gets its own reason too (#1494, #599). It used to
+    // fall through to the create-or-fail, hit EEXIST and answer
+    // 'active' / existingLock:null, which nobody reports: the bootstrap
+    // neither forced nor warned, and every session ran without a lock, with
+    // no trace. Never reclaimed — what sits there was not written by a lock
+    // writer, and a directory may hold content nobody here created (PSA-003).
+    const unreadable = (error) => ({ ok: false, reason: 'unreadable', existingLock: null, error, exclusivityClass: callerClass });
+
     const existing = readLockDetailed({ repoRoot });
 
     if (existing.status === 'ok') {
@@ -684,9 +733,8 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
       return classifyExisting(existing.lock);
     }
     if (existing.status === 'corrupt') return corrupt();
-    // 'absent' → create below. 'unreadable' also falls through: the
-    // create-or-fail hits EEXIST and preserves the file, and the vanished-race
-    // branch answers the conservative 'active' (#599).
+    if (existing.status === 'unreadable') return unreadable(existing.error);
+    // 'absent' → create below.
 
     // No existing lock — create one with a TOCTOU-safe create-or-fail (#590).
     // Two concurrent SessionStart hooks can both reach this branch having each
@@ -706,11 +754,12 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     const raced = readLockDetailed({ repoRoot });
     if (raced.status === 'ok') return classifyExisting(raced.lock);
     if (raced.status === 'corrupt') return corrupt();
-    // The EEXIST winner's lock vanished before we could re-read it (ENOENT),
-    // or it is unreadable. Defensive fallback: report 'active' so the caller
-    // defers rather than racing again — mirrors tryAcquireStateLock's
-    // vanish-race handling (a lost-then-vanished race resolves conservatively).
-    return { ok: false, reason: 'active', existingLock: null, exclusivityClass: callerClass };
+    if (raced.status === 'unreadable') return unreadable(raced.error);
+    // The EEXIST winner's lock vanished before we could re-read it (ENOENT).
+    // Defensive fallback: report 'active' so the caller defers rather than
+    // racing again — mirrors tryAcquireStateLock's vanish-race handling (a
+    // lost-then-vanished race resolves conservatively).
+    return { ok: false, reason: 'active', existingLock: null, ageHours: null, exclusivityClass: callerClass };
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message, exclusivityClass: callerClass };
   }
@@ -741,7 +790,14 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * no information while breaking the direct `forceAcquire()` calls documented in
  * `skills/session-start/references/phase-1-2-session-lock.md`.
  *
- * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string }} args
+ * `onlyIfNotLive: true` (#1494) turns the unconditional overwrite into a
+ * single-winner takeover of a stale or corrupt lock: a lock that is live when
+ * it is moved aside is put back, and every lost race returns a fresh
+ * `acquire()` result instead of `ok: true` — see `reclaimIfNotLive()`. The
+ * SessionStart bootstrap passes it for its `stale-heartbeat` / `corrupt`
+ * reclaims; the operator-approved force-take of a LIVE lock (Phase 1.2) omits it.
+ *
+ * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string, onlyIfNotLive?: boolean }} args
  */
 /**
  * A `sessionId` is usable only when it is a non-blank string. ONE predicate,
@@ -756,9 +812,12 @@ function hasUsableSessionId(sessionId) {
   return typeof sessionId === 'string' && sessionId.trim().length > 0;
 }
 
-export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, semanticSessionId } = {}) {
+export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoot, semanticSessionId, onlyIfNotLive = false } = {}) {
   if (!hasUsableSessionId(sessionId)) {
     return { ok: false, reason: 'missing-session-id' };
+  }
+  if (onlyIfNotLive === true) {
+    return reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSessionId });
   }
   try {
     const replacedLock = readLock({ repoRoot });
@@ -773,6 +832,88 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
     return result;
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message };
+  }
+}
+
+/**
+ * Single-winner takeover of a stale or corrupt lock — `forceAcquire({
+ * onlyIfNotLive: true })` (#1494).
+ *
+ * The plain force is last-writer-wins: two SessionStarts that both saw the same
+ * stale lock both forced it, both got `ok: true`, and the later rename won while
+ * the loser kept running as if it held the lock. Here the lock is first renamed
+ * to a unique tombstone. A rename moves exactly one directory entry, so only one
+ * caller can hold the moved file; it is judged only then, from the tombstone:
+ *   - not live (stale, heartbeat-less, unparseable) → replaced via the same
+ *     create-or-fail link as a fresh acquire();
+ *   - live → a racer finished its takeover between our acquire() read and our
+ *     rename, and what we moved is ITS lock: linked back, never replaced.
+ * Every losing path — the rename finds nothing (ENOENT: a racer moved it
+ * first), the create finds a lock (EEXIST), the moved lock was live — ends in
+ * ONE fresh `acquire()`, which reads whatever sits at the path now and answers
+ * as on a first look (normally `active` with the winner's lock).
+ *
+ * Ceilings (BV-004): (1) a racer's fresh lock that we move and link back is
+ * absent for that window; a reader in it sees no lock. (2) A third session that
+ * creates a lock inside that window makes the link-back fail with EEXIST; the
+ * displaced lock is dropped and its owner learns it at its next heartbeat
+ * (updateHeartbeat() returns false on the session mismatch). Both need three
+ * SessionStarts in one checkout within microseconds. Revisit if a `reclaimed`
+ * event pair within one second shows up in events.jsonl again.
+ *
+ * @param {{ sessionId: string, mode: string, ttlHours: number, repoRoot?: string, semanticSessionId?: string }} args
+ * @returns {object} forceAcquire()'s `{ ok: true, lock, replacedLock? }` or
+ *   `fs-error` shape, or — on a lost race — the result of a fresh `acquire()`.
+ */
+function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSessionId }) {
+  const lockFile = lockPathFor(repoRoot);
+  const reacquire = () => acquire({ sessionId, mode, ttlHours, repoRoot, semanticSessionId, quiet: true });
+  const tomb = path.join(path.dirname(lockFile), `.session.lock.reclaim.${crypto.randomBytes(8).toString('hex')}`);
+
+  try {
+    fs.renameSync(lockFile, tomb);
+  } catch (err) {
+    if (err && err.code === 'ENOENT') return reacquire();
+    return { ok: false, reason: 'fs-error', error: err.message };
+  }
+
+  let keepTomb = false;
+  try {
+    let raw;
+    try {
+      raw = fs.readFileSync(tomb, 'utf8');
+    } catch {
+      // Unjudgeable — something unreadable replaced the stale file after
+      // acquire() read it. Not ours to drop: put it back (a directory cannot
+      // be hard-linked, and renaming a directory never replaces a file); if
+      // the path is taken by then, it stays under the tombstone name.
+      keepTomb = true;
+      try {
+        if (fs.lstatSync(tomb).isDirectory()) fs.renameSync(tomb, lockFile);
+        else { fs.linkSync(tomb, lockFile); keepTomb = false; }
+      } catch { /* stays at the tombstone name */ }
+      return reacquire();
+    }
+
+    const moved = parseLock(raw);
+    if (moved !== null && isLockLive(moved)) {
+      try { fs.linkSync(tomb, lockFile); } catch { /* ceiling (2) above */ }
+      return reacquire();
+    }
+
+    const lock = buildLock({ sessionId, mode, ttlHours, semanticSessionId });
+    const created = createSessionLockExclusive(lockFile, lock);
+    if (created.ok) {
+      const result = { ok: true, lock };
+      if (moved !== null) result.replacedLock = moved;
+      return result;
+    }
+    if (created.reason === 'exists') return reacquire();
+    return created;
+  } finally {
+    if (!keepTomb) {
+      try { fs.unlinkSync(tomb); } catch { /* best-effort */ }
+    }
   }
 }
 
