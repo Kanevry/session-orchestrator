@@ -34,6 +34,7 @@ import {
   spawnInGroup,
   _liveGroupPgids,
 } from '@lib/process-group.mjs';
+import { runOrphanScan } from '@lib/orphan-reaper/scan.mjs';
 
 /** A PID the kernel would never assign — the only "target" a unit test may name. */
 const DEAD_PID = 999999;
@@ -584,7 +585,7 @@ describe('gate-process ledger', () => {
 
   it('returns an empty read for a repo with no ledger yet', () => {
     const read = readGateProcessLedger(repoRoot, { nowMs: Date.now() });
-    expect(read).toEqual({ records: [], malformedLines: 0, expired: 0 });
+    expect(read).toEqual({ records: [], malformedLines: 0, expired: 0, state: 'absent' });
   });
 
   it('prunes expired and malformed lines in-process, keeping the fresh ones', () => {
@@ -703,9 +704,27 @@ describe('gate-process ledger', () => {
 
       expect(readFileSync(victim, 'utf8')).toBe(body);
       expect(lstatSync(ledger).isSymbolicLink()).toBe(true);
-      expect(read).toEqual({ records: [], malformedLines: 0, expired: 0 });
+      expect(read).toEqual({ records: [], malformedLines: 0, expired: 0, state: 'unreadable' });
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toMatch(/could not record gate process .*not a regular file/);
+
+      // Bug (#1498): the refused read returned the same `[]` as an empty
+      // ledger, so the scan's `ledger-unreadable` skip was unreachable with the
+      // DEFAULT reader and a scan that measured nothing looked clean.
+      const scan = await runOrphanScan({
+        repoRoot,
+        now,
+        deps: {
+          runPs: async () => '',
+          readOwnSessionId: async () => null,
+          detectPeers: async () => [],
+          appendAudit: () => {},
+          readAuditRecords: () => [],
+          emitEvent: async () => true,
+          killProcessGroup: async () => { throw new Error('a test never signals'); },
+        },
+      });
+      expect(scan.skipped).toBe('ledger-unreadable');
     } finally {
       await rm(victimDir, { recursive: true, force: true });
     }
@@ -735,7 +754,7 @@ process.stdout.write(JSON.stringify({ pruned, read }));`;
 
     expect(child.signal).toBeNull();
     expect(child.status).toBe(0);
-    expect(JSON.parse(child.stdout)).toEqual({ pruned: 0, read: { records: [], malformedLines: 0, expired: 0 } });
+    expect(JSON.parse(child.stdout)).toEqual({ pruned: 0, read: { records: [], malformedLines: 0, expired: 0, state: 'unreadable' } });
     expect(child.stderr).toMatch(/could not record gate process/);
     expect(lstatSync(ledger).isFIFO()).toBe(true);
   });

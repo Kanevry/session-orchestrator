@@ -602,6 +602,24 @@ describe('backfill-abandoned-sessions — reads across rotation boundaries (#141
     expect(records.some((x) => x.status === 'abandoned')).toBe(false);
     expect(records.some((x) => x._synthetic_session_id !== undefined)).toBe(false);
   });
+
+  it('counts a pruned archive as a history gap instead of silently planning fewer candidates (#1498)', () => {
+    // BUG THIS CATCHES: a tombstone naming an archive the ring had pruned left
+    // no trace in the summary, so a cut history planned fewer candidates and
+    // read as complete. The retained archive's tombstone must NOT count.
+    const kept = 'events-20260701T000000Z_20260702T120000Z.jsonl';
+    seedArchive(kept, TWO_ABANDONED_EVENTS);
+    const archiveDir = join(tmp, '.orchestrator', 'metrics', '_archive');
+    seedEvents([
+      { timestamp: '2026-07-02T12:00:01.000Z', event: 'orchestrator.events.rotated', archived_as: join(archiveDir, kept) },
+      { timestamp: '2026-07-03T09:00:00.000Z', event: 'orchestrator.events.rotated', archived_as: join(archiveDir, 'events-20260601T000000Z_20260630T000000Z.jsonl') },
+    ]);
+
+    const r = runCli(['--repo-root', tmp, '--json']);
+
+    expect(r.status).toBe(0);
+    expect(summaryOf(r)).toMatchObject({ total: 2, history_gaps: 1 });
+  });
 });
 
 describe('backfill-abandoned-sessions — #1167 duplicate-stub root cause', () => {

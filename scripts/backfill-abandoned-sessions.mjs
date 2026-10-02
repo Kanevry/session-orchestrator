@@ -43,6 +43,7 @@ import { parseArgs } from 'node:util';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
 import { SCAN_CHUNK_BYTES, emitEvent, listEventSourcesNewestFirst } from './lib/events.mjs';
+import { ARCHIVE_DIR_NAME, ROTATION_EVENT } from './lib/events-schema.mjs';
 import { getProjectDir } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { isLockLive, readLock } from './lib/session-lock.mjs';
@@ -56,7 +57,8 @@ const SESSION_ENDED = 'orchestrator.session.ended';
  * Events-ledger window for the #1401 census (`scripts/lib/events-retention-banner.mjs`):
  * `null` — {@link planSessions} takes every `session.started` ever written as a
  * candidate, so no day count bounds it (`DEFAULT_TTL_HOURS` is a minimum AGE,
- * not a window). A pruned history yields fewer candidates and says nothing.
+ * not a window). A pruned history yields fewer candidates; the run summary says
+ * so as `history_gaps` (#1498).
  */
 export const REQUIRED_EVENTS_WINDOW_DAYS = null;
 
@@ -134,6 +136,23 @@ function readJsonl(filePath) {
  * @returns {Array<{ sessionId: string, semanticSessionId: string|null }>}
  */
 export function planSessions({ repoRoot }) {
+  return planWithGaps({ repoRoot }).plan;
+}
+
+/**
+ * {@link planSessions} plus the count of rotation tombstones whose archive is
+ * not one of the sources read (#1498). Pruned history used to shrink the plan
+ * silently; non-zero `historyGaps` says the candidate count is a floor.
+ *
+ * The check is `readEventsWithRotations` rule 1 (`scripts/lib/events.mjs`):
+ * resolved by BASENAME against this ledger's own `_archive/` (#1411), and a
+ * file that exists but is not a source (renamed out of `ARCHIVE_NAME_RE`)
+ * counts as a gap too — existence is not reading (#1423).
+ *
+ * @param {{ repoRoot: string }} args
+ * @returns {{ plan: Array<{ sessionId: string, semanticSessionId: string|null }>, historyGaps: number }}
+ */
+function planWithGaps({ repoRoot }) {
   const eventsPath = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
 
   // Two independent UUID -> semantic bridges (#1167). `lock.acquired` is the
@@ -158,9 +177,17 @@ export function planSessions({ repoRoot }) {
   // (`hooks/on-session-start.mjs` → `backfillOnSessionStart`). Reversing the
   // newest-first source list keeps first-seen order chronological, exactly as
   // the single-file read produced it.
-  for (const source of [...listEventSourcesNewestFirst({ filePath: eventsPath })].reverse()) {
+  const sources = listEventSourcesNewestFirst({ filePath: eventsPath });
+  const read = new Set(sources.map((s) => s.path));
+  const archiveDir = path.join(path.dirname(eventsPath), ARCHIVE_DIR_NAME);
+  let historyGaps = 0;
+  for (const source of [...sources].reverse()) {
     forEachJsonlRecord(source.path, (ev) => {
       if (!ev || typeof ev !== 'object') return;
+      if (ev.event === ROTATION_EVENT && typeof ev.archived_as === 'string' && ev.archived_as.length > 0
+        && !read.has(path.join(archiveDir, path.basename(ev.archived_as)))) {
+        historyGaps += 1;
+      }
       if (typeof ev.session_id === 'string' && typeof ev.semantic_session_id === 'string') {
         if (ev.event === LOCK_ACQUIRED) semanticFromLock.set(ev.session_id, ev.semantic_session_id);
         else if (ev.event === SESSION_ENDED) {
@@ -189,7 +216,7 @@ export function planSessions({ repoRoot }) {
       || (semanticSessionId !== null && runningIds.has(semanticSessionId))) continue;
     plan.push({ sessionId, semanticSessionId });
   }
-  return plan;
+  return { plan, historyGaps };
 }
 
 /**
@@ -382,12 +409,15 @@ export async function runMigration({
   limit = null,
   newestFirst = false,
 }) {
-  const planned = planSessions({ repoRoot });
+  const { plan: planned, historyGaps } = planWithGaps({ repoRoot });
   const plan = newestFirst ? [...planned].reverse() : planned;
   const summary = {
     repoRoot,
     mode: apply ? 'apply' : 'dry-run',
     total: plan.length,
+    // #1498: rotated archives the ledger names but no longer holds. Non-zero ⇒
+    // sessions they recorded are not candidates and `total` is a floor.
+    history_gaps: historyGaps,
     backfilled: 0,
     would_backfill: 0,
     dead_by_age: 0,
@@ -604,6 +634,9 @@ function renderHuman(summary) {
   lines.push(`Backfill abandoned sessions — ${summary.mode}`);
   lines.push(`  repo:            ${summary.repoRoot}`);
   lines.push(`  sessions seen:   ${summary.total}`);
+  if (summary.history_gaps > 0) {
+    lines.push(`  history gaps:    ${summary.history_gaps} rotated archive(s) no longer readable — sessions seen is a floor`);
+  }
   if (summary.mode === 'apply') {
     lines.push(`  backfilled:      ${summary.backfilled}`);
   } else {

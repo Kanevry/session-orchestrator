@@ -518,6 +518,22 @@ describe('scripts/autopilot.mjs integration', () => {
     expect(rec.iterations_completed).toBe(iterations);
   });
 
+  // #1498: `tokens_unknown_sessions` reached autopilot.jsonl but no report read
+  // it, so the run summary's token figure looked like the whole sum. Without
+  // STUB_OWN_TOKENS the own record carries no token figure.
+  it.each([
+    ['names the unknown-token iterations, so the total reads as a lower bound', {}, /tokens=0 tokens_unknown_sessions=1 \(the token total is a lower bound\)$/m],
+    ['prints a known total without the lower-bound note', { STUB_OWN_TOKENS: '5000' }, /tokens=5000$/m],
+  ])('run summary %s', (_name, env, line) => {
+    writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+    const result = runAutopilot(
+      ['--headless', '--max-sessions=1', '--confidence-threshold=0.4'],
+      { tmp, env }
+    );
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(line);
+  });
+
   // #1457: canonicalization must discard a later backfill stub sharing the child's raw UUID.
   it('uses the authoritative own record when a later raw-ID stub canonicalizes away', () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');

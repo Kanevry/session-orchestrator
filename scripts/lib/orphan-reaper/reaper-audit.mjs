@@ -4,16 +4,10 @@
  * reader exists for.
  */
 
-import {
-  lstatSync,
-  mkdirSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { mkdirSync, statSync } from 'node:fs';
 import path from 'node:path';
 
+import { replaceRegularFile } from '../process-group.mjs';
 import { readTailWindow } from '../tail-window.mjs';
 import { REAPER_DEFAULTS, underRepo } from './defaults.mjs';
 import { NOT_A_REGULAR_FILE, appendNoFollow } from './no-follow-append.mjs';
@@ -242,35 +236,6 @@ function newestSpan(lines, want) {
     if (isRateDecision(parsed)) decisions += 1;
   }
   return { records: newestFirst.reverse(), complete: taken >= want && decisions >= want };
-}
-
-/**
- * Replace the audit atomically: write `<target>.tmp-<pid>` beside it, then
- * rename over it. Throws instead of writing when the target is a symlink or not
- * a regular file. `writeFileSync(target)` would truncate first — a scan child
- * killed between truncate and write left the "why was this killed" record empty
- * — and would write THROUGH a symlink, cutting e.g. a linked `events.jsonl` to
- * 512 KiB (CWE-59, reproduced 2026-10-01). `rename` replaces the link itself,
- * and `wx` refuses a pre-planted file or link at the tmp name. The same few
- * lines as `process-group.mjs`'s `replaceRegularFile`, kept local because that
- * module is not this one's to depend on for a file write.
- *
- * @param {string} target
- * @param {string} body
- */
-function replaceRegularFile(target, body) {
-  if (!lstatSync(target).isFile()) throw new Error(NOT_A_REGULAR_FILE);
-  const tmp = `${target}.tmp-${process.pid}`;
-  try {
-    writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
-    renameSync(tmp, target);
-  } catch (err) {
-    // EEXIST: the tmp name belongs to someone else — never remove it.
-    if (err?.code !== 'EEXIST') {
-      try { unlinkSync(tmp); } catch { /* nothing was created */ }
-    }
-    throw err;
-  }
 }
 
 /**

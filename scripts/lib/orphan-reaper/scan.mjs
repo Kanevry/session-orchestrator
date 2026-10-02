@@ -243,6 +243,10 @@ export async function runOrphanScan({
   } catch {
     return empty('ledger-unreadable', malformed);
   }
+  // The default reader never throws: a refused or unreadable ledger comes back
+  // as no records with `state: 'unreadable'` (#1498). Read as "no register
+  // hits" it ran a clean-looking scan that measured nothing.
+  if (ledger?.state === 'unreadable') return empty('ledger-unreadable', malformed);
 
   let ownSessionId = null;
   try {

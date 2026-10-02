@@ -466,6 +466,34 @@ describe('backfillAbandonedSession — dead-by-age relaxation (#731)', () => {
     expect(readSessions()).toHaveLength(1);
   });
 
+  it('reads a candidate whose events rotated into _archive/ — the active-only read left it with no last event (#1498)', async () => {
+    // Bug: planSessions plans archived candidates (#1414), but the core read
+    // the ACTIVE events.jsonl only, so this candidate gathered nothing: no
+    // lastEventMs → never dead-by-age → `skipped-foreign-live-lock` on every
+    // run (and without a lock a record stamped started_at = completed_at = now).
+    writeJsonl(path.join(metricsDir(), '_archive', 'events-20260527T140000Z_20260527T150000Z.jsonl'), [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    seedEvents([{ timestamp: '2026-05-27T15:00:00.000Z', event: 'orchestrator.agent.stopped', session_id: OTHER_UUID }]);
+    seedLock({
+      sessionId: OTHER_UUID,
+      semanticSessionId: 'main-2026-05-27-session-2',
+      lastHeartbeat: new Date(NOW_MS).toISOString(),
+    });
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS, relaxDeadByAge: true });
+
+    expect(res).toMatchObject({ action: 'backfilled', deadByAge: true, sessionId: 'main-2026-05-27-session-1' });
+    expect(res.record.started_at).toBe(STARTED_AT);
+  });
+
   it('still blocks on a LIVE foreign lock when the candidate is WITHIN the default TTL, even with relaxDeadByAge set', async () => {
     seedEvents([
       { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },

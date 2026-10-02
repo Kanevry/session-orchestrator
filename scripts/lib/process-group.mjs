@@ -559,10 +559,13 @@ export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
  * counted separately — they are not candidates for anything, and their PIDs are
  * the most likely to have been recycled.
  *
- * A symlinked, FIFO or otherwise non-regular ledger reads as EMPTY, like an
+ * A symlinked, FIFO or otherwise non-regular ledger yields NO records, like an
  * unreadable one ({@link readLedgerNoFollow}): never a link target's lines as
- * candidates, never a blocked open. Empty is the fail-safe direction here — a
- * ledger with no records names no process group to signal.
+ * candidates, never a blocked open — no records name no process group to
+ * signal. But it is not reported as empty (#1498): `state` tells the three
+ * outcomes apart — `read`, `absent` (no ledger yet, the ordinary case) and
+ * `unreadable` (refused or failed) — because the scan's `ledger-unreadable`
+ * skip was unreachable while a refused ledger looked exactly like a clean one.
  *
  * @param {string} repoRoot
  * @param {object} [opts]
@@ -570,8 +573,10 @@ export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
  *   return '' for a missing file.
  * @param {number} [opts.nowMs]
  * @param {number} [opts.maxAgeMs]
- * @returns {{records: GateProcessRecord[], malformedLines: number, expired: number}}
- *   `records` are the fresh, parseable entries in source order.
+ * @returns {{records: GateProcessRecord[], malformedLines: number, expired: number,
+ *   state: 'read'|'absent'|'unreadable'}}
+ *   `records` are the fresh, parseable entries in source order; empty unless
+ *   `state` is `read`.
  */
 export function readGateProcessLedger(repoRoot, {
   readFn,
@@ -579,12 +584,16 @@ export function readGateProcessLedger(repoRoot, {
   maxAgeMs = DEFAULT_LEDGER_MAX_AGE_MS,
 } = {}) {
   const target = ledgerPathFor(repoRoot);
-  let raw = '';
+  let raw;
   try {
     if (readFn) raw = readFn(target) ?? '';
     else if (existsSync(target)) raw = readLedgerNoFollow(target);
-  } catch {
-    return { records: [], malformedLines: 0, expired: 0 };
+    else return { records: [], malformedLines: 0, expired: 0, state: 'absent' };
+  } catch (err) {
+    // ENOENT is a ledger that vanished (or a `readFn` reporting a missing
+    // file); anything else — ELOOP, ERR_NOT_REGULAR_FILE, EACCES — was refused.
+    const state = err?.code === 'ENOENT' ? 'absent' : 'unreadable';
+    return { records: [], malformedLines: 0, expired: 0, state };
   }
 
   /** @type {GateProcessRecord[]} */
@@ -612,7 +621,7 @@ export function readGateProcessLedger(repoRoot, {
     records.push(parsed);
   }
 
-  return { records, malformedLines, expired };
+  return { records, malformedLines, expired, state: 'read' };
 }
 
 /**
@@ -626,14 +635,18 @@ export function readGateProcessLedger(repoRoot, {
  * ledger linked to `events.jsonl` emptied the link's target (CWE-59, reproduced
  * 2026-10-01). `rename` replaces the directory entry itself, never a link's
  * target, and the `wx` flag refuses a pre-planted file or link at the tmp name.
- * `orphan-reaper/reaper-audit.mjs` carries the same few lines without the `io`
- * seam this copy needs for its tests.
+ * The ONE copy (#1498): `orphan-reaper/reaper-audit.mjs` imports it for the
+ * audit prune — both ledgers its scan housekeeping rewrites. It lives here, not
+ * there, because this module imports nothing from `orphan-reaper/` beyond the
+ * fs-only `no-follow-append.mjs`, so the graph stays acyclic, and every
+ * importer of the audit module already loads this one.
  *
  * @param {string} target
  * @param {string} body
- * @param {{lstatSync: Function, writeFileSync: Function, renameSync: Function, unlinkSync: Function}} io
+ * @param {{lstatSync: Function, writeFileSync: Function, renameSync: Function, unlinkSync: Function}} [io]
+ *   fs seam for tests; defaults to `node:fs`.
  */
-function replaceRegularFile(target, body, io) {
+export function replaceRegularFile(target, body, io = { lstatSync, writeFileSync, renameSync, unlinkSync }) {
   if (!io.lstatSync(target).isFile()) throw new Error(NOT_A_REGULAR_FILE);
   const tmp = `${target}.tmp-${process.pid}`;
   try {
