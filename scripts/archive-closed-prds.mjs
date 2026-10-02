@@ -383,7 +383,9 @@ EXIT CODES
 function printHuman(archived, skipped, isDryRun, vaultDir, vaultSubdir) {
   // Runs as a custom phase at every session start and end, so this line lands
   // in every transcript — home dir as `~` (#1490). `--json` keeps the real
-  // value: that output is a machine contract, not a log line.
+  // `vaultDir`: that field is a machine contract, not a log line. A
+  // `skipped[].reason` is redacted in BOTH outputs — it carries fs error text,
+  // and main() redacts it before it enters the array (8273d97a).
   process.stdout.write(
     `Doc archive ${isDryRun ? '(dry-run)' : '(apply)'} → ${redactHomeDir(`${vaultDir}/${vaultSubdir}`)}\n`,
   );

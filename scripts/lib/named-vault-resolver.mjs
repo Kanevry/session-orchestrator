@@ -567,7 +567,8 @@ export function normalizeRemote(url) {
  *   only the home-dir shape is the owner leak, and the forge shape is what the
  *   suffix comparison is about. The result still goes through
  *   {@link redactUrlCredentials}, so a bare `https://git@` (a token slot there)
- *   is redacted as before.
+ *   is redacted as before. A `://` with no scheme before it (`/srv/a://b`,
+ *   `host:/p://q`) is no URL form: the path and scp rules read it (#1496).
  * - A scp-like `[user@]host:path` (#1487 item 10) applies the login rule and
  *   keeps the host and a RELATIVE path — the repo shape the canonical-suffix
  *   comparison is about. Here a path starting with `/` or `~` is unambiguous: a
@@ -584,9 +585,11 @@ export function describeOriginForLog(url) {
   if (!s) return '';
   if (/^file:/i.test(s)) return 'file://<local path>';
   const login = (u) => (u === undefined ? '' : u === 'git' ? 'git@' : '***@');
-  if (s.includes('://')) {
-    const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*)(.*)$/is.exec(s);
-    if (!m) return redactUrlCredentials(s);
+  // A `://` with no scheme in front of it is no URL — git's is_url() reads
+  // such a string by the scp/local rules below, and so does this (#1496: it
+  // used to be printed verbatim, home dir and all).
+  const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*)(.*)$/is.exec(s);
+  if (m) {
     const [, scheme, authority, urlPath] = m;
     // userinfo runs to the LAST '@' of the authority (a password may hold one).
     const at = authority.lastIndexOf('@');

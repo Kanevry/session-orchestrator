@@ -170,12 +170,16 @@ export function _parseVaultIntegration(content) {
         if (v === '' || v === 'none' || v === 'null') vaultName = null;
         else vaultName = v;
         break;
-      case 'gitlab-groups':
+      case 'gitlab-groups': {
         // A value replaces any earlier one; an empty value opens a block list,
-        // which replaces it only once it has collected an item.
-        if (v === '') groupItems = [];
-        else gitlabGroups = _groupsFromScalar(v);
+        // which replaces it only once it has collected an item. The value goes
+        // to `_groupsFromScalar` WITH its quotes, as the inline form's does —
+        // stripping them here first read `"null"` as unset in this form only (#1496).
+        const raw = kvMatch[2].trim();
+        if (raw === '') groupItems = [];
+        else gitlabGroups = _groupsFromScalar(raw);
         break;
+      }
     }
   }
   if (groupItems !== null && groupItems.length > 0) gitlabGroups = groupItems;
@@ -231,17 +235,24 @@ function _groupName(raw) {
  * empty result is `null`, the documented default. Before this, `null` scanned a
  * GitLab group named "null" and `["a"]` one named `"a"` with the quotes.
  *
+ * The ONE normalisation for both forms, so both pass the value with its quotes
+ * (#1496). A wholly quoted value is a YAML string, never a null: it loses that
+ * quote pair, is split on commas, and its elements are taken literally —
+ * `"null"` is the group "null", `"a, b"` the groups a and b.
+ *
  * @param {string} v
  * @returns {string[]|null}
  */
 function _groupsFromScalar(v) {
   const trimmed = v.trim();
   if (YAML_NULL_RE.test(trimmed)) return null;
-  const groups = trimmed
+  const unquoted = _stripQuotes(trimmed);
+  const readElement = unquoted === trimmed ? _groupName : (g) => (g === '' ? null : g);
+  const groups = unquoted
     .replace(/^\[/, '')
     .replace(/\]$/, '')
     .split(',')
-    .map((g) => _groupName(g.trim()))
+    .map((g) => readElement(g.trim()))
     .filter((g) => g !== null);
   return groups.length > 0 ? groups : null;
 }

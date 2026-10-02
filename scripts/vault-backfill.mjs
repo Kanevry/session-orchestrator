@@ -39,7 +39,7 @@ import {
 
 import { validateManifest, SLUG_RE } from './lib/vault-backfill/manifest.mjs';
 import { _parseVaultIntegration } from './lib/config/vault-integration.mjs';
-import { loadHostPaths } from './lib/config/host-paths.mjs';
+import { loadHostPaths, resolveVaultIntegrationHost } from './lib/config/host-paths.mjs';
 import { resolveVaultDir } from './lib/config.mjs';
 import { expandTilde } from './lib/common.mjs';
 
@@ -103,7 +103,14 @@ if (flagVerbose) setGlabVerbose(true);
  * names, even on a host whose owner.yaml points elsewhere. Not
  * `parseSessionConfig`: it throws on an invalid value in any unrelated block.
  *
- * @returns {{'gitlab-groups': string[]|null, 'vault-dir': string|null}}
+ * `enabled` is the switch the other vault writers obey (board-writer,
+ * narrative-mirror: `enabled !== true` → skip), after the same host-local
+ * lowering `parseSessionConfig` applies — env `SO_VAULT_INTEGRATION` >
+ * owner.yaml `vault-integration:` > committed (#1496: stubs were created with
+ * the integration off, from an owner.yaml `paths.vault-dir` alone).
+ *
+ * @returns {{'gitlab-groups': string[]|null, 'vault-dir': string|null, enabled: boolean,
+ *   'host-override': string|null}}
  */
 function readVaultIntegrationConfig() {
   const candidates = [join(process.cwd(), 'CLAUDE.md'), join(process.cwd(), 'AGENTS.md')];
@@ -115,9 +122,15 @@ function readVaultIntegrationConfig() {
     }
   }
 
-  const parsed = _parseVaultIntegration(content ?? '');
-  const vaultDir = resolveVaultDir(parsed['vault-dir'], loadHostPaths()).value ?? null;
-  return { 'gitlab-groups': parsed['gitlab-groups'], 'vault-dir': vaultDir };
+  const hostCtx = loadHostPaths();
+  const vi = resolveVaultIntegrationHost(_parseVaultIntegration(content ?? ''), hostCtx);
+  const vaultDir = resolveVaultDir(vi['vault-dir'], hostCtx).value ?? null;
+  return {
+    'gitlab-groups': vi['gitlab-groups'],
+    'vault-dir': vaultDir,
+    enabled: vi.enabled === true,
+    'host-override': vi['host-override'],
+  };
 }
 
 // ── Vault-dir folder stub ─────────────────────────────────────────────────────
@@ -392,7 +405,17 @@ async function main() {
     groups = cfgConfig['gitlab-groups'];
   }
 
-  const vaultDir = flagVaultDir ?? cfgConfig['vault-dir'] ?? null;
+  // The configured vault-dir counts only while vault-integration is on; an
+  // explicit --vault-dir is this run's own request and still wins.
+  let vaultDir = flagVaultDir ?? null;
+  if (vaultDir === null && cfgConfig['vault-dir'] !== null) {
+    if (cfgConfig.enabled) {
+      vaultDir = cfgConfig['vault-dir'];
+    } else {
+      const why = cfgConfig['host-override'] ? `switched off by ${cfgConfig['host-override']}` : 'not enabled';
+      log(`vault-integration is ${why} — no vault folder stubs (pass --vault-dir to create them anyway)`);
+    }
+  }
 
   if (!flagYes && (!groups || groups.length === 0)) {
     die(1, 'no GitLab groups specified — pass --groups <CSV> or set vault-integration.gitlab-groups in CLAUDE.md');

@@ -107,6 +107,12 @@ describe('_parseVaultIntegration', () => {
       content: 'vault-integration:\n  gitlab-groups:\n    - null\n    - "null"\n',
       expected: vi({ 'gitlab-groups': ['null'] }),
     },
+    // #1496 item 2: the block scalar stripped its quotes BEFORE the null check,
+    // so `"null"` read as unset there while the inline form and the block list
+    // read the group "null". The quoted comma string is the guard against a
+    // fix that hands the raw value through and splits inside the quotes.
+    { why: '#1496: block form reads a quoted "null" scalar as the group "null", like the inline form', content: 'vault-integration:\n  gitlab-groups: "null"\n', expected: vi({ 'gitlab-groups': ['null'] }) },
+    { why: '#1496: block form still splits a quoted comma string', content: 'vault-integration:\n  gitlab-groups: "infra, clients"\n', expected: vi({ 'gitlab-groups': ['infra', 'clients'] }) },
     {
       why: 'block ends at the first non-indented line',
       content: 'vault-integration:\n  enabled: true\n  vault-dir: ~/v\n  mode: strict\ndocs-orchestrator:\n  enabled: false\n',
