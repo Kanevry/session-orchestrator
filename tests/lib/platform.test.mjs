@@ -25,6 +25,7 @@ import {
   detectPlatform,
   resolvePluginRoot,
   resolveProjectDir,
+  resolveSessionRoot,
   resolveStateDir,
   resolveConfigFile,
 } from '@lib/platform.mjs';
@@ -596,5 +597,72 @@ describe('deprecated compat bindings', () => {
     // Control: the plain constants that were KEPT are still exported, so a
     // wholesale export-list breakage cannot make the assertion above pass.
     expect(names).toEqual(expect.arrayContaining(['SO_SHARED_DIR', 'SO_OS', 'SO_PATH_SEP']));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveSessionRoot (#1492) — the rungs the hook-level tests do not reach.
+// Existence-only `.git` entries: the resolver never asks git, so neither does this.
+// ---------------------------------------------------------------------------
+
+describe('resolveSessionRoot (#1492)', () => {
+  /** @type {string} */
+  let sandbox;
+
+  beforeEach(() => {
+    // realpath: the clamp compares canonical paths (macOS /var -> /private/var).
+    sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-session-root-')));
+  });
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  /** mkdir -p `rel` inside the sandbox; with `dotGit`, mark it a repo root. */
+  const dirAt = (rel, { dotGit = false } = {}) => {
+    const dir = path.join(sandbox, rel);
+    mkdirSync(dir, { recursive: true });
+    if (dotGit) mkdirSync(path.join(dir, '.git'));
+    return dir;
+  };
+
+  const AGENT = 'agent-a0123456789abcdef0';
+
+  it('falls back to $CLAUDE_PROJECT_DIR when cwd is in no repo — a `cd sub` in a non-git project keeps its manifest', () => {
+    // Bug caught: without the env rung a non-git project resolved to the
+    // subdirectory the session `cd`-ed into, which holds no manifest — every
+    // scope gate allowed everything from then on.
+    const proj = dirAt('proj');
+    const sub = dirAt(path.join('proj', 'sub'));
+    vi.stubEnv('CLAUDE_PROJECT_DIR', proj);
+
+    expect(resolveSessionRoot(sub)).toBe(proj);
+  });
+
+  it('does not lift an agent-shaped worktree whose parent is no working copy', () => {
+    // Bug caught: the lift would leave every repository — for a checkout at
+    // `~/.claude/worktrees/agent-<hex>` (the harness layout, inside Claude's own
+    // config dir) the session root became `$HOME`, where pre-task-scope-disjoint
+    // writes its ledger and events unconditionally.
+    const agentWt = dirAt(path.join('home', '.claude', 'worktrees', AGENT), { dotGit: true });
+
+    expect(resolveSessionRoot(path.join(agentWt, 'src'))).toBe(agentWt);
+  });
+
+  it('clamps a lifted agent worktree to a launch dir in a subdirectory of the repo', () => {
+    // Bug caught: the harness puts agent worktrees under the repo root, so an
+    // agent of a session launched in `/mono/packages/foo` lifted to `/mono` —
+    // above the launch dir, no manifest — and was unenforced. Before #1492 it
+    // resolved the launch dir. A clamp that also required `cwd` inside the launch
+    // dir would miss exactly this case: the agent's `cwd` never is.
+    const mono = dirAt('mono', { dotGit: true });
+    const pkg = dirAt(path.join('mono', 'packages', 'foo'));
+    const agentWt = dirAt(path.join('mono', '.claude', 'worktrees', AGENT), { dotGit: true });
+    vi.stubEnv('CLAUDE_PROJECT_DIR', pkg);
+
+    expect(resolveSessionRoot(agentWt)).toBe(pkg);
+    // Control: the lift itself still lands on the repo root without a launch dir.
+    vi.stubEnv('CLAUDE_PROJECT_DIR', '');
+    expect(resolveSessionRoot(agentWt)).toBe(mono);
   });
 });

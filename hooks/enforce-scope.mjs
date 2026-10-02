@@ -227,9 +227,10 @@ async function main() {
 
   // #1492 — the SESSION's working copy, not the launch dir: after
   // `EnterWorktree`, `$CLAUDE_PROJECT_DIR` still names the dir the session was
-  // launched in, while the manifest lives in the worktree. A harness subagent
-  // worktree (`isolation: "worktree"`) is lifted to the coordinator's root.
-  // See `resolveSessionRoot` in scripts/lib/platform.mjs.
+  // launched in, while the manifest lives in the worktree. Never above the launch
+  // dir; a harness subagent worktree (`isolation: "worktree"`) is lifted to the
+  // launch checkout it sits under — still unenforced in an entered-worktree
+  // session (named ceiling in `resolveSessionRoot`, scripts/lib/platform.mjs).
   const projectRootRaw = resolveSessionRoot(input.cwd);
 
   // Resolve symlinks in the project root itself so that realpath(file) comparisons

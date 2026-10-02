@@ -174,9 +174,9 @@
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
  * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
  * `resolveSessionRoot()` resolves (`scripts/lib/platform.mjs`: the git toplevel
- * of the payload `cwd` — its nearest `.git` ancestor when git cannot answer — so
- * neither the subdirectory a `cd` moved to, #1489 Pkt 6, nor the launch dir a
- * worktree session left), which is
+ * of the payload `cwd` — its nearest `.git` ancestor when git cannot answer —
+ * but never above a launch dir inside it; so neither the subdirectory a `cd`
+ * moved to, #1489 Pkt 6, nor the launch dir a worktree session left), which is
  * also where the ledger and its lock live. The reason it
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
  * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
@@ -1553,51 +1553,6 @@ export function listTrackedFiles(cwd) {
   return trackedFilesIn(gitToplevel(cwd, git), git).files;
 }
 
-/*
- * The SESSION ROOT (#1489 Pkt 6) — where this session's own state lives: the
- * scope ledger and its lock, the `wave-scope.json` the wave key is read from,
- * the event records and their session attribution. NOT where project settings
- * are read — that is `settingsRootOf()`, a different directory on purpose.
- * Resolved by `resolveSessionRoot(cwd, cwdToplevel)` in
- * `scripts/lib/platform.mjs` — ONE resolver shared with every hook that reads
- * the session's control files (#1492). Why each rung is where it is:
- *
- * NOT the payload `cwd`: that one follows the session's `cd` (docs/en/hooks
- * § "cwd follows Claude"). Keyed on it, a dispatch made after `cd sub` read and
- * wrote `<root>/sub/.orchestrator/wave-dispatch-scopes.json` — a second, empty
- * ledger holding none of the wave's earlier claims — so its collision with an
- * agent dispatched before the `cd` was ALLOWED, and its records left the
- * session's `events.jsonl`. The git toplevel of `cwd` undoes exactly that `cd`.
- *
- * NOT `$CLAUDE_PROJECT_DIR` first either: it stays on the LAUNCH dir after the
- * session enters a worktree (docs/en/hooks § "Worktrees are different"), while
- * the coordinator writes `wave-scope.json` into the worktree and
- * `scope-echo --verify` reads that worktree's `events.jsonl`. Preferred here, it
- * (measured on be6a2e3e) dropped every wave key to `w?`, left the worktree's
- * records empty, and gave every worktree session of one launch dir ONE shared
- * ledger — where a peer session's dispatch wipes this session's claims and lets
- * the collision through. It is the fallback only when `cwd` is in no repo.
- *
- * NOR `$CLAUDE_PROJECT_DIR` merely because GIT could not answer (review MED on
- * 63f35e8c): `gitToplevel()` returns `''` on ANY error, and the toplevel lookup
- * is the first spawn against the shared `GIT_BUDGET_MS` — one `rev-parse`
- * hanging past it sent a worktree session's dispatch back to the launch-root
- * ledger, the exact bug above narrowed to the timeout. The resolver's `.git`
- * ancestor walk answers the same question without a spawn, so no budget can
- * cut it.
- *
- * Precedence: the git toplevel of `cwd`, else the nearest `.git` ancestor of
- * `cwd` — either one lifted to the coordinator's root when it is a harness
- * subagent worktree `<root>/.claude/worktrees/agent-<hex>` (#1492) — else the
- * launch dir from env, else `cwd`.
- *
- * Remaining limit (not a regression — main keyed state on `cwd` itself): a `cd`
- * into a NESTED toplevel that is not a harness agent worktree — a worktree the
- * session entered under `.claude/worktrees/<name>`, a submodule, a nested repo —
- * gets that toplevel's own ledger, by either rung, because it IS a repo root of
- * its own.
- */
-
 /**
  * The SETTINGS ROOT (#1485) — where `harnessBaseRef()` reads the project's
  * `.claude/settings{,.local}.json`: `$CLAUDE_PROJECT_DIR`, else the git toplevel
@@ -2327,7 +2282,9 @@ async function main() {
   // repo the agents edit, which is the one the session works in (after entering
   // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot` —
   // except inside a harness agent worktree, which `sessionRoot` lifts to its
-  // parent (#1492) and which lists the same repo's files from its own HEAD;
+  // parent (#1492) and which lists the same repo's files from its own HEAD, and
+  // in a session launched in a repo SUBDIRECTORY, where `sessionRoot` is that
+  // launch dir and the listing stays at the toplevel above it;
   // when git could not, `sessionRoot` falls back to a `.git` ancestor (git just
   // failed there), `$CLAUDE_PROJECT_DIR` or a bare `cwd` — another repo, or a
   // subdirectory from which `ls-files` answers subdir-relative (the review-MED

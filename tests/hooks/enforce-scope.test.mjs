@@ -1955,11 +1955,11 @@ describe('session root after entering a worktree (#1492)', { timeout: 20000 }, (
     expectDeny(result, ["'other/x.mjs' not in allowed paths"]);
   });
 
-  it('keeps an isolation:"worktree" agent on the coordinator manifest — its harness worktree is no root of its own', async () => {
+  it('keeps an isolation:"worktree" agent on the launch checkout manifest — its harness worktree is no root of its own', async () => {
     // Bug caught: the agent's payload `cwd` is `<root>/.claude/worktrees/agent-<hex>`,
     // a repo root holding no manifest. Resolved as-is, every isolation:"worktree"
     // agent was allowed everything; before #1492 it resolved `$CLAUDE_PROJECT_DIR`
-    // and met the coordinator's manifest, which is what this pins.
+    // = the launch checkout it sits under, and met that manifest — what this pins.
     const { launch } = await mkLaunchRepo();
     await fs.mkdir(path.join(launch, '.claude'), { recursive: true });
     await fs.writeFile(path.join(launch, '.claude', 'wave-scope.json'), JSON.stringify(SCOPE));
@@ -1970,6 +1970,25 @@ describe('session root after entering a worktree (#1492)', { timeout: 20000 }, (
       env: { CLAUDE_CODE_SESSION_ID: null },
     });
     expectDeny(result, ["'elsewhere/x.mjs' not in allowed paths"]);
+  });
+
+  it('never resolves ABOVE a launch dir in a repo subdirectory — a monorepo package keeps its manifest', async () => {
+    // Bug caught (review HIGH-1 on 4fdbc469): launched in `/mono/packages/foo`,
+    // the `.git` walk climbed to `/mono`, which holds no manifest, so Gate 3
+    // ALLOWED this out-of-scope write — before #1492 the launch dir was the root
+    // and it was denied. Same shape: a project under a git-tracked `$HOME`.
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-1492-mono-'));
+    tmpDirs.push(dir);
+    git(dir, 'init', '-q');
+    const pkg = path.join(dir, 'packages', 'foo');
+    await fs.mkdir(path.join(pkg, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(pkg, '.claude', 'wave-scope.json'), JSON.stringify(SCOPE));
+    const result = await runHook({
+      projectDir: pkg,
+      stdin: editPayload(path.join(pkg, 'other', 'x.mjs'), 'Write', { cwd: pkg }),
+      env: { CLAUDE_CODE_SESSION_ID: null },
+    });
+    expectDeny(result, ["'other/x.mjs' not in allowed paths"]);
   });
 
   it("still ALLOWS the coordinator's auto-memory dir, which the harness keys on the LAUNCH path", async () => {

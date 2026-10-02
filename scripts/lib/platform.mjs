@@ -13,7 +13,7 @@
  * NOTHING in this module touches the filesystem at import time.
  */
 
-import { existsSync, statSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolvePluginRoot as _resolvePluginRootRobust } from './plugin-root.mjs';
@@ -317,41 +317,87 @@ function _liftHarnessAgentWorktree(root) {
   return existsSync(path.join(parent, '.git')) ? parent : root;
 }
 
+/** realpath, or the resolved spelling when the path does not exist. */
+function _canonical(p) {
+  try { return realpathSync(p); } catch { return path.resolve(p); }
+}
+
+/**
+ * Is `child` a STRICT descendant of `parent` (never `parent` itself)? Both sides
+ * canonical, so macOS `/tmp` vs `/private/tmp` cannot split one directory in two.
+ *
+ * @param {string} child
+ * @param {string} parent
+ * @returns {boolean}
+ */
+function _isStrictlyInside(child, parent) {
+  const rel = path.relative(_canonical(parent), _canonical(child));
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
+}
+
 /**
  * The SESSION ROOT (#1492) — the working copy whose control files belong to the
  * session a hook fires in: `wave-scope.json`, the `.orchestrator/` ledgers, the
- * event records. NOT the launch dir: `$CLAUDE_PROJECT_DIR` stays on the dir the
- * session was LAUNCHED in after it enters a worktree (docs/en/hooks § "Worktrees
- * are different"), while the coordinator writes `wave-scope.json` into that
- * worktree. Read from the launch dir, the manifest was absent and every scope
- * gate allowed everything for the whole session, silently (#1492, measured in
- * session main-2026-10-02-session-21). NOT the payload `cwd` itself either: it
- * follows the session's `cd` (docs/en/hooks § "cwd follows Claude"), and a
- * `cd sub` must not move the session's state into `<root>/sub` (#1489 Pkt 6).
+ * event records. One resolver for every hook that reads them (enforce-scope,
+ * enforce-commands, post-bash-write-verify, pre-task-scope-disjoint).
+ *
+ * NOT the launch dir whenever the session works elsewhere: `$CLAUDE_PROJECT_DIR`
+ * stays on the dir the session was LAUNCHED in after it enters a worktree
+ * (docs/en/hooks § "Worktrees are different"), while the coordinator writes
+ * `wave-scope.json` into that worktree. Read from the launch dir, the manifest
+ * was absent and every scope gate allowed everything for the whole session,
+ * silently (#1492, measured in session main-2026-10-02-session-21); preferred
+ * for the dispatch ledger it also gave every worktree session of one launch dir
+ * ONE shared ledger and the wave key `w?` (measured on be6a2e3e).
+ *
+ * NOT the payload `cwd` itself: it follows the session's `cd` (docs/en/hooks
+ * § "cwd follows Claude"), and a `cd sub` must not move the session's state into
+ * `<root>/sub` — a second, empty ledger whose collisions were allowed (#1489 Pkt 6).
+ *
+ * NEVER ABOVE the launch dir: a session launched in a repo SUBDIRECTORY (a
+ * monorepo package, a project under a git-tracked `$HOME`) keeps its manifest
+ * there. The repo root above it holds none, so resolving to it switched every
+ * scope gate off (review HIGH-1 on 4fdbc469, measured DENY → ALLOW).
  *
  * Precedence:
  *   1. no payload `cwd` → `resolveProjectDir()`, the pre-#1492 answer unchanged;
  *   2. the repo root of `cwd` — `toplevel` when the caller already holds
  *      `git rev-parse --show-toplevel` of it, else the nearest `.git` ancestor
  *      (`_dotGitAncestor`), which answers the same without a spawn, so neither a
- *      timed-out git nor a hot-path budget can send a worktree session back to
- *      the launch dir (review MED on 63f35e8c) — lifted to the coordinator's
- *      working copy when it is a harness subagent worktree (below);
+ *      timed-out git (review MED on 63f35e8c) nor a hot-path budget can send a
+ *      worktree session back to the launch dir — lifted to `<P>` when it is a
+ *      harness subagent worktree `<P>/.claude/worktrees/agent-<hex>` (below),
+ *      then replaced by `$CLAUDE_PROJECT_DIR` when it lies strictly ABOVE it;
  *   3. the launch dir from env (`CLAUDE_PROJECT_DIR` → `CODEX_PROJECT_DIR` →
  *      `CURSOR_PROJECT_DIR` → `PI_PROJECT_DIR`), only when `cwd` is in no repo;
  *   4. `cwd`.
  *
+ * Only `$CLAUDE_PROJECT_DIR` clamps in rung 2: the Cursor and Pi bridges set
+ * their `*_PROJECT_DIR` to the payload `cwd` on every call
+ * (`cursor-hook-bridge.mjs`, `pi-hook-bridge.mjs`), so a clamp on those would
+ * follow every `cd` again. The clamp does not ask whether `cwd` lies inside the
+ * launch dir: an `isolation: "worktree"` agent's `cwd` never does, and it must
+ * clamp too (see THE LIFT).
+ *
  * THE LIFT. An `isolation: "worktree"` subagent's hook payload carries the
- * worktree the harness made for it, `<root>/.claude/worktrees/agent-<hex>`. That
+ * worktree the harness made for it, `<P>/.claude/worktrees/agent-<hex>`. That
  * worktree is a repo root of its own and holds no manifest, so rung 2 alone
- * would disarm scope enforcement for every such agent. Before #1492 they
- * resolved `$CLAUDE_PROJECT_DIR` and were checked against the coordinator's
- * manifest; the lift keeps exactly that. It is keyed on the PATH SHAPE, never on
- * which candidate holds a manifest — a root picked because a control file is
- * readable there would let any directory that lacks one become the deciding
- * root.
+ * would disarm scope enforcement for every such agent. The harness puts it under
+ * the LAUNCH checkout, so `<P>` is what `$CLAUDE_PROJECT_DIR` resolved to before
+ * #1492 — the lift keeps exactly that, and the clamp keeps it for a launch in a
+ * subdirectory of `<P>`. It is keyed on the PATH SHAPE, never on which candidate
+ * holds a manifest: a root picked because a control file is readable there
+ * would let any directory that lacks one become the deciding root.
  *
  * Ceilings (BV-004):
+ *  - An agent of a session that ENTERED a worktree is still unenforced, as before
+ *    #1492: its worktree sits under the launch checkout (measured: session
+ *    0d5e4fc3, 2026-09-25 — cwd `<main>/.claude/worktrees/landing-produktschau`,
+ *    agent worktreePath `<main>/.claude/worktrees/agent-acd5bfd0aa590e2e8`), so
+ *    the lift lands on the launch root, where that session has no manifest.
+ *    Fixing it needs a design (e.g. find the manifest bound to the payload
+ *    `session_id` among the repo's worktrees). Revisit when an entered-worktree
+ *    session dispatches `isolation: "worktree"` agents under a manifest.
  *  - Rung 2 is `cd`-relocatable: a session whose `cwd` sits in ANOTHER repo (a
  *    submodule, a nested or sibling checkout) is checked against that repo's
  *    manifest — usually none, so its gates allow — where the launch dir's
@@ -369,8 +415,10 @@ function _liftHarnessAgentWorktree(root) {
 export function resolveSessionRoot(cwd, toplevel = '') {
   if (typeof cwd !== 'string' || cwd.trim() === '') return resolveProjectDir();
   const repoRoot = (typeof toplevel === 'string' ? toplevel : '') || _dotGitAncestor(cwd);
-  if (repoRoot) return _liftHarnessAgentWorktree(repoRoot);
-  return _launchDirFromEnv() || cwd;
+  if (!repoRoot) return _launchDirFromEnv() || cwd;
+  const root = _liftHarnessAgentWorktree(repoRoot);
+  const launch = (process.env.CLAUDE_PROJECT_DIR || '').trim();
+  return launch !== '' && _isStrictlyInside(launch, root) ? launch : root;
 }
 
 // ---------------------------------------------------------------------------
