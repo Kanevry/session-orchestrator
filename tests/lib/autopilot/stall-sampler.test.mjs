@@ -186,17 +186,14 @@ describe('sampleProgress — session.lock heartbeat takes precedence over mtime'
     expect(result.stallSeconds).toBe(900);
   });
 
-  it('a schema-v1 lock without last_heartbeat falls back to started_at', () => {
-    const lock = writeLock(tmp, { session_id: 'abc', started_at: new Date(NOW - 10_000).toISOString() });
-    const result = sampleProgress({ autopilotJsonlPath: staleJsonl(tmp), sessionLockPath: lock, nowMs });
-    expect(result.marker).toBe('session.lock:last_heartbeat');
-    expect(result.stallSeconds).toBe(10);
-  });
-
   it.each([
     ['corrupt JSON', 'not json at all'],
     ['no timestamp field', JSON.stringify({ session_id: 'abc' })],
     ['unparsable timestamp', JSON.stringify({ last_heartbeat: 'whenever' })],
+    // #595 sunset: started_at is NOT a heartbeat stand-in. 2 s old here, so the
+    // removed fallback would have reported a fresh marker (progressed=true,
+    // stallSeconds 2) and masked the stall the mtime still shows.
+    ['no last_heartbeat, fresh started_at', JSON.stringify({ session_id: 'abc', started_at: new Date(NOW - 2_000).toISOString() })],
   ])('falls back to the mtime marker when the lock is unusable (%s)', (_label, body) => {
     const jsonl = staleJsonl(tmp);
     const lock = writeLock(tmp, body);

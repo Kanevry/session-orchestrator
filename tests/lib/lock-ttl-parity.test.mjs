@@ -1,12 +1,15 @@
 /**
  * lock-ttl-parity.test.mjs — cross-reference drift guard (review FIX 3, W4-FC).
  *
- * The session-lock TTL/liveness semantics are encoded in THREE places:
+ * The session-lock TTL/liveness rule is encoded in TWO places:
  *   1. scripts/lib/session-lock.mjs         — SSOT (DEFAULT_TTL_HOURS, isLockLive)
- *   2. scripts/lib/lock-reaper.mjs           — ageHoursOf (age-only; no TTL constant)
- *   3. scripts/lib/harness-audit/categories/category4.mjs — inlined mirror
+ *   2. scripts/lib/harness-audit/categories/category4.mjs — inlined mirror
  *      (DEFAULT_LOCK_TTL_HOURS, lockIsLive), documented as a stdlib-only copy
  *      of the SSOT so the audit path never imports the session-lock barrel.
+ *
+ * Not a copy, so not covered here: scripts/lib/lock-reaper.mjs `ageHoursOf()`
+ * reports hours since `last_heartbeat` for display, holds no TTL and decides
+ * nothing (the reaper gates on the imported `isLockLive`).
  *
  * A silent edit to either the constant or the liveness rule in ONE of these
  * copies without the other would drift the harness-audit's orphaned-session-lock

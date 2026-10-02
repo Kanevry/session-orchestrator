@@ -25,9 +25,12 @@
  * @param {unknown} obj — a value already parsed from JSON.
  * @returns {boolean} true when `obj` carries all six required lock fields with
  *   the right primitive types. `semantic_session_id` and `last_heartbeat` are
- *   deliberately NOT required — both are optional by schema (v1 locks predate
- *   `last_heartbeat`, and `semantic_session_id` is absent on harnesses that
- *   resolve no semantic id).
+ *   deliberately NOT required. `semantic_session_id` is absent on harnesses
+ *   that resolve no semantic id. A lock without `last_heartbeat` must stay
+ *   shape-valid so it remains VISIBLE: since the #595 sunset (2026-10-02)
+ *   `isLockLive()` calls it not live and `acquire()` classifies it
+ *   `stale-heartbeat`, so the bootstrap reclaims it. Requiring the field here
+ *   would hide it from every `readLock()` caller instead.
  */
 export function isLockShape(obj) {
   return (

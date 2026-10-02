@@ -360,8 +360,12 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
       ? lock.mode
       : (registryEntry && registryEntry.mode ? registryEntry.mode : null);
 
+    // The "Last heartbeat" column shows a heartbeat or nothing: a lock without
+    // `last_heartbeat` renders '—', never its `started_at` under that label
+    // (#595 sunset, 2026-10-02 — `isLockLive()` already calls it not live, so
+    // the status derivation below treats it as a dead lease).
     const heartbeat = lock
-      ? (lock.last_heartbeat ?? lock.started_at ?? null)
+      ? (lock.last_heartbeat ?? null)
       : (registryEntry ? (registryEntry.last_heartbeat ?? null) : null);
 
     // ── Status derivation ──

@@ -672,6 +672,45 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
     expect(session).not.toBeNull();
     expect(session.conflict_with_session_id).toBe(foreignSessionId);
   });
+
+  it('reclaims a corrupt lock with one WARN, but still never takes a well-formed live foreign lock', async () => {
+    // Bug: an unparseable session.lock wedged session start for good. readLock()
+    // → null, the create-or-fail hit EEXIST, the vanished-race branch answered
+    // 'active' with existingLock:null, shouldForce was false, and the bootstrap
+    // bailed on every attempt — the file stayed `{not json` forever.
+    const dir = join(sandbox, '.orchestrator');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'session.lock'), '{not json');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const bootWarns = () => stderrSpy.mock.calls.map((c) => String(c[0])).filter((s) => s.includes('lock-bootstrap'));
+
+    const reclaimed = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'my-session-corrupt',
+      mode: 'deep',
+      _emitEventImpl: noopEmit,
+    });
+
+    expect(reclaimed?.session_id).toBe('my-session-corrupt');
+    expect(readLock().session_id).toBe('my-session-corrupt');
+    expect(bootWarns()).toEqual([expect.stringContaining('not a valid lock record — reclaimed')]);
+
+    // The well-formed live lock of a DIFFERENT session stays fully protected:
+    // classified 'active' (the conflict signal is only recorded on that reason),
+    // not reclaimed, no further WARN.
+    seedForeignLiveLock('foreign-live-corrupt-case');
+    const blocked = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'another-session',
+      mode: 'deep',
+      _emitEventImpl: noopEmit,
+    });
+
+    expect(blocked).toBeNull();
+    expect(readLock().session_id).toBe('foreign-live-corrupt-case');
+    expect(readCurrentSession()?.conflict_with_session_id).toBe('foreign-live-corrupt-case');
+    expect(bootWarns()).toHaveLength(1);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -25,11 +25,11 @@
  *     ttl_hours:            number,
  *   }
  *
- * The current scripts/lib/session-lock.mjs (pre-I3) writes the v1 shape
- * (no last_heartbeat, no semantic_session_id). This helper layers v2 fields
- * on top via an atomic tmp+rename overwrite — when I3 ships its v2 schema,
- * this helper's overlay becomes a no-op (the field is already there) and
- * everything continues to work.
+ * scripts/lib/session-lock.mjs `buildLock()` has written `last_heartbeat`
+ * itself since Epic #583 W2-I3 (`last_heartbeat` = `started_at` at genesis).
+ * This helper's tmp+rename overlay therefore re-writes an identical
+ * `last_heartbeat`, and its remaining job is `semantic_session_id`, which
+ * `acquire()` / `forceAcquire()` are not given here.
  *
  * @module hooks/_lib/lock-bootstrap
  */
@@ -189,6 +189,13 @@ export async function bootstrapLock({
       // session-lock.mjs; matching only the new one keeps this force-branch
       // reachable.
       acquireResult.reason === 'stale-heartbeat' ||
+      // A lock file that is not a lock record (invalid JSON or not the lock
+      // shape) can never be a live lock — every writer writes atomically — so
+      // it is reclaimed like a stale one, with one stderr WARN below. Before
+      // acquire() reported 'corrupt' it answered 'active' / existingLock:null,
+      // which this predicate could never force: one damaged file wedged every
+      // new session in the repo.
+      acquireResult.reason === 'corrupt' ||
       (acquireResult.reason === 'active' &&
         acquireResult.existingLock &&
         (acquireResult.existingLock.session_id === sessionId ||
@@ -202,10 +209,19 @@ export async function bootstrapLock({
     );
 
   if (!acquireResult.ok && shouldForce) {
+    const reclaimingCorrupt = acquireResult.reason === 'corrupt';
     try {
       acquireResult = forceAcquireFn({ sessionId, mode, ttlHours, repoRoot });
     } catch {
       return null;
+    }
+    if (reclaimingCorrupt) {
+      // The file's content is not echoed: it is unbounded and may be anything.
+      process.stderr.write(
+        acquireResult && acquireResult.ok === true
+          ? '⚠ lock-bootstrap: .orchestrator/session.lock was not a valid lock record — reclaimed for this session\n'
+          : `⚠ lock-bootstrap: .orchestrator/session.lock is not a valid lock record and could not be reclaimed (${acquireResult?.reason ?? 'unknown'}) — this session runs without a lock\n`,
+      );
     }
   }
 
@@ -236,9 +252,9 @@ export async function bootstrapLock({
 
   // Step 2: enrich the lock with v2 fields (last_heartbeat + semantic_session_id).
   // We re-read the file fresh (acquire() just wrote it) and overlay the new
-  // fields, then atomically tmp+rename. When I3 lands and acquire() writes the
-  // v2 shape natively, this overlay becomes idempotent (already-present fields
-  // get overwritten with identical values).
+  // fields, then atomically tmp+rename. acquire() already writes
+  // last_heartbeat (Epic #583 W2-I3), so that half of the overlay re-writes an
+  // identical value; semantic_session_id is the half that adds information.
   const lockFile = path.join(repoRoot, '.orchestrator', 'session.lock');
   let baseLock;
   try {

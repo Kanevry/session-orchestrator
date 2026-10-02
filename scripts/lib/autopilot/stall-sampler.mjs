@@ -8,7 +8,8 @@
  *      `hooks/on-stop.mjs` refreshes it at every turn-end and
  *      `hooks/post-tool-batch-wave-signal.mjs` at every tool batch.
  *   2. `autopilot.jsonl` mtime — the legacy marker, used only when no lock path
- *      is supplied or the lock is absent/corrupt/timestamp-less.
+ *      is supplied or the lock is absent/corrupt/heartbeat-less (`started_at`
+ *      is never a stand-in — it does not advance during a run).
  *
  * The header of this module used to claim `autopilot.jsonl` carries "one record
  * per session". It does not: `telemetry.mjs` writes ONE record per /autopilot
@@ -74,11 +75,13 @@ function readHeartbeatMs(sessionLockPath) {
     return null;
   }
   if (typeof lock !== 'object' || lock === null) return null;
-  // Same precedence `session-lock.mjs` uses on read: a v1 lock has no
-  // `last_heartbeat`, and its `started_at` is the best available stand-in.
-  const raw = typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0
-    ? lock.last_heartbeat
-    : lock.started_at;
+  // `last_heartbeat` only — no `started_at` stand-in, matching `isLockLive()`
+  // since the #595 sunset (2026-10-02). `started_at` never advances during a
+  // run, so a lock without a heartbeat would read as a stall once 600 s passed
+  // (or as fresh within 30 s of its genesis) — a measurement the lock never
+  // made. No heartbeat → `null` → the mtime marker, exactly as for a lock
+  // with no timestamp at all.
+  const raw = lock.last_heartbeat;
   if (typeof raw !== 'string' || raw.length === 0) return null;
   const ms = Date.parse(raw);
   return Number.isFinite(ms) ? ms : null;
@@ -95,9 +98,10 @@ function readHeartbeatMs(sessionLockPath) {
  * @param {string} [opts.autopilotJsonlPath] — path to autopilot.jsonl (default
  *   '.orchestrator/metrics/autopilot.jsonl').
  * @param {string} [opts.sessionLockPath] — path to `session.lock`. When supplied
- *   and readable, its `last_heartbeat` (falling back to `started_at`, the schema
- *   v1 normalisation `session-lock.mjs` applies on read) REPLACES the mtime
- *   marker. Omitted → mtime only, which is what every pre-existing caller gets.
+ *   and readable, its `last_heartbeat` REPLACES the mtime marker. A lock
+ *   without a parsable `last_heartbeat` contributes nothing (no `started_at`
+ *   fallback, as in `session-lock.mjs` `isLockLive()`) and the mtime marker is
+ *   used. Omitted → mtime only, which is what every pre-existing caller gets.
  * @param {number} [opts.stallTimeoutSeconds] — kill-switch threshold (default
  *   600). NOT range-clamped here; caller is responsible for bounds.
  * @param {() => number} [opts.nowMs] — wall-clock supplier (default Date.now).

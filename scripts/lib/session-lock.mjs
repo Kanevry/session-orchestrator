@@ -185,12 +185,14 @@ function heartbeatAgeMinutes(lock) {
  * rejected either. It stays VISIBLE — `readLockDetailed()` reports `ok` and
  * `acquire()` classifies it `stale-heartbeat` (heartbeat age `null`), which
  * lets the SessionStart bootstrap reclaim it — while `isLockLive()` reads it
- * as not live. Rejecting it here would be worse: `readLock()` would return
- * `null`, the create-or-fail in `acquire()` would hit EEXIST, and the
- * vanished-race branch would answer `active` with `existingLock: null` on
- * every attempt — a lock nobody can see blocking every new session. No writer
- * has produced such a lock since Epic #583: `buildLock()`, the hook bootstrap
- * and `updateHeartbeat()` all set `last_heartbeat`.
+ * as not live. Rejecting it here would make it `corrupt`: still reclaimable
+ * (`acquire()` reports `corrupt` since 2026-10-02 — until then the
+ * create-or-fail hit EEXIST and the vanished-race branch answered `active`
+ * with `existingLock: null` on every attempt, wedging the repo), but invisible
+ * to every `readLock()` caller, which would lose its session_id, host and
+ * started_at. No writer has produced such a lock since Epic #583:
+ * `buildLock()`, the hook bootstrap and `updateHeartbeat()` all set
+ * `last_heartbeat`.
  *
  * @param {string} raw
  * @returns {object|null}
@@ -479,6 +481,12 @@ export function readLockDetailed(opts = {}) {
  *         recorded pids dead, INCLUDING the currently heartbeating session's
  *         own lock), so `stale-pid-alive` was unreachable same-host and every
  *         stale lock rendered as "confirmed dead" in the recovery AUQ.
+ *   { ok: false, reason: 'corrupt', existingLock: null, exclusivityClass? }
+ *       — a lock file is present but fails parseLock() (invalid JSON, or not
+ *         the six-field lock shape). It can never be a live lock — every
+ *         writer writes atomically — so the SessionStart bootstrap reclaims it
+ *         with one stderr WARN. Before 2026-10-02 this case answered 'active'
+ *         with `existingLock: null` on every attempt and wedged the repo.
  *   { ok: false, reason: 'missing-session-id' }
  *       — no usable `sessionId` given; NOTHING was written. Same reason string
  *         and same predicate as forceAcquire() (see its docblock for why an
@@ -644,12 +652,34 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
       };
     };
 
-    const existing = readLock({ repoRoot });
+    // A file that is present but fails parseLock() — invalid JSON, or JSON
+    // without the six-field lock shape — gets its OWN reason instead of
+    // collapsing into the vanished-race branch below. It used to: readLock()
+    // returned null, the create-or-fail hit EEXIST on the file still there,
+    // the re-read was null again, and every attempt answered
+    // `active` / `existingLock: null` — which the bootstrap cannot reclaim, so
+    // one damaged file blocked every new session in the repo for good.
+    // Such a file can never be a live lock: all four production writers
+    // (createSessionLockExclusive, writeLockAtomic via forceAcquire and
+    // updateHeartbeat, the bootstrap's writeJsonAtomicSync) write a full
+    // buildLock() body via tmp+link / tmp+rename, so no reader ever sees a
+    // partial write. Reported, not cleared — the caller decides (see the
+    // decision-deferred note in the module header).
+    // Ceiling (BV-004): a future writer emitting a body that fails
+    // isLockShape() would be classified corrupt too. Revisit if the lock
+    // schema ever changes a required field's type or name.
+    const corrupt = () => ({ ok: false, reason: 'corrupt', existingLock: null, exclusivityClass: callerClass });
 
-    if (existing !== null) {
+    const existing = readLockDetailed({ repoRoot });
+
+    if (existing.status === 'ok') {
       // A lock is present — classify it.
-      return classifyExisting(existing);
+      return classifyExisting(existing.lock);
     }
+    if (existing.status === 'corrupt') return corrupt();
+    // 'absent' → create below. 'unreadable' also falls through: the
+    // create-or-fail hits EEXIST and preserves the file, and the vanished-race
+    // branch answers the conservative 'active' (#599).
 
     // No existing lock — create one with a TOCTOU-safe create-or-fail (#590).
     // Two concurrent SessionStart hooks can both reach this branch having each
@@ -666,15 +696,14 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
 
     // reason === 'exists' — we lost the create race. Re-read the now-present
     // lock and classify it exactly as if we had seen it on the up-front check.
-    const raced = readLock({ repoRoot });
-    if (raced === null) {
-      // The EEXIST winner's lock vanished before we could re-read it (ENOENT /
-      // unparseable). Defensive fallback: report 'active' so the caller defers
-      // rather than racing again — mirrors tryAcquireStateLock's vanish-race
-      // handling (a lost-then-vanished race resolves conservatively).
-      return { ok: false, reason: 'active', existingLock: null, exclusivityClass: callerClass };
-    }
-    return classifyExisting(raced);
+    const raced = readLockDetailed({ repoRoot });
+    if (raced.status === 'ok') return classifyExisting(raced.lock);
+    if (raced.status === 'corrupt') return corrupt();
+    // The EEXIST winner's lock vanished before we could re-read it (ENOENT),
+    // or it is unreadable. Defensive fallback: report 'active' so the caller
+    // defers rather than racing again — mirrors tryAcquireStateLock's
+    // vanish-race handling (a lost-then-vanished race resolves conservatively).
+    return { ok: false, reason: 'active', existingLock: null, exclusivityClass: callerClass };
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message, exclusivityClass: callerClass };
   }
