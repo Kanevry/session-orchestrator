@@ -359,6 +359,23 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
     expect(out.bannerLines.join('\n')).not.toContain('should not be seen');
   });
 
+  // BUG (#1489): `measure` travels into the ledger AND over the unredacted
+  // webhook, so a probe's `telemetry` returning a path, a nested blob or a
+  // non-finite number would write it there verbatim. Only snake_case keys with
+  // finite-number or null values may pass.
+  it('persists a probe telemetry as measure, keeping only numeric and null values', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const telemetry = () => ({ count: 3, none: null, path: '/Users/x/repo', nested: { a: 1 }, ratio: Number.NaN, 'Bad-Key': 1 });
+    const probes = [await fakeProbe(dir, 'local', CLEAN, { telemetry })];
+
+    await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
+
+    expect(calls[0].payload.probes).toEqual([
+      { id: 'local', outcome: 'ran-clean', work_ms: expect.any(Number), measure: { count: 3, none: null } },
+    ]);
+  });
+
   // BUG: the opt-in escape hatch is documented but dead, so an operator who
   // sets it gets the same silent exclusion and no way to find out.
   it('runs network probes when SO_PROBES_INCLUDE_NETWORK=1', async () => {

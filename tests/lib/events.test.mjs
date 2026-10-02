@@ -905,6 +905,47 @@ describe('streaming reads across rotations', () => {
     expect(result.stopped).toBe(false);
   });
 
+  it('reports a cut history when a concurrent append pushed the rotation tombstone to line 2', async () => {
+    // BUG THIS CATCHES (#1489 review LOW-2): `maybeRotate` renames, prunes,
+    // THEN appends its tombstone, from an async SessionStart hook, so another
+    // writer's record can land first. The walk checked only FIRST lines and
+    // returned `gaps: []` where `readEventsWithRotations` names the pruned
+    // archive — and maintenance-due said "evolve: never" again.
+    const { scanEventsBackwards, readEventsWithRotations } = await importEventsWithDir(dir);
+    const active = path.join(dir, 'events.jsonl');
+    const pruned = path.join(dir, ARCHIVE_DIR_NAME, 'events-20260101T000000Z_20260201T000000Z.jsonl');
+    const tombstone = `${JSON.stringify({
+      timestamp: '2026-09-20T00:00:01Z',
+      event: 'orchestrator.events.rotated',
+      archived_as: pruned,
+      size_before: 10485800,
+      lines: 31000,
+      first_ts: '2026-01-01T00:00:00Z',
+      last_ts: '2026-02-01T00:00:00Z',
+      malformed_lines: 0,
+      schema_version: 1,
+    })}\n`;
+    writeFileSync(active, rec('2026-09-20T00:00:00Z') + tombstone + rec('2026-09-20T00:00:02Z'));
+
+    const result = scanEventsBackwards({
+      filePath: active,
+      filter: 'orchestrator.evolve.completed',
+      onRecord: () => false,
+    });
+
+    expect(result.gaps).toEqual([
+      {
+        kind: 'missing-archive',
+        path: pruned,
+        archived_as: pruned,
+        first_ts: '2026-01-01T00:00:00Z',
+        last_ts: '2026-02-01T00:00:00Z',
+        reported_by: active,
+      },
+    ]);
+    expect(readEventsWithRotations(undefined, { filePath: active }).gaps.map((g) => g.kind)).toEqual(['missing-archive']);
+  });
+
   it('counts an unreadable line among the matching ones instead of skipping it silently', async () => {
     const { scanEventsBackwards } = await importEventsWithDir(dir);
     const active = path.join(dir, 'events.jsonl');

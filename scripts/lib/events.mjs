@@ -827,8 +827,8 @@ export function listEventSourcesNewestFirst(opts = {}) {
  *   the caller must report undeterminable, never a clean negative.
  * @returns {{stopped: boolean, truncated: boolean, malformed_lines: number,
  *            sources: string[], unreadable: string[], gaps: object[]}} `gaps`
- *   (#1489): a source read to its FIRST line that begins with a rotation
- *   tombstone whose archive is not one of this walk's sources — pruned
+ *   (#1489): every rotation tombstone the walk passed, on any line and
+ *   regardless of `filter`, whose archive is not one of this walk's sources — pruned
  *   (`missing-archive`) or renamed out of `ARCHIVE_NAME_RE`
  *   (`unindexed-archive`), the same two kinds and fields
  *   {@link readEventsWithRotations} reports. Non-empty ⇒ the history the walk
@@ -860,16 +860,20 @@ export function scanEventsBackwards(opts = {}) {
   );
 
   /**
-   * Rotation writes its tombstone as the new file's FIRST line, so only first
-   * lines are checked — and only of sources read that far. Resolved by basename
-   * against this ledger's own `_archive/`, never by the absolute provenance
-   * value (#1411, see {@link readEventsWithRotations}).
+   * Every rotation tombstone the walk passes is checked, on whatever line it
+   * sits — the semantics of {@link readEventsWithRotations}, which checks every
+   * rotation record of every source. Not only first lines (#1489 review
+   * LOW-2): `maybeRotate` renames, prunes, THEN appends the tombstone, from an
+   * async SessionStart hook, so a concurrent append can land first and push it
+   * to line 2. Called BEFORE the caller's `filter`, which names another event
+   * and would otherwise hide the cut. Resolved by basename against this
+   * ledger's own `_archive/`, never by the absolute provenance value (#1411).
    */
-  const noteCut = (firstLine, source) => {
-    if (!firstLine.includes(ROTATION_EVENT)) return;
+  const noteCut = (line, source) => {
+    if (!line.includes(ROTATION_EVENT)) return;
     let record;
     try {
-      record = JSON.parse(firstLine.toString('utf8'));
+      record = JSON.parse(line);
     } catch {
       return; // counted by `consume` like every other malformed line
     }
@@ -893,6 +897,7 @@ export function scanEventsBackwards(opts = {}) {
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i];
       if (!line) continue;
+      noteCut(line, source);
       if (typeof filter === 'string' && !line.includes(filter)) continue;
       let record;
       try {
@@ -941,10 +946,7 @@ export function scanEventsBackwards(opts = {}) {
         carry = block.subarray(0, firstNewline);
       }
       // pos === 0: the carry is this source's FIRST line, complete by construction.
-      if (!stopped && !truncated) {
-        noteCut(carry, source);
-        if (consume(carry, source)) stopped = true;
-      }
+      if (!stopped && !truncated && consume(carry, source)) stopped = true;
     } catch (err) {
       // An unreadable source is a FINDING, not an empty one: it is exactly the
       // case where "no record found" must not be reported as "never happened".

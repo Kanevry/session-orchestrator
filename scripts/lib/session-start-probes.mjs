@@ -502,6 +502,10 @@ function startLoopBlockedMeter() {
  *   - `render` is a PURE function of the result (#1396): anything it names
  *     that the entry function does not return is resolved in `followUp`,
  *     inside the budget — never in the renderer.
+ *   - `telemetry`  optional; PURE `(result) => object|undefined` — the numbers
+ *                  the probe measured, persisted as `measure` on its element
+ *                  of `orchestrator.probes.completed` for `ran-*` outcomes
+ *                  (#1489), bounded by {@link probeMeasure}.
  */
 export const PROBES = [
   {
@@ -764,6 +768,18 @@ export const PROBES = [
         : 'no-events-ledger';
     },
     args: ({ repoRoot, config }) => ({ repoRoot, config }),
+    // #1489: the coverage reaches the ledger on every measured answer, warn or
+    // not — a warning that never fires is otherwise indistinguishable from a
+    // dead one (HR-105). Counts and day spans only: no path, no timestamp.
+    // A degraded answer carries no `archives`, so it persists no measure.
+    telemetry: (r) => (Number.isInteger(r?.archives)
+      ? {
+          coverage_days: Number.isFinite(r.coverageDays) ? Math.round(r.coverageDays * 1000) / 1000 : null,
+          archives: r.archives,
+          max_backups: r.maxBackups,
+          required_days: r.requiredDays ?? null,
+        }
+      : undefined),
   },
 ];
 
@@ -788,6 +804,42 @@ function pluginVersion() {
   } catch {
     return undefined;
   }
+}
+
+/**
+ * NAMED CEILING (BV-004): keys per probe `measure`. `events-retention`, the one
+ * probe with telemetry today, persists 4. Revisit when a probe needs more than
+ * 8 — the cap exists so one probe cannot inflate every SessionStart record.
+ */
+const MEASURE_MAX_KEYS = 8;
+const MEASURE_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
+/**
+ * A probe's `telemetry(result)`, bounded for the ledger (#1489): at most
+ * {@link MEASURE_MAX_KEYS} snake_case keys whose values are finite numbers or
+ * `null`; any other entry is dropped. Strings are refused outright, not
+ * vetted: `orchestrator.probes.completed` also travels over the optional
+ * webhook unredacted, and a string is how a path or a repo slug gets there.
+ * A missing, throwing or empty telemetry yields `undefined` — no `measure`
+ * key, which reads as "not measured", never as zero.
+ *
+ * @param {{telemetry?: Function}} probe
+ * @param {*} result — the probe's delivered result
+ * @returns {Record<string, number|null>|undefined}
+ */
+function probeMeasure(probe, result) {
+  if (typeof probe.telemetry !== 'function') return undefined;
+  let raw;
+  try {
+    raw = probe.telemetry(result);
+  } catch {
+    return undefined;
+  }
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+  const entries = Object.entries(raw)
+    .filter(([k, v]) => MEASURE_KEY_RE.test(k) && (v === null || (typeof v === 'number' && Number.isFinite(v))))
+    .slice(0, MEASURE_MAX_KEYS);
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
@@ -1103,10 +1155,12 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       const line = typeof probe.render === 'function'
         ? probe.render(result)
         : defaultRender(result, severity);
+      const measure = probeMeasure(probe, result);
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,
         workMs,
         ...(followUpFailure ? { followUp: followUpFailure } : {}),
+        ...(measure ? { measure } : {}),
         ...(line ? { line } : {}),
       });
     }),
@@ -1170,6 +1224,9 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       // A follow-up that fell back to the delivered result is otherwise
       // invisible (the outcome is `ran-*`); this is its revisit trigger's input.
       ...(typeof r.followUp === 'string' ? { follow_up: r.followUp } : {}),
+      // What the probe MEASURED, warn or not (#1489, HR-105): without it a
+      // probe that never warns reads the same whether it is rare or dead.
+      ...(r.measure ? { measure: r.measure } : {}),
     })),
   };
 

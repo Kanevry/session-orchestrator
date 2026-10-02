@@ -33,11 +33,15 @@
  * Measured 2026-10-02: 4 of 35 fleet ledgers hold any archive, at most 3 at
  * `max-backups: 5`, so the warning has never fired — and a warning that never
  * fires looks the same whether it is rare or dead. Every MEASURED answer
- * therefore carries the measurement, warn or not: `coverageDays` (now minus the
- * oldest readable event), `oldestEventAt`, `requiredDays`/`requiredBy`,
- * `archives`, `maxBackups`. The runner (`session-start-probes.mjs`) persists
- * only `outcome`/`reason`/`work_ms` per probe today, so these fields reach the
- * caller but not yet `orchestrator.probes.completed`.
+ * therefore carries the measurement, warn or not: `coverageDays`,
+ * `oldestEventAt`, `requiredDays`/`requiredBy`, `archives`, `maxBackups`.
+ * `coverageDays` is now minus the oldest archive's start on a FULL ring — the
+ * span the verdict judges — and now minus the oldest stamp of any source
+ * (archives, legacy ring, active file) below it, where nothing was pruned.
+ * The registry entry's `telemetry` (`session-start-probes.mjs`) persists
+ * `coverage_days`, `archives`, `max_backups` and `required_days` as `measure`
+ * on this probe's element of `orchestrator.probes.completed`; `oldestEventAt`
+ * and `requiredBy` reach the caller only.
  *
  * ## Three states, never two
  *
@@ -55,11 +59,14 @@
  *     or `{severity:'warn', kind:'retention-short', message, …}`.
  *
  * Cost: two `readdirSync` of `_archive/` per session start (the registry
- * precondition, then this probe), one ≤64 KiB head read of the active file and
- * of each legacy-ring file, and the import of every reader module to read its
- * declaration — 22-32 ms cold for all six in a fresh process (measured
- * 2026-10-02, load average ~5); two of them are session-start probes already
- * loaded in that process.
+ * precondition, then this probe), below a full ring one ≤64 KiB head read of
+ * the active file and of each legacy-ring file, and — on EVERY measured start,
+ * before the ring check, because `requiredDays` is part of the silent
+ * measurement — the import of every reader module to read its declaration:
+ * 22-32 ms cold for all six in a fresh process (measured 2026-10-02, load
+ * average ~5); two of them are session-start probes already loaded in that
+ * process. So a reader module that fails to import degrades this probe on
+ * every start, not only on a full ring.
  *
  * @module scripts/lib/events-retention-banner
  */
@@ -233,19 +240,29 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
     };
   }
 
-  // Oldest readable event across every source the readers read: archives by
-  // name, the legacy ring and the active file by their first stamp.
+  const raw = config?.['events-rotation']?.['max-backups'];
+  const maxBackups = Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_MAX_BACKUPS;
+  const ringFull = names.length >= maxBackups;
+
+  // A FULL ring is judged on its archives alone. The rotator prunes archives
+  // but never the legacy ring, so a legacy `events.jsonl.N` from before the
+  // migration outlives the pruned archives and its stamp would span the hole
+  // they left (#1489 review MED-1: a `.1` from April turned 20 hours of
+  // contiguous history into "173.5d, covered"). Below a full ring nothing has
+  // been pruned, so every source counts toward the silent coverage figure.
   const starts = [
     ...names.map(archiveStartMs),
-    ...Array.from({ length: LEGACY_RING_MAX }, (_, i) => `${activePath}.${i + 1}`)
-      .filter((p) => existsSync(p))
-      .map(firstTimestampMs),
-    firstTimestampMs(activePath),
+    ...(ringFull
+      ? []
+      : [
+          ...Array.from({ length: LEGACY_RING_MAX }, (_, i) => `${activePath}.${i + 1}`)
+            .filter((p) => existsSync(p))
+            .map(firstTimestampMs),
+          firstTimestampMs(activePath),
+        ]),
   ].filter(Number.isFinite);
   const oldestMs = starts.length > 0 ? Math.min(...starts) : Number.NaN;
 
-  const raw = config?.['events-rotation']?.['max-backups'];
-  const maxBackups = Number.isInteger(raw) && raw >= 1 ? raw : DEFAULT_MAX_BACKUPS;
   const measured = {
     coverageDays: Number.isFinite(oldestMs) ? (nowMs - oldestMs) / DAY_MS : null,
     oldestEventAt: Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null,
@@ -257,7 +274,7 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
 
   // Ring not full ⇒ nothing pruned under this config ⇒ the retained ledger is
   // the whole history. See the module header (HR-101).
-  if (names.length < maxBackups) return { severity: 'ok', kind: 'ring-not-full', ...measured };
+  if (!ringFull) return { severity: 'ok', kind: 'ring-not-full', ...measured };
   if (required.days === null) return { severity: 'ok', kind: 'no-finite-window', ...measured };
   // Finite here: the ring is full, so `names` is non-empty and
   // `archiveStartMs` is total over `ARCHIVE_NAME_RE` matches.
