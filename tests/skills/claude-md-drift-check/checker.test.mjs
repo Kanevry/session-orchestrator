@@ -11,10 +11,11 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { writeFileSync, mkdirSync, existsSync, chmodSync, readFileSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 
 import { join, resolve, sep, delimiter } from 'node:path';
 import { fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
+import { installNodeCli } from '../../_helpers/executable-fixture.mjs';
 
 // checker.mjs emits `file` fields using path.relative, which uses the runtime's
 // path.sep. Normalize to forward slashes in assertions for Windows portability.
@@ -358,9 +359,11 @@ describe('check 3: issue-reference-freshness — #872 --repo host-pinning (SSH r
     // --repo value is observable without depending on real GitLab auth.
     const binDir = makeTmpDir('drift-check-glab-stub-');
     const captureFile = join(binDir, 'capture.txt');
-    const glabStub = join(binDir, 'glab');
-    writeFileSync(glabStub, `#!/bin/sh\necho "$@" >> "${captureFile}"\nexit 0\n`);
-    chmodSync(glabStub, 0o755);
+    // `glab issue view …` runs the plain file `<vault>/issue` through a symlink to
+    // node — no freshly written executable (tests/_helpers/executable-fixture.mjs).
+    installNodeCli(binDir, 'glab', vault, {
+      issue: `fs.appendFileSync(${JSON.stringify(captureFile)}, ARGS.join(' ') + '\\n');\n`,
+    });
 
     try {
       const r = runChecker(vault, [], { PATH: `${binDir}${delimiter}${process.env.PATH}` });
@@ -396,9 +399,11 @@ describe('check 3: issue-reference-freshness — explicit --repo CLI precedence 
 
     const binDir = makeTmpDir('drift-check-glab-stub-');
     const captureFile = join(binDir, 'capture.txt');
-    const glabStub = join(binDir, 'glab');
-    writeFileSync(glabStub, `#!/bin/sh\necho "$@" >> "${captureFile}"\nexit 0\n`);
-    chmodSync(glabStub, 0o755);
+    // `glab issue view …` runs the plain file `<vault>/issue` through a symlink to
+    // node — no freshly written executable (tests/_helpers/executable-fixture.mjs).
+    installNodeCli(binDir, 'glab', vault, {
+      issue: `fs.appendFileSync(${JSON.stringify(captureFile)}, ARGS.join(' ') + '\\n');\n`,
+    });
 
     try {
       const r = runChecker(

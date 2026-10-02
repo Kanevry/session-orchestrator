@@ -16,10 +16,11 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, cpSync, mkdirSync, chmodSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, cpSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { installGitHook } from '../_helpers/executable-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -79,7 +80,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // so the hook's `node scripts/lib/validate/check-owner-leakage.mjs` resolves.
       mkdirSync(join(tmpDir, 'scripts', 'lib', 'validate'), { recursive: true });
       cpSync(SCANNER_PATH, join(tmpDir, 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs'));
-      // Install our pre-commit hook into .git/hooks so `git commit` triggers it
+      // Install our pre-commit hook so `git commit` triggers it
       // (we don't need husky's _ runtime — just the hook body running).
       const hookSrc = readFileSync(HOOK_PATH, 'utf8')
         // Strip the gitleaks prelude + EVERYTHING after the check-owner-leakage
@@ -91,9 +92,8 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
         // before OR after lint-staged is removed automatically.
         .replace(/if command -v gitleaks[\s\S]*?fi\n\n/, '')
         .replace(/(check-owner-leakage\.mjs[\s\S]*?\n\}\n)[\s\S]*$/, '$1');
-      const hookDst = join(tmpDir, '.git', 'hooks', 'pre-commit');
-      writeFileSync(hookDst, hookSrc);
-      chmodSync(hookDst, 0o755);
+      // No freshly written executable: see tests/_helpers/executable-fixture.mjs.
+      installGitHook(tmpDir, 'pre-commit', hookSrc);
     });
 
     afterEach(() => {
@@ -267,9 +267,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // from the inert-degrade case above).
       symlinkSync(NODE_MODULES_PATH, join(tmpDir, 'node_modules'), 'dir');
 
-      const hookDst = join(tmpDir, '.git', 'hooks', 'pre-commit');
-      writeFileSync(hookDst, buildOwnerLeakageHookSlice());
-      chmodSync(hookDst, 0o755);
+      installGitHook(tmpDir, 'pre-commit', buildOwnerLeakageHookSlice());
 
       namesDir = makeTmpDir('so-husky-cp11-names-');
     });

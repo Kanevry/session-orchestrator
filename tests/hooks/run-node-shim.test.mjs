@@ -16,7 +16,6 @@ import {
   writeFileSync,
   mkdtempSync,
   mkdirSync,
-  chmodSync,
   existsSync,
   rmSync,
   symlinkSync,
@@ -128,24 +127,30 @@ describe('run-node.sh — node resolution (GH#53)', () => {
     expect(res.stdout).toBe('got:{"tool":"Bash"}');
   });
 
+  // The "fake" node in the next two tests is a SYMLINK to the real one, never a
+  // freshly written executable (macOS first-launch check, see
+  // tests/_helpers/executable-fixture.mjs). The probe prints process.argv0 — the
+  // exact path the shim exec'd — so only the binary under test can satisfy it.
   it('SO_NODE_BIN override wins over PATH', () => {
     const dirs = makeSandbox();
     const fakeNode = path.join(dirs.fakeBin, 'node');
-    writeFileSync(fakeNode, '#!/bin/sh\necho "fake-node:$1"\nexit 0\n');
-    chmodSync(fakeNode, 0o755);
-    const res = runShim(nodelessEnv(dirs, { SO_NODE_BIN: fakeNode }), ['some-script.mjs']);
+    symlinkSync(process.execPath, fakeNode);
+    const probe = path.join(dirs.root, 'probe.mjs');
+    writeFileSync(probe, 'process.stdout.write(`fake-node:${process.argv0}:${process.argv[2]}`);');
+    const res = runShim(nodelessEnv(dirs, { SO_NODE_BIN: fakeNode }), [probe, 'some-arg']);
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('fake-node:some-script.mjs');
+    expect(res.stdout).toBe(`fake-node:${fakeNode}:some-arg`);
   });
 
   it('falls back to SO_NODE_SEARCH_DIRS when PATH has no node', () => {
     const dirs = makeSandbox();
     const fakeNode = path.join(dirs.fakeBin, 'node');
-    writeFileSync(fakeNode, '#!/bin/sh\necho "fake-node:$1"\nexit 0\n');
-    chmodSync(fakeNode, 0o755);
-    const res = runShim(nodelessEnv(dirs, { SO_NODE_SEARCH_DIRS: dirs.fakeBin }), ['x.mjs']);
+    symlinkSync(process.execPath, fakeNode);
+    const probe = path.join(dirs.root, 'probe.mjs');
+    writeFileSync(probe, 'process.stdout.write(`fake-node:${process.argv0}:${process.argv[2]}`);');
+    const res = runShim(nodelessEnv(dirs, { SO_NODE_SEARCH_DIRS: dirs.fakeBin }), [probe, 'x-arg']);
     expect(res.status).toBe(0);
-    expect(res.stdout).toContain('fake-node:x.mjs');
+    expect(res.stdout).toBe(`fake-node:${fakeNode}:x-arg`);
   });
 });
 

@@ -24,11 +24,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, mkdirSync, chmodSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 import { join, resolve } from 'node:path';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir } from '../_helpers/tmp-fixture.mjs';
+import { installGitHook } from '../_helpers/executable-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -122,9 +123,8 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
       writeFileSync(join(tmpDir, 'hooks', 'on-stop.mjs'), "import '../scripts/lib/helper.mjs';\n");
       writeFileSync(join(tmpDir, 'scripts', 'lib', 'helper.mjs'), 'export const x = 1;\n');
 
-      const hookDst = join(tmpDir, '.git', 'hooks', 'pre-commit');
-      writeFileSync(hookDst, extractStage());
-      chmodSync(hookDst, 0o755);
+      // No freshly written executable: see tests/_helpers/executable-fixture.mjs.
+      installGitHook(tmpDir, 'pre-commit', extractStage());
     });
 
     afterEach(() => {

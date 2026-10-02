@@ -31,6 +31,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { isRoot } from '../_helpers/perms.mjs';
+import { installNodeCli } from '../_helpers/executable-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -146,6 +147,26 @@ function runInteractive(args, { env = {}, cwd } = {}) {
     child.on('error', reject);
     child.stdin.on('error', reject);
     child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/**
+ * Put a fake `glab` into `binDir` without writing a fresh executable
+ * (tests/_helpers/executable-fixture.mjs). `glab --version` is answered by node
+ * itself (exit 0 — all `assertGlabExists` reads); `glab api <path>` answers from
+ * `routes[path]` = { stdout?, stderr?, code }; any other `api` path exits 2 with
+ * "unexpected glab arguments". vault-backfill spawns glab without a `cwd`, so
+ * the `api` script lives in the CLI's own cwd, `tmpBase` (see run()).
+ */
+function installFakeGlab(binDir, routes) {
+  installNodeCli(binDir, 'glab', tmpBase, {
+    api: `const routes = ${JSON.stringify(routes)};
+const r = Object.hasOwn(routes, ARGS[1]) ? routes[ARGS[1]] : null;
+if (!r) { process.stderr.write('unexpected glab arguments: ' + ARGS[0] + ' ' + ARGS[1] + '\\n'); process.exit(2); }
+if (r.stdout) process.stdout.write(r.stdout + '\\n');
+if (r.stderr) process.stderr.write(r.stderr + '\\n');
+process.exit(r.code);
+`,
   });
 }
 
@@ -293,24 +314,12 @@ describe('Session Config reading (#1094)', () => {
     );
     const binDir = join(tmpBase, 'bin');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z"}]]'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw" ]; then
-  printf '404 File Not Found\\n' >&2
-  exit 1
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z"}]]', code: 0 },
+      'projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw':
+        { stderr: '404 File Not Found', code: 1 },
+    });
 
     const { status, stdout, stderr } = run([], {
       cwd: tmpBase,
@@ -488,24 +497,12 @@ describe('interactive group apply mode', () => {
     setupTemplateDir(tmpBase);
     const binDir = join(tmpBase, 'bin');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z","namespace":{"full_path":"engineering/platform"},"web_url":"https://gitlab.example.test/engineering/platform/edge-proxy","private_token":"must-not-escape-the-normalized-representation"}]]'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw" ]; then
-  printf '404 File Not Found\\n' >&2
-  exit 1
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z","namespace":{"full_path":"engineering/platform"},"web_url":"https://gitlab.example.test/engineering/platform/edge-proxy","private_token":"must-not-escape-the-normalized-representation"}]]', code: 0 },
+      'projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw':
+        { stderr: '404 File Not Found', code: 1 },
+    });
 
     const { status, stdout } = await runInteractive(
       ['--groups', 'engineering/platform', '--apply', '--out-dir', outDir],
@@ -539,24 +536,12 @@ exit 2
     const stagingDir = join(tmpBase, 'staging', 'nested');
     const escapedFile = join(tmpBase, 'outside-response-sentinel', '.vault.yaml');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":1065,"path_with_namespace":"../../outside-response-sentinel","visibility":"private","created_at":"2026-08-21T00:00:00Z"}]]'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "projects/..%2F..%2Foutside-response-sentinel/repository/files/.vault.yaml/raw" ]; then
-  printf '404 File Not Found\\n' >&2
-  exit 1
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":1065,"path_with_namespace":"../../outside-response-sentinel","visibility":"private","created_at":"2026-08-21T00:00:00Z"}]]', code: 0 },
+      'projects/..%2F..%2Foutside-response-sentinel/repository/files/.vault.yaml/raw':
+        { stderr: '404 File Not Found', code: 1 },
+    });
 
     const { status, stdout, stderr } = await runInteractive(
       ['--groups', 'engineering/platform', '--apply', '--out-dir', stagingDir],
@@ -582,20 +567,10 @@ exit 2
     setupTemplateDir(tmpBase);
     const binDir = join(tmpBase, 'bin');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":315,"path_with_namespace":"engineering/platform/bad-timestamp","visibility":"internal","created_at":42,"private_token":"must-not-escape-the-api-diagnostic"}]]'
-  exit 0
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":315,"path_with_namespace":"engineering/platform/bad-timestamp","visibility":"internal","created_at":42,"private_token":"must-not-escape-the-api-diagnostic"}]]', code: 0 },
+    });
 
     const { status, stdout, stderr } = run(
       ['--groups', 'engineering/platform'],
