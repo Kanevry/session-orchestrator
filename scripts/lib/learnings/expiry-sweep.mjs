@@ -68,6 +68,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readLearnings, readLearningsSnapshot, rewriteLearnings, withLearningsLock } from './io.mjs';
+import { redactHomeDir } from '../common.mjs';
 
 /**
  * Thrown by {@link pruneLearnings} when `expectedGeneration` no longer matches
@@ -283,7 +284,8 @@ export function warnUnparseableLines(filePath, malformed, lineNumbers = []) {
   const more = lineNumbers.length > 10 ? `, +${lineNumbers.length - 10} more` : '';
   const where = lineNumbers.length > 0 ? ` (line(s) ${lineNumbers.slice(0, 10).join(', ')}${more})` : '';
   console.error(
-    `[learnings] WARN: ${malformed.length} unparseable line(s) in ${filePath}${where} kept verbatim, ` +
+    // The store path is absolute and lands in every /close transcript (#1490).
+    `[learnings] WARN: ${malformed.length} unparseable line(s) in ${redactHomeDir(filePath)}${where} kept verbatim, ` +
       `never archived; report them to the operator — ` +
       `never hand-edit the store`
   );
