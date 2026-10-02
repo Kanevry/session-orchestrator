@@ -639,6 +639,55 @@ describe('backfillAbandonedSession — dead-by-age relaxation (#731)', () => {
   });
 });
 
+describe('backfillAbandonedSession — a rotated-ledger scan the deadline cut short (#1498)', () => {
+  afterEach(() => {
+    vi.doUnmock('@lib/events.mjs');
+    vi.resetModules();
+  });
+
+  it('defers the candidate instead of recording the half of its history read before the cut', async () => {
+    // BUG THIS CATCHES: `recordsMentioning` handing a CUT scan on as a whole
+    // history. The active file holds one late event, the archive the
+    // session.started + lock.acquired. Used as the whole, the partial answer
+    // writes `unknown-2026-05-27-abandoned-<hash>` started 15:30 instead of
+    // main-2026-05-27-session-1 started 14:00, and the dedupe keeps that
+    // record forever. Double: the real scanner, cut where a budget expires
+    // between the active file and the first archive — active records
+    // delivered, `truncated: true` (events.mjs `outOfTime()` before a source).
+    writeJsonl(path.join(metricsDir(), '_archive', 'events-20260527T140000Z_20260527T150000Z.jsonl'), [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      {
+        timestamp: '2026-05-27T14:01:00.000Z',
+        event: 'orchestrator.session.lock.acquired',
+        session_id: UUID,
+        semantic_session_id: 'main-2026-05-27-session-1',
+        mode: 'feature',
+      },
+    ]);
+    seedEvents([{ timestamp: '2026-05-27T15:30:00.000Z', event: 'orchestrator.agent.stopped', session_id: UUID }]);
+    vi.resetModules();
+    const cutScan = vi.fn();
+    vi.doMock('@lib/events.mjs', async (importOriginal) => {
+      const actual = await importOriginal();
+      cutScan.mockImplementation((opts) => ({
+        ...actual.scanEventsBackwards({
+          ...opts,
+          onRecord: (record, source) => source.kind === 'active' && opts.onRecord(record, source),
+        }),
+        truncated: true,
+      }));
+      return { ...actual, scanEventsBackwards: cutScan };
+    });
+    const { backfillAbandonedSession: backfill } = await import('@lib/session-close-backfill.mjs');
+
+    const res = await backfill({ repoRoot, sessionId: UUID, now: NOW_MS, archiveScanDeadlineMs: Date.now() + 60_000 });
+
+    expect(cutScan).toHaveBeenCalledTimes(1);
+    expect(res).toEqual({ action: 'skipped-history-unread', sessionId: UUID });
+    expect(readSessions()).toEqual([]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #863 — own-live-lock self-exclusion (defect 1: a live OWN session was
 // getting recorded 'abandoned' because the pre-#863 guard only ever checked
@@ -1222,6 +1271,58 @@ describe('backfillCompletedFromStateMd — #429', () => {
 
     expect(res.action).toBe('backfilled');
     expect('raw_session_id' in readSessions()[0]).toBe(false);
+  });
+
+  describe('(b4) STATE.md without session-id whose events rotated into _archive/ (#1498 label bridge)', () => {
+    const ARCHIVE = 'events-20260527T090000Z_20260527T170000Z.jsonl';
+    const lockAcquired = (sessionId, timestamp) => ({
+      timestamp,
+      event: 'orchestrator.session.lock.acquired',
+      session_id: sessionId,
+      semantic_session_id: 'main-2026-05-27-session-1',
+      mode: 'deep',
+    });
+
+    beforeEach(() => {
+      // `session-id` is optional in STATE.md (state-ownership.md); the
+      // frontmatter carries only the semantic label. The active file holds
+      // nothing of this session — everything it emitted rotated away.
+      writeStateMd(COMPLETED_FRONTMATTER);
+      seedEvents([{ timestamp: '2026-05-27T18:00:00.000Z', event: 'orchestrator.agent.stopped', session_id: '99999999-2222-4333-8444-555555555555' }]);
+    });
+
+    it('takes started_at from the archive through the label → UUID bridge, not the run time', async () => {
+      // BUG THIS CATCHES: skipping the label → archive → UUID bridge. The
+      // record then carries started_at = now (18:30) for a session that
+      // started at 14:00 — the archive holds the answer, nothing read it.
+      writeJsonl(path.join(metricsDir(), '_archive', ARCHIVE), [
+        { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+        lockAcquired(UUID, '2026-05-27T14:01:00.000Z'),
+      ]);
+
+      const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+      expect(res.action).toBe('backfilled');
+      expect(res.record.started_at).toBe(STARTED_AT);
+    });
+
+    it('borrows no history when the label bridges to TWO UUIDs — started_at stays flagged incomplete', async () => {
+      // BUG THIS CATCHES: weakening the `bridged.size !== 1` guard (e.g. to
+      // `< 1`). A reused label then picks the FIRST bridged UUID and stamps
+      // that other session's start (09:00) and join key onto this record.
+      writeJsonl(path.join(metricsDir(), '_archive', ARCHIVE), [
+        { timestamp: '2026-05-27T09:00:00.000Z', event: 'orchestrator.session.started', session_id: OTHER_UUID, branch: 'main' },
+        lockAcquired(OTHER_UUID, '2026-05-27T09:01:00.000Z'),
+        { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+        lockAcquired(UUID, '2026-05-27T14:01:00.000Z'),
+      ]);
+
+      const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+      expect(res.action).toBe('backfilled');
+      expect(res.record._backfill_incomplete_fields).toContain('started_at');
+      expect(res.record).not.toHaveProperty('raw_session_id');
+    });
   });
 
   it('(c) a second run after (b) is a no-op (idempotent — dedupe against the just-written record)', async () => {
