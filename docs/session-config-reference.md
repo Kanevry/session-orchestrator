@@ -1626,7 +1626,7 @@ reaper:
 | `reaper.max-hook-latency-ms` | integer (≥ 1) | `50` | Ceiling the TRIGGER may delay a hook by — the config read, the marker `stat` and the detached spawn, measured with `performance.now()` in `maybeTriggerOrphanScan()`. Overrunning it writes ONE stderr WARN line and nothing else: no event (a `PostToolBatch`-class hook emitting per fire is the always-on signal HR-101 calls a broken instrument) and no abort (the child is already detached by then). The scan itself is not covered — that is the point of spawning detached. |
 | `reaper.false-alarm-window` | integer (≥ 1) | `50` | Rolling window of audit decisions the HR-101 10 % false-alarm rate is judged over — a window in DECISIONS, not calendar time, so the rate has a population on quiet hosts too. Reaches the scan as `--false-alarm-window` on the detached child's argv and becomes `runOrphanScan`'s `falseAlarmWindow`; the CLI refuses `0`, which `falseAlarmRate()` would read as “every firing ever recorded” rather than as a window. |
 
-**Used by:** `hooks/post-tool-batch-wave-signal.mjs`, `hooks/on-stop.mjs` (both via `maybeTriggerOrphanScan()`), `scripts/lib/orphan-reaper.mjs`, `scripts/lib/config/reaper.mjs` (`_parseReaper`). PRD `docs/prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md`, Epic #1425, issue #1432.
+**Used by:** `hooks/post-tool-batch-wave-signal.mjs`, `hooks/on-stop.mjs` (both via `maybeTriggerOrphanScan()` from `scripts/lib/orphan-reaper/trigger.mjs`), `scripts/lib/orphan-reaper.mjs`, `scripts/lib/config/reaper.mjs` (`_parseReaper`). PRD `docs/prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md`, Epic #1425, issue #1432.
 
 ## Gate Timeout — Path B (#1425 A3)
 

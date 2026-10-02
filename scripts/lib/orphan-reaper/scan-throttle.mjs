@@ -1,10 +1,11 @@
 /**
- * orphan-reaper/scan-throttle.mjs — the B4 throttle the two trigger hooks call.
+ * orphan-reaper/scan-throttle.mjs — the B4 throttle the trigger calls.
  *
- * This is the reaper's only hot-path surface: `hooks/on-stop.mjs` and
- * `hooks/post-tool-batch-wave-signal.mjs` import THIS module, not the scan, so a
- * tool batch pays for one `stat` and two tiny modules — never for the ledger,
- * `ps` or kill-ladder code the detached scan child loads.
+ * Together with `trigger.mjs` this is the reaper's only hot-path surface:
+ * `hooks/on-stop.mjs` and `hooks/post-tool-batch-wave-signal.mjs` reach THIS
+ * module (lazily, via `trigger.mjs`), not the scan, so a tool batch pays for one
+ * `stat` and a few tiny modules — never for the ledger, `ps` or kill-ladder code
+ * the detached scan child loads.
  */
 
 import { lstatSync, mkdirSync, writeFileSync } from 'node:fs';
@@ -69,11 +70,11 @@ export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEF
  * Stamp the throttle marker. Best-effort and never throws — a marker that could
  * not be written means the next scan runs, which is the safe direction for a
  * read-only probe (the reasoning is on {@link shouldScanNow}). Callers must not
- * read a `false` as a stamped throttle: the hooks' `maybeTriggerOrphanScan`
- * returns it as `reason: 'spawned-unthrottled'`. That return value is the whole
- * record — both hook entrypoints discard it, and nothing writes it to an event
- * or a log — so in production an unwritable marker shows only as one detached
- * scan child per hook fire.
+ * read a `false` as a stamped throttle: `maybeTriggerOrphanScan`
+ * (`trigger.mjs`) returns it as `reason: 'spawned-unthrottled'`, and
+ * `hooks/on-stop.mjs` records that reason as `reaper_trigger` on its
+ * Stop/SubagentStop records — so an unwritable marker is countable in
+ * events.jsonl, not only visible as one detached scan child per hook fire.
  *
  * A marker path that is a symlink or not a regular file is left alone and
  * reported as not written: `writeFileSync` follows a link, so a marker linked to

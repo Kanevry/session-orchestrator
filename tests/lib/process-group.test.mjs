@@ -12,11 +12,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import {
   GATE_PROCESS_LEDGER_RELPATH,
@@ -671,6 +672,72 @@ describe('gate-process ledger', () => {
     } finally {
       await rm(victimDir, { recursive: true, force: true });
     }
+  });
+
+  it('refuses to APPEND or READ through a symlinked ledger — appendFileSync wrote every gate registration into the link target', async () => {
+    // Bug (#1489, CWE-59): `recordGateProcess` used `appendFileSync(path)`,
+    // which follows a symlink, so `ln -s <victim> gate-processes.jsonl` routed
+    // every gate registration into the victim — and `readFileSync` then handed
+    // the victim's lines to the reaper as kill candidates. Only the prune's
+    // rewrite refused a link.
+    const victimDir = mkdtempSync(path.join(os.tmpdir(), 'process-group-victim-'));
+    try {
+      const now = Date.now();
+      const victim = path.join(victimDir, 'foreign.jsonl');
+      const body = `${JSON.stringify(rec(777, now - 1000))}\n`;
+      writeFileSync(victim, body, 'utf8');
+      const ledger = path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH);
+      mkdirSync(path.dirname(ledger), { recursive: true });
+      symlinkSync(victim, ledger);
+      const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      let read;
+      let warnings;
+      try {
+        recordGateProcess(repoRoot, rec(501, now));
+        read = readGateProcessLedger(repoRoot, { nowMs: now });
+        warnings = warn.mock.calls.map((c) => String(c[0]));
+      } finally {
+        warn.mockRestore();
+      }
+
+      expect(readFileSync(victim, 'utf8')).toBe(body);
+      expect(lstatSync(ledger).isSymbolicLink()).toBe(true);
+      expect(read).toEqual({ records: [], malformedLines: 0, expired: 0 });
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toMatch(/could not record gate process .*not a regular file/);
+    } finally {
+      await rm(victimDir, { recursive: true, force: true });
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('returns at once from a FIFO planted at the ledger path — the plain append open hung the gate in its own registration path', () => {
+    // Bug (#1489): `appendFileSync(path)` opened a planted FIFO for writing and
+    // waited for a reader that never came, and `readFileSync` blocked the same
+    // way — both on `spawnInGroup`'s register path (record + prune), so the gate
+    // never started its command. Child process: a sync open blocked in THIS
+    // worker could not be interrupted by any test timeout.
+    const ledger = path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH);
+    mkdirSync(path.dirname(ledger), { recursive: true });
+    execFileSync('mkfifo', [ledger]);
+    const moduleUrl = pathToFileURL(path.join(process.cwd(), 'scripts/lib/process-group.mjs')).href;
+    const probe = `const pg = await import(process.argv[1]);
+const root = process.argv[2];
+pg.recordGateProcess(root, ${JSON.stringify(rec(4242, Date.now()))});
+const pruned = pg.pruneGateProcessLedger(root);
+const read = pg.readGateProcessLedger(root);
+process.stdout.write(JSON.stringify({ pruned, read }));`;
+
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', probe, moduleUrl, repoRoot], {
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+
+    expect(child.signal).toBeNull();
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({ pruned: 0, read: { records: [], malformedLines: 0, expired: 0 } });
+    expect(child.stderr).toMatch(/could not record gate process/);
+    expect(lstatSync(ledger).isFIFO()).toBe(true);
   });
 
   it('registers the spawned group in the ledger under repoRoot', () => {
