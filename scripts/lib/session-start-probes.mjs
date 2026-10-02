@@ -823,23 +823,26 @@ const MEASURE_KEY_RE = /^[a-z][a-z0-9_]{0,31}$/;
  * A missing, throwing or empty telemetry yields `undefined` — no `measure`
  * key, which reads as "not measured", never as zero.
  *
+ * Reading the returned object stays inside the `try`: `Object.entries` runs
+ * its getters and a Proxy's `ownKeys` trap, and either may throw — which,
+ * outside it, rejected the whole runner against its never-rejects contract.
+ *
  * @param {{telemetry?: Function}} probe
  * @param {*} result — the probe's delivered result
  * @returns {Record<string, number|null>|undefined}
  */
 function probeMeasure(probe, result) {
   if (typeof probe.telemetry !== 'function') return undefined;
-  let raw;
   try {
-    raw = probe.telemetry(result);
+    const raw = probe.telemetry(result);
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
+    const entries = Object.entries(raw)
+      .filter(([k, v]) => MEASURE_KEY_RE.test(k) && (v === null || (typeof v === 'number' && Number.isFinite(v))))
+      .slice(0, MEASURE_MAX_KEYS);
+    return entries.length > 0 ? Object.fromEntries(entries) : undefined;
   } catch {
     return undefined;
   }
-  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined;
-  const entries = Object.entries(raw)
-    .filter(([k, v]) => MEASURE_KEY_RE.test(k) && (v === null || (typeof v === 'number' && Number.isFinite(v))))
-    .slice(0, MEASURE_MAX_KEYS);
-  return entries.length > 0 ? Object.fromEntries(entries) : undefined;
 }
 
 /**
@@ -1147,14 +1150,28 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       }
 
       const result = raced?.__probeResult;
-      const severity = severityOf(result, probe);
-      // The renderer gets the RESULT only (#1396): no `ctx`, so it has no repo
-      // to spawn git against. It runs after the budget race, where nothing it
-      // did would be measured; a repo-local fact a banner names is resolved in
-      // the probe's `followUp`, inside the race, and carried as data.
-      const line = typeof probe.render === 'function'
-        ? probe.render(result)
-        : defaultRender(result, severity);
+      // A custom `severityOf`, a `render`, or a getter on the result the
+      // defaults read is probe-supplied code that can throw. The runner never
+      // rejects, so such a throw degrades this probe the way a throwing
+      // precondition does: `error` with a fixed reason, no banner line.
+      let severity;
+      let line;
+      let stage = 'severity-threw';
+      try {
+        severity = severityOf(result, probe);
+        stage = 'render-threw';
+        // The renderer gets the RESULT only (#1396): no `ctx`, so it has no
+        // repo to spawn git against. It runs after the budget race, where
+        // nothing it did would be measured; a repo-local fact a banner names
+        // is resolved in the probe's `followUp`, inside the race, and carried
+        // as data.
+        line = typeof probe.render === 'function'
+          ? probe.render(result)
+          : defaultRender(result, severity);
+      } catch {
+        record('error', { reason: stage, workMs });
+        return;
+      }
       const measure = probeMeasure(probe, result);
       record(severity === 'ok' ? 'ran-clean' : severity === 'warn' ? 'ran-warn' : 'ran-alert', {
         severity,

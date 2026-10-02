@@ -24,9 +24,16 @@
  * ## When it warns (HR-101 — a signal may only warn if it is rare)
  *
  * Only when the archive ring is FULL (`archives >= max-backups`). Below that
- * nothing has been pruned under the current config, so the retained ledger IS
- * the whole history — a two-hour-old repo covering two hours is not "short
- * retention", and judging it so would fire on every young repo's start.
+ * the rotator prunes nothing under the current config, so the ledger only
+ * grows — a two-hour-old repo covering two hours is not "short retention", and
+ * judging it so would fire on every young repo's start.
+ *
+ * "Not full" does not mean "never pruned": after `max-backups` is RAISED, the
+ * archives pruned under the old, smaller ring stay gone. The oldest retained
+ * archive then opens with a rotation record whose `archived_as` names a
+ * predecessor that no longer exists — that is the hole, and the silent
+ * coverage figure then starts at the oldest archive exactly as on a full ring,
+ * never at a legacy `events.jsonl.N` older than the hole.
  *
  * ## Rare vs. broken (HR-105, #1489 item 2)
  *
@@ -36,8 +43,9 @@
  * therefore carries the measurement, warn or not: `coverageDays`,
  * `oldestEventAt`, `requiredDays`/`requiredBy`, `archives`, `maxBackups`.
  * `coverageDays` is now minus the oldest archive's start on a FULL ring — the
- * span the verdict judges — and now minus the oldest stamp of any source
- * (archives, legacy ring, active file) below it, where nothing was pruned.
+ * span the verdict judges — and below it when that archive's predecessor is
+ * gone (see above); otherwise now minus the oldest stamp of any source
+ * (archives, legacy ring, active file), where nothing was pruned.
  * The registry entry's `telemetry` (`session-start-probes.mjs`) persists
  * `coverage_days`, `archives`, `max_backups` and `required_days` as `measure`
  * on this probe's element of `orchestrator.probes.completed`; `oldestEventAt`
@@ -52,15 +60,18 @@
  *     `session-start-probes.mjs`) lists `_archive/` the same way and skips
  *     exactly these inputs, so the runner records them as `skipped`, never as
  *     `ran-clean` — which is what severity ok would otherwise become.
- *   - **unmeasurable** — `_archive/` exists but cannot be listed, or a
- *     reader's declaration cannot be read: `{severity:'warn', degraded:true}`.
- *     An unreadable source must never read as "retention is fine".
+ *   - **unmeasurable** — `_archive/` exists but cannot be listed, a reader's
+ *     declaration cannot be read, or the oldest retained stamp lies after now
+ *     (a future-dated archive or a clock set back — the span would be
+ *     negative): `{severity:'warn', degraded:true}`. An unreadable source must
+ *     never read as "retention is fine".
  *   - **measured** — `{severity:'ok', kind:'ring-not-full'|'no-finite-window'|'covered', …}`
  *     or `{severity:'warn', kind:'retention-short', message, …}`.
  *
  * Cost: two `readdirSync` of `_archive/` per session start (the registry
  * precondition, then this probe), below a full ring one ≤64 KiB head read of
- * the active file and of each legacy-ring file, and — on EVERY measured start,
+ * the oldest archive (for its rotation record) and — unless that shows a
+ * pruned predecessor — of the active file and of each legacy-ring file, and — on EVERY measured start,
  * before the ring check, because `requiredDays` is part of the silent
  * measurement — the import of every reader module to read its declaration:
  * 22-32 ms cold for all six in a fresh process (measured 2026-10-02, load
@@ -74,7 +85,7 @@
 import { closeSync, existsSync, openSync, readSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE, LEGACY_RING_MAX } from './events-schema.mjs';
+import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE, LEGACY_RING_MAX, ROTATION_EVENT } from './events-schema.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -127,30 +138,23 @@ function archiveStartMs(name) {
 }
 
 /**
- * Epoch ms of the first parseable `timestamp` within the first
- * {@link HEAD_BYTES} of `file` — the file's oldest event, since every ledger
- * file is append-ordered. NaN when absent, unreadable, or stampless: the
- * caller then has no stamp from this file, never a guessed one.
+ * The parseable JSON records within the first {@link HEAD_BYTES} of `file`, in
+ * file order; `[]` when absent or unreadable. Malformed lines — and the partial
+ * last line of the head — are skipped, never guessed at.
  *
  * @param {string} file
- * @returns {number}
+ * @returns {Array<*>}
  */
-function firstTimestampMs(file) {
+function headRecords(file) {
   let fd;
+  let text = '';
   try {
     fd = openSync(file, 'r');
     const buf = Buffer.alloc(HEAD_BYTES);
     const n = readSync(fd, buf, 0, HEAD_BYTES, 0);
-    for (const line of buf.subarray(0, n).toString('utf8').split('\n')) {
-      try {
-        const ms = Date.parse(JSON.parse(line)?.timestamp);
-        if (Number.isFinite(ms)) return ms;
-      } catch {
-        /* malformed, or the partial last line of the head — try the next */
-      }
-    }
+    text = buf.subarray(0, n).toString('utf8');
   } catch {
-    /* absent or unreadable — no stamp from this file */
+    /* absent or unreadable — no records from this file */
   } finally {
     if (fd !== undefined) {
       try {
@@ -160,7 +164,53 @@ function firstTimestampMs(file) {
       }
     }
   }
+  const records = [];
+  for (const line of text.split('\n')) {
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      /* malformed, or the partial last line of the head */
+    }
+  }
+  return records;
+}
+
+/**
+ * Epoch ms of the first parseable `timestamp` within the head of `file` — the
+ * file's oldest event, since every ledger file is append-ordered. NaN when
+ * absent, unreadable, or stampless: the caller then has no stamp from this
+ * file, never a guessed one.
+ *
+ * @param {string} file
+ * @returns {number}
+ */
+function firstTimestampMs(file) {
+  for (const rec of headRecords(file)) {
+    const ms = Date.parse(rec?.timestamp);
+    if (Number.isFinite(ms)) return ms;
+  }
   return Number.NaN;
+}
+
+/**
+ * Was history pruned before `oldest`, the oldest retained archive? Its head
+ * carries the rotation record written when its predecessor was archived, and
+ * that record's `archived_as` names the predecessor: an archive name absent
+ * from `names` was pruned — under a smaller ring, before `max-backups` was
+ * raised — or deleted. `false` when the head holds no rotation record (the
+ * first archive after the legacy ring, which wrote none): the hole then goes
+ * unseen, it is never invented.
+ *
+ * @param {string} archiveDir
+ * @param {string} oldest — a member of `names`
+ * @param {string[]} names — the retained `ARCHIVE_NAME_RE` archives
+ * @returns {boolean}
+ */
+function predecessorPruned(archiveDir, oldest, names) {
+  const rotation = headRecords(path.join(archiveDir, oldest)).find((r) => r?.event === ROTATION_EVENT);
+  if (typeof rotation?.archived_as !== 'string') return false;
+  const predecessor = path.basename(rotation.archived_as);
+  return ARCHIVE_NAME_RE.test(predecessor) && !names.includes(predecessor);
 }
 
 /**
@@ -248,11 +298,19 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
   // but never the legacy ring, so a legacy `events.jsonl.N` from before the
   // migration outlives the pruned archives and its stamp would span the hole
   // they left (#1489 review MED-1: a `.1` from April turned 20 hours of
-  // contiguous history into "173.5d, covered"). Below a full ring nothing has
-  // been pruned, so every source counts toward the silent coverage figure.
+  // contiguous history into "173.5d, covered"). Below a full ring the same
+  // hole exists when an archive was pruned under an earlier, smaller ring
+  // (`max-backups` raised since): the oldest archive's rotation record names a
+  // predecessor that is gone. Only without such a hole does every source
+  // count toward the silent coverage figure.
+  const oldestArchive = names.reduce(
+    (a, b) => (a === null || archiveStartMs(b) < archiveStartMs(a) ? b : a),
+    null,
+  );
+  const holeBeforeArchives = ringFull || (oldestArchive !== null && predecessorPruned(archiveDir, oldestArchive, names));
   const starts = [
     ...names.map(archiveStartMs),
-    ...(ringFull
+    ...(holeBeforeArchives
       ? []
       : [
           ...Array.from({ length: LEGACY_RING_MAX }, (_, i) => `${activePath}.${i + 1}`)
@@ -263,6 +321,19 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
   ].filter(Number.isFinite);
   const oldestMs = starts.length > 0 ? Math.min(...starts) : Number.NaN;
 
+  // Every retained source dated after now — a future-dated archive, or a clock
+  // set back — makes the span negative. That is no measurement, and an
+  // unmeasured span must never record as clean, so it degrades like an
+  // unreadable source instead of persisting a negative `coverage_days`.
+  if (oldestMs > nowMs) {
+    return {
+      severity: 'warn',
+      degraded: true,
+      kind: 'unmeasurable',
+      message: `⚠ events-retention: the oldest retained event is dated ${new Date(oldestMs).toISOString()}, after now — retention span not measured, which is not the same as covered.`,
+    };
+  }
+
   const measured = {
     coverageDays: Number.isFinite(oldestMs) ? (nowMs - oldestMs) / DAY_MS : null,
     oldestEventAt: Number.isFinite(oldestMs) ? new Date(oldestMs).toISOString() : null,
@@ -272,8 +343,9 @@ export async function checkEventsRetention({ repoRoot, config, now = Date.now() 
     maxBackups,
   };
 
-  // Ring not full ⇒ nothing pruned under this config ⇒ the retained ledger is
-  // the whole history. See the module header (HR-101).
+  // Ring not full ⇒ nothing is pruned under this config, so the retained
+  // ledger only grows; any older hole is already excluded from the figure
+  // above. Never a warning here — see the module header (HR-101).
   if (!ringFull) return { severity: 'ok', kind: 'ring-not-full', ...measured };
   if (required.days === null) return { severity: 'ok', kind: 'no-finite-window', ...measured };
   // Finite here: the ring is full, so `names` is non-empty and

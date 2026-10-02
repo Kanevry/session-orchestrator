@@ -376,6 +376,29 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
     ]);
   });
 
+  // BUG (2026-10-02 review of 54a3c26b): `probeMeasure` read the telemetry
+  // object OUTSIDE its try, and `render` ran unguarded, so a throwing getter
+  // or renderer rejected the whole runner — every banner and the ledger record
+  // lost — although the runner documents that it never rejects.
+  it('degrades a probe whose telemetry getter or renderer throws instead of rejecting the run', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const telemetry = () => ({ get count() { throw new Error('getter exploded'); } });
+    const render = () => { throw new Error('render exploded'); };
+    const probes = [
+      await fakeProbe(dir, 'measure', CLEAN, { telemetry }),
+      await fakeProbe(dir, 'render', warns('never rendered'), { render }),
+    ];
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
+
+    expect(calls[0].payload.probes).toEqual([
+      { id: 'measure', outcome: 'ran-clean', work_ms: expect.any(Number) },
+      { id: 'render', outcome: 'error', reason: 'render-threw', work_ms: expect.any(Number) },
+    ]);
+    expect(out.bannerLines.join('\n')).not.toContain('never rendered');
+  });
+
   // BUG: the opt-in escape hatch is documented but dead, so an operator who
   // sets it gets the same silent exclusion and no way to find out.
   it('runs network probes when SO_PROBES_INCLUDE_NETWORK=1', async () => {

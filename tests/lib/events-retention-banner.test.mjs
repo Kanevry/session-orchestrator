@@ -71,7 +71,14 @@ describe('checkEventsRetention', () => {
   // successor's tombstone names it, the file is gone) a full ring judged on
   // "oldest stamp anywhere" reached back to April across the hole and called
   // 20 hours of contiguous history `covered`.
-  it('judges a FULL ring on its archives, not on a legacy backup older than the pruned hole', async () => {
+  // BUG the raised-ring row catches (2026-10-02 review): after `max-backups`
+  // was raised the ring is no longer full, yet the archive pruned under the
+  // old ring is still gone — the silent branch spanned the same hole and
+  // persisted `coverage_days` back to April (a probe read 173.5).
+  it.each([
+    { label: 'a FULL ring', maxBackups: 3, expected: { severity: 'warn', kind: 'retention-short' } },
+    { label: 'a ring no longer full after max-backups was raised', maxBackups: 5, expected: { severity: 'ok', kind: 'ring-not-full' } },
+  ])('judges $label on its archives, not on a legacy backup older than the pruned hole', async ({ maxBackups, expected }) => {
     const root = await repoWithArchives([20, 16, 12]);
     const metrics = path.join(root, '.orchestrator', 'metrics');
     const [oldest] = readdirSync(path.join(metrics, '_archive')).sort();
@@ -81,10 +88,10 @@ describe('checkEventsRetention', () => {
     );
     await fs.writeFile(path.join(metrics, 'events.jsonl.1'), `${JSON.stringify({ event: 'subagent_stop', timestamp: '2026-04-12T00:00:00.000Z' })}\n`);
 
-    const out = await checkEventsRetention({ repoRoot: root, config: { 'events-rotation': { 'max-backups': 3 } }, now: NOW });
+    const out = await checkEventsRetention({ repoRoot: root, config: { 'events-rotation': { 'max-backups': maxBackups } }, now: NOW });
 
-    expect(out).toMatchObject({ severity: 'warn', kind: 'retention-short', oldestEventAt: '2026-10-01T16:00:00.000Z', archives: 3, maxBackups: 3 });
-    expect(out.message).toContain('covers 0.8d (3 archives');
+    expect(out).toMatchObject({ ...expected, oldestEventAt: '2026-10-01T16:00:00.000Z', archives: 3, maxBackups });
+    expect(out.coverageDays).toBeCloseTo(20 / 24, 9);
   });
 
   // BUG this catches (HR-101): judged without the ring-full guard, every young
@@ -142,6 +149,13 @@ describe('checkEventsRetention', () => {
     await fs.mkdir(path.join(broken, '.orchestrator', 'metrics'), { recursive: true });
     await fs.writeFile(path.join(broken, '.orchestrator', 'metrics', '_archive'), 'not a directory');
     expect(await checkEventsRetention({ repoRoot: broken, now: NOW })).toMatchObject({ severity: 'warn', degraded: true, kind: 'unmeasurable' });
+
+    // BUG (2026-10-02 review): an archive dated after now yielded a negative
+    // `coverageDays`, recorded as a silent ring-not-full measurement.
+    const future = await repoWithArchives([-48]);
+    const out = await checkEventsRetention({ repoRoot: future, now: NOW });
+    expect(out).toMatchObject({ severity: 'warn', degraded: true, kind: 'unmeasurable' });
+    expect(out).not.toHaveProperty('coverageDays');
   });
 
   // BUG this catches (#1401 review): the registry precondition took the mere
