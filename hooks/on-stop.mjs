@@ -661,9 +661,12 @@ async function handleSubagentStop(input, reaperTrigger = null) {
   // #1183 — a malformed record throws EventValidationError BEFORE any side
   // effect (scripts/lib/events.mjs); this hook must never abort on that, so
   // the emit is wrapped rather than left to propagate.
-  Object.assign(payload, reaperTriggerField(reaperTrigger));
+  // A fresh object via spread (like the Stop record above), never
+  // Object.assign onto a parsed payload: spread defines keys, so no `__proto__`
+  // key can reach the prototype setter (CWE-1321, semgrep
+  // prototype-pollution-object-assign).
   try {
-    await emitEvent('orchestrator.agent.stopped', payload);
+    await emitEvent('orchestrator.agent.stopped', { ...payload, ...reaperTriggerField(reaperTrigger) });
   } catch { /* telemetry never blocks the hook (#1183) */ }
   return null;
 }
