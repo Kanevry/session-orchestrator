@@ -103,6 +103,20 @@ function renderPrompt(block, files, opts = {}) {
   return `Du bist W9-X. Repo: /tmp/demo.\n\n${emitted.join('\n')}\n\nMach die Arbeit.`;
 }
 
+/**
+ * The ambient env minus what a live session leaks into it (the shape of
+ * `hookEnv()` in `pre-task-scope-disjoint.test.mjs`). The project dir is no git
+ * repo, so an inherited CLAUDE_PROJECT_DIR becomes the hook's state root: this
+ * file's ledger and events would land in the real project (`.husky/pre-push`
+ * unsets it for its own gate for that reason).
+ */
+function hookEnv() {
+  const env = { ...process.env };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_PROJECT_DIR;
+  return env;
+}
+
 /** Run the real hook binary with a PreToolUse dispatch payload on stdin. */
 function dispatch(cwd, id, prompt) {
   const payload = JSON.stringify({
@@ -113,7 +127,7 @@ function dispatch(cwd, id, prompt) {
     tool_input: { description: id, model: 'opus', prompt, subagent_type: 'code-implementer' },
   });
   return spawnSync(process.execPath, [HOOK], {
-    input: payload, encoding: 'utf8', cwd: REPO_ROOT, timeout: 20_000,
+    input: payload, encoding: 'utf8', cwd: REPO_ROOT, env: hookEnv(), timeout: 20_000,
   });
 }
 

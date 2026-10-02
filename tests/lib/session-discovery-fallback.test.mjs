@@ -61,9 +61,14 @@ function writeLocalLock(body) {
 
 /** Build a valid lock body with sensible defaults. */
 function lockBody(overrides = {}) {
+  // #595: a v2 lock always carries last_heartbeat; default it to started_at
+  // (the old reader fallback) so a fixture that only shifts started_at keeps
+  // its meaning.
+  const started_at = overrides.started_at ?? new Date().toISOString();
   return {
     session_id: 'test-fallback',
-    started_at: new Date().toISOString(),
+    started_at,
+    last_heartbeat: started_at,
     mode: 'deep',
     pid: process.pid,
     host: hostname(),

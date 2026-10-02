@@ -120,18 +120,26 @@ describe('runExpiredSweep', () => {
     expect(archived[0]._archive_reason).toBe('expired');
   });
 
-  it('emits orchestrator.learnings.sweep_applied with the archived count', async () => {
-    // Bug: an apply with no ledger record leaves "has the sweep ever run?"
-    // unanswerable — exactly the state that hid the missing caller for months.
+  // Bug: an apply with no ledger record leaves "has the sweep ever run?"
+  // unanswerable — exactly the state that hid the missing caller for months.
+  // Second row (#1489): the count of unparseable store lines reached stderr
+  // only, so a store carrying torn lines was invisible in the ledger.
+  it.each([
+    ['a clean store', '', 0],
+    ['a store with one torn line', '{"id":"torn","type":"recurr', 1],
+  ])('emits orchestrator.learnings.sweep_applied with the archived and malformed counts (%s)', async (_label, torn, malformed) => {
     const root = seedStore(makeRepo());
+    const store = metric(root, 'learnings.jsonl');
+    if (torn) writeFileSync(store, `${readFileSync(store, 'utf8')}${torn}\n`);
     const plan = await planFor(root);
 
-    await runExpiredSweep({ repoRoot: root, plan });
+    const res = await runExpiredSweep({ repoRoot: root, plan });
 
+    expect(res).toMatchObject({ ran: true, archived: 1, malformed });
     const events = readJsonl(metric(root, 'events.jsonl'));
     const sweeps = events.filter((e) => e.event === 'orchestrator.learnings.sweep_applied');
     expect(sweeps).toHaveLength(1);
-    expect(sweeps[0]).toMatchObject({ scanned: 2, archived: 1, source: 'session-end-3.6.4' });
+    expect(sweeps[0]).toMatchObject({ scanned: 2, archived: 1, malformed, source: 'session-end-3.6.4' });
     // Ledger-safety guard: nothing leaked to the ambient destination.
     expect(existsSync(SENTINEL_LEDGER)).toBe(false);
   });

@@ -156,17 +156,18 @@ function lockAgeHours(lock) {
  * liveness rule thresholds against, surfaced as a number so callers (the
  * Phase-1.2 stale-lock AUQ, recovery diagnostics) can report WHY a lock was
  * classified stale instead of asserting a PID verdict the lock cannot support
- * (#1137). Mirrors `isLockLive()`'s `last_heartbeat` → `started_at` fallback.
+ * (#1137). Reads `last_heartbeat` only, like `isLockLive()`: a lock without one
+ * has no heartbeat age, so this returns `null` rather than an age invented from
+ * `started_at` (#595, 2026-10-02 — the v1 fallback is gone).
  *
- * @param {{ last_heartbeat?: string, started_at?: string }} lock
- * @returns {number|null} minutes since the last heartbeat, or null if unparseable.
+ * @param {{ last_heartbeat?: string }} lock
+ * @returns {number|null} minutes since the last heartbeat, or null when the lock
+ *   carries no parseable `last_heartbeat`.
  */
 function heartbeatAgeMinutes(lock) {
   if (!lock || typeof lock !== 'object') return null;
-  const hbStr = (typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0)
-    ? lock.last_heartbeat
-    : lock.started_at;
-  const ts = Date.parse(hbStr);
+  if (typeof lock.last_heartbeat !== 'string' || lock.last_heartbeat.length === 0) return null;
+  const ts = Date.parse(lock.last_heartbeat);
   if (Number.isNaN(ts)) return null;
   return (Date.now() - ts) / (60 * 1000);
 }
@@ -179,20 +180,19 @@ function heartbeatAgeMinutes(lock) {
  * `session_id` field carries a UUID and the caller wants to preserve the
  * always-semantic id alongside it).
  *
- * Back-compat: v1 locks (no `last_heartbeat`) are normalised on read with
- * `last_heartbeat = started_at`. The optional `semantic_session_id` field is
- * left undefined when absent. This lets pre-#583 lockfiles flow through the
- * new liveness rule transparently — the v1 lock's `started_at` becomes its
- * effective heartbeat, so TTL freshness still rescues recent locks even when
- * the writer process is dead (the D2/D5 production case).
- *
- * RETAINED, not forgotten (#595, re-verified 2026-08-15): zero v1 files exist
- * on this host, but this normalisation is MIRRORED in
- * `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()` and
- * pinned by `tests/lib/lock-ttl-parity.test.mjs`. Removing it here alone
- * breaks that parity by construction — see
- * `skills/_shared/state-ownership.md` § Schema v1 Sunset for the full
- * co-change set the removal needs.
+ * A lock WITHOUT `last_heartbeat` (#595 sunset, 2026-10-02) is returned as-is:
+ * its heartbeat is no longer filled in from `started_at`, and it is deliberately not
+ * rejected either. It stays VISIBLE — `readLockDetailed()` reports `ok` and
+ * `acquire()` classifies it `stale-heartbeat` (heartbeat age `null`), which
+ * lets the SessionStart bootstrap reclaim it — while `isLockLive()` reads it
+ * as not live. Rejecting it here would make it `corrupt`: still reclaimable
+ * (`acquire()` reports `corrupt` since 2026-10-02 — until then the
+ * create-or-fail hit EEXIST and the vanished-race branch answered `active`
+ * with `existingLock: null` on every attempt, wedging the repo), but invisible
+ * to every `readLock()` caller, which would lose its session_id, host and
+ * started_at. No writer has produced such a lock since Epic #583:
+ * `buildLock()`, the hook bootstrap and `updateHeartbeat()` all set
+ * `last_heartbeat`.
  *
  * @param {string} raw
  * @returns {object|null}
@@ -203,18 +203,9 @@ function parseLock(raw) {
     // The six-field predicate lives in ONE place (#1153 P7) — see
     // `./session-lock-shape.mjs` for the other consumer and the fail-open
     // drift this sharing prevents.
-    if (isLockShape(obj)) {
-      // Schema v1 → v2 normalisation: when `last_heartbeat` is absent or
-      // non-string, treat the lock as if it heartbeat-ed once at started_at.
-      const normalised = { ...obj };
-      if (typeof normalised.last_heartbeat !== 'string' || normalised.last_heartbeat.length === 0) {
-        normalised.last_heartbeat = normalised.started_at;
-      }
-      // semantic_session_id stays undefined when absent — callers that need it
-      // should fall back to session_id.
-      return normalised;
-    }
-    return null;
+    // semantic_session_id stays undefined when absent — callers that need it
+    // should fall back to session_id.
+    return isLockShape(obj) ? obj : null;
   } catch {
     return null;
   }
@@ -241,14 +232,21 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
     session_id: sessionId,
     started_at: startedAt,
     last_heartbeat: startedAt,
-    mode,
+    // mode and ttl_hours are coerced here because acquire()/forceAcquire() take
+    // them from hand-written callers (dispatcher claimRepo, the phase-1.2 prose)
+    // unchecked: `mode: undefined` vanished from the JSON and `ttlHours: null`
+    // or "4" had the wrong type, so the lock failed isLockShape() — and a lock
+    // that fails the shape is reclaimed as 'corrupt' by the next session even
+    // while its heartbeat is fresh. 'unknown' classifies like any unknown mode
+    // (parallel-ok, see the acquire() wrapper).
+    mode: typeof mode === 'string' && mode.trim().length > 0 ? mode : 'unknown',
     pid: process.pid,
     // `host` stays the RAW hostname — it is an on-the-wire event field
     // (orchestrator.session.lock.acquired) and feeds the privacy-hash contract.
     // `host_id` is the additive normalised twin every comparison reads (#1072).
     host: os.hostname(),
     host_id: stableHostname(),
-    ttl_hours: ttlHours,
+    ttl_hours: Number.isFinite(ttlHours) && ttlHours > 0 ? ttlHours : DEFAULT_TTL_HOURS,
   };
   if (typeof semanticSessionId === 'string' && semanticSessionId.length > 0) {
     lock.semantic_session_id = semanticSessionId;
@@ -266,23 +264,21 @@ function buildLock({ sessionId, mode, ttlHours, semanticSessionId }) {
  *
  * Liveness rule: a lock is live when (now - last_heartbeat) < ttl_hours.
  *
- * The `started_at` fallback below is RETAINED, not forgotten (#595,
- * re-verified 2026-08-15): it is mirrored verbatim in
- * `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()` and
- * pinned by `tests/lib/lock-ttl-parity.test.mjs`. See
- * `skills/_shared/state-ownership.md` § Schema v1 Sunset.
+ * No `started_at` fallback (#595 sunset, 2026-10-02): a lock with no
+ * `last_heartbeat` is NOT live — nothing is heartbeating it, so it must not
+ * hold the repo for a TTL window counted from its start. The rule is mirrored
+ * in `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()`, and
+ * `tests/lib/lock-ttl-parity.test.mjs` holds the two to identical verdicts.
+ * See `skills/_shared/state-ownership.md` § Schema v1 Sunset.
  *
- * @param {{ last_heartbeat: string, started_at: string, ttl_hours?: number }} lock
+ * @param {{ last_heartbeat: string, ttl_hours?: number }} lock
  * @param {number} [nowMs]
  * @returns {boolean}
  */
 export function isLockLive(lock, nowMs = Date.now()) {
   if (!lock || typeof lock !== 'object') return false;
-  // Back-compat: prefer last_heartbeat; fall back to started_at when absent.
-  const hbStr = (typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0)
-    ? lock.last_heartbeat
-    : lock.started_at;
-  const heartbeatMs = Date.parse(hbStr);
+  if (typeof lock.last_heartbeat !== 'string' || lock.last_heartbeat.length === 0) return false;
+  const heartbeatMs = Date.parse(lock.last_heartbeat);
   if (Number.isNaN(heartbeatMs)) return false;
   const ttlHours = typeof lock.ttl_hours === 'number' ? lock.ttl_hours : DEFAULT_TTL_HOURS;
   const ttlMs = ttlHours * 3600 * 1000;
@@ -492,6 +488,12 @@ export function readLockDetailed(opts = {}) {
  *         recorded pids dead, INCLUDING the currently heartbeating session's
  *         own lock), so `stale-pid-alive` was unreachable same-host and every
  *         stale lock rendered as "confirmed dead" in the recovery AUQ.
+ *   { ok: false, reason: 'corrupt', existingLock: null, exclusivityClass? }
+ *       — a lock file is present but fails parseLock() (invalid JSON, or not
+ *         the six-field lock shape). It can never be a live lock — every
+ *         writer writes atomically — so the SessionStart bootstrap reclaims it
+ *         with one stderr WARN. Before 2026-10-02 this case answered 'active'
+ *         with `existingLock: null` on every attempt and wedged the repo.
  *   { ok: false, reason: 'missing-session-id' }
  *       — no usable `sessionId` given; NOTHING was written. Same reason string
  *         and same predicate as forceAcquire() (see its docblock for why an
@@ -657,12 +659,34 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
       };
     };
 
-    const existing = readLock({ repoRoot });
+    // A file that is present but fails parseLock() — invalid JSON, or JSON
+    // without the six-field lock shape — gets its OWN reason instead of
+    // collapsing into the vanished-race branch below. It used to: readLock()
+    // returned null, the create-or-fail hit EEXIST on the file still there,
+    // the re-read was null again, and every attempt answered
+    // `active` / `existingLock: null` — which the bootstrap cannot reclaim, so
+    // one damaged file blocked every new session in the repo for good.
+    // Such a file can never be a live lock: all four production writers
+    // (createSessionLockExclusive, writeLockAtomic via forceAcquire and
+    // updateHeartbeat, the bootstrap's writeJsonAtomicSync) write a full
+    // buildLock() body via tmp+link / tmp+rename, so no reader ever sees a
+    // partial write. Reported, not cleared — the caller decides (see the
+    // decision-deferred note in the module header).
+    // Ceiling (BV-004): a future writer emitting a body that fails
+    // isLockShape() would be classified corrupt too. Revisit if the lock
+    // schema ever changes a required field's type or name.
+    const corrupt = () => ({ ok: false, reason: 'corrupt', existingLock: null, exclusivityClass: callerClass });
 
-    if (existing !== null) {
+    const existing = readLockDetailed({ repoRoot });
+
+    if (existing.status === 'ok') {
       // A lock is present — classify it.
-      return classifyExisting(existing);
+      return classifyExisting(existing.lock);
     }
+    if (existing.status === 'corrupt') return corrupt();
+    // 'absent' → create below. 'unreadable' also falls through: the
+    // create-or-fail hits EEXIST and preserves the file, and the vanished-race
+    // branch answers the conservative 'active' (#599).
 
     // No existing lock — create one with a TOCTOU-safe create-or-fail (#590).
     // Two concurrent SessionStart hooks can both reach this branch having each
@@ -679,15 +703,14 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
 
     // reason === 'exists' — we lost the create race. Re-read the now-present
     // lock and classify it exactly as if we had seen it on the up-front check.
-    const raced = readLock({ repoRoot });
-    if (raced === null) {
-      // The EEXIST winner's lock vanished before we could re-read it (ENOENT /
-      // unparseable). Defensive fallback: report 'active' so the caller defers
-      // rather than racing again — mirrors tryAcquireStateLock's vanish-race
-      // handling (a lost-then-vanished race resolves conservatively).
-      return { ok: false, reason: 'active', existingLock: null, exclusivityClass: callerClass };
-    }
-    return classifyExisting(raced);
+    const raced = readLockDetailed({ repoRoot });
+    if (raced.status === 'ok') return classifyExisting(raced.lock);
+    if (raced.status === 'corrupt') return corrupt();
+    // The EEXIST winner's lock vanished before we could re-read it (ENOENT),
+    // or it is unreadable. Defensive fallback: report 'active' so the caller
+    // defers rather than racing again — mirrors tryAcquireStateLock's
+    // vanish-race handling (a lost-then-vanished race resolves conservatively).
+    return { ok: false, reason: 'active', existingLock: null, exclusivityClass: callerClass };
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message, exclusivityClass: callerClass };
   }

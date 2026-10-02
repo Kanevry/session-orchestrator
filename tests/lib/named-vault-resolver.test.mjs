@@ -745,6 +745,10 @@ describe('describeOriginForLog', () => {
     ['scp-like, login user + IPv6 host', 'alice@[::1]:/home/alice/vault', '***@[::1]:<remote path>'],
     ['scp-like, login user inside IPv6 brackets', '[alice@::1]:/home/alice/vault', '[***@::1]:<remote path>'],
     ['ssh:// URL', 'ssh://git@gitlab.example.com/agents/vault', 'ssh://git@gitlab.example.com/agents/vault'],
+    // #1490 item 5: the URL form printed the login user verbatim and kept a
+    // home-dir path even with the credential redacted — the scp rules apply.
+    ['ssh:// URL, login user + home path', 'ssh://alice@nas.example.org/home/alice/vault', 'ssh://***@nas.example.org/<remote path>'],
+    ['ssh:// URL, user:pw + home path', 'ssh://alice:pw@nas.example.org/home/alice/vault', 'ssh://***@nas.example.org/<remote path>'],
     ['absent origin', undefined, ''],
   ])('%s', (_label, url, expected) => {
     expect(describeOriginForLog(url)).toBe(expected);

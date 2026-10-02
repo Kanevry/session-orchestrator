@@ -442,15 +442,39 @@ clone until `npx husky` has run, absent for Codex / web edits, and skipped by
   version-only headers are skipped by commitlint's built-in default ignores
   (`@commitlint/is-ignored`, not `config-conventional`; measured 2026-09-29), so
   GitLab's own merge commits pass. The husky hook applies the same ignores.
-- **Coverage gap (known, measured 2026-09-29).** An MR pipeline re-lints the
-  whole MR range on every push. A direct push is linted per push only
-  (`before-sha..sha`), and every job here is `interruptible`, so a push pipeline
-  auto-cancelled by the next push can leave its commits unlinted when that push
-  lands before the validate stage finishes. Of the last 100 `main` pipelines, 11
-  were cancelled (7 of them with direct-push commits), and in all 11 every
-  security and validate job had already finished — 0 were exposed. A squash
-  merge's commit (the MR title) is never linted by the MR pipeline, only by the
-  `main` pipeline after the merge, where a red job can no longer block it.
+- **MR title on a squash merge (#1477 item 1, closed).** A squash merge commits
+  the MR title (the project's squash commit template is unset, so GitLab uses
+  `%{title}`), which no linted range contains. When
+  `CI_MERGE_REQUEST_SQUASH_ON_MERGE` is `"true"` (GitLab renders
+  `squash_on_merge?`, so the project's `always`/`never` option is included),
+  the job also lints `CI_MERGE_REQUEST_TITLE` with the same config, after
+  stripping GitLab's Draft prefixes (`Draft:`, `[Draft]`, `(Draft)`, any case,
+  repeated). An MR that will not squash keeps a free-form title, because its
+  commits are what lands. A red title blocks the merge, since the project only
+  merges with a green pipeline. Two cases stay open. The variable is fixed when
+  the pipeline is created, and neither editing the title nor ticking squash
+  starts a new one, so a box ticked after the last pipeline merges an unlinted
+  title. A squash message edited in the merge dialog is not linted either. After
+  fixing a title, run a new pipeline for the MR.
+- **Open gaps (#1477, measured 2026-09-29).**
+  - *Suggestion commits (item 2):* `suggestion_commit_message` is unset in the
+    project, so GitLab's default "Apply 1 suggestion(s) to 1 file(s)" fails
+    `type-empty`. The fix is a project setting (owner).
+  - *Force-push without an open MR (item 3):* the old before-sha is missing from
+    the fresh clone, so the job goes red. 0 of 100 push pipelines were affected,
+    and the next push heals it.
+  - *Breadth of the default ignores (item 4):* `@commitlint/is-ignored` also
+    accepts `fixup! …`, bare version numbers and any message with a `Merge …`
+    line in its body. `defaultIgnores: false` would change the husky hook too.
+  - *Cancelled push pipelines (item 5):* an MR pipeline re-lints the whole MR
+    range on every push. A direct push is linted per push only
+    (`before-sha..sha`), and every job here is `interruptible`, so a push
+    pipeline auto-cancelled by the next push can leave its commits unlinted
+    when that push lands before the validate stage finishes. Of the last 100
+    `main` pipelines, 11 were cancelled (7 of them with direct-push commits),
+    and in all 11 every security and validate job had already finished. None
+    were exposed.
+
   Two non-conforming commits reached `main` after `commitlint.config.mjs` was
   added and before this job (`c99f57d9`, a 126-character header; `c5252e68`, a
   `merge:` type). Revisit when a non-conforming commit lands on `main`

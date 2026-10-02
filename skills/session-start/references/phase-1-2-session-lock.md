@@ -10,7 +10,7 @@
 
 Acquire a distributed session-lock to detect parallel sessions in the same repo before initializing STATE.md. This prevents two concurrent Claude/Codex sessions from stomping each other's wave state and metrics writes.
 
-**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: process.cwd() })`. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's raw `session_id` does not exactly match the current session's raw id (a rare divergence — surface via AUQ before overwriting). A matching `semantic_session_id`, STATE.md `session`, or owner proof cannot repair that mismatch. The decision flow below still applies to all three outcomes (active / stale / fs-error) when the prose path needs to acquire.
+**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: process.cwd() })`. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's raw `session_id` does not exactly match the current session's raw id (a rare divergence — surface via AUQ before overwriting). A matching `semantic_session_id`, STATE.md `session`, or owner proof cannot repair that mismatch. The decision flow below still applies to all four outcomes (active / stale / corrupt / fs-error) when the prose path needs to acquire.
 
 ```javascript
 import { acquire, forceAcquire } from 'scripts/lib/session-lock.mjs';
@@ -63,13 +63,21 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      // hostnamesMatch('', …) is false and this machine reads its own lock as
      // cross-host. Production uses `lockHostCandidate()` from host-identity.mjs.
      const sameHost = hostnamesMatch(existingLock.host_id || existingLock.host, os.hostname());
+     // Both figures can be `null`, and a template literal renders null as "null" while
+     // Math.round(null) is 0 — "0 minutes ago" for a lock that NEVER heartbeat. A lock
+     // without `last_heartbeat` is stale because nothing heartbeats it (#595 sunset), not
+     // because its ttl ran out, so the ttl wording branches with it.
+     const started = ageHours === null ? 'start time unreadable' : `started ${ageHours.toFixed(1)}h ago`;
+     const heartbeat = heartbeatAgeMinutes === null
+       ? 'last heartbeat: never (lock has no last_heartbeat), so nothing has kept it alive'
+       : `its ttl=${existingLock.ttl_hours}h has expired, and its last heartbeat was ${Math.round(heartbeatAgeMinutes)} minutes ago`;
      AskUserQuestion({
        questions: [{
-         question: `A stale session lock is in the way — started ${ageHours}h ago on host=${existingLock.host}${sameHost ? '' : ' (another machine)'}, its ttl=${existingLock.ttl_hours}h has expired, and its last heartbeat was ${Math.round(heartbeatAgeMinutes)} minutes ago. Reclaim it?`,
+         question: `A stale session lock is in the way — ${started} on host=${existingLock.host}${sameHost ? '' : ' (another machine)'}, ${heartbeat}. Reclaim it?`,
          header: "Stale lock",
          multiSelect: false,
          options: [
-           { label: "Reclaim (Recommended)", description: "Overwrites the stale lock and continues, because its time-to-live has run out. When that process is really dead, nothing of the old session is lost." },
+           { label: "Reclaim (Recommended)", description: "Overwrites the stale lock and continues, because nothing has refreshed its heartbeat within its time-to-live. When that process is really dead, nothing of the old session is lost." },
            { label: "Abort — investigate manually", description: "Stops here and writes nothing. The lock file `.orchestrator/session.lock` (it names the process that wrote it) tells you whether that session is still alive." },
          ],
        }],
@@ -78,7 +86,8 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
    - **Codex CLI / Cursor IDE fallback (numbered Markdown list):**
      ```
      A stale session lock is in the way — started <ageHours>h ago on <host>, ttl=<ttlHours>h expired, last heartbeat <heartbeatAgeMinutes> minutes ago. Reclaim it?
-     1. Reclaim (Recommended) — overwrites the stale lock and continues, because its time-to-live has run out and that process is no longer holding anything.
+     (heartbeatAgeMinutes null → replace the ttl/heartbeat clause with "last heartbeat: never (lock has no last_heartbeat)"; ageHours null → "start time unreadable")
+     1. Reclaim (Recommended) — overwrites the stale lock and continues, because nothing has refreshed its heartbeat within its time-to-live.
      2. Abort — stops here and writes nothing. The lock file `.orchestrator/session.lock` (it names the process that wrote it) tells you whether that session is still alive.
      Reply with the number of your choice.
      ```
@@ -86,7 +95,11 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      `Stale-lock reclaim: replaced lock from session_id=<existingLock.session_id>, age=<ageHours>h, pid=<existingLock.pid>`. Continue.
    - On **Abort**: exit cleanly.
 
-4. **`result.ok === false`** with `reason === 'fs-error'**:
+4. **`result.ok === false`** with `reason === 'corrupt'`:
+   - `.orchestrator/session.lock` exists but is not a lock record (invalid JSON, or JSON without the lock shape). It can never be a live lock: every writer writes it atomically (tmp+link / tmp+rename), so no reader sees a half-written file. The SessionStart hook already reclaims this case mechanically and prints one stderr WARN; reaching it here means the hook did not run or its reclaim failed.
+   - No AUQ — the answer is derivable (AUQ-001.2). Log `⚠ session-lock: .orchestrator/session.lock was not a valid lock record — reclaiming.`, call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() })`, and after Phase 1.5 append a deviation: `Corrupt-lock reclaim: replaced an unparseable .orchestrator/session.lock`. Continue.
+
+5. **`result.ok === false`** with `reason === 'fs-error'**:
    - Filesystem error when writing the lock file. Log `⚠ session-lock: acquire failed — <error>. Continuing without lock (degraded mode).` and proceed without a lock. Do NOT block the session for a transient FS error.
 
 > **New reasons from P1.2 #570:** When called with the optional `activeSessions` argument, `acquire()` can also return `active-incompatible-exclusive`, `active-compatible-parallel`, or `active-readonly-bypass`. Session-start invokes `acquire()` WITHOUT `activeSessions` (the preamble in Phase 0.5 already handled cross-worktree detection); these new reasons surface only in callers that bypass the preamble. Other entry-points (autopilot, session-plan, wave-executor, session-end) follow the same pattern.

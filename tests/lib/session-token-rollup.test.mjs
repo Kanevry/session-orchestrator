@@ -669,6 +669,31 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     expect(r._token_schema).toBe(2);
     expect(r.total_token_cache_read).toBe(1000);
     expect(r.total_token_input_uncached).toBe(100);
+    // Bug caught (#1487 Pkt 1): the v1 agent ran but was no cost candidate, so
+    // the v2 half's cost was persisted as the whole session's (priced 1 of 1).
+    expect(r.total_cost_usd).toBeNull();
+    expect(r.cost_records_priced).toBe(1);
+    expect(r.cost_records_total).toBe(2);
+
+    // The same holds for a v1 agent that started but whose stop found no
+    // transcript (fleet 2026-10-02: 57 such v1 stops in 28 ledgers).
+    const startedV1 = rollupSessionTokens({
+      parentSessionId: 'S',
+      subagentsPath: write([
+        stop({ agent_id: 'v2' }),
+        stop({
+          agent_id: 'v1-wf',
+          schema_version: 1,
+          start_record_found: true,
+          subagent_transcript_found: false,
+          token_input: null,
+          token_output: null,
+        }),
+      ]),
+    });
+    expect(startedV1.total_cost_usd).toBeNull();
+    expect(startedV1.cost_records_priced).toBe(1);
+    expect(startedV1.cost_records_total).toBe(2);
   });
 
   it('total_cost_usd is null when any priced record has an unknown model, with priced/total counts', () => {
@@ -750,6 +775,10 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     { name: 'a later found stop of the same agent with its running total', records: [known, stop({ agent_id: 'known', start_record_found: true, timestamp: '2026-09-09T11:00:00.000Z', token_input: 1700, token_input_uncached: 200, token_cache_read: 1500, token_output: 30 })], priced: 1, total: 1, cost: 200 * 5e-6 + 1500 * 0.5e-6 + 30 * 25e-6, output: 30 },
     // A later stop past the hook's 50 MiB read limit yields no tokens (fleet: 2 agents). Bug caught either way: taking only that record drops the agent's known running total from the token sums; pricing the earlier record persists a partial cost as complete.
     { name: 'a later token-less stop of the same agent (oversized transcript)', records: [known, noTranscript({ agent_id: 'known', start_record_found: true, subagent_transcript_found: true, timestamp: '2026-09-09T11:00:00.000Z' })], priced: 0, total: 1, cost: null, output: 10 },
+    // #1487 Pkt 1 (e0257e34 review): an agent whose v1 stop a v2 stop of the same agent supersedes is priced by the v2 record — a v1 candidate kept beside it would unprice a known session.
+    { name: 'a v1 stop of an agent that later stopped under v2', records: [stop({ agent_id: 'known', schema_version: 1, timestamp: '2026-09-09T09:00:00.000Z' }), known], priced: 1, total: 1, cost: KNOWN_COST, output: 10 },
+    // #1487 Pkt 1: a v1-only agent is ONE unpriced candidate however often it stopped — counting per record would report 1 of 3.
+    { name: 'a v1-only agent that stopped twice', records: [known, stop({ agent_id: 'y', schema_version: 1 }), stop({ agent_id: 'y', schema_version: 1, timestamp: '2026-09-09T11:00:00.000Z' })], priced: 1, total: 2, cost: null, output: 10 },
   ])('$name → priced $priced / total $total', ({ records, priced, total, cost, output }) => {
     const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: write(records) });
     expect(r.cost_records_priced).toBe(priced);

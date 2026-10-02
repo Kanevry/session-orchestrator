@@ -26,9 +26,11 @@
  * can classify cross-repo registry entries correctly. Without it, every
  * registry-sourced peer was bucketed as `mode='session'` → classifyMode threw
  * → fell back to `parallel-ok`, silently bypassing the exclusivity matrix
- * for cross-repo entries (D5 from Epic #583 audit). The field is optional
- * on read for back-compat with v1 entries (defaults to null) — retained
- * deliberately, see `skills/_shared/state-ownership.md` § Schema v1 Sunset.
+ * for cross-repo entries (D5 from Epic #583 audit). `registerSelf()` writes
+ * `mode: null` when the caller passes none; on read an entry WITHOUT the key
+ * is still accepted — a deliberate fail-open for peer visibility (see
+ * `_validEntry`), not v1 back-compat, which ended with the #595 sunset
+ * (2026-10-02). See `skills/_shared/state-ownership.md` § Schema v1 Sunset.
  */
 
 import path from 'node:path';
@@ -131,15 +133,15 @@ function _validEntry(obj) {
     || typeof obj.started_at !== 'string') {
     return false;
   }
-  // Schema v2 (Epic #583): `mode` is optional. When present it MUST be a string
-  // (no number / object / array smuggling). When absent (v1 entry), it is
-  // accepted — back-compat with pre-#583 registry files.
-  //
-  // RETAINED, not forgotten (#595, re-verified 2026-08-15): zero mode-less
-  // entries exist on this host, but rejecting one would make a LIVE peer
-  // invisible to the exclusivity matrix — a strict weakening of
-  // parallel-session detection for zero functional gain (an absent mode
-  // already degrades to the `parallel-ok` bucket). See
+  // `mode`: when present it MUST be null or a string (no number / object /
+  // array smuggling). When ABSENT the entry is still accepted — a deliberate
+  // fail-open for peer visibility, not schema-v1 compat. No writer omits the
+  // key (`registerSelf()` writes `mode: null` at worst), so a mode-less entry
+  // is foreign or damaged; but it still carries a heartbeat, and rejecting it
+  // would drop a possibly LIVE peer from `readRegistry()` / `detectPeers()`,
+  // hiding it from parallel-session detection. Accepting it costs nothing:
+  // `acquire()` already buckets an unclassifiable peer mode as `parallel-ok`.
+  // Decided at the #595 sunset (2026-10-02), see
   // `skills/_shared/state-ownership.md` § Schema v1 Sunset.
   if ('mode' in obj && obj.mode !== null && typeof obj.mode !== 'string') {
     return false;
@@ -148,7 +150,7 @@ function _validEntry(obj) {
   // claims to be navigator, it never decides it. The authoritative claim is the
   // navigator lease under `~/.config/navigator/leases/navigator.json`, and
   // classifyMode ignores `role`. When present it MUST be null or a string (no
-  // number / object smuggling); absent is accepted like a v1 `mode`.
+  // number / object smuggling); absent is accepted, like an absent `mode`.
   if ('role' in obj && obj.role !== null && typeof obj.role !== 'string') {
     return false;
   }
@@ -206,7 +208,7 @@ export function logSweepEvent({ event, session_id, error }) {
  * @param {string} [opts.mode] — session mode (e.g., 'deep', 'feature', 'housekeeping').
  *   Schema v2 (Epic #583, W2-I3): when present, propagated into the entry so
  *   discovery + exclusivity-matrix classification work for cross-repo peers.
- *   Default: `null` (back-compat with v1 entries).
+ *   Default: `null` (mode unknown — classified `parallel-ok` by `acquire()`).
  * @returns {Promise<object>} the written entry
  */
 export async function registerSelf(opts) {

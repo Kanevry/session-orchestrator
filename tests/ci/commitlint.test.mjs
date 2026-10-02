@@ -18,6 +18,9 @@ const job = doc[JOB_NAME];
 //     closed itself.
 //  2. The project default clone depth is 20, so the range base may be absent;
 //     that must be a red job, never a silent pass.
+//  3. A squash merge commits the MR TITLE, which no linted range contains — the
+//     only pipeline that saw it was main's, after the merge (#1477 item 1). An
+//     MR that will squash must lint its title; one that will not must not.
 // These are behavioral tests: the committed script block is lifted out of the
 // YAML and executed against a real git repo with the CI variables set by hand.
 
@@ -76,14 +79,14 @@ function makeRepo(messages) {
 }
 
 /**
- * Execute the committed script block with an explicit CI environment. The three
- * range variables are always set (empty string = unset) so a real GitLab runner
- * running this suite cannot leak its own values in.
+ * Execute the committed script block with an explicit CI environment. The range
+ * and MR-title variables are always set (empty string = unset) so a real GitLab
+ * runner running this suite cannot leak its own values in.
  * @param {string} dir
- * @param {{mrBase?: string, before?: string, sha: string}} ci
+ * @param {{mrBase?: string, before?: string, sha: string, squash?: string, title?: string}} ci
  * @returns {{status: number|null, out: string}}
  */
-function runJob(dir, { mrBase = '', before = '', sha }) {
+function runJob(dir, { mrBase = '', before = '', sha, squash = '', title = '' }) {
   const res = spawnSync('sh', ['-c', scriptBlock], {
     cwd: dir,
     encoding: 'utf8',
@@ -92,6 +95,8 @@ function runJob(dir, { mrBase = '', before = '', sha }) {
       CI_MERGE_REQUEST_DIFF_BASE_SHA: mrBase,
       CI_COMMIT_BEFORE_SHA: before,
       CI_COMMIT_SHA: sha,
+      CI_MERGE_REQUEST_SQUASH_ON_MERGE: squash,
+      CI_MERGE_REQUEST_TITLE: title,
     },
   });
   return { status: res.status, out: `${res.stdout ?? ''}${res.stderr ?? ''}` };
@@ -160,6 +165,45 @@ describe('commitlint job lints the merge-request range', () => {
     expect(status, out).toBe(0);
     expect(out).toContain('[commitlint] range');
   });
+});
+
+describe('commitlint job lints the MR title when the MR will squash (#1477 item 1)', () => {
+  // GitLab renders CI_MERGE_REQUEST_SQUASH_ON_MERGE as "true"/"false" (`squash_on_merge?.to_s`).
+  // Every case uses a valid commit range, so a red job is the TITLE's verdict.
+  /** @param {{squash: string, title: string}} mr */
+  function runMr(mr) {
+    const { dir, base, head } = makeRepo(['fix: fine']);
+    return runJob(dir, { mrBase: base, before: head, sha: head, ...mr });
+  }
+
+  it('fails a squash MR whose title is not conventional', () => {
+    const { status, out } = runMr({ squash: 'true', title: 'Update the readme' });
+    expect(status, out).toBe(1);
+    expect(out).toContain('type-empty');
+  });
+
+  it('passes a squash MR whose title is conventional, having linted it', () => {
+    const { status, out } = runMr({ squash: 'true', title: 'feat: add x' });
+    expect(status, out).toBe(0);
+    expect(out).toContain('linting it: feat: add x');
+  });
+
+  it('ignores the title of an MR that will not squash', () => {
+    // Its commits are what lands, so a free-form title must not block it.
+    const { status, out } = runMr({ squash: 'false', title: 'Update the readme' });
+    expect(status, out).toBe(0);
+    expect(out).toContain('MR title not linted');
+  });
+
+  // Unstripped, each title parses as type "Draft"/"[Draft]"/"(draft)" and fails type-enum.
+  it.each(['Draft: ', '[Draft] ', '(draft) ', 'Draft: [Draft] '])(
+    'strips the GitLab draft prefix %j before linting',
+    (prefix) => {
+      const { status, out } = runMr({ squash: 'true', title: `${prefix}feat: add x` });
+      expect(status, out).toBe(0);
+      expect(out).toContain('linting it: feat: add x');
+    },
+  );
 });
 
 describe('commitlint job fails closed', () => {

@@ -58,7 +58,7 @@ skill without dispatching to a tier template.
 |------|----------------|
 | `--upgrade <tier>` | You bootstrapped `fast` earlier and now need `standard` or `deep`. Idempotent — writes only the delta. Refuses downgrade. Valid: `fast → standard`, `fast → deep`, `standard → deep`. |
 | `--retroactive` | The repo already has `CLAUDE.md` (or `AGENTS.md` on Codex CLI) + `## Session Config` but no `bootstrap.lock` (manually bootstrapped before the gate existed). Writes the lock based on file inventory; **makes no scaffolding changes**. Commit: `chore: bootstrap lock (retroactive)`. |
-| `--refresh-lock` | Your `bootstrap.lock` already has valid `version`/`tier` fields but the freshness probe flags it as stale or plugin-version-drifted — `--retroactive` is a no-op here. Acknowledges the current plugin version and resets the freshness clock (`refreshed-at` + `refreshed-plugin-version`) without touching the lock's original bootstrap provenance. No scaffolding, no auto-commit. |
+| `--refresh-lock` | Your `bootstrap.lock` already has valid `version`/`tier` fields but the freshness probe flags it as stale or plugin-version-drifted — `--retroactive` is a no-op here. Acknowledges the current plugin version and resets the freshness clock (`refreshed-at` + `refreshed-plugin-version`) without touching the lock's original bootstrap provenance. Also appends missing store-lock `.gitignore` lines. No scaffolding, no auto-commit. |
 | `--sync-rules` | Pull canonical rules from the plugin's `rules/` library into `.claude/rules/`. Preserves local rules (files without the plugin source header). Standalone — does not touch `bootstrap.lock`. |
 | `--ecosystem-health` | Run the ecosystem-health wizard: detects CI provider + package manager, prompts for health endpoints, pipelines, and critical issue labels. Writes the config block + `.orchestrator/policy/ecosystem.json`. No scaffolding, no auto-commit. |
 | `--fast` / `--standard` / `--deep` | Skip the tier confirmation question (e.g., for scripted runs). Equivalent to running `/bootstrap` and selecting that option. |
@@ -213,6 +213,8 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
 
 6. **Apply delta files.** Execute only the relevant template steps for the missing files. Read the appropriate template (`standard-template.md` and/or `deep-template.md`) and execute ONLY the steps that produce the delta files. Do NOT re-run already-completed steps.
 
+6a. **Ignore the store-lock artifacts (#1489 Pkt 17).** Execute the bash block in [`_shared-template.md#store-lock-ignore`](_shared-template.md) regardless of the delta. It amends the existing `.gitignore` instead of producing a delta file, so steps 5–6 never reach it — and a repo bootstrapped before it existed lacks the two patterns. Idempotent. The append is NOT a delta file: step 8 leaves it unstaged, and step 9 names it.
+
 7. **Update bootstrap.lock atomically.** Overwrite `.orchestrator/bootstrap.lock` with `tier: <TARGET_TIER>`. Preserve a validated existing `archetype`; when upgrading a null Fast archetype, record the newly confirmed ID and scaffold source. Update `timestamp` to now. Preserve the prior `source` otherwise. Write `plugin-version` from `$PLUGIN_ROOT/package.json` (current plugin version at upgrade time).
 
 8. **Commit.** Stage only the delta files that were just written and commit:
@@ -224,7 +226,7 @@ Entered when `$ARGUMENTS` contains `--upgrade <tier>`. No scaffolding questions 
    git commit -m "chore: bootstrap upgrade to <TARGET_TIER>"
    ```
 
-9. **Report.** Print a one-line summary: `Bootstrap upgraded from <CURRENT_TIER> to <TARGET_TIER>. <N> files added.`
+9. **Report.** Print a one-line summary: `Bootstrap upgraded from <CURRENT_TIER> to <TARGET_TIER>. <N> files added.` When step 6a appended to `.gitignore`, add: `.gitignore: store-lock patterns appended (unstaged).`
 
 ---
 
@@ -240,7 +242,7 @@ See [references/bootstrap-retroactive-flow.md](references/bootstrap-retroactive-
 
 ## Refresh-Lock Flow (`--refresh-lock`)
 
-Acknowledges the current plugin version and resets the freshness clock on an already-valid `bootstrap.lock` (`refreshed-at` + `refreshed-plugin-version`) without disturbing its original bootstrap provenance or re-running scaffolding.
+Acknowledges the current plugin version and resets the freshness clock on an already-valid `bootstrap.lock` (`refreshed-at` + `refreshed-plugin-version`) without disturbing its original bootstrap provenance or re-running scaffolding; appends missing store-lock `.gitignore` lines via `_shared-template.md#store-lock-ignore` (#1489 Pkt 17).
 
 See [references/bootstrap-refresh-lock-flow.md](references/bootstrap-refresh-lock-flow.md).
 

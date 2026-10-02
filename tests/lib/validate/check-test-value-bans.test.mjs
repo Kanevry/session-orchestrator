@@ -82,6 +82,16 @@
  *      Date.now(); fn(now)`, `{ now }` from `new Date()`, `{ now: new Date() }`
  *      — so a block that reads the wall clock and pins a date stays silent: a
  *      genuine time bomb hidden by the rule built to find it (#1487 item 8).
+ *  23. B5 reads clock bindings block-wise only → a module-level or `beforeEach`
+ *      `now = Date.now()` handed over as `{ now }` counts as control and the bomb
+ *      stays silent (#1489 item 16). The counter-examples pin the precision side
+ *      of reading the setup: a block's own rebinding, a clock frozen in setup,
+ *      and a name the file-wide setup binds both ways.
+ *  24. B5 lets a setup fake timer exempt the whole file → a `vi.useFakeTimers()`
+ *      in one `describe`'s beforeEach silences a real-clock bomb in a SIBLING
+ *      `describe` it never runs for (review of 3206ab24); or counts a bare
+ *      `advanceTimersByTime` as freezing the clock. The counter-example pins the
+ *      other side: a fake timer in an ENCLOSING `describe` still exempts.
  *
  * Fixtures are written into tmpdirs at runtime: a committed fixture file
  * carrying ban signatures would be flagged by the check's own repo-wide scan.
@@ -507,6 +517,14 @@ const ECHO_BLOCK = [
   '});',
 ];
 
+/** A block that hands over a `now` it does not bind itself — the binding lives in the shared setup. */
+const SETUP_CLOCK_BLOCK = [
+  "it('derives the per-type expiry', () => {",
+  '  const meta = toActivationMetadata(learning, { now });',
+  "  expect(meta.expiresAt).toBe('2026-08-05');",
+  '});',
+];
+
 /** A seamed sibling that happens to assert the same date — its assertion is no input of the bomb's block. */
 const SIBLING_SAME_DATE_BLOCK = [
   "it('reports the expiry inside the metadata object', () => {",
@@ -584,6 +602,54 @@ describe('check-test-value-bans — B5 date-literal time bombs', () => {
     expect(json.findings[0]).toMatchObject({
       file: 'tests/real-clock.test.mjs',
       line: 11,
+      ban: 'B5-date-time-bomb',
+    });
+  });
+
+  // #1489 item 16: the same real-clock handover, with the binding OUTSIDE the block.
+  it.each([
+    ['module-level `const now = Date.now()`', ['const now = Date.now();'], 11],
+    ['`beforeEach` assigning `now = Date.now()`', ['let now;', 'beforeEach(() => {', '  now = Date.now();', '});'], 14],
+  ])('flags a pinned date when the real clock it hands over is bound in the shared setup (%s)', (_shape, setup, line) => {
+    const { json } = scan({
+      'tests/setup-clock.test.mjs': [EMITTER_IMPORT, ...setup, '', ...SEAM_BLOCK, '', ...SETUP_CLOCK_BLOCK, ''].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
+    expect(json.findings[0]).toMatchObject({ file: 'tests/setup-clock.test.mjs', line, ban: 'B5-date-time-bomb' });
+  });
+
+  // Review of 3206ab24: the fake timer lives in a SIBLING describe's beforeEach, which vitest never runs for the bomb.
+  it.each([
+    ['the block only reads the real clock', [], 16],
+    ['the block also advances timers no installer of its own faked', ['    vi.advanceTimersByTime(1_000);'], 17],
+  ])('flags a real-clock bomb although a sibling `describe` installs a fake timer (%s)', (_shape, extra, line) => {
+    const { json } = scan({
+      'tests/sibling-timer.test.mjs': [
+        EMITTER_IMPORT,
+        "describe('under a frozen clock', () => {",
+        '  beforeEach(() => {',
+        '    vi.useFakeTimers();',
+        '  });',
+        ...SEAM_BLOCK.map((l) => `  ${l}`),
+        '});',
+        '',
+        "describe('against the live clock', () => {",
+        "  it('derives the per-type expiry', () => {",
+        '    const now = Date.now();',
+        ...extra,
+        '    const meta = toActivationMetadata(learning, { now });',
+        "    expect(meta.expiresAt).toBe('2026-08-05');",
+        '  });',
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(1);
+    expect(json.findings[0]).toMatchObject({
+      file: 'tests/sibling-timer.test.mjs',
+      line,
       ban: 'B5-date-time-bomb',
     });
   });
@@ -724,6 +790,90 @@ describe('check-test-value-bans — B5 counter-examples', () => {
     });
 
     expect(json.counts['B5-date-time-bomb']).toBe(1);
+  });
+
+  // #1489 item 16, precision side: reading the shared setup must not turn a controlled block into a finding.
+  it.each([
+    [
+      // Catches a setup read that ignores shadowing: the block hands over its OWN fixed `now`.
+      'the block rebinds `now` to a fixed date',
+      ['const now = Date.now();', '', ...SEAM_BLOCK, '', ...SHORTHAND_CLOCK_BLOCK],
+    ],
+    [
+      // Catches a setup read that ignores a frozen clock: `Date.now()` after setSystemTime is fixed.
+      'the setup freezes the clock before binding `now`',
+      [
+        'let now;',
+        'beforeEach(() => {',
+        "  vi.setSystemTime(new Date('2026-07-05T00:00:00Z'));",
+        '  now = Date.now();',
+        '});',
+        '',
+        ...SEAM_BLOCK,
+        '',
+        ...SETUP_CLOCK_BLOCK,
+      ],
+    ],
+    [
+      // Catches "any real-clock setup binding wins": the setup is file-wide, and
+      // this block sits under the `describe` that binds a fixed date.
+      'another `describe` binds the same `now` to the real clock',
+      [
+        'let now;',
+        "describe('against the live clock', () => {",
+        '  beforeEach(() => {',
+        '    now = Date.now();',
+        '  });',
+        "  it('returns metadata', () => {",
+        '    expect(toActivationMetadata(learning, { now })).toBeDefined();',
+        '  });',
+        '});',
+        '',
+        "describe('against a fixed clock', () => {",
+        '  beforeEach(() => {',
+        "    now = new Date('2026-07-05T00:00:00Z');",
+        '  });',
+        ...SEAM_BLOCK.map((l) => `  ${l}`),
+        ...SETUP_CLOCK_BLOCK.map((l) => `  ${l}`),
+        '});',
+      ],
+    ],
+  ])('does not flag a block whose `now` is controlled although the setup binds it too (%s)', (_shape, body) => {
+    const { json } = scan({ 'tests/setup-control.test.mjs': [EMITTER_IMPORT, ...body, ''].join('\n') });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
+  });
+
+  // Precision side of the describe scope: vitest runs a describe's beforeEach for every block it encloses.
+  it.each([
+    ['the block sits directly in that describe', ["  it('derives the per-type expiry', () => {"], ['  });']],
+    [
+      // Catches a scope check that demands the timer's describe be the block's INNERMOST one.
+      'the block sits in a describe nested inside it',
+      ["  describe('per type', () => {", "    it('derives the per-type expiry', () => {"],
+      ['    });', '  });'],
+    ],
+  ])('does not flag a real-clock block an enclosing `describe` freezes the clock for (%s)', (_shape, open, close) => {
+    const { json } = scan({
+      'tests/enclosing-timer.test.mjs': [
+        EMITTER_IMPORT,
+        ...SEAM_BLOCK,
+        '',
+        "describe('under a frozen clock', () => {",
+        '  beforeEach(() => {',
+        "    vi.setSystemTime(new Date('2026-07-05T00:00:00Z'));",
+        '  });',
+        ...open,
+        '    const now = Date.now();',
+        '    const meta = toActivationMetadata(learning, { now });',
+        "    expect(meta.expiresAt).toBe('2026-08-05');",
+        ...close,
+        '});',
+        '',
+      ].join('\n'),
+    });
+
+    expect(json.counts['B5-date-time-bomb']).toBe(0);
   });
 });
 

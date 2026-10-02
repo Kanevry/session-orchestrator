@@ -1307,6 +1307,14 @@ export function computeInstructionBudget(opts = {}) {
 const RECONCILE_EVENT = 'orchestrator.reconcile.completed';
 
 /**
+ * Events-ledger window for the #1401 census (`events-retention-banner.mjs`):
+ * `null` — {@link readLastReconcileCapped} wants the NEWEST reconcile record,
+ * whose age no constant bounds; a pruned one reads as not measured (`null`,
+ * rendered as absence), never as a measured `0`.
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+
+/**
  * Wall-clock budget for the backwards ledger walk. Deliberately small: this
  * runs inside a session-start probe whose own budget is 2 s, and the number it
  * fetches is DECORATION on a line that is already actionable without it.

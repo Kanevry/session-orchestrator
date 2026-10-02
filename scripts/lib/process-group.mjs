@@ -25,16 +25,17 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  appendFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
-  readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import path from 'node:path';
+
+import { NOT_A_REGULAR_FILE, appendNoFollow } from './orphan-reaper/no-follow-append.mjs';
+import { readTailWindow } from './tail-window.mjs';
 
 /**
  * Grace period between SIGTERM and SIGKILL, in ms — the repo's one definition,
@@ -491,6 +492,26 @@ function ledgerPathFor(repoRoot) {
 }
 
 /**
+ * Read the whole ledger without following a link and without blocking on a
+ * FIFO: `readTailWindow`'s `noFollow` open with a window larger than any file,
+ * so a regular ledger reads exactly as `readFileSync` read it. A plain
+ * `readFileSync` FOLLOWED a symlinked ledger (a foreign file parsed as kill
+ * candidates) and blocked for good in `open` on a planted FIFO — inside the
+ * gate's own registration path (#1489). THROWS like `readFileSync`: ENOENT,
+ * ELOOP for a symlink, `ERR_NOT_REGULAR_FILE` for a FIFO or directory.
+ *
+ * Named ceiling (BV-004): the file is read whole, as before — fine for a ledger
+ * pruned to 24 h (one line per gate command); revisit if it ever stops being
+ * pruned.
+ *
+ * @param {string} target
+ * @returns {string}
+ */
+function readLedgerNoFollow(target) {
+  return readTailWindow(target, Number.MAX_SAFE_INTEGER, { noFollow: true }).text;
+}
+
+/**
  * Append one {@link GateProcessRecord} to the gate-process ledger.
  *
  * Append-only JSONL: concurrent gate runs from parallel sessions each add their
@@ -498,6 +519,12 @@ function ledgerPathFor(repoRoot) {
  * never fail a gate — but a failure prints one WARN line to stderr rather than
  * vanishing (a ledger that silently stops being written is indistinguishable
  * from a host with no gate processes).
+ *
+ * The write is {@link appendNoFollow}, never `appendFileSync(path)`: that
+ * followed a symlinked ledger, so every gate registration landed in the link's
+ * target, and its open of a planted FIFO blocked until a reader appeared — the
+ * gate hung in its own registration path (#1489). A link, FIFO, directory or
+ * hard-linked ledger is now refused with the same one WARN line.
  *
  * @param {string} repoRoot
  * @param {GateProcessRecord} record
@@ -513,7 +540,7 @@ export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
     if (!appendFn) mkdirSync(path.dirname(target), { recursive: true });
     const line = `${JSON.stringify(record)}\n`;
     if (appendFn) appendFn(target, line);
-    else appendFileSync(target, line, 'utf8');
+    else appendNoFollow(target, line);
   } catch (err) {
     process.stderr.write(
       `process-group: could not record gate process in ${GATE_PROCESS_LEDGER_RELPATH}: ${err?.message ?? String(err)}\n`,
@@ -531,6 +558,11 @@ export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
  * inline note at the check. Entries older than `maxAgeMs` are filtered out and
  * counted separately — they are not candidates for anything, and their PIDs are
  * the most likely to have been recycled.
+ *
+ * A symlinked, FIFO or otherwise non-regular ledger reads as EMPTY, like an
+ * unreadable one ({@link readLedgerNoFollow}): never a link target's lines as
+ * candidates, never a blocked open. Empty is the fail-safe direction here — a
+ * ledger with no records names no process group to signal.
  *
  * @param {string} repoRoot
  * @param {object} [opts]
@@ -550,7 +582,7 @@ export function readGateProcessLedger(repoRoot, {
   let raw = '';
   try {
     if (readFn) raw = readFn(target) ?? '';
-    else if (existsSync(target)) raw = readFileSync(target, 'utf8');
+    else if (existsSync(target)) raw = readLedgerNoFollow(target);
   } catch {
     return { records: [], malformedLines: 0, expired: 0 };
   }
@@ -594,17 +626,15 @@ export function readGateProcessLedger(repoRoot, {
  * ledger linked to `events.jsonl` emptied the link's target (CWE-59, reproduced
  * 2026-10-01). `rename` replaces the directory entry itself, never a link's
  * target, and the `wx` flag refuses a pre-planted file or link at the tmp name.
- * Kept local, not imported, because this module deliberately has no local
- * imports; `orphan-reaper/reaper-audit.mjs` carries the same few lines.
+ * `orphan-reaper/reaper-audit.mjs` carries the same few lines without the `io`
+ * seam this copy needs for its tests.
  *
  * @param {string} target
  * @param {string} body
  * @param {{lstatSync: Function, writeFileSync: Function, renameSync: Function, unlinkSync: Function}} io
  */
 function replaceRegularFile(target, body, io) {
-  if (!io.lstatSync(target).isFile()) {
-    throw new Error('not a regular file (a symlink is never written through) — left untouched');
-  }
+  if (!io.lstatSync(target).isFile()) throw new Error(NOT_A_REGULAR_FILE);
   const tmp = `${target}.tmp-${process.pid}`;
   try {
     io.writeFileSync(tmp, body, { encoding: 'utf8', flag: 'wx' });
@@ -630,8 +660,10 @@ function replaceRegularFile(target, body, io) {
  *
  * In-process fs only — never a shell `rm`/`mv` (PSA-003, and
  * `.orchestrator/metrics/**` deletions are a blocked-command rule for a reason).
- * The rewrite goes through {@link replaceRegularFile}: a symlinked or
- * non-regular ledger is refused with one WARN and left untouched.
+ * The read is {@link readLedgerNoFollow} and the rewrite goes through
+ * {@link replaceRegularFile}: a symlinked, FIFO or otherwise non-regular ledger
+ * is refused with one WARN and left untouched — refused at the READ, so a link
+ * target is never read and a FIFO never blocks the gate's registration path.
  *
  * Named ceiling (BV-004): read-filter-write is not atomic against a concurrent
  * append, so a line appended between the read and the write is lost. Acceptable
@@ -655,13 +687,26 @@ export function pruneGateProcessLedger(repoRoot, {
   maxAgeMs = DEFAULT_LEDGER_MAX_AGE_MS,
   fs: fsSeam,
 } = {}) {
-  const io = fsSeam ?? { existsSync, readFileSync, writeFileSync, lstatSync, renameSync, unlinkSync };
+  const io = fsSeam ?? {
+    existsSync,
+    readFileSync: readLedgerNoFollow,
+    writeFileSync,
+    lstatSync,
+    renameSync,
+    unlinkSync,
+  };
   const target = ledgerPathFor(repoRoot);
   let raw;
   try {
     if (!io.existsSync(target)) return 0;
     raw = io.readFileSync(target, 'utf8');
-  } catch {
+  } catch (err) {
+    // A refused ledger (ELOOP: a symlink; ERR_NOT_REGULAR_FILE: a FIFO, a
+    // directory) gets the same one WARN the rewrite gives it; an unreadable or
+    // vanished one stays silent, as before.
+    if (err?.code === 'ELOOP' || err?.code === 'ERR_NOT_REGULAR_FILE') {
+      process.stderr.write(`process-group: could not prune ${GATE_PROCESS_LEDGER_RELPATH}: ${NOT_A_REGULAR_FILE}\n`);
+    }
     return 0;
   }
 

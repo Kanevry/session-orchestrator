@@ -16,7 +16,11 @@
  * payload `{ session, repo, modus, kandidaten, navigator_state }` — no paths, no
  * quota, no `auftrag_ref`.
  *
- * stdout: one JSON line `{ ok, path, navigator_state, event }`.
+ * stdout: one JSON line `{ ok, path, navigator_state, navigator_adresse, event }`.
+ * `navigator_adresse` is the active lease's `adresse` exactly as
+ * `readNavigatorLease()` validated it (a ListAgents peer name), else `null` — no
+ * active lease, no address in it, or one the validator refused. It is the only
+ * value the caller may address a hint to; an unvalidated string never reaches it.
  *
  * Exit codes:
  *   0 — check-in written (an event failure only WARNs; `event: false` on stdout)
@@ -106,7 +110,12 @@ async function main() {
     return 1;
   }
 
-  const { state: navigatorState } = await readNavigatorLease();
+  const navigator = await readNavigatorLease();
+  const navigatorState = navigator.state;
+  // readNavigatorLease() returns a lease only when it passed validation, its
+  // `adresse` included (an invalid one makes the whole lease `unreadable`).
+  const navigatorAdresse =
+    navigator.state === 'active' && typeof navigator.lease.adresse === 'string' ? navigator.lease.adresse : null;
 
   let event = true;
   try {
@@ -132,7 +141,15 @@ async function main() {
   // Report the path with `~` for the home prefix: stdout lands in transcripts.
   const home = os.homedir();
   const shownPath = target.startsWith(`${home}${path.sep}`) ? `~${target.slice(home.length)}` : target;
-  process.stdout.write(JSON.stringify({ ok: true, path: shownPath, navigator_state: navigatorState, event }) + '\n');
+  process.stdout.write(
+    JSON.stringify({
+      ok: true,
+      path: shownPath,
+      navigator_state: navigatorState,
+      navigator_adresse: navigatorAdresse,
+      event,
+    }) + '\n',
+  );
   return 0;
 }
 

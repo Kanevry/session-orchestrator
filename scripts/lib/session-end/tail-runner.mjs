@@ -45,6 +45,8 @@
  * @property {string}  [error]        - error message, `reason === 'error'` only.
  * @property {number}  [scanned]      - entries read from the active store (ran only).
  * @property {number}  [archived]     - entries moved to the archive sidecar (ran only).
+ * @property {number}  [malformed]    - unparseable store lines kept verbatim, never
+ *                                      archived (ran only; a measured `0` when none).
  * @property {string}  [archivePath]  - the archive sidecar written to (ran only).
  */
 
@@ -88,10 +90,10 @@ function findPhaseDecision(plan, phase) {
  * happens to resolve to (#941 — that mistake once landed a test record in the
  * operator's real fleet ledger).
  *
- * @param {{repoRoot: string, scanned: number, archived: number}} ctx
+ * @param {{repoRoot: string, scanned: number, archived: number, malformed: number}} ctx
  * @returns {Promise<void>}
  */
-async function emitSweepApplied({ repoRoot, scanned, archived }) {
+async function emitSweepApplied({ repoRoot, scanned, archived, malformed }) {
   if (typeof repoRoot !== 'string' || repoRoot.trim() === '') {
     process.stderr.write(
       `tail-runner: skipped ${SWEEP_EVENT} — no repoRoot given; ` +
@@ -103,7 +105,7 @@ async function emitSweepApplied({ repoRoot, scanned, archived }) {
     const { emitEvent, sessionAttribution } = await import('../events.mjs');
     await emitEvent(
       SWEEP_EVENT,
-      { scanned, archived, source: SWEEP_SOURCE, ...sessionAttribution(repoRoot) },
+      { scanned, archived, malformed, source: SWEEP_SOURCE, ...sessionAttribution(repoRoot) },
       { repoRoot },
     );
   } catch {
@@ -151,9 +153,12 @@ export async function runExpiredSweep({ repoRoot, plan, now, graceDays, emit = t
 
     const scanned = res?.scanned ?? 0;
     const archived = res?.archived ?? 0;
-    if (emit) await emitSweepApplied({ repoRoot, scanned, archived });
+    // The sweep result omits `malformed` when the read found none, so absent IS
+    // a measured 0 here — carried as a number like its two siblings (HR-105).
+    const malformed = res?.malformed ?? 0;
+    if (emit) await emitSweepApplied({ repoRoot, scanned, archived, malformed });
 
-    return { ran: true, scanned, archived, archivePath: res?.archivePath ?? archivePath };
+    return { ran: true, scanned, archived, malformed, archivePath: res?.archivePath ?? archivePath };
   } catch (err) {
     // Fail CLOSED (see the module header): a maintenance sweep must never be
     // able to block a session close.

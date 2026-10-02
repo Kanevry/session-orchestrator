@@ -34,8 +34,11 @@ const VALID = Object.freeze({
 
 /** [name, mutation applied to a copy of VALID, expected isLockShape] */
 const FIXTURES = [
-  ['a complete v2 lock', (o) => o, true],
-  ['a v1 lock without last_heartbeat', (o) => o, true],
+  ['a complete v2 lock', (o) => ({ ...o, last_heartbeat: o.started_at }), true],
+  // Shape-valid on purpose (#595 sunset, 2026-10-02): such a lock must stay
+  // VISIBLE to readLock() — isLockLive() is what calls it not live. Requiring
+  // the field here would turn it into `corrupt` and wedge acquire() on it.
+  ['a lock without last_heartbeat', (o) => o, true],
   ['session_id missing', (o) => { delete o.session_id; return o; }, false],
   ['session_id non-string', (o) => ({ ...o, session_id: 7 }), false],
   ['started_at missing', (o) => { delete o.started_at; return o; }, false],

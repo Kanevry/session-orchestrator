@@ -634,20 +634,7 @@ fi
 
 **Gitignore guidance:** Do NOT add `.orchestrator/metrics/*.jsonl` to `.gitignore`. The files are intentionally visible in version control — they carry project learnings and session history that future contributors benefit from.
 
-The store's LOCK artifacts are the opposite case and DO get ignored: the ledgers are durable project data, while `<store>.lock`, its `.acquire` guard and the `.file.lock.*` temp files that `scripts/lib/file-lock.mjs` creates beside each lock are per-process runtime state that a `git add .` would otherwise commit (#1487). Append the two patterns when missing:
-
-```bash
-_GI="$REPO_ROOT/.gitignore"
-_GI_MISSING=()
-for _pat in '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'; do
-  grep -qxF -- "$_pat" "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
-done
-if [[ ! -L "$_GI" && ${#_GI_MISSING[@]} -gt 0 ]]; then
-  printf '%s\n' '# session-orchestrator store-lock artifacts (runtime state, never versioned)' "${_GI_MISSING[@]}" >> "$_GI"
-fi
-```
-
-Idempotent (only missing patterns are appended), and a symlinked `.gitignore` is left alone. A `.gitignore` that Fast Step 3 created is already in `BOOTSTRAP_FILES` and is committed at Step 7; an append to a pre-existing one stays an unstaged change, because Step 7 stages only files bootstrap created.
+The store's LOCK artifacts are the opposite case and DO get ignored (#1487): Fast Step 3, inherited above, already appended `.orchestrator/metrics/*.jsonl.lock*` and `.file.lock.*` via [`_shared-template.md#store-lock-ignore`](_shared-template.md) — the one canonical snippet, also run by the `--upgrade` and `--refresh-lock` flows. Nothing to repeat here.
 
 <!-- @include _shared-template.md#baseline-fetch -->
 ## Step S99: (Optional) Fetch Canonical Rules + Agents from Baseline

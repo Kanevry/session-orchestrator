@@ -826,7 +826,13 @@ export function listEventSourcesNewestFirst(opts = {}) {
  *   a stop, the walk ends with `truncated: true` — which is NOT "not found":
  *   the caller must report undeterminable, never a clean negative.
  * @returns {{stopped: boolean, truncated: boolean, malformed_lines: number,
- *            sources: string[], unreadable: string[]}}
+ *            sources: string[], unreadable: string[], gaps: object[]}} `gaps`
+ *   (#1489): every rotation tombstone the walk passed, on any line and
+ *   regardless of `filter`, whose archive is not one of this walk's sources — pruned
+ *   (`missing-archive`) or renamed out of `ARCHIVE_NAME_RE`
+ *   (`unindexed-archive`), the same two kinds and fields
+ *   {@link readEventsWithRotations} reports. Non-empty ⇒ the history the walk
+ *   read is CUT, so a walk that found nothing has not proven "never happened".
  */
 export function scanEventsBackwards(opts = {}) {
   const { onRecord, filter, budgetMs } = opts;
@@ -840,9 +846,50 @@ export function scanEventsBackwards(opts = {}) {
 
   const scanned = [];
   const unreadable = [];
+  const gaps = [];
   let malformed = 0;
   let stopped = false;
   let truncated = false;
+
+  const sources = listEventSourcesNewestFirst(opts);
+  const listed = new Set(sources.map((s) => s.path));
+  // Same construction as `discoverArchives`, so a listed archive matches by string.
+  const ownArchiveDir = path.join(
+    path.dirname(opts.filePath ?? eventsFilePath(opts.repoRoot)),
+    ARCHIVE_DIR_NAME,
+  );
+
+  /**
+   * Every rotation tombstone the walk passes is checked, on whatever line it
+   * sits — the semantics of {@link readEventsWithRotations}, which checks every
+   * rotation record of every source. Not only first lines (#1489 review
+   * LOW-2): `maybeRotate` renames, prunes, THEN appends the tombstone, from an
+   * async SessionStart hook, so a concurrent append can land first and push it
+   * to line 2. Called BEFORE the caller's `filter`, which names another event
+   * and would otherwise hide the cut. Resolved by basename against this
+   * ledger's own `_archive/`, never by the absolute provenance value (#1411).
+   */
+  const noteCut = (line, source) => {
+    if (!line.includes(ROTATION_EVENT)) return;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      return; // counted by `consume` like every other malformed line
+    }
+    const target = record?.event === ROTATION_EVENT ? record.archived_as : null;
+    if (typeof target !== 'string' || target.length === 0) return;
+    const sibling = path.join(ownArchiveDir, path.basename(target));
+    if (listed.has(sibling)) return;
+    gaps.push({
+      kind: existsSync(sibling) ? 'unindexed-archive' : 'missing-archive',
+      path: sibling,
+      archived_as: target,
+      first_ts: record.first_ts ?? null,
+      last_ts: record.last_ts ?? null,
+      reported_by: source.path,
+    });
+  };
 
   /** @returns {boolean} true ⇒ the caller accepted a record; stop everything. */
   const consume = (block, source) => {
@@ -850,6 +897,7 @@ export function scanEventsBackwards(opts = {}) {
     for (let i = lines.length - 1; i >= 0; i -= 1) {
       const line = lines[i];
       if (!line) continue;
+      noteCut(line, source);
       if (typeof filter === 'string' && !line.includes(filter)) continue;
       let record;
       try {
@@ -863,7 +911,7 @@ export function scanEventsBackwards(opts = {}) {
     return false;
   };
 
-  for (const source of listEventSourcesNewestFirst(opts)) {
+  for (const source of sources) {
     if (stopped || truncated) break;
     if (outOfTime()) {
       truncated = true;
@@ -915,5 +963,5 @@ export function scanEventsBackwards(opts = {}) {
     }
   }
 
-  return { stopped, truncated, malformed_lines: malformed, sources: scanned, unreadable };
+  return { stopped, truncated, malformed_lines: malformed, sources: scanned, unreadable, gaps };
 }

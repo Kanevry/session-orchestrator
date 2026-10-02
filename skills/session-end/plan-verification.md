@@ -46,7 +46,7 @@ Compare the files the plan said would be touched against the files actually chan
    - Generated/lock files (`pnpm-lock.yaml`, `*.lock`, `dist/**`, `node_modules/**`) are excluded from both planned and actual sets
    - The `.claude/`, `.codex/`, and `.cursor/` state directories are excluded — they are session artifacts, not code
 
-   > **Scope-drift cross-reference:** the S2 warn-only drift tripwire (below) uses its own separately-maintained filter list — `DRIFT_EXCLUDE_PATTERNS` in `scripts/lib/scope-baseline.mjs` — and is NOT derived from the filters above. That list is the shared filter source for both sides of its ratio IN CODE: `writeBaseline()`'s denominator (`countPlannedFiles()`) and `computeDrift()`'s numerator both call the same internal `filterExcluded()` helper (#894 review finding F1 — previously only the numerator was code-filtered; the denominator relied on a coordinator prose instruction to pre-filter before calling `writeBaseline()`, which is why three earlier PRD revisions shipped a tripwire that read a wrong ratio).
+   > **Scope-drift cross-reference:** the S2 warn-only drift tripwire (below) uses its own separately-maintained filter list — `DRIFT_EXCLUDE_PATTERNS` in `scripts/lib/scope-baseline.mjs` — and is NOT derived from the filters above. That list is the shared filter source for both sides of its ratio IN CODE: `writeBaseline()`'s denominator (`countPlannedFiles()`) and `computeDrift()`'s numerator both call the same internal `filterExcluded()` helper — the numerator additionally drops UNTRACKED paths under `.orchestrator/` (`isUntrackedRuntimeWrite()`), a rule keyed on tracked status that only the live numerator has (#894 review finding F1 — previously only the numerator was code-filtered; the denominator relied on a coordinator prose instruction to pre-filter before calling `writeBaseline()`, which is why three earlier PRD revisions shipped a tripwire that read a wrong ratio).
 5. **Report** in the verification output. Also call `computeDrift({ repoRoot, threshold: 2.0 })` (`scripts/lib/scope-baseline.mjs`) and append its result — warn-only, informational, never blocks close:
    ```
    File-level grounding:
@@ -56,6 +56,7 @@ Compare the files the plan said would be touched against the files actually chan
    - Untouched (planned but not edited): N files [list first 5]
    - Scope drift: filesRatio X.X (Y actual / Z planned, threshold 2.0) — [breached | ok | skipped: <reason>]
    ```
+   Read `skipped: unresolvable-ref` as "a git query the numerator needs failed", not only "the ref is dead": besides a `session-start-ref` lost to a rebase or force-push it also covers a checkout git cannot read, the working-tree or untracked query failing, output over 64 MiB (ENOBUFS) and the 10 s per-query timeout. Run `git rev-parse --verify <session-start-ref>` before concluding the ref is gone. `skipped: no-baseline-ref` means the repo has no base to measure against (no remotes, no `main`/`master`). A `breached` result can also be an over-report: files already dirty at session start, or a same-checkout peer's files, count as drift (see `computeDrift()`'s JSDoc).
 6. **Append to session metrics** (`grounding` field in the Phase 1.7 JSONL entry):
    ```json
    "grounding": {

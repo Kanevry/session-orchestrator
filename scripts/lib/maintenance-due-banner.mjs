@@ -132,6 +132,14 @@ const MS_PER_DAY = 86_400_000;
 /** The event name whose ABSENCE is the `evolve` signal. */
 const EVOLVE_EVENT = 'orchestrator.evolve.completed';
 
+/**
+ * Events-ledger window for the #1401 census (`events-retention-banner.mjs`):
+ * `null` — the one ledger question here ("was {@link EVOLVE_EVENT} EVER
+ * recorded?") is about every line ever written, so no day count bounds it; a
+ * pruned history turns the answer `undeterminable`, never "never" (#1489).
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+
 /** Pending-proposal sidecars, repo-relative (owned by auto-dream / auto-dialectic). */
 const PENDING_SIDECARS = ['.orchestrator/pending-dream.md', '.orchestrator/dialectic-pending.md'];
 
@@ -187,11 +195,13 @@ export const EVOLVE_SCAN_BUDGET_MS = 1000;
  * /evolve, which is the HR-101 failure mode this module exists to avoid.
  *
  * @param {string} repoRoot
- * @returns {{ok: boolean, lastAt: string|null, truncated: boolean}} `ok: false`
- *   ⇒ a source exists but could not be read; `truncated: true` ⇒ the budget ran
- *   out before the walk finished. In BOTH cases the caller must record
- *   `undeterminable`, never clean — a walk that did not finish has not proven
- *   "never".
+ * @returns {{ok: boolean, lastAt: string|null, truncated: boolean, historyCut: boolean}}
+ *   `ok: false` ⇒ a source exists but could not be read; `truncated: true` ⇒
+ *   the budget ran out before the walk finished. In BOTH cases the caller must
+ *   record `undeterminable`, never clean — a walk that did not finish has not
+ *   proven "never". `historyCut: true` ⇒ the walk finished but the history it
+ *   read begins after an archive that is gone (#1489: pruned by
+ *   `events-rotation.max-backups`), so a miss has not proven "never" either.
  */
 function readLastEvolveRun(repoRoot) {
   const file = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
@@ -209,8 +219,10 @@ function readLastEvolveRun(repoRoot) {
       return true;
     },
   });
-  if (scan.unreadable.length > 0) return { ok: false, lastAt: null, truncated: false };
-  return { ok: true, lastAt, truncated: scan.truncated };
+  if (scan.unreadable.length > 0) {
+    return { ok: false, lastAt: null, truncated: false, historyCut: false };
+  }
+  return { ok: true, lastAt, truncated: scan.truncated, historyCut: scan.gaps.length > 0 };
 }
 
 /**
@@ -301,7 +313,10 @@ export async function computeMaintenanceDue(opts = {}) {
     if (!evolve.ok || evolve.truncated) {
       undeterminable.push('evolve');
     } else if (evolve.lastAt === null && nudge.activeLearnings >= MAINTENANCE_MIN_LEARNINGS) {
-      markDue('evolve', `never, ${nudge.activeLearnings} active learnings`);
+      // #1489: judged only where it would flip the verdict, so a cut history
+      // adds no row to a repo the floor already keeps silent (HR-101).
+      if (evolve.historyCut) undeterminable.push('evolve');
+      else markDue('evolve', `never, ${nudge.activeLearnings} active learnings`);
     }
 
     // --- reconcile (S3) ----------------------------------------------------

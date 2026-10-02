@@ -109,19 +109,22 @@ function lockPathFor(repoRoot) {
 }
 
 /**
- * Fractional hours since a lock's last heartbeat (the liveness basis). Falls
- * back to started_at when last_heartbeat is absent (v1 lock). Returns null when
- * neither parses.
+ * Fractional hours since a lock's last heartbeat — the figure the reaper
+ * REPORTS (candidate list `ageHours`, `orchestrator.session.lock.reaped`
+ * `age_hours`). Display only: the reap decision is `isLockLive()`.
+ *
+ * Reads `last_heartbeat` only, like `isLockLive()` since the #595 sunset
+ * (2026-10-02). A lock without one has no heartbeat age, so this returns
+ * `null` (the CLI renders "unknown age") instead of passing off the age since
+ * `started_at` as heartbeat staleness.
  *
  * @param {object} lock
  * @param {number} nowMs
- * @returns {number|null}
+ * @returns {number|null} null when `last_heartbeat` is absent or unparseable.
  */
 function ageHoursOf(lock, nowMs) {
-  const hb = (typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0)
-    ? lock.last_heartbeat
-    : lock.started_at;
-  const ms = Date.parse(hb);
+  if (typeof lock.last_heartbeat !== 'string' || lock.last_heartbeat.length === 0) return null;
+  const ms = Date.parse(lock.last_heartbeat);
   if (Number.isNaN(ms)) return null;
   return Number(((nowMs - ms) / (3600 * 1000)).toFixed(2));
 }

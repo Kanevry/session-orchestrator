@@ -5,13 +5,8 @@
  */
 
 import {
-  appendFileSync,
-  closeSync,
-  constants as fsConstants,
-  fstatSync,
   lstatSync,
   mkdirSync,
-  openSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -21,6 +16,7 @@ import path from 'node:path';
 
 import { readTailWindow } from '../tail-window.mjs';
 import { REAPER_DEFAULTS, underRepo } from './defaults.mjs';
+import { NOT_A_REGULAR_FILE, appendNoFollow } from './no-follow-append.mjs';
 
 /** Relative path of the JSONL kill audit (B5). Gitignored via `.gitignore:55`
  *  (`.orchestrator/metrics/*.jsonl`), verified with `git check-ignore --no-index -v`.
@@ -58,26 +54,6 @@ const REAPER_AUDIT_KEEP_BYTES = 512 * 1024;
  *  window holds fewer complete lines, or fewer rate decisions, than requested,
  *  and never past {@link REAPER_AUDIT_MAX_BYTES}. */
 const AUDIT_TAIL_START_BYTES = 64 * 1024;
-
-/** The one refusal both writers share — the prune's {@link replaceRegularFile}
- *  and the append's `O_NOFOLLOW` open. */
-const NOT_A_REGULAR_FILE = 'not a regular file (a symlink is never written through) — left untouched';
-
-/**
- * `open(2)` flags of the audit append. `O_NOFOLLOW` makes the kernel refuse a
- * symlink as the last path component (ELOOP) in the same call that opens the
- * file, so there is no lstat-then-open window; `O_NONBLOCK` turns a planted FIFO
- * with no reader into ENXIO instead of blocking in `open`. That protects THIS
- * open only: the scan child then READS the same path for the rate and opens it
- * again to prune, and a plain `'r'` open of the FIFO blocked it for good
- * (reproduced 2026-10-02, #1487) — both reads therefore go through
- * `readTailWindow`'s `noFollow` open, the read-side twin of these flags.
- * Named ceiling (BV-004): both are POSIX-only — Node leaves them undefined on
- * Windows, where a linked audit is still followed; revisit if the reaper ever
- * runs there (it shells out to `ps`, so today it does not).
- */
-const AUDIT_APPEND_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT
-  | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 
 /**
  * Whether an audit record is one of the HR-101 rate's DECISIONS: the reaper
@@ -157,12 +133,15 @@ export function buildAuditRecord(entry, decision, {
  * Refuses a symlinked or non-regular audit exactly as {@link pruneReaperAudit}
  * does: `appendFileSync(path)` follows a link, so `ln -s events.jsonl
  * reaper-audit.jsonl` routed every kill record into the link target (CWE-59,
- * #1487). The check is the open itself ({@link AUDIT_APPEND_FLAGS}) plus an
- * `fstat` of the descriptor that was opened — never a separate lstat. The same
- * `fstat` refuses a HARD-linked audit (`nlink !== 1`): `ln <victim>
- * reaper-audit.jsonl` passes every symlink check, and each append then lands in
- * the victim (reproduced 2026-10-02). The prune is immune — it renames a new
- * inode over the name.
+ * #1487). The write goes through {@link appendNoFollow} (`no-follow-append.mjs`,
+ * shared with the gate-process ledger): an `O_NOFOLLOW|O_NONBLOCK` open plus an
+ * `fstat` of the opened descriptor, which also refuses a FIFO and a HARD-linked
+ * audit (`ln <victim> reaper-audit.jsonl` passes every symlink check, and each
+ * append then landed in the victim — reproduced 2026-10-02). That protects the
+ * append only: the scan child then READS the same path for the rate and opens
+ * it again to prune — both reads therefore go through `readTailWindow`'s
+ * `noFollow` open, the read-side twin. The prune's rewrite is immune to hard
+ * links — it renames a new inode over the name.
  *
  * @param {string} repoRoot
  * @param {object} record
@@ -170,23 +149,11 @@ export function buildAuditRecord(entry, decision, {
  */
 export function appendAuditRecord(repoRoot, record) {
   const target = auditPath(repoRoot);
-  let fd = null;
   try {
     mkdirSync(path.dirname(target), { recursive: true });
-    fd = openSync(target, AUDIT_APPEND_FLAGS);
-    const stats = fstatSync(fd);
-    if (!stats.isFile()) throw new Error(NOT_A_REGULAR_FILE);
-    if (stats.nlink !== 1) {
-      throw new Error(`hard-linked (${stats.nlink} names) — an append would write into every one of them; left untouched`);
-    }
-    appendFileSync(fd, `${JSON.stringify(record)}\n`, 'utf8');
+    appendNoFollow(target, `${JSON.stringify(record)}\n`);
   } catch (err) {
-    const why = err?.code === 'ELOOP' ? NOT_A_REGULAR_FILE : (err?.message ?? String(err));
-    process.stderr.write(`orphan-reaper: could not append to ${REAPER_AUDIT_RELPATH}: ${why}\n`);
-  } finally {
-    if (fd !== null) {
-      try { closeSync(fd); } catch { /* nothing left to release */ }
-    }
+    process.stderr.write(`orphan-reaper: could not append to ${REAPER_AUDIT_RELPATH}: ${err?.message ?? String(err)}\n`);
   }
 }
 

@@ -359,6 +359,61 @@ describe('runSessionStartProbes — what did not run is recorded', () => {
     expect(out.bannerLines.join('\n')).not.toContain('should not be seen');
   });
 
+  // BUG (#1489): `measure` travels into the ledger AND over the unredacted
+  // webhook, so a probe's `telemetry` returning a path, a nested blob or a
+  // non-finite number would write it there verbatim. Only snake_case keys with
+  // finite-number or null values may pass.
+  it('persists a probe telemetry as measure, keeping only numeric and null values', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const telemetry = () => ({ count: 3, none: null, path: '/Users/x/repo', nested: { a: 1 }, ratio: Number.NaN, 'Bad-Key': 1 });
+    const probes = [await fakeProbe(dir, 'local', CLEAN, { telemetry })];
+
+    await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
+
+    expect(calls[0].payload.probes).toEqual([
+      { id: 'local', outcome: 'ran-clean', work_ms: expect.any(Number), measure: { count: 3, none: null } },
+    ]);
+  });
+
+  // BUG (2026-10-02 review of 54a3c26b): `probeMeasure` read the telemetry
+  // object OUTSIDE its try, and `render` ran unguarded, so a throwing getter
+  // or renderer rejected the whole runner — every banner and the ledger record
+  // lost — although the runner documents that it never rejects.
+  it('degrades a probe whose telemetry getter or renderer throws instead of rejecting the run', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const telemetry = () => ({ get count() { throw new Error('getter exploded'); } });
+    const render = () => { throw new Error('render exploded'); };
+    const probes = [
+      await fakeProbe(dir, 'measure', CLEAN, { telemetry }),
+      await fakeProbe(dir, 'render', warns('never rendered'), { render }),
+    ];
+
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
+
+    expect(calls[0].payload.probes).toEqual([
+      { id: 'measure', outcome: 'ran-clean', work_ms: expect.any(Number) },
+      { id: 'render', outcome: 'error', reason: 'render-threw', work_ms: expect.any(Number) },
+    ]);
+    expect(out.bannerLines.join('\n')).not.toContain('never rendered');
+  });
+
+  // BUG (2026-10-02 review of c5c06239): the error reason was built with
+  // String() of the probe-supplied thrown value outside any guard, so a probe
+  // throwing a prototype-less object rejected the runner after all.
+  it('records a probe that throws an unprintable value as an error instead of rejecting the run', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const probes = [await fakeProbe(dir, 'unprintable', 'export function probe() { throw Object.create(null); }\n')];
+
+    await runSessionStartProbes({ repoRoot: dir }, { probes, emit, timeoutMs: 30_000 });
+
+    expect(calls[0].payload.probes).toEqual([
+      { id: 'unprintable', outcome: 'error', reason: 'probe-threw-unprintable' },
+    ]);
+  });
+
   // BUG: the opt-in escape hatch is documented but dead, so an operator who
   // sets it gets the same silent exclusion and no way to find out.
   it('runs network probes when SO_PROBES_INCLUDE_NETWORK=1', async () => {

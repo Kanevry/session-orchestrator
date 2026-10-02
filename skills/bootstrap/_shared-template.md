@@ -1,7 +1,8 @@
 # Bootstrap Shared Template Partials
 
 > This file is NOT a standalone template. It contains shared step definitions
-> referenced from `standard-template.md` and `deep-template.md` via
+> referenced from the tier templates (and, for `#store-lock-ignore`, from the
+> `SKILL.md` Upgrade and Refresh-Lock flows) via
 > `<!-- @include _shared-template.md#section-name -->` markers.
 >
 > When the bootstrap skill reads a tier template, sections marked with an
@@ -334,3 +335,36 @@ fi
 ```
 
 On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per the platform state-directory convention.
+
+---
+
+## #store-lock-ignore — Store-Lock Artifacts in .gitignore (#1487, #1489 Pkt 17)
+
+Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refresh-Lock Flow in `SKILL.md` — the last two because a repo bootstrapped before this step existed never gets it otherwise: both flows write no `.gitignore` of their own.
+
+The `.orchestrator/metrics/*.jsonl` ledgers are durable project data and stay versioned. Their LOCK artifacts are per-process runtime state that a `git add .` would otherwise commit: `<store>.lock`, its `.acquire` guard and the `.file.lock.*` temp files that `scripts/lib/file-lock.mjs` creates beside each lock. Append the two patterns when missing:
+
+```bash
+# The Upgrade and Refresh-Lock flows run in a fresh shell where REPO_ROOT may be unset.
+_GI_ROOT="${REPO_ROOT:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+_GI="$_GI_ROOT/.gitignore"
+_GI_MISSING=()
+if [[ -z "$_GI_ROOT" ]]; then
+  # No repo root: never fall back to "/.gitignore" (a stray file at / when run as root).
+  echo "store-lock-ignore: no repository root (REPO_ROOT unset, not inside a repo) — skipped" >&2
+else
+  for _pat in '.orchestrator/metrics/*.jsonl.lock*' '.file.lock.*'; do
+    # A CRLF .gitignore stores "pattern\r" — count that as present, or every run appends a duplicate block.
+    grep -qxF -- "$_pat" "$_GI" 2>/dev/null || grep -qxF -- "$_pat"$'\r' "$_GI" 2>/dev/null || _GI_MISSING+=("$_pat")
+  done
+fi
+# An unreadable .gitignore (e.g. mode 0200) defeats both the presence check and the newline check — leave it alone.
+if [[ -n "$_GI_ROOT" && ! -L "$_GI" && ( ! -e "$_GI" || -r "$_GI" ) && ${#_GI_MISSING[@]} -gt 0 ]]; then
+  # A last line without a trailing newline would fuse with the comment below: `.env` + `# …`
+  # becomes `.env# …`, which git no longer reads as `.env` — the append would UN-ignore it.
+  if [[ -s "$_GI" && -n "$(tail -c1 "$_GI")" ]]; then printf '\n' >> "$_GI"; fi
+  printf '%s\n' '# session-orchestrator store-lock artifacts (runtime state, never versioned)' "${_GI_MISSING[@]}" >> "$_GI"
+fi
+```
+
+Idempotent (only missing patterns are appended), and a symlinked `.gitignore` is left alone. A `.gitignore` created earlier in the same run is already in `BOOTSTRAP_FILES` and is committed with that run; an append to a pre-existing one stays an unstaged change, because no bootstrap commit stages a file bootstrap did not create (the Upgrade Flow stages only its delta files, the Refresh-Lock Flow commits nothing). Name the append in the flow's report so the operator commits it.

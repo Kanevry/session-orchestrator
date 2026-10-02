@@ -1,12 +1,15 @@
 /**
  * lock-ttl-parity.test.mjs — cross-reference drift guard (review FIX 3, W4-FC).
  *
- * The session-lock TTL/liveness semantics are encoded in THREE places:
+ * The session-lock TTL/liveness rule is encoded in TWO places:
  *   1. scripts/lib/session-lock.mjs         — SSOT (DEFAULT_TTL_HOURS, isLockLive)
- *   2. scripts/lib/lock-reaper.mjs           — ageHoursOf (age-only; no TTL constant)
- *   3. scripts/lib/harness-audit/categories/category4.mjs — inlined mirror
+ *   2. scripts/lib/harness-audit/categories/category4.mjs — inlined mirror
  *      (DEFAULT_LOCK_TTL_HOURS, lockIsLive), documented as a stdlib-only copy
  *      of the SSOT so the audit path never imports the session-lock barrel.
+ *
+ * Not a copy, so not covered here: scripts/lib/lock-reaper.mjs `ageHoursOf()`
+ * reports hours since `last_heartbeat` for display, holds no TTL and decides
+ * nothing (the reaper gates on the imported `isLockLive`).
  *
  * A silent edit to either the constant or the liveness rule in ONE of these
  * copies without the other would drift the harness-audit's orphaned-session-lock
@@ -27,10 +30,12 @@ describe('lock TTL/liveness parity — session-lock.mjs (SSOT) vs category4.mjs 
   });
 
   it('judges a fresh-heartbeat lock identically (both live)', () => {
+    // No ttl_hours field: both copies must fall back to their default TTL
+    // constant (equal per the test above) — a copy without that default would
+    // compute a NaN window and call the lock dead.
     const lock = {
-      last_heartbeat: new Date(NOW - 1 * 3600 * 1000).toISOString(), // 1h ago, ttl 4h
+      last_heartbeat: new Date(NOW - 1 * 3600 * 1000).toISOString(), // 1h ago, default ttl 4h
       started_at: new Date(NOW - 1 * 3600 * 1000).toISOString(),
-      ttl_hours: 4,
     };
     expect(isLockLive(lock, NOW)).toBe(true);
     expect(lockIsLive(lock, NOW)).toBe(true);
@@ -46,14 +51,15 @@ describe('lock TTL/liveness parity — session-lock.mjs (SSOT) vs category4.mjs 
     expect(lockIsLive(lock, NOW)).toBe(false);
   });
 
-  it('judges a v1 lock (no last_heartbeat, started_at fallback) identically', () => {
-    // No last_heartbeat and no ttl_hours field at all — both implementations
-    // must fall back to started_at as the effective heartbeat AND to their
-    // respective default TTL constant (equal per the parity test above).
+  it('judges a heartbeat-less lock identically (both NOT live — #595 sunset)', () => {
+    // started_at is 1h ago, well inside the TTL. Until 2026-10-02 both copies
+    // fell back to it and called this lock live; now neither may, so a copy
+    // that re-grows the started_at fallback breaks parity here.
     const lock = {
       started_at: new Date(NOW - 1 * 3600 * 1000).toISOString(), // 1h ago
+      ttl_hours: 4,
     };
-    expect(isLockLive(lock, NOW)).toBe(true);
-    expect(lockIsLive(lock, NOW)).toBe(true);
+    expect(isLockLive(lock, NOW)).toBe(false);
+    expect(lockIsLive(lock, NOW)).toBe(false);
   });
 });

@@ -1,13 +1,15 @@
 /**
- * orphan-reaper/scan-throttle.mjs — the B4 throttle the two trigger hooks call.
+ * orphan-reaper/scan-throttle.mjs — the B4 throttle the trigger calls.
  *
- * This is the reaper's only hot-path surface: `hooks/on-stop.mjs` and
- * `hooks/post-tool-batch-wave-signal.mjs` import THIS module, not the scan, so a
- * tool batch pays for one `stat` and two tiny modules — never for the ledger,
- * `ps` or kill-ladder code the detached scan child loads.
+ * Together with `trigger.mjs` this is the reaper's only hot-path surface:
+ * `hooks/on-stop.mjs` and `hooks/post-tool-batch-wave-signal.mjs` reach THIS
+ * module (lazily, via `trigger.mjs`), not the scan, so a tool batch pays for one
+ * `stat` and a few tiny modules — never for the ledger, `ps` or kill-ladder code
+ * the detached scan child loads.
  */
 
-import { lstatSync, mkdirSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { lstatSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { REAPER_DEFAULTS, underRepo } from './defaults.mjs';
@@ -27,7 +29,9 @@ export const SCAN_MARKER_RELPATH = '.orchestrator/tmp/reaper-last-scan';
  * `lstat`, never `stat`: a symlinked (or otherwise non-regular) marker is not
  * one {@link touchScanMarker} wrote, and `stat` read the TARGET's mtime — so a
  * link to any often-written file (`events.jsonl`) throttled every scan for good
- * (#1487). Such a marker counts as absent, i.e. "scan". That is the fail-safe
+ * (#1487). Such a marker counts as absent, i.e. "scan" — and that scan's stamp
+ * replaces a link with a regular marker, so the next fire throttles again
+ * ({@link touchScanMarker}). Counting it as absent is the fail-safe
  * direction for this throttle: too many scans cost one detached child per hook
  * fire — visible in the process table, and in the `scan_completed` rate
  * whenever a scan finds anything — in an opt-in state (`reaper.enabled`
@@ -69,20 +73,31 @@ export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEF
  * Stamp the throttle marker. Best-effort and never throws — a marker that could
  * not be written means the next scan runs, which is the safe direction for a
  * read-only probe (the reasoning is on {@link shouldScanNow}). Callers must not
- * read a `false` as a stamped throttle: the hooks' `maybeTriggerOrphanScan`
- * returns it as `reason: 'spawned-unthrottled'`. That return value is the whole
- * record — both hook entrypoints discard it, and nothing writes it to an event
- * or a log — so in production an unwritable marker shows only as one detached
- * scan child per hook fire.
+ * read a `false` as a stamped throttle: `maybeTriggerOrphanScan`
+ * (`trigger.mjs`) returns it as `reason: 'spawned-unthrottled'`, and
+ * `hooks/on-stop.mjs` records that reason as `reaper_trigger` on its
+ * Stop/SubagentStop records — so an unwritable marker is countable in
+ * events.jsonl, not only visible as one detached scan child per hook fire.
  *
- * A marker path that is a symlink or not a regular file is left alone and
- * reported as not written: `writeFileSync` follows a link, so a marker linked to
- * any file would overwrite that file on every hook (CWE-59). Silent, like every
- * other failure here — this runs inside a 50 ms hook budget.
- * Named ceiling (BV-004): lstat-then-write leaves a check-to-use window of one
- * syscall; a link planted inside it is still written through. Acceptable for a
- * gitignored throttle stamp; revisit (O_NOFOLLOW open) if the marker ever
- * carries data.
+ * Written to a sibling tmp file, then renamed over the marker path. A rename
+ * replaces the directory ENTRY and never follows a symlink sitting there, so a
+ * planted or accidental link is healed by the next stamp — not written through
+ * (CWE-59: `writeFileSync` on the marker replaced the link's target), and not
+ * refused either: refusing it returned `false` on every fire, which switched the
+ * throttle off for good (#1489 Pkt 9). With no lstat-then-write step there is no
+ * check-to-use window left. The tmp name carries pid + random bytes and is
+ * opened `wx` (O_EXCL), so anything already at that name fails the stamp
+ * instead of being written through; a tmp this call created is removed again
+ * when the rename fails, or every failed fire would leave one behind.
+ *
+ * A DIRECTORY at the marker path is the one shape that stays unhealed: a rename
+ * cannot replace it (EISDIR), and removing it would delete content this module
+ * never wrote. It stays `false`. Silent, like every other failure here — this
+ * runs inside a 50 ms hook budget.
+ * Named ceiling (BV-004): the PARENT path is resolved normally, so a symlinked
+ * `.orchestrator/tmp/` puts the marker into the link's target directory, where
+ * it can replace only an entry of its own name. Acceptable for a gitignored
+ * throttle stamp; revisit if the marker ever carries data.
  *
  * @param {string} markerPath
  * @param {object} [opts]
@@ -91,23 +106,35 @@ export function shouldScanNow(markerPath, nowMs, minIntervalSeconds = REAPER_DEF
  */
 export function touchScanMarker(markerPath, { writeFn } = {}) {
   try {
+    const stamp = `${new Date().toISOString()}\n`;
     if (writeFn) {
-      writeFn(markerPath, `${new Date().toISOString()}\n`);
+      writeFn(markerPath, stamp);
       return true;
     }
-    let existing = null;
-    try {
-      existing = lstatSync(markerPath);
-    } catch {
-      /* no marker yet — the first stamp creates it */
-    }
-    if (existing && !existing.isFile()) return false;
     mkdirSync(path.dirname(markerPath), { recursive: true });
-    writeFileSync(markerPath, `${new Date().toISOString()}\n`, 'utf8');
-    return true;
+    const tmp = `${markerPath}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+    try {
+      writeFileSync(tmp, stamp, { encoding: 'utf8', flag: 'wx' });
+    } catch (err) {
+      // EEXIST: the `wx` open was refused, so the entry at `tmp` is not ours.
+      if (err?.code !== 'EEXIST') removeOwnTmp(tmp);
+      return false;
+    }
+    try {
+      renameSync(tmp, markerPath);
+      return true;
+    } catch {
+      removeOwnTmp(tmp);
+      return false;
+    }
   } catch {
     return false;
   }
+}
+
+/** Best-effort removal of a tmp file {@link touchScanMarker} created. @param {string} tmp */
+function removeOwnTmp(tmp) {
+  try { unlinkSync(tmp); } catch { /* never created, or already gone */ }
 }
 
 /** Absolute path of the throttle marker for a repo. One constant per path.

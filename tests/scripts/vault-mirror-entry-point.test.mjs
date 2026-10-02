@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
@@ -97,6 +97,7 @@ function runMirror(args, opts = {}) {
       ...process.env,
       VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
       ...pinnedLedgerEnv(opts.projectDir),
+      ...opts.env,
     },
   });
 }
@@ -174,6 +175,24 @@ describe('vault-mirror entry-point invariant (#536)', () => {
     const action = JSON.parse(result.stdout.trim());
     expect(action.action).toBe('created');
     expect(action.kind).toBe('learning');
+  });
+
+  // #1490: a Node fs error names the ABSOLUTE path it failed on, and this
+  // stderr lands in CI logs and transcripts (session-end echoes it).
+  it('a filesystem error prints the vault path with the home dir as ~, never absolute (#1490)', () => {
+    const home = tmp();
+    const vaultDir = join(home, 'vault');
+    mkdirSync(vaultDir);
+    // 50-sessions AS A FILE → mkdirSync below it throws a genuine ENOTDIR.
+    writeFileSync(join(vaultDir, '50-sessions'), 'blocking-file', 'utf8');
+    const sourceFile = writeJsonl(tmp(), VALID_SESSION);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session'], {
+      env: { HOME: home },
+    });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('filesystem error');
+    expect(result.stderr).toContain('~/vault/50-sessions');
+    expect(result.stderr).not.toContain(home);
   });
 
   it('invariant: pending-dream.md as --source fails when file missing (exit 2)', () => {

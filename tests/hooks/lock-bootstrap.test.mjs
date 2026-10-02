@@ -223,6 +223,53 @@ describe('bootstrapLock — failure paths (best-effort contract)', () => {
     expect(forceAcquire).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['a foreign stale lock is a takeover', 'old-session', 'stale-heartbeat'],
+    ['the own stale lock (same raw id after > ttl idle) is a refresh', 'main-2026-05-27-deep-2', undefined],
+  ])('records `reclaimed` on the acquired event only for a real takeover: %s', async (_label, priorOwner, expected) => {
+    // Bug: `reclaimed: 'stale-heartbeat'` was also set when a session resumed
+    // its OWN stale lock, inflating the takeover count the field exists for.
+    const events = [];
+    await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'main-2026-05-27-deep-2',
+      mode: 'deep',
+      _acquireImpl: vi.fn(() => ({
+        ok: false,
+        reason: 'stale-heartbeat',
+        existingLock: { session_id: priorOwner, started_at: '2026-05-26T00:00:00.000Z', mode: 'deep', pid: 1, host: 'test-host', ttl_hours: 4 },
+      })),
+      _forceAcquireImpl: makeAcquireStub(),
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0].payload.reclaimed).toBe(expected);
+  });
+
+  it('leaves a lock alone that another session forced in between, instead of stamping its own label on it', async () => {
+    // Bug: two starts forcing the same stale/corrupt lock both got ok:true; the
+    // enrichment then re-read the OTHER session's lock and wrote our semantic
+    // label and owner proof onto it.
+    const events = [];
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'session-a',
+      semanticSessionId: 'label-a',
+      mode: 'deep',
+      _acquireImpl: vi.fn(() => ({ ok: false, reason: 'corrupt', existingLock: null })),
+      // The forced write "succeeds", but the file ends up owned by session-b.
+      _forceAcquireImpl: (args) => makeAcquireStub()({ ...args, sessionId: 'session-b' }),
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+    });
+
+    expect(result).toBeNull();
+    const onDisk = readLock();
+    expect(onDisk.session_id).toBe('session-b');
+    expect(onDisk.semantic_session_id).toBeUndefined();
+    expect(existsSync(join(sandbox, '.orchestrator', 'runtime', 'lock-owner-proof.json'))).toBe(false);
+    expect(events).toEqual([]);
+  });
+
   it('force-overwrites a stale-heartbeat lock', async () => {
     const staleAcquire = vi.fn(() => ({
       ok: false,
@@ -671,6 +718,50 @@ describe('bootstrapLock — end-to-end hijack prevention (#744, real acquire/for
     const session = readCurrentSession();
     expect(session).not.toBeNull();
     expect(session.conflict_with_session_id).toBe(foreignSessionId);
+  });
+
+  it('reclaims a corrupt lock with one WARN, but still never takes a well-formed live foreign lock', async () => {
+    // Bug: an unparseable session.lock wedged session start for good. readLock()
+    // → null, the create-or-fail hit EEXIST, the vanished-race branch answered
+    // 'active' with existingLock:null, shouldForce was false, and the bootstrap
+    // bailed on every attempt — the file stayed `{not json` forever.
+    const dir = join(sandbox, '.orchestrator');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'session.lock'), '{not json');
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const bootWarns = () => stderrSpy.mock.calls.map((c) => String(c[0])).filter((s) => s.includes('lock-bootstrap'));
+
+    const events = [];
+    const reclaimed = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'my-session-corrupt',
+      mode: 'deep',
+      _emitEventImpl: async (name, payload) => { events.push({ name, payload }); },
+    });
+
+    expect(reclaimed?.session_id).toBe('my-session-corrupt');
+    expect(readLock().session_id).toBe('my-session-corrupt');
+    expect(bootWarns()).toEqual([expect.stringContaining('not a valid lock record — reclaimed')]);
+    // The WARN is discarded by the harness; the acquired event is the countable trace.
+    expect(events).toEqual([
+      { name: 'orchestrator.session.lock.acquired', payload: expect.objectContaining({ reclaimed: 'corrupt' }) },
+    ]);
+
+    // The well-formed live lock of a DIFFERENT session stays fully protected:
+    // classified 'active' (the conflict signal is only recorded on that reason),
+    // not reclaimed, no further WARN.
+    seedForeignLiveLock('foreign-live-corrupt-case');
+    const blocked = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'another-session',
+      mode: 'deep',
+      _emitEventImpl: noopEmit,
+    });
+
+    expect(blocked).toBeNull();
+    expect(readLock().session_id).toBe('foreign-live-corrupt-case');
+    expect(readCurrentSession()?.conflict_with_session_id).toBe('foreign-live-corrupt-case');
+    expect(bootWarns()).toHaveLength(1);
   });
 });
 

@@ -53,6 +53,14 @@ const SESSION_STARTED = 'orchestrator.session.started';
 const SESSION_ENDED = 'orchestrator.session.ended';
 
 /**
+ * Events-ledger window for the #1401 census (`scripts/lib/events-retention-banner.mjs`):
+ * `null` — {@link planSessions} takes every `session.started` ever written as a
+ * candidate, so no day count bounds it (`DEFAULT_TTL_HOURS` is a minimum AGE,
+ * not a window). A pruned history yields fewer candidates and says nothing.
+ */
+export const REQUIRED_EVENTS_WINDOW_DAYS = null;
+
+/**
  * Default cap on how many candidates may reach the (expensive) shared core in a
  * single run. Only the SessionStart path passes a limit; the CLI stays uncapped.
  * See `backfillOnSessionStart` for the latency rationale.

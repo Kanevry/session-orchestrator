@@ -100,6 +100,13 @@ function setSessionField(statePath, newSession) {
   return updated;
 }
 
+/** Writes `content` to `<root>/<rel>`, creating parent dirs. No git side effect. */
+function writeAt(root, rel, content) {
+  const abs = join(root, rel);
+  mkdirSync(dirname(abs), { recursive: true });
+  writeFileSync(abs, content, 'utf8');
+}
+
 /** Writes each relPath (creating parent dirs) and commits them all in one commit. */
 function writeFilesAndCommit(root, relPaths, message) {
   for (const rel of relPaths) {
@@ -704,6 +711,88 @@ describe('computeDrift()', () => {
 
     expect(result.actualFiles).toBe(2);
     expect(result.filesRatio).toBe(1);
+  });
+
+  // #1027: the numerator was `git diff --name-only <ref>..HEAD` alone — commits
+  // only. Mid-session nothing is committed yet, and a NEW module is untracked,
+  // so the overshoot below read 1 of 4 files and never breached. The same
+  // working tree also carries the plugin's own writes (a tracked metrics
+  // ledger a consumer repo versions, an untracked lock and filescope), which
+  // must NOT count once the working tree is read.
+  it('#1027: counts staged, unstaged and NEW untracked files — but not the plugin\'s own runtime writes', () => {
+    const root = makeTmpRepo();
+    mkdirSync(join(root, 'src'), { recursive: true });
+    mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(join(root, 'src', 'existing.mjs'), 'export const a = 1;\n', 'utf8');
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'events.jsonl'), '{"e":1}\n', 'utf8');
+    const sha = initialCommit(root);
+    writeFilesAndCommit(root, ['src/committed.mjs'], 'wave 1');
+
+    // The session's uncommitted work: 3 more deliverables (committed.mjs is
+    // edited again and must be counted once, not twice).
+    writeFileSync(join(root, 'src', 'committed.mjs'), 'edited after commit\n', 'utf8');
+    writeFileSync(join(root, 'src', 'existing.mjs'), 'export const a = 2;\n', 'utf8');
+    writeFileSync(join(root, 'src', 'staged.mjs'), 'staged\n', 'utf8');
+    fixtureGit(['add', 'src/staged.mjs'], root);
+    writeFileSync(join(root, 'src', 'new-module.mjs'), 'untracked\n', 'utf8');
+
+    // The plugin's own runtime writes in the same working tree.
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'events.jsonl'), '{"e":1}\n{"e":2}\n', 'utf8');
+    writeFileSync(join(root, '.orchestrator', 'session.lock'), '{}\n', 'utf8');
+    mkdirSync(join(root, '.claude', 'filescopes', 'wave-1'), { recursive: true });
+    writeFileSync(join(root, '.claude', 'filescopes', 'wave-1', 'w1-a.json'), '[]\n', 'utf8');
+    seedState(root, driftStateFixture({ session: 'session-A', baselineSession: 'session-A', sessionStartRef: sha, plannedFiles: 2 }));
+
+    expect(computeDrift({ repoRoot: root })).toEqual({
+      ok: true,
+      skipped: false,
+      filesRatio: 2,
+      plannedFiles: 2,
+      actualFiles: 4,
+      breached: true,
+      threshold: 2,
+      refUsed: sha,
+    });
+  });
+
+  // #1027 review (MED-2, LOW-3): in a consumer repo `.orchestrator/` is not
+  // ignored, so the plugin's own runtime writes sat in the untracked source
+  // and counted as drift, while the one-segment `.orchestrator/*` pattern
+  // hid a TRACKED `bootstrap.lock` edit. Each row starts from one untracked
+  // deliverable (src/feature.mjs) and adds one write of the named class.
+  it.each([
+    {
+      name: 'untracked .orchestrator/runtime/ (gate-processes.jsonl, every wave) is not drift',
+      write: (root) => writeAt(root, '.orchestrator/runtime/gate-processes.jsonl', '{}\n'),
+      actualFiles: 1,
+    },
+    {
+      name: 'untracked .orchestrator/tmp/ (coordinator scratch) is not drift',
+      write: (root) => writeAt(root, '.orchestrator/tmp/dialectic-prompt.txt', 'scratch\n'),
+      actualFiles: 1,
+    },
+    {
+      name: 'an isolated agent worktree under .claude/worktrees/ is not drift',
+      write: (root) => {
+        mkdirSync(join(root, '.claude', 'worktrees'), { recursive: true });
+        fixtureGit(['worktree', 'add', '-q', '-b', 'agent-a', join(root, '.claude', 'worktrees', 'agent-a')], root);
+      },
+      actualFiles: 1,
+    },
+    {
+      name: 'an edit to the TRACKED .orchestrator/bootstrap.lock deliverable still counts',
+      write: (root) => writeAt(root, '.orchestrator/bootstrap.lock', 'version: 1\ntier: standard\n'),
+      actualFiles: 2,
+    },
+  ])('#1027 review: $name', ({ write, actualFiles }) => {
+    const root = makeTmpRepo();
+    writeAt(root, '.orchestrator/bootstrap.lock', 'version: 1\ntier: fast\n');
+    const sha = initialCommit(root);
+    seedState(root, driftStateFixture({ session: 'session-A', baselineSession: 'session-A', sessionStartRef: sha, plannedFiles: 1 }));
+    writeAt(root, 'src/feature.mjs', 'export const f = 1;\n');
+    write(root);
+
+    expect(computeDrift({ repoRoot: root }).actualFiles).toBe(actualFiles);
   });
 
   it('no STATE.md → skipped with reason no-state-md', () => {

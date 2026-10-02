@@ -245,6 +245,27 @@ describe('checkMaintenanceDue', () => {
     expect(computed.undeterminable).toEqual([]);
   });
 
+  // BUG (#1489): `events-rotation.max-backups` prunes the OLDEST archive. When
+  // that archive held the repo's only `orchestrator.evolve.completed`, the walk
+  // found nothing and the probe reported "evolve: never" to a repo that HAS run
+  // /evolve. The surviving tombstone names the pruned archive, so the walk knows
+  // its history is cut — and a cut history cannot prove "never".
+  it('records evolve as undeterminable, not "never", when the history before the ledger was pruned', async () => {
+    writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5);
+    writeMetrics('events.jsonl', [
+      JSON.stringify({
+        event: 'orchestrator.events.rotated',
+        timestamp: '2026-02-01T00:00:00.000Z',
+        archived_as: path.join(metricsDir(), '_archive', 'events-20260101T000000Z_20260201T000000Z.jsonl'),
+      }),
+      JSON.stringify({ event: 'subagent_stop', timestamp: '2026-09-02T00:00:00.000Z' }),
+    ]);
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(computed.due.map((d) => d.id)).not.toContain('evolve');
+    expect(computed.undeterminable).toEqual(['evolve']);
+  });
+
   // BUG (#1290 item 2): the ledger is now read BACKWARDS in TAIL_CHUNK_BYTES
   // chunks. A chunked reader that parses the partial line at the front of each
   // chunk sees a record split across the boundary as two halves, neither of

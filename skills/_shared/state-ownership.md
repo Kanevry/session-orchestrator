@@ -107,8 +107,9 @@ layer.
 - **Registry `role` (`'navigator'`) is display, never ownership.** The
   authoritative claim is the navigator lease (`leases/navigator.json` under
   `~/.config/navigator/`, see `skills/_shared/fleet-protocol.md`); `registerSelf()`
-  does not carry the field across a repeated SessionStart, so the `/navigator`
-  skill re-sets it each ticker round via `heartbeat(id, { role })` (#1462).
+  does not carry the field across a repeated SessionStart, so a navigator
+  (operated outside this plugin) has to re-set it on every round via
+  `heartbeat(id, { role })` (#1462).
 
 The peer-discovery and issue-budget procedures below apply these rules at their
 narrow surfaces; neither creates a second ownership model.
@@ -277,23 +278,39 @@ The fix removes the question rather than re-answering it. `classifyExisting()` r
 
 `isPidAliveOnHost` remains exported from `session-lock.mjs` and is unaffected — `file-lock.mjs` and `lock-reaper.mjs` are legitimate callers, because there the pid IS the process being asked about.
 
-### Schema v1 → v2 backward-compat
+### Schema v1 → v2 backward-compat — ENDED 2026-10-02 (#595)
 
-Readers (e.g., `readLock()` in `session-lock.mjs`, `discoverActiveSessions()`) MUST tolerate absent `last_heartbeat` and `semantic_session_id` fields (v1 locks written before Epic #583). When `last_heartbeat` is absent, fall back to TTL-based expiry from `started_at`. When `semantic_session_id` is absent, treat as unknown.
+Lock readers no longer tolerate a v1 lock. A `session.lock` without `last_heartbeat` is foreign or damaged — no writer has produced one since Epic #583 (`buildLock()`, `hooks/_lib/lock-bootstrap.mjs` and `updateHeartbeat()` all set it) — and it is handled as **visible but not live**:
 
-#### Schema v1 Sunset — evaluated 2026-08-15, tolerance RETAINED (#595)
+- `parseLock()` returns it unchanged: still shape-valid (`isLockShape()` does not require `last_heartbeat`), so `readLockDetailed()` reports `ok` and the lock is never silently dropped.
+- `isLockLive()` and its stdlib-only mirror `lockIsLive()` in `scripts/lib/harness-audit/categories/category4.mjs` call it NOT live; there is no `started_at` fallback any more.
+- `heartbeatAgeMinutes` is `null` (no heartbeat, so no heartbeat age) in both `acquire()`'s result and `checkStale()`.
+- `acquire()` classifies it `stale-heartbeat`, so the SessionStart bootstrap reclaims it instead of the repo staying blocked for a TTL window that nothing heartbeats.
 
-The 90-day sunset window from Epic #583 (target 2026-08-25) came due and the removal was evaluated against the live fleet. **Verdict: keep the three reader tolerances; the blocker is not v1 data, it is a second production copy of the rule.**
+Rejecting such a lock outright was considered and refused. At the time, a rejected lock made `readLock()` return `null`, the create-or-fail in `acquire()` hit `EEXIST` on the file still there, and the vanished-race branch answered `active` with `existingLock: null` on every attempt, so a lock nobody could see blocked every new session. That wedge is closed now (see **Corrupt lock** below), but rejecting would still hide the lock's `session_id`, host and `started_at` from every `readLock()` caller.
 
-**Precondition — zero v1 artefacts on disk (measured 2026-08-15, this host):**
+`semantic_session_id` stays optional by schema, not as a v1 artefact: when absent, treat it as unknown.
 
-- `find ~/Projects ~/.claude ~/.config /tmp/claude-501 -name 'session.lock' -not -path '*/node_modules/*'` → **12 files, 12/12 carry a non-empty `last_heartbeat`** (0 v1).
-- `~/.config/session-orchestrator/sessions/active/*.json` → **3 entries, 3/3 carry the `mode` key** (0 v1).
-- The only co-installed older plugin build (`~/.claude/plugins/cache/session-orchestrator/session-orchestrator/3.13.0`) already writes `last_heartbeat` (`session-lock.mjs:195`) and `mode` (`session-registry.mjs:209`) — **no v1 writer remains on this host.**
+#### Schema v1 Sunset — decided 2026-10-02 (#595)
 
-**Why the branches stay anyway:**
+**History.** The 90-day window from Epic #583 (target 2026-08-25) was evaluated on 2026-08-15 and the tolerance RETAINED. The blocker then was not v1 data but a second production copy of the rule (the `category4.mjs` mirror, pinned by `tests/lib/lock-ttl-parity.test.mjs` *for a v1 lock*) plus v1-shaped test fixtures: a removal attempt turned 18 tests red across 4 files.
 
-1. **`parseLock()` / `isLockLive()` — the rule is duplicated.** `scripts/lib/harness-audit/categories/category4.mjs` `lockIsLive()` inlines the same `last_heartbeat ?? started_at` fallback, and `tests/lib/lock-ttl-parity.test.mjs` asserts the mirror and the SSOT return identical verdicts *for a v1 lock*. Dropping it in `session-lock.mjs` alone breaks that parity by construction. A measured removal attempt turned **18 tests red across 4 files** (`session-discovery` 9, `session-discovery-fallback` 6, `lock-ttl-parity` 1, `on-session-start` 2) — all outside the lock/registry module pair, all seeding v1-shaped fixtures.
-2. **`_validEntry()` optional `mode` — removal is a net safety LOSS.** Rejecting a mode-less registry entry drops a **live peer** from `readRegistry()`, making it invisible to the exclusivity matrix. An absent `mode` already degrades to the `parallel-ok` bucket, so strictening buys no detection and costs peer visibility — the wrong direction under `.claude/rules/development.md` § Guard & Threshold Design.
+**Precondition, re-measured 2026-10-02 on this host (read-only):**
 
-**What a real sunset needs (co-change set, one atomic MR):** `scripts/lib/session-lock.mjs` + `scripts/lib/harness-audit/categories/category4.mjs` (the mirror) + fixture updates in `tests/lib/session-discovery.test.mjs`, `tests/lib/session-discovery-fallback.test.mjs`, `tests/lib/lock-ttl-parity.test.mjs`, `tests/hooks/on-session-start.test.mjs`. Deleting the *mirror* in favour of importing the SSOT is the durable fix — the duplication, not the v1 data, is what keeps this class alive. The registry item should be closed as won't-do per point 2.
+- `find ~/Projects -maxdepth 4 -path '*/.orchestrator/session.lock'` → **8 files, 8/8 carry a non-empty `last_heartbeat`**.
+- `~/.config/session-orchestrator/sessions/active/*.json` → **10 entries, 10/10 carry `last_heartbeat` and the `mode` key**.
+
+**Decision (owner-approved scope, 2026-10-02):**
+
+1. **Lock side: the fallback is REMOVED** from all three readers in `scripts/lib/session-lock.mjs` (`parseLock()` normalisation, `isLockLive()`, `heartbeatAgeMinutes()`) and from the `category4.mjs` mirror in the same change. The mirror stays, because the audit path must not import the lock manager. `lock-ttl-parity.test.mjs` now asserts that both copies call a heartbeat-less lock not live, so a copy that grows the fallback back breaks parity. The default-lock fixture factories in `tests/lib/session-discovery.test.mjs` and `tests/lib/session-discovery-fallback.test.mjs` now set `last_heartbeat`; at the measurement those two files carried 17 of the 19 tests the removal turned red.
+2. **Registry side: `_validEntry()` keeps accepting an entry without `mode`.** This is no longer framed as v1 compat. It is a deliberate fail-open for peer visibility: rejecting a mode-less entry would drop a possibly LIVE peer from `readRegistry()` / `detectPeers()` and hide it from parallel-session detection, while an unclassifiable peer mode already degrades to `parallel-ok` in `acquire()`. This follows `.claude/rules/development.md` § Guard & Threshold Design.
+
+**Display readers aligned (2026-10-02, follow-up to the sunset).** Three readers that parse the lock themselves kept the `started_at` stand-in after the change above, and now read `last_heartbeat` only:
+
+- `scripts/lib/lock-reaper.mjs` `ageHoursOf()` reports `null` for a heartbeat-less lock (the CLI prints "unknown age") instead of the age since `started_at` labelled as staleness. It is display only; the reap gate is `isLockLive()`.
+- `scripts/lib/autopilot/stall-sampler.mjs` `readHeartbeatMs()` treats a heartbeat-less lock like a timestamp-less one and falls back to the `autopilot.jsonl` mtime marker. `started_at` never advances during a run, so as a stand-in it read as a stall after 600 s, or as fresh in the first 30 s.
+- `scripts/lib/vault-status/board-writer.mjs` renders `—` in the "Last heartbeat" column, never `started_at` under that label.
+
+The Phase-1.2 stale-lock prompt (`skills/session-start/references/phase-1-2-session-lock.md`) renders a `null` `heartbeatAgeMinutes` as "last heartbeat: never (lock has no last_heartbeat)" and drops the "ttl has expired" clause in that case, instead of `Math.round(null)` = "0 minutes ago".
+
+**Corrupt lock (2026-10-02).** A `session.lock` that fails `parseLock()` (invalid JSON, or JSON without the six-field shape) makes `acquire()` return `reason: 'corrupt'` (`existingLock: null`), and the SessionStart bootstrap reclaims it with one stderr WARN. Before this, the file wedged the repo: `readLock()` returned `null`, the create-or-fail hit `EEXIST`, and the vanished-race branch answered `active` with `existingLock: null` on every attempt, which the bootstrap never forces. Reclaiming is safe because such a file can never be a live lock: all four production writers write a full `buildLock()` body atomically (tmp+link / tmp+rename). An `unreadable` lock (EACCES) still answers the conservative `active`.

@@ -27,8 +27,10 @@ export const DEFAULT_LOCK_TTL_HOURS = 4;
 /**
  * Heartbeat-based liveness for a parsed session.lock — a self-contained mirror
  * of session-lock.mjs `isLockLive` (which is the SSOT for the semantics). A lock
- * is live when (now - last_heartbeat) < ttl_hours; falls back to started_at for
- * v1 locks. Returns false for malformed input (→ treated as an orphaned lease).
+ * is live when (now - last_heartbeat) < ttl_hours. A lock without
+ * `last_heartbeat` is not live — no `started_at` fallback since the #595 sunset
+ * (2026-10-02), same as the SSOT. Returns false for malformed input (→ treated
+ * as an orphaned lease).
  *
  * Exported (additive-only) so tests/lib/lock-ttl-parity.test.mjs can drive both
  * this mirror and the SSOT with identical fixtures and assert identical verdicts.
@@ -39,10 +41,8 @@ export const DEFAULT_LOCK_TTL_HOURS = 4;
  */
 export function lockIsLive(lock, nowMs) {
   if (!lock || typeof lock !== 'object') return false;
-  const hb = (typeof lock.last_heartbeat === 'string' && lock.last_heartbeat.length > 0)
-    ? lock.last_heartbeat
-    : lock.started_at;
-  const ms = Date.parse(hb);
+  if (typeof lock.last_heartbeat !== 'string' || lock.last_heartbeat.length === 0) return false;
+  const ms = Date.parse(lock.last_heartbeat);
   if (Number.isNaN(ms)) return false;
   const ttlHours = typeof lock.ttl_hours === 'number' ? lock.ttl_hours : DEFAULT_LOCK_TTL_HOURS;
   return (nowMs - ms) < ttlHours * 3600 * 1000;

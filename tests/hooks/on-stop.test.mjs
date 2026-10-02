@@ -19,19 +19,16 @@
  *   9. missing node_modules degrades gracefully (GH Kanevry/session-orchestrator#63)
  */
 
-import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { isRoot } from '../_helpers/perms.mjs';
-import { mkdtempSync, rmSync, existsSync as existsSyncNode, writeFileSync as writeFileSyncNode } from 'node:fs';
+import { mkdirSync as mkdirSyncNode, mkdtempSync, rmSync, existsSync as existsSyncNode, writeFileSync as writeFileSyncNode } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { performance as perfHooks } from 'node:perf_hooks';
 import { join as joinPath } from 'node:path';
-const perfNow = () => perfHooks.now();
-import { maybeTriggerOrphanScan } from '../../hooks/on-stop.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -259,6 +256,10 @@ describe('Stop event with session_id', { timeout: 15000 }, () => {
     // is why 8.127 of 8.127 fleet records carried a fabricated zero.
     expect(Object.hasOwn(record, 'duration_ms')).toBe(false);
     expect(Object.hasOwn(record, 'duration_source')).toBe(false);
+    // #1489 — the reaper is disabled by default, so the trigger outcome key is
+    // ABSENT, never `"disabled"`: a value on every record of every host would be
+    // the always-on signal HR-101 rejects.
+    expect(Object.hasOwn(record, 'reaper_trigger')).toBe(false);
     expect(Number.isInteger(record.wave)).toBe(true);
   });
 });
@@ -448,6 +449,8 @@ describe('issue #32 — legacy agent_name is ignored', { timeout: 15000 }, () =>
     const record = await readLastEvent(dir);
     expect(record.event).toBe('orchestrator.agent.stopped');
     expect(Object.hasOwn(record, 'agent')).toBe(false);
+    // #1489 — default config: no reaper_trigger key on SubagentStop either.
+    expect(Object.hasOwn(record, 'reaper_trigger')).toBe(false);
   });
 });
 
@@ -1836,213 +1839,10 @@ describe('Stop duration_ms from session.lock (K5)', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
-// orphan-reaper trigger (#1432 B4)
+// orphan-reaper trigger (#1432 B4) — the trigger itself is tested ONCE, in
+// tests/lib/orphan-reaper/trigger.test.mjs (#1489). This hook keeps its
+// wiring case and the record sink only it has (`reaper_trigger`).
 // ---------------------------------------------------------------------------
-
-describe('maybeTriggerOrphanScan — Stop + SubagentStop', () => {
-  let rtmp;
-
-  beforeEach(() => { rtmp = mkdtempSync(joinPath(tmpdir(), 'reaper-trigger-')); });
-  afterEach(() => { rmSync(rtmp, { recursive: true, force: true }); });
-
-  /** Record every spawn the trigger attempts, without ever spawning. */
-  function recordingSpawn(calls) {
-    return (cmd, args, opts) => {
-      calls.push({ cmd, args, opts });
-      return { unref() {} };
-    };
-  }
-
-  function writeClaudeMd(body) {
-    writeFileSyncNode(joinPath(rtmp, 'CLAUDE.md'), body, 'utf8');
-  }
-
-  it('does nothing when no CLAUDE.md/AGENTS.md exists', async () => {
-    // Bug: an unreadable config defaulting to ENABLED would arm a signal-sending
-    // watchdog on every repo that has no Session Config at all.
-    const calls = [];
-    const r = await maybeTriggerOrphanScan({ projectDir: rtmp, spawnFn: recordingSpawn(calls) });
-    expect(r).toEqual({ spawned: false, reason: 'disabled' });
-    expect(calls).toHaveLength(0);
-  });
-
-  it('reaper.enabled: false → no stat, no spawn', async () => {
-    // Bug: the default-off block still paying for a marker stat on every hook.
-    writeClaudeMd('reaper:\n  enabled: false\n');
-    const calls = [];
-    const stats = [];
-    const r = await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      spawnFn: recordingSpawn(calls),
-      statFn: (p) => { stats.push(p); throw new Error('nope'); },
-    });
-    expect(r).toEqual({ spawned: false, reason: 'disabled' });
-    expect(calls).toHaveLength(0);
-    expect(stats).toHaveLength(0);
-  });
-
-  it('spawns exactly one detached child when armed and the marker is absent', async () => {
-    writeClaudeMd('reaper:\n  enabled: true\n');
-    const calls = [];
-    const r = await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      spawnFn: recordingSpawn(calls),
-      writeFn: () => {},
-    });
-    expect(r).toEqual({ spawned: true, reason: 'spawned' });
-    expect(calls).toHaveLength(1);
-    const [call] = calls;
-    expect(call.cmd).toBe(process.execPath);
-    expect(call.opts).toMatchObject({ detached: true, stdio: 'ignore' });
-    // argv shape: <scriptPath> --repo-root <p> --mode <m> --min-age-seconds …
-    // The script path is argv[0] — no `--input-type=module -e <program>` any
-    // more, so nothing this hook builds is executable source at all.
-    expect(call.args[0]).toMatch(/orphan-reaper\.mjs$/);
-    expect(call.args[0].startsWith('file://')).toBe(false);
-    expect(call.args.slice(1, 5)).toEqual(['--repo-root', rtmp, '--mode', 'report']);
-    // Bug: a checkout path reaching the child as anything but its OWN argv
-    // value (an interpolated `-e` program, a concatenated `--repo-root=<p>`)
-    // is code or an unparseable flag, not a value.
-    expect(call.args).not.toContain('-e');
-    expect(call.args.filter((a) => a.includes(rtmp))).toEqual([rtmp]);
-  });
-
-  it('the throttle skips the spawn when the marker is fresh', async () => {
-    // Bug (PRD FA4, second scenario): without the throttle a PostToolBatch storm
-    // spawns one ps-running child per tool call.
-    writeClaudeMd('reaper:\n  enabled: true\n  min-scan-interval-seconds: 30\n');
-    const calls = [];
-    const now = 1_000_000;
-    const r = await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      now,
-      spawnFn: recordingSpawn(calls),
-      statFn: () => ({ mtimeMs: now - 5_000 }),
-      writeFn: () => {},
-    });
-    expect(r).toEqual({ spawned: false, reason: 'throttled' });
-    expect(calls).toHaveLength(0);
-  });
-
-  it('spawns again once the interval has elapsed', async () => {
-    writeClaudeMd('reaper:\n  enabled: true\n  min-scan-interval-seconds: 30\n');
-    const calls = [];
-    const now = 1_000_000;
-    const r = await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      now,
-      spawnFn: recordingSpawn(calls),
-      statFn: () => ({ mtimeMs: now - 31_000 }),
-      writeFn: () => {},
-    });
-    expect(r).toEqual({ spawned: true, reason: 'spawned' });
-    expect(calls).toHaveLength(1);
-  });
-
-  it('reports an unstamped throttle instead of a normal spawn when the marker could not be written', async () => {
-    // Bug (#1487 item 6): touchScanMarker's `false` was dropped, so a marker the
-    // hook can never stamp (a planted link, a read-only tmp dir) — every fire
-    // spawning a scan — returned exactly what a throttled spawn returns. The
-    // scan still runs: the throttle fails toward scanning, never toward a
-    // silently disabled reaper.
-    writeClaudeMd('reaper:\n  enabled: true\n');
-    const calls = [];
-    const r = await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      spawnFn: recordingSpawn(calls),
-      writeFn: () => { throw new Error('EACCES'); },
-    });
-    expect(r).toEqual({ spawned: true, reason: 'spawned-unthrottled' });
-    expect(calls).toHaveLength(1);
-  });
-
-  it('passes mode: kill through to the child', async () => {
-    writeClaudeMd('reaper:\n  enabled: true\n  mode: kill\n  min-age-seconds: 600\n');
-    const calls = [];
-    await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      spawnFn: recordingSpawn(calls),
-      writeFn: () => {},
-    });
-    expect(calls[0].args.slice(3, 7))
-      .toEqual(['--mode', 'kill', '--min-age-seconds', '600']);
-  });
-
-  it('passes reaper.false-alarm-window through to the child — the key had NO consumer before 2026-09-22', async () => {
-    // Bug: `false-alarm-window` was parsed, defaulted, documented and never
-    // sent anywhere. `runOrphanScan` hard-coded REAPER_DEFAULTS, so configuring
-    // it changed nothing at all — a config key that only its parser knows.
-    writeClaudeMd('reaper:\n  enabled: true\n  false-alarm-window: 25\n');
-    const calls = [];
-    await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      spawnFn: recordingSpawn(calls),
-      writeFn: () => {},
-    });
-    const i = calls[0].args.indexOf('--false-alarm-window');
-    expect(i).toBeGreaterThan(0);
-    expect(calls[0].args[i + 1]).toBe('25');
-  });
-
-  it('WARNS on stderr when the trigger overran reaper.max-hook-latency-ms, and stays silent inside it', async () => {
-    // Bug: `max-hook-latency-ms` was a documented budget nothing measured
-    // against — the only "enforcement" was the prose claim that the scan runs
-    // detached. A budget with no measurement cannot be exceeded OR held.
-    writeClaudeMd('reaper:\n  enabled: true\n  max-hook-latency-ms: 5\n');
-    const written = [];
-    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
-      written.push(String(chunk));
-      return true;
-    });
-    try {
-      // A clock that jumps 12 ms between entry and the post-spawn check.
-      let t = 0;
-      await maybeTriggerOrphanScan({
-        projectDir: rtmp,
-        spawnFn: () => ({ unref() {} }),
-        writeFn: () => {},
-        clockFn: () => { const v = t; t += 12; return v; },
-      });
-      expect(written.join('')).toMatch(/hook latency 12\.0 ms exceeded reaper\.max-hook-latency-ms \(5 ms\)/);
-
-      written.length = 0;
-      let t2 = 0;
-      await maybeTriggerOrphanScan({
-        projectDir: rtmp,
-        spawnFn: () => ({ unref() {} }),
-        writeFn: () => {},
-        clockFn: () => { const v = t2; t2 += 1; return v; },
-      });
-      expect(written).toEqual([]);
-    } finally {
-      spy.mockRestore();
-    }
-  });
-
-  it('degrades silently when the spawn throws', async () => {
-    // Bug (PRD FA4): the hook must never fail because the reaper did.
-    writeClaudeMd('reaper:\n  enabled: true\n');
-    const r = await maybeTriggerOrphanScan({
-      projectDir: rtmp,
-      spawnFn: () => { throw new Error('EAGAIN'); },
-      writeFn: () => {},
-    });
-    expect(r).toEqual({ spawned: false, reason: 'error' });
-  });
-
-  it('returns within reaper.max-hook-latency-ms (50 ms)', async () => {
-    // Bug: running the scan inline. One ps round-trip out of Node was measured
-    // at ~47 ms over 287 KB — alone enough to blow the budget.
-    writeClaudeMd('reaper:\n  enabled: true\n');
-    const spawnFn = () => ({ unref() {} });
-    // Warm the dynamic import so the measurement is the STEADY-STATE cost the
-    // hook pays, not the one-off module load of the very first tool batch.
-    await maybeTriggerOrphanScan({ projectDir: rtmp, spawnFn, writeFn: () => {} });
-    const started = perfNow();
-    await maybeTriggerOrphanScan({ projectDir: rtmp, spawnFn, writeFn: () => {} });
-    expect(perfNow() - started).toBeLessThan(50);
-  });
-});
 
 describe('orphan-reaper wiring — the hook actually calls the trigger (#1432 B4)', () => {
   let wtmp;
@@ -2050,9 +1850,9 @@ describe('orphan-reaper wiring — the hook actually calls the trigger (#1432 B4
   beforeEach(() => { wtmp = mkdtempSync(joinPath(tmpdir(), 'reaper-wiring-stop-')); });
   afterEach(() => { rmSync(wtmp, { recursive: true, force: true }); });
 
-  it('stamps the throttle marker on SubagentStop when reaper.enabled: true', async () => {
-    // Bug: the exported trigger works but NO call site invokes it — the unit
-    // tests above would stay green while the watchdog never runs in production.
+  it('stamps the throttle marker on SubagentStop when reaper.enabled: true, and records the outcome', async () => {
+    // Bug: the shared trigger works but NO call site invokes it — its unit
+    // tests would stay green while the watchdog never runs in production.
     // `mode: report` keeps the detached child in dry-run: it sends no signals.
     writeFileSyncNode(joinPath(wtmp, 'CLAUDE.md'), 'reaper:\n  enabled: true\n  mode: report\n', 'utf8');
     const marker = joinPath(wtmp, '.orchestrator', 'tmp', 'reaper-last-scan');
@@ -2066,16 +1866,25 @@ describe('orphan-reaper wiring — the hook actually calls the trigger (#1432 B4
 
     expect(res.code).toBe(0);
     expect(existsSyncNode(marker)).toBe(true);
+    const stopped = (await readAllEvents(wtmp)).find((e) => e.event === 'orchestrator.agent.stopped');
+    expect(stopped?.reaper_trigger).toBe('spawned');
   });
 
-  it('writes no marker when the reaper is not armed', async () => {
-    writeFileSyncNode(joinPath(wtmp, 'CLAUDE.md'), 'reaper:\n  enabled: false\n', 'utf8');
+  it('records spawned-unthrottled on the Stop record when the throttle marker cannot be stamped', async () => {
+    // Bug (#1489, HR-105): `main()` discarded the trigger's result, so a marker
+    // the hook can never stamp — here a planted DIRECTORY, so every fire spawns
+    // a scan — left no trace anywhere but the process table.
+    writeFileSyncNode(joinPath(wtmp, 'CLAUDE.md'), 'reaper:\n  enabled: true\n  mode: report\n', 'utf8');
+    mkdirSyncNode(joinPath(wtmp, '.orchestrator', 'tmp', 'reaper-last-scan'), { recursive: true });
+
     const res = await runHook({
       projectDir: wtmp,
-      stdin: JSON.stringify({ hook_event_name: 'SubagentStop', agent_type: 'code-implementer' }),
+      stdin: JSON.stringify({}),
       env: { SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
     });
+
     expect(res.code).toBe(0);
-    expect(existsSyncNode(joinPath(wtmp, '.orchestrator', 'tmp', 'reaper-last-scan'))).toBe(false);
+    const turn = (await readAllEvents(wtmp)).find((e) => e.event === 'orchestrator.turn.stopped');
+    expect(turn?.reaper_trigger).toBe('spawned-unthrottled');
   });
 });

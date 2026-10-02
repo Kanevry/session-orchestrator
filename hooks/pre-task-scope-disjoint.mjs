@@ -132,7 +132,7 @@
  *   | 5 | prompt carries no scope marker         | ALLOW + COUNT       | 105 of 147 real prompts (71.4 %) have none. Non-extractable ≠ violation; denying these would deny 7 dispatches in 10. #1092: the allow now carries a counter-only record, so it is no longer byte-identical to "the guard never ran" |
  *   | 6 | scope block present but unparseable    | ALLOW + COUNT       | same reason as 5 — the parser is the fragile part, so its failures must resolve to the harmless side. Counted under a DISTINCT class from row 5 |
  *   | 7 | ledger unreadable / corrupt            | WARN + ALLOW + SELF-HEAL | loss of state is not evidence of a violation; loud so it gets noticed. The verdict now CARRIES a fresh ledger, so the corruption is repaired on the spot — without it the guard stayed OFF for the whole remaining wave, visible only in one `systemMessage` |
- *   | 8 | `git ls-files` failed                  | ALLOW (degraded)    | glob-vs-glob expansion degrades, concrete collisions are still found. A git outage is not a scope violation |
+ *   | 8 | `git ls-files` failed, or the shared git budget (`GIT_BUDGET_MS`) ran out | ALLOW (degraded) + `known_files_skipped` in the record | glob-vs-glob expansion degrades, concrete collisions are still found. A git outage is not a scope violation. #1489 Pkt 7: a HANGING git used to outlive the 5 s harness timeout, which killed the hook — the verdict lost with no record |
  *   | 9 | `findScopeCollisions` → not evaluable   | WARN + ALLOW        | the library says "not evaluable". Denying on a verdict with no witness is an assertion without evidence |
  *   |10 | same agent id re-dispatched         | ALLOW; predecessor pruned only when FINISHED | a retry after a failed agent is legitimate (a failed agent is finished), so the guard must not self-lock. #1480 B4: an unfinished predecessor is KEPT as a claim — a third agent hitting only its scope still collides. With distinct `tool_use_id`s on both it is an ordinary partner (row 11); without them it never collides with its own retry. Replaced WITHOUT a probe only where no claim is lost: the same `tool_use_id` (the same dispatch evaluated again), or — neither carrying an id — a predecessor wholly covered by the retry's scope |
  *   |10a| collision, but EVERY colliding prior agent has FINISHED (positive evidence) | ALLOW (+ prune) | the sequential repair pass. Its ledger records are pruned, so the state cannot re-block the next one either |
@@ -140,7 +140,7 @@
  *   |12 | unexpected throw                       | ALLOW + stderr      | as row 2 |
  *   |13 | liveness probe throws / no positive evidence (no record, unknown result form) | treat as IN FLIGHT | keeps row 11 biting; the blind case is bounded by `IN_FLIGHT_TTL_MS`, never unbounded. A dispatch re-opened by a SendMessage with no completion after it is in flight outright, without TTL |
  *   |14 | ledger lock not acquirable in `LEDGER_LOCK_TIMEOUT_MS` | run UNLOCKED (degraded) | the lock removes the read-modify-write race (below); failing to take it must not deny, so the cycle degrades to the pre-lock behaviour |
- *   |15 | `isolation: "worktree"`, `worktree.baseRef` not `"head"`, `merge-base --is-ancestor HEAD origin/HEAD` exits 1 in a full-history repo whose FETCH_HEAD is < 24 h old | **DENY**, no ledger write | #1485: the agent would branch from a base missing commits of HEAD and edit OLD code. Every non-measurement — no origin/HEAD, shallow, `stale-remote-ref`, git error — is ALLOW + a `skipped` record. No ledger write, so the in-place re-dispatch the deny advises meets no phantom claim. A collision DENY (row 11) wins the terminal emit; this one then goes to stderr |
+ *   |15 | `isolation: "worktree"`, `worktree.baseRef` not `"head"`, `merge-base --is-ancestor HEAD origin/HEAD` exits 1 in a full-history repo whose FETCH_HEAD is < 24 h old | **DENY**, no ledger write | #1485: the agent would branch from a base missing commits of HEAD and edit OLD code. Every non-measurement — no origin/HEAD, shallow, `stale-remote-ref`, git error, git budget spent (`git-budget`) — is ALLOW + a `skipped` record. No ledger write, so the in-place re-dispatch the deny advises meets no phantom claim. A collision DENY (row 11) wins the terminal emit; this one then goes to stderr. Otherwise the `scope_checked` record carries `ledger_result: 'deny-stale-base'`, never the collision verdict's allow (#1489 Pkt 8) |
  *
  * Every row that reaches a verdict from `decide()` — 5–11 and 13–14 — also
  * leaves an event record (§ Observability), so "which row fired" is answerable
@@ -172,13 +172,20 @@
  * ## Observability — the ledger half of #1092
  *
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
- * record to `<projectDir>/.orchestrator/metrics/events.jsonl`. The reason it
+ * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
+ * `sessionRootOf()` resolves (the git toplevel of the payload `cwd` — its nearest
+ * `.git` ancestor when git cannot answer — so neither the subdirectory a `cd`
+ * moved to, #1489 Pkt 6, nor the launch dir a worktree session left), which is
+ * also where the ledger and its lock live. The reason it
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
  * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
  * it cannot say WHICH dispatch carried a scope. Payload: `wave` (omitted, never
  * `0`, when unknown), `agent_id`, `declared_path_count`, `injected`, `shape`,
- * `signal`, `ledger_result`, `collision_count`, `hook`, plus `session_id` /
- * `semantic_session_id` when a session lock is readable.
+ * `signal`, `ledger_result`, `collision_count`, `hook`, `known_files_skipped`
+ * (only when the tracked-file listing degraded, matrix row 8), `collision_result`
+ * (only beside `ledger_result: 'deny-stale-base'` — the collision verdict it
+ * replaced), plus `session_id` / `semantic_session_id` when a session lock is
+ * readable.
  *
  * WHAT IT PROVES: this hook SAW (or did not see) a `FILE-SCOPE` declaration in
  * the prompt the coordinator handed to the dispatch tool, and what the guard
@@ -235,7 +242,7 @@
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -285,6 +292,28 @@ const LEDGER_LOCK_REL = path.join('.orchestrator', 'wave-dispatch-scopes.lock');
  */
 const LEDGER_LOCK_TIMEOUT_MS = 2000;
 const LEDGER_LOCK_POLL_MS = 25;
+
+/**
+ * ONE deadline for ALL git work of one hook fire (#1489 Pkt 7). Every spawn
+ * gets at most what is LEFT of it, so the git work as a whole — never a single
+ * call — is what is bounded.
+ *
+ * The number is arithmetic, not taste: `hooks/hooks.json` gives this hook
+ * `"timeout": 5` (seconds) for the WHOLE process. The git work runs first; after
+ * it the ledger lock may wait up to `LEDGER_LOCK_TIMEOUT_MS` (2000). 5000 − 2000
+ * − 1500 leaves 1500 ms for node start, the late-bound imports, the transcript
+ * scan (≤ ~210 ms at the largest measured 70 MB) and the two awaited event
+ * appends — ~20× the 69 ms full path measured idle (§ Measured cost). The git
+ * work itself measured 27.8 ms together with lock, ledger and compare, so 1500
+ * binds only a git that hangs (a stuck lock file, a network-backed `HEAD`, a
+ * frozen filesystem). Before, each worktree call had its own 5 s and
+ * `listTrackedFiles` none: one hanging git outlived the harness, which killed
+ * the hook — a silent fail-open with no record of the lost verdict.
+ *
+ * Revisit-Trigger: a change of this hook's `timeout` in `hooks/hooks.json` or of
+ * `LEDGER_LOCK_TIMEOUT_MS` — the three numbers must keep summing below 5000.
+ */
+const GIT_BUDGET_MS = 1500;
 
 /** Payload bounds — see § stdout discipline. */
 const MAX_REPORTED_COLLISIONS = 5;
@@ -1411,6 +1440,88 @@ function waveNumberOf(waveKey) {
   return Number.isSafeInteger(n) && n > 0 ? n : null;
 }
 
+/** Thrown instead of spawning once the shared git deadline has passed. */
+class GitBudgetExhausted extends Error {
+  /** @param {string} subcommand */
+  constructor(subcommand) {
+    super(`git ${subcommand}: shared git budget (${GIT_BUDGET_MS} ms) exhausted`);
+    this.name = 'GitBudgetExhausted';
+  }
+}
+
+/**
+ * A git runner bound to ONE deadline shared by every call of this hook fire
+ * (see `GIT_BUDGET_MS`). Each call gets `timeout` = what is left; once nothing
+ * is left it throws without spawning. `exhausted()` turns sticky the moment a
+ * call is refused or timed out, so a caller can tell "git said no" from "git
+ * never got to answer" — the second is a skip, never evidence (§ matrix rows 8,
+ * 15). `SIGKILL`, not the default SIGTERM: a child that ignores SIGTERM keeps
+ * `execFileSync` blocked past its timeout. Safe here — every call is read-only
+ * plumbing that takes no index lock (§ PSA).
+ *
+ * @param {number} deadline — epoch ms
+ * @returns {{run: (args: string[], cwd: string, opts?: {maxBuffer?: number}) => string,
+ *   exhausted: () => boolean}}
+ */
+function makeGitRunner(deadline) {
+  let exhausted = false;
+  const run = (args, cwd, { maxBuffer } = {}) => {
+    const remaining = Math.floor(deadline - Date.now());
+    if (remaining <= 0) {
+      exhausted = true;
+      throw new GitBudgetExhausted(args[0]);
+    }
+    try {
+      return execFileSync('git', args, {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: remaining,
+        killSignal: 'SIGKILL',
+        ...(maxBuffer === undefined ? {} : { maxBuffer }),
+      });
+    } catch (e) {
+      if (e?.code === 'ETIMEDOUT') exhausted = true;
+      throw e;
+    }
+  };
+  return { run, exhausted: () => exhausted };
+}
+
+/**
+ * `git rev-parse --show-toplevel` of `cwd`, or `''` when git cannot say.
+ *
+ * @param {string} cwd
+ * @param {ReturnType<typeof makeGitRunner>} git
+ * @returns {string}
+ */
+function gitToplevel(cwd, git) {
+  try {
+    return git.run(['rev-parse', '--show-toplevel'], cwd).trim();
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Tracked files of the repo rooted at `root`, plus WHY the list is empty when
+ * it had to be (matrix row 8 — degrade, never deny, but leave a reason).
+ *
+ * @param {string} root — a git toplevel, or `''` when none could be resolved
+ * @param {ReturnType<typeof makeGitRunner>} git
+ * @returns {{files: string[], skipped?: 'budget-exhausted'|'git-error'}}
+ */
+function trackedFilesIn(root, git) {
+  const failed = () => ({ files: [], skipped: git.exhausted() ? 'budget-exhausted' : 'git-error' });
+  if (root === '') return failed();
+  try {
+    const stdout = git.run(['ls-files', '-z'], root, { maxBuffer: 32 * 1024 * 1024 });
+    return { files: stdout.split('\0').filter((f) => f.length > 0) };
+  } catch {
+    return failed();
+  }
+}
+
 /**
  * Tracked files, for glob expansion inside `findScopeCollisions`. The library is
  * pure and must not spawn — supplying this is precisely the hook's job.
@@ -1424,24 +1535,92 @@ function waveNumberOf(waveKey) {
  * That is the dangerous direction, because the hook is the last gate before the
  * write.
  *
+ * Standalone entry with its own `GIT_BUDGET_MS`; `main()` composes the same two
+ * steps under the deadline it shares with the worktree-base check.
+ *
  * @param {string} cwd
  * @returns {string[]}
  */
 export function listTrackedFiles(cwd) {
-  const opts = {
-    cwd,
-    encoding: 'utf8',
-    maxBuffer: 32 * 1024 * 1024,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  };
-  try {
-    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], opts).trim();
-    if (!root) return [];
-    const stdout = execFileSync('git', ['ls-files', '-z'], { ...opts, cwd: root });
-    return stdout.split('\0').filter((f) => f.length > 0);
-  } catch {
-    return [];
+  const git = makeGitRunner(Date.now() + GIT_BUDGET_MS);
+  return trackedFilesIn(gitToplevel(cwd, git), git).files;
+}
+
+/**
+ * The SESSION ROOT (#1489 Pkt 6) — where this session's own state lives: the
+ * scope ledger and its lock, the `wave-scope.json` the wave key is read from,
+ * the event records and their session attribution. NOT where project settings
+ * are read — that is `settingsRootOf()`, a different directory on purpose.
+ *
+ * NOT the payload `cwd`: that one follows the session's `cd` (docs/en/hooks
+ * § "cwd follows Claude"). Keyed on it, a dispatch made after `cd sub` read and
+ * wrote `<root>/sub/.orchestrator/wave-dispatch-scopes.json` — a second, empty
+ * ledger holding none of the wave's earlier claims — so its collision with an
+ * agent dispatched before the `cd` was ALLOWED, and its records left the
+ * session's `events.jsonl`. The git toplevel of `cwd` undoes exactly that `cd`.
+ *
+ * NOT `$CLAUDE_PROJECT_DIR` first either: it stays on the LAUNCH dir after the
+ * session enters a worktree (docs/en/hooks § "Worktrees are different"), while
+ * the coordinator writes `wave-scope.json` into the worktree and
+ * `scope-echo --verify` reads that worktree's `events.jsonl`. Preferred here, it
+ * (measured on be6a2e3e) dropped every wave key to `w?`, left the worktree's
+ * records empty, and gave every worktree session of one launch dir ONE shared
+ * ledger — where a peer session's dispatch wipes this session's claims and lets
+ * the collision through. It is the fallback only when `cwd` is in no repo.
+ *
+ * NOR `$CLAUDE_PROJECT_DIR` merely because GIT could not answer (review MED on
+ * 63f35e8c): `gitToplevel()` returns `''` on ANY error, and the toplevel lookup
+ * is the first spawn against the shared `GIT_BUDGET_MS` — one `rev-parse`
+ * hanging past it sent a worktree session's dispatch back to the launch-root
+ * ledger, the exact bug above narrowed to the timeout. `dotGitAncestorOf()`
+ * answers the same question without a spawn, so no budget can cut it.
+ *
+ * Precedence: the git toplevel of `cwd`, else the nearest `.git` ancestor of
+ * `cwd`, else `$CLAUDE_PROJECT_DIR`, else `cwd`.
+ *
+ * Remaining limit (not a regression — main keyed state on `cwd` itself): a `cd`
+ * into a NESTED toplevel — an agent worktree under `.claude/worktrees/`, a
+ * submodule, a nested repo — still gets that toplevel's own ledger, by either
+ * rung, because it IS a repo root of its own.
+ *
+ * @param {string} cwd — the payload `cwd`
+ * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
+ * @returns {string}
+ */
+function sessionRootOf(cwd, cwdToplevel) {
+  return cwdToplevel || dotGitAncestorOf(cwd) || (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwd;
+}
+
+/**
+ * The nearest directory at or above `cwd` holding a `.git` entry — a directory,
+ * or the FILE a linked worktree carries — or `''` when none does. The no-spawn
+ * rung under `gitToplevel()` in `sessionRootOf()`: git's own repo discovery
+ * walks up looking for exactly this entry, so where git answers, both agree.
+ * Existence only — the entry is not validated, which git would do.
+ *
+ * @param {string} cwd
+ * @returns {string}
+ */
+function dotGitAncestorOf(cwd) {
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, '.git'))) return dir;
+    if (path.dirname(dir) === dir) return '';
   }
+}
+
+/**
+ * The SETTINGS ROOT (#1485) — where `harnessBaseRef()` reads the project's
+ * `.claude/settings{,.local}.json`: `$CLAUDE_PROJECT_DIR`, else the git toplevel
+ * of `cwd`, else `cwd`. The launch dir FIRST, unlike `sessionRootOf()`: it is the
+ * root the harness applies project settings from, and after entering a worktree
+ * the gitignored `settings.local.json` exists only there.
+ *
+ * @param {string} cwd — the payload `cwd`
+ * @param {string} cwdToplevel — `gitToplevel(cwd)`, `''` when git could not say
+ * @returns {string}
+ */
+function settingsRootOf(cwd, cwdToplevel) {
+  return (process.env.CLAUDE_PROJECT_DIR || '').trim() || cwdToplevel || cwd;
 }
 
 // ---------------------------------------------------------------------------
@@ -1575,18 +1754,24 @@ const BASE_REF_SOURCE_LABEL = {
  * TWO DIRECTORIES, deliberately different: git measures in `cwd` (the payload's,
  * which follows the session's `cd` — git finds the enclosing repo from any
  * subdirectory, and inside an entered worktree `"head"` means THAT worktree's
- * HEAD); settings are read at the session root — `$CLAUDE_PROJECT_DIR`, which
- * the harness exports to every hook and keeps put across `cd` and worktree entry
- * (docs/en/hooks § "Worktrees are different"), else the git toplevel of `cwd`,
- * else `cwd` itself.
+ * HEAD); settings are read at `settingsRoot` (`settingsRootOf()` — the root the
+ * harness applies project settings from, which is NOT where the record lands:
+ * that is `sessionRootOf()`).
+ *
+ * Every git call draws on the hook fire's ONE shared deadline (`GIT_BUDGET_MS`).
+ * A call the budget cut short is no measurement: each skip then reads
+ * `git-budget`, whichever reason the cut call would otherwise have produced — a
+ * timed-out `origin/HEAD` lookup is not evidence that there is none.
  *
  * @param {{tool_input?: unknown}} input — the raw hook payload
  * @param {string} cwd — the hook payload's `cwd`
+ * @param {string} settingsRoot — `settingsRootOf()`
+ * @param {ReturnType<typeof makeGitRunner>} gitRunner — the fire's shared runner
  * @returns {{head: string, base: string, base_ref: 'head'|'fresh',
  *   base_ref_source: 'local'|'project'|'user'|'default', stale: boolean,
  *   missing_commits?: number, subagent_type?: string}|{stale: null, skipped: string}|null}
  */
-function worktreeBaseFacts(input, cwd) {
+function worktreeBaseFacts(input, cwd, settingsRoot, gitRunner) {
   // The applicability gate sits OUTSIDE the try on purpose: everything below it
   // resolves to a `skipped` RECORD, so a throw here must not be able to mint one
   // for a dispatch that was never on the `worktree` branch at all.
@@ -1594,24 +1779,17 @@ function worktreeBaseFacts(input, cwd) {
   if (toolInput === null || typeof toolInput !== 'object') return null;
   if (toolInput.isolation !== 'worktree') return null;
 
+  /** @param {string} reason */
+  const skip = (reason) => ({ stale: null, skipped: gitRunner.exhausted() ? 'git-budget' : reason });
   try {
     /** @param {string[]} args */
-    const git = (args) => execFileSync('git', args, {
-      cwd,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 5_000,
-    }).trim();
+    const git = (args) => gitRunner.run(args, cwd).trim();
 
     let head = '';
     try { head = git(['rev-parse', '--verify', 'HEAD^{commit}']); } catch { /* below */ }
-    if (head === '') return { stale: null, skipped: 'git-error' };
+    if (head === '') return skip('git-error');
 
-    let settingsRoot = (process.env.CLAUDE_PROJECT_DIR || '').trim();
-    if (settingsRoot === '') {
-      try { settingsRoot = git(['rev-parse', '--show-toplevel']); } catch { /* below */ }
-    }
-    const { baseRef, source } = harnessBaseRef(settingsRoot || cwd);
+    const { baseRef, source } = harnessBaseRef(settingsRoot);
     const facts = { head, base_ref: baseRef, base_ref_source: source };
     if (typeof toolInput.subagent_type === 'string' && toolInput.subagent_type !== '') {
       facts.subagent_type = toolInput.subagent_type;
@@ -1624,7 +1802,7 @@ function worktreeBaseFacts(input, cwd) {
     // falls back to HEAD; neither outcome is knowable here → skip, not deny.
     let base = '';
     try { base = git(['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/HEAD^{commit}']); } catch { /* below */ }
-    if (base === '') return { stale: null, skipped: 'no-origin-head' };
+    if (base === '') return skip('no-origin-head');
     if (base === head) return { ...facts, base, stale: false };
 
     try {
@@ -1633,17 +1811,24 @@ function worktreeBaseFacts(input, cwd) {
     } catch (e) {
       // Exit 1 is the ONE candidate "no"; 128 (bad object), a timeout or a
       // signal is a non-measurement and must not accuse anybody.
-      if (e?.status !== 1) return { stale: null, skipped: 'git-error' };
+      if (e?.status !== 1) return skip('git-error');
     }
     // ...and exit 1 is a MEASUREMENT only over full history. A shallow clone's
     // cut-off graph answers "no" for a HEAD that IS an ancestor (measured
     // 2026-10-02: `clone --depth 1` + `fetch --depth 1` → exit 1, the full source
     // → exit 0). Probed only here, on the rare "no": an exit 0, which no missing
     // history can fake, never pays for it. A failed probe cannot rule shallow
-    // out, so it skips as well.
+    // out, so it skips as well. ONE spawn answers both questions below (two
+    // lines, in argument order) — the deny path is the one that must finish
+    // inside the shared budget.
     let shallow = '';
-    try { shallow = git(['rev-parse', '--is-shallow-repository']); } catch { /* below */ }
-    if (shallow !== 'false') return { stale: null, skipped: shallow === 'true' ? 'shallow' : 'git-error' };
+    let fetchHeadPath = '';
+    try {
+      [shallow = '', fetchHeadPath = ''] = git(['rev-parse', '--is-shallow-repository', '--git-path', 'FETCH_HEAD'])
+        .split('\n')
+        .map((line) => line.trim());
+    } catch { /* below */ }
+    if (shallow !== 'false') return skip(shallow === 'true' ? 'shallow' : 'git-error');
 
     // ...and only over a ref the harness will actually branch from. With
     // FETCH_HEAD older than `FETCH_REFRESH_MS` (or absent — the harness reads
@@ -1651,7 +1836,7 @@ function worktreeBaseFacts(input, cwd) {
     // tip, which may well contain HEAD by now; this hook never fetches (network
     // inside a 5 s PreToolUse budget), so the cached ref decides nothing here.
     let fetchedMs = 0;
-    try { fetchedMs = statSync(path.resolve(cwd, git(['rev-parse', '--git-path', 'FETCH_HEAD']))).mtimeMs; } catch { /* absent → stale */ }
+    try { if (fetchHeadPath !== '') fetchedMs = statSync(path.resolve(cwd, fetchHeadPath)).mtimeMs; } catch { /* absent → stale */ }
     if (Date.now() - fetchedMs > FETCH_REFRESH_MS) return { stale: null, skipped: 'stale-remote-ref' };
 
     let missing = Number.NaN;
@@ -2109,7 +2294,10 @@ async function main() {
   const input = await readStdin();
   if (!input) return emitAllow();
 
-  const projectDir = typeof input.cwd === 'string' && input.cwd !== ''
+  // The payload `cwd` follows the session's `cd`; it names the repo git measures
+  // in, and only through its git toplevel where this session's state lives
+  // (`sessionRootOf()`) — a `cd sub` must not move the ledger.
+  const cwd = typeof input.cwd === 'string' && input.cwd !== ''
     ? input.cwd
     : bannerProjectDir();
   const sessionId = typeof input.session_id === 'string' ? input.session_id : 'no-session';
@@ -2117,23 +2305,44 @@ async function main() {
   // Cheap pre-check: skip all I/O for the overwhelmingly common non-dispatch call.
   if (input.tool_name !== DISPATCH_TOOL) return emitAllow();
 
-  const waveKey = waveKeyOf(projectDir, sessionId, readFileSync);
-  const knownFiles = listTrackedFiles(projectDir);
+  // ONE git deadline for this whole fire (`GIT_BUDGET_MS`). Worst case 7 spawns
+  // against it: the toplevel below, up to 5 in `worktreeBaseFacts` (HEAD,
+  // origin/HEAD, is-ancestor, shallow+FETCH_HEAD, rev-list) and `ls-files`.
+  const git = makeGitRunner(Date.now() + GIT_BUDGET_MS);
+  const cwdToplevel = gitToplevel(cwd, git);
+  const sessionRoot = sessionRootOf(cwd, cwdToplevel);
+
+  const waveKey = waveKeyOf(sessionRoot, sessionId, readFileSync);
   // `selfUseId`: this dispatch's own tool_use may already stand in the transcript
   // and must not make a finished same-named predecessor look alive (#1480 A).
   const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path, selfUseId: input.tool_use_id });
-  const ledgerPath = path.join(projectDir, LEDGER_REL);
+  const ledgerPath = path.join(sessionRoot, LEDGER_REL);
 
   // #1485 — the stale-worktree-base verdict, computed BEFORE the ledger cycle
-  // (and outside the lock: up to four git spawns hold nobody up there). It never
+  // (and outside the lock: its git spawns hold nobody up there). It never
   // reads the collision verdict and a collision DENY always wins; on its own it
   // denies ONLY a measured mismatch (`stale === true`). Every skip is allowed.
   // It must be known before the cycle because a dispatch this check will deny
   // never happens, so the cycle must not persist it: a phantom claim would make
   // the deny's own remedy — the same agent re-dispatched in place under a new
   // tool_use_id — collide with it for up to `IN_FLIGHT_TTL_MS`.
-  const worktreeBase = worktreeBaseFacts(input, projectDir);
+  //
+  // It draws on the shared budget BEFORE the tracked-file listing: a missed
+  // stale base has no later gate (matrix row 15), a missed listing only
+  // degrades glob expansion, and three later gates still see a collision.
+  const worktreeBase = worktreeBaseFacts(input, cwd, settingsRootOf(cwd, cwdToplevel), git);
   const staleDeny = worktreeBase?.stale === true ? staleWorktreeDeny(worktreeBase) : null;
+
+  // Listed at `cwd`'s toplevel ONLY: the declared paths are repo-relative to the
+  // repo the agents edit, which is the one the session works in (after entering
+  // a worktree: that worktree). Whenever git resolved it, it IS `sessionRoot`;
+  // when git could not, `sessionRoot` falls back to a `.git` ancestor (git just
+  // failed there), `$CLAUDE_PROJECT_DIR` or a bare `cwd` — another repo, or a
+  // subdirectory from which `ls-files` answers subdir-relative (the review-MED
+  // class above) — so the listing degrades (matrix row 8) instead of following
+  // it there.
+  const known = trackedFilesIn(cwdToplevel, git);
+  const knownFiles = known.files;
 
   // The read-modify-write CYCLE, run under the ledger lock below. Everything
   // inside is synchronous and emits NOTHING — an emit here would `process.exit()`
@@ -2174,7 +2383,7 @@ async function main() {
   };
 
   let verdict;
-  const lockPath = path.join(projectDir, LEDGER_LOCK_REL);
+  const lockPath = path.join(sessionRoot, LEDGER_LOCK_REL);
   try {
     mkdirSync(path.dirname(lockPath), { recursive: true });
   } catch { /* the unlocked fallback below still works */ }
@@ -2207,15 +2416,30 @@ async function main() {
   // import is dynamic so a checkout without `scripts/lib/events.mjs` degrades to
   // silence instead of crashing (§ Import safety), and the catch guarantees a
   // failed write cannot change the verdict or the exit code.
+  //
+  // `decide()` never sees the stale-base check, so its `ledger_result` describes
+  // the COLLISION verdict alone. When the stale base is what actually blocks the
+  // dispatch (no collision deny beside it — that one keeps `deny`), the record
+  // says so (#1489 Pkt 8): recorded as `allow`, a refused dispatch counted as a
+  // dispatched one in every later query. The replaced value survives as
+  // `collision_result`, so a `warn-ledger-corrupt` / `warn-not-evaluable` behind
+  // a stale-base deny is not reported on stderr alone.
   if (verdict.telemetry) {
+    const telemetry = {
+      ...verdict.telemetry,
+      ...(staleDeny !== null && verdict.action !== 'deny'
+        ? { ledger_result: 'deny-stale-base', collision_result: verdict.telemetry.ledger_result }
+        : {}),
+      ...(known.skipped === undefined ? {} : { known_files_skipped: known.skipped }),
+    };
     try {
       const { emitEvent, sessionAttribution } = await import(
         pathToFileURL(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'events.mjs')).href
       );
       await emitEvent(
         SCOPE_EVENT,
-        { hook: HOOK_NAME, ...verdict.telemetry, ...sessionAttribution(projectDir) },
-        { repoRoot: projectDir }
+        { hook: HOOK_NAME, ...telemetry, ...sessionAttribution(sessionRoot) },
+        { repoRoot: sessionRoot }
       );
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }
@@ -2239,9 +2463,9 @@ async function main() {
           hook: HOOK_NAME,
           ...worktreeBase,
           decision: staleDeny === null ? 'allow' : 'deny',
-          ...sessionAttribution(projectDir),
+          ...sessionAttribution(sessionRoot),
         },
-        { repoRoot: projectDir }
+        { repoRoot: sessionRoot }
       );
     } catch { /* observability is best-effort — it never blocks the decision */ }
   }

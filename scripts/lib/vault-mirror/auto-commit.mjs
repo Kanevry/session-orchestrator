@@ -11,6 +11,8 @@ import { readFileSync, existsSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
+import { redactHomeDir } from '../common.mjs';
+
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 const MIRROR_DIRS = ['40-learnings', '50-sessions'];
 
@@ -79,7 +81,7 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId, repo) {
 
   const addResult = git(vaultDirPath, ['add', '--', ...stagingTargets]);
   if (addResult.status !== 0) {
-    process.stderr.write(`vault-mirror: auto-commit git-add failed: ${addResult.stderr}\n`);
+    process.stderr.write(`vault-mirror: auto-commit git-add failed: ${redactHomeDir(addResult.stderr)}\n`);
     process.stdout.write(
       JSON.stringify({ action: 'auto-commit-skipped', reason: 'git-add-failed' }) + '\n',
     );
@@ -88,7 +90,7 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId, repo) {
 
   const diff = git(vaultDirPath, ['diff', '--cached', '--name-only', '--', ...stagingTargets]);
   if (diff.status !== 0) {
-    process.stderr.write(`vault-mirror: auto-commit git-diff failed: ${diff.stderr}\n`);
+    process.stderr.write(`vault-mirror: auto-commit git-diff failed: ${redactHomeDir(diff.stderr)}\n`);
     process.stdout.write(
       JSON.stringify({ action: 'auto-commit-skipped', reason: 'git-diff-failed' }) + '\n',
     );
@@ -182,7 +184,7 @@ export function autoCommitVaultMirror(vaultDirPath, sessionId, repo) {
   //      committed content is already validated. See SKILL.md § "Pre-commit hook bypass (--no-verify)".
   const commit = git(vaultDirPath, ['commit', '-m', subject, '--no-verify']);
   if (commit.status !== 0) {
-    process.stderr.write(`vault-mirror: auto-commit git-commit failed: ${commit.stderr}\n`);
+    process.stderr.write(`vault-mirror: auto-commit git-commit failed: ${redactHomeDir(commit.stderr)}\n`);
     process.stdout.write(
       JSON.stringify({ action: 'auto-commit-skipped', reason: 'git-commit-failed' }) + '\n',
     );

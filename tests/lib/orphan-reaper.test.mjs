@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1011,9 +1011,12 @@ describe('shouldScanNow', () => {
     expect(auditPath('/repo')).toBe('/repo/.orchestrator/metrics/reaper-audit.jsonl');
   });
 
-  it('never writes the marker through a symlink — writeFileSync overwrote whatever file the marker linked to', () => {
-    // Bug (CWE-59): the hook-path writer followed a symlinked marker, so a link
-    // to any file got that file replaced by an ISO timestamp on every scan.
+  it('heals a symlinked marker into a regular one without writing through it — refusing the link switched the throttle off for good', () => {
+    // Bug (#1489 Pkt 9): the stamp refused a symlinked marker and returned
+    // `false` on every fire, so one planted link made every hook spawn a scan
+    // child, forever. The bug before it (CWE-59): writeFileSync followed the
+    // link and replaced its target with an ISO timestamp. Both are closed only
+    // if the link ENTRY is replaced and the target is never opened.
     const dir = mkdtempSync(join(tmpdir(), 'reaper-marker-'));
     try {
       const victim = join(dir, 'victim.jsonl');
@@ -1021,9 +1024,32 @@ describe('shouldScanNow', () => {
       const marker = join(dir, 'reaper-last-scan');
       symlinkSync(victim, marker);
 
-      expect(touchScanMarker(marker)).toBe(false);
+      expect(touchScanMarker(marker)).toBe(true);
       expect(readFileSync(victim, 'utf8')).toBe('keep me\n');
-      expect(lstatSync(marker).isSymbolicLink()).toBe(true);
+      expect(lstatSync(marker).isFile()).toBe(true);
+      // The healed marker throttles again — the whole point of healing it.
+      expect(shouldScanNow(marker, lstatSync(marker).mtimeMs + 1_000, 30)).toBe(false);
+      expect(readdirSync(dir).sort()).toEqual(['reaper-last-scan', 'victim.jsonl']);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves a directory at the marker path untouched and removes its own tmp file when the stamp fails', () => {
+    // A rename cannot replace a directory, and deleting one to make room would
+    // destroy content this module never wrote — so this shape stays `false`
+    // (→ `spawned-unthrottled`). Bug this catches in the tmp+rename writer: a
+    // failed rename that keeps its tmp file leaks one file into
+    // `.orchestrator/tmp/` on every hook fire.
+    const dir = mkdtempSync(join(tmpdir(), 'reaper-marker-'));
+    try {
+      const marker = join(dir, 'reaper-last-scan');
+      mkdirSync(marker);
+      writeFileSync(join(marker, 'foreign.txt'), 'keep\n', 'utf8');
+
+      expect(touchScanMarker(marker)).toBe(false);
+      expect(readFileSync(join(marker, 'foreign.txt'), 'utf8')).toBe('keep\n');
+      expect(readdirSync(dir)).toEqual(['reaper-last-scan']);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

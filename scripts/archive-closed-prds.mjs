@@ -44,7 +44,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 
-import { findProjectRoot, resolveInstructionFile, warn } from './lib/common.mjs';
+import { findProjectRoot, redactHomeDir, resolveInstructionFile, warn } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { glabRun as defaultGlabRun } from './lib/vault-backfill/glab.mjs';
 import { archiveFileToVault, titleFromMarkdown } from './lib/vault-archive.mjs';
@@ -381,8 +381,11 @@ EXIT CODES
 }
 
 function printHuman(archived, skipped, isDryRun, vaultDir, vaultSubdir) {
+  // Runs as a custom phase at every session start and end, so this line lands
+  // in every transcript — home dir as `~` (#1490). `--json` keeps the real
+  // value: that output is a machine contract, not a log line.
   process.stdout.write(
-    `Doc archive ${isDryRun ? '(dry-run)' : '(apply)'} → ${vaultDir}/${vaultSubdir}\n`,
+    `Doc archive ${isDryRun ? '(dry-run)' : '(apply)'} → ${redactHomeDir(`${vaultDir}/${vaultSubdir}`)}\n`,
   );
   if (archived.length > 0) {
     process.stdout.write(`  ${isDryRun ? 'WOULD ARCHIVE' : 'ARCHIVED'} (${archived.length}):\n`);
@@ -488,7 +491,7 @@ export function main({
   const root = repoRoot ?? findProjectRoot();
   const instr = resolveInstructionFile(root);
   if (!instr) {
-    process.stderr.write(`archive-closed-prds: no CLAUDE.md/AGENTS.md at ${root}.\n`);
+    process.stderr.write(`archive-closed-prds: no CLAUDE.md/AGENTS.md at ${redactHomeDir(root)}.\n`);
     return { code: 1, archived: [], skipped: [] };
   }
 
@@ -498,7 +501,7 @@ export function main({
     const config = parseSessionConfig(content, hostPaths ? { hostPaths } : undefined);
     vaultDir = config?.['vault-integration']?.['vault-dir'];
   } catch (err) {
-    process.stderr.write(`archive-closed-prds: failed to parse Session Config: ${err.message}\n`);
+    process.stderr.write(`archive-closed-prds: failed to parse Session Config: ${redactHomeDir(err.message)}\n`);
     return { code: 2, archived: [], skipped: [] };
   }
   if (!vaultDir || typeof vaultDir !== 'string' || vaultDir.trim() === '') {
@@ -534,8 +537,10 @@ export function main({
     try {
       header = readHeaderRegion(abs);
     } catch (err) {
-      skipped.push({ source: rel, reason: `unreadable: ${err.message}` });
-      warn(`archive-closed-prds: cannot read ${rel}: ${err.message}`);
+      // fs errors name the ABSOLUTE path they failed on (#1490).
+      const msg = redactHomeDir(err.message);
+      skipped.push({ source: rel, reason: `unreadable: ${msg}` });
+      warn(`archive-closed-prds: cannot read ${rel}: ${msg}`);
       continue;
     }
 
@@ -603,8 +608,9 @@ export function main({
         title: titleFromMarkdown(header),
       });
     } catch (err) {
-      skipped.push({ source: rel, reason: `archive-failed: ${err.message}`, iid, via, ownership });
-      warn(`archive-closed-prds: failed to archive ${rel}: ${err.message}`);
+      const msg = redactHomeDir(err.message);
+      skipped.push({ source: rel, reason: `archive-failed: ${msg}`, iid, via, ownership });
+      warn(`archive-closed-prds: failed to archive ${rel}: ${msg}`);
       continue;
     }
     entry.iid = iid;
@@ -614,7 +620,7 @@ export function main({
     if (!isDryRun) {
       const rm = gitRunFn(['-C', root, 'rm', '--', rel]);
       entry.removed = rm.ok;
-      if (!rm.ok) warn(`archive-closed-prds: 'git rm ${rel}' failed: ${rm.stderr.trim()}`);
+      if (!rm.ok) warn(`archive-closed-prds: 'git rm ${rel}' failed: ${redactHomeDir(rm.stderr.trim())}`);
     }
 
     archived.push(entry);
@@ -641,7 +647,7 @@ if (isMainModule(import.meta.url)) {
     const { code } = main();
     process.exit(code ?? 0);
   } catch (err) {
-    process.stderr.write(`archive-closed-prds: unexpected error: ${err?.stack ?? err}\n`);
+    process.stderr.write(`archive-closed-prds: unexpected error: ${redactHomeDir(String(err?.stack ?? err))}\n`);
     process.exit(2);
   }
 }

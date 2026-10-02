@@ -428,13 +428,14 @@ describe('session-registry', () => {
       expect(found.mode).toBeNull();
     });
 
-    // #595 (2026-08-15): this tolerance was evaluated for removal and
-    // RETAINED. Rejecting a mode-less entry would make a LIVE peer invisible
-    // to the exclusivity matrix — weakening parallel-session detection for
-    // zero gain, since an absent mode already degrades to `parallel-ok`.
-    // See skills/_shared/state-ownership.md § Schema v1 Sunset.
-    it('R2b: v1 entry on disk (no mode field) is read back as a valid entry', async () => {
-      // Write a v1-shaped entry directly to disk (no mode field).
+    // Deliberate fail-open for peer visibility (#595 sunset, 2026-10-02), not
+    // v1 compat: no writer omits `mode`, but rejecting a mode-less entry would
+    // drop a possibly LIVE peer from readRegistry() and hide it from
+    // parallel-session detection, while an unclassifiable mode already
+    // degrades to `parallel-ok`. See skills/_shared/state-ownership.md
+    // § Schema v1 Sunset.
+    it('R2b: a mode-less entry on disk stays visible (fail-open for peer visibility)', async () => {
+      // Write an entry directly to disk with no mode key at all.
       await mkdir(path.join(tmpBase, 'active'), { recursive: true });
       const v1Entry = {
         session_id: 'R2-v1',
@@ -448,7 +449,7 @@ describe('session-registry', () => {
         status: 'active',
         current_wave: 0,
         host_class: null,
-        // No mode field — pre-#583 schema v1.
+        // No mode key — a shape no current writer produces.
       };
       await writeFile(
         path.join(tmpBase, 'active', 'R2-v1.json'),
@@ -476,9 +477,7 @@ describe('session-registry', () => {
 
   describe('isRegistryEntryFresh helper (Epic #583, W2-I3)', () => {
     it('returns true when last_heartbeat is within freshnessMin', () => {
-      // `mode` mirrors what registerSelf actually writes (`opts.mode ?? null`)
-      // — an entry without the key is not a shape any writer produces and is
-      // rejected outright since the #595 v1 sunset.
+      // `mode` mirrors what registerSelf actually writes (`opts.mode ?? null`).
       const entry = {
         session_id: 'fresh',
         started_at: new Date().toISOString(),
@@ -491,8 +490,7 @@ describe('session-registry', () => {
     it('returns false when last_heartbeat is older than freshnessMin', () => {
       const oneHourAgo = new Date(Date.now() - 60 * 60_000).toISOString();
       // Valid shape on purpose: this must return false because the heartbeat
-      // is OLD, not because the entry failed validation — without `mode` the
-      // assertion would pass for the wrong reason.
+      // is OLD, not because the entry failed validation.
       const entry = {
         session_id: 'stale',
         started_at: oneHourAgo,

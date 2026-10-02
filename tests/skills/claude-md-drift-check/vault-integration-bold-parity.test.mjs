@@ -34,6 +34,7 @@ describe('drift-check raw-parity: bold vault-integration header resolves through
       'vault-dir': '~/Projects/vault',
       mode: 'warn',
       'vault-name': null,
+      'gitlab-groups': null,
     });
   });
 
@@ -49,6 +50,7 @@ describe('drift-check raw-parity: bold vault-integration header resolves through
       'vault-dir': '~/Projects/vault',
       mode: 'warn',
       'vault-name': null,
+      'gitlab-groups': null,
     });
   });
 
@@ -65,6 +67,7 @@ describe('drift-check raw-parity: bold vault-integration header resolves through
       'vault-dir': null,
       mode: 'warn',
       'vault-name': null,
+      'gitlab-groups': null,
     });
   });
 });

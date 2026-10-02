@@ -66,12 +66,9 @@
  * hooks.json wiring is managed separately (W3-C4 scope).
  */
 
-import { execFileSync, spawn } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { performance } from 'node:perf_hooks';
-import { fileURLToPath } from 'node:url';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -80,7 +77,7 @@ import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { findScopeFile } from '../scripts/lib/scope-gate.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
-import { _parseReaper } from '../scripts/lib/config/reaper.mjs';
+import { maybeTriggerOrphanScan } from '../scripts/lib/orphan-reaper/trigger.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -305,155 +302,6 @@ function countFilesChangedSince(projectDir, sha) {
     return paths.size;
   } catch {
     return null;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// orphan-reaper trigger (#1432 B4)
-// ---------------------------------------------------------------------------
-//
-// DUPLICATED VERBATIM between the two trigger hooks —
-// hooks/post-tool-batch-wave-signal.mjs <-> hooks/on-stop.mjs. Deliberate, with
-// a named revisit trigger (BV-004): they are the only two trigger points the
-// PRD declares, and a shared `hooks/_lib/reaper-trigger.mjs` would be a third
-// file in the hook import graph. SIZE, measured 2026-09-22 by diffing the two
-// blocks: 138 identical lines — this note said "~40 lines of glue" until then,
-// which is what made the duplicate look cheaper than it is. Extract it the
-// moment a THIRD hook needs the trigger, or the moment the copies must differ.
-
-/**
- * Filesystem path of the scan CLI, spawned as a PLAIN argv call.
- *
- * It used to be a `file://` URL handed to `node --input-type=module -e
- * <program>`, because `scripts/lib/orphan-reaper.mjs` had no entry guard. It
- * has one now (`parseReaperCliArgs` + the `isMainModule` tail), so the child's
- * contract lives in that module instead of as source text duplicated here —
- * and nothing this hook builds is a program any more: every variable part is
- * an argv value, which cannot become code whatever the checkout path contains.
- *
- * `fileURLToPath`, not `new URL(...).pathname`: the latter leaves a
- * percent-encoded path for any checkout directory containing a space.
- */
-const ORPHAN_REAPER_SCRIPT = fileURLToPath(
-  new URL('../scripts/lib/orphan-reaper.mjs', import.meta.url),
-);
-
-/**
- * Read the `reaper:` block from the project's Session Config host file.
- * Sync + inline, mirroring `hooks/loop-guard.mjs` `loadConfig()` — a hot hook
- * path must not import the full config orchestrator. A missing or unreadable
- * file yields the parser defaults, i.e. DISABLED.
- *
- * @param {string} projectDir
- * @returns {ReturnType<typeof _parseReaper>}
- */
-function loadReaperConfig(projectDir) {
-  for (const name of ['CLAUDE.md', 'AGENTS.md']) {
-    try {
-      return _parseReaper(readFileSync(path.join(projectDir, name), 'utf8'));
-    } catch {
-      // missing or unreadable — try the next candidate
-    }
-  }
-  return _parseReaper('');
-}
-
-/**
- * Trigger the orphan scan, throttled and NON-BLOCKING (PRD FA4).
- *
- * The hook itself does exactly two pieces of I/O — one config read and one
- * `stat` of the throttle marker — and then hands the work to a DETACHED,
- * unref'd child. The scan is never run inline: one `ps` round-trip out of Node
- * was measured at ~47 ms over 287 KB of output, which alone would blow the
- * 50 ms `reaper.max-hook-latency-ms` budget this hook has to stay inside.
- *
- * The marker is stamped BEFORE the spawn, so a spawn that fails still consumes
- * the throttle window — otherwise a broken spawn would be retried on every
- * single tool batch.
- *
- * `reaper.max-hook-latency-ms` is the ceiling on the work above — measured here
- * with `performance.now()` and reported as ONE stderr WARN line when exceeded.
- * A WARN and not an event: this fires from a `PostToolBatch`-class hook, and a
- * per-fire telemetry record is exactly the always-on signal
- * `.claude/rules/host-resources.md` HR-101 calls a broken instrument. The
- * measurement covers preparation only — the scan itself runs detached, which is
- * the whole reason the budget can be held.
- *
- * Never throws: any failure degrades silently (PRD FA4 "lautlos degradieren").
- *
- * @param {object} [opts]
- * @param {string} [opts.projectDir]  Repo root; defaults to `getProjectDir()`.
- * @param {number} [opts.now]         Injected clock (ms).
- * @param {Function} [opts.spawnFn]   Injected `spawn` (tests).
- * @param {Function} [opts.statFn]    Injected marker `lstatSync` (tests).
- * @param {Function} [opts.writeFn]   Injected marker writer (tests).
- * @param {() => number} [opts.clockFn]  Injected monotonic clock for the latency
- *   budget (tests); defaults to `performance.now`.
- * @returns {Promise<{spawned: boolean, reason: string}>} `reason` is
- *   `'spawned-unthrottled'` when the scan ran but the marker could not be
- *   stamped — the next fire will scan again, and the result must not read like
- *   a throttled spawn. The value reaches in-process callers (tests) only:
- *   `main()` below discards it and nothing records it, so it is no production
- *   signal (HR-105).
- */
-export async function maybeTriggerOrphanScan({
-  projectDir,
-  now,
-  spawnFn = spawn,
-  statFn,
-  writeFn,
-  clockFn = () => performance.now(),
-} = {}) {
-  const startedAt = clockFn();
-  /** One WARN line when the preparation overran `reaper.max-hook-latency-ms`. */
-  const checkLatency = (budgetMs) => {
-    const elapsed = clockFn() - startedAt;
-    if (Number.isFinite(budgetMs) && budgetMs > 0 && elapsed > budgetMs) {
-      process.stderr.write(
-        `orphan-reaper trigger: hook latency ${elapsed.toFixed(1)} ms exceeded `
-        + `reaper.max-hook-latency-ms (${budgetMs} ms)\n`,
-      );
-    }
-  };
-  try {
-    const root = typeof projectDir === 'string' && projectDir ? projectDir : getProjectDir();
-    const cfg = loadReaperConfig(root);
-    // Cheapest gate first: disabled means no stat, no spawn, no module load.
-    if (cfg.enabled !== true) return { spawned: false, reason: 'disabled' };
-
-    // The throttle module only — the scan's ledger, `ps` and kill-ladder code
-    // load in the detached child, never on this hook path (#1437).
-    const reaper = await import('../scripts/lib/orphan-reaper/scan-throttle.mjs');
-    const markerPath = reaper.scanMarkerPath(root);
-    const nowMs = typeof now === 'number' ? now : Date.now();
-
-    if (!reaper.shouldScanNow(markerPath, nowMs, cfg['min-scan-interval-seconds'], { statFn })) {
-      checkLatency(cfg['max-hook-latency-ms']);
-      return { spawned: false, reason: 'throttled' };
-    }
-    // An unwritable marker does not cancel the scan — the throttle fails toward
-    // scanning (see shouldScanNow) — but the result says the throttle is off.
-    // No output: this runs on every tool batch in every session on the host.
-    const stamped = reaper.touchScanMarker(markerPath, { writeFn });
-
-    const child = spawnFn(
-      process.execPath,
-      [
-        ORPHAN_REAPER_SCRIPT,
-        '--repo-root', root,
-        '--mode', cfg.mode,
-        '--min-age-seconds', String(cfg['min-age-seconds']),
-        '--kill-grace-ms', String(cfg['kill-grace-ms']),
-        '--verify-wait-ms', String(cfg['verify-wait-ms']),
-        '--false-alarm-window', String(cfg['false-alarm-window']),
-      ],
-      { detached: true, stdio: 'ignore' },
-    );
-    if (child && typeof child.unref === 'function') child.unref();
-    checkLatency(cfg['max-hook-latency-ms']);
-    return { spawned: true, reason: stamped ? 'spawned' : 'spawned-unthrottled' };
-  } catch {
-    return { spawned: false, reason: 'error' };
   }
 }
 
@@ -723,6 +571,12 @@ async function main() {
   // `process.exit(0)` in a `finally`: an un-awaited spawn would race the exit.
   // The await is bounded by design — one config read, one stat, one detached
   // spawn, all measured under `reaper.max-hook-latency-ms` (50 ms).
+  //
+  // The returned reason is deliberately NOT recorded here (#1489): this hook
+  // emits no record per batch, and adding one is the per-fire telemetry HR-101
+  // rejects. The throttle marker is one file per repo, so a defeated marker
+  // (`spawned-unthrottled`) shows on the next Stop/SubagentStop record, whose
+  // `reaper_trigger` key hooks/on-stop.mjs fills from the same trigger.
   await maybeTriggerOrphanScan();
 }
 

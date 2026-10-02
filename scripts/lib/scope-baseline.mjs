@@ -141,8 +141,11 @@ import { resolveBaselineRange, isQueryFailure } from './vcs-repo-spec.mjs';
 // F1 bug this filter exists to prevent — a caller could hand
 // `writeBaseline()` an unfiltered count with no `filterExcluded()` pass at
 // all). `computeDrift()` filters the numerator at measure time by running
-// the live `git diff --name-only` output through the same
-// `filterExcluded()` helper.
+// the live change set (committed range ∪ working tree ∪ untracked, see its
+// JSDoc) through the same `filterExcluded()` helper. One classification sits
+// OUTSIDE this list on purpose: untracked paths under `.orchestrator/` (see
+// `isUntrackedRuntimeWrite()` below) — it keys on tracked status, which only
+// the live numerator has, so a pattern here could not express it.
 // Deliberately narrows skills/session-end/plan-verification.md:42-45's
 // per-session-state exclusion from "the whole .claude/ directory" down to
 // just the session ARTEFACTS — `.claude/rules/**` stays COUNTED because a
@@ -165,6 +168,24 @@ export const DRIFT_EXCLUDE_PATTERNS = [
   '.codex/STATE.md', '.codex/wave-scope.json', '.codex/metrics/**',
   '.cursor/STATE.md', '.cursor/wave-scope.json', '.cursor/metrics/**',
   '.pi/STATE.md', '.pi/wave-scope.json', '.pi/metrics/**',
+  // The plugin's OWN mid-session writes. They only became visible to the
+  // numerator when it started reading the working tree and untracked files
+  // (#1027). Two classes are excluded HERE, whatever their tracked status:
+  //   - `.orchestrator/metrics/**` — a consumer repo keeps its `*.jsonl`
+  //     TRACKED by design (skills/bootstrap/standard-template.md "Gitignore
+  //     guidance") and hooks append to it all session.
+  //   - `<state-dir>/filescopes/**` and `<state-dir>/worktrees/**` — bootstrap
+  //     writes no ignore line for either. An agent worktree is a nested repo,
+  //     so `ls-files --others` lists each as ONE `.claude/worktrees/<id>/`
+  //     entry (measured 2026-10-02): one false file per isolated agent.
+  // Every OTHER plugin write under `.orchestrator/` (runtime/, tmp/, debug/,
+  // session.lock, current-session.json, ...) is excluded by
+  // `isUntrackedRuntimeWrite()` while untracked, which is how a consumer repo
+  // holds them. Its deliverables (`steering/`, `policy/`, `bootstrap.lock`)
+  // are tracked and count.
+  '.claude/filescopes/**', '.codex/filescopes/**', '.cursor/filescopes/**', '.pi/filescopes/**',
+  '.claude/worktrees/**', '.codex/worktrees/**', '.cursor/worktrees/**', '.pi/worktrees/**',
+  '.orchestrator/metrics/**',
 ];
 
 // ---------------------------------------------------------------------------
@@ -217,6 +238,38 @@ function filterExcluded(files) {
     (f) => !DRIFT_EXCLUDE_PATTERNS.some((pattern) => pathMatchesPattern(f, pattern))
   );
 }
+
+/**
+ * Is this UNTRACKED path the plugin's own runtime output? Same rule as
+ * `isOwnRuntimeArtifact()` in scripts/lib/project-hygiene.mjs (untracked
+ * under `.orchestrator/` = ours), mirrored rather than imported: it is not
+ * exported, and importing that module would pull js-yaml and the command
+ * blocker into this one for a one-line prefix test. Applied to the
+ * `ls-files --others` source only — a tracked `.orchestrator/` file is a
+ * deliverable or a ledger, and `DRIFT_EXCLUDE_PATTERNS` decides which.
+ *
+ * Ceiling (BV-004): a runtime file a consumer has COMMITTED (e.g. a
+ * `session.lock` swept in by `git add -A`) counts whenever the plugin
+ * rewrites it, and a NEW `steering/`/`policy/` file counts only once it is
+ * tracked. Revisit if a drift WARN traces to a tracked runtime file, or a
+ * missed WARN to an uncommitted steering/policy deliverable.
+ *
+ * @param {string} file repo-root-relative path from `git ls-files --others`
+ * @returns {boolean}
+ */
+function isUntrackedRuntimeWrite(file) {
+  return file.startsWith('.orchestrator/');
+}
+
+/** Split git `--name-only`/`ls-files` stdout into trimmed non-empty paths. */
+function outputPaths(stdout) {
+  return stdout.split('\n').map((line) => line.trim()).filter((line) => line.length > 0);
+}
+
+// Per-query bound for the three numerator git calls — the same 10 s that
+// scripts/lib/project-hygiene.mjs gives its read-only git queries. A timeout
+// throws like any other failure and lands in the same skip.
+const DRIFT_GIT_TIMEOUT_MS = 10_000;
 
 /**
  * Internal: read + parse STATE.md's frontmatter exactly once. Shared by
@@ -464,12 +517,37 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
 }
 
 /**
- * Compute the S2 warn-only scope-drift ratio: how many files have actually
- * changed since the session's frozen `session-start-ref`, filtered through
+ * Compute the S2 warn-only scope-drift ratio: how many files differ in this
+ * checkout — committed since the session's frozen `session-start-ref`, plus
+ * whatever is uncommitted or untracked right now — filtered through
  * `DRIFT_EXCLUDE_PATTERNS`, against the `plannedFiles` count frozen by
  * `writeBaseline()`. Sync (`readFileSync` + `execFileSync('git', ...)`
  * only). Never throws, never denies — this is a WARN-only tripwire; the
  * CALLER decides whether/how to surface `breached`.
+ *
+ * Numerator (#1027): the deduplicated union of three git queries — the
+ * committed range diff, the working tree against HEAD (staged + unstaged),
+ * and untracked files (`ls-files --others --exclude-standard`, minus the
+ * plugin's own untracked `.orchestrator/` writes, see
+ * `isUntrackedRuntimeWrite()`). Until #1027 only the first was read, so
+ * uncommitted edits and every NEW module — the typical shape of an
+ * overshoot — were invisible until someone committed them. All three must
+ * succeed: if any fails (including ENOBUFS and the per-query timeout) the
+ * result is the `unresolvable-ref` skip, never a ratio over a partial
+ * numerator. That reason is deliberately not split by cause: its readers
+ * (skills/wave-executor/references/wave-loop-review.md step 7a,
+ * skills/session-end/plan-verification.md step 5) render every skip
+ * silently or verbatim and none branches on it.
+ *
+ * Named ceiling (BV-004) — over-report: only the committed source is tied to
+ * `session-start-ref`. The working-tree and untracked sources read the
+ * checkout as it is NOW, so a file that was already dirty when the session
+ * started, and a same-checkout peer session's files, count as this session's
+ * drift. Fixing it means persisting a start-dirty snapshot at freeze time and
+ * subtracting it — a storage change, out of scope for this warn-only
+ * tripwire. Revisit if a drift WARN traces to pre-session dirt or to a
+ * peer's files (`git status` at session start shows the former,
+ * PSA-001 signals the latter).
  *
  * Skip precedence (first match wins, so `reason` is deterministic):
  *   `no-state-md` → `unreadable-state-md` → `no-baseline` →
@@ -509,13 +587,14 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
  *
  * Named ceiling (BV-004) on the local-branch tail of the resolution chain:
  * when the chain lands on a LOCAL `main`/`master` and HEAD is already that
- * branch, `main...HEAD` has merge-base === HEAD and the diff is empty, so
- * the ratio reads `0` instead of skipping. That is the honest floor of the
- * available information (no remote-tracking ref exists to say where the
- * session started) and it is harmless here because both a `0` ratio and a
- * skip are silent under `wave-loop.md`'s WARN-on-breach rule. Revisit if
- * this function ever gains a non-warn consumer that treats `skipped:false`
- * as "measured successfully".
+ * branch, `main...HEAD` has merge-base === HEAD and the COMMITTED source is
+ * empty, so the session's commits are invisible and the ratio counts only
+ * the uncommitted and untracked files instead of skipping. That is the
+ * honest floor of the available information (no remote-tracking ref exists
+ * to say where the session started); it can only under-report, and an
+ * under-report is as silent as a skip under `wave-loop-review.md`'s
+ * WARN-on-breach rule. Revisit if this function ever gains a non-warn
+ * consumer that treats `skipped:false` as "measured successfully".
  *
  * @param {object} args
  * @param {string|undefined} args.repoRoot
@@ -578,26 +657,38 @@ export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
     refUsed = resolved.range;
   }
 
-  let stdout;
+  // Untracked files can be numerous, so the 1 MiB default buffer would turn
+  // a large tree into an ENOBUFS skip.
+  const gitOpts = { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, timeout: DRIFT_GIT_TIMEOUT_MS };
+  const changedFiles = new Set();
   try {
-    stdout = execFileSync('git', ['diff', '--name-only', diffRange], { cwd, encoding: 'utf8' });
+    const committed = execFileSync('git', ['diff', '--name-only', diffRange], gitOpts);
+    const workingTree = execFileSync('git', ['diff', '--name-only', 'HEAD'], gitOpts);
+    // `--full-name` + `:/` keep these paths in the same repo-root-relative
+    // space as `git diff --name-only`, even if `cwd` is a subdirectory.
+    const untracked = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--full-name', '--', ':/'], gitOpts);
+    for (const file of [...outputPaths(committed), ...outputPaths(workingTree)]) changedFiles.add(file);
+    for (const file of outputPaths(untracked)) {
+      if (!isUntrackedRuntimeWrite(file)) changedFiles.add(file);
+    }
   } catch {
-    // The range resolved but the diff against it failed — a present-but-dead
-    // `session-start-ref` (rebase, force-push, deleted commit), or a
-    // resolved base that vanished between resolution and diff. Neither can
-    // produce a trustworthy numerator.
+    // The range resolved but a numerator query failed — a present-but-dead
+    // `session-start-ref` (rebase, force-push, deleted commit), a resolved
+    // base that vanished between resolution and diff, a working-tree or
+    // untracked query git could not answer, output over `maxBuffer`
+    // (ENOBUFS), or a query past `DRIFT_GIT_TIMEOUT_MS`. None can produce a
+    // trustworthy numerator, and a partial one must not be reported as
+    // measured. All share `unresolvable-ref`: every reader renders a skip
+    // silently and none branches on the reason (census in the JSDoc above).
     return { ok: true, skipped: true, reason: 'unresolvable-ref' };
   }
 
-  const changedFiles = stdout
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-
   // Same `filterExcluded()` primitive `writeBaseline()`'s denominator
-  // (`countPlannedFiles()`) calls (#894 review finding F1) — both sides of
-  // the ratio are provably produced by one function.
-  const actualFiles = filterExcluded(changedFiles).length;
+  // (`countPlannedFiles()`) calls (#894 review finding F1), so the pattern
+  // filter on both sides of the ratio is one function. The untracked
+  // `.orchestrator/` rule above is numerator-only by construction: a planned
+  // path carries no tracked status to test.
+  const actualFiles = filterExcluded([...changedFiles]).length;
 
   const plannedFilesRaw = baseline.plannedFiles;
   const plannedFiles = typeof plannedFilesRaw === 'number' && Number.isFinite(plannedFilesRaw)

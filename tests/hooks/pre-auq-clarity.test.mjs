@@ -4,10 +4,11 @@
  * Contract tests for the runtime `AskUserQuestion` clarity guard.
  *
  * Every `it` below names the concrete bug it catches (TV-001). Decision
- * assertions go exclusively through `expectAllow` / `expectDeny` from
+ * assertions go exclusively through `expectAllow` / `expectDeny` / `isDeny` from
  * `tests/_helpers/hook-decision.mjs`: under the exit-0 PreToolUse protocol
  * (#906) allow AND deny both exit 0, so a bare `expect(status).toBe(0)` is an
- * assert-nothing that stays green in BOTH directions.
+ * assert-nothing that stays green in BOTH directions — and a substring check on
+ * stdout stays green on a malformed or doubled envelope, which `isDeny` parses.
  *
  * The fake-regression block at the bottom is the load-bearing one: it restores
  * each named defect in a COPY of the hook and proves the matching test goes RED.
@@ -21,7 +22,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from
 import path from 'node:path';
 import os from 'node:os';
 
-import { expectDeny, expectAllow, expectGuardInactive } from '../_helpers/hook-decision.mjs';
+import { expectDeny, expectAllow, expectGuardInactive, isDeny } from '../_helpers/hook-decision.mjs';
 // Die Schwellen-SSOT, nicht die gedruckte Zahl: der Deny-Text wird gegen die
 // Konstante geprüft, damit eine verschobene Schwelle den Satz mitzieht.
 import * as schemaModule from '../../scripts/lib/auq/schema.mjs';
@@ -304,11 +305,12 @@ describe('pre-auq-clarity — hard limits block', () => {
     // land — the model rewrites something else, gets denied again, and the
     // operator's question never appears. The reason must carry the addressable
     // JSON path, the measured value and the limit.
-    const env = expectDeny(runHook(envelope([h2Question()])), ['questions[0]', H2_MEASURED]);
-
+    //
     // The operator-visible headline names WHICH limit broke, not a preamble
     // identical for every deny (`emitDeny` derives it from the first line).
-    expect(env.systemMessage).toContain('H2');
+    expectDeny(runHook(envelope([h2Question()])), ['questions[0]', H2_MEASURED], {
+      systemMessageContains: 'H2',
+    });
   });
 
   it('renders the option cap from the threshold instead of spelling it out in words', () => {
@@ -514,7 +516,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
       toolName: 'Bash',
     });
     const leaked = runHook(stdin, { hook: broken });
-    expect(leaked.stdout).toContain('"permissionDecision":"deny"'); // the defect's signature
+    expect(isDeny(leaked), leaked.stdout).toBe(true); // the defect's signature
     expect(() => expectAllow(leaked)).toThrow();
 
     expectAllow(runHook(stdin)); // ...and the real hook allows
@@ -530,7 +532,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
 
     const garbage = '{"tool_name": "AskUserQuestion", "tool_input": {';
     const leaked = runHook(garbage, { hook: broken });
-    expect(leaked.stdout).toContain('"permissionDecision":"deny"');
+    expect(isDeny(leaked), leaked.stdout).toBe(true);
     expect(() => expectAllow(leaked)).toThrow();
 
     expectAllow(runHook(garbage));
@@ -557,7 +559,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
       ],
     }]);
     const leaked = runHook(stdin, { hook: broken });
-    expect(leaked.stdout).toContain('"permissionDecision":"deny"');
+    expect(isDeny(leaked), leaked.stdout).toBe(true);
     expect(() => expectAllow(leaked)).toThrow();
 
     expectAllow(runHook(stdin));
@@ -578,7 +580,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
     const vague = runHook(stdin, { hook: broken });
     // Still a deny — the defect is in the REASON, which is exactly why an
     // assertion that only checked "it denied" would stay green here.
-    expect(vague.stdout).toContain('"permissionDecision":"deny"');
+    expect(isDeny(vague), vague.stdout).toBe(true);
     expect(() => expectDeny(vague, ['questions[0]', H2_MEASURED])).toThrow();
 
     expectDeny(runHook(stdin), ['questions[0]', H2_MEASURED]);
@@ -619,7 +621,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
 
     const stdin = envelope([cleanQuestion({ header: 'Sitzungsdauer' })]);
     const rearmed = runHook(stdin, { hook: broken });
-    expect(rearmed.stdout).toContain('"permissionDecision":"deny"'); // the defect's signature
+    expect(isDeny(rearmed), rearmed.stdout).toBe(true); // the defect's signature
     expect(() => expectAllow(rearmed)).toThrow();
 
     expectAllow(runHook(stdin)); // ...and the real hook lets it through

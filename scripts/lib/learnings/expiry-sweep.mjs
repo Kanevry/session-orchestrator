@@ -30,6 +30,11 @@
  *     ONLY destructive step, and it reuses `rewriteLearnings()` from io.mjs
  *     (#721), which itself snapshots a `.bak-<ISO>` backup before the atomic
  *     rename — the same safety net that protects every other bulk rewrite.
+ *     A store line that does not parse is carried through the rewrite
+ *     verbatim (#1489): neither partition can judge it, and the rewrite is
+ *     built from parsed records, so leaving it out deleted it with no archive
+ *     record. Refusing the rewrite instead would stall the session-end sweep
+ *     on every close until someone repaired the line by hand.
  *   - Grace period (default 14 days): an entry that JUST expired stays in the
  *     active store for `graceDays` more days. This absorbs two things: (a)
  *     TTL edge-noise near the boundary, and (b) a window for /evolve's
@@ -63,6 +68,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, appendFile } from 'node:fs/promises';
 import path from 'node:path';
 import { readLearnings, readLearningsSnapshot, rewriteLearnings, withLearningsLock } from './io.mjs';
+import { redactHomeDir } from '../common.mjs';
 
 /**
  * Thrown by {@link pruneLearnings} when `expectedGeneration` no longer matches
@@ -228,6 +234,63 @@ function countByReason(batch) {
   return out;
 }
 
+/**
+ * Result field for the store's unparseable lines: `{malformed: n}` when the
+ * read held `n > 0`, else `{}` — so the pinned zero-case result shape (the
+ * CLI's `--json` contract) is unchanged, and an absent field always means a
+ * read that found none. A non-zero count also goes to stderr, because a
+ * caller that forwards only its own fields (the session-end tail runner, the
+ * CLI's human-readable line) would otherwise drop it on the floor.
+ *
+ * @param {string} filePath
+ * @param {string[]} malformed - raw text of the lines that did not parse
+ * @param {number[]} lineNumbers - their 1-based store lines (`malformedLineNumbers`)
+ * @returns {{malformed?: number}}
+ */
+function malformedField(filePath, malformed, lineNumbers) {
+  if (malformed.length === 0) return {};
+  warnUnparseableLines(filePath, malformed, lineNumbers);
+  return { malformed: malformed.length };
+}
+
+/**
+ * Store + line set already WARNed about in this process. One `/close` reads the
+ * same store twice in one process — the planner's dry run, then the apply — and
+ * printed the identical WARN twice. Grows by one key per distinct store+line
+ * set, so it stays tiny; revisit if a long-lived process ever sweeps many stores.
+ * @type {Set<string>}
+ */
+const warnedUnparseable = new Set();
+
+/**
+ * Print the one stderr WARN for a store's unparseable lines — at most once per
+ * store and identical line set per process. The policy it states is the store
+ * policy since #1489: such lines are kept verbatim at the end of every rewrite,
+ * never archived, and never a reason to refuse a write.
+ *
+ * @param {string} filePath
+ * @param {string[]} malformed - raw text of the lines that did not parse
+ * @param {number[]} [lineNumbers] - their 1-based store lines; at most ten listed
+ *
+ * The text names no dry-run state: one WARN per process is shared by the
+ * planner's dry run and the apply that follows it in a /close, so a dry-run
+ * qualifier would be printed for — and contradict — the applied rewrite.
+ */
+export function warnUnparseableLines(filePath, malformed, lineNumbers = []) {
+  if (malformed.length === 0) return;
+  const key = `${path.resolve(filePath)}\0${malformed.join('\n')}`;
+  if (warnedUnparseable.has(key)) return;
+  warnedUnparseable.add(key);
+  const more = lineNumbers.length > 10 ? `, +${lineNumbers.length - 10} more` : '';
+  const where = lineNumbers.length > 0 ? ` (line(s) ${lineNumbers.slice(0, 10).join(', ')}${more})` : '';
+  console.error(
+    // The store path is absolute and lands in every /close transcript (#1490).
+    `[learnings] WARN: ${malformed.length} unparseable line(s) in ${redactHomeDir(filePath)}${where} kept verbatim, ` +
+      `never archived; report them to the operator — ` +
+      `never hand-edit the store`
+  );
+}
+
 /** Resolve the `now` parameter (Date | epoch ms | undefined) to epoch ms. */
 function resolveNowMs(now) {
   if (now instanceof Date) return now.getTime();
@@ -249,15 +312,32 @@ function resolveNowMs(now) {
  * @param {string} opts.archivePath
  * @param {object[]} opts.keep — the next store generation
  * @param {{entry: object, verdict: {reason: string, tombstone: object|null}}[]} opts.archiveBatch
+ * @param {string[]} opts.malformed — unparseable store lines, written back
+ *   verbatim after `keep` (see the module header)
+ * @param {number[]} opts.malformedLineNumbers — their 1-based store lines (WARN only)
  * @param {number} opts.nowMs
  * @param {boolean} opts.dryRun
- * @returns {Promise<{kept: number, archived: number, byReason: Record<string, number>}>}
+ * @returns {Promise<{kept: number, archived: number, byReason: Record<string, number>,
+ *   malformedField: {malformed?: number}}>}
  */
-async function archiveThenRewrite({ filePath, archivePath, keep, archiveBatch, nowMs, dryRun }) {
+async function archiveThenRewrite({
+  filePath,
+  archivePath,
+  keep,
+  archiveBatch,
+  malformed,
+  malformedLineNumbers,
+  nowMs,
+  dryRun,
+}) {
   const byReason = countByReason(archiveBatch);
-  if (dryRun) {
-    return { kept: keep.length, archived: archiveBatch.length, byReason };
-  }
+  const result = {
+    kept: keep.length,
+    archived: archiveBatch.length,
+    byReason,
+    malformedField: malformedField(filePath, malformed, malformedLineNumbers),
+  };
+  if (dryRun) return result;
 
   // Validate the KEEP batch BEFORE the archive append (dry-run rewrite: throws
   // on a bad record, writes nothing). Without this, an invalid-but-parseable
@@ -266,7 +346,7 @@ async function archiveThenRewrite({ filePath, archivePath, keep, archiveBatch, n
   // duplicates the archive append every time (never de-duplicated on read)
   // while the store is never actually pruned. Validating first means a bad
   // record throws here, before anything on disk has been touched.
-  await rewriteLearnings(filePath, keep, { dryRun: true });
+  await rewriteLearnings(filePath, keep, { dryRun: true, malformedLines: malformed });
 
   // Crash-safe ordering: archive append FIRST. A duplicate re-append after a
   // crash is harmless (append-only, never de-duplicated on read); the reverse
@@ -285,9 +365,9 @@ async function archiveThenRewrite({ filePath, archivePath, keep, archiveBatch, n
   // Re-validates (cheap, idempotent) and snapshots a `.bak-<ISO>` backup of
   // the current store before the atomic rename (io.mjs #721). The KEEP batch
   // already passed the dry-run probe above, so this call cannot throw here.
-  await rewriteLearnings(filePath, keep, { dryRun: false });
+  await rewriteLearnings(filePath, keep, { dryRun: false, malformedLines: malformed });
 
-  return { kept: keep.length, archived: archiveBatch.length, byReason };
+  return result;
 }
 
 /**
@@ -305,7 +385,10 @@ async function archiveThenRewrite({ filePath, archivePath, keep, archiveBatch, n
  * @param {Date|number} [opts.now] - injectable clock; defaults to `Date.now()`
  * @param {boolean} [opts.dryRun=true] - when true, computes counts but writes nothing
  * @param {number} [opts.graceDays=14] - days past expiry before an entry is archived
- * @returns {Promise<{scanned: number, kept: number, archived: number, dryRun: boolean, archivePath: string}>}
+ * @returns {Promise<{scanned: number, kept: number, archived: number, dryRun: boolean, archivePath: string,
+ *   malformed?: number}>} `malformed` is present only when the store held
+ *   unparseable lines: their count. They are kept verbatim at the end of the
+ *   rewritten store, never archived, and not counted in `scanned`/`kept`.
  *   Never throws on a missing store — returns the zeroed shape instead. Both
  *   `filePath` and `archivePath` are required; a missing/invalid `filePath`
  *   throws a plain `Error` (programmer error, not a runtime data condition).
@@ -347,7 +430,7 @@ async function sweepExpiredLearningsUnlocked({
   const graceMs =
     (Number.isFinite(graceDays) && graceDays >= 0 ? graceDays : DEFAULT_GRACE_DAYS) * MS_PER_DAY;
 
-  const { entries } = await readLearnings(filePath);
+  const { entries, malformed, malformedLineNumbers } = await readLearnings(filePath);
 
   const keep = [];
   const archiveBatch = [];
@@ -368,11 +451,13 @@ async function sweepExpiredLearningsUnlocked({
     }
   }
 
-  const { kept, archived } = await archiveThenRewrite({
+  const { kept, archived, malformedField: malformedCount } = await archiveThenRewrite({
     filePath,
     archivePath,
     keep,
     archiveBatch,
+    malformed,
+    malformedLineNumbers,
     nowMs,
     dryRun,
   });
@@ -380,7 +465,7 @@ async function sweepExpiredLearningsUnlocked({
   // Result shape is pinned by the CLI (`scripts/sweep-expired-learnings.mjs`)
   // and its JSON contract — deliberately WITHOUT `byReason`, which only the
   // multi-reason prune path below can populate meaningfully.
-  return { scanned: entries.length, kept, archived, dryRun, archivePath };
+  return { scanned: entries.length, kept, archived, dryRun, archivePath, ...malformedCount };
 }
 
 /**
@@ -445,7 +530,10 @@ async function sweepExpiredLearningsUnlocked({
  *   earlier read, outside the lock (the `/evolve` sidecar); a caller that
  *   reads and prunes inside one `withLearningsLock` section may omit it.
  * @returns {Promise<{scanned: number, kept: number, archived: number,
- *   byReason: Record<string, number>, dryRun: boolean, archivePath: string}>}
+ *   byReason: Record<string, number>, dryRun: boolean, archivePath: string,
+ *   malformed?: number}>} `malformed` as in {@link sweepExpiredLearnings}: the
+ *   store's unparseable lines, kept verbatim — no caller generation can carry
+ *   them, so they are never read as caller drops.
  * @throws {StoreGenerationMismatchError} when `expectedGeneration` is stale
  */
 export async function pruneLearnings(opts = {}) {
@@ -492,14 +580,23 @@ async function pruneLearningsUnlocked({
   const nowMs = resolveNowMs(now);
   // Token and records come from ONE read, so the comparison judges exactly the
   // records loop (3) reconciles against.
-  const { entries: current, generation } = await readLearningsSnapshot(filePath);
+  const { entries: current, malformed, malformedLineNumbers, generation } = await readLearningsSnapshot(filePath);
   if (expectedGeneration !== undefined && generation !== expectedGeneration) {
     throw new StoreGenerationMismatchError(filePath, expectedGeneration, generation);
   }
   const next = entries ?? current;
 
   if (next.length === 0 && current.length === 0) {
-    return { scanned: 0, kept: 0, archived: 0, byReason: {}, dryRun, archivePath };
+    // Nothing to write — the malformed lines, if any, stay where they are.
+    return {
+      scanned: 0,
+      kept: 0,
+      archived: 0,
+      byReason: {},
+      dryRun,
+      archivePath,
+      ...malformedField(filePath, malformed, malformedLineNumbers),
+    };
   }
 
   const resolveDrop = (entry) =>
@@ -583,14 +680,24 @@ async function pruneLearningsUnlocked({
     dropped += 1;
   }
 
-  const { kept, archived, byReason } = await archiveThenRewrite({
+  const { kept, archived, byReason, malformedField: malformedCount } = await archiveThenRewrite({
     filePath,
     archivePath,
     keep,
     archiveBatch,
+    malformed,
+    malformedLineNumbers,
     nowMs,
     dryRun,
   });
 
-  return { scanned: next.length + dropped, kept, archived, byReason, dryRun, archivePath };
+  return {
+    scanned: next.length + dropped,
+    kept,
+    archived,
+    byReason,
+    dryRun,
+    archivePath,
+    ...malformedCount,
+  };
 }

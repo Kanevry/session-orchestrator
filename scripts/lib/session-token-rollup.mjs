@@ -93,8 +93,9 @@
  * without usage turns, or unreadable, #1474), or when the agent has a start
  * record but its stop found no transcript of its own and no other record of the
  * same agent did (`start_record_found: true`, `subagent_transcript_found: false`
- * — mostly `workflow-subagent`). A phantom stop (#939, no start record) is no
- * agent and no candidate. A record whose four token buckets
+ * — mostly `workflow-subagent`), or when its only own-transcript records are
+ * schema_version 1 (#1487 Pkt 1 — v1 has no priceable buckets). A phantom stop
+ * (#939, no start record) is no agent and no candidate. A record whose four token buckets
  * are all 0 is priced at $0 whatever its model, and never turns a null total into
  * a number on its own. A record whose turns span several models carries
  * `models_usage` (#1470) and is priced part by part. `cost_records_priced` /
@@ -104,11 +105,16 @@
  * Blind spots the ledger cannot close: an agent whose start record lies outside
  * the hook's tail window reads `start_record_found: false` and is
  * indistinguishable from a phantom, and an agent that left neither a start nor a
- * stop record is invisible. One blind spot is a rule of this module, not the
- * ledger: a session spanning the 2026-09-09 schema boundary is priced over its v2
- * records only — its v1 records are `legacy_v1_records`, never cost candidates
- * (4 distinct fleet sessions carry such a numeric cost, 31 ledgers, 2026-10-01).
- * "Never a partial sum" holds only over the v2 agents the ledger can see.
+ * stop record is invisible. "Never a partial sum" holds over the agents the
+ * ledger can see. Until #1487 Pkt 1 (2026-10-02) a session spanning the
+ * 2026-09-09 schema boundary was priced over its v2 records only — its v1
+ * agents were never cost candidates, so the v2 half's sum read as the whole
+ * bill (4 distinct fleet sessions, 31 ledgers, 2026-10-01). A v1 agent is now an
+ * unpriced candidate: such a session reports `total_cost_usd: null` with
+ * `cost_records_priced < cost_records_total`. Re-measured 2026-10-02 (28
+ * ledgers, 1,887 ledger/session pairs): the same 4 sessions turn null, and 498
+ * pure-v1 pairs change only `cost_records_total` (0/0 → 0/N, cost null before
+ * and after). FORWARD-ONLY like the #949 cut.
  *
  * @module session-token-rollup
  */
@@ -238,10 +244,10 @@ function recordCostUsd(record) {
  * @property {number|null}  total_token_input_uncached - Sum of token_input_uncached over the same one record per agent.
  * @property {number|null}  total_token_cache_read     - Sum of token_cache_read over the same one record per agent.
  * @property {number|null}  total_token_cache_creation - Sum of token_cache_creation over the same one record per agent.
- * @property {number|null}  total_cost_usd     - Σ cost over the agents counted in cost_records_priced; null when cost_records_priced < cost_records_total (#1475 — any unpriced candidate: unknown model, no model, no tokens, or a started agent without a transcript), null when there is nothing to price (cost_records_total 0), and null when no record with a non-zero bucket was priced (all-zero records alone never yield a fabricated $0). Never 0 for unknown — see telemetry/pricing.mjs.
+ * @property {number|null}  total_cost_usd     - Σ cost over the agents counted in cost_records_priced; null when cost_records_priced < cost_records_total (#1475 — any unpriced candidate: unknown model, no model, no tokens, a started agent without a transcript, or a v1 agent, #1487 Pkt 1), null when there is nothing to price (cost_records_total 0), and null when no record with a non-zero bucket was priced (all-zero records alone never yield a fabricated $0). Never 0 for unknown — see telemetry/pricing.mjs.
  * @property {number}       cost_records_priced - How many agents of cost_records_total carry a known cost on their last found v2 record: priced by the table (per model part when the record carries models_usage, #1470), or all four token buckets 0 (priced at $0 whatever the model, #1474).
- * @property {number}       cost_records_total  - How many agents were candidates for pricing, each counted once however often it stopped: every agent with a v2 record whose own transcript was found — priced on its LAST such record, so one whose last read yielded no tokens (transcript oversized, without usage turns, or unreadable, #1474) is unpriced — plus every started agent whose v2 stops found no transcript of its own (`start_record_found: true`, `subagent_transcript_found: false`) and that has no token-bearing record in the session. Both latter kinds have an unknown cost. Phantom stops (no start record, #939) are never candidates. priced < total nulls total_cost_usd.
- * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every total above because their schema_version < 2 (their token_input is a different quantity).
+ * @property {number}       cost_records_total  - How many agents were candidates for pricing, each counted once however often it stopped: every agent with a v2 record whose own transcript was found — priced on its LAST such record, so one whose last read yielded no tokens (transcript oversized, without usage turns, or unreadable, #1474) is unpriced — plus every started agent whose stops found no transcript of its own (`start_record_found: true`, `subagent_transcript_found: false`), plus every agent with a schema_version 1 own-transcript record (#1487 Pkt 1) — each of these two only when the agent has no v2 own-transcript record in the session. All three latter kinds have an unknown cost. Phantom stops (no start record, #939) are never candidates. priced < total nulls total_cost_usd.
+ * @property {number}       legacy_v1_records  - Token-bearing records EXCLUDED from every token total above because their schema_version < 2 (their token_input is a different quantity). Their agents are unpriced cost candidates (cost_records_total, #1487 Pkt 1).
  * @property {2}            _token_schema      - The token contract these totals were computed under.
  */
 
@@ -341,13 +347,20 @@ export function rollupSessionTokens({
   const addNonNegative = (acc, value) =>
     typeof value === 'number' && value >= 0 ? (acc ?? 0) + value : acc;
 
-  // Agents with at least one record whose own transcript WAS read. A later stop
-  // of the same agent can find a transcript an earlier one missed (measured
-  // 2026-10-01: 4 agents in one fleet session, `workflow-subagent` found:false
-  // first, then found:true) — its cost is then known and must not null the total.
-  const agentsWithTranscript = new Set(
-    matched.filter(isTokenBearing).map((r) => r.agent_id).filter((id) => typeof id === 'string'),
-  );
+  // Real agents that may have no v2 record of their own transcript — each an
+  // unpriced candidate, counted once: a started agent whose stop found no
+  // transcript (#1475), and an agent seen in a v1 record (#1487 Pkt 1 — v1
+  // carries no priceable buckets). Resolved against `agents` only AFTER the
+  // pass: a later v2 stop of the same agent that found its transcript prices it
+  // (measured 2026-10-01: 4 agents in one fleet session, `workflow-subagent`
+  // found:false first, then found:true) and must not null a known cost. A record
+  // without an agent_id cannot be joined to another and stands alone.
+  const maybeUnpriced = new Set();
+  let unkeyedUnpriced = 0;
+  const addMaybeUnpriced = (record) => {
+    if (record.agent_id === undefined || record.agent_id === null) unkeyedUnpriced += 1;
+    else maybeUnpriced.add(record.agent_id);
+  };
 
   // One agent, one count (see module header § One record per agent). Per agent:
   // `last` is its last stop that found its transcript — the cost candidate —
@@ -358,9 +371,6 @@ export function rollupSessionTokens({
   // cannot be joined to another and stands alone.
   /** @type {Map<unknown, {last: object, lastWithTokens: object|null}>} */
   const agents = new Map();
-  /** Started agents whose stops found no transcript — each counts once. */
-  const startedWithoutTranscript = new Set();
-  let unkeyedStartedWithoutTranscript = 0;
 
   for (const record of matched) {
     // Provenance gate (#949) — a record whose tokens describe the PARENT
@@ -369,28 +379,22 @@ export function rollupSessionTokens({
     // sentinel: a session of only untrustworthy records reports "no data",
     // which is true, instead of a fabricated 0.
     if (!isTokenBearing(record)) {
-      // …but a v2 agent that really ran without a readable transcript has an
+      // …but an agent that really ran without a readable transcript has an
       // unknown cost: an unpriced candidate (total, not priced), so priced <
       // total nulls `total_cost_usd` (#1475). Phantoms never reach this branch.
-      if (
-        isV2(record) &&
-        isStartedWithoutTranscript(record) &&
-        !agentsWithTranscript.has(record.agent_id)
-      ) {
-        if (record.agent_id === undefined || record.agent_id === null) {
-          unkeyedStartedWithoutTranscript += 1;
-        } else {
-          startedWithoutTranscript.add(record.agent_id);
-        }
-      }
+      if (isStartedWithoutTranscript(record)) addMaybeUnpriced(record);
       continue;
     }
 
     // Schema gate (#1244) — a v1 record's token_input is raw uncached input,
     // a different quantity from a v2 record's billable prompt volume. Count it
-    // so the boundary is visible, never sum it.
+    // so the boundary is visible, never sum it. Its agent ran, though, and v1
+    // cannot be priced: it is an unpriced cost candidate (#1487 Pkt 1), so a
+    // session spanning the 2026-09-09 boundary reports a null cost instead of
+    // the v2 half's partial sum.
     if (!isV2(record)) {
       legacyV1 += 1;
+      addMaybeUnpriced(record);
       continue;
     }
 
@@ -452,7 +456,8 @@ export function rollupSessionTokens({
       if (!allZero) sumCost = (sumCost ?? 0) + cost;
     }
   }
-  costTotal += startedWithoutTranscript.size + unkeyedStartedWithoutTranscript;
+  for (const id of maybeUnpriced) if (!agents.has(id)) costTotal += 1;
+  costTotal += unkeyedUnpriced;
 
   return {
     match_status: 'matched',

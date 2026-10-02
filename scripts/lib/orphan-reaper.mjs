@@ -25,7 +25,11 @@
  * trigger hooks spawn. The implementation lives in `orphan-reaper/`:
  *
  *   defaults.mjs       `REAPER_DEFAULTS` + the repo-path join (node:path only)
- *   scan-throttle.mjs  B4 throttle marker — the trigger hooks import THIS
+ *   trigger.mjs        `maybeTriggerOrphanScan` — the ONE trigger both hooks
+ *                      import; deliberately NOT re-exported here, so this CLI's
+ *                      closure stays free of the config parser and platform.mjs
+ *   scan-throttle.mjs  B4 throttle marker — loaded lazily by trigger.mjs
+ *   no-follow-append.mjs  the O_NOFOLLOW|O_NONBLOCK append both ledgers share
  *   ps-snapshot.mjs    the binding `ps` format, its parser and runners
  *   reaper-decide.mjs  the PURE candidate decision and its identity checks
  *   reaper-audit.mjs   B5 audit record, writer, bounded reader, pruner, HR-101 rate

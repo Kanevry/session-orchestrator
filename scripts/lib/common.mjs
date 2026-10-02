@@ -54,6 +54,47 @@ export function expandTilde(p) {
   return p;
 }
 
+/**
+ * Replace the current user's home directory with `~` wherever it occurs in
+ * `text` — the inverse of {@link expandTilde}, for free text as well as a bare
+ * path: an `err.message` from `node:fs` (`ENOENT: …, open '/Users/bob/v/x.md'`),
+ * git stderr, a resolved vault dir. Every occurrence is replaced.
+ *
+ * Log lines of the vault writers and the session-end shell land in CI logs and
+ * session transcripts, where the home dir is an owner-privacy leak (#1490,
+ * `.claude/rules/security.md` § Owner-Privacy).
+ *
+ * Boundary-aware on both sides. On the right the home dir must end at a path
+ * separator, the end of the text, whitespace, a quote/bracket/list delimiter
+ * (`'"\`)]},;:`) or a sentence-final `.`, so `/Users/bob` never rewrites
+ * `/Users/bobby/x` or `/Users/bob.old`. On the left it must not continue a
+ * path segment, so `/data/Users/bob` stays. A home dir that is empty, the
+ * filesystem root or a bare drive root is a no-op — collapsing it would
+ * rewrite every absolute path. Non-strings pass through unchanged.
+ *
+ * @param {string} text
+ * @param {string} [home] — defaults to `os.homedir()`; an unresolvable home
+ *   leaves `text` unchanged (a log redactor must never turn an error path into
+ *   a crash)
+ * @returns {string}
+ */
+export function redactHomeDir(text, home) {
+  if (typeof text !== 'string' || text.length === 0) return text;
+  let h = home;
+  if (h === undefined) {
+    try {
+      h = os.homedir();
+    } catch {
+      return text;
+    }
+  }
+  h = String(h ?? '').replace(/[/\\]+$/, '');
+  if (h.length === 0 || /^[a-z]:$/i.test(h)) return text;
+  const escaped = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`(?<![\\w.~-])${escaped}(?=$|[/\\\\\\s'"\`)\\]},;:]|\\.(?:$|\\s))`, 'g');
+  return text.replace(re, '~');
+}
+
 // ---------------------------------------------------------------------------
 // Timestamp helpers
 // ---------------------------------------------------------------------------

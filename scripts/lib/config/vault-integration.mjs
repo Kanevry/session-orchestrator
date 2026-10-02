@@ -57,16 +57,31 @@ const MODE_ALLOWED = ['warn', 'strict', 'off'];
  * value portion (including any literal `**` inside it) is untouched.
  *
  * Defaults:
- *   enabled:    false
- *   vault-dir:  null
- *   mode:       "warn" (invalid values silently fall back to "warn")
- *   vault-name: null   (absent = downstream callers use deriveRepo() default)
+ *   enabled:       false
+ *   vault-dir:     null
+ *   mode:          "warn" (invalid values silently fall back to "warn")
+ *   vault-name:    null   (absent = downstream callers use deriveRepo() default)
+ *   gitlab-groups: null   (#1094 — non-empty string[] or null; see _groupsFromScalar)
+ *
+ * `gitlab-groups` accepts a comma string (`a, b`), a flow array (`[a, b]`) and,
+ * in block form only, a YAML block list (`gitlab-groups:` + indented `- a`
+ * lines — the shape docs/session-config-template.md documents). Inside the
+ * inline-object form more than one group needs the `[a, b]` array, because the
+ * literal is split on commas. YAML semantics throughout: `null` / `~` / empty
+ * mean unset (also as a list element), and each element loses one pair of
+ * matching quotes.
  *
  * @param {string} content — full file contents
- * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null}}
+ * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null}}
  */
 export function _parseVaultIntegration(content) {
-  const defaults = { enabled: false, 'vault-dir': null, mode: 'warn', 'vault-name': null };
+  const defaults = {
+    enabled: false,
+    'vault-dir': null,
+    mode: 'warn',
+    'vault-name': null,
+    'gitlab-groups': null,
+  };
   if (typeof content !== 'string' || content === '') return defaults;
 
   // #1162: NOT a raw split. `preprocessBlockLines` drops HTML-commented lines
@@ -106,21 +121,36 @@ export function _parseVaultIntegration(content) {
   let vaultDir = null;
   let mode = 'warn';
   let vaultName = null;
+  let gitlabGroups = null;
+  // Items of a YAML block list under a value-less `gitlab-groups:` line; null
+  // while no such list is open.
+  let groupItems = null;
 
   for (const rawLine of blockLines) {
     const clean = rawLine.replace(/\s*#.*$/, '').replace(/\s+$/, '');
     if (!clean.trim()) continue;
 
-    // Only first-level sub-keys (single indent). Skip deeper nested keys like
-    // `gitlab-groups:` list items (handled as a no-op — they aren't in this
-    // parser's return shape).
+    if (groupItems !== null) {
+      const item = clean.match(/^\s+-(?:\s+(.*))?$/);
+      if (item) {
+        const value = _groupName((item[1] ?? '').trim());
+        if (value !== null) groupItems.push(value);
+        continue;
+      }
+    }
+
+    // Sub-keys at any indent. A list-item line (`- x`) never matches, so list
+    // items under a key this parser does not own are skipped here.
     const kvMatch = clean.match(/^\s+([a-zA-Z_-]+):\s*(.*)$/);
     if (!kvMatch) continue;
 
+    if (groupItems !== null) {
+      if (groupItems.length > 0) gitlabGroups = groupItems;
+      groupItems = null;
+    }
+
     const k = kvMatch[1];
-    let v = kvMatch[2].trim();
-    if (v.startsWith('"') && v.endsWith('"') && v.length >= 2) v = v.slice(1, -1);
-    else if (v.startsWith("'") && v.endsWith("'") && v.length >= 2) v = v.slice(1, -1);
+    const v = _stripQuotes(kvMatch[2].trim());
 
     switch (k) {
       case 'enabled':
@@ -140,21 +170,107 @@ export function _parseVaultIntegration(content) {
         if (v === '' || v === 'none' || v === 'null') vaultName = null;
         else vaultName = v;
         break;
+      case 'gitlab-groups':
+        // A value replaces any earlier one; an empty value opens a block list,
+        // which replaces it only once it has collected an item.
+        if (v === '') groupItems = [];
+        else gitlabGroups = _groupsFromScalar(v);
+        break;
     }
   }
+  if (groupItems !== null && groupItems.length > 0) gitlabGroups = groupItems;
 
-  return { enabled, 'vault-dir': vaultDir, mode, 'vault-name': vaultName };
+  return {
+    enabled,
+    'vault-dir': vaultDir,
+    mode,
+    'vault-name': vaultName,
+    'gitlab-groups': gitlabGroups,
+  };
 }
+
+/**
+ * Strip ONE pair of matching surrounding quotes (`"x"` / `'x'`). A lone quote
+ * character is returned unchanged.
+ *
+ * @param {string} v — an already-trimmed value
+ * @returns {string}
+ */
+function _stripQuotes(v) {
+  if (v.length >= 2 && ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'")))) {
+    return v.slice(1, -1);
+  }
+  return v;
+}
+
+/**
+ * The YAML 1.2 core-schema null scalars, plus the empty value. `none` is NOT
+ * one: YAML reads it as a string, so it stays a literal group name.
+ */
+const YAML_NULL_RE = /^(?:|null|Null|NULL|~)$/;
+
+/**
+ * One `gitlab-groups` element as YAML reads it: an unquoted null scalar (or an
+ * empty element) is no group at all → `null`; otherwise ONE pair of matching
+ * quotes is stripped, so `"null"` stays the string `null` exactly as in YAML.
+ *
+ * @param {string} raw — an already-trimmed element
+ * @returns {string|null}
+ */
+function _groupName(raw) {
+  if (YAML_NULL_RE.test(raw)) return null;
+  const name = _stripQuotes(raw).trim();
+  return name === '' ? null : name;
+}
+
+/**
+ * Normalise a scalar `gitlab-groups` value to a group list with YAML semantics:
+ * a null scalar (`null`, `~`, empty) is unset → `null`; otherwise drop one
+ * leading `[` and one trailing `]`, split on commas, trim, and read each element
+ * through `_groupName` (null elements dropped, one quote pair stripped). An
+ * empty result is `null`, the documented default. Before this, `null` scanned a
+ * GitLab group named "null" and `["a"]` one named `"a"` with the quotes.
+ *
+ * @param {string} v
+ * @returns {string[]|null}
+ */
+function _groupsFromScalar(v) {
+  const trimmed = v.trim();
+  if (YAML_NULL_RE.test(trimmed)) return null;
+  const groups = trimmed
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .split(',')
+    .map((g) => _groupName(g.trim()))
+    .filter((g) => g !== null);
+  return groups.length > 0 ? groups : null;
+}
+
+/**
+ * `gitlab-groups: [ ... ]` inside an inline object literal (braces already
+ * removed). Taken out BEFORE the comma split, which would otherwise cut the
+ * array apart; every other pair is split exactly as before.
+ */
+const INLINE_GROUPS_ARRAY_RE = /(^|,)\s*gitlab-groups\s*:\s*(\[[^\]]*\])\s*(?=,|$)/;
 
 /**
  * Parse an inline YAML object literal `{ key: val, key: val }` into the
  * vault-integration return shape. Supports unquoted values including `~/` paths.
  *
  * @param {string} raw — full literal including braces
- * @returns {{enabled: boolean, "vault-dir": string|null, mode: string}}
+ * @returns {{enabled: boolean, "vault-dir": string|null, mode: string, "vault-name": string|null, "gitlab-groups": string[]|null}}
  */
 function _parseInlineObject(raw) {
-  const stripped = raw.replace(/^\s*\{/, '').replace(/\}\s*$/, '').trim();
+  let stripped = raw.replace(/^\s*\{/, '').replace(/\}\s*$/, '').trim();
+  let groupsArray = null;
+  const arrayMatch = stripped.match(INLINE_GROUPS_ARRAY_RE);
+  if (arrayMatch) {
+    groupsArray = arrayMatch[2];
+    stripped =
+      stripped.slice(0, arrayMatch.index) +
+      arrayMatch[1] +
+      stripped.slice(arrayMatch.index + arrayMatch[0].length);
+  }
   const kv = new Map();
   if (stripped !== '') {
     for (const pair of stripped.split(',')) {
@@ -180,7 +296,15 @@ function _parseInlineObject(raw) {
     vaultNameRaw === undefined || vaultNameRaw === '' || vaultNameRaw === 'none' || vaultNameRaw === 'null'
       ? null
       : vaultNameRaw;
-  return { enabled, 'vault-dir': vaultDir, mode, 'vault-name': vaultName };
+  const groupsRaw = groupsArray ?? kv.get('gitlab-groups');
+  const gitlabGroups = groupsRaw === undefined ? null : _groupsFromScalar(groupsRaw);
+  return {
+    enabled,
+    'vault-dir': vaultDir,
+    mode,
+    'vault-name': vaultName,
+    'gitlab-groups': gitlabGroups,
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -31,6 +31,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { isRoot } from '../_helpers/perms.mjs';
+import { installNodeCli } from '../_helpers/executable-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -83,14 +84,21 @@ function writeManifest(dir, manifest) {
 /**
  * Run the CLI script and return { status, stdout, stderr }.
  * env merges PROJECTS_BASELINE_DIR + HOME on top of a minimal PATH.
+ * cwd defaults to the per-test tmpdir, NEVER the repo root: the CLI reads
+ * vault-integration from CLAUDE.md in its cwd, and the repo's own `vault-dir`
+ * would point every --apply test's folder stubs at a real vault.
+ * SO_CONFIG_HOME defaults to an empty dir under the tmpdir for the same reason:
+ * the CLI resolves vault-dir host-locally, and HOME is the real one, so the
+ * host's owner.yaml `paths.vault-dir` would otherwise win over every fixture.
  */
 function run(args, { env = {}, cwd } = {}) {
   const result = spawnSync(NODE, [SCRIPT_PATH, ...args], {
     encoding: 'utf8',
-    cwd: cwd ?? REPO_ROOT,
+    cwd: cwd ?? tmpBase,
     env: {
       HOME: homedir(),
       PATH: '/usr/bin:/bin:/usr/local/bin',
+      SO_CONFIG_HOME: join(tmpBase, 'no-owner-config'),
       ...env,
     },
   });
@@ -101,14 +109,15 @@ function run(args, { env = {}, cwd } = {}) {
   };
 }
 
-/** Run the interactive CLI and answer prompts one at a time over stdin. */
+/** Run the interactive CLI and answer prompts one at a time over stdin (cwd: see run()). */
 function runInteractive(args, { env = {}, cwd } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(NODE, [SCRIPT_PATH, ...args], {
-      cwd: cwd ?? REPO_ROOT,
+      cwd: cwd ?? tmpBase,
       env: {
         HOME: homedir(),
         PATH: '/usr/bin:/bin:/usr/local/bin',
+        SO_CONFIG_HOME: join(tmpBase, 'no-owner-config'),
         ...env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -138,6 +147,26 @@ function runInteractive(args, { env = {}, cwd } = {}) {
     child.on('error', reject);
     child.stdin.on('error', reject);
     child.on('close', (status) => resolve({ status, stdout, stderr }));
+  });
+}
+
+/**
+ * Put a fake `glab` into `binDir` without writing a fresh executable
+ * (tests/_helpers/executable-fixture.mjs). `glab --version` is answered by node
+ * itself (exit 0 — all `assertGlabExists` reads); `glab api <path>` answers from
+ * `routes[path]` = { stdout?, stderr?, code }; any other `api` path exits 2 with
+ * "unexpected glab arguments". vault-backfill spawns glab without a `cwd`, so
+ * the `api` script lives in the CLI's own cwd, `tmpBase` (see run()).
+ */
+function installFakeGlab(binDir, routes) {
+  installNodeCli(binDir, 'glab', tmpBase, {
+    api: `const routes = ${JSON.stringify(routes)};
+const r = Object.hasOwn(routes, ARGS[1]) ? routes[ARGS[1]] : null;
+if (!r) { process.stderr.write('unexpected glab arguments: ' + ARGS[0] + ' ' + ARGS[1] + '\\n'); process.exit(2); }
+if (r.stdout) process.stdout.write(r.stdout + '\\n');
+if (r.stderr) process.stderr.write(r.stderr + '\\n');
+process.exit(r.code);
+`,
   });
 }
 
@@ -266,6 +295,109 @@ describe('flag validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Session Config reading (#1094) — through the canonical parser
+// ---------------------------------------------------------------------------
+
+describe('Session Config reading (#1094)', () => {
+  it('reads gitlab-groups from a bold-bullet inline vault-integration and lets SO_VAULT_DIR override its vault-dir', () => {
+    // The pre-#1094 hand-parser knew only the plain block header, so this form
+    // (19 of 56 instruction files measured on one host) yielded no groups → exit 1.
+    // SO_VAULT_DIR differs from the committed vault-dir: 9d50a9cf read only the
+    // committed value, so its stubs ignored the host-local tier.
+    setupTemplateDir(tmpBase);
+    const committedVaultDir = join(tmpBase, 'committed-vault');
+    const vaultDir = join(tmpBase, 'sovault');
+    writeFileSync(
+      join(tmpBase, 'CLAUDE.md'),
+      `## Session Config\n\n- **vault-integration:** { enabled: true, vault-dir: ${committedVaultDir}, gitlab-groups: [engineering/platform] }\n`,
+      'utf8',
+    );
+    const binDir = join(tmpBase, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z"}]]', code: 0 },
+      'projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw':
+        { stderr: '404 File Not Found', code: 1 },
+    });
+
+    const { status, stdout, stderr } = run([], {
+      cwd: tmpBase,
+      env: {
+        PROJECTS_BASELINE_DIR: tmpBase,
+        HOME: homedir(),
+        PATH: `${binDir}:/usr/bin:/bin`,
+        SO_VAULT_DIR: vaultDir,
+      },
+    });
+
+    expect(status).toBe(0);
+    expect(parseActions(stdout).map(({ action, path, group }) => ({ action, path, group }))).toEqual([
+      { action: 'vault-yaml-rendered', path: 'engineering/platform/edge-proxy', group: 'engineering/platform' },
+    ]);
+    expect(stderr).toContain(
+      `[dry-run] would create vault folder stub: ${join(vaultDir, '01-projects', 'edge-proxy')}`,
+    );
+    expect(stderr).not.toContain(committedVaultDir);
+    expect(existsSync(vaultDir)).toBe(false);
+    expect(existsSync(committedVaultDir)).toBe(false);
+  });
+
+  it('--apply puts the stub into the owner.yaml paths.vault-dir, not the committed vault-dir', () => {
+    setupTemplateDir(tmpBase);
+    const committedVaultDir = join(tmpBase, 'committed-vault');
+    const ownerVaultDir = join(tmpBase, 'owner-vault');
+    const configHome = join(tmpBase, 'config-home');
+    mkdirSync(configHome);
+    writeFileSync(join(configHome, 'owner.yaml'), `paths:\n  vault-dir: ${ownerVaultDir}\n`, 'utf8');
+    writeFileSync(
+      join(tmpBase, 'CLAUDE.md'),
+      `## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ${committedVaultDir}\n`,
+      'utf8',
+    );
+    const manifestPath = writeManifest(tmpBase, {
+      version: 1,
+      repos: [{ id: 42, path: 'mygroup/my-test', slug: 'my-test', tier: 'active', visibility: 'internal' }],
+    });
+
+    const { status, stderr } = run(['--yes', manifestPath, '--apply', '--out-dir', outDir], {
+      env: { PROJECTS_BASELINE_DIR: tmpBase, SO_CONFIG_HOME: configHome },
+    });
+
+    expect(status).toBe(0);
+    expect(stderr).toContain(`created vault folder stub: ${join(ownerVaultDir, '01-projects', 'my-test')}`);
+    expect(existsSync(join(ownerVaultDir, '01-projects', 'my-test'))).toBe(true);
+    expect(existsSync(committedVaultDir)).toBe(false);
+  });
+
+  it('expands a ~-prefixed vault-dir to HOME instead of creating a literal ./~ tree in the cwd', () => {
+    // Pre-fix, resolve('~/…') made the stub `<cwd>/~/…/01-projects/<slug>` — a
+    // directory hidden from git by the `*~` ignore rule.
+    setupTemplateDir(tmpBase);
+    const home = join(tmpBase, 'home');
+    mkdirSync(home);
+    writeFileSync(
+      join(tmpBase, 'CLAUDE.md'),
+      '## Session Config\n\nvault-integration:\n  enabled: true\n  vault-dir: ~/test-vault\n',
+      'utf8',
+    );
+    const manifestPath = writeManifest(tmpBase, {
+      version: 1,
+      repos: [{ id: 42, path: 'mygroup/my-test', slug: 'my-test', tier: 'active', visibility: 'internal' }],
+    });
+
+    const { status } = run(['--yes', manifestPath, '--apply', '--out-dir', outDir], {
+      cwd: tmpBase,
+      env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: home, PATH: '/usr/bin:/bin' },
+    });
+
+    expect(status).toBe(0);
+    expect(existsSync(join(tmpBase, '~'))).toBe(false);
+    expect(existsSync(join(home, 'test-vault', '01-projects', 'my-test'))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Scenario 7: --yes headless apply — writes file with correct content
 // ---------------------------------------------------------------------------
 
@@ -365,24 +497,12 @@ describe('interactive group apply mode', () => {
     setupTemplateDir(tmpBase);
     const binDir = join(tmpBase, 'bin');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z","namespace":{"full_path":"engineering/platform"},"web_url":"https://gitlab.example.test/engineering/platform/edge-proxy","private_token":"must-not-escape-the-normalized-representation"}]]'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw" ]; then
-  printf '404 File Not Found\\n' >&2
-  exit 1
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":314,"path_with_namespace":"engineering/platform/edge-proxy","visibility":"internal","created_at":"2026-07-01T12:00:00Z","namespace":{"full_path":"engineering/platform"},"web_url":"https://gitlab.example.test/engineering/platform/edge-proxy","private_token":"must-not-escape-the-normalized-representation"}]]', code: 0 },
+      'projects/engineering%2Fplatform%2Fedge-proxy/repository/files/.vault.yaml/raw':
+        { stderr: '404 File Not Found', code: 1 },
+    });
 
     const { status, stdout } = await runInteractive(
       ['--groups', 'engineering/platform', '--apply', '--out-dir', outDir],
@@ -416,24 +536,12 @@ exit 2
     const stagingDir = join(tmpBase, 'staging', 'nested');
     const escapedFile = join(tmpBase, 'outside-response-sentinel', '.vault.yaml');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":1065,"path_with_namespace":"../../outside-response-sentinel","visibility":"private","created_at":"2026-08-21T00:00:00Z"}]]'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "projects/..%2F..%2Foutside-response-sentinel/repository/files/.vault.yaml/raw" ]; then
-  printf '404 File Not Found\\n' >&2
-  exit 1
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":1065,"path_with_namespace":"../../outside-response-sentinel","visibility":"private","created_at":"2026-08-21T00:00:00Z"}]]', code: 0 },
+      'projects/..%2F..%2Foutside-response-sentinel/repository/files/.vault.yaml/raw':
+        { stderr: '404 File Not Found', code: 1 },
+    });
 
     const { status, stdout, stderr } = await runInteractive(
       ['--groups', 'engineering/platform', '--apply', '--out-dir', stagingDir],
@@ -459,20 +567,10 @@ exit 2
     setupTemplateDir(tmpBase);
     const binDir = join(tmpBase, 'bin');
     mkdirSync(binDir, { recursive: true });
-    const glabPath = join(binDir, 'glab');
-    writeFileSync(glabPath, `#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'glab version 1.0.0\\n'
-  exit 0
-fi
-if [ "$1" = "api" ] && [ "$2" = "groups/engineering%2Fplatform/projects?simple=true&per_page=100" ]; then
-  printf '%s\\n' '[[{"id":315,"path_with_namespace":"engineering/platform/bad-timestamp","visibility":"internal","created_at":42,"private_token":"must-not-escape-the-api-diagnostic"}]]'
-  exit 0
-fi
-printf 'unexpected glab arguments: %s %s\\n' "$1" "$2" >&2
-exit 2
-`, 'utf8');
-    chmodSync(glabPath, 0o755);
+    installFakeGlab(binDir, {
+      'groups/engineering%2Fplatform/projects?simple=true&per_page=100':
+        { stdout: '[[{"id":315,"path_with_namespace":"engineering/platform/bad-timestamp","visibility":"internal","created_at":42,"private_token":"must-not-escape-the-api-diagnostic"}]]', code: 0 },
+    });
 
     const { status, stdout, stderr } = run(
       ['--groups', 'engineering/platform'],

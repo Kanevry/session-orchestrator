@@ -22,6 +22,20 @@ const VALIDATOR = resolve(REPO_ROOT, 'scripts/validate-wave-scope.mjs');
 const DISJOINT_HOOK = resolve(REPO_ROOT, 'hooks/pre-task-scope-disjoint.mjs');
 const tempRoots = [];
 
+/**
+ * The ambient env minus what a live session leaks into it (the shape of
+ * `hookEnv()` in `tests/hooks/pre-task-scope-disjoint.test.mjs`). `projectRoot`
+ * is no git repo, so an inherited CLAUDE_PROJECT_DIR becomes the hook's state
+ * root: the dispatch would replace the real project's ledger and append to its
+ * events (`.husky/pre-push` unsets it for its own gate for that reason).
+ */
+function hookEnv() {
+  const env = { ...process.env };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  delete env.CLAUDE_PROJECT_DIR;
+  return env;
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
@@ -106,6 +120,7 @@ describe('wave scope producer handoff (#1083)', () => {
         }),
         encoding: 'utf8',
         cwd: REPO_ROOT,
+        env: hookEnv(),
       },
     );
     expectAllow(firstDispatch);
@@ -128,6 +143,7 @@ describe('wave scope producer handoff (#1083)', () => {
         }),
         encoding: 'utf8',
         cwd: REPO_ROOT,
+        env: hookEnv(),
       },
     );
     expectDeny(secondDispatch, ['W42-I1', 'W42-I2', 'scripts/shared-scope.mjs']);

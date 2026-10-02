@@ -95,10 +95,14 @@
  *
  *                     NOT flagged: blocks that control the clock (`now:`, `{ now }`
  *                     or a positional `now` — wider than the seam proof, #1478 —
- *                     `vi.useFakeTimers` / `vi.setSystemTime`). A handover whose
- *                     value IS the real clock is no control (#1487): inline
- *                     (`{ now: Date.now() }`) or through a binding in the same
- *                     block (`const now = new Date(); fn(now)`). Date literals in
+ *                     `vi.useFakeTimers` / `vi.setSystemTime`, also when called
+ *                     in the setup at module level or in a `describe` that
+ *                     encloses the block). A handover whose value IS the real
+ *                     clock is no control (#1487): inline (`{ now: Date.now() }`)
+ *                     or through a binding in the same block
+ *                     (`const now = new Date(); fn(now)`) or in the shared setup
+ *                     — module level, `describe` body, `beforeEach` (#1489
+ *                     item 16). Date literals in
  *                     INPUT position (only `.toBe`/`.toEqual`/`.toStrictEqual`
  *                     expected values are read), which leaves the passthrough
  *                     class (input date === output date) untouched.
@@ -399,8 +403,13 @@ const REAL_CLOCK_READ = /\bDate\.now\(\)|\bnew Date\(\s*\)|\bperformance\.now\(\
  */
 const CLOCK_BINDING = new RegExp(String.raw`${CLOCK_NAME}=(?![=>])(.*)`);
 
-/** Freezing the global clock — equally valid control, but not a seam PROOF. */
-const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime|advanceTimersByTime|runAllTimers)\b/;
+/**
+ * Freezing the global clock — equally valid control, but not a seam PROOF. Only
+ * the INSTALLERS count: `advanceTimersByTime` / `runAllTimers` move a clock some
+ * installer already faked and freeze nothing on their own, so a block that only
+ * advances timers is controlled exactly when an installer reaches it.
+ */
+const FAKE_TIMER = /\b(?:useFakeTimers|setSystemTime)\b/;
 
 /**
  * Vitest aliases that resolve to the repo's own modules — source of truth is
@@ -635,16 +644,46 @@ function declaredHookSubjects(lines) {
  * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
  */
 function testBlocks(lines) {
-  const OPENER = /^(\s*)(?:it|test)(?:\.\w+)*\s*\(/;
-  const SIBLING = /^\s*(?:it|test|describe)(?:\.\w+)*\s*\(/;
+  return callRanges(lines, /^(\s*)(?:it|test)(?:\.\w+)*\s*\(/, /^\s*(?:it|test|describe)(?:\.\w+)*\s*\(/);
+}
+
+/**
+ * Split a file into `describe(` blocks, segmented like {@link testBlocks} but
+ * with no sibling fallback: a `describe` without its own same-indentation `});`
+ * runs to the end of the file. For its one consumer (B5's setup fake-timer
+ * scope) over-inclusion is NOT safe: a wider `describe` exempts more blocks, so
+ * a fake timer in it hides a sibling describe's time bomb — the false negative
+ * this scoping exists to remove. Ceiling (BV-004): two shapes still widen —
+ * a `describe` closed with options (`}, 10_000);`) runs to end of file, and a
+ * tagged-template `describe.each\`…\`` never matches the opener, so its timer
+ * reads as module level. Measured 2026-10-02 over 722 test files: 0 of the 13
+ * fake-timer files use either shape. Revisit when one appears in a fake-timer
+ * file, or when a B5 miss traces to one.
+ * @param {string[]} lines
+ * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
+ */
+function describeBlocks(lines) {
+  return callRanges(lines, /^(\s*)describe(?:\.\w+)*\s*\(/, null);
+}
+
+/**
+ * Shared segmenter: every line matching `opener` (group 1 = its indentation)
+ * opens a range that ends after the first later line closing at the SAME
+ * indentation (`});`), or before the first `sibling` line, or at end of file.
+ * @param {string[]} lines
+ * @param {RegExp} opener
+ * @param {RegExp|null} sibling
+ * @returns {Array<{start: number, end: number}>} half-open [start, end) indices
+ */
+function callRanges(lines, opener, sibling) {
   const out = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = OPENER.exec(lines[i]);
+    const m = opener.exec(lines[i]);
     if (!m) continue;
     const closer = new RegExp(`^${m[1]}\\}\\)`);
     let end = lines.length;
     for (let j = i + 1; j < lines.length; j++) {
-      if (SIBLING.test(lines[j])) {
+      if (sibling?.test(lines[j])) {
         end = j;
         break;
       }
@@ -684,25 +723,51 @@ function importedLocalIdentifiers(content) {
 }
 
 /**
- * The clock-named variables a block binds to the REAL clock
- * (`const now = Date.now()`, `let nowMs = new Date().getTime()`). Handing one of
- * them over is reading the wall clock with an extra step, not controlling it.
+ * The clock-named bindings in these lines (`const now = Date.now()`,
+ * `now = new Date('2026-01-01')`): per name, whether ANY binding reads the REAL
+ * clock and whether ANY binding does not. Handing a real-clock binding over is
+ * reading the wall clock with an extra step, not controlling it.
  *
- * CEILING (#1487): only bindings inside the block itself are read — a
- * module-level or `beforeEach` `now = Date.now()` still counts as control, and
- * so does a real-clock value laundered through a non-clock name
- * (`const t = Date.now(); fn({ now: t })`). REVISIT when a clock-shift run of
- * the suite finds a bomb fed by either route.
- * @param {string[]} live the block's non-comment lines
- * @returns {Set<string>}
+ * CEILING (#1487): a real-clock value laundered through a non-clock name
+ * (`const t = Date.now(); fn({ now: t })`) still counts as control. REVISIT
+ * when a clock-shift run of the suite finds a bomb fed by that route.
+ * @param {string[]} live non-comment lines
+ * @returns {Map<string, {real: boolean, other: boolean}>}
  */
-function realClockBindings(live) {
-  /** @type {Set<string>} */
-  const names = new Set();
+function clockBindings(live) {
+  /** @type {Map<string, {real: boolean, other: boolean}>} */
+  const out = new Map();
   for (const line of live) {
     const m = CLOCK_BINDING.exec(line);
-    if (m && REAL_CLOCK_READ.test(m[2])) names.add(m[1]);
+    if (!m) continue;
+    const seen = out.get(m[1]) ?? { real: false, other: false };
+    if (REAL_CLOCK_READ.test(m[2])) seen.real = true;
+    else seen.other = true;
+    out.set(m[1], seen);
   }
+  return out;
+}
+
+/**
+ * The clock-named names a block hands over as the REAL clock: its own real-clock
+ * bindings, plus the shared setup's (module level, `describe` body,
+ * `beforeEach`) for every name the block does not rebind itself (#1489 item 16:
+ * read block-wise only, `const now = Date.now()` at module level counted as
+ * control and kept a genuine bomb silent).
+ *
+ * A setup name counts only when EVERY setup binding of it reads the real clock.
+ * Setup is file-wide, not per-`describe`, so a name bound to the real clock in
+ * one `beforeEach` and to a fixed date in another is ambiguous for any given
+ * block — read as control, the scan's precision-first direction.
+ * @param {Map<string, {real: boolean, other: boolean}>} own the block's bindings
+ * @param {Map<string, {real: boolean, other: boolean}>} setup the shared setup's bindings
+ * @returns {Set<string>}
+ */
+function realClockNames(own, setup) {
+  /** @type {Set<string>} */
+  const names = new Set();
+  for (const [name, b] of own) if (b.real) names.add(name);
+  for (const [name, b] of setup) if (b.real && !b.other && !own.has(name)) names.add(name);
   return names;
 }
 
@@ -729,11 +794,11 @@ function valueExpressionAt(line, from) {
 /**
  * True when this line hands over a clock that is NOT the real one: a clock-named
  * handover (CONTROL_CLOCK_ARG) whose value neither reads the wall clock inline
- * (`{ now: Date.now() }`) nor names a real-clock binding of the same block
- * (`const now = Date.now(); fn(now)`). #1487: before this, both shapes counted
- * as control and kept a genuine time bomb silent.
+ * (`{ now: Date.now() }`) nor names a real-clock binding in the block's scope
+ * (`const now = Date.now(); fn(now)`, see `realClockNames`). #1487: before this,
+ * both shapes counted as control and kept a genuine time bomb silent.
  * @param {string} line
- * @param {Set<string>} realClock names bound to the real clock in this block
+ * @param {Set<string>} realClock names bound to the real clock in this block's scope
  */
 function handsOverControlledClock(line, realClock) {
   for (const m of line.matchAll(CONTROL_CLOCK_ARG)) {
@@ -778,16 +843,56 @@ function scanClockBombs(relPath, content, lines) {
   const sutIds = importedLocalIdentifiers(content);
   if (sutIds.length === 0) return findings;
 
-  const blocks = testBlocks(lines).map(({ start, end }) => {
+  const ranges = testBlocks(lines);
+
+  // The setup every block shares (helpers, constants, `describe` bodies,
+  // beforeEach): where an echo may come from, and where a clock may be bound or
+  // frozen for the blocks below it. Never a sibling test — its assertions,
+  // titles and clock literals say nothing about this block's inputs.
+  // CEILING (BV-004): a block without its own same-indentation `});` (a
+  // `}, 10_000);` close, an expression-bodied arrow) runs on to the next sibling
+  // and takes the setup lines in between out of sharedSetup. Both directions
+  // follow: a swallowed `now = Date.now()` hides a finding, a swallowed fake
+  // timer adds one. Measured 2026-10-02 @ 46e6695b over 722 test files: 221 of
+  // 15,644 blocks lack the closer, 1 of them swallows a beforeAll/beforeEach,
+  // none a fake-timer install; 0 blocks are one-line its. REVISIT when a
+  // swallowed setup line binds or freezes a clock — then end such blocks on
+  // their own close instead of the sibling (testBlocks() also feeds B2/B3).
+  /** @type {Set<number>} */
+  const inBlock = new Set();
+  for (const { start, end } of ranges) for (let q = start; q < end; q++) inBlock.add(q);
+  const sharedSetup = lines.filter((_, q) => !inBlock.has(q));
+  const setupLive = sharedSetup.filter((l) => !isCommentLine(l));
+  const setupBindings = clockBindings(setupLive);
+  // A clock frozen in setup (`beforeEach(() => vi.setSystemTime(…))`) controls
+  // every block it reaches, including a `now = Date.now()` bound after it — and
+  // it reaches only the blocks vitest runs it for: all of them from module level,
+  // only its own `describe`'s from inside one. A fake timer in a SIBLING
+  // `describe` exempted every block in the file until 2026-10-02 and kept a
+  // genuine bomb silent (review of 3206ab24). `null` = module level.
+  const describes = describeBlocks(lines);
+  /** @type {Array<{start: number, end: number}|null>} */
+  const setupTimerScopes = [];
+  lines.forEach((l, q) => {
+    if (inBlock.has(q) || isCommentLine(l) || !FAKE_TIMER.test(l)) return;
+    // Innermost enclosing describe: ranges nest, so the latest start that still holds q.
+    const holders = describes.filter((d) => d.start <= q && q < d.end);
+    setupTimerScopes.push(holders.length > 0 ? holders[holders.length - 1] : null);
+  });
+  /** @param {number} start */
+  const setupFreezes = (start) =>
+    setupTimerScopes.some((d) => d === null || (d.start < start && start < d.end));
+
+  const blocks = ranges.map(({ start, end }) => {
     const body = lines.slice(start, end);
     const live = body.filter((l) => !isCommentLine(l));
-    const realClock = realClockBindings(live);
+    const realClock = realClockNames(clockBindings(live), setupBindings);
     return {
       start,
       body,
       provesSeam: live.some((l) => SEAM_CLOCK_ARG.test(l)),
       hasClockArg: live.some((l) => handsOverControlledClock(l, realClock)),
-      hasFakeTimer: live.some((l) => FAKE_TIMER.test(l)),
+      hasFakeTimer: setupFreezes(start) || live.some((l) => FAKE_TIMER.test(l)),
     };
   });
 
@@ -798,17 +903,6 @@ function scanClockBombs(relPath, content, lines) {
     for (const id of sutIds) if (callsIdentifier(b.body, id)) seamed.add(id);
   }
   if (seamed.size === 0) return findings;
-
-  // Where an echo may come from: the finding's own block, or the setup every
-  // block shares (helpers, constants, beforeEach). Never a sibling test — its
-  // assertions, titles and clock literals say nothing about this block's inputs.
-  // A block without its own `});` (a one-line it) runs on to the next sibling
-  // and takes the setup lines in between out of sharedSetup — that direction can
-  // only add a finding, never hide one (1.4% of blocks, measured 2026-09-30).
-  /** @type {Set<number>} */
-  const inBlock = new Set();
-  for (const b of blocks) for (let q = b.start; q < b.start + b.body.length; q++) inBlock.add(q);
-  const sharedSetup = lines.filter((_, q) => !inBlock.has(q));
 
   for (const b of blocks) {
     if (b.hasClockArg || b.hasFakeTimer) continue;
