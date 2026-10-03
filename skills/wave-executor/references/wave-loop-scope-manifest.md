@@ -100,7 +100,7 @@ Before each wave dispatch:
      --assert-disjoint "$WAVE_SCOPES_SIDECAR" < <state-dir>/wave-scope.json
    ```
 
-   Exit 1 (one stderr message per collision) means two agents were handed the same file: fix the session plan, re-materialize, re-assert. Never widen the union to make it pass. This runs **before** 3.3 because a union computed over colliding scopes launders the defect into the very artefact meant to prevent it — `allowedPaths` then grants the file and every later gate sees a legal write.
+   Exit 1 (one stderr message per collision) means two agents were handed the same file: fix the session plan, re-materialize, re-assert. Where no manifest exists yet (`/plan` checking a draft), pass `--no-manifest` instead of piping a fabricated one — it checks the sidecar alone, and is rejected together with `--union` / `--assert-subset` (#1510 f). Never widen the union to make it pass. This runs **before** 3.3 because a union computed over colliding scopes launders the defect into the very artefact meant to prevent it — `allowedPaths` then grants the file and every later gate sees a legal write.
 
    **3.3 — compute the union.** `--union` is a QUERY MODE that still requires a schema-valid manifest on stdin, so write the skeleton first with `"allowedPaths": []`, then:
 

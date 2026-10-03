@@ -267,6 +267,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 /** @type {typeof import('../scripts/lib/scope-echo.mjs').scopeDigest} */ let scopeDigest;
 /** @type {typeof import('../scripts/lib/platform.mjs').resolveSessionRoot} */ let resolveSessionRoot;
 let findScopeCollisions;
+/** @type {typeof import('../scripts/lib/scope-gate.mjs').scopeEntrySpelling} */ let scopeEntrySpelling;
 let findOwnScopeFile;
 let readProcessLocalSessionIds;
 let classifyManifestSession;
@@ -581,7 +582,7 @@ async function bootstrap() {
   );
 
   ({ readStdin, emitAllow, emitDeny, emitWarn, writeJsonAtomicSync } = modules.io);
-  ({ findScopeCollisions, findOwnScopeFile } = modules.scopeGate);
+  ({ findScopeCollisions, findOwnScopeFile, scopeEntrySpelling } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
   ({ withFileLock } = modules.fileLock);
   ({ scopeDigest } = modules.scopeEcho);
@@ -740,36 +741,6 @@ function cleanScopeLine(line) {
 }
 
 /**
- * Canonicalise a scope entry's SPELLING so two agents writing the same file two
- * ways are not read as disjoint (review LOW). Measured before this existed:
- * `['./scripts/lib/foo.mjs']` vs `['scripts/lib/foo.mjs']` compared `ok: true`
- * — the hook extracts from PROSE, and `looksLikeRepoPath` admits a `./` prefix,
- * so both spellings reach the comparison verbatim.
- *
- * Purely syntactic and meaning-preserving: `./` prefixes, `/./` segments and
- * duplicated slashes are removed. A TRAILING slash is deliberately kept — it is
- * the directory-prefix operator of `pathMatchesPattern`, so stripping it would
- * silently narrow a scope. The `dir` ↔ `dir/` case is handled by
- * {@link promoteDirEntries}, which decides it on evidence rather than guessing.
- *
- * `scope-gate.mjs` is a hook-safe pure library and out of this change's scope,
- * so the normalisation lives on THIS side of the call, applied to both sides of
- * every comparison.
- *
- * @param {string} entry
- * @returns {string}
- */
-export function normalizeScopeEntry(entry) {
-  if (typeof entry !== 'string') return '';
-  let s = entry.trim();
-  if (s === '') return '';
-  s = s.replace(/\/{2,}/g, '/');       // `a//b` → `a/b`
-  s = s.replace(/(?:^|\/)\.\//g, (m) => (m.startsWith('/') ? '/' : '')); // `./a`, `a/./b`
-  while (s.startsWith('./')) s = s.slice(2);
-  return s;
-}
-
-/**
  * Promote an entry that names a DIRECTORY to its `dir/` prefix form, on
  * evidence. `scripts/lib` and `scripts/lib/` are the same claim, but
  * `pathMatchesPattern` reads only the second as a prefix — measured `ok: true`
@@ -815,7 +786,11 @@ function collectScopePaths(segments) {
   for (const raw of segments) {
     // A trailing sentence period is punctuation, never part of a path
     // (measured: "docs/events-schema.md." at the end of an inline declaration).
-    const cleaned = normalizeScopeEntry(cleanScopeLine(raw).replace(/\.$/, ''));
+    // Lexical cleaning only (prose → path); the SPELLING rule is
+    // `scopeEntrySpelling` in scope-gate.mjs, applied in `decide()` (#1510 g).
+    // The second trim: a period stripped after `cleanScopeLine`'s trim can
+    // expose a space (`foo.mjs .`), which `looksLikeRepoPath` would reject.
+    const cleaned = cleanScopeLine(raw).replace(/\.$/, '').trim();
     if (!looksLikeRepoPath(cleaned)) continue;
     if (seen.has(cleaned)) continue;
     seen.add(cleaned);
@@ -906,7 +881,8 @@ export function extractScopeSignal(prompt) {
  * (and the tests that pin them) keep the original signature.
  *
  * @param {string} prompt
- * @returns {string[]} repo-relative paths/globs, normalised, deduped, order preserved
+ * @returns {string[]} repo-relative paths/globs as declared (lexically cleaned,
+ *   deduped, order preserved) — the SPELLING rule runs in `decide()` (#1510 g)
  */
 export function extractScopeFromPrompt(prompt) {
   return extractScopeSignal(prompt).files;
@@ -2070,9 +2046,11 @@ export function scopeDigestFields(files, prompt, digestFn) {
  * @param {string} [params.nowIso]            dispatch timestamp recorded on the entry
  * @param {(paths: string[]) => string} [params.digestFn] scope-digest function
  *   (injected for testability; defaults to the late-bound `scopeDigest`)
+ * @param {(entry: string) => string} [params.spellFn] scope-entry spelling rule
+ *   (injected for testability; defaults to the late-bound `scopeEntrySpelling`)
  * @returns {Verdict}
  */
-export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, collide, isFinished, nowIso, digestFn }) {
+export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, collide, isFinished, nowIso, digestFn, spellFn }) {
   const toolName = input?.tool_name;
   // Row 4: not our tool.
   if (toolName !== DISPATCH_TOOL) return { action: 'allow' };
@@ -2083,7 +2061,14 @@ export function decide({ input, ledger, ledgerCorrupt, waveKey, knownFiles, coll
   const at = typeof nowIso === 'string' ? nowIso : new Date().toISOString();
 
   const signal = extractScopeSignal(toolInput.prompt);
-  const files = signal.files;
+  // #1510 g — ONE spelling rule, scope-gate's, applied before the ledger, the
+  // digest and `promoteDirEntries` see an entry: `./scripts/lib` must reach the
+  // dir-promotion as `scripts/lib`, or a bare-dir claim stays a literal and
+  // compares disjoint with the files beneath it. Re-deduped on the spelling.
+  // Unbound (a direct importer that never ran `bootstrap()`) ⇒ entries as
+  // extracted; `findScopeCollisions` still spells both sides itself.
+  const spell = typeof spellFn === 'function' ? spellFn : scopeEntrySpelling;
+  const files = typeof spell === 'function' ? [...new Set(signal.files.map(spell))] : signal.files;
   const id = agentIdOf(toolInput);
   const priorAgents = (ledger !== null && ledger?.waveKey === waveKey && Array.isArray(ledger.agents))
     ? ledger.agents

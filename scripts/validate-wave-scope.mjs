@@ -10,6 +10,7 @@
  *   cat wave-scope.json | node scripts/validate-wave-scope.mjs
  *   node scripts/validate-wave-scope.mjs --assert-subset <agent-filescope.json> < wave-scope.json
  *   node scripts/validate-wave-scope.mjs --assert-disjoint <agent-scopes.json> < wave-scope.json
+ *   node scripts/validate-wave-scope.mjs --assert-disjoint <agent-scopes.json> --no-manifest
  *   node scripts/validate-wave-scope.mjs --union <agent-scopes.json> < wave-scope.json
  *
  * Flags:
@@ -38,6 +39,17 @@
  *                           Runs even when the manifest fails schema validation
  *                           (#1026.4): it reads only the sidecar, so schema
  *                           errors and collisions are reported together (exit 1).
+ *   --no-manifest           #1510 f. With --assert-disjoint ONLY: check the
+ *                           sidecar alone and read NO manifest (no stdin, no
+ *                           positional file) — `/plan` checks disjointness
+ *                           before any wave-scope.json exists and had to pipe
+ *                           a fabricated dummy. Stdout stays EMPTY (there is no
+ *                           manifest to echo); exit 0 = disjoint, 1 = collision.
+ *                           An explicit flag, never inferred from empty stdin:
+ *                           WITHOUT it, empty/missing stdin stays an error
+ *                           (fail-closed, #1083 class). Rejected (exit 1) with
+ *                           --union / --assert-subset / --expand-test-siblings
+ *                           or a positional path — those need a manifest.
  *   --union <path>          #1020. QUERY MODE. Read the same sidecar, compute
  *                           `expandTestSiblings(unionFileScopes(scopes), {role})`
  *                           using the MANIFEST'S OWN `role`, and print the
@@ -161,7 +173,8 @@ function flagValue(argv, i, flag) {
  *
  * @param {string[]} argv - full process.argv
  * @returns {{ assertSubset: string|null, expandTestSiblings: boolean,
- *             assertDisjoint: string|null, union: string|null, positionals: string[] }}
+ *             assertDisjoint: string|null, union: string|null, noManifest: boolean,
+ *             positionals: string[] }}
  */
 function parseArgs(argv) {
   const positionals = [];
@@ -169,6 +182,7 @@ function parseArgs(argv) {
   let expandTestSiblings = false;
   let assertDisjoint = null;
   let union = null;
+  let noManifest = false;
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--expand-test-siblings') {
@@ -185,11 +199,27 @@ function parseArgs(argv) {
     } else if (a === '--union') {
       union = flagValue(argv, i, '--union');
       i++; // consume the value
+    } else if (a === '--no-manifest') {
+      noManifest = true;
     } else {
       positionals.push(a);
     }
   }
-  return { assertSubset, expandTestSiblings, assertDisjoint, union, positionals };
+  if (noManifest) {
+    // #1510 f — every other mode reads the MANIFEST (`role`, `allowedPaths`), so
+    // combining it with "there is no manifest" is a contradiction, not a no-op.
+    if (assertDisjoint === null) die('--no-manifest requires --assert-disjoint <agent-scopes.json>', 1);
+    const needsManifest = [
+      union !== null && '--union',
+      assertSubset !== null && '--assert-subset',
+      expandTestSiblings && '--expand-test-siblings',
+      positionals.length > 0 && `a wave-scope.json path (${positionals[0]})`,
+    ].filter(Boolean);
+    if (needsManifest.length > 0) {
+      die(`--no-manifest cannot be combined with ${needsManifest.join(', ')}: that mode reads the manifest`, 1);
+    }
+  }
+  return { assertSubset, expandTestSiblings, assertDisjoint, union, noManifest, positionals };
 }
 
 /**
@@ -755,7 +785,12 @@ function validate(
   process.stdout.write(input.endsWith('\n') ? input : input + '\n');
 }
 
-const { assertSubset, expandTestSiblings, assertDisjoint, union, positionals } = parseArgs(
+const { assertSubset, expandTestSiblings, assertDisjoint, union, noManifest, positionals } = parseArgs(
   process.argv,
 );
-validate(readInput(positionals[0]), assertSubset, expandTestSiblings, assertDisjoint, union);
+if (noManifest) {
+  // #1510 f — sidecar-only: stdin is never read, so no dummy manifest is needed.
+  assertDisjointOrDie(assertDisjoint);
+} else {
+  validate(readInput(positionals[0]), assertSubset, expandTestSiblings, assertDisjoint, union);
+}

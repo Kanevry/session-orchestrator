@@ -1067,7 +1067,7 @@ describe('pre-task-scope-disjoint — import safety (isMain)', () => {
     // loading. Every export the tests below reach for has to be there.
     const mod = await import(pathToFileURL(HOOK).href);
     for (const name of ['decide', 'extractScopeFromPrompt', 'extractScopeSignal', 'listTrackedFiles',
-      'normalizeScopeEntry', 'promoteDirEntries', 'buildTranscriptIndex', 'makeFinishedProbe',
+      'promoteDirEntries', 'buildTranscriptIndex', 'makeFinishedProbe',
       'bumpSignalCounter']) {
       expect(typeof mod[name]).toBe('function');
     }
@@ -1085,12 +1085,20 @@ describe('pre-task-scope-disjoint — path spelling and git-root alignment', () 
     expectDeny(dispatch(dir, 'Agent B', ['scripts/lib/foo.mjs']), ['scripts/lib/foo.mjs', 'concrete']);
   });
 
-  it('collapses duplicated slashes and `/./` segments before comparing', async () => {
-    // Same class, the two other spellings a hand-written scope block produces.
-    const { normalizeScopeEntry } = await import(pathToFileURL(HOOK).href);
-    expect(normalizeScopeEntry('./scripts//lib/./foo.mjs')).toBe('scripts/lib/foo.mjs');
-    expect(normalizeScopeEntry('scripts/lib/')).toBe('scripts/lib/'); // prefix operator preserved
-    expect(normalizeScopeEntry('scripts/**/*.mjs')).toBe('scripts/**/*.mjs');
+  it('spells a bare-dir claim with scope-gate\'s rule BEFORE promoting it (#1510 g)', () => {
+    // Bug caught: the hook carried its own copy of the spelling rule, and the
+    // copy had drifted — `scripts/././lib` kept a `./` segment (`scripts/./lib`),
+    // so `promoteDirEntries` found no tracked file beneath it, the entry stayed
+    // the LITERAL `scripts/lib`, and a sibling claiming `scripts/lib/foo.mjs`
+    // compared DISJOINT (measured: allow on the pre-#1510 hook).
+    const dir = makeProjectDir();
+    const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'ignore' });
+    git('init', '-q');
+    mkdirSync(path.join(dir, 'scripts', 'lib'), { recursive: true });
+    writeFileSync(path.join(dir, 'scripts', 'lib', 'foo.mjs'), '// tracked\n');
+    git('add', 'scripts/lib/foo.mjs');
+    expectAllow(dispatch(dir, 'Agent A', ['scripts/././lib']));
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/lib/foo.mjs']), ['scripts/lib/foo.mjs']);
   });
 
   it('promotes a bare directory entry to its `dir/` prefix ON EVIDENCE, never by guess', async () => {
