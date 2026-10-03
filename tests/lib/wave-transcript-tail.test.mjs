@@ -15,7 +15,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -549,7 +549,12 @@ describe('wave-transcript-tail — session + wave resolution', () => {
       process.execPath,
       [join(import.meta.dirname, '../../scripts/lib/wave-transcript-tail.mjs'), '--tail', '--interval=1'],
       {
-        env: { ...process.env, CLAUDE_PLUGIN_ROOT: repo, CLAUDE_CODE_SESSION_ID: 'synthetic-no-such-session' },
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: repo,
+          CLAUDE_PLUGIN_ROOT: repo,
+          CLAUDE_CODE_SESSION_ID: 'synthetic-no-such-session',
+        },
         stdio: 'ignore',
       },
     );
@@ -740,4 +745,44 @@ describe('wave-transcript-tail — readAgentType failure split (#1216)', () => {
     expect(readAgentType(projectsDir, UUID, AGENT)).toBe('unknown');
     expect(stderr).not.toHaveBeenCalled();
   });
+});
+
+describe('wave-transcript-tail — project root (#1517)', () => {
+  it('keeps its state in the PROJECT, not in CLAUDE_PLUGIN_ROOT', async () => {
+    // Bug (#1517): the tail took its root from `CLAUDE_PLUGIN_ROOT || cwd`, and
+    // CLAUDE_PLUGIN_ROOT is the installed plugin directory — the singleton lock,
+    // the session.lock read, the events.jsonl seed and the projects-dir encoding
+    // all landed in the plugin cache. Reader and writer shared the wrong root,
+    // so nothing looked split. Asserted on the singleton lock, the first state
+    // the tailer writes. Falsification: restore the CLAUDE_PLUGIN_ROOT fallback
+    // and the lock appears under the plugin dir instead.
+    const project = mkdtempSync(join(tmpdir(), 'wtt-proj-'));
+    const plugin = mkdtempSync(join(tmpdir(), 'wtt-plugin-'));
+    mkdirSync(join(project, '.orchestrator'), { recursive: true });
+    mkdirSync(join(plugin, '.orchestrator'), { recursive: true });
+    const child = spawn(
+      process.execPath,
+      [join(import.meta.dirname, '../../scripts/lib/wave-transcript-tail.mjs'), '--tail', '--interval=1'],
+      {
+        env: {
+          ...process.env,
+          CLAUDE_PROJECT_DIR: project,
+          CLAUDE_PLUGIN_ROOT: plugin,
+          CLAUDE_CODE_SESSION_ID: 'synthetic-no-such-session',
+        },
+        stdio: 'ignore',
+      },
+    );
+    const lockRel = join('.orchestrator', 'wave-transcript-tail.lock');
+    try {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline && !existsSync(join(project, lockRel))) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(existsSync(join(project, lockRel))).toBe(true);
+      expect(existsSync(join(plugin, lockRel))).toBe(false);
+    } finally {
+      child.kill('SIGKILL');
+    }
+  }, 15_000);
 });

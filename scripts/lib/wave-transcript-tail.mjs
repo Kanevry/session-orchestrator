@@ -61,6 +61,7 @@ import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
 import { readLock, isLockLive } from './session-lock.mjs';
 import { resolveSubagentSidecar } from '../../hooks/_lib/subagent-paths.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { getProjectDir } from './platform.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
 const WAVE_SCOPE_REL = '.claude/wave-scope.json';
@@ -784,7 +785,11 @@ function sleep(ms) {
  * @param {number} args.intervalS
  */
 async function tailLoop({ intervalS }) {
-  const repoRoot = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
+  // #1517: the PROJECT root (CLAUDE_PROJECT_DIR > CLAUDE.md/.git walk-up > cwd).
+  // CLAUDE_PLUGIN_ROOT is the installed plugin directory — taking it as the root
+  // put the singleton lock, the session.lock read and the projects-dir encoding
+  // inside the plugin cache.
+  const repoRoot = getProjectDir();
 
   // The monitor fires once per wave-executor INVOCATION, and a deep session
   // invokes it repeatedly — so refuse to be the second tailer.
