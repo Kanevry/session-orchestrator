@@ -968,6 +968,40 @@ describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () =>
     expect(readEvents().filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored')).toHaveLength(0);
   });
 
+  it.each([
+    ['foreign, higher precedence', '.claude', JSON.stringify({ session_id: 'PEER-UUID-1111' }), true],
+    ['foreign, lower precedence', '.pi', JSON.stringify({ session_id: 'PEER-UUID-1111' }), true],
+    ['unbound', '.pi', '{}', false],
+    ['corrupt', '.pi', '{broken', false],
+  ])('reports real writes but exempts only proven peer control state (%s)', (_label, ownDir, peerRaw, exempt) => {
+    mkdirSync(join(tmp, ownDir), { recursive: true });
+    writeFileSync(join(tmp, ownDir, 'wave-scope.json'), JSON.stringify({
+      wave: 4, enforcement: 'warn', allowedPaths: ['hooks/**'], session_id: 'OWN-UUID-2222',
+    }));
+    expect(runHook('OWN-UUID-2222').stderr).toBe(''); // baseline before peer writes
+
+    mkdirSync(join(tmp, '.codex', 'filescopes', 'wave-4'), { recursive: true });
+    writeFileSync(join(tmp, '.codex', 'wave-scope.json'), peerRaw);
+    writeFileSync(join(tmp, '.codex', 'filescopes', 'wave-4', 'peer.json'), '{}');
+    writeFileSync(join(tmp, '.codex', 'other.mjs'), '// not control state\n');
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const status = git('status', '--porcelain', '--untracked-files=all');
+    expect(status).toContain('.codex/wave-scope.json');
+    expect(status).toContain('.codex/filescopes/wave-4/peer.json');
+
+    const res = runHook('OWN-UUID-2222');
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('out-of-scope.mjs');
+    expect(res.stderr).toContain('.codex/other.mjs');
+    if (exempt) {
+      expect(res.stderr).not.toContain('.codex/wave-scope.json');
+      expect(res.stderr).not.toContain('.codex/filescopes/wave-4/peer.json');
+    } else {
+      expect(res.stderr).toContain('.codex/wave-scope.json');
+      expect(res.stderr).toContain('.codex/filescopes/wave-4/peer.json');
+    }
+  });
+
   // W4/F7 — the bug: G3b `return`ed BEFORE `currentScopeState` was computed, so
   // REBINDING the manifest to a fabricated `session_id` (one `cat >` redirect)
   // disarmed this session's gates AND produced total silence. Deleting the file

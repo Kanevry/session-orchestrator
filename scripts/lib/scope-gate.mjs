@@ -79,16 +79,23 @@ export function findScopeFile(projectRoot) {
  * With one, one extra sync read + parse of that small file. The caller still
  * reads the returned file itself and classifies THAT read, so a rebind between
  * the two reads is judged at the same decision point as before.
+ * With `includeForeignPaths`, scan all candidates even after selecting ours
+ * and also return every provably foreign manifest. Post-Bash attribution uses
+ * that list to exclude peer control state, including lower-precedence peers.
  *
  * Sync. Never throws (unless `classify` does).
  *
  * @param {string} projectRoot absolute path to the project root
  * @param {Set<string>} ownIds process-local own ids (`readProcessLocalSessionIds`)
  * @param {(scope: object, ownIds: Set<string>) => { verdict: string }} classify
- * @returns {{ path: string|null, foreignPath: string|null }}
+ * @param {object} [options]
+ * @param {boolean} [options.includeForeignPaths=false] collect all peer manifests
+ * @returns {{ path: string|null, foreignPath: string|null, foreignPaths?: string[] }}
  */
-export function findOwnScopeFile(projectRoot, ownIds, classify) {
+export function findOwnScopeFile(projectRoot, ownIds, classify, { includeForeignPaths = false } = {}) {
+  let ownPath = null;
   let foreignPath = null;
+  const foreignPaths = [];
   for (const dir of SCOPE_FILE_DIRS) {
     const candidate = path.join(projectRoot, dir, 'wave-scope.json');
     if (!existsSync(candidate)) continue;
@@ -99,9 +106,15 @@ export function findOwnScopeFile(projectRoot, ownIds, classify) {
     } catch {
       // unreadable / corrupt → `{}` → no binding → 'unknown' → this candidate decides
     }
-    if (classify(scope, ownIds).verdict !== 'foreign') return { path: candidate, foreignPath };
-    foreignPath ??= candidate;
+    if (classify(scope, ownIds).verdict !== 'foreign') {
+      if (!includeForeignPaths) return { path: candidate, foreignPath };
+      ownPath ??= candidate;
+    } else {
+      foreignPath ??= candidate;
+      if (includeForeignPaths) foreignPaths.push(candidate);
+    }
   }
+  if (includeForeignPaths) return { path: ownPath, foreignPath, foreignPaths };
   return { path: null, foreignPath };
 }
 
