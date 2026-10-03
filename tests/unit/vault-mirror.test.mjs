@@ -6,6 +6,7 @@ import { join, resolve, sep } from 'node:path';
 // to forward slashes in assertions for Windows portability (Unix no-op).
 const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import {
   fixtureGitSpawn,
   makeTmpDir as makeFixtureTmpDir,
@@ -25,6 +26,10 @@ const VALID_LEARNING = JSON.stringify({
   created_at: '2026-04-13T10:00:00Z',
   expires_at: '2027-04-13T10:00:00Z',
 });
+
+// #1506.1: a NEWLY created disambiguation file is suffixed with
+// sha256(full record key)[0:8]; VALID_LEARNING's record key is its id.
+const VALID_LEARNING_HASH8 = createHash('sha256').update(JSON.parse(VALID_LEARNING).id).digest('hex').slice(0, 8);
 
 const VALID_SESSION = JSON.stringify({
   session_id: 'session-2026-04-13',
@@ -998,7 +1003,7 @@ describe('vault-mirror CLI', () => {
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
     expect(result.status).toBe(0);
     expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session.md'))).toBe(true);
-    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', `cross-repo-deep-session-${VALID_LEARNING_HASH8}.md`))).toBe(true);
   });
 
   it('collision disambiguation: original file is unchanged after run', () => {
@@ -1057,8 +1062,8 @@ describe('vault-mirror CLI', () => {
     expect(JSON.parse(result.stdout.trim()).action).toBe('skipped-collision-resolved');
   });
 
-  it('collision disambiguation: disambiguated slug uses first-8-chars of uuid', () => {
-    // id "a1b2c3d4-0001-4000-8000-000000000001" → stripped hyphens → "a1b2c3d4" prefix
+  it('collision disambiguation: a NEW disambiguated slug uses the full-record-key hash (#1506.1)', () => {
+    // Not the uuid prefix "a1b2c3d4": non-UUID ids sharing 8 chars collided on it.
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
 
@@ -1084,7 +1089,42 @@ describe('vault-mirror CLI', () => {
 
     runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
 
-    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', `cross-repo-deep-session-${VALID_LEARNING_HASH8}.md`))).toBe(true);
+    expect(existsSync(join(vaultDir, '40-learnings', 'test-vault', 'cross-repo-deep-session-a1b2c3d4.md'))).toBe(false);
+  });
+
+  it('collision disambiguation: an EXISTING -<uuid8> note of the record is not renamed (#1506.1)', () => {
+    // Owner decision: only NEW disambiguation files get the hash suffix.
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
+    const dir = join(vaultDir, '40-learnings', 'test-vault');
+    mkdirSync(dir, { recursive: true });
+    const note = (id, record) =>
+      [
+        '---',
+        `id: ${id}`,
+        'type: learning',
+        'title: Existing note',
+        'status: verified',
+        'created: 2026-01-01',
+        'updated: 2026-01-01',
+        'tags: [learning/architectural]',
+        `source-record: "${record}"`,
+        '_generator: session-orchestrator-vault-mirror@1',
+        '---',
+        '',
+        'body',
+      ].join('\n');
+    // Main note owned by another record, NEWER, so it stays the main owner.
+    writeFileSync(join(dir, 'cross-repo-deep-session.md'), note('cross-repo-deep-session', 'other-record').replace(/created: 2026-01-01/, 'created: 2027-01-01'), 'utf8');
+    writeFileSync(join(dir, 'cross-repo-deep-session-a1b2c3d4.md'), note('cross-repo-deep-session-a1b2c3d4', JSON.parse(VALID_LEARNING).id), 'utf8');
+
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault']);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).path).toBe('40-learnings/test-vault/cross-repo-deep-session-a1b2c3d4.md');
+    expect(readFileSync(join(dir, 'cross-repo-deep-session-a1b2c3d4.md'), 'utf8')).toContain('Prefer explicit contracts');
+    expect(existsSync(join(dir, `cross-repo-deep-session-${VALID_LEARNING_HASH8}.md`))).toBe(false);
   });
 
   // ── Malformed JSONL → exit 1 ──────────────────────────────────────────────

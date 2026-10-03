@@ -4,10 +4,11 @@
  * Exports: subjectToSlug, isValidSlug, uuidPrefix8, toDate,
  *          truncateAtWord, yamlQuoteIfNeeded, parseFrontmatter,
  *          slugifyTagSegment, buildTag, slugifyIdSafe, TAG_MAX_LENGTH,
- *          resolveSourceSessionLink
+ *          resolveSourceSessionLink, recordKeySuffix8
  */
 
 import { parseSessionId } from '../session-id.mjs';
+import { digestSha256Short } from '../crypto-digest-utils.mjs';
 
 /**
  * Convert a subject string to a kebab slug.
@@ -133,6 +134,20 @@ export function slugifyIdSafe(input) {
 /** Derive the first 8 chars of a UUID (strip hyphens, take first 8 hex chars). */
 export function uuidPrefix8(id) {
   return id.replace(/-/g, '').slice(0, 8);
+}
+
+/**
+ * The disambiguation suffix of a NEW `<slug>-<suffix>.md` note (#1506.1): the
+ * first 8 hex chars of a SHA-256 over the FULL record key. `uuidPrefix8` only
+ * separates UUID ids — non-UUID ids sharing their first 8 chars collided, and
+ * the third record of a subject was never mirrored. Existing `-<uuid8>` notes
+ * keep their names; only newly created disambiguation files use this suffix.
+ *
+ * @param {string} recordKey - the record's `source-record` (or its raw id).
+ * @returns {string} 8 lowercase hex chars.
+ */
+export function recordKeySuffix8(recordKey) {
+  return digestSha256Short(String(recordKey));
 }
 
 /** Format a UTC ISO date string as YYYY-MM-DD. */

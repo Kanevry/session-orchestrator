@@ -6,11 +6,11 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createSecretValueMasker } from '../secret-masker.mjs';
-import { subjectToSlug, isValidSlug, uuidPrefix8, toDate, parseFrontmatter } from './utils.mjs';
+import { subjectToSlug, isValidSlug, uuidPrefix8, recordKeySuffix8, toDate, parseFrontmatter } from './utils.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2, learningSourceRecord } from './render-learnings.mjs';
@@ -421,6 +421,44 @@ function notOurGenerator(fm) {
   if (!fm || !fm['_generator']) return 'hand-written';
   if (fm['_generator'] !== GENERATOR_MARKER) return 'unknown generator';
   return null;
+}
+
+/**
+ * The disambiguation slug a record uses under `slug` in `dir` (#1506.1). An
+ * EXISTING `<slug>-<uuid8>` note that is ours and owned by this record keeps
+ * its name — the owner decision was "no mass rename"; every other case gets the
+ * full-record-key hash suffix ({@link recordKeySuffix8}), so non-UUID ids that
+ * share their first 8 chars no longer land on one file.
+ *
+ * @param {string} dir - the namespace folder.
+ * @param {string} slug - the canonical note slug.
+ * @param {{ legacyId: string, recordKey: string }} keys - `legacyId` is what the
+ *   pre-#1506 suffix was derived from (the raw id); `recordKey` the full key.
+ * @returns {{ slug: string, exists: boolean|null }} `exists: true` when the
+ *   legacy name was chosen (it was just probed); `null` when not yet probed.
+ */
+function disambigSlugFor(dir, slug, { legacyId, recordKey }) {
+  const legacy = `${slug}-${uuidPrefix8(legacyId)}`;
+  const hashed = `${slug}-${recordKeySuffix8(recordKey)}`;
+  const legacyPath = join(dir, `${legacy}.md`);
+  if (legacy !== hashed && existsSync(legacyPath)) {
+    const fm = parseFrontmatter(readFileSync(legacyPath, 'utf8'));
+    if (notOurGenerator(fm) === null && foreignOwnerReason(fm, { recordKey }) === null) {
+      return { slug: legacy, exists: true };
+    }
+  }
+  return { slug: hashed, exists: null };
+}
+
+/**
+ * Replace the frontmatter `id:` line of a note — used when a displaced note
+ * moves to its disambiguated name (#1506.2), whose `id` must match the file.
+ * @param {string} content
+ * @param {string} id
+ * @returns {string}
+ */
+function withNoteId(content, id) {
+  return content.replace(/^id: .*$/m, `id: ${id}`);
 }
 
 /**
@@ -1154,26 +1192,58 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // that note is masked in place first — never by rewriting it from THIS
     // record, which would be the #1503 overwrite triggered by a secret.
     //
-    // BV-004 ceiling: (1) the main `<slug>.md` keeps the FIRST record that
-    // claimed it — after a re-learn it goes stale while the current record lives
-    // at `<slug>-<uuid8>.md`; (2) disambiguation is ONE level deep — a
-    // `-<uuid8>` file owned by yet another record is skipped-foreign-owner.
-    // Fine while re-learns are rare (fleet census at review time: 39 slugs in 12
-    // repos). Revisit-Trigger: a stale main note is read as current, or a
-    // skipped-foreign-owner is reported on a `-<uuid8>` path.
+    // #1506.2: the NEWEST record owns the main `<slug>.md` — a re-learned
+    // record (strictly later `created` day) takes it over, and the displaced
+    // note moves, bytes kept but `id` renamed, to its own record's
+    // disambiguation path; never lost, never overwritten. #1506.1: a NEW
+    // disambiguation file is suffixed with a hash of the full record key, so
+    // non-UUID ids sharing a prefix no longer collide; existing `-<uuid8>`
+    // files keep their names.
+    //
+    // BV-004 ceiling: "newest" is compared at DAY granularity (`created` is a
+    // date) — a same-day re-learn keeps the current owner (stable, no churn).
+    // Revisit-Trigger: a same-day re-learn is reported as a stale main note.
+    //
+    // BV-004 ceiling: the takeover ignores repo provenance — a NEWER record of
+    // another repo mirrored into this namespace (the #1503 shape) also takes the
+    // main note, and `source-repo` cannot tell it apart (both carry the writer's
+    // namespace). Nothing is lost (the displaced note moves, never overwritten);
+    // the CLI's `source-repo-mismatch` refusal is what keeps foreign records out.
+    // Revisit-Trigger: a takeover whose displaced note belongs to this repo's
+    // live store, or any mirror run accepting a foreign `--source` again.
     const recordMismatch = foreignOwnerReason(fm, writer);
     const routedByRecord = recordMismatch !== null;
     if (routedByRecord && maskerWouldChange(existingContent)) {
       healedForeignLeak = maskForeignNoteInPlace(targetPath, existingContent, ctx);
     }
 
+    const entryDay = toDate(dateSource);
+    if (
+      routedByRecord &&
+      fm['id'] === slug &&
+      !expired &&
+      /^\d{4}-\d{2}-\d{2}$/.test(entryDay) &&
+      typeof fm['created'] === 'string' &&
+      entryDay > fm['created']
+    ) {
+      const takenOver = takeOverMainNote({
+        fm, slug, targetDir, targetPath, entry, entryId, writer, generator, generatorOpts,
+        healedForeignLeak, lineNum: _lineNum, ctx,
+      });
+      if (takenOver !== null) return takenOver;
+    }
+
     if (fm['id'] !== slug || routedByRecord) {
       // Different id (or different record) → collision: disambiguate
-      const disambigSlug = `${slug}-${uuidPrefix8(entryId)}`;
+      const picked = disambigSlugFor(targetDir, slug, {
+        legacyId: String(entryId),
+        recordKey: writer.recordKey ?? String(entryId),
+      });
+      const disambigSlug = picked.slug;
       targetPath = join(targetDir, `${disambigSlug}.md`);
       slug = disambigSlug;
 
-      if (existsSync(targetPath)) {
+      if (picked.exists ?? existsSync(targetPath)) {
         // Still exists with disambig — check if it's ours
         const disambigContent = readFileSync(targetPath, 'utf8');
         const disambigFm = parseFrontmatter(disambigContent);
@@ -1241,6 +1311,21 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       });
     }
 
+    // #1506.2: the main note is this record's — a live disambiguation copy of
+    // the same record (left by an interrupted takeover) is superseded.
+    if (fm['source-record'] === writer.recordKey) {
+      const stale = staleOwnDisambig(targetDir, slug, entryId, writer);
+      if (stale !== null) {
+        if (!dryRun) writeFileSync(stale.path, stale.next, 'utf8');
+        return emitEntryAction(_lineNum, ctx, {
+          action: 'updated',
+          path: stale.path,
+          id: basename(stale.path, '.md'),
+          meta: { archived_reason: 'superseded' },
+        });
+      }
+    }
+
     // Same id: check if updated would advance (unless --force overrides).
     // Even when the date has not advanced, content may have changed (confidence,
     // insight, expires_at, etc.) — compare canonical fields before skipping.
@@ -1282,9 +1367,85 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 }
 
 /**
- * The note slugs a learning record can live under: the canonical slug and, for
- * v1, the pre-#725 legacy variant. Used by the CLI to keep the archive pass off
- * notes a LIVE record still owns (#1513).
+ * The writer's own disambiguation note when it is stale (#1506.2): the writer's
+ * record owns the main note, so a mirror-owned, not-yet-archived note of the
+ * SAME record (explicit `source-record` match) at its disambiguation name is a
+ * second live copy — it is marked `archived` / `superseded`. Consulted by the
+ * takeover and on every run where the main note is already ours, so a crash
+ * between a takeover's writes heals on the next run.
+ *
+ * @returns {{ path: string, next: string }|null} the rewrite, or null.
+ */
+function staleOwnDisambig(targetDir, slug, entryId, writer) {
+  if (typeof writer.recordKey !== 'string') return null;
+  const own = disambigSlugFor(targetDir, slug, { legacyId: String(entryId), recordKey: writer.recordKey });
+  const path = join(targetDir, `${own.slug}.md`);
+  if (!(own.exists ?? existsSync(path))) return null;
+  const content = readFileSync(path, 'utf8');
+  const fm = parseFrontmatter(content);
+  if (notOurGenerator(fm) !== null || fm['source-record'] !== writer.recordKey || fm['id'] !== own.slug) return null;
+  const next = markArchived(content, 'superseded');
+  return next === content ? null : { path, next };
+}
+
+/**
+ * #1506.2 takeover: the writer's record is newer than the record that owns the
+ * main note, so the writer claims `<slug>.md`. The displaced note moves to its
+ * own record's disambiguation path (`id` renamed, bytes otherwise kept); a
+ * stale disambiguation note of the writer's own record (written while the older
+ * record held the main note) is marked `archived` / `superseded`.
+ *
+ * Returns `null` — leaving the caller on the plain disambiguation route — when
+ * the displaced record's target path is occupied by a note that is not ours or
+ * belongs to yet another record: a takeover must never overwrite anything.
+ *
+ * @returns {string|null} the emitted action, or null.
+ */
+function takeOverMainNote({
+  fm, slug, targetDir, targetPath, entry, entryId, writer, generator, generatorOpts, healedForeignLeak, lineNum, ctx,
+}) {
+  const { dryRun } = ctx;
+  const displacedKey = fm['source-record'];
+  const displaced = disambigSlugFor(targetDir, slug, { legacyId: displacedKey, recordKey: displacedKey });
+  const displacedPath = join(targetDir, `${displaced.slug}.md`);
+  if (displaced.exists !== true && existsSync(displacedPath)) {
+    const dfm = parseFrontmatter(readFileSync(displacedPath, 'utf8'));
+    if (notOurGenerator(dfm) !== null || dfm['source-record'] !== displacedKey) return null;
+  }
+
+  const ownStale = staleOwnDisambig(targetDir, slug, entryId, writer);
+
+  if (!dryRun) {
+    // Re-read: an in-place leak heal above may have rewritten the note.
+    const current = readFileSync(targetPath, 'utf8');
+    // Rewritten even when it exists (and is ours, checked above): a stale copy
+    // there may carry `status: archived` from an earlier archive pass.
+    writeFileSync(displacedPath, withNoteId(current, displaced.slug), 'utf8');
+    // Before the main note: a crash between the two writes must leave the
+    // takeover re-runnable (the main note still foreign), never a main note of
+    // ours beside a stale live disambiguation note of the same record.
+    if (ownStale !== null && ownStale.path !== displacedPath) writeFileSync(ownStale.path, ownStale.next, 'utf8');
+    writeFileSync(targetPath, generator(entry, slug, generatorOpts), 'utf8');
+  }
+  return emitEntryAction(lineNum, ctx, {
+    action: 'updated',
+    path: targetPath,
+    id: slug,
+    meta: {
+      reason: 'newer record owns the main note',
+      displaced_id: displaced.slug,
+      ...(healedForeignLeak ? { healed_leak: true } : {}),
+    },
+  });
+}
+
+/**
+ * The note slugs a learning record can live under: the canonical slug, for v1
+ * the pre-#725 legacy variant, and its two disambiguation names — the
+ * pre-#1506 `-<uuid8>` and the full-key `-<hash8>` (#1506.1). Used by the CLI
+ * to keep the archive pass off notes a LIVE record still owns (#1513). The
+ * disambiguation names are record-specific, so a record displaced from the
+ * main note by a re-learn (#1506.2) is still archived once it leaves the store.
  *
  * @param {object} rawEntry
  * @returns {string[]}
@@ -1298,6 +1459,10 @@ export function learningNoteSlugs(rawEntry) {
     const legacy = legacyConcatSlug(entry.subject);
     if (isValidSlug(legacy) && !slugs.includes(legacy)) slugs.push(legacy);
   }
+  const id = String(entry.id);
+  for (const name of [`${slugs[0]}-${uuidPrefix8(id)}`, `${slugs[0]}-${recordKeySuffix8(learningSourceRecord(entry) ?? id)}`]) {
+    if (!slugs.includes(name)) slugs.push(name);
+  }
   return slugs;
 }
 
@@ -1305,12 +1470,12 @@ export function learningNoteSlugs(rawEntry) {
  * Mark the existing note of a record that left `learnings.jsonl` (#1513).
  *
  * Input is one `learnings-archive.jsonl` record. Its note — canonical slug,
- * legacy slug, or the `-<uuid8>` disambiguation, in the namespace or the flat
+ * legacy slug, or a `-<uuid8>`/`-<hash8>` disambiguation, in the namespace or the flat
  * legacy layout — gets `status: archived` + `archived-reason` (`expired` for an
  * `_archive_reason: expired` record, `superseded` for every other reason). The
  * note's bytes are otherwise kept; nothing is ever created. Ownership rules are
  * the same as for writes: mirror-owned, and a `source-record` naming another
- * record is left alone. Slugs in `ctx.liveLearningSlugs` (records still in the
+ * record is left alone. Names in `ctx.liveLearningSlugs` (records still in the
  * live store) are skipped, so a re-learned subject never flip-flops.
  *
  * @returns {Promise<string>} the emitted action
@@ -1322,10 +1487,14 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
     throw new Error(`vault-mirror: archived learning entry missing required field 'id' (id=<no id>)`);
   }
   const reason = entry._archive_reason === 'expired' ? 'expired' : 'superseded';
-  const slugs = learningNoteSlugs(entry);
   const live = ctx?.liveLearningSlugs instanceof Set ? ctx.liveLearningSlugs : new Set();
-  if (slugs.some((s) => live.has(s))) {
-    return emitEntryAction(_lineNum, ctx, {
+  // Per name, not per record (#1506.2): a live re-learn owns the canonical
+  // slug, but the displaced note at THIS record's disambiguation name is still
+  // this record's to archive.
+  const allNames = learningNoteSlugs(entry);
+  const names = allNames.filter((s) => !live.has(s));
+  const liveOwned = () =>
+    emitEntryAction(_lineNum, ctx, {
       // `skipped-noop`, not a class of its own: this is the steady state of
       // every run, and noops stay out of the per-entry ledger (#1151).
       action: 'skipped-noop',
@@ -1333,7 +1502,7 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
       id: entry.id,
       meta: { reason: 'archived record: a live record owns this note' },
     });
-  }
+  if (names.length === 0) return liveOwned();
   const repoNs = canonicalNamespace(
     vaultDir,
     resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
@@ -1341,7 +1510,6 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
   const nsDir = join(resolve(vaultDir), '40-learnings', repoNs);
   const flatDir = join(resolve(vaultDir), '40-learnings');
   const writer = { recordKey: learningSourceRecord(entry) };
-  const names = [...slugs, `${slugs[0]}-${uuidPrefix8(String(entry.id))}`];
   for (const dir of [nsDir, flatDir]) {
     for (const name of names) {
       const path = join(dir, `${name}.md`);
@@ -1363,6 +1531,7 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
       });
     }
   }
+  if (names.length < allNames.length) return liveOwned();
   return emitEntryAction(_lineNum, ctx, {
     action: 'skipped-noop',
     path: null,
