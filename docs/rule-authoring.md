@@ -466,6 +466,16 @@ under four contracts, all of them consequences of the four merge rules above:
 `--apply` emits `orchestrator.rules.expiry_sweep_applied` after the writes
 succeed (see `docs/events-schema.md`); a dry run emits nothing.
 
+**Single-entry files (#1513).** A generated rule holding exactly ONE learning
+(one provenance pair, no `###` entry, no counter sentence — the per-learning
+shape a consumer's reconciliation engine writes; all 21 generated rules of the
+Meta-Vault on 2026-10-03) is dated by its own frontmatter `expires-at`, the
+date `rule-loader.mjs` acts on. There is no body sentence to keep in agreement,
+so the `no-counter-sentence` refusal does not apply: the file is deleted
+(`reason: 'single-entry-expired'`, pair stamped terminal first) once the LATER
+of that date and the learning's store `expires_at` (when it resolves) has
+passed. A re-stamped learning therefore keeps its rule.
+
 ## Authoring Examples
 
 ### (a) Hand-authored always-on rule (no frontmatter)

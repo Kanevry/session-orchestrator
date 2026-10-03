@@ -590,6 +590,58 @@ export async function planRuleExpirySweep(opts = {}) {
     const advisory = headerAdvisory(parsed, expiryById);
     const raiseTo = headerRaiseTarget(parsed, expiryById);
 
+    if (
+      parsed.counterLine === -1 &&
+      parsed.entries.length === 0 &&
+      parsed.pairs.length === 1 &&
+      substantive.length === 1 &&
+      parsed.expiresAt !== null &&
+      Number.isFinite(Date.parse(parsed.expiresAt))
+    ) {
+      // SINGLE-ENTRY file (#1513): one learning, one pair, no `### ` entries,
+      // no counter sentence — the shape the reconciliation engine writes per
+      // learning in consumer repos (measured 2026-10-03: all 21 generated rules
+      // of the Meta-Vault). The fail-closed branch below skipped every one of
+      // them as `no-counter-sentence`, so they stayed on disk forever after
+      // expiry. Here the date is unambiguous — the file's own frontmatter
+      // `expires-at`, the one `rule-loader.mjs` acts on — and there is no
+      // body sentence to keep in agreement. The later of that date and the
+      // learning's store `expires_at` (when it resolves) decides, so a
+      // re-stamped learning never loses its rule. Expired → the same `delete`
+      // as a fully expired consolidated file: the pair is stamped terminal
+      // before the unlink, so `/reconcile` does not re-propose it.
+      const pair = substantive[0];
+      const storeAt = expiryById.has(pair.id) ? Date.parse(expiryById.get(pair.id)) : Number.NaN;
+      const fileAt = Date.parse(parsed.expiresAt);
+      const effectiveAt = Number.isFinite(storeAt) ? Math.max(storeAt, fileAt) : fileAt;
+      const base = {
+        file: rule.file,
+        expiredPairIds: [],
+        keptPairIds: [pair.id],
+        unresolvedPairIds: expiryById.has(pair.id) ? [] : [pair.id],
+        bytesBefore: Buffer.byteLength(content, 'utf8'),
+        headings: 0,
+        substantivePairs: 1,
+      };
+      if (effectiveAt < cutoffMs) {
+        plans.push({
+          ...base,
+          expiredPairIds: [pair.id],
+          keptPairIds: [],
+          unresolvedPairIds: [],
+          action: 'delete',
+          reason: 'single-entry-expired',
+          newExpiresAt: null,
+          newAbsorbedCount: 0,
+          bytesAfter: 0,
+          stampKeys: [pair.key],
+        });
+      } else {
+        plans.push({ ...base, action: 'keep', newExpiresAt: null, newAbsorbedCount: 1, bytesAfter: base.bytesBefore });
+      }
+      continue;
+    }
+
     if (parsed.counterLine === -1) {
       // FAIL-CLOSED (GH#70). Every write this module performs moves the
       // frontmatter `expires-at` AND the body sentence that restates it. When
