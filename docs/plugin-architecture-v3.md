@@ -120,7 +120,7 @@ Under `scripts/lib/`. Each module is a focused concern and exports only what cal
 | **`config-schema.mjs`** | Plain-JS validator; validates the 7 mandatory Session Config fields (3 required strings + 4 typed fields) | `validateSessionConfig` (internal `REQUIRED_STRING_FIELDS` constant covers the 3 required strings — not exported) |
 | **`events.mjs`** | Append to `.orchestrator/metrics/events.jsonl` + optional webhook POST | `emitEvent`, `appendEvent` |
 | **`worktree.mjs`** | zx-based git worktree helpers with cross-platform paths | `createWorktree`, `removeWorktree`, `listWorktrees`, `cleanupAllWorktrees` |
-| **`hardening.mjs`** | Scope + command enforcement primitives | `findScopeFile`, `getEnforcementLevel`, `pathMatchesPattern`, `commandMatchesBlocked` |
+| **`hardening.mjs`** | Scope + command enforcement primitives | `findScopeFile` (deprecated: ignores manifest ownership; hooks use `findOwnScopeFile` from `scope-gate.mjs`), `getEnforcementLevel`, `pathMatchesPattern`, `commandMatchesBlocked` |
 | **`common.mjs`** | Grab-bag utilities | `makeTmpPath`, `utcTimestamp`, `readJson`, `writeJson`, `appendJsonl` |
 | **`state-md.mjs`** | Hand-rolled YAML-subset STATE.md parser (never throws) | `parseStateMd`, `serializeStateMd`, `touchUpdatedField` |
 | **`host-identity.mjs`** | Device fingerprint + SSH detection (v3.1 resource-awareness) | `getHostIdentity`, `isSshSession` |

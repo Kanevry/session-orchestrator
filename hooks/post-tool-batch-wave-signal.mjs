@@ -204,7 +204,7 @@ async function ownsSessionFile(input, sessionFile) {
  * wave-scope.json absent"). The file is deleted mid-session at Quality phase
  * transitions and final cleanup, so absence is an expected, non-error state.
  *
- * The manifest is located via `findScopeFile()` (#1082), the same precedence
+ * The manifest is located via `findOwnScopeFile()` (#1504), the same precedence
  * every other consumer uses — `.pi` > `.cursor` > `.codex` > `.claude`. The
  * previous hard-coded `.claude/` path made this hook's whole wave-lifecycle
  * fallback structurally dead on Codex CLI, Cursor and pi: the manifest exists,

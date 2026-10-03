@@ -31,6 +31,7 @@ const SCOPE_FILE_DIRS = Object.freeze(['.pi', '.cursor', '.codex', '.claude']);
  * Returns the absolute path string, or null if none exist.
  * Sync (uses fs.existsSync).
  *
+ * @deprecated Use findOwnScopeFile because first-file selection ignores manifest ownership and can select a peer session's manifest.
  * @param {string} projectRoot — absolute path to project root
  * @returns {string|null}
  */

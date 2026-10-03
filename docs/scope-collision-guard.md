@@ -23,7 +23,7 @@ Two things follow, and both are the point of #1020:
 | 4 | Inject | `FILE-SCOPE — exactly these:` + a fenced block in each agent prompt | the per-agent file from step 1 |
 | 5 | Dispatch | `.orchestrator/wave-dispatch-scopes.<session>.json` (ledger, one per session) | `hooks/pre-task-scope-disjoint.mjs`, `PreToolUse` matcher `Agent` |
 
-`<state-dir>` is the first of `.pi` / `.cursor` / `.codex` / `.claude` that carries a `wave-scope.json` — the same precedence `findScopeFile()` and the hook's `waveKeyOf()` use.
+`<state-dir>` is the first of `.pi` / `.cursor` / `.codex` / `.claude` that carries a `wave-scope.json` not provably owned by a peer session — `findOwnScopeFile()` resolves it using process-local session ids, including for the hook's `waveKeyOf()`. Unbound or corrupt manifests still decide under the ENFORCE contract; when only peer manifests exist, the wave key is `<session>|w?|?`.
 
 Step 1 also offers an opt-in path diagnostic: run `materialize-wave-scope.mjs` from the project root with `--warn-missing` to name absent concrete paths and their agents on stderr (#1235). Relative paths resolve from the working directory, not `<state-dir>`. A warning does not fail the command or change its stdout or either declaration shape. For a file the wave deliberately creates, repeat `--new-file PATH` as needed; every exception must exactly match a declared path and pass scope validation before any writes begin. Grants containing `*` or ending in `/` are skipped under the existing glob/prefix grammar; `?` and braces are literal. The canonical invocation and handling steps are in `skills/wave-executor/references/wave-loop-scope-manifest.md` § 3.1.
 

@@ -267,6 +267,9 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 /** @type {typeof import('../scripts/lib/scope-echo.mjs').scopeDigest} */ let scopeDigest;
 /** @type {typeof import('../scripts/lib/platform.mjs').resolveSessionRoot} */ let resolveSessionRoot;
 let findScopeCollisions;
+let findOwnScopeFile;
+let readProcessLocalSessionIds;
+let classifyManifestSession;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -554,6 +557,7 @@ async function bootstrap() {
     {
       io: { specifier: lib('io.mjs') },
       scopeGate: { specifier: lib('scope-gate.mjs') },
+      sessionIdentity: { specifier: lib('session-identity', 'own-session.mjs') },
       fileLock: { specifier: lib('file-lock.mjs') },
       // ONE normalization for the digest, shared with the receive side (#1092):
       // `scope-echo.mjs` is pure (stdlib + `crypto-digest-utils.mjs`) and its
@@ -577,7 +581,8 @@ async function bootstrap() {
   );
 
   ({ readStdin, emitAllow, emitDeny, emitWarn, writeJsonAtomicSync } = modules.io);
-  ({ findScopeCollisions } = modules.scopeGate);
+  ({ findScopeCollisions, findOwnScopeFile } = modules.scopeGate);
+  ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
   ({ withFileLock } = modules.fileLock);
   ({ scopeDigest } = modules.scopeEcho);
   ({ resolveSessionRoot } = modules.platform);
@@ -1428,7 +1433,8 @@ export function makeFinishedProbe({
 /**
  * Identify the wave this dispatch belongs to. Derived from the coordinator's
  * own scope file so a wave transition resets the ledger without anyone having to
- * remember to clear it.
+ * remember to clear it. `findOwnScopeFile` skips provably foreign manifests;
+ * unbound or corrupt manifests still decide under the ENFORCE contract.
  *
  * FALLBACK, stated honestly (review MED): with no readable `wave-scope.json` the
  * key degrades to `<session>|w?|?`, so the ledger spans the whole SESSION and a
@@ -1443,18 +1449,21 @@ export function makeFinishedProbe({
  * @param {string} projectDir
  * @param {string} sessionId
  * @param {(p: string, enc: string) => string} readFn — injected `readFileSync`
- *   (the module is late-bound, so it cannot be imported at the top level here)
+ * @param {Set<string>} [ownIds] — process-local ids; repo helpers are late-bound
+ *   by bootstrap, as for the other guard dependencies.
  * @returns {string}
  */
-export function waveKeyOf(projectDir, sessionId, readFn) {
-  for (const dir of ['.pi', '.cursor', '.codex', '.claude']) {
+export function waveKeyOf(projectDir, sessionId, readFn,
+  ownIds = new Set(readProcessLocalSessionIds({ hookInput: { session_id: sessionId } }))) {
+  const { path: scopeFile } = findOwnScopeFile(projectDir, ownIds, classifyManifestSession);
+  if (scopeFile) {
     try {
-      const raw = readFn(path.join(projectDir, dir, 'wave-scope.json'), 'utf8');
+      const raw = readFn(scopeFile, 'utf8');
       const data = JSON.parse(raw);
       const wave = data?.wave ?? '?';
       const role = data?.role ?? '?';
       return `${sessionId}|w${wave}|${role}`;
-    } catch { /* try next location */ }
+    } catch { /* corrupt / unreadable own-or-unknown manifest → no wave */ }
   }
   return `${sessionId}|w?|?`;
 }
@@ -2340,7 +2349,8 @@ async function main() {
   const cwdToplevel = gitToplevel(cwd, git);
   const sessionRoot = resolveSessionRoot(cwd, cwdToplevel);
 
-  const waveKey = waveKeyOf(sessionRoot, sessionId, readFileSync);
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+  const waveKey = waveKeyOf(sessionRoot, sessionId, readFileSync, ownIds);
   // `selfUseId`: this dispatch's own tool_use may already stand in the transcript
   // and must not make a finished same-named predecessor look alive (#1480 A).
   const isFinished = makeFinishedProbe({ transcriptPath: input.transcript_path, selfUseId: input.tool_use_id });
