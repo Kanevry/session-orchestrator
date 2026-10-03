@@ -192,6 +192,27 @@ describe('ssot-code-diff probe', () => {
       expect(result.findings[0].evidence.actual).toBe(4);
     });
 
+    // #1506 pt 7: since the commands→skills fold most slash commands are skills
+    // with `user-invocable: true`; counting only commands/*.md reported 2 vs 27.
+    it('counts user-invocable skills toward the slash-command total', async () => {
+      const root = tmp();
+      writeActivationMarker(root);
+      writeCommandFiles(root, 2);
+      for (const name of ['alpha', 'beta', 'gamma']) {
+        writeFile(
+          root,
+          join('skills', name, 'SKILL.md'),
+          `---\nname: ${name}\ndescription: Fixture skill\nuser-invocable: true\n---\n\n# ${name}\n`,
+        );
+      }
+      writeFile(root, join('skills', 'internal', 'SKILL.md'), '---\nname: internal\ndescription: Fixture skill\n---\n\n# internal\n');
+      writeFile(root, 'README.md', '# readme\n\nAll 5 commands are documented below.\n');
+
+      const result = await runProbe(root, {});
+
+      expect(result.findings).toEqual([]);
+    });
+
     it('produces a finding for a .claude/rules/*.md count drift', async () => {
       const root = tmp();
       writeActivationMarker(root);

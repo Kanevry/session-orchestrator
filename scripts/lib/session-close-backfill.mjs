@@ -358,7 +358,7 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
     if (!(budgetMs > 0)) return null;
   }
   const newestFirst = [];
-  const { truncated } = scanEventsBackwards({
+  const { truncated, unreadable } = scanEventsBackwards({
     filePath: eventsPath,
     filter: id,
     budgetMs,
@@ -367,7 +367,17 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
       return false;
     },
   });
-  return truncated ? null : newestFirst.reverse();
+  // #1505.5b: a source the walk could not read cut the history exactly like a
+  // deadline does — its records are simply absent — so it defers the candidate
+  // the same way. Ceiling (BV-004): a PERMANENTLY unreadable archive defers its
+  // candidates on every run (`skipped-history-unread`, visible, never a record
+  // dated NOW). `gaps` (pruned/unindexed archives) are deliberately NOT treated
+  // so: the walk reports every gap of the whole ledger, mostly far older than
+  // the candidate, and deferring on any of them would skip the candidate
+  // forever — telling a gap inside the session's window apart needs its
+  // first_ts/last_ts against the session's range, a follow-up.
+  const cut = truncated || (Array.isArray(unreadable) && unreadable.length > 0);
+  return cut ? null : newestFirst.reverse();
 }
 
 /**

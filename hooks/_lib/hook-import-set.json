@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-02T16:57:38.231Z",
-  "head": "317015cecdbd0819a859d4d1717ade6a0d230e1d",
+  "generated_at": "2026-10-03T07:30:53.188Z",
+  "head": "0cfbaa2c4fad16d825b94b8000ca8aea3dc9af68",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -308,6 +308,7 @@
     {
       "file": "scripts/lib/command-blocker.mjs",
       "reachable_from": [
+        "on-stop.mjs",
         "post-bash-issue-budget-refund.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs",
@@ -842,8 +843,7 @@
       "file": "scripts/lib/env-check.mjs",
       "reachable_from": [
         "post-bash-write-verify.mjs",
-        "post-edit-validate.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "post-edit-validate.mjs"
       ]
     },
     {
@@ -976,8 +976,7 @@
       "file": "scripts/lib/hardening.mjs",
       "reachable_from": [
         "post-bash-write-verify.mjs",
-        "post-edit-validate.mjs",
-        "pre-bash-memory-propose-audit.mjs"
+        "post-edit-validate.mjs"
       ]
     },
     {
@@ -1304,6 +1303,7 @@
     {
       "file": "scripts/lib/scope-gate.mjs",
       "reachable_from": [
+        "on-stop.mjs",
         "post-bash-write-verify.mjs",
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",

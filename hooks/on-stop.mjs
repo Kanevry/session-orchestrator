@@ -46,7 +46,12 @@ import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { detectPlatform, getProjectDir } from '../scripts/lib/platform.mjs';
+import { detectPlatform, getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
+import {
+  classifyManifestSession,
+  readProcessLocalSessionIds,
+} from '../scripts/lib/session-identity/own-session.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { heartbeat, logSweepEvent } from '../scripts/lib/session-registry.mjs';
@@ -211,25 +216,26 @@ async function gitInfo(projectRoot) {
 // ---------------------------------------------------------------------------
 
 /**
- * Try to read the wave number from .claude/wave-scope.json (or .codex / .cursor / .pi).
- * Returns 0 if no scope file is found or the file cannot be parsed.
- * @param {string} projectRoot
+ * Read the wave number from THIS session's wave-scope manifest at the session
+ * root — the same root and the same `.pi` > `.cursor` > `.codex` > `.claude`
+ * precedence the scope guards use (#1504 point 4). A peer's manifest in the
+ * same working copy is skipped; a peer-only result is "no own wave" → 0.
+ * Returns 0 too when the manifest is absent or cannot be parsed.
+ *
+ * @param {string} sessionRoot  `resolveSessionRoot(input.cwd)`
+ * @param {object|null} input   the hook payload (its `session_id` is ours)
  * @returns {Promise<number>}
  */
-async function readWaveNumber(projectRoot) {
-  const dirs = ['.pi', '.claude', '.codex', '.cursor'];
-  for (const dir of dirs) {
-    const scopePath = path.join(projectRoot, dir, 'wave-scope.json');
-    try {
-      const raw = await fs.readFile(scopePath, 'utf8');
-      const obj = JSON.parse(raw);
-      const wave = typeof obj.wave === 'number' ? obj.wave : 0;
-      return wave;
-    } catch {
-      // file missing or unparseable — try next
-    }
+async function readWaveNumber(sessionRoot, input) {
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+  const { path: scopePath } = findOwnScopeFile(sessionRoot, ownIds, classifyManifestSession);
+  if (scopePath === null) return 0;
+  try {
+    const obj = JSON.parse(await fs.readFile(scopePath, 'utf8'));
+    return typeof obj?.wave === 'number' ? obj.wave : 0;
+  } catch {
+    return 0; // unreadable or unparseable — no wave known
   }
-  return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -396,7 +402,7 @@ function reaperTriggerField(trigger) {
 async function handleStop(input, reaperTrigger = null) {
   const projectRoot = getProjectDir();
 
-  const wave = await readWaveNumber(projectRoot);
+  const wave = await readWaveNumber(resolveSessionRoot(input?.cwd), input);
   const { commit, branch } = await gitInfo(projectRoot);
 
   const { sessionId, semanticSessionId } = await resolveSessionId(input, projectRoot);
@@ -819,7 +825,9 @@ async function main() {
   // config read plus one stat, bounded by `reaper.max-hook-latency-ms` (50 ms),
   // and the scan itself runs in a detached child. Its outcome rides on the
   // record either branch emits anyway (`reaper_trigger`, see reaperTriggerField).
-  const reaperTrigger = await maybeTriggerOrphanScan();
+  // Rooted at the SESSION root (#1492 point 2): the gate ledger the scan reads
+  // lives in the tree the gate ran in — an entered worktree, not the launch dir.
+  const reaperTrigger = await maybeTriggerOrphanScan({ projectDir: resolveSessionRoot(input?.cwd) });
 
   if (eventType === 'subagent_stop') {
     const additionalContext = await handleSubagentStop(input, reaperTrigger);

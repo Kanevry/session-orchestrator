@@ -459,7 +459,21 @@ the husky `commit-msg` hook because the hook is inactive in a fresh clone until
   merges (`Merge branch 'x' into 'main'` from GitLab, and git's
   `Merge branch 'main' into x`, `Merge remote-tracking branch 'origin/main' into x`,
   `Merge branch 'main' of <remote>`), and `Revert "…"` / `Reapply "…"`. Both CI
-  call sites (range and squash title) pass `-g commitlint.ci.config.mjs`. The
+  call sites (range and squash title) pass `-g commitlint.ci.config.mjs`.
+  The first line alone does not prove git or GitLab wrote it (#1507 item 1): a
+  normal commit titled `Merge branch 'a' into b` or `Revert "x"` used to skip
+  every rule. So the job lints the range in two passes that together cover it
+  exactly: `--git-log-args=--no-merges` with `COMMITLINT_MERGE_COMMITS=0`, where
+  a merge-shaped subject is linted like any other, and `--git-log-args=--merges`
+  with `COMMITLINT_MERGE_COMMITS=1`, where git has counted two or more parents
+  and the merge shape is accepted. A hand-written message on a real merge is
+  still linted in the second pass. A revert or reapply shape is accepted only
+  with the body line git or GitLab writes under it: `This reverts commit <sha>`
+  (git, and GitLab's revert of a single commit) or `This reverts merge request
+  !<iid>` (GitLab's revert of a merged MR; taken from GitLab's source, not
+  measured on this instance). The squash-title call sets
+  `COMMITLINT_MERGE_COMMITS=0`: a squash commit has one parent, so a
+  merge-shaped or bare `Revert "…"` MR title fails. The
   husky hook keeps the lenient defaults on purpose, so a local `git revert`,
   `git commit --fixup` or `git pull` merge is not blocked mid-work; a `fixup!`
   commit has to be autosquashed before its MR pipeline goes green.
@@ -494,24 +508,28 @@ the husky `commit-msg` hook because the hook is inactive in a fresh clone until
   directly pushed commits), then re-land the change from a new branch with a
   conventional message (`git revert --no-commit <the revert commit>`, then
   `git commit -m 'fix: …'`).
-  Closing these before the merge is an **owner decision** (project settings,
-  not changed here):
+  Closing these before the merge was an **owner decision** (project settings,
+  not changed by code):
   - `squash_option: never` removes the squash case entirely. Cost: low,
     measured 2026-10-02: 3 of 71 merged MRs were squashed, the newest on
-    2026-05-22. The setting is `default_off` today.
+    2026-05-22. **Set by the owner on 2026-10-03** (was `default_off`;
+    verified via `glab api projects/:id` at 2026-10-03T06:47Z, #1507 item 5).
+    The title lint above stays as the guard should the setting ever change.
   - A push rule (`commit_message_regex`) would reject an edited message at
     merge time, but push rules are not available on this instance's tier
     (the push-rule API answers 404).
   A merge-commit message hand-edited in the dialog stays detectable only after
   the fact, as above.
-- **Suggestion commits (#1477 item 2, owner setting).** `suggestion_commit_message`
-  is unset in the project, so GitLab commits "Apply 1 suggestion(s) to 1 file(s)",
-  which fails `type-empty` / `subject-empty`. A template that passes (measured
-  exit 0 against the CI config, 2026-10-02):
+- **Suggestion commits (#1477 item 2, owner setting, set).** With
+  `suggestion_commit_message` unset, GitLab commits "Apply 1 suggestion(s) to
+  1 file(s)", which fails `type-empty` / `subject-empty`. A template that passes
+  (measured exit 0 against the CI config, 2026-10-02):
   `chore: Apply %{suggestions_count} suggestion(s) to %{files_count} file(s)`.
-  Keep `%{file_paths}` out of it: the template is the header, and a few paths
-  break `header-max-length 120`. Setting it is an owner action (project
-  setting `suggestion_commit_message`, under the merge-request settings).
+  **Set to exactly this template by the owner on 2026-10-03** (project setting
+  `suggestion_commit_message`, under the merge-request settings; verified via
+  `glab api projects/:id` at 2026-10-03T06:47Z, #1507 item 5). Keep
+  `%{file_paths}` out of it if it is ever edited: the template is the header,
+  and a few paths break `header-max-length 120`.
 - **Cancelled push pipelines (#1477 item 5, accepted ceiling).** An MR pipeline
   re-lints the whole MR range on every push. A direct push is linted per push
   only (`before-sha..sha`), and every job here is `interruptible` with

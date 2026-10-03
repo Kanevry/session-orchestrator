@@ -55,8 +55,8 @@ import {
   resolveGateTimeoutMs,
 } from './lib/gates/gate-helpers.mjs';
 import { buildCommandSignature, spawnInGroup } from './lib/process-group.mjs';
-import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
-import { findScopeFile } from './lib/scope-gate.mjs';
+import { classifyManifestSession, readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { findOwnScopeFile } from './lib/scope-gate.mjs';
 import { gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { shellQuote } from './lib/sh-quote.mjs';
@@ -271,8 +271,10 @@ function resolveLedgerRoot(value) {
  *
  * Mirrors `resolveWave()` in `hooks/pre-bash-memory-propose-audit.mjs` — the
  * same `.{pi,cursor,codex,claude}/wave-scope.json` precedence via
- * {@link findScopeFile} — with ONE deliberate difference: the hook returns `0`
- * for "no wave-scope file", this returns `null`.
+ * {@link findOwnScopeFile}, skipping a PEER session's manifest in the same
+ * working copy (#1504: a peer-only result is no wave of ours, never the peer's
+ * number) — with ONE deliberate difference: the hook returns `0` for "no
+ * wave-scope file", this returns `null`.
  *
  * Absent is not zero. A human running `npm run quality-gate` from a `git push`
  * has no wave at all, and that is the common case; publishing `wave_number: 0`
@@ -289,7 +291,8 @@ function resolveLedgerRoot(value) {
  */
 function resolveWaveNumber(projectDir) {
   try {
-    const waveFile = findScopeFile(projectDir);
+    const ownIds = new Set(readProcessLocalSessionIds({ env: process.env, hookInput: null }));
+    const { path: waveFile } = findOwnScopeFile(projectDir, ownIds, classifyManifestSession);
     if (!waveFile || !existsSync(waveFile)) return null;
     const wave = JSON.parse(readFileSync(waveFile, 'utf8'))?.wave;
     if (typeof wave !== 'number' || !Number.isFinite(wave) || wave <= 0) return null;

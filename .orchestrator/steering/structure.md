@@ -10,8 +10,8 @@
 
 | Path | Purpose |
 |------|---------|
-| `skills/` | 50 user-facing skills (+ `_shared/` internal) |
-| `commands/` | 2 command files (`/session`, `/templates-ack`). The other 24 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-09-22 (census below) |
+| `skills/` | 51 user-facing skills (+ `_shared/` internal) |
+| `commands/` | 2 command files (`/session`, `/templates-ack`). The other 25 slash commands are skills with explicit `user-invocable: true` — one definition per name (a command + same-named skill lists twice in the `/` picker); measured 2026-10-03 (census below) |
 | `agents/` | 14 sub-agent definitions (YAML frontmatter + Markdown body, + `schemas/` subdirectory). The authoring spec is NOT here — it lives in `docs/agent-authoring.md`, because Claude Code registers every `agents/*.md` as a dispatchable agent by directory convention |
 | `hooks/` | Hook event matchers + handlers (18 matcher entries / 27 plugin-wired handler files [28 on-disk; the extra one is Husky-wired — see Inventory below], 10 distinct events) |
 | `.orchestrator/policy/` | Runtime policy: `blocked-commands.json` (16 rules — 12 `severity: block`, 4 `severity: warn`); measured 2026-09-22 (census below) |
@@ -30,15 +30,15 @@
 | `.codex-plugin/` | Codex CLI plugin manifest |
 | `.cursor-plugin/plugin.json` | Portable plugin manifest; kept outside root so Codex resolves its native manifest |
 | `AGENTS.md` (root) | Byte-identical GENERATED copy of `CLAUDE.md` for the 7 of 8 harnesses that read `AGENTS.md` |
-| `.agents/skills/` | Portable GENERATED mirror of all 50 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
+| `.agents/skills/` | Portable GENERATED mirror of all 51 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |
 | `site/` | The public website (`index.html`, `llms.txt`, `llms-full.txt`, `_census.json`) |
 | `assets/` | Repo assets (`icon.svg`, `og-card.svg`, `wave-lifecycle.svg` — the README's rendered wave diagram) |
 
 ## Inventory (canonical)
 
-- **Skills:** 50 user-facing — measured 2026-09-16 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
-- **Slash commands:** 26 — measured 2026-09-22 (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): 2 command files (`/session`, `/templates-ack`) + 24 user-invocable skills (`/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/ux-grill`)
+- **Skills:** 51 user-facing — measured 2026-10-03 (`ls -d skills/*/ | grep -v _shared | wc -l`). `_shared/` is internal docs, not a skill.
+- **Slash commands:** 27 — measured 2026-10-03 (`{ ls commands/*.md | sed 's|commands/||; s|\.md$||'; grep -l '^user-invocable: true' skills/*/SKILL.md | sed 's|skills/||; s|/SKILL.md$||'; } | sort -u | wc -l`): 2 command files (`/session`, `/templates-ack`) + 25 user-invocable skills (`/autopilot`, `/bootstrap`, `/brainstorm`, `/close`, `/debug`, `/discovery`, `/dispatcher`, `/eli5`, `/eval`, `/evolve`, `/go`, `/grill`, `/harness-audit`, `/memory-cleanup`, `/persona-panel`, `/plan`, `/portfolio`, `/reconcile`, `/release`, `/repo-audit`, `/spinout`, `/sunset-review`, `/test`, `/test-audit`, `/ux-grill`)
 - **Agents:** 14 — measured 2026-09-06 (`ls agents/*.md | wc -l`): `analyst`, `architect-reviewer`, `code-implementer`, `db-specialist`, `dialectic-deriver`, `docs-writer`, `eval-judge`, `qa-strategist`, `security-reviewer`, `session-reviewer`, `skill-applied-judge`, `test-writer`, `ui-developer`, `ux-evaluator`
 - **Hook event matchers / handlers:** 18 matcher entries / 27 plugin-wired handler files (28 on-disk) — measured 2026-09-16 (`grep -c '"matcher"' hooks/hooks.json`; `grep -o '[a-z0-9-]*\.mjs' hooks/hooks.json | sort -u | wc -l`; `ls hooks/*.mjs | wc -l`). `hooks/wave-scope-commit-guard.mjs` is on-disk but intentionally NOT a plugin hook — it is the repository's Git pre-commit guard via Husky (`.husky/pre-commit`), because it guards git index/commit state rather than a plugin lifecycle event. Counting basis: "plugin-wired" = distinct `.mjs` filenames referenced inside `hooks/hooks.json`; "Husky-wired" = referenced inside `.husky/pre-commit`; "on-disk" = `ls hooks/*.mjs`.
 - **Rules:** 25 always-on files — measured 2026-09-16 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.

@@ -812,3 +812,57 @@ describe('suggestForEmptyScope — no branch carries a runnable shell command (#
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// findOwnScopeFile — #1504 point 6. Dynamic imports keep this block
+// self-contained; the classifier is the real one the hooks inject.
+// ---------------------------------------------------------------------------
+
+async function mkScopeRoot(manifests) {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'find-own-scope-'));
+  for (const [dir, body] of Object.entries(manifests)) {
+    mkdirSync(join(root, dir), { recursive: true });
+    writeFileSync(join(root, dir, 'wave-scope.json'), typeof body === 'string' ? body : JSON.stringify(body));
+  }
+  return { root, at: (dir) => join(root, dir, 'wave-scope.json') };
+}
+
+describe('findOwnScopeFile (#1504 point 6)', () => {
+  const OWN = new Set(['OWN-1']);
+  const PEER = { session_id: 'PEER-1', allowedPaths: [] };
+
+  async function resolve(manifests, ownIds = OWN) {
+    const { findOwnScopeFile } = await import('@lib/scope-gate.mjs');
+    const { classifyManifestSession } = await import('@lib/session-identity/own-session.mjs');
+    const { rmSync } = await import('node:fs');
+    const fx = await mkScopeRoot(manifests);
+    try {
+      return { result: findOwnScopeFile(fx.root, ownIds, classifyManifestSession), at: fx.at };
+    } finally {
+      rmSync(fx.root, { recursive: true, force: true });
+    }
+  }
+
+  it('skips a peer manifest that outranks ours and returns our own .claude one', async () => {
+    // Bug caught: first-EXISTING precedence let a peer's `.pi` manifest hide ours.
+    const { result, at } = await resolve({ '.pi': PEER, '.claude': { session_id: 'OWN-1' } });
+    expect(result).toEqual({ path: at('.claude'), foreignPath: at('.pi') });
+  });
+
+  it('does NOT skip a corrupt higher-precedence candidate — unknown means enforce', async () => {
+    // Bug caught: treating an unparseable manifest as skippable would let a
+    // truncated file hand the decision to a lower, laxer one.
+    const { result, at } = await resolve({ '.cursor': '{"session_id": "PEER', '.claude': { session_id: 'OWN-1' } });
+    expect(result.path).toBe(at('.cursor'));
+  });
+
+  it('returns no path and the FIRST foreign candidate when every candidate is foreign', async () => {
+    // Bug caught: losing the all-foreign case would drop the callers' existing
+    // allow + foreign_session_ignored disposition.
+    const { result, at } = await resolve({ '.codex': PEER, '.claude': { ...PEER, wave: 2 } });
+    expect(result).toEqual({ path: null, foreignPath: at('.codex') });
+  });
+});

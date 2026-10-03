@@ -385,6 +385,15 @@ lint:
 # config accepts only the merge and `Revert "…"`/`Reapply "…"` first lines git or
 # GitLab generate. The husky hook keeps the lenient defaults, so local
 # `git revert`/`--fixup` work.
+# Who wrote it (#1507 item 1): a first line alone let a normal commit titled
+# `Merge branch 'a' into b` or `Revert "x"` skip every rule. The range is linted
+# in two passes that together cover it exactly — `--no-merges` with
+# COMMITLINT_MERGE_COMMITS=0 (a merge-shaped subject is linted like any other)
+# and `--merges` with =1 (git counts two or more parents, so the merge shape is
+# accepted) — and a revert shape counts only with git's/GitLab's
+# `This reverts commit <sha>` / `This reverts merge request !<iid>` body line.
+# Either pass red = job red; each pass over an empty subset exits 0, which is
+# fine because the non-empty check above covers the union.
 #
 # Default branch (#1502): a red range on `main` prints the remedy — `main` cannot
 # be force-pushed, so the landed commit is reverted and the change re-landed.
@@ -440,7 +449,10 @@ commitlint:
         echo "[commitlint] FAIL: empty range - nothing was checked, which is not a pass"; exit 1;
       fi;
       git log --format='[commitlint]   %h %s' "$from..$CI_COMMIT_SHA";
-      if ! npx --no -- commitlint -g commitlint.ci.config.mjs --from "$from" --to "$CI_COMMIT_SHA" --verbose; then
+      rc=0;
+      COMMITLINT_MERGE_COMMITS=0 npx --no -- commitlint -g commitlint.ci.config.mjs --from "$from" --to "$CI_COMMIT_SHA" --git-log-args=--no-merges --verbose || rc=1;
+      COMMITLINT_MERGE_COMMITS=1 npx --no -- commitlint -g commitlint.ci.config.mjs --from "$from" --to "$CI_COMMIT_SHA" --git-log-args=--merges --verbose || rc=1;
+      if [ "$rc" -ne 0 ]; then
         if [ -n "$branch" ] && [ "$branch" = "$def" ]; then
           if git rev-parse -q --verify "$CI_COMMIT_SHA^2" >/dev/null; then undo="git revert -m 1 $CI_COMMIT_SHA"; else undo="git revert $from..$CI_COMMIT_SHA"; fi;
           echo "[commitlint] REMEDY: $def cannot be force-pushed, so these messages cannot be rewritten in place. Revert what landed ($undo) via an MR, then re-land the change from a new branch with a conventional message (git revert --no-commit <the revert commit>; git commit -m 'fix: ...'). See docs/ci-setup.md, commitlint job.";
@@ -451,7 +463,7 @@ commitlint:
         true)
           title=$(printf '%s\n' "${CI_MERGE_REQUEST_TITLE:-}" | sed -E 's/^((\[[Dd][Rr][Aa][Ff][Tt]\]|\([Dd][Rr][Aa][Ff][Tt]\)|[Dd][Rr][Aa][Ff][Tt]:)[[:space:]]*)+//');
           printf '[commitlint] squash merge - the MR title becomes the commit message, linting it: %s\n' "$title";
-          printf '%s\n' "$title" | npx --no -- commitlint -g commitlint.ci.config.mjs --verbose;;
+          printf '%s\n' "$title" | COMMITLINT_MERGE_COMMITS=0 npx --no -- commitlint -g commitlint.ci.config.mjs --verbose;;
         false)
           echo "[commitlint] MR title not linted: this MR does not squash on merge, so its commits (linted above) are what lands";;
         *)

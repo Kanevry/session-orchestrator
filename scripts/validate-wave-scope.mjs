@@ -35,6 +35,9 @@
  *                           `git ls-files` — spawned HERE, in the CLI layer,
  *                           because scripts/lib/scope-gate.mjs is hook-safe and
  *                           must not spawn a process (see its module header).
+ *                           Runs even when the manifest fails schema validation
+ *                           (#1026.4): it reads only the sidecar, so schema
+ *                           errors and collisions are reported together (exit 1).
  *   --union <path>          #1020. QUERY MODE. Read the same sidecar, compute
  *                           `expandTestSiblings(unionFileScopes(scopes), {role})`
  *                           using the MANIFEST'S OWN `role`, and print the
@@ -638,11 +641,24 @@ function knownRepoFiles() {
  * @param {string} sidecarPath
  */
 function assertDisjointOrDie(sidecarPath) {
+  if (!reportScopeCollisions(sidecarPath)) process.exit(1);
+}
+
+/**
+ * Run the #1020 collision check and write one stderr line per finding.
+ * Reads ONLY the sidecar, never the manifest — which is why {@link validate}
+ * can still run it when the manifest fails schema validation (#1026.4).
+ * Sidecar I/O and shape defects exit via {@link readAgentScopesOrDie}.
+ *
+ * @param {string} sidecarPath
+ * @returns {boolean} true when the wave is disjoint
+ */
+function reportScopeCollisions(sidecarPath) {
   const agentScopes = readAgentScopesOrDie(sidecarPath, '--assert-disjoint');
   const { ok, collisions, duplicateIds } = findScopeCollisions(agentScopes, {
     knownFiles: knownRepoFiles(),
   });
-  if (ok) return;
+  if (ok) return true;
 
   // Duplicate ids FIRST: they are a malformed plan, and a reader who fixes them
   // may well change which collisions remain.
@@ -659,7 +675,7 @@ function assertDisjointOrDie(sidecarPath) {
   process.stderr.write(
     `ERROR: ${collisions.length} scope collision(s), ${duplicateIds.length} duplicate id(s) — every file must belong to exactly ONE agent per wave (#1020; .claude/rules/parallel-sessions.md § Decision Tree)\n`,
   );
-  process.exit(1);
+  return false;
 }
 
 /**
@@ -709,6 +725,9 @@ function validate(
     for (const e of errors) {
       process.stderr.write(`ERROR: ${e}\n`);
     }
+    // #1026.4 — the collision check reads only the sidecar, so a schema error
+    // must not hide its findings: report both, exit 1 either way.
+    if (assertDisjointPath) reportScopeCollisions(assertDisjointPath);
     process.exit(1);
   }
 

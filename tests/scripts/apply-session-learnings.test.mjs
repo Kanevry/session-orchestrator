@@ -11,7 +11,7 @@
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -247,6 +247,21 @@ describe('apply-session-learnings CLI', () => {
     const { repo, metrics } = makeRepo();
     const foreign = makeRepo();
     const result = runCli(repo, ['--apply', '--json', '--file', foreign.store], {});
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toMatch(/lies outside --repo-root/);
+    expect(backupsIn(foreign.metrics)).toHaveLength(1);
+    expect(eventsIn(metrics)).toBe(false);
+  });
+
+  // #1506.4b: the inside check was lexical, so a symlinked directory inside the
+  // repo pointing at a foreign store passed it and the event claimed a write to
+  // this repo's `linked/learnings.jsonl` that landed in the other repo.
+  it('--apply through a symlinked directory inside --repo-root to a foreign store pins no event', () => {
+    const { repo, metrics } = makeRepo();
+    const foreign = makeRepo();
+    symlinkSync(foreign.metrics, path.join(repo, 'linked'), 'dir');
+    const result = runCli(repo, ['--apply', '--json', '--file', path.join('linked', 'learnings.jsonl')], {});
 
     expect(result.status).toBe(0);
     expect(result.stderr).toMatch(/lies outside --repo-root/);

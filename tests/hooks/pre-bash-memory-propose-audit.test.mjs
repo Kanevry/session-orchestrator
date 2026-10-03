@@ -689,3 +689,43 @@ describe('G7 — cwd is relative to the project dir, never absolute', { timeout:
     expect(JSON.stringify(events[0]).includes('alice')).toBe(false);
   });
 });
+
+describe('G5 wave — session root and manifest ownership (#1504)', () => {
+  it("records wave 0, not a PEER session's wave, when the only manifest is a peer's", async () => {
+    // Bug caught: findScopeFile() took the first manifest that exists, so a
+    // peer's manifest in the same working copy put the PEER's wave on this
+    // session's propose_invoked record.
+    const dir = await mkProjectTracked();
+    await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 7, session_id: 'peer-session-zz' }),
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'own-session-aa' }),
+    });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].wave).toBe(0);
+  });
+
+  it('reads the wave at the worktree the payload cwd sits in, not at the launch dir', async () => {
+    // Bug caught: the wave was read at $CLAUDE_PROJECT_DIR — the launch dir —
+    // so a session working in an entered worktree recorded wave 0.
+    const dir = await mkProjectTracked();
+    const wt = await mkProjectTracked();
+    await fs.mkdir(path.join(wt, '.git'), { recursive: true });
+    await fs.mkdir(path.join(wt, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(wt, '.claude', 'wave-scope.json'), JSON.stringify({ wave: 5 }));
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1', cwd: wt }),
+    });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].wave).toBe(5);
+  });
+});

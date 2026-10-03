@@ -16,6 +16,9 @@ import path from 'node:path';
 
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 
+/** The harness state dirs a `wave-scope.json` may live in, highest precedence first. */
+const SCOPE_FILE_DIRS = Object.freeze(['.pi', '.cursor', '.codex', '.claude']);
+
 /**
  * Find the wave-scope.json file for the given project root.
  *
@@ -28,17 +31,79 @@ import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './comma
  * Returns the absolute path string, or null if none exist.
  * Sync (uses fs.existsSync).
  *
+ * @deprecated Use findOwnScopeFile because first-file selection ignores manifest ownership and can select a peer session's manifest.
  * @param {string} projectRoot — absolute path to project root
  * @returns {string|null}
  */
 export function findScopeFile(projectRoot) {
-  for (const dir of ['.pi', '.cursor', '.codex', '.claude']) {
+  for (const dir of SCOPE_FILE_DIRS) {
     const candidate = path.join(projectRoot, dir, 'wave-scope.json');
     if (existsSync(candidate)) {
       return candidate;
     }
   }
   return null;
+}
+
+/**
+ * The manifest that governs THIS session: walk the {@link findScopeFile}
+ * precedence (`.pi` > `.cursor` > `.codex` > `.claude`) and return the first
+ * candidate that is NOT provably bound to another session (#1504 point 6).
+ *
+ * `findScopeFile` stops at the first file that EXISTS. When that file is a
+ * peer's — another harness session's manifest in the same working copy — every
+ * guard that stands down on a foreign manifest stood down, and this session's
+ * own `.claude/wave-scope.json` one rung lower was never read: a peer's
+ * manifest switched this session's scope gates off.
+ *
+ * Disposition per candidate, decided INSIDE the loop (an identity check after
+ * the loop makes the first readable candidate the veto-holder —
+ * `.claude/rules/identity-and-locks.md`):
+ *   - `'own'` or `'unknown'` → return it. `'unknown'` covers an unbound/legacy
+ *     manifest, a corrupt or unreadable one (judged as `{}`), and an empty
+ *     `ownIds` (a harness that supplies no session id). Each means ENFORCE
+ *     under the binding contract, so each stays the decider exactly as under
+ *     `findScopeFile` — a truncated manifest cannot skip itself.
+ *   - `'foreign'` → remember the first one and `continue`.
+ *
+ * When EVERY existing candidate is foreign, `path` is null and `foreignPath`
+ * names the first of them, so the caller reaches its existing foreign
+ * disposition (allow + `orchestrator.scope.foreign_session_ignored`) unchanged.
+ *
+ * `classify` is injected, not imported: importing the identity module here
+ * would add it to the import closure of every hook that reaches this file
+ * through the `hardening.mjs` barrel, while only the guards that stand down on
+ * a foreign manifest need it — and each of them already binds it. Pass
+ * `classifyManifestSession` from `session-identity/own-session.mjs`.
+ *
+ * COST: identical to `findScopeFile` when no manifest exists (≤4 `existsSync`).
+ * With one, one extra sync read + parse of that small file. The caller still
+ * reads the returned file itself and classifies THAT read, so a rebind between
+ * the two reads is judged at the same decision point as before.
+ *
+ * Sync. Never throws (unless `classify` does).
+ *
+ * @param {string} projectRoot absolute path to the project root
+ * @param {Set<string>} ownIds process-local own ids (`readProcessLocalSessionIds`)
+ * @param {(scope: object, ownIds: Set<string>) => { verdict: string }} classify
+ * @returns {{ path: string|null, foreignPath: string|null }}
+ */
+export function findOwnScopeFile(projectRoot, ownIds, classify) {
+  let foreignPath = null;
+  for (const dir of SCOPE_FILE_DIRS) {
+    const candidate = path.join(projectRoot, dir, 'wave-scope.json');
+    if (!existsSync(candidate)) continue;
+    let scope = {};
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, 'utf8'));
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) scope = parsed;
+    } catch {
+      // unreadable / corrupt → `{}` → no binding → 'unknown' → this candidate decides
+    }
+    if (classify(scope, ownIds).verdict !== 'foreign') return { path: candidate, foreignPath };
+    foreignPath ??= candidate;
+  }
+  return { path: null, foreignPath };
 }
 
 /**
@@ -190,7 +255,8 @@ function literalScopePrefix(entry) {
  * verbatim presence + literal-prefix coverage; it does not prove that e.g.
  * `src/**\/*.ts` ⊆ `src/**\/*.js` is false. The concrete-path branch above is
  * exact and carries the incident-relevant load (the union the coordinator
- * actually writes is verbatim, deduplicated agent scopes). Erring toward
+ * actually writes is the deduplicated agent scopes in canonical spelling, see
+ * {@link unionFileScopes}). Erring toward
  * over-approximating coverage keeps a legitimate union from being rejected on a
  * glob technicality rather than pretending to a precision this matcher lacks.
  *
@@ -211,16 +277,21 @@ export function assertFileScopeSubset(fileScope, allowedPaths) {
   const missing = [];
   for (const entry of fileScope) {
     if (typeof entry !== 'string' || entry.length === 0) continue;
+    // The AGENT side is compared in canonical spelling — the spelling the union
+    // emits and the write path Gate 7 matches. `allowedPaths` stays as written:
+    // a hand-written `./x` there is a pattern Gate 7 cannot match, and spelling
+    // it away here would report coverage the hook then denies.
+    const spelled = scopeEntrySpelling(entry);
     let covered;
-    if (isGlobScopeEntry(entry)) {
+    if (isGlobScopeEntry(spelled)) {
       // GLOB entry: verbatim presence OR literal-prefix coverage.
-      const prefix = literalScopePrefix(entry);
-      covered = allowedPaths.some((p) => p === entry || pathMatchesPattern(prefix, p));
+      const prefix = literalScopePrefix(spelled);
+      covered = allowedPaths.some((p) => p === spelled || pathMatchesPattern(prefix, p));
     } else {
       // CONCRETE entry: must match ≥1 allowedPaths pattern.
-      covered = allowedPaths.some((p) => pathMatchesPattern(entry, p));
+      covered = allowedPaths.some((p) => pathMatchesPattern(spelled, p));
     }
-    if (!covered) missing.push(entry);
+    if (!covered) missing.push(entry); // as declared, so the plan entry is findable
   }
   return { ok: missing.length === 0, missing };
 }
@@ -329,13 +400,16 @@ export function testSiblingExpansionApplies(opts = {}) {
  *
  * ## Why a GLOB and not a computed path
  * The emitted sibling is `tests/**\/{basename}*.test.mjs`, never a concrete
- * path. Measured over all 430 tracked production `.mjs` in this repo:
- * a naive 1:1 mirror (`scripts/lib/X.mjs → tests/lib/X.test.mjs`) is right
- * 301/430 = 70.0% (`hooks/_lib` 0/5, `scripts/ci/` 0/1); a same-basename test
- * ANYWHERE under `tests/` is right 368/430 = 85.6%. The glob takes the 85.6%
- * form, and its failure mode is HARMLESS — it grants write access to files that
- * may not exist. A computed concrete path is wrong 30% of the time AND still
- * denies the real test, which is the original bug wearing a new face.
+ * path: a same-basename test ANYWHERE under `tests/` resolves for far more
+ * production files than a naive 1:1 mirror (`scripts/lib/X.mjs →
+ * tests/lib/X.test.mjs`). The DATED figures — population, both ratios, the
+ * measuring command and the SHA — live in ONE place:
+ * skills/wave-executor/references/wave-loop-scope-manifest.md § Test-Sibling
+ * Expansion (#970). Cite and re-measure them there, never restate them here: an
+ * undated copy drifted to a second, contradicting set of numbers (#1026.5,
+ * PSA-006 item 4). The glob's failure mode is HARMLESS — it grants write access
+ * to files that may not exist. A computed concrete path is wrong more often AND
+ * still denies the real test, which is the original bug wearing a new face.
  *
  * ## Required behaviours (each is a nameable regression)
  *  1. `[]` → `[]` STRUCTURALLY. Discovery waves use an empty scope as a
@@ -403,8 +477,11 @@ export function testSiblingsFor(entries, opts = {}) {
     : DEFAULT_TEST_PATH_PATTERNS;
   const out = [];
   const seen = new Set();
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    if (typeof entry !== 'string' || entry.length === 0) continue;
+  for (const declared of Array.isArray(entries) ? entries : []) {
+    if (typeof declared !== 'string' || declared.length === 0) continue;
+    // Canonical spelling, as the union carries it: a verbatim `./tests/x.mjs`
+    // misses `tests/**` and would be mirrored as if it were production code.
+    const entry = scopeEntrySpelling(declared);
     if (path.isAbsolute(entry)) continue; // behaviour 3
     if (isGlobScopeEntry(entry)) continue; // no single basename to mirror
     if (isTestPathEntry(entry, testPatterns)) continue; // behaviours 2 + 4
@@ -1012,6 +1089,14 @@ export function isScopeDeclarationPath(relPath, scopeRelPath) {
  * non-array / non-object members and non-string, empty entries are skipped.
  * Pure, sync, no I/O — hook-safe per the module header.
  *
+ * ENTRIES ARE EMITTED IN CANONICAL SPELLING ({@link scopeEntrySpelling}) and
+ * deduplicated on it. Gate 7 matches the repo-relative WRITE path against each
+ * entry, so a verbatim `./scripts/lib/foo.mjs` was a pattern no write could
+ * ever match — the declaring agent's own write was denied — and kept a second
+ * spelling of `scripts/lib/foo.mjs` beside it. The agent-side checks
+ * ({@link assertFileScopeSubset}, {@link testSiblingsFor}) compare the same
+ * spelling, so a per-agent file that keeps the plan's `./x` still passes.
+ *
  * PEER RECORDS ARE EXCLUDED (#1195 follow-through). A record whose id starts
  * with `peer-session-` declares a territory NO agent of this wave may write —
  * it exists so a peer's paths take part in the DISJOINTNESS check and so
@@ -1042,9 +1127,10 @@ export function unionFileScopes(scopes) {
     if (files === null) continue;
     for (const entry of files) {
       if (typeof entry !== 'string' || entry.length === 0) continue;
-      if (seen.has(entry)) continue;
-      seen.add(entry);
-      out.push(entry);
+      const spelled = scopeEntrySpelling(entry);
+      if (seen.has(spelled)) continue;
+      seen.add(spelled);
+      out.push(spelled);
     }
   }
   return out;
@@ -1169,8 +1255,11 @@ function globsDisagreeOnLiteralSegment(x, y) {
  * NEGATIVE — the whole point of this function is that an unreviewed scope is
  * exactly the one that collides.
  *
+ * `files` holds each entry's comparison SPELLING ({@link scopeEntrySpelling});
+ * `declared` holds the entry as written, index-aligned, for the evidence report.
+ *
  * @param {Array<{id?: string, files?: string[]}>} agentScopes
- * @returns {Array<{id: string, declaredId: string|null, files: string[]}>}
+ * @returns {Array<{id: string, declaredId: string|null, files: string[], declared: string[]}>}
  */
 function normalizeAgentScopes(agentScopes) {
   const out = [];
@@ -1178,12 +1267,41 @@ function normalizeAgentScopes(agentScopes) {
     const raw = agentScopes[i];
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const declaredId = typeof raw.id === 'string' && raw.id.length > 0 ? raw.id : null;
-    const files = Array.isArray(raw.files)
+    const declared = Array.isArray(raw.files)
       ? raw.files.filter((f) => typeof f === 'string' && f.length > 0)
       : [];
-    out.push({ id: declaredId ?? `<unnamed#${i}>`, declaredId, files });
+    const files = declared.map(scopeEntrySpelling);
+    out.push({ id: declaredId ?? `<unnamed#${i}>`, declaredId, files, declared });
   }
   return out;
+}
+
+/**
+ * One scope entry's canonical SPELLING — THE spelling rule of this module.
+ * Used by the collision comparison (#1026.3), by {@link unionFileScopes} (whose
+ * output IS `allowedPaths`, so Gate 7 sees this spelling), and on the agent side
+ * of {@link assertFileScopeSubset} / {@link testSiblingsFor}, so a per-agent file
+ * that keeps the plan's declaration verbatim still agrees with the union.
+ * Equal-meaning spellings compared unequal before: `./scripts/lib/foo.mjs` vs
+ * `scripts/lib/foo.mjs` was reported disjoint (measured 2026-10-03 @ 8292050e).
+ * It changes no grant's MEANING — only how one is spelled.
+ *
+ * Collapses runs of `/` and drops `.` segments (`./a`, `a/./b`). A leading `/`
+ * (absolute entry) and a trailing `/` survive: the trailing slash is meaning,
+ * not spelling — `scripts/lib/` is a prefix grant, while `scripts/lib` grants
+ * only the literal path `scripts/lib` (`pathMatchesPattern('scripts/lib/foo.mjs',
+ * 'scripts/lib') === false`), so those two stay disjoint.
+ *
+ * NAMED CEILING: `..` segments are left alone — `a/../b` is not provably `b`
+ * when `a` is a glob segment. Revisit if a plan ever declares a `..` entry.
+ *
+ * @param {string} entry - a non-empty scope entry
+ * @returns {string}
+ */
+function scopeEntrySpelling(entry) {
+  const spelled = entry.replace(/\/{2,}/g, '/').replace(/(^|\/)(?:\.\/)+/g, '$1');
+  // `./` alone would spell as '' — keep the entry rather than invent a meaning.
+  return spelled.length > 0 ? spelled : entry;
 }
 
 /**
@@ -1363,17 +1481,19 @@ export function findScopeCollisions(agentScopes, opts = {}) {
       const b = agents[j];
       if (a.id === b.id) continue; // duplicate-id record: reported separately
       const buckets = new Map();
-      for (const x of a.files) {
-        for (const y of b.files) {
-          const kind = classifyEntryCollision(x, y, expand);
+      // Classify on the comparison spelling; report the entry AS DECLARED, so
+      // the operator can find it in the plan (#1026.3).
+      for (let xi = 0; xi < a.files.length; xi++) {
+        for (let yi = 0; yi < b.files.length; yi++) {
+          const kind = classifyEntryCollision(a.files[xi], b.files[yi], expand);
           if (kind === null) continue;
           let evidence = buckets.get(kind);
           if (evidence === undefined) {
             evidence = new Set();
             buckets.set(kind, evidence);
           }
-          evidence.add(x);
-          evidence.add(y);
+          evidence.add(a.declared[xi]);
+          evidence.add(b.declared[yi]);
         }
       }
       for (const kind of KIND_ORDER) {

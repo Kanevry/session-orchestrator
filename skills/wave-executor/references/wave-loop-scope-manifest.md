@@ -16,12 +16,12 @@ Before each wave dispatch:
    **Deriving `blockedCommands` (effective floor∪overlay policy, #155/#972):** Before writing `wave-scope.json`, derive the blocked patterns from the EFFECTIVE policy via the shared merge module — the plugin's floor policy united with the repo's overlay policy. (A bare `jq` over the repo-local policy file alone under-counts the merged result since #972.)
    ```bash
    BLOCKED=$(node --input-type=module -e "
-   import { loadEffectivePolicy } from '$PLUGIN_ROOT/scripts/lib/blocked-commands-policy.mjs';
+   import { loadEffectivePolicy, blockedCommandPatterns } from '$PLUGIN_ROOT/scripts/lib/blocked-commands-policy.mjs';
    const { rules } = await loadEffectivePolicy({ cwd: process.cwd(), projectDir: process.env.CLAUDE_PROJECT_DIR ?? null, pluginRoot: '$PLUGIN_ROOT' });
-   console.log(JSON.stringify((rules ?? []).filter(r => r.severity === 'block').map(r => r.pattern)));
+   console.log(JSON.stringify(blockedCommandPatterns(rules)));
    ")
    ```
-   Use `$BLOCKED` as the `blockedCommands` value in `wave-scope.json`. Since #972 this is the effective floor∪overlay policy — identical to what the destructive-guard hook enforces.
+   Use `$BLOCKED` as the `blockedCommands` value in `wave-scope.json`. Since #972 the rules come from the effective floor∪overlay policy the destructive-guard hook enforces. `blockedCommandPatterns()` keeps only the UNTYPED `block` rules (#1509): a typed rule (`redirect-truncate`, `path-delete`) carries a target-decided `pattern` (`">"`, a free-text label) that `hooks/enforce-commands.mjs` would misread as a command pattern. The destructive guard still enforces the typed rules on every Bash call — do not re-inline the filter here.
 
    **Fallback:** If the command fails or prints `[]` (neither the plugin's floor policy nor a repo policy resolvable — pre-#155 setup), use the legacy hardcoded array and log a warning in the wave progress update:
    ```bash
@@ -49,7 +49,7 @@ Before each wave dispatch:
      "session_id": "<raw session id from attributionForRecord(); OMIT the key if unavailable>",
      "semantic_session_id": "<semantic_session_id from the same call; OMIT if unavailable>",
      "allowedPaths": ["<from agent specs in session plan>"],
-     "blockedCommands": "<derived dynamically from the effective floor∪overlay policy via loadEffectivePolicy (severity: block rules, #972); falls back to legacy 5-element array if no policy resolves>",
+     "blockedCommands": "<derived dynamically from the effective floor∪overlay policy via loadEffectivePolicy + blockedCommandPatterns (untyped severity: block rules, #972/#1509); falls back to legacy 5-element array if no policy resolves>",
      "gates": "<copy of enforcement-gates from Session Config, or omit if unset>"
    }
    ```

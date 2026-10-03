@@ -24,6 +24,7 @@
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { expandTilde } from '../../../scripts/lib/common.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -73,9 +74,12 @@ function parseFrontmatter(text) {
 // Helpers
 // ---------------------------------------------------------------------------
 
+// #1506 pt 6: the committed value is `~/Projects/vault`; unexpanded it resolved
+// against the cwd (`<cwd>/~/Projects/vault`), where a stray `~` directory
+// produced a false all-clear (0 stale narratives instead of 33).
 function resolveVaultDir(projectRoot, config) {
-  if (config?.['vault-integration']?.['vault-dir']) return config['vault-integration']['vault-dir'];
-  if (process.env.VAULT_DIR) return process.env.VAULT_DIR;
+  if (config?.['vault-integration']?.['vault-dir']) return expandTilde(config['vault-integration']['vault-dir']);
+  if (process.env.VAULT_DIR) return expandTilde(process.env.VAULT_DIR);
   return null;
 }
 

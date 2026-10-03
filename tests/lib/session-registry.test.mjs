@@ -68,9 +68,11 @@ describe('session-registry', () => {
       expect(a).toMatch(/^[a-f0-9]{64}$/);
     });
 
-    it('normalises relative and absolute equivalents of the cwd', () => {
-      const abs = repoPathHash(process.cwd());
-      const rel = repoPathHash('.');
+    it('normalises relative and absolute equivalents of a cwd-relative path', () => {
+      // Not the cwd itself: since #1505.1 the module imports session-lock.mjs,
+      // and validate-plugin R2 rejects a real repo root reaching that closure.
+      const abs = repoPathHash(path.resolve('not-a-real-subdir'));
+      const rel = repoPathHash('not-a-real-subdir');
       expect(abs).toBe(rel);
     });
 
@@ -254,6 +256,28 @@ describe('session-registry', () => {
       await registerSelf({ sessionId: 'b', projectRoot: '/tmp/b' });
       const peers = await detectPeers();
       expect(peers.map((p) => p.session_id).sort()).toEqual(['a', 'b']);
+    });
+  });
+
+  describe('a heartbeat stamped in the future (#1505.1)', () => {
+    // BUG THIS CATCHES: `_ageMinutes` returned `now - t` unguarded, so an entry
+    // stamped a year ahead had a negative age — "fresh" for detectPeers and
+    // isRegistryEntryFresh, and never over sweepZombies' threshold, for a year.
+    it('is neither fresh nor a peer, and is swept once its file was last written long ago', async () => {
+      const { isRegistryEntryFresh, detectPeers } = await import('@lib/session-registry.mjs');
+      await registerSelf({ sessionId: 'ahead', projectRoot: '/tmp/a' });
+      const p = path.join(tmpBase, 'active', 'ahead.json');
+      const entry = JSON.parse(await readFile(p, 'utf8'));
+      entry.last_heartbeat = new Date(Date.now() + 365 * 24 * 3600_000).toISOString();
+      await writeFile(p, JSON.stringify(entry, null, 2) + '\n');
+
+      expect(isRegistryEntryFresh(entry)).toBe(false);
+      expect((await detectPeers({ sessionId: 'me' })).map((e) => e.session_id)).not.toContain('ahead');
+      // Just written — a live writer's file is young by mtime: kept.
+      expect((await sweepZombies({ thresholdMin: 60 })).removed).toEqual([]);
+      const old = new Date(Date.now() - 120 * 60_000);
+      await utimes(p, old, old);
+      expect((await sweepZombies({ thresholdMin: 60 })).removed).toEqual(['ahead.json']);
     });
   });
 

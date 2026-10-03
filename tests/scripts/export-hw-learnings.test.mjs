@@ -699,6 +699,29 @@ describe('resolveDefaultOutput', () => {
     expect(resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS })).toBeNull();
   });
 
+  // #1506.4a: the default target is the vault, but the off switch was never read,
+  // so the export wrote into the vault with the integration disabled.
+  it('returns null when vault-integration.enabled is false even though vault-dir is set', () => {
+    writeFileSync(
+      join(tmp, 'CLAUDE.md'),
+      [
+        '# Fixture',
+        '',
+        '## Session Config',
+        '',
+        'persistence: true',
+        '',
+        'vault-integration:',
+        '  enabled: false',
+        `  vault-dir: ${join(tmp, 'my-vault')}`,
+        '  mode: warn',
+        '',
+      ].join('\n'),
+    );
+
+    expect(resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS })).toBeNull();
+  });
+
   it('returns null when no CLAUDE.md/AGENTS.md exists at repoRoot', () => {
     expect(resolveDefaultOutput({ repoRoot: tmp, hostPaths: HOST_PATHS })).toBeNull();
   });

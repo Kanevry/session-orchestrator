@@ -766,6 +766,24 @@ describe('validate-wave-scope.mjs — --expand-test-siblings (#970)', () => {
     expect(r.stderr).toMatch(/does not grant the test sibling/);
   });
 
+  // BUG: `--union` emits the canonical spelling (`scripts/lib/foo.mjs`) while
+  // the per-agent file keeps the plan's declaration (`./scripts/lib/foo.mjs`).
+  // Compared raw, the subset check rejected the agent's own entry, and the
+  // sibling check read `./tests/lib/helper.mjs` as production code (it does not
+  // match `tests/**`) and demanded a sibling the union never synthesizes.
+  it('accepts a ./-declared agent against the canonical union --union emits', () => {
+    const union = {
+      ...VALID,
+      role: 'Impl-Polish',
+      allowedPaths: ['scripts/lib/foo.mjs', 'tests/lib/helper.mjs', 'tests/**/foo*.test.mjs'],
+    };
+    const r = runSiblings(union, ['./scripts/lib/foo.mjs', './tests/lib/helper.mjs'], [
+      '--expand-test-siblings',
+    ]);
+    expect(stderrSansSessionWarn(r.stderr)).toBe('');
+    expect(r.status).toBe(0);
+  });
+
   it('does NOT weaken --assert-subset: the plain subset failure keeps its exact message', () => {
     // The #796 assertion runs FIRST and unchanged. An entry outside the union
     // must still fail with the original wording, not the #970 one.

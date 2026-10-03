@@ -75,6 +75,7 @@ import crypto from 'node:crypto';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 import { stableHostname } from '../scripts/lib/host-identity.mjs';
+import { dotGitAncestor, launchDirFromEnv } from '../scripts/lib/platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -400,16 +401,36 @@ function deriveAgentId() {
 }
 
 /**
- * Resolve the project directory the hook should operate against. Mirrors
- * pre-bash-memory-propose-audit.mjs resolution: prefer CLAUDE_PROJECT_DIR /
- * CODEX_PROJECT_DIR env-vars, fall back to cwd.
+ * The repo whose fence directory this `git add` is recorded in — the SAME root
+ * the reader uses (#1504 point 4). The only reader, `hooks/wave-scope-commit-guard.mjs`,
+ * runs as git's pre-commit hook and walks `<git rev-parse --show-toplevel>/.orchestrator/staging-fence/`,
+ * i.e. the work-tree root the commit is made in. `dotGitAncestor(cwd)` is that
+ * root without a spawn: the nearest `.git` entry at or above the payload `cwd` —
+ * the worktree root for a session that entered a worktree (measured 2026-10-03:
+ * launch dir `<main>`, cwd `<worktree>/sub` → `<worktree>`, git toplevel
+ * `<worktree>`), the repo root for a launch in a repo SUBDIRECTORY. The launch
+ * dir (`$CLAUDE_PROJECT_DIR`) was wrong in both: the fence landed where no
+ * commit guard looked, and every cross-agent overlap passed.
  *
+ * Deliberately NOT `resolveSessionRoot()`: its clamp answers the launch
+ * SUBDIRECTORY of a monorepo package, while git's toplevel is the repo root.
+ *
+ * Fallback when the payload carries no `cwd`, or `cwd` is in no repo (where no
+ * commit can read a fence anyway): the launch dir from env, then `process.cwd()`.
+ *
+ * NAMED CEILING (BV-004): the root follows the payload `cwd`, not the command —
+ * `git -C <other-tree> add` or `cd <other-tree> && git add` records the intent
+ * in the CURRENT tree's fence dir while the commit in `<other-tree>` reads its
+ * own, so that overlap stays unseen (as before). Revisit if a fence miss is
+ * ever traced to a redirected `git add`; the fix then is to resolve the root
+ * from the tokenized command's `-C` / leading `cd`.
+ *
+ * @param {object|null} input  the hook payload
  * @returns {string}
  */
-function resolveProjectDir() {
-  return process.env.CLAUDE_PROJECT_DIR
-    ?? process.env.CODEX_PROJECT_DIR
-    ?? process.cwd();
+function resolveFenceRoot(input) {
+  const cwd = typeof input?.cwd === 'string' ? input.cwd.trim() : '';
+  return (cwd !== '' && dotGitAncestor(cwd)) || launchDirFromEnv() || process.cwd();
 }
 
 /**
@@ -494,7 +515,7 @@ async function main() {
   if (!recognised) return emitAllow();
 
   // G5 — derive paths.
-  const projectDir = resolveProjectDir();
+  const projectDir = resolveFenceRoot(input);
   const agentId = deriveAgentId();
   const fenceFile = path.join(
     projectDir,

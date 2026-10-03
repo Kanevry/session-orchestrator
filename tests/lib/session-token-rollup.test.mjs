@@ -779,6 +779,8 @@ describe('rollupSessionTokens — schema_version 2 (#1244)', () => {
     { name: 'a v1 stop of an agent that later stopped under v2', records: [stop({ agent_id: 'known', schema_version: 1, timestamp: '2026-09-09T09:00:00.000Z' }), known], priced: 1, total: 1, cost: KNOWN_COST, output: 10 },
     // #1487 Pkt 1: a v1-only agent is ONE unpriced candidate however often it stopped — counting per record would report 1 of 3.
     { name: 'a v1-only agent that stopped twice', records: [known, stop({ agent_id: 'y', schema_version: 1 }), stop({ agent_id: 'y', schema_version: 1, timestamp: '2026-09-09T11:00:00.000Z' })], priced: 1, total: 2, cost: null, output: 10 },
+    // #1487.17 (661fdd55): a started agent without a transcript is ONE unpriced candidate however often it stopped. Bug caught: counting per record reports total 3, not 2.
+    { name: 'a started agent without a transcript that stopped twice', records: [known, noTranscript({ start_record_found: true }), noTranscript({ start_record_found: true, timestamp: '2026-09-09T11:00:00.000Z' })], priced: 1, total: 2, cost: null, output: 10 },
   ])('$name → priced $priced / total $total', ({ records, priced, total, cost, output }) => {
     const r = rollupSessionTokens({ parentSessionId: 'S', subagentsPath: write(records) });
     expect(r.cost_records_priced).toBe(priced);

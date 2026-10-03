@@ -858,6 +858,30 @@ describe('foreign-session manifest (#1153 P1)', { timeout: 15000 }, () => {
     });
     expectDeny(result, 'npm test');
   });
+
+  it("DENIES from this session's own .claude manifest when a peer's .codex manifest outranks it (#1504 point 6)", async () => {
+    // BUG: G3 took the FIRST existing manifest (.pi > .cursor > .codex > .claude);
+    // the peer's .codex one read foreign, G3b stood down and ALLOWED `npm test`,
+    // and this session's own .claude manifest one rung lower was never read.
+    // The peer blocks a DIFFERENT command, so the deny can only come from ours.
+    const dir = await mkProjectTracked({
+      ...FOREIGN_CMD_SCOPE,
+      session_id: 'OWN-UUID-2222',
+      semantic_session_id: 'main-2026-01-01-session-1',
+    });
+    await fs.mkdir(path.join(dir, '.codex'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.codex', 'wave-scope.json'),
+      JSON.stringify({ ...FOREIGN_CMD_SCOPE, blockedCommands: ['git push'] }),
+    );
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('npm test'),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, 'npm test');
+    expect(await readCmdEvents(dir)).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -108,7 +108,11 @@ let isPathInside;
 let relativeFromRoot;
 let resolveProjectDir;
 let resolveSessionRoot;
-let findScopeFile;
+// The launch dir the harness states — platform.mjs's one definition of the env
+// chain, so the relocation trace below cannot drift from the clamp (#1504).
+let launchDirFromEnv;
+// #1504 point 6 — the manifest that governs THIS session; bound from scope-gate below.
+let findOwnScopeFile;
 let pathMatchesPattern;
 let suggestForScopeViolation;
 let readJson;
@@ -198,8 +202,8 @@ async function bootstrap() {
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   ({ isPathInside, relativeFromRoot } = modules.pathUtils);
-  ({ resolveProjectDir, resolveSessionRoot } = modules.platform);
-  ({ findScopeFile, pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
+  ({ resolveProjectDir, resolveSessionRoot, launchDirFromEnv } = modules.platform);
+  ({ pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({
     classifyEmptyScope,
@@ -207,6 +211,7 @@ async function bootstrap() {
     sessionStartedAtMs,
     gradeScopeEntry,
     canonicalizeGrantPrefix,
+    findOwnScopeFile,
   } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
 }
@@ -242,9 +247,26 @@ async function main() {
     projectRoot = projectRootRaw;
   }
 
-  // Gate 3: no wave-scope.json → nothing to enforce
-  const scopePath = findScopeFile(projectRoot);
-  if (!scopePath) return emitAllow();
+  // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
+  // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
+  // ownIds : new Set()` — a bare array would silently become EMPTY, making
+  // every manifest read `unknown`. Process-local only (#1194, see Gate 3b).
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+
+  // Gate 3: no wave-scope.json → nothing to enforce.
+  //
+  // #1504 point 6 — the first manifest that is not provably a peer's, in the
+  // `.pi` > `.cursor` > `.codex` > `.claude` order. `findScopeFile` stopped at
+  // the first file that exists, so a peer's `.pi`/`.cursor` manifest made Gate
+  // 3b stand down and this session's own `.claude/wave-scope.json` was never
+  // read. Only when EVERY candidate is foreign does the first of them come back
+  // (`foreignPath`), so Gate 3b's stand-down below stays unchanged.
+  const located = findOwnScopeFile(projectRoot, ownIds, classifyManifestSession);
+  const scopePath = located.path ?? located.foreignPath;
+  if (!scopePath) {
+    await recordHiddenManifestOncePerWave({ projectRootRaw, projectRoot, ownIds, filePath });
+    return emitAllow();
+  }
 
   // SECURITY-REQ-08: read scope file once; pass parsed object to all subsequent checks
   //
@@ -312,11 +334,7 @@ async function main() {
   // `enforcement: "off"` already grants in the same file — this gate adds no new
   // authority, and the manifest is the coordinator's own artefact either way.
   {
-    // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
-    // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
-    // ownIds : new Set()` — a bare array would silently become EMPTY, making
-    // every manifest read `unknown`.
-    const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+    // `ownIds` is the process-local set built above Gate 3.
     const { verdict, manifestIds } = classifyManifestSession(scope, ownIds);
     if (verdict === 'foreign') {
       // Observability only, and deliberately NOT emitWarn: this branch is hit on
@@ -721,6 +739,94 @@ async function recordRefusedGrantOncePerWave({ scope, scopePath, projectRoot, in
       { repoRoot: projectRoot },
     );
   } catch { /* observability is best-effort — never changes the WARN */ }
+}
+
+/**
+ * #1504 point 3 — the catch event for a session root that HID an active wave,
+ * ONCE per (session, wave, session root).
+ *
+ * `resolveSessionRoot()` answers with the repo the payload `cwd` sits in. A wave
+ * agent that `cd`s into a nested or sibling repo (or a session that entered a
+ * worktree) therefore resolves a root without a manifest, and Gate 3 allows
+ * every write there while the wave's manifest sits at the launch dir, unread.
+ * The revisit trigger `resolveSessionRoot` names for exactly that relocation
+ * ("an `orchestrator.scope.*` record") could never fire: this allow left no
+ * trace. Behaviour stays ALLOW — this is the trace, not a new deny.
+ *
+ * Fires only when BOTH hold, so the ordinary no-manifest allow — every write in
+ * every repo without a wave — stays silent (HR-101):
+ *   1. the harness states a launch dir and it is not the resolved session root;
+ *   2. the launch root carries a manifest that is not provably a peer's
+ *      ({@link findOwnScopeFile}: own, or unbound/legacy — one that WOULD have
+ *      been enforced). A peer's manifest at the launch root hides nothing of ours.
+ *
+ * COST on the hot path: rung 1 is an env read plus a string compare — no
+ * filesystem call while the session root IS the launch dir, i.e. for every
+ * session that never left its checkout. One `realpath` when only the spelling
+ * differs (macOS `/var` → `/private/var`); the ≤4 `existsSync` of rung 2 only
+ * for a genuinely relocated root.
+ *
+ * DEDUPE: the {@link recordRefusedGrantOncePerWave} pattern — an exclusive
+ * create (`flag: 'wx'`) of `<launch>/.orchestrator/tmp/scope-root-relocated/<key>`.
+ * The event goes to the LAUNCH repo's ledger, where the wave's other records
+ * live. The session root's basename joins the key so a second relocated repo in
+ * one wave is reported too. NAMED CEILING (BV-004): two relocated roots sharing a
+ * basename in one wave report once; revisit if a record ever names the wrong repo.
+ *
+ * Never throws — observability must not change the allow.
+ *
+ * @param {{projectRootRaw: string, projectRoot: string, ownIds: Set<string>,
+ *   filePath: string}} facts
+ * @returns {Promise<void>}
+ */
+async function recordHiddenManifestOncePerWave({ projectRootRaw, projectRoot, ownIds, filePath }) {
+  try {
+    const launchRaw = launchDirFromEnv();
+    if (launchRaw === '') return;
+    const launchResolved = path.resolve(launchRaw);
+    if (launchResolved === projectRootRaw || launchResolved === projectRoot) return;
+    let launch;
+    try {
+      launch = await fs.realpath(launchResolved);
+    } catch {
+      return; // a launch dir that does not exist holds no manifest
+    }
+    if (launch === projectRoot) return;
+
+    const { path: manifest } = findOwnScopeFile(launch, ownIds, classifyManifestSession);
+    if (!manifest) return;
+
+    let scope = {};
+    try {
+      const parsed = JSON.parse(await fs.readFile(manifest, 'utf8'));
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) scope = parsed;
+    } catch { /* unreadable → keyed and reported as wave `unknown` */ }
+
+    const session = String(scope.session_id ?? scope.session ?? [...ownIds][0] ?? 'no-session');
+    const key = `${session}-w${scope.wave ?? 'unknown'}-${path.basename(projectRoot)}`
+      .replace(/[^A-Za-z0-9._-]/g, '_')
+      .slice(0, 160);
+    const markerDir = path.join(launch, '.orchestrator', 'tmp', 'scope-root-relocated');
+    try { await fs.mkdir(markerDir, { recursive: true }); } catch { /* the create below decides */ }
+    try {
+      await fs.writeFile(path.join(markerDir, key), `${new Date().toISOString()}\n`, { flag: 'wx' });
+    } catch (e) {
+      if (e?.code === 'EEXIST') return; // this root already reported for this wave
+    }
+    const { emitEvent } = await import('../scripts/lib/events.mjs');
+    await emitEvent(
+      'orchestrator.scope.manifest_hidden_by_session_root',
+      {
+        hook: HOOK_NAME,
+        manifest,
+        launch_root: launch,
+        session_root: projectRoot,
+        wave: scope.wave,
+        file_path: path.isAbsolute(filePath) ? filePath : path.resolve(projectRoot, filePath),
+      },
+      { repoRoot: launch },
+    );
+  } catch { /* observability is best-effort — never changes the allow */ }
 }
 
 /**

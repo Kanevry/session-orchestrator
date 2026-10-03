@@ -188,6 +188,24 @@ describe('wave-scope-commit-guard — PSA-004 sub-mode B', { timeout: 15000 }, (
     expect(result.stderr).toMatch(/belongs to another session/);
   });
 
+  it("BLOCKS from this session's own .claude manifest when a peer's .codex manifest outranks it (#1504 point 6)", async () => {
+    // BUG: the guard took the FIRST existing manifest (.codex outranks .claude);
+    // the peer's one read foreign and the commit passed, while this session's
+    // own .claude manifest was never read. The peer allows docs/, so the block
+    // can only come from our own allowedPaths.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ session_id: 'sess-mine', allowedPaths: ['src/'] }));
+    await fs.mkdir(path.join(dir, '.codex'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.codex', 'wave-scope.json'),
+      JSON.stringify({ session_id: 'sess-peer', allowedPaths: ['docs/'] }),
+    );
+    await stageFile(dir, 'docs/mine.md');
+    const result = await runHook(dir, { CLAUDE_CODE_SESSION_ID: 'sess-mine' });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*docs\/mine\.md/);
+  });
+
   it('keeps BLOCKING an out-of-scope staged path under enforcement: warn', async () => {
     // Bug caught: tying this verdict to `enforcement` turned the only hard
     // PSA-004 stop of a warn-mode wave (enforce-scope lets the write through

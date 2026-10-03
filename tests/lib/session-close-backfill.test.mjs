@@ -686,6 +686,39 @@ describe('backfillAbandonedSession — a rotated-ledger scan the deadline cut sh
     expect(res).toEqual({ action: 'skipped-history-unread', sessionId: UUID });
     expect(readSessions()).toEqual([]);
   });
+
+  it('defers the candidate when an archive could not be read (#1505.5b)', async () => {
+    // BUG THIS CATCHES: `recordsMentioning` kept only `truncated` from the scan
+    // and dropped `unreadable`, so a walk that could not read the archive
+    // holding session.started handed the active-file half on as the whole
+    // history — the same wrong record as the deadline cut above.
+    const archive = path.join(metricsDir(), '_archive', 'events-20260527T140000Z_20260527T150000Z.jsonl');
+    writeJsonl(archive, [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    seedEvents([{ timestamp: '2026-05-27T15:30:00.000Z', event: 'orchestrator.agent.stopped', session_id: UUID }]);
+    vi.resetModules();
+    const unreadableScan = vi.fn();
+    vi.doMock('@lib/events.mjs', async (importOriginal) => {
+      const actual = await importOriginal();
+      unreadableScan.mockImplementation((opts) => ({
+        ...actual.scanEventsBackwards({
+          ...opts,
+          onRecord: (record, source) => source.kind === 'active' && opts.onRecord(record, source),
+        }),
+        truncated: false,
+        unreadable: [archive],
+      }));
+      return { ...actual, scanEventsBackwards: unreadableScan };
+    });
+    const { backfillAbandonedSession: backfill } = await import('@lib/session-close-backfill.mjs');
+
+    const res = await backfill({ repoRoot, sessionId: UUID, now: NOW_MS, archiveScanDeadlineMs: Date.now() + 60_000 });
+
+    expect(unreadableScan).toHaveBeenCalledTimes(1);
+    expect(res).toEqual({ action: 'skipped-history-unread', sessionId: UUID });
+    expect(readSessions()).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

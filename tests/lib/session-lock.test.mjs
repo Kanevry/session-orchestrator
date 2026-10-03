@@ -2199,3 +2199,67 @@ describe('forceAcquire — rejects a missing/blank sessionId instead of writing 
     expect(onDisk.session_id).toBe('sess-owned');
   });
 });
+
+// ===========================================================================
+// #1505.3 — leftovers of a SIGKILLed writer or reclaimer
+// ===========================================================================
+
+describe('acquire() sweeps the lock manager\'s own leftovers (#1505.3)', () => {
+  it('removes only old regular files of exactly those names; keeps young ones, live tombstones, symlinks and foreign files', async () => {
+    // BUG THIS CATCHES: a process killed between creating a
+    // `.session.lock.tmp.*` / `.create.tmp.*` / `.reclaim.*` file and its
+    // cleanup left it beside the lock forever — the code had only creators.
+    const { acquire, sweepLockLeftovers } = await import('@lib/session-lock.mjs');
+    const root = mkdtempSync(join(tmpdir(), 'lock-leftovers-'));
+    try {
+      const dir = join(root, '.orchestrator');
+      mkdirSync(dir, { recursive: true });
+      const nowIso = new Date().toISOString();
+      const liveLock = { session_id: 'peer', started_at: nowIso, last_heartbeat: nowIso, mode: 'deep', pid: 1, host: hostname(), ttl_hours: 4 };
+      const longAgo = new Date(Date.now() - 10 * 3600_000).toISOString();
+      const deadLock = { ...liveLock, started_at: longAgo, last_heartbeat: longAgo };
+      const swept = [
+        '.session.lock.tmp.0123456789ab',
+        '.session.lock.create.tmp.0123456789abcdef',
+        '.session.lock.reclaim.0123456789abcdef',
+      ];
+      writeFileSync(join(dir, swept[0]), '{"partial');
+      writeFileSync(join(dir, swept[1]), JSON.stringify(deadLock));
+      writeFileSync(join(dir, swept[2]), JSON.stringify(deadLock));
+      const kept = [
+        '.session.lock.reclaim.fedcba9876543210', // a LIVE lock in a tombstone
+        '.session.lock.tmp.0123456789abX', // not the exact shape
+        'x.session.lock.tmp.0123456789ab', // not anchored
+        '.session.lock.tmp.aaaaaaaaaaaa', // a symlink
+        '.session.lock.reclaim.bbbbbbbbbbbbbbbb', // a directory
+      ];
+      writeFileSync(join(dir, kept[0]), JSON.stringify(liveLock));
+      writeFileSync(join(dir, kept[1]), 'x');
+      writeFileSync(join(dir, kept[2]), 'x');
+      writeFileSync(join(root, 'victim'), 'v');
+      fs.symlinkSync(join(root, 'victim'), join(dir, kept[3]));
+      mkdirSync(join(dir, kept[4]));
+
+      // Young (just written): nothing is removed.
+      expect(sweepLockLeftovers({ repoRoot: root }).removed).toEqual([]);
+
+      // Two hours later — past LOCK_LEFTOVER_MIN_AGE_MS — acquire() sweeps.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      vi.setSystemTime(Date.now() + 2 * 3600_000);
+      let res;
+      try {
+        res = acquire({ sessionId: 'leftover-test', mode: 'deep', repoRoot: root, quiet: true });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(res.ok).toBe(true);
+      const left = readdirSync(dir);
+      for (const n of swept) expect(left).not.toContain(n);
+      for (const n of kept) expect(left).toContain(n);
+      expect(left).toContain('session.lock');
+      expect(readFileSync(join(root, 'victim'), 'utf8')).toBe('v');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

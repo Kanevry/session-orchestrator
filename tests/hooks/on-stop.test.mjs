@@ -282,6 +282,45 @@ describe('Stop event without session_id', { timeout: 15000 }, () => {
 });
 
 // ---------------------------------------------------------------------------
+// 2b. Wave number from THIS session's manifest (#1504 points 4 + 6)
+// ---------------------------------------------------------------------------
+
+describe("Stop record's wave comes from this session's own manifest", { timeout: 15000 }, () => {
+  /** Write each `{ '<stateDir>': scope }` entry as `<dir>/<stateDir>/wave-scope.json`. */
+  async function seedManifests(dir, manifests) {
+    for (const [stateDir, scope] of Object.entries(manifests)) {
+      await fs.mkdir(path.join(dir, stateDir), { recursive: true });
+      await fs.writeFile(path.join(dir, stateDir, 'wave-scope.json'), JSON.stringify(scope));
+    }
+  }
+
+  it.each([
+    {
+      label: "own .claude wave 2 under a peer's .pi wave 7",
+      manifests: { '.pi': { wave: 7, session_id: U('peer') }, '.claude': { wave: 2, session_id: U('own') } },
+      expected: 2,
+    },
+    {
+      label: "only a peer's .claude wave 7 (no own wave)",
+      manifests: { '.claude': { wave: 7, session_id: U('peer') } },
+      expected: 0,
+    },
+  ])('records wave $expected for $label', async ({ manifests, expected }) => {
+    // BUG: readWaveNumber took the FIRST wave-scope.json it found, so a peer
+    // session's manifest in the same working copy stamped ITS wave onto this
+    // session's Stop record (7 instead of 2, or 7 instead of "no own wave").
+    const dir = await track(await mkGitDir());
+    await seedManifests(dir, manifests);
+    await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ hook_event_name: 'Stop', session_id: U('own') }),
+    });
+    const turn = (await readAllEvents(dir)).find((e) => e.event === 'orchestrator.turn.stopped');
+    expect(turn.wave).toBe(expected);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 3. SubagentStop with agent_type (discriminated by field presence)
 // ---------------------------------------------------------------------------
 

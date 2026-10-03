@@ -453,3 +453,25 @@ describe('.mjs extension triggers typecheck', { timeout: 15000 }, () => {
     expect(typeof parsed.duration_ms).toBe('number');
   });
 });
+
+describe("gate toggle — a PEER's manifest cannot disable this session's gate (#1504)", { timeout: 10000 }, () => {
+  it("runs the check when only a peer's manifest sets post-edit-validate=false", async () => {
+    // Bug caught: findScopeFile() took the first manifest that exists, so a
+    // peer session's `gates['post-edit-validate']: false` silenced this
+    // session's post-edit typecheck.
+    const dir = await mkProjectTracked({
+      scope: { session_id: 'peer-session-zz', gates: { 'post-edit-validate': false } },
+      claudeMdConfig: 'typecheck-command: none',
+    });
+    const payload = JSON.parse(editPayload(path.join(dir, 'src', 'app.ts')));
+    const result = await runHook({
+      projectDir: dir,
+      stdin: JSON.stringify({ ...payload, session_id: 'own-session-aa' }),
+      extraEnv: { PATH: '/usr/bin:/bin' },
+    });
+    expect(result.code).toBe(0);
+    const lines = result.stderr.split('\n').filter((l) => l.trim());
+    expect(lines.length).toBeGreaterThanOrEqual(1);
+    expect(JSON.parse(lines[0]).status).toBe('skip');
+  });
+});

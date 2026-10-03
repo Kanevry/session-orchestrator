@@ -345,6 +345,45 @@ describe('pre-task-scope-disjoint — the allow paths, asserted positively', () 
 });
 
 describe('pre-task-scope-disjoint — one ledger per session (#1493.3)', () => {
+  it('waveKeyOf skips a peer wave so peer transitions cannot erase our live claims (#1504)', () => {
+    const dir = makeProjectDir();
+    for (const stateDir of ['.pi', '.claude']) mkdirSync(path.join(dir, stateDir));
+    const peerFile = path.join(dir, '.pi', 'wave-scope.json');
+    writeFileSync(peerFile, JSON.stringify({ session_id: 'peer', wave: 3 }));
+    writeFileSync(path.join(dir, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 's1', wave: 2 }));
+
+    expectAllow(dispatch(dir, 'Agent A', ['scripts/foo.mjs']));
+    expect(JSON.parse(readFileSync(path.join(dir, LEDGER_REL), 'utf8')).waveKey).toBe('s1|w2|?');
+    writeFileSync(peerFile, JSON.stringify({ session_id: 'peer', wave: 4 }));
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/foo.mjs']), 'scripts/foo.mjs');
+  });
+
+  it('waveKeyOf uses w? with only a peer manifest and keeps claims through peer wave changes', () => {
+    const dir = makeProjectDir();
+    mkdirSync(path.join(dir, '.pi'));
+    const peerFile = path.join(dir, '.pi', 'wave-scope.json');
+    writeFileSync(peerFile, JSON.stringify({ session_id: 'peer', wave: 3 }));
+
+    expectAllow(dispatch(dir, 'Agent A', ['scripts/foo.mjs']));
+    expect(JSON.parse(readFileSync(path.join(dir, LEDGER_REL), 'utf8')).waveKey).toBe('s1|w?|?');
+    writeFileSync(peerFile, JSON.stringify({ session_id: 'peer', wave: 4 }));
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/foo.mjs']), 'scripts/foo.mjs');
+  });
+
+  it.each([
+    ['unbound', JSON.stringify({ wave: 3 }), 's1|w3|?'],
+    ['corrupt', '{not json', 's1|w?|?'],
+  ])('waveKeyOf keeps an %s manifest as the ENFORCE decider', (_kind, raw, expectedKey) => {
+    const dir = makeProjectDir();
+    for (const stateDir of ['.pi', '.claude']) mkdirSync(path.join(dir, stateDir));
+    writeFileSync(path.join(dir, '.pi', 'wave-scope.json'), raw);
+    writeFileSync(path.join(dir, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 's1', wave: 2 }));
+
+    expectAllow(dispatch(dir, 'Agent A', ['scripts/foo.mjs']));
+    expect(JSON.parse(readFileSync(path.join(dir, LEDGER_REL), 'utf8')).waveKey).toBe(expectedKey);
+    expectDeny(dispatch(dir, 'Agent B', ['scripts/foo.mjs']), 'scripts/foo.mjs');
+  });
+
   it('a PEER session dispatching in the same working copy no longer erases this session\'s live claims', () => {
     // Bug caught: ONE shared ledger held ONE waveKey (`<session>|w<N>|<role>`).
     // The peer's dispatch reset it to its own key, `decide()` then found no

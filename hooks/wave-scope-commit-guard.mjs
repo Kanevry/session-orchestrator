@@ -56,10 +56,10 @@ import { join, relative } from 'node:path';
 // ships with the session-orchestrator package), NOT relative to the git
 // repo it is protecting. The two diverge when the hook is invoked from a
 // consumer repo or a test tmp-dir.
-import { pathMatchesPattern, findScopeFile } from '../scripts/lib/hardening.mjs';
+import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 import { withStagingFenceLock } from '../scripts/lib/session-lock.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
-import { classifyEmptyScope, sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
+import { classifyEmptyScope, findOwnScopeFile, sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
   readProcessLocalSessionIds,
@@ -77,19 +77,6 @@ const ownAgentId = process.env.SO_WAVE_AGENT_ID ?? null;
  * Mirrors ALL_PATHS_MARKER in hooks/pre-bash-staging-fence.mjs.
  */
 const ALL_PATHS_MARKER = '*';
-
-/**
- * Build a regex that finds a staged path inside a `git add` command string.
- * Word-boundary on both sides so `src/foo.ts` does not match `src/foo.ts.bak`.
- * The path is escaped so glob metacharacters (`*`, `?`) and shell metas
- * cannot be reinterpreted.
- *
- * LEGACY PATH ONLY since #1404 — see the fallback branch in findOverlaps.
- */
-function pathRegex(p) {
-  const escaped = p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|[\\s'"])${escaped}(?:$|[\\s'"])`);
-}
 
 /**
  * Normalise a path token so reader and writer compare the same spelling.
@@ -129,19 +116,13 @@ function pathsOverlap(fencePath, ourPath) {
  * Walk a single sibling fence file and return the staged paths a sibling
  * agent also recorded an intent to stage.
  *
- * Two entry shapes are accepted:
- *  - #1404 shape `{ paths, command_hash, timestamp }` — path LISTS compared
- *    against our staged set.
- *  - LEGACY shape `{ command, timestamp }` — a fence file written by a
- *    pre-#1404 hook version. Live sessions on this host may hold such files
- *    RIGHT NOW, and dropping them would read as "no overlap" — silently
- *    weaker than before the change. So the old raw-command regex still runs
- *    for an entry that has `command` and no `paths`.
- *    NAMED CEILING (BV-004): this fallback exists only to span the sessions
- *    running across the upgrade. REVISIT TRIGGER — remove it one minor
- *    release after 5.3.0 (i.e. in 5.4.0), by which point no process started
- *    before the upgrade can still be writing fence files. The command text it
- *    reads is never PRINTED (issue #1404) — only the fact of the match is.
+ * One entry shape is read: the #1404 `{ paths, command_hash, timestamp }`,
+ * whose path LIST is compared against our staged set. An entry without a
+ * `paths` array is skipped — that includes the pre-#1404 `{ command }` shape,
+ * whose raw-command regex fallback was removed in 5.4.x as its own revisit
+ * trigger demanded (#1487 point 16): the only fence writer,
+ * hooks/pre-bash-staging-fence.mjs, has written `paths` + `command_hash` and
+ * never `command` since 5.3.0, and no other hook or bridge writes fence files.
  */
 function findOverlaps(fenceJsonPath, ourStaged) {
   let body;
@@ -157,30 +138,15 @@ function findOverlaps(fenceJsonPath, ourStaged) {
   const siblingAgent = body.agent_id ?? '<unknown>';
   const matches = [];
   for (const entry of body.staged_paths) {
-    if (Array.isArray(entry?.paths)) {
-      const hash = typeof entry.command_hash === 'string' ? entry.command_hash : '<no-hash>';
-      for (const raw of entry.paths) {
-        if (typeof raw !== 'string') continue;
-        const fencePath = normalizeStagedPath(raw);
-        for (const ours of ourStaged) {
-          if (pathsOverlap(fencePath, normalizeStagedPath(ours))) {
-            matches.push({ ourPath: ours, siblingAgent, fencePath, hash });
-          }
+    if (!Array.isArray(entry?.paths)) continue;
+    const hash = typeof entry.command_hash === 'string' ? entry.command_hash : '<no-hash>';
+    for (const raw of entry.paths) {
+      if (typeof raw !== 'string') continue;
+      const fencePath = normalizeStagedPath(raw);
+      for (const ours of ourStaged) {
+        if (pathsOverlap(fencePath, normalizeStagedPath(ours))) {
+          matches.push({ ourPath: ours, siblingAgent, fencePath, hash });
         }
-      }
-      continue;
-    }
-
-    const cmd = entry?.command;
-    if (typeof cmd !== 'string') continue;
-    for (const ours of ourStaged) {
-      if (pathRegex(ours).test(cmd)) {
-        matches.push({
-          ourPath: ours,
-          siblingAgent,
-          fencePath: '<legacy entry, pre-#1404>',
-          hash: '<legacy entry, pre-#1404>',
-        });
       }
     }
   }
@@ -308,7 +274,16 @@ async function main() {
   // skills/wave-executor/wave-loop.md), so this guard never fired. findScopeFile
   // returns null when no scope file exists at any precedence dir, preserving
   // the "no active wave → exit 0" semantics below.
-  const scopePath = findScopeFile(repoRoot);
+  //
+  // #1504 point 6: the first manifest that is not provably a peer's, so a
+  // peer's higher-precedence manifest no longer hides this session's own one;
+  // when every candidate is foreign the first comes back and
+  // `scopeCommitVerdict` passes it as before. The git process inherits the
+  // committing session's env; there is no hook payload here, so the env tier is
+  // the only process-local identity.
+  const ownIds = new Set(readProcessLocalSessionIds());
+  const located = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
+  const scopePath = located.path ?? located.foreignPath;
   const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');
 
   // -------------------------------------------------------------------------
@@ -331,9 +306,7 @@ async function main() {
       scope: scope !== null && typeof scope === 'object' ? scope : {},
       stagedFiles,
       scopeRel: relative(repoRoot, scopePath) || scopePath,
-      // The git process inherits the committing session's env; there is no hook
-      // payload here, so the env tier is the only process-local identity.
-      ownIds: new Set(readProcessLocalSessionIds()),
+      ownIds,
       scopeMtimeMs: mtimeMsOf(scopePath),
       sessionAge: sessionAgeMs(repoRoot),
     });

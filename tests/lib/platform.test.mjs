@@ -750,3 +750,40 @@ describe('resolveSessionRoot (#1492)', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1504 point 8 — APFS case spelling must not skip the clamp.
+// ---------------------------------------------------------------------------
+
+describe('resolveSessionRoot — case-insensitive volume spelling (#1504 point 8)', () => {
+  /** @type {string} */
+  let sandbox;
+  beforeEach(() => {
+    sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-case-root-')));
+  });
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it('clamps on a launch dir spelled in another letter case — the monorepo-package manifest stays the decider', () => {
+    // Bug caught: `_canonical` used the JS `realpathSync`, which keeps the
+    // CALLER's letter case on a case-insensitive volume. A launch dir spelled
+    // `<sandbox>/MONO/pkg` beside the git-found `<sandbox>/mono` gave
+    // `path.relative` = `../MONO/pkg`, the clamp was skipped, and a package
+    // session climbed to the repo root, where no manifest lives.
+    const mono = path.join(sandbox, 'mono');
+    const pkg = path.join(mono, 'pkg');
+    mkdirSync(path.join(mono, '.git'), { recursive: true });
+    mkdirSync(pkg, { recursive: true });
+    const upper = path.join(sandbox, 'MONO', 'pkg');
+    let caseInsensitive = false;
+    try { caseInsensitive = realpathSync(upper) !== ''; } catch { /* case-sensitive volume */ }
+    if (!caseInsensitive) return; // the split cannot exist on a case-sensitive volume
+
+    vi.stubEnv('CLAUDE_PROJECT_DIR', upper);
+    expect(resolveSessionRoot(pkg)).toBe(upper);
+    // Control: the same spelling as the repo root clamps either way.
+    vi.stubEnv('CLAUDE_PROJECT_DIR', pkg);
+    expect(resolveSessionRoot(pkg)).toBe(pkg);
+  });
+});

@@ -34,6 +34,7 @@ export { assertNodeVersion, assertDepInstalled, checkEnvironment } from './env-c
 
 // B) Scope / pattern primitives
 export {
+  /** @deprecated Use findOwnScopeFile from scope-gate.mjs because first-file selection ignores manifest ownership and can select a peer session's manifest. */
   findScopeFile,
   getEnforcementLevel,
   gateEnabled,

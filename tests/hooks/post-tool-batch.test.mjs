@@ -684,3 +684,46 @@ describe('orphan-reaper wiring — the hook actually calls the trigger (#1432 B4
     expect(existsSync(marker)).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1504 points 3 + 4 — the wave number comes from THIS session's manifest at
+// the SESSION root, never from the launch dir or a peer's manifest.
+// ---------------------------------------------------------------------------
+
+describe('post-tool-batch wave reader — session root and manifest ownership (#1504)', () => {
+  it('reads the wave from the worktree the session works in, not from the launch dir', () => {
+    // Bug caught: resolveWaveNumber(getProjectDir()) read the LAUNCH dir; a
+    // session that entered a worktree keeps its manifest there, so every batch
+    // read wave 0 and no wave boundary was ever persisted.
+    const wt = makeTmpDir('ptb-wt-');
+    try {
+      mkdirSync(join(wt, '.git'), { recursive: true });
+      mkdirSync(join(wt, '.claude'), { recursive: true });
+      writeFileSync(join(wt, '.claude', 'wave-scope.json'), JSON.stringify({ wave: 2 }), 'utf8');
+      writeCurrentSession({ session_id: 's', last_wave: 1 });
+
+      const result = runHook(JSON.stringify({ session_id: 's', batch_id: 'b1', cwd: wt }));
+      expect(result.status).toBe(0);
+      expect(readSessionFile().last_wave).toBe(2);
+    } finally {
+      removeTree(wt);
+    }
+  });
+
+  it("never records a PEER session's wave number as this session's", () => {
+    // Bug caught: findScopeFile() returned the first manifest that EXISTS, so a
+    // peer's `.claude/wave-scope.json` in the same working copy moved this
+    // session's last_wave to the peer's wave.
+    mkdirSync(join(tmp, '.claude'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, session_id: 'peer-session-zz' }),
+      'utf8',
+    );
+    writeCurrentSession({ session_id: 'own-session-aa', last_wave: 1 });
+
+    const result = runHook(JSON.stringify({ session_id: 'own-session-aa', batch_id: 'b1' }));
+    expect(result.status).toBe(0);
+    expect(readSessionFile().last_wave).toBe(1);
+  });
+});

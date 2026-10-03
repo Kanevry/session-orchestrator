@@ -97,7 +97,8 @@ import { pathToFileURL } from 'node:url';
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
 let resolveSessionRoot;
 let readJson;
-let findScopeFile;
+// #1504 point 6 — bound from scope-gate below.
+let findOwnScopeFile;
 let extractBashWriteTargets;
 let pathMatchesPattern;
 /** @type {typeof import('../scripts/lib/session-identity/own-session.mjs').readProcessLocalSessionIds} */
@@ -165,7 +166,8 @@ function bannerProjectDir() {
  * the entry-point catch banners.
  *
  * `hardening.mjs` is bound (no headFallback — it carries relative imports) for
- * `findScopeFile` / `extractBashWriteTargets` / `pathMatchesPattern`; the two
+ * `extractBashWriteTargets` / `pathMatchesPattern` (and `scope-gate.mjs` for
+ * `findOwnScopeFile`, #1504 point 6); the two
  * command-matching primitives come from the direct `blocker` namespace, which is
  * the only entry that opts into the `git show HEAD:` recovery. Because hardening
  * transitively imports command-blocker (via scope-gate.mjs), a broken command-blocker
@@ -184,6 +186,9 @@ async function bootstrap() {
       platform: { specifier: lib('platform.mjs') },
       common: { specifier: lib('common.mjs') },
       hardening: { specifier: lib('hardening.mjs') },
+      // #1504 point 6 — `findOwnScopeFile`. Already reachable through the
+      // hardening barrel, so no new module edge.
+      scopeGate: { specifier: lib('scope-gate.mjs') },
       blocker: {
         specifier: lib('command-blocker.mjs'),
         headFallback: true,
@@ -205,7 +210,8 @@ async function bootstrap() {
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   ({ resolveSessionRoot } = modules.platform);
   ({ readJson } = modules.common);
-  ({ findScopeFile, extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
+  ({ extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
+  ({ findOwnScopeFile } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
   blocker = modules.blocker;
   degradedLabels = degraded;
@@ -280,8 +286,17 @@ async function main() {
   // `resolveSessionRoot` in scripts/lib/platform.mjs.
   const projectRoot = resolveSessionRoot(input.cwd);
 
-  // G3 — no scope file → allow
-  const scopePath = findScopeFile(projectRoot);
+  // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
+  // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
+  // ownIds : new Set()` — a bare array would silently become EMPTY.
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+
+  // G3 — no scope file → allow. #1504 point 6: the first manifest that is not
+  // provably a peer's, so a peer's higher-precedence `.pi`/`.cursor`/`.codex`
+  // manifest no longer hides this session's own one; only when every candidate
+  // is foreign does the first come back, and G3b below stands down as before.
+  const located = findOwnScopeFile(projectRoot, ownIds, classifyManifestSession);
+  const scopePath = located.path ?? located.foreignPath;
   if (!scopePath) return flushNotices(notices);
 
   // SECURITY-REQ-08: read scope file exactly once; use the parsed object
@@ -316,10 +331,7 @@ async function main() {
   // empty, so this gate is permanently `'unknown'` = enforce = pre-#1153
   // behaviour there. Revisit when those hook payloads carry a session id.
   {
-    // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
-    // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
-    // ownIds : new Set()` — a bare array would silently become EMPTY.
-    const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+    // `ownIds` is the process-local set built above G3.
     const { verdict, manifestIds } = classifyManifestSession(scope, ownIds);
     if (verdict === 'foreign') {
       // Observability only, and deliberately NOT emitWarn: this branch is hit on

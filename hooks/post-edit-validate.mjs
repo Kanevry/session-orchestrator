@@ -35,8 +35,13 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { readStdin } from '../scripts/lib/io.mjs';
-import { resolveProjectDir } from '../scripts/lib/platform.mjs';
-import { findScopeFile, gateEnabled } from '../scripts/lib/hardening.mjs';
+import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { gateEnabled } from '../scripts/lib/hardening.mjs';
+import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
+import {
+  classifyManifestSession,
+  readProcessLocalSessionIds,
+} from '../scripts/lib/session-identity/own-session.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 
 // ---------------------------------------------------------------------------
@@ -184,7 +189,9 @@ async function main() {
   const ext = path.extname(filePath).toLowerCase();
   if (!TS_EXTS.has(ext)) process.exit(0);
 
-  const projectRoot = resolveProjectDir();
+  // The SESSION root the scope guards use (#1492, #1504 point 4) — not the
+  // launch dir, which stays put while a session works in an entered worktree.
+  const projectRoot = resolveSessionRoot(input?.cwd);
 
   // Compute relative path (REQ-03)
   const absFilePath = path.isAbsolute(filePath)
@@ -192,8 +199,11 @@ async function main() {
     : path.resolve(projectRoot, filePath);
   const relPath = path.relative(projectRoot, absFilePath);
 
-  // G5: per-gate toggle — skip if post-edit-validate gate is disabled
-  const scopeFile = findScopeFile(projectRoot);
+  // G5: per-gate toggle — skip if post-edit-validate gate is disabled. Only
+  // THIS session's manifest may switch it off: a peer's manifest in the same
+  // working copy is skipped, and a peer-only result means no toggle (#1504).
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+  const { path: scopeFile } = findOwnScopeFile(projectRoot, ownIds, classifyManifestSession);
   if (scopeFile && !gateEnabled(scopeFile, 'post-edit-validate')) {
     process.exit(0);
   }

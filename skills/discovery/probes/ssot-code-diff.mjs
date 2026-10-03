@@ -24,7 +24,8 @@
  *   2. `.claude/rules/*.md` file count (non-recursive) vs. "N rule files" claims.
  *   3. `skills/` user-facing directory count (excludes `_shared/`) vs.
  *      "N user-facing skills" / "N skills" claims.
- *   4. `commands/*.md` file count vs. "N slash-commands" / "N commands" claims.
+ *   4. Slash-command count (`commands/*.md` ∪ skills with `user-invocable: true`)
+ *      vs. "N slash-commands" / "N commands" claims.
  *
  * Scope exclusions: CHANGELOG.md, docs/adr/, docs/prd/, docs/retro/ are never
  * scanned — same principle as the docs-staleness probe (historical/immutable
@@ -45,6 +46,7 @@
 
 import { existsSync, readdirSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { slashCommandNames } from '../../../scripts/lib/user-invocable-skills.mjs';
 
 // ---------------------------------------------------------------------------
 // Doc source sets (deliberately small and hand-curated)
@@ -101,12 +103,16 @@ function countUserFacingSkills(root) {
   }
 }
 
+// Slash commands = `commands/*.md` ∪ skills with an explicit
+// `user-invocable: true` (the #1370 commands→skills fold) — the shared census
+// in user-invocable-skills.mjs, not a second copy. Counting `commands/` alone
+// reported 2 against the real 27 on every run (#1506 pt 7). `null` (entry
+// skipped) only when the repo has neither source.
 function countCommands(root) {
-  const dir = join(root, 'commands');
-  if (!existsSync(dir)) return null;
   try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    return entries.filter((e) => e.isFile() && e.name.endsWith('.md')).length;
+    const names = slashCommandNames(root);
+    if (names.length === 0 && !existsSync(join(root, 'commands'))) return null;
+    return names.length;
   } catch {
     return null;
   }
@@ -180,7 +186,7 @@ const REGISTRY = [
   },
   {
     id: 'commands-count',
-    label: 'commands/*.md file count',
+    label: 'slash-command count (commands/*.md + user-invocable skills)',
     sources: SOURCE_SET_INVENTORY,
     severity: 'medium',
     getActual: countCommands,
