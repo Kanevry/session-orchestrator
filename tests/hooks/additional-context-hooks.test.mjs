@@ -286,7 +286,7 @@ describe('post-edit-validate.mjs remediation output', () => {
     try {
       // Create a minimal fake typecheck script that exits 1
       const fakeTc = join(dir, 'fake-tc.mjs');
-      await fsp.writeFile(fakeTc, `#!/usr/bin/env node\nprocess.stderr.write('TS error: bad type\\n'); process.exit(1);\n`, { mode: 0o755 });
+      await fsp.writeFile(fakeTc, `process.stderr.write('TS error: bad type\\n'); process.exit(1);\n`);
       await fsp.mkdir(join(dir, '.claude'), { recursive: true });
       await fsp.writeFile(
         join(dir, 'CLAUDE.md'),

@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.6.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.7.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -139,15 +139,14 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.6.0)
+## Recent highlights (v5.7.0)
 
-Highlights of the v5.6.0 line:
+Highlights of the v5.7.0 line:
 
-- **Clearer about what you get.** The website, this README and the npm page now open with the problem the plugin solves and list the features by benefit: what each part does for you, then how it works.
-- **Sessions in a worktree or a subdirectory report their own tree.** A wave's start commit, changed files, HEAD and the stop record's branch now describe the tree the session works in, and the commit guard also checks the manifest of a session launched in a subdirectory, never less strictly than before (#1511).
-- **One rule for how scope paths are spelled.** The overlap check before dispatch and the scope tools now compare paths the same way, and `validate-wave-scope --assert-disjoint --no-manifest` checks a plan's file lists without a dummy manifest (#1510).
-- **A changed scope sidecar can no longer hide a violation.** If the per-wave sidecar changes under a standing manifest, peer records stop counting and you get one notice (#1504).
-- **Close-backfill reads ledger gaps only inside the session's own time window**, so one pruned archive no longer holds back every later session (#1512).
+- **Tidy up the vault mirror in place.** `scripts/vault-mirror-prune.mjs` applies the retention rules to existing learning and session notes: dry run with a manifest first, then `--apply` archives duplicates, superseded and expired notes and writes month rollups. Nothing is deleted, and a second run plans nothing (#1513).
+- **Fewer, better vault notes from now on.** A session record without enough free text gets one rollup row instead of a note, an expired learning never becomes a note, and a learning whose insight already exists is refused (#1513).
+- **The commit guard says which manifest it means.** Parse errors and block messages name the manifest file, and the "To proceed" hint prints once (#1514).
+- **Silent failures made visible.** Read errors other than a missing file are now reported instead of turning into `0` or `unknown` (#1216), and lint blocks imports of the deprecated locks shim (#1234).
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 

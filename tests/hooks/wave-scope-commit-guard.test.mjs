@@ -274,7 +274,21 @@ describe('wave-scope-commit-guard — PSA-004 sub-mode B', { timeout: 15000 }, (
     const result = await runHook(dir);
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('wave-scope-commit-guard');
-    expect(result.stderr).toContain('failed to parse wave-scope.json');
+    expect(result.stderr).toContain('failed to parse .claude/wave-scope.json');
+  });
+
+  it('names WHICH manifest failed to parse when the subdirectory one is corrupt (#1514.2)', async () => {
+    // Bug caught: with two candidate manifests the message said only
+    // "wave-scope.json", so the operator could not tell the valid repo-root one
+    // from the corrupt one under the session root.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(dir, JSON.stringify({ allowedPaths: ['pkg/'] }));
+    await writeScope(pkg, '{ not valid json');
+    await stageFile(dir, 'pkg/src/a.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('failed to parse pkg/.claude/wave-scope.json');
   });
 });
 
@@ -373,6 +387,35 @@ describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeou
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('other/evil.mjs');
     expect(result.stderr).not.toContain('pkg/src/ok.mjs');
+  });
+
+  it('prints the remediation hint once and names both manifests when both block (#1514.3)', async () => {
+    // Bug caught: each blocking manifest printed its own "To proceed:" block
+    // under an identical header, so the operator saw the hint twice and could
+    // not tell which manifest had blocked.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(dir, JSON.stringify({ allowedPaths: ['src/'] }));
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/a.mjs'] }));
+    await stageFile(dir, 'other/evil.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(result.code).toBe(1);
+    expect(result.stderr.match(/To proceed:/g)).toHaveLength(1);
+    expect(result.stderr).toContain('outside wave-scope.allowedPaths (.claude/wave-scope.json)');
+    expect(result.stderr).toContain('outside wave-scope.allowedPaths (pkg/.claude/wave-scope.json)');
+  });
+
+  it('blocks a staged repo-root package-lock.json under a subdirectory manifest (#1514.4)', async () => {
+    // Intentionally STRICTER than the repo-root-only guard, hence not a row of
+    // the never-laxer matrix above: a path outside the session root is the
+    // lint-staged sweep this guard exists to stop (header § Behavior summary).
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/'] }));
+    await stageFile(dir, 'package-lock.json', '{}\n');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*package-lock\.json/);
   });
 
   it('adopts a subdirectory session root named in a different letter case on a case-insensitive FS', async () => {

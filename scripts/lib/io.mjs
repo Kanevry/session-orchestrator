@@ -946,16 +946,21 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
  * neither may mask the original error.
  *
  * ── BV-004 ceiling + revisit trigger ────────────────────────────────────────
- * TWO PRODUCTION CALL-SITES: `vault-status/board-writer.mjs#writeBoard`
- * (`backup: false`) and {@link writeJsonAtomicSync}, which carries 12 further
- * call-sites across 9 files behind it. That second one is the load-bearing
+ * THREE PRODUCTION CALL-SITES (re-measured 2026-10-03 @ 0e0c4b08 with
+ * `rg -n "atomicWriteWithBackup\(" scripts hooks skills --glob '*.mjs'`):
+ * `vault-status/board-writer.mjs#writeBoard` (`backup: false`),
+ * `reconcile/rule-expiry-sweep.mjs` (no `backup`, i.e. `false`) and
+ * {@link writeJsonAtomicSync}, which carries 14 further call-sites across 11
+ * files behind it (`rg -n "writeJsonAtomicSync\("` over the same scope, minus
+ * the definition and `host-identity.mjs`'s private `_writeJsonAtomicSync`
+ * copy, which does NOT route through this helper). That last one is the load-bearing
  * evidence — the previous revision of this note recorded ONE call-site and
  * concluded the signature was unproven, while the function with an identical
  * body sat 60 lines above in this same file, unmigrated. The cheapest possible
  * migration going unmade is not a neutral fact about a helper: it is the
  * measurement that the helper is not paying for itself.
  *
- * What the second call-site does NOT prove: `writeJsonAtomicSync` passes
+ * What the `writeJsonAtomicSync` call-site does NOT prove: it passes
  * `backup: false` and no `fs`, so the backup half and the injection seam still
  * rest on tests plus one board-writer flag. REVISIT TRIGGER — when a sweep
  * migrates the remaining hand-rolled sites, re-check before widening:

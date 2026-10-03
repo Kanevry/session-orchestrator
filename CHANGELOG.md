@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.7.0] - 2026-10-03
+
 ### Added
 
 - **`scripts/vault-mirror-prune.mjs`** (#1513): applies the vault-mirror retention rules to the existing `40-learnings/` and `50-sessions/` notes. Dry run by default with a JSON manifest (`--manifest`: path, reason, action, target, kept copy, rollup); `--apply` writes the month rollups, then moves archived notes to `90-archive/mirror/<zone>/<same path>` with `status: archived` + `archived-reason`, then renames alias-folder and flat notes into their namespace. Reasons: `duplicate`, `superseded`, `expired`, `metrics-only-session`, `namespace-alias`, `flat-relocate`. Only notes with the mirror's `_generator` marker are touched; nothing is deleted; a second run plans nothing.
@@ -17,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **vault-mirror learnings lifecycle** (#1513): the pre-#725 slug variant of a note is updated in place instead of getting a hyphenated twin; a new note whose normalised insight already exists in the namespace is refused (`skipped-duplicate-insight`); an expired learning is never created (`skipped-expired`) and its existing note becomes `status: archived` + `archived-reason: expired`; `--kind learning` also reads the sibling `learnings-archive.jsonl` and marks the notes of archived records (`expired` / `superseded`). `backfill-learnings-from-vault.mjs` falls back to `90-archive/mirror/40-learnings/`.
 - **`session-close-backfill.log` carries events only** (#1513): `skipped-*` outcomes are no longer appended (86 % of the Meta-Vault's 723 KB log); they remain queryable as ledger events.
 - **`sweep-expired-rules` removes expired single-entry rule files** (#1513): a generated rule with one learning and no counter sentence was skipped as `no-counter-sentence` forever; it is now deleted (pair stamped first) once the later of its frontmatter `expires-at` and the learning's store date has passed.
+- **Commit guard names the manifest** (#1514): a parse error and each block header now carry the manifest path (`.claude/wave-scope.json` vs `pkg/.claude/wave-scope.json`), and the "To proceed" hint prints once when both manifests block.
+- **Read failures other than a missing file are reported** (#1216): `countProposalsForWave` and the transcript tail's `readAgentType` now warn on stderr instead of silently returning `0` / `unknown`.
+- **Lint rejects the deprecated locks shim and the deleted `OWNER_YAML_PATH`** (#1234): `no-restricted-imports` with the replacement named in the message.
+- **ADR-0002 verdict corrected to Stay** (#1053): native session↔session and agent→coordinator messaging (Claude Code 2.1.224) removed the one capability Agent Teams added; ADR-0003/0007/0010 and the rules point at the addendum. LM-002a separates Channels from cross-session messaging.
+
+### Fixed
+
+- **Drift-check Check 7 derives learning keys with the shared `learningKeyOf`** (#1021): a learning with a blank title or an untrimmed type no longer produces a key that differs from the one the rule emitter stamps.
+- Shared helpers instead of private copies: one `tombstoneGap` for the three archive-gap sites (#1505), and `deriveFenceToken`, `learningKeyOf`, `kebab` imported where they were copied (#1021). Behaviour unchanged.
+
+### Removed
+
+- **H3 Agent Teams test harness** (`hooks/agent-teams-h3-test.sh`, `scripts/spikes/h3-agent-teams/`) — the question it measured is closed (#1061).
 
 ## [5.6.0] - 2026-10-03
 

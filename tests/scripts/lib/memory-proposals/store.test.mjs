@@ -295,6 +295,25 @@ describe('appendProposal + readWaveSummary — boundary', () => {
     expect(w2count).toBe(2);
   });
 
+  it('B8d (#1216): countProposalsForWave warns on a non-ENOENT read failure (EISDIR) and returns 0', async () => {
+    const repoRoot = tmpRepo();
+    // A DIRECTORY at proposals.jsonl: readFileSync throws EISDIR, which
+    // countWaveLines rethrows — previously swallowed without a trace.
+    mkdirSync(join(repoRoot, '.orchestrator/metrics/proposals.jsonl'));
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const count = await countProposalsForWave({ repoRoot, waveId: 'W1' });
+
+    expect(count).toBe(0);
+    const warned = stderrSpy.mock.calls.some(
+      (call) =>
+        typeof call[0] === 'string' &&
+        call[0].includes('[memory-proposals] WARN: countProposalsForWave') &&
+        call[0].includes('EISDIR'),
+    );
+    expect(warned).toBe(true);
+  });
+
   it('B9: readWaveSummary returns null when no summary file exists', async () => {
     const repoRoot = tmpRepo();
 

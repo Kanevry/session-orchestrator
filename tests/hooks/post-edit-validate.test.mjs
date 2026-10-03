@@ -137,18 +137,13 @@ async function mkProjectTracked(opts) {
 // ---------------------------------------------------------------------------
 
 /**
- * Write a tiny shell/node script to dir that exits with given code.
- * Returns absolute path to the script.
- *
- * On Windows, writes a .cmd file; on POSIX, a shebang'd .mjs.
+ * Write a tiny node script to dir that exits with given code.
+ * Returns absolute path to the script. Every caller runs it as
+ * `${process.execPath} <script>`, so it needs neither a shebang nor an exec bit.
  */
 async function mkTypecheckScript(dir, exitCode) {
   const scriptPath = path.join(dir, 'fake-tc.mjs');
-  await fs.writeFile(
-    scriptPath,
-    `#!/usr/bin/env node\nprocess.exit(${exitCode});\n`,
-    { mode: 0o755 },
-  );
+  await fs.writeFile(scriptPath, `process.exit(${exitCode});\n`);
   return scriptPath;
 }
 
@@ -157,11 +152,7 @@ async function mkTypecheckScript(dir, exitCode) {
  */
 async function mkSlowScript(dir) {
   const scriptPath = path.join(dir, 'slow-tc.mjs');
-  await fs.writeFile(
-    scriptPath,
-    `#!/usr/bin/env node\nsetTimeout(() => process.exit(0), 5000);\n`,
-    { mode: 0o755 },
-  );
+  await fs.writeFile(scriptPath, `setTimeout(() => process.exit(0), 5000);\n`);
   return scriptPath;
 }
 

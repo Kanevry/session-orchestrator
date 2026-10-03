@@ -1,6 +1,7 @@
 # ADR 0002: Agent Teams as Wave Substrate
 
 > Status: ACCEPTED · session main-2026-05-19-deep-2 · issue #437
+> **Verdict corrected to Stay — 2026-10-03 (#1053 B2).** The Adapter verdict below is retained as the historical record; the current verdict is **Stay**. See [§ Addendum — 2026-10-03: Verdict corrected to Stay](#addendum--2026-10-03-verdict-corrected-to-stay-1053).
 > Source research: "Agent Teams Evaluation" (#437; archived in the private Meta-Vault) (W2 + W3 Empirical)
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
@@ -52,9 +53,21 @@ Rationale: **Adopt is refuted on evidence** — migrating would forfeit eleven v
 
 Adapter verdict stands. H3 hard-precondition test scaffolded but **PENDING-EMPIRICAL** (manual operator step — interactive Agent Teams spawn cannot be automated):
 
-- **H3 harness shipped**: `hooks/agent-teams-h3-test.sh` (DRY-RUN scaffold: precondition_check / scaffold_team_dir / generate_log_template / print_manual_procedure; exit 0/1/2 contract; shellcheck-clean).
+- **H3 harness shipped**: `hooks/agent-teams-h3-test.sh` (DRY-RUN scaffold: precondition_check / scaffold_team_dir / generate_log_template / print_manual_procedure; exit 0/1/2 contract; shellcheck-clean). *Removed in #1061 (2026-10-03) together with `scripts/spikes/h3-agent-teams/` — the question it measured was closed by the Addendum below; git history keeps both.*
 - **H3 + H4 procedure documented**: "Deep-3 Agent Teams H3" (#484; archived in the private Meta-Vault) (9 sections + appended H4 config-overwrite verification procedure).
 - **Preconditions verified (W1 D2/D6)**: claude-code 2.1.144 (≥ 2.1.32 min), `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` present in binary, no pre-existing `~/.claude/teams/`. TaskCompleted exit-2 hook contract + ~7× plan-mode token cost + isolation-premise-false all re-confirmed against live docs 2026-05-19.
 - **Session Config key NOT wired**: the default-off `agent-teams:` key (ADR 0002:69) is intentionally deferred — wiring is gated on `H3 PASS`, which requires the manual empirical run. If H3 fails across 3 runs, ADR collapses to Stay per the existing contract.
 
 W4 architect-reviewer verdict: PASS (no premature Session Config wiring; empirical status correctly preserved).
+
+## Addendum — 2026-10-03: Verdict corrected to Stay (#1053)
+
+**The 11-vs-1 premise is obsolete.** § Context justified the Adapter with *"Agent Teams supplies exactly one capability we lack (peer-to-peer teammate messaging via the `SendMessage` mailbox)"*. That one capability has been available natively since Claude Code 2.1.224 — in the shape the orchestrator needs (session↔session and agent→coordinator; a sibling-agent mesh is a deliberate non-goal, `.claude/rules/cross-session-messaging.md` § Anti-Patterns) — without the experimental flag, without the documented ~7× plan-mode token cost, without the machine-owned `~/.claude/teams/.../config.json`, and without forfeiting any of the eleven capabilities listed in § Context (source: issue #1053 § Warum, PRD `docs/prd/2026-08-16-cross-session-messaging.md` § 2 B2). The quid pro quo the Adapter existed to buy is gone.
+
+**Verdict: Stay.** The Adapter collapses to Stay along the path § Decision itself prescribes (*"the spike is closed won't-do and this ADR collapses to Stay with the gap matrix as the standing public rationale"*) — not through an H3 failure, but because the capability the spike was meant to measure no longer needs Agent Teams. The gap matrix in § Context stays the standing public rationale.
+
+**Consequences:**
+- **H3 and H4 are no longer needed.** #484 (the spike, H3/H4 and the promotion criteria in § Follow-ups) was closed 2026-08-17 (`glab api projects/:id/issues/484` → `closed_at 2026-08-17T19:25:55Z`, read 2026-10-03).
+- **No `agent-teams:` Session Config key will be wired.** The "What changes" bullets in § Consequences describe a spike that will not ship; the "What we keep unchanged" list holds unchanged.
+- **The H3 harness is retired** (#1061, 2026-10-03): `hooks/agent-teams-h3-test.sh` and `scripts/spikes/h3-agent-teams/` were removed; git history keeps them.
+- Sibling ADRs that cited this ADR's Adapter verdict (ADR-0003, ADR-0007, ADR-0010) carry a dated pointer to this addendum.

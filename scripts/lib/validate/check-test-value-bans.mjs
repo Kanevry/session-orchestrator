@@ -406,6 +406,15 @@ const SEAM_CLOCK_ARG = new RegExp(`${CLOCK_NAME}:`);
  * `{ now }` or a positional `now` loses its seam proof and its bombs go unseen.
  * REVISIT on the first B5 finding whose subject is a helper, or the first CI
  * `test-value-bans` B5 finding the ±days clock-shift probe shows to be false.
+ *
+ * CEILING (#1507 item 3) — three known blind spots of the SCREAMING_CASE forms,
+ * left deliberately: (a) a bare `NOW)` / `NOW,` counts as a handover, whatever
+ * the constant holds; (b) arithmetic on a collected clock (`NOW - DAY`) is NOT
+ * seen as a handover, the terminator follows the operand, not the name; (c) an
+ * IMPORTED clock constant is not checked for provenance — `NOW` from a helper
+ * module that holds `Date.now()` reads as controlled. Measured impact
+ * 2026-10-03: 0 changed findings over 722 test files.
+ * REVISIT on the first B5 miss or false finding traced to (a), (b) or (c).
  */
 const CONTROL_CLOCK_ARG = new RegExp(String.raw`${CLOCK_NAME}(:|,|\}|\))`, 'g');
 

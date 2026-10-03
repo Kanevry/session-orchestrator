@@ -154,6 +154,29 @@ function findOverlaps(fenceJsonPath, ourStaged) {
   return matches;
 }
 
+/** Remediation for an allowedPaths violation, printed once per commit. */
+const ALLOWED_PATHS_HINT = [
+  '',
+  'These files were likely added by lint-staged eslint --fix / prettier --write.',
+  'To proceed:',
+  '  1) git restore --staged <path>   # for each foreign path',
+  '  2) git commit                    # retry',
+];
+
+/**
+ * A manifest path for messages: relative to the repo root, the absolute path
+ * when it does not lie beneath it (#1514.2 — two candidate manifests, so a
+ * message must say which one it means).
+ *
+ * @param {string} repoRoot
+ * @param {string} scopePath
+ * @returns {string}
+ */
+function manifestLabel(repoRoot, scopePath) {
+  const rel = relative(repoRoot, scopePath);
+  return rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? scopePath : rel;
+}
+
 /** mtime of a file in ms, or `null` when it cannot be stat'ed. */
 function mtimeMsOf(file) {
   try {
@@ -183,11 +206,14 @@ function mtimeMsOf(file) {
  *   without pattern matching, since a `../`-prefixed path would match a glob
  *   like `**\/*.mjs` and enforce-scope denies every write outside its root
  *   (REQ-04).
- * @param {string} p.scopeRel manifest path for messages, repo-relative
+ * @param {string} p.scopeRel manifest path for messages, repo-relative (absolute
+ *   when outside the repo root) — `manifestLabel`
  * @param {Set<string>} p.ownIds this process's session ids
  * @param {number|null} p.scopeMtimeMs
  * @param {number|null} p.sessionAge ms since the newest session clock
- * @returns {{action: 'pass'|'report'|'block', lines: string[]}}
+ * @returns {{action: 'pass'|'report'|'block', lines: string[], hint?: string[]}}
+ *   `hint` = the remediation block; `main()` prints it ONCE after every
+ *   manifest was judged, so two blocking manifests do not repeat it (#1514.3).
  */
 function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeRel, ownIds, scopeMtimeMs, sessionAge }) {
   if (stagedFiles.length === 0) return { action: 'pass', lines: [] };
@@ -218,14 +244,10 @@ function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeR
     return {
       action: 'block',
       lines: [
-        '✗ wave-scope-commit-guard: staged paths outside wave-scope.allowedPaths:',
+        `✗ wave-scope-commit-guard: staged paths outside wave-scope.allowedPaths (${scopeRel}):`,
         ...violations.map((v) => `  - ${v}`),
-        '',
-        'These files were likely added by lint-staged eslint --fix / prettier --write.',
-        'To proceed:',
-        '  1) git restore --staged <path>   # for each foreign path',
-        '  2) git commit                    # retry',
       ],
+      hint: ALLOWED_PATHS_HINT,
     };
   }
 
@@ -354,15 +376,22 @@ async function main() {
   const stagedFiles = stagedOutput.split('\n').filter(Boolean);
 
   let blocked = false;
+  /** @type {string[]|null} printed once after the loop (#1514.3) */
+  let hint = null;
+  const flushHint = () => {
+    if (hint !== null) for (const line of hint) process.stderr.write(`${line}\n`);
+  };
   for (const { root, scopePathOf } of judgements) {
     const located = findOwnScopeFile(root, ownIds, classifyManifestSession);
     const scopePath = located.path ?? located.foreignPath;
     if (!scopePath) continue;
+    const scopeRel = manifestLabel(repoRoot, scopePath);
     let scope;
     try {
       scope = JSON.parse(readFileSync(scopePath, 'utf8'));
     } catch (err) {
-      process.stderr.write(`wave-scope-commit-guard: failed to parse wave-scope.json: ${err.message}\n`);
+      process.stderr.write(`wave-scope-commit-guard: failed to parse ${scopeRel}: ${err.message}\n`);
+      flushHint();
       process.exit(1);
     }
 
@@ -370,14 +399,16 @@ async function main() {
       scope: scope !== null && typeof scope === 'object' ? scope : {},
       stagedFiles,
       scopePathOf,
-      scopeRel: relative(repoRoot, scopePath) || scopePath,
+      scopeRel,
       ownIds,
       scopeMtimeMs: mtimeMsOf(scopePath),
       sessionAge: sessionAgeMs(root),
     });
     for (const line of verdict.lines) process.stderr.write(`${line}\n`);
+    if (verdict.hint) hint = verdict.hint;
     if (verdict.action === 'block') blocked = true;
   }
+  flushHint();
   if (blocked) process.exit(1);
 
   // -------------------------------------------------------------------------

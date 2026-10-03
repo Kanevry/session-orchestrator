@@ -579,6 +579,60 @@ function discoverArchives(logPath) {
 }
 
 /**
+ * The one tombstone-to-archive match (#1505 5c) — shared by
+ * {@link readEventsWithRotations} rule 1, {@link scanEventsBackwards}, and
+ * `planWithGaps` in `scripts/backfill-abandoned-sessions.mjs`, which used to
+ * carry three hand-kept copies of it.
+ *
+ * #1411 — the tombstone resolves against THIS ledger's own `_archive/`, by
+ * BASENAME, never against the absolute value it stores. The writer keeps
+ * `archived_as` absolute (`events-rotation.mjs` joins the repo root) and that
+ * value stays in the record as PROVENANCE. It is not a lookup key: a moved
+ * checkout, a clone, or a sibling git worktree — routine here — makes every
+ * tombstone name a path that does not exist in THIS tree, so an exact
+ * comparison reported a phantom `missing-archive` for an archive sitting right
+ * beside the active file. Basename, not `realpath`: realpath cannot resolve a
+ * path that no longer exists, which IS the failure mode.
+ *
+ * ORDER (why the absolute value has no second chance): the sibling answer is
+ * consulted first, and an absolute hit would only be trustworthy while it
+ * pointed INSIDE this ledger's own archive dir — but any such path resolves to
+ * exactly the sibling path already tested, so once the sibling misses, an
+ * absolute hit can ONLY be a still-present OLD checkout. Honouring it would
+ * validate THIS ledger against a FOREIGN repo's archive: a silent false
+ * negative, worse than the phantom gap.
+ *
+ * #1423 — THREE outcomes, not two: read (`null`), present-but-unread
+ * (`unindexed-archive`), gone (`missing-archive`). The middle one used to be
+ * folded into the first by `existsSync`, so a tombstone whose archive had been
+ * RENAMED out of `ARCHIVE_NAME_RE` reported `complete: true` while its records
+ * were absent.
+ *
+ * @param {unknown} record  a parsed ledger line
+ * @param {string} ownArchiveDir  this ledger's `_archive/`, built exactly as
+ *   `discoverArchives` builds it so a read archive matches `readSet` by string
+ * @param {Set<string>} readSet  the paths this read actually took as sources
+ * @returns {{kind: 'unindexed-archive'|'missing-archive', path: string,
+ *            archived_as: string, first_ts: string|null, last_ts: string|null}|null}
+ *   `null` when `record` is not a rotation tombstone, names no archive, or its
+ *   archive was read.
+ */
+export function tombstoneGap(record, ownArchiveDir, readSet) {
+  if (record?.event !== ROTATION_EVENT) return null;
+  const target = record.archived_as;
+  if (typeof target !== 'string' || target.length === 0) return null;
+  const sibling = path.join(ownArchiveDir, path.basename(target));
+  if (readSet.has(sibling)) return null;
+  return {
+    kind: existsSync(sibling) ? 'unindexed-archive' : 'missing-archive',
+    path: sibling,
+    archived_as: target,
+    first_ts: record.first_ts ?? null,
+    last_ts: record.last_ts ?? null,
+  };
+}
+
+/**
  * Read the events ledger ACROSS rotation boundaries — active file plus every
  * archive still on disk — in time order, reporting what is missing instead of
  * silently returning less.
@@ -660,44 +714,14 @@ export function readEventsWithRotations(repoRoot, opts = {}) {
   // `onDisk` still match by string.
   const ownArchiveDir = path.join(path.dirname(activePath), ARCHIVE_DIR_NAME);
 
-  // Rule 1 — every rotation tombstone must still point at a file.
+  // Rule 1 — every rotation tombstone must still point at a file (resolution
+  // and the three outcomes: {@link tombstoneGap}).
   for (const source of sources) {
     for (const record of source.records) {
-      if (record?.event !== ROTATION_EVENT) continue;
-      const target = record.archived_as;
-      if (typeof target !== 'string' || target.length === 0) continue;
-      // #1411 — resolve the tombstone against THIS ledger's own `_archive/`,
-      // by BASENAME, and never against the absolute value it stores.
-      //
-      // The writer keeps `archived_as` absolute (`events-rotation.mjs` joins
-      // the repo root) and that value stays in the record as PROVENANCE. It is
-      // not a lookup key: a moved checkout, a clone, or a sibling git worktree
-      // — routine here — makes every tombstone name a path that does not exist
-      // in THIS tree, so the old exact comparison reported a phantom
-      // `missing-archive` for an archive sitting right beside the active file.
-      // Basename, not `realpath`: realpath cannot resolve a path that no longer
-      // exists, which IS the failure mode.
-      //
-      // ORDER (why the absolute value has no second chance): the sibling answer
-      // is consulted first, and an absolute hit would only be trustworthy while
-      // it pointed INSIDE this ledger's own archive dir — but any such path
-      // resolves to exactly the sibling path already tested, so once the
-      // sibling misses, an absolute hit can ONLY be a still-present OLD
-      // checkout. Honouring it would validate THIS ledger against a FOREIGN
-      // repo's archive: a silent false negative, worse than the phantom gap.
-      const sibling = path.join(ownArchiveDir, path.basename(target));
-      if (onDisk.has(sibling)) continue;
+      const gap = tombstoneGap(record, ownArchiveDir, onDisk);
+      if (gap === null) continue;
       gaps.push({
-        // #1423 — THREE outcomes, not two: read (above), present-but-unread
-        // (here), gone (below). The middle one used to be silently folded into
-        // the first by `existsSync`, so a tombstone whose archive had been
-        // RENAMED out of `ARCHIVE_NAME_RE` reported `complete: true` while its
-        // records were absent from `events`.
-        kind: existsSync(sibling) ? 'unindexed-archive' : 'missing-archive',
-        path: sibling,
-        archived_as: target,
-        first_ts: record.first_ts ?? null,
-        last_ts: record.last_ts ?? null,
+        ...gap,
         lines: record.lines ?? null,
         size_before: record.size_before ?? null,
         reported_by: source.path,
@@ -866,8 +890,7 @@ export function scanEventsBackwards(opts = {}) {
    * LOW-2): `maybeRotate` renames, prunes, THEN appends the tombstone, from an
    * async SessionStart hook, so a concurrent append can land first and push it
    * to line 2. Called BEFORE the caller's `filter`, which names another event
-   * and would otherwise hide the cut. Resolved by basename against this
-   * ledger's own `_archive/`, never by the absolute provenance value (#1411).
+   * and would otherwise hide the cut. Matched by {@link tombstoneGap}.
    */
   const noteCut = (line, source) => {
     if (!line.includes(ROTATION_EVENT)) return;
@@ -877,18 +900,8 @@ export function scanEventsBackwards(opts = {}) {
     } catch {
       return; // counted by `consume` like every other malformed line
     }
-    const target = record?.event === ROTATION_EVENT ? record.archived_as : null;
-    if (typeof target !== 'string' || target.length === 0) return;
-    const sibling = path.join(ownArchiveDir, path.basename(target));
-    if (listed.has(sibling)) return;
-    gaps.push({
-      kind: existsSync(sibling) ? 'unindexed-archive' : 'missing-archive',
-      path: sibling,
-      archived_as: target,
-      first_ts: record.first_ts ?? null,
-      last_ts: record.last_ts ?? null,
-      reported_by: source.path,
-    });
+    const gap = tombstoneGap(record, ownArchiveDir, listed);
+    if (gap !== null) gaps.push({ ...gap, reported_by: source.path });
   };
 
   /** @returns {boolean} true ⇒ the caller accepted a record; stop everything. */

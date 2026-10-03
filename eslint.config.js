@@ -36,6 +36,23 @@ export default [
       "no-var": "error",
       "eqeqeq": ["error", "always"],
       "no-console": "off",
+      // #1234 — removed/deprecated import surfaces. Static imports only; the
+      // shim's own test imports it dynamically in a child process on purpose.
+      "no-restricted-imports": ["error", {
+        patterns: [
+          {
+            regex: "(^|/)locks/index\\.mjs$",
+            message:
+              "locks/index.mjs is deprecated since 5.2.0 (removed in 6.0.0) — import from " +
+              "scripts/lib/locks/state-md-lock.mjs / staging-fence-lock.mjs, or scripts/lib/session-lock.mjs.",
+          },
+          {
+            regex: "(^|/)owner-yaml\\.mjs$",
+            importNames: ["OWNER_YAML_PATH"],
+            message: "OWNER_YAML_PATH was deleted — use resolveOwnerYamlPath().",
+          },
+        ],
+      }],
     },
     files: ["**/*.mjs", "**/*.js"],
   },

@@ -19,7 +19,7 @@ The W2 research note ("Routines Evaluation", #438; archived in the private Meta-
 - **Green status ≠ task success.** A green run only means "the session started and exited without an infrastructure error"; the operator must read the transcript to confirm what Claude did (Finding 6).
 - **Routines win exactly one Gap-Matrix row** — laptop-closed durability — and lose or only partially match every autonomy-safety row (research note "Net", lines 189-194). `/loop`'s recurring-task expiry is **7 days, not 3** (Finding 9), and its 1-minute minimum interval contrasts with Routines' 1-hour minimum and no-open-session requirement — confirming the two primitives address different slots, consistent with LM-001's routing tree.
 
-The interacting decision is ADR 0002 (#437, Agent Teams as wave substrate, "Agent Teams Evaluation" — #437; archived in the private Meta-Vault): both evaluate replacing a load-bearing local abstraction with an Anthropic-native substrate, and both land on **Adapter, not Adopt**, for the same structural reason — the native primitive supplies raw capability but not the safety surface (`docs/adr/0001-context-vs-orchestration.md`'s house thesis). The two adapters compose: an Agent-Teams-backed wave could itself run inside a Routine-fired cloud session, but only under the same one-bounded-session constraint this ADR sets.
+The interacting decision is ADR 0002 (#437, Agent Teams as wave substrate, "Agent Teams Evaluation" — #437; archived in the private Meta-Vault): both evaluate replacing a load-bearing local abstraction with an Anthropic-native substrate, and both land on **Adapter, not Adopt**, for the same structural reason — the native primitive supplies raw capability but not the safety surface (`docs/adr/0001-context-vs-orchestration.md`'s house thesis). The two adapters compose: an Agent-Teams-backed wave could itself run inside a Routine-fired cloud session, but only under the same one-bounded-session constraint this ADR sets. *(2026-10-03: ADR-0002's verdict was since corrected to **Stay** — see its Addendum, #1053. The shared structural reason stands.)*
 
 ## Decision
 
@@ -40,7 +40,7 @@ The interacting decision is ADR 0002 (#437, Agent Teams as wave substrate, "Agen
 
 **Ecosystem interactions:**
 
-- **ADR 0002 (#437, Agent Teams):** independent Adapter verdict, same rationale (native substrate supplies capability, not the safety surface). The two compose only under this ADR's one-bounded-session constraint — an Agent-Teams wave inside a Routine fire is still one bounded session, not a cloud loop.
+- **ADR 0002 (#437, Agent Teams):** independent Adapter verdict, same rationale (native substrate supplies capability, not the safety surface) — corrected to **Stay** 2026-10-03 (ADR-0002 Addendum, #1053). The two compose only under this ADR's one-bounded-session constraint — an Agent-Teams wave inside a Routine fire is still one bounded session, not a cloud loop.
 - **`.claude/rules/loop-and-monitor.md`:** LM-004 already routes the overnight/cross-repo/survives-restart class to Routines/Desktop; this ADR makes that routing concrete for the `/autopilot` housekeeping subset *without* contradicting LM-005 (no unguarded scheduler replaces `/autopilot`; the loop brain stays local and guarded). LM-001's primitive-selection tree is unchanged — Routines remain the "periodic, unbounded-by-session, must-survive-restart" leaf, distinct from `/loop` (≤7-day, session-scoped) and Monitor (streamable trigger).
 
 ## Follow-ups
