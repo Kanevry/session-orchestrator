@@ -231,7 +231,7 @@ $session-orchestrator:close</pre>
         </li>
         <li>
           <h3><code>/go</code>: execute the plan in checked waves</h3>
-          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow checks results between waves and requires the full configured test, typecheck and lint gate before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave; deep uses five and the ultradeep profile uses seven.</p>
+          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow runs your tests and typecheck after each implementation wave and requires the full configured test, typecheck and lint gate after the Quality wave and before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave; deep uses five and the ultradeep profile uses seven.</p>
         </li>
         <li>
           <h3><code>/close</code>: verify, commit, and file what is left</h3>

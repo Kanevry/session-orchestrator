@@ -1,6 +1,6 @@
 # session-orchestrator (full description for LLMs)
 
-Your coding agents get an agreed plan, a check after every step and a handover to the next session. On their own, coding agents drift from the plan, overwrite each other's files and call work done before it is checked; Session Orchestrator adds a repeatable Plan, Go, Close workflow to AI coding sessions that closes those gaps. It is a workflow layer that runs on top of the coding agent you already have (Claude Code, Codex CLI, Cursor IDE, or Pi), not a replacement for it. Maintained by one person, Bernhard Götzendorfer, Vienna; shipped as-is with best-effort maintenance. Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor. MIT license, local by default, no account required, telemetry strictly opt-in.
+Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session. On their own, coding agents drift from the plan, overwrite each other's files and call work done before it is checked; Session Orchestrator adds a repeatable Plan, Go, Close workflow to AI coding sessions that closes those gaps. It is a workflow layer that runs on top of the coding agent you already have (Claude Code, Codex CLI, Cursor IDE, or Pi), not a replacement for it. Maintained by one person, Bernhard Götzendorfer, Vienna; shipped as-is with best-effort maintenance. Not affiliated with or endorsed by Anthropic, OpenAI, or Cursor. MIT license, local by default, no account required, telemetry strictly opt-in.
 
 Version 5.5.0 · npm package: session-orchestrator · requires Node.js >= 24 · https://session-orchestrator.com
 
@@ -11,19 +11,19 @@ Windows: native use is untested. The Node core uses portable paths, but shell ho
 ## What you get
 
 - Know what to work on: /session reads git, open issues, recent commits and the last session record, recommends one scope and waits for your correction. /plan, /brainstorm and /grill help while an idea is still vague.
-- Errors stop at the next check: /go runs your own test, typecheck and lint commands between waves and sends findings back for a fix; /close checks every planned item against what happened; /debug looks for the root cause before a fix.
+- Errors stop at the next check: /go checks each implementation wave with your tests and typecheck and turns failures into fix tasks for the next wave; the full test, typecheck and lint gate runs after the Quality wave and before /close commits; /close checks every planned item against what happened; /debug looks for the root cause before a fix.
 - Agents keep to their files: declared per-agent file scopes are checked for overlap before dispatch; a destructive-command guard blocks 12 command patterns and warns on 4 (hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex).
 - Pick up where you stopped: STATE.md records each finished wave so the next /session offers to resume; a heartbeat session lock keeps two sessions from colliding in one checkout; /close files unfinished work as GitLab or GitHub issues.
 - It improves with your sessions: every session appends a record; /evolve proposes learnings with confidence scores, /reconcile drafts rules from them, and the operator approves or deletes each one. Optional mirror into a Markdown notes vault.
-- Audit, test and review on demand: a discovery scan at /close turns confirmed findings into issues; /test drives web and macOS flows end to end; /ux-grill audits a running web app (accessibility, target size, overflow); /test-audit removes tests that catch nothing.
-- Longer runs: /autopilot chains sessions and stops on any of 10 kill-switches; /dispatcher picks the next free repository; /portfolio summarises issues and CI across registered repositories.
+- Audit, test and review on demand: a discovery scan at /close turns confirmed findings into issues; /test drives web and macOS flows end to end; /ux-grill audits a running web app (accessibility, target size, overflow); /test-audit removes tests that catch nothing; /repo-audit and /harness-audit score a repository against a checklist; /persona-panel has several reviewer personas read the same output in parallel.
+- Longer runs: /autopilot chains sessions and stops on any of 10 kill-switches; /dispatcher recommends the next free repository and claims it once you confirm; /portfolio summarises issues, MRs and CI across the repositories registered in your notes vault.
 
 ## The loop
 
 Bootstrap once per project. In Codex, select `$session-orchestrator:bootstrap`, then `$session-orchestrator:session feature`, `$session-orchestrator:go`, and `$session-orchestrator:close` in the skill picker or invoke them in a message. The slash commands below describe the shared workflows on Claude Code, Cursor and Pi. Codex requires version 0.144.4 or later and a fresh task after plugin installation; review the hook bundle through `/hooks`.
 
 - /session [housekeeping|feature|deep] - research and Q&A: inspects git state, open issues, CI status, prior-session records, then presents one structured summary with a recommendation. Scope is agreed with the operator before any code.
-- /go - executes the agreed scope in a shape matched to the session type: one wave for housekeeping or five for deep (Discovery, Impl-Core, Impl-Polish, Quality, Finalization) with quality checks between waves and a full configured test, typecheck and lint gate before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi execute sequentially. For work that outgrows five waves there is a named ultradeep profile - a profile over session-type deep, not a fourth enum value - running seven waves: Research plus Code-Discovery, a blocking coordinator Synthesis-Gate, Impl-Core, Impl-Polish, a read-only Review-Panel, Quality, Release.
+- /go - executes the agreed scope in a shape matched to the session type: one wave for housekeeping, three for a feature or five for deep (Discovery, Impl-Core, Impl-Polish, Quality, Finalization), with your tests and typecheck after each implementation wave and the full configured test, typecheck and lint gate after the Quality wave and before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi execute sequentially. For work that outgrows five waves there is a named ultradeep profile - a profile over session-type deep, not a fourth enum value - running seven waves: Research plus Code-Discovery, a blocking coordinator Synthesis-Gate, Impl-Core, Impl-Polish, a read-only Review-Panel, Quality, Release.
 - /close - verifies every planned item against evidence, runs the full gate one last time, files carryover issues for unfinished work, commits cleanly, mirrors to GitHub when configured, writes session records and learnings.
 
 ## Example and origin
@@ -62,7 +62,7 @@ aiat-llm-eval v1: an open standard for honest LLM session evaluation. Pre-regist
 ## Numbers
 
 <!-- census:start -->
-Version 5.5.0 · counted 2026-10-03 at 673140e3 · skills 51 · commands 27 · agents 14 · hooks 29 · test files 722 · sessions 437 · learnings 269 · npm downloads (30d) 2504 · GitHub stars 53
+Version 5.5.0 · counted 2026-10-03 at e16b6b03 · skills 51 · commands 27 · agents 14 · hooks 29 · test files 723 · sessions 437 · learnings 269 · npm downloads (30d) 2504 · GitHub stars 53
 <!-- census:end -->
 
 Generated by `node scripts/site-numbers.mjs --write`; the machine-readable receipt is site/_census.json. Facts outside the census, measured 2026-10-03 at d1af261a: 19 ADRs, 49 modules under scripts/lib/validate/ (`find scripts/lib/validate -name '*.mjs' ! -name '*.test.mjs' | wc -l`), 16 destructive-command policy rules (12 marked blocking, 4 marked warning; applied only by a compatible active hook), 25 rule files under .claude/rules/, 28 of the hook files plugin-wired across 10 event types, and 14,978 top-level it()/test() call sites (`rg -c '^\s*(it|test)\(' tests --glob '*.test.mjs'` summed per file; the runtime total is higher because of parameterised blocks that expand at run time). The v4.0.0 release REMOVES public surfaces, so counts from the preceding 3.24 line (49 skills / 28 commands / 16 agents / 61 rules) are stale by construction.

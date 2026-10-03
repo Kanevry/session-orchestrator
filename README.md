@@ -6,12 +6,12 @@
 
 **Give your agents a working rhythm.**
 
-On their own, coding agents drift from the plan, overwrite each other's files and call work done before it is checked. Session Orchestrator gives every session a plan you agree to, a check after every step and a handover to the next session.
+Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session. On their own, coding agents drift from the plan, overwrite each other's files and call work done before it is checked; Session Orchestrator closes those gaps.
 
 You type three commands:
 
 - **`/session`** reads your repository, your open issues and the last session, proposes what to work on, and waits for your correction.
-- **`/go`** runs the agreed work in waves of parallel agents and runs your test, typecheck and lint commands between each wave. Work that fails a check goes back to be fixed before the next wave starts.
+- **`/go`** runs the agreed work in waves of parallel agents. After each implementation wave your tests and typecheck run, and failures become fix tasks for the next wave. The full test, typecheck and lint gate runs before `/close` commits.
 - **`/close`** checks every planned item against what actually happened, commits, and files the rest as issues for next time.
 
 Session Orchestrator is a free, MIT-licensed workflow plugin for **Claude Code, Codex CLI, Cursor IDE, or [Pi](docs/pi-setup.md)**. It runs on your machine and writes plain text into your repository. No account, no server, nothing to sign up for.
@@ -61,7 +61,7 @@ persistence: true
 enforcement: warn
 ```
 
-The first three are the commands `/go` runs between waves and `/close` runs at the end — use whatever your project actually uses. Everything else is opt-in: [full template](docs/session-config-template.md) · [every key, its type and default](docs/session-config-reference.md).
+The first three are the commands the quality gate runs: tests and typecheck after each implementation wave, all three after the Quality wave and before `/close` commits — use whatever your project actually uses. Everything else is opt-in: [full template](docs/session-config-template.md) · [every key, its type and default](docs/session-config-reference.md).
 
 **3. Run the loop.**
 
@@ -82,12 +82,12 @@ Each item: what it does for you, then how it works.
 | You get | How |
 |---|---|
 | **Know what to work on.** Every session starts from the real state of your project, not from a prompt you rewrite. | `/session` reads git, open issues, recent commits and the last session record, recommends one scope and waits for your correction. `/plan`, `/brainstorm` and `/grill` help while an idea is still vague. |
-| **Errors stop at the next check.** A broken test is found after the step that caused it, not five steps later. | `/go` runs your test, typecheck and lint commands between waves and sends findings back for a fix. `/close` checks every planned item against what happened. `/debug` looks for the root cause before a fix. |
-| **Agents keep to their files.** Parallel agents do not overwrite each other, and destructive commands do not slip through. | Per-agent file scopes are checked for overlap before dispatch. A guard blocks 12 destructive command patterns (hard reset, `rm -rf`, force-push, `DROP TABLE`, …) and warns on 4. Hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex. |
-| **Pick up where you stopped.** A crash or a second session in the same folder does not cost you the work. | `STATE.md` records each finished wave and the next `/session` offers to resume. A heartbeat lock keeps two sessions apart in one checkout. `/close` files what is left as GitLab or GitHub issues. |
+| **Errors stop at the next check.** A broken test is found right after the work that caused it, not after more work is built on top. | `/go` checks each wave with your tests and typecheck and turns failures into fix tasks; lint and the full suite run before the commit. `/close` checks every planned item against what happened. `/debug` looks for the root cause before a fix. |
+| **Agents keep to their files.** Parallel agents do not overwrite each other, and destructive commands do not slip through. | Each agent gets a declared list of files it may change; overlapping lists are rejected before dispatch. A guard blocks 12 destructive command patterns (hard reset, `rm -rf`, force-push, `DROP TABLE`, …) and warns on 4. Hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex. |
+| **Pick up where you stopped.** A crash or a second session in the same folder does not cost you the work. | `STATE.md` (a progress file in your repo) records each finished wave, and the next `/session` offers to resume. A session lock with a heartbeat keeps two sessions apart in one checkout. `/close` files what is left as GitLab or GitHub issues. |
 | **It improves with your sessions.** Patterns from your own work become rules, once you approve them. | Every session appends a record. `/evolve` proposes learnings with a confidence score, `/reconcile` drafts rules from them; you approve or delete each one. Optional mirror into a Markdown notes vault. |
-| **Audit, test and review on demand.** Find problems you did not ask about, and show the app works. | A discovery scan at `/close` turns confirmed findings into issues. `/test` drives web and macOS flows end to end, `/ux-grill` audits a running web app, `/test-audit` removes tests that catch nothing. |
-| **Longer runs, more repositories.** | `/autopilot` chains sessions and stops on any of 10 kill-switches. `/dispatcher` picks the next free repository, `/portfolio` summarises issues and CI across them. |
+| **Audit, test and review on demand.** Find problems you did not ask about, and show the app works. | A discovery scan at `/close` turns confirmed findings into issues. `/test` drives web and macOS flows end to end, `/ux-grill` audits a running web app, `/test-audit` removes tests that catch nothing. `/repo-audit` and `/harness-audit` score a repository against a checklist, and `/persona-panel` has several reviewer personas read the same output in parallel. |
+| **Longer runs, more repositories.** | `/autopilot` chains sessions and stops on any of 10 kill-switches. `/dispatcher` recommends the next free repository and claims it once you confirm, and `/portfolio` summarises issues, MRs and CI across the repositories registered in your notes vault. |
 
 ## How it works
 
@@ -96,7 +96,7 @@ When you type `/session feature`:
 1. **It reads the project.** Git state, open issues, recent commits, documentation, host resources and the records of previous sessions become a Session Overview with one recommendation.
 2. **You correct the scope.** Nothing is implemented until you agree to the plan.
 3. **The work is split into waves.** The session type decides how many: housekeeping 1, feature 3, deep 5, the ultradeep profile 7. Each wave gets a purpose, a list of file paths it may write to, and a result that can be checked.
-4. **`/go` runs it.** Agents whose file scopes do not overlap run at the same time on Claude Code and Codex; Cursor and Pi run them one after another. After each wave the quality gate runs, and anything it reports goes back for correction before the next wave starts.
+4. **`/go` runs it.** Agents whose file scopes do not overlap run at the same time on Claude Code and Codex; Cursor and Pi run them one after another. After each implementation wave your tests and typecheck run, and failures become fix tasks for the next wave. The full test, typecheck and lint gate runs after the Quality wave.
 5. **`/close` checks and records.** It compares the plan against what happened, runs the full quality gate, commits file by file, and opens issues for whatever was not finished.
 
 **What it writes into your repository**, and nothing else — all of it plain text, all of it local:
@@ -116,7 +116,7 @@ The plugin is **51 skills, 27 slash commands, 14 typed subagents and 29 hook fil
 ## Why it is built this way
 
 - **The wave order is deliberate.** Discovery runs first so every implementer starts from the same picture of the code. Impl-Core runs before Impl-Polish so the structure exists before anything integrates against it. The Quality wave simplifies generated code *before* tests are written — write the tests first and they assert whatever the model produced, so changing it later means rewriting the tests too.
-- **Checks run between waves, not only at the end.** A mistake caught after wave 2 costs one wave. The same mistake found at `/close` has already been copied into every wave after it. Findings below the configured confidence threshold are not shown to you.
+- **Checks run after each implementation wave, not only at the end.** A mistake caught after wave 2 costs one wave. The same mistake found at `/close` has already been copied into every wave after it. Findings below the configured confidence threshold are not shown to you.
 - **A crash does not lose the session.** `STATE.md` records which wave finished and what deviated from the plan. The next `/session` offers to continue from the last completed wave.
 - **Two sessions in one working copy is treated as a real risk.** Two people, or two of your own sessions, in the same checkout share one git index, one filesystem and one `STATE.md`, and neither can see the other's uncommitted work. A heartbeat session lock, per-agent file-scope manifests, and the PSA rules in [`.claude/rules/parallel-sessions.md`](https://github.com/Kanevry/session-orchestrator/blob/main/.claude/rules/parallel-sessions.md) exist for exactly that case.
 - **Guards run where the harness supports them, and the table below says where it does not.** A destructive-command policy — 12 rules block, 4 warn — and file-scope enforcement run as real hooks on Claude Code, as bridges on Cursor and Pi, and as instructions only on Codex. Details: [`docs/components.md`](docs/components.md#other-surfaces).

@@ -6,7 +6,7 @@
     "commands": "27",
     "agents": "14",
     "hooks": "29",
-    "tests": "722",
+    "tests": "723",
     "sessions": "437",
     "learnings": "269",
     "rules": "25",
@@ -15,6 +15,6 @@
     "npm-downloads-30d": "2504",
     "github-stars": "53",
     "counted-at": "2026-10-03",
-    "counted-sha": "673140e3"
+    "counted-sha": "e16b6b03"
   }
 }

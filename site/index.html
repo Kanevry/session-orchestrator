@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Session Orchestrator | A working rhythm for your coding agents</title>
-<meta name="description" content="Your coding agents get an agreed plan, a check after every step and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
+<meta name="description" content="Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
 <link rel="canonical" href="https://session-orchestrator.com/">
 <link rel="alternate" hreflang="en" href="https://session-orchestrator.com/">
 <link rel="alternate" hreflang="de" href="https://session-orchestrator.com/de">
@@ -15,7 +15,7 @@
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/">
 <meta property="og:title" content="Session Orchestrator | A working rhythm for your coding agents">
-<meta property="og:description" content="Your coding agents get an agreed plan, a check after every step and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
+<meta property="og:description" content="Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -23,7 +23,7 @@
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Session Orchestrator | A working rhythm for your coding agents">
-<meta name="twitter:description" content="Your coding agents get an agreed plan, a check after every step and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
+<meta name="twitter:description" content="Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with an illustration of an agent workshop under human direction.">
 
@@ -56,7 +56,7 @@
       "url": "https://session-orchestrator.com/",
       "applicationCategory": "DeveloperApplication",
       "operatingSystem": "macOS, Linux",
-      "description": "Your coding agents get an agreed plan, a check after every step and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.",
+      "description": "Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session. A free, open-source plugin for Claude Code, Codex, Cursor and Pi.",
       "license": "https://opensource.org/licenses/MIT",
       "codeRepository": "https://github.com/Kanevry/session-orchestrator",
       "downloadUrl": "https://www.npmjs.com/package/session-orchestrator",
@@ -186,8 +186,8 @@
       <div class="hero-copy">
         <p class="eyebrow">Open source for your coding sessions</p>
         <h1 class="h-display">Give your agents<br>a working rhythm.</h1>
-        <p class="hero-lede">Plan the work. Run it in checked waves. Pick up where you left off.</p>
-        <p class="hero-context">On their own, coding agents drift from the plan, overwrite each other&#8217;s files and call work done before it is checked. Session Orchestrator gives every session a plan you agree to, a check after every step and a handover to the next one. It runs on Claude Code, Codex, Cursor and Pi.</p>
+        <p class="hero-lede">Your coding agents get an agreed plan, a check after each round of changes and a handover to the next session.</p>
+        <p class="hero-context">Plan the work. Run it in checked waves. Pick up where you left off. On their own, coding agents drift from the plan, overwrite each other&#8217;s files and call work done before it is checked. Session Orchestrator closes those gaps on Claude Code, Codex, Cursor and Pi.</p>
         <div class="cta"><a class="btn btn-primary" href="#install">Install the plugin<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a><a class="btn btn-secondary" href="#loop">See a session<span aria-hidden="true">↓</span></a></div>
         <p class="hero-note">Free · MIT licensed · No plugin account</p>
       </div>
@@ -221,7 +221,7 @@
         </video>
         <figcaption>The same session as a 34-second film, with sound · made with AI</figcaption>
       </figure>
-      <div class="workflow-note"><h3>Size the workflow to the job.</h3><p>Housekeeping can take one wave. Deep uses five, and the ultradeep profile uses seven. Waves organise the work; a small change does not need to become a large project.</p><a href="/guide#first-session">Run your first session <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
+      <div class="workflow-note"><h3>Size the workflow to the job.</h3><p>Housekeeping uses one wave, a feature three, deep five, the ultradeep profile seven. Waves organise the work; a small change does not need to become a large project.</p><a href="/guide#first-session">Run your first session <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
     </div>
   </section>
 
@@ -230,19 +230,19 @@
       <div class="section-heading"><div><p class="eyebrow">What you get</p><h2>Less babysitting.<br>More finished work.</h2></div><p>Each part closes one gap that shows up when agents work alone. First what it does for you, then how it works. Everything runs on your machine and writes plain text into your repository.</p></div>
       <ul class="feature-grid">
         <li class="feature"><span class="feature-tag">Start right</span><h3>Know what to work on.</h3><p class="feature-value">Every session starts from the real state of your project, not from a prompt you write again each time.</p><p><code>/session</code> reads git, open issues, recent commits and the last session record, recommends one scope and waits for your correction. <code>/plan</code>, <code>/brainstorm</code> and <code>/grill</code> help while an idea is still vague.</p></li>
-        <li class="feature"><span class="feature-tag">Catch mistakes early</span><h3>Errors stop at the next check.</h3><p class="feature-value">A broken test is found after the step that caused it, not after five more steps built on top of it.</p><p><code>/go</code> runs your own test, typecheck and lint commands between waves and sends findings back for a fix. <code>/close</code> checks every planned item against what happened. <code>/debug</code> finds the root cause before anyone patches.</p></li>
-        <li class="feature"><span class="feature-tag">Stay in scope</span><h3>Agents keep to their files.</h3><p class="feature-value">Parallel agents do not overwrite each other, and destructive commands do not slip through.</p><p>Each agent gets a declared list of files, and overlaps are rejected before work starts. A guard blocks 12 kinds of destructive command, such as hard resets, <code>rm -rf</code>, force-push and <code>DROP TABLE</code>, and warns on 4 more. Real hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex.</p></li>
+        <li class="feature"><span class="feature-tag">Catch mistakes early</span><h3>Errors stop at the next check.</h3><p class="feature-value">A broken test is found right after the work that caused it, not after more work is built on top of it.</p><p><code>/go</code> checks each wave with your tests and typecheck and turns failures into fix tasks; lint and the full suite run before the commit. <code>/close</code> checks every planned item against what happened. <code>/debug</code> finds the root cause before anyone patches.</p></li>
+        <li class="feature"><span class="feature-tag">Stay in scope</span><h3>Agents keep to their files.</h3><p class="feature-value">Parallel agents do not overwrite each other, and destructive commands do not slip through.</p><p>Each agent gets a declared list of files, and overlaps are rejected before work starts. A guard blocks 12 destructive command patterns, such as hard resets, <code>rm -rf</code>, force-push and <code>DROP TABLE</code>, and warns on 4 more. Real hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex.</p></li>
         <li class="feature"><span class="feature-tag">Keep the thread</span><h3>Pick up where you stopped.</h3><p class="feature-value">A crash, a closed laptop or a second session in the same folder does not cost you the work.</p><p><code>STATE.md</code> records every finished wave, so the next <code>/session</code> offers to resume. A heartbeat lock keeps two sessions from colliding in one checkout. <code>/close</code> files what is left as issues on GitLab or GitHub.</p></li>
         <li class="feature"><span class="feature-tag">Learn as you go</span><h3>It improves with your sessions.</h3><p class="feature-value">Patterns from your own sessions become rules your agents follow next time, once you approve them.</p><p>Every session appends a record. <code>/evolve</code> proposes learnings with a confidence score, and <code>/reconcile</code> drafts rules from them. You read each one and delete what you disagree with. Optional: mirror sessions and learnings into a Markdown notes vault.</p></li>
-        <li class="feature"><span class="feature-tag">Look further</span><h3>Audit, test and review on demand.</h3><p class="feature-value">The same workflow can find problems you did not ask about, and show that the app works.</p><p>A discovery scan at <code>/close</code> turns findings you confirm into issues. <code>/test</code> drives web and macOS flows end to end, <code>/ux-grill</code> checks a running web app for accessibility and layout faults, and <code>/test-audit</code> removes tests that catch nothing.</p></li>
+        <li class="feature"><span class="feature-tag">Look further</span><h3>Audit, test and review on demand.</h3><p class="feature-value">The same workflow can find problems you did not ask about, and show that the app works.</p><p>A discovery scan at <code>/close</code> turns findings you confirm into issues. <code>/test</code> drives web and macOS flows end to end, <code>/ux-grill</code> checks a running web app for accessibility and layout faults, and <code>/test-audit</code> removes tests that catch nothing. <code>/repo-audit</code> and <code>/harness-audit</code> score a repository against a checklist, and <code>/persona-panel</code> has several reviewer personas read the same output in parallel.</p></li>
       </ul>
-      <p class="feature-more">For longer runs: <code>/autopilot</code> chains whole sessions and stops on any of 10 kill-switches, <code>/dispatcher</code> picks the next free repository across your projects, and <code>/portfolio</code> summarises issues and CI across them. Every command is listed in the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/components.md">component reference</a>.</p>
+      <p class="feature-more">For longer runs: <code>/autopilot</code> chains whole sessions and stops on any of 10 kill-switches, <code>/dispatcher</code> recommends the next free repository and claims it once you confirm, and <code>/portfolio</code> summarises issues, MRs and CI across the repositories registered in your notes vault. Every command is listed in the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/components.md">component reference</a>.</p>
       <h3 class="go-steps-title">What happens between <code>/session</code> and <code>/close</code></h3>
       <ol class="go-steps">
         <li><b>Read</b>Git, issues, recent commits and earlier sessions become one overview with a recommendation.</li>
         <li><b>Agree</b>Nothing changes in your code until you accept or correct the scope.</li>
-        <li><b>Split</b>The work becomes waves: 1 for housekeeping, 3 for a feature, 5 for deep work. Each wave gets a goal and the files it may write.</li>
-        <li><b>Run and check</b>Agents with separate files work in parallel on Claude Code and Codex. After every wave, your test, typecheck and lint commands run.</li>
+        <li><b>Split</b>The work becomes waves: 1 for housekeeping, 3 for a feature, 5 for deep work, 7 for the ultradeep profile. Each wave gets a goal and the files it may write.</li>
+        <li><b>Run and check</b>Agents with separate files work in parallel on Claude Code and Codex. After each implementation wave, your tests and typecheck run, and failures become fix tasks for the next wave. The full test, typecheck and lint gate runs before /close commits.</li>
         <li><b>Close</b>The plan is compared with the result, the changes are committed, and unfinished work becomes issues.</li>
       </ol>
     </div>
@@ -331,14 +331,14 @@
         <div class="card"><p class="n"><span class="num" data-metric="commands">27</span></p><p class="l">slash commands</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">29</span></p><p class="l">hook files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">722</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">723</span></p><p class="l">test files</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="sessions">437</span></p><p class="l">session records in this repo</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="learnings">269</span></p><p class="l">learnings in this repo</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">2504</span></p><p class="l">npm downloads, last 30 days</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-03</span> at commit <span class="num" data-metric="counted-sha">673140e3</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-03</span> at commit <span class="num" data-metric="counted-sha">e16b6b03</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">A few practical questions</p>
