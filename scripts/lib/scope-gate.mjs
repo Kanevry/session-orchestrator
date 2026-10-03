@@ -254,7 +254,8 @@ function literalScopePrefix(entry) {
  * verbatim presence + literal-prefix coverage; it does not prove that e.g.
  * `src/**\/*.ts` ⊆ `src/**\/*.js` is false. The concrete-path branch above is
  * exact and carries the incident-relevant load (the union the coordinator
- * actually writes is verbatim, deduplicated agent scopes). Erring toward
+ * actually writes is the deduplicated agent scopes in canonical spelling, see
+ * {@link unionFileScopes}). Erring toward
  * over-approximating coverage keeps a legitimate union from being rejected on a
  * glob technicality rather than pretending to a precision this matcher lacks.
  *
@@ -275,16 +276,21 @@ export function assertFileScopeSubset(fileScope, allowedPaths) {
   const missing = [];
   for (const entry of fileScope) {
     if (typeof entry !== 'string' || entry.length === 0) continue;
+    // The AGENT side is compared in canonical spelling — the spelling the union
+    // emits and the write path Gate 7 matches. `allowedPaths` stays as written:
+    // a hand-written `./x` there is a pattern Gate 7 cannot match, and spelling
+    // it away here would report coverage the hook then denies.
+    const spelled = scopeEntrySpelling(entry);
     let covered;
-    if (isGlobScopeEntry(entry)) {
+    if (isGlobScopeEntry(spelled)) {
       // GLOB entry: verbatim presence OR literal-prefix coverage.
-      const prefix = literalScopePrefix(entry);
-      covered = allowedPaths.some((p) => p === entry || pathMatchesPattern(prefix, p));
+      const prefix = literalScopePrefix(spelled);
+      covered = allowedPaths.some((p) => p === spelled || pathMatchesPattern(prefix, p));
     } else {
       // CONCRETE entry: must match ≥1 allowedPaths pattern.
-      covered = allowedPaths.some((p) => pathMatchesPattern(entry, p));
+      covered = allowedPaths.some((p) => pathMatchesPattern(spelled, p));
     }
-    if (!covered) missing.push(entry);
+    if (!covered) missing.push(entry); // as declared, so the plan entry is findable
   }
   return { ok: missing.length === 0, missing };
 }
@@ -470,8 +476,11 @@ export function testSiblingsFor(entries, opts = {}) {
     : DEFAULT_TEST_PATH_PATTERNS;
   const out = [];
   const seen = new Set();
-  for (const entry of Array.isArray(entries) ? entries : []) {
-    if (typeof entry !== 'string' || entry.length === 0) continue;
+  for (const declared of Array.isArray(entries) ? entries : []) {
+    if (typeof declared !== 'string' || declared.length === 0) continue;
+    // Canonical spelling, as the union carries it: a verbatim `./tests/x.mjs`
+    // misses `tests/**` and would be mirrored as if it were production code.
+    const entry = scopeEntrySpelling(declared);
     if (path.isAbsolute(entry)) continue; // behaviour 3
     if (isGlobScopeEntry(entry)) continue; // no single basename to mirror
     if (isTestPathEntry(entry, testPatterns)) continue; // behaviours 2 + 4
@@ -1079,6 +1088,14 @@ export function isScopeDeclarationPath(relPath, scopeRelPath) {
  * non-array / non-object members and non-string, empty entries are skipped.
  * Pure, sync, no I/O — hook-safe per the module header.
  *
+ * ENTRIES ARE EMITTED IN CANONICAL SPELLING ({@link scopeEntrySpelling}) and
+ * deduplicated on it. Gate 7 matches the repo-relative WRITE path against each
+ * entry, so a verbatim `./scripts/lib/foo.mjs` was a pattern no write could
+ * ever match — the declaring agent's own write was denied — and kept a second
+ * spelling of `scripts/lib/foo.mjs` beside it. The agent-side checks
+ * ({@link assertFileScopeSubset}, {@link testSiblingsFor}) compare the same
+ * spelling, so a per-agent file that keeps the plan's `./x` still passes.
+ *
  * PEER RECORDS ARE EXCLUDED (#1195 follow-through). A record whose id starts
  * with `peer-session-` declares a territory NO agent of this wave may write —
  * it exists so a peer's paths take part in the DISJOINTNESS check and so
@@ -1109,9 +1126,10 @@ export function unionFileScopes(scopes) {
     if (files === null) continue;
     for (const entry of files) {
       if (typeof entry !== 'string' || entry.length === 0) continue;
-      if (seen.has(entry)) continue;
-      seen.add(entry);
-      out.push(entry);
+      const spelled = scopeEntrySpelling(entry);
+      if (seen.has(spelled)) continue;
+      seen.add(spelled);
+      out.push(spelled);
     }
   }
   return out;
@@ -1258,10 +1276,14 @@ function normalizeAgentScopes(agentScopes) {
 }
 
 /**
- * One scope entry's canonical SPELLING, for the collision comparison only
- * (#1026.3) — never written back, so it changes no grant. Equal-meaning
- * spellings compared unequal before: `./scripts/lib/foo.mjs` vs
+ * One scope entry's canonical SPELLING — THE spelling rule of this module.
+ * Used by the collision comparison (#1026.3), by {@link unionFileScopes} (whose
+ * output IS `allowedPaths`, so Gate 7 sees this spelling), and on the agent side
+ * of {@link assertFileScopeSubset} / {@link testSiblingsFor}, so a per-agent file
+ * that keeps the plan's declaration verbatim still agrees with the union.
+ * Equal-meaning spellings compared unequal before: `./scripts/lib/foo.mjs` vs
  * `scripts/lib/foo.mjs` was reported disjoint (measured 2026-10-03 @ 8292050e).
+ * It changes no grant's MEANING — only how one is spelled.
  *
  * Collapses runs of `/` and drops `.` segments (`./a`, `a/./b`). A leading `/`
  * (absolute entry) and a trailing `/` survive: the trailing slash is meaning,

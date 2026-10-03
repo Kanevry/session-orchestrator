@@ -47,6 +47,21 @@ describe('unionFileScopes (#1020)', () => {
     expect(unionFileScopes([['z.mjs', 'a.mjs', 'm.mjs']])).toEqual(['z.mjs', 'a.mjs', 'm.mjs']);
   });
 
+  // BUG: the union emitted entries as declared, so a plan entry spelled
+  // `./scripts/lib/foo.mjs` became an allowedPaths pattern that Gate 7
+  // (hooks/enforce-scope.mjs) can never match against the repo-relative write
+  // path — the agent's own write was denied — and two spellings of one file
+  // were both kept. Trailing `/` (prefix grant) and a leading `/` (absolute
+  // grant) are meaning, not spelling, and must survive.
+  it('emits the canonical spelling Gate 7 can match, deduplicated across spellings', () => {
+    const union = unionFileScopes([
+      { id: 'W2-A', files: ['./scripts/lib/foo.mjs', './tests/'] },
+      { id: 'W2-B', files: ['scripts/lib/foo.mjs', 'scripts//lib/./bar.mjs', '/abs//vault/'] },
+    ]);
+    expect(union).toEqual(['scripts/lib/foo.mjs', 'tests/', 'scripts/lib/bar.mjs', '/abs/vault/']);
+    expect(pathMatchesPattern('scripts/lib/foo.mjs', union[0])).toBe(true);
+  });
+
   // BUG: a throw here runs inside hooks/enforce-scope.mjs' hot path, where the
   // exit-0/stdout-JSON protocol reads "no decision" as ALLOW — a crash would
   // silently disable scope enforcement instead of failing loudly.
