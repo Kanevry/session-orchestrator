@@ -671,10 +671,13 @@ describe('scripts/codex-install.mjs', () => {
   });
 
   // The personal catalog `~/.agents/plugins/marketplace.json` is READ for a
-  // hint (#1518 review); the installer itself writes no file at all.
-  it('contains no private Codex paths, file writes, hook-state writes, or trust bypass', () => {
+  // hint (#1518 review). The installer writes nothing itself; its only
+  // write-capable import is the shared stage helper, which writes the stage dir.
+  it('writes only the stage dir: no private Codex paths, catalog writes, hook-state writes, or trust bypass', () => {
     const source = readFileSync(SCRIPT, 'utf8');
     expect(source).not.toMatch(/\b(writeFileSync|appendFileSync|rmSync|unlinkSync|renameSync|cpSync)\b/);
+    const localImports = [...source.matchAll(/^import .* from '(\.[^']+)';$/gm)].map((m) => m[1]).sort();
+    expect(localImports).toEqual(['./lib/codex/plugin-contract.mjs', './lib/plugin-package-stage.mjs']);
     const forbidden = [
       ['.tmp', 'plugins'].join('/'),
       ['config', 'toml'].join('.'),

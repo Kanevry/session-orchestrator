@@ -149,7 +149,15 @@ export function stagePackage({
       renameSync(pkg, stageDir);
     } catch (error) {
       // Put the old stage back before the finally deletes the work dir with it.
-      if (hadPrevious) renameSync(previous, stageDir);
+      // If even that fails, keep the work dir: it is the only copy left.
+      if (hadPrevious) {
+        try {
+          renameSync(previous, stageDir);
+        } catch (restoreError) {
+          work = undefined;
+          throw new Error(`${error.message}; restoring the previous stage failed (${restoreError.message}) — it is kept at ${previous}`, { cause: restoreError });
+        }
+      }
       throw error;
     }
     return { ok: true };
