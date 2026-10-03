@@ -98,6 +98,30 @@ describe('findScopeCollisions — stage 1: exact equality (#1020)', () => {
     expect(result.collisions).toEqual([]);
     expect(result.ok).toBe(true);
   });
+
+  // BUG (#1026.3): entries were compared as raw strings, so ONE file declared
+  // in two spellings (`./x`, `a//b`, `a/./b`) passed as disjoint — measured
+  // 2026-10-03 @ 8292050e: `./scripts/lib/foo.mjs` vs `scripts/lib/foo.mjs` → ok.
+  // Evidence must keep the spellings AS DECLARED so the plan entry is findable.
+  it('reports one file declared in different spellings as a collision', () => {
+    const result = findScopeCollisions(
+      [
+        { id: 'W3-A', files: ['scripts/lib/foo.mjs'] },
+        { id: 'W3-B', files: ['./scripts/lib/foo.mjs'] },
+        { id: 'W3-C', files: ['scripts//lib/./foo.mjs'] },
+      ],
+      { knownFiles: [] },
+    );
+    expect(result).toEqual({
+      ok: false,
+      duplicateIds: [],
+      collisions: [
+        { a: 'W3-A', b: 'W3-B', kind: 'concrete', evidence: ['scripts/lib/foo.mjs', './scripts/lib/foo.mjs'] },
+        { a: 'W3-A', b: 'W3-C', kind: 'concrete', evidence: ['scripts/lib/foo.mjs', 'scripts//lib/./foo.mjs'] },
+        { a: 'W3-B', b: 'W3-C', kind: 'concrete', evidence: ['./scripts/lib/foo.mjs', 'scripts//lib/./foo.mjs'] },
+      ],
+    });
+  });
 });
 
 describe('findScopeCollisions — stage 2: concrete vs glob (#1020)', () => {

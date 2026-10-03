@@ -20,6 +20,7 @@ import {
   resolvePolicyPaths,
   mergePolicies,
   loadEffectivePolicy,
+  blockedCommandPatterns,
 } from '../../scripts/lib/blocked-commands-policy.mjs';
 
 // ---------------------------------------------------------------------------
@@ -461,5 +462,55 @@ describe('loadEffectivePolicy per-path cache', () => {
     const second = await loadEffectivePolicy(opts);
     expect(second.rules.map((r) => r.id)).toContain('floor-new');
     expect(second.rules.map((r) => r.id)).toContain('consumer-a');
+  });
+});
+
+// BUG (#1509): the wave-manifest recipe flattened EVERY block rule into
+// `blockedCommands`, so the TYPED rules' target-decided patterns (`">"`, a
+// free-text path-delete label) reached hooks/enforce-commands.mjs as command
+// patterns and `bash -c "echo hi > /tmp/x"` was denied. Golden records harvested
+// from .orchestrator/policy/blocked-commands.json @ 8292050e (2026-10-03): field
+// set, order and optional fields verbatim; only the `rationale` prose abridged.
+describe('blockedCommandPatterns (#1509)', () => {
+  const GOLDEN_RULES = [
+    {
+      id: 'git-reset-hard',
+      pattern: 'git reset --hard',
+      severity: 'block',
+      'allow-override-flag': null,
+      sources: ['PSA-003', '#155'],
+      rationale: 'Hard reset permanently discards staged and committed work (abridged).',
+    },
+    {
+      id: 'git-reset-mixed',
+      pattern: 'git reset --mixed',
+      severity: 'warn',
+      'allow-override-flag': null,
+      sources: ['PSA-003', '#155'],
+      rationale: 'Mixed reset unstages changes silently (abridged).',
+    },
+    {
+      id: 'redirect-truncate-protected',
+      type: 'redirect-truncate',
+      pattern: '>',
+      severity: 'block',
+      'target-denylist': ['CLAUDE.md', 'AGENTS.md', '.claude/rules/**', '.orchestrator/policy/**', '.orchestrator/metrics/*.jsonl*', '.git/**', 'SECURITY.md'],
+      modes: ['truncate'],
+      rationale: 'Truncating redirect onto protected artefacts (abridged).',
+      sources: ['#983', '#1401'],
+    },
+    {
+      id: 'ledger-delete-protected',
+      type: 'path-delete',
+      pattern: 'rm|mv|unlink .orchestrator (state dir) or .orchestrator/metrics/**',
+      severity: 'block',
+      'target-denylist': ['.orchestrator', '.orchestrator/metrics', '.orchestrator/metrics/**'],
+      rationale: 'Deleting or renaming anything under .orchestrator/metrics/ (abridged).',
+      sources: ['#1401', 'PSA-003'],
+    },
+  ];
+
+  it('keeps only untyped block patterns, never a typed rule pattern', () => {
+    expect(blockedCommandPatterns(GOLDEN_RULES)).toEqual(['git reset --hard']);
   });
 });

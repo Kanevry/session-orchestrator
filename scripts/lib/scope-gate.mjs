@@ -329,13 +329,16 @@ export function testSiblingExpansionApplies(opts = {}) {
  *
  * ## Why a GLOB and not a computed path
  * The emitted sibling is `tests/**\/{basename}*.test.mjs`, never a concrete
- * path. Measured over all 430 tracked production `.mjs` in this repo:
- * a naive 1:1 mirror (`scripts/lib/X.mjs → tests/lib/X.test.mjs`) is right
- * 301/430 = 70.0% (`hooks/_lib` 0/5, `scripts/ci/` 0/1); a same-basename test
- * ANYWHERE under `tests/` is right 368/430 = 85.6%. The glob takes the 85.6%
- * form, and its failure mode is HARMLESS — it grants write access to files that
- * may not exist. A computed concrete path is wrong 30% of the time AND still
- * denies the real test, which is the original bug wearing a new face.
+ * path: a same-basename test ANYWHERE under `tests/` resolves for far more
+ * production files than a naive 1:1 mirror (`scripts/lib/X.mjs →
+ * tests/lib/X.test.mjs`). The DATED figures — population, both ratios, the
+ * measuring command and the SHA — live in ONE place:
+ * skills/wave-executor/references/wave-loop-scope-manifest.md § Test-Sibling
+ * Expansion (#970). Cite and re-measure them there, never restate them here: an
+ * undated copy drifted to a second, contradicting set of numbers (#1026.5,
+ * PSA-006 item 4). The glob's failure mode is HARMLESS — it grants write access
+ * to files that may not exist. A computed concrete path is wrong more often AND
+ * still denies the real test, which is the original bug wearing a new face.
  *
  * ## Required behaviours (each is a nameable regression)
  *  1. `[]` → `[]` STRUCTURALLY. Discovery waves use an empty scope as a
@@ -1169,8 +1172,11 @@ function globsDisagreeOnLiteralSegment(x, y) {
  * NEGATIVE — the whole point of this function is that an unreviewed scope is
  * exactly the one that collides.
  *
+ * `files` holds each entry's comparison SPELLING ({@link scopeEntrySpelling});
+ * `declared` holds the entry as written, index-aligned, for the evidence report.
+ *
  * @param {Array<{id?: string, files?: string[]}>} agentScopes
- * @returns {Array<{id: string, declaredId: string|null, files: string[]}>}
+ * @returns {Array<{id: string, declaredId: string|null, files: string[], declared: string[]}>}
  */
 function normalizeAgentScopes(agentScopes) {
   const out = [];
@@ -1178,12 +1184,37 @@ function normalizeAgentScopes(agentScopes) {
     const raw = agentScopes[i];
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) continue;
     const declaredId = typeof raw.id === 'string' && raw.id.length > 0 ? raw.id : null;
-    const files = Array.isArray(raw.files)
+    const declared = Array.isArray(raw.files)
       ? raw.files.filter((f) => typeof f === 'string' && f.length > 0)
       : [];
-    out.push({ id: declaredId ?? `<unnamed#${i}>`, declaredId, files });
+    const files = declared.map(scopeEntrySpelling);
+    out.push({ id: declaredId ?? `<unnamed#${i}>`, declaredId, files, declared });
   }
   return out;
+}
+
+/**
+ * One scope entry's canonical SPELLING, for the collision comparison only
+ * (#1026.3) — never written back, so it changes no grant. Equal-meaning
+ * spellings compared unequal before: `./scripts/lib/foo.mjs` vs
+ * `scripts/lib/foo.mjs` was reported disjoint (measured 2026-10-03 @ 8292050e).
+ *
+ * Collapses runs of `/` and drops `.` segments (`./a`, `a/./b`). A leading `/`
+ * (absolute entry) and a trailing `/` survive: the trailing slash is meaning,
+ * not spelling — `scripts/lib/` is a prefix grant, while `scripts/lib` grants
+ * only the literal path `scripts/lib` (`pathMatchesPattern('scripts/lib/foo.mjs',
+ * 'scripts/lib') === false`), so those two stay disjoint.
+ *
+ * NAMED CEILING: `..` segments are left alone — `a/../b` is not provably `b`
+ * when `a` is a glob segment. Revisit if a plan ever declares a `..` entry.
+ *
+ * @param {string} entry - a non-empty scope entry
+ * @returns {string}
+ */
+function scopeEntrySpelling(entry) {
+  const spelled = entry.replace(/\/{2,}/g, '/').replace(/(^|\/)(?:\.\/)+/g, '$1');
+  // `./` alone would spell as '' — keep the entry rather than invent a meaning.
+  return spelled.length > 0 ? spelled : entry;
 }
 
 /**
@@ -1363,17 +1394,19 @@ export function findScopeCollisions(agentScopes, opts = {}) {
       const b = agents[j];
       if (a.id === b.id) continue; // duplicate-id record: reported separately
       const buckets = new Map();
-      for (const x of a.files) {
-        for (const y of b.files) {
-          const kind = classifyEntryCollision(x, y, expand);
+      // Classify on the comparison spelling; report the entry AS DECLARED, so
+      // the operator can find it in the plan (#1026.3).
+      for (let xi = 0; xi < a.files.length; xi++) {
+        for (let yi = 0; yi < b.files.length; yi++) {
+          const kind = classifyEntryCollision(a.files[xi], b.files[yi], expand);
           if (kind === null) continue;
           let evidence = buckets.get(kind);
           if (evidence === undefined) {
             evidence = new Set();
             buckets.set(kind, evidence);
           }
-          evidence.add(x);
-          evidence.add(y);
+          evidence.add(a.declared[xi]);
+          evidence.add(b.declared[yi]);
         }
       }
       for (const kind of KIND_ORDER) {

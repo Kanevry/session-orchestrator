@@ -199,6 +199,46 @@ export function mergePolicies(floor, overlay) {
 }
 
 // ---------------------------------------------------------------------------
+// Wave-manifest projection
+// ---------------------------------------------------------------------------
+
+/**
+ * The patterns a wave manifest's `blockedCommands` may carry (#1509): the
+ * `pattern` of every `severity: 'block'` rule that has NO `type`.
+ *
+ * A TYPED rule's `pattern` is not a command pattern. `redirect-truncate` rules
+ * carry `pattern: ">"` and `path-delete` rules a free-text label; both are
+ * decided by their TARGET, type-aware, in hooks/pre-bash-destructive-guard.mjs.
+ * `hooks/enforce-commands.mjs` reads every `blockedCommands` entry as a command
+ * pattern, so the flattened `">"` denied interpreter payloads such as
+ * `bash -c "echo hi > /tmp/x"` (measured 2026-10-03 @ 8292050e). An untyped
+ * rule is the one class whose pattern means the same thing to both hooks.
+ *
+ * An UNKNOWN `type` is excluded as well: its pattern's meaning is unknown, and
+ * the destructive guard still evaluates the rule on every Bash call, so leaving
+ * it out of the manifest drops no protection — admitting it repeats #1509 for
+ * the next rule type.
+ *
+ * Total: a non-array `rules` (e.g. `loadEffectivePolicy()`'s `null`) yields `[]`.
+ *
+ * @param {unknown} rules - the `rules` of {@link loadEffectivePolicy}
+ * @returns {string[]}
+ */
+export function blockedCommandPatterns(rules) {
+  if (!Array.isArray(rules)) return [];
+  return rules
+    .filter(
+      (r) =>
+        r !== null &&
+        typeof r === 'object' &&
+        r.severity === 'block' &&
+        (r.type ?? null) === null &&
+        typeof r.pattern === 'string',
+    )
+    .map((r) => r.pattern);
+}
+
+// ---------------------------------------------------------------------------
 // Load (with per-path mtime cache)
 // ---------------------------------------------------------------------------
 

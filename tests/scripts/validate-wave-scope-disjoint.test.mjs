@@ -142,6 +142,29 @@ describe('validate-wave-scope.mjs — --assert-disjoint findings (#1020)', () =>
   });
 });
 
+// BUG (#1026.4): validate() exited on a schema error BEFORE the collision check,
+// although that check never reads the manifest — a broken manifest hid a real
+// double assignment. Measured 2026-10-03 @ 8292050e: only the schema error printed.
+describe('validate-wave-scope.mjs — --assert-disjoint under a schema error (#1026.4)', () => {
+  it('reports the schema error AND the collision, exit 1', () => {
+    const { enforcement: _omitted, ...brokenManifest } = MANIFEST;
+    const r = runWithSidecar(
+      [
+        { id: 'W3-I1', files: ['tests/scripts/shared.test.mjs'] },
+        { id: 'W3-I3', files: ['tests/scripts/shared.test.mjs'] },
+      ],
+      disjointArgs,
+      brokenManifest,
+    );
+    expect(r.status).toBe(1);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toMatch(/^ERROR: enforcement must be a string, got type: undefined$/m);
+    expect(r.stderr).toMatch(
+      /^ERROR: wave scope collision \(concrete\): agents "W3-I1" and "W3-I3" both claim \[tests\/scripts\/shared\.test\.mjs\]$/m,
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // knownFiles injection
 //
