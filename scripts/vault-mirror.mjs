@@ -85,6 +85,7 @@ import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
+import { SESSION_NARRATIVE_FIELDS, canonicalNamespace } from './lib/vault-mirror/retention.mjs';
 import { sessionSourceRecord } from './lib/vault-mirror/render-sessions.mjs';
 import { checkCanonicalVault, describeOriginForLog, findRepoRoot, normalizeRemote } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
@@ -842,6 +843,30 @@ async function main() {
     // never a guess (scripts/lib/sessions-canonical.mjs header, "RULE ORDER").
     const survivors = new Set(canonicalizeSessions(identifiable));
 
+    // #1513 review H2: "newest wins" must not cost a session its narrative. A
+    // re-appended record often carries only the metrics; the free text sits on
+    // the line it supersedes (vault ledger: 1.172 chars on line 101, none on the
+    // winning line 108). The winner inherits every narrative field it LACKS
+    // from the losers, latest loser first — its own fields always win.
+    const inherited = new Map();
+    for (const e of sessionEntries) {
+      if (!isIdentifiable(e) || survivors.has(e)) continue;
+      const carry = inherited.get(e.session_id) ?? {};
+      for (const field of SESSION_NARRATIVE_FIELDS) {
+        if (e[field] !== undefined && e[field] !== null && e[field] !== '') carry[field] = e[field];
+      }
+      inherited.set(e.session_id, carry);
+    }
+    const withNarrative = (e) => {
+      const carry = isIdentifiable(e) ? inherited.get(e.session_id) : undefined;
+      if (!carry) return e;
+      const merged = { ...e };
+      for (const [field, value] of Object.entries(carry)) {
+        if (merged[field] === undefined || merged[field] === null || merged[field] === '') merged[field] = value;
+      }
+      return merged;
+    };
+
     for (let i = 0; i < sessionEntries.length; i++) {
       const entry = sessionEntries[i];
       if (isIdentifiable(entry) && !survivors.has(entry)) {
@@ -870,7 +895,7 @@ async function main() {
         );
         continue;
       }
-      await dispatchEntry(entry, sessionLineNums[i]);
+      await dispatchEntry(withNarrative(entry), sessionLineNums[i]);
     }
   }
 
@@ -902,7 +927,8 @@ async function main() {
     autoCommitVaultMirror(
       resolve(vaultDir),
       sessionIdArg,
-      resolveRepoNamespace({ vaultName, repoRoot: ctx.repoRoot }),
+      // #1513 review M2: the folder the processors actually wrote into.
+      canonicalNamespace(resolve(vaultDir), resolveRepoNamespace({ vaultName, repoRoot: ctx.repoRoot })),
     );
   }
 }

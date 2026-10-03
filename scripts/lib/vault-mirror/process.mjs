@@ -18,7 +18,9 @@ import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, genera
 import { emitMirrorEvent } from './telemetry.mjs';
 import {
   ARCHIVE_ROOT,
+  canonicalNamespace,
   legacyConcatSlug,
+  noteNarrativeChars,
   markArchived,
   noteInsightKey,
   renderRollup,
@@ -106,18 +108,25 @@ function dirStamp(dir) {
 
 /**
  * normalised insight → absolute path, over the mirror-owned, NOT archived
- * learning notes directly in `dirs` (non-recursive). Read-only.
+ * learning notes directly in `dirs` (non-recursive), plus those in `flatDir`
+ * whose `source-repo` is `ns`. Read-only.
  *
  * @param {string[]} dirs
+ * @param {string|null} [flatDir]
+ * @param {string|null} [ns]
  * @returns {Map<string, string>}
  */
-function getInsightIndex(dirs) {
-  const key = dirs.join('\0');
-  const stamp = dirs.map(dirStamp).join('\0');
+function getInsightIndex(dirs, flatDir = null, ns = null) {
+  const key = [...dirs, flatDir ?? '', ns ?? ''].join('\0');
+  const stamp = [...dirs, ...(flatDir ? [flatDir] : [])].map(dirStamp).join('\0');
   const cached = _insightIndexes.get(key);
   if (cached && cached.stamp === stamp) return cached.index;
   const index = new Map();
-  for (const dir of dirs) {
+  // #1513 review M3: a flat legacy note counts only when its `source-repo` is
+  // this namespace — a flat note of another repo, or one without attribution,
+  // must not refuse a genuine new learning of this repo.
+  const sources = [...dirs.map((d) => ({ dir: d, onlyRepo: null })), ...(flatDir ? [{ dir: flatDir, onlyRepo: ns }] : [])];
+  for (const { dir, onlyRepo } of sources) {
     let names;
     try {
       names = readdirSync(dir, { withFileTypes: true });
@@ -136,6 +145,7 @@ function getInsightIndex(dirs) {
       const fm = parseFrontmatter(content);
       if (!fm || fm['_generator'] !== GENERATOR_MARKER || fm['type'] !== 'learning') continue;
       if (fm['status'] === 'archived') continue;
+      if (onlyRepo !== null && fm['source-repo'] !== onlyRepo) continue;
       const insightKey = noteInsightKey(content);
       if (insightKey && !index.has(insightKey)) index.set(insightKey, abs);
     }
@@ -972,10 +982,13 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
   // #660: namespace new writes under a per-repo subdirectory. #1389: `ctx.repoRoot`
   // is optional — absent, resolveRepoNamespace falls back to process.cwd().
-  const repoNs = resolveRepoNamespace({
-    vaultName: ctx?.vaultName ?? null,
-    repoRoot: ctx?.repoRoot ?? null,
-  });
+  // #1513 review M2: a hyphen alias (`gotzendorferv2`) resolves to the
+  // canonical folder already in the vault (`gotzendorfer-v2`), so the mirror
+  // and the pruner agree on where a repo's notes live.
+  const repoNs = canonicalNamespace(
+    vaultDir,
+    resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
+  );
   // #725 D2: thread the resolved repo namespace into the learning frontmatter as
   // `source-repo` for cross-repo attribution. repoNs is already sanitised +
   // leak-guarded by resolveRepoNamespace, so it is safe to interpolate as-is. The
@@ -1011,7 +1024,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     }
     const insightKey = noteInsightKey(content);
     if (insightKey) {
-      const twin = getInsightIndex([targetDir, join(resolve(vaultDir), '40-learnings')]).get(insightKey);
+      const twin = getInsightIndex([targetDir], join(resolve(vaultDir), '40-learnings'), repoNs).get(insightKey);
       if (twin !== undefined) {
         return emitEntryAction(_lineNum, ctx, {
           action: 'skipped-duplicate-insight',
@@ -1321,7 +1334,10 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
       meta: { reason: 'archived record: a live record owns this note' },
     });
   }
-  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null });
+  const repoNs = canonicalNamespace(
+    vaultDir,
+    resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
+  );
   const nsDir = join(resolve(vaultDir), '40-learnings', repoNs);
   const flatDir = join(resolve(vaultDir), '40-learnings');
   const writer = { recordKey: learningSourceRecord(entry) };
@@ -1474,10 +1490,10 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // owner-leaky repo's real name reached the vault through the session-note
   // frontmatter even though the directory AND the learning `source-repo` field
   // were already pseudonym-mapped/redacted (#732 leak-guard bypass).
-  const repoNs = resolveRepoNamespace({
-    vaultName: ctx?.vaultName ?? null,
-    repoRoot: ctx?.repoRoot ?? null,
-  });
+  const repoNs = canonicalNamespace(
+    vaultDir,
+    resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
+  );
 
   // Narrative gate (#1513, replaces the PRD F1.2 rendered-length gate). A
   // session gets its own note only when its FREE-TEXT fields (`notes`,
@@ -1550,7 +1566,8 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     }
     if (legacyMarked && !legacyForeign) {
       const entryUpdated = toDate(entry.completed_at);
-      if (!force && !legacyStillLeaks && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
+      const legacyNarrativeStale = noteNarrativeChars(legacyContent) !== noteNarrativeChars(renderedBody);
+      if (!force && !legacyStillLeaks && !legacyNarrativeStale && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: session_id });
       }
       // Updated date would advance, or the on-disk note still leaks — fall
@@ -1596,7 +1613,11 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     }
 
     const entryUpdated = toDate(entry.completed_at);
-    if (!force && !existingLeaks && fm['updated'] && fm['updated'] >= entryUpdated) {
+    // #1513 review H2: a note rendered before narrative/summary were printed
+    // carries less free text than the record — heal it once, or the pruner
+    // archives it as metrics-only and the mirror re-creates it every run.
+    const narrativeStale = noteNarrativeChars(existingContent) !== noteNarrativeChars(renderedBody);
+    if (!force && !existingLeaks && !narrativeStale && fm['updated'] && fm['updated'] >= entryUpdated) {
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: session_id });
     }
     if (!dryRun) writeFileSync(targetPath, renderedBody, 'utf8');

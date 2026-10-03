@@ -686,8 +686,10 @@ describe('processSession', () => {
 
   it('emits skipped-noop when existing file has same generator and date is not newer', async () => {
     existsSyncSpy.mockReturnValue(true);
+    // The on-disk note already carries the record's narrative (#1513 H2: a
+    // note with LESS free text than the record is healed, not skipped).
     readFileSyncSpy.mockReturnValue(
-      '---\nid: session-2026-04-13\nupdated: 2026-04-13\n_generator: session-orchestrator-vault-mirror@1\n---\n'
+      `---\nid: session-2026-04-13\nupdated: 2026-04-13\n_generator: session-orchestrator-vault-mirror@1\n---\n\n## Notes\n\n${NARRATIVE}\n`
     );
     const processSession = await getProcessSession();
 

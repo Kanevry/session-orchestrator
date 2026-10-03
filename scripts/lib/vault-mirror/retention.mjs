@@ -5,7 +5,8 @@
  *
  * One module, so the mirror and the pruner cannot disagree about what counts
  * as narrative, as the same insight, as an archived note, or as a rollup row.
- * Pure string functions only — no fs, no clock (callers pass `today`).
+ * String functions plus one read-only directory probe
+ * ({@link canonicalNamespace}); no clock (callers pass `today`).
  *
  * ## The rules (deterministic, documented in skills/vault-mirror/SKILL.md)
  *
@@ -29,6 +30,9 @@
  *
  * @module scripts/lib/vault-mirror/retention
  */
+
+import { readdirSync } from 'node:fs';
+import { join } from 'node:path';
 
 import { subjectToSlug } from './utils.mjs';
 
@@ -60,6 +64,29 @@ const collapse = (s) => String(s).replace(/\s+/g, ' ').trim();
  * @param {object} entry sessions.jsonl record
  * @returns {number}
  */
+/**
+ * The session free text as it is RENDERED into the note's `## Notes` section:
+ * every narrative field (strings and string-array items), in
+ * {@link SESSION_NARRATIVE_FIELDS} order, blank-line separated. One function
+ * for the renderer and the gate, so a record that passes the gate always
+ * renders a note the pruner measures at least as long (#1513 review H2: the
+ * gate counted `narrative`/`summary`, the renderer printed only `notes`, and
+ * the pruner archived the empty note the mirror then re-created).
+ *
+ * @param {object} entry
+ * @returns {string} '' when the record carries no free text
+ */
+export function sessionNarrativeText(entry) {
+  if (!entry || typeof entry !== 'object') return '';
+  const parts = [];
+  for (const field of SESSION_NARRATIVE_FIELDS) {
+    const v = entry[field];
+    const items = typeof v === 'string' ? [v] : Array.isArray(v) ? v.filter((x) => typeof x === 'string') : [];
+    for (const item of items) if (item.trim()) parts.push(item.trim());
+  }
+  return parts.join('\n\n');
+}
+
 export function sessionNarrativeChars(entry) {
   if (!entry || typeof entry !== 'object') return 0;
   let total = 0;
@@ -123,9 +150,86 @@ export function normalizeInsight(text) {
   ).replace(/[\s.;:!,]+$/, '');
 }
 
-/** Normalised `## Insight` of a learning note, or `''` when absent/empty. */
+/**
+ * Insight texts that are NOT a learning but a placeholder a tool wrote — equal
+ * placeholders say nothing about two notes carrying the same learning (#1513
+ * review M4). Matched against the normalised text.
+ */
+const PLACEHOLDER_INSIGHTS = Object.freeze([
+  /^\(legacy record\b/,
+  /^\(none recorded\)$/,
+  /insight backfilled during/,
+  /^\(no insight\b/,
+  /^(?:n\/a|tbd|todo|unknown|none)$/,
+]);
+
+/** Shorter normalised insights are too generic to identify one learning. */
+export const MIN_INSIGHT_KEY_CHARS = 40;
+
+/**
+ * The dedupe key of an insight text: normalised, or `''` (= never a
+ * duplicate) for placeholders and texts under {@link MIN_INSIGHT_KEY_CHARS}.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function insightDedupeKey(text) {
+  const key = normalizeInsight(text);
+  if (key.length < MIN_INSIGHT_KEY_CHARS) return '';
+  return PLACEHOLDER_INSIGHTS.some((re) => re.test(key)) ? '' : key;
+}
+
+/** Dedupe key of a learning note's `## Insight`, or `''` (see {@link insightDedupeKey}). */
 export function noteInsightKey(content) {
-  return normalizeInsight(section(content, 'Insight') ?? '');
+  return insightDedupeKey(section(content, 'Insight') ?? '');
+}
+
+const dehyphen = (s) => String(s).replace(/-/g, '');
+const hyphenCount = (s) => (String(s).match(/-/g) || []).length;
+
+/**
+ * The hyphen-alias rule, shared by the mirror and the pruner (#1513 review
+ * M2): among namespace folders that are equal modulo hyphens, the one with the
+ * most hyphens is canonical (ties: lexicographic). The repo-identity fallback
+ * that drops hyphens (`GotzendorferV2` → `gotzendorferv2`) and the
+ * remote-derived name (`gotzendorfer-v2`) thereby land in one folder.
+ *
+ * @param {Iterable<string>} folders namespace folder names present
+ * @param {string} ns
+ * @returns {string} the canonical folder for `ns` (`ns` itself when none)
+ */
+export function canonicalAmong(folders, ns) {
+  if (!ns) return ns;
+  let best = ns;
+  for (const f of folders) {
+    if (f === best || dehyphen(f) !== dehyphen(ns)) continue;
+    const better = hyphenCount(f) > hyphenCount(best) || (hyphenCount(f) === hyphenCount(best) && f < best);
+    if (better) best = f;
+  }
+  return hyphenCount(best) > hyphenCount(ns) ? best : ns;
+}
+
+/**
+ * {@link canonicalAmong} over the namespace folders that exist in the vault's
+ * two mirror zones. Read-only; an unreadable zone contributes nothing.
+ *
+ * @param {string} vaultDir
+ * @param {string} ns
+ * @returns {string}
+ */
+export function canonicalNamespace(vaultDir, ns) {
+  if (!ns) return ns;
+  const folders = new Set();
+  for (const zone of ['40-learnings', '50-sessions']) {
+    try {
+      for (const ent of readdirSync(join(vaultDir, zone), { withFileTypes: true })) {
+        if (ent.isDirectory()) folders.add(ent.name);
+      }
+    } catch {
+      /* zone absent */
+    }
+  }
+  return canonicalAmong(folders, ns);
 }
 
 /**
