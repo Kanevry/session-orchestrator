@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`scripts/lib/plugin-package-stage.mjs`** (#1518): one packed staging for Claude and Codex installs — `npm pack --ignore-scripts`, extract, optional `npm ci --omit=dev --ignore-scripts` and a validate callback on the new copy, then swap; a failed swap restores the previous stage, stale work dirs are swept.
+- **`atomicWriteText`** (#1032): async twin of `atomicWriteWithBackup` in `scripts/lib/io.mjs` that never rejects and cleans up its tmp; the error envelope gains `code`, and `envelopeToError` re-throws it for sites that must throw.
 - **`orchestrator.ledger.unreadable` event** (#1505): the orphan-reaper scan records why it skipped (`refused` for a symlink, EACCES or a non-regular file; `reader-threw`) before ending with `ledger-unreadable`, so an unreadable process register no longer disables the scan silently. A failing emit never fails the scan.
 - **`scripts/lib/test-sibling-coverage.mjs`** (#1030): measures how many production files have a test sibling under the scope gate's own matchers (glob, exact basename, mirror path); `--json` carries its definition. The wave-scope manifest reference now points at it instead of hard-coded counts.
 - **ADR-0016 Cross-session messaging** (#1053): Adopt for the live cross-session axis, Spike for Remote Control (#1056, closed negative); anchors "entries vs messages" (files hold state, messages are hints).
@@ -16,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`codex-install` installs from the packed copy** (#1518) instead of the checkout, so the Codex plugin cache no longer receives `.env.local`; it refuses while a local Codex marketplace reads the clone and hints at `~/.agents/plugins/marketplace.json` entries that resolve to it.
+- **`update:local` checks installation first** (#1519): not installed → skipped without touching the stage; a `kanevry` marketplace on another source joins the printed remove list; a relative `CLAUDE_CONFIG_DIR` is ignored.
+- **Hand-rolled atomic writes use the shared helpers** (#1032): seventeen sites in quality-gate, reconcile, skill-evolution, memory-proposals, auto-dialectic, auto-dream, peer-cards, worktree meta, slopcheck and three vault scripts, byte-identical; tmp files are `.<base>.tmp.<hex>` and ignored under `.orchestrator/metrics/`.
 - **Events ledger lives in the main checkout** (#1514): `eventsFilePath(repoRoot)` maps a root inside a linked worktree to its main checkout (spawn-free, via `.git` → `commondir`), and the launch dir from the environment goes through the same mapping. Hooks, scope-echo, materialize-wave-scope and about twenty readers (banners, backfill, eval, telemetry sync, retention) resolve the same file, including sessions launched inside a worktree and work in a second repo. Scope files and the dispatch ledger stay on the session root.
 - **`/` picker semantics** (#1515): a missing `user-invocable` key counts as true, as in Claude Code; all 51 skills now state it (28 operator commands, 23 helpers). `architecture`, `tmux-layout` and `write-executable-plan` became commands, the other seven helpers. Counters and all four adapter generators share `isUserInvocableSkill`; README, components, steering and site say 30 slash commands.
 - **`npm run update:local` installs from `npm pack`** (#1515): only package files reach the plugin cache (no `.env.local`, no `.orchestrator/` beyond `policy/`). It refuses only while a `directory` marketplace points at the clone and names the exact remove/add/install commands; GitHub and npm sources update as before. `evals/` ships in the package (without `evals/results/`).
@@ -24,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Three watchers resolved the project from `CLAUDE_PLUGIN_ROOT`** (#1517): `wave-transcript-tail`, `convergence-monitor` and `ecosystem-health` read state inside the installed plugin directory; they use `getProjectDir()` now.
+- **A failed atomic write no longer leaves its tmp file** (#1032) when the write created it and then failed.
+- **vault-mirror refreshes a changed main note in the run that archives a stale disambig** (#1519) instead of one run later.
 - **A UTF-8 BOM on the first line of `learnings.jsonl` is stripped** (#1506) instead of making the record malformed.
 - **Unused learnings exports removed** (#1021): twelve exports without a consumer outside their own module.
 
