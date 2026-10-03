@@ -114,6 +114,17 @@ afterAll(() => {
 
 // Each deriveRepo test resets module cache so the _cachedRepo = null is fresh.
 
+
+// #1513: a session record earns its own note only with >= 400 chars of free
+// text (`notes`/`narrative`/`summary`). Fixtures that exercise the NOTE path
+// carry this; the narrative-gate tests below vary it on purpose.
+const NARRATIVE =
+  'Wave 2 was re-planned after the reviewer found that the cache key ignored the locale, ' +
+  'so two languages shared one entry. The fix moved the key derivation into the loader and ' +
+  'the follow-up for the stale entries went to a separate issue because it needs a migration ' +
+  'window. The operator decided to keep the old endpoint for one more release so external ' +
+  'callers can switch without a coordinated deploy later.';
+
 describe('deriveRepo', () => {
   afterEach(() => {
     vi.doUnmock('node:child_process');
@@ -267,6 +278,7 @@ describe('SKIP stderr lines carry the vault-relative path, never the vault root'
     agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
     waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
     effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+    notes: NARRATIVE,
   };
 
   afterEach(() => {
@@ -631,6 +643,7 @@ describe('processSession', () => {
     agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
     waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
     effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+    notes: NARRATIVE,
   };
 
   it('sanitises session_id with slashes via subjectToSlug (last segment)', async () => {
@@ -806,6 +819,7 @@ describe('processSession #732: source-repo uses resolveRepoNamespace(), never ra
     agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
     waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
     effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+    notes: NARRATIVE,
   };
 
   it('write path AND rendered source-repo both use resolveRepoNamespace()s return value, never the raw origin', async () => {
@@ -1042,99 +1056,47 @@ describe('quality gate', () => {
     agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
     waves: [{ wave: 1, role: 'Planning', agent_count: 2, files_changed: 4, quality: 'ok' }],
     effectiveness: { planned_issues: 1, completed: 1, carryover: 0, emergent: 0, completion_rate: 1.0 },
+    notes: NARRATIVE,
   };
 
-  it('session: narrative-length BOUNDARY — chars === qualityMinNarrativeChars passes the gate', async () => {
+  // #1513: the gate measures the record's FREE TEXT, not the rendered body —
+  // the old rendered-length measure let every table-only record through
+  // (2.728 of 3.003 vault notes). The bug these pin: a metrics-only record
+  // gets its own note again, or a narrative record loses its note.
+  it('session: narrative gate BOUNDARY on free text — N chars passes min N, fails min N+1 into the rollup', async () => {
     existsSyncSpy.mockReturnValue(false);
     const processSession = await getProcessSession();
-    // The rendered narrative for VALID_V1_SESSION is a known length; set the
-    // threshold equal to it so the gate condition `narrative < min` is false.
-    // The empirical narrative length on this fixture is 456 chars (verified
-    // independently); set threshold equal to that to exercise the boundary.
-    const { lines } = await captureStdout(() =>
-      processSession(VALID_V1_SESSION, 1, {
-        vaultDir: '/vault',
-        dryRun: false,
-        kind: 'session',
-        qualityMinNarrativeChars: 456,
-      }),
+    const entry = { ...VALID_V1_SESSION, notes: 'x'.repeat(456) };
+    const pass = await captureStdout(() =>
+      processSession(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', qualityMinNarrativeChars: 456 }),
     );
+    expect(pass.lines[0].action).toBe('created');
 
-    expect(lines).toHaveLength(1);
-    expect(lines[0].action).toBe('created');
+    writeFileSyncSpy.mockClear();
+    const fail = await captureStdout(() =>
+      processSession(entry, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', qualityMinNarrativeChars: 457 }),
+    );
+    expect(fail.lines).toHaveLength(1);
+    expect(fail.lines[0]).toMatchObject({
+      action: 'skipped-metrics-only',
+      id: 'session-2026-05-21',
+      reason: 'narrative:456 < min:457',
+    });
+    expect(fail.lines[0].path).toMatch(/^50-sessions\/[^/]+\/_rollup-2026-05\.md$/);
+    // Exactly one write, and it is the rollup — never a session note.
+    expect(writeFileSyncSpy).toHaveBeenCalledOnce();
+    expect(String(writeFileSyncSpy.mock.calls[0][0])).toMatch(/_rollup-2026-05\.md$/);
+    expect(writeFileSyncSpy.mock.calls[0][1]).toContain('| 2026-05-21 | `session-2026-05-21` |');
   });
 
-  it('session: narrative-length BOUNDARY — chars < threshold by 1 → skipped-quality-low', async () => {
+  it('session: a table-only record (no free text) is rolled up even with --force and the default threshold', async () => {
     existsSyncSpy.mockReturnValue(false);
     const processSession = await getProcessSession();
-    // Same fixture renders to 456 chars → threshold 457 must trip the gate.
+    const { notes: _drop, ...tableOnly } = VALID_V1_SESSION;
     const { lines } = await captureStdout(() =>
-      processSession(VALID_V1_SESSION, 1, {
-        vaultDir: '/vault',
-        dryRun: false,
-        kind: 'session',
-        qualityMinNarrativeChars: 457,
-      }),
+      processSession(tableOnly, 1, { vaultDir: '/vault', dryRun: false, kind: 'session', force: true }),
     );
-
-    expect(lines).toHaveLength(1);
-    expect(lines[0].action).toBe('skipped-quality-low');
-    expect(lines[0].path).toBe(null);
-    expect(lines[0].id).toBe('session-2026-05-21');
-    expect(lines[0].reason).toBe('narrative:456 < min:457');
-  });
-
-  it('session: --force does NOT bypass quality gate (force=true + short-narrative threshold → skipped)', async () => {
-    existsSyncSpy.mockReturnValue(false);
-    const processSession = await getProcessSession();
-    // Threshold higher than fixture length forces the gate; --force must not bypass it.
-    const { lines } = await captureStdout(() =>
-      processSession(VALID_V1_SESSION, 1, {
-        vaultDir: '/vault',
-        dryRun: false,
-        kind: 'session',
-        force: true,
-        qualityMinNarrativeChars: 10000,
-      }),
-    );
-
-    expect(lines).toHaveLength(1);
-    expect(lines[0].action).toBe('skipped-quality-low');
-  });
-
-  it('session: skipped-quality-low entry carries path: null AND reason field', async () => {
-    existsSyncSpy.mockReturnValue(false);
-    const processSession = await getProcessSession();
-    const { lines } = await captureStdout(() =>
-      processSession(VALID_V1_SESSION, 1, {
-        vaultDir: '/vault',
-        dryRun: false,
-        kind: 'session',
-        qualityMinNarrativeChars: 10000,
-      }),
-    );
-
-    expect(lines).toHaveLength(1);
-    expect(lines[0].action).toBe('skipped-quality-low');
-    expect(lines[0].path).toBe(null);
-    expect(typeof lines[0].reason).toBe('string');
-    expect(lines[0].reason).toMatch(/^narrative:\d+ < min:\d+$/);
-  });
-
-  it('session: default qualityMinNarrativeChars=400 is applied when ctx omits the field', async () => {
-    existsSyncSpy.mockReturnValue(false);
-    const processSession = await getProcessSession();
-    // No qualityMinNarrativeChars in ctx → defaults to 400 → fixture (456) passes.
-    const { lines } = await captureStdout(() =>
-      processSession(VALID_V1_SESSION, 1, {
-        vaultDir: '/vault',
-        dryRun: false,
-        kind: 'session',
-      }),
-    );
-
-    expect(lines).toHaveLength(1);
-    expect(lines[0].action).toBe('created');
+    expect(lines[0]).toMatchObject({ action: 'skipped-metrics-only', reason: 'narrative:0 < min:400' });
   });
 
   it('learning: default qualityMinConfidence=0.5 applied when ctx omits the field', async () => {
@@ -1713,6 +1675,7 @@ describe('processSession #909: status:abandoned is filtered before rendering', (
     agents_dispatched: 4,
     agent_summary: { complete: 4, partial: 0, failed: 0, spiral: 0 },
     effectiveness: { planned_issues: 2, completed_issues: 2, carryover: 0, completion_rate: 1.0 },
+    notes: NARRATIVE,
   };
 
   it('writes NO note at all for an abandoned session', async () => {

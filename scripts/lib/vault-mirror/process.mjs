@@ -5,7 +5,7 @@
  * Both functions write to the vault dir and emit JSON action lines to stdout.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
@@ -16,6 +16,16 @@ import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2, learningSourceRecord } from './render-learnings.mjs';
 import { detectSessionSchema, normalizeSessionEntry, generateSessionNote, generateSessionNoteV2, generateSessionNoteV3, sessionSourceRecord } from './render-sessions.mjs';
 import { emitMirrorEvent } from './telemetry.mjs';
+import {
+  ARCHIVE_ROOT,
+  legacyConcatSlug,
+  markArchived,
+  noteInsightKey,
+  renderRollup,
+  rollupRelPath,
+  rollupRowFromNote,
+  sessionNarrativeChars,
+} from './retention.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -64,8 +74,82 @@ function getSessionNoteSet(vaultDir) {
   }
 
   walk(sessionsDir);
+  // #1513: session notes the pruner moved to the archive keep their basename,
+  // and Obsidian resolves a wiki-link by basename — so a learning whose source
+  // session was archived still links. Without this walk every such learning
+  // would re-render its `source_session` as plain text and churn on each run.
+  walk(join(resolvedVault, ARCHIVE_ROOT, '50-sessions'));
   _sessionNoteSets.set(resolvedVault, knownSessions);
   return knownSessions;
+}
+
+// ── Insight index for write-time dedupe (#1513) ───────────────────────────────
+
+/**
+ * Cache: `<dir>\0<dir>` → { stamp, index }. The stamp is the two directories'
+ * mtimes, which change whenever a file is added or removed — including by this
+ * process's own creates — so the index is rebuilt exactly when its population
+ * changed and reused otherwise (one read of the namespace per run, not per
+ * record).
+ *
+ * @type {Map<string, {stamp: string, index: Map<string, string>}>}
+ */
+const _insightIndexes = new Map();
+
+function dirStamp(dir) {
+  try {
+    return String(statSync(dir).mtimeMs);
+  } catch {
+    return 'absent';
+  }
+}
+
+/**
+ * normalised insight → absolute path, over the mirror-owned, NOT archived
+ * learning notes directly in `dirs` (non-recursive). Read-only.
+ *
+ * @param {string[]} dirs
+ * @returns {Map<string, string>}
+ */
+function getInsightIndex(dirs) {
+  const key = dirs.join('\0');
+  const stamp = dirs.map(dirStamp).join('\0');
+  const cached = _insightIndexes.get(key);
+  if (cached && cached.stamp === stamp) return cached.index;
+  const index = new Map();
+  for (const dir of dirs) {
+    let names;
+    try {
+      names = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const ent of names) {
+      if (!ent.isFile() || !ent.name.endsWith('.md')) continue;
+      const abs = join(dir, ent.name);
+      let content;
+      try {
+        content = readFileSync(abs, 'utf8');
+      } catch {
+        continue;
+      }
+      const fm = parseFrontmatter(content);
+      if (!fm || fm['_generator'] !== GENERATOR_MARKER || fm['type'] !== 'learning') continue;
+      if (fm['status'] === 'archived') continue;
+      const insightKey = noteInsightKey(content);
+      if (insightKey && !index.has(insightKey)) index.set(insightKey, abs);
+    }
+  }
+  _insightIndexes.set(key, { stamp, index });
+  return index;
+}
+
+/** Today as `YYYY-MM-DD` from the injectable `ctx.now` (ms, ISO or Date). */
+function todayOf(ctx) {
+  const now = ctx?.now;
+  const ms =
+    now instanceof Date ? now.getTime() : typeof now === 'number' ? now : typeof now === 'string' ? Date.parse(now) : NaN;
+  return new Date(Number.isFinite(ms) ? ms : Date.now()).toISOString().slice(0, 10);
 }
 
 // ── Content diff helper ───────────────────────────────────────────────────────
@@ -763,6 +847,47 @@ function maskEntrySecrets(entry) {
 
 // ── Core processing ───────────────────────────────────────────────────────────
 
+/**
+ * The canonical note slug of a learning (extracted from processLearning for
+ * #1513 so the archive pass derives the SAME path). See the #725 D1 / #635
+ * notes inside.
+ *
+ * @param {object} entry normalised learning entry
+ * @param {'v1'|'v2'} schema
+ * @returns {string}
+ */
+function learningSlug(entry, schema) {
+  const entryId = entry.id;
+  let slugSource;
+  if (schema === 'v2') {
+    slugSource = entry.id;
+  } else if (typeof entry.subject === 'string') {
+    slugSource = entry.subject.trim().replace(/\s+/g, '-');
+  } else {
+    slugSource = entry.subject;
+  }
+  let slug;
+  if (typeof slugSource === 'string' && slugSource.length > 0) {
+    slug = subjectToSlug(slugSource);
+  } else {
+    slug = '';
+  }
+  if (!isValidSlug(slug)) {
+    slug = `learning-${uuidPrefix8(entryId)}`;
+  }
+  // #635: cap the slug so `<slug>.md` (plus a possible `-<uuid8>` disambig
+  // suffix) stays under the 255-byte filename limit. Normalized prose subjects
+  // can be arbitrarily long and previously aborted the whole mirror run with
+  // ENAMETOOLONG. 240 + 9 (disambig) + 3 (.md) = 252 — and every pre-existing
+  // vault note (max observed slug: 208 chars) keeps its identity untouched.
+  if (slug.length > 240) {
+    slug = slug.slice(0, 240).replace(/-+$/, '');
+  }
+
+  return slug;
+}
+
+
 export async function processLearning(rawEntry, _lineNum, ctx) {
   const {
     vaultDir,
@@ -806,34 +931,20 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // subject contract pinned by 15 tests in tests/unit/vault-mirror.test.mjs. The
   // pre-map is the mechanism the brief itself names and yields the IDENTICAL slug
   // for real data (kebab id derived from the same subject); see report.
-  let slugSource;
-  if (schema === 'v2') {
-    slugSource = entry.id;
-  } else if (typeof entry.subject === 'string') {
-    slugSource = entry.subject.trim().replace(/\s+/g, '-');
-  } else {
-    slugSource = entry.subject;
-  }
-  let slug;
-  if (typeof slugSource === 'string' && slugSource.length > 0) {
-    slug = subjectToSlug(slugSource);
-  } else {
-    slug = '';
-  }
-  if (!isValidSlug(slug)) {
-    slug = `learning-${uuidPrefix8(entryId)}`;
-  }
-  // #635: cap the slug so `<slug>.md` (plus a possible `-<uuid8>` disambig
-  // suffix) stays under the 255-byte filename limit. Normalized prose subjects
-  // can be arbitrarily long and previously aborted the whole mirror run with
-  // ENAMETOOLONG. 240 + 9 (disambig) + 3 (.md) = 252 — and every pre-existing
-  // vault note (max observed slug: 208 chars) keeps its identity untouched.
-  if (slug.length > 240) {
-    slug = slug.slice(0, 240).replace(/-+$/, '');
-  }
+  let slug = learningSlug(entry, schema);
 
   // Generator + date source differ by schema
-  const generator = schema === 'v2' ? generateLearningNoteV2 : generateLearningNote;
+  const baseGenerator = schema === 'v2' ? generateLearningNoteV2 : generateLearningNote;
+  // #1513: an expired learning (v1 `expires_at` before today) is never CREATED,
+  // and an existing note of it is re-rendered as `status: archived` +
+  // `archived-reason: expired` (the canonical-field diff sees the status change
+  // and writes it once; afterwards the note is a noop). v2 records carry no
+  // expiry. The pruner moves such notes out of the active zone.
+  const expiresDay = schema === 'v1' && typeof entry.expires_at === 'string' ? toDate(entry.expires_at) : '';
+  const expired = /^\d{4}-\d{2}-\d{2}$/.test(expiresDay) && expiresDay < todayOf(ctx);
+  const generator = expired
+    ? (e, s, o) => markArchived(baseGenerator(e, s, o), 'expired')
+    : baseGenerator;
   const dateSource = schema === 'v2' ? entry.first_seen : entry.created_at;
 
   // #704: Build a noteExists predicate from the vault's 50-sessions index so that
@@ -877,10 +988,77 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // so two records sharing a subject keep two stable notes instead of
   // overwriting each other on every run.
   const writer = { recordKey: learningSourceRecord(entry) };
+
+  /**
+   * #1513: the two reasons a NEW learning note is not created. Consulted only
+   * where a file would come into existence — updates of existing notes are
+   * never refused here. Returns the emitted action, or null to proceed.
+   *
+   *   - `skipped-expired`: the learning is past `expires_at`; a note for it
+   *     would be dead on arrival.
+   *   - `skipped-duplicate-insight`: a mirror-owned, non-archived note in this
+   *     namespace (or the flat legacy layout) already carries the same
+   *     normalised insight — the same learning under another slug or id.
+   */
+  const refuseNewNote = (content) => {
+    if (expired) {
+      return emitEntryAction(_lineNum, ctx, {
+        action: 'skipped-expired',
+        path: null,
+        id: entryId,
+        meta: { reason: `expires:${expiresDay} < today:${todayOf(ctx)}` },
+      });
+    }
+    const insightKey = noteInsightKey(content);
+    if (insightKey) {
+      const twin = getInsightIndex([targetDir, join(resolve(vaultDir), '40-learnings')]).get(insightKey);
+      if (twin !== undefined) {
+        return emitEntryAction(_lineNum, ctx, {
+          action: 'skipped-duplicate-insight',
+          path: twin,
+          id: entryId,
+          meta: { reason: 'same normalised insight as an existing note' },
+        });
+      }
+    }
+    return null;
+  };
   const targetDir = join(resolve(vaultDir), '40-learnings', repoNs);
   if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   let targetPath = join(targetDir, `${slug}.md`);
+
+  // #1513 LEGACY SLUG: until #725 D1 a v1 subject was slugged WITHOUT the
+  // whitespace → hyphen pre-map ("3parallelimplagents…"); the canonical form
+  // hyphenates ("3-parallel-impl-agents…"). When only the legacy variant of
+  // THIS record's note exists, it IS the note: it is updated in place under
+  // its own name instead of a second file being created beside it (the vault
+  // carried 364 such twins). New notes always get the canonical name.
+  if (schema === 'v1') {
+    const legacySlug = legacyConcatSlug(entry.subject);
+    const flatDir = join(resolve(vaultDir), '40-learnings');
+    if (
+      isValidSlug(legacySlug) &&
+      legacySlug !== slug &&
+      !existsSync(targetPath) &&
+      !existsSync(join(flatDir, `${slug}.md`))
+    ) {
+      for (const dir of [targetDir, flatDir]) {
+        const legacyPath = join(dir, `${legacySlug}.md`);
+        if (!existsSync(legacyPath)) continue;
+        const legacyFm = parseFrontmatter(readFileSync(legacyPath, 'utf8'));
+        if (
+          notOurGenerator(legacyFm) === null &&
+          legacyFm['id'] === legacySlug &&
+          foreignOwnerReason(legacyFm, writer) === null
+        ) {
+          slug = legacySlug;
+          targetPath = join(targetDir, `${legacySlug}.md`);
+          break;
+        }
+      }
+    }
+  }
 
   // #660 IDEMPOTENCY DUAL-PROBE: before treating the namespaced path as absent,
   // also check the legacy flat path. If a note with the same slug already exists
@@ -1035,6 +1213,10 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       }
 
       const content = generator(entry, slug, generatorOpts);
+      if (!existsSync(targetPath)) {
+        const refused = refuseNewNote(content);
+        if (refused !== null) return refused;
+      }
       if (!dryRun) writeFileSync(targetPath, content, 'utf8');
       return emitEntryAction(_lineNum, ctx, {
         action: 'skipped-collision-resolved',
@@ -1072,6 +1254,8 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
   // File does not exist — create
   const content = generator(entry, slug, generatorOpts);
+  const refused = refuseNewNote(content);
+  if (refused !== null) return refused;
   if (!dryRun) writeFileSync(targetPath, content, 'utf8');
   return emitEntryAction(_lineNum, ctx, {
     action: 'created',
@@ -1081,6 +1265,137 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // purpose (emitAction relativises it), a raw absolute path here would put
     // the operator's home dir on stdout and into the ledger record.
     ...healMeta(healedLegacyFlat, healedForeignLeak),
+  });
+}
+
+/**
+ * The note slugs a learning record can live under: the canonical slug and, for
+ * v1, the pre-#725 legacy variant. Used by the CLI to keep the archive pass off
+ * notes a LIVE record still owns (#1513).
+ *
+ * @param {object} rawEntry
+ * @returns {string[]}
+ */
+export function learningNoteSlugs(rawEntry) {
+  const entry = normalizeLearningEntry(rawEntry);
+  if (!entry || entry.id === null || entry.id === undefined) return [];
+  const schema = detectLearningSchema(entry);
+  const slugs = [learningSlug(entry, schema)];
+  if (schema === 'v1') {
+    const legacy = legacyConcatSlug(entry.subject);
+    if (isValidSlug(legacy) && !slugs.includes(legacy)) slugs.push(legacy);
+  }
+  return slugs;
+}
+
+/**
+ * Mark the existing note of a record that left `learnings.jsonl` (#1513).
+ *
+ * Input is one `learnings-archive.jsonl` record. Its note — canonical slug,
+ * legacy slug, or the `-<uuid8>` disambiguation, in the namespace or the flat
+ * legacy layout — gets `status: archived` + `archived-reason` (`expired` for an
+ * `_archive_reason: expired` record, `superseded` for every other reason). The
+ * note's bytes are otherwise kept; nothing is ever created. Ownership rules are
+ * the same as for writes: mirror-owned, and a `source-record` naming another
+ * record is left alone. Slugs in `ctx.liveLearningSlugs` (records still in the
+ * live store) are skipped, so a re-learned subject never flip-flops.
+ *
+ * @returns {Promise<string>} the emitted action
+ */
+export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
+  const { vaultDir, dryRun } = ctx;
+  const entry = maskEntrySecrets(normalizeLearningEntry(rawEntry));
+  if (!entry || entry.id === null || entry.id === undefined) {
+    throw new Error(`vault-mirror: archived learning entry missing required field 'id' (id=<no id>)`);
+  }
+  const reason = entry._archive_reason === 'expired' ? 'expired' : 'superseded';
+  const slugs = learningNoteSlugs(entry);
+  const live = ctx?.liveLearningSlugs instanceof Set ? ctx.liveLearningSlugs : new Set();
+  if (slugs.some((s) => live.has(s))) {
+    return emitEntryAction(_lineNum, ctx, {
+      // `skipped-noop`, not a class of its own: this is the steady state of
+      // every run, and noops stay out of the per-entry ledger (#1151).
+      action: 'skipped-noop',
+      path: null,
+      id: entry.id,
+      meta: { reason: 'archived record: a live record owns this note' },
+    });
+  }
+  const repoNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null });
+  const nsDir = join(resolve(vaultDir), '40-learnings', repoNs);
+  const flatDir = join(resolve(vaultDir), '40-learnings');
+  const writer = { recordKey: learningSourceRecord(entry) };
+  const names = [...slugs, `${slugs[0]}-${uuidPrefix8(String(entry.id))}`];
+  for (const dir of [nsDir, flatDir]) {
+    for (const name of names) {
+      const path = join(dir, `${name}.md`);
+      if (!existsSync(path)) continue;
+      const content = readFileSync(path, 'utf8');
+      const fm = parseFrontmatter(content);
+      if (notOurGenerator(fm) !== null || fm['id'] !== name) continue;
+      if (foreignOwnerReason(fm, writer) !== null) continue;
+      const next = markArchived(content, reason);
+      if (next === content) {
+        return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path, id: name });
+      }
+      if (!dryRun) writeFileSync(path, next, 'utf8');
+      return emitEntryAction(_lineNum, ctx, {
+        action: 'updated',
+        path,
+        id: name,
+        meta: { archived_reason: reason },
+      });
+    }
+  }
+  return emitEntryAction(_lineNum, ctx, {
+    action: 'skipped-noop',
+    path: null,
+    id: entry.id,
+    meta: { reason: 'archived record: no note in the vault' },
+  });
+}
+
+/**
+ * Route a metrics-only session record (#1513): a note that already exists for
+ * it is left exactly as it is (the pruner decides about the bestand), and
+ * otherwise the record becomes one row in its month rollup. Idempotent: an
+ * unchanged rollup is a `skipped-noop`.
+ */
+async function rollUpSession({ renderedBody, session_id, repoNs, narrativeChars, lineNum, ctx }) {
+  const { vaultDir, dryRun, qualityMinNarrativeChars = 400 } = ctx;
+  const reason = `narrative:${narrativeChars} < min:${qualityMinNarrativeChars}`;
+  const root = resolve(vaultDir);
+  const existingNote = [join(root, '50-sessions', repoNs, `${session_id}.md`), join(root, '50-sessions', `${session_id}.md`)].find(
+    (p) => existsSync(p),
+  );
+  const row = rollupRowFromNote(renderedBody, { id: session_id });
+  if (existingNote !== undefined || row === null) {
+    return emitEntryAction(lineNum, ctx, { action: 'skipped-quality-low', path: null, id: session_id, meta: { reason } });
+  }
+  const month = row.date.slice(0, 7);
+  const rollupPath = join(root, rollupRelPath(repoNs, month));
+  let existing = null;
+  if (existsSync(rollupPath)) {
+    existing = readFileSync(rollupPath, 'utf8');
+    const notOurs = notOurGenerator(parseFrontmatter(existing));
+    if (notOurs !== null) {
+      process.stderr.write(`SKIP ${notOurs}: ${toVaultRelative(rollupPath, vaultDir)}\n`);
+      return emitEntryAction(lineNum, ctx, { action: 'skipped-handwritten', path: rollupPath, id: session_id });
+    }
+  }
+  const next = renderRollup(existing, [row], { ns: repoNs, month });
+  if (next === existing) {
+    return emitEntryAction(lineNum, ctx, { action: 'skipped-noop', path: rollupPath, id: session_id, meta: { reason } });
+  }
+  if (!dryRun) {
+    mkdirSync(join(root, '50-sessions', repoNs), { recursive: true });
+    writeFileSync(rollupPath, next, 'utf8');
+  }
+  return emitEntryAction(lineNum, ctx, {
+    action: 'skipped-metrics-only',
+    path: rollupPath,
+    id: session_id,
+    meta: { reason },
   });
 }
 
@@ -1164,27 +1479,23 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     repoRoot: ctx?.repoRoot ?? null,
   });
 
-  // Quality gate (PRD F1.2): skip sessions whose rendered narrative is too short.
-  // Measure on the rendered markdown body so the check is schema-agnostic across
-  // v1 and v2 producers. The render is cheap and idempotent; we reuse the result
-  // below instead of calling generator() a second time.
-  // Runs BEFORE the --force branch so --force does NOT bypass the quality filter.
-  // If the generator throws a `vault-mirror: …` validation error (missing
-  // required field), it propagates up to vault-mirror.mjs which classifies it
-  // as `skipped-invalid` rather than `skipped-quality-low` — semantically more
-  // accurate for the metrics summary in session-end Phase 3.7.
+  // Narrative gate (#1513, replaces the PRD F1.2 rendered-length gate). A
+  // session gets its own note only when its FREE-TEXT fields (`notes`,
+  // `narrative`, `summary` — see retention.mjs) carry at least
+  // `qualityMinNarrativeChars` characters. The old gate measured the rendered
+  // body INCLUDING the wave/agent tables, so nearly every record passed: 2.728
+  // of 3.003 vault session notes were tables with no information beyond git
+  // (Jev audit 2026-10-03). A record below the gate becomes one row in the
+  // month rollup `50-sessions/<ns>/_rollup-YYYY-MM.md` instead. `0` disables
+  // the gate. Runs BEFORE --force; --force does NOT bypass it.
+  //
+  // The render still happens first: a generator `vault-mirror: …` validation
+  // error must keep surfacing as `skipped-invalid`, and the rollup row is read
+  // off the rendered note so the mirror and the pruner share one parser.
   const renderedBody = generator(entry, { repoNs });
-  // Strip YAML frontmatter (lines between the first two `---` markers) so we
-  // measure only narrative content, not boilerplate.
-  const narrativeBody = renderedBody.replace(/^---[\s\S]*?---/m, '').trim();
-  const narrativeChars = narrativeBody.length;
+  const narrativeChars = sessionNarrativeChars(entry);
   if (narrativeChars < qualityMinNarrativeChars) {
-    return emitEntryAction(_lineNum, ctx, {
-      action: 'skipped-quality-low',
-      path: null,
-      id: session_id,
-      meta: { reason: `narrative:${narrativeChars} < min:${qualityMinNarrativeChars}` },
-    });
+    return rollUpSession({ renderedBody, session_id, repoNs, narrativeChars, lineNum: _lineNum, ctx });
   }
 
   // #660: namespace new writes under a per-repo subdirectory. repoNs was
