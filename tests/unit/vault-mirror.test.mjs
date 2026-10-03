@@ -46,6 +46,19 @@ const VALID_SESSION = JSON.stringify({
 });
 
 /**
+ * #1513: `--kind session` fixtures here are table-only records, which the
+ * narrative gate now rolls up instead of mirroring. These suites pin the NOTE
+ * path (naming, dedup, ownership), so they switch the gate off unless a test
+ * sets the threshold itself; the gate is pinned in
+ * tests/lib/vault-mirror/process.test.mjs.
+ */
+function narrativeGateOff(args) {
+  const i = args.indexOf('--kind');
+  if (i === -1 || args[i + 1] !== 'session' || args.includes('--quality-min-narrative-chars')) return args;
+  return [...args, '--quality-min-narrative-chars', '0'];
+}
+
+/**
  * @param {string[]} args — CLI flags passed to scripts/vault-mirror.mjs.
  * @param {{ projectDir?: string, env?: Record<string, string> }} [opts] — `projectDir`
  *   pins CLAUDE_PROJECT_DIR to a caller-owned tmp dir so the test can READ the
@@ -69,7 +82,7 @@ function runMirror(args, opts = {}) {
   // A test that silently writes into the substrate it is not testing is the same
   // class as tests/lib/worktree.test.mjs self-poisoning (#984).
   const projectDir = opts.projectDir ?? makeFixtureTmpDir('vault-mirror-events-');
-  return spawnSync('node', [MIRROR, ...args], {
+  return spawnSync('node', [MIRROR, ...narrativeGateOff(args)], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -1288,7 +1301,7 @@ describe('vault-mirror CLI', () => {
       confidence: 0.5,
       source_session: '[object',
       created_at: '2026-04-23T18:19:24Z',
-      expires_at: '2026-05-23T00:00:00Z',
+      expires_at: '2099-05-23T00:00:00Z', // #1513: a past date would be skipped-expired
     });
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);
@@ -1317,7 +1330,7 @@ describe('vault-mirror CLI', () => {
       confidence: 0.5,
       source_session: '!!!@@###',
       created_at: '2026-04-23T18:19:24Z',
-      expires_at: '2026-05-23T00:00:00Z',
+      expires_at: '2099-05-23T00:00:00Z', // #1513: a past date would be skipped-expired
     });
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, entry);

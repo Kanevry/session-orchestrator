@@ -83,6 +83,19 @@ function pinnedLedgerEnv(projectDir) {
 }
 
 /**
+ * #1513: `--kind session` fixtures here are table-only records, which the
+ * narrative gate now rolls up instead of mirroring. These suites pin the NOTE
+ * path (naming, dedup, ownership), so they switch the gate off unless a test
+ * sets the threshold itself; the gate is pinned in
+ * tests/lib/vault-mirror/process.test.mjs.
+ */
+function narrativeGateOff(args) {
+  const i = args.indexOf('--kind');
+  if (i === -1 || args[i + 1] !== 'session' || args.includes('--quality-min-narrative-chars')) return args;
+  return [...args, '--quality-min-narrative-chars', '0'];
+}
+
+/**
  * @param {string[]} args — CLI flags passed to scripts/vault-mirror.mjs.
  * @param {{ projectDir?: string }} [opts] — see {@link pinnedLedgerEnv}.
  */
@@ -91,7 +104,7 @@ function runMirror(args, opts = {}) {
   // so the existing #536 invariant tests (which mirror into non-git tmp dirs)
   // keep exercising the --kind/--source/JSON.parse rejection layers. The guard
   // itself is covered by the `runMirrorGuarded` suite below.
-  return spawnSync('node', [MIRROR, ...args], {
+  return spawnSync('node', [MIRROR, ...narrativeGateOff(args)], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -838,7 +851,7 @@ describe('vault-mirror repo root (#1503)', () => {
   }
 
   function runIn(cwd, args, projectDir) {
-    return spawnSync('node', [MIRROR, ...args], {
+    return spawnSync('node', [MIRROR, ...narrativeGateOff(args)], {
       cwd,
       encoding: 'utf8',
       env: { ...process.env, VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1', ...pinnedLedgerEnv(projectDir) },

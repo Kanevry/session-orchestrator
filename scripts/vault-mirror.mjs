@@ -20,7 +20,7 @@
  *       `--repo-root` — #1503)
  *
  * Output: one JSON line per action on stdout:
- *   {"action":"created|updated|skipped-noop|skipped-handwritten|skipped-collision-resolved|skipped-foreign-owner|skipped-invalid|skipped-quality-low|skipped-abandoned|skipped-duplicate-session","path":"...","kind":"...","id":"..."}
+ *   {"action":"created|updated|skipped-noop|skipped-handwritten|skipped-collision-resolved|skipped-foreign-owner|skipped-invalid|skipped-quality-low|skipped-abandoned|skipped-duplicate-session|skipped-metrics-only|skipped-expired|skipped-duplicate-insight","path":"...","kind":"...","id":"..."}
  *
  * Idempotency rules:
  *   1. File does not exist → create.
@@ -45,8 +45,10 @@
  *
  * Quality gate (PRD F1.2):
  *   Learnings with confidence < --quality-min-confidence emit `skipped-quality-low`.
- *   Sessions with rendered-narrative length < --quality-min-narrative-chars emit
- *   `skipped-quality-low`. Quality gate runs BEFORE --force; --force does NOT
+ *   Sessions whose free text (`notes`/`narrative`/`summary`) is shorter than
+ *   --quality-min-narrative-chars get no note: `skipped-metrics-only` with one row
+ *   in the month rollup `50-sessions/<repo>/_rollup-YYYY-MM.md` (#1513; rules in
+ *   scripts/lib/vault-mirror/retention.mjs). Quality gate runs BEFORE --force; --force does NOT
  *   bypass the filter. Quality-skipped entries emit `path: null` and an
  *   additional `reason` field describing the violated threshold.
  *
@@ -65,14 +67,16 @@
  * Part of session-orchestrator vault-mirror (Issue #14).
  */
 
-import { existsSync, realpathSync } from 'node:fs';
-import { basename, dirname, resolve } from 'node:path';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { basename, dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 import { createReadStream } from 'node:fs';
 
 import {
   processLearning,
   processSession,
+  processArchivedLearning,
+  learningNoteSlugs,
   getMaskerStats,
   emitAction,
 } from './lib/vault-mirror/process.mjs';
@@ -81,6 +85,7 @@ import { emitEvent } from './lib/events.mjs';
 import { autoCommitVaultMirror } from './lib/vault-mirror/auto-commit.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { resolveRepoNamespace } from './lib/vault-mirror/namespace.mjs';
+import { SESSION_NARRATIVE_FIELDS, canonicalNamespace } from './lib/vault-mirror/retention.mjs';
 import { sessionSourceRecord } from './lib/vault-mirror/render-sessions.mjs';
 import { checkCanonicalVault, describeOriginForLog, findRepoRoot, normalizeRemote } from './lib/named-vault-resolver.mjs';
 import { loadOwnerConfig } from './lib/owner-yaml.mjs';
@@ -249,8 +254,9 @@ if (flagValues.help === true) {
       '                                        project holding --source (<root>/.orchestrator/metrics/), else',
       '                                        the git repo containing it, else the cwd. Refused (exit 2,',
       '                                        "source-repo-mismatch") when --source lies in a different repo.',
-      '  --quality-min-narrative-chars <int>   Sessions: minimum rendered-narrative length (default 400).',
-      '                                        Entries below the threshold emit "skipped-quality-low".',
+      '  --quality-min-narrative-chars <int>   Sessions: minimum free text in notes/narrative/summary',
+      '                                        (default 400, 0 = off). Below it: "skipped-metrics-only",',
+      '                                        one row in 50-sessions/<repo>/_rollup-YYYY-MM.md.',
       '  --quality-min-confidence <float>      Learnings: minimum confidence threshold (default 0.5).',
       '                                        Entries below the threshold emit "skipped-quality-low".',
       '',
@@ -641,6 +647,9 @@ async function main() {
     // superseded duplicates included — filled while buffering below, read by
     // processSession's owner guard (a key from this ledger is never foreign).
     sourceRecordKeys: new Set(),
+    // #1513: note slugs of every LIVE learning in --source; the archive pass
+    // below never marks a note one of them still owns.
+    liveLearningSlugs: new Set(),
     qualityMinNarrativeChars,
     qualityMinConfidence,
   };
@@ -662,14 +671,15 @@ async function main() {
    *   always supplies a real line number.
    * @returns {Promise<void>}
    */
-  async function dispatchEntry(entry, entryLineNum) {
+  async function dispatchEntry(entry, entryLineNum, processor = null) {
     try {
       // Both processors return the `action` string they emitted (every one of
       // their exit paths is an `emitAction` call), so the tally needs no second
       // census of the 18 call sites in process.mjs — a census that would go
       // stale the first time a branch is added.
-      const action =
-        kind === 'learning'
+      const action = processor
+        ? await processor(entry, entryLineNum, ctx)
+        : kind === 'learning'
           ? await processLearning(entry, entryLineNum, ctx)
           : await processSession(entry, entryLineNum, ctx);
       tally(action);
@@ -776,7 +786,37 @@ async function main() {
       continue;
     }
 
+    for (const slug of learningNoteSlugs(entry)) ctx.liveLearningSlugs.add(slug);
     await dispatchEntry(entry, lineNum);
+  }
+
+  // #1513 ARCHIVE PASS (`--kind learning` only): records /evolve or the expiry
+  // sweep moved out of `learnings.jsonl` live on in the sibling
+  // `learnings-archive.jsonl`. Their vault notes used to stay `status: draft`
+  // forever, because the mirror only ever saw the live store. Each archived
+  // record now marks its existing note archived (never creates one). Counted
+  // into `total` like any other line, so the run partition still holds. A
+  // malformed archive line is reported and skipped — the archive is secondary
+  // input and must not abort a mirror run that already wrote the live store.
+  if (kind === 'learning' && basename(resolve(source)) === 'learnings.jsonl') {
+    const archivePath = join(dirname(resolve(source)), 'learnings-archive.jsonl');
+    if (existsSync(archivePath)) {
+      const archiveLines = readFileSync(archivePath, 'utf8').split('\n');
+      for (let i = 0; i < archiveLines.length; i += 1) {
+        const trimmed = archiveLines[i].trim();
+        if (!trimmed) continue;
+        let archived;
+        try {
+          archived = JSON.parse(trimmed);
+        } catch {
+          process.stderr.write(`WARN vault-mirror: malformed JSON on learnings-archive.jsonl line ${i + 1} — skipped\n`);
+          continue;
+        }
+        if (archived === null || typeof archived !== 'object') continue;
+        runState.total++;
+        await dispatchEntry(archived, i + 1, processArchivedLearning);
+      }
+    }
   }
 
   if (kind === 'session') {
@@ -802,6 +842,30 @@ async function main() {
     // references as in `sessionEntries`, so reference identity below is exact,
     // never a guess (scripts/lib/sessions-canonical.mjs header, "RULE ORDER").
     const survivors = new Set(canonicalizeSessions(identifiable));
+
+    // #1513 review H2: "newest wins" must not cost a session its narrative. A
+    // re-appended record often carries only the metrics; the free text sits on
+    // the line it supersedes (vault ledger: 1.172 chars on line 101, none on the
+    // winning line 108). The winner inherits every narrative field it LACKS
+    // from the losers, latest loser first — its own fields always win.
+    const inherited = new Map();
+    for (const e of sessionEntries) {
+      if (!isIdentifiable(e) || survivors.has(e)) continue;
+      const carry = inherited.get(e.session_id) ?? {};
+      for (const field of SESSION_NARRATIVE_FIELDS) {
+        if (e[field] !== undefined && e[field] !== null && e[field] !== '') carry[field] = e[field];
+      }
+      inherited.set(e.session_id, carry);
+    }
+    const withNarrative = (e) => {
+      const carry = isIdentifiable(e) ? inherited.get(e.session_id) : undefined;
+      if (!carry) return e;
+      const merged = { ...e };
+      for (const [field, value] of Object.entries(carry)) {
+        if (merged[field] === undefined || merged[field] === null || merged[field] === '') merged[field] = value;
+      }
+      return merged;
+    };
 
     for (let i = 0; i < sessionEntries.length; i++) {
       const entry = sessionEntries[i];
@@ -831,7 +895,7 @@ async function main() {
         );
         continue;
       }
-      await dispatchEntry(entry, sessionLineNums[i]);
+      await dispatchEntry(withNarrative(entry), sessionLineNums[i]);
     }
   }
 
@@ -863,7 +927,8 @@ async function main() {
     autoCommitVaultMirror(
       resolve(vaultDir),
       sessionIdArg,
-      resolveRepoNamespace({ vaultName, repoRoot: ctx.repoRoot }),
+      // #1513 review M2: the folder the processors actually wrote into.
+      canonicalNamespace(resolve(vaultDir), resolveRepoNamespace({ vaultName, repoRoot: ctx.repoRoot })),
     );
   }
 }

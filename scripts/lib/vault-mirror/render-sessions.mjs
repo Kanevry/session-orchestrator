@@ -17,6 +17,7 @@
 
 import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
 import { sourceRecordValue, sourceRecordLine } from './render-learnings.mjs';
+import { sessionNarrativeText } from './retention.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -425,6 +426,9 @@ export function generateSessionNote(entry, options = {}) {
   const created = toDate(started_at);
   const updated = toDate(completed_at);
   const durationLabel = renderDuration(duration_seconds);
+  // #1513 review H2: v1 printed no free text at all; same block as v2/v3.
+  const v1Narrative = sessionNarrativeText(entry);
+  const v1NotesBlock = v1Narrative ? `\n## Notes\n\n${v1Narrative}\n` : '';
   // #M1: every `effectiveness` sub-field is OPTIONAL (validator.mjs
   // `_validateOptionalFields` shape-checks the object, never its members), so a
   // raw interpolation writes the literal string `undefined` into a note a human
@@ -564,7 +568,7 @@ ${waveRows}
 ## Agent summary
 
 - Complete: ${complete} · Partial: ${partial} · Failed: ${failed} · Spiral: ${spiral}
-`;
+${v1NotesBlock}`;
 }
 
 export function generateSessionNoteV2(entry, options = {}) {
@@ -580,7 +584,7 @@ export function generateSessionNoteV2(entry, options = {}) {
     throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${entry.session_id})`);
   }
 
-  const { session_id, session_type, started_at, completed_at, duration_seconds, branch, planned_issues, waves, files_changed, issues_closed, issues_created, effectiveness, notes } = entry;
+  const { session_id, session_type, started_at, completed_at, duration_seconds, branch, planned_issues, waves, files_changed, issues_closed, issues_created, effectiveness } = entry;
 
   const created = toDate(started_at);
   const updated = toDate(completed_at);
@@ -616,7 +620,9 @@ export function generateSessionNoteV2(entry, options = {}) {
   const closedList = Array.isArray(issues_closed) && issues_closed.length ? issues_closed.join(', ') : '—';
   const createdList = Array.isArray(issues_created) && issues_created.length ? issues_created.join(', ') : '—';
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
-  const notesBlock = notes ? `\n## Notes\n\n${notes}\n` : '';
+  // #1513 review H2: notes + narrative + summary, the fields the gate counts.
+  const narrativeText = sessionNarrativeText(entry);
+  const notesBlock = narrativeText ? `\n## Notes\n\n${narrativeText}\n` : '';
 
   // #732: emit `source-repo` (leak-guarded/pseudonym-mapped) instead of the
   // legacy raw `repo` field — see generateSessionNote for the full rationale.
@@ -680,7 +686,7 @@ export function generateSessionNoteV3(entry, options = {}) {
     session_id, session_type, platform, branch, started_at, completed_at,
     duration_minutes, duration_seconds, waves, agents_dispatched, agent_summary,
     planned_issues, effectiveness, commits, issues_closed, issues_created,
-    follow_ups_filed, tests_total_pre, tests_total_post, tests_added, notes,
+    follow_ups_filed, tests_total_pre, tests_total_post, tests_added,
   } = entry;
 
   const created = toDate(started_at);
@@ -741,7 +747,9 @@ export function generateSessionNoteV3(entry, options = {}) {
 
   const platformBullet = platform === null || platform === undefined || platform === '' ? '' : ` · **Platform:** ${platform}`;
   const branchLine = branch ? ` · **Branch:** ${branch}` : '';
-  const notesBlock = notes ? `\n## Notes\n\n${notes}\n` : '';
+  // #1513 review H2: notes + narrative + summary, the fields the gate counts.
+  const narrativeText = sessionNarrativeText(entry);
+  const notesBlock = narrativeText ? `\n## Notes\n\n${narrativeText}\n` : '';
 
   // #732: emit `source-repo` (leak-guarded/pseudonym-mapped) instead of the
   // legacy raw `repo` field — see generateSessionNote for the full rationale.

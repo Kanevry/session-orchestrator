@@ -118,6 +118,22 @@ const EVENTS_REL = ['.orchestrator', 'metrics', 'events.jsonl'];
 const SESSIONS_REL = ['.orchestrator', 'metrics', 'sessions.jsonl'];
 const BACKFILL_LOG_REL = ['.orchestrator', 'metrics', 'session-close-backfill.log'];
 
+/**
+ * Which outcomes reach the side-log (#1513). Only EVENTS — `backfilled`,
+ * `would-backfill`, `error` and any other non-skip action — are written; every
+ * `skipped-*` outcome is the steady state of a session close and stays out.
+ * Measured in the Meta-Vault 2026-10-03: 5.786 lines / 723 KB, 86 %
+ * `skipped-already-recorded`, one commit-worthy diff per close. The skips lose
+ * nothing: on-session-end emits every outcome, skips included, as a queryable
+ * event (#1068 AC2), and an injected `log` callback still receives them all.
+ *
+ * @param {unknown} action
+ * @returns {boolean}
+ */
+export function isLoggedBackfillAction(action) {
+  return typeof action === 'string' && !action.startsWith('skipped-');
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -1169,6 +1185,7 @@ export async function backfillAbandonedSession({
         return;
       }
       if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
+      if (!isLoggedBackfillAction(res.action)) return;
       const logPath = path.join(repoRoot, ...BACKFILL_LOG_REL);
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.appendFileSync(
@@ -1432,6 +1449,7 @@ export async function backfillCompletedFromStateMd({
         return;
       }
       if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
+      if (!isLoggedBackfillAction(res.action)) return;
       const logPath = path.join(repoRoot, ...BACKFILL_LOG_REL);
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.appendFileSync(

@@ -235,7 +235,7 @@ Quality thresholds applied by `scripts/vault-mirror.mjs` before mirroring a lear
 ```yaml
 vault-mirror:
   quality:
-    min-narrative-chars: 400           # integer ≥ 0 — minimum body length to mirror
+    min-narrative-chars: 400           # integer ≥ 0 — minimum session free text (notes/narrative/summary) for an own note; below → month rollup (#1513)
     min-confidence: 0.5                # float 0.0..1.0 — minimum learning confidence to mirror
 ```
 

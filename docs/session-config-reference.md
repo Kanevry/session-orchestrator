@@ -837,7 +837,7 @@ vault-mirror:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `vault-mirror.quality.min-narrative-chars` | integer | `400` | Minimum body length (characters) before a learning or session note is mirrored to the vault. Notes shorter than this threshold are skipped — useful to prevent low-information notes from cluttering the vault during onboarding or when a session yields only stubs. Bounds: integer ≥ 0. Out-of-range values silently fall back to the default. PRD F1.2 / issue #504. |
+| `vault-mirror.quality.min-narrative-chars` | integer | `400` | Minimum free text (characters in the session record's `notes` / `narrative` / `summary`) before a session gets its own vault note (#1513). Below it the session becomes one row in `50-sessions/<repo>/_rollup-YYYY-MM.md`; `0` disables the gate. Learnings are not gated by length. Bounds: integer ≥ 0. Out-of-range values silently fall back to the default. PRD F1.2 / issue #504, narrative semantics #1513. |
 | `vault-mirror.quality.min-confidence` | float | `0.5` | Minimum learning confidence (0.0..1.0) before a learning note is mirrored. Confidence is read from the source learning record. Notes below this threshold are skipped. Set to `0.0` to mirror every learning regardless of confidence. Bounds: `0.0 ≤ value ≤ 1.0`. Out-of-range values silently fall back to the default. PRD F1.2 / issue #504. |
 
 **Used by:** `scripts/vault-mirror.mjs`.
