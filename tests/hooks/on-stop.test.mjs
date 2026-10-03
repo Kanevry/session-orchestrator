@@ -424,6 +424,30 @@ describe('git info available — populated branch/commit', { timeout: 15000 }, (
     expect(typeof record.branch).toBe('string');
     expect(record.branch.length).toBeGreaterThan(0);
   });
+
+  it('reports the commit/branch of the worktree the session works in, not the launch dir (#1511 point b)', async () => {
+    // Bug caught: gitInfo(getProjectDir()) ran in the LAUNCH checkout, so after
+    // EnterWorktree every stop record carried the launch dir's HEAD and branch.
+    const launch = await mkCommittedGitDir();
+    const wt = await mkCommittedGitDir();
+    await track(launch.dir);
+    await track(wt.dir);
+    expect(launch.committed && wt.committed).toBe(true);
+    const { $ } = await import('zx');
+    $.verbose = false;
+    $.quiet = true;
+    await $`git -C ${wt.dir} checkout -q -b wave-worktree`;
+    const wtHead = (await $`git -C ${wt.dir} rev-parse HEAD`).stdout.trim();
+
+    await runHook({
+      projectDir: launch.dir,
+      stdin: JSON.stringify({ session_id: U('git-worktree'), cwd: wt.dir }),
+    });
+    const record = await readLastEvent(launch.dir);
+    expect(record.event).toBe('orchestrator.session.stopped');
+    expect(record.branch).toBe('wave-worktree');
+    expect(record.commit).toBe(wtHead);
+  });
 });
 
 // ---------------------------------------------------------------------------

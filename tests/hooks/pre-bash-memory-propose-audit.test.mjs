@@ -399,6 +399,32 @@ describe('G4 — session_id resolution', { timeout: 15000 }, () => {
     expect(events[0].session_id).toBe('sess-file');
   });
 
+  it('G4 reads current-session.json where on-session-start writes it, with CLAUDE_PROJECT_DIR set but empty (#1511 point c)', async () => {
+    // Bug caught: `CLAUDE_PROJECT_DIR ?? … ?? process.cwd()` kept the empty
+    // string and looked for the record under the hook's cwd (a subdirectory),
+    // while the writer (`resolveProjectDir`) skips an empty var and walks up to
+    // the repo root — so the fallback never found the record it wrote.
+    const dir = await mkProjectTracked();
+    const sub = path.join(dir, 'pkg');
+    await fs.mkdir(path.join(dir, '.git'), { recursive: true });
+    await fs.mkdir(sub, { recursive: true });
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ session_id: 'sess-walked-up' }),
+    );
+    const result = await runHook({
+      projectDir: dir,
+      cwd: sub,
+      env: { CLAUDE_PROJECT_DIR: '', CODEX_PROJECT_DIR: '', CURSOR_PROJECT_DIR: '', PI_PROJECT_DIR: '' },
+      stdin: bashPayload('node scripts/memory-propose.mjs'),
+    });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].session_id).toBe('sess-walked-up');
+  });
+
   it('G4 prefers stdin over file when both present', async () => {
     const dir = await mkProjectTracked();
     await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
@@ -727,5 +753,24 @@ describe('G5 wave — session root and manifest ownership (#1504)', () => {
     const events = await readEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0].wave).toBe(5);
+  });
+
+  it('records cwd relative to the entered worktree, not as a hash against the launch dir (#1511 point c)', async () => {
+    // Bug caught: `relativeCwd(process.cwd(), <launch dir>)` — a session working
+    // in an entered (sibling) worktree lies outside the launch dir, so every
+    // record carried an opaque `sha256:` hash instead of its place in the tree.
+    const dir = await mkProjectTracked();
+    const wt = await mkProjectTracked();
+    await fs.mkdir(path.join(wt, '.git'), { recursive: true });
+    await fs.mkdir(path.join(wt, 'src'), { recursive: true });
+    const result = await runHook({
+      projectDir: dir,
+      cwd: path.join(wt, 'src'),
+      stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1', cwd: path.join(wt, 'src') }),
+    });
+    expectAllow(result);
+    const events = await readEvents(dir);
+    expect(events).toHaveLength(1);
+    expect(events[0].cwd).toBe('src');
   });
 });

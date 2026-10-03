@@ -303,6 +303,25 @@ describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeou
     expect(result.code).toBe(0);
     expect(result.stderr).toBe('');
   });
+
+  it('reads the manifest at the session root when the session was launched in a repo SUBDIRECTORY (#1511 point d)', async () => {
+    // BUG: the guard read only `<toplevel>/.claude/wave-scope.json`, while
+    // enforce-scope reads at `resolveSessionRoot` — the launch subdirectory. The
+    // repo root holds no manifest, so an out-of-scope staged path passed. The
+    // in-scope path pins the other half: manifest paths are relative to the
+    // session root, so matching the repo-relative `pkg/src/a.mjs` would block it.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/a.mjs'] }));
+    await stageFile(dir, 'pkg/src/a.mjs');
+    const inScope = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(inScope.code).toBe(0);
+
+    await stageFile(dir, 'pkg/src/b.mjs');
+    const outOfScope = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(outOfScope.code).toBe(1);
+    expect(outOfScope.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*pkg\/src\/b\.mjs/);
+  });
 });
 
 // ---------------------------------------------------------------------------
