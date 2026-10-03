@@ -8,6 +8,7 @@
  */
 
 import {
+  GATE_PROCESS_LEDGER_RELPATH,
   killProcessGroup,
   pruneGateProcessLedger,
   readGateProcessLedger,
@@ -25,8 +26,15 @@ import {
 } from './reaper-audit.mjs';
 import { decideReapCandidates, verifyGroupMemberIdentity } from './reaper-decide.mjs';
 
-/** Name const for the one event this module emits. @see docs/events-schema.md */
+/** Name const for the scan-summary event. @see docs/events-schema.md */
 export const REAPER_SCAN_EVENT = 'orchestrator.reaper.scan_completed';
+
+/**
+ * Name const for the degraded-scan event (#1505 point 5a, owner decision
+ * 2026-10-03). An unreadable process register disables the scan; this record
+ * is what makes that countable (HR-105). @see docs/events-schema.md
+ */
+export const LEDGER_UNREADABLE_EVENT = 'orchestrator.ledger.unreadable';
 
 /** Default own-session-id reader. Lazily imported so the static import closure
  *  of this module stays small — it is destined for a hot-path hook (#1432).
@@ -237,16 +245,34 @@ export async function runOrphanScan({
 
   const { rows, malformed } = parsePsSnapshotDetailed(text);
 
+  // HR-105 (#1505 point 5a): an unreadable register switches the scan off, and
+  // the detached hook child ignores the exit 2 that says so — without a record
+  // the instrument is off with no trace. Once per degraded scan; the scan runs
+  // throttled, so this cannot become a per-fire signal (HR-101). Repo-relative
+  // path only, never a host path. A failing emit never fails the scan.
+  const unreadable = async (reason) => {
+    try {
+      await d.emitEvent(LEDGER_UNREADABLE_EVENT, {
+        path: GATE_PROCESS_LEDGER_RELPATH,
+        reason,
+        consumer: 'orphan-reaper',
+      }, { repoRoot });
+    } catch {
+      /* telemetry that can fail a scan would fail the hook the scan runs in */
+    }
+    return empty('ledger-unreadable', malformed);
+  };
+
   let ledger;
   try {
     ledger = d.readLedger(repoRoot, { nowMs: startedAt });
   } catch {
-    return empty('ledger-unreadable', malformed);
+    return unreadable('reader-threw');
   }
   // The default reader never throws: a refused or unreadable ledger comes back
   // as no records with `state: 'unreadable'` (#1498). Read as "no register
   // hits" it ran a clean-looking scan that measured nothing.
-  if (ledger?.state === 'unreadable') return empty('ledger-unreadable', malformed);
+  if (ledger?.state === 'unreadable') return unreadable('refused');
 
   let ownSessionId = null;
   try {
