@@ -26,6 +26,8 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Tracked files under `.orchestrator/policy/`, measured from git — the SET the
@@ -111,5 +113,40 @@ describe('npm packlist — destructive-guard floor policy', () => {
 
     expect(tracked.length).toBeGreaterThan(0); // vacuum guard: an empty census proves nothing
     expect(packedPolicy).toEqual(tracked);
+  });
+});
+
+/**
+ * Every `"./…"` string a harness manifest declares, as a repo-relative path.
+ * Walks the whole object so a new field is covered without editing this test.
+ */
+function declaredManifestPaths(manifestFile) {
+  const found = [];
+  const walk = (v) => {
+    if (typeof v === 'string' && v.startsWith('./')) found.push(v.slice(2).replace(/\/$/, ''));
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(JSON.parse(readFileSync(join(REPO_ROOT, manifestFile), 'utf8')));
+  return found;
+}
+
+/**
+ * TV-001, the bug this names (#1515 point 3): `.claude-plugin/plugin.json`
+ * declared `experimental.evals: "./evals"` while `files[]` lacked `evals/` —
+ * every marketplace and git install had the directory, only the npm tarball
+ * pointed into nothing. A path counts as shipped when it is a packed file or a
+ * packed directory prefix.
+ */
+describe('npm packlist — paths the harness manifests declare', () => {
+  const manifests = ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.cursor-plugin/plugin.json']
+    .filter((m) => existsSync(join(REPO_ROOT, m)));
+
+  it.each(manifests)('%s declares no path the tarball lacks', (manifest) => {
+    const declared = declaredManifestPaths(manifest);
+    expect(declared.length).toBeGreaterThan(0); // vacuum guard
+    const missing = declared.filter(
+      (d) => !packedPaths.some((p) => p === d || p.startsWith(`${d}/`)),
+    );
+    expect(missing).toEqual([]);
   });
 });
