@@ -41,7 +41,7 @@ import { isSessionConfigHeading } from '../../scripts/lib/config/section-extract
 import { FRONTMATTER_NOT_AT_TOP, parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
-import { kebab } from '../../scripts/lib/learnings/kebab.mjs';
+import { learningKeyOf } from '../../scripts/lib/learnings/kebab.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -1144,9 +1144,9 @@ function main() {
   // `learning-key` and verify it matches a non-expired entry in
   // `.orchestrator/metrics/learnings.jsonl`.
   //
-  // Key derivation mirrors emitter.mjs `toActivationMetadata`:
-  //   learningKey = `${type}/${kebab(title || subject || '')}`
-  //   kebab(s) = s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+  // Key derivation is the shared `learningKeyOf` (scripts/lib/learnings/kebab.mjs):
+  //   `${type.trim()}/${kebab(title || subject)}`, blank title/subject skipped,
+  //   null for an empty type or slug — so a stamped key matches its own learning.
   //
   // WARN (never error) when:
   //   - NEITHER a learnings.jsonl entry NOR a valid `evidence-digest` frontmatter
@@ -1233,12 +1233,8 @@ function main() {
           let entry;
           try { entry = JSON.parse(trimmed); } catch { continue; }
           if (!entry || typeof entry !== 'object') continue;
-          const type = typeof entry.type === 'string' ? entry.type : '';
-          const subjectOrTitle =
-            (typeof entry.title === 'string' && entry.title !== '' ? entry.title : '') ||
-            (typeof entry.subject === 'string' && entry.subject !== '' ? entry.subject : '');
-          if (!type || !subjectOrTitle) continue;
-          const derivedKey = `${type}/${kebab(subjectOrTitle)}`;
+          const derivedKey = learningKeyOf(entry);
+          if (!derivedKey) continue;
           // Store the most-recent expires_at (later entries overwrite earlier ones
           // with the same key — safe; duplicates are rare and same-key learnings
           // share the same expiry semantics).
