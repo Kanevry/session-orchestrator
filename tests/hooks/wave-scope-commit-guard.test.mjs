@@ -322,6 +322,52 @@ describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeou
     expect(outOfScope.code).toBe(1);
     expect(outOfScope.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*pkg\/src\/b\.mjs/);
   });
+
+  it('still reads the REPO-ROOT manifest when a subdirectory session root holds none (#1511 d regression)', async () => {
+    // BUG: the subdirectory mode replaced the repo-root lookup, so a wave whose
+    // manifest sits at the toplevel stopped governing a commit made from a
+    // session launched in `pkg/` — the out-of-scope path passed with exit 0.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ allowedPaths: ['src/'] }));
+    await fs.mkdir(path.join(dir, 'pkg'), { recursive: true });
+    await stageFile(dir, 'other/evil.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: path.join(dir, 'pkg') });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('other/evil.mjs');
+  });
+
+  it('blocks a staged path OUTSIDE the subdirectory session root even when a glob would match its ../ form', async () => {
+    // BUG: `other/evil.mjs` became `../other/evil.mjs`, which `**/*.mjs`
+    // matches — a write enforce-scope denies (REQ-04) committed unchecked.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['**/*.mjs'] }));
+    await stageFile(dir, 'pkg/src/ok.mjs');
+    await stageFile(dir, 'other/evil.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('other/evil.mjs');
+    expect(result.stderr).not.toContain('pkg/src/ok.mjs');
+  });
+
+  it('adopts a subdirectory session root named in a different letter case on a case-insensitive FS', async () => {
+    // BUG: plain realpathSync keeps the caller's case, so a case-different
+    // CLAUDE_PROJECT_DIR relativised to `../..` against the git toplevel and the
+    // subdirectory mode silently stood down. Only reproducible where the FS
+    // folds case (APFS default); elsewhere the case-different path does not exist.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    const shouted = path.join(path.dirname(dir), path.basename(dir).toUpperCase(), 'pkg');
+    if (shouted === pkg) return;
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/a.mjs'] }));
+    let caseInsensitive = true;
+    try { await fs.access(shouted); } catch { caseInsensitive = false; }
+    if (!caseInsensitive) return;
+    await stageFile(dir, 'pkg/src/b.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: shouted });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('pkg/src/b.mjs');
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -465,8 +465,16 @@ export function readPeerSidecarRaw(stateDir, wave) {
  *                                          a re-created sidecar still mismatches
  *   same manifest, DIFFERENT sidecar     → `tampered`: honour NO peer record
  *                                          (fail toward reporting) and keep the
- *                                          ORIGINAL binding, so the notice repeats
- *                                          until the manifest is rewritten
+ *                                          ORIGINAL binding until the manifest is
+ *                                          rewritten; the notice fires ONCE per
+ *                                          mismatching sidecar hash (`notify`)
+ *
+ * Once, not per call: a legitimate mid-wave Peer-Scope-Union rewrites the sidecar
+ * while `--union` (which excludes peer records) leaves the manifest bytes
+ * unchanged, so `tampered` holds for the rest of the wave. Repeating the ⚠ on
+ * every Bash call would be an always-on signal (HR-101). The marker
+ * `sidecarNotified` is persisted in the trusted snapshot by the caller only on
+ * the path that emits; a further change of the sidecar (a new hash) notifies again.
  *
  * A snapshot written before this field existed has no `sidecarHash` and binds
  * silently on its first call — the same one-time adoption the control hash had.
@@ -479,15 +487,24 @@ export function readPeerSidecarRaw(stateDir, wave) {
  * @param {{ hash: string, sidecarHash?: unknown }|null} prevScopeState trusted prior state
  * @param {string} manifestHash this call's manifest hash
  * @param {string} sidecarHash this call's sidecar hash, or 'absent'
- * @returns {{ sidecarHash: string, tampered: boolean }} the hash to persist + verdict
+ * @returns {{ sidecarHash: string, tampered: boolean, notify: boolean, sidecarNotified?: string }}
+ *   the hash to persist, the verdict, whether to emit the mismatch notice, and
+ *   (when tampered) the marker to persist once it has been emitted
  */
 export function bindPeerSidecar(prevScopeState, manifestHash, sidecarHash) {
   const bound = prevScopeState?.sidecarHash;
   if (!prevScopeState || prevScopeState.hash !== manifestHash || typeof bound !== 'string') {
-    return { sidecarHash, tampered: false };
+    return { sidecarHash, tampered: false, notify: false };
   }
-  if (bound === sidecarHash || sidecarHash === 'absent') return { sidecarHash: bound, tampered: false };
-  return { sidecarHash: bound, tampered: true };
+  if (bound === sidecarHash || sidecarHash === 'absent') {
+    return { sidecarHash: bound, tampered: false, notify: false };
+  }
+  return {
+    sidecarHash: bound,
+    tampered: true,
+    notify: prevScopeState.sidecarNotified !== sidecarHash,
+    sidecarNotified: sidecarHash,
+  };
 }
 
 /**
@@ -1237,6 +1254,9 @@ async function main() {
     },
   });
 
+  // The mismatch notice below is emitted on this path only, so its once-marker
+  // is persisted here and nowhere else (see `bindPeerSidecar`).
+  if (sidecarBinding.tampered) currentScopeState.sidecarNotified = sidecarBinding.sidecarNotified;
   writeSnapshot(snapFile, { ...nextSnapshot, scopeState: currentScopeState });
 
   const messages = [];
@@ -1261,7 +1281,7 @@ async function main() {
   const peerRecords = sidecarBinding.tampered
     ? []
     : readPeerScopeRecords(path.dirname(scopePath), scope.wave, sidecarRaw);
-  if (sidecarBinding.tampered) {
+  if (sidecarBinding.notify) {
     messages.push(formatSidecarMismatchNotice(
       path.relative(repoRoot, path.join(path.dirname(scopePath), 'filescopes', `wave-${scope.wave}.scopes.json`)),
     ));

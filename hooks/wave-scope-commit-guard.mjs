@@ -177,8 +177,12 @@ function mtimeMsOf(file) {
  * @param {object} p
  * @param {Record<string, unknown>} p.scope parsed manifest
  * @param {string[]} p.stagedFiles  repo-relative, as `git diff --cached` prints them
- * @param {(f: string) => string} [p.scopePathOf]  a staged path as the manifest
- *   names it — relative to the SESSION root; identity when that is the repo root
+ * @param {(f: string) => string|null} [p.scopePathOf]  a staged path as the
+ *   manifest names it — relative to the SESSION root; identity when that is the
+ *   repo root. `null` = the path lies OUTSIDE the session root: a violation
+ *   without pattern matching, since a `../`-prefixed path would match a glob
+ *   like `**\/*.mjs` and enforce-scope denies every write outside its root
+ *   (REQ-04).
  * @param {string} p.scopeRel manifest path for messages, repo-relative
  * @param {Set<string>} p.ownIds this process's session ids
  * @param {number|null} p.scopeMtimeMs
@@ -203,7 +207,10 @@ function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeR
   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
   if (allowedPaths.length > 0) {
     const violations = stagedFiles.filter(
-      (f) => !allowedPaths.some((pattern) => pathMatchesPattern(scopePathOf(f), pattern)),
+      (f) => {
+        const scoped = scopePathOf(f);
+        return scoped === null || !allowedPaths.some((pattern) => pathMatchesPattern(scoped, pattern));
+      },
     );
     if (violations.length === 0) return { action: 'pass', lines: [] };
     // Blocks under `warn` too — see the header: in a warn-mode wave this is
@@ -272,7 +279,11 @@ function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeR
  */
 function subdirSessionRoot(repoRoot) {
   const canon = (p) => {
-    try { return realpathSync(p); } catch { return p; }
+    // `.native` canonicalises letter case on case-insensitive APFS (as
+    // enforce-scope's clamp does since #1504 pt 8); the JS realpath keeps a
+    // case-different CLAUDE_PROJECT_DIR verbatim, which relativises to `../..`
+    // against the git toplevel and switches the subdirectory mode off silently.
+    try { return realpathSync.native(p); } catch { return p; }
   };
   const realRepoRoot = canon(repoRoot);
   const sessionRoot = canon(resolveSessionRoot(repoRoot, repoRoot));
@@ -316,12 +327,27 @@ async function main() {
   // answers above it (a harness `agent-<hex>` worktree lifted to its launch
   // checkout) would judge this repo's staged paths against another tree's
   // manifest — that case keeps the repo root, as before.
+  //
+  // When the session root holds no own manifest, the repo-root manifest is read
+  // as before #1511 d, with repo-relative paths — adopting the subdirectory must
+  // not switch off a repo-root wave that governed this commit until then.
   const subdir = subdirSessionRoot(repoRoot);
-  const sessionRoot = subdir?.sessionRoot ?? repoRoot;
-  const scopePathOf = subdir === null
+  let sessionRoot = subdir?.sessionRoot ?? repoRoot;
+  let scopePathOf = subdir === null
     ? (f) => f
-    : (f) => relative(subdir.sessionRoot, join(subdir.realRepoRoot, f));
-  const located = findOwnScopeFile(sessionRoot, ownIds, classifyManifestSession);
+    : (f) => {
+      const rel = relative(subdir.sessionRoot, join(subdir.realRepoRoot, f));
+      return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? null : rel;
+    };
+  let located = findOwnScopeFile(sessionRoot, ownIds, classifyManifestSession);
+  if (subdir !== null && located.path === null) {
+    const atRepoRoot = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
+    if (atRepoRoot.path !== null || (located.foreignPath === null && atRepoRoot.foreignPath !== null)) {
+      located = atRepoRoot;
+      sessionRoot = repoRoot;
+      scopePathOf = (f) => f;
+    }
+  }
   const scopePath = located.path ?? located.foreignPath;
   const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');
 
