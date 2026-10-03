@@ -40,7 +40,7 @@ own scope to PSA-002.
 
 PSA-005 spans **both** axes; only its session-lock half is purely
 operator-scoped. PSA-006 is **orthogonal** to both (Discovery grep-discipline).
-See ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped).
+See ADR-0010 § Native-Overlap Refresh (Agent Teams = Stay; PSA re-scoped).
 
 ## Decision Tree — What To Do When You Detect Parallel Signals
 
@@ -274,4 +274,4 @@ The git index and stash are **shared resources of the working copy**, not a priv
 - Pausing at PSA-001 signals when your scope is unaffected — needless interruptions slow the session.
 
 ## See Also
-development.md · security.md · testing.md · mvp-scope.md · cli-design.md · receiving-review.md · cross-session-messaging.md (CSM-001..005 — the send decision the Decision Tree routes to) · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Adapter; PSA re-scoped) · "Native-Overlap Verdicts" research (#665; archived in the private Meta-Vault) § PSA re-scope
+development.md · security.md · testing.md · mvp-scope.md · cli-design.md · receiving-review.md · cross-session-messaging.md (CSM-001..005 — the send decision the Decision Tree routes to) · `../../skills/_shared/state-ownership.md` (concurrency) · ADR-0010 § Native-Overlap Refresh (Agent Teams = Stay; PSA re-scoped) · "Native-Overlap Verdicts" research (#665; archived in the private Meta-Vault) § PSA re-scope

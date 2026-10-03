@@ -114,6 +114,8 @@ can only be polled or tailed, stay on Monitor. It is research-preview — do not
 wire a load-bearing automation onto it without a Monitor/`/loop` fallback. Auth,
 version, and org-gating constraints are in the ADR reference section.
 
+Session-to-session text is not Channels: `cross-session-messaging.md`.
+
 ## LM-002b: Use Workflows When …
 
 Dynamic **Workflows** (`Workflow` tool) is the **one-shot fan-out** primitive —
@@ -132,7 +134,7 @@ one-shot fan-out, use the `Workflow` tool.
 **Distinct from Agent Teams.** Workflows' one-shot fan-out is unrelated to the
 experimental `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` flag (off-by-default, in-run
 multi-agent coordination within a single live session) — see
-`parallel-sessions.md` § PSA Scope Axes and ADR-0002 / #484 for that boundary.
+`parallel-sessions.md` § PSA Scope Axes and ADR-0002 (Stay) for that boundary.
 
 **Do not swap wave-executor for a bare Workflow.** The 16/1000 caps are
 agent-count bounds, not the repo's ten kill-switches, and Workflows ship no
