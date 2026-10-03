@@ -358,7 +358,7 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
     if (!(budgetMs > 0)) return null;
   }
   const newestFirst = [];
-  const { truncated, unreadable } = scanEventsBackwards({
+  const { truncated, unreadable, gaps } = scanEventsBackwards({
     filePath: eventsPath,
     filter: id,
     budgetMs,
@@ -371,13 +371,51 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
   // deadline does — its records are simply absent — so it defers the candidate
   // the same way. Ceiling (BV-004): a PERMANENTLY unreadable archive defers its
   // candidates on every run (`skipped-history-unread`, visible, never a record
-  // dated NOW). `gaps` (pruned/unindexed archives) are deliberately NOT treated
-  // so: the walk reports every gap of the whole ledger, mostly far older than
-  // the candidate, and deferring on any of them would skip the candidate
-  // forever — telling a gap inside the session's window apart needs its
-  // first_ts/last_ts against the session's range, a follow-up.
-  const cut = truncated || (Array.isArray(unreadable) && unreadable.length > 0);
+  // dated NOW).
+  const cut = truncated
+    || (Array.isArray(unreadable) && unreadable.length > 0)
+    || gapInsideWindow(gaps, newestFirst);
   return cut ? null : newestFirst.reverse();
+}
+
+/**
+ * Whether a pruned/unindexed archive (`gaps` of {@link scanEventsBackwards})
+ * may hold records of the session whose found records are `records` (#1512).
+ *
+ * The walk reports every gap of the WHOLE ledger, mostly far older than the
+ * candidate; deferring on any of them would skip the candidate forever. So a
+ * gap counts only when its `[first_ts, last_ts]` intersects the session's
+ * window `[earliest, latest]` timestamp of the records the walk found.
+ *
+ * Fail direction (BV-004): a gap missing either bound, or a session with no
+ * dated record, is NOT counted — an unbounded gap would intersect every later
+ * session and recreate the defer-forever bug. Such a candidate is written as
+ * before #1512, its unread start listed in `_backfill_incomplete_fields`.
+ * Likewise a gap that ate the session's START lies just before the earliest
+ * found record and stays outside the window — same incomplete-start answer.
+ * Revisit if tombstones without `first_ts`/`last_ts` still appear in ledgers.
+ *
+ * @param {Array<{first_ts?: string|null, last_ts?: string|null}>|undefined} gaps
+ * @param {Array<object>} records
+ * @returns {boolean}
+ */
+function gapInsideWindow(gaps, records) {
+  if (!Array.isArray(gaps) || gaps.length === 0) return false;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const r of records) {
+    const ts = typeof r?.timestamp === 'string' ? Date.parse(r.timestamp) : NaN;
+    if (Number.isNaN(ts)) continue;
+    lo = Math.min(lo, ts);
+    hi = Math.max(hi, ts);
+  }
+  if (lo > hi) return false;
+  return gaps.some((g) => {
+    const first = typeof g?.first_ts === 'string' ? Date.parse(g.first_ts) : NaN;
+    const last = typeof g?.last_ts === 'string' ? Date.parse(g.last_ts) : NaN;
+    if (Number.isNaN(first) || Number.isNaN(last)) return false;
+    return first <= hi && last >= lo;
+  });
 }
 
 /**

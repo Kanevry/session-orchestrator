@@ -719,6 +719,44 @@ describe('backfillAbandonedSession — a rotated-ledger scan the deadline cut sh
     expect(res).toEqual({ action: 'skipped-history-unread', sessionId: UUID });
     expect(readSessions()).toEqual([]);
   });
+
+  // #1512: a pruned archive is reported by the walk as a `gap`. One inside the
+  // session's window [14:00, 15:30] cut its history (the lock.acquired with the
+  // semantic id sat there); one weeks older did not — and must not defer the
+  // candidate forever, since every later session would see the same gap.
+  function seedPrunedArchiveLedger(gapFirst, gapLast) {
+    writeJsonl(path.join(metricsDir(), '_archive', 'events-20260527T140000Z_20260527T142000Z.jsonl'), [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    seedEvents([
+      {
+        timestamp: '2026-05-27T15:00:00.000Z',
+        event: 'orchestrator.events.rotated',
+        archived_as: `events-${gapFirst.replace(/[-:]|\.\d+/g, '')}_${gapLast.replace(/[-:]|\.\d+/g, '')}.jsonl`,
+        first_ts: gapFirst,
+        last_ts: gapLast,
+      },
+      { timestamp: '2026-05-27T15:30:00.000Z', event: 'orchestrator.agent.stopped', session_id: UUID },
+    ]);
+  }
+
+  it('defers the candidate when a pruned archive falls inside its window (#1512)', async () => {
+    seedPrunedArchiveLedger('2026-05-27T14:20:01.000Z', '2026-05-27T14:59:59.000Z');
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res).toEqual({ action: 'skipped-history-unread', sessionId: UUID });
+    expect(readSessions()).toEqual([]);
+  });
+
+  it('still backfills when the only pruned archive lies outside its window (#1512)', async () => {
+    seedPrunedArchiveLedger('2026-05-01T00:00:00.000Z', '2026-05-02T00:00:00.000Z');
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    expect(res.record.started_at).toBe(STARTED_AT);
+  });
 });
 
 // ---------------------------------------------------------------------------
