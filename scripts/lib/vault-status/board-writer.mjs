@@ -662,12 +662,12 @@ export function writeBoard(opts) {
   // which is precisely the surface the `_overview.md` refusal above protects.
   //
   // `copyFileSync` is forwarded even though `backup: false` makes it inert
-  // today: {@link atomicWriteWithBackup} falls back to the REAL `node:fs` per
-  // MISSING method, so a 4-of-5 adapter would silently route the backup copy
-  // to the real filesystem the moment anyone flips `backup` — a test that
-  // believes itself hermetic would drop `.bak-<ISO>` files into the repo.
-  // Forwarding the fifth method keeps the adapter total over io.mjs's
-  // injectable surface.
+  // today: {@link atomicWriteWithBackup} fails CLOSED under `backup: true` when
+  // an injected adapter lacks `existsSync` or `copyFileSync` (it returns
+  // `{ ok: false, reason: 'fs-error' }` before touching any filesystem), so a
+  // 4-of-5 adapter would turn into a failed board write the moment anyone
+  // flips `backup`. Forwarding the fifth method keeps the adapter total over
+  // io.mjs's injectable surface so that flip stays a one-line change.
   const result = atomicWriteWithBackup(outputPath, content, {
     tmpPrefix: '.active-sessions',
     fs: {
