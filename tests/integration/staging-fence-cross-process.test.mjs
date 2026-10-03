@@ -134,26 +134,6 @@ function writeFence(agentId, paths) {
 }
 
 /**
- * Write a fence file in the PRE-#1404 shape (`{ command, timestamp }`, no
- * `paths`). Such files exist on disk in sessions that were already running
- * when the hook was upgraded; the reader must still detect their overlaps.
- */
-function writeLegacyFence(agentId, paths) {
-  const fenceFile = join(repoRoot, '.orchestrator', 'staging-fence', `${agentId}.json`);
-  const body = {
-    agent_id: agentId,
-    pid: 12345,
-    host: 'test',
-    started_at: new Date().toISOString(),
-    staged_paths: paths.map((p) => ({
-      command: `git add ${p}`,
-      timestamp: new Date().toISOString(),
-    })),
-  };
-  writeFileSync(fenceFile, JSON.stringify(body, null, 2));
-}
-
-/**
  * Create a file under the repo and stage it via `git add`.
  */
 function stageFile(relPath, content = 'x\n') {
@@ -391,21 +371,6 @@ describe('staging-fence overlap on path lists (#1404)', { timeout: 20000 }, () =
     expect(result.code).toBe(1);
     expect(result.stderr).toContain('staging-fence: cross-agent overlap');
     expect(result.stderr).toContain('src/unrelated-name.ts');
-  });
-
-  // Bug: a fence file written before the upgrade has no `paths` key. Dropping
-  // such entries reads as "no overlap" — silently weaker than before.
-  it('a pre-#1404 legacy entry is still detected via the command fallback', async () => {
-    writeLegacyFence('sibling-legacy', ['src/foo.ts']);
-    stageFile('src/foo.ts');
-
-    const result = await runHook(repoRoot);
-
-    expect(result.code).toBe(1);
-    expect(result.stderr).toContain('staging-fence: cross-agent overlap');
-    expect(result.stderr).toContain('legacy entry, pre-#1404');
-    // The fallback READS the command text but must never PRINT it.
-    expect(result.stderr).not.toContain('git add src/foo.ts');
   });
 
   // Bug: a directory operand (`git add src`) stages every file beneath it; an

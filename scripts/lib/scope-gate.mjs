@@ -16,6 +16,9 @@ import path from 'node:path';
 
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 
+/** The harness state dirs a `wave-scope.json` may live in, highest precedence first. */
+const SCOPE_FILE_DIRS = Object.freeze(['.pi', '.cursor', '.codex', '.claude']);
+
 /**
  * Find the wave-scope.json file for the given project root.
  *
@@ -32,13 +35,74 @@ import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './comma
  * @returns {string|null}
  */
 export function findScopeFile(projectRoot) {
-  for (const dir of ['.pi', '.cursor', '.codex', '.claude']) {
+  for (const dir of SCOPE_FILE_DIRS) {
     const candidate = path.join(projectRoot, dir, 'wave-scope.json');
     if (existsSync(candidate)) {
       return candidate;
     }
   }
   return null;
+}
+
+/**
+ * The manifest that governs THIS session: walk the {@link findScopeFile}
+ * precedence (`.pi` > `.cursor` > `.codex` > `.claude`) and return the first
+ * candidate that is NOT provably bound to another session (#1504 point 6).
+ *
+ * `findScopeFile` stops at the first file that EXISTS. When that file is a
+ * peer's — another harness session's manifest in the same working copy — every
+ * guard that stands down on a foreign manifest stood down, and this session's
+ * own `.claude/wave-scope.json` one rung lower was never read: a peer's
+ * manifest switched this session's scope gates off.
+ *
+ * Disposition per candidate, decided INSIDE the loop (an identity check after
+ * the loop makes the first readable candidate the veto-holder —
+ * `.claude/rules/identity-and-locks.md`):
+ *   - `'own'` or `'unknown'` → return it. `'unknown'` covers an unbound/legacy
+ *     manifest, a corrupt or unreadable one (judged as `{}`), and an empty
+ *     `ownIds` (a harness that supplies no session id). Each means ENFORCE
+ *     under the binding contract, so each stays the decider exactly as under
+ *     `findScopeFile` — a truncated manifest cannot skip itself.
+ *   - `'foreign'` → remember the first one and `continue`.
+ *
+ * When EVERY existing candidate is foreign, `path` is null and `foreignPath`
+ * names the first of them, so the caller reaches its existing foreign
+ * disposition (allow + `orchestrator.scope.foreign_session_ignored`) unchanged.
+ *
+ * `classify` is injected, not imported: importing the identity module here
+ * would add it to the import closure of every hook that reaches this file
+ * through the `hardening.mjs` barrel, while only the guards that stand down on
+ * a foreign manifest need it — and each of them already binds it. Pass
+ * `classifyManifestSession` from `session-identity/own-session.mjs`.
+ *
+ * COST: identical to `findScopeFile` when no manifest exists (≤4 `existsSync`).
+ * With one, one extra sync read + parse of that small file. The caller still
+ * reads the returned file itself and classifies THAT read, so a rebind between
+ * the two reads is judged at the same decision point as before.
+ *
+ * Sync. Never throws (unless `classify` does).
+ *
+ * @param {string} projectRoot absolute path to the project root
+ * @param {Set<string>} ownIds process-local own ids (`readProcessLocalSessionIds`)
+ * @param {(scope: object, ownIds: Set<string>) => { verdict: string }} classify
+ * @returns {{ path: string|null, foreignPath: string|null }}
+ */
+export function findOwnScopeFile(projectRoot, ownIds, classify) {
+  let foreignPath = null;
+  for (const dir of SCOPE_FILE_DIRS) {
+    const candidate = path.join(projectRoot, dir, 'wave-scope.json');
+    if (!existsSync(candidate)) continue;
+    let scope = {};
+    try {
+      const parsed = JSON.parse(readFileSync(candidate, 'utf8'));
+      if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) scope = parsed;
+    } catch {
+      // unreadable / corrupt → `{}` → no binding → 'unknown' → this candidate decides
+    }
+    if (classify(scope, ownIds).verdict !== 'foreign') return { path: candidate, foreignPath };
+    foreignPath ??= candidate;
+  }
+  return { path: null, foreignPath };
 }
 
 /**

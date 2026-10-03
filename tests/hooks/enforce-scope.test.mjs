@@ -2010,3 +2010,114 @@ describe('session root after entering a worktree (#1492)', { timeout: 20000 }, (
     expectAllow(result);
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1504 point 6 — a FOREIGN higher-precedence manifest must not hide our own
+// ---------------------------------------------------------------------------
+
+/** This session's own manifest: PEER_SCOPE's shape, bound to OWN-UUID-2222. */
+const OWN_SCOPE = { ...PEER_SCOPE, session_id: 'OWN-UUID-2222', semantic_session_id: 'main-2026-01-01-session-1' };
+
+/** Write `scope` as `<dir>/<stateDir>/wave-scope.json`. */
+async function writeManifest(dir, stateDir, scope) {
+  await fs.mkdir(path.join(dir, stateDir), { recursive: true });
+  await fs.writeFile(path.join(dir, stateDir, 'wave-scope.json'), JSON.stringify(scope));
+}
+
+describe('manifest precedence vs. ownership (#1504 point 6)', { timeout: 15000 }, () => {
+  it("ENFORCES this session's own .claude manifest when a peer's .pi manifest outranks it", async () => {
+    // Bug caught: Gate 3 took the FIRST existing manifest (.pi > … > .claude);
+    // the peer's `.pi` one read foreign, Gate 3b stood down, and our own
+    // `.claude/wave-scope.json` (allowedPaths: []) was never read.
+    const dir = await mkProjectTracked(OWN_SCOPE);
+    await writeManifest(dir, '.pi', PEER_SCOPE);
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectDeny(result, ['not in allowed paths']);
+    expect(await readEvents(dir)).toEqual([]);
+  });
+
+  it('still allows with ONE foreign_session_ignored event, naming the first candidate, when EVERY candidate is foreign', async () => {
+    // Bug caught: the all-foreign case must keep the pre-#1504 disposition.
+    const dir = await mkProjectTracked(PEER_SCOPE);
+    await writeManifest(dir, '.pi', { ...PEER_SCOPE, wave: 7 });
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md')),
+      env: { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' },
+    });
+    expectAllow(result);
+    const events = (await readEvents(dir))
+      .filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored');
+    expect(events).toHaveLength(1);
+    expect(events[0].manifest).toBe(path.join(await fs.realpath(dir), '.pi', 'wave-scope.json'));
+    expect(events[0].wave).toBe(7);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1504 point 3 — a session root relocated away from the wave's manifest
+// ---------------------------------------------------------------------------
+
+describe('session root relocated away from the wave manifest (#1504 point 3)', { timeout: 20000 }, () => {
+  const HIDDEN = 'orchestrator.scope.manifest_hidden_by_session_root';
+
+  async function gitInit(dir) {
+    const { execFileSync } = await import('node:child_process');
+    execFileSync('git', ['-C', dir, 'init', '-q']);
+  }
+
+  /** `<launch>/nested` — a git repo of its own, holding no manifest. */
+  async function mkNested(launch) {
+    const nested = path.join(launch, 'nested');
+    await fs.mkdir(nested, { recursive: true });
+    await gitInit(nested);
+    return nested;
+  }
+
+  const editIn = (cwd, file) => JSON.stringify({ tool_name: 'Edit', tool_input: { file_path: file }, cwd });
+  const OWN_ENV = { CLAUDE_CODE_SESSION_ID: 'OWN-UUID-2222' };
+
+  it("emits ONE event per wave when a nested repo hides this session's manifest — and still allows", async () => {
+    // Bug caught: Gate 3's no-manifest allow left no trace, so the revisit
+    // trigger `resolveSessionRoot` names ("an orchestrator.scope.* record")
+    // could never fire for an agent that cd'd into a nested repo.
+    const launch = await mkProjectTracked(OWN_SCOPE);
+    const nested = await mkNested(launch);
+    for (const name of ['a.txt', 'b.txt']) {
+      expectAllow(await runHook({ projectDir: launch, stdin: editIn(nested, path.join(nested, name)), env: OWN_ENV }));
+    }
+    const events = (await readEvents(launch)).filter((e) => e.event === HIDDEN);
+    expect(events).toHaveLength(1);
+    expect(events[0].hook).toBe('enforce-scope');
+    expect(events[0].wave).toBe(4);
+    expect(events[0].launch_root).toBe(await fs.realpath(launch));
+    expect(events[0].session_root).toBe(await fs.realpath(nested));
+    expect(events[0].file_path).toBe(path.join(nested, 'a.txt'));
+  });
+
+  it('stays silent on the ordinary no-manifest allow — no event, no marker', async () => {
+    // Bug caught: an event on EVERY no-manifest allow would fire on every Edit
+    // in every repo on the host (HR-101). Both shapes: the session root IS the
+    // launch dir, and a nested repo under a launch dir that has no wave.
+    const launch = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-1504-'));
+    tmpDirs.push(launch);
+    await gitInit(launch);
+    const nested = await mkNested(launch);
+    for (const cwd of [launch, nested]) {
+      expectAllow(await runHook({ projectDir: launch, stdin: editIn(cwd, path.join(cwd, 'x.txt')), env: OWN_ENV }));
+    }
+    expect((await readEvents(launch)).filter((e) => e.event === HIDDEN)).toEqual([]);
+    await expect(fs.stat(path.join(launch, '.orchestrator', 'tmp', 'scope-root-relocated'))).rejects.toThrow();
+  });
+
+  it("stays silent when the launch-root manifest is a PEER's — it hides nothing of ours", async () => {
+    const launch = await mkProjectTracked(PEER_SCOPE);
+    const nested = await mkNested(launch);
+    expectAllow(await runHook({ projectDir: launch, stdin: editIn(nested, path.join(nested, 'a.txt')), env: OWN_ENV }));
+    expect((await readEvents(launch)).filter((e) => e.event === HIDDEN)).toEqual([]);
+  });
+});

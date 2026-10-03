@@ -157,14 +157,20 @@ import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpat
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
 import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
-import { findScopeFile, pathMatchesPattern } from '../scripts/lib/hardening.mjs';
+import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
 // hooks/enforce-scope.mjs can read the same session clock without a hook->hook
 // import. Re-exported below, so this hook's public surface — and
 // tests/hooks/post-bash-write-verify.test.mjs, which imports the named export —
 // is unchanged. Two byte-identical copies of a clock is exactly the one-fact-two-
 // copies class this repo keeps paying for.
-import { sessionAgeMs, PEER_RECORD_PREFIX, isPeerRecordId, isScopeDeclarationPath } from '../scripts/lib/scope-gate.mjs';
+import {
+  sessionAgeMs,
+  PEER_RECORD_PREFIX,
+  isPeerRecordId,
+  isScopeDeclarationPath,
+  findOwnScopeFile,
+} from '../scripts/lib/scope-gate.mjs';
 // #1153 P1 — the same process-local ownership check hooks/enforce-scope.mjs
 // applies at Gate 3b. This hook reads the SAME working-copy `wave-scope.json`,
 // so without it a peer session's manifest drives this session's advisories.
@@ -902,7 +908,14 @@ async function main() {
   // G3 — no wave scope → nothing defines "outside". #938: if a previous call
   // RECORDED a scope state, the control file's disappearance is itself a
   // control-file change and gets one visible (non-alarming) notice.
-  const scopePath = findScopeFile(repoRoot);
+  //
+  // #1504 point 6 — the first manifest that is not provably a peer's, so a
+  // peer's higher-precedence manifest no longer hides this session's own one;
+  // only when every candidate is foreign does the first come back, and G3b
+  // below keeps its stand-down and its rebind notice unchanged.
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+  const located = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
+  const scopePath = located.path ?? located.foreignPath;
   if (!scopePath) {
     if (prevScopeState && prevScopeState.hash !== 'absent') {
       writeSnapshot(snapFile, {
@@ -926,7 +939,7 @@ async function main() {
   } catch {
     /* raw stays null (unreadable) or scope stays null (unparseable) */
   }
-  if (raw === null) return; // file vanished between findScopeFile and read
+  if (raw === null) return; // file vanished between findOwnScopeFile and read
 
   // The control-file identity of THIS call, computed BEFORE the G3b
   // stand-down (W4/F7). Ordering is the whole fix: G3b used to `return` above
@@ -967,7 +980,6 @@ async function main() {
   // CLI, Cursor today) the own-id set is empty, so this gate is permanently
   // `'unknown'` = full pre-#1153 behaviour there.
   {
-    const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
     const { verdict, manifestIds } = classifyManifestSession(scope ?? {}, ownIds);
     if (verdict === 'foreign') {
       // Observability only — one event per stand-down decision, awaited so the
