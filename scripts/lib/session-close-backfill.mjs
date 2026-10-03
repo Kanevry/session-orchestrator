@@ -395,8 +395,8 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
  * puts it back), so it DEFERS (`skipped-history-unread`). `missing-archive` —
  * pruned, its bytes gone — never resolves, so deferring would skip the candidate
  * on every run forever; the record is written instead, naming in `lostFields`
- * what the lost span may have held: `session_type` (the LAST `shape_resolved`
- * decides it) always, `completed_at` when the gap reaches past the latest found
+ * what the lost span may have held: `session_type` and `session_profile` (the
+ * LAST `shape_resolved` decides both) always, `completed_at` when the gap reaches past the latest found
  * record. An unknown kind defers (fail toward not writing a wrong record).
  *
  * Fail direction (BV-004): a gap missing either bound, or a session with no
@@ -405,6 +405,10 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
  * before #1512, its unread start listed in `_backfill_incomplete_fields`.
  * Likewise a gap that ate the session's START lies just before the earliest
  * found record and stays outside the window — same incomplete-start answer.
+ * Symmetrically a gap that starts AFTER the newest found record (it ate the
+ * session's END) is not counted either, so a `shape_resolved` or stop event
+ * lost there goes unnamed in `lostFields`; revisit if a backfilled record's
+ * `completed_at` is later contradicted by a recovered archive.
  * Ceiling: an `unindexed-archive` nobody renames back defers its candidate on
  * every run, visibly. Revisit if tombstones without `first_ts`/`last_ts` still
  * appear in ledgers, or if `skipped-history-unread` persists across many runs.
@@ -433,6 +437,7 @@ function windowGapVerdict(gaps, records) {
     if (!(first <= hi && last >= lo)) continue;
     if (g.kind !== 'missing-archive') return { defer: true, lostFields: [] };
     lost.add('session_type');
+    lost.add('session_profile'); // same latest-wins `shape_resolved` record
     if (last > hi) lost.add('completed_at');
   }
   return { defer: false, lostFields: [...lost] };

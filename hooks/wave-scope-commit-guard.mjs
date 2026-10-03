@@ -317,38 +317,33 @@ async function main() {
   // the only process-local identity.
   const ownIds = new Set(readProcessLocalSessionIds());
 
-  // #1511 point d — read the manifest at the SESSION root the scope guards
-  // resolve (`resolveSessionRoot`, enforce-scope.mjs), not at the repo root: a
-  // session launched in a repo SUBDIRECTORY keeps its manifest there, so the
-  // repo root held none and sub-mode B never ran for it. git runs this hook at
-  // the worktree top level and the committing session's env (the launch dir) is
-  // inherited, so the toplevel stands in for the payload `cwd` the Edit/Write
-  // guards get. Only a root AT or INSIDE the repo is adopted: the one rung that
-  // answers above it (a harness `agent-<hex>` worktree lifted to its launch
-  // checkout) would judge this repo's staged paths against another tree's
-  // manifest — that case keeps the repo root, as before.
+  // #1511 point d — ALSO read the manifest at the SESSION root the scope guards
+  // resolve (`resolveSessionRoot`, enforce-scope.mjs): a session launched in a
+  // repo SUBDIRECTORY keeps its manifest there, so the repo root held none and
+  // sub-mode B never ran for it. git runs this hook at the worktree top level
+  // and the committing session's env (the launch dir) is inherited, so the
+  // toplevel stands in for the payload `cwd` the Edit/Write guards get. Only a
+  // root STRICTLY inside the repo is adopted: the one rung that answers above it
+  // (a harness `agent-<hex>` worktree lifted to its launch checkout) would judge
+  // this repo's staged paths against another tree's manifest.
   //
-  // When the session root holds no own manifest, the repo-root manifest is read
-  // as before #1511 d, with repo-relative paths — adopting the subdirectory must
-  // not switch off a repo-root wave that governed this commit until then.
+  // The repo-root manifest is ALWAYS judged exactly as before #1511 d, and the
+  // subdirectory manifest is judged IN ADDITION, each against its own path
+  // mapping; either one blocking blocks. So the verdict is never laxer than the
+  // repo-root-only guard it extends — choosing ONE of the two manifests let an
+  // unbound or `enforcement: off` subdirectory manifest silence a repo-root wave
+  // that blocked the same commit (second review, MED-1).
   const subdir = subdirSessionRoot(repoRoot);
-  let sessionRoot = subdir?.sessionRoot ?? repoRoot;
-  let scopePathOf = subdir === null
-    ? (f) => f
-    : (f) => {
-      const rel = relative(subdir.sessionRoot, join(subdir.realRepoRoot, f));
-      return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? null : rel;
-    };
-  let located = findOwnScopeFile(sessionRoot, ownIds, classifyManifestSession);
-  if (subdir !== null && located.path === null) {
-    const atRepoRoot = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
-    if (atRepoRoot.path !== null || (located.foreignPath === null && atRepoRoot.foreignPath !== null)) {
-      located = atRepoRoot;
-      sessionRoot = repoRoot;
-      scopePathOf = (f) => f;
-    }
+  const judgements = [{ root: repoRoot, scopePathOf: (f) => f }];
+  if (subdir !== null) {
+    judgements.push({
+      root: subdir.sessionRoot,
+      scopePathOf: (f) => {
+        const rel = relative(subdir.sessionRoot, join(subdir.realRepoRoot, f));
+        return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? null : rel;
+      },
+    });
   }
-  const scopePath = located.path ?? located.foreignPath;
   const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');
 
   // -------------------------------------------------------------------------
@@ -358,7 +353,11 @@ async function main() {
   const stagedOutput = execSync('git diff --cached --name-only', { encoding: 'utf8' });
   const stagedFiles = stagedOutput.split('\n').filter(Boolean);
 
-  if (scopePath) {
+  let blocked = false;
+  for (const { root, scopePathOf } of judgements) {
+    const located = findOwnScopeFile(root, ownIds, classifyManifestSession);
+    const scopePath = located.path ?? located.foreignPath;
+    if (!scopePath) continue;
     let scope;
     try {
       scope = JSON.parse(readFileSync(scopePath, 'utf8'));
@@ -374,11 +373,12 @@ async function main() {
       scopeRel: relative(repoRoot, scopePath) || scopePath,
       ownIds,
       scopeMtimeMs: mtimeMsOf(scopePath),
-      sessionAge: sessionAgeMs(sessionRoot),
+      sessionAge: sessionAgeMs(root),
     });
     for (const line of verdict.lines) process.stderr.write(`${line}\n`);
-    if (verdict.action === 'block') process.exit(1);
+    if (verdict.action === 'block') blocked = true;
   }
+  if (blocked) process.exit(1);
 
   // -------------------------------------------------------------------------
   // Sub-mode C — cross-agent staging-fence reconciliation (issue #552)

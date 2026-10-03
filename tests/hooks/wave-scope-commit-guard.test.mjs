@@ -336,6 +336,31 @@ describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeou
     expect(result.stderr).toContain('other/evil.mjs');
   });
 
+  // BUG (second review, MED-1): the repo-root manifest was consulted only when
+  // the subdirectory held no own manifest, so an unbound or `enforcement: off`
+  // subdirectory manifest silenced a repo-root wave that blocked the commit
+  // before #1511 d. Invariant: never laxer than the repo-root-only guard
+  // (a9c6f98a) — `old` is that guard's exit code for the same cell.
+  const OWN_ROOT = { session_id: 'me', allowedPaths: ['pkg/src/ok.mjs'] };
+  it.each([
+    ['unbound+off', { allowedPaths: ['x'], enforcement: 'off' }, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['unbound+off', { allowedPaths: ['x'], enforcement: 'off' }, { allowedPaths: ['src/'] }, ['other/evil.mjs'], 1],
+    ['own', { session_id: 'me', allowedPaths: ['src/ok.mjs'] }, OWN_ROOT, ['pkg/src/ok.mjs'], 0],
+    ['own', { session_id: 'me', allowedPaths: ['src/ok.mjs'] }, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['foreign', { session_id: 'peer', allowedPaths: ['src/ok.mjs'] }, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['absent', null, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['absent', null, OWN_ROOT, ['pkg/src/ok.mjs'], 0],
+  ])('session-root %s manifest vs repo-root manifest: exit never below the repo-root-only guard (%#)', async (_label, sub, root, staged, old) => {
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await fs.mkdir(pkg, { recursive: true });
+    if (sub !== null) await writeScope(pkg, JSON.stringify(sub));
+    await writeScope(dir, JSON.stringify(root));
+    for (const f of staged) await stageFile(dir, f);
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg, CLAUDE_CODE_SESSION_ID: 'me' });
+    expect(result.code).toBe(old);
+  });
+
   it('blocks a staged path OUTSIDE the subdirectory session root even when a glob would match its ../ form', async () => {
     // BUG: `other/evil.mjs` became `../other/evil.mjs`, which `**/*.mjs`
     // matches — a write enforce-scope denies (REQ-04) committed unchecked.

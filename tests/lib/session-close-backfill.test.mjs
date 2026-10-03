@@ -753,6 +753,7 @@ describe('backfillAbandonedSession — a rotated-ledger scan the deadline cut sh
     expect(res.action).toBe('backfilled');
     expect(res.record.started_at).toBe(STARTED_AT);
     expect(res.record._backfill_incomplete_fields).toContain('session_type');
+    expect(res.record._backfill_incomplete_fields).toContain('session_profile');
   });
 
   it('defers the candidate when an UNINDEXED archive falls inside its window (#1512)', async () => {
