@@ -303,6 +303,96 @@ describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeou
     expect(result.code).toBe(0);
     expect(result.stderr).toBe('');
   });
+
+  it('reads the manifest at the session root when the session was launched in a repo SUBDIRECTORY (#1511 point d)', async () => {
+    // BUG: the guard read only `<toplevel>/.claude/wave-scope.json`, while
+    // enforce-scope reads at `resolveSessionRoot` — the launch subdirectory. The
+    // repo root holds no manifest, so an out-of-scope staged path passed. The
+    // in-scope path pins the other half: manifest paths are relative to the
+    // session root, so matching the repo-relative `pkg/src/a.mjs` would block it.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/a.mjs'] }));
+    await stageFile(dir, 'pkg/src/a.mjs');
+    const inScope = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(inScope.code).toBe(0);
+
+    await stageFile(dir, 'pkg/src/b.mjs');
+    const outOfScope = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(outOfScope.code).toBe(1);
+    expect(outOfScope.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*pkg\/src\/b\.mjs/);
+  });
+
+  it('still reads the REPO-ROOT manifest when a subdirectory session root holds none (#1511 d regression)', async () => {
+    // BUG: the subdirectory mode replaced the repo-root lookup, so a wave whose
+    // manifest sits at the toplevel stopped governing a commit made from a
+    // session launched in `pkg/` — the out-of-scope path passed with exit 0.
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ allowedPaths: ['src/'] }));
+    await fs.mkdir(path.join(dir, 'pkg'), { recursive: true });
+    await stageFile(dir, 'other/evil.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: path.join(dir, 'pkg') });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('other/evil.mjs');
+  });
+
+  // BUG (second review, MED-1): the repo-root manifest was consulted only when
+  // the subdirectory held no own manifest, so an unbound or `enforcement: off`
+  // subdirectory manifest silenced a repo-root wave that blocked the commit
+  // before #1511 d. Invariant: never laxer than the repo-root-only guard
+  // (a9c6f98a) — `old` is that guard's exit code for the same cell.
+  const OWN_ROOT = { session_id: 'me', allowedPaths: ['pkg/src/ok.mjs'] };
+  it.each([
+    ['unbound+off', { allowedPaths: ['x'], enforcement: 'off' }, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['unbound+off', { allowedPaths: ['x'], enforcement: 'off' }, { allowedPaths: ['src/'] }, ['other/evil.mjs'], 1],
+    ['own', { session_id: 'me', allowedPaths: ['src/ok.mjs'] }, OWN_ROOT, ['pkg/src/ok.mjs'], 0],
+    ['own', { session_id: 'me', allowedPaths: ['src/ok.mjs'] }, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['foreign', { session_id: 'peer', allowedPaths: ['src/ok.mjs'] }, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['absent', null, OWN_ROOT, ['other/evil.mjs'], 1],
+    ['absent', null, OWN_ROOT, ['pkg/src/ok.mjs'], 0],
+  ])('session-root %s manifest vs repo-root manifest: exit never below the repo-root-only guard (%#)', async (_label, sub, root, staged, old) => {
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await fs.mkdir(pkg, { recursive: true });
+    if (sub !== null) await writeScope(pkg, JSON.stringify(sub));
+    await writeScope(dir, JSON.stringify(root));
+    for (const f of staged) await stageFile(dir, f);
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg, CLAUDE_CODE_SESSION_ID: 'me' });
+    expect(result.code).toBe(old);
+  });
+
+  it('blocks a staged path OUTSIDE the subdirectory session root even when a glob would match its ../ form', async () => {
+    // BUG: `other/evil.mjs` became `../other/evil.mjs`, which `**/*.mjs`
+    // matches — a write enforce-scope denies (REQ-04) committed unchecked.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['**/*.mjs'] }));
+    await stageFile(dir, 'pkg/src/ok.mjs');
+    await stageFile(dir, 'other/evil.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('other/evil.mjs');
+    expect(result.stderr).not.toContain('pkg/src/ok.mjs');
+  });
+
+  it('adopts a subdirectory session root named in a different letter case on a case-insensitive FS', async () => {
+    // BUG: plain realpathSync keeps the caller's case, so a case-different
+    // CLAUDE_PROJECT_DIR relativised to `../..` against the git toplevel and the
+    // subdirectory mode silently stood down. Only reproducible where the FS
+    // folds case (APFS default); elsewhere the case-different path does not exist.
+    const dir = await mkRepoTracked();
+    const pkg = path.join(dir, 'pkg');
+    const shouted = path.join(path.dirname(dir), path.basename(dir).toUpperCase(), 'pkg');
+    if (shouted === pkg) return;
+    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/a.mjs'] }));
+    let caseInsensitive = true;
+    try { await fs.access(shouted); } catch { caseInsensitive = false; }
+    if (!caseInsensitive) return;
+    await stageFile(dir, 'pkg/src/b.mjs');
+    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: shouted });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain('pkg/src/b.mjs');
+  });
 });
 
 // ---------------------------------------------------------------------------

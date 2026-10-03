@@ -1295,10 +1295,17 @@ function normalizeAgentScopes(agentScopes) {
  * NAMED CEILING: `..` segments are left alone — `a/../b` is not provably `b`
  * when `a` is a glob segment. Revisit if a plan ever declares a `..` entry.
  *
+ * EXPORTED as the ONE spelling rule (#1510 g): `hooks/pre-task-scope-disjoint.mjs`
+ * applies it (late-bound) before its own dedupe and dir-promotion, instead of a
+ * hand-copied twin that had already drifted (`a/././b` kept a `./` segment).
+ * Whitespace is NOT trimmed here: no writer of a scope entry produces padding
+ * (the hook's prose cleaner trims before this rule runs; sidecar entries are
+ * JSON strings the plan writes), and trimming would rewrite a declared path.
+ *
  * @param {string} entry - a non-empty scope entry
  * @returns {string}
  */
-function scopeEntrySpelling(entry) {
+export function scopeEntrySpelling(entry) {
   const spelled = entry.replace(/\/{2,}/g, '/').replace(/(^|\/)(?:\.\/)+/g, '$1');
   // `./` alone would spell as '' — keep the entry rather than invent a meaning.
   return spelled.length > 0 ? spelled : entry;

@@ -408,14 +408,11 @@ export { PEER_RECORD_PREFIX };
  * @param {unknown} wave the manifest's `wave` field
  * @returns {Array<{ id: string, files: string[] }>}
  */
-export function readPeerScopeRecords(stateDir, wave) {
-  if (typeof stateDir !== 'string' || stateDir === '') return [];
-  if (typeof wave !== 'number' || !Number.isInteger(wave) || wave <= 0) return [];
+export function readPeerScopeRecords(stateDir, wave, raw = readPeerSidecarRaw(stateDir, wave)) {
+  if (typeof raw !== 'string') return [];
   let parsed;
   try {
-    parsed = JSON.parse(
-      readFileSync(path.join(stateDir, 'filescopes', `wave-${wave}.scopes.json`), 'utf8'),
-    );
+    parsed = JSON.parse(raw);
   } catch {
     return [];
   }
@@ -427,6 +424,100 @@ export function readPeerScopeRecords(stateDir, wave) {
         && Array.isArray(r.files),
     )
     .map((r) => ({ id: r.id, files: r.files.filter((f) => typeof f === 'string') }));
+}
+
+/**
+ * The raw bytes of a wave's aggregate scope sidecar, or null (absent,
+ * unreadable, or no usable state dir / wave). Read ONCE per call so the bytes
+ * that are hashed ({@link bindPeerSidecar}) are the bytes that are parsed.
+ *
+ * @param {string} stateDir
+ * @param {unknown} wave
+ * @returns {string|null}
+ */
+export function readPeerSidecarRaw(stateDir, wave) {
+  if (typeof stateDir !== 'string' || stateDir === '') return null;
+  if (typeof wave !== 'number' || !Number.isInteger(wave) || wave <= 0) return null;
+  try {
+    return readFileSync(path.join(stateDir, 'filescopes', `wave-${wave}.scopes.json`), 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Bind the aggregate sidecar's content to the manifest it was written for
+ * (#1504 point 5). The sidecar carried no integrity anchor: a `peer-session-*`
+ * record appended AFTER dispatch downgraded matching violations to a peer-write
+ * notice, because the control hash covers only `wave-scope.json`.
+ *
+ * The anchor is the trusted snapshot's `scopeState` — the one record this hook
+ * already treats as control state. The coordinator's order is materialize →
+ * assert-disjoint → union → write manifest, so the sidecar is final by the time
+ * the manifest is; the hash is therefore (re)bound whenever the MANIFEST hash
+ * changes (or no binding exists yet), and must hold while the manifest stands.
+ * No coordinator step and no new field: a materializer-written digest would sit
+ * in a file the same actor can rewrite, which binds nothing.
+ *
+ *   manifest changed / no prior binding  → bind the current hash, honour records
+ *   same manifest, same sidecar hash     → honour records
+ *   same manifest, sidecar now absent    → nothing to honour; keep the binding so
+ *                                          a re-created sidecar still mismatches
+ *   same manifest, DIFFERENT sidecar     → `tampered`: honour NO peer record
+ *                                          (fail toward reporting) and keep the
+ *                                          ORIGINAL binding until the manifest is
+ *                                          rewritten; the notice fires ONCE per
+ *                                          mismatching sidecar hash (`notify`)
+ *
+ * Once, not per call: a legitimate mid-wave Peer-Scope-Union rewrites the sidecar
+ * while `--union` (which excludes peer records) leaves the manifest bytes
+ * unchanged, so `tampered` holds for the rest of the wave. Repeating the ⚠ on
+ * every Bash call would be an always-on signal (HR-101). The marker
+ * `sidecarNotified` is persisted in the trusted snapshot by the caller only on
+ * the path that emits; a further change of the sidecar (a new hash) notifies again.
+ *
+ * A snapshot written before this field existed has no `sidecarHash` and binds
+ * silently on its first call — the same one-time adoption the control hash had.
+ *
+ * NAMED CEILING: a sidecar changed BEFORE this hook first observes the manifest
+ * (no trusted snapshot yet) is bound as found; so is one rewritten together with
+ * the manifest (that path already raises the control-file notice). A forged
+ * COMPLETE snapshot record is believed — `trustedScopeState`'s residual.
+ *
+ * @param {{ hash: string, sidecarHash?: unknown }|null} prevScopeState trusted prior state
+ * @param {string} manifestHash this call's manifest hash
+ * @param {string} sidecarHash this call's sidecar hash, or 'absent'
+ * @returns {{ sidecarHash: string, tampered: boolean, notify: boolean, sidecarNotified?: string }}
+ *   the hash to persist, the verdict, whether to emit the mismatch notice, and
+ *   (when tampered) the marker to persist once it has been emitted
+ */
+export function bindPeerSidecar(prevScopeState, manifestHash, sidecarHash) {
+  const bound = prevScopeState?.sidecarHash;
+  if (!prevScopeState || prevScopeState.hash !== manifestHash || typeof bound !== 'string') {
+    return { sidecarHash, tampered: false, notify: false };
+  }
+  if (bound === sidecarHash || sidecarHash === 'absent') {
+    return { sidecarHash: bound, tampered: false, notify: false };
+  }
+  return {
+    sidecarHash: bound,
+    tampered: true,
+    notify: prevScopeState.sidecarNotified !== sidecarHash,
+    sidecarNotified: sidecarHash,
+  };
+}
+
+/**
+ * Render the sidecar-mismatch notice (#1504 point 5) — an alarm (⚠), because the
+ * consequence is that agreed peer writes now report as violations.
+ *
+ * @param {string} relSidecarPath
+ * @returns {string}
+ */
+export function formatSidecarMismatchNotice(relSidecarPath) {
+  return `bash-write-verify: ${relSidecarPath} changed since wave-scope.json was written — `
+    + 'its peer-session-* records are NOT honoured (writes under them report as violations) '
+    + 'until the manifest is rewritten (#1504 point 5).';
 }
 
 /**
@@ -960,6 +1051,16 @@ async function main() {
       : 'unparseable',
     gateOn: scope ? scope?.gates?.['bash-write-verify'] !== false : true,
   };
+  // #1504 point 5 — bind the aggregate sidecar to this manifest (see
+  // `bindPeerSidecar`). Part of `currentScopeState` so EVERY snapshot write
+  // below, stand-down paths included, carries the binding forward.
+  const sidecarRaw = readPeerSidecarRaw(path.dirname(scopePath), scope?.wave);
+  const sidecarBinding = bindPeerSidecar(
+    prevScopeState,
+    currentScopeState.hash,
+    sidecarRaw === null ? 'absent' : createHash('sha1').update(sidecarRaw).digest('hex').slice(0, 16),
+  );
+  currentScopeState.sidecarHash = sidecarBinding.sidecarHash;
 
   // G3b (#1153 P1) — is this manifest even MINE?
   //
@@ -1153,6 +1254,9 @@ async function main() {
     },
   });
 
+  // The mismatch notice below is emitted on this path only, so its once-marker
+  // is persisted here and nowhere else (see `bindPeerSidecar`).
+  if (sidecarBinding.tampered) currentScopeState.sidecarNotified = sidecarBinding.sidecarNotified;
   writeSnapshot(snapFile, { ...nextSnapshot, scopeState: currentScopeState });
 
   const messages = [];
@@ -1172,7 +1276,17 @@ async function main() {
   // reachable. Such a write is agreed, not a bypass. Split it out of the violation report and
   // name it, so the peer's file is countable without being an alarm. Sidecar
   // absent ⇒ `peerRecords` is empty ⇒ every path stays a violation, unchanged.
-  const peerRecords = readPeerScopeRecords(path.dirname(scopePath), scope.wave);
+  // #1504 point 5 — a sidecar changed under a standing manifest is untrusted:
+  // no peer record is honoured, and the mismatch is named.
+  const peerRecords = sidecarBinding.tampered
+    ? []
+    : readPeerScopeRecords(path.dirname(scopePath), scope.wave, sidecarRaw);
+  if (sidecarBinding.notify) {
+    messages.push(formatSidecarMismatchNotice(
+      path.relative(repoRoot, path.join(path.dirname(scopePath), 'filescopes', `wave-${scope.wave}.scopes.json`)),
+    ));
+    warn = true;
+  }
   const violations = [];
   for (const relPath of report) {
     const peerId = peerRecordFor(relPath, peerRecords);

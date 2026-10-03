@@ -46,14 +46,14 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20260910">
+<link rel="stylesheet" href="/assets/site.css?v=20261003">
 </head>
 <body class="guide-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.5.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.6.0</span></span></a>
     <nav class="nav" aria-label="Guide sections">
       <a href="#install">Install</a>
       <a href="#first-session">First session</a>
@@ -231,7 +231,7 @@ $session-orchestrator:close</pre>
         </li>
         <li>
           <h3><code>/go</code>: execute the plan in checked waves</h3>
-          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow checks results between waves and requires the full configured test, typecheck and lint gate before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave; deep uses five and the ultradeep profile uses seven.</p>
+          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow runs your tests and typecheck after each implementation wave and requires the full configured test, typecheck and lint gate after the Quality wave and before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave; deep uses five and the ultradeep profile uses seven.</p>
         </li>
         <li>
           <h3><code>/close</code>: verify, commit, and file what is left</h3>
@@ -295,7 +295,7 @@ enforcement: warn</pre>
       <p class="lede">Guard behaviour depends on your coding tool. Claude Code runs the guard hooks directly; Cursor and Pi use bridges with documented limits. On Codex, destructive-command and file-scope rules are instructions only. Scope edits are denied only when a compatible hook is active and enforcement is strict.</p>
 
       <h3>The destructive-command guard</h3>
-      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>15 rules: 11 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. The plugin does not enforce this guard on Codex. The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, and protected-file truncation. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
+      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>16 rules: 12 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. The plugin does not enforce this guard on Codex. The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, truncating protected files or the harness memory, and deleting the session ledgers. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
       <p>The reason it is that broad: several sessions can share one working copy, and a stash or a reset takes work from a neighbour who has no way to find it again.</p>
 
       <div class="card">

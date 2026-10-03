@@ -348,8 +348,11 @@ export const REQUIRED_EVENTS_WINDOW_DAYS = null;
  * @param {string} eventsPath
  * @param {string} id
  * @param {number|null} deadlineMs — epoch ms the scan must end by; `null` = unbounded
- * @returns {Array<object>|null} `null` when the deadline had passed before the
- *   scan or cut it short — a partial history is never handed on as a whole one.
+ * @returns {{records: Array<object>, lostFields: string[]}|null} `null` when the
+ *   deadline had passed before the scan or cut it short, or a recoverable cut
+ *   lies in the session's window — a partial history is never handed on as a
+ *   whole one. `lostFields` names the record fields a PERMANENTLY pruned archive
+ *   inside the window may have changed (see {@link windowGapVerdict}).
  */
 function recordsMentioning(eventsPath, id, deadlineMs) {
   let budgetMs;
@@ -358,7 +361,7 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
     if (!(budgetMs > 0)) return null;
   }
   const newestFirst = [];
-  const { truncated, unreadable } = scanEventsBackwards({
+  const { truncated, unreadable, gaps } = scanEventsBackwards({
     filePath: eventsPath,
     filter: id,
     budgetMs,
@@ -371,13 +374,73 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
   // deadline does — its records are simply absent — so it defers the candidate
   // the same way. Ceiling (BV-004): a PERMANENTLY unreadable archive defers its
   // candidates on every run (`skipped-history-unread`, visible, never a record
-  // dated NOW). `gaps` (pruned/unindexed archives) are deliberately NOT treated
-  // so: the walk reports every gap of the whole ledger, mostly far older than
-  // the candidate, and deferring on any of them would skip the candidate
-  // forever — telling a gap inside the session's window apart needs its
-  // first_ts/last_ts against the session's range, a follow-up.
-  const cut = truncated || (Array.isArray(unreadable) && unreadable.length > 0);
-  return cut ? null : newestFirst.reverse();
+  // dated NOW).
+  if (truncated || (Array.isArray(unreadable) && unreadable.length > 0)) return null;
+  const verdict = windowGapVerdict(gaps, newestFirst);
+  if (verdict.defer) return null;
+  return { records: newestFirst.reverse(), lostFields: verdict.lostFields };
+}
+
+/**
+ * What a pruned/unindexed archive (`gaps` of {@link scanEventsBackwards}) means
+ * for the session whose found records are `records` (#1512).
+ *
+ * The walk reports every gap of the WHOLE ledger, mostly far older than the
+ * candidate; deferring on any of them would skip the candidate forever. So a
+ * gap counts only when its `[first_ts, last_ts]` intersects the session's
+ * window `[earliest, latest]` timestamp of the records the walk found.
+ *
+ * A counted gap's KIND then decides. `unindexed-archive` — the file still sits
+ * in `_archive/` under a name the walk does not index — can resolve (a rename
+ * puts it back), so it DEFERS (`skipped-history-unread`). `missing-archive` —
+ * pruned, its bytes gone — never resolves, so deferring would skip the candidate
+ * on every run forever; the record is written instead, naming in `lostFields`
+ * what the lost span may have held: `session_type` and `session_profile` (the
+ * LAST `shape_resolved` decides both) always, `completed_at` when the gap reaches past the latest found
+ * record. An unknown kind defers (fail toward not writing a wrong record).
+ *
+ * Fail direction (BV-004): a gap missing either bound, or a session with no
+ * dated record, is NOT counted — an unbounded gap would intersect every later
+ * session and recreate the defer-forever bug. Such a candidate is written as
+ * before #1512, its unread start listed in `_backfill_incomplete_fields`.
+ * Likewise a gap that ate the session's START lies just before the earliest
+ * found record and stays outside the window — same incomplete-start answer.
+ * Symmetrically a gap that starts AFTER the newest found record (it ate the
+ * session's END) is not counted either, so a `shape_resolved` or stop event
+ * lost there goes unnamed in `lostFields`; revisit if a backfilled record's
+ * `completed_at` is later contradicted by a recovered archive.
+ * Ceiling: an `unindexed-archive` nobody renames back defers its candidate on
+ * every run, visibly. Revisit if tombstones without `first_ts`/`last_ts` still
+ * appear in ledgers, or if `skipped-history-unread` persists across many runs.
+ *
+ * @param {Array<{kind?: string, first_ts?: string|null, last_ts?: string|null}>|undefined} gaps
+ * @param {Array<object>} records
+ * @returns {{defer: boolean, lostFields: string[]}}
+ */
+function windowGapVerdict(gaps, records) {
+  const none = { defer: false, lostFields: [] };
+  if (!Array.isArray(gaps) || gaps.length === 0) return none;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const r of records) {
+    const ts = typeof r?.timestamp === 'string' ? Date.parse(r.timestamp) : NaN;
+    if (Number.isNaN(ts)) continue;
+    lo = Math.min(lo, ts);
+    hi = Math.max(hi, ts);
+  }
+  if (lo > hi) return none;
+  const lost = new Set();
+  for (const g of gaps) {
+    const first = typeof g?.first_ts === 'string' ? Date.parse(g.first_ts) : NaN;
+    const last = typeof g?.last_ts === 'string' ? Date.parse(g.last_ts) : NaN;
+    if (Number.isNaN(first) || Number.isNaN(last)) continue;
+    if (!(first <= hi && last >= lo)) continue;
+    if (g.kind !== 'missing-archive') return { defer: true, lostFields: [] };
+    lost.add('session_type');
+    lost.add('session_profile'); // same latest-wins `shape_resolved` record
+    if (last > hi) lost.add('completed_at');
+  }
+  return { defer: false, lostFields: [...lost] };
 }
 
 /**
@@ -414,19 +477,21 @@ function recordsMentioning(eventsPath, id, deadlineMs) {
  * @param {string} eventsPath
  * @param {{ sessionId: string|null, semanticSessionId: string|null }} ids
  * @param {number|null} [deadlineMs=null] — shared scan deadline (epoch ms); `null` = unbounded
- * @returns {ReturnType<typeof collectSessionEvents> & { historyUnread?: true }}
+ * @returns {ReturnType<typeof collectSessionEvents> & { historyUnread?: true, historyLostFields?: string[] }}
  */
 function gatherSessionEvents(readFileSync, eventsPath, ids, deadlineMs = null) {
   const gathered = collectSessionEvents(readJsonlSafe(readFileSync, eventsPath), ids);
   if (gathered.startedAt !== null) return gathered;
   try {
     let uuid = isUuid(ids.sessionId) ? ids.sessionId : null;
+    let bridgeLost = [];
     if (uuid === null) {
       const label = ids.semanticSessionId || ids.sessionId;
       if (!label) return gathered;
       const bridge = recordsMentioning(eventsPath, label, deadlineMs);
       if (bridge === null) return { ...gathered, historyUnread: true };
-      const bridged = collectSessionEvents(bridge, ids).uuids;
+      bridgeLost = bridge.lostFields;
+      const bridged = collectSessionEvents(bridge.records, ids).uuids;
       if (bridged.size !== 1) return gathered;
       [uuid] = bridged;
     }
@@ -434,7 +499,12 @@ function gatherSessionEvents(readFileSync, eventsPath, ids, deadlineMs = null) {
     if (history === null) return { ...gathered, historyUnread: true };
     // Empty only when the scan found no source at all — e.g. a reader seam the
     // filesystem does not back; the active answer stands.
-    return history.length > 0 ? collectSessionEvents(history, ids) : gathered;
+    if (history.records.length === 0) return gathered;
+    const collected = collectSessionEvents(history.records, ids);
+    // #1512: a permanently pruned archive inside the window — written, with
+    // what it may have held named instead of deferring forever.
+    const lostFields = [...new Set([...bridgeLost, ...history.lostFields])];
+    return lostFields.length > 0 ? { ...collected, historyLostFields: lostFields } : collected;
   } catch {
     return gathered;
   }
@@ -559,6 +629,9 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
   // no terminal event was found, so mark it incomplete so downstream duration
   // consumers can tell an events-attested end apart from an estimate (#914 R1).
   if (completedEstimated) incomplete.push('completed_at');
+  // #1512: fields a permanently pruned archive inside the session window may
+  // have held (`windowGapVerdict`), named rather than deferring forever.
+  for (const f of gathered.historyLostFields ?? []) if (!incomplete.includes(f)) incomplete.push(f);
 
   const record = {
     session_id: recordId,

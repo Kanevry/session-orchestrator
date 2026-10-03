@@ -354,6 +354,13 @@ async function main() {
     ...(waveSignal !== null ? { wave_signal: waveSignal } : {}),
   };
 
+  // Two roots, by writer (#1511 point a). `current-session.json` and
+  // `session.lock` stay at the LAUNCH dir: on-session-start.mjs writes both at
+  // `resolveProjectDir()`, and a reader elsewhere finds no record. Everything
+  // about the WAVE — its manifest, its start sha, the files it changed — is read
+  // at the SESSION root: after EnterWorktree the launch dir is a different
+  // checkout, whose HEAD and working tree say nothing about this wave.
+  const sessionRoot = resolveSessionRoot(input?.cwd);
   const sessionFile = path.join(getProjectDir(), '.orchestrator', 'current-session.json');
 
   const lastBatchResult = await atomicMutateJson(sessionFile, {}, (current) => ({
@@ -462,7 +469,7 @@ async function main() {
     // last_wave_completed === last_wave and stays silent.
     try {
       const wave = await resolveWaveNumber(
-        resolveSessionRoot(input?.cwd),
+        sessionRoot,
         new Set(readProcessLocalSessionIds({ hookInput: input })),
       );
       if (wave > 0) {
@@ -495,7 +502,7 @@ async function main() {
           if (lastWave > lastWaveCompleted) {
             // #980 — measure the closing wave's diff size BEFORE the new wave's
             // start sha is persisted below. Unmeasurable → both keys omitted.
-            const filesChanged = countFilesChangedSince(getProjectDir(), waveStartSha);
+            const filesChanged = countFilesChangedSince(sessionRoot, waveStartSha);
             await emitEvent('orchestrator.wave.completed', {
               wave_number: lastWave,
               ...(filesChanged !== null
@@ -537,7 +544,7 @@ async function main() {
             // #980 — the OPEN half: stamp the sha this new wave starts from.
             // Written as null (not omitted) when git is unreadable, so the
             // PREVIOUS wave's sha can never linger and inflate the next count.
-            const startSha = readHeadSha(getProjectDir());
+            const startSha = readHeadSha(sessionRoot);
             const markResult = await atomicMutateJson(sessionFile, {}, (current) => ({
               ...current,
               wave_start_sha: startSha,
@@ -593,7 +600,7 @@ async function main() {
   // Rooted at the SESSION root (#1492 point 2, #1504 point 4): the quality gate
   // registers its children in the ledger of the tree it runs in, which for an
   // entered worktree is the worktree — the launch dir holds none of them.
-  await maybeTriggerOrphanScan({ projectDir: resolveSessionRoot(input?.cwd) });
+  await maybeTriggerOrphanScan({ projectDir: sessionRoot });
 }
 
 // Entry guard (#1393): run only as the node script the harness execs — a bare
