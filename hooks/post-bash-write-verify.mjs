@@ -513,11 +513,9 @@ export function snapshotPathFor(repoRoot) {
  * @param {number|null} [args.scopeMtimeMs] mtime (ms) of wave-scope.json, or null
  * @param {(relPath: string) => (number|null)} [args.mtimeMs] mtime lookup for a
  *   dirty path; null = not attributable (deleted path / stat failure)
- * @param {string[]} [args.foreignScopeRelPaths] provably foreign manifests,
- *   repo-relative; only these and their sibling filescopes are peer control state
  * @returns {{ report: string[], nextSnapshot: { signature: string, paths: string[] }, rebaselined: boolean }}
  */
-export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null, scopeRelPath = null, foreignScopeRelPaths = [] }) {
+export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null, scopeRelPath = null }) {
   const outOfScope = dirtyPaths
     .filter((p) => !isIgnoredPath(p))
     // A `../…` path (outside the project root, see rebaseToSessionRoot) is never
@@ -535,11 +533,7 @@ export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, s
     // wave territory either — excluded the same way, not via
     // IGNORED_PATH_PATTERNS, so the exemption follows THIS manifest's state dir
     // instead of granting all four harness dirs (#1027 Pkt 5).
-    .filter((p) => !isScopeDeclarationPath(p, scopeRelPath))
-    // Proven peer manifests and their declarations belong to another session.
-    // Unknown/corrupt manifests get no exemption, nor does other harness dirt.
-    .filter((p) => !foreignScopeRelPaths.some((scopeRel) =>
-      p === scopeRel || isScopeDeclarationPath(p, scopeRel)));
+    .filter((p) => !isScopeDeclarationPath(p, scopeRelPath));
 
   const rebaselined = !snapshot || snapshot.signature !== signature;
   const seen = rebaselined || !Array.isArray(snapshot?.paths) ? new Set() : new Set(snapshot.paths);
@@ -920,7 +914,7 @@ async function main() {
   // only when every candidate is foreign does the first come back, and G3b
   // below keeps its stand-down and its rebind notice unchanged.
   const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
-  const located = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession, { includeForeignPaths: true });
+  const located = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
   const scopePath = located.path ?? located.foreignPath;
   if (!scopePath) {
     if (prevScopeState && prevScopeState.hash !== 'absent') {
@@ -1150,7 +1144,6 @@ async function main() {
     signature,
     scopeMtimeMs,
     scopeRelPath: relScopePath,
-    foreignScopeRelPaths: located.foreignPaths.map((p) => path.relative(repoRoot, p)),
     mtimeMs: (rel) => {
       try {
         return statSync(path.join(repoRoot, rel)).mtimeMs;
