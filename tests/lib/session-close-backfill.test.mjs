@@ -325,6 +325,15 @@ describe('backfillAbandonedSession — dedupe', () => {
     expect(first.record).toMatchObject({ session_id: UUID, raw_session_id: UUID, semantic_session_id: 'main-2026-05-27-session-1' });
     expect(second).toEqual({ action: 'skipped-already-recorded', sessionId: UUID });
     expect(canonicalizeSessions(readSessions())).toHaveLength(2);
+    // #1513: the side-log carries EVENTS only. The skip is the steady state of
+    // every close (86 % of a 723 KB log in the Meta-Vault) and is reported as a
+    // ledger event by on-session-end, so it must not reach the file.
+    const log = fs
+      .readFileSync(path.join(metricsDir(), 'session-close-backfill.log'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => JSON.parse(l).action);
+    expect(log).toEqual(['backfilled']);
   });
 
   it('skips when the semantic id is already recorded in sessions.jsonl', async () => {
