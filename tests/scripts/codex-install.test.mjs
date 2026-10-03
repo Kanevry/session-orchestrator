@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -30,6 +31,9 @@ const PLUGIN_ID = 'session-orchestrator@kanevry';
 const LEGACY_OPENAI = 'session-orchestrator@openai-curated';
 const LEGACY_LOCAL = 'session-orchestrator@local';
 const UNKNOWN_PLUGIN = 'unrelated-plugin@team-catalog';
+// Per-test stage dir (<tmp XDG_CACHE_HOME>/session-orchestrator/plugin-package),
+// set in beforeEach: the installer must hand Codex this path, never the clone.
+let STAGE = '';
 
 function commandKey(args) {
   return JSON.stringify(args);
@@ -64,7 +68,7 @@ function pluginList({ installed = [targetEntry()], available = [] } = {}) {
 function makeScenario(options = {}) {
   const marketplaceAdd = {
     marketplaceName: 'kanevry',
-    installedRoot: REPO_ROOT,
+    installedRoot: STAGE,
     alreadyAdded: options.alreadyAdded ?? false,
   };
   const pluginAdd = {
@@ -88,7 +92,7 @@ function makeScenario(options = {}) {
       [commandKey(['plugin', 'marketplace', 'list', '--json'])]: [
         jsonResponse(options.marketplaceList ?? { marketplaces: [] }),
       ],
-      [commandKey(['plugin', 'marketplace', 'add', REPO_ROOT, '--json'])]: [
+      [commandKey(['plugin', 'marketplace', 'add', STAGE, '--json'])]: [
         jsonResponse(options.marketplaceAdd ?? marketplaceAdd),
       ],
       [commandKey(['plugin', 'add', PLUGIN_ID, '--json'])]: bundleSnapshots.map((snapshot) => (
@@ -149,6 +153,35 @@ process.exit(response.status ?? 0);
 `);
 }
 
+// A fake `npm`: real `npm pack` of this repo takes ~13 s (measured 2026-10-03),
+// once per test is too slow. `pack` tars the subset the Codex contract reads
+// into a `package/` tarball like npm does; `ci` leaves a node_modules marker.
+// Every call is logged, so a test can assert staging did or did not run.
+const FAKE_PACKED = ['.codex-plugin', '.claude-plugin', 'hooks', 'assets', '.mcp.json', 'package.json'];
+function installFakeNpm(binDir) {
+  installScriptCli(binDir, 'npm', `import { appendFileSync, cpSync, mkdirSync, mkdtempSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { join } from 'node:path';
+
+const argv = process.argv.slice(2);
+appendFileSync(process.env.FAKE_NPM_LOG, JSON.stringify({ argv, cwd: process.cwd() }) + '\\n');
+if (process.env.FAKE_NPM_FAIL === argv[0]) { process.stderr.write('simulated npm failure\\n'); process.exit(3); }
+if (argv[0] === 'pack') {
+  const dest = argv[argv.indexOf('--pack-destination') + 1];
+  const src = mkdtempSync(join(process.env.FAKE_NPM_TMP, 'pack-'));
+  for (const entry of ${JSON.stringify(FAKE_PACKED)}) {
+    if (entry === process.env.FAKE_NPM_OMIT) continue;
+    cpSync(join(process.cwd(), entry), join(src, 'package', entry), { recursive: true });
+  }
+  const tar = spawnSync('tar', ['-czf', join(dest, 'fake-1.0.0.tgz'), '-C', src, 'package']);
+  if (tar.status !== 0) process.exit(4);
+  process.stdout.write(JSON.stringify([{ filename: 'fake-1.0.0.tgz' }]));
+} else if (argv[0] === 'ci') {
+  mkdirSync(join(process.cwd(), 'node_modules', '.fake-ci'), { recursive: true });
+}
+`);
+}
+
 describe('scripts/codex-install.mjs', () => {
   let tempRoot;
   let fakeBin;
@@ -157,6 +190,7 @@ describe('scripts/codex-install.mjs', () => {
   let logPath;
   let homePath;
   let codexHomePath;
+  let npmLogPath;
 
   beforeEach(() => {
     tempRoot = mkdtempSync(join(tmpdir(), 'codex-install-test-'));
@@ -166,10 +200,14 @@ describe('scripts/codex-install.mjs', () => {
     logPath = join(tempRoot, 'argv.jsonl');
     homePath = join(tempRoot, 'home');
     codexHomePath = join(tempRoot, 'codex-home');
+    npmLogPath = join(tempRoot, 'npm.jsonl');
+    STAGE = join(tempRoot, 'xdg', 'session-orchestrator', 'plugin-package');
+    mkdirSync(join(tempRoot, 'npm-tmp'), { recursive: true });
     mkdirSync(fakeBin, { recursive: true });
     mkdirSync(homePath, { recursive: true });
     mkdirSync(codexHomePath, { recursive: true });
     installFakeCodex(fakeBin);
+    installFakeNpm(fakeBin);
   });
 
   afterEach(() => {
@@ -181,6 +219,7 @@ describe('scripts/codex-install.mjs', () => {
     args = [],
     pathValue = `${fakeBin}${delimiter}${process.env.PATH ?? ''}`,
     timeout = 30_000,
+    extraEnv = {},
   } = {}) {
     writeFileSync(scenarioPath, JSON.stringify(scenario), 'utf8');
     return spawnSync(process.execPath, [SCRIPT, ...args], {
@@ -193,6 +232,10 @@ describe('scripts/codex-install.mjs', () => {
         FAKE_CODEX_SCENARIO: scenarioPath,
         FAKE_CODEX_STATE: statePath,
         FAKE_CODEX_LOG: logPath,
+        XDG_CACHE_HOME: join(tempRoot, 'xdg'),
+        FAKE_NPM_LOG: npmLogPath,
+        FAKE_NPM_TMP: join(tempRoot, 'npm-tmp'),
+        ...extraEnv,
       },
       encoding: 'utf8',
       timeout,
@@ -201,6 +244,11 @@ describe('scripts/codex-install.mjs', () => {
 
   function readState() {
     return JSON.parse(readFileSync(statePath, 'utf8'));
+  }
+
+  function readNpmCalls() {
+    if (!existsSync(npmLogPath)) return [];
+    return readFileSync(npmLogPath, 'utf8').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
   }
 
   function readCalls() {
@@ -219,7 +267,7 @@ describe('scripts/codex-install.mjs', () => {
       ['--version'],
       ['features', 'list'],
       ['plugin', 'marketplace', 'list', '--json'],
-      ['plugin', 'marketplace', 'add', REPO_ROOT, '--json'],
+      ['plugin', 'marketplace', 'add', STAGE, '--json'],
       ['plugin', 'add', PLUGIN_ID, '--json'],
       ['plugin', 'list', '--available', '--json'],
       ['plugin', 'list', '--available', '--json'],
@@ -237,8 +285,8 @@ describe('scripts/codex-install.mjs', () => {
       marketplaceList: {
         marketplaces: [{
           name: 'kanevry',
-          root: REPO_ROOT,
-          marketplaceSource: { sourceType: 'local', source: REPO_ROOT },
+          root: STAGE,
+          marketplaceSource: { sourceType: 'local', source: STAGE },
         }],
       },
     });
@@ -247,7 +295,7 @@ describe('scripts/codex-install.mjs', () => {
 
     expect(result.status).toBe(0);
     expect(result.stdout).toContain("already uses this source; refreshed");
-    expect(readCalls()).toContainEqual(['plugin', 'marketplace', 'add', REPO_ROOT, '--json']);
+    expect(readCalls()).toContainEqual(['plugin', 'marketplace', 'add', STAGE, '--json']);
   });
 
   it('refreshes the installed bundle state through plugin add on every rerun', () => {
@@ -311,8 +359,8 @@ describe('scripts/codex-install.mjs', () => {
 
   it('invokes the canonical contract before the first mutating command', () => {
     const source = readFileSync(SCRIPT, 'utf8');
-    const contractCall = source.indexOf('const expectedVersion = validateLocalContract();');
-    const marketplaceMutation = source.indexOf("['plugin', 'marketplace', 'add', SO_ROOT, '--json']");
+    const contractCall = source.indexOf('expectedVersion = validateLocalContract(dir);');
+    const marketplaceMutation = source.indexOf("['plugin', 'marketplace', 'add', STAGE_DIR, '--json']");
     const result = runInstaller();
 
     expect(contractCall).toBeGreaterThan(-1);
@@ -343,6 +391,60 @@ describe('scripts/codex-install.mjs', () => {
       ['features', 'list'],
       ['plugin', 'marketplace', 'list', '--json'],
     ]);
+  });
+
+  it('installs from the packed stage with runtime deps, never from the clone (#1518)', () => {
+    const result = runInstaller();
+    const npmCalls = readNpmCalls();
+
+    expect(result.status).toBe(0);
+    expect(npmCalls.map((c) => c.argv[0])).toEqual(['pack', 'ci']);
+    expect(npmCalls[0].argv).toContain('--ignore-scripts');
+    expect(npmCalls[1].argv).toEqual(['ci', '--omit=dev', '--ignore-scripts']);
+    expect(existsSync(join(STAGE, '.codex-plugin', 'plugin.json'))).toBe(true);
+    expect(existsSync(join(STAGE, 'package-lock.json'))).toBe(true);
+    expect(existsSync(join(STAGE, 'node_modules', '.fake-ci'))).toBe(true);
+    expect(readCalls().flat()).not.toContain(REPO_ROOT);
+  });
+
+  it('refuses a marketplace on the clone before staging, naming the remove command (#1518)', () => {
+    const scenario = makeScenario({
+      marketplaceList: {
+        marketplaces: [{
+          name: 'kanevry',
+          root: REPO_ROOT,
+          marketplaceSource: { sourceType: 'local', source: REPO_ROOT },
+        }],
+      },
+    });
+
+    const result = runInstaller({ scenario });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('reads this clone');
+    expect(result.stderr).toContain('codex plugin marketplace remove kanevry && node scripts/codex-install.mjs');
+    expect(readNpmCalls()).toEqual([]);
+    expect(existsSync(STAGE)).toBe(false);
+  });
+
+  it('returns exit 2 and makes no Codex mutation when staging fails', () => {
+    const result = runInstaller({ extraEnv: { FAKE_NPM_FAIL: 'ci' } });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Cannot stage the packed copy');
+    expect(readCalls().some((args) => args[2] === 'add' || args[1] === 'add')).toBe(false);
+  });
+
+  it('keeps the previous stage when the new copy fails the contract (#1518 review)', () => {
+    mkdirSync(STAGE, { recursive: true });
+    writeFileSync(join(STAGE, 'marker'), 'previous');
+
+    const result = runInstaller({ extraEnv: { FAKE_NPM_OMIT: 'hooks' } });
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain('Local Codex plugin contract failed');
+    expect(readFileSync(join(STAGE, 'marker'), 'utf8')).toBe('previous');
+    expect(readCalls().some((args) => args[2] === 'add' || args[1] === 'add')).toBe(false);
   });
 
   it('returns exit 2 when the installed target is disabled', () => {
@@ -530,7 +632,7 @@ describe('scripts/codex-install.mjs', () => {
       ok: true,
       codexVersion: '0.144.4',
       marketplace: 'kanevry',
-      marketplaceSource: REPO_ROOT,
+      marketplaceSource: STAGE,
       marketplaceAlreadyAdded: false,
       pluginId: PLUGIN_ID,
       pluginVersion: MANIFEST.version,
@@ -568,11 +670,13 @@ describe('scripts/codex-install.mjs', () => {
     expect(() => readFileSync(logPath, 'utf8')).toThrow();
   });
 
-  it('contains no private Codex paths, catalog files, hook-state writes, or trust bypass', () => {
+  // The personal catalog `~/.agents/plugins/marketplace.json` is READ for a
+  // hint (#1518 review); the installer itself writes no file at all.
+  it('contains no private Codex paths, file writes, hook-state writes, or trust bypass', () => {
     const source = readFileSync(SCRIPT, 'utf8');
+    expect(source).not.toMatch(/\b(writeFileSync|appendFileSync|rmSync|unlinkSync|renameSync|cpSync)\b/);
     const forbidden = [
       ['.tmp', 'plugins'].join('/'),
-      ['marketplace', 'json'].join('.'),
       ['config', 'toml'].join('.'),
       ['hooks', 'state'].join('.'),
       ['--dangerously', 'bypass-hook-trust'].join('-'),

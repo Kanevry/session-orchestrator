@@ -22,13 +22,15 @@ npm install
 node scripts/codex-install.mjs
 ```
 
-The installer validates the local Codex manifest and hook contract, then uses the same public commands an operator can run manually:
+The installer never registers the clone itself. It packs the clone with `npm pack --ignore-scripts` into `~/.cache/session-orchestrator/plugin-package/` (`$XDG_CACHE_HOME` if set; the same packed copy `npm run update:local` uses for Claude Code), installs the runtime dependencies there with `npm ci --omit=dev --ignore-scripts`, validates the Codex manifest and hook contract of that packed copy, then uses the same public commands an operator can run manually:
 
 ```bash
-codex plugin marketplace add "$PWD"
+codex plugin marketplace add ~/.cache/session-orchestrator/plugin-package
 codex plugin add session-orchestrator@kanevry
 codex plugin list --available --json
 ```
+
+A marketplace on the working checkout copies all of it into the Codex plugin cache — measured 2026-10-03: 15742 files, `.env.local`, `.orchestrator/` and `tests/` included (#1518). The installer therefore refuses while any local marketplace reads the clone and prints the exact `codex plugin marketplace remove <name>` command to run once before re-running it.
 
 It operates only through public Codex plugin commands; hook trust remains untouched.
 
@@ -84,7 +86,7 @@ npm install
 node scripts/codex-install.mjs
 ```
 
-Every installer run executes `codex plugin marketplace add` and `codex plugin add`, even when the marketplace is already configured. The repeated `plugin add` refreshes Codex's installed bundle from the current clone instead of treating installation as a one-time copy.
+Every installer run executes `codex plugin marketplace add` and `codex plugin add`, even when the marketplace is already configured. The repeated `plugin add` refreshes Codex's installed bundle from a freshly packed copy of the current clone instead of treating installation as a one-time copy.
 
 After either refresh path, confirm the installed version with `codex plugin list --available --json` and start a fresh task. Reopen the skill picker and search for `go` or `close`; if the updated entries are still missing, fully restart Codex. Editing the source clone or regenerating skills alone does not refresh the installed bundle.
 
@@ -272,7 +274,7 @@ codex plugin list --available --json
 - **Marketplace is configured but the plugin is only available:** run `codex plugin add session-orchestrator@kanevry`, then run the plugin list again.
 - **The target is missing, disabled, duplicated, or at the wrong version:** run `codex plugin marketplace list --json`, remove the exact target with `codex plugin remove session-orchestrator@kanevry` when present, and rerun `node scripts/codex-install.mjs` to reinstall and verify it.
 - **A `session-orchestrator@openai-curated` or `session-orchestrator@local` installation remains:** these are the only allowlisted legacy IDs. Remove the exact stale ID with `codex plugin remove session-orchestrator@openai-curated` or `codex plugin remove session-orchestrator@local`; unrelated plugins remain untouched.
-- **The `kanevry` marketplace points at another source:** confirm the conflict with `codex plugin marketplace list --json`, run `codex plugin marketplace remove kanevry`, then rerun the installer from the intended clone so it performs the public marketplace add and plugin add lifecycle.
+- **The `kanevry` marketplace points at another source:** confirm the conflict with `codex plugin marketplace list --json`, run `codex plugin marketplace remove kanevry`, then rerun the installer from the intended clone so it re-packs it and performs the public marketplace add and plugin add lifecycle.
 - **`go` or `close` is missing from the skill picker:** follow [the refresh steps](#refresh-and-explicit-cache-invalidation), verify the installed version, and restart Codex if reopening the picker does not load the new entries. Use the namespaced skill form from [Usage](#usage), rather than selecting the unrelated native Goal command.
 - **Plugin is installed and enabled but hooks do not fire:** start a fresh task or fully restart Codex, run `/hooks`, and review the trust state. Installation does not imply hook approval.
 - **No import-probe warning after an edit:** the post-edit import probe is currently **unwired in Codex**. Reinstalling the same bundle does not add it. Use normal project lint and tests; see [the probe's harness wiring and ESLint requirements](USER-GUIDE.md#import-probe-warnings-and-missing-eslint).

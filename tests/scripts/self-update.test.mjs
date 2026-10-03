@@ -12,8 +12,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  findClaudeEntry, missingRuntimeDeps, packedFilename, updateClaude,
+  findClaudeEntry, missingRuntimeDeps, resolveClaudeConfigDir, updateClaude,
 } from '../../scripts/self-update.mjs';
+import { packedFilename } from '../../scripts/lib/plugin-package-stage.mjs';
 
 describe('missingRuntimeDeps', () => {
   let dir;
@@ -93,7 +94,9 @@ describe('updateClaude source guard', () => {
     calls = [];
     const run = (cmd, args) => {
       calls.push(`${cmd} ${args.join(' ')}`);
-      if (args.join(' ') === 'plugin list --json') return { ok: true, stdout: entry(installedId, install, '9.9.9') };
+      if (args.join(' ') === 'plugin list --json') {
+        return { ok: true, stdout: installedId ? entry(installedId, install, '9.9.9') : '[]' };
+      }
       return { ok: true, stdout: '' };
     };
     ctx = { soRoot: clone, stageDir: join(tmp, 'stage'), knownMarketplacesFile: file, hasClaude: () => true };
@@ -115,6 +118,23 @@ describe('updateClaude source guard', () => {
     expect(calls.some((c) => c.startsWith('claude plugin update'))).toBe(false);
   });
 
+  it('skips without staging when the plugin is not installed, even with a directory marketplace on the clone (#1519)', () => {
+    const io = setup((clone) => ({ 'session-orchestrator': { source: { source: 'directory', path: clone } } }), null);
+    const r = updateClaude(io, { dryRun: true }, ctx);
+    expect(r.status).toBe('skipped');
+    expect(calls.some((c) => c.startsWith('npm pack'))).toBe(false);
+  });
+
+  it('adds a same-named marketplace on another source to the remove list, so add <stage> cannot collide (#1519)', () => {
+    const io = setup((clone) => ({
+      'session-orchestrator': { source: { source: 'directory', path: clone } },
+      kanevry: { source: { source: 'github', repo: 'Kanevry/session-orchestrator' } },
+    }), 'session-orchestrator@kanevry');
+    const r = updateClaude(io, { dryRun: true }, ctx);
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('claude plugin marketplace remove session-orchestrator && claude plugin marketplace remove kanevry && ');
+  });
+
   it('still updates a GitHub-sourced marketplace, using the installed plugin id', () => {
     const io = setup(() => ({ kanevry: { source: { source: 'github', repo: 'Kanevry/session-orchestrator' } } }),
       'session-orchestrator@kanevry');
@@ -123,5 +143,14 @@ describe('updateClaude source guard', () => {
     expect(calls).toContain('claude plugin marketplace update kanevry');
     expect(calls).toContain('claude plugin update session-orchestrator@kanevry');
     expect(calls.some((c) => c.startsWith('npm pack'))).toBe(false);
+  });
+});
+
+describe('resolveClaudeConfigDir', () => {
+  it('ignores a relative CLAUDE_CONFIG_DIR like a relative XDG_CACHE_HOME and reports it (#1519)', () => {
+    expect(resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: 'rel/claude' }, '/home/u'))
+      .toEqual({ dir: join('/home/u', '.claude'), ignored: 'rel/claude' });
+    expect(resolveClaudeConfigDir({ CLAUDE_CONFIG_DIR: '/abs/claude' }, '/home/u'))
+      .toEqual({ dir: '/abs/claude', ignored: null });
   });
 });
