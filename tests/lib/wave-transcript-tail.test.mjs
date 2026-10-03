@@ -14,7 +14,7 @@
  * Every case below names the concrete bug it catches (TV-001).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
@@ -32,6 +32,7 @@ import {
   buildStagnationPayload,
   acquireSingleton,
   releaseSingleton,
+  readAgentType,
 } from '../../scripts/lib/wave-transcript-tail.mjs';
 
 const REPO = '/repo';
@@ -703,5 +704,40 @@ describe('wave-transcript-tail — pre-agent_id seed records', () => {
     const state = createState();
     expect(seedFromEvents([priorRecord({ agent_id: 'some-other-agent' })], SEMANTIC, state)).toBe(1);
     expect(runAll([gitAdd()], state)).toHaveLength(1);
+  });
+});
+
+describe('wave-transcript-tail — readAgentType failure split (#1216)', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  /** Lay out `<projectsDir>/<UUID>/subagents/agent-<AGENT>.meta.json`. */
+  function writeMeta(content) {
+    const projectsDir = tmpRepo('wtt-meta-');
+    const subagents = join(projectsDir, UUID, 'subagents');
+    mkdirSync(subagents, { recursive: true });
+    if (content !== null) writeFileSync(join(subagents, `agent-${AGENT}.meta.json`), content);
+    return projectsDir;
+  }
+
+  it('reports a malformed sidecar instead of swallowing it, still returning unknown', () => {
+    // Bug: the bare `catch { return 'unknown' }` made a corrupt meta file
+    // indistinguishable from a not-yet-written one — no trace of the cause.
+    const projectsDir = writeMeta('{not json');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(readAgentType(projectsDir, UUID, AGENT)).toBe('unknown');
+    expect(
+      stderr.mock.calls.some(
+        ([msg]) => typeof msg === 'string' && msg.includes('agent-type read failed') && msg.includes('.meta.json'),
+      ),
+    ).toBe(true);
+  });
+
+  it('stays silent when the sidecar simply does not exist yet (ENOENT)', () => {
+    const projectsDir = writeMeta(null);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    expect(readAgentType(projectsDir, UUID, AGENT)).toBe('unknown');
+    expect(stderr).not.toHaveBeenCalled();
   });
 });

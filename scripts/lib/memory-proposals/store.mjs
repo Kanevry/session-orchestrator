@@ -413,7 +413,10 @@ export async function appendProposal({
  * Reads proposals.jsonl without acquiring the lock — suitable for diagnostics
  * and reads where eventual consistency is acceptable.
  *
- * Returns 0 when the file does not exist.
+ * Returns 0 when the file does not exist (silently — `countWaveLines` maps
+ * ENOENT to 0). Any other read failure also returns 0, but with a stderr WARN
+ * so a 0 caused by an unreadable file is distinguishable from an empty queue
+ * (#1216).
  *
  * @param {object} opts
  * @param {string} opts.repoRoot
@@ -424,7 +427,11 @@ export async function countProposalsForWave({ repoRoot, waveId }) {
   const jsonlPath = jsonlPathFor(repoRoot);
   try {
     return countWaveLines(jsonlPath, waveId);
-  } catch {
+  } catch (err) {
+    process.stderr.write(
+      `[memory-proposals] WARN: countProposalsForWave: ` +
+        `${err?.code ?? '?'}: ${err?.message ?? String(err)} — returning 0\n`,
+    );
     return 0;
   }
 }

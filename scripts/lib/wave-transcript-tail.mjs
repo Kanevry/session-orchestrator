@@ -734,12 +734,18 @@ function mayCarrySignal(line) {
  * the real on-disk location of the coordinator's own transcript, sibling of
  * the `subagents/` directory this function reads from.
  *
+ * A missing sidecar (ENOENT) is the normal not-yet-written case and stays
+ * silent; any other failure (malformed JSON, EACCES, EISDIR) is reported via
+ * `note()` so an `'unknown'` agent type is traceable to its cause (#1216).
+ *
+ * Exported for tests only.
+ *
  * @param {string} projectsDir
  * @param {string} sessionId
  * @param {string} agentId
  * @returns {string}
  */
-function readAgentType(projectsDir, sessionId, agentId) {
+export function readAgentType(projectsDir, sessionId, agentId) {
   const sidecar = resolveSubagentSidecar({
     transcriptPath: join(projectsDir, `${sessionId}.jsonl`),
     agentId,
@@ -749,7 +755,10 @@ function readAgentType(projectsDir, sessionId, agentId) {
     const meta = JSON.parse(readFileSync(sidecar.meta, 'utf8'));
     const t = meta?.agentType;
     return typeof t === 'string' && t ? t : 'unknown';
-  } catch {
+  } catch (err) {
+    if (err?.code !== 'ENOENT') {
+      note(`agent-type read failed for ${sidecar.meta}: ${String(err?.message ?? err)}`);
+    }
     return 'unknown';
   }
 }

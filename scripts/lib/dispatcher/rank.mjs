@@ -202,7 +202,11 @@ async function defaultStaleDaysFor(repoRoot, nowMs) {
     const days = (nowMs - latestMs) / MS_PER_DAY;
     return days > 0 ? days : 0;
   } catch {
-    // No sessions file (or unreadable) ⇒ never worked on ⇒ maximally stale.
+    // Not the missing/unreadable-ledger path: readCanonicalSessions already
+    // returns [] for both (ENOENT silently, any other read failure with a
+    // stderr WARN — sessions-canonical.mjs § #1188), handled by the
+    // `records.length === 0` branch above. This catch only absorbs an
+    // unexpected throw (e.g. a non-string repoRoot) ⇒ maximally stale.
     return STALENESS_CAP_DAYS;
   }
 }
