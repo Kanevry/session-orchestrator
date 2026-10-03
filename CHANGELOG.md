@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`validate-wave-scope --assert-disjoint --no-manifest`** (#1510 f): runs the disjointness check on the per-wave sidecar alone, without a manifest on stdin, so `/plan` no longer fabricates a dummy manifest. Without the flag an empty stdin stays an error (fail-closed); combining it with `--union`, `--assert-subset`, `--expand-test-siblings` or a positional manifest is rejected.
+
+### Changed
+
+- **Wave git facts follow the session root** (`hooks/post-tool-batch-wave-signal.mjs`, `hooks/on-stop.mjs`, `hooks/pre-bash-memory-propose-audit.mjs`, #1511 a–c): in a session that entered a worktree, the wave's start SHA, changed-file count, HEAD, the stop record's branch/commit and the audit record's `cwd` now describe the tree the session works in. `current-session.json`, `session.lock` and the heartbeat stay at the launch dir, where `on-session-start` writes them.
+- **The commit guard also judges the session-root manifest** (`hooks/wave-scope-commit-guard.mjs`, #1511 d): a session launched in a repo subdirectory has its own manifest checked in addition to the repo-root manifest, which is judged exactly as before; either one blocking blocks the commit. Staged paths outside the session root are violations without pattern matching, and the path is resolved with `realpathSync.native`.
+- **One scope-entry spelling rule** (`scripts/lib/scope-gate.mjs` `scopeEntrySpelling`, now exported, #1510 g): `pre-task-scope-disjoint` drops its drifted copy (`scripts/././lib` stayed unpromoted there, so a sibling claim compared as disjoint).
+- **Close-backfill reads ledger gaps inside the session's own window** (`scripts/lib/session-close-backfill.mjs`, #1512): a recoverable `unindexed-archive` gap overlapping the session defers the candidate; a pruned `missing-archive` gap writes the record and lists `session_type`/`session_profile` (and `completed_at` when the gap runs past the last event) in `_backfill_incomplete_fields`. Gaps outside the window, or without bounds, no longer matter.
+- **Website, README and npm description** lead with the problem the plugin solves and group the features by benefit (site EN/DE, guide, `llms.txt`, `llms-full.txt`).
+
+### Fixed
+
+- **A sidecar changed under a standing manifest no longer downgrades violations** (`hooks/post-bash-write-verify.mjs`, #1504 point 5): the sidecar hash is bound into the hook's trusted snapshot; on a mismatch `peer-session-*` records are ignored and one notice per mismatching hash is shown. A mid-wave Peer-Scope-Union must re-run the full scope sequence including the skeleton rewrite (`skills/_shared/parallel-aware-auq.md`).
+- **Destructive-command guard counts on the site** read 11 blocking of 15 rules; the policy has 12 blocking and 4 warning rules of 16.
+- **`.phase-result` on the site** loses its coloured side stripe (#1357, first half).
+
 ## [5.5.0] - 2026-10-03
 
 ### Added
