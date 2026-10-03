@@ -42,6 +42,7 @@
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { eventsFilePath } from './events.mjs';
 import { readCanonicalSessions } from './sessions-canonical.mjs';
 import { readTailWindow } from './tail-window.mjs';
 import { withStateMdLock } from './session-lock.mjs';
@@ -207,7 +208,7 @@ const EVENTS_MAX_AGE_MS = 2 * 24 * 60 * 60 * 1000;
  * @returns {Promise<string[]>}  Array of semantic_session_id strings (may include duplicates).
  */
 async function readSessionIdsFromEvents(repoRoot) {
-  const filePath = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+  const filePath = eventsFilePath(repoRoot); // #1514 point 1: the repo's one ledger
 
   let window;
   try {

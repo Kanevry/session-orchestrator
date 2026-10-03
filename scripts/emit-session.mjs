@@ -29,6 +29,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { appendJsonl } from './lib/common.mjs';
 import {
   MEMORY_CLEANUP_EVENT,
@@ -48,6 +49,18 @@ import {
   normalizeWaveKeys,
 } from './lib/session-schema.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+
+/**
+ * The events ledger beside `sessionsFile` — mapped to the main checkout when the
+ * metrics dir sits in a LINKED git worktree (#1514 point 1: one ledger per repo,
+ * the one the hooks write). Identity everywhere else, including a tmp fixture.
+ *
+ * @param {string} sessionsFile
+ * @returns {string}
+ */
+function siblingEventsFile(sessionsFile) {
+  return join(resolveEventsLedgerRoot(dirname(sessionsFile)), 'events.jsonl');
+}
 
 export { serializeSessionLineChecked };
 
@@ -314,7 +327,7 @@ async function main() {
   const alreadyStamped =
     typeof repaired.memory_cleanup_at === 'string' && repaired.memory_cleanup_at.length > 0;
   if (!alreadyStamped) {
-    const eventsFile = join(dirname(args.file), 'events.jsonl');
+    const eventsFile = siblingEventsFile(args.file);
     const signal = deriveMemoryCleanupSignal({
       eventsFile,
       sessionId: repaired.session_id,
@@ -455,7 +468,7 @@ async function main() {
   // without one the fallback cannot run, which is exactly when silence hid it.
   if (!hasOwn('session_start_ref')) {
     const headSha = ownUuid !== null
-      ? readOwnStartHeadSha(join(dirname(args.file), 'events.jsonl'), ownUuid)
+      ? readOwnStartHeadSha(siblingEventsFile(args.file), ownUuid)
       : null;
     if (headSha !== null) {
       repaired = { ...repaired, session_start_ref: headSha };

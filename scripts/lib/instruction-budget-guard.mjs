@@ -88,7 +88,7 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { scanEventsBackwards } from './events.mjs';
+import { eventsFilePath, scanEventsBackwards } from './events.mjs';
 import {
   FRONTMATTER_NOT_AT_TOP,
   loadApplicableRules,
@@ -1335,7 +1335,7 @@ const RECONCILE_SCAN_BUDGET_MS = 150;
  */
 function readLastReconcileCapped(repoRoot) {
   if (typeof repoRoot !== 'string' || repoRoot === '') return null;
-  const filePath = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+  const filePath = eventsFilePath(repoRoot); // #1514 point 1: the repo's one ledger
   let capped = null;
   let scan;
   try {

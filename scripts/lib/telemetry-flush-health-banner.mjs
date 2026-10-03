@@ -32,8 +32,8 @@
  */
 
 import { existsSync } from 'node:fs';
-import path from 'node:path';
 
+import { eventsFilePath } from './events.mjs';
 import { readTailWindow } from './tail-window.mjs';
 
 /**
@@ -122,7 +122,7 @@ export function checkTelemetryFlushHealth({ repoRoot } = {}) {
   try {
     if (!repoRoot || typeof repoRoot !== 'string') return null;
 
-    const file = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+    const file = eventsFilePath(repoRoot); // #1514: the repo's one ledger
     if (!existsSync(file)) return null;
 
     const tail = readTail(file);

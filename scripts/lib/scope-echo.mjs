@@ -420,7 +420,8 @@ export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFi
  * @param {number} params.wave
  * @param {string} params.stateDir
  * @param {string} [params.session]    semantic (or raw) session id to filter on
- * @param {string} [params.eventsPath] defaults to `.orchestrator/metrics/events.jsonl`
+ * @param {string} [params.eventsPath] defaults to the cwd-relative `.orchestrator/metrics/events.jsonl`;
+ *   the CLI passes `eventsFilePath(<state-dir>/..)` (the repo's one ledger, #1514)
  * @param {typeof readFileSync} [params.readFile]
  * @param {typeof readdirSync} [params.readDir]
  * @returns {{wave: number, transport: 'observable'|'unobservable', dispatches: number,
@@ -639,11 +640,20 @@ async function mainVerify(args) {
     return 1;
   }
 
+  // #1514 point 1 — read the ledger the send-side hook WRITES: the one ledger
+  // of the repo this state dir belongs to (`eventsFilePath(<root>)`, a linked
+  // worktree mapped to its main checkout), not a cwd-relative path that, run
+  // from an entered worktree, found 0 `scope_checked` records. Resolved here,
+  // not in `verifyWaveScope`, so this module stays pure (stdlib +
+  // `crypto-digest-utils.mjs`) for the hook that imports it.
+  const eventsPath = typeof args.events === 'string'
+    ? args.events
+    : (await import('./events.mjs')).eventsFilePath(resolve(stateDir, '..'));
   const report = verifyWaveScope({
     wave,
     stateDir,
     session: typeof args.session === 'string' ? args.session : undefined,
-    eventsPath: typeof args.events === 'string' ? args.events : undefined,
+    eventsPath,
   });
 
   if (args.emit) {

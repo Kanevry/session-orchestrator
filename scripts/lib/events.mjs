@@ -52,7 +52,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { getProjectDir, SO_SHARED_DIR } from './platform.mjs';
+import { getProjectDir, resolveEventsLedgerRoot, SO_SHARED_DIR } from './platform.mjs';
 import { readLock } from './session-lock.mjs';
 import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import {
@@ -139,8 +139,12 @@ function sandboxedDefault(defaultPath) {
 /**
  * Returns the absolute path to `.orchestrator/metrics/events.jsonl` under `repoRoot`.
  *
- * `repoRoot` defaults to the module-level `SO_PROJECT_DIR` constant, so the
- * zero-arg call is unchanged for every existing caller (#941). Pass an explicit
+ * `repoRoot` defaults to the ONE events-ledger root, `resolveEventsLedgerRoot()`
+ * (`platform.mjs`, #1514 point 1): the launch dir from env, else the main
+ * checkout when the cwd is a linked git worktree, else `getProjectDir()` — the
+ * pre-#1514 default, unchanged everywhere a worktree is not involved (#941). An
+ * explicit absolute `repoRoot` inside a linked worktree is mapped to its main
+ * checkout the same way. Pass an explicit
  * `repoRoot` when the destination must be pinned to a tree other than the
  * CWD/env-resolved project — e.g. a unit test running the gate against a tmp
  * repo, which must NOT append synthetic records to the real fleet telemetry.
@@ -154,8 +158,18 @@ function sandboxedDefault(defaultPath) {
  * @returns {string}
  */
 export function eventsFilePath(repoRoot) {
-  if (repoRoot !== undefined) return path.join(repoRoot, SO_SHARED_DIR, 'metrics', 'events.jsonl');
-  return sandboxedDefault(path.join(getProjectDir(), SO_SHARED_DIR, 'metrics', 'events.jsonl'));
+  if (repoRoot !== undefined) {
+    // #1514 point 1 — an absolute root inside a LINKED git worktree maps to the
+    // same spot in its main checkout: one ledger per repo, never one per
+    // worktree. Identity for every other root (a plain repo, a tmp fixture, a
+    // non-git dir), and a relative/empty value is joined exactly as before —
+    // `emitEvent()` refuses it upstream.
+    const root = typeof repoRoot === 'string' && path.isAbsolute(repoRoot)
+      ? resolveEventsLedgerRoot(repoRoot)
+      : repoRoot;
+    return path.join(root, SO_SHARED_DIR, 'metrics', 'events.jsonl');
+  }
+  return sandboxedDefault(path.join(resolveEventsLedgerRoot(), SO_SHARED_DIR, 'metrics', 'events.jsonl'));
 }
 
 /**

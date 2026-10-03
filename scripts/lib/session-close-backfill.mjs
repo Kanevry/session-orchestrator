@@ -66,7 +66,7 @@ import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs'
 import { canonicalizeSessions } from './sessions-canonical.mjs';
 // Already in the hook import set (`emitEvent` lives there): the rotation-aware
 // reader adds no new file to the SessionStart/SessionEnd hook graph.
-import { scanEventsBackwards } from './events.mjs';
+import { eventsFilePath, scanEventsBackwards } from './events.mjs'; // eventsFilePath: #1514, the repo's one ledger
 // Leaf constants module (no imports of its own) and ALREADY in the hook import
 // set via session-schema/validator.mjs — importing it here adds no new file to
 // the SessionStart/SessionEnd hook graph. The profile enum must not be
@@ -114,7 +114,6 @@ const EVENT_STOPPED = 'orchestrator.session.stopped';
 const EVENT_TURN_STOPPED = 'orchestrator.turn.stopped';
 const EVENT_ENDED = 'orchestrator.session.ended';
 
-const EVENTS_REL = ['.orchestrator', 'metrics', 'events.jsonl'];
 const SESSIONS_REL = ['.orchestrator', 'metrics', 'sessions.jsonl'];
 const BACKFILL_LOG_REL = ['.orchestrator', 'metrics', 'session-close-backfill.log'];
 
@@ -973,7 +972,7 @@ export async function backfillAbandonedSession({
         return { action: 'skipped-no-identifier' };
       }
 
-      const eventsPath = path.join(repoRoot, ...EVENTS_REL);
+      const eventsPath = eventsFilePath(repoRoot);
       const sessionsPath = path.join(repoRoot, ...SESSIONS_REL);
 
       // -- Resolve the SEMANTIC record id (sessions.jsonl key) ----------------
@@ -1368,7 +1367,7 @@ export async function backfillCompletedFromStateMd({
       if (supersedes) recordId = supersedes;
 
       // -- Derive whatever is derivable from events.jsonl (never STATE.md body) -
-      const eventsPath = path.join(repoRoot, ...EVENTS_REL);
+      const eventsPath = eventsFilePath(repoRoot);
       const gathered = gatherSessionEvents(readFileSync, eventsPath, { sessionId: nativeId, semanticSessionId });
 
       // -- Synthesize + validate (round-trip gate) BEFORE any disk mutation ----

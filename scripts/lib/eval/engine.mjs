@@ -50,6 +50,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveEventsLedgerRoot } from '../platform.mjs';
 
 import { resolvePluginRoot } from '../common.mjs';
 import { readEventsWithRotations } from '../events.mjs';
@@ -899,7 +900,8 @@ export function evaluateSession(opts = {}) {
   }
 
   const sessionsPath = path.join(metricsDir, 'sessions.jsonl');
-  const eventsPath = path.join(metricsDir, 'events.jsonl');
+  // #1514 point 1 — the repo's ONE ledger (main checkout for a linked worktree).
+  const eventsPath = path.join(resolveEventsLedgerRoot(metricsDir), 'events.jsonl');
   // #1209: sessions.jsonl is APPEND-ONLY (the same physical session can carry
   // more than one line — crash-recovery re-appends, #1068 stub/supersede
   // pairs), so a raw readJsonlFile() left resolveSession()/findPeerOverlap()

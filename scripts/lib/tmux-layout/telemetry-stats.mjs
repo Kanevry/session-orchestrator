@@ -15,10 +15,8 @@
  */
 
 import path from 'node:path';
-import { readEventsWithRotations } from '../events.mjs';
+import { eventsFilePath, readEventsWithRotations } from '../events.mjs';
 import { isMainModule } from '../is-main-module.mjs';
-
-const EVENTS_PATH = '.orchestrator/metrics/events.jsonl';
 
 /** Every event this module reports on carries this prefix. */
 const TMUX_EVENT_PREFIX = 'tmux-layout.';
@@ -58,11 +56,11 @@ export const REQUIRED_EVENTS_WINDOW_DAYS = null;
  * the session path. Revisit if this module gains a hot-path caller or if
  * `max-size-mb` is raised past ~100.
  *
- * @param {string} [eventsPath=.orchestrator/metrics/events.jsonl]
+ * @param {string} [eventsPath=eventsFilePath()]  the repo's one ledger (#1514)
  * @returns {{events: Array<object>, complete: boolean|null, gaps: Array<object>,
  *            notices: Array<object>}}
  */
-export function readTmuxEventsEnvelope(eventsPath = EVENTS_PATH) {
+export function readTmuxEventsEnvelope(eventsPath = eventsFilePath()) {
   const { events, gaps, complete, notices } = readEventsWithRotations(undefined, {
     filePath: eventsPath,
   });
@@ -83,10 +81,10 @@ export function readTmuxEventsEnvelope(eventsPath = EVENTS_PATH) {
  * existing caller expects. Use the envelope when the completeness of the read
  * matters to the answer.
  *
- * @param {string} [eventsPath=.orchestrator/metrics/events.jsonl]
+ * @param {string} [eventsPath=eventsFilePath()]  the repo's one ledger (#1514)
  * @returns {Array<object>}  parsed event records (filtered to tmux-layout.* events)
  */
-export function readTmuxEvents(eventsPath = EVENTS_PATH) {
+export function readTmuxEvents(eventsPath = eventsFilePath()) {
   return readTmuxEventsEnvelope(eventsPath).events;
 }
 

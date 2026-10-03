@@ -73,7 +73,7 @@
 import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 
-import { SCAN_CHUNK_BYTES, scanEventsBackwards } from './events.mjs';
+import { SCAN_CHUNK_BYTES, eventsFilePath, scanEventsBackwards } from './events.mjs';
 import { computeReconcileNudge } from './reconcile-nudge-banner.mjs';
 import { sweepExpiredLearnings } from './learnings/expiry-sweep.mjs';
 import { shouldDispatchAutoDialectic } from './auto-dialectic.mjs';
@@ -204,7 +204,7 @@ export const EVOLVE_SCAN_BUDGET_MS = 1000;
  *   `events-rotation.max-backups`), so a miss has not proven "never" either.
  */
 function readLastEvolveRun(repoRoot) {
-  const file = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+  const file = eventsFilePath(repoRoot); // #1514: the repo's one ledger
   let lastAt = null;
   const scan = scanEventsBackwards({
     filePath: file,

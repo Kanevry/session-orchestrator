@@ -88,6 +88,7 @@
 import { closeSync, existsSync, openSync, readSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
+import { eventsFilePath } from './events.mjs';
 import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE, LEGACY_RING_MAX, ROTATION_EVENT } from './events-schema.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -268,9 +269,11 @@ async function maxRequiredWindow(readers) {
  */
 export async function checkEventsRetention({ repoRoot, config, now = Date.now() } = {}) {
   if (!repoRoot || typeof repoRoot !== 'string') return null;
-  const metricsDir = path.join(repoRoot, '.orchestrator', 'metrics');
+  // #1514 point 1 — the repo's ONE ledger; its archive dir sits beside the SAME
+  // resolved file rotation writes (`events-rotation.mjs`: `<dirname(log)>/_archive`).
+  const activePath = eventsFilePath(repoRoot);
+  const metricsDir = path.dirname(activePath);
   const archiveDir = path.join(metricsDir, ARCHIVE_DIR_NAME);
-  const activePath = path.join(metricsDir, 'events.jsonl');
   const nowMs = typeof now === 'number' && Number.isFinite(now) ? now : Date.now();
 
   let names;

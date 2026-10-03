@@ -13,7 +13,7 @@
  * NOTHING in this module touches the filesystem at import time.
  */
 
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolvePluginRoot as _resolvePluginRootRobust } from './plugin-root.mjs';
@@ -354,9 +354,14 @@ function _isStrictlyInside(child, parent) {
 
 /**
  * The SESSION ROOT (#1492) — the working copy whose control files belong to the
- * session a hook fires in: `wave-scope.json`, the `.orchestrator/` ledgers, the
- * event records. One resolver for every hook that reads them (enforce-scope,
- * enforce-commands, post-bash-write-verify, pre-task-scope-disjoint).
+ * session a hook fires in: `wave-scope.json`, the `filescopes/` manifests, the
+ * `.orchestrator/` dispatch ledger. One resolver for every hook that reads them
+ * (enforce-scope, enforce-commands, post-bash-write-verify,
+ * pre-task-scope-disjoint). The event records are written via
+ * `eventsFilePath(<session root>)` (`scripts/lib/events.mjs`), which maps a
+ * linked worktree to its main checkout — ONE ledger per repo (owner decision on
+ * #1514 point 1), so a worktree session's events stay readable after the
+ * worktree is gone.
  *
  * NOT the launch dir whenever the session works elsewhere: `$CLAUDE_PROJECT_DIR`
  * stays on the dir the session was LAUNCHED in after it enters a worktree
@@ -451,6 +456,109 @@ export function resolveSessionRoot(cwd, toplevel = '') {
   const root = _liftHarnessAgentWorktree(repoRoot);
   const launch = launchDirFromEnv();
   return launch !== '' && _isStrictlyInside(launch, root) ? launch : root;
+}
+
+// ---------------------------------------------------------------------------
+// resolveEventsLedgerRoot (#1514 point 1)
+// ---------------------------------------------------------------------------
+
+/** Repo root holding a `.git` entry → its main checkout ('' = none). Per process. */
+const _mainCheckoutMemo = new Map();
+
+/**
+ * The MAIN checkout of the linked git worktree rooted at `root` (whose `.git`
+ * is a FILE), or `''` when `root` is no linked worktree of a non-bare repo or
+ * its git metadata cannot be read.
+ *
+ * SPAWN-FREE, so it is safe on the hook hot path (every default `emitEvent()`):
+ * git's own on-disk layout answers it. A linked worktree's `.git` file reads
+ * `gitdir: <X>` (X = `<common>/worktrees/<name>`), and `<X>/commondir` names the
+ * common dir relative to X. Only a common dir named `.git` counts — its parent
+ * is the main checkout. A submodule (`gitdir:` into `.git/modules/<name>`, no
+ * `commondir` file) and a bare repo's worktree (common dir `repo.git`) fall
+ * through to `''`. Never throws.
+ *
+ * @param {string} root  a directory holding a `.git` entry
+ * @returns {string}
+ */
+function _mainCheckoutOfLinkedWorktree(root) {
+  if (_mainCheckoutMemo.has(root)) return _mainCheckoutMemo.get(root);
+  let main = '';
+  try {
+    const dotGit = path.join(root, '.git');
+    if (statSync(dotGit).isFile()) {
+      const match = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
+      if (match) {
+        const gitDir = path.resolve(root, match[1]);
+        const commonDir = path.resolve(gitDir, readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim());
+        if (path.basename(commonDir) === '.git' && commonDir !== gitDir) main = path.dirname(commonDir);
+      }
+    }
+  } catch {
+    main = ''; // unreadable metadata, no `commondir` (a submodule) — the caller falls back
+  }
+  _mainCheckoutMemo.set(root, main);
+  return main;
+}
+
+/**
+ * `dir` mapped from a linked worktree to the SAME relative spot in its main
+ * checkout (a launch in a worktree's subdirectory keeps its subdirectory), or
+ * `''` when `dir` sits in no linked worktree.
+ *
+ * @param {string} dir  absolute
+ * @returns {string}
+ */
+function _inMainCheckout(dir) {
+  const ancestor = dotGitAncestor(dir);
+  if (!ancestor) return '';
+  const main = _mainCheckoutOfLinkedWorktree(ancestor);
+  return main ? path.join(main, path.relative(ancestor, dir)) : '';
+}
+
+/**
+ * The root of the ONE events ledger (`<root>/.orchestrator/metrics/events.jsonl`)
+ * — owner decision on #1514 point 1: "Event-Ledger immer im Haupt-Checkout".
+ *
+ * Precedence:
+ *   1. the launch dir from env ({@link launchDirFromEnv}, `path.resolve`d) —
+ *      mapped to the main checkout when it IS a linked worktree. A session
+ *      LAUNCHED in a worktree (headless, offload, Codex) hands its hooks
+ *      `$CLAUDE_PROJECT_DIR` = the worktree; without the mapping its hooks wrote
+ *      the worktree's ledger while its scripts (rung 2) wrote the main one;
+ *   2. when `cwd` sits in a LINKED git worktree, that repo's main checkout.
+ *      Measured 2026-10-03: a Bash-tool command does NOT get
+ *      `$CLAUDE_PROJECT_DIR`, and after `EnterWorktree` its cwd is the
+ *      worktree — without this rung a coordinator-run script (`scope-echo
+ *      --verify`, `materialize-wave-scope`) wrote and read the worktree's
+ *      ledger while the hooks wrote the launch dir's;
+ *   3. {@link getProjectDir} — the pre-#1514 answer, unchanged for a plain
+ *      repo, a bare repo's worktree, a submodule and a non-git directory.
+ *
+ * Spawn-free (see {@link _mainCheckoutOfLinkedWorktree}). Deliberately NOT
+ * folded into `resolveProjectDir()`: every other consumer of the project dir
+ * (config, STATE.md, manifests) keeps its answer.
+ *
+ * `repoRoot` given: the same mapping applied to that root — for a caller that
+ * holds a repo root and wants THE ledger of that repo.
+ *
+ * @param {string} [repoRoot]  an explicit root to map (skips the env/cwd rungs)
+ * @param {string} [cwd=process.cwd()]
+ * @returns {string}  Absolute path
+ */
+export function resolveEventsLedgerRoot(repoRoot, cwd = process.cwd()) {
+  if (typeof repoRoot === 'string' && repoRoot.trim() !== '') {
+    const root = path.resolve(repoRoot);
+    return _inMainCheckout(root) || root;
+  }
+  const launchRaw = launchDirFromEnv();
+  if (launchRaw !== '') {
+    const launch = path.resolve(launchRaw);
+    return _inMainCheckout(launch) || launch;
+  }
+  const ancestor = dotGitAncestor(path.resolve(cwd));
+  const main = ancestor ? _mainCheckoutOfLinkedWorktree(ancestor) : '';
+  return main || getProjectDir();
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +703,7 @@ export function _resetPlatformCache() {
   _cache.projectDir = undefined;
   _cache.stateDir = undefined;
   _cache.configFile = undefined;
+  _mainCheckoutMemo.clear();
 }
 
 // The deprecated `export let SO_PLATFORM / SO_PLUGIN_ROOT / SO_PROJECT_DIR /

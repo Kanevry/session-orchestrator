@@ -172,12 +172,14 @@
  * ## Observability — the ledger half of #1092
  *
  * Every dispatch DECISION also appends one `orchestrator.wave_dispatch.scope_checked`
- * record to `<session root>/.orchestrator/metrics/events.jsonl` — the root
- * `resolveSessionRoot()` resolves (`scripts/lib/platform.mjs`: the git toplevel
- * of the payload `cwd` — its nearest `.git` ancestor when git cannot answer —
- * but never above a launch dir inside it; so neither the subdirectory a `cd`
- * moved to, #1489 Pkt 6, nor the launch dir a worktree session left), which is
- * also where the ledger and its lock live. The reason it
+ * record to the events ledger of the session root's repo —
+ * `eventsFilePath(sessionRoot)`, which maps a linked worktree to its main
+ * checkout (one ledger per repo, #1514 point 1). The DISPATCH ledger and its
+ * lock stay on the root `resolveSessionRoot()` resolves (`scripts/lib/platform.mjs`: the git
+ * toplevel of the payload `cwd` — its nearest `.git` ancestor when git cannot
+ * answer — but never above a launch dir inside it; so neither the subdirectory
+ * a `cd` moved to, #1489 Pkt 6, nor the launch dir a worktree session left),
+ * and session attribution is still read there. The reason the record
  * exists is matrix rows 5/6: the no-signal ALLOW used to be byte-identical to
  * "the guard never ran", and the in-ledger counter added first is a WAVE tally —
  * it cannot say WHICH dispatch carried a scope. Payload: `wave` (omitted, never
