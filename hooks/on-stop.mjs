@@ -400,10 +400,16 @@ function reaperTriggerField(trigger) {
  * @param {{reason?: string}|null} [reaperTrigger]  `maybeTriggerOrphanScan()` result.
  */
 async function handleStop(input, reaperTrigger = null) {
+  // Two roots, by writer (#1511 point b). `current-session.json` and
+  // `session.lock` (session id, lock heartbeat, duration) stay at the LAUNCH
+  // dir: on-session-start.mjs writes both at `resolveProjectDir()`. The wave
+  // and the commit/branch describe the tree the session WORKS in — after
+  // EnterWorktree that is the session root, not the launch checkout.
   const projectRoot = getProjectDir();
+  const sessionRoot = resolveSessionRoot(input?.cwd);
 
-  const wave = await readWaveNumber(resolveSessionRoot(input?.cwd), input);
-  const { commit, branch } = await gitInfo(projectRoot);
+  const wave = await readWaveNumber(sessionRoot, input);
+  const { commit, branch } = await gitInfo(sessionRoot);
 
   const { sessionId, semanticSessionId } = await resolveSessionId(input, projectRoot);
 

@@ -48,8 +48,8 @@
 //     `git commit --no-verify` skips it entirely (operator opts out by name).
 
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { isAbsolute, join, relative, sep } from 'node:path';
 
 // Re-use existing helpers from scripts/lib/hardening.mjs.
 // IMPORTANT: import is resolved relative to THIS file's location (the hook
@@ -59,6 +59,7 @@ import { join, relative } from 'node:path';
 import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 import { withStagingFenceLock } from '../scripts/lib/session-lock.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
+import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { classifyEmptyScope, findOwnScopeFile, sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
@@ -175,14 +176,20 @@ function mtimeMsOf(file) {
  *
  * @param {object} p
  * @param {Record<string, unknown>} p.scope parsed manifest
- * @param {string[]} p.stagedFiles
+ * @param {string[]} p.stagedFiles  repo-relative, as `git diff --cached` prints them
+ * @param {(f: string) => string|null} [p.scopePathOf]  a staged path as the
+ *   manifest names it — relative to the SESSION root; identity when that is the
+ *   repo root. `null` = the path lies OUTSIDE the session root: a violation
+ *   without pattern matching, since a `../`-prefixed path would match a glob
+ *   like `**\/*.mjs` and enforce-scope denies every write outside its root
+ *   (REQ-04).
  * @param {string} p.scopeRel manifest path for messages, repo-relative
  * @param {Set<string>} p.ownIds this process's session ids
  * @param {number|null} p.scopeMtimeMs
  * @param {number|null} p.sessionAge ms since the newest session clock
  * @returns {{action: 'pass'|'report'|'block', lines: string[]}}
  */
-function scopeCommitVerdict({ scope, stagedFiles, scopeRel, ownIds, scopeMtimeMs, sessionAge }) {
+function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeRel, ownIds, scopeMtimeMs, sessionAge }) {
   if (stagedFiles.length === 0) return { action: 'pass', lines: [] };
 
   // Same classifier and same disposition as enforce-scope Gate 3b: only a
@@ -200,7 +207,10 @@ function scopeCommitVerdict({ scope, stagedFiles, scopeRel, ownIds, scopeMtimeMs
   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
   if (allowedPaths.length > 0) {
     const violations = stagedFiles.filter(
-      (f) => !allowedPaths.some((pattern) => pathMatchesPattern(f, pattern)),
+      (f) => {
+        const scoped = scopePathOf(f);
+        return scoped === null || !allowedPaths.some((pattern) => pathMatchesPattern(scoped, pattern));
+      },
     );
     if (violations.length === 0) return { action: 'pass', lines: [] };
     // Blocks under `warn` too — see the header: in a warn-mode wave this is
@@ -259,6 +269,30 @@ function scopeCommitVerdict({ scope, stagedFiles, scopeRel, ownIds, scopeMtimeMs
 }
 
 /**
+ * The session root a commit at `repoRoot` is judged against when it lies
+ * STRICTLY inside the repo, else `null` (judge at `repoRoot`, as before) — see
+ * the call site in `main()` (#1511 point d). Both sides realpath-resolved, so
+ * macOS `/var` vs `/private/var` cannot split one directory in two.
+ *
+ * @param {string} repoRoot  `git rev-parse --show-toplevel`
+ * @returns {{sessionRoot: string, realRepoRoot: string}|null}
+ */
+function subdirSessionRoot(repoRoot) {
+  const canon = (p) => {
+    // `.native` canonicalises letter case on case-insensitive APFS (as
+    // enforce-scope's clamp does since #1504 pt 8); the JS realpath keeps a
+    // case-different CLAUDE_PROJECT_DIR verbatim, which relativises to `../..`
+    // against the git toplevel and switches the subdirectory mode off silently.
+    try { return realpathSync.native(p); } catch { return p; }
+  };
+  const realRepoRoot = canon(repoRoot);
+  const sessionRoot = canon(resolveSessionRoot(repoRoot, repoRoot));
+  const rel = relative(realRepoRoot, sessionRoot);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return null;
+  return { sessionRoot, realRepoRoot };
+}
+
+/**
  * Both sub-modes, in the order the pre-commit hook needs them. Every statement
  * here used to sit at module top level, which meant a bare `import()` of this
  * file ran `git rev-parse` / `git diff --cached` and could exit the IMPORTING
@@ -282,8 +316,34 @@ async function main() {
   // committing session's env; there is no hook payload here, so the env tier is
   // the only process-local identity.
   const ownIds = new Set(readProcessLocalSessionIds());
-  const located = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
-  const scopePath = located.path ?? located.foreignPath;
+
+  // #1511 point d — ALSO read the manifest at the SESSION root the scope guards
+  // resolve (`resolveSessionRoot`, enforce-scope.mjs): a session launched in a
+  // repo SUBDIRECTORY keeps its manifest there, so the repo root held none and
+  // sub-mode B never ran for it. git runs this hook at the worktree top level
+  // and the committing session's env (the launch dir) is inherited, so the
+  // toplevel stands in for the payload `cwd` the Edit/Write guards get. Only a
+  // root STRICTLY inside the repo is adopted: the one rung that answers above it
+  // (a harness `agent-<hex>` worktree lifted to its launch checkout) would judge
+  // this repo's staged paths against another tree's manifest.
+  //
+  // The repo-root manifest is ALWAYS judged exactly as before #1511 d, and the
+  // subdirectory manifest is judged IN ADDITION, each against its own path
+  // mapping; either one blocking blocks. So the verdict is never laxer than the
+  // repo-root-only guard it extends — choosing ONE of the two manifests let an
+  // unbound or `enforcement: off` subdirectory manifest silence a repo-root wave
+  // that blocked the same commit (second review, MED-1).
+  const subdir = subdirSessionRoot(repoRoot);
+  const judgements = [{ root: repoRoot, scopePathOf: (f) => f }];
+  if (subdir !== null) {
+    judgements.push({
+      root: subdir.sessionRoot,
+      scopePathOf: (f) => {
+        const rel = relative(subdir.sessionRoot, join(subdir.realRepoRoot, f));
+        return rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel) ? null : rel;
+      },
+    });
+  }
   const fenceDir = join(repoRoot, '.orchestrator', 'staging-fence');
 
   // -------------------------------------------------------------------------
@@ -293,7 +353,11 @@ async function main() {
   const stagedOutput = execSync('git diff --cached --name-only', { encoding: 'utf8' });
   const stagedFiles = stagedOutput.split('\n').filter(Boolean);
 
-  if (scopePath) {
+  let blocked = false;
+  for (const { root, scopePathOf } of judgements) {
+    const located = findOwnScopeFile(root, ownIds, classifyManifestSession);
+    const scopePath = located.path ?? located.foreignPath;
+    if (!scopePath) continue;
     let scope;
     try {
       scope = JSON.parse(readFileSync(scopePath, 'utf8'));
@@ -305,14 +369,16 @@ async function main() {
     const verdict = scopeCommitVerdict({
       scope: scope !== null && typeof scope === 'object' ? scope : {},
       stagedFiles,
+      scopePathOf,
       scopeRel: relative(repoRoot, scopePath) || scopePath,
       ownIds,
       scopeMtimeMs: mtimeMsOf(scopePath),
-      sessionAge: sessionAgeMs(repoRoot),
+      sessionAge: sessionAgeMs(root),
     });
     for (const line of verdict.lines) process.stderr.write(`${line}\n`);
-    if (verdict.action === 'block') process.exit(1);
+    if (verdict.action === 'block') blocked = true;
   }
+  if (blocked) process.exit(1);
 
   // -------------------------------------------------------------------------
   // Sub-mode C — cross-agent staging-fence reconciliation (issue #552)

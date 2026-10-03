@@ -830,6 +830,63 @@ describe('post-bash-write-verify E2E', () => {
     expect(JSON.parse(union.stdout)).not.toContain('peer/**');
   });
 
+  it('honours NO peer record once the sidecar changed under a standing manifest (#1504 point 5)', () => {
+    // The bug: the sidecar had no integrity anchor. One appended
+    // `peer-session-*` record AFTER dispatch turned this session's own
+    // out-of-scope write into a "peer write, not a violation" notice — the
+    // control hash covers only wave-scope.json (docs/scope-collision-guard.md § 2.2).
+    mkdirSync(join(tmp, '.claude', 'filescopes'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, role: 'Impl', enforcement: 'warn', allowedPaths: ['hooks/**'] }),
+    );
+    const sidecar = join(tmp, '.claude', 'filescopes', 'wave-4.scopes.json');
+    writeFileSync(sidecar, JSON.stringify([{ id: 'a1', files: ['hooks/**'] }]));
+    runHook(); // baseline — binds the sidecar to this manifest
+    writeFileSync(sidecar, JSON.stringify([
+      { id: 'a1', files: ['hooks/**'] },
+      { id: 'peer-session-forged', files: ['laundered/**'] },
+    ]));
+    mkdirSync(join(tmp, 'laundered'), { recursive: true });
+    writeFileSync(join(tmp, 'laundered', 'x.mjs'), 'pwned\n');
+
+    const res = runHook();
+    expect(res.status).toBe(0);
+    expect(res.stderr).not.toContain('peer write');
+    expect(res.stderr).toContain('OUTSIDE the wave');
+    expect(res.stderr).toContain('laundered/x.mjs');
+    expect(res.stderr).toContain('wave-4.scopes.json changed since wave-scope.json was written');
+  });
+
+  it('names a sidecar mismatch ONCE per binding, while its peer records stay disabled (#1504 point 5, HR-101)', () => {
+    // The bug: a legitimate mid-wave Peer-Scope-Union rewrites the sidecar but
+    // leaves the manifest bytes unchanged (`--union` excludes peer records), so
+    // the ⚠ mismatch notice fired on EVERY later Bash call of the wave.
+    mkdirSync(join(tmp, '.claude', 'filescopes'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, role: 'Impl', enforcement: 'warn', allowedPaths: ['hooks/**'] }),
+    );
+    const sidecar = join(tmp, '.claude', 'filescopes', 'wave-4.scopes.json');
+    writeFileSync(sidecar, JSON.stringify([{ id: 'a1', files: ['hooks/**'] }]));
+    runHook(); // baseline — binds the sidecar to this manifest
+    writeFileSync(sidecar, JSON.stringify([
+      { id: 'a1', files: ['hooks/**'] },
+      { id: 'peer-session-b', files: ['peer/**'] },
+    ]));
+    const first = runHook();
+    expect(first.stderr).toContain('wave-4.scopes.json changed since wave-scope.json was written');
+
+    mkdirSync(join(tmp, 'peer'), { recursive: true });
+    writeFileSync(join(tmp, 'peer', 'later.mjs'), 'x\n');
+    const second = runHook();
+    expect(second.stderr).not.toContain('changed since wave-scope.json was written');
+    // Still disabled: the peer's path reports as a violation, not a peer write.
+    expect(second.stderr).not.toContain('peer write');
+    expect(second.stderr).toContain('peer/later.mjs');
+    expect(second.stderr).toContain('OUTSIDE the wave');
+  });
+
   it('is unchanged when the aggregate sidecar is absent (#1195)', () => {
     writeScope(['hooks/**']);
     runHook();

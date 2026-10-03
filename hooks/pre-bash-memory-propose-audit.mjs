@@ -29,7 +29,7 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
@@ -246,18 +246,23 @@ async function main() {
   if (!MEMORY_PROPOSE_REGEX.test(command)) return emitAllow();
 
   // Matched — proceed with audit logging (G4-G7)
-  const projectDir = process.env.CLAUDE_PROJECT_DIR
-    ?? process.env.CODEX_PROJECT_DIR
-    ?? process.cwd();
+  // Two roots, by writer (#1511 point c). The session-id fallback reads
+  // `current-session.json` where on-session-start.mjs WRITES it — the launch dir,
+  // through the same resolver (`resolveProjectDir`; the hand-rolled
+  // `CLAUDE_PROJECT_DIR ?? CODEX_PROJECT_DIR ?? process.cwd()` kept a set-but-
+  // empty var, skipped the Cursor/Pi vars and never walked up). The wave and the
+  // recorded `cwd` describe the tree the session WORKS in: the SESSION root the
+  // scope guards use (#1504 point 4), which after EnterWorktree is not the
+  // launch dir.
+  const projectDir = getProjectDir();
+  const sessionRoot = resolveSessionRoot(input.cwd);
 
   // G4 — resolve session_id
   const sessionId = await resolveSessionId(input, projectDir);
 
   // G5 — resolve wave
-  // Read at the SESSION root the scope guards use (#1504 point 4), not at the
-  // launch dir above, which stays put while the session works in a worktree.
   const wave = await resolveWave(
-    resolveSessionRoot(input.cwd),
+    sessionRoot,
     new Set(readProcessLocalSessionIds({ hookInput: input })),
   );
 
@@ -280,7 +285,7 @@ async function main() {
       command_hash: commandHash,
       flags_present: flags,
       argv_length: command.length,
-      cwd: relativeCwd(process.cwd(), projectDir),
+      cwd: relativeCwd(process.cwd(), sessionRoot),
       exit_code: null,
     });
   } catch { /* telemetry never blocks the hook (#1183) */ }

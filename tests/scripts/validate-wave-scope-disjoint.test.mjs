@@ -507,6 +507,54 @@ describe('validate-wave-scope.mjs — #1020 no-flag regression (R3/R4)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// #1510 f — --no-manifest: the sidecar alone, no stdin
+//
+// BUG CAUGHT: `/plan` checks disjointness before any wave-scope.json exists, and
+// --assert-disjoint refused to run without a manifest on stdin, so the caller had
+// to fabricate one. The flag must be EXPLICIT: empty stdin without it stays an
+// error (#1083 fail-closed class), never a silent "no manifest, fine".
+// ---------------------------------------------------------------------------
+
+describe('validate-wave-scope.mjs — --assert-disjoint --no-manifest (#1510 f)', () => {
+  const OVERLAP = [{ id: 'A', files: ['scripts/a.mjs'] }, { id: 'B', files: ['scripts/a.mjs'] }];
+  const APART = [{ id: 'A', files: ['scripts/a.mjs'] }, { id: 'B', files: ['scripts/b.mjs'] }];
+  const run = (sidecar, extra = [], input = '') => {
+    const dir = mkdtempSync(join(tmpdir(), 'vws-nomanifest-'));
+    const p = join(dir, 'agent-scopes.json');
+    writeFileSync(p, JSON.stringify(sidecar));
+    try {
+      return spawnSync('node', [SCRIPT, '--assert-disjoint', p, ...extra], { input, encoding: 'utf8', cwd: REPO_ROOT });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  };
+
+  it('checks the sidecar with NO manifest on stdin: exit 0 disjoint, exit 1 on a collision', () => {
+    const ok = run(APART, ['--no-manifest']);
+    expect(ok.status).toBe(0);
+    expect(ok.stdout).toBe('');
+    const bad = run(OVERLAP, ['--no-manifest']);
+    expect(bad.status).toBe(1);
+    expect(bad.stderr).toMatch(/wave scope collision/);
+  });
+
+  it('keeps empty stdin an ERROR without the flag (fail-closed)', () => {
+    const r = run(APART);
+    expect(r.status).toBe(1);
+    expect(r.stdout).toBe('');
+  });
+
+  it.each([
+    [['--union', 'x.json'], '--union'],
+    [['--assert-subset', 'x.json'], '--assert-subset'],
+  ])('rejects --no-manifest combined with a manifest-reading mode (%j)', (extra, named) => {
+    const r = run(APART, ['--no-manifest', ...extra]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain(`--no-manifest cannot be combined with ${named}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // FAKE REGRESSION — #1020 Vorfall 3, at the CLI boundary
 //
 // The library-level fake regression (tests/lib/scope-gate-collisions.test.mjs)
