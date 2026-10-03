@@ -185,7 +185,7 @@
 
 import { tokenize } from './affinity.mjs';
 import { readLearnings } from './io.mjs';
-import { kebab } from './kebab.mjs';
+import { learningKeyOf } from './kebab.mjs';
 import { normalizeDialects } from './schema.mjs';
 
 // ---------------------------------------------------------------------------
@@ -441,27 +441,18 @@ export function emptyPools() {
 /**
  * Logical identity of a learning: `` `${type}/${kebab(title || subject)}` ``.
  *
- * Returns `null` when either half is unusable — mirroring
- * `validate/check-learning-provenance.mjs::learningKeyOf`, so an unkeyable
- * record simply does not participate in the exact-key pass. It still seeds and
+ * Returns `null` when either half is unusable (non-record input, blank
+ * type/title/subject, or an all-symbol title that kebabs to '') — delegates to
+ * the shared `kebab.mjs::learningKeyOf` (#1021) so the key space cannot fork
+ * from the provenance checker's. An unkeyable record simply does not
+ * participate in the exact-key pass. It still seeds and
  * joins pools: a missing title is not a reason to hide a learning from dedupe.
  *
  * @param {unknown} record
  * @returns {string|null}
  */
 export function learningKey(record) {
-  if (!_isRecord(record)) return null;
-  const type = typeof record.type === 'string' ? record.type.trim() : '';
-  const titleOrSubject =
-    (typeof record.title === 'string' && record.title.trim() !== '' ? record.title : '') ||
-    (typeof record.subject === 'string' && record.subject.trim() !== '' ? record.subject : '');
-  if (type === '' || titleOrSubject === '') return null;
-  const slug = kebab(titleOrSubject);
-  // `kebab` may legally return '' (all-symbol input) — an empty slug is not an
-  // identity, so such a record is unkeyable rather than colliding with every
-  // other empty-slug record of the same type.
-  if (slug === '') return null;
-  return `${type}/${slug}`;
+  return learningKeyOf(record);
 }
 
 /**

@@ -98,9 +98,9 @@
 import { parseArgs } from 'node:util';
 import { readFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { createHash } from 'node:crypto';
 
 import { findProjectRoot } from './lib/common.mjs';
+import { deriveFenceToken } from './lib/reconcile/sanitize.mjs';
 import { loadApplicableRules } from './lib/rule-loader.mjs';
 import { readHostClass } from './lib/autopilot/telemetry.mjs';
 import { resolveStateArtifactPath, resolveStateMdPath } from './lib/state-md.mjs';
@@ -216,30 +216,6 @@ function neutraliseWrapperForgeries(text) {
     out = out.replace(new RegExp(escapeRegExp(literal), 'gi'), WRAPPER_FORGERY_REDACTION);
   }
   return out;
-}
-
-/**
- * Derive this block's fence token from its own payload.
- *
- * Deterministic by construction (same input → same token), so the CLI's stdout
- * stays reproducible. The re-derivation loop makes the absence guarantee
- * STRUCTURAL rather than probabilistic: a token that literally occurred in the
- * payload would be forgeable in a closing tag, so we re-hash with a counter
- * until it does not occur. Each iteration is a fresh 32-bit draw against a
- * fixed payload, so termination is immediate in practice; the cap exists only
- * so a pathological input cannot spin, and its fallback (the full 64-hex
- * digest, which no realistic rule body contains) still satisfies the guarantee.
- *
- * @param {string} payload - the concatenated rule bodies this token must fence
- * @returns {string} a hex token provably absent from `payload`
- */
-function deriveFenceToken(payload) {
-  const digest = (salt) => createHash('sha256').update(`${salt}\n${payload}`).digest('hex');
-  for (let salt = 0; salt < 64; salt++) {
-    const token = digest(salt).slice(0, 8);
-    if (!payload.includes(token)) return token;
-  }
-  return digest(64);
 }
 
 /**

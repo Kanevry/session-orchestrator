@@ -41,6 +41,7 @@ import { isSessionConfigHeading } from '../../scripts/lib/config/section-extract
 import { FRONTMATTER_NOT_AT_TOP, parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
+import { kebab } from '../../scripts/lib/learnings/kebab.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -1215,13 +1216,6 @@ function main() {
     // boundary would add real coupling for one 30-character literal. The two
     // copies are pinned equal by `tests/lib/reconcile/renderer.test.mjs`.
     const EVIDENCE_DIGEST_RE = /^sha256-v1:[0-9a-f]{64}$/;
-
-    // Slugify function mirroring emitter.mjs `kebab()`.
-    const kebab = (s) =>
-      String(s)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-+|-+$/g, '');
 
     // Build the set of known learning keys from learnings.jsonl.
     // key → expires_at (ISO string or null)
