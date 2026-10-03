@@ -55,6 +55,7 @@ import {
 import { buildBackfillIndex, parseSessionId } from './lib/vault-repo-backfill.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { atomicWriteText, envelopeToError } from './lib/io.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -693,7 +694,6 @@ async function writeManifest({ vaultDir, derivableOnly, summary, moves }) {
 
   const ts = new Date().toISOString().replace(/[:.]/g, '-');
   const manifestPath = path.join(manifestDir, `relocation-manifest-${ts}.json`);
-  const tmpPath = `${manifestPath}.tmp-${process.pid}`;
 
   // Store vault-relative paths in the manifest
   const movesRel = moves.map((m) => ({
@@ -714,8 +714,10 @@ async function writeManifest({ vaultDir, derivableOnly, summary, moves }) {
     moves: movesRel,
   };
 
-  await fs.writeFile(tmpPath, JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-  await fs.rename(tmpPath, manifestPath);
+  const res = await atomicWriteText(manifestPath, JSON.stringify(manifest, null, 2) + '\n', {
+    tmpPrefix: `.${path.basename(manifestPath)}.tmp`,
+  });
+  if (!res.ok) throw envelopeToError(res);
 
   return manifestPath;
 }

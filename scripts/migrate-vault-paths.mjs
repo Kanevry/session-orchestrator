@@ -58,6 +58,7 @@ import {
 } from './lib/vault-migration-rules.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { atomicWriteText, envelopeToError } from './lib/io.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -529,12 +530,14 @@ function findHits(filePath, content) {
 }
 
 /**
- * Atomic write: write to <path>.migrate-tmp, then rename.
+ * Atomic write via `atomicWriteText` (`<dir>/.<name>.tmp.<hex>`, then rename);
+ * throws with the original message and `code` on failure.
  */
 async function atomicWrite(filePath, content) {
-  const tmp = `${filePath}.migrate-tmp-${process.pid}-${Date.now()}`;
-  await fs.writeFile(tmp, content, 'utf8');
-  await fs.rename(tmp, filePath);
+  const res = await atomicWriteText(filePath, content, {
+    tmpPrefix: `.${path.basename(filePath)}.tmp`,
+  });
+  if (!res.ok) throw envelopeToError(res);
 }
 
 /**

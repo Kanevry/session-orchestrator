@@ -43,6 +43,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import { atomicWriteWithBackup } from './io.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -164,15 +165,16 @@ function ensureCacheLoaded(repoRoot) {
 function persistCache(repoRoot) {
   if (_cache === null) return;
   const file = cachePathFor(repoRoot);
-  const dir = path.dirname(file);
+  let body;
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    const obj = Object.fromEntries(_cache.entries());
-    const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmp, file);
+    body = JSON.stringify(Object.fromEntries(_cache.entries()), null, 2) + '\n';
   } catch (err) {
-    console.warn(`slopcheck: cache write failed (${err.code ?? 'unknown'}): ${err.message}`);
+    console.warn(`slopcheck: cache write failed (serialize): ${err.message}`);
+    return;
+  }
+  const res = atomicWriteWithBackup(file, body, { tmpPrefix: `.${path.basename(file)}.tmp` });
+  if (!res.ok) {
+    console.warn(`slopcheck: cache write failed (${res.code ?? 'unknown'}): ${res.error}`);
   }
 }
 

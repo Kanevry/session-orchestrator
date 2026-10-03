@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 
@@ -122,9 +122,11 @@ describe('_writeWorktreeMeta', () => {
       repoRoot: sandbox,
     });
 
+    // Tmp names are `.<suffix>.json.tmp.<hex>` (atomicWriteText, #1032) — match
+    // the `.tmp` segment, not a fixed name, or this check can never fail.
     const metaDir = join(sandbox, WORKTREE_META_DIR);
-    const tmpFile = join(metaDir, `${suffix}.json.tmp`);
-    expect(existsSync(tmpFile)).toBe(false);
+    expect(readdirSync(metaDir).filter((f) => /\.tmp([.-]|$)/.test(f))).toEqual([]);
+    expect(readdirSync(metaDir)).toContain(`${suffix}.json`);
   });
 
   it('sets baseSha to null when null is provided', async () => {

@@ -62,7 +62,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -75,6 +75,7 @@ import {
   spawnInGroup,
 } from './process-group.mjs';
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
+import { atomicWriteWithBackup, writeJsonAtomicSync } from './io.mjs';
 import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
@@ -406,12 +407,10 @@ function writeLastGreenSha(repoRoot) {
     if (sha.status !== 0 || !sha.stdout) return;
     const head = sha.stdout.trim();
     if (!head) return;
-    const runtimeDir = join(repoRoot, '.orchestrator', 'runtime');
-    mkdirSync(runtimeDir, { recursive: true });
-    const target = join(runtimeDir, 'last-green-sha.txt');
-    const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-    writeFileSync(tmp, head + '\n', 'utf8');
-    renameSync(tmp, target);
+    // Never throws; an fs failure is the same silent best-effort as before.
+    atomicWriteWithBackup(join(repoRoot, '.orchestrator', 'runtime', 'last-green-sha.txt'), head + '\n', {
+      tmpPrefix: '.tmp-last-green-sha',
+    });
   } catch {
     // best-effort
   }
@@ -657,14 +656,12 @@ function readCorrectiveContext(repoRoot) {
 function writeDiagnosticsBundle(repoRoot, bundle) {
   try {
     const dir = join(repoRoot, '.orchestrator', 'metrics', 'verification-failures');
-    mkdirSync(dir, { recursive: true });
     // Replace colons in ISO timestamp for cross-fs portability.
     const ts = new Date().toISOString().replace(/:/g, '-');
     const target = join(dir, `${ts}.json`);
-    const tmp = `${target}.tmp-${process.pid}-${Date.now()}`;
-    writeFileSync(tmp, JSON.stringify(redactDiagnosticsBundle(bundle), null, 2) + '\n', 'utf8');
-    renameSync(tmp, target);
-    return target;
+    // Same bytes as before: indent 2 + trailing newline, mkdir -p of `dir`.
+    const res = writeJsonAtomicSync(target, redactDiagnosticsBundle(bundle), { tmpPrefix: '.tmp-diagnostics' });
+    return res.ok ? target : null;
   } catch {
     return null;
   }

@@ -123,7 +123,7 @@
  */
 
 import { existsSync, realpathSync, statSync } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import {
@@ -135,6 +135,7 @@ import {
   warnUnparseableLines,
 } from './lib/learnings/expiry-sweep.mjs';
 import { readLearningsSnapshot, parseLearningsText } from './lib/learnings/io.mjs';
+import { atomicWriteText, envelopeToError } from './lib/io.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
@@ -668,9 +669,10 @@ async function runSnapshot(args) {
       ...snap.entries.map((e) => JSON.stringify(e)),
     ];
     await mkdir(path.dirname(args.snapshot), { recursive: true });
-    const tmp = `${args.snapshot}.tmp-${process.pid}`;
-    await writeFile(tmp, lines.join('\n') + '\n', 'utf8');
-    await rename(tmp, args.snapshot);
+    const res = await atomicWriteText(args.snapshot, lines.join('\n') + '\n', {
+      tmpPrefix: `.${path.basename(args.snapshot)}.tmp`,
+    });
+    if (!res.ok) throw envelopeToError(res);
   } catch (err) {
     process.stderr.write(`sweep-expired-learnings: snapshot failed: ${err.message}\n`);
     process.exit(2);

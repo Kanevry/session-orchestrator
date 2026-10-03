@@ -21,10 +21,10 @@
  * No external deps — Node 20+ stdlib only.
  */
 
-import { readFile, writeFile, rename, unlink, mkdir } from 'node:fs/promises';
+import { readFile, unlink, mkdir } from 'node:fs/promises';
 import { existsSync, statSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { atomicWriteText, envelopeToError } from './io.mjs';
 
 import { readCanonicalSessions } from './sessions-canonical.mjs';
 import { filterRealSessions } from './session-schema.mjs';
@@ -205,7 +205,7 @@ function pendingDreamPath(repoRoot) {
  * the metadata session-end's Final Report and the next session's --apply-pending
  * step both rely on.
  *
- * Atomicity: write to `<path>.<rand>.tmp`, then rename(). Same-fs rename is
+ * Atomicity: `atomicWriteText` (`<dir>/.<name>.tmp.<hex>`, then rename()). Same-fs rename is
  * atomic on POSIX — observers see either the previous file or the new one,
  * never a half-written intermediate.
  *
@@ -245,11 +245,10 @@ export async function writePendingDream({
   ].join('\n');
 
   const content = `${frontmatter}${diff}${diff.endsWith('\n') ? '' : '\n'}`;
-  const tmp = `${target}.${randomUUID().slice(0, 8)}.tmp`;
-  await writeFile(tmp, content, 'utf8');
-  await rename(tmp, target);
+  const res = await atomicWriteText(target, content, { tmpPrefix: `.${path.basename(target)}.tmp` });
+  if (!res.ok) throw envelopeToError(res);
 
-  return { path: target, bytes: Buffer.byteLength(content, 'utf8') };
+  return { path: target, bytes: res.bytes };
 }
 
 /**
@@ -472,9 +471,8 @@ export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }
 
   const newBody = extractedBlock.trimEnd() + '\n';
   await mkdir(path.dirname(memoryPath), { recursive: true });
-  const tmp = `${memoryPath}.${randomUUID().slice(0, 8)}.tmp`;
-  await writeFile(tmp, newBody, 'utf8');
-  await rename(tmp, memoryPath);
+  const res = await atomicWriteText(memoryPath, newBody, { tmpPrefix: '.MEMORY.md.tmp' });
+  if (!res.ok) throw envelopeToError(res);
 
   const linesAfter = newBody.length === 0 ? 0 : newBody.split('\n').length;
 

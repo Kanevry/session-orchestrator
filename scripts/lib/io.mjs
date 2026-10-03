@@ -16,7 +16,7 @@
  * #457; writeJsonAtomicSync extracted for #558 M1.
  */
 
-import { writeFile, rename, mkdir } from 'node:fs/promises';
+import { writeFile, rename, mkdir, copyFile, unlink } from 'node:fs/promises';
 import {
   mkdirSync,
   writeFileSync,
@@ -888,7 +888,10 @@ export async function writeJsonAtomic(filePath, value, opts = {}) {
  * @param {object} [opts]
  * @param {number} [opts.indent=2]      JSON.stringify indent.
  * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
- * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string }}
+ * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string, code: string|null }}
+ *   `code` is the failing call's `err.code` (`'ENOSPC'`, `'EACCES'`, …), or `null`
+ *   when the error carried none (a serialization TypeError, the partial-adapter
+ *   refusal). Additive (#1032): `error` keeps its exact text.
  */
 export function writeJsonAtomicSync(filePath, data, opts = {}) {
   const { indent = 2, tmpPrefix = '.tmp' } = opts;
@@ -897,7 +900,7 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
   try {
     body = JSON.stringify(data, null, indent) + '\n';
   } catch (err) {
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return _fsErrorEnvelope(err);
   }
 
   const res = atomicWriteWithBackup(filePath, body, { tmpPrefix });
@@ -941,9 +944,10 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
  * envelope is returned. Without that, every failed write leaves a
  * `<tmpPrefix>.<hex>` behind — the board writer's failure mode is a retry loop,
  * so the litter accumulates in the operator's vault directory. The cleanup is
- * attempted only when the write actually created the tmp file, and its own
- * failure is swallowed: a leaked tmp is worse than a silent unlink miss, and
- * neither may mask the original error.
+ * attempted once the tmp path has been chosen — including a write that created
+ * the file and then failed mid-way — and its own failure is swallowed: a leaked
+ * tmp is worse than a silent unlink miss, and neither may mask the original
+ * error.
  *
  * ── BV-004 ceiling + revisit trigger ────────────────────────────────────────
  * THREE PRODUCTION CALL-SITES (re-measured 2026-10-03 @ 0e0c4b08 with
@@ -964,8 +968,8 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
  * `backup: false` and no `fs`, so the backup half and the injection seam still
  * rest on tests plus one board-writer flag. REVISIT TRIGGER — when a sweep
  * migrates the remaining hand-rolled sites, re-check before widening:
- * (a) whether an `async` twin is needed rather than bolting a promise mode onto
- * this one (three known sites are `fs/promises`), and (b) whether rotation
+ * (a) answered (#1032): the async twin is {@link atomicWriteText}, not a
+ * promise mode on this function; and (b) whether rotation
  * belongs here after all (it does only if ≥2 migrated callers want the SAME
  * keep-N). If NO caller ever passes `backup: true` in production, that half is
  * still the part to shrink back.
@@ -982,7 +986,9 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
  *   Injectable fs (tests). Omitted methods fall back to `node:fs` — EXCEPT on
  *   the backup path, which fails closed (see below).
  * @returns {{ ok: true, path: string, bytes: number, backupPath: string|null }
- *   | { ok: false, reason: 'fs-error', error: string }}
+ *   | { ok: false, reason: 'fs-error', error: string, code: string|null }}
+ *   `code` is the failing call's `err.code`, or `null` when there was none
+ *   (additive, #1032 — a caller that must re-throw with the same code can now).
  */
 export function atomicWriteWithBackup(filePath, body, opts = {}) {
   const {
@@ -1016,20 +1022,15 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
   // methods are guarded, not just `copyFileSync` — a missing `existsSync` probes
   // the real target and silently decides the backup branch from it, which is the
   // same escape one step earlier.
-  if (backup && injectedFs) {
-    for (const method of ['existsSync', 'copyFileSync']) {
-      if (typeof injectedFs[method] !== 'function') {
-        return {
-          ok: false,
-          reason: 'fs-error',
-          error: `partial fs adapter: ${method} required for backup`,
-        };
-      }
-    }
-  }
+  const refusal = _partialAdapterRefusal(backup, injectedFs, ['existsSync', 'copyFileSync']);
+  if (refusal) return refusal;
 
+  // Assigned BEFORE the write, and cleanup keys on it rather than on the write
+  // having returned: `writeFileSync` can create the tmp file and THEN throw
+  // (ENOSPC / EIO mid-write), and a flag set only after it returned leaked
+  // exactly that file (#1032). Unlinking a tmp that was never created throws
+  // ENOENT, which the cleanup swallows.
   let tmpFile = null;
-  let tmpCreated = false;
 
   try {
     const dir = dirname(filePath);
@@ -1037,34 +1038,170 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
 
     let backupPath = null;
     if (backup && fsExists(filePath)) {
-      const stamp = (now instanceof Date ? now : new Date()).toISOString().replace(/[:.]/g, '-');
-      backupPath = `${filePath}.bak-${stamp}`;
+      backupPath = _backupPathFor(filePath, now);
       fsCopyFile(filePath, backupPath);
     }
 
-    tmpFile = path.join(dir, `${tmpPrefix}.${randomBytes(6).toString('hex')}`);
+    tmpFile = _tmpPathFor(dir, tmpPrefix);
     fsWriteFile(tmpFile, body, encoding);
-    tmpCreated = true;
     fsRename(tmpFile, filePath);
 
-    return {
-      ok: true,
-      path: filePath,
-      bytes: Buffer.isBuffer(body) ? body.length : Buffer.byteLength(String(body), encoding),
-      backupPath,
-    };
+    return { ok: true, path: filePath, bytes: _byteLength(body, encoding), backupPath };
   } catch (err) {
-    // Only when the write got far enough to create it. The name carries 12 hex
-    // chars of entropy, so this cannot collide with a caller's real file.
-    if (tmpCreated) {
+    // The name carries 12 hex chars of entropy, so this cannot collide with a
+    // caller's real file.
+    if (tmpFile !== null) {
       try {
         fsUnlink(tmpFile);
       } catch {
         // Best-effort: never let cleanup replace the error the caller needs.
       }
     }
-    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+    return _fsErrorEnvelope(err);
   }
+}
+
+/**
+ * Async twin of {@link atomicWriteWithBackup} (#1032): same tmp naming
+ * (`<dir>/<tmpPrefix>.<12 hex>`), same backup stamp, SAME envelope — and like
+ * the sync helper it RESOLVES on failure and never rejects. A `promise` mode on
+ * the sync function was rejected on purpose: one contract with two failure
+ * directions (`ok:false` vs. reject) is the bug class this envelope exists to
+ * end. Callers whose contract is to throw re-raise via {@link envelopeToError},
+ * which keeps the message and `err.code`.
+ *
+ * Shared with the sync helper: tmp/backup naming, byte count, the error
+ * envelope and the partial-adapter refusal. The five-step flow itself is
+ * spelled twice — sync calls and awaited calls cannot share one body without a
+ * generator driver, which would put an indirection on the hook-hot sync path
+ * for ~15 lines of saved control flow.
+ *
+ * Backup differs in one detail: it copies and treats `ENOENT` as "first write,
+ * nothing to snapshot" instead of probing `existsSync` first — the same result
+ * without a check-then-act window.
+ *
+ * @param {string} filePath  Target path; parent dirs created with mkdir -p semantics.
+ * @param {string|Buffer} body  Bytes to write, verbatim. Never inspected.
+ * @param {object} [opts]
+ * @param {BufferEncoding} [opts.encoding='utf8']  Encoding for a string `body`.
+ * @param {boolean} [opts.backup=false]  Snapshot the existing file to `.bak-<ISO>` first.
+ * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
+ * @param {Date} [opts.now]  Clock seam for the backup stamp (tests).
+ * @param {{ mkdir?: Function, writeFile?: Function, rename?: Function,
+ *   copyFile?: Function, unlink?: Function }} [opts.fs]
+ *   Injectable `fs/promises`-shaped object (tests). Omitted methods fall back to
+ *   `node:fs/promises` — except `copyFile` under `backup: true`, which fails closed.
+ * @returns {Promise<{ ok: true, path: string, bytes: number, backupPath: string|null }
+ *   | { ok: false, reason: 'fs-error', error: string, code: string|null }>}
+ */
+export async function atomicWriteText(filePath, body, opts = {}) {
+  const {
+    encoding = 'utf8',
+    backup = false,
+    tmpPrefix = '.tmp',
+    now = new Date(),
+    fs: injectedFs,
+  } = opts;
+
+  const fsMkdir = injectedFs?.mkdir ?? mkdir;
+  const fsWriteFile = injectedFs?.writeFile ?? writeFile;
+  const fsRename = injectedFs?.rename ?? rename;
+  const fsCopyFile = injectedFs?.copyFile ?? copyFile;
+  const fsUnlink = injectedFs?.unlink ?? unlink;
+
+  const refusal = _partialAdapterRefusal(backup, injectedFs, ['copyFile']);
+  if (refusal) return refusal;
+
+  let tmpFile = null;
+
+  try {
+    const dir = dirname(filePath);
+    await fsMkdir(dir, { recursive: true });
+
+    let backupPath = null;
+    if (backup) {
+      const candidate = _backupPathFor(filePath, now);
+      try {
+        await fsCopyFile(filePath, candidate);
+        backupPath = candidate;
+      } catch (err) {
+        if (err?.code !== 'ENOENT') throw err;
+      }
+    }
+
+    tmpFile = _tmpPathFor(dir, tmpPrefix);
+    await fsWriteFile(tmpFile, body, encoding);
+    await fsRename(tmpFile, filePath);
+
+    return { ok: true, path: filePath, bytes: _byteLength(body, encoding), backupPath };
+  } catch (err) {
+    if (tmpFile !== null) {
+      try {
+        await fsUnlink(tmpFile);
+      } catch {
+        // Best-effort: never let cleanup replace the error the caller needs.
+      }
+    }
+    return _fsErrorEnvelope(err);
+  }
+}
+
+/**
+ * Re-raise a failed {@link atomicWriteText} / {@link atomicWriteWithBackup}
+ * envelope as an Error carrying the original message and `code`, for call-sites
+ * whose own contract is to throw (#1032).
+ *
+ * @param {{ error: string, code?: string|null }} envelope
+ * @returns {Error & { code?: string }}
+ */
+export function envelopeToError(envelope) {
+  const err = new Error(envelope.error);
+  if (envelope.code) err.code = envelope.code;
+  return err;
+}
+
+/** @returns {{ ok: false, reason: 'fs-error', error: string, code: string|null }} */
+function _fsErrorEnvelope(err) {
+  return {
+    ok: false,
+    reason: 'fs-error',
+    error: err?.message ?? String(err),
+    code: typeof err?.code === 'string' ? err.code : null,
+  };
+}
+
+/**
+ * Backup-path fail-closed for a partial injected adapter (see the rationale in
+ * {@link atomicWriteWithBackup}). Returns the refusal envelope, or null.
+ */
+function _partialAdapterRefusal(backup, injectedFs, methods) {
+  if (!backup || !injectedFs) return null;
+  for (const method of methods) {
+    if (typeof injectedFs[method] !== 'function') {
+      return {
+        ok: false,
+        reason: 'fs-error',
+        error: `partial fs adapter: ${method} required for backup`,
+        code: null,
+      };
+    }
+  }
+  return null;
+}
+
+/** `<filePath>.bak-<ISO>` with `:`/`.` → `-`, so a lexical sort is chronological. */
+function _backupPathFor(filePath, now) {
+  const stamp = (now instanceof Date ? now : new Date()).toISOString().replace(/[:.]/g, '-');
+  return `${filePath}.bak-${stamp}`;
+}
+
+/** Sibling tmp path (same filesystem → atomic rename): `<dir>/<tmpPrefix>.<12 hex>`. */
+function _tmpPathFor(dir, tmpPrefix) {
+  return path.join(dir, `${tmpPrefix}.${randomBytes(6).toString('hex')}`);
+}
+
+function _byteLength(body, encoding) {
+  return Buffer.isBuffer(body) ? body.length : Buffer.byteLength(String(body), encoding);
 }
 
 /**

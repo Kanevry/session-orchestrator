@@ -42,11 +42,11 @@
  */
 
 import { appendFile, mkdir, readdir, rm } from 'node:fs/promises';
-import { writeFileSync, renameSync, readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { appendLearning } from '../learnings/io.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
+import { atomicWriteWithBackup } from '../io.mjs';
 
 // ---------------------------------------------------------------------------
 // Path constants (relative to repoRoot)
@@ -320,10 +320,9 @@ export async function clearProposalsJsonl({ repoRoot }) {
     // target — a concurrent hook reading proposals.jsonl mid-clear observes
     // either the pre-clear content or the fully-cleared file, never a
     // partial truncate.
-    const tmpSuffix = crypto.randomBytes(6).toString('hex');
-    const tmpFile = path.join(metricsDirPath, `.proposals.jsonl.tmp.${tmpSuffix}`);
-    writeFileSync(tmpFile, '', 'utf8');
-    renameSync(tmpFile, proposalsPath);
+    // Same tmp-name shape as before: `.proposals.jsonl.tmp.<12 hex>`.
+    const res = atomicWriteWithBackup(proposalsPath, '', { tmpPrefix: '.proposals.jsonl.tmp' });
+    if (!res.ok) return { cleared: false, summariesCleared: 0 };
   } catch {
     return { cleared: false, summariesCleared: 0 };
   }

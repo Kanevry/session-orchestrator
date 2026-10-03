@@ -13,6 +13,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { WORKTREE_META_DIR } from './constants.mjs';
+import { atomicWriteText, envelopeToError } from '../io.mjs';
 
 // ---------------------------------------------------------------------------
 // Public helpers
@@ -58,7 +59,10 @@ export async function _writeWorktreeMeta(suffix, { branch, wtPath, baseRef, base
     createdAt: new Date().toISOString(),
   };
 
-  const tmpPath = `${metaPath}.tmp`;
-  await fs.writeFile(tmpPath, JSON.stringify(meta, null, 2), 'utf8');
-  await fs.rename(tmpPath, metaPath);
+  // Random tmp suffix: the former fixed `<meta>.tmp` name let two concurrent
+  // writers of the same suffix clobber each other's tmp (#1032).
+  const res = await atomicWriteText(metaPath, JSON.stringify(meta, null, 2), {
+    tmpPrefix: `.${suffix}.json.tmp`,
+  });
+  if (!res.ok) throw envelopeToError(res);
 }
