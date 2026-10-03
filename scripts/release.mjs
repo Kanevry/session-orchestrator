@@ -387,6 +387,10 @@ const INTENTIONAL_TEST_ASSET_PATHS = new Set([
 // `scripts/lib/locks/index.mjs` is the one-cycle deprecation shim (5.2.0 CHANGELOG, Changed): its
 // runtime warning names the version it was deprecated IN, so it legitimately carries the previous
 // release literal until its 6.0.0 removal — version history by construction, not drift.
+// `site/_census.json` is deliberately NOT allowlisted: it carries a `"version"` field that
+// `--set-version` re-stamps (scripts/site-numbers.mjs --write, see the post-bump hint in main()),
+// so leaving it under the drift sweep makes the sweep double as its staleness gate — a census
+// not re-stamped after a bump fails `--check` instead of shipping the previous version.
 export const HISTORY_ALLOWLIST = /^(CHANGELOG\.md|README\.md|scripts\/lib\/locks\/index\.mjs|CLAUDE\.md|AGENTS\.md|CONTRIBUTING\.md|NOTICE|\.husky\/pre-push|docs\/|tests\/|skills\/npm-publish\/|skills\/architecture\/references\/domain-model\.md|skills\/autopilot\/SKILL\.md|scripts\/release\.mjs|\.orchestrator\/|site\/leaderboard\.json|site\/guide\/index\.html|site\/llms-full\.txt|skills\/release\/SKILL\.md|marketing\/remotion\/(?:README\.md|campaign\.json|render-receipt\.json|src\/ReleaseFilm\.tsx)$)/;
 
 /** Pure check over packed-entry lines. Returns violations: {name, line}[]. */

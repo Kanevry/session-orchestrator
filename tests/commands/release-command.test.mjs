@@ -113,3 +113,42 @@ describe('skills/release/SKILL.md ↔ scripts/release.mjs flag contract', () => 
     expect(missing).toEqual([]);
   });
 });
+
+/**
+ * Symbol contract for docs/distribution/npm-publish-checklist.md (#1086 item 3).
+ *
+ * THE BUG THIS CATCHES: the checklist sends the operator to a named
+ * release.mjs symbol (`evaluateNpmAuth`, `MIN_PACKED_ENTRIES`, …) that was
+ * renamed or deleted — the doc then points at nothing. Asserts symbol
+ * EXISTENCE as an export of the real module, never wording. Extraction is
+ * narrow: only backticked bare identifiers (optionally `name()`) on lines that
+ * themselves name `release.mjs`, AND carrying an uppercase letter (camelCase or
+ * SCREAMING_CASE) — the same lines also backtick all-lowercase non-symbols
+ * (`files`, `origin`, `github`: a package.json key and two git remotes).
+ */
+const CHECKLIST_DOC = path.join(REPO_ROOT, 'docs', 'distribution', 'npm-publish-checklist.md');
+
+export function extractReleaseSymbols(markdown) {
+  const symbols = new Set();
+  for (const line of markdown.split('\n')) {
+    if (!line.includes('release.mjs')) continue;
+    for (const span of line.matchAll(/`([^`]+)`/g)) {
+      const m = /^([A-Za-z_$][\w$]*)(?:\(\))?$/.exec(span[1]);
+      if (m && /[A-Z]/.test(m[1])) symbols.add(m[1]);
+    }
+  }
+  return [...symbols].sort();
+}
+
+describe('docs/distribution/npm-publish-checklist.md ↔ scripts/release.mjs symbol contract', () => {
+  const symbols = extractReleaseSymbols(readFileSync(CHECKLIST_DOC, 'utf8'));
+
+  it('the extractor finds the symbols the checklist names (guards a blind extractor)', () => {
+    expect(symbols).toEqual(expect.arrayContaining(['evaluateNpmAuth', 'MIN_PACKED_ENTRIES']));
+  });
+
+  it.each(symbols)('release.mjs exports the documented symbol %s', async (name) => {
+    const mod = await import(RELEASE_SCRIPT);
+    expect(Object.keys(mod)).toContain(name);
+  });
+});
