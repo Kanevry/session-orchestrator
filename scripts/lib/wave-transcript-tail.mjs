@@ -785,7 +785,7 @@ function sleep(ms) {
  * @param {number} args.intervalS
  */
 async function tailLoop({ intervalS }) {
-  // #1517: the PROJECT root (CLAUDE_PROJECT_DIR > CLAUDE.md/.git walk-up > cwd).
+  // #1517: the PROJECT root (CLAUDE_PROJECT_DIR > CLAUDE.md or AGENTS.md / .git walk-up > cwd).
   // CLAUDE_PLUGIN_ROOT is the installed plugin directory — taking it as the root
   // put the singleton lock, the session.lock read and the projects-dir encoding
   // inside the plugin cache.
