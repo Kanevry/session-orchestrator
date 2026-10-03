@@ -405,7 +405,8 @@ export function testSiblingExpansionApplies(opts = {}) {
  * tests/lib/X.test.mjs`). The DATED figures — population, both ratios, the
  * measuring command and the SHA — live in ONE place:
  * skills/wave-executor/references/wave-loop-scope-manifest.md § Test-Sibling
- * Expansion (#970). Cite and re-measure them there, never restate them here: an
+ * Expansion (#970), measured by `scripts/lib/test-sibling-coverage.mjs` (#1030 P3).
+ * Cite and re-measure them there, never restate them here: an
  * undated copy drifted to a second, contradicting set of numbers (#1026.5,
  * PSA-006 item 4). The glob's failure mode is HARMLESS — it grants write access
  * to files that may not exist. A computed concrete path is wrong more often AND
