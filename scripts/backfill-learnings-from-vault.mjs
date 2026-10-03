@@ -837,6 +837,19 @@ export async function main(argv = [], deps = {}) {
   const archiveIds = idsInStore(archiveAbs);
   const backups = backupPaths(storeAbs).map((p) => ({ path: p, ids: idsInStore(p) }));
   const { notes, unreadable } = indexVaultNotes(learningsAbs);
+  // #1513: `vault-mirror-prune --apply` moves expired/duplicate/superseded
+  // learning notes to `90-archive/mirror/<subdir>/…` with their bytes intact.
+  // They are still evidence for this restore tool — but only as a FALLBACK:
+  // the archive holds the non-canonical twins of live notes, and searching
+  // both at once would turn every such learning into an ambiguous match.
+  const archivedAbs = resolve(vaultDir, '90-archive', 'mirror', vaultSubdir);
+  const archivedNotes = [];
+  if (archivedAbs !== learningsAbs && existsSync(archivedAbs)) {
+    const archived = indexVaultNotes(archivedAbs);
+    for (const n of archived.notes) n.relPath = join('90-archive', 'mirror', vaultSubdir, n.relPath);
+    archivedNotes.push(...archived.notes);
+    unreadable.push(...archived.unreadable);
+  }
   for (const u of unreadable) process.stderr.write(`backfill-learnings-from-vault: WARN unreadable vault note ${u}\n`);
 
   const repoHint = basename(root);
@@ -879,12 +892,10 @@ export async function main(argv = [], deps = {}) {
 
     orphanIndex += 1;
     const keySubjectSlug = prov.learningKey ? prov.learningKey.split('/').slice(1).join('/') : null;
-    const { note, strategy, ambiguous } = locateNote(notes, {
-      subject: prov.subject,
-      keySlug: keySubjectSlug,
-      learningId: id,
-      repoHint,
-    });
+    const query = { subject: prov.subject, keySlug: keySubjectSlug, learningId: id, repoHint };
+    let located = locateNote(notes, query);
+    if (!located.note && !located.ambiguous && archivedNotes.length > 0) located = locateNote(archivedNotes, query);
+    const { note, strategy, ambiguous } = located;
 
     const { record, fidelity, conflicts, crossChecks, validates, validationError } = reconstructRecord({
       rule: prov,

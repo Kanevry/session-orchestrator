@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`scripts/vault-mirror-prune.mjs`** (#1513): applies the vault-mirror retention rules to the existing `40-learnings/` and `50-sessions/` notes. Dry run by default with a JSON manifest (`--manifest`: path, reason, action, target, kept copy, rollup); `--apply` writes the month rollups, then moves archived notes to `90-archive/mirror/<zone>/<same path>` with `status: archived` + `archived-reason`, then renames alias-folder and flat notes into their namespace. Reasons: `duplicate`, `superseded`, `expired`, `metrics-only-session`, `namespace-alias`, `flat-relocate`. Only notes with the mirror's `_generator` marker are touched; nothing is deleted; a second run plans nothing.
+
+### Changed
+
+- **vault-mirror narrative gate for sessions** (#1513): `vault-mirror.quality.min-narrative-chars` now measures the record's free text (`notes`, `narrative`, `summary`) instead of the rendered body with its tables. A record below it gets no note but one row in `50-sessions/<repo>/_rollup-YYYY-MM.md` (action `skipped-metrics-only`; idempotent). `0` disables the gate.
+- **vault-mirror learnings lifecycle** (#1513): the pre-#725 slug variant of a note is updated in place instead of getting a hyphenated twin; a new note whose normalised insight already exists in the namespace is refused (`skipped-duplicate-insight`); an expired learning is never created (`skipped-expired`) and its existing note becomes `status: archived` + `archived-reason: expired`; `--kind learning` also reads the sibling `learnings-archive.jsonl` and marks the notes of archived records (`expired` / `superseded`). `backfill-learnings-from-vault.mjs` falls back to `90-archive/mirror/40-learnings/`.
+- **`session-close-backfill.log` carries events only** (#1513): `skipped-*` outcomes are no longer appended (86 % of the Meta-Vault's 723 KB log); they remain queryable as ledger events.
+- **`sweep-expired-rules` removes expired single-entry rule files** (#1513): a generated rule with one learning and no counter sentence was skipped as `no-counter-sentence` forever; it is now deleted (pair stamped first) once the later of its frontmatter `expires-at` and the learning's store date has passed.
+
 ## [5.5.0] - 2026-10-03
 
 ### Added
