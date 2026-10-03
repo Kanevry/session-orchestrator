@@ -255,3 +255,46 @@ describe('emitEvent — a relative or empty opts.repoRoot is refused, never writ
     await expect(access(path.join(tmpCwd, 'undefined'))).rejects.toThrow();
   });
 });
+
+describe('eventsFilePath() — the ledger root from a linked worktree (#1514 point 1)', () => {
+  it('resolves to the MAIN checkout ledger from a worktree cwd when no launch dir is in env', async () => {
+    // Bug caught: a Bash-tool command gets no $CLAUDE_PROJECT_DIR (measured
+    // 2026-10-03), and after EnterWorktree its cwd is the worktree. The walk-up
+    // default then put coordinator scripts (scope-echo --verify,
+    // materialize-wave-scope) on the WORKTREE ledger while every hook wrote the
+    // launch dir's — the verify read 0 dispatches.
+    const { execFileSync } = await import('node:child_process');
+    const { realpathSync } = await import('node:fs');
+    const root = realpathSync(await mkdtemp(path.join(tmpdir(), 'ev-ledger-root-')));
+    try {
+      const main = path.join(root, 'main');
+      const wt = path.join(root, 'wt');
+      const git = (cwd, ...args) => execFileSync('git', args, { cwd, stdio: 'ignore' });
+      execFileSync('git', ['init', '-q', main], { stdio: 'ignore' });
+      git(main, '-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false',
+        'commit', '-q', '--allow-empty', '-m', 'seed');
+      git(main, 'worktree', 'add', '-q', '--detach', wt);
+
+      const env = { ...process.env };
+      for (const k of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) delete env[k];
+      const eventsUrl = new URL('../../scripts/lib/events.mjs', import.meta.url).href;
+      const resolved = (cwd) => execFileSync(process.execPath, [
+        '--input-type=module', '-e',
+        `const m = await import(${JSON.stringify(eventsUrl)}); process.stdout.write(m.eventsFilePath());`,
+      ], { cwd, env, encoding: 'utf8' });
+
+      const ledger = path.join(main, '.orchestrator', 'metrics', 'events.jsonl');
+      expect(resolved(wt)).toBe(ledger);
+      // A plain (non-worktree) repo keeps its pre-#1514 answer.
+      expect(resolved(main)).toBe(ledger);
+      // A session LAUNCHED in the worktree (headless, offload, Codex): its hooks
+      // get CLAUDE_PROJECT_DIR = the worktree and must still land on the main
+      // ledger, or hooks and scripts split it again (REFUTE HIGH-1).
+      env.CLAUDE_PROJECT_DIR = wt;
+      expect(resolved(main)).toBe(ledger);
+      delete env.CLAUDE_PROJECT_DIR;
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});

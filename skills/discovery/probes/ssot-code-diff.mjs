@@ -24,7 +24,7 @@
  *   2. `.claude/rules/*.md` file count (non-recursive) vs. "N rule files" claims.
  *   3. `skills/` user-facing directory count (excludes `_shared/`) vs.
  *      "N user-facing skills" / "N skills" claims.
- *   4. Slash-command count (`commands/*.md` ∪ skills with `user-invocable: true`)
+ *   4. Slash-command count (`commands/*.md` ∪ skills not marked `user-invocable: false`)
  *      vs. "N slash-commands" / "N commands" claims.
  *
  * Scope exclusions: CHANGELOG.md, docs/adr/, docs/prd/, docs/retro/ are never
@@ -103,8 +103,8 @@ function countUserFacingSkills(root) {
   }
 }
 
-// Slash commands = `commands/*.md` ∪ skills with an explicit
-// `user-invocable: true` (the #1370 commands→skills fold) — the shared census
+// Slash commands = `commands/*.md` ∪ skills whose `user-invocable` is absent or
+// `true` (the #1370 commands→skills fold; absent = true per #1515) — the shared census
 // in user-invocable-skills.mjs, not a second copy. Counting `commands/` alone
 // reported 2 against the real 27 on every run (#1506 pt 7). `null` (entry
 // skipped) only when the repo has neither source.

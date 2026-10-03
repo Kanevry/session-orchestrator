@@ -385,6 +385,18 @@ describe('readLearnings', () => {
     expect(r.entries.length).toBe(2);
     expect(r.malformed).toEqual([]);
   });
+
+  // TV-001 — the bug (#1506.5b): an editor's UTF-8 BOM in front of the first
+  // line made that record malformed — WARNed on every close and only
+  // recoverable via --drop-malformed --accept-embedded. Owner decision: strip it.
+  it('parses a BOM-prefixed first line as an entry', async () => {
+    const path = join(tmp, 'learnings.jsonl');
+    // Built, not typed: a literal U+FEFF in source fails validate-plugin's unicode-safety check.
+    writeFileSync(path, String.fromCharCode(0xfeff) + JSON.stringify(LEGACY()) + '\n');
+    const r = await readLearnings(path);
+    expect(r.entries.map((e) => e.id)).toEqual([LEGACY().id]);
+    expect(r.malformed).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

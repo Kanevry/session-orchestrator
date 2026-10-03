@@ -41,6 +41,8 @@
     "output-styles/",
     "monitors/",
     "assets/",
+    "evals/",
+    "!evals/results/**",
     "!assets/marketing/**",
     ".claude-plugin/",
     ".codex-plugin/",

@@ -50,7 +50,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 
-import { emitEvent } from './events.mjs';
+import { emitEvent, eventsFilePath } from './events.mjs';
 import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE } from './events-schema.mjs';
 
 /**
@@ -762,7 +762,7 @@ export const PROBES = [
     fn: 'checkEventsRetention',
     network: false,
     precondition: ({ repoRoot }) => {
-      const metrics = path.join(repoRoot, '.orchestrator', 'metrics');
+      const metrics = path.dirname(eventsFilePath(repoRoot)); // #1514: the ledger checkEventsRetention reads
       return existsSync(path.join(metrics, 'events.jsonl')) || hasRotationArchive(metrics)
         ? null
         : 'no-events-ledger';

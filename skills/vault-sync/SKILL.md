@@ -10,6 +10,7 @@ description: >
   vault-sync". <example>Context: session-end Phase 1 quality gate, vault-sync.enabled=true,
   vault-sync.mode="hard". user: "/close" assistant: "vault-sync found 2 frontmatter errors in
   vault/40-learnings/ml-notes.md — missing required `id` field. Fixing before close."</example>
+user-invocable: false
 model: haiku
 ---
 

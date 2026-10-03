@@ -143,6 +143,7 @@ describe('userInvocableSkills / slashCommandNames over a temp tree', () => {
     write('nested', skillDoc('true', { nested: true }));
     write('lookalike', skillDoc('yes'));
     write('library', skillDoc('false'));
+    write('keyless', '---\nname: keyless\ndescription: No marker at all.\n---\n\n# Body\n');
   });
 
   afterEach(() => {
@@ -150,19 +151,31 @@ describe('userInvocableSkills / slashCommandNames over a temp tree', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it('counts every shape a YAML parser reads as true, and nothing else (HIGH-2, MED-4)', () => {
+  it('counts every shape a YAML parser reads as true, plus an absent key, and nothing else (HIGH-2, MED-4)', () => {
     expect(userInvocableSkills(root)).toEqual([
       'bare',
       'bom',
       'cased',
       'commented',
+      'keyless',
+      'nested',
       'quoted',
       'single-quoted',
     ]);
   });
 
+  // BUG this catches (#1515, measured 2026-10-03): Claude Code lists a skill
+  // with NO `user-invocable` key in the `/` picker, but this census counted it
+  // as a library skill — 37 picker entries against a documented 27. Red before
+  // isUserInvocableSkill: `keyless` was missing from the census.
+  it('counts a skill WITHOUT the key as invocable, as Claude Code does (#1515)', () => {
+    expect(userInvocableSkills(root)).toContain('keyless');
+    expect(userInvocableSkills(root)).not.toContain('library');
+  });
+
   it('does NOT hoist a flag nested under `metadata:` (MED-3)', () => {
-    expect(userInvocableSkills(root)).not.toContain('nested');
+    // The nested skill is invocable only because its TOP-LEVEL key is absent
+    // (#1515 semantics) — the nested value itself must not surface.
     const doc = readFileSync(path.join(root, 'skills', 'nested', 'SKILL.md'), 'utf8');
     expect(parseSkillFrontmatter(doc)?.['user-invocable']).toBeUndefined();
   });
@@ -180,6 +193,8 @@ describe('userInvocableSkills / slashCommandNames over a temp tree', () => {
       'bom',
       'cased',
       'commented',
+      'keyless',
+      'nested',
       'quoted',
       'session',
       'single-quoted',

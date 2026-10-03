@@ -14,7 +14,7 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  * GENERIC over any consumer repo, where a slash command still IS a
  * `commands/*.md` file. The 2026-09-16 command→skill fold (#1370) is a fact
  * about THIS plugin — 24 command files folded into their same-named
- * `skills/<name>/SKILL.md` behind an explicit `user-invocable: true` — so
+ * `skills/<name>/SKILL.md` behind `user-invocable: true` (absent counts as true, #1515) — so
  * teaching the shared checker that union would mis-measure every repo that never
  * folded. `scripts/site-numbers.mjs` `countCommands()` carries the union for this
  * plugin's own tile, and names the divergence in its docblock.

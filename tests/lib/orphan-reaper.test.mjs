@@ -958,6 +958,30 @@ describe('runOrphanScan — telemetry', () => {
 
     expect(res.candidates).toHaveLength(1);
   });
+
+  it.each([
+    ['refused', () => ({ records: [], malformedLines: 0, expired: 0, state: 'unreadable' })],
+    ['reader-threw', () => { throw new Error('EACCES'); }],
+  ])('records orchestrator.ledger.unreadable (%s) — an unreadable register must not silently switch the scan off (HR-105, #1505 5a)', async (reason, readLedger) => {
+    // Bug caught: the scan returned `skipped: 'ledger-unreadable'` and exit 2,
+    // which the detached hook child ignores — the instrument was off with no
+    // trace in events.jsonl.
+    const { deps } = scanDeps({ psOutputs: [makeOutput(gateRow())] });
+    deps.readLedger = readLedger;
+
+    const res = await runOrphanScan({ repoRoot: '/synthetic/repo', deps });
+
+    expect(res.skipped).toBe('ledger-unreadable');
+    expect(deps.emitEvent.mock.calls).toEqual([[
+      'orchestrator.ledger.unreadable',
+      { path: '.orchestrator/runtime/gate-processes.jsonl', reason, consumer: 'orphan-reaper' },
+      { repoRoot: '/synthetic/repo' },
+    ]]);
+
+    // A throwing emitter still yields the degraded result, never a rejection.
+    deps.emitEvent = vi.fn(async () => { throw new Error('ledger unwritable'); });
+    await expect(runOrphanScan({ repoRoot: '/synthetic/repo', deps })).resolves.toMatchObject({ skipped: 'ledger-unreadable' });
+  });
 });
 
 // ---------------------------------------------------------------------------

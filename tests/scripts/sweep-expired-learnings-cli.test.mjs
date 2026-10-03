@@ -1170,9 +1170,10 @@ describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
       { bom: false, embedded_record: { offset: 29, id: 'fused' } },
     ],
     [
-      'a record behind a UTF-8 BOM',
-      () => `${BOM}${JSON.stringify(liveLearning({ id: 'first' }))}\n${JSON.stringify(liveLearning({ id: 'alive', subject: 'a' }))}\n`,
-      1,
+      // Line 2: a BOM on line 1 is stripped by parseLearningsText (#1506.5b).
+      'a record behind a UTF-8 BOM on line 2',
+      () => `${JSON.stringify(liveLearning({ id: 'alive', subject: 'a' }))}\n${BOM}${JSON.stringify(liveLearning({ id: 'first' }))}\n`,
+      2,
       { bom: true, embedded_record: null },
     ],
   ])('the dry run flags %s and --apply refuses that line without --accept-embedded', (_label, body, line, flags) => {

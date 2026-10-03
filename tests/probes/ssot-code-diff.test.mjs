@@ -205,7 +205,7 @@ describe('ssot-code-diff probe', () => {
           `---\nname: ${name}\ndescription: Fixture skill\nuser-invocable: true\n---\n\n# ${name}\n`,
         );
       }
-      writeFile(root, join('skills', 'internal', 'SKILL.md'), '---\nname: internal\ndescription: Fixture skill\n---\n\n# internal\n');
+      writeFile(root, join('skills', 'internal', 'SKILL.md'), '---\nname: internal\ndescription: Fixture skill\nuser-invocable: false\n---\n\n# internal\n');
       writeFile(root, 'README.md', '# readme\n\nAll 5 commands are documented below.\n');
 
       const result = await runProbe(root, {});

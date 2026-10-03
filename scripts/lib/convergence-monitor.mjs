@@ -44,7 +44,7 @@
  */
 
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
-import { join } from 'node:path';
+import { eventsFilePath } from './events.mjs';
 import { isMainModule } from './is-main-module.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
@@ -455,7 +455,7 @@ function sleep(ms) {
  */
 async function tailLoop(intervalS) {
   const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-  const absPath = join(pluginRoot, EVENTS_FILE_REL);
+  const absPath = eventsFilePath(pluginRoot); // #1514: the repo's one ledger
   /** @type {Map<number, WaveSummary>} */
   const state = new Map();
   /** @type {Set<string>} */

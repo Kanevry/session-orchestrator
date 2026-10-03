@@ -143,6 +143,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { eventsFilePath } from './events.mjs';
 import { readLock, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { isRealSession } from './session-schema/filters.mjs';
 import { readCanonicalSessions } from './sessions-canonical.mjs';
@@ -150,8 +151,6 @@ import { readCanonicalSessions } from './sessions-canonical.mjs';
 /** Repo-relative path to the session ledger (one record per closed session). */
 const SESSIONS_PATH = '.orchestrator/metrics/sessions.jsonl';
 
-/** Repo-relative path to the generic telemetry stream (one line per event). */
-const EVENTS_PATH = '.orchestrator/metrics/events.jsonl';
 
 /** warn threshold: 2x the session-lock default TTL (8h) — imported, not duplicated. */
 export const WARN_THRESHOLD_HOURS = DEFAULT_TTL_HOURS * 2;
@@ -527,7 +526,7 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
     const ledger = lastLedgerEntry(sessionRecords);
     if (ledger === null) return null;
 
-    const eventLines = readJsonlLines(path.join(repoRoot, EVENTS_PATH));
+    const eventLines = readJsonlLines(eventsFilePath(repoRoot)); // #1514: the repo's one ledger
     if (eventLines === null || eventLines.length === 0) return null;
 
     const { cutoffMs, ownSessionId } = resolveCutoff(repoRoot, nowMs);

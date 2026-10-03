@@ -182,7 +182,7 @@ export const DEFAULT_MAX_GLOBAL = 4;
  * overlaps only, so a directory-prefix match scores 0.75 without appearing
  * there. Using it as a proxy would silently drop the strongest partial matches.
  */
-export const SCOPE_MATCH_MIN_PATH_SCORE = 0.25;
+const SCOPE_MATCH_MIN_PATH_SCORE = 0.25;
 
 /**
  * Blend of relevance (affinity to this agent's scope) against quality
@@ -190,7 +190,7 @@ export const SCOPE_MATCH_MIN_PATH_SCORE = 0.25;
  * IS the acceptance criterion. Weight-normalized like `affinity()`, so the
  * result stays in [0,1] for any non-negative pair.
  */
-export const SELECT_WEIGHTS = Object.freeze({ relevanceWeight: 0.7, qualityWeight: 0.3 });
+const SELECT_WEIGHTS = Object.freeze({ relevanceWeight: 0.7, qualityWeight: 0.3 });
 
 /**
  * How many active entries the file entry-point pulls before ranking.
@@ -496,7 +496,7 @@ export function renderIndexLine(entry, opts = {}) {
  * @param {{now?: Date|number, decay?: object, affinityOpts?: object}} [opts]
  * @returns {{score: number, relevance: number, quality: number, pathScore: number}}
  */
-export function scoreLearning(entry, scope, opts = {}) {
+function scoreLearning(entry, scope, opts = {}) {
   const zero = { score: 0, relevance: 0, quality: 0, pathScore: 0 };
   if (!_isRecord(entry)) return zero;
 

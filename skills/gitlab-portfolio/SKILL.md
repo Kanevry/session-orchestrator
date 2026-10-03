@@ -10,6 +10,7 @@ description: >
   gitlab-portfolio.enabled=true, vault has 5 registered repos. user: "/session deep" assistant:
   "Portfolio: 3 critical issues across 2 repos — run /portfolio for details. Dashboard written to
   vault/01-projects/_PORTFOLIO.md."</example>
+user-invocable: false
 model: sonnet
 ---
 

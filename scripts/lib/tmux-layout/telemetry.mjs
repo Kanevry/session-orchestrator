@@ -19,17 +19,15 @@ import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 
 import { findProjectRoot } from '../common.mjs';
+import { eventsFilePath } from '../events.mjs';
 import { stampEventSchemaVersion, validateEventRecord } from '../events-schema.mjs';
 
-/**
- * Path FRAGMENT joined against a resolved repo root at write time — NOT a
- * relative path constant. A relative constant resolves against process.cwd(),
- * which is how ~8k test-emitted tmux events landed in the real ledger: the
- * suite spawns scripts/tmux-layout.mjs with cwd = repo root, so every
- * telemetry write went straight into production telemetry.
- * Same shape as scripts/lib/session-close-backfill.mjs § EVENTS_REL.
- */
-const EVENTS_REL = ['.orchestrator', 'metrics', 'events.jsonl'];
+// The ledger path is resolved against a repo root at write time — NEVER a
+// relative path constant. A relative constant resolves against process.cwd(),
+// which is how ~8k test-emitted tmux events landed in the real ledger: the
+// suite spawns scripts/tmux-layout.mjs with cwd = repo root, so every
+// telemetry write went straight into production telemetry. The path is
+// `eventsFilePath(<root>)` (#1514: the repo's one ledger).
 
 /**
  * True when this process is a vitest run, or a child spawned by one
@@ -56,7 +54,7 @@ function isTestRunner() {
 export function emit(eventType, payload = {}, { repoRoot } = {}) {
   try {
     if (!repoRoot && isTestRunner()) return;
-    const eventsPath = path.join(repoRoot || findProjectRoot(), ...EVENTS_REL);
+    const eventsPath = eventsFilePath(repoRoot || findProjectRoot()); // #1514: the repo's one ledger
     const dir = path.dirname(eventsPath);
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     // `stampEventSchemaVersion()` rather than an inline `schema_version:` —

@@ -645,7 +645,7 @@ describe('check 5: surface-count family (command/skill/agent/hook/test)', () => 
   // A `0` claim must pass silently and a wrong claim must still be caught.
   it('counts 0 (not skip) when skills/ exists with nothing user-invocable and no commands/ dir', () => {
     mkdirSync(join(vault, 'skills', 'library'), { recursive: true });
-    writeFileSync(join(vault, 'skills', 'library', 'SKILL.md'), '---\nname: library\ndescription: not invocable.\n---\n# library\n');
+    writeFileSync(join(vault, 'skills', 'library', 'SKILL.md'), '---\nname: library\ndescription: not invocable.\nuser-invocable: false\n---\n# library\n');
 
     writeFileSync(join(vault, 'CLAUDE.md'), 'We ship 0 commands today.\n');
     const okRun = parseJson(runChecker(vault, ['--skip-issue-refs']).stdout);

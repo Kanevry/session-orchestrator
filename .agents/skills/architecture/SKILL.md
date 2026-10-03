@@ -3,6 +3,7 @@ name: architecture
 description: Use when the user asks to improve architecture, find refactoring opportunities, surface deepening opportunities, consolidate tightly-coupled modules, or make a codebase more testable and AI-navigable. Surfaces shallow modules and hypothetical seams using a precise vocabulary (Module / Interface / Implementation / Depth / Seam / Adapter / Leverage / Locality from LANGUAGE.md).
 license: MIT
 metadata:
+  user-invocable: "true"
   model: inherit
   derived-from: mattpocock/skills@90ea8ee
   upstream-url: https://github.com/mattpocock/skills/tree/main/improve-codebase-architecture
@@ -18,3 +19,5 @@ metadata:
 > Regenerate with `node scripts/generate-agents-skills.mjs`.
 
 Read the linked document in full and follow its complete workflow, including prechecks and stop conditions. Resolve its link relative to this SKILL.md, not the project working directory. The plugin root is three directories above this file. Resolve package paths such as `skills/` and `scripts/` from that root and relative links in the canonical document from its own directory. Keep the user’s project as the target of project operations.
+
+`$ARGUMENTS` means the trailing user input after the selected command skill, or an empty string when absent. Preserve flags, quoted text, and Unicode as data. Do not perform global substitution in the command document, shell expansion on the argument string, or execution of that string as shell code. Pass command arguments through structured tool parameters or safely quoted individual arguments.

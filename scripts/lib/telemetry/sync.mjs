@@ -42,6 +42,7 @@ import { peekAll, enqueue, clear, queueStats } from './queue.mjs';
 import { loadOwnerConfig } from '../owner-yaml.mjs';
 import { readJsonlFile } from '../io.mjs';
 import { readEventsWithRotations } from '../events.mjs';
+import { resolveEventsLedgerRoot } from '../platform.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { resolvePrivateConfigDir } from '../config/private-config-dir.mjs';
 import { readSessionProfile } from '../state-md.mjs';
@@ -382,7 +383,8 @@ export function deriveSessionFromEvents(metricsDir) {
     // once-per-flush cold read. Revisit if `max-size-mb` is raised past ~100,
     // if `max-backups` grows, or if the flush budget drops below ~1 s.
     const ledger = readEventsWithRotations(undefined, {
-      filePath: path.join(metricsDir, 'events.jsonl'),
+      // #1514: the repo's one ledger (identity unless metricsDir is in a linked worktree).
+      filePath: path.join(resolveEventsLedgerRoot(metricsDir), 'events.jsonl'),
     });
     const events = ledger.events;
     // A missing archive is a GAP, never an empty window (#1407 AC-3). Carried

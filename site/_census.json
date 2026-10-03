@@ -3,10 +3,10 @@
   "metrics": {
     "version": "5.7.0",
     "skills": "51",
-    "commands": "27",
+    "commands": "30",
     "agents": "14",
     "hooks": "29",
-    "tests": "725",
+    "tests": "727",
     "sessions": "437",
     "learnings": "269",
     "rules": "25",
@@ -15,6 +15,6 @@
     "npm-downloads-30d": "2504",
     "github-stars": "53",
     "counted-at": "2026-10-03",
-    "counted-sha": "c1642ce4"
+    "counted-sha": "af58a173"
   }
 }

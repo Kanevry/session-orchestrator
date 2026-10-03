@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import YAML from 'js-yaml';
 
 vi.mock('node:fs', async () => {
@@ -2488,30 +2488,93 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
   };
   const NOTE = '40-learnings/alpha-tool/shared-subject.md';
 
-  // Two shapes, one route (#1503 review F2): an OLDER record from another repo
-  // mirrored under the wrong namespace (the incident), and a NEWER record of the
-  // same repo — an expired learning re-learned under a new id. Pre-fix the first
-  // overwrote the note; skipping instead froze the second forever. Both now
-  // land at the disambiguated path and leave the existing note untouched.
-  it.each([
-    ['an older record from another repo', BETA_LEARNING],
-    [
-      'a re-learned record of the same repo (new id, newer)',
-      { ...ALPHA_LEARNING, id: 'cccccccc-0003-4000-8000-000000000003', insight: 'Re-learned', created_at: '2026-09-20T10:00:00Z' },
-    ],
-  ])('%s never overwrites the note and still reaches the vault (source-record → disambiguation)', async (_label, record) => {
+  // #1506.1: a NEW disambiguation file is suffixed with sha256(full record key)[0:8].
+  const hash8 = (key) => createHash('sha256').update(key).digest('hex').slice(0, 8);
+
+  // #1503 incident shape: an OLDER record from another repo mirrored under the
+  // wrong namespace overwrote the note. It now lands at its own disambiguated
+  // path and leaves the existing note untouched.
+  it('an older record from another repo never overwrites the note and still reaches the vault (source-record → disambiguation)', async () => {
     quietStderr();
     const { processLearning } = await load();
     await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
     const before = read(NOTE);
 
-    const { lines } = await captureStdout(() => processLearning(record, 1, ctxFor('learning', alphaRoot)));
+    const { lines } = await captureStdout(() => processLearning(BETA_LEARNING, 1, ctxFor('learning', alphaRoot)));
 
-    const disambig = `40-learnings/alpha-tool/shared-subject-${record.id.slice(0, 8)}.md`;
+    const disambig = `40-learnings/alpha-tool/shared-subject-${hash8(BETA_LEARNING.id)}.md`;
     expect(lines[0]).toMatchObject({ action: 'skipped-collision-resolved', path: disambig, reason: 'source-record mismatch' });
     expect(read(NOTE)).toBe(before);
-    expect(read(disambig)).toContain(record.insight);
-    expect(read(disambig)).toContain(`source-record: "${record.id}"`);
+    expect(read(disambig)).toContain(BETA_LEARNING.insight);
+    expect(read(disambig)).toContain(`source-record: "${BETA_LEARNING.id}"`);
+  });
+
+  // #1506.1 + #1506.2: non-UUID ids sharing their first 8 chars all reach the
+  // vault under distinct files, the NEWEST record owns the main note, the
+  // displaced one keeps its bytes at its own disambiguation path, and a re-run
+  // churns nothing. Pre-fix the third record collided on `-<uuid8>` and was
+  // skipped-foreign-owner, and the main note kept the oldest record forever.
+  it('re-learns with prefix-sharing non-UUID ids: distinct files, newest owns the main note, idempotent', async () => {
+    quietStderr();
+    const { processLearning } = await load();
+    const rec = (n, day) => ({
+      ...ALPHA_LEARNING,
+      id: `shared-subject-relearn-${n}`,
+      insight: `Record ${n}`,
+      created_at: `2026-09-${day}T10:00:00Z`,
+    });
+    const records = [rec(1, '01'), rec(2, '10'), rec(3, '20')];
+    const run = async () => {
+      const out = [];
+      for (const r of records) out.push((await captureStdout(() => processLearning(r, 1, ctxFor('learning', alphaRoot)))).lines[0]);
+      return out;
+    };
+
+    const first = await run();
+    expect(first.map((l) => l.action)).not.toContain('skipped-foreign-owner');
+    expect(read(NOTE)).toContain('Record 3');
+    expect(read(NOTE)).toContain(`source-record: "${records[2].id}"`);
+    for (const r of records.slice(0, 2)) {
+      const rel = `40-learnings/alpha-tool/shared-subject-${hash8(r.id)}.md`;
+      expect(read(rel)).toContain(r.insight);
+      expect(read(rel)).toMatch(new RegExp(`^id: shared-subject-${hash8(r.id)}$`, 'm'));
+    }
+
+    const snapshot = fs.readdirSync(join(vault, '40-learnings/alpha-tool')).sort().map((f) => [f, read(`40-learnings/alpha-tool/${f}`)]);
+    const second = await run();
+    expect(second.map((l) => l.action)).toEqual(['skipped-noop', 'skipped-noop', 'skipped-noop']);
+    expect(fs.readdirSync(join(vault, '40-learnings/alpha-tool')).sort().map((f) => [f, read(`40-learnings/alpha-tool/${f}`)])).toEqual(snapshot);
+
+    // Record 1 leaves the store: the live re-learns own the canonical slug, but
+    // its displaced note is still its own to archive (pre-fix: never, as long
+    // as any live record held the slug).
+    const { processArchivedLearning, learningNoteSlugs } = await import('@lib/vault-mirror/process.mjs');
+    const liveLearningSlugs = new Set(records.slice(1).flatMap((r) => learningNoteSlugs(r)));
+    const archived = await captureStdout(() =>
+      processArchivedLearning({ ...records[0], _archive_reason: 'pruned' }, 1, { ...ctxFor('learning', alphaRoot), liveLearningSlugs }),
+    );
+    expect(archived.lines[0]).toMatchObject({ action: 'updated', id: `shared-subject-${hash8(records[0].id)}` });
+    expect(read(NOTE)).not.toMatch(/^status: archived$/m);
+  });
+
+  // #1506.2 review LOW-2: a crash between a takeover's writes left the main
+  // note ours and the writer's old disambiguation note live — takeover never
+  // ran again and the archive pass skips live names, so the duplicate stayed
+  // forever. The next run of that record must supersede it, once.
+  it('an interrupted takeover (main ours, own disambig still live) heals on the next run', async () => {
+    quietStderr();
+    const { processLearning } = await load();
+    await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    const own = `40-learnings/alpha-tool/shared-subject-${hash8(ALPHA_LEARNING.id)}.md`;
+    fs.writeFileSync(join(vault, own), read(NOTE).replace(/^id: .*$/m, `id: shared-subject-${hash8(ALPHA_LEARNING.id)}`));
+
+    const heal = await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    expect(heal.lines[0]).toMatchObject({ action: 'updated', path: own, archived_reason: 'superseded' });
+    expect(read(own)).toMatch(/^status: archived$/m);
+    expect(read(NOTE)).not.toMatch(/^status: archived$/m);
+
+    const again = await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    expect(again.lines[0].action).toBe('skipped-noop');
   });
 
   it('a relabelled note (source-repo differs from its folder) is still the repo\'s own note and gets updated', async () => {
@@ -2575,7 +2638,11 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
       own: () => ALPHA_LEARNING,
       foreign: () => BETA_LEARNING,
       preForeign: true,
-      expectAction: { action: 'skipped-noop', path: '40-learnings/alpha-tool/shared-subject-bbbbbbbb.md', healed_leak: true },
+      expectAction: {
+        action: 'skipped-noop',
+        path: `40-learnings/alpha-tool/shared-subject-${createHash('sha256').update(BETA_LEARNING.id).digest('hex').slice(0, 8)}.md`,
+        healed_leak: true,
+      },
       ownMarker: 'Alpha insight',
       ownKey: ALPHA_LEARNING.id,
     },

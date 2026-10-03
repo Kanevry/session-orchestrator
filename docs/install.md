@@ -84,9 +84,17 @@ JSON (measured 2026-10-02). Later releases dropped the `overrides` block. If
 `node_modules/` is missing, run `npm ci --omit=dev` in that directory.
 
 **From a clone, one command does all of it:** `npm run update:local`
-(`scripts/self-update.mjs`) fast-forwards the clone, updates the Claude Code
-marketplace and plugin, installs missing runtime dependencies in the plugin
-directory, and re-runs the Codex installer if the plugin is installed in Codex.
+(`scripts/self-update.mjs`) fast-forwards the clone, packs it with `npm pack`
+into `~/.cache/session-orchestrator/plugin-package/` (`$XDG_CACHE_HOME` if set),
+updates the Claude Code marketplace and plugin from that packed copy, installs
+missing runtime dependencies in the plugin directory, and re-runs the Codex
+installer if the plugin is installed in Codex. The marketplace must read the
+packed copy, never the clone: a directory marketplace on the working checkout
+copies every file of it into the plugin cache, `.env.local` included (#1515).
+The Claude step refuses while any `directory` marketplace reads the clone and
+prints the exact `claude plugin marketplace remove <name>` and
+`claude plugin marketplace add ~/.cache/session-orchestrator/plugin-package`
+commands; a GitHub- or npm-sourced marketplace updates as before.
 `--dry-run` shows the commands first; old cache folders are never deleted,
 because the running session still uses them until the restart. On Cursor and the Pi clone fallback, upgrade
 with `git pull` in your clone followed by the same install script you originally

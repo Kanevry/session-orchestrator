@@ -278,7 +278,9 @@ describe('portable native invocation policy', () => {
     generateAgentsSurface({ pluginRoot: root });
     expect(readPolicy('internal')).toEqual({ allow_implicit_invocation: false });
     rmSync(join(root, 'skills/internal/agents/openai.yaml'));
-    writeSkill('internal', 'description: Internal skill.');
+    // An ABSENT key is invocable (Claude Code picker semantics, #1515) — a
+    // library skill states `false`.
+    writeSkill('internal', 'description: Internal skill.\nuser-invocable: false');
     expect(generateAgentsSurface({ pluginRoot: root, check: true }).drift).toContain('.agents/skills/internal/agents/openai.yaml is obsolete');
     generateAgentsSurface({ pluginRoot: root });
     expect(existsSync(join(root, '.agents/skills/internal/agents/openai.yaml'))).toBe(false);

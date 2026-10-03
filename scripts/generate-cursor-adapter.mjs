@@ -27,7 +27,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isUserInvocableValue } from './lib/user-invocable-skills.mjs';
+import { isUserInvocableSkill, isUserInvocableValue } from './lib/user-invocable-skills.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -194,8 +194,9 @@ Cursor has no Skill tool. When the command says to invoke a skill, Read \`skills
 /**
  * Skills that declare themselves operator-facing slash commands.
  *
- * The predicate is `isUserInvocableValue` from `scripts/lib/user-invocable-skills.mjs`
- * — the ONE normaliser for this marker, shared with the Pi and Codex generators
+ * The predicate is `isUserInvocableSkill` from `scripts/lib/user-invocable-skills.mjs`
+ * (absent key = invocable, #1515) over the ONE value normaliser `isUserInvocableValue`,
+ * shared with the Pi and Codex generators
  * and with every counter. The private copy this replaced read only a
  * whitespace-trimmed bare `true`, so `True` and `true # note` were demoted HERE
  * while the shared counter listed them as commands; the SKILL.md path is passed
@@ -225,7 +226,7 @@ function skillFlags(skillName) {
   if (cached) return cached;
   const file = path.join(SKILLS_DIR, skillName, 'SKILL.md');
   const fields = parseFrontmatter(readFileSync(file, 'utf8'));
-  const userInvocable = isUserInvocableValue(fields['user-invocable'], file, 'user-invocable');
+  const userInvocable = isUserInvocableSkill(fields, file);
   const sourceDisablesModel = isUserInvocableValue(
     fields['disable-model-invocation'], file, 'disable-model-invocation',
   );

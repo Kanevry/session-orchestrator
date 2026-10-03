@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isUserInvocableValue } from './lib/user-invocable-skills.mjs';
+import { isUserInvocableSkill } from './lib/user-invocable-skills.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -138,7 +138,8 @@ function clampDescription(text) {
 /**
  * Skills that declare themselves operator-facing slash commands.
  *
- * The predicate is `isUserInvocableValue` from `scripts/lib/user-invocable-skills.mjs`
+ * The predicate is `isUserInvocableSkill` from `scripts/lib/user-invocable-skills.mjs`
+ * (absent key = invocable, as Claude Code reads it — #1515; values via `isUserInvocableValue`)
  * — the ONE normaliser for this marker, shared with the Cursor and Codex
  * generators and with every counter. A local copy here is how the quoted-value
  * disagreement arose (`"true"`: wrapper generated on two adapters, counted by
@@ -150,7 +151,7 @@ function userInvocableSkills() {
   return skillDirs().filter((name) => {
     const file = path.join(SKILLS_DIR, name, 'SKILL.md');
     const fields = parseFrontmatter(readFileSync(file, 'utf8'));
-    return isUserInvocableValue(fields['user-invocable'], file);
+    return isUserInvocableSkill(fields, file);
   });
 }
 

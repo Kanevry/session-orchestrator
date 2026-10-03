@@ -93,7 +93,7 @@ function collectSkillFiles(skillsDir) {
  *
  * Rules: R1 frontmatter block present · R8 block parses as a YAML mapping ·
  * R2 `name` present · R3 `name` is kebab-case · R5 `name` === directory name ·
- * R6 `description` present and non-empty.
+ * R6 `description` present and non-empty · R9 `user-invocable` stated explicitly.
  *
  * @param {{ dirName: string, relPath: string, absPath: string }} skill
  * @returns {boolean} true when every rule holds
@@ -148,6 +148,16 @@ function validateSkillFrontmatter(skill) {
     fail(`${skill.relPath}: missing or empty required frontmatter field: description`);
   }
 
+  // R9 — `user-invocable` written down. Claude Code lists a skill WITHOUT the
+  // key in the `/` picker (#1515: 37 entries against a documented 27, from 10
+  // keyless skills). The census and the adapter generators now follow that
+  // reading (`isUserInvocableSkill`), but a forgotten key is still an
+  // unreviewed picker entry — so the decision must be explicit: `true` for an
+  // operator command, `false` for a helper the model dispatches.
+  if (!Object.hasOwn(frontmatter, 'user-invocable')) {
+    fail(`${skill.relPath}: missing required frontmatter field: user-invocable (Claude Code treats an absent key as true and lists the skill in the / picker — write \`user-invocable: true\` for an operator command or \`user-invocable: false\` for a helper)`);
+  }
+
   return failed === before;
 }
 
@@ -180,7 +190,7 @@ if (!existsSync(skillsDir)) {
     }
 
     if (valid === skills.length) {
-      pass(`all ${skills.length} ${SKILL_FILE} frontmatter blocks parse as YAML and carry a kebab-case name matching their directory plus a non-empty description`);
+      pass(`all ${skills.length} ${SKILL_FILE} frontmatter blocks parse as YAML and carry a kebab-case name matching their directory, a non-empty description and an explicit user-invocable`);
     }
   }
 }

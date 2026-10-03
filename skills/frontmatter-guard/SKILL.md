@@ -9,6 +9,7 @@ description: >
   note|daily|project|person|reference|idea|learning|session." <commentary>The wave-executor pre-dispatch
   hook calls detectVaultTaskScope() — the fileScope contains /Projects/vault/40-learnings/ so the guard
   triggers and the snippet is prepended to the agent system prompt.</commentary></example>
+user-invocable: false
 model: inherit
 ---
 

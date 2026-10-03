@@ -56,14 +56,13 @@ import {
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 
-import { emitEvent, sessionAttribution } from './events.mjs';
+import { emitEvent, eventsFilePath, sessionAttribution } from './events.mjs';
 import { tryAcquireFileLock, releaseFileLock } from './file-lock.mjs';
 import { readLock, isLockLive } from './session-lock.mjs';
 import { resolveSubagentSidecar } from '../../hooks/_lib/subagent-paths.mjs';
 import { isMainModule } from './is-main-module.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
-const EVENTS_FILE_REL = '.orchestrator/metrics/events.jsonl';
 const WAVE_SCOPE_REL = '.claude/wave-scope.json';
 
 /**
@@ -813,7 +812,7 @@ async function tailLoop({ intervalS }) {
   // Restart-safety: do not re-announce findings already recorded for this
   // session. Seeded on the SEMANTIC id — the same key `report()` writes.
   try {
-    const evPath = join(repoRoot, EVENTS_FILE_REL);
+    const evPath = eventsFilePath(repoRoot); // #1514 point 1: the repo's one ledger
     if (existsSync(evPath)) {
       const seeded = seedFromEvents(readFileSync(evPath, 'utf8').split('\n'), semanticSessionId, state);
       if (seeded > 0) note(`seeded ${seeded} prior finding counters from events.jsonl`);

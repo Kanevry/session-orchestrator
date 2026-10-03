@@ -42,7 +42,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
-import { SCAN_CHUNK_BYTES, emitEvent, listEventSourcesNewestFirst, tombstoneGap } from './lib/events.mjs';
+import { SCAN_CHUNK_BYTES, emitEvent, eventsFilePath, listEventSourcesNewestFirst, tombstoneGap } from './lib/events.mjs';
 import { ARCHIVE_DIR_NAME } from './lib/events-schema.mjs';
 import { getProjectDir } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -173,7 +173,7 @@ export function planSessions({ repoRoot }) {
  * @returns {{ plan: Array<{ sessionId: string, semanticSessionId: string|null }>, historyGaps: number }}
  */
 function planWithGaps({ repoRoot }) {
-  const eventsPath = path.join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
+  const eventsPath = eventsFilePath(repoRoot); // #1514: the repo's one ledger
 
   // Two independent UUID -> semantic bridges (#1167). `lock.acquired` is the
   // original one, but a session that LOST the lock-acquire race never emits it;

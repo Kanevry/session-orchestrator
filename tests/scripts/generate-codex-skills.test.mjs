@@ -21,7 +21,7 @@ function command(name, fields = '') {
 }
 
 function skill(name) {
-  write(`skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: Internal ${name}.\n---\n\nCanonical skill ${name}.\n`);
+  write(`skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: Internal ${name}.\nuser-invocable: false\n---\n\nCanonical skill ${name}.\n`);
 }
 
 function run(...args) {

@@ -218,7 +218,7 @@ export const PATH_BOOST_EXACT = 0.05;
 export const PATH_BOOST_DIR = 0.025;
 
 /** How many leading directory segments define the directory-prefix boost. */
-export const DIR_PREFIX_SEGMENTS = 2;
+const DIR_PREFIX_SEGMENTS = 2;
 
 /**
  * Documented ceiling for consumers (accepted failure mode 2): a pool graph walk
@@ -229,7 +229,7 @@ export const DIR_PREFIX_SEGMENTS = 2;
 export const MAX_POOL_HOPS = 2;
 
 /** Token length floor — tokens shorter than this are dropped before stoplisting. */
-export const MIN_TOKEN_LENGTH = 3;
+const MIN_TOKEN_LENGTH = 3;
 
 /** Cap on the reported `sharedTokens` — a diagnostic for the judge, not a payload. */
 const SHARED_TOKEN_CAP = 8;

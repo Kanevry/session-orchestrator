@@ -145,10 +145,7 @@ export const JUDGMENT_DECISIONS = Object.freeze([
 ]);
 
 /** Decisions that assert a relation to at least one other record. */
-export const RELATION_DECISIONS = Object.freeze(['refine', 'supersede', 'merge', 'contradict']);
-
-/** Decisions that assert no relation (`skip`) or no judgment (`abstain`). */
-export const NO_RELATION_DECISIONS = Object.freeze(['skip', 'abstain']);
+const RELATION_DECISIONS = Object.freeze(['refine', 'supersede', 'merge', 'contradict']);
 
 /**
  * The eight failure modes. Closed set — the free-text `detail` field carries
@@ -174,7 +171,7 @@ export const FAILURE_MODES = Object.freeze([
  * on purpose: registering the AUQ in the SAME map as the archive writer is what
  * makes "an AUQ is a write" structural rather than a comment someone can miss.
  */
-export const EFFECT_BY_DECISION = Object.freeze({
+const EFFECT_BY_DECISION = Object.freeze({
   skip: null,
   abstain: null,
   refine: 'refine',
@@ -191,7 +188,7 @@ export const EFFECT_BY_DECISION = Object.freeze({
  * the corpus develops genuine clusters (max pairwise similarity > ~0.4) or if
  * live judgments start naming a truncated-away record in their rationale.
  */
-export const DEFAULT_MAX_NEIGHBOURS = 12;
+const DEFAULT_MAX_NEIGHBOURS = 12;
 
 /**
  * Judge wall-clock budget. Ceiling: 60s — a judgment pass runs at session-end
@@ -206,7 +203,7 @@ export const DEFAULT_JUDGE_TIMEOUT_MS = 60_000;
  * the judge to lean on `scope` or `host_class` would be steering it by a field
  * that is constant across the corpus.
  */
-export const SURFACE_HINT = [
+const SURFACE_HINT = [
   'Judge the SURFACE, not the subject line.',
   '',
   'Measured 2026-08-13 over the 100 live records: `scope` is "local" in 100/100 and',
@@ -233,7 +230,7 @@ export const SURFACE_HINT = [
  * restatement drifts silently, and the failure mode of drift here is that every
  * batch voids and the feature is dead while looking wired.
  */
-export const JUDGMENT_OUTPUT_CONTRACT = [
+const JUDGMENT_OUTPUT_CONTRACT = [
   'Answer with JSON only, exactly this shape:',
   '',
   '{"candidate_id": "<the candidate id you were given>",',

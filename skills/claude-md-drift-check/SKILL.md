@@ -9,6 +9,7 @@ description: >
   globs), and docs-parity (docs/components.md count-claims vs on-disk counts, template-vs-reference
   config-key parity, stale .claude/metrics/ paths). Full per-check spec in the body table. Invoked as an
   opt-in session-end phase; mirrors vault-sync's lean JSON+exit-code contract.
+user-invocable: false
 model: haiku
 ---
 
@@ -37,7 +38,7 @@ PHASE 1 IMPLEMENTED (2026-04-19). Session-end opt-in quality gate. Upstream of `
 | 2 | `project-count-sync` | Hardcoded "N registered" / "N projects" claims next to `01-projects/` | compare to `ls -d 01-projects/*/` |
 | 3 | `issue-reference-freshness` | `#NN` in forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps) | `glab issue view NN --repo <origin>` |
 | 4 | `session-file-existence` | `50-sessions/YYYY-MM-DD-*.md` references anywhere in scope | `existsSync(vault/50-sessions/<file>)` |
-| 5 | `command-count` | "N commands" / "N /commands" claims in prose | compare to the name-deduplicated union of `commands/*.md` and skills with explicit `user-invocable: true`; skipped only when both directories are absent |
+| 5 | `command-count` | "N commands" / "N /commands" claims in prose | compare to the name-deduplicated union of `commands/*.md` and skills whose `user-invocable` is `true` or absent (Claude Code picker semantics, #1515); skipped only when both directories are absent |
 | 6 | `session-config-parity` | Top-level keys under `## Session Config` in `CLAUDE.md` / `AGENTS.md` | diff against `docs/session-config-template.md`; a missing MANDATORY (minimal-baseline) key is an error, a missing OPT-IN-baseline-only key is a note, a local key absent from the template's Session Config blocks is a warning |
 | 7 | `vault-dir-parity` | `vault-integration.vault-dir` in BOTH `CLAUDE.md` AND `AGENTS.md` | reuse `_parseVaultIntegration`; flag when the two files disagree. Short-circuits to PASS when the two are the SAME file by construction (symlink / same inode / byte-identical generated copy) |
 | 8 | `generated-rule-staleness` *(WARN only)* | `.claude/rules/*.md` with `auto-generated: true` frontmatter | extract `learning-key`; WARN when the key is absent from `.orchestrator/metrics/learnings.jsonl` or its learning's `expires_at` is in the past; skipped silently when no auto-generated rules exist |

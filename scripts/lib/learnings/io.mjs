@@ -262,6 +262,11 @@ export async function readLearningsSnapshot(filePath) {
  * malformed too (#1500): `normalizeLearning` turned it into a record of
  * defaults alone, and every rewrite wrote that invented record back.
  *
+ * A UTF-8 BOM (U+FEFF) in front of the FIRST line — an editor's save — is
+ * stripped before parsing, so that line is an entry, not malformed (#1506.5b).
+ * A BOM inside the file (line 2+) stays malformed: that is a concatenation
+ * artefact the drop-malformed preview reports as `bom`.
+ *
  * @param {string} raw
  * @returns {{entries: object[], malformed: string[], malformedLineNumbers: number[]}}
  *   `malformedLineNumbers[i]` is the 1-based line of `malformed[i]` in `raw`
@@ -273,7 +278,7 @@ export function parseLearningsText(raw) {
   raw.split('\n').forEach((line, i) => {
     if (line.trim().length === 0) return;
     try {
-      const parsed = JSON.parse(line);
+      const parsed = JSON.parse(i === 0 && line.charCodeAt(0) === 0xfeff ? line.slice(1) : line);
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
         throw new TypeError('not a JSON object');
       }
@@ -414,7 +419,7 @@ const BACKUP_KEEP = 3;
  * @param {string} fileName — sibling filename to classify
  * @returns {string|null} the suffix after the delimiter, or `null`
  */
-export function backupSuffixOf(baseName, fileName) {
+function backupSuffixOf(baseName, fileName) {
   const stem = `${baseName}.bak`;
   if (!fileName.startsWith(stem)) return null;
   const delim = fileName[stem.length];
