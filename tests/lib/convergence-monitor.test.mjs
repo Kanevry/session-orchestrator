@@ -139,14 +139,14 @@ describe('convergence-monitor classify — event-type gate (#966)', () => {
     // is scheduled — after `tail.started` is already on stdout and with an empty
     // stderr. The monitor then supervises NOTHING while looking like a clean
     // shutdown, which is why no convergence signal was ever observed.
-    // Hermetic: CLAUDE_PLUGIN_ROOT points at an empty tmpdir, so the child finds
+    // Hermetic: CLAUDE_PROJECT_DIR points at an empty tmpdir, so the child finds
     // no events.jsonl and can only poll — it neither reads nor writes anything
     // real. Falsification: restore `t.unref?.()` in sleep() and this goes red.
     const repo = mkdtempSync(join(tmpdir(), 'cm-live-'));
     const child = spawn(
       process.execPath,
       [join(import.meta.dirname, '../../scripts/lib/convergence-monitor.mjs'), '--tail', '--interval=1'],
-      { env: { ...process.env, CLAUDE_PLUGIN_ROOT: repo }, stdio: 'ignore' },
+      { env: { ...process.env, CLAUDE_PROJECT_DIR: repo, CLAUDE_PLUGIN_ROOT: repo }, stdio: 'ignore' },
     );
     let exitedEarly = false;
     child.on('exit', () => { exitedEarly = true; });
@@ -308,7 +308,7 @@ describe('convergence-monitor — tail tick evaluation (live binary)', () => {
     // evaluates only its highest wave, and started{N+1}, admitted by the old
     // `orchestrator.wave.` prefix although it carries no measurement, made that
     // wave N+1 with an empty summary: the (N-1, N) pair was never compared and
-    // 40 -> 10 files emitted nothing. Hermetic: CLAUDE_PLUGIN_ROOT is a tmpdir.
+    // 40 -> 10 files emitted nothing. Hermetic: CLAUDE_PROJECT_DIR is a tmpdir.
     // Falsification: re-admit `orchestrator.wave.started` in isWaveScopedEvent
     // and no shrinking_diff line arrives before the deadline.
     const repo = mkdtempSync(join(tmpdir(), 'cm-tick-'));
@@ -325,7 +325,7 @@ describe('convergence-monitor — tail tick evaluation (live binary)', () => {
     const child = spawn(
       process.execPath,
       [join(import.meta.dirname, '../../scripts/lib/convergence-monitor.mjs'), '--tail', '--interval=0.1'],
-      { env: { ...process.env, CLAUDE_PLUGIN_ROOT: repo }, stdio: ['ignore', 'pipe', 'ignore'] },
+      { env: { ...process.env, CLAUDE_PROJECT_DIR: repo, CLAUDE_PLUGIN_ROOT: repo }, stdio: ['ignore', 'pipe', 'ignore'] },
     );
     const signals = [];
     return new Promise((resolve) => {
@@ -348,6 +348,43 @@ describe('convergence-monitor — tail tick evaluation (live binary)', () => {
     })
       .then(() => {
         expect(signals).toEqual([{ wave: 2, previousFilesChanged: 40, currentFilesChanged: 10, delta: -30 }]);
+      })
+      .finally(() => { child.kill('SIGKILL'); });
+  }, 15_000);
+});
+
+describe('convergence-monitor — project root (#1517)', () => {
+  it('reads the ledger of the PROJECT, not of CLAUDE_PLUGIN_ROOT', () => {
+    // Bug (#1517): the tail took its root from `CLAUDE_PLUGIN_ROOT || cwd`, and
+    // CLAUDE_PLUGIN_ROOT is the installed plugin directory — under Claude Code
+    // the monitor tailed the plugin cache's ledger and never saw the repo's.
+    // The startup event discriminates: `tail.started` only when the ledger the
+    // monitor resolved exists. Falsification: restore the CLAUDE_PLUGIN_ROOT
+    // fallback and the first event becomes `no-events-yet`.
+    const project = mkdtempSync(join(tmpdir(), 'cm-proj-'));
+    const plugin = mkdtempSync(join(tmpdir(), 'cm-plugin-'));
+    const eventsPath = join(project, '.orchestrator', 'metrics', 'events.jsonl');
+    mkdirSync(dirname(eventsPath), { recursive: true });
+    writeFileSync(eventsPath, '');
+    const child = spawn(
+      process.execPath,
+      [join(import.meta.dirname, '../../scripts/lib/convergence-monitor.mjs'), '--tail', '--interval=1'],
+      { env: { ...process.env, CLAUDE_PROJECT_DIR: project, CLAUDE_PLUGIN_ROOT: plugin }, stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    return new Promise((resolve) => {
+      let buf = '';
+      const deadline = setTimeout(() => resolve(null), 5000);
+      child.stdout.on('data', (chunk) => {
+        buf += chunk;
+        const nl = buf.indexOf('\n');
+        if (nl === -1) return;
+        clearTimeout(deadline);
+        resolve(JSON.parse(buf.slice(0, nl)));
+      });
+    })
+      .then((first) => {
+        expect(first?.event).toBe('tail.started');
+        expect(first?.details?.exists).toBe(true);
       })
       .finally(() => { child.kill('SIGKILL'); });
   }, 15_000);

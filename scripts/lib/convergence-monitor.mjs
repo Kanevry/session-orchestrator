@@ -46,6 +46,7 @@
 import { existsSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { eventsFilePath } from './events.mjs';
 import { isMainModule } from './is-main-module.mjs';
+import { getProjectDir } from './platform.mjs';
 
 const DEFAULT_INTERVAL_S = 2;
 const EVENTS_FILE_REL = '.orchestrator/metrics/events.jsonl';
@@ -454,8 +455,9 @@ function sleep(ms) {
  * @param {number} intervalS
  */
 async function tailLoop(intervalS) {
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-  const absPath = eventsFilePath(pluginRoot); // #1514: the repo's one ledger
+  // #1517: the PROJECT root, never CLAUDE_PLUGIN_ROOT (the installed plugin
+  // directory, whose ledger is not this repo's).
+  const absPath = eventsFilePath(getProjectDir()); // #1514: the repo's one ledger
   /** @type {Map<number, WaveSummary>} */
   const state = new Map();
   /** @type {Set<string>} */

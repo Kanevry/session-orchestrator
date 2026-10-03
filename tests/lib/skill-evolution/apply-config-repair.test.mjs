@@ -374,7 +374,10 @@ describe('defaultApplyConfigRepair (real) behaviours', () => {
 
     await runRepairEngine({ repoRoot, config: gatedConfig(), learnings: [{}] }, seams);
 
-    const leftovers = readdirSync(repoRoot).filter((name) => name.endsWith('.tmp'));
+    // The helper names its tmp `<tmpPrefix>.<hex>` (`.CLAUDE.md.tmp.<hex>`), so
+    // an `endsWith('.tmp')` filter could never match a leftover — match the
+    // `.tmp` segment followed by `.`/`-` or the end of the name instead.
+    const leftovers = readdirSync(repoRoot).filter((name) => /\.tmp([.-]|$)/.test(name));
     expect(leftovers).toEqual([]);
   });
 });

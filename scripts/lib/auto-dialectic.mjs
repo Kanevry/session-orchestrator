@@ -30,10 +30,11 @@
  * separate helpers. No external deps — Node 20+ stdlib only.
  */
 
-import { readFile, writeFile, rename, unlink, mkdir, readdir, stat, lstat } from 'node:fs/promises';
+import { readFile, rename, unlink, mkdir, readdir, stat, lstat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import { atomicWriteText, envelopeToError } from './io.mjs';
 
 import { filterRealSessions } from './session-schema.mjs';
 
@@ -284,7 +285,7 @@ export async function shouldDispatchAutoDialectic({
 /**
  * Write `.orchestrator/dialectic-last-run` with the given ISO timestamp.
  *
- * Atomicity: write to `<path>.<rand>.tmp`, then rename(). Same-fs rename is
+ * Atomicity: `atomicWriteText` (`<dir>/.<name>.tmp.<hex>`, then rename()). Same-fs rename is
  * atomic on POSIX — observers see either the previous file or the new one,
  * never a half-written intermediate (mirrors auto-dream.mjs:248-251).
  *
@@ -312,9 +313,10 @@ export async function writeDialecticLastRun({ repoRoot, isoTimestamp } = {}) {
   const target = lastRunPath(repoRoot);
   try {
     await mkdir(path.dirname(target), { recursive: true });
-    const tmp = `${target}.${randomUUID().slice(0, 8)}.tmp`;
-    await writeFile(tmp, `${isoTimestamp}\n`, 'utf8');
-    await rename(tmp, target);
+    const res = await atomicWriteText(target, `${isoTimestamp}\n`, {
+      tmpPrefix: `.${path.basename(target)}.tmp`,
+    });
+    if (!res.ok) return { ok: false, error: res.error };
     return { ok: true, path: target };
   } catch (err) {
     return { ok: false, error: err.message };
@@ -401,11 +403,10 @@ export async function writeDialecticPending({
   ].join('\n');
 
   const content = `${frontmatter}${diff}${diff.endsWith('\n') ? '' : '\n'}`;
-  const tmp = `${target}.${randomUUID().slice(0, 8)}.tmp`;
-  await writeFile(tmp, content, 'utf8');
-  await rename(tmp, target);
+  const res = await atomicWriteText(target, content, { tmpPrefix: `.${path.basename(target)}.tmp` });
+  if (!res.ok) throw envelopeToError(res);
 
-  return { path: target, bytes: Buffer.byteLength(content, 'utf8') };
+  return { path: target, bytes: res.bytes };
 }
 
 /**

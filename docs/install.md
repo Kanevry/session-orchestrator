@@ -88,7 +88,8 @@ JSON (measured 2026-10-02). Later releases dropped the `overrides` block. If
 into `~/.cache/session-orchestrator/plugin-package/` (`$XDG_CACHE_HOME` if set),
 updates the Claude Code marketplace and plugin from that packed copy, installs
 missing runtime dependencies in the plugin directory, and re-runs the Codex
-installer if the plugin is installed in Codex. The marketplace must read the
+installer if the plugin is installed in Codex (it installs from the same packed
+copy, #1518). The marketplace must read the
 packed copy, never the clone: a directory marketplace on the working checkout
 copies every file of it into the plugin cache, `.env.local` included (#1515).
 The Claude step refuses while any `directory` marketplace reads the clone and

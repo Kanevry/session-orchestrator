@@ -362,6 +362,7 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 | `.orchestrator/metrics/*.jsonl.bak.*` | the legacy evolve backup `learnings.jsonl.bak.evolve-<ts>`, a full store copy still on disk in older repos (`scripts/lib/learnings/io.mjs`) |
 | `.orchestrator/metrics/*.jsonl.[0-9]*`, `.orchestrator/metrics/*.jsonl.archive-*`, `.orchestrator/metrics/_archive/` | rotated ledger history of the events log (`scripts/lib/events.mjs`): the legacy numbered `events.jsonl.<n>` slots, older `*.jsonl.archive-*` copies and the `_archive/` directory of rotated `events-<first>_<last>.jsonl` files (`scripts/lib/events-schema.mjs`); the live `*.jsonl` ledgers stay versioned |
 | `.orchestrator/metrics/*.jsonl.tmp-*` | atomic-write temp files of the ledgers (`scripts/lib/autopilot/telemetry.mjs`), left behind only by a crash |
+| `.orchestrator/metrics/.*.tmp.*` | temp files of the shared atomic writers (`scripts/lib/io.mjs`, named `.<base>.tmp.<hex>`), left behind only by a crash |
 | `.orchestrator/pending-dream.md` | the auto-dream sidecar — a full replacement body of the private MEMORY.md (`scripts/lib/auto-dream.mjs`) |
 | `.orchestrator/dialectic-pending.md`, `.orchestrator/dialectic-last-run`, `.orchestrator/consumed/` | the auto-dialectic sidecar, its last-run timestamp and the archive of consumed sidecars (`scripts/lib/auto-dialectic.mjs`) |
 | `.orchestrator/promoted-from.json` | the worktree-promotion marker, a per-worktree fact (`scripts/lib/autopilot/worktree-pipeline.mjs`, read by `scripts/lib/session-end/worktree-cleanup.mjs`) |
@@ -397,7 +398,7 @@ _GI_PATTERNS=(
   '.orchestrator/metrics/proposals-write.lock*' '.orchestrator/metrics/.proposals-write.lock.*'
   '.orchestrator/staging-fence/'
   '.orchestrator/tmp/'
-  '.orchestrator/metrics/*.jsonl.bak.*' '.orchestrator/metrics/*.jsonl.tmp-*'
+  '.orchestrator/metrics/*.jsonl.bak.*' '.orchestrator/metrics/*.jsonl.tmp-*' '.orchestrator/metrics/.*.tmp.*'
   '.orchestrator/metrics/*.jsonl.[0-9]*' '.orchestrator/metrics/*.jsonl.archive-*' '.orchestrator/metrics/_archive/'
   '.orchestrator/pending-dream.md'
   '.orchestrator/dialectic-pending.md' '.orchestrator/dialectic-last-run' '.orchestrator/consumed/'

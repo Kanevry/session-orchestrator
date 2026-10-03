@@ -25,7 +25,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,7 +36,7 @@ describe('ecosystem-health --watch stays alive (#980 defect A1, third copy)', ()
     const cwd = mkdtempSync(join(tmpdir(), 'eco-health-live-'));
     const child = spawn(process.execPath, [SCRIPT, '--watch', '--interval=1'], {
       cwd,
-      env: { ...process.env, CLAUDE_PLUGIN_ROOT: cwd },
+      env: { ...process.env, CLAUDE_PROJECT_DIR: cwd, CLAUDE_PLUGIN_ROOT: cwd },
       stdio: 'ignore',
     });
 
@@ -53,6 +53,43 @@ describe('ecosystem-health --watch stays alive (#980 defect A1, third copy)', ()
         // "exited 0 after 48ms" rather than a bare `true !== false`.
         expect(earlyExit, `watcher exited early: ${JSON.stringify(earlyExit)}`).toBeNull();
         expect(Date.now() - t0).toBeGreaterThanOrEqual(2500);
+      })
+      .finally(() => {
+        child.kill('SIGKILL');
+      });
+  }, 15_000);
+});
+
+describe('ecosystem-health --watch project root (#1517)', () => {
+  it('watches the state file of the PROJECT, not of CLAUDE_PLUGIN_ROOT', () => {
+    // Bug (#1517): the watcher took its root from `CLAUDE_PLUGIN_ROOT || cwd`,
+    // and CLAUDE_PLUGIN_ROOT is the installed plugin directory — under Claude
+    // Code it watched the plugin cache and never saw the repo's state file. The
+    // startup event discriminates: `watcher.started` only when the resolved
+    // file exists. Falsification: restore the CLAUDE_PLUGIN_ROOT fallback and
+    // the first event becomes `no-state-yet`.
+    const project = mkdtempSync(join(tmpdir(), 'eco-health-proj-'));
+    const plugin = mkdtempSync(join(tmpdir(), 'eco-health-plugin-'));
+    mkdirSync(join(project, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(join(project, '.orchestrator', 'metrics', 'ecosystem-health.jsonl'), '{"ok":true}\n');
+    const child = spawn(process.execPath, [SCRIPT, '--watch', '--interval=1'], {
+      cwd: plugin,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: project, CLAUDE_PLUGIN_ROOT: plugin },
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return new Promise((resolve) => {
+      let buf = '';
+      const deadline = setTimeout(() => resolve(null), 5000);
+      child.stdout.on('data', (chunk) => {
+        buf += chunk;
+        const nl = buf.indexOf('\n');
+        if (nl === -1) return;
+        clearTimeout(deadline);
+        resolve(JSON.parse(buf.slice(0, nl)));
+      });
+    })
+      .then((first) => {
+        expect(first?.event).toBe('watcher.started');
       })
       .finally(() => {
         child.kill('SIGKILL');

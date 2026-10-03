@@ -26,7 +26,8 @@
  *                commands, while ANY directory marketplace reads this clone;
  *                GitHub/npm sources update as before, with a one-line hint.
  *   3. codex   — only if the plugin is already installed in Codex: re-run
- *                scripts/codex-install.mjs (refreshes the installed bundle).
+ *                scripts/codex-install.mjs, which installs from the same
+ *                packed STAGE_DIR (#1518), never from this clone.
  *
  * Never deletes an old plugin cache directory: the running session still
  * loads it until the harness restarts.
@@ -34,15 +35,14 @@
  * Exit codes: 0 all steps ok/skipped · 1 usage error · 2 a step failed.
  */
 
-import {
-  copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync,
-} from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveStageDir, stagePackage } from './lib/plugin-package-stage.mjs';
 
 const SO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 // Codex install id; the Claude id is read from the installed entry, because
@@ -55,30 +55,25 @@ const COMMAND_TIMEOUT_MS = 300_000;
 // marketplaces (measured 2026-10-02); the 1 MiB default fails with ENOBUFS.
 const MAX_BUFFER = 64 * 1024 * 1024;
 /** Host-local copy of the packed package; the marketplace reads this, never the clone. */
-const XDG_CACHE = (process.env.XDG_CACHE_HOME || '').trim();
-// The XDG spec says a relative value is invalid and must be ignored.
-const STAGE_DIR = path.join(
-  path.isAbsolute(XDG_CACHE) ? XDG_CACHE : path.join(os.homedir(), '.cache'),
-  'session-orchestrator',
-  'plugin-package',
-);
-const KNOWN_MARKETPLACES = path.join(
-  (process.env.CLAUDE_CONFIG_DIR || '').trim() || path.join(os.homedir(), '.claude'),
-  'plugins',
-  'known_marketplaces.json',
-);
+const STAGE_DIR = resolveStageDir();
 
 /**
- * Tarball filename from `npm pack --json`. npm <= 11 emits `[ { filename } ]`,
- * npm >= 12.0.2 `{ "<name>": { filename } }` (same split pack-policy-floor.test
- * documents for `files`).
- * @param {unknown} packJson
- * @returns {string | null}
+ * Claude Code config dir: CLAUDE_CONFIG_DIR when absolute, else ~/.claude. A
+ * relative value is ignored like a relative XDG_CACHE_HOME — resolved against
+ * whatever cwd this script runs in, it would point the marketplace guard at a
+ * file that does not exist and let the update run unguarded (#1519).
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {string} [home]
+ * @returns {{dir: string, ignored: string | null}}
  */
-export function packedFilename(packJson) {
-  const entry = Array.isArray(packJson) ? packJson[0] : Object.values(packJson ?? {})[0];
-  return typeof entry?.filename === 'string' && entry.filename !== '' ? entry.filename : null;
+export function resolveClaudeConfigDir(env = process.env, home = os.homedir()) {
+  const raw = (env.CLAUDE_CONFIG_DIR || '').trim();
+  if (path.isAbsolute(raw)) return { dir: raw, ignored: null };
+  return { dir: path.join(home, '.claude'), ignored: raw || null };
 }
+
+const CLAUDE_CONFIG = resolveClaudeConfigDir();
+const KNOWN_MARKETPLACES = path.join(CLAUDE_CONFIG.dir, 'plugins', 'known_marketplaces.json');
 
 const realOrResolved = (p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
 
@@ -212,49 +207,6 @@ function updateRepo({ run, log }, opts) {
   return { step: 'repo', status: 'ok', detail: `${repoVersion()}${moved ? ' (updated)' : ' (already current)'}` };
 }
 
-/**
- * Replace STAGE_DIR with the extracted `npm pack` of this clone. The work dir
- * sits beside STAGE_DIR so every rename stays on one filesystem, and it is
- * removed on every path out.
- * @returns {{ok: true} | {ok: false, detail: string}}
- */
-function stagePackage({ run, log }, { dryRun }, { soRoot, stageDir }) {
-  log(`claude: packing this clone into ${stageDir} (package files only)`);
-  if (dryRun) {
-    run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', '<work>']);
-    run('tar', ['-xzf', '<work>/<tarball>', '-C', '<work>']);
-    return { ok: true };
-  }
-  let work;
-  try {
-    mkdirSync(path.dirname(stageDir), { recursive: true });
-    work = mkdtempSync(path.join(path.dirname(stageDir), '.stage-'));
-    // An inherited silent loglevel suppresses the JSON parsed below.
-    const env = { ...process.env };
-    delete env.npm_config_loglevel;
-    delete env.NPM_CONFIG_LOGLEVEL;
-    // --ignore-scripts explicitly: never rely on the clone's .npmrc for prepack.
-    const pack = run('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', work], { cwd: soRoot, env });
-    if (!pack.ok) return { ok: false, detail: pack.detail };
-    let filename;
-    try { filename = packedFilename(JSON.parse(pack.stdout)); } catch { filename = null; }
-    if (!filename) return { ok: false, detail: 'npm pack --json reported no tarball filename' };
-    const untar = run('tar', ['-xzf', path.join(work, filename), '-C', work]);
-    if (!untar.ok) return { ok: false, detail: untar.detail };
-    const pkg = path.join(work, 'package');
-    // npm never packs package-lock.json, and the dependency install below runs
-    // `npm ci` in the plugin copy, which refuses to run without one.
-    copyFileSync(path.join(soRoot, 'package-lock.json'), path.join(pkg, 'package-lock.json'));
-    if (existsSync(stageDir)) renameSync(stageDir, path.join(work, 'previous'));
-    renameSync(pkg, stageDir);
-    return { ok: true };
-  } catch (error) {
-    return { ok: false, detail: `staging ${stageDir}: ${error.message}` };
-  } finally {
-    if (work) rmSync(work, { recursive: true, force: true });
-  }
-}
-
 /** Marketplace name the packed copy registers under (its own marketplace.json). */
 function packedMarketplaceName(root) {
   try {
@@ -273,24 +225,17 @@ export function updateClaude({ run, log }, opts, ctx = {}) {
     soRoot = SO_ROOT,
     stageDir = STAGE_DIR,
     knownMarketplacesFile = KNOWN_MARKETPLACES,
+    ignoredConfigDir = CLAUDE_CONFIG.ignored,
     hasClaude = () => onPath('claude'),
   } = ctx;
   const fail = (detail) => ({ step: 'claude', status: 'failed', detail });
   if (!hasClaude()) return { step: 'claude', status: 'skipped', detail: 'claude not on PATH' };
-
-  const known = readKnownMarketplaces(knownMarketplacesFile);
-  const leaking = directoryMarketplacesOn(known, soRoot);
-  if (leaking.length > 0) {
-    // Stage first so the `add` target named below exists.
-    const staged = stagePackage({ run, log }, opts, { soRoot, stageDir });
-    const removes = leaking.map((n) => `claude plugin marketplace remove ${n}`).join(' && ');
-    return fail(
-      `directory marketplace ${leaking.map((n) => `'${n}'`).join(', ')} reads this clone — the plugin cache `
-      + `becomes a full copy incl. .env.local (#1515). Re-register once: ${removes} && `
-      + `claude plugin marketplace add ${stageDir} && claude plugin install ${PLUGIN_NAME}@${packedMarketplaceName(soRoot)}`
-      + (staged.ok ? '' : ` (staging failed: ${staged.detail})`),
-    );
+  if (ignoredConfigDir) {
+    log(`claude: ignoring relative CLAUDE_CONFIG_DIR '${ignoredConfigDir}' — reading ${knownMarketplacesFile}`);
   }
+  const stage = () => stagePackage({
+    soRoot, stageDir, run, log: (line) => log(`claude: ${line}`), dryRun: opts.dryRun,
+  });
 
   const parseEntry = (r) => {
     if (!r.ok) return { error: r.detail };
@@ -298,16 +243,40 @@ export function updateClaude({ run, log }, opts, ctx = {}) {
       return { error: `plugin list --json unparseable: ${e.message}` };
     }
   };
+  // Installed-check first: with nothing installed there is nothing to guard,
+  // and the refusal below would replace the host's stage dir for no install (#1519).
   const before = parseEntry(run('claude', ['plugin', 'list', '--json'], { mutates: false }));
   if (before.error) return fail(before.error);
   if (!before.entry) return { step: 'claude', status: 'skipped', detail: `${PLUGIN_NAME} not installed` };
+
+  const known = readKnownMarketplaces(knownMarketplacesFile);
+  const leaking = directoryMarketplacesOn(known, soRoot);
+  if (leaking.length > 0) {
+    // Stage first so the `add` target named below exists.
+    const staged = stage();
+    const packedName = packedMarketplaceName(soRoot);
+    // A marketplace already holding the packed copy's name (e.g. a GitHub
+    // `kanevry`) would make `marketplace add <stage>` fail on the taken name.
+    const sameName = known?.find((m) => m.name === packedName);
+    const nameTaken = sameName && !leaking.includes(packedName)
+      && !(sameName.source === 'directory' && sameName.path && realOrResolved(sameName.path) === realOrResolved(stageDir));
+    const removes = [...leaking, ...(nameTaken ? [packedName] : [])]
+      .map((n) => `claude plugin marketplace remove ${n}`).join(' && ');
+    return fail(
+      `directory marketplace ${leaking.map((n) => `'${n}'`).join(', ')} reads this clone — the plugin cache `
+      + `becomes a full copy incl. .env.local (#1515). Re-register once: ${removes} && `
+      + `claude plugin marketplace add ${stageDir} && claude plugin install ${PLUGIN_NAME}@${packedName}`
+      + (staged.ok ? '' : ` (staging failed: ${staged.detail})`),
+    );
+  }
+
   const pluginId = before.entry.id;
   const marketplace = pluginId.slice(pluginId.indexOf('@') + 1);
   const reg = known?.find((m) => m.name === marketplace);
   const fromStage = reg?.source === 'directory' && !!reg.path && realOrResolved(reg.path) === realOrResolved(stageDir);
 
   if (fromStage) {
-    const staged = stagePackage({ run, log }, opts, { soRoot, stageDir });
+    const staged = stage();
     if (!staged.ok) return fail(staged.detail);
   } else {
     log(known

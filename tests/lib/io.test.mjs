@@ -36,6 +36,8 @@ import {
   readJsonlLines,
   readJsonlFile,
   atomicWriteWithBackup,
+  atomicWriteText,
+  envelopeToError,
   writeJsonAtomicSync,
 } from '@lib/io.mjs';
 
@@ -698,6 +700,8 @@ describe('atomicWriteWithBackup', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('fs-error');
     expect(typeof result.error).toBe('string');
+    // #1032: the errno survives, so a caller that must re-throw can keep it.
+    expect(result.code).toBe('ENOTDIR');
     expect(existsSync('/dev/null/nope/target.md')).toBe(false);
     // The unrelated existing file is untouched by the failed write.
     expect(readFileSync(file, 'utf8')).toBe('original\n');
@@ -747,6 +751,7 @@ describe('atomicWriteWithBackup', () => {
         ok: false,
         reason: 'fs-error',
         error: `partial fs adapter: ${missing} required for backup`,
+        code: null,
       });
       // The escape this guards: a real node:fs fallback dropping a sidecar next
       // to the target. Exactly one entry means nothing leaked.
@@ -801,6 +806,96 @@ describe('atomicWriteWithBackup', () => {
     // before any tmp file exists.
     expect(readdirSync(tmpDir)).toEqual([]);
     expect(existsSync(file)).toBe(false);
+  });
+
+  it('removes a tmp the write created before failing mid-way (ENOSPC), and reports the code', () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-'));
+    const file = join(tmpDir, 'board.md');
+
+    // The leak #1032 named: the old `tmpCreated` flag was set only after
+    // writeFileSync RETURNED, so a write that created the file and then threw
+    // left it behind. This fake does exactly that against the real disk.
+    const result = atomicWriteWithBackup(file, 'v1\n', {
+      fs: {
+        writeFileSync: (p) => {
+          writeFileSync(p, 'partial');
+          throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+        },
+      },
+    });
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'fs-error',
+      error: 'ENOSPC: no space left on device',
+      code: 'ENOSPC',
+    });
+    expect(readdirSync(tmpDir)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// atomicWriteText — async twin (#1032)
+// ---------------------------------------------------------------------------
+
+describe('atomicWriteText', () => {
+  let tmpDir;
+
+  afterEach(() => {
+    if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
+    tmpDir = undefined;
+  });
+
+  it('writes the body verbatim with the sync envelope and leaves no tmp sibling', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-async-'));
+    const file = join(tmpDir, 'nested', 'MEMORY.md');
+
+    const result = await atomicWriteText(file, 'hello\n', { tmpPrefix: '.MEMORY.md.tmp' });
+
+    expect(result).toEqual({ ok: true, path: file, bytes: 6, backupPath: null });
+    expect(readFileSync(file, 'utf8')).toBe('hello\n');
+    expect(readdirSync(join(tmpDir, 'nested'))).toEqual(['MEMORY.md']);
+  });
+
+  it('snapshots the previous contents under backup:true, and skips the snapshot on a first write', async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-async-'));
+    const file = join(tmpDir, 'store.jsonl');
+
+    expect((await atomicWriteText(file, 'v1\n', { backup: true })).backupPath).toBeNull();
+    const second = await atomicWriteText(file, 'v2\n', {
+      backup: true,
+      now: new Date('2026-08-14T10:20:30.400Z'),
+    });
+
+    expect(second.backupPath).toBe(`${file}.bak-2026-08-14T10-20-30-400Z`);
+    expect(readFileSync(second.backupPath, 'utf8')).toBe('v1\n');
+    expect(readFileSync(file, 'utf8')).toBe('v2\n');
+  });
+
+  it.each([
+    ['rename fails after a complete write', 'rename'],
+    ['the write fails after creating the tmp', 'writeFile'],
+  ])('resolves (never rejects) and removes its tmp when %s', async (_label, failing) => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-atomic-async-'));
+    const file = join(tmpDir, 'board.md');
+    const boom = Object.assign(new Error('EIO: i/o error'), { code: 'EIO' });
+    const fs =
+      failing === 'rename'
+        ? { rename: async () => { throw boom; } }
+        : { writeFile: async (p) => { writeFileSync(p, 'partial'); throw boom; } };
+
+    const result = await atomicWriteText(file, 'v1\n', { tmpPrefix: '.board.md.tmp', fs });
+
+    expect(result).toEqual({ ok: false, reason: 'fs-error', error: 'EIO: i/o error', code: 'EIO' });
+    expect(readdirSync(tmpDir)).toEqual([]);
+  });
+
+  it('envelopeToError re-raises with the original message and code', async () => {
+    const result = await atomicWriteText('/dev/null/nope/target.md', 'x');
+
+    const err = envelopeToError(result);
+    expect(err.message).toBe(result.error);
+    expect(err.code).toBe('ENOTDIR');
   });
 });
 
@@ -871,7 +966,9 @@ describe('writeJsonAtomicSync', () => {
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('fs-error');
     expect(typeof result.error).toBe('string');
-    expect(Object.keys(result).sort()).toEqual(['error', 'ok', 'reason']);
+    // `code` is the one additive key (#1032); session-lock propagates it verbatim.
+    expect(Object.keys(result).sort()).toEqual(['code', 'error', 'ok', 'reason']);
+    expect(result.code).toBe('ENOTDIR');
   });
 });
 

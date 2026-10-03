@@ -1313,10 +1313,34 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
     // #1506.2: the main note is this record's — a live disambiguation copy of
     // the same record (left by an interrupted takeover) is superseded.
-    if (fm['source-record'] === writer.recordKey) {
-      const stale = staleOwnDisambig(targetDir, slug, entryId, writer);
+    const stale = fm['source-record'] === writer.recordKey
+      ? staleOwnDisambig(targetDir, slug, entryId, writer)
+      : null;
+
+    // Same id: check if updated would advance (unless --force overrides).
+    // Even when the date has not advanced, content may have changed (confidence,
+    // insight, expires_at, etc.) — compare canonical fields before skipping.
+    const entryUpdated = toDate(dateSource);
+    let mainUnchanged = false;
+    if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
+      const candidateContent = generator(entry, slug, generatorOpts);
+      if (learningContentMatches(existingContent, candidateContent)) {
+        // #1028 residue 1: probe the on-disk content against the CURRENT masker
+        // before trusting the five-field match — see maskerWouldChange above.
+        mainUnchanged = !maskerWouldChange(existingContent);
+      }
+      // Content differs, or the on-disk note still leaks under the current env —
+      // fall through to overwrite (same path as date-advance branch).
+    }
+
+    // #1519.4: archive the stale copy AND refresh the main note in the SAME run
+    // (previously the stale branch returned first, so a simultaneous record
+    // change reached the main note one run later). Stale copy first: a crash
+    // between the two writes leaves an archived copy beside a not-yet-refreshed
+    // main note, which the next run's content diff completes.
+    if (stale !== null && !dryRun) writeFileSync(stale.path, stale.next, 'utf8');
+    if (mainUnchanged) {
       if (stale !== null) {
-        if (!dryRun) writeFileSync(stale.path, stale.next, 'utf8');
         return emitEntryAction(_lineNum, ctx, {
           action: 'updated',
           path: stale.path,
@@ -1324,30 +1348,18 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
           meta: { archived_reason: 'superseded' },
         });
       }
-    }
-
-    // Same id: check if updated would advance (unless --force overrides).
-    // Even when the date has not advanced, content may have changed (confidence,
-    // insight, expires_at, etc.) — compare canonical fields before skipping.
-    const entryUpdated = toDate(dateSource);
-    if (!force && fm['updated'] && fm['updated'] >= entryUpdated) {
-      const candidateContent = generator(entry, slug, generatorOpts);
-      if (learningContentMatches(existingContent, candidateContent)) {
-        // #1028 residue 1: probe the on-disk content against the CURRENT masker
-        // before trusting the five-field match — see maskerWouldChange above.
-        const stillLeaks = maskerWouldChange(existingContent);
-        if (!stillLeaks) {
-          return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: slug });
-        }
-      }
-      // Content differs, or the on-disk note still leaks under the current env —
-      // fall through to overwrite (same path as date-advance branch).
+      return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: slug });
     }
 
     // Overwrite with advanced updated date (or forced re-render)
     const content = generator(entry, slug, generatorOpts);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
-    return emitEntryAction(_lineNum, ctx, { action: 'updated', path: targetPath, id: slug });
+    return emitEntryAction(_lineNum, ctx, {
+      action: 'updated',
+      path: targetPath,
+      id: slug,
+      ...(stale !== null ? { meta: { superseded_id: basename(stale.path, '.md') } } : {}),
+    });
   }
 
   // File does not exist — create

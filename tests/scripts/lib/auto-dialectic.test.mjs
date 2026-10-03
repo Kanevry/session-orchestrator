@@ -460,7 +460,7 @@ describe('writeDialecticLastRun', () => {
     await writeDialecticLastRun({ repoRoot, isoTimestamp: '2026-05-23T12:00:00.000Z' });
     const orchestratorDir = join(repoRoot, '.orchestrator');
     const entries = readdirSync(orchestratorDir);
-    const tmpFiles = entries.filter((f) => f.endsWith('.tmp'));
+    const tmpFiles = entries.filter((f) => /\.tmp([.-]|$)/.test(f));
     expect(tmpFiles).toEqual([]);
   });
 });
@@ -571,7 +571,7 @@ describe('writeDialecticPending', () => {
     await writeDialecticPending({ repoRoot, diff: 'content' });
     const orchestratorDir = join(repoRoot, '.orchestrator');
     const entries = readdirSync(orchestratorDir);
-    const tmpFiles = entries.filter((f) => f.endsWith('.tmp'));
+    const tmpFiles = entries.filter((f) => /\.tmp([.-]|$)/.test(f));
     expect(tmpFiles).toEqual([]);
   });
 

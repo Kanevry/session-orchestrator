@@ -49,9 +49,9 @@
  * Part of Epic #643 → issue #647 (C2 auto-repair engine).
  */
 
-import { readFileSync, writeFileSync, renameSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { atomicWriteWithBackup } from '../io.mjs';
 
 import { extractCandidates as realExtractCandidates } from './candidate-intake.mjs';
 import {
@@ -281,13 +281,10 @@ async function defaultApplyConfigRepair(candidate, repoRoot) {
     return { ok: true, applied: false, reason: 'already-current (no-op)' };
   }
 
-  try {
-    const dir = path.dirname(abs);
-    const tmpFile = path.join(dir, `.${path.basename(abs)}.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tmpFile, next, { encoding: 'utf8' });
-    renameSync(tmpFile, abs);
-  } catch (err) {
-    return { ok: true, applied: false, reason: `write failed: ${err?.message ?? String(err)}` };
+  // The helper's mkdir -p is a no-op here: `abs` was just read, so its dir exists.
+  const written = atomicWriteWithBackup(abs, next, { tmpPrefix: `.${path.basename(abs)}.tmp` });
+  if (!written.ok) {
+    return { ok: true, applied: false, reason: `write failed: ${written.error}` };
   }
 
   return { ok: true, applied: true };

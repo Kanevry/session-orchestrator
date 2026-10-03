@@ -337,7 +337,7 @@ describe('writePendingDream', () => {
     // Verify no .tmp file remains alongside the sidecar.
     const dir = join(repoRoot, '.orchestrator');
     const entries = readdirSync(dir);
-    const tmpFiles = entries.filter((f) => f.endsWith('.tmp'));
+    const tmpFiles = entries.filter((f) => /\.tmp([.-]|$)/.test(f));
     expect(tmpFiles).toEqual([]);
   });
 

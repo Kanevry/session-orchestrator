@@ -57,9 +57,10 @@
  *        (absence reads as `'written'`, the only outcome that existed then).
  */
 
-import { mkdirSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
+import { createHash } from 'node:crypto';
+import { atomicWriteWithBackup } from '../io.mjs';
 
 /** Default repo-relative location of the reconcile-candidate work-queue. */
 export const DEFAULT_STORE_PATH = '.orchestrator/runtime/reconcile-candidates.jsonl';
@@ -159,18 +160,16 @@ function readStore(absPath) {
  * @returns {{ ok: true, lines: number } | { ok: false, reason: 'fs-error', error: string }}
  */
 function writeStore(absPath, records) {
+  let content;
   try {
-    const dir = dirname(absPath);
-    mkdirSync(dir, { recursive: true });
     const body = records.map((r) => JSON.stringify(r)).join('\n');
-    const content = records.length > 0 ? body + '\n' : '';
-    const tmpFile = join(dir, `.reconcile-candidates.${randomBytes(6).toString('hex')}.tmp`);
-    writeFileSync(tmpFile, content, { encoding: 'utf8' });
-    renameSync(tmpFile, absPath);
-    return { ok: true, lines: records.length };
+    content = records.length > 0 ? body + '\n' : '';
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
   }
+  // mkdir -p + tmp + rename; its failure envelope is this function's own.
+  const res = atomicWriteWithBackup(absPath, content, { tmpPrefix: '.reconcile-candidates.tmp' });
+  return res.ok ? { ok: true, lines: records.length } : res;
 }
 
 /**

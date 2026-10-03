@@ -664,57 +664,34 @@ describe('classifyPackages — disk persistence (cache file round-trip)', () => 
 // ---------------------------------------------------------------------------
 
 describe('classifyPackages — fail-soft when cache write throws', () => {
+  let tmpDir;
+
   beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'slopcheck-failsoft-'));
     clearCache();
     vi.clearAllMocks();
   });
 
   afterEach(() => {
+    // eslint-disable-next-line no-empty
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch {}
     vi.restoreAllMocks();
   });
 
-  it('returns LEGITIMATE classification even when writeFileSync throws EACCES', async () => {
+  it('still classifies, and warns with the errno instead of throwing, when the cache write fails', async () => {
     mockNpmFound('18.2.0', '17.0.2');
+    // A regular FILE at `.orchestrator`, the cache dir's parent: the real mkdir in the
+    // shared atomic-write helper fails with ENOTDIR for every uid (root
+    // included) — no fs spy, so the production write path is what fails.
+    fs.writeFileSync(path.join(tmpDir, '.orchestrator'), 'not a dir');
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-    // Intercept writeFileSync when it targets the slopcheck tmp cache file.
-    const writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((filePath, ...rest) => {
-      if (typeof filePath === 'string' && filePath.includes('slopcheck-cache.json')) {
-        const err = new Error('EACCES: permission denied');
-        err.code = 'EACCES';
-        throw err;
-      }
-      // Pass through all other writeFileSync calls.
-      return fs.writeFileSync.wrappedImplementation?.(filePath, ...rest);
-    });
+    const result = await classifyPackages([{ name: 'react', registry: 'npm' }], { repoRoot: tmpDir });
 
-    const result = await classifyPackages([{ name: 'react', registry: 'npm' }]);
-
-    // Classification must succeed even though cache write failed.
     expect(result).toHaveLength(1);
     expect(result[0].classification).toBe('LEGITIMATE');
-    // Spy was actually invoked (the impl tried to write).
-    expect(writeFileSpy).toHaveBeenCalled();
-  });
-
-  it('emits a console.warn (not throws) when the cache write fails', async () => {
-    mockNpmFound('18.2.0', '17.0.2');
-
-    vi.spyOn(fs, 'writeFileSync').mockImplementation((filePath) => {
-      if (typeof filePath === 'string' && filePath.includes('slopcheck-cache.json')) {
-        const err = new Error('EACCES: permission denied');
-        err.code = 'EACCES';
-        throw err;
-      }
-    });
-
-    const warnSpy = vi.spyOn(console, 'warn');
-
-    await classifyPackages([{ name: 'react', registry: 'npm' }]);
-
-    // A warn must have been emitted for the cache-write failure.
-    expect(warnSpy).toHaveBeenCalled();
     const warnMessages = warnSpy.mock.calls.map((c) => c[0]);
-    expect(warnMessages.some((m) => typeof m === 'string' && m.includes('cache write failed'))).toBe(true);
+    expect(warnMessages.some((m) => typeof m === 'string' && m.includes('cache write failed (ENOTDIR)'))).toBe(true);
   });
 });
 

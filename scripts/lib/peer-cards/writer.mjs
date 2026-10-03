@@ -22,9 +22,9 @@
  * Part of #503 (Wave 2; sibling to schema.mjs / reader.mjs / merger.mjs).
  */
 
-import { writeFile, rename, mkdir, unlink } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { atomicWriteText, envelopeToError } from '../io.mjs';
 
 import { validatePeerCardFrontmatter } from './schema.mjs';
 
@@ -118,21 +118,9 @@ export async function writePeerCard(repoRoot, target, card) {
 
   const bodyStr = typeof card.body === 'string' ? card.body : '';
   const content = `${serializeFrontmatter(fm)}\n\n${bodyStr.trimStart()}`;
-  const tmpPath = `${finalPath}.${randomUUID().slice(0, 8)}.tmp`;
-
-  try {
-    await writeFile(tmpPath, content, 'utf8');
-    await rename(tmpPath, finalPath);
-    return { ok: true, path: finalPath };
-  } catch (err) {
-    // Best-effort cleanup of orphaned tmp file. Swallow secondary failures —
-    // the primary error is what the caller needs to see.
-    try {
-      await unlink(tmpPath);
-    } catch {
-      /* tmp file may not exist if writeFile failed before creating it */
-    }
-    throw err;
-  }
+  // The helper unlinks its own tmp on failure; re-raise with the same code.
+  const res = await atomicWriteText(finalPath, content, { tmpPrefix: `.${filename}.tmp` });
+  if (!res.ok) throw envelopeToError(res);
+  return { ok: true, path: finalPath };
 }
 

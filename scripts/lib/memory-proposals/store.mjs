@@ -16,10 +16,10 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { serializeProposal } from './schema.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { tryAcquireFileLock, releaseFileLock } from '../file-lock.mjs';
+import { writeJsonAtomicSync } from '../io.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -285,10 +285,8 @@ function incrementSummary(summaryPath, field) {
     ensureDir(summaryPath);
     const current = readSummary(summaryPath);
     current[field] = (current[field] ?? 0) + 1;
-    const tmpSuffix = crypto.randomBytes(4).toString('hex');
-    const tmpFile = `${summaryPath}.tmp.${tmpSuffix}`;
-    fs.writeFileSync(tmpFile, JSON.stringify(current, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmpFile, summaryPath);
+    // Same bytes (indent 2 + trailing newline); a failure is swallowed as before.
+    writeJsonAtomicSync(summaryPath, current, { tmpPrefix: `.${path.basename(summaryPath)}.tmp` });
   } catch {
     /* best-effort: summary writes are non-critical */
   }

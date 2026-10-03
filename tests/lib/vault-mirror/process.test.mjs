@@ -2577,6 +2577,28 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
     expect(again.lines[0].action).toBe('skipped-noop');
   });
 
+  // #1519.4: the stale-disambig branch returned before the main note was
+  // compared, so a record change arriving in the same run reached the main note
+  // only one run later. Both must land in ONE run, and the run after is a no-op.
+  it('an interrupted takeover plus a changed record: own disambig archived AND main note updated in one run', async () => {
+    quietStderr();
+    const { processLearning } = await load();
+    await captureStdout(() => processLearning(ALPHA_LEARNING, 1, ctxFor('learning', alphaRoot)));
+    const ownSlug = `shared-subject-${hash8(ALPHA_LEARNING.id)}`;
+    const own = `40-learnings/alpha-tool/${ownSlug}.md`;
+    fs.writeFileSync(join(vault, own), read(NOTE).replace(/^id: .*$/m, `id: ${ownSlug}`));
+    const changed = { ...ALPHA_LEARNING, insight: 'Alpha insight — revised in the same run' };
+
+    const heal = await captureStdout(() => processLearning(changed, 1, ctxFor('learning', alphaRoot)));
+    expect(heal.lines[0]).toMatchObject({ action: 'updated', path: NOTE, superseded_id: ownSlug });
+    expect(read(own)).toMatch(/^status: archived$/m);
+    expect(read(NOTE)).toContain(changed.insight);
+    expect(read(NOTE)).not.toMatch(/^status: archived$/m);
+
+    const again = await captureStdout(() => processLearning(changed, 1, ctxFor('learning', alphaRoot)));
+    expect(again.lines[0].action).toBe('skipped-noop');
+  });
+
   it('a relabelled note (source-repo differs from its folder) is still the repo\'s own note and gets updated', async () => {
     // #1503 review F1: the note sits in the writer's namespace folder, so a stale
     // `source-repo` only means a move or a `.vault.yaml` relabel. Treating it as

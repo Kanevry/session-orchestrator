@@ -2,22 +2,31 @@
 /**
  * Install Session Orchestrator through Codex's public plugin lifecycle.
  *
+ * The marketplace reads the host-local packed copy (`npm pack` of this clone,
+ * with runtime dependencies, under ~/.cache/session-orchestrator/plugin-package),
+ * never the clone itself: a marketplace on the working checkout copied all of
+ * it into the Codex plugin cache — 15742 files, `.env.local`, `.orchestrator/`
+ * and `tests/` included (#1518, measured 2026-10-03).
+ *
  * Exit codes:
  *   0 — installed, enabled, and verified
  *   1 — argument or user-correctable environment error
  *   2 — system, upstream command/JSON, or runtime postcondition failure
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { validateCodexPluginContract } from './lib/codex/plugin-contract.mjs';
+import { resolveStageDir, stagePackage } from './lib/plugin-package-stage.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
 const SO_ROOT = path.dirname(SCRIPT_DIR);
+const STAGE_DIR = resolveStageDir();
 
 const MIN_CODEX_VERSION = [0, 144, 4];
 const MARKETPLACE_NAME = 'kanevry';
@@ -166,27 +175,28 @@ function requireStableFeature(features, name) {
   }
 }
 
-function readLocalJson(relativePath, label) {
+function readLocalJson(relativePath, label, root = SO_ROOT) {
   try {
-    return JSON.parse(readFileSync(path.join(SO_ROOT, relativePath), 'utf8'));
+    return JSON.parse(readFileSync(path.join(root, relativePath), 'utf8'));
   } catch (error) {
     throw new InstallerError(`Cannot read valid ${label}: ${error.message}`);
   }
 }
 
-function readBaseVersion() {
-  const packageJson = readLocalJson('package.json', 'package.json');
+function readBaseVersion(root = SO_ROOT) {
+  const packageJson = readLocalJson('package.json', 'package.json', root);
   if (typeof packageJson.version !== 'string' || packageJson.version.trim() === '') {
     throw new InstallerError('package.json must contain a non-empty version string.');
   }
   return packageJson.version;
 }
 
-function validateLocalContract() {
-  const expectedBaseVersion = readBaseVersion();
-  const manifest = readLocalJson(path.join('.codex-plugin', 'plugin.json'), 'Codex plugin manifest');
+/** Validates the plugin Codex will actually install: the staged packed copy. */
+function validateLocalContract(root) {
+  const expectedBaseVersion = readBaseVersion(root);
+  const manifest = readLocalJson(path.join('.codex-plugin', 'plugin.json'), 'Codex plugin manifest', root);
   const verdict = validateCodexPluginContract({
-    pluginRoot: SO_ROOT,
+    pluginRoot: root,
     expectedBaseVersion,
   });
 
@@ -210,12 +220,34 @@ function requireArray(value, label) {
   return value;
 }
 
+const realOrResolved = (p) => { try { return realpathSync(p); } catch { return path.resolve(p); } };
+
 function sameLocalPath(left, right) {
-  return typeof left === 'string' && path.resolve(left) === path.resolve(right);
+  return typeof left === 'string' && realOrResolved(left) === realOrResolved(right);
+}
+
+function marketplaceSource(entry) {
+  return { sourceType: entry.marketplaceSource?.sourceType, source: entry.marketplaceSource?.source ?? entry.root };
 }
 
 function assertMarketplaceCompatible(payload) {
   const marketplaces = requireArray(payload.marketplaces, 'marketplaces');
+  // Any local marketplace on the working checkout copies all of it into the
+  // plugin cache (#1518) — refuse, naming the one-time re-registration.
+  const onCheckout = marketplaces.filter((entry) => {
+    if (!isRecord(entry)) return false;
+    const { sourceType, source } = marketplaceSource(entry);
+    return sourceType === 'local' && sameLocalPath(source, SO_ROOT);
+  });
+  if (onCheckout.length > 0) {
+    const removes = onCheckout.map((entry) => `codex plugin marketplace remove ${String(entry.name)}`).join(' && ');
+    throw new InstallerError(
+      `Marketplace ${onCheckout.map((entry) => `'${String(entry.name)}'`).join(', ')} reads this clone '${SO_ROOT}' — `
+      + `the Codex plugin cache becomes a full copy incl. .env.local (#1518). Re-register once: `
+      + `${removes} && node scripts/codex-install.mjs (it adds the packed copy at '${STAGE_DIR}').`,
+      ERROR_CATEGORIES.USER,
+    );
+  }
   const matches = marketplaces.filter((entry) => isRecord(entry) && entry.name === MARKETPLACE_NAME);
 
   if (matches.length > 1) {
@@ -227,16 +259,49 @@ function assertMarketplaceCompatible(payload) {
   }
   if (matches.length === 0) return;
 
-  const existing = matches[0];
-  const sourceType = existing.marketplaceSource?.sourceType;
-  const source = existing.marketplaceSource?.source ?? existing.root;
-  if (sourceType !== 'local' || !sameLocalPath(source, SO_ROOT)) {
+  const { sourceType, source } = marketplaceSource(matches[0]);
+  if (sourceType !== 'local' || !sameLocalPath(source, STAGE_DIR)) {
     throw new InstallerError(
       `Marketplace '${MARKETPLACE_NAME}' already points to '${String(source)}' (${String(sourceType)}), `
-      + `not '${SO_ROOT}'. Resolve the conflict manually after reviewing `
+      + `not '${STAGE_DIR}'. Resolve the conflict manually after reviewing `
       + `'codex plugin marketplace list --json'; this installer will not remove or replace it.`,
       ERROR_CATEGORIES.USER,
     );
+  }
+}
+
+/**
+ * Codex's personal marketplace (`~/.agents/plugins/marketplace.json`, paths
+ * relative to the home dir) may list a plugin that resolves to this clone — on
+ * the reference host `~/plugins/session-orchestrator` is a symlink to the main
+ * checkout, and the resulting `session-orchestrator@local` cache held
+ * `.env.local` (#1518). That catalog belongs to the operator, so this is a
+ * read-only hint naming the cleanup, never a refusal or an edit.
+ */
+function printPersonalMarketplaceHint(json) {
+  const home = os.homedir();
+  const catalog = path.join(home, '.agents', 'plugins', 'marketplace.json');
+  let plugins;
+  try {
+    plugins = JSON.parse(readFileSync(catalog, 'utf8')).plugins;
+  } catch {
+    return;
+  }
+  if (!Array.isArray(plugins)) return;
+  const hits = plugins.filter((plugin) => (
+    isRecord(plugin) && typeof plugin.source?.path === 'string'
+    && sameLocalPath(path.resolve(home, plugin.source.path), SO_ROOT)
+  ));
+  for (const plugin of hits) {
+    const linked = path.resolve(home, plugin.source.path);
+    const message = `Hint: ${catalog} lists '${String(plugin.name)}' at '${linked}', which resolves to this clone — `
+      + `its Codex cache copies the whole checkout incl. .env.local (#1518). Cleanup, once: `
+      + `(1) let this installer finish (it removes ${PLUGIN_NAME}@local after a healthy install); `
+      + `(2) remove that entry from ${catalog}; (3) delete the link '${linked}' if it is a symlink; `
+      + `(4) after restarting Codex, delete the old cache folders under ~/.codex/plugins/cache/local/ `
+      + `(${PLUGIN_NAME}/ and any plugin-install-*/ or plugin-backup-*/ holding ${PLUGIN_NAME}).`;
+    if (json) process.stderr.write(`${message}\n`);
+    else progress(json, message);
   }
 }
 
@@ -246,9 +311,9 @@ function assertMarketplaceAddResult(payload) {
       `Marketplace add returned '${String(payload.marketplaceName)}', expected '${MARKETPLACE_NAME}'.`,
     );
   }
-  if (!sameLocalPath(payload.installedRoot, SO_ROOT)) {
+  if (!sameLocalPath(payload.installedRoot, STAGE_DIR)) {
     throw new InstallerError(
-      `Marketplace add returned root '${String(payload.installedRoot)}', expected '${SO_ROOT}'.`,
+      `Marketplace add returned root '${String(payload.installedRoot)}', expected '${STAGE_DIR}'.`,
     );
   }
   if (typeof payload.alreadyAdded !== 'boolean') {
@@ -336,18 +401,38 @@ function install({ json }) {
   requireStableFeature(features, 'hooks');
   progress(json, 'Features: plugins stable true; hooks stable true');
 
-  const expectedVersion = validateLocalContract();
-  progress(json, `Local contract: valid (${expectedVersion})`);
-
   const marketplaceList = runCodexJson(
     ['plugin', 'marketplace', 'list', '--json'],
     'Marketplace list',
   );
+  // Checked before staging: a refused install must not replace the stage dir.
   assertMarketplaceCompatible(marketplaceList);
 
-  progress(json, `Marketplace: adding '${SO_ROOT}'`);
+  printPersonalMarketplaceHint(json);
+
+  // The contract is checked on the new copy BEFORE it replaces the shared
+  // stage: an invalid copy must never become what Claude Code or Codex reads.
+  let expectedVersion;
+  const staged = stagePackage({
+    soRoot: SO_ROOT,
+    stageDir: STAGE_DIR,
+    installDeps: true,
+    log: (line) => progress(json, `Package: ${line}`),
+    validate: (dir) => {
+      try {
+        expectedVersion = validateLocalContract(dir);
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, detail: error.message };
+      }
+    },
+  });
+  if (!staged.ok) throw new InstallerError(`Cannot stage the packed copy: ${staged.detail}`);
+  progress(json, `Local contract: valid (${expectedVersion})`);
+
+  progress(json, `Marketplace: adding '${STAGE_DIR}'`);
   const marketplaceAdd = runCodexJson(
-    ['plugin', 'marketplace', 'add', SO_ROOT, '--json'],
+    ['plugin', 'marketplace', 'add', STAGE_DIR, '--json'],
     'Marketplace add',
   );
   assertMarketplaceAddResult(marketplaceAdd);
@@ -399,7 +484,7 @@ function install({ json }) {
     ok: true,
     codexVersion: formatVersion(version),
     marketplace: MARKETPLACE_NAME,
-    marketplaceSource: SO_ROOT,
+    marketplaceSource: STAGE_DIR,
     marketplaceAlreadyAdded: marketplaceAdd.alreadyAdded,
     pluginId: PLUGIN_ID,
     pluginVersion: expectedVersion,

@@ -71,6 +71,9 @@ Thumbs.db
 # crash mid-acquisition leaves one behind (#1487 item 11).
 .file.lock.*
 .orchestrator/metrics/*.jsonl.tmp-*
+# Crash residue of the shared atomic writers (scripts/lib/io.mjs): tmp files are
+# named `.<base>.tmp.<hex>` next to their target (#1032).
+.orchestrator/metrics/.*.tmp.*
 .orchestrator/metrics/repo-audit-*.json
 .orchestrator/metrics/sweep.log
 .orchestrator/metrics/_archive/

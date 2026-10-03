@@ -39,11 +39,12 @@
 
 import { existsSync, statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { getProjectDir } from './platform.mjs';
 
 // Ceiling (BV-004): one process per session that invoked session-start
 // (monitors/monitors.json `when: on-skill-invoke:session-start`), alive until
 // SIGTERM; one stat + one full readFileSync of ONE local file per 900 s
-// (resolved against CLAUDE_PLUGIN_ROOT, not the repo); no network, no repo
+// (resolved against the project dir via getProjectDir(), #1517); no network, no repo
 // enumeration, no Session Config read (runs even with `ecosystem-health: false`).
 // The watched file has NO producer (0 writers, measured 2026-09-18:
 // `rg -l "ecosystem-health\.jsonl"` → this file only) — every run emits
@@ -129,8 +130,9 @@ function fingerprint(absPath) {
  * @param {number} intervalS
  */
 async function watchLoop(intervalS) {
-  const pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || process.cwd();
-  const absPath = join(pluginRoot, STATE_FILE_REL);
+  // #1517: the PROJECT root, never CLAUDE_PLUGIN_ROOT (the installed plugin
+  // directory, whose metrics are not this repo's).
+  const absPath = join(getProjectDir(), STATE_FILE_REL);
 
   // Startup event — confirms the watcher is alive even when nothing has
   // happened yet. Without this, a "no events" stream is indistinguishable
