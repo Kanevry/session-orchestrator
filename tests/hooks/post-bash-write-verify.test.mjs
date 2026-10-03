@@ -946,6 +946,28 @@ describe('post-bash-write-verify — foreign-session manifest (#1153 P1)', () =>
     expect(runHook('OWN-UUID-2222').stderr).toContain('out-of-scope.mjs');
   });
 
+  it("WARNS from this session's own .claude manifest when a peer's .codex manifest outranks it (#1504 point 6)", () => {
+    // BUG: G3 took the FIRST existing manifest (.codex outranks .claude); the
+    // peer's one read foreign, G3b stood down, and this session's out-of-scope
+    // Bash write went unreported. The peer allows everything, so the advisory
+    // can only come from our own manifest. `.codex/` is git-excluded: an
+    // untracked peer manifest is itself reported as out-of-scope dirt, which
+    // is not the behaviour this test pins.
+    writeScope({ session_id: 'OWN-UUID-2222' });
+    mkdirSync(join(tmp, '.git', 'info'), { recursive: true });
+    writeFileSync(join(tmp, '.git', 'info', 'exclude'), '.codex/\n');
+    mkdirSync(join(tmp, '.codex'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.codex', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, enforcement: 'warn', allowedPaths: ['**'], session_id: 'PEER-UUID-1111' }),
+    );
+    expect(runHook('OWN-UUID-2222').stderr).toBe(''); // baseline
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+    const res = runHook('OWN-UUID-2222');
+    expect(res.stderr).toContain('out-of-scope.mjs');
+    expect(readEvents().filter((e) => e.event === 'orchestrator.scope.foreign_session_ignored')).toHaveLength(0);
+  });
+
   // W4/F7 — the bug: G3b `return`ed BEFORE `currentScopeState` was computed, so
   // REBINDING the manifest to a fabricated `session_id` (one `cat >` redirect)
   // disarmed this session's gates AND produced total silence. Deleting the file
