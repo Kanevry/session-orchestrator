@@ -42,8 +42,8 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
-import { SCAN_CHUNK_BYTES, emitEvent, listEventSourcesNewestFirst } from './lib/events.mjs';
-import { ARCHIVE_DIR_NAME, ROTATION_EVENT } from './lib/events-schema.mjs';
+import { SCAN_CHUNK_BYTES, emitEvent, listEventSourcesNewestFirst, tombstoneGap } from './lib/events.mjs';
+import { ARCHIVE_DIR_NAME } from './lib/events-schema.mjs';
 import { getProjectDir } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { isLockLive, readLock } from './lib/session-lock.mjs';
@@ -163,7 +163,8 @@ export function planSessions({ repoRoot }) {
  * not one of the sources read (#1498). Pruned history used to shrink the plan
  * silently; non-zero `historyGaps` says the candidate count is a floor.
  *
- * The check is `readEventsWithRotations` rule 1 (`scripts/lib/events.mjs`):
+ * The check is `tombstoneGap` (`scripts/lib/events.mjs`), the one shared with
+ * `readEventsWithRotations` rule 1:
  * resolved by BASENAME against this ledger's own `_archive/` (#1411), and a
  * file that exists but is not a source (renamed out of `ARCHIVE_NAME_RE`)
  * counts as a gap too — existence is not reading (#1423).
@@ -203,10 +204,7 @@ function planWithGaps({ repoRoot }) {
   for (const source of [...sources].reverse()) {
     forEachJsonlRecord(source.path, (ev) => {
       if (!ev || typeof ev !== 'object') return;
-      if (ev.event === ROTATION_EVENT && typeof ev.archived_as === 'string' && ev.archived_as.length > 0
-        && !read.has(path.join(archiveDir, path.basename(ev.archived_as)))) {
-        historyGaps += 1;
-      }
+      if (tombstoneGap(ev, archiveDir, read) !== null) historyGaps += 1;
       if (typeof ev.session_id === 'string' && typeof ev.semantic_session_id === 'string') {
         if (ev.event === LOCK_ACQUIRED) semanticFromLock.set(ev.session_id, ev.semantic_session_id);
         else if (ev.event === SESSION_ENDED) {
