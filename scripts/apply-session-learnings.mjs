@@ -62,7 +62,8 @@
  * Telemetry: `--apply` emits `orchestrator.learnings.session_write_applied`
  * after the write — its presence is the proof the write ran. Best-effort: a
  * telemetry failure never changes the exit code. Skipped (stderr WARN) when
- * `--file` lies outside `--repo-root`, so the record is never pinned to a repo
+ * `--file` lies outside `--repo-root` after resolving symlinks on both sides,
+ * so the record is never pinned to a repo
  * whose store was not written.
  *
  * Exit codes:
@@ -74,8 +75,9 @@
  *      summary, and WARNed on stderr with their line numbers.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
+import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { LearningsLockError, readLearnings, withLearningsLock } from './lib/learnings/io.mjs';
 import { pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
 import {
@@ -312,9 +314,29 @@ export function buildNextGeneration({ current, updates, newLearnings, decayRate,
   return { next, confirmed, contradicted, appended: newIds.size, decayed, undecayable };
 }
 
+/**
+ * A path resolved through symlinks when it exists, else absolute as given.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function canonicalPath(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
 async function emitSessionWriteApplied({ repoRoot, filePath, payload }) {
-  const rel = path.relative(repoRoot, filePath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
+  // Canonical, not lexical (#1506.4b; same check as sweep-expired-learnings
+  // --drop-malformed, #1500 F4): a store reached through a symlinked directory
+  // inside the repo but living outside it is refused, and a root spelled
+  // through a symlink (macOS /var → /private/var) still accepts the store
+  // inside it. Runs after the write, so the store exists and resolves.
+  const file = canonicalPath(filePath);
+  const rel = path.relative(canonicalPath(repoRoot), file);
+  if (!validatePathInsideProject(file, repoRoot, { canonicalizeRoot: true }).ok) {
     process.stderr.write(
       `apply-session-learnings: skipped ${SESSION_WRITE_EVENT} — ${filePath} lies outside ` +
         `--repo-root ${repoRoot}\n`,

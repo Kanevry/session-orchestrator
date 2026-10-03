@@ -283,6 +283,15 @@ describe('SKIP stderr lines carry the vault-relative path, never the vault root'
       'SKIP hand-written (disambig): ',
       (p) => (p.endsWith('explicit-contracts.md') ? OURS_OTHER_ID : HANDWRITTEN),
     ],
+    // #1506.3: the disambig branch tested only `!_generator`, so another tool's
+    // `<slug>-<uuid8>.md` (no source-record) was overwritten as
+    // `skipped-collision-resolved` instead of being skipped.
+    [
+      'learning unknown generator (disambig)',
+      'learning',
+      'SKIP unknown generator (disambig): ',
+      (p) => (p.endsWith('explicit-contracts.md') ? OURS_OTHER_ID : FOREIGN_GENERATOR),
+    ],
     ['session hand-written', 'session', 'SKIP hand-written: ', () => HANDWRITTEN],
     ['session unknown generator', 'session', 'SKIP unknown generator: ', () => FOREIGN_GENERATOR],
   ])('%s', async (_label, kind, prefix, contentFor) => {

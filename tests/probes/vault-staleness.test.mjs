@@ -5,7 +5,7 @@
  * Uses tmpdir-based isolation — never touches the host repo.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -182,6 +182,25 @@ describe('vault-staleness probe', () => {
       expect(result.findings).toHaveLength(0);
       expect(result.metrics.scanned_projects).toBe(1);
       expect(result.metrics.stale_count).toBe(0);
+    });
+  });
+
+  // #1506 pt 6: the committed `~/Projects/vault` was passed to existsSync
+  // unexpanded, so the probe looked under `<cwd>/~/...` — a skip, or a false
+  // all-clear when a stray `~` directory sat there — never the real vault.
+  describe('~-prefixed vault-dir', () => {
+    afterEach(() => vi.unstubAllEnvs());
+
+    it('expands ~ against the home directory instead of the cwd', async () => {
+      const home = tmp();
+      const { projectsDir } = makeVault(home);
+      makeProject(projectsDir, 'fresh-project', { slug: 'fresh-project', tier: 'active', lastSync: hoursAgo(1) });
+      vi.stubEnv('HOME', home);
+
+      const result = await runProbe(tmp(), { 'vault-integration': { 'vault-dir': '~/vault' } });
+
+      expect(result.skipped_reason).toBeUndefined();
+      expect(result.metrics.scanned_projects).toBe(1);
     });
   });
 

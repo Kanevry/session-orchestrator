@@ -85,21 +85,28 @@ const DEFAULT_VAULT_SUBPATH = path.join('01-projects', 'session-orchestrator', '
  *   — forwarded to parseSessionConfig (tests pass `{ env: {}, ownerConfig: undefined }`
  *   for hermetic, owner.yaml-free resolution — issue #653 bleed guard).
  * @returns {string|null} the resolved output path, or null when vault-dir is
- *   unconfigured/unresolvable.
+ *   unconfigured/unresolvable or vault-integration is not enabled.
  */
 export function resolveDefaultOutput({ repoRoot, hostPaths } = {}) {
   const root = repoRoot ?? findProjectRoot();
   const instr = resolveInstructionFile(root);
   if (!instr) return null;
 
-  let vaultDir;
+  let vi;
   try {
     const content = readFileSync(instr.path, 'utf8');
     const config = parseSessionConfig(content, hostPaths ? { hostPaths } : undefined);
-    vaultDir = config?.['vault-integration']?.['vault-dir'];
+    vi = config?.['vault-integration'];
   } catch {
     return null;
   }
+  // #1506.4a: this default target IS the vault, so it obeys the off switch the
+  // other vault writers obey (vault-backfill, board-writer, narrative-mirror:
+  // `enabled !== true` → no vault write), already host-lowered by
+  // parseSessionConfig (env SO_VAULT_INTEGRATION > owner.yaml > committed). An
+  // explicit `--output` is the caller's own path and is not gated.
+  if (vi?.enabled !== true) return null;
+  const vaultDir = vi['vault-dir'];
   if (!vaultDir || typeof vaultDir !== 'string' || vaultDir.trim() === '') return null;
 
   // Expand a `~`-prefixed vault-dir (e.g. the committed Session Config default
@@ -604,7 +611,8 @@ function parseArgs(argv) {
     if (!resolved) {
       process.stderr.write(
         'export-hw-learnings: could not resolve vault-integration.vault-dir for the default ' +
-        '--output path (no CLAUDE.md/AGENTS.md found, or vault-dir is unset). ' +
+        '--output path (no CLAUDE.md/AGENTS.md found, vault-integration.enabled is not true, ' +
+        'or vault-dir is unset). ' +
         'Pass --output <path> explicitly.\n'
       );
       process.exit(1);

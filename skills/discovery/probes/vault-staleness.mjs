@@ -38,6 +38,7 @@
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { expandTilde } from '../../../scripts/lib/common.mjs';
 
 // ---------------------------------------------------------------------------
 // Minimal YAML frontmatter parser — top-level scalar fields only (<30 lines).
@@ -112,13 +113,18 @@ export async function runProbe(projectRoot, config) {
   try {
     // --- Config validation (early exit paths) ---
 
-    const vaultDir = config?.['vault-integration']?.['vault-dir'];
-    if (!vaultDir) {
+    const configuredVaultDir = config?.['vault-integration']?.['vault-dir'];
+    if (!configuredVaultDir) {
       return makeSkip('vault-dir not configured');
     }
+    // #1506 pt 6: the committed value is `~/Projects/vault`; unexpanded it
+    // resolved against the cwd (`<cwd>/~/Projects/vault`), where a stray `~`
+    // directory produced a false all-clear (0 projects scanned instead of 45).
+    const vaultDir = expandTilde(configuredVaultDir);
 
     if (!existsSync(vaultDir)) {
-      return makeSkip(`vault-dir does not exist: ${vaultDir}`);
+      // The configured spelling, not the expanded one: no home dir in the output.
+      return makeSkip(`vault-dir does not exist: ${configuredVaultDir}`);
     }
 
     const projectsDir = join(vaultDir, '01-projects');

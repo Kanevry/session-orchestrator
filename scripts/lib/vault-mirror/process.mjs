@@ -311,6 +311,25 @@ export function foreignOwnerReason(fm, { recordKey = null, ownRecordKeys = null 
 }
 
 /**
+ * The generator-marker half of note ownership, checked BEFORE the record-level
+ * {@link foreignOwnerReason}: `'hand-written'` when the note carries no
+ * `_generator`, `'unknown generator'` when another tool wrote it, `null` when
+ * it is ours. Every branch that may write an existing note consults this one
+ * predicate — the disambiguation branch used to test only the first half, so a
+ * `<slug>-<uuid8>.md` written by another generator (no `source-record`, so
+ * `foreignOwnerReason` allows it) was overwritten (#1506.3). The returned label
+ * is the stderr wording of the SKIP line.
+ *
+ * @param {Record<string, string>|null} fm - parsed frontmatter of the note on disk.
+ * @returns {'hand-written'|'unknown generator'|null}
+ */
+function notOurGenerator(fm) {
+  if (!fm || !fm['_generator']) return 'hand-written';
+  if (fm['_generator'] !== GENERATOR_MARKER) return 'unknown generator';
+  return null;
+}
+
+/**
  * Emit `skipped-foreign-owner` for a note the writer must not touch: one stderr
  * `SKIP` line (vault-relative path, like every other SKIP line) and the stdout
  * action carrying `meta.reason`.
@@ -929,15 +948,10 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     const existingContent = readFileSync(targetPath, 'utf8');
     const fm = parseFrontmatter(existingContent);
 
-    if (!fm || !fm['_generator']) {
-      // Hand-written: skip
-      process.stderr.write(`SKIP hand-written: ${toVaultRelative(targetPath, vaultDir)}\n`);
-      return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
-    }
-
-    if (fm['_generator'] !== GENERATOR_MARKER) {
-      // Different generator — treat as hand-written to be safe
-      process.stderr.write(`SKIP unknown generator: ${toVaultRelative(targetPath, vaultDir)}\n`);
+    // Hand-written, or another generator's note — treated as hand-written to be safe.
+    const notOurs = notOurGenerator(fm);
+    if (notOurs !== null) {
+      process.stderr.write(`SKIP ${notOurs}: ${toVaultRelative(targetPath, vaultDir)}\n`);
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: entryId });
     }
 
@@ -972,8 +986,9 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         // Still exists with disambig — check if it's ours
         const disambigContent = readFileSync(targetPath, 'utf8');
         const disambigFm = parseFrontmatter(disambigContent);
-        if (!disambigFm || !disambigFm['_generator']) {
-          process.stderr.write(`SKIP hand-written (disambig): ${toVaultRelative(targetPath, vaultDir)}\n`);
+        const disambigNotOurs = notOurGenerator(disambigFm);
+        if (disambigNotOurs !== null) {
+          process.stderr.write(`SKIP ${disambigNotOurs} (disambig): ${toVaultRelative(targetPath, vaultDir)}\n`);
           return emitEntryAction(_lineNum, ctx, {
             action: 'skipped-handwritten',
             path: targetPath,
@@ -1243,14 +1258,9 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     const existingContent = readFileSync(targetPath, 'utf8');
     const fm = parseFrontmatter(existingContent);
 
-    if (!fm || !fm['_generator']) {
-      // Hand-written: skip
-      process.stderr.write(`SKIP hand-written: ${toVaultRelative(targetPath, vaultDir)}\n`);
-      return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: session_id });
-    }
-
-    if (fm['_generator'] !== GENERATOR_MARKER) {
-      process.stderr.write(`SKIP unknown generator: ${toVaultRelative(targetPath, vaultDir)}\n`);
+    const notOurs = notOurGenerator(fm);
+    if (notOurs !== null) {
+      process.stderr.write(`SKIP ${notOurs}: ${toVaultRelative(targetPath, vaultDir)}\n`);
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-handwritten', path: targetPath, id: session_id });
     }
 
