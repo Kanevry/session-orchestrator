@@ -95,8 +95,35 @@ export const LOCK_PATH = '.orchestrator/session.lock';
  * back by more than 5 minutes makes every live lock written just before it read
  * as stale, and the next SessionStart reclaims it. Revisit if a `reclaimed`
  * event follows a clock step on a host whose previous session was still running.
+ *
+ * Exported as the ONE copy of this tolerance (#1505.1/.2): the session registry
+ * (`session-registry.mjs` `_ageMinutes`) and the lock reaper (`lock-reaper.mjs`
+ * `ageHoursOf`, `currentSessionAgeHours`) apply the same future-stamp rule.
  */
-const FUTURE_HEARTBEAT_TOLERANCE_MS = 5 * 60 * 1000;
+export const FUTURE_HEARTBEAT_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
+ * The lock manager's own transient files beside `session.lock` (#1505.3): the
+ * `writeLockAtomic()` tmp (6 random bytes), the `createSessionLockExclusive()`
+ * tmp and the `reclaimIfNotLive()` tombstone (8 random bytes each). A process
+ * SIGKILLed between creating one and its cleanup leaves it behind for good.
+ * Anchored and exact so `session.lock` itself — or any foreign file — can
+ * never match.
+ */
+const LOCK_LEFTOVER_RE = /^\.session\.lock\.(?:tmp\.[0-9a-f]{12}|create\.tmp\.[0-9a-f]{16}|reclaim\.[0-9a-f]{16})$/;
+
+/**
+ * Minimum age before {@link sweepLockLeftovers} removes a leftover. Every one
+ * of them lives inside ONE synchronous call (write → rename/link → unlink),
+ * milliseconds long. Ceiling (BV-004): the age is taken from the later of
+ * mtime and ctime, because a tombstone is a RENAMED lock whose mtime is the
+ * old lock's last write; rename updates ctime (measured 2026-10-03 on APFS;
+ * ext4/xfs do too). On a filesystem whose rename touches neither, a tombstone
+ * could look old mid-reclaim — the tombstone content check below still keeps
+ * every live one. Revisit if a `reclaimed` event is followed by a lost
+ * link-back on such a filesystem.
+ */
+export const LOCK_LEFTOVER_MIN_AGE_MS = 60 * 60 * 1000;
 
 /**
  * Where the durable lock-ownership proof lives, relative to the repo root
@@ -572,6 +599,10 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     return { ok: false, reason: 'missing-session-id' };
   }
 
+  // #1505.3: remove what a SIGKILLed writer or reclaimer left beside the lock.
+  // Result-neutral and best-effort: it never reads or touches `session.lock`.
+  try { sweepLockLeftovers({ repoRoot }); } catch { /* never blocks acquire */ }
+
   const lockFile = lockPathFor(repoRoot);
 
   // -------------------------------------------------------------------------
@@ -926,6 +957,53 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
       try { fs.unlinkSync(tomb); } catch { /* best-effort */ }
     }
   }
+}
+
+/**
+ * Remove the lock manager's own leftovers beside `session.lock` (#1505.3) —
+ * files named exactly like {@link LOCK_LEFTOVER_RE}, regular files only (lstat:
+ * a symlink, directory or anything else is never followed nor removed), last
+ * touched more than {@link LOCK_LEFTOVER_MIN_AGE_MS} ago. A tombstone is
+ * removed only on the decision its killed reclaimer would have taken itself:
+ * readable and not a live lock. An unreadable one is kept, as
+ * `reclaimIfNotLive()` keeps it. Unlinking a tombstone removes only that NAME —
+ * when it is still a hard link to the primary lock's inode (killed between
+ * link-back and unlink), `session.lock` keeps its content.
+ *
+ * Never throws; a file that vanished or cannot be removed is skipped.
+ *
+ * @param {{ repoRoot?: string, nowMs?: number }} [opts]
+ * @returns {{ removed: string[] }} basenames removed
+ */
+export function sweepLockLeftovers({ repoRoot, nowMs = Date.now() } = {}) {
+  const removed = [];
+  let dir;
+  let names;
+  try {
+    dir = path.dirname(lockPathFor(repoRoot));
+    names = fs.readdirSync(dir);
+  } catch {
+    return { removed };
+  }
+  for (const name of names) {
+    if (!LOCK_LEFTOVER_RE.test(name)) continue;
+    const full = path.join(dir, name);
+    try {
+      const st = fs.lstatSync(full);
+      if (!st.isFile()) continue;
+      // A future mtime/ctime (clock stepped back) yields a negative age: kept.
+      if (!(nowMs - Math.max(st.mtimeMs, st.ctimeMs) > LOCK_LEFTOVER_MIN_AGE_MS)) continue;
+      if (name.startsWith('.session.lock.reclaim.')) {
+        let raw;
+        try { raw = fs.readFileSync(full, 'utf8'); } catch { continue; }
+        const moved = parseLock(raw);
+        if (moved !== null && isLockLive(moved, nowMs)) continue;
+      }
+      fs.unlinkSync(full);
+      removed.push(name);
+    } catch { /* vanished or unremovable — best-effort */ }
+  }
+  return { removed };
 }
 
 /**

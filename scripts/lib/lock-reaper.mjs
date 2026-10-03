@@ -66,7 +66,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { enumerateCandidates } from './dispatcher/enumerate.mjs';
-import { readLock, isLockLive, isPidAliveOnHost, LOCK_PATH, DEFAULT_TTL_HOURS } from './session-lock.mjs';
+import { readLock, isLockLive, isPidAliveOnHost, LOCK_PATH, DEFAULT_TTL_HOURS, FUTURE_HEARTBEAT_TOLERANCE_MS } from './session-lock.mjs';
 import { emitEvent } from './events.mjs';
 import { hostnamesMatch, lockHostCandidate } from './host-identity.mjs';
 
@@ -126,7 +126,25 @@ function ageHoursOf(lock, nowMs) {
   if (typeof lock.last_heartbeat !== 'string' || lock.last_heartbeat.length === 0) return null;
   const ms = Date.parse(lock.last_heartbeat);
   if (Number.isNaN(ms)) return null;
-  return Number(((nowMs - ms) / (3600 * 1000)).toFixed(2));
+  const hours = futureSafeAgeHours(ms, nowMs);
+  return hours === null ? null : Number(hours.toFixed(2));
+}
+
+/**
+ * Hours from `ms` to `nowMs`, or `null` when `ms` lies further in the future
+ * than {@link FUTURE_HEARTBEAT_TOLERANCE_MS} (#1505.2). Such a stamp measures
+ * no age, and a negative one is worse than none: it reads as "younger than
+ * every TTL" and was emitted as a negative `age_hours`. `null` — not 0 — so an
+ * unmeasurable age never looks like a fresh one. Within the tolerance (clock
+ * skew) the age clamps to 0.
+ *
+ * @param {number} ms
+ * @param {number} nowMs
+ * @returns {number|null}
+ */
+function futureSafeAgeHours(ms, nowMs) {
+  if (ms > nowMs + FUTURE_HEARTBEAT_TOLERANCE_MS) return null;
+  return Math.max(0, nowMs - ms) / (3600 * 1000);
 }
 
 /**
@@ -226,12 +244,15 @@ function currentSessionPathFor(repoRoot) {
 function currentSessionAgeHours(parsed, filePath, nowMs, fsDep) {
   const ts = typeof parsed?.timestamp === 'string' ? parsed.timestamp : null;
   const ms = ts ? Date.parse(ts) : NaN;
-  if (!Number.isNaN(ms)) {
-    return (nowMs - ms) / (3600 * 1000);
-  }
+  // #1505.2: a `timestamp` beyond the future tolerance measures nothing — it
+  // fell through as a negative age, always under the TTL, and kept the file
+  // 'fresh' forever. It is treated like an absent one: the mtime decides.
+  const fromTimestamp = Number.isNaN(ms) ? null : futureSafeAgeHours(ms, nowMs);
+  if (fromTimestamp !== null) return fromTimestamp;
   try {
     const info = fsDep.statSync(filePath);
-    return (nowMs - info.mtimeMs) / (3600 * 1000);
+    // A future mtime too → null → 'fresh': kept until the clock passes it.
+    return futureSafeAgeHours(info.mtimeMs, nowMs);
   } catch {
     return null;
   }

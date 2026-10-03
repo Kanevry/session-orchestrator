@@ -566,3 +566,26 @@ describe('run-migrate-v2-cross-repo', () => {
     expect(readLearnings(free)[0].insight).toBe('legacy description text');
   }, 30_000);
 });
+
+describe('run-migrate-v2-cross-repo — I/O errors exit 2 (#1487.15)', () => {
+  it('10. a store that cannot be read is reported as error and the run exits 2, not 0', () => {
+    // BUG THIS CATCHES: `read failed` / `write failed` set `status: 'error'`
+    // but the run ended `process.exit(0)` — only the lock case exited 2,
+    // although the header and --help document 2 = I/O error.
+    const base = makeTmpBase();
+    const bad = makeFakeRepo(base, 'repo-unreadable', [legacyDescriptionLine('id-bad')]);
+    const good = makeFakeRepo(base, 'repo-good', [legacyDescriptionLine('id-good')]);
+    const store = join(bad, '.orchestrator', 'metrics', 'learnings.jsonl');
+    rmSync(store);
+    mkdirSync(store); // EISDIR on read
+    const result = run(['--repos', `${bad},${good}`, '--json']);
+
+    expect(result.status).toBe(2);
+    const parsed = JSON.parse(result.stdout);
+    const badResult = parsed.repos.find((r) => r.repo === bad);
+    expect(badResult).toMatchObject({ status: 'error' });
+    expect(badResult.error).toMatch(/read failed/);
+    expect(parsed.repos.find((r) => r.repo === good).status).toBe('dry-run');
+    expect(result.stderr).toMatch(/I\/O error in 1 repo/);
+  });
+});

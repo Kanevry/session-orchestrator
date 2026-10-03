@@ -502,12 +502,24 @@ process.stderr.write(
     `${aggregate.totalStillInvalidPost} still-invalid\n`
 );
 
+let exitCode = 0;
 if (lockFailedRepos.length > 0) {
   process.stderr.write(
     `run-migrate-v2: ERROR learnings store lock not acquired, nothing written in ${lockFailedRepos.length} repo(s): ` +
       `${lockFailedRepos.join(', ')}\n`
   );
-  process.exit(2);
+  exitCode = 2;
 }
 
-process.exit(0);
+// #1487.15: every other `status: 'error'` (read failed / write failed) is an
+// I/O error too — exit 2 as the header and --help document, never 0.
+const ioFailed = results.filter((r) => r.status === 'error' && !lockFailedRepos.includes(r.repo));
+if (ioFailed.length > 0) {
+  process.stderr.write(
+    `run-migrate-v2: ERROR I/O error in ${ioFailed.length} repo(s): ` +
+      `${ioFailed.map((r) => `${r.repo} (${r.error})`).join(', ')}\n`
+  );
+  exitCode = 2;
+}
+
+process.exit(exitCode);

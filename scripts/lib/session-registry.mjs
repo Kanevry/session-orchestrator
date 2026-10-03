@@ -42,6 +42,7 @@ import { appendFileSync, mkdirSync } from 'node:fs';
 
 import { utcTimestamp, appendJsonl } from './common.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
+import { FUTURE_HEARTBEAT_TOLERANCE_MS } from './session-lock.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -157,10 +158,29 @@ function _validEntry(obj) {
   return true;
 }
 
+/**
+ * True when `isoTimestamp` lies further in the future than the lock module's
+ * {@link FUTURE_HEARTBEAT_TOLERANCE_MS} (#1505.1). Such a heartbeat was not
+ * written by a live writer on this clock — a hand edit or a clock stepped
+ * backwards — so it measures nothing.
+ */
+function _isFutureStamp(isoTimestamp, now) {
+  const t = Date.parse(isoTimestamp);
+  return !Number.isNaN(t) && t > now + FUTURE_HEARTBEAT_TOLERANCE_MS;
+}
+
+/**
+ * Minutes since `isoTimestamp`. `Infinity` — never fresh — when it is
+ * unparseable or stamped beyond the future tolerance (#1505.1: `now - t` went
+ * negative, stayed under every freshness window, and kept the entry "fresh"
+ * forever, exactly the flaw `isLockLive()` closed in #1494). Within the
+ * tolerance the age clamps to 0 instead of going negative.
+ */
 function _ageMinutes(isoTimestamp, now = Date.now()) {
   const t = Date.parse(isoTimestamp);
   if (Number.isNaN(t)) return Infinity;
-  return (now - t) / 60_000;
+  if (_isFutureStamp(isoTimestamp, now)) return Infinity;
+  return Math.max(0, now - t) / 60_000;
 }
 
 // ---------------------------------------------------------------------------
@@ -355,12 +375,15 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
     const parsed = await _readJsonSafe(full);
     const valid = _validEntry(parsed);
     let age;
-    if (valid) {
+    if (valid && !_isFutureStamp(parsed.last_heartbeat, now)) {
       age = _ageMinutes(parsed.last_heartbeat, now);
     } else {
       // Malformed files can be fresh semantic-session claim files. Use mtime so
       // a concurrent SessionStart claim is not swept before registerSelf()
       // overwrites it with the real heartbeat entry.
+      // #1505.1: a future-stamped heartbeat measures no age either — `now - t`
+      // was negative, never over the threshold, so it was never swept. The
+      // mtime is when it was last written: a live heartbeat() keeps it young.
       try {
         const info = await fs.stat(full);
         age = (now - info.mtimeMs) / 60_000;

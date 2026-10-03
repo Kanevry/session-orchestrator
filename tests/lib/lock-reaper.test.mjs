@@ -623,3 +623,40 @@ describe('reapRepoLock — #1072 hostname-spelling variants', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 });
+
+// ===========================================================================
+// #1505.2 — a future stamp is no age
+// ===========================================================================
+
+describe('reapRepoLock — stamps in the future (#1505.2)', () => {
+  it('archives an orphaned current-session.json whose timestamp lies a year ahead once its mtime is old', async () => {
+    // BUG THIS CATCHES: `currentSessionAgeHours` returned a negative age for a
+    // future `timestamp`, always under the TTL, so guard (c) called the file
+    // 'fresh' and kept it until the wall clock caught up.
+    const { utimesSync } = await import('node:fs');
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'cs-future', null);
+    writeCurrentSession(repo, currentSessionBody({ sessionId: 'ahead', offsetHours: -24 * 365 }));
+    const old = new Date(NOW - 10 * 3600 * 1000);
+    utimesSync(currentSessionPathOf(repo), old, old);
+    const { deps } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.currentSession.archived).toBe(true);
+  });
+
+  it('reports a dead lock heartbeated a day ahead with age_hours null, never negative', async () => {
+    // BUG THIS CATCHES: `ageHoursOf` was unclamped — the reaped event carried
+    // `age_hours: -24`, an age no lock can have.
+    const startDir = makeStartDir();
+    const repo = makeRepo(startDir, 'lock-future', lockBody({ offsetHours: -24 }));
+    const { deps, emit } = makeDeps({ hostname: HOST });
+
+    const res = await reapRepoLock({ repoRoot: repo, now: NOW, dryRun: false, deps });
+
+    expect(res.action).toBe('reaped');
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit.mock.calls[0][1].age_hours).toBeNull();
+  });
+});
