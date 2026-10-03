@@ -106,10 +106,14 @@ export function main(argv = process.argv.slice(2)) {
     rollups: Object.fromEntries(Object.entries(plan.rollups).map(([k, rows]) => [k, rows.length])),
     actions: plan.actions,
   };
-  if (args.manifest) writeFileSync(resolve(expandTilde(args.manifest)), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
-
   let applied = null;
-  if (args.apply) applied = applyPrune(plan, { vaultDir });
+  if (args.apply) {
+    applied = applyPrune(plan, { vaultDir });
+    // The apply result belongs in the manifest: notes written beside an
+    // occupied archive target (`suffixed`) and per-path errors.
+    manifest.applied = applied;
+  }
+  if (args.manifest) writeFileSync(resolve(expandTilde(args.manifest)), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 
   const summary = {
     dry_run: !args.apply,
@@ -117,7 +121,7 @@ export function main(argv = process.argv.slice(2)) {
     rollups: Object.keys(plan.rollups).length,
     aliases: plan.aliases,
     skipped_handwritten: plan.handwritten,
-    ...(applied ? { applied: { ...applied, errors: applied.errors.length } } : {}),
+    ...(applied ? { applied: { ...applied, suffixed: applied.suffixed.length, errors: applied.errors.length } } : {}),
   };
   if (args.json) process.stdout.write(JSON.stringify(summary) + '\n');
   else {
@@ -126,7 +130,7 @@ export function main(argv = process.argv.slice(2)) {
     process.stdout.write(`  rollup notes                         ${Object.keys(plan.rollups).length}\n`);
     for (const [from, to] of Object.entries(plan.aliases)) process.stdout.write(`  alias ${from} -> ${to}\n`);
     if (applied) {
-      process.stdout.write(`  applied: archived ${applied.archived}, moved ${applied.moved}, rollups written ${applied.rollupsWritten}, errors ${applied.errors.length}\n`);
+      process.stdout.write(`  applied: archived ${applied.archived}, moved ${applied.moved}, rollups written ${applied.rollupsWritten}, suffixed ${applied.suffixed.length}, errors ${applied.errors.length}\n`);
     }
   }
   if (applied && applied.errors.length > 0) {

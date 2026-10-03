@@ -17,10 +17,12 @@
  * | `namespace-alias`      | both      | move    | the namespace folder is an alias of another (explicit `--alias`, or the same name modulo hyphens where only the other one has hyphens) |
  * | `flat-relocate`        | both      | move    | a flat legacy note (no namespace folder) whose `source-repo` names its namespace |
  *
- * Canonical copy of a duplicate group, in this order: sits in its own
- * namespace folder > sits in any namespace folder > carries `source-record` >
- * more hyphens in the file name (the post-#725 slug) > newer `updated` >
- * path order.
+ * Expiry is decided FIRST: an expired or already archived note is never the
+ * kept copy of a group (#1513 review H1). Among the live copies the canonical
+ * one is, in this order: in its own namespace folder > in any namespace
+ * folder > `status: verified` > later `expires` > carries `source-record` >
+ * more hyphens in the file name (the post-#725 slug) > newer `updated` > path
+ * order. Placeholder and very short insights never form a group (M4).
  *
  * ## What it never does
  *
@@ -44,17 +46,20 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join, resolve, sep } from 'node:path';
+import { createHash } from 'node:crypto';
+import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import { parseFrontmatter, subjectToSlug } from './utils.mjs';
 import {
   GENERATOR_MARKER,
   ROLLUP_PREFIX,
   archivePathFor,
+  canonicalAmong,
   markArchived,
   noteInsightKey,
   noteNarrativeChars,
@@ -126,34 +131,32 @@ function readZoneNotes(vaultDir) {
 function makeAliasResolver(notes, explicit) {
   const present = new Set(notes.map((n) => n.dirNs).filter(Boolean));
   for (const to of Object.values(explicit)) present.add(to);
-  const byKey = new Map();
-  for (const ns of [...present].sort()) {
-    const k = dehyphen(ns);
-    const cur = byKey.get(k);
-    if (cur === undefined || hyphens(ns) > hyphens(cur)) byKey.set(k, ns);
-  }
-  const auto = {};
-  for (const ns of present) {
-    const target = byKey.get(dehyphen(ns));
-    if (target !== ns && hyphens(target) > hyphens(ns)) auto[ns] = target;
-  }
+  // The hyphen rule is the SAME function the mirror applies at write time
+  // (`canonicalAmong`, #1513 review M2), so both agree on the folder.
   const resolveNs = (ns) => {
     if (!ns) return ns;
     if (Object.hasOwn(explicit, ns)) return explicit[ns];
-    return auto[ns] ?? ns;
+    return canonicalAmong(present, ns);
   };
   const used = {};
   for (const ns of present) if (resolveNs(ns) !== ns) used[ns] = resolveNs(ns);
   return { resolveNs, aliases: used };
 }
 
+/**
+ * Which copy of a group stays. Callers pass LIVE notes only (not expired, not
+ * archived — #1513 review H1), so rank never has to weigh a dead copy.
+ */
 function canonicalRank(a, b) {
   const own = (n) => (n.dirNs !== '' && n.dirNs === n.effNs ? 1 : 0);
   const inNs = (n) => (n.dirNs !== '' ? 1 : 0);
+  const verified = (n) => (n.fm.status === 'verified' ? 1 : 0);
   const rec = (n) => (n.fm['source-record'] ? 1 : 0);
   return (
     own(b) - own(a) ||
     inNs(b) - inNs(a) ||
+    verified(b) - verified(a) ||
+    String(b.fm.expires ?? '9999').localeCompare(String(a.fm.expires ?? '9999')) ||
     rec(b) - rec(a) ||
     hyphens(b.base) - hyphens(a.base) ||
     String(b.fm.updated ?? '').localeCompare(String(a.fm.updated ?? '')) ||
@@ -189,10 +192,24 @@ export function planPrune({ vaultDir, today, minNarrativeChars = 400, aliases = 
     if (!decided.has(n.rel)) decided.set(n.rel, keep ? { reason, keep } : { reason });
   };
 
-  // ── learnings: duplicate → superseded → expired ────────────────────────────
+  // ── learnings: expired FIRST, then duplicate / superseded among the living ─
+  // #1513 review H1: deciding duplicates first let a group keep its EXPIRED
+  // copy and archive the valid one as its duplicate — the expiry pass then
+  // archived the keeper too, leaving no active copy at all (350 groups in the
+  // Meta-Vault, 34 of them with a live copy). A dead copy is never a keeper.
   const learnings = notes.filter((n) => n.zone === '40-learnings' && n.fm.type === 'learning');
-  const byInsight = new Map();
+  const live = [];
   for (const n of learnings) {
+    const marked = n.fm.status === 'archived' ? n.fm['archived-reason'] : '';
+    if (marked === 'superseded' || marked === 'expired') decide(n, marked);
+    else if (n.fm.status === 'archived') decide(n, 'superseded');
+    else if (/^\d{4}-\d{2}-\d{2}/.test(String(n.fm.expires ?? '')) && String(n.fm.expires).slice(0, 10) < today) {
+      decide(n, 'expired');
+    } else live.push(n);
+  }
+
+  const byInsight = new Map();
+  for (const n of live) {
     n.insightKey = noteInsightKey(n.content);
     if (!n.insightKey) continue;
     if (!byInsight.has(n.insightKey)) byInsight.set(n.insightKey, []);
@@ -212,7 +229,7 @@ export function planPrune({ vaultDir, today, minNarrativeChars = 400, aliases = 
     }
     const unnamed = (buckets.get('') ?? []).sort(canonicalRank);
     if (named.length > 0) {
-      const keeper = buckets.get(named[0])[0];
+      const keeper = buckets.get(named[0]).sort(canonicalRank)[0];
       for (const n of unnamed) decide(n, 'duplicate', keeper.rel);
     } else {
       for (const n of unnamed.slice(1)) decide(n, 'duplicate', unnamed[0].rel);
@@ -220,7 +237,7 @@ export function planPrune({ vaultDir, today, minNarrativeChars = 400, aliases = 
   }
 
   const bySlug = new Map();
-  for (const n of learnings) {
+  for (const n of live) {
     if (decided.has(n.rel)) continue;
     const k = `${n.effNs}\0${dehyphen(n.base)}`;
     if (!bySlug.has(k)) bySlug.set(k, []);
@@ -232,14 +249,6 @@ export function planPrune({ vaultDir, today, minNarrativeChars = 400, aliases = 
       (a, b) => String(b.fm.updated ?? '').localeCompare(String(a.fm.updated ?? '')) || canonicalRank(a, b),
     );
     for (const n of sorted.slice(1)) decide(n, 'superseded', sorted[0].rel);
-  }
-
-  for (const n of learnings) {
-    const marked = n.fm.status === 'archived' ? n.fm['archived-reason'] : '';
-    if (marked === 'superseded' || marked === 'expired') decide(n, marked);
-    else if (/^\d{4}-\d{2}-\d{2}/.test(String(n.fm.expires ?? '')) && String(n.fm.expires).slice(0, 10) < today) {
-      decide(n, 'expired');
-    }
   }
 
   // ── sessions: metrics-only → rollup + archive ──────────────────────────────
@@ -298,10 +307,22 @@ export function planPrune({ vaultDir, today, minNarrativeChars = 400, aliases = 
   return { actions, counts, aliases: usedAliases, handwritten, rollups };
 }
 
-/** Refuse anything that is not a regular, non-symlink file inside the vault. */
+/**
+ * Refuse a path that leaves the vault — lexically, or through a symlinked
+ * directory on the way (#1513 review N1: `90-archive` as a symlink would have
+ * turned the archive move into a write anywhere on the host). The nearest
+ * EXISTING ancestor is realpath'd and must sit inside the realpath'd root.
+ */
 function assertInside(root, rel) {
   const abs = resolve(root, rel);
   if (!abs.startsWith(`${root}${sep}`)) throw new Error(`refusing ${rel}: outside the vault`);
+  const realRoot = realpathSync(root);
+  let probe = dirname(abs);
+  while (!existsSync(probe) && probe.startsWith(`${root}${sep}`)) probe = dirname(probe);
+  const realProbe = realpathSync(probe);
+  if (realProbe !== realRoot && !realProbe.startsWith(`${realRoot}${sep}`)) {
+    throw new Error(`refusing ${rel}: resolves outside the vault through a symlink`);
+  }
   return abs;
 }
 
@@ -318,7 +339,7 @@ function assertRegularFile(abs, rel) {
  *
  * @param {ReturnType<typeof planPrune>} plan
  * @param {{vaultDir: string}} ctx
- * @returns {{archived: number, moved: number, rollupsWritten: number, errors: Array<{path: string, error: string}>}}
+ * @returns {{archived: number, moved: number, rollupsWritten: number, suffixed: Array<{path: string, target: string, written: string}>, errors: Array<{path: string, error: string}>}}
  */
 export function applyPrune(plan, { vaultDir }) {
   const root = resolve(vaultDir);
@@ -326,6 +347,8 @@ export function applyPrune(plan, { vaultDir }) {
   let archived = 0;
   let moved = 0;
   let rollupsWritten = 0;
+  /** @type {Array<{path: string, target: string, written: string}>} */
+  const suffixed = [];
   const failedRollups = new Set();
 
   for (const [rel, rows] of Object.entries(plan.rollups ?? {})) {
@@ -368,16 +391,23 @@ export function applyPrune(plan, { vaultDir }) {
         continue;
       }
       const next = markArchived(content, a.reason);
-      if (existsSync(dst)) {
-        if (readFileSync(dst, 'utf8') !== next) throw new Error(`archive target exists with other content: ${a.target}`);
-      } else {
-        writeFileSync(dst, next, { encoding: 'utf8', flag: 'wx' });
+      let finalDst = dst;
+      if (existsSync(dst) && readFileSync(dst, 'utf8') !== next) {
+        // #1513 review N4: an occupied target with OTHER content (an earlier
+        // archive of a namesake) is never overwritten and never a permanent
+        // error: the note goes beside it, suffixed by its content hash, and
+        // the apply result names it. Same content → same suffix → idempotent.
+        const hash8 = createHash('sha256').update(next).digest('hex').slice(0, 8);
+        finalDst = join(dirname(dst), `${basename(dst, '.md')}.dup-${hash8}.md`);
+        suffixed.push({ path: a.path, target: a.target, written: `${dirname(a.target)}/${basename(finalDst)}` });
       }
+      if (!existsSync(finalDst)) writeFileSync(finalDst, next, { encoding: 'utf8', flag: 'wx' });
+      else if (readFileSync(finalDst, 'utf8') !== next) throw new Error(`archive target exists with other content: ${finalDst}`);
       unlinkSync(src);
       archived += 1;
     } catch (err) {
       errors.push({ path: a.path, error: err?.message ?? String(err) });
     }
   }
-  return { archived, moved, rollupsWritten, errors };
+  return { archived, moved, rollupsWritten, suffixed, errors };
 }
