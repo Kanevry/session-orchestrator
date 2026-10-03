@@ -1,5 +1,12 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { copyFileSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import {
+  copyFileSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -166,23 +173,61 @@ describe('commitlint job lints the merge-request range', () => {
     expect(out).toContain('type-enum');
   });
 
-  it('valid commits plus GitLab and git-local merge commits and a Revert pass', () => {
+  it('valid commits plus GitLab and git-local merge commits and generated reverts pass', () => {
     // Catches a CI ignore list that rejects merges git or GitLab write themselves. The
     // git-local shapes (unquoted target, remote-tracking) sit inside MR ranges whenever a
     // branch takes in main: 4 of the 25 merge subjects in the last 200 main commits
     // (measured 2026-10-02 @ ff3e43b5), which a GitLab-only pattern would have failed.
-    // The apostrophe branch is a legal ref name that `'[^']+'` rejected.
-    const { dir, base, head } = makeRepo([
-      'fix: fine',
+    // The apostrophe branch is a legal ref name that `'[^']+'` rejected. Every merge is a
+    // real two-parent commit and the first revert is `git revert` itself (#1507 item 1:
+    // the shapes are accepted only from those); the second is GitLab's MR-revert body.
+    const { dir, base } = makeRepo(['fix: fine']);
+    const merges = [
       "Merge branch 'fix/x' into 'main'",
       "Merge branch 'fix/it's' into 'main'",
       "Merge branch 'main' into fix/x",
       "Merge remote-tracking branch 'origin/main' into fix/x",
-      'Revert "fix: fine"',
-    ]);
+    ];
+    merges.forEach((msg, i) => {
+      git(dir, ['checkout', '-q', '-b', `side-${i}`, 'main']);
+      writeFileSync(join(dir, `side-${i}.txt`), 'x\n');
+      git(dir, ['add', `side-${i}.txt`]);
+      git(dir, ['commit', '-q', '-m', `fix: side ${i}`]);
+      git(dir, ['checkout', '-q', 'main']);
+      git(dir, ['merge', '-q', '--no-ff', '-m', msg, `side-${i}`]);
+    });
+    git(dir, ['revert', '--no-edit', '-m', '1', 'HEAD']);
+    git(dir, ['commit', '-q', '--allow-empty', '-m', 'Revert "feat: x"', '-m', 'This reverts merge request !21']);
+    const head = git(dir, ['rev-parse', 'HEAD']);
     const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
     expect(status, out).toBe(0);
     expect(out).toContain('[commitlint] range');
+  });
+
+  // #1507 item 1: the CI ignore read the first line only, so a normal (one-parent) commit
+  // whose subject merely looks generated skipped every rule — both passed at 62236581.
+  it.each([
+    ['a one-parent commit with a merge subject', "Merge branch 'a' into b"],
+    ['a revert subject without the reverts line', 'Revert "anything"'],
+  ])('%s is linted, not ignored', (_label, message) => {
+    const { dir, base, head } = makeRepo([message]);
+    const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
+    expect(status, out).toBe(1);
+    expect(out).toContain('type-empty');
+  });
+
+  it('a real merge whose message was hand-written is linted in the merges pass', () => {
+    // The `--no-merges` pass skips every merge, so without the `--merges` pass a merge
+    // message edited in the merge dialog would land unlinted (history shape, docs/ci-setup.md).
+    const { dir, base } = makeRepo(['fix: fine']);
+    git(dir, ['checkout', '-q', '-b', 'side', 'main']);
+    git(dir, ['commit', '-q', '--allow-empty', '-m', 'fix: side']);
+    git(dir, ['checkout', '-q', 'main']);
+    git(dir, ['merge', '-q', '--no-ff', '-m', "Merge branch 'side' (MR !21, hand-edited)", 'side']);
+    const head = git(dir, ['rev-parse', 'HEAD']);
+    const { status, out } = runJob(dir, { mrBase: base, before: head, sha: head });
+    expect(status, out).toBe(1);
+    expect(out).toContain('type-empty');
   });
 
   // commitlint's default ignores (@commitlint/is-ignored 19.8.1) pass every one of these:
@@ -226,12 +271,17 @@ describe('commitlint job lints the MR title when the MR will squash (#1477 item 
     expect(out).toContain('linting it: feat: add x');
   });
 
-  it('lints the title with the CI rule set, so a fixup! title fails', () => {
-    // Pins `-g commitlint.ci.config.mjs` on the stdin call site: the default ignores pass it.
-    const { status, out } = runMr({ squash: 'true', title: 'fixup! feat: add x' });
-    expect(status, out).toBe(1);
-    expect(out).toContain('type-empty');
-  });
+  // Pins `-g commitlint.ci.config.mjs` on the stdin call site: the default ignores pass a
+  // fixup! title. A squash commit has one parent, so a merge-shaped title must be linted
+  // too — it passed while the CI ignore read only the first line (#1507 item 1).
+  it.each(['fixup! feat: add x', "Merge branch 'x' into 'main'"])(
+    'lints the title with the CI rule set, so a %j title fails',
+    (title) => {
+      const { status, out } = runMr({ squash: 'true', title });
+      expect(status, out).toBe(1);
+      expect(out).toContain('type-empty');
+    },
+  );
 
   // A free-form title must not block any of these (an MR that does not squash lands its
   // commits), and the log must say which case applied (#1502): it used to print "this

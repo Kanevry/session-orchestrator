@@ -866,7 +866,7 @@ Opt-out configuration for the agent-writable memory tool. During a wave, an agen
 
 This is a Hermes-style memory-write API **without** Hermes' overwrites-manual-edits critique: the operator confirmation is mandatory and there is no silent overwrite path. Three safety layers keep the surface conservative:
 
-1. **Quota per wave** — `quota-per-wave` (default `5`) caps how many proposals any single agent may queue within one wave. Excess proposals exit `1` and the call-site logs the rejection.
+1. **Quota per wave** — `quota-per-wave` (default `5`) caps how many proposals ONE WAVE may queue, all of its agents together — not each agent: the store counts a wave's records by `wave_id` only (`scripts/lib/memory-proposals/store.mjs`). In a wave of N agents the 6th proposal of the wave exits `1` regardless of which agent sends it, so one agent that proposes five times uses up the quota for every sibling. Excess proposals exit `1` and the call-site logs the rejection.
 2. **Confidence floor** — `confidence-floor` (default `0.5`) rejects low-confidence proposals before they reach the operator (exit `2`). Tuned so a learning is only proposed when the agent is at least 50% sure of the insight.
 3. **AUQ confirm-or-discard** — the session-end phase never auto-persists. Every proposal is `AskUserQuestion`-gated; the operator can accept, reject, or edit before commit.
 
@@ -876,14 +876,14 @@ All fields live under the top-level `memory` object in your Session Config host 
 memory:
   proposals:
     enabled: true                # default true; opt-out master toggle for the memory.propose feature
-    quota-per-wave: 5            # max proposals an agent may queue per wave (exit 1 on overflow)
+    quota-per-wave: 5            # max proposals per wave, all agents together (exit 1 on overflow)
     confidence-floor: 0.5        # proposals below this confidence are rejected (exit 2)
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `memory.proposals.enabled` | boolean | `true` | Master toggle for the entire memory-proposals feature. When `false`, the `memory.propose` CLI exits `3` (rejected-wrong-context) for every call and session-end Phase 3.6.3 is skipped. When `true`, agents may queue proposals during waves and the coordinator surfaces them at session-end. PRD F2.1 / issue #501. |
-| `memory.proposals.quota-per-wave` | integer | `5` | Maximum number of proposals one wave-executor agent can queue per wave. The 6th proposal from the same agent in the same wave exits `1` (quota-exceeded). Bounds: integer ≥ 0. Set to `0` to disable proposals from agents without disabling the feature entirely (operator can still propose). |
+| `memory.proposals.quota-per-wave` | integer | `5` | Maximum number of proposals a wave can queue, counted across ALL of its agents (the store counts records by `wave_id` only). The 6th proposal of a wave exits `1` (quota-exceeded) whichever agent sends it — in a wave of N agents, the first five proposals of the wave win. Bounds: integer ≥ 0. Set to `0` to disable proposals from agents without disabling the feature entirely (operator can still propose). |
 | `memory.proposals.confidence-floor` | float | `0.5` | Minimum confidence (0.0..1.0) required for a proposal to be queued. Proposals with `--confidence < confidence-floor` exit `2` (rejected-low-confidence) before reaching the operator. Bounds: `0.0 ≤ value ≤ 1.0`. Set to `0.0` to accept any confidence (operator filters at AUQ time). |
 
 ### Agent CLI invocation
@@ -923,7 +923,7 @@ A successful dry-run exits `0` with stdout status `dry-run-ok` (see updated exit
 |-----------|-----------------|---------|--------------|
 | `0` | `queued` | Queued | Proposal accepted into the per-wave staging directory; awaits operator confirmation at session-end Phase 3.6.3. |
 | `0` | `dry-run-ok` | Validated, not written | `--dry-run` was passed and the proposal (argv + schema) validated successfully. No write to `proposals.jsonl` occurs; the wrong-context gates are bypassed under this flag (#741.3). |
-| `1` | `quota-exceeded` | Rejected — quota exceeded | This agent has already queued `quota-per-wave` proposals in this wave. Subsequent calls from the same agent fail until the next wave. Not applicable under `--dry-run` (gate bypassed). |
+| `1` | `quota-exceeded` | Rejected — quota exceeded | This wave has already queued `quota-per-wave` proposals, from any of its agents. Every further call in this wave fails, whichever agent makes it, until the next wave. Not applicable under `--dry-run` (gate bypassed). |
 | `2` | `rejected-low-confidence` | Rejected — low confidence | `--confidence` argument is below `confidence-floor`. Tighten the insight or raise the confidence (operator can still tune the floor). |
 | `3` | `rejected-wrong-context` | Rejected — wrong context | Feature disabled (`enabled: false`), STATE.md not active, or `SO_WAVE_AGENT != "1"` (call originated outside a wave-executor agent context). Not applicable under `--dry-run` (gate bypassed). |
 | `4` | `error` | Arg error | Missing or malformed flag — invalid `--type`, empty `--subject`, non-numeric `--confidence`. The CLI prints a one-line usage message on stderr. |

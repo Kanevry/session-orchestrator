@@ -230,7 +230,7 @@ MUST prefix with `SO_WAVE_AGENT=1` — without it the CLI returns exit 3 `reject
 
 Exit code 0 = queued (the coordinator will present at session-end via AskUserQuestion); 1 = quota-exceeded; 2 = rejected-low-confidence (below floor 0.5); 3 = rejected-wrong-context (STATE.md not active OR SO_WAVE_AGENT != "1"); 4 = error (arg validation or internal).
 
-Use ONLY when you find a recurring pattern, anti-pattern, or constraint worth carrying into future sessions. The coordinator confirms each proposal before it lands in learnings.jsonl. Do NOT over-propose — quota is bounded per wave.
+Use ONLY when you find a recurring pattern, anti-pattern, or constraint worth carrying into future sessions. The coordinator confirms each proposal before it lands in learnings.jsonl. Do NOT over-propose — the quota is shared by every agent of the wave: once the wave holds `quota-per-wave` proposals (default 5), the next one exits 1 whichever agent sends it.
 
 Analyzer-only learning types, including `autonomy-verdict`, are intentionally not valid here; those are emitted by `/evolve` after their analyzer-specific evidence gates pass.
 ```
