@@ -6,6 +6,8 @@
 
 **Give your agents a working rhythm.**
 
+On their own, coding agents drift from the plan, overwrite each other's files and call work done before it is checked. Session Orchestrator gives every session a plan you agree to, a check after every step and a handover to the next session.
+
 You type three commands:
 
 - **`/session`** reads your repository, your open issues and the last session, proposes what to work on, and waits for your correction.
@@ -72,6 +74,20 @@ The first three are the commands `/go` runs between waves and `/close` runs at t
 On Codex the same three are `$session-orchestrator:session feature`, `$session-orchestrator:go`, `$session-orchestrator:close` ([Codex usage](docs/codex-setup.md#usage)). `/plan` and `/evolve` extend the loop; you can start with just these three.
 
 In headless Claude Code (`claude -p`), `/session` and `/plan` are reserved terminal-only built-in names and the bare form is refused; use `/session-orchestrator:session` and `/session-orchestrator:plan` there. Every other command keeps its bare form.
+
+## What you get
+
+Each item: what it does for you, then how it works.
+
+| You get | How |
+|---|---|
+| **Know what to work on.** Every session starts from the real state of your project, not from a prompt you rewrite. | `/session` reads git, open issues, recent commits and the last session record, recommends one scope and waits for your correction. `/plan`, `/brainstorm` and `/grill` help while an idea is still vague. |
+| **Errors stop at the next check.** A broken test is found after the step that caused it, not five steps later. | `/go` runs your test, typecheck and lint commands between waves and sends findings back for a fix. `/close` checks every planned item against what happened. `/debug` looks for the root cause before a fix. |
+| **Agents keep to their files.** Parallel agents do not overwrite each other, and destructive commands do not slip through. | Per-agent file scopes are checked for overlap before dispatch. A guard blocks 12 destructive command patterns (hard reset, `rm -rf`, force-push, `DROP TABLE`, …) and warns on 4. Hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex. |
+| **Pick up where you stopped.** A crash or a second session in the same folder does not cost you the work. | `STATE.md` records each finished wave and the next `/session` offers to resume. A heartbeat lock keeps two sessions apart in one checkout. `/close` files what is left as GitLab or GitHub issues. |
+| **It improves with your sessions.** Patterns from your own work become rules, once you approve them. | Every session appends a record. `/evolve` proposes learnings with a confidence score, `/reconcile` drafts rules from them; you approve or delete each one. Optional mirror into a Markdown notes vault. |
+| **Audit, test and review on demand.** Find problems you did not ask about, and show the app works. | A discovery scan at `/close` turns confirmed findings into issues. `/test` drives web and macOS flows end to end, `/ux-grill` audits a running web app, `/test-audit` removes tests that catch nothing. |
+| **Longer runs, more repositories.** | `/autopilot` chains sessions and stops on any of 10 kill-switches. `/dispatcher` picks the next free repository, `/portfolio` summarises issues and CI across them. |
 
 ## How it works
 

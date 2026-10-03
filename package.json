@@ -1,7 +1,7 @@
 {
   "name": "session-orchestrator",
   "version": "5.5.0",
-  "description": "A repeatable Plan, Go, Close workflow for AI coding sessions: /session reads your repo and agrees the scope, /go runs the work in waves with a quality gate between each, /close verifies and commits. Runs on Claude Code, Codex CLI, Cursor and Pi.",
+  "description": "Your coding agents get an agreed plan, a check after every step and a handover to the next session. Plan, Go, Close: /session reads your repo and agrees the scope, /go runs the work in waves with your tests between each, /close verifies, commits and files the rest as issues. Scope and destructive-command guards, crash-safe resume, learnings you approve. For Claude Code, Codex CLI, Cursor and Pi.",
   "type": "module",
   "homepage": "https://session-orchestrator.com",
   "keywords": [
@@ -16,7 +16,12 @@
     "orchestration",
     "developer-tools",
     "mcp",
-    "llm"
+    "llm",
+    "workflow",
+    "quality-gates",
+    "ai-coding",
+    "gitlab",
+    "github"
   ],
   "engines": {
     "node": ">=24.0.0"

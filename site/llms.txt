@@ -1,6 +1,6 @@
 # session-orchestrator
 
-> Plan the work. Run it in checked waves. Pick up where you left off. Session Orchestrator is an open-source workflow plugin for Claude Code, Codex CLI, Cursor and Pi. MIT-licensed, local by default, no plugin account.
+> Your coding agents get an agreed plan, a check after every step and a handover to the next session. Session Orchestrator is an open-source workflow plugin for Claude Code, Codex CLI, Cursor and Pi. MIT-licensed, local by default, no plugin account.
 
 German landing page: https://session-orchestrator.com/de
 
@@ -26,13 +26,23 @@ Version: 5.5.0 · npm: session-orchestrator · requires Node.js >= 24 (package.j
 - Codex usage: select `$session-orchestrator:bootstrap` once per project, then `$session-orchestrator:session feature`, `$session-orchestrator:go`, and `$session-orchestrator:close` in the skill picker or a message. Requires a fresh task after plugin installation; review hooks through `/hooks`.
 - Codex refresh: a Git marketplace uses `codex plugin marketplace upgrade kanevry` then `codex plugin add session-orchestrator@kanevry`; a local clone uses `git pull`, `npm install`, and `node scripts/codex-install.mjs`. Start a fresh task afterwards.
 
+## What you get
+
+- Know what to work on: /session reads git, open issues, recent commits and the last session record, recommends one scope and waits for your correction. /plan, /brainstorm and /grill help while an idea is still vague.
+- Errors stop at the next check: /go runs your own test, typecheck and lint commands between waves and sends findings back for a fix; /close checks every planned item against what happened; /debug looks for the root cause before a fix.
+- Agents keep to their files: declared per-agent file scopes are checked for overlap before dispatch; a destructive-command guard blocks 12 command patterns and warns on 4 (hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex).
+- Pick up where you stopped: STATE.md records each finished wave so the next /session offers to resume; a heartbeat session lock keeps two sessions from colliding in one checkout; /close files unfinished work as GitLab or GitHub issues.
+- It improves with your sessions: every session appends a record; /evolve proposes learnings with confidence scores, /reconcile drafts rules from them, and the operator approves or deletes each one. Optional mirror into a Markdown notes vault.
+- Audit, test and review on demand: a discovery scan at /close turns confirmed findings into issues; /test drives web and macOS flows end to end; /ux-grill audits a running web app (accessibility, target size, overflow); /test-audit removes tests that catch nothing.
+- Longer runs: /autopilot chains sessions and stops on any of 10 kill-switches; /dispatcher picks the next free repository; /portfolio summarises issues and CI across registered repositories.
+
 ## Plan, Go, Close
 
 Read the repository and agree the scope. Assign independent work, combine the changes and verify the result. Close with evidence and a record of unfinished work. The shape depends on the session type: housekeeping uses one wave, deep uses five, and the ultradeep profile uses seven. Parallel execution is available on Claude Code and Codex; Cursor and Pi execute sequentially. The landing page illustrates this with a CSV-export example, not a live session report.
 
 ## Platform limits and data
 
-Claude Code runs guard hooks directly. Cursor and Pi use bridges with documented event limits and execute tasks sequentially. Codex CLI offers selectable workflow skills and parallel agents, but its destructive-command and file-scope rules are instructions only; the plugin does not enforce either guard there. With an active compatible scope hook on Claude Code, Cursor or Pi, strict blocks supported out-of-scope edits, warn reports them without denial, and off disables scope checking. The separate destructive-command policy defines 11 blocking and 4 warning rules; an active compatible hook is required to apply them.
+Claude Code runs guard hooks directly. Cursor and Pi use bridges with documented event limits and execute tasks sequentially. Codex CLI offers selectable workflow skills and parallel agents, but its destructive-command and file-scope rules are instructions only; the plugin does not enforce either guard there. With an active compatible scope hook on Claude Code, Cursor or Pi, strict blocks supported out-of-scope edits, warn reports them without denial, and off disables scope checking. The separate destructive-command policy defines 12 blocking and 4 warning rules; an active compatible hook is required to apply them.
 
 macOS and Linux are covered by CI. Native Windows use is untested; shell hooks and the optional MCP server need WSL or Git Bash.
 
@@ -44,7 +54,7 @@ Optional telemetry is off until consent. By default, session-start checks the np
 Version 5.5.0 · counted 2026-10-03 at 673140e3 · skills 51 · commands 27 · agents 14 · hooks 29 · test files 722 · sessions 437 · learnings 269 · npm downloads (30d) 2504 · GitHub stars 53
 <!-- census:end -->
 
-Generated by `node scripts/site-numbers.mjs --write`; the machine-readable receipt is /_census.json. Facts outside the census, measured 2026-09-06 at bc49301b: 18 ADRs, 26 always-on rule files, 15 destructive-command policy rules (11 marked blocking, 4 marked warning; applied only by a compatible active hook), and 26 of the hook files plugin-wired across 10 event types. Also ships a portable cross-harness surface: root AGENTS.md (byte-identical generated copy of CLAUDE.md), .cursor-plugin/plugin.json (agent-plugins.org 1.0.0), and a .agents/skills/ mirror of every skill.
+Generated by `node scripts/site-numbers.mjs --write`; the machine-readable receipt is /_census.json. Facts outside the census, measured 2026-10-03 at d1af261a: 19 ADRs, 25 rule files under .claude/rules/, 16 destructive-command policy rules (12 marked blocking, 4 marked warning; applied only by a compatible active hook), and 28 of the hook files plugin-wired across 10 event types. Also ships a portable cross-harness surface: root AGENTS.md (byte-identical generated copy of CLAUDE.md), .cursor-plugin/plugin.json (agent-plugins.org 1.0.0), and a .agents/skills/ mirror of every skill.
 
 Repository session records describe development activity, not active users. Download counts include automated requests.
 
