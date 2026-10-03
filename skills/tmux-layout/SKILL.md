@@ -6,6 +6,7 @@ description: >
   layout. Read-only side-channel observability — the coordinator chat stays in the operator's original
   terminal. Trigger phrases: "tmux layout", "split panes for ci watch", "visualize session side-channels",
   "show me state-md tail and ci".
+user-invocable: true
 model: inherit
 color: cyan
 tools: Read, Bash, Grep, Glob

@@ -65,9 +65,6 @@ const CONSUMER_VERSIONED = [
  */
 const NOT_IN_CONSUMER_BLOCK = {
   '.orchestrator/metrics/*.jsonl': 'the ledgers — consumers version them',
-  '.orchestrator/metrics/*.jsonl.[0-9]*': 'ledger history (events rotation) — versioning it is the consumer\'s call',
-  '.orchestrator/metrics/*.jsonl.archive-*': 'ledger history (events archive)',
-  '.orchestrator/metrics/_archive/': 'ledger history (expired learnings)',
   '.orchestrator/STATE.md': 'no writer — STATE.md lives under .claude/',
   '.orchestrator/metrics/sweep.log': 'no writer — the registry sweep log lives in the private config dir',
   '.orchestrator/metrics/context-overhead-*.json': 'a hand-made measurement artifact of this repo',

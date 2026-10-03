@@ -71,6 +71,7 @@ function run(root) {
 const VALID = `---
 name: good-skill
 description: Use when the corpus needs a control fixture that satisfies every rule.
+user-invocable: false
 ---
 
 # Good Skill
@@ -105,6 +106,7 @@ name: repaired
 description: >
   Use when encountering any bug — runs a 4-phase process. Iron Law: NO FIXES WITHOUT
   ROOT CAUSE INVESTIGATION FIRST.
+user-invocable: false
 ---
 
 # Repaired
@@ -175,6 +177,18 @@ describe('check-skills.mjs — R2/R3/R5/R6: name and description contract', () =
 
     expect(code).toBe(1);
     expect(out).toContain('FAIL: skills/emptydesc/SKILL.md: missing or empty required frontmatter field: description');
+  });
+
+  // BUG this catches (#1515 MED-2): a new SKILL.md without `user-invocable`
+  // lands in Claude Code's `/` picker silently — nobody decided it is an
+  // operator command, and nothing reviewed its Cursor/Pi adapters. Red before R9.
+  it('fails a skill that does not state `user-invocable` (R9)', () => {
+    const root = makeRoot({ keyless: '---\nname: keyless\ndescription: Use when the picker marker is forgotten.\n---\n' });
+
+    const { code, out } = run(root);
+
+    expect(code).toBe(1);
+    expect(out).toContain('FAIL: skills/keyless/SKILL.md: missing required frontmatter field: user-invocable');
   });
 
   it('passes a fixture that satisfies every rule', () => {

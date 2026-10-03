@@ -10,6 +10,7 @@ description: >
   notes to vault", "vault-mirror failed at session close". <example>Context: session-end is finalizing,
   vault-integration.mode is "warn". user: "/close" assistant: "Running vault-mirror to write
   50-sessions/session-2026-05-17.md from the closing session record — 1 created, 0 skipped."</example>
+user-invocable: false
 model: haiku
 ---
 

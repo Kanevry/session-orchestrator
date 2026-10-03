@@ -606,8 +606,8 @@ export function staticReferenceScan(repoRoot, { kind, name }) {
  * NOTE since the 2026-09-16 command→skill fold (#1370): this linkage now covers
  * almost nothing. `commands/` holds two files (`session`, `templates-ack`), so
  * `skillToCommands` is near-empty by construction — the operator entry point for
- * every other slash command is an explicit `user-invocable: true` in the skill's
- * own frontmatter, not a command file pointing at it. `runSunsetWalk` therefore
+ * every other slash command is a skill whose `user-invocable` is `true` or absent
+ * (Claude Code picker semantics, #1515) in its own frontmatter, not a command file pointing at it. `runSunsetWalk` therefore
  * threads that flag alongside this linkage, and `classifyItem` treats the two as
  * equivalent evidence of "an operator can invoke this directly". Without that, 26
  * live slash commands would have been demoted the day their command file was
@@ -783,7 +783,7 @@ export function classifyItem({
   const strictRefs = staticRefs.strictRefs;
   const nonBoilerplateRefs = staticRefs.nonBoilerplateRefs;
   const invokedByCommands = linkage?.invokedByCommands ?? [];
-  // #1370 fold: an explicit `user-invocable: true` in SKILL.md frontmatter is the
+  // #1370 fold: a picker-visible skill (`user-invocable` true or absent, #1515) is the
   // post-fold form of "an operator invokes this directly" — the same evidence a
   // command file used to carry. Default false so older callers/tests that do not
   // thread it behave exactly as before.

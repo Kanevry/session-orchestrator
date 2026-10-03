@@ -342,7 +342,7 @@ On Codex CLI / Cursor IDE, substitute `.codex/` or `.cursor/` for `.claude/` per
 
 Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refresh-Lock Flow in `SKILL.md` — the last two because a repo bootstrapped before this step existed never gets it otherwise: both flows write no `.gitignore` of their own.
 
-`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state or a per-run artifact that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, every store rewrite leaves a full backup copy of the ledger beside it, the auto-dream sidecar is a full replacement body of the operator's private MEMORY.md, and the quality-gate and ux-grill artifacts can carry secrets or a rendered password. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write). Rotated and archived ledger copies (`*.jsonl.[0-9]*`, `*.jsonl.archive-*`, `metrics/_archive/`) are not on this list: they carry ledger history, and whether that is versioned is the consumer's call.
+`.orchestrator/` itself stays versioned: `bootstrap.lock`, `policy/`, `steering/`, `peers/` and the `.orchestrator/metrics/*.jsonl` ledgers are durable project data. What the plugin writes there at runtime is per-process state or a per-run artifact that a `git add -A` would otherwise commit — the session lock is rewritten on every SessionStart, every store rewrite leaves a full backup copy of the ledger beside it, the auto-dream sidecar is a full replacement body of the operator's private MEMORY.md, and the quality-gate and ux-grill artifacts can carry secrets or a rendered password. Each pattern below names one writer's file, its `.acquire` guard where it has one, and its own temp files (left behind only by a crash mid-write). Rotated and archived ledger copies (`*.jsonl.[0-9]*`, `*.jsonl.archive-*`, `metrics/_archive/`) are ignored too (owner decision 2026-10-03, #1507 Pkt 4): the live `*.jsonl` ledger is the versioned record, and the rotated history beside it is not.
 
 | Pattern(s) | Written by |
 |---|---|
@@ -360,6 +360,7 @@ Applied by Fast Step 3 (so by every tier), by the Upgrade Flow and by the Refres
 | `.orchestrator/staging-fence/` | the staging-fence commit mutex and intent log |
 | `.orchestrator/tmp/` | machine-local scratch: lock-reaper archives of reaped session locks (`tmp/reaped-locks/`, carrying host name, pid and session ids), worktree metadata (`tmp/worktree-meta/`), the orphan-reaper throttle marker (`tmp/reaper-last-scan`) |
 | `.orchestrator/metrics/*.jsonl.bak.*` | the legacy evolve backup `learnings.jsonl.bak.evolve-<ts>`, a full store copy still on disk in older repos (`scripts/lib/learnings/io.mjs`) |
+| `.orchestrator/metrics/*.jsonl.[0-9]*`, `.orchestrator/metrics/*.jsonl.archive-*`, `.orchestrator/metrics/_archive/` | rotated ledger history of the events log (`scripts/lib/events.mjs`): the legacy numbered `events.jsonl.<n>` slots, older `*.jsonl.archive-*` copies and the `_archive/` directory of rotated `events-<first>_<last>.jsonl` files (`scripts/lib/events-schema.mjs`); the live `*.jsonl` ledgers stay versioned |
 | `.orchestrator/metrics/*.jsonl.tmp-*` | atomic-write temp files of the ledgers (`scripts/lib/autopilot/telemetry.mjs`), left behind only by a crash |
 | `.orchestrator/pending-dream.md` | the auto-dream sidecar — a full replacement body of the private MEMORY.md (`scripts/lib/auto-dream.mjs`) |
 | `.orchestrator/dialectic-pending.md`, `.orchestrator/dialectic-last-run`, `.orchestrator/consumed/` | the auto-dialectic sidecar, its last-run timestamp and the archive of consumed sidecars (`scripts/lib/auto-dialectic.mjs`) |
@@ -397,6 +398,7 @@ _GI_PATTERNS=(
   '.orchestrator/staging-fence/'
   '.orchestrator/tmp/'
   '.orchestrator/metrics/*.jsonl.bak.*' '.orchestrator/metrics/*.jsonl.tmp-*'
+  '.orchestrator/metrics/*.jsonl.[0-9]*' '.orchestrator/metrics/*.jsonl.archive-*' '.orchestrator/metrics/_archive/'
   '.orchestrator/pending-dream.md'
   '.orchestrator/dialectic-pending.md' '.orchestrator/dialectic-last-run' '.orchestrator/consumed/'
   '.orchestrator/promoted-from.json'

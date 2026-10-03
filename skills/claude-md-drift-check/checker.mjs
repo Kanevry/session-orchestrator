@@ -417,8 +417,9 @@ function countTestFiles(vaultDir) {
 }
 
 /**
- * The product's slash-command count: `commands/*.md` ∪ skills carrying an
- * explicit `user-invocable: true`, deduplicated by name — the same union
+ * The product's slash-command count: `commands/*.md` ∪ skills whose
+ * `user-invocable` is `true` or absent (Claude Code picker semantics, #1515),
+ * deduplicated by name — the same union
  * `scripts/site-numbers.mjs` and
  * `tests/commands/headless-bare-command-availability.test.mjs` use. In a
  * consumer repo without `skills/` (or without `commands/`) the union

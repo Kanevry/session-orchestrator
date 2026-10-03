@@ -6,11 +6,13 @@
  * Since the #1370 command→skill fold (2026-09-16) `commands/` holds only the two
  * names that cannot be a skill (`session`, `templates-ack` — see
  * `tests/commands/headless-bare-command-availability.test.mjs` for the measured
- * mechanism). Every other slash command IS a skill, marked by an EXPLICIT
- * `user-invocable: true` in its SKILL.md frontmatter. Consumers that used to
+ * mechanism). Every other slash command IS a skill. Claude Code lists a skill in
+ * the `/` picker unless its frontmatter says `user-invocable: false` — a MISSING
+ * key counts as `true` (#1515, measured 2026-10-03: 37 picker entries against a
+ * documented 27, because 10 skills carried no key). Consumers that used to
  * count or link `commands/*.md` therefore need the union:
  *
- *   commands/*.md  ∪  skills with explicit `user-invocable: true`
+ *   commands/*.md  ∪  skills whose `user-invocable` is absent or `true`
  *
  * This module exists so that union has one implementation rather than one per
  * consumer (site-numbers tile, sunset walker linkage, the guard tests). It is
@@ -85,9 +87,10 @@ function normaliseScalar(text) {
  * route through this function; four private re-implementations disagreeing on a
  * quoted value is the defect this replaces.
  *
- * Explicit-true only. `undefined` (flag absent) is NOT user-invocable: the whole
- * point of the marker is that it is written down, so a skill that forgot it is a
- * defect to surface, not a default to guess.
+ * Judges a PRESENT value only: `undefined` returns `false`. Whether an ABSENT
+ * `user-invocable` key makes a skill a slash command is a question about the
+ * whole frontmatter, answered by {@link isUserInvocableSkill} (absent = true,
+ * as Claude Code reads it — #1515).
  *
  * Accepted: the boolean `true`, and a string that normalises to `true`
  * case-insensitively — so `"true"`, `'true'`, `True`, `true # note` and
@@ -155,7 +158,30 @@ export function parseSkillFrontmatter(content) {
 }
 
 /**
- * Names of skills carrying an explicit `user-invocable: true`, sorted.
+ * Claude Code's picker semantics for one parsed SKILL.md frontmatter: the key
+ * ABSENT means invocable; a present key goes through
+ * {@link isUserInvocableValue}. Kept apart from that predicate on purpose —
+ * the sibling marker `disable-model-invocation` shares the value normaliser
+ * but defaults to `false` when absent.
+ *
+ * Every generator (Cursor, Pi, Codex, agents surface) and every counter routes
+ * the skill-level question through here, so an absent key cannot be a slash
+ * command for the census and a non-command for the adapters (#1515 MED-2).
+ * `check-skills` additionally requires the key to be written down, so the
+ * absent branch is the harness-parity fallback, not the expected path.
+ *
+ * @param {Record<string, unknown>|null|undefined} frontmatter
+ * @param {string} [file] path named in a lookalike WARN
+ * @returns {boolean} `false` for a missing/non-object frontmatter (fail-closed)
+ */
+export function isUserInvocableSkill(frontmatter, file) {
+  if (!frontmatter || typeof frontmatter !== 'object') return false;
+  if (!Object.hasOwn(frontmatter, 'user-invocable')) return true;
+  return isUserInvocableValue(frontmatter['user-invocable'], file);
+}
+
+/**
+ * Names of skills that appear in the `/` picker (key absent or `true`), sorted.
  *
  * @param {string} repoRoot plugin root (the directory holding `skills/`)
  * @returns {string[]}
@@ -174,7 +200,7 @@ export function userInvocableSkills(repoRoot) {
     } catch {
       continue;
     }
-    if (fm && isUserInvocableValue(fm['user-invocable'], file)) names.push(entry.name);
+    if (fm && isUserInvocableSkill(fm, file)) names.push(entry.name);
   }
   return names.sort();
 }

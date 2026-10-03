@@ -2,6 +2,7 @@
 name: tmux-layout
 description: "Use this skill when the operator wants a prepared tmux visualization layout for the session's side-channels (STATE.md tail, CI-watch, events.jsonl tail). Renders a 4-pane default layout or debug layout. Read-only side-channel observability — the coordinator chat stays in the operator's original terminal. Trigger phrases: \"tmux layout\", \"split panes for ci watch\", \"visualize session side-channels\", \"show me state-md tail and ci\"."
 metadata:
+  user-invocable: "true"
   model: inherit
   color: cyan
 allowed-tools:
@@ -21,3 +22,5 @@ allowed-tools:
 > Regenerate with `node scripts/generate-agents-skills.mjs`.
 
 Read the linked document in full and follow its complete workflow, including prechecks and stop conditions. Resolve its link relative to this SKILL.md, not the project working directory. The plugin root is three directories above this file. Resolve package paths such as `skills/` and `scripts/` from that root and relative links in the canonical document from its own directory. Keep the user’s project as the target of project operations.
+
+`$ARGUMENTS` means the trailing user input after the selected command skill, or an empty string when absent. Preserve flags, quoted text, and Unicode as data. Do not perform global substitution in the command document, shell expansion on the argument string, or execution of that string as shell code. Pass command arguments through structured tool parameters or safely quoted individual arguments.

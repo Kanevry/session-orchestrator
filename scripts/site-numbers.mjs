@@ -178,8 +178,9 @@ export function countSkills(root) {
 }
 
 /**
- * The product's "slash commands" number: `commands/*.md` ∪ skills carrying an
- * EXPLICIT `user-invocable: true`, deduplicated by name.
+ * The product's "slash commands" number: `commands/*.md` ∪ skills whose
+ * `user-invocable` is `true` or ABSENT (Claude Code lists a keyless skill in the
+ * `/` picker — #1515), deduplicated by name.
  *
  * NOT `ls commands/*.md | wc -l` any more, and the change is not cosmetic. After
  * the 2026-09-16 fold (#1370) `commands/` holds two files — `session` and
@@ -435,7 +436,7 @@ export const METRIC_DEFS = Object.freeze([
     id: 'commands',
     provenance: false,
     source:
-      'ls commands/*.md | wc -l  +  grep -l "^user-invocable: true" skills/*/SKILL.md | wc -l   (union by name — see countCommands)',
+      'ls commands/*.md | wc -l  +  grep -L "^user-invocable: *false" skills/*/SKILL.md | wc -l   (union by name; a skill without the key counts, as in Claude Code — see countCommands)',
     compute: (root) => fmtCount(countCommands(root)),
   },
   {
