@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.4.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.5.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -123,16 +123,16 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.4.0)
+## Recent highlights (v5.5.0)
 
-Highlights of the v5.4.0 line:
+Highlights of the v5.5.0 line:
 
-- **Fleet protocol v1.** Parallel sessions now check in through files instead of chat messages: `scripts/lib/fleet-protocol.mjs` owns the layout under `~/.config/navigator/`, session-start writes a check-in (Phase 7.6), and the SessionStart banner shows in one line whether a navigator lease is active, absent or unreadable. The coordinator role itself runs outside this plugin and grants no approvals; `skills/_shared/fleet-protocol.md` is the file contract (#1462, #1491).
-- **`offload-first` places work before pressure forces it.** With the new Session Config key set to `true`, offloadable wave roles go to a ready declared remote host on a `proceed` verdict too, not only when resources are short. Default `false` changes nothing (#1465).
-- **A `test-audit` skill for shrinking a suite without losing proof.** A four-question gate before a new test, a focused audit, and a lane-based campaign; every delete, merge or repair needs written evidence and a production mutation the remaining test catches.
-- **The sessions ledger and the vault writers are honest again.** Backfill stubs no longer hide real records, token totals are rolled up mechanically so the autopilot token-budget kill-switch fires again once `--max-tokens` is set (its default is now `0`, off), and the board writer and narrative mirror refuse a vault that is not the canonical one. `vault-dir` gains a per-directory tier in `owner.yaml` (#1443, #1436, #1450, #1448).
-- **Vendored rules load path-scoped again.** Library rules open their frontmatter on line 1 and carry `paths:` beside `globs:`, so consumers no longer load path-scoped rules on every turn; the loader, budget guard, drift check and validator now flag a displaced block (#1449).
-- **Session costs never read as complete when they are not.** Each subagent now counts once in the token and cost totals (a resumed agent used to be summed per stop), a session with any unpriced agent stores no dollar figure but its coverage counters, and mixed-model agents are priced per model. Every `learnings.jsonl` read-modify-write runs under one store lock, so a concurrent append is no longer lost.
+- **Scope guards hold in worktrees, subdirectory launches and beside peer sessions.** The guards read the session's own working copy, find this session's own `wave-scope.json` even when a peer session's manifest ranks higher, and the wave readers, staging fence and orphan reaper follow the same session root. `blockedCommands` carries only command patterns, so redirects inside `bash -c` payloads are no longer denied (#1492, #1493, #1504, #1509).
+- **Session locks are taken over by exactly one session.** A stale or corrupt lock is reclaimed through a tombstone, a future-stamped lock or registry entry never counts as young, and leftovers of a killed reclaim are swept (#1494, #1505).
+- **vault-mirror never overwrites a note it does not own.** The namespace follows the mirrored ledger, a note of another project or generator is skipped, and the vault writers honour the `vault-integration` off switch (#1496, #1503, #1506).
+- **The learnings store keeps every line.** Unparseable lines survive each rewrite, `sweep-expired-learnings --drop-malformed` removes one on purpose, and a prune snapshots first and refuses on drift (#1486, #1489, #1500).
+- **Conventional commits on every path to `main`.** CI lints each commit range and the squash title, and accepts merge or revert headers only from real merges and reverts (#1477, #1502, #1507).
+- **`npm run update:local` updates every local install**, and Claude Code installs the plugin's dependencies again (the `overrides` block it refused is gone). The `/session-orchestrator:navigator` skill left the package; the fleet file contract stays (#1491).
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
