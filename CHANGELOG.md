@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.6.0] - 2026-10-03
+
 ### Added
 
 - **`validate-wave-scope --assert-disjoint --no-manifest`** (#1510 f): runs the disjointness check on the per-wave sidecar alone, without a manifest on stdin, so `/plan` no longer fabricates a dummy manifest. Without the flag an empty stdin stays an error (fail-closed); combining it with `--union`, `--assert-subset`, `--expand-test-siblings` or a positional manifest is rejected.

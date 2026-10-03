@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.6.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -139,16 +139,15 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.5.0)
+## Recent highlights (v5.6.0)
 
-Highlights of the v5.5.0 line:
+Highlights of the v5.6.0 line:
 
-- **Scope guards hold in worktrees, subdirectory launches and beside peer sessions.** The guards read the session's own working copy, find this session's own `wave-scope.json` even when a peer session's manifest ranks higher, and the wave readers, staging fence and orphan reaper follow the same session root. `blockedCommands` carries only command patterns, so redirects inside `bash -c` payloads are no longer denied (#1492, #1493, #1504, #1509).
-- **Session locks are taken over by exactly one session.** A stale or corrupt lock is reclaimed through a tombstone, a future-stamped lock or registry entry never counts as young, and leftovers of a killed reclaim are swept (#1494, #1505).
-- **vault-mirror never overwrites a note it does not own.** The namespace follows the mirrored ledger, a note of another project or generator is skipped, and the vault writers honour the `vault-integration` off switch (#1496, #1503, #1506).
-- **The learnings store keeps every line.** Unparseable lines survive each rewrite, `sweep-expired-learnings --drop-malformed` removes one on purpose, and a prune snapshots first and refuses on drift (#1486, #1489, #1500).
-- **Conventional commits on every path to `main`.** CI lints each commit range and the squash title, and accepts merge or revert headers only from real merges and reverts (#1477, #1502, #1507).
-- **`npm run update:local` updates every local install**, and Claude Code installs the plugin's dependencies again (the `overrides` block it refused is gone). The `/session-orchestrator:navigator` skill left the package; the fleet file contract stays (#1491).
+- **Clearer about what you get.** The website, this README and the npm page now open with the problem the plugin solves and list the features by benefit: what each part does for you, then how it works.
+- **Sessions in a worktree or a subdirectory report their own tree.** A wave's start commit, changed files, HEAD and the stop record's branch now describe the tree the session works in, and the commit guard also checks the manifest of a session launched in a subdirectory, never less strictly than before (#1511).
+- **One rule for how scope paths are spelled.** The overlap check before dispatch and the scope tools now compare paths the same way, and `validate-wave-scope --assert-disjoint --no-manifest` checks a plan's file lists without a dummy manifest (#1510).
+- **A changed scope sidecar can no longer hide a violation.** If the per-wave sidecar changes under a standing manifest, peer records stop counting and you get one notice (#1504).
+- **Close-backfill reads ledger gaps only inside the session's own time window**, so one pruned archive no longer holds back every later session (#1512).
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
