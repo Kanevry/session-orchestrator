@@ -73,9 +73,13 @@ import path from 'node:path';
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
-import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { findScopeFile } from '../scripts/lib/scope-gate.mjs';
+import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
+import {
+  classifyManifestSession,
+  readProcessLocalSessionIds,
+} from '../scripts/lib/session-identity/own-session.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
 import { maybeTriggerOrphanScan } from '../scripts/lib/orphan-reaper/trigger.mjs';
 
@@ -207,11 +211,16 @@ async function ownsSessionFile(input, sessionFile) {
  * it just is not under `.claude/`, so every batch read 0 and no
  * wave-lifecycle event was ever emitted there.
  *
- * @param {string} projectDir
+ * Only THIS session's manifest counts (#1504): `findOwnScopeFile` skips a
+ * peer's manifest in the same working copy, and a peer-only result is "no own
+ * wave" → 0, never the peer's number recorded as ours.
+ *
+ * @param {string} projectDir  the session root (`resolveSessionRoot`)
+ * @param {Set<string>} ownIds  this process's own session ids
  * @returns {Promise<number>}
  */
-async function resolveWaveNumber(projectDir) {
-  const waveFile = findScopeFile(projectDir);
+async function resolveWaveNumber(projectDir, ownIds) {
+  const { path: waveFile } = findOwnScopeFile(projectDir, ownIds, classifyManifestSession);
   if (waveFile === null) return 0;
   try {
     const raw = await readFile(waveFile, 'utf8');
@@ -452,7 +461,10 @@ async function main() {
     // when an N+1 transition already closed wave N, SessionEnd sees
     // last_wave_completed === last_wave and stays silent.
     try {
-      const wave = await resolveWaveNumber(getProjectDir());
+      const wave = await resolveWaveNumber(
+        resolveSessionRoot(input?.cwd),
+        new Set(readProcessLocalSessionIds({ hookInput: input })),
+      );
       if (wave > 0) {
         // Read last_wave from the just-written session file (after the
         // last_batch RMW above, so we observe the latest persisted value).
@@ -577,7 +589,11 @@ async function main() {
   // rejects. The throttle marker is one file per repo, so a defeated marker
   // (`spawned-unthrottled`) shows on the next Stop/SubagentStop record, whose
   // `reaper_trigger` key hooks/on-stop.mjs fills from the same trigger.
-  await maybeTriggerOrphanScan();
+  //
+  // Rooted at the SESSION root (#1492 point 2, #1504 point 4): the quality gate
+  // registers its children in the ledger of the tree it runs in, which for an
+  // entered worktree is the worktree — the launch dir holds none of them.
+  await maybeTriggerOrphanScan({ projectDir: resolveSessionRoot(input?.cwd) });
 }
 
 // Entry guard (#1393): run only as the node script the harness execs — a bare

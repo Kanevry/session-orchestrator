@@ -300,3 +300,28 @@ describe('pre-bash-staging-fence — #1404 path operands instead of raw command'
     expect(fenceFiles(projectDir)).toHaveLength(0);
   });
 });
+
+describe('fence root — written where the commit guard reads it (#1504 point 4)', () => {
+  it('writes the fence at the git toplevel when the launch dir is a repo SUBDIRECTORY', () => {
+    // Bug caught: the fence was written at $CLAUDE_PROJECT_DIR. The only reader,
+    // wave-scope-commit-guard, walks `<git rev-parse --show-toplevel>/.orchestrator/staging-fence/`,
+    // so a session launched in `<repo>/pkg` (or working in an entered worktree)
+    // fenced into a directory no commit ever read.
+    const repo = mkdtempSync(join(tmpdir(), 'fence-root-'));
+    try {
+      const pkg = join(repo, 'pkg');
+      mkdirSync(join(repo, '.git'), { recursive: true });
+      mkdirSync(pkg, { recursive: true });
+      const r = spawnSync('node', [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'git add a.txt' }, cwd: pkg }),
+        encoding: 'utf-8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: pkg, SO_DISABLED_HOOKS: '', SO_HOOK_PROFILE: '', SO_WAVE_AGENT: '1' },
+      });
+      expect(r.status).toBe(0);
+      expect(fenceFiles(repo)).toHaveLength(1);
+      expect(existsSync(join(pkg, '.orchestrator', 'staging-fence'))).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});

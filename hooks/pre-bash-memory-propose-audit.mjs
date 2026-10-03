@@ -29,7 +29,12 @@ import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from '../scripts/lib/events.mjs';
-import { findScopeFile } from '../scripts/lib/hardening.mjs';
+import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
+import {
+  classifyManifestSession,
+  readProcessLocalSessionIds,
+} from '../scripts/lib/session-identity/own-session.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -201,14 +206,16 @@ async function resolveSessionId(input, projectDir) {
 }
 
 /**
- * Resolve the current wave number from the active wave-scope.json.
- * Returns 0 when the file is absent or unparseable.
+ * Resolve the current wave number from THIS session's wave-scope.json.
+ * Returns 0 when the file is absent or unparseable — and when the only
+ * manifest is a peer's (#1504): its number is not this session's wave.
  *
- * @param {string} projectDir
+ * @param {string} projectDir  the session root (`resolveSessionRoot`)
+ * @param {Set<string>} ownIds  this process's own session ids
  * @returns {Promise<number>}
  */
-async function resolveWave(projectDir) {
-  const waveFile = findScopeFile(projectDir);
+async function resolveWave(projectDir, ownIds) {
+  const { path: waveFile } = findOwnScopeFile(projectDir, ownIds, classifyManifestSession);
   if (!waveFile || !existsSync(waveFile)) return 0;
   try {
     const raw = await readFile(waveFile, 'utf8');
@@ -247,7 +254,12 @@ async function main() {
   const sessionId = await resolveSessionId(input, projectDir);
 
   // G5 — resolve wave
-  const wave = await resolveWave(projectDir);
+  // Read at the SESSION root the scope guards use (#1504 point 4), not at the
+  // launch dir above, which stays put while the session works in a worktree.
+  const wave = await resolveWave(
+    resolveSessionRoot(input.cwd),
+    new Set(readProcessLocalSessionIds({ hookInput: input })),
+  );
 
   // G6 — derive the non-reversible argv summary (#1415). Nothing downstream
   // ever sees the command text: hash for grouping, known flag NAMES for

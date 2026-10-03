@@ -269,9 +269,13 @@ const HARNESS_AGENT_WORKTREE_RE = /^agent-[0-9a-f]{8,}$/;
  * Trimmed: a whitespace-only value is truthy and would otherwise win
  * (`development.md` § Error Handling, env-var fallback whitespace trap).
  *
+ * The ONE definition of "the launch dir the harness states": the clamp in
+ * {@link resolveSessionRoot} and the relocation trace in `hooks/enforce-scope.mjs`
+ * must read the same chain, so a second copy of it is a second definition.
+ *
  * @returns {string}
  */
-function _launchDirFromEnv() {
+export function launchDirFromEnv() {
   for (const name of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) {
     const value = (process.env[name] || '').trim();
     if (value !== '') return value;
@@ -293,7 +297,7 @@ function _launchDirFromEnv() {
  * @param {string} cwd
  * @returns {string}
  */
-function _dotGitAncestor(cwd) {
+export function dotGitAncestor(cwd) {
   for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
     if (existsSync(path.join(dir, '.git'))) return dir;
     if (path.dirname(dir) === dir) return '';
@@ -317,9 +321,22 @@ function _liftHarnessAgentWorktree(root) {
   return existsSync(path.join(parent, '.git')) ? parent : root;
 }
 
-/** realpath, or the resolved spelling when the path does not exist. */
+/**
+ * The NATIVE realpath, or the resolved spelling when the path does not exist.
+ *
+ * `realpathSync.native`, not the JS `realpathSync`: on a case-insensitive
+ * volume (APFS default) the JS form resolves symlinks but keeps the CALLER's
+ * letter case, so `/users/me/repo` stayed `/users/…` beside the git-found
+ * `/Users/…`, `path.relative` answered `../../users/…` and the clamp was
+ * skipped (#1504 point 8, measured 2026-10-03 on a home dir typed lowercase:
+ * JS `/users/<me>`, native `/Users/<me>`). Every comparison in the clamp chain
+ * goes through this one function — mixing the two forms re-opens the split.
+ *
+ * @param {string} p
+ * @returns {string}
+ */
 function _canonical(p) {
-  try { return realpathSync(p); } catch { return path.resolve(p); }
+  try { return realpathSync.native(p); } catch { return path.resolve(p); }
 }
 
 /**
@@ -363,11 +380,11 @@ function _isStrictlyInside(child, parent) {
  *   1. no payload `cwd` → `resolveProjectDir()`, the pre-#1492 answer unchanged;
  *   2. the repo root of `cwd` — `toplevel` when the caller already holds
  *      `git rev-parse --show-toplevel` of it, else the nearest `.git` ancestor
- *      (`_dotGitAncestor`), which answers the same without a spawn, so neither a
+ *      (`dotGitAncestor`), which answers the same without a spawn, so neither a
  *      timed-out git (review MED on 63f35e8c) nor a hot-path budget can send a
  *      worktree session back to the launch dir — lifted to `<P>` when it is a
  *      harness subagent worktree `<P>/.claude/worktrees/agent-<hex>` (below),
- *      then replaced by the launch dir from env (`_launchDirFromEnv`) when it
+ *      then replaced by the launch dir from env (`launchDirFromEnv`) when it
  *      lies strictly ABOVE it;
  *   3. the launch dir from env (`CLAUDE_PROJECT_DIR` → `CODEX_PROJECT_DIR` →
  *      `CURSOR_PROJECT_DIR` → `PI_PROJECT_DIR`), only when `cwd` is in no repo;
@@ -429,10 +446,10 @@ function _isStrictlyInside(child, parent) {
  */
 export function resolveSessionRoot(cwd, toplevel = '') {
   if (typeof cwd !== 'string' || cwd.trim() === '') return resolveProjectDir();
-  const repoRoot = (typeof toplevel === 'string' ? toplevel : '') || _dotGitAncestor(cwd);
-  if (!repoRoot) return _launchDirFromEnv() || cwd;
+  const repoRoot = (typeof toplevel === 'string' ? toplevel : '') || dotGitAncestor(cwd);
+  if (!repoRoot) return launchDirFromEnv() || cwd;
   const root = _liftHarnessAgentWorktree(repoRoot);
-  const launch = _launchDirFromEnv();
+  const launch = launchDirFromEnv();
   return launch !== '' && _isStrictlyInside(launch, root) ? launch : root;
 }
 

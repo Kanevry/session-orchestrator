@@ -108,6 +108,9 @@ let isPathInside;
 let relativeFromRoot;
 let resolveProjectDir;
 let resolveSessionRoot;
+// The launch dir the harness states — platform.mjs's one definition of the env
+// chain, so the relocation trace below cannot drift from the clamp (#1504).
+let launchDirFromEnv;
 // #1504 point 6 — the manifest that governs THIS session; bound from scope-gate below.
 let findOwnScopeFile;
 let pathMatchesPattern;
@@ -199,7 +202,7 @@ async function bootstrap() {
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   ({ isPathInside, relativeFromRoot } = modules.pathUtils);
-  ({ resolveProjectDir, resolveSessionRoot } = modules.platform);
+  ({ resolveProjectDir, resolveSessionRoot, launchDirFromEnv } = modules.platform);
   ({ pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({
@@ -736,21 +739,6 @@ async function recordRefusedGrantOncePerWave({ scope, scopePath, projectRoot, in
       { repoRoot: projectRoot },
     );
   } catch { /* observability is best-effort — never changes the WARN */ }
-}
-
-/**
- * The launch dir the harness states for this session — the same env chain, in
- * the same order and with the same trim, as `_launchDirFromEnv()` in
- * `scripts/lib/platform.mjs` (not exported). `''` when none is set.
- *
- * @returns {string}
- */
-function launchDirFromEnv() {
-  for (const name of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) {
-    const value = (process.env[name] || '').trim();
-    if (value !== '') return value;
-  }
-  return '';
 }
 
 /**
