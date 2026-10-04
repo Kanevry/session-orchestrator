@@ -26,13 +26,9 @@
  *   2 — missing file
  *   3 — malformed sentinels (only one of begin/end present)
  *
- * Vendor-ahead state (2026-05-23, #503, I5):
- *   The vaultNoteTypeSchema enum in validator.mjs currently includes
- *   `peer-card` which is NOT yet present in the canonical
- *   projects-baseline source. Until #503 lands upstream, `--check` will
- *   report drift; this is expected and is tracked as upstream-sync-debt
- *   in the #503 PRD (W5 F2 docs agent owns the PRD update). Once
- *   upstream catches up, `--write` will become a no-op (idempotent).
+ * The #503 vendor-ahead state (`peer-card` in validator.mjs before the
+ * canonical source carried it) is resolved: projects-baseline has
+ * `peer-card`, and `--check` passed against baseline `9108018` (2026-10-04).
  */
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';

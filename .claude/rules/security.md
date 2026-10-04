@@ -41,7 +41,13 @@ SEC identifiers are sequential; gaps are intentional:
 - Rotate secrets on any suspected exposure. Immediately.
 
 ### Secrets Inventory (SEC-005)
-Past ~10 managed secrets, `.env.example` documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md`, one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries), where drift between "what's in .env" and "what's actually in use" became unmanageable without it. Sweep quarterly; open a `priority:high` issue for any secret expiring in < 30 days. Rotation schedule per secret type: the baseline `infrastructure` rules (not vendored into this plugin). <!-- path-check: example -->
+Past ~10 managed secrets, `.env.example` documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md`, one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries), where .env-vs-in-use drift became unmanageable. Sweep quarterly; open a `priority::high` issue for any secret expiring in < 30 days. Rotation schedule per secret type: the baseline `infrastructure` rules (not vendored into this plugin). <!-- path-check: example -->
+
+### Secret Output Discipline (SEC-008)
+A secret value must never reach stdout, a log, or a session transcript. Masking at output is too late: scrollback, shell history and the on-disk agent transcript (retained, re-read by other agents) already hold it. Leaks come from incidental output (`cat .env`, `docker inspect`, bare `env`), not a deliberate `echo`.
+- Use a command that cannot print the value: key names (`printenv | cut -d= -f1`), presence (`test -n "${TOKEN:-}"`), length (`echo "${#TOKEN}"`), fingerprint (`printf %s "$TOKEN" | shasum -a 256 | cut -c1-12`). Filter inside the same pipeline, never after printing.
+- Never put a secret in argv (world-readable via `ps`; lands in shell history, `set -x` traces, CI logs) or a URL query string — pass it via env var, stdin or a mode-0600 file. In code, log credential IDs or salted hashes.
+- Emitted anyway → compromised: rotate and revoke **before** cleanup, then record it in the SEC-005 inventory if one exists.
 
 ## Error Exposure (SEC-009)
 - Never return `error.message` directly to the client.
@@ -62,12 +68,12 @@ Past ~10 managed secrets, `.env.example` documents shape, not lifecycle. Commit 
 
 ## Dependencies
 - The canonical PM's production audit in CI — `npm audit --omit=dev --audit-level=high` / `pnpm audit --prod --audit-level=high`. Block deploys on high/critical vulnerabilities.
-- Gitleaks (37 rules) in CI — verified here (`.gitleaks.toml`, GitLab job `gitleaks-scan` + a SHA-pinned GitHub action). **Semgrep SAST is adopted here, but NOT in the baseline's shape**: measured 2026-08-28 @ `30940cb` (`grep -c "^- id:" .semgrep.yml` → 27): `.semgrep.yml` carries **27** rules, not the baseline's 64, and no managed rulesets — delta **37 removed, 0 added** (`.semgrep.yml`'s own "Drift check against the baseline" section quotes the identical `64 baseline / 27 here / 37 removed / 0 added`, measured @ `4950990`). Its header accounts for 5 as measured false positives (78 findings, all from those five, measured 2026-08-22) plus 2 absent for lack of a call site (`unsafe-llm-prompt-injection`, `unsafe-llm-output-rendering`); the remaining 30 are not individually accounted for. A live scan at that SHA (`semgrep scan --config .semgrep.yml --metrics=off --quiet scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/`) returns 25 findings — the same count its header carries, dated the same day. CI: GitLab job `semgrep:` (`.gitlab-ci.yml:300`, image `semgrep/semgrep:1.161.0`), gated on findings NEW since the baseline commit, wired into `pipeline-gate` (`:719`). **GitHub Actions: 0 references** (`rg -n semgrep .github/` → no matches, measured 2026-08-28) — the mirror runs no SAST. So: GitLab-side coverage exists and is narrower than the baseline; GitHub-side coverage does not exist.
+- Gitleaks (37 rules) in CI — verified here (`.gitleaks.toml`, GitLab job `gitleaks-scan` + a SHA-pinned GitHub action). **Semgrep SAST is adopted here, but NOT in the baseline's shape**: measured 2026-08-28 @ `30940cb` (`grep -c "^- id:" .semgrep.yml` → 27): `.semgrep.yml` carries **27** rules, not the baseline's 64, and no managed rulesets — delta **37 removed, 0 added** (identical in `.semgrep.yml`'s own "Drift check against the baseline" section, measured @ `4950990`). Its header accounts for 5 as measured false positives (78 findings, all from those five, measured 2026-08-22) plus 2 absent for lack of a call site (`unsafe-llm-prompt-injection`, `unsafe-llm-output-rendering`); the remaining 30 are not individually accounted for. A live scan at that SHA (`semgrep scan --config .semgrep.yml --metrics=off --quiet scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/`) returns 25 findings — the same count its header carries, dated the same day. CI: GitLab job `semgrep:` (`.gitlab-ci.yml:300`, image `semgrep/semgrep:1.161.0`), gated on findings NEW since the baseline commit, wired into `pipeline-gate` (`:719`). **GitHub Actions: 0 references** (`rg -n semgrep .github/` → no matches, measured 2026-08-28) — the mirror runs no SAST.
 - Review `node_modules` additions in PRs (supply chain awareness).
 
 ## Supply Chain Security (SEC-020)
 
-**Scope note — check the package manager before reading an omission as a gap.** Only `ignore-scripts` below is read by BOTH npm and pnpm; the other four keys are **pnpm-only directives npm silently ignores**. An npm-canonical repo omitting them is CORRECT, not deficient — this repo is one (`package-lock.json` is the tracked lockfile, per `.claude/rules/development.md` § Package Management), and its `.npmrc` records the omission in a comment block. Measured 2026-08-22 @ `141d418`: `npm config get ignore-scripts` → `true`.
+**Scope note — check the package manager before reading an omission as a gap.** Only `ignore-scripts` below is read by BOTH npm and pnpm; the other four keys are **pnpm-only directives npm silently ignores**. An npm-canonical repo omitting them is CORRECT — this repo is one (tracked `package-lock.json`, `development.md` § Package Management); its `.npmrc` records the omission in a comment. Measured 2026-08-22 @ `141d418`: `npm config get ignore-scripts` → `true`.
 
 - **npm + pnpm** — `ignore-scripts=true` in `.npmrc` as the global default: no package runs install/postinstall/prepare scripts unless allowlisted via `only-built-dependencies-of[]` (pnpm-only; under npm the switch is all-or-nothing). The single most effective defense against Axios-style postinstall attacks.
 - **pnpm** — allowlisted packages (native binaries that genuinely need install scripts): `@your-org/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Add a new entry only after verifying the package requires postinstall.
@@ -89,7 +95,7 @@ The quality-gate loop resolves gate commands via three-level precedence (explici
 
 - **VCS anchors trust:** every `CLAUDE.md` edit is commit-gated — a malicious Session Config change must land in `HEAD`, visible in `git log` and reviewed before merge.
 - **No privilege escalation:** the fixer-agent dispatch runs within the session's existing permissions, and anyone who can commit can already execute arbitrary code via `package.json` scripts, `.husky/` hooks or test files. Session Config `*-command` is **not** a new attack surface — it is the existing commit-review trust model.
-- **Bounded scope:** commands are read and executed only during inter-wave Quality-Gate runs with `verification-auto-fix.enabled: true` (default `false`). Without that flag a repo never parses Session Config commands at all.
+- **Bounded scope:** commands run only during inter-wave Quality-Gate runs with `verification-auto-fix.enabled: true` (default `false`).
 
 **Where the VCS anchor does not reach (measured 2026-09-09).** "Commit-gated therefore reviewed" holds for the GitLab `origin` path (MR review) **only**. The GitHub mirror's `main` is pushed **directly from the operator's machine** — `git push github HEAD` (`skills/session-end/SKILL.md`, every `/close`) and `git push github main` + tag (`scripts/release.mjs`) — authenticated by the local `gh auth git-credential` keychain entry, not by any CI job or CI variable. That branch triggers the Vercel production deploy of session-orchestrator.com, so a compromised local GitHub credential or coordinator session deploys unreviewed. Live compensating controls: `required_status_checks.strict: true` over 3 contexts, `allow_force_pushes: false` / `allow_deletions: false`, and the read-only `scripts/github-protection-audit.mjs`. Open gap `enforce_admins: false` (#1079) — do **not** flip it while the push path still targets protected `main` directly, or every `/close` and every release push fails. Runbook and required ordering: `docs/github-mirror-protection.md`.
 
@@ -104,15 +110,15 @@ The quality-gate loop resolves gate commands via three-level precedence (explici
 **Operator audit checklist:**
 
 1. **Review Session Config drift** in standard code review. Any PR modifying a command-bearing key MUST show the before/after.
-2. **Watch for unexpected Session Config keys.** A new command-bearing entry outside the documented set (`lint-command`, `typecheck-command`, `test-command`, `custom-phases[].command`, `agent-mapping.<role>`) is an investigation trigger — these are the surfaces `scripts/parse-config.mjs` parses into executable commands.
+2. **Watch for unexpected Session Config keys.** A command-bearing entry outside the five surfaces above is an investigation trigger — those are what `scripts/parse-config.mjs` parses into executable commands.
 3. **An `agent-mapping` role changing from a bare agent name to `cursor:*` MUST show before/after** and cite the foreign-dispatch trust boundary: it moves that wave role from a native subagent (observed by the whole hook chain — scope guard, destructive-command guard, `SubagentStop` telemetry) to a Bash-spawned binary none of those hooks see.
-4. **Treat Session Config like code.** A malicious Session Config change equals a malicious code change. Use the existing VCS review process; add no extra gates for Session Config specifically.
+4. **Treat Session Config like code** — a malicious change to it is a malicious code change: use the existing VCS review, no extra gates.
 
 Cross-references: `scripts/lib/qg-command-drift-banner.mjs` (session-start banner for `*-command` drift) · `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`) · `.claude/rules/quality-gates-autofix.md` (auto-fix loop behaviour).
 
 ### SEC-020-1: Package Legitimacy Audit (Slopcheck — #520)
 
-Pattern 2 of the gsd Pattern Adoption (Issue #520) provides `classifyPackages()` from `scripts/lib/slopcheck.mjs` against LLM-hallucinated package names ("Slopsquatting" — documented incidents 2024/2025). With `slopcheck.enabled: true` in Session Config (default: `false`), the plan-skill runs Phase 3.5 Package-Audit on PRD-mentioned packages (`skills/plan/SKILL.md`) and the discovery probe `skills/discovery/probes/supply-chain-slopcheck.mjs` runs over `package.json` / `requirements.txt` / `Cargo.toml`.
+`classifyPackages()` (`scripts/lib/slopcheck.mjs`, gsd Pattern 2, #520) guards against LLM-hallucinated package names ("Slopsquatting" — documented incidents 2024/2025). With `slopcheck.enabled: true` (default `false`), the plan-skill runs Phase 3.5 Package-Audit on PRD-mentioned packages (`skills/plan/SKILL.md`) and the discovery probe `skills/discovery/probes/supply-chain-slopcheck.mjs` runs over `package.json` / `requirements.txt` / `Cargo.toml`.
 
 Classifications:
 - **LEGITIMATE**: package exists + download_count > threshold
@@ -121,8 +127,6 @@ Classifications:
 - **SLOP**: package not in registry — possible LLM hallucination (hard block in plan-flow)
 
 **Complementary** to the SEC-020 baseline (`ignore-scripts=true`, `block-exotic-subdeps=true`, `minimum-release-age=1440`): SEC-020 prevents post-install execution of malicious packages; Slopcheck prevents adopting non-existent (typosquat-target) packages at all.
-
-Cross-references: API `scripts/lib/slopcheck.mjs` · discovery probe `supply-chain-slopcheck.mjs` · plan-skill Phase 3.5 · Issue #520.
 
 ## Owner-Privacy Pre-Commit Hook (#494)
 - Repositories with private slugs, personal home paths, or non-public hosts MUST run an owner-leakage scanner as a pre-commit hook stage — CI catches the same leak too late (it lands on the public branch first).
@@ -136,14 +140,14 @@ Cross-references: API `scripts/lib/slopcheck.mjs` · discovery probe `supply-cha
   }
   ```
 - The scanner runs against the staged tree (`git ls-files` sees staged-but-not-committed files), closing the `git add <leak> && git commit` gap — the root cause of three pre-#494 CI red incidents (deep-1, deep-2, deep-3).
-- **Untracked files: the offload gate is sharper than the local one.** Both call sites (`.husky/pre-commit:116`, `.gitlab-ci.yml:370`) omit its `--include-untracked` flag (`:132`), so untracked files go unscanned locally; on an offload host the same file arrives tracked and IS scanned. `.orchestrator/tmp/` is gitignored, `.orchestrator/` itself is not — that is how an untracked `.orchestrator/tmp-dialectic-prompt.txt` turned the m5 gate red at CP2/CP7 after a green local run. Green locally does not mean green on offload; keep working files in `.orchestrator/tmp/`.
-- `git commit --no-verify` bypass remains available but logs a warning per `.claude/rules/development.md` — use only after triage.
-- Regression test: a husky test asserting the hook contains the scanner invocation, plus E2E tests planting leaks in a tmp git repo and asserting the commit is blocked. Reference: `tests/husky/pre-commit-owner-leakage.test.mjs`.
+- **Untracked files: the offload gate is sharper than the local one.** Both call sites (`.husky/pre-commit:116`, `.gitlab-ci.yml:370`) omit its `--include-untracked` flag (`:132`), so untracked files go unscanned locally; on an offload host the same file arrives tracked and IS scanned. `.orchestrator/tmp/` is gitignored, `.orchestrator/` itself is not — that is how an untracked `.orchestrator/tmp-dialectic-prompt.txt` turned the m5 gate red at CP2/CP7 after a green local run. Keep working files in `.orchestrator/tmp/`.
+- `git commit --no-verify` bypass remains available — use only after triage.
+- Regression test: `tests/husky/pre-commit-owner-leakage.test.mjs` (hook carries the scanner invocation; E2E leaks planted in a tmp git repo block the commit).
 
 ## Settings-Allowlist Token Guard (SEC-021, #728b)
-- Never place a live PAT/token as a permission-allowlist entry in `.claude/settings.json` or `.claude/settings.local.json` (e.g. a `Bash(glab ... glpat-xxxxxxxxxxxxxxxxxxxx:...)` line). A live GitLab PAT surfaced exactly this way in a portfolio repo, pasted in cleartext. Use an env-var reference or the OS keychain — never the raw secret value.
+- Never place a live PAT/token as a permission-allowlist entry in `.claude/settings.json` or `.claude/settings.local.json` (e.g. a `Bash(glab ... glpat-…:...)` line). A live GitLab PAT once surfaced this way in cleartext in a portfolio repo. Use an env-var reference or the OS keychain — never the raw secret value.
 - `.gitleaks.toml` (37 rules) is the canonical regex source for token shapes (`glpat-`, `ghp_`, `github_pat_`, `sk-ant-`, `AKIA`, …); `scripts/lib/validate/check-test-fixture-shapes.mjs` (patterns F5–F8) is the in-repo prior art for the same shapes in test fixtures. Do not maintain a fifth copy — the `repo-audit` Category 6 grep row (`skills/repo-audit/SKILL.md`) is a deliberate high-signal SUBSET of the 5 prefixes above, not a competing source of truth.
-- **Why `check-owner-leakage.mjs` does not cover this:** it enumerates `git ls-files` — tracked files only, by design (§ "Owner-Privacy Pre-Commit Hook" above). `.claude/settings.local.json` is conventionally gitignored/untracked, so a token pasted there is structurally invisible to the pre-commit hook. `repo-audit`'s on-disk grep (reads the file directly, not via `git ls-files`) is the only mechanism here that inspects the live file regardless of tracked status.
+- **Why `check-owner-leakage.mjs` does not cover this:** it scans `git ls-files` (tracked only, by design), and `.claude/settings.local.json` is conventionally untracked, so a token there is invisible to the pre-commit hook. `repo-audit`'s on-disk grep is the only mechanism here that reads the live file regardless of tracked status.
 
 ## OWASP Top 10 2021 Mapping
 
@@ -157,7 +161,7 @@ Cross-references: API `scripts/lib/slopcheck.mjs` · discovery probe `supply-cha
 | A06 | Vulnerable Components | Dependencies section (canonical-PM audit), CI Semgrep (27 rules, GitLab only — see § Dependencies) + Gitleaks (37 rules) |
 | A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in rules/opt-in-stack/security-web.md) |
 | A08 | Data Integrity Failures | CI/CD pipeline integrity, Gitleaks, pnpm lockfile, SEC-020 (supply chain), json-parse-untrusted (CWE-502) |
-| A09 | Logging Failures | rules/opt-in-stack/backend.md (structured logging), @your-org/logger |
+| A09 | Logging Failures | rules/opt-in-stack/backend.md (structured logging), @your-org/logger, SEC-008 (no secrets in output/logs/transcripts, CWE-532) |
 | A10 | SSRF | SEC-014 (safeFetch/safeFetchJSON, redirect re-validation) |
 
 ## Cryptographic Failures (SEC-015)
