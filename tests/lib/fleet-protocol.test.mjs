@@ -174,7 +174,13 @@ describe('security review follow-ups (#1462) — shapes that can leave the host 
 });
 
 describe('readAuflagen — accepted only for the own repo (#1520)', () => {
-  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });
+  // Scrubbed env: an inherited GIT_DIR outranks -C and would write into a foreign repo.
+  const gitChildEnv = () => {
+    const e = { ...process.env };
+    for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE']) delete e[k];
+    return e;
+  };
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore', env: gitChildEnv() });
 
   async function initRepo(name) {
     const dir = path.join(tmp, name);
@@ -190,14 +196,26 @@ describe('readAuflagen — accepted only for the own repo (#1520)', () => {
     await fs.writeFile(p, JSON.stringify(content));
   }
 
-  it('a file naming another repo is rejected (repo-mismatch)', async () => {
+  // The ambient-GIT_DIR case: GIT_DIR outranks -C, so an unscrubbed lookup resolves
+  // BOTH sides to the own repo and accepts the foreign file (review finding, 2026-10-04).
+  it.each([
+    ['clean env', false],
+    ['an inherited GIT_DIR pointing at the own repo', true],
+  ])('a file naming another repo is rejected (repo-mismatch) — %s', async (_label, withGitDir) => {
     const own = await initRepo('own');
     const other = await initRepo('other');
     await writeAuflagen({ repo: other, caps: 1 });
-    expect(await readAuflagen('main-2026-10-04-session-1', { repoRoot: own, env })).toEqual({
-      state: 'rejected',
-      reason: 'repo-mismatch',
-    });
+    const saved = process.env.GIT_DIR;
+    if (withGitDir) process.env.GIT_DIR = path.join(own, '.git');
+    try {
+      expect(await readAuflagen('main-2026-10-04-session-1', { repoRoot: own, env })).toEqual({
+        state: 'rejected',
+        reason: 'repo-mismatch',
+      });
+    } finally {
+      if (saved === undefined) delete process.env.GIT_DIR;
+      else process.env.GIT_DIR = saved;
+    }
   });
 
   it('a file without repo is rejected (repo-missing)', async () => {

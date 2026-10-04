@@ -306,6 +306,7 @@ const GIT_TIMEOUT_MS = 5_000;
 function gitCommonDir(dir) {
   try {
     const out = execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      env: gitEnv(),
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: GIT_TIMEOUT_MS,
@@ -315,6 +316,21 @@ function gitCommonDir(dir) {
   } catch {
     return null;
   }
+}
+
+/**
+ * The only environment variables forwarded to `git`. An inherited `GIT_DIR`
+ * outranks `-C`, so both sides of the repo comparison would resolve to the
+ * same directory and a foreign repo's Auflagen would be ACCEPTED. Same
+ * allowlist as `git-config-drift.mjs` / `check-banner-parity.mjs`.
+ */
+const GIT_ENV_ALLOWLIST = Object.freeze(['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TZ']);
+
+function gitEnv() {
+  /** @type {Record<string, string>} */
+  const env = {};
+  for (const k of GIT_ENV_ALLOWLIST) if (process.env[k] !== undefined) env[k] = /** @type {string} */ (process.env[k]);
+  return env;
 }
 
 /** @param {string} p */
