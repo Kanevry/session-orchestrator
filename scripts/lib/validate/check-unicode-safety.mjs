@@ -114,7 +114,7 @@ function walkDir(root, dir, acc = []) {
 export function getTrackedFiles(root) {
   let files;
   try {
-    const output = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' });
+    const output = execFileSync('git', ['ls-files'], { cwd: root, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     files = output.split('\n').filter(Boolean).map((f) => join(root, f));
   } catch {
     files = walkDir(root, root);

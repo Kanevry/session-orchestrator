@@ -265,6 +265,7 @@ const GIT_OPTS = (projectDir) => ({
   cwd: projectDir,
   encoding: 'utf8',
   timeout: 1_500,
+  maxBuffer: 64 * 1024 * 1024,
   stdio: ['ignore', 'pipe', 'ignore'],
   env: filteredGitEnv(),
 });

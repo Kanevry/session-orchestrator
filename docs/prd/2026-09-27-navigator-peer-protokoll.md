@@ -149,6 +149,8 @@ Check-in, gelten die **Standard-Auflagen** (konservative Stufe, steht in B1); le
 Schreiben im eigenen Worktree laufen weiter. Das ist kein Warten auf eine Antwort, sondern ein
 Dateistand mit Frist.
 
+> Nachtrag 2026-10-04 (#1487 Pkt. 14): Die „Lastschwelle“ der m5-remote-Regel ist ersetzt; ob m5-remote nutzbar ist, entscheidet `navigator m5-ersatz --quiet` (Exit 0 = nutzbar), siehe Nachträge in A.2.
+
 ### 3.4 Merge: Ansage und Lease als Zustand
 
 1. **Ansage (Session):** `merge/<repo_id>/ansage-<mr>.json` mit MR, gepinnter Head-SHA, Pipeline-ID,

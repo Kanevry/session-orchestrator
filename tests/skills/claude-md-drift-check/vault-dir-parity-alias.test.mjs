@@ -89,6 +89,21 @@ describe('Check 7 — AGENTS.md is an alias of CLAUDE.md', () => {
     expect(json.checks_run).toContain('vault-dir-parity');
     expect(json.errors.filter((e) => e.check === 'vault-dir-parity')).toEqual([]);
   });
+
+  it('reports no error for a config-free `@CLAUDE.md` import pointer, but still errors on the reverse pointer the runtime reads raw (bug: AGENTS.md=`@CLAUDE.md` raised CLAUDE.md=<dir> vs AGENTS.md=(unset), though resolveInstructionFile never reads it)', () => {
+    writeFileSync(join(root, 'CLAUDE.md'), instructionFile('~/Projects/vault'), 'utf8');
+    writeFileSync(join(root, 'AGENTS.md'), '\n@./CLAUDE.md\n\nCodex reads this file.\n', 'utf8');
+    let { json } = runChecker();
+    expect(json.checks_run).toContain('vault-dir-parity');
+    expect(json.errors.filter((e) => e.check === 'vault-dir-parity')).toEqual([]);
+
+    // Reverse: CLAUDE.md is the pointer — it is the file parse-config reads, so
+    // its missing block IS the runtime value and the disagreement is real.
+    writeFileSync(join(root, 'AGENTS.md'), instructionFile('~/Projects/vault'), 'utf8');
+    writeFileSync(join(root, 'CLAUDE.md'), '@AGENTS.md\n', 'utf8');
+    ({ json } = runChecker());
+    expect(json.errors.filter((e) => e.check === 'vault-dir-parity')).toHaveLength(1);
+  });
 });
 
 describe('Check 7 — two independent files (the class it exists for)', () => {

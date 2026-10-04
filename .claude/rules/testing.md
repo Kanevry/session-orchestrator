@@ -161,9 +161,9 @@ Historical note: the original cautionary tale (pipeline #3940, 2026-05-14 — 7 
 - Isolate each component — never test actions through the full agent runtime in unit tests.
 
 ### Deterministic Testing
-- Set `temperature: 0` and fixed `seed` in test model configs for reproducible outputs.
+- Never set `temperature` / `top_p` / `top_k` — removed on current Claude models (HTTP 400). Determinism comes from a mocked client in unit tests, and from fixed prompts, `strict: true` tools and structured outputs (`output_config.format`) where a real call is unavoidable.
 - Use snapshot testing for prompt templates: `expect(buildPrompt(context)).toMatchSnapshot()`.
-- Pin model versions in test configs (e.g., `claude-sonnet-4-20250514`) — model updates should not break tests.
+- Pin the exact model ID in test configs (e.g. `claude-sonnet-5` — current IDs carry no date suffix) so model updates do not break tests.
 - For non-deterministic outputs: assert structure and constraints, not exact content.
   ```typescript
   const result = await agent.run('Summarize this document');

@@ -12,9 +12,10 @@ A separate git repository (not vendored, not a submodule, not on npm) carrying:
 - `packages/zod-schemas/src/vault-frontmatter.ts` — the canonical Zod schema for
   Obsidian vault note frontmatter.
 - `templates/shared/.vault.yaml.template` — the canonical `.vault.yaml` template.
-- A `.claude/rules/` corpus. Measured 2026-09-18 at projects-baseline `5cc51f2`,
-  counting top-level keys inside each file's frontmatter block only: **32 rule
-  files — 23 carry BOTH `paths:` and `globs:`, 9 carry neither, 0 carry only
+- A `.claude/rules/` corpus. Measured 2026-10-04 at projects-baseline `9108018`
+  (committed tree via `git ls-tree` / `git show HEAD:<file>`),
+  counting top-level keys inside each file's frontmatter block only: **30 rule
+  files — 21 carry BOTH `paths:` and `globs:`, 9 carry neither, 0 carry only
   `paths:`, 0 carry only `globs:`** (per `.claude/rules/*.md`: extract the
   frontmatter, `grep -c '^paths:'` / `grep -c '^globs:'`, then
   `sort | uniq -c` over the per-file pairs). This is the one dated count; the

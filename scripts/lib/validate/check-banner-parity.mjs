@@ -187,6 +187,7 @@ export function collectMarkdownFiles(pluginRoot) {
       const output = execFileSync('git', ['ls-files', '-z', '--', ...SCAN_DIRS], {
         cwd: pluginRoot,
         encoding: 'utf8',
+        maxBuffer: 64 * 1024 * 1024,
         stdio: ['ignore', 'pipe', 'ignore'],
         env,
       });

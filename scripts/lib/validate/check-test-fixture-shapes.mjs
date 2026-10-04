@@ -154,7 +154,7 @@ const MAGIC_COMMENT_SCAN_LINES = 5;
 function getTrackedTestFiles() {
   let output;
   try {
-    output = execFileSync('git', ['ls-files'], { cwd: pluginRoot, encoding: 'utf8' });
+    output = execFileSync('git', ['ls-files'], { cwd: pluginRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   } catch {
     // Not a git repo or git unavailable — return empty (caller treats as pass)
     return [];
