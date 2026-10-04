@@ -154,10 +154,10 @@ const MAGIC_COMMENT_SCAN_LINES = 5;
 function getTrackedTestFiles() {
   let output;
   try {
-    output = execFileSync('git', ['ls-files'], { cwd: pluginRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    output = execFileSync('git', ['ls-files'], { cwd: pluginRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   } catch {
-    // Not a git repo or git unavailable — return empty (caller treats as pass)
-    return [];
+    console.error('Error: unable to enumerate tracked test files with git ls-files');
+    process.exit(2);
   }
   return output
     .split('\n')

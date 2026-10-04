@@ -31,11 +31,14 @@ With the updated package installed, find its `installPath` using
 node scripts/windows-setup.mjs "C:\path\to\installed\session-orchestrator"
 ```
 
-Run the setup script from the updated checkout. It changes only that installed
+Run the setup script from the updated checkout, targeting the installed plugin
+inside `plugins/cache` (never a Git checkout). It changes only that installed
 plugin's MCP command to the current native Node executable and the absolute
 `scripts/mcp-server.mjs` path, preserving other servers and keeping the original
 configuration in `.mcp.json.before-windows-setup`. Restart the agent to load it.
-Restore that backup to roll back. Reinstalling the plugin replaces this local
+To roll back, inspect the backup first and restore its original contents to
+`.mcp.json`. Remove `.mcp.json.before-windows-setup` before running setup again.
+Reinstalling the plugin replaces this local
 configuration; run setup again for the new install path. This opt-in avoids
 accidentally selecting Windows' `bash.exe` WSL launcher. The native server has
 the same two read-only tools and needs neither Bash nor jq.

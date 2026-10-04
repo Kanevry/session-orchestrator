@@ -217,7 +217,7 @@ describe('maybeTriggerOrphanScan', () => {
       + 'process.stdout.write(JSON.stringify(await maybeTriggerOrphanScan()));\n');
     const r = spawnSync('/bin/sh', ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3"',
       'sh', gone, process.execPath, probe], { env, encoding: 'utf8', timeout: 30_000 });
-    expect(r.status).toBe(0);
+    expect(r.status, JSON.stringify({ signal: r.signal, stderr: r.stderr, errorCode: r.error?.code })).toBe(0);
     expect(JSON.parse(r.stdout)).toEqual({ spawned: false, reason: 'disabled' });
   });
 

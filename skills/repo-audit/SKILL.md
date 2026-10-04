@@ -63,7 +63,7 @@ Run all checks in parallel where possible. For each check use the status symbols
 
 | Check | Method |
 |---|---|
-| `CLAUDE.md` exists (50-100 lines, lean) | `wc -l CLAUDE.md` |
+| `CLAUDE.md` exists (at most 80 non-exempt lines; runtime `## Session Config` block exempt) | `node scripts/lib/claude-md-budget-lint.mjs --file CLAUDE.md` |
 | `.claude/rules/` has path-scoped rules | `ls .claude/rules/*.md 2>/dev/null` |
 | `.claude/settings.json` exists | `ls .claude/settings.json` |
 | `.mcp.json` exists with servers | `ls .mcp.json` |
@@ -193,7 +193,7 @@ Session Config commands: test=`<test-command>` typecheck=`<typecheck-command>` l
 ## Detailed Results
 
 ### 1. Configuration
-- ✓ CLAUDE.md exists (72 lines — within 50-100 range)
+- ✓ CLAUDE.md exists (72 non-exempt lines — within the 80-line budget)
 - ✗ `.claude/settings.json` missing — create with permissions and hooks
 - ⚠ `.mcp.json` missing — add MCP servers appropriate for your stack
 ...
