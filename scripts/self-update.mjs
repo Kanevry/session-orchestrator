@@ -38,7 +38,7 @@
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { commandOnPath, spawnNativeSync } from './lib/native-command.mjs';
 import { fileURLToPath } from 'node:url';
 
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -158,7 +158,7 @@ to the newest Session Orchestrator, and verify each one afterwards.
   --json       Print the per-step result as JSON
 `;
 
-function makeRunner({ dryRun, json }) {
+export function makeRunner({ dryRun, json }) {
   const log = (line) => { if (!json) process.stdout.write(`${line}\n`); };
   /** Run a command; read-only queries also run under --dry-run. */
   function run(cmd, args, { cwd = SO_ROOT, mutates = true, env } = {}) {
@@ -167,7 +167,7 @@ function makeRunner({ dryRun, json }) {
       log(`  [dry-run] ${shown}${cwd === SO_ROOT ? '' : `   (in ${cwd})`}`);
       return { ok: true, stdout: '' };
     }
-    const r = spawnSync(cmd, args, { cwd, env, encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+    const r = spawnNativeSync(cmd, args, { cwd, env, encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
     if (r.error) return { ok: false, detail: `${shown}: ${r.error.message}` };
     if (r.status !== 0) {
       return { ok: false, detail: `${shown} exited ${r.status}: ${(r.stderr || r.stdout || '').trim().slice(-400)}` };
@@ -175,10 +175,6 @@ function makeRunner({ dryRun, json }) {
     return { ok: true, stdout: r.stdout };
   }
   return { run, log };
-}
-
-function onPath(bin) {
-  return spawnSync('which', [bin], { encoding: 'utf8' }).status === 0;
 }
 
 function repoVersion(root = SO_ROOT) {
@@ -226,7 +222,7 @@ export function updateClaude({ run, log }, opts, ctx = {}) {
     stageDir = STAGE_DIR,
     knownMarketplacesFile = KNOWN_MARKETPLACES,
     ignoredConfigDir = CLAUDE_CONFIG.ignored,
-    hasClaude = () => onPath('claude'),
+    hasClaude = () => commandOnPath('claude'),
   } = ctx;
   const fail = (detail) => ({ step: 'claude', status: 'failed', detail });
   if (!hasClaude()) return { step: 'claude', status: 'skipped', detail: 'claude not on PATH' };
@@ -321,7 +317,7 @@ export function updateClaude({ run, log }, opts, ctx = {}) {
 }
 
 function updateCodex({ run, log }, opts) {
-  if (!onPath('codex')) return { step: 'codex', status: 'skipped', detail: 'codex not on PATH' };
+  if (!commandOnPath('codex')) return { step: 'codex', status: 'skipped', detail: 'codex not on PATH' };
   const list = run('codex', ['plugin', 'list'], { mutates: false });
   if (!list.ok) return { step: 'codex', status: 'failed', detail: list.detail };
   if (!new RegExp(`^${PLUGIN_ID}\\s+installed`, 'm').test(list.stdout)) {

@@ -22,6 +22,30 @@ uninstall.
 
 ## Install
 
+### Native Windows MCP (opt-in, #1522)
+
+With the updated package installed, find its `installPath` using
+`claude plugin list --json`, then run in PowerShell:
+
+```powershell
+node scripts/windows-setup.mjs "C:\path\to\installed\session-orchestrator"
+```
+
+Run the setup script from the updated checkout. It changes only that installed
+plugin's MCP command to the current native Node executable and the absolute
+`scripts/mcp-server.mjs` path, preserving other servers and keeping the original
+configuration in `.mcp.json.before-windows-setup`. Restart the agent to load it.
+Restore that backup to roll back. Reinstalling the plugin replaces this local
+configuration; run setup again for the new install path. This opt-in avoids
+accidentally selecting Windows' `bash.exe` WSL launcher. The native server has
+the same two read-only tools and needs neither Bash nor jq.
+
+Windows package staging also launches npm through its JavaScript entrypoint;
+Node and npm must be installed together or npm must be on an absolute PATH.
+This does **not** establish native Windows hook/guard parity: Git Bash remains
+necessary for the existing shell hooks, tracked separately in #1394. The
+repository-wide validation currently has a POSIX-only jq discovery step.
+
 | Platform | Install |
 |---|---|
 | **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (run both inside Claude Code). |
