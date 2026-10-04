@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { handleLine, readSessionConfig, readSessionMetrics, resolveProjectRoot } from '../../scripts/mcp-server.mjs';
+import { handleLine, readSessionConfig, readSessionMetrics } from '../../scripts/mcp-server.mjs';
 
 const server = fileURLToPath(new URL('../../scripts/mcp-server.mjs', import.meta.url));
 let root;
@@ -93,9 +93,24 @@ describe('native MCP Windows transport', () => {
   });
 
   it('returns the existing no-repository tool result when git fails', () => {
-    expect(resolveProjectRoot(root)).toBeNull();
-    expect(handleLine('{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"session_config"}}', { cwd: root }))
-      .toEqual({ jsonrpc: '2.0', id: null, result: { content: [{ type: 'text', text: 'Error: not inside a git repository' }] } });
+    // TMPDIR can itself live inside a repository. Limit Git's parent search
+    // only in this child, keeping the real resolver and tool error path.
+    const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { handleLine, resolveProjectRoot } from ${JSON.stringify(new URL('../../scripts/mcp-server.mjs', import.meta.url).href)};
+      process.stdout.write(JSON.stringify({
+        root: resolveProjectRoot(),
+        response: handleLine('{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"session_config"}}'),
+      }));
+    `], {
+      cwd: root, encoding: 'utf8', timeout: 5000,
+      env: { ...process.env, GIT_CEILING_DIRECTORIES: tmpdir() },
+    });
+    expect(child.error).toBeUndefined();
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({
+      root: null,
+      response: { jsonrpc: '2.0', id: null, result: { content: [{ type: 'text', text: 'Error: not inside a git repository' }] } },
+    });
   });
 
   it('returns an actionable error for unknown tools with a string request id', () => {
