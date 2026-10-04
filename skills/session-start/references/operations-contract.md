@@ -50,7 +50,10 @@ workflow with its own verified scope, tests and review; it does not turn this en
 into a fabricated wave session.
 Before the first writing action, write the fleet check-in and read the fleet's constraints —
 the same step as session-start Phase 7.6 (`scripts/fleet-checkin.mjs`; fields and the
-Standard-Auflagen in `skills/_shared/fleet-protocol.md`). If no `auflagen/` file has appeared by
+Standard-Auflagen in `skills/_shared/fleet-protocol.md`). Read the Auflagen with
+`node scripts/fleet-auflagen.mjs <session_id>`, never the file directly: only a file whose `repo`
+resolves to this repo's git common dir is `accepted`, and a `rejected` one counts as absent
+(`skills/_shared/fleet-protocol.md` § `auflagen/<session_id>.json`). If no `auflagen/` file has appeared by
 the `fallback_due_at` on the CLI's stdout, the Standard-Auflagen apply: the CLI sets it
 `CHECKIN_FALLBACK_MIN` after `zeit` while a navigator is active, and to `zeit` itself —
 immediately — otherwise. A hint to the navigator is optional and never awaited.
