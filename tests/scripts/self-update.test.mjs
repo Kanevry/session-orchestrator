@@ -16,7 +16,7 @@ import {
 } from '../../scripts/self-update.mjs';
 import { packedFilename } from '../../scripts/lib/plugin-package-stage.mjs';
 
-it('runs real npm through the self-update runner on Windows without a cmd shell', () => {
+it('runs real npm through the self-update runner on the current platform', () => {
   const result = makeRunner({ dryRun: false, json: true }).run('npm', ['--version']);
   expect(result.ok).toBe(true);
   expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);

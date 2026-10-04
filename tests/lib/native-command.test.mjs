@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { commandOnPath, resolveNativeCommand, spawnNativeSync } from '../../scripts/lib/native-command.mjs';
 
-describe('native Windows npm launching', () => {
+describe('native command launching', () => {
   it('uses npm beside nvm-windows Node while preserving argument boundaries', () => {
     expect(resolveNativeCommand('npm', ['pack', 'a & b', '"quoted"', '%PATH%', ''], {
       platform: 'win32', execPath: 'C:\\nvm4w\\nodejs\\node.exe', env: {},
@@ -37,7 +37,7 @@ describe('native Windows npm launching', () => {
     expect(JSON.parse(result.stdout)).toEqual(['a & echo injected', '%PATH%', '"quoted"', '', 'C:\\space dir\\']);
   });
 
-  it('finds the running Node executable on native Windows without which', () => {
+  it('finds Node and rejects a missing executable on the current platform', () => {
     expect(commandOnPath('node')).toBe(true);
     expect(commandOnPath('so-definitely-missing-executable-90021')).toBe(false);
   });
