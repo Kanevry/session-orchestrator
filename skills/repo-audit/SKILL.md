@@ -63,7 +63,7 @@ Run all checks in parallel where possible. For each check use the status symbols
 
 | Check | Method |
 |---|---|
-| `CLAUDE.md` exists (at most 80 non-exempt lines; runtime `## Session Config` block exempt) | `node scripts/lib/claude-md-budget-lint.mjs --file CLAUDE.md` |
+| `CLAUDE.md` exists (at most 80 non-exempt lines; runtime `## Session Config` block exempt) | `node "$PLUGIN_ROOT/scripts/lib/claude-md-budget-lint.mjs" --file CLAUDE.md` |
 | `.claude/rules/` has path-scoped rules | `ls .claude/rules/*.md 2>/dev/null` |
 | `.claude/settings.json` exists | `ls .claude/settings.json` |
 | `.mcp.json` exists with servers | `ls .mcp.json` |
