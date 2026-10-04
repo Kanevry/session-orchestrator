@@ -277,6 +277,26 @@ describe('rule-scoping — zero-match-globs probe (warning)', () => {
     const warns = j.warnings.filter((w) => w.check === 'rule-scoping' && w.extracted === 'src/**');
     expect(warns).toHaveLength(0);
   });
+
+  it('matches a dotfile glob against a `git ls-files` listing above 1 MiB (bug: the default 1 MiB maxBuffer threw ENOBUFS, the bare catch fell back to a dotdir-skipping walk, and `.gitleaks.toml` read as "0 tracked files" — a 1,199,500-byte vault listing, 2026-10-04)', () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(join(rulesDir, 'scoped.md'), '---\nglobs:\n  - .gitleaks.toml\n---\n\n# Scoped Rule\n');
+    // A stub `git` first on PATH: ~1.56 MB of tracked paths, the dotfile last.
+    const bin = join(vault, 'stub-bin');
+    mkdirSync(bin);
+    writeFileSync(
+      join(bin, 'git'),
+      '#!/bin/sh\n[ "$1" = ls-files ] || exit 128\n' +
+        "awk 'BEGIN{for(i=0;i<40000;i++)printf \"pad/%030d.md\\n\",i; print \".gitleaks.toml\"}'\n",
+    );
+    chmodSync(join(bin, 'git'), 0o755);
+    const env = { ...process.env, VAULT_DIR: vault, PATH: `${bin}:${process.env.PATH}` };
+    const r = spawnSync('node', [CHECKER, ...SKIP_OTHERS], { env, encoding: 'utf8', timeout: 15_000 });
+
+    const j = parseJson(r.stdout);
+    expect(j.warnings.filter((w) => w.extracted === '.gitleaks.toml')).toEqual([]);
+    expect(r.stderr).not.toMatch(/git ls-files failed/);
+  });
 });
 
 // ---------------------------------------------------------------------------

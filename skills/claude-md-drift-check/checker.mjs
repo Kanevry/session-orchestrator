@@ -337,6 +337,44 @@ function instructionFilesAreAliased(pathA, pathB) {
   }
 }
 
+/**
+ * Is `AGENTS.md` a pure import pointer to `CLAUDE.md`?
+ *
+ * Shape: its first non-empty line is a Claude Code import `@CLAUDE.md` (or
+ * `@./CLAUDE.md`), and it carries no config of its own — no
+ * `vault-integration:` block and no `## Session Config` heading. Such a file
+ * cannot disagree with CLAUDE.md at runtime: `resolveInstructionFile()`
+ * (`scripts/lib/common.mjs`) and `parse-config.mjs` read CLAUDE.md first
+ * whenever it is non-empty, so the pointer's missing block is never read.
+ * Comparing them reported `CLAUDE.md='<dir>' vs AGENTS.md='(unset)'` as an
+ * error (peer session gotzendorferv2-6e, 2026-10-04).
+ *
+ * ONE direction only, on purpose. A CLAUDE.md that imports AGENTS.md is the
+ * file those readers pick, and they read it raw — they do not follow `@`
+ * imports — so its missing block IS the runtime value and the disagreement is
+ * real. A pointer that carries its own block stays compared too.
+ *
+ * Check 7 only. Check 9 probe 2a must keep scanning such a file: its citations
+ * are its OWN text (the import is not expanded here), so scanning it reports
+ * no CLAUDE.md defect twice — skipping it would hide its own dangling ones.
+ *
+ * @param {string} agentsPath
+ * @returns {boolean}
+ */
+function agentsMdImportsClaudeMd(agentsPath) {
+  let content;
+  try {
+    content = readFileSync(agentsPath, 'utf8').replace(/^\uFEFF/, '');
+  } catch {
+    return false;
+  }
+  const lines = content.split('\n');
+  const first = lines.find((l) => l.trim().length > 0);
+  if (first === undefined || !/^@(?:\.\/)?CLAUDE\.md\s*$/.test(first.trim())) return false;
+  if (lines.some((l) => isSessionConfigHeading(l))) return false;
+  return !readVaultIntegration(agentsPath).present;
+}
+
 function classifySection(heading) {
   if (!heading) return null;
   if (BACKWARD_HEADING_RE.test(heading)) return 'backward';
@@ -670,12 +708,31 @@ function globMatchesAny(pattern, trackedFiles) {
  * Returns the repo's tracked files (relative, forward-slash separated) via
  * `git ls-files`; falls back to a manual walk (excluding dotdirs and
  * node_modules — same exclusions as `walkDir`) when git is unavailable.
+ *
+ * Only "git missing" and "not a git repository" fall back silently. Any other
+ * failure still falls back, but says so on stderr: the walk skips dotdirs, so
+ * every glob under `.claude/` or a dotfile like `.gitleaks.toml` then reports
+ * "matches 0 tracked files" — a false warning that must carry its cause. The
+ * 64 MiB buffer exists because the 1 MiB default threw ENOBUFS on a vault
+ * listing of 1,199,500 bytes (measured 2026-10-04), which the old bare catch
+ * turned into exactly those false warnings, silently.
  */
 function listTrackedFiles(vaultDir) {
   try {
-    const out = execFileSync('git', ['ls-files'], { cwd: vaultDir, encoding: 'utf8' });
+    const out = execFileSync('git', ['ls-files'], {
+      cwd: vaultDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 64 * 1024 * 1024,
+    });
     return out.split('\n').filter(Boolean);
-  } catch {
+  } catch (err) {
+    const notARepo = err?.status === 128 && /not a git repository/i.test(String(err?.stderr ?? ''));
+    if (err?.code !== 'ENOENT' && !notARepo) {
+      process.stderr.write(
+        `claude-md-drift-check: git ls-files failed in ${vaultDir} (${err?.code ?? `exit ${err?.status}`}: ${String(err?.message ?? err).split('\n')[0]}) — falling back to a filesystem walk that skips dotdirs; zero-match glob warnings under dot-paths are unreliable this run\n`,
+      );
+    }
     const files = [];
     walkDir(vaultDir, (f) => files.push(relative(vaultDir, f).replace(/\\/g, '/')));
     return files;
@@ -1114,8 +1171,13 @@ function main() {
         // absent vault-integration block is a different (and more informative)
         // outcome than "the files cannot disagree".
         checksSkipped.push('vault-dir-parity: neither file has a vault-integration: block');
-      } else if (instructionFilesAreAliased(claudePath, agentsPath)) {
-        // Identical by construction (generated copy, symlink, or hardlink) —
+      } else if (
+        instructionFilesAreAliased(claudePath, agentsPath) ||
+        agentsMdImportsClaudeMd(agentsPath)
+      ) {
+        // Identical by construction (generated copy, symlink, or hardlink), or
+        // AGENTS.md is a config-free `@CLAUDE.md` import pointer the runtime
+        // never reads (see agentsMdImportsClaudeMd) —
         // parity is SATISFIED, so the check RAN and found nothing. Reporting
         // this as a skip would be wrong too: the invariant Check 7 guards is
         // actively held here, it is simply held mechanically rather than by

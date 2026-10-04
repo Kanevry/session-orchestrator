@@ -459,6 +459,30 @@ describe('planRuleExpirySweep + applyRuleExpirySweep', () => {
     ]);
   });
 
+  it('an EXPIRED markers-only pair does not pin the header: it is raised to the earliest live absorbed date and the pair stays as a dedupe marker (bug: the elapsed markers-only date held the raise target at the passed header, so rule-loader excluded the whole file forever — live guard-design.md 2026-10-04)', async () => {
+    const entries = [
+      { key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha holds' },
+      { key: 'proven-pattern/old', id: 'id-old', heading: 'Old', markersOnly: true },
+      { key: 'proven-pattern/gamma', id: 'id-gamma', heading: 'Gamma holds' },
+    ];
+    // Header == the markers-only pair's date, which has passed by NOW.
+    writeRule('fixture.md', { expiresAt: '2026-05-01', entries });
+    writeLearnings([
+      learning('id-alpha', 'anti-pattern/alpha', '2026-10-16T00:00:00.000Z'),
+      learning('id-old', 'proven-pattern/old', '2026-05-01T00:00:00.000Z'),
+      learning('id-gamma', 'proven-pattern/gamma', '2026-11-20T00:00:00.000Z'),
+    ]);
+
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    expect(plan.plans[0].action).toBe('rewrite');
+    expect(plan.plans[0].reason).toBe('header-raise');
+    expect(plan.plans[0].newExpiresAt).toBe('2026-10-16');
+    expect(plan.plans[0].newAbsorbedCount).toBe(3);
+    const parsed = parseConsolidatedRule(plan.plans[0].nextContent);
+    expect(parsed.counterDate).toBe('2026-10-16');
+    expect(parsed.pairs.map((p) => p.id)).toEqual(['id-alpha', 'id-old', 'id-gamma']);
+  });
+
   it('T9 — a `no-1to1-mapping` file STILL carries the header advisory (bug: computing it after the skip branch structurally excluded the 4 merged-prose files, test-hygiene.md among them, so the shipped instrument could not report the very header-outliving-content defect its docblock named)', async () => {
     // Same ambiguous shape as T6: two substantive pairs, one prose entry.
     const content = renderRuleFile({

@@ -403,12 +403,23 @@ function dateOnly(iso) {
  * `unresolvedPairIds`), so a file whose ids all fail to resolve yields `null`
  * rather than a guess.
  *
+ * One exclusion: a markers-only pair whose date lies before `cutoffMs` is
+ * dropped. Its substance is already gone, so its elapsed date protects nothing
+ * — yet left in, it pins the raise target at or below a header that has already
+ * passed, and `rule-loader.mjs` excludes the whole file forever (live
+ * 2026-10-04: `guard-design.md` header 2026-10-04 pinned by markers-only
+ * `d86c9b5f-…`, next absorbed date 2026-10-07). The pair itself stays in the
+ * file and in `N` — it is still a dedupe marker. Expired SUBSTANTIVE pairs stay
+ * in the population: raising past one would revive prose not yet swept.
+ *
  * @param {ReturnType<typeof parseConsolidatedRule>} parsed
  * @param {Map<string, string>} expiryById
+ * @param {number} cutoffMs  expiry cutoff (now minus grace)
  * @returns {string|null}
  */
-function earliestResolvableDate(parsed, expiryById) {
+function earliestResolvableDate(parsed, expiryById, cutoffMs) {
   const dates = parsed.pairs
+    .filter((p) => !p.markersOnly || !(Date.parse(expiryById.get(p.id) ?? '') < cutoffMs))
     .map((p) => expiryById.get(p.id))
     .filter((v) => typeof v === 'string' && Number.isFinite(Date.parse(v)))
     .sort();
@@ -423,15 +434,20 @@ function earliestResolvableDate(parsed, expiryById) {
  * outlives its content is never lowered here — see the module header for why
  * the two directions are not symmetric.
  *
+ * Already-expired markers-only pairs do not hold the target down (see
+ * {@link earliestResolvableDate}); they stay in the file as dedupe markers and
+ * keep counting toward `N`.
+ *
  * @param {ReturnType<typeof parseConsolidatedRule>} parsed
  * @param {Map<string, string>} expiryById
+ * @param {number} cutoffMs  expiry cutoff (now minus grace)
  * @returns {string|null}
  */
-function headerRaiseTarget(parsed, expiryById) {
+function headerRaiseTarget(parsed, expiryById, cutoffMs) {
   if (!parsed.expiresAt || parsed.expiresAtLine < 0) return null;
   const headerMs = Date.parse(parsed.expiresAt);
   if (!Number.isFinite(headerMs)) return null;
-  const earliest = earliestResolvableDate(parsed, expiryById);
+  const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs);
   if (earliest === null) return null;
   const earliestMs = Date.parse(earliest);
   if (!Number.isFinite(earliestMs) || earliestMs <= headerMs) return null;
@@ -450,15 +466,20 @@ function headerRaiseTarget(parsed, expiryById) {
  *
  * Deliberately NOT the `newExpiresAt` population: that one excludes expired
  * pairs so a rewritten file is not instantly expired again. This is a
- * diagnostic about the file AS COMMITTED, so it excludes nothing.
+ * diagnostic about the file AS COMMITTED, so it excludes nothing — except an
+ * already-expired markers-only pair, the same exclusion the raise target makes.
+ * Without it, every file the raise (or an expired-entries rewrite) moved past
+ * such a pair would carry a permanent advisory naming the elapsed date, i.e.
+ * an instruction to lower the header back to where the loader drops the file.
  *
  * @param {ReturnType<typeof parseConsolidatedRule>} parsed
  * @param {Map<string, string>} expiryById
+ * @param {number} cutoffMs  expiry cutoff (now minus grace)
  * @returns {string|undefined} undefined when there is nothing to report
  */
-function headerAdvisory(parsed, expiryById) {
+function headerAdvisory(parsed, expiryById, cutoffMs) {
   if (!parsed.expiresAt) return undefined;
-  const earliest = earliestResolvableDate(parsed, expiryById);
+  const earliest = earliestResolvableDate(parsed, expiryById, cutoffMs);
   if (earliest === null || earliest === parsed.expiresAt) return undefined;
   return `header expires-at ${parsed.expiresAt} != earliest resolvable absorbed date ${earliest}`;
 }
@@ -587,8 +608,8 @@ export async function planRuleExpirySweep(opts = {}) {
     // most likely to carry a stale header, `test-hygiene.md` among them — could
     // never receive one. Measured 2026-09-17: the advisory reached 3 of 7 files
     // where 6 of 7 have the discrepancy.
-    const advisory = headerAdvisory(parsed, expiryById);
-    const raiseTo = headerRaiseTarget(parsed, expiryById);
+    const advisory = headerAdvisory(parsed, expiryById, cutoffMs);
+    const raiseTo = headerRaiseTarget(parsed, expiryById, cutoffMs);
 
     if (
       parsed.counterLine === -1 &&
