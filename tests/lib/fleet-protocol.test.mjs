@@ -6,13 +6,17 @@
  *     (fail-closed: a false `active` makes a peer defer to a navigator that is gone);
  *   - a missing lease is `none`, not `unreadable` (the common, healthy case);
  *   - a whitespace-only NAVIGATOR_CONFIG_DIR must not become a relative `'   '` dir;
- *   - a session id with path parts must never reach a filesystem path (traversal).
+ *   - a session id with path parts must never reach a filesystem path (traversal);
+ *   - an auflagen file from another repo, or without `repo`, must never be accepted —
+ *     semantic session ids collide across repos (#1520), while a linked worktree of
+ *     the named repo must still match.
  *
  * No test touches the real `~/.config/navigator/`: every path is derived from a
  * per-test `mkdtemp` directory passed as `env.NAVIGATOR_CONFIG_DIR` or `home`.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,6 +24,8 @@ import {
   navigatorDir,
   leasePath,
   checkinPath,
+  auflagenPath,
+  readAuflagen,
   readNavigatorLease,
   validateCheckin,
 } from '../../scripts/lib/fleet-protocol.mjs';
@@ -164,5 +170,53 @@ describe('security review follow-ups (#1462) — shapes that can leave the host 
     expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
     await writeLease(lease({ laeuft_ab: '2026-09-27T13:00:00' }));
     expect(await readNavigatorLease({ now: NOW, env })).toMatchObject({ state: 'unreadable' });
+  });
+});
+
+describe('readAuflagen — accepted only for the own repo (#1520)', () => {
+  const git = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });
+
+  async function initRepo(name) {
+    const dir = path.join(tmp, name);
+    await fs.mkdir(dir, { recursive: true });
+    git(dir, 'init', '-q');
+    git(dir, '-c', 'user.email=t@example.org', '-c', 'user.name=t', 'commit', '-q', '--allow-empty', '-m', 'init');
+    return dir;
+  }
+
+  async function writeAuflagen(content) {
+    const p = auflagenPath('main-2026-10-04-session-1', { env });
+    await fs.mkdir(path.dirname(p), { recursive: true });
+    await fs.writeFile(p, JSON.stringify(content));
+  }
+
+  it('a file naming another repo is rejected (repo-mismatch)', async () => {
+    const own = await initRepo('own');
+    const other = await initRepo('other');
+    await writeAuflagen({ repo: other, caps: 1 });
+    expect(await readAuflagen('main-2026-10-04-session-1', { repoRoot: own, env })).toEqual({
+      state: 'rejected',
+      reason: 'repo-mismatch',
+    });
+  });
+
+  it('a file without repo is rejected (repo-missing)', async () => {
+    const own = await initRepo('own');
+    await writeAuflagen({ caps: 1 });
+    expect(await readAuflagen('main-2026-10-04-session-1', { repoRoot: own, env })).toEqual({
+      state: 'rejected',
+      reason: 'repo-missing',
+    });
+  });
+
+  it('a session in a linked worktree accepts a file naming the main tree', async () => {
+    const own = await initRepo('own');
+    const wt = path.join(tmp, 'own-wt');
+    git(own, 'worktree', 'add', '-q', '-b', 'wt', wt);
+    await writeAuflagen({ repo: own, caps: 1 });
+    expect(await readAuflagen('main-2026-10-04-session-1', { repoRoot: wt, env })).toEqual({
+      state: 'accepted',
+      auflagen: { repo: own, caps: 1 },
+    });
   });
 });

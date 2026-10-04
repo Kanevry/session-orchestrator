@@ -21,12 +21,18 @@
  * expired lease is `none`, a lease that cannot be read or validated is
  * `unreadable`, and neither is ever `active`.
  *
+ * An auflagen file is keyed by the semantic session id, which collides across
+ * repos (`main-<date>-session-N`), so it is only accepted when its mandatory
+ * `repo` field resolves to the reader's own git common dir ({@link readAuflagen},
+ * #1520 / navigator#190).
+ *
  * Session ids become file names, so {@link isSafeSessionId} is the security
  * boundary between check-in input and the filesystem: every path builder that
  * takes a session id refuses an unsafe one with a TypeError.
  */
 
-import { promises as fs } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import fsSync, { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -285,4 +291,79 @@ export async function readNavigatorLease({ now = Date.now(), env, home } = {}) {
   if (problem) return { state: 'unreadable', reason: problem };
   if (Date.parse(lease.laeuft_ab) <= now) return { state: 'none' };
   return { state: 'active', lease };
+}
+
+/** Timeout for the `git rev-parse` calls in {@link readAuflagen}. */
+const GIT_TIMEOUT_MS = 5_000;
+
+/**
+ * Absolute, realpath'd git common dir of `dir` — the same value for a main tree,
+ * any of its linked worktrees, and the `.git` directory itself — or null when
+ * `dir` is not inside a git repository (or git is unavailable).
+ * @param {string} dir
+ * @returns {string|null}
+ */
+function gitCommonDir(dir) {
+  try {
+    const out = execFileSync('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: GIT_TIMEOUT_MS,
+    }).trim();
+    if (!out) return null;
+    return realpathSyncSafe(out);
+  } catch {
+    return null;
+  }
+}
+
+/** @param {string} p */
+function realpathSyncSafe(p) {
+  try {
+    return fsSync.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+}
+
+/**
+ * Read this session's conditions file and accept it only when it belongs to the
+ * reader's repository. Never throws; fail-closed.
+ *
+ * The file's mandatory `repo` field (an absolute path to the target repo's
+ * toplevel or its git common dir, written by the navigator) and `repoRoot` are
+ * both resolved to their git common dir, so a session in a linked worktree
+ * matches a file naming the main tree. Every `rejected` result means: behave as
+ * if no file existed (Standard-Auflagen apply).
+ *
+ * @param {string} sessionId
+ * @param {{ repoRoot?: string, env?: Record<string, string|undefined>, home?: string }} [opts]
+ * @returns {Promise<
+ *   | { state: 'absent' }
+ *   | { state: 'accepted', auflagen: Record<string, unknown> }
+ *   | { state: 'rejected', reason: 'unsafe-session-id'|'unreadable'|'invalid-json'|'repo-missing'|'repo-unresolved'|'repo-mismatch' }
+ * >}
+ */
+export async function readAuflagen(sessionId, { repoRoot = process.cwd(), env, home } = {}) {
+  if (!isSafeSessionId(sessionId)) return { state: 'rejected', reason: 'unsafe-session-id' };
+  let raw;
+  try {
+    raw = await fs.readFile(auflagenPath(sessionId, { env, home }), 'utf8');
+  } catch (err) {
+    if (err && /** @type {NodeJS.ErrnoException} */ (err).code === 'ENOENT') return { state: 'absent' };
+    return { state: 'rejected', reason: 'unreadable' };
+  }
+  let auflagen;
+  try {
+    auflagen = JSON.parse(raw);
+  } catch {
+    return { state: 'rejected', reason: 'invalid-json' };
+  }
+  if (!isPlainObject(auflagen)) return { state: 'rejected', reason: 'invalid-json' };
+  const fileRepo = auflagen.repo;
+  if (typeof fileRepo !== 'string' || !path.isAbsolute(fileRepo)) return { state: 'rejected', reason: 'repo-missing' };
+  const own = gitCommonDir(repoRoot);
+  if (!own) return { state: 'rejected', reason: 'repo-unresolved' };
+  if (gitCommonDir(fileRepo) !== own) return { state: 'rejected', reason: 'repo-mismatch' };
+  return { state: 'accepted', auflagen };
 }

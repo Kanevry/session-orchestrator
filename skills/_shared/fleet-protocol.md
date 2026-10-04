@@ -103,6 +103,14 @@ Bedingungen, die der Navigator einer Session schreibt (z. B. Agent-Caps, volle P
 Offload-Regel, Merge- und Zeitregeln, Besitzkonflikte); Inhalt und Form gehören dem Navigator. Die
 Session **liest** die Datei; sie wartet auf keine Nachricht. Keine Auflage ist eine Freigabe.
 
+**Pflichtfeld `repo`** (#1520, navigator#190): absoluter Pfad auf Toplevel oder git-common-dir des
+Ziel-Repos. Der Dateiname ist die semantische Session-ID, und die kollidiert über Repos hinweg.
+Gelesen wird über `node scripts/fleet-auflagen.mjs <session_id>` (Code: `readAuflagen()`); die
+Datei gilt nur, wenn `repo` und das eigene Repo auf dasselbe `git rev-parse --path-format=absolute
+--git-common-dir` auflösen, ein Worktree passt also zu seinem Haupt-Checkout. Fehlt das Feld, passt
+es nicht oder ist die Datei unlesbar: fail-closed, WARN auf stderr, die Datei zählt als nicht
+vorhanden, die Standard-Auflagen gelten.
+
 **Standard-Auflagen (konservative Stufe).** Sie gelten ab `fallback_due_at` (stdout der
 Check-in-CLI), wenn bis dahin keine Auflagen-Datei liegt. Die Frist rechnet `fallbackDueAt()`:
 `CHECKIN_FALLBACK_MIN` = 10 Minuten nach `checkin.zeit`, solange ein Navigator aktiv ist; ohne
