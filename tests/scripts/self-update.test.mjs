@@ -12,9 +12,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  findClaudeEntry, missingRuntimeDeps, resolveClaudeConfigDir, updateClaude,
+  findClaudeEntry, makeRunner, missingRuntimeDeps, resolveClaudeConfigDir, updateClaude,
 } from '../../scripts/self-update.mjs';
 import { packedFilename } from '../../scripts/lib/plugin-package-stage.mjs';
+
+it('runs real npm through the self-update runner on Windows without a cmd shell', () => {
+  const result = makeRunner({ dryRun: false, json: true }).run('npm', ['--version']);
+  expect(result.ok).toBe(true);
+  expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+});
 
 describe('missingRuntimeDeps', () => {
   let dir;
@@ -108,7 +114,7 @@ describe('updateClaude source guard', () => {
 
   it('refuses a directory marketplace on the clone under ANY name, reached via a symlink, and names it', () => {
     const io = setup((clone) => {
-      symlinkSync(clone, join(tmp, 'alias'));
+      symlinkSync(clone, join(tmp, 'alias'), 'junction');
       return { 'session-orchestrator': { source: { source: 'directory', path: join(tmp, 'alias') } } };
     }, 'session-orchestrator@session-orchestrator');
     const r = updateClaude(io, { dryRun: true }, ctx);

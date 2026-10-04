@@ -18,7 +18,7 @@ import {
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawnNativeSync } from './native-command.mjs';
 
 const COMMAND_TIMEOUT_MS = 300_000;
 const WORK_PREFIX = '.stage-';
@@ -79,7 +79,7 @@ export function packedFilename(packJson) {
  */
 export function spawnRun(cmd, args, { cwd, env } = {}) {
   const shown = `${cmd} ${args.join(' ')}`;
-  const r = spawnSync(cmd, args, { cwd, env, encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
+  const r = spawnNativeSync(cmd, args, { cwd, env, encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: 64 * 1024 * 1024 });
   if (r.error) return { ok: false, detail: `${shown}: ${r.error.message}` };
   if (r.status !== 0) {
     return { ok: false, detail: `${shown} exited ${r.status}: ${(r.stderr || r.stdout || '').trim().slice(-400)}` };

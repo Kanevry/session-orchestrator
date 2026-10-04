@@ -13,7 +13,13 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { resolveStageDir, stagePackage } from '../../scripts/lib/plugin-package-stage.mjs';
+import { resolveStageDir, spawnRun, stagePackage } from '../../scripts/lib/plugin-package-stage.mjs';
+
+it('runs real npm through the staging runner on Windows without a cmd shell', () => {
+  const result = spawnRun('npm', ['--version']);
+  expect(result.ok).toBe(true);
+  expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+/);
+});
 
 describe('stagePackage failure cleanup', () => {
   let tmp;
