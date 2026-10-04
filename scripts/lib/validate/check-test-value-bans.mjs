@@ -461,9 +461,10 @@ const LOCAL_IMPORT = new RegExp(
 function trackedTestFiles() {
   let out;
   try {
-    out = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    out = execFileSync('git', ['ls-files'], { cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 * 1024 * 1024 });
   } catch {
-    return []; // not a git repo — nothing to scan
+    console.error('Error: unable to enumerate tracked test files with git ls-files');
+    process.exit(2);
   }
   return out
     .split('\n')

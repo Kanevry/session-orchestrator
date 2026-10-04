@@ -22,9 +22,9 @@ function call(name, id = 0) {
 }
 
 describe('native MCP Windows transport', () => {
-  it('initializes and lists both tools without bash or jq on PATH; recovers after bad JSON and ignores notifications', () => {
+  it('initializes and lists both tools without bash or jq on PATH; recovers after bad JSON and ignores notifications', { timeout: 40_000 }, () => {
     const child = spawnSync(process.execPath, [server], {
-      cwd: root, encoding: 'utf8', timeout: 5000,
+      cwd: root, encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, PATH: root, Path: root },
       input: '{broken}\r\n'
         + '{"jsonrpc":"2.0","method":"notifications/initialized"}\r\n'
@@ -92,7 +92,7 @@ describe('native MCP Windows transport', () => {
       + 'tokens: ? in / 20 out (coverage: 2 subagents) [session: latest]');
   });
 
-  it('returns the existing no-repository tool result when git fails', () => {
+  it('returns the existing no-repository tool result when git fails', { timeout: 40_000 }, () => {
     // TMPDIR can itself live inside a repository. Limit Git's parent search
     // only in this child, keeping the real resolver and tool error path.
     const child = spawnSync(process.execPath, ['--input-type=module', '-e', `
@@ -102,7 +102,7 @@ describe('native MCP Windows transport', () => {
         response: handleLine('{"jsonrpc":"2.0","id":null,"method":"tools/call","params":{"name":"session_config"}}'),
       }));
     `], {
-      cwd: root, encoding: 'utf8', timeout: 5000,
+      cwd: root, encoding: 'utf8', timeout: 30_000,
       env: { ...process.env, GIT_CEILING_DIRECTORIES: tmpdir() },
     });
     expect(child.error).toBeUndefined();

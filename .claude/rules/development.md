@@ -58,7 +58,7 @@ Enforced by ESLint flat config (`eslint.config.js`) + Prettier. `no-console` is 
 - **Env-var wiring (dead env / three wirings):** an env var set in ops (docker-compose / deploy `.env`) but never read in `src/` is a **dead env** — ops thinks it active, code ignores it (hardcoded default wins); grep `src/` for every ops-set var, where 0 matches = wiring never finished. Conversely a new `process.env.X` read needs **three wirings**: code default, compose/env, and every deploy target's env.
 
 ## Documentation
-- CLAUDE.md in every project root (50-100 lines, lean).
+- CLAUDE.md per root: ≤80 non-exempt lines; `## Session Config` exempt.
 - Detailed rules in `.claude/rules/` with path-scoping.
 - API docs via JSDoc/TSDoc on public functions (inline, code-surface documentation — the implementer's job; standalone/narrative docs like README and CLAUDE.md are the docs-writer's, see `agents/code-implementer.md` § Rules).
 - No README.md bloat — keep it minimal, link to docs.

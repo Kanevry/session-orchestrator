@@ -7,6 +7,11 @@ import { isMainModule } from './lib/is-main-module.mjs';
 export function configureNativeMcp(pluginRoot, { node = process.execPath, platform = process.platform } = {}) {
   if (platform !== 'win32') throw new Error('This setup is for native Windows only.');
   const root = realpathSync(pluginRoot);
+  if (existsSync(path.join(root, '.git'))) throw new Error('Refusing to configure a Git checkout.');
+  const segments = root.split(path.sep);
+  const inCache = segments.some((segment, index) =>
+    segment === 'plugins' && segments[index + 1] === 'cache' && index + 2 < segments.length);
+  if (!inCache) throw new Error('Expected an installed plugin inside plugins/cache.');
   const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'));
   if (pkg.name !== 'session-orchestrator') throw new Error('Expected a session-orchestrator plugin directory.');
   const server = path.join(root, 'scripts', 'mcp-server.mjs');

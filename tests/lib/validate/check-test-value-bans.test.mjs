@@ -121,6 +121,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import vitestConfig from '../../../vitest.config.mjs';
+import { fixtureGit } from '../../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-test-value-bans.mjs');
@@ -1118,6 +1119,33 @@ describe('check-test-value-bans — B5 counter-examples', () => {
 });
 
 describe('check-test-value-bans — CLI contract', () => {
+  // bug_caught (#1521 P6): failed git enumeration emitted an empty successful JSON scan.
+  it('exits 2 with a safe diagnostic when the real git child rejects a corrupt index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'so-tvb-index-error-'));
+    tmpDirs.push(root);
+    fixtureGit(['init', '-q', '-b', 'main'], root);
+    writeFileSync(join(root, '.git', 'index'), 'invalid index');
+    const res = spawnSync(process.execPath, [SCRIPT, root, '--json'], {
+      encoding: 'utf8', timeout: 20_000,
+    });
+    expect(res.status).toBe(2);
+    expect(res.stderr).toBe('Error: unable to enumerate tracked test files with git ls-files\n');
+    expect(res.stdout).toBe('');
+  });
+
+  // bug_caught: the tool-error path must preserve a successful scan of an empty index.
+  it('exits 0 with no findings after git successfully enumerates an empty index', () => {
+    const root = mkdtempSync(join(tmpdir(), 'so-tvb-empty-index-'));
+    tmpDirs.push(root);
+    fixtureGit(['init', '-q', '-b', 'main'], root);
+    const res = spawnSync(process.execPath, [SCRIPT, root, '--json'], {
+      encoding: 'utf8', timeout: 20_000,
+    });
+    expect(res.status).toBe(0);
+    expect(JSON.parse(res.stdout)).toMatchObject({ advisory: true, scanned: 0, findings: [] });
+    expect(res.stderr).toBe('');
+  });
+
   it('--json emits the advisory/scanned/counts/findings shape consumers parse', () => {
     const { json } = scan({ 'tests/shape.test.mjs': 'expect(Object.keys(a)).toHaveLength(9);\n' });
 

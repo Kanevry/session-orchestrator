@@ -90,6 +90,26 @@ function writeTestFile(root, relPath, content) {
 // ---------------------------------------------------------------------------
 
 describe('Control: empty tests/ tree', () => {
+  // bug_caught (#1521 P6): failed git enumeration used to masquerade as a clean scan.
+  it('exits 2 with a safe diagnostic when the real git child rejects a corrupt index', () => {
+    const root = makeTmpRepo(() => {});
+    writeFileSync(join(root, '.git', 'index'), 'invalid index');
+    const result = runCheck(root);
+    expect(result.status).toBe(2);
+    expect(result.stderr).toBe('Error: unable to enumerate tracked test files with git ls-files\n');
+    expect(result.stdout).not.toContain('  PASS:');
+    expect(result.stdout).not.toContain('Results:');
+  });
+
+  // bug_caught: failure handling must not reject a successful, genuinely empty index.
+  it('exits 0 after git successfully enumerates an empty index', () => {
+    const root = makeTmpRepo(() => {});
+    const result = runCheck(root);
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('across 0 scanned tests/ files');
+    expect(result.stderr).toBe('');
+  });
+
   it('exits 0 with empty tests/ tree', () => {
     const root = makeTmpRepo((r) => {
       // Write only a non-tests/ file so git has something to track
