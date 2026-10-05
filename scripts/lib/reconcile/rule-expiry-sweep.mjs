@@ -146,7 +146,7 @@ import { join, resolve, sep } from 'node:path';
 import { atomicWriteWithBackup } from '../io.mjs';
 import { readLearnings } from '../learnings/io.mjs';
 import { listMachineGeneratedRules } from '../instruction-budget-guard.mjs';
-import { ruleExpiryInstantMs } from '../rule-loader.mjs';
+import { parseGlobsFrontmatter, ruleExpiryInstantMs } from '../rule-loader.mjs';
 import { markCandidateProcessed } from './idempotency.mjs';
 
 /** Repo-relative learnings store — the only source of a per-entry date. */
@@ -289,6 +289,18 @@ export function parseConsolidatedRule(content) {
       expiresAtLine = i;
       expiresAt = m[1];
       break;
+    }
+  }
+  // The VALUE is taken the loader's way (quote-stripped): a hand-edited
+  // `"2026-06-01"` would otherwise reach Date.parse with its quotes and be read
+  // as LOCAL midnight — up to 26 h before the loader stops injecting the rule.
+  // The line index above stays the rewrite anchor.
+  if (expiresAtLine >= 0) {
+    try {
+      const loaderValue = parseGlobsFrontmatter(String(content ?? '')).meta['expires-at'];
+      if (typeof loaderValue === 'string') expiresAt = loaderValue;
+    } catch {
+      // frontmatter the loader rejects — keep the raw value (fail-open downstream)
     }
   }
 

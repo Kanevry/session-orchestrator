@@ -757,4 +757,15 @@ Repos in groups without the bot as member are silently missing from the sync.
     const nextDay = await planRuleExpirySweep({ repoRoot, now: '2026-06-02T00:00:00.000Z' });
     expect(nextDay.plans.find((p) => p.file === 'lastday.md')).toMatchObject({ action: 'delete', reason: 'single-entry-expired' });
   });
+
+  it('T19 — a hand-quoted expires-at ("2026-06-01") is read the loader\'s way (bug: raw quotes sent V8 into a local-time parse — up to 26 h before the loader drops the rule)', async () => {
+    singleEntryRule('quoted.md', { expiresAt: '"2026-06-01"', key: 'recurring-issue/quoted', id: 'id-quoted' });
+    writeLearnings([learning('id-quoted', 'recurring-issue/quoted', PAST)]);
+
+    const onDay = await planRuleExpirySweep({ repoRoot, now: '2026-06-01T23:59:59.999Z' });
+    expect(onDay.plans.find((p) => p.file === 'quoted.md').action).toBe('keep');
+
+    const nextDay = await planRuleExpirySweep({ repoRoot, now: '2026-06-02T00:00:00.000Z' });
+    expect(nextDay.plans.find((p) => p.file === 'quoted.md')).toMatchObject({ action: 'delete', reason: 'single-entry-expired' });
+  });
 });
