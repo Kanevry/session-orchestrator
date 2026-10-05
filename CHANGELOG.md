@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Lead page on the website**: `site/lead/` introduces the sibling project lead-session-orchestrator in the site design, linked from the main, German and guide pages, the sitemap and llms.txt; the README and the fleet contract point to it. npm and GitHub are marked as coming soon until it is released.
+
 ## [5.8.0] - 2026-10-05
 
 ### Added
