@@ -162,11 +162,11 @@ export const AGENT_SUMMARY_FIELDS = Object.freeze(['complete', 'partial', 'faile
  * #964). These are NOT in REQUIRED_FIELDS — older entries lacking them validate
  * cleanly. Validator: see `_validateOptionalFields` in validator.mjs.
  *
- * NOT YET EXHAUSTIVE. `_validateOptionalFields` additionally shape-checks
- * `discovery_stats`, `review_stats`, `platform`, `branch`, `base_branch`,
- * `notes`, `duration_seconds`, `issues_closed` and `issues_created` without
- * listing them here. Treat membership as "declared optional", never absence as
- * "not a known field" — see the #964 follow-up note in the session report.
+ * Exhaustive since #986: every optional key `validateSession` inspects is
+ * declared here. tests/lib/session-schema/constants.test.mjs takes that census
+ * from the validator itself (a Proxy records the keys it reads) and also pins
+ * the declared-but-unchecked remainder (`session_start_ref`, `raw_session_id`,
+ * `_repair_source`).
  */
 export const OPTIONAL_FIELDS = Object.freeze([
   'agent_identity',
@@ -252,4 +252,19 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // 2026-10-01), so the counters say which of the two it is.
   'cost_records_priced',
   'cost_records_total',
+  // #986 — shape-checked by `_validateOptionalFields` since before this list
+  // existed, never declared until the census test made the gap visible.
+  'discovery_stats',
+  'review_stats',
+  'platform',
+  'branch',
+  'base_branch',
+  'notes',
+  'duration_seconds',
+  'issues_closed',
+  'issues_created',
+  // `express_path` (canonical boolean, legacy {activated} object tolerated) and
+  // its forensic sidecar `_express_path_detail` written by `normalizeSession`.
+  'express_path',
+  '_express_path_detail',
 ]);
