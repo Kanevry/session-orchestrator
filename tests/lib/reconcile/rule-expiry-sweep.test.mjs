@@ -746,4 +746,15 @@ Repos in groups without the bot as member are silently missing from the sync.
     const { records } = loadCandidates({ repoRoot });
     expect(records.find((r) => r.learning_key === 'recurring-issue/gone')).toMatchObject({ outcome: SWEPT_OUTCOME });
   });
+
+  it('T18 — a single-entry rule is kept through its whole expires-at day (UTC) and deleted from the next midnight (bug: the sweep deleted a rule the loader still injected, #1521)', async () => {
+    singleEntryRule('lastday.md', { expiresAt: '2026-06-01', key: 'recurring-issue/lastday', id: 'id-lastday' });
+    writeLearnings([learning('id-lastday', 'recurring-issue/lastday', PAST)]);
+
+    const onDay = await planRuleExpirySweep({ repoRoot, now: '2026-06-01T23:59:59.999Z' });
+    expect(onDay.plans.find((p) => p.file === 'lastday.md').action).toBe('keep');
+
+    const nextDay = await planRuleExpirySweep({ repoRoot, now: '2026-06-02T00:00:00.000Z' });
+    expect(nextDay.plans.find((p) => p.file === 'lastday.md')).toMatchObject({ action: 'delete', reason: 'single-entry-expired' });
+  });
 });

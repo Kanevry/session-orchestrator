@@ -48,8 +48,9 @@
  * Deterministic gating (issue #694) runs after a successful frontmatter parse
  * and applies to BOTH always-on and glob-matched candidate rules — a rule must
  * pass ALL active gates to be included:
- *   - Expiry: a rule with a parseable `expires-at` strictly before `now` is
- *     EXCLUDED (with a mandatory stderr WARN). A malformed `expires-at` never
+ *   - Expiry: a rule whose parseable `expires-at` has passed is EXCLUDED (with
+ *     a mandatory stderr WARN). A bare date is inclusive — the rule loads
+ *     through that whole UTC day ({@link ruleExpiryInstantMs}, #1521). A malformed `expires-at` never
  *     excludes (fail-open).
  *   - Mode-gating: when the `mode` param is non-null and the rule declares a
  *     `mode` that differs, the rule is EXCLUDED. A null `mode` param disables
@@ -411,16 +412,41 @@ function metaToEntryFields(meta) {
  * @param {unknown} rawExpiry - the raw `expires-at` frontmatter value (or undefined)
  * @param {number} [now] - epoch ms; defaults to `Date.now()`
  * @param {(raw: unknown) => void} [onUnparseable] - called when `expires-at` is present but unparseable
- * @returns {boolean} true only when a PARSEABLE `expires-at` lies before `now`
+ * @returns {boolean} true only when `now` has reached a PARSEABLE `expires-at`'s {@link ruleExpiryInstantMs}
  */
 export function isRuleExpired(rawExpiry, now = Date.now(), onUnparseable) {
   if (rawExpiry === undefined || rawExpiry === null) return false;
-  const ts = Date.parse(String(rawExpiry));
-  if (Number.isNaN(ts)) {
+  const ts = ruleExpiryInstantMs(rawExpiry);
+  if (ts === null) {
     if (typeof onUnparseable === 'function') onUnparseable(rawExpiry);
     return false;
   }
-  return ts < now;
+  return ts <= now;
+}
+
+const BARE_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const MS_PER_DAY = 86_400_000;
+
+/**
+ * The instant (epoch ms) from which a rule with this `expires-at` counts as
+ * expired, or `null` when the value is absent or unparseable.
+ *
+ * `expires-at` is INCLUSIVE (#1521): a bare `YYYY-MM-DD` keeps the rule live
+ * through the whole of that UTC day, so the instant is the FOLLOWING UTC
+ * midnight. A full timestamp is taken as written. Every consumer that judges
+ * "expired" — the loader gate above, `instruction-budget-guard.mjs`
+ * (maintenance probe S7) and `reconcile/rule-expiry-sweep.mjs` — goes through
+ * this one function so the three never disagree about the boundary day.
+ *
+ * @param {unknown} rawExpiry
+ * @returns {number|null}
+ */
+export function ruleExpiryInstantMs(rawExpiry) {
+  if (rawExpiry === undefined || rawExpiry === null) return null;
+  const text = String(rawExpiry).trim();
+  const ts = Date.parse(text);
+  if (Number.isNaN(ts)) return null;
+  return BARE_DATE_RE.test(text) ? ts + MS_PER_DAY : ts;
 }
 
 /**

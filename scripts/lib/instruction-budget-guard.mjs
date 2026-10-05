@@ -92,7 +92,9 @@ import { eventsFilePath, scanEventsBackwards } from './events.mjs';
 import {
   FRONTMATTER_NOT_AT_TOP,
   loadApplicableRules,
+  isRuleExpired,
   parseGlobsFrontmatter,
+  ruleExpiryInstantMs,
 } from './rule-loader.mjs';
 
 /** Default directive ceiling (operator-chosen growth ratchet just above the ~457 baseline). */
@@ -846,11 +848,11 @@ const MS_PER_DAY = 86_400_000;
  * declares no expiry or an unparseable one.
  *
  * Negative ⇒ already expired. The comparison basis is deliberately the SAME one
- * `rule-loader.mjs` `applyGates` uses — `Date.parse(expires-at) < now`, i.e. a
- * bare `YYYY-MM-DD` is UTC midnight — so "expired" here means exactly "the
- * loader already filters it out of every wave's rule set", never a second
- * definition of the same word. `Math.floor` therefore returns `-1` for a rule
- * that expired at midnight today: past, but by less than a day.
+ * `rule-loader.mjs` `applyGates` uses — `ruleExpiryInstantMs`, where a bare
+ * `YYYY-MM-DD` is INCLUSIVE and expires at the FOLLOWING UTC midnight (#1521) —
+ * so "expired" here means exactly "the loader already filters it out of every
+ * wave's rule set", never a second definition of the same word. `0` therefore
+ * means "last day: still loads today", `-1` "dropped at the last midnight".
  *
  * An unparseable date returns `null` (fail-OPEN, matching the loader, which
  * warns and ignores the expiry rather than excluding the file) — the malformed
@@ -863,17 +865,18 @@ export function daysUntilGeneratedRuleExpiry(opts = {}) {
   const meta = opts.meta;
   if (!meta || typeof meta !== 'object') return null;
   if (!Object.prototype.hasOwnProperty.call(meta, 'expires-at')) return null;
-  const expiresAt = Date.parse(String(meta['expires-at']));
-  if (!Number.isFinite(expiresAt)) return null;
+  const expiresAt = ruleExpiryInstantMs(meta['expires-at']);
+  if (expiresAt === null) return null;
 
-  const raw = opts.now;
-  let now;
-  if (raw instanceof Date) now = raw.getTime();
-  else if (typeof raw === 'number' && Number.isFinite(raw)) now = raw;
-  else if (typeof raw === 'string' && Number.isFinite(Date.parse(raw))) now = Date.parse(raw);
-  else now = Date.now();
+  return Math.floor((expiresAt - nowMs(opts.now)) / MS_PER_DAY);
+}
 
-  return Math.floor((expiresAt - now) / MS_PER_DAY);
+/** `now` as epoch ms: Date, number or parseable string; anything else → the process clock. */
+function nowMs(raw) {
+  if (raw instanceof Date) return raw.getTime();
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && Number.isFinite(Date.parse(raw))) return Date.parse(raw);
+  return Date.now();
 }
 
 /**
@@ -888,8 +891,12 @@ export function daysUntilGeneratedRuleExpiry(opts = {}) {
  * @returns {boolean}
  */
 export function isExpiredGeneratedRule(opts = {}) {
-  const days = daysUntilGeneratedRuleExpiry(opts);
-  return days !== null && days < 0;
+  const meta = opts.meta;
+  if (!meta || typeof meta !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(meta, 'expires-at')) return false;
+  // The loader's own predicate, not `days < 0`: flooring whole days would call
+  // the rule live for the first millisecond after the boundary (#1521).
+  return isRuleExpired(meta['expires-at'], nowMs(opts.now));
 }
 
 /**
