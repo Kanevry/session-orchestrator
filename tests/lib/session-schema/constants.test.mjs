@@ -199,6 +199,15 @@ describe('OPTIONAL_FIELDS', () => {
         if (typeof key === 'string') read.add(key);
         return Reflect.get(target, key, receiver);
       },
+      // `in` and Object.hasOwn checks bypass `get`; record them too.
+      has(target, key) {
+        if (typeof key === 'string') read.add(key);
+        return Reflect.has(target, key);
+      },
+      getOwnPropertyDescriptor(target, key) {
+        if (typeof key === 'string') read.add(key);
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
     });
     validateSession(probe);
     const inspected = [...read].filter(

@@ -326,7 +326,7 @@ Operator-selected issues (from Phase 6) are appended AFTER this loop, not interl
 
 ## Phase 7.1: Issue Premise Verification (#730/H3)
 
-> Housekeeping too: in-scope issues, plus `git log --grep='#<N>'` (#1521).
+> Housekeeping too (#1521).
 > Runs on the shortlisted candidate issues from Phase 6 Pattern Recognition
 > (cap: 8 issues — cost control; prioritize the issues most likely to enter scope).
 

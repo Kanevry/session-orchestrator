@@ -128,8 +128,10 @@ function classifyFailure(err) {
   // or secondary rate limit with HTTP 403, so the `http 403` test below would
   // otherwise tell the operator to re-authenticate when waiting is the fix. A
   // 403 without rate-limit wording (expired token, missing scope) stays
-  // `auth-error`.
-  if (haystack.includes('rate limit')) return 'query-failed';
+  // `auth-error`, and so does an UNAUTHENTICATED rate limit, whose fix is to
+  // log in. `abuse detection` is GitHub's older wording for the secondary limit.
+  const rateLimited = haystack.includes('rate limit') || haystack.includes('abuse detection');
+  if (rateLimited && !haystack.includes('authenticated requests get a higher')) return 'query-failed';
   if (
     haystack.includes('gh auth login') ||
     haystack.includes('not logged in') ||

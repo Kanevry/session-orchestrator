@@ -220,6 +220,8 @@ describe('checkMirrorIssues — degraded states are not "clean"', () => {
     // re-authenticate would be the wrong advice (#1034 item 2).
     ['primary rate limit', 'query-failed', 'gh: HTTP 403: API rate limit exceeded for user ID 1 (https://api.github.com/graphql)'],
     ['secondary rate limit', 'query-failed', 'gh: HTTP 403: You have exceeded a secondary rate limit.'],
+    ['older secondary-limit wording', 'query-failed', 'gh: HTTP 403: You have triggered an abuse detection mechanism.'],
+    ['unauthenticated rate limit', 'auth-error', 'gh: HTTP 403: API rate limit exceeded for 203.0.113.7. (But here\'s the good news: Authenticated requests get a higher rate limit.)'],
     // A 403 WITHOUT rate-limit wording (expired token, missing scope) keeps
     // the re-authenticate signal.
     ['insufficient scope', 'auth-error', 'gh: HTTP 403: Resource not accessible by personal access token'],
