@@ -72,6 +72,25 @@
         <p class="hero-note">Open source · MIT licensed · Not on npm yet</p>
       </div>
       <figure class="hero-art">
+        <img src="/img/lead-control-room-800.webp" srcset="/img/lead-control-room-480.webp 480w, /img/lead-control-room-800.webp 800w, /img/lead-control-room-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="One person in an elevated control room oversees four separate workshops where small agents work, with one indicator light per workshop and a stop lever on the desk.">
+        <figcaption>Lead control room above four workshops · made with AI</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section class="sec workflow-sec" id="how">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">How it works</p><h2>You, one lead,<br>and the sessions.</h2></div><p>The lead decides which session runs next and what it may do. Inside each session, session-orchestrator does the actual work. They talk only through files in a shared directory, never by waiting on each other&#8217;s messages.</p></div>
+      <div class="session-board">
+        <div class="session-heading"><span class="example-label">Four pieces</span><p>What carries the lead.</p><span class="example-note">Version 0.x, GitLab only for now</span></div>
+        <ol class="session-phases">
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">01</span><h3>Lead</h3></div><div class="phase-body"><h4>One lead above, session-orchestrator inside.</h4><p>The lead decides which session runs next and what it may do. Inside each session the session-orchestrator plugin plans, runs waves, checks and closes. A lease makes sure only one lead acts at a time.</p><div class="discovery-tasks"><span>Lease</span><span>Constraints per session</span><span>Check-in at session start</span></div><p class="phase-result"><b>Never waiting:</b> A session never blocks on the lead. Without constraints it falls back to conservative defaults after 10 minutes.</p></div></li>
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">02</span><h3>Rules</h3></div><div class="phase-body"><h4>Your rules, signed and committed.</h4><p>One YAML file per repository, the authority artifact, says which actions are free, which need your approval each time, and which never happen. It counts only when it is committed and SSH-signed by a key you trust.</p><div class="discovery-tasks"><span><code>frei</code> free</span><span><code>einzeln</code> ask each time</span><span><code>nie</code> never</span></div><p class="phase-result"><b>Without a signature:</b> Every action asks. The trust anchor starts empty, so nothing is free until you add a signer.</p></div></li>
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">03</span><h3>Gates</h3></div><div class="phase-body"><h4>Measured before a run, and before a merge.</h4><p>Before a run starts, and before a merge, the lead checks what it can measure.</p><div class="discovery-tasks"><span>Repository busy?</span><span>Remote on a blocked host?</span><span>Disk and memory</span><span>Stop set?</span><span>Pipeline green on this exact commit</span></div><p class="phase-result"><b>If it cannot measure, it refuses:</b> Anything that cannot be measured ends with exit 6, never with 0.</p></div></li>
+          <li class="session-phase"><div class="phase-heading"><span class="phase-number">04</span><h3>Ledger</h3></div><div class="phase-body"><h4>A record that shows when it was changed.</h4><p>Decisions and merges go into an append-only, hash-chained log per host.</p><p class="phase-result"><b>Edited later?</b> <code>ledger verify</code> names the first broken line.</p></div></li>
+        </ol>
+      </div>
+      <figure class="fig lead-diagram-fig">
         <svg class="lead-diagram" viewBox="0 0 600 400" role="img" aria-labelledby="lead-diagram-title lead-diagram-desc">
           <title id="lead-diagram-title">You, one lead session, three sessions</title>
           <desc id="lead-diagram-desc">You sign the authority files and answer one queue. The lead session holds the lease, the gates, the ledger and the owner queue. It sends constraints to three sessions, Claude Code, Codex CLI and a headless run, and reads their check-ins. Each session runs session-orchestrator inside.</desc>
@@ -100,21 +119,6 @@
         </svg>
         <figcaption>Diagram: one lead above several sessions</figcaption>
       </figure>
-    </div>
-  </section>
-
-  <section class="sec workflow-sec" id="how">
-    <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">How it works</p><h2>You, one lead,<br>and the sessions.</h2></div><p>The lead decides which session runs next and what it may do. Inside each session, session-orchestrator does the actual work. They talk only through files in a shared directory, never by waiting on each other&#8217;s messages.</p></div>
-      <div class="session-board">
-        <div class="session-heading"><span class="example-label">Four pieces</span><p>What carries the lead.</p><span class="example-note">Version 0.x, GitLab only for now</span></div>
-        <ol class="session-phases">
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">01</span><h3>Lead</h3></div><div class="phase-body"><h4>One lead above, session-orchestrator inside.</h4><p>The lead decides which session runs next and what it may do. Inside each session the session-orchestrator plugin plans, runs waves, checks and closes. A lease makes sure only one lead acts at a time.</p><div class="discovery-tasks"><span>Lease</span><span>Constraints per session</span><span>Check-in at session start</span></div><p class="phase-result"><b>Never waiting:</b> A session never blocks on the lead. Without constraints it falls back to conservative defaults after 10 minutes.</p></div></li>
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">02</span><h3>Rules</h3></div><div class="phase-body"><h4>Your rules, signed and committed.</h4><p>One YAML file per repository, the authority artifact, says which actions are free, which need your approval each time, and which never happen. It counts only when it is committed and SSH-signed by a key you trust.</p><div class="discovery-tasks"><span><code>frei</code> free</span><span><code>einzeln</code> ask each time</span><span><code>nie</code> never</span></div><p class="phase-result"><b>Without a signature:</b> Every action asks. The trust anchor starts empty, so nothing is free until you add a signer.</p></div></li>
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">03</span><h3>Gates</h3></div><div class="phase-body"><h4>Measured before a run, and before a merge.</h4><p>Before a run starts, and before a merge, the lead checks what it can measure.</p><div class="discovery-tasks"><span>Repository busy?</span><span>Remote on a blocked host?</span><span>Disk and memory</span><span>Stop set?</span><span>Pipeline green on this exact commit</span></div><p class="phase-result"><b>If it cannot measure, it refuses:</b> Anything that cannot be measured ends with exit 6, never with 0.</p></div></li>
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">04</span><h3>Ledger</h3></div><div class="phase-body"><h4>A record that shows when it was changed.</h4><p>Decisions and merges go into an append-only, hash-chained log per host.</p><p class="phase-result"><b>Edited later?</b> <code>ledger verify</code> names the first broken line.</p></div></li>
-        </ol>
-      </div>
       <!-- Film placeholder, see docs/proposals/lead-film.md. Not rendered yet.
            When a film exists, restore this block with real files under site/video/
            and add the source and poster attributes the #loop film on / uses.

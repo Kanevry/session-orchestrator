@@ -22,3 +22,5 @@
 @media (max-width: 600px) {
   .lead-pair { grid-template-columns: 1fr; }
 }
+.lead-diagram-fig { max-width: 760px; margin: 40px auto 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: #17191b; }
+.lead-diagram-fig .lead-diagram { display: block; width: 100%; height: auto; }
