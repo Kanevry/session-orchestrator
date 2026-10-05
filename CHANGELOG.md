@@ -26,6 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`npm run update:local` installs from `npm pack`** (#1515): only package files reach the plugin cache (no `.env.local`, no `.orchestrator/` beyond `policy/`). It refuses only while a `directory` marketplace points at the clone and names the exact remove/add/install commands; GitHub and npm sources update as before. `evals/` ships in the package (without `evals/results/`).
 - **vault-mirror re-learn** (#1506): new disambiguation files get `-<sha256(record key)[0:8]>` (existing `-<uuid8>` files keep their name); a strictly newer record takes over the main note and the older one moves to its own disambiguation file, crash-safe in write order.
 - **Bootstrap consumer ignore block** (#1507): the three rotated-ledger patterns are ignored in consumer repos too.
+- **`vault-sync/validator.sh` installs nothing** (#1070): it checks that `zod`/`yaml` resolve (they are root dependencies) and otherwise exits 2 with `reason: setup-required` and a shell-quoted `npm ci` hint, emitted as valid JSON; session-end shows that reason instead of discarding stderr. The former silent `pnpm install` is gone.
+- **One source listing for the plugin surface** (#1240): `scripts/lib/plugin-surface.mjs` holds the frontmatter parser, the `commands/`/`skills/` listing and the `_`/`.` private-name filter used by all four adapter generators and the slash-command census. Generated output is unchanged.
+- **Nine more hand-rolled tmp+rename writes use the shared helper** (#1032): reconcile writer, ux-grill run record, vault-sync baseline, bootstrap-lock refresh, autopilot telemetry, and the backfill, migrate, cross-repo-migrate and session-record-repair scripts; their own backup schemes stay. `appendJsonlAtomic` now creates a missing parent directory.
+- **Phase 7.1 premise check runs in housekeeping sessions too** (#1521).
 
 ### Fixed
 
@@ -34,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **vault-mirror refreshes a changed main note in the run that archives a stale disambig** (#1519) instead of one run later.
 - **A UTF-8 BOM on the first line of `learnings.jsonl` is stripped** (#1506) instead of making the record malformed.
 - **Unused learnings exports removed** (#1021): twelve exports without a consumer outside their own module.
+- **`OPTIONAL_FIELDS` declares every field the session validator checks** (#986): eleven were missing; the parity test now takes its census from `validateSession` itself.
+- **A rate-limit HTTP 403 is `query-failed`, not `auth-error`** (#1034) in the mirror-issues banner and the GitHub protection audit, so a rate limit no longer advises a re-login; an unauthenticated rate limit and a 403 without rate-limit wording stay `auth-error`.
+- **Stale docs corrected**: memory-proposal provenance tag (#1027), `auto-commit-per-wave` described as the planned no-op it is (#1219), steering counts (#1515), two gate-event measurement docblocks (#966).
+
+### Removed
+
+- **`buildCandidatePoolsFromFile`** (#1021) from `scripts/lib/learnings/candidates.mjs`: no consumer besides its own test (never a documented public API; use `buildCandidatePools`).
+- **The separate `skills/vault-sync` dependency install** in GitLab CI, GitHub Actions and the pre-push gate (#1070): it pulled unlocked `zod`/`yaml` versions that no root `npm audit` saw; the root install already provides both.
 
 ## [5.7.0] - 2026-10-03
 

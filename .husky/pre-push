@@ -182,8 +182,7 @@ unset git_var git_env_keep
 # ---------------------------------------------------------------------------
 # git invokes pre-push with $1 = the remote NAME (or its URL, when pushed BY
 # URL) and $2 = the remote URL — this hook never read either until now
-# (`rg -n '\$1|\$2' .husky/pre-push` found only a local function's own args,
-# in link_node_modules()). A SCRATCH push — a raw, unconfigured URL such as
+# (`rg -n '\$1|\$2' .husky/pre-push` found no use of either). A SCRATCH push — a raw, unconfigured URL such as
 # the remote-offload tool's SSH sync target — publishes nothing: gating it
 # buys no safety and costs the full quality gate on every sync. (The offload
 # tool has since been fixed upstream to push with --no-verify; this check is
