@@ -13,6 +13,10 @@
  * Tolerant parser: any other value (or an absent block) resolves to disabled.
  *
  * Consumer: `hooks/post-tooluse-frontend-slop.mjs`.
+ *
+ * @deprecated since 5.8.0 (#1121) — the hook this block drives is removed in
+ * the next major. The parser stays side-effect free; the hook prints the
+ * deprecation notice when the block is enabled.
  */
 
 import { promises as fs } from 'node:fs';
@@ -32,6 +36,7 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  *
  * @param {string} content — full file contents
  * @returns {{ enabled: boolean }}
+ * @deprecated since 5.8.0 (#1121) — removal in the next major.
  */
 export function _parseFrontendSlopHook(content) {
   const defaults = { enabled: false };
@@ -85,6 +90,7 @@ export function _parseFrontendSlopHook(content) {
  *
  * @param {{ repoRoot?: string }} [opts]
  * @returns {Promise<{ enabled: boolean }>}
+ * @deprecated since 5.8.0 (#1121) — removal in the next major.
  */
 export async function loadFrontendSlopHookConfig(opts = {}) {
   // Called at USE time, never at module load: the deprecated `SO_PROJECT_DIR`

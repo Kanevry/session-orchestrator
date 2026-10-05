@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **One source listing for the plugin surface** (#1240): `scripts/lib/plugin-surface.mjs` holds the frontmatter parser, the `commands/`/`skills/` listing and the `_`/`.` private-name filter used by all four adapter generators and the slash-command census. Generated output is unchanged.
 - **Nine more hand-rolled tmp+rename writes use the shared helper** (#1032): reconcile writer, ux-grill run record, vault-sync baseline, bootstrap-lock refresh, autopilot telemetry, and the backfill, migrate, cross-repo-migrate and session-record-repair scripts; their own backup schemes stay. `appendJsonlAtomic` now creates a missing parent directory.
 - **Phase 7.1 premise check runs in housekeeping sessions too** (#1521).
+- **Eval rubric-v3** (#1487): a quality_gate event counts as failed when it exited non-zero, timed out, or was recorded as `orchestrator.quality_gate.failed`. A killed reporting gate run with exit code 0 used to score `pass`. Only `verification-evidence` and `gate-health` change. The 9 stored `rubric-v2` records are not re-scored; `--verify` reports `VERSION-MISMATCH` for them.
+
+### Deprecated
+
+- **Frontend-slop hook** (#1121): `hooks/post-tooluse-frontend-slop.mjs` and the `frontend-slop-hook:` block are removed in the next major. With `enabled: true` the hook writes one deprecation line to stderr per run and otherwise works as before.
 
 ### Fixed
 
