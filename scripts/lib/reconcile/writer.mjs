@@ -39,9 +39,10 @@
  *    pushes an error string.
  *
  * Atomic write strategy (rule files):
- *  - Write content to `<target>.XXXXXXXX.tmp` via `writeFileSync`, then
- *    `renameSync` over the final path. Same-filesystem rename is atomic on POSIX,
- *    so the rule file is never partially visible. Mirrors idempotency.mjs pattern.
+ *  - `atomicWriteWithBackup` (`../io.mjs`): content goes to a sibling
+ *    `.<file>.tmp.<hex>`, then is renamed over the final path. Same-filesystem
+ *    rename is atomic on POSIX, so the rule file is never partially visible.
+ *    Mirrors idempotency.mjs pattern.
  *
  * JSONL append strategy (rejected log):
  *  - `appendFileSync` for the rejected log — each record is a self-contained line,
@@ -63,17 +64,16 @@ import {
   writeFileSync,
   readFileSync,
   readdirSync,
-  renameSync,
   appendFileSync,
   realpathSync,
   rmSync,
   statSync,
 } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { withFileLock } from '../file-lock.mjs';
+import { atomicWriteWithBackup, envelopeToError } from '../io.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { parseGlobsFrontmatter } from '../rule-loader.mjs';
 import { markCandidateProcessed } from './idempotency.mjs';
@@ -308,24 +308,18 @@ function resolveDest(item, target, prep, roots, errors) {
 }
 
 /**
- * Write `content` to `destPath` atomically via tmp+rename.
+ * Write `content` to `destPath` atomically via tmp+rename
+ * (`atomicWriteWithBackup`, random tmp suffix, tmp unlinked on failure).
  *
- * Uses a random 8-hex-char suffix for the tmp file to avoid collisions when
- * multiple proposals write to the same directory concurrently (defensive;
- * under the lock this should not happen, but the pattern is cheap).
- *
- * Throws on filesystem errors — callers must catch.
+ * Throws on filesystem errors — callers must catch. The helper returns an
+ * envelope; `envelopeToError` re-raises it with the same message and `code`.
  *
  * @param {string} destPath - absolute path of the target rule file.
  * @param {string} content  - UTF-8 text content to write.
  */
 function writeTextAtomic(destPath, content) {
-  const dir = path.dirname(destPath);
-  mkdirSync(dir, { recursive: true });
-  const suffix = randomBytes(4).toString('hex');
-  const tmpPath = `${destPath}.${suffix}.tmp`;
-  writeFileSync(tmpPath, content, 'utf8');
-  renameSync(tmpPath, destPath);
+  const res = atomicWriteWithBackup(destPath, content, { tmpPrefix: `.${path.basename(destPath)}.tmp` });
+  if (!res.ok) throw envelopeToError(res);
 }
 
 /**

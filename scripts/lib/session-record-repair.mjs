@@ -68,6 +68,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { atomicWriteWithBackup, envelopeToError } from './io.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
 import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
 import { checkSessionsIntegrity as defaultCheckIntegrity } from './sessions-integrity-banner.mjs';
@@ -716,7 +717,6 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
     renameSync = fs.renameSync,
     copyFileSync = fs.copyFileSync,
     unlinkSync = fs.unlinkSync,
-    existsSync = fs.existsSync,
   } = deps;
 
   const { checkIntegrity = defaultCheckIntegrity } = deps;
@@ -751,18 +751,14 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
   }
 
   // -- atomic swap ----------------------------------------------------------
-  const tmpPath = `${file}.tmp-${process.pid}`;
-  try {
-    writeFileSync(tmpPath, text, 'utf8');
-    renameSync(tmpPath, file);
-  } catch (err) {
-    try {
-      if (existsSync(tmpPath)) unlinkSync(tmpPath);
-    } catch {
-      /* best-effort cleanup */
-    }
-    throw err;
-  }
+  // The helper unlinks its tmp on failure; the backup above keeps its own
+  // `.bak-<compact stamp>` schema, so the helper takes none. The injected fs
+  // seams (`deps`) are threaded through so a test fake still sees the write.
+  const res = atomicWriteWithBackup(file, text, {
+    tmpPrefix: `.${path.basename(file)}.tmp`,
+    fs: { writeFileSync, renameSync, unlinkSync },
+  });
+  if (!res.ok) throw envelopeToError(res);
 
   // -- post-verification ----------------------------------------------------
   const verdict = verifyWritten({

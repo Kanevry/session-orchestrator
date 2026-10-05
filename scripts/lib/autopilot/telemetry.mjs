@@ -17,9 +17,10 @@
  *   linkChildLoopToCoordinator(childRunId, parentRunId)— Phase D linkage documentation helper
  */
 
-import { writeFileSync, renameSync, mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
+
+import { atomicWriteWithBackup, envelopeToError } from '../io.mjs';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -38,7 +39,11 @@ export const SCHEMA_VERSION = 1;
  * Crash-safe: a partial tmpfile is never visible at the destination path.
  * POSIX rename(2) is atomic within the same filesystem.
  *
- * The directory must already exist (callers are responsible for mkdirSync).
+ * Write path: `atomicWriteWithBackup` (`../io.mjs`), which also creates a
+ * missing parent directory (mkdir -p) and unlinks its tmp on failure. The tmp
+ * keeps the `<file>.tmp-<pid>.<hex>` shape so the `*.jsonl.tmp-*` crash-residue
+ * ignore pattern (bootstrap store-lock-ignore) still matches it. Throws on
+ * failure with the original message and `code` (`envelopeToError`).
  *
  * @param {object} record    — the record to serialize as a JSONL line
  * @param {string} jsonlPath — destination JSONL path
@@ -53,9 +58,10 @@ export function appendJsonlAtomic(record, jsonlPath) {
   if (existing.length > 0 && !existing.endsWith('\n')) existing += '\n';
 
   const line = JSON.stringify(record) + '\n';
-  const tmp = `${jsonlPath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  writeFileSync(tmp, existing + line, 'utf8');
-  renameSync(tmp, jsonlPath);
+  const res = atomicWriteWithBackup(jsonlPath, existing + line, {
+    tmpPrefix: `${path.basename(jsonlPath)}.tmp-${process.pid}`,
+  });
+  if (!res.ok) throw envelopeToError(res);
 }
 
 // ---------------------------------------------------------------------------

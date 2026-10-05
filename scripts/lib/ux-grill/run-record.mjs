@@ -32,6 +32,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { atomicWriteWithBackup, envelopeToError } from '../io.mjs';
 import { findingsPath, runRecordPath } from './paths.mjs';
 import { makeRunRecord } from './schema.mjs';
 
@@ -290,9 +291,10 @@ export function updateRunRecordCompare(repoRoot, runId, compare) {
     out.push(raw);
   }
 
-  const tmp = `${ledger}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, out.length > 0 ? `${out.join('\n')}\n` : '', 'utf8');
-  fs.renameSync(tmp, ledger);
+  const res = atomicWriteWithBackup(ledger, out.length > 0 ? `${out.join('\n')}\n` : '', {
+    tmpPrefix: `.${path.basename(ledger)}.tmp`,
+  });
+  if (!res.ok) throw envelopeToError(res);
   return { updated, skippedLines };
 }
 
