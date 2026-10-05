@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Frontend-slop hook** (#1121): `hooks/post-tooluse-frontend-slop.mjs` and the `frontend-slop-hook:` block are removed in the next major. With `enabled: true` the hook writes one deprecation line to stderr per run and otherwise works as before.
 
+### Removed
+
+- **`buildCandidatePoolsFromFile`** (#1021) from `scripts/lib/learnings/candidates.mjs`: no consumer besides its own test (never a documented public API; use `buildCandidatePools`).
+- **The separate `skills/vault-sync` dependency install** in GitLab CI, GitHub Actions and the pre-push gate (#1070): it pulled unlocked `zod`/`yaml` versions that no root `npm audit` saw; the root install already provides both.
+
 ### Fixed
 
 - **Three watchers resolved the project from `CLAUDE_PLUGIN_ROOT`** (#1517): `wave-transcript-tail`, `convergence-monitor` and `ecosystem-health` read state inside the installed plugin directory; they use `getProjectDir()` now.
@@ -48,11 +53,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A rule stays active through its `expires-at` day** (#1521): the loader used to drop it at 00:00 UTC of that date. Loader, budget guard and expiry sweep share one `ruleExpiryInstantMs`.
 - **A rate-limit HTTP 403 is `query-failed`, not `auth-error`** (#1034) in the mirror-issues banner and the GitHub protection audit, so a rate limit no longer advises a re-login; an unauthenticated rate limit and a 403 without rate-limit wording stay `auth-error`.
 - **Stale docs corrected**: memory-proposal provenance tag (#1027), `auto-commit-per-wave` described as the planned no-op it is (#1219), steering counts (#1515), two gate-event measurement docblocks (#966).
-
-### Removed
-
-- **`buildCandidatePoolsFromFile`** (#1021) from `scripts/lib/learnings/candidates.mjs`: no consumer besides its own test (never a documented public API; use `buildCandidatePools`).
-- **The separate `skills/vault-sync` dependency install** in GitLab CI, GitHub Actions and the pre-push gate (#1070): it pulled unlocked `zod`/`yaml` versions that no root `npm audit` saw; the root install already provides both.
 
 ## [5.7.0] - 2026-10-03
 
