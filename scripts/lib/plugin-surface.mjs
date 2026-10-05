@@ -9,7 +9,11 @@
  * the agents/codex pair skipped names with a leading `.` or `_` while the
  * cursor/pi pair did not, so a `commands/_draft.md` produced Cursor and Pi
  * wrappers but no Codex or `.agents` mirror. {@link isHiddenSourceName} is now
- * the single filter all four apply.
+ * the single NAME filter all four apply. The file/directory test is not yet
+ * shared: the list helpers here follow symlinks (statSync), while
+ * generate-codex-skills.mjs keeps its own dirent loop, which does not. No
+ * source is a symlink today (`find skills commands -maxdepth 2 -type l` → 0);
+ * revisit when one is added.
  */
 
 import { existsSync, readdirSync, statSync } from 'node:fs';

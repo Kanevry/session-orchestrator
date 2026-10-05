@@ -65,7 +65,7 @@ fi
 if ! (cd "$SCRIPT_DIR" && node --input-type=module \
       -e "import.meta.resolve('zod'); import.meta.resolve('yaml');") >/dev/null 2>&1; then
   PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-  infra_error "setup-required" "zod/yaml not resolvable from $SCRIPT_DIR" "cd '$PLUGIN_ROOT' && npm ci"
+  infra_error "setup-required" "zod/yaml not resolvable from $SCRIPT_DIR" "cd $(printf %q "$PLUGIN_ROOT") && npm ci"
   exit 2
 fi
 

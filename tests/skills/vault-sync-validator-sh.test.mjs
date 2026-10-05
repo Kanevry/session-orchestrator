@@ -34,10 +34,10 @@ describe('validator.sh dependency readiness', () => {
     expect(JSON.parse(r.stdout).status).not.toBe('infra-error');
   });
 
-  it('exits 2 with a valid setup-required envelope when deps are missing, even with a quote in the path', () => {
+  it('exits 2 with a valid setup-required envelope when deps are missing, even with quotes and a space in the path', () => {
     const root = mkdtempSync(join(tmpdir(), 'vs-sh-nodeps-'));
     dirs.push(root);
-    const skillDir = join(root, 'plug"in', 'skills', 'vault-sync');
+    const skillDir = join(root, 'plug"in\'s dir', 'skills', 'vault-sync');
     mkdirSync(skillDir, { recursive: true });
     for (const f of ['validator.sh', 'validator.mjs']) {
       copyFileSync(join(REPO_ROOT, 'skills', 'vault-sync', f), join(skillDir, f));
@@ -47,5 +47,7 @@ describe('validator.sh dependency readiness', () => {
     const envelope = JSON.parse(r.stderr.trim().split('\n').pop());
     expect(envelope).toMatchObject({ status: 'infra-error', reason: 'setup-required' });
     expect(envelope.setup).toContain('npm ci');
+    // The setup hint must survive shell parsing for any path the plugin lives in.
+    expect(spawnSync('bash', ['-n', '-c', envelope.setup]).status).toBe(0);
   });
 });

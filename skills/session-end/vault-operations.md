@@ -33,8 +33,11 @@ if [[ "$VS_ENABLED" == "true" ]]; then
     --mode "$VS_MODE" "${VS_EXCLUDE_ARGS[@]}" 2>"$VS_ERR_FILE") || VS_EXIT=$?
   VS_EXIT="${VS_EXIT:-0}"
   if [[ "$VS_EXIT" -eq 2 ]]; then
-    VS_REASON=$(tail -n 1 "$VS_ERR_FILE" | jq -r '.reason // "unknown"' 2>/dev/null || echo unknown)
-    VS_SETUP=$(tail -n 1 "$VS_ERR_FILE" | jq -r '.setup // empty' 2>/dev/null || true)
+    VS_LAST=$(tail -n 1 "$VS_ERR_FILE")
+    # A plain-text stderr line (e.g. an invalid --mode) is the reason itself.
+    VS_REASON=$(jq -r '.reason // empty' <<<"$VS_LAST" 2>/dev/null || true)
+    VS_REASON="${VS_REASON:-${VS_LAST:-unknown}}"
+    VS_SETUP=$(jq -r '.setup // empty' <<<"$VS_LAST" 2>/dev/null || true)
   fi
   rm -f "$VS_ERR_FILE"
 
