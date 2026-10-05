@@ -44,4 +44,4 @@ decomposing) without re-running the greps.
 
 - Re-verifying every sentence of every issue — cap 3 claims/issue, 8 issues.
 - Treating UNVERIFIED as a blocker — it is informational only.
-- Running this for housekeeping sessions — predefined tasks carry no premise risk worth the latency.
+- Skipping it in housekeeping — items go stale there too (#1521: 4 of 7 were fixed).

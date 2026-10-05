@@ -862,7 +862,7 @@ memory:
 
 ## Memory Proposals (#501)
 
-Opt-out configuration for the agent-writable memory tool. During a wave, an agent may queue a learning proposal via the `memory.propose` CLI. At session-end Phase 3.6.3, the coordinator surfaces every queued proposal to the operator via `AskUserQuestion` for accept / reject / edit. Only accepted proposals are persisted to `.orchestrator/metrics/learnings.jsonl` with a `proposed-by: <agent-name>` provenance tag — a one-line audit trail showing which agent generated the learning. PRD F2.1 / issue #501.
+Opt-out configuration for the agent-writable memory tool. During a wave, an agent may queue a learning proposal via the `memory.propose` CLI. At session-end Phase 3.6.3, the coordinator surfaces every queued proposal to the operator via `AskUserQuestion` for accept / reject / edit. Only accepted proposals are persisted to `.orchestrator/metrics/learnings.jsonl` with a `_provenance: agent-proposed@<wave-id>` tag — an audit trail of the wave that generated the learning; the agent name is not persisted (see `--type` below). PRD F2.1 / issue #501.
 
 This is a Hermes-style memory-write API **without** Hermes' overwrites-manual-edits critique: the operator confirmation is mandatory and there is no silent overwrite path. Three safety layers keep the surface conservative:
 
