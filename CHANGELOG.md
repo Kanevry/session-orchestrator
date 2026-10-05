@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A UTF-8 BOM on the first line of `learnings.jsonl` is stripped** (#1506) instead of making the record malformed.
 - **Unused learnings exports removed** (#1021): twelve exports without a consumer outside their own module.
 - **`OPTIONAL_FIELDS` declares every field the session validator checks** (#986): eleven were missing; the parity test now takes its census from `validateSession` itself.
+- **`mirror: none` is honoured at /close** (#1034): the GitHub mirror push checked only for a `github` remote, so such a repo pushed anyway. An explicit `none` now skips it; no key keeps today's behaviour; an unknown value fails loudly.
+- **A rule stays active through its `expires-at` day** (#1521): the loader used to drop it at 00:00 UTC of that date. Loader, budget guard and expiry sweep share one `ruleExpiryInstantMs`.
 - **A rate-limit HTTP 403 is `query-failed`, not `auth-error`** (#1034) in the mirror-issues banner and the GitHub protection audit, so a rate limit no longer advises a re-login; an unauthenticated rate limit and a 403 without rate-limit wording stay `auth-error`.
 - **Stale docs corrected**: memory-proposal provenance tag (#1027), `auto-commit-per-wave` described as the planned no-op it is (#1219), steering counts (#1515), two gate-event measurement docblocks (#966).
 
