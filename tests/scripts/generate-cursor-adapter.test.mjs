@@ -41,7 +41,7 @@ const BOM = String.fromCharCode(0xfeff);
  */
 function installGenerator(fixtureRoot) {
   mkdirSync(path.join(fixtureRoot, 'scripts', 'lib'), { recursive: true });
-  for (const rel of ['lib/user-invocable-skills.mjs', 'lib/agent-frontmatter.mjs']) {
+  for (const rel of ['lib/user-invocable-skills.mjs', 'lib/agent-frontmatter.mjs', 'lib/plugin-surface.mjs']) {
     copyFileSync(path.join(REPO_ROOT, 'scripts', rel), path.join(fixtureRoot, 'scripts', rel));
   }
   const dest = path.join(fixtureRoot, 'scripts', 'generate-cursor-adapter.mjs');

@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-03T07:30:53.188Z",
-  "head": "0cfbaa2c4fad16d825b94b8000ca8aea3dc9af68",
+  "generated_at": "2026-10-05T10:45:41.038Z",
+  "head": "94dc4a0cf182a06492feb217162d290e9fd0e921",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1262,6 +1262,14 @@
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/plugin-surface.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs"
       ]
     },
     {

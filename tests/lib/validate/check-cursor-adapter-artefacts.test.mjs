@@ -75,7 +75,7 @@ describe('validateCursorArtefacts — generated-artefact frontmatter spec', () =
       // of the generator alone would ERR_MODULE_NOT_FOUND (the import list is part
       // of the fixture contract — same shape as installGenerator() in
       // tests/scripts/generate-cursor-adapter.test.mjs).
-      for (const rel of ['lib/user-invocable-skills.mjs', 'lib/agent-frontmatter.mjs']) {
+      for (const rel of ['lib/user-invocable-skills.mjs', 'lib/agent-frontmatter.mjs', 'lib/plugin-surface.mjs']) {
         copyFileSync(path.join(REPO_ROOT, 'scripts', rel), path.join(root, 'scripts', rel));
       }
       writeFileSync(

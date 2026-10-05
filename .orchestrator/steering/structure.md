@@ -21,7 +21,7 @@
 | `scripts/` | Node.js automation scripts (`.mjs` only) — includes `generate-agents-skills.mjs` (writes the portable cross-harness surface), `site-numbers.mjs` (the website census), `validate-plugin.mjs` |
 | `scripts/lib/` | Shared library modules (no `.sh` — bash-free since 2026-04-30) — includes `plugin-update-banner.mjs` (installed-vs-published check), `sessions-canonical.mjs`, `session-lock.mjs`, `config/*.mjs` parsers |
 | `scripts/lib/validate/` | 41 `check-*.mjs` validator modules — 39 wired into `scripts/validate-plugin.mjs`, 2 (`check-test-fixture-shapes`, `check-test-value-bans`) run from CI / `.husky/pre-commit` |
-| `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (731 `*.test.mjs` files, census below) |
+| `tests/` | vitest test suite mirroring `scripts/lib/` + `tests/skills/` (733 `*.test.mjs` files, census below) |
 | `templates/` | Vendorable scaffolding (`_shared/rules/`, `_shared/loop.md`) copied into consumer repos |
 | `rules/` | The DELIVERABLE rule library shipped out via `/bootstrap --sync-rules` — opposite role to `.claude/rules/` |
 | `docs/` | PRDs, ADRs, retros, audits, marketplace, CI setup, `agent-authoring.md` |
@@ -44,7 +44,7 @@
 - **Rules:** 25 always-on files — measured 2026-09-16 (`ls .claude/rules/*.md | wc -l`). This number moves whenever the reconcile engine materialises or consolidates generated rules — re-measure, never quote from memory.
 - **Validators:** 41 `scripts/lib/validate/check-*.mjs` modules — measured 2026-10-05 @ 1386a98e (`ls scripts/lib/validate/check-*.mjs | wc -l`); 39 are referenced by `scripts/validate-plugin.mjs`, the other two (`check-test-fixture-shapes`, `check-test-value-bans`) by `.gitlab-ci.yml` / `.husky/pre-commit`.
 - **ADRs:** 20 — measured 2026-10-05 @ 1386a98e (`ls docs/adr/*.md | wc -l`): 16 numbered `00NN-*.md` plus 4 dated `2026-05-10-*.md` records.
-- **Tests:** 731 test files — measured 2026-10-05 @ 1386a98e (`find tests -name '*.test.mjs' | wc -l`). The runtime test-case total is only knowable from a `npm test` run; the static floor is 15,894 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
+- **Tests:** 733 test files — measured 2026-10-05 @ fix/so-15-deep-sweep (`find tests -name '*.test.mjs' | wc -l`). The runtime test-case total is only knowable from a `npm test` run; the static floor is 15,894 `it()`/`test()` definitions (`rg -c --no-filename -e '^\s*(it|test)(\.\w+)?\(' tests --glob '*.test.mjs'`, summed) and the real number is higher because of parameterised blocks.
 - **Destructive-command policy:** 16 rules, 12 blocking and 4 warning — measured 2026-09-22 (`jq '[.rules[].severity] | group_by(.) | map({(.[0]): length}) | add' .orchestrator/policy/blocked-commands.json`). The total includes both blocking and warning rules.
 
 ## Key Skills (frequently referenced)

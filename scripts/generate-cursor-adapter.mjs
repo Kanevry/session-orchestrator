@@ -28,6 +28,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, wri
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isUserInvocableSkill, isUserInvocableValue } from './lib/user-invocable-skills.mjs';
+import { listCommandFiles, listSkillDirs, parseFrontmatter } from './lib/plugin-surface.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -44,73 +45,6 @@ const SKILL_FLAGS = new Map();
 
 function isDir(p) {
   try { return statSync(p).isDirectory(); } catch { return false; }
-}
-
-function commandFiles() {
-  if (!existsSync(COMMANDS_DIR)) return [];
-  return readdirSync(COMMANDS_DIR)
-    .filter((name) => name.endsWith('.md'))
-    .sort();
-}
-
-function skillDirs() {
-  if (!existsSync(SKILLS_DIR)) return [];
-  return readdirSync(SKILLS_DIR)
-    .filter((name) => isDir(path.join(SKILLS_DIR, name)) && existsSync(path.join(SKILLS_DIR, name, 'SKILL.md')))
-    .sort();
-}
-
-/**
- * Parse YAML-ish frontmatter including `>` / `|` folded scalars.
- *
- * A UTF-8 BOM before the opening `---`, or CRLF line endings, used to make the
- * two probes below miss the block entirely: the file parsed as "no
- * frontmatter", so every flag in it (`user-invocable`,
- * `disable-model-invocation`) silently disappeared and the skill was demoted
- * out of `.cursor/commands/` with no diagnostic anywhere. Both are normalised
- * away first — the same treatment `parseAgentFrontmatter`
- * (`scripts/lib/agent-frontmatter.mjs`) gives them.
- *
- * NOT replaced by the shared `parseSkillFrontmatter`: that one returns the
- * `__BLOCK_SCALAR__` sentinel for a `description: >`, which is the form every
- * merged skill actually uses — routing through it would emit the sentinel as
- * the wrapper description.
- *
- * @param {string} content
- * @returns {Record<string, string>}
- */
-function parseFrontmatter(content) {
-  const text = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).replace(/\r\n?/g, '\n');
-  if (!text.startsWith('---\n')) return {};
-  const end = text.indexOf('\n---\n', 4);
-  if (end === -1) return {};
-
-  const lines = text.slice(4, end).split('\n');
-  const fields = {};
-  let i = 0;
-  while (i < lines.length) {
-    const match = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (!match) {
-      i += 1;
-      continue;
-    }
-    const key = match[1];
-    const raw = match[2];
-    if (raw === '>' || raw === '| ' || raw === '|' || raw === '>-' || raw === '|-') {
-      const folded = [];
-      i += 1;
-      while (i < lines.length && (lines[i].startsWith(' ') || lines[i].startsWith('\t') || lines[i] === '')) {
-        folded.push(lines[i].replace(/^\s+/, ''));
-        i += 1;
-      }
-      const joiner = raw.startsWith('|') ? '\n' : ' ';
-      fields[key] = folded.filter(Boolean).join(joiner).trim();
-      continue;
-    }
-    fields[key] = raw.replace(/^["']|["']$/g, '');
-    i += 1;
-  }
-  return fields;
 }
 
 /**
@@ -205,7 +139,7 @@ Cursor has no Skill tool. When the command says to invoke a skill, Read \`skills
  * @returns {string[]} skill names, sorted
  */
 function userInvocableSkills() {
-  return skillDirs().filter((name) => skillFlags(name).userInvocable);
+  return listSkillDirs(ROOT).filter((name) => skillFlags(name).userInvocable);
 }
 
 /**
@@ -376,7 +310,7 @@ Cursor has no Skill tool. Treat "invoke the ${skillName} skill" as: Read \`skill
  */
 function expectedCommands() {
   const commands = new Map();
-  for (const commandFile of commandFiles()) {
+  for (const commandFile of listCommandFiles(ROOT)) {
     commands.set(commandFile, renderCommand(commandFile));
   }
 
@@ -402,7 +336,7 @@ function expectedCommands() {
 
 function expectedSkills() {
   const skills = new Map();
-  for (const skillName of skillDirs()) {
+  for (const skillName of listSkillDirs(ROOT)) {
     skills.set(skillName, renderSkill(skillName));
   }
   return skills;

@@ -19,10 +19,11 @@
  *   node scripts/generate-pi-prompts.mjs --check
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isUserInvocableSkill } from './lib/user-invocable-skills.mjs';
+import { listCommandFiles, listSkillDirs, parseFrontmatter } from './lib/plugin-surface.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const SCRIPT_DIR = path.dirname(__filename);
@@ -32,74 +33,6 @@ const SKILLS_DIR = path.join(ROOT, 'skills');
 const PROMPTS_DIR = path.join(ROOT, 'pi', 'prompts');
 const CHECK_ONLY = process.argv.includes('--check');
 const DESCRIPTION_MAX = 1024;
-
-function isDir(p) {
-  try { return statSync(p).isDirectory(); } catch { return false; }
-}
-
-function commandFiles() {
-  if (!existsSync(COMMANDS_DIR)) return [];
-  return readdirSync(COMMANDS_DIR)
-    .filter((name) => name.endsWith('.md'))
-    .sort();
-}
-
-function skillDirs() {
-  if (!existsSync(SKILLS_DIR)) return [];
-  return readdirSync(SKILLS_DIR)
-    .filter((name) => isDir(path.join(SKILLS_DIR, name)) && existsSync(path.join(SKILLS_DIR, name, 'SKILL.md')))
-    .sort();
-}
-
-/**
- * Parse YAML-ish frontmatter including `>` / `|` folded scalars, returning
- * DECODED values (surrounding quotes stripped). Skill descriptions are folded
- * scalars in practice, which the previous line-at-a-time parser read as the
- * literal `>`. Mirrors `generate-cursor-adapter.mjs`.
- *
- * A UTF-8 BOM before the opening `---`, or CRLF line endings, used to make the
- * two probes below miss the block entirely: the file parsed as "no
- * frontmatter", so `user-invocable` silently disappeared and the skill was
- * demoted out of `pi/prompts/` with no diagnostic anywhere. Both are normalised
- * away first — the same treatment `parseAgentFrontmatter`
- * (`scripts/lib/agent-frontmatter.mjs`) gives them.
- *
- * @param {string} content
- * @returns {Record<string, string>}
- */
-function parseFrontmatter(content) {
-  const text = (content.charCodeAt(0) === 0xfeff ? content.slice(1) : content).replace(/\r\n?/g, '\n');
-  if (!text.startsWith('---\n')) return {};
-  const end = text.indexOf('\n---\n', 4);
-  if (end === -1) return {};
-
-  const lines = text.slice(4, end).split('\n');
-  const fields = {};
-  let i = 0;
-  while (i < lines.length) {
-    const match = lines[i].match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
-    if (!match) {
-      i += 1;
-      continue;
-    }
-    const key = match[1];
-    const raw = match[2];
-    if (raw === '>' || raw === '| ' || raw === '|' || raw === '>-' || raw === '|-') {
-      const folded = [];
-      i += 1;
-      while (i < lines.length && (lines[i].startsWith(' ') || lines[i].startsWith('\t') || lines[i] === '')) {
-        folded.push(lines[i].replace(/^\s+/, ''));
-        i += 1;
-      }
-      const joiner = raw.startsWith('|') ? '\n' : ' ';
-      fields[key] = folded.filter(Boolean).join(joiner).trim();
-      continue;
-    }
-    fields[key] = raw.replace(/^["']|["']$/g, '');
-    i += 1;
-  }
-  return fields;
-}
 
 /** @see generate-cursor-adapter.mjs — same allow-list, same reasoning. */
 const YAML_SCALAR_LOOKALIKE = /^(?:true|false|yes|no|on|off|null|nan|[-+]?\.?inf|~)$/i;
@@ -148,7 +81,7 @@ function clampDescription(text) {
  * @returns {string[]} skill names, sorted
  */
 function userInvocableSkills() {
-  return skillDirs().filter((name) => {
+  return listSkillDirs(ROOT).filter((name) => {
     const file = path.join(SKILLS_DIR, name, 'SKILL.md');
     const fields = parseFrontmatter(readFileSync(file, 'utf8'));
     return isUserInvocableSkill(fields, file);
@@ -218,7 +151,7 @@ Read that skill file and follow it exactly. When it references \`$ARGUMENTS\`, s
  */
 function expectedPrompts() {
   const prompts = new Map();
-  for (const commandFile of commandFiles()) {
+  for (const commandFile of listCommandFiles(ROOT)) {
     prompts.set(commandFile, renderPrompt(commandFile));
   }
 
