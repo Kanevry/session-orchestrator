@@ -1,8 +1,8 @@
 /**
  * tests/site/structure.test.mjs
  *
- * Structural guards over the five SHIPPED pages of `site/`. There is no build
- * step and no shared layout: five hand-authored HTML files are the whole site,
+ * Structural guards over the six SHIPPED pages of `site/`. There is no build
+ * step and no shared layout: six hand-authored HTML files are the whole site,
  * so nothing but a test connects them. Every `describe` below names the concrete
  * regression it catches (`.claude/rules/test-value.md` TV-001); none pins prose.
  *
@@ -30,14 +30,16 @@ const SITE = join(REPO_ROOT, 'site');
 const EN = 'site/index.html';
 const DE = 'site/de/index.html';
 const GUIDE = 'site/guide/index.html';
+const LEAD = 'site/lead/index.html';
 const IMPRESSUM = 'site/impressum/index.html';
 const DATENSCHUTZ = 'site/datenschutz/index.html';
 
-/** The five hand-authored pages, with the per-page facts a page owns alone. */
+/** The six hand-authored pages, with the per-page facts a page owns alone. */
 const PAGES = [
   { file: EN, lang: 'en', route: 'https://session-orchestrator.com/' },
   { file: DE, lang: 'de', route: 'https://session-orchestrator.com/de' },
   { file: GUIDE, lang: 'en', route: 'https://session-orchestrator.com/guide' },
+  { file: LEAD, lang: 'en', route: 'https://session-orchestrator.com/lead' },
   { file: IMPRESSUM, lang: 'de', route: 'https://session-orchestrator.com/impressum' },
   { file: DATENSCHUTZ, lang: 'de', route: 'https://session-orchestrator.com/datenschutz' },
 ];
@@ -135,7 +137,7 @@ describe('site: hreflang and canonical', () => {
     expect(alternates(read(file)), `${file} rel=alternate hreflang links`).toEqual(TRIPLE);
   });
 
-  it.each([GUIDE, IMPRESSUM, DATENSCHUTZ])('%s carries no hreflang at all', (file) => {
+  it.each([GUIDE, LEAD, IMPRESSUM, DATENSCHUTZ])('%s carries no hreflang at all', (file) => {
     expect(alternates(read(file)), `${file} must not advertise a translation`).toEqual([]);
   });
 
@@ -352,7 +354,7 @@ describe('site: campaign film embed', () => {
 });
 
 describe('site: sitemap and robots', () => {
-  it('sitemap.xml lists exactly the five pages', () => {
+  it('sitemap.xml lists exactly the shipped pages', () => {
     const locs = all(/<loc>([^<]+)<\/loc>/g, read('site/sitemap.xml'));
     expect(locs, 'site/sitemap.xml <loc> entries').toEqual(PAGES.map((p) => p.route));
   });

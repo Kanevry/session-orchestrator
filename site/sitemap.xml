@@ -25,6 +25,12 @@
     <priority>0.8</priority>
   </url>
   <url>
+    <loc>https://session-orchestrator.com/lead</loc>
+    <lastmod>2026-10-05</lastmod>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>https://session-orchestrator.com/impressum</loc>
     <lastmod>2026-09-07</lastmod>
     <changefreq>yearly</changefreq>

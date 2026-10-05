@@ -1,7 +1,7 @@
 /**
  * tests/site/seo-graph.test.mjs
  *
- * The JSON-LD contract of the five shipped pages. tests/site/structure.test.mjs
+ * The JSON-LD contract of the six shipped pages. tests/site/structure.test.mjs
  * owns canonical, hreflang, h1, og:image, assets, sitemap and robots, but never
  * parses JSON-LD, so a broken block, a dangling @id or FAQ data that no longer
  * matches the visible FAQ would ship unnoticed. GitLab #1483.
@@ -21,6 +21,11 @@ const PAGES = [
     file: 'site/guide/index.html',
     route: 'https://session-orchestrator.com/guide',
     type: 'TechArticle',
+  },
+  {
+    file: 'site/lead/index.html',
+    route: 'https://session-orchestrator.com/lead',
+    type: 'WebPage',
   },
   {
     file: 'site/impressum/index.html',
@@ -82,7 +87,7 @@ describe('site JSON-LD: 1. block integrity', () => {
 
 describe('site JSON-LD: 2. cross-page reference resolution', () => {
   // A renamed node leaves a reference on another page pointing at nothing.
-  it.each(PAGES)('$file resolves every pure @id reference across all five pages', ({ file }) => {
+  it.each(PAGES)('$file resolves every pure @id reference across all shipped pages', ({ file }) => {
     const documents = PAGES.map((page) => document(page.file));
     const registry = new Set();
     for (const data of documents) {

@@ -1001,6 +1001,7 @@ export const SITEMAP_PAGES = Object.freeze([
   { page: 'index.html', loc: 'https://session-orchestrator.com/' },
   { page: 'de/index.html', loc: 'https://session-orchestrator.com/de' },
   { page: 'guide/index.html', loc: 'https://session-orchestrator.com/guide' },
+  { page: 'lead/index.html', loc: 'https://session-orchestrator.com/lead' },
   { page: 'impressum/index.html', loc: 'https://session-orchestrator.com/impressum' },
   { page: 'datenschutz/index.html', loc: 'https://session-orchestrator.com/datenschutz' },
 ]);
