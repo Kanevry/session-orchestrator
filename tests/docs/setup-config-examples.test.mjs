@@ -306,10 +306,9 @@ describe('round-trip fidelity — hardcoded literal values', () => {
     expect(parsed['max-turns']).toBe('auto');
     expect(parsed['learning-expiry-days']).toBe(30);
     expect(parsed.vcs).toBe('github');
-    // "none" is a documented sentinel string that _coerceString() (see
-    // scripts/lib/config/coercers.mjs) always maps to JSON null — not a
-    // format regression.
-    expect(parsed.mirror).toBeNull();
+    // `mirror` is the one string key that keeps an explicit "none" (#1034):
+    // session-end Phase 4.4 must tell an opt-out from an absent key (null).
+    expect(parsed.mirror).toBe('none');
     expect(parsed['test-command']).toBe('npm test');
     expect(parsed['typecheck-command']).toBe('npm run typecheck');
     expect(parsed['lint-command']).toBe('npm run lint');

@@ -68,7 +68,7 @@ Read by: `skills/session-start/SKILL.md` (Phase 4.5), `skills/session-plan/SKILL
 ```yaml
 vcs: gitlab                            # github | gitlab — auto-detected from remote when unset
 gitlab-host: gitlab.example.com        # only if remote URL doesn't expose it
-mirror: github                         # auto-push to mirror after every commit (none | github)
+mirror: github                         # session-end pushes to the `github` remote (none | github; absent = push if remote exists)
 cross-repos: [related-repo-1]          # repos under ~/Projects/ to snapshot at session-start
 pencil: path/to/design.pen             # design-code alignment input
 ecosystem-health: true                 # toggle health-endpoint probes
@@ -991,7 +991,8 @@ events-rotation:
 express-path:
   enabled: true
 
-# Frontend-slop PostToolUse hook (#684) — opt-in, warn-only, non-blocking
+# Frontend-slop PostToolUse hook (#684) — DEPRECATED (#1121), removal in the next major
+# opt-in, warn-only, non-blocking; enabled: true prints one deprecation line on stderr
 frontend-slop-hook:
   enabled: false           # PostToolUse frontend-slop detector after UI-file edits; profile-gate also gates it
 

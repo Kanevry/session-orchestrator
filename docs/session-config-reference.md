@@ -164,7 +164,7 @@ agent-mapping: { impl: cursor:composer-2.5, test: cursor:cursor-grok-4.6-high, s
 |-------|------|---------|-------------|
 | `vcs` | string | auto-detect | Version control platform: `github` or `gitlab`. Auto-detected from git remote URL if not set. |
 | `gitlab-host` | string | from remote | Custom GitLab hostname. Only needed if the host cannot be inferred from the git remote URL. |
-| `mirror` | string | `none` | Mirror target after push. Set to `github` to automatically push to a GitHub remote after every session commit. |
+| `mirror` | string | absent (`null`) | GitHub mirror push at session-end Phase 4.4 (`skills/session-end/SKILL.md` § 4.4, read via `parse-config.mjs`). `github` or **absent** → push `HEAD` to the `github` remote when one exists (absent keeps the pre-#1034 remote-based behaviour, so keyless repos keep mirroring). `none` → never push, even with a `github` remote; unlike other string keys an explicit `none` parses to the string `'none'`, not `null`. Any other value → WARN, nothing pushed, exit 1. Not a per-commit hook: the push happens once per `/close`. |
 | `cross-repos` | list | none | Related repositories under `~/Projects/`. The orchestrator checks their git state and critical issues during session start. |
 | `cross-repo.projects` | list | `[]` | Repos to process when running cross-repo maintenance scripts (`run-migrate-v2-cross-repo.mjs`, `vault-integration-watcher.mjs`, `promote-vault-strict.mjs`). Each entry is a path (absolute, `~`-prefixed, or bare name resolved under `~/Projects/`). When this list is empty or absent, those scripts emit a one-line notice and exit 0 — they never error on an empty list. Example: `[~/Projects/my-app, ~/Projects/another-app]`. |
 | `pencil` | string | none | Path to a `.pen` design file (relative to project root). Enables design-code alignment reviews after Impl-Core and Impl-Polish waves. |
@@ -1555,7 +1555,9 @@ The banner renders with one of the following shapes:
 - **Archival:** `skills/session-start/SKILL.md` § Idle Reset rule 6 (removes fields from frontmatter, prepends readable block to `## Previous Session`).
 - **Future consumer:** Phase B Mode-Selector skill (planned in Epic #271) will read these fields as the primary input for autonomous mode selection.
 
-## Frontend-Slop Hook (#684)
+## Frontend-Slop Hook (#684) — deprecated
+
+> **Deprecated since 5.8.0 (#1121), removal in the next major.** Behaviour is unchanged. When `enabled: true`, the hook writes one line per run to stderr: `ℹ frontend-slop-hook is deprecated, removal in the next major — #1121`. Reason (#1121, measured for PRD 2026-08-22 framework-verschlankung): `orchestrator.frontend_slop.warning` fired 0 times in 27,530 events, and this repo runs the block with `enabled: false`. Do not enable it in new repos.
 
 Opt-in configuration for the frontend-slop detector hook. When enabled, the `PostToolUse` hook runs the deterministic frontend-slop detector (`scripts/lib/frontend-detect/detect.mjs`) on a UI file right after it is edited and surfaces findings as a `hookSpecificOutput.additionalContext` roll-up. **Warn-only / non-blocking** — it never blocks an edit. The Hook Runtime Profile Control gate (below) also applies, so the hook can be silenced via the standard profile env-vars even when `enabled: true`. Default OFF — opt-in by design (unlike `loop-guard`, which defaults on). Epic #684 P1.
 

@@ -214,7 +214,10 @@ between the markers and executes it, so no second copy of this command may exist
 
 ```bash
 # --- github-mirror-push:begin ---
-# Only attempt if 'mirror: github' is in Session Config.
+# Session Config `mirror` decides first (#1034), read through parse-config.mjs:
+#   `mirror: none`       → never push, even with a 'github' remote (explicit opt-out)
+#   `mirror: github` or key absent → push when a 'github' remote exists (states 1-3)
+#   any other value / config unreadable → loud WARN, no push, exit 1
 # State 0: not a git repository at all → loud WARN, exit 1. This state was MISSED
 #          in the first version and is the reason it is listed first now: outside
 #          a repo, `git remote get-url` fails with "fatal: not a git repository",
@@ -228,6 +231,17 @@ between the markers and executes it, so no second copy of this command may exist
 if ! git_dir=$(git rev-parse --git-dir 2>&1); then
   echo "WARN GitHub mirror: not a git repository — cannot mirror anything." >&2
   echo "  git said: ${git_dir}" >&2
+  exit 1
+elif ! cfg_json=$(node "${PLUGIN_ROOT:?PLUGIN_ROOT unset}/scripts/parse-config.mjs"); then
+  echo "WARN GitHub mirror: Session Config unreadable — 'mirror' not evaluated, nothing pushed." >&2
+  exit 1
+elif ! mirror_cfg=$(printf '%s' "$cfg_json" | node -e 'let s="";process.stdin.on("data",(d)=>{s+=d;}).on("end",()=>{const v=JSON.parse(s).mirror;process.stdout.write(v==null?"":String(v));});'); then
+  echo "WARN GitHub mirror: parse-config output is not JSON — nothing pushed." >&2
+  exit 1
+elif [ "$mirror_cfg" = "none" ]; then
+  echo "GitHub mirror: 'mirror: none' in Session Config — skipping (not an error)."
+elif [ -n "$mirror_cfg" ] && [ "$mirror_cfg" != "github" ]; then
+  echo "WARN GitHub mirror: unknown 'mirror: ${mirror_cfg}' (expected none | github) — nothing pushed." >&2
   exit 1
 elif ! mirror_url=$(git remote get-url github 2>&1); then
   echo "GitHub mirror: no 'github' remote configured — skipping (not an error)."
