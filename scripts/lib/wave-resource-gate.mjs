@@ -134,7 +134,8 @@ async function applyDecisionRules(measurements, opts) {
  * The gate does NOT probe the network — a placement decision must stay a pure
  * function of its inputs. The caller supplies a readiness WITNESS:
  *   - `opts.remoteReady` — `{ [alias]: boolean }`, e.g. built from the
- *     SessionStart `Offload m5: ready=yes` banner or `remoteDoctor()`.
+ *     SessionStart `Offload <alias>: headless-ready=yes` banner (legacy `ready=yes` only
+ *     without new readiness markers) or `remoteDoctor().ready`.
  *   - `opts.probeFn` — `async (alias) => boolean`, consulted only for hosts the
  *     `remoteReady` map does not already answer for. Default `null`. A probeFn
  *     that REJECTS is read as not-ready and its message is appended to
