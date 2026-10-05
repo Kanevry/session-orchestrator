@@ -332,27 +332,18 @@ else
 
   # A symlink is a FILE to git, so the `node_modules/` line in .gitignore does not
   # match it. Without this exclude the fresh clone reports a dirty tree and every
-  # cleanliness assertion in the suite goes red on an artefact of this hook. The
-  # bare pattern matches at any depth, so it covers the nested link below too.
+  # cleanliness assertion in the suite goes red on an artefact of this hook.
   printf 'node_modules\n' >> "$tree/.git/info/exclude"
 
-  # CI parity, and it is TWO links, not one: .gitlab-ci.yml and
-  # .github/workflows/test.yml both run `npm ci` AND
-  # `(cd skills/vault-sync && npm install)`. Measured 2026-08-19 on the full
-  # suite: linking only the root gives `9 test files failed | 102 tests failed`
-  # against `1 file | 0 tests` with both links, the extra ones all on
-  # `Cannot find package 'zod' imported from skills/vault-sync/validator.mjs`.
-  # That is an artefact of this setup, not a defect in the tree being pushed.
-  link_node_modules() {
-    nm_src=$repo_root${1:+/$1}/node_modules
-    nm_dst=$tree${1:+/$1}/node_modules
-    [ -d "$nm_src" ] || return 0
-    [ -d "$tree${1:+/$1}" ] || return 0
-    [ -e "$nm_dst" ] && return 0
-    ln -s "$nm_src" "$nm_dst" 2>/dev/null || return 0
-  }
-  link_node_modules ''
-  link_node_modules 'skills/vault-sync'
+  # CI parity: both CI hosts run only the root `npm ci`, so one link suffices.
+  # skills/vault-sync needs no nested node_modules — zod/yaml are root
+  # `dependencies` and Node resolves them from the root node_modules/
+  # (2026-10-05: the vault-sync test files ran 125/0 without a nested install).
+  nm_src=$repo_root/node_modules
+  nm_dst=$tree/node_modules
+  if [ -d "$nm_src" ] && [ ! -e "$nm_dst" ]; then
+    ln -s "$nm_src" "$nm_dst" 2>/dev/null || true
+  fi
 
   mat_elapsed=$(( $(date +%s) - mat_start ))
   run_dir=$tree

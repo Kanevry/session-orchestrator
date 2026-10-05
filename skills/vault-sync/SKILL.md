@@ -41,9 +41,9 @@ The inline Zod schema is vendored from the canonical source at `projects-baselin
 
 `skills/vault-sync/package.json` pins `yaml ^2.5.0` / `zod ^3.24.0` — intentionally NOT the root's `yaml ^2.9.0` / `zod ^3.25.76`. This is not drift to fix:
 
-- Both CI hosts install this sub-package on its own, independent of the root install (`.gitlab-ci.yml:123` and `.github/workflows/test.yml:95`, both: `(cd skills/vault-sync && npm install --ignore-scripts --no-audit --no-fund)`). `--ignore-scripts` is passed explicitly because the root `.npmrc` does not reach this folder (`npm config get ignore-scripts` → `false` here, `true` at the root; measured 2026-10-05).
-- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps. Where `skills/vault-sync/node_modules/` exists (CI), Node resolves `zod`/`yaml` from it first; where it does not (a fresh worktree, an npm or plugin install), they resolve from the root's own `dependencies` (`yaml ^2.9.0`, `zod ^3.25.76`) — measured 2026-10-05 via `import.meta.resolve('zod')` from this folder → `<root>/node_modules/zod`. That second path is the runtime path for every end user, so the root dependencies must stay.
-- The `zod ^3.24.0` pin deliberately tracks the projects-baseline version, not this repo's own (`scripts/release.mjs:488`).
+- Nothing installs this sub-package. Neither CI host runs a nested install any more — both run only the root `npm ci`, and `.husky/pre-push` links only the root `node_modules/` into its tracked-tree clone. The nested install was dropped on 2026-10-05: it pulled unlocked `zod`/`yaml` versions (this folder's lockfile is gitignored) that the root `npm audit` never saw, and the vault-sync test files ran 125 passed / 0 failed without it.
+- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps. Node resolves `zod`/`yaml` from this folder via the root's own `dependencies` (`yaml ^2.9.0`, `zod ^3.25.76`) — measured 2026-10-05 via `import.meta.resolve('zod')` from this folder → `<root>/node_modules/zod`. That is the runtime path in CI, in every worktree and for every end user, so the root dependencies must stay. A stale local `skills/vault-sync/node_modules/` from an older manual install would still win resolution; delete it if versions disagree.
+- The `zod ^3.24.0` pin deliberately tracks the projects-baseline version, not this repo's own (`scripts/release.mjs:622`).
 
 The root's dependency versions are NOT the SSOT for this folder — do not "fix" this pin to match the root.
 
