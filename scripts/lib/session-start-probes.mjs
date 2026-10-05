@@ -258,10 +258,11 @@ function commitRunsCommand(gh, sha) {
  * @returns {string}
  */
 function ciUnknownHint(result) {
-  if (!PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) return CI_UNKNOWN_HINT_DEFAULT;
-  // The GitHub reason names the gh CLI; a glab command there would be wrong.
-  const gh = result.details.cliUsed === 'gh';
+  // Every GitHub unknown reason needs a GitHub hint, including running,
+  // queued and cancelled checks that do not trigger a pushed-commit query.
+  const gh = result?.details?.cliUsed === 'gh';
   const onDemand = gh ? 'run `gh run list` on demand' : CI_UNKNOWN_HINT_DEFAULT;
+  if (!PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) return onDemand;
   const pushed = result.pushed && typeof result.pushed === 'object' ? result.pushed : null;
   // Pure (#1396): the SHA is whatever the follow-up resolved inside the budget.
   // Without `pushed` (the follow-up overran or threw before resolving it) the
@@ -273,6 +274,19 @@ function ciUnknownHint(result) {
   const verdict = pushedVerdictText(pushed?.verdict);
   if (verdict) return `last pushed: ${short} — ${verdict}`;
   return `last pushed: ${short} (pipeline not checked; run \`${commitRunsCommand(gh, sha)}\`)`;
+}
+
+/** Additive GitHub diagnostics; absent counts leave existing banners unchanged. */
+function checkRunCountsText(result) {
+  const counts = result?.details?.checkRunCounts;
+  if (!counts || result?.details?.cliUsed !== 'gh') return '';
+  const parts = [
+    ['success', 'successful'], ['failure', 'failed/action required'],
+    ['inProgress', 'in progress'], ['queued', 'queued'],
+    ['cancelled', 'cancelled'], ['other', 'unrecognised'],
+  ].filter(([key]) => Number.isSafeInteger(counts[key]) && counts[key] > 0)
+    .map(([key, label]) => `${label}: ${counts[key]}`);
+  return parts.length ? ` — Check runs: ${parts.join(', ')}` : '';
 }
 
 /**
@@ -584,7 +598,7 @@ export const PROBES = [
         // #1337: a RED pushed commit is an alert, and the banner says what the
         // rule judges (HR-106) — same 🚨 as a red HEAD.
         const mark = r.pushed?.verdict?.status === 'red' ? '🚨' : '⚠';
-        return `${mark} ci-status: CI status for HEAD could not be determined (${reason}) — ${ciUnknownHint(r)}`;
+        return `${mark} ci-status: CI status for HEAD could not be determined (${reason})${checkRunCountsText(r)} — ${ciUnknownHint(r)}`;
       }
       if (r.status === 'red') {
         const pid = r.details?.currentPipelineId ?? '?';
@@ -592,7 +606,7 @@ export const PROBES = [
           ? ` — last green: #${r.lastGreen.pipelineId} (commit ${String(r.lastGreen.sha ?? '').slice(0, 7)}, ${r.redCount} pipelines ago)`
           : '';
         const job = r.failingJobName ? ` Failing job: ${r.failingJobName}` : '';
-        return `🚨 CI RED on HEAD (pipeline #${pid})${green}.${job}`;
+        return `🚨 CI RED on HEAD (pipeline #${pid})${green}.${job}${checkRunCountsText(r)}`;
       }
       if (r.status === 'green') {
         const lines = [];

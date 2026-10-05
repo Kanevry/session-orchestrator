@@ -347,3 +347,51 @@ describe('output', () => {
     expect(classes.completed_at_missing).toBe(2);
   });
 });
+
+// #1525: use a valid golden record, changing only the timestamp spellings.
+describe('#1525 — synthetic UTC-offset ledger through the real CLI', () => {
+  it('dry-runs without writes, applies with an exact backup, and repeats byte-identically', () => {
+    const originalRecord = JSON.parse(GOLDEN_RAW.split('\n')[5]);
+    const record = {
+      ...originalRecord,
+      started_at: '2026-06-14T09:00:00.994600+00:00',
+      completed_at: '2026-06-14T10:00:00.999999+00:00',
+      lease_acquired_at: '2026-06-14T09:00:00.994699+00:00',
+    };
+    const validLine = JSON.stringify(originalRecord, null, 0);
+    const offsetLine = JSON.stringify(record);
+    const original = `${offsetLine}\n${validLine}\n${offsetLine}\n`;
+    writeFileSync(ledger, original, 'utf8');
+    const dry = run(['--repo-root', repoRoot, '--json', '--dry-run']);
+    expect(dry.code).toBe(0);
+    expect(JSON.parse(dry.stdout).repaired).toBe(2);
+    expect(readFileSync(ledger, 'utf8')).toBe(original);
+    expect(metricsDirEntries()).toEqual(['sessions.jsonl']);
+
+    const applied = run(['--repo-root', repoRoot, '--json', '--apply']);
+    expect(applied.code).toBe(0);
+    const summary = JSON.parse(applied.stdout);
+    expect(summary.repaired).toBe(2);
+    expect(summary.invalid_after).toBe(0);
+    expect(summary.post_verify.integrity).toBe('clean');
+    expect(readFileSync(summary.backup_path, 'utf8')).toBe(original);
+    const after = readFileSync(ledger, 'utf8');
+    const lines = after.trimEnd().split('\n');
+    expect(lines).toHaveLength(3);
+    expect(lines[0]).toBe(lines[2]);
+    expect(lines[1]).toBe(validLine);
+    const repaired = JSON.parse(lines[0]);
+    expect(repaired.started_at).toBe('2026-06-14T09:00:00.994Z');
+    expect(repaired.completed_at).toBe('2026-06-14T10:00:00.999Z');
+    expect(repaired.lease_acquired_at).toBe('2026-06-14T09:00:00.994Z');
+    expect(repaired._started_at_raw).toBe(record.started_at);
+    expect(repaired._completed_at_raw).toBe(record.completed_at);
+    expect(repaired._lease_acquired_at_raw).toBe(record.lease_acquired_at);
+    expect(repaired._backfill_incomplete_fields).toEqual([]);
+
+    const again = run(['--repo-root', repoRoot, '--json', '--apply']);
+    expect(again.code).toBe(0);
+    expect(JSON.parse(again.stdout).repaired).toBe(0);
+    expect(readFileSync(ledger, 'utf8')).toBe(after);
+  });
+});

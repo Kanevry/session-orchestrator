@@ -1089,8 +1089,20 @@ async function checkGithub(repoRoot, deps = {}) {
     };
   }
 
+  // #856: lifecycle and conclusion are separate facts. Failure retains
+  // priority even in an inconsistent row; only completed success grants green.
+  // Counts are additive diagnostics, never a new status or gate authority.
+  const checkRunCounts = { success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, other: 0 };
+  for (const run of checkRuns) {
+    if (run?.conclusion === 'failure' || run?.conclusion === 'action_required') checkRunCounts.failure++;
+    else if (run?.status === 'completed' && run?.conclusion === 'success') checkRunCounts.success++;
+    else if (run?.status === 'completed' && run?.conclusion === 'cancelled') checkRunCounts.cancelled++;
+    else if (run?.status === 'in_progress' && run?.conclusion === null) checkRunCounts.inProgress++;
+    else if (run?.status === 'queued' && run?.conclusion === null) checkRunCounts.queued++;
+    else checkRunCounts.other++;
+  }
   const failedRun = checkRuns.find(
-    (r) => r.conclusion === 'failure' || r.conclusion === 'action_required',
+    (r) => r?.conclusion === 'failure' || r?.conclusion === 'action_required',
   );
 
   if (failedRun) {
@@ -1101,11 +1113,12 @@ async function checkGithub(repoRoot, deps = {}) {
       details: {
         cliUsed: 'gh',
         reason: 'lastGreen-not-implemented-for-github',
+        checkRunCounts,
       },
     };
   }
 
-  const allSuccess = checkRuns.every((r) => r.conclusion === 'success');
+  const allSuccess = checkRunCounts.success === checkRuns.length;
   if (allSuccess) {
     return {
       status: 'green',
@@ -1116,13 +1129,21 @@ async function checkGithub(repoRoot, deps = {}) {
     };
   }
 
-  // Some runs pending / in-progress / etc.
+  const states = [
+    ['inProgress', 'check-runs-in-progress'],
+    ['queued', 'check-runs-queued'],
+    ['cancelled', 'check-runs-cancelled'],
+    ['other', 'check-runs-unrecognised'],
+  ].filter(([key]) => checkRunCounts[key] > 0);
+  // Successes may accompany one unknown state; counts expose the whole mix.
+  const reason = states.length === 1 ? states[0][1] : 'check-runs-mixed';
   return {
     status: 'unknown',
     ok: false,
     details: {
       cliUsed: 'gh',
-      reason: 'check-runs-not-complete',
+      reason,
+      checkRunCounts,
     },
   };
 }
@@ -1189,6 +1210,7 @@ async function checkGithub(repoRoot, deps = {}) {
  *     cliUsed: 'glab'|'gh',
  *     reason?: string,
  *     error?: string,
+ *     checkRunCounts?: { success: number, failure: number, inProgress: number, queued: number, cancelled: number, other: number },
  *     matchedRef?: string,
  *     candidateCount?: number,
  *     candidateStatuses?: string[],
@@ -1202,7 +1224,11 @@ async function checkGithub(repoRoot, deps = {}) {
  * #857 "several contradicting pipelines" and "only foreign-ref pipelines"
  * findings — and the #1390 "same-sha rows the ref preference set aside"
  * (`droppedCount`/`droppedStatuses`) — are delivered through ADDITIVE `details`
- * fields and `details.reason`,
+ * fields and `details.reason`. GitHub's `checkRunCounts` counts each row once:
+ * `failure` includes action_required; `other` includes malformed/inconsistent
+ * rows and unsupported statuses/conclusions. Non-success reasons are
+ * check-runs-in-progress, check-runs-queued, check-runs-cancelled,
+ * check-runs-unrecognised, or check-runs-mixed (multiple non-success kinds),
  * never as a new status value — consumers fail open on an unknown status string
  * and the session-start renderer prints nothing for one.
  */

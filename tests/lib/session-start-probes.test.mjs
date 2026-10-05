@@ -1167,3 +1167,29 @@ describe('the instruction-budget probe on a repo with no .claude/rules (#1132)',
     expect(calls[0].payload.skipped).toBe(0);
   });
 });
+
+describe('#856 — GitHub check-run counts reach the session-start banner', () => {
+  it.each([
+    ['unknown', 'check-runs-in-progress', { inProgress: 1 }, 'in progress: 1', 'ran-warn'],
+    ['unknown', 'check-runs-queued', { queued: 1 }, 'queued: 1', 'ran-warn'],
+    ['unknown', 'check-runs-cancelled', { cancelled: 1 }, 'cancelled: 1', 'ran-warn'],
+    ['unknown', 'check-runs-mixed', { inProgress: 1, queued: 2, cancelled: 1 }, 'in progress: 1, queued: 2, cancelled: 1', 'ran-warn'],
+    ['red', 'lastGreen-not-implemented-for-github', { failure: 1, inProgress: 1 }, 'failed/action required: 1, in progress: 1', 'ran-alert'],
+  ])('renders %s / %s with counts and unchanged severity', async (status, reason, counts, text, outcome) => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const reading = { status, ok: false, details: { cliUsed: 'gh', reason, checkRunCounts: counts } };
+    const fake = await fakeProbe(dir, 'ci-status', `export function probe() { return ${JSON.stringify(reading)}; }`, {
+      render: registryProbe.render, severityOf: registryProbe.severityOf,
+    });
+    const out = await runSessionStartProbes({ repoRoot: dir }, { probes: [fake], emit });
+    expect(out.results[0].outcome).toBe(outcome);
+    expect(out.bannerLines).toHaveLength(1);
+    expect(out.bannerLines[0]).toContain(`Check runs: ${text}`);
+    if (status === 'unknown') {
+      expect(out.bannerLines[0]).toContain(reason);
+      expect(out.bannerLines[0]).toContain('run `gh run list` on demand');
+    } else expect(out.bannerLines[0]).toContain('CI RED');
+  });
+});
