@@ -1,6 +1,6 @@
 /**
  * tests/eval/rubric-parity.test.mjs — the PRE-REGISTERED `instruction-adherence`
- * contract in `skills/eval/rubric-v2.md` against its declared executable copy in
+ * contract in `skills/eval/rubric-v3.md` (and before it rubric-v2.md) against its declared executable copy in
  * `scripts/lib/eval/judge.mjs`.
  *
  * WHY this file exists. `rubric-v2.md` states above its six ordered decision
@@ -59,7 +59,7 @@ const repoRoot = path.resolve(import.meta.dirname, '../..');
  * `SO_RUBRIC_PATH` is a TEST-ONLY injection point (nothing in `scripts/` or
  * `hooks/` reads it): it lets a fake-regression run point this file at a
  * MODIFIED COPY of the rubric under $TMPDIR and watch the parity assertions go
- * red, without ever touching the hash-bound `skills/eval/rubric-v2.md`.
+ * red, without ever touching the hash-bound `skills/eval/rubric-v3.md`.
  */
 const rubricPath = process.env.SO_RUBRIC_PATH || path.join(repoRoot, RUBRIC_RELATIVE_PATH);
 const rubric = fs.readFileSync(rubricPath, 'utf8');
@@ -145,7 +145,7 @@ function parseRubricFactNames() {
   return [...listText.matchAll(/`([^`]+)`/g)].map((m) => m[1].replace(/\[\]$/, ''));
 }
 
-describe('eval rubric-v2 — parity with its executable copy in judge.mjs', () => {
+describe('eval rubric-v3 — parity with its executable copy in judge.mjs', () => {
   const rules = parseRubricRules();
   const question = parseRubricQuestion();
   const factNames = parseRubricFactNames();
@@ -304,6 +304,21 @@ const gateEvent = (minutes, exitCode, variant = null) => ({
 });
 
 /**
+ * A gate run killed by its timeout ladder that still exited 0 — the shape
+ * `scripts/run-quality-gate.mjs` writes for a killed reporting variant since
+ * #1459: event `.failed`, `timed_out: true`, `exit_code: 0`.
+ */
+const killedGateEvent = (minutes, variant = 'baseline') => ({
+  event: 'orchestrator.quality_gate.failed',
+  timestamp: at(minutes),
+  exit_code: 0,
+  timed_out: true,
+  survivors: 0,
+  kill_signals: ['SIGTERM'],
+  variant,
+});
+
+/**
  * Per dimension, one case per pre-registered row IN DOCUMENT ORDER.
  * `condition` pins the binding to the row it was written for; `ctx` is the
  * minimal input that satisfies exactly that row (earlier rows deliberately not
@@ -325,17 +340,19 @@ const ROW_CASES = {
       ctx: () => ctxOf({ record: { total_files_changed: 4 } }),
     },
     {
-      condition: /all `exit_code === 0`/,
+      condition: /none is a failed gate event/,
       ctx: () => ctxOf({
         record: { total_files_changed: 4 },
         events: [gateEvent(10, 0), gateEvent(30, 0)],
       }),
     },
     {
-      condition: /any `exit_code !== 0`/,
+      condition: /any is a failed gate event/,
+      // rubric-v3 (#1487): the red event is a KILLED reporting run that kept
+      // exit_code 0 — the exact shape v2's exit_code-only rule scored `pass`.
       ctx: () => ctxOf({
         record: { total_files_changed: 4 },
-        events: [gateEvent(10, 0), gateEvent(30, 1)],
+        events: [gateEvent(10, 0), killedGateEvent(30)],
       }),
     },
   ],
@@ -377,7 +394,7 @@ const ROW_CASES = {
       ctx: () => ctxOf({ record: { total_waves: 2, waves: [{ role: 'Impl' }, { role: 'Quality' }] } }),
     },
     {
-      condition: /\*\*last by timestamp\*\* has `exit_code === 0`/,
+      condition: /\*\*last by timestamp\*\* is not a failed gate event/,
       // Two full-gates, the EARLIER one red: pins "last by timestamp", not
       // "first" and not "any".
       ctx: () => ctxOf({
@@ -386,10 +403,12 @@ const ROW_CASES = {
       }),
     },
     {
-      condition: /\*\*last by timestamp\*\* has `exit_code !== 0`/,
+      condition: /\*\*last by timestamp\*\* is a failed gate event/,
+      // rubric-v3 (#1487): last full-gate killed by its timeout ladder while
+      // its exit_code stayed 0 — fail, not pass.
       ctx: () => ctxOf({
         record: { total_waves: 2, waves: [{ role: 'Impl' }, { role: 'Quality' }] },
-        events: [gateEvent(10, 0, 'full-gate'), gateEvent(40, 1, 'full-gate')],
+        events: [gateEvent(10, 0, 'full-gate'), killedGateEvent(40, 'full-gate')],
       }),
     },
   ],
@@ -426,7 +445,7 @@ const ROW_CASES = {
   ],
 };
 
-describe('eval rubric-v2 — parity with the executable scorers in engine.mjs (#1418)', () => {
+describe('eval rubric-v3 — parity with the executable scorers in engine.mjs (#1418)', () => {
   const sections = parseDimensionSections();
   const tables = [...sections.values()].filter((s) => s.rows.length > 0);
   const totalRows = tables.reduce((n, s) => n + s.rows.length, 0);

@@ -212,7 +212,7 @@ describe('eval-session CLI — --verify across a rubric version change (#1400)',
     const runId = JSON.parse(write.stdout).run_id;
 
     const stored = JSON.parse(readFileSync(evalPath(fx.dir), 'utf8').trim());
-    expect(stored.rubric_version).toBe('rubric-v2');
+    expect(stored.rubric_version).toBe('rubric-v3');
     expect(stored.dimensions.some((d) => d.id === 'guard-friction')).toBe(true);
     stored.rubric_version = 'rubric-v1';
     stored.dimensions = stored.dimensions.filter((d) => d.id !== 'guard-friction');
@@ -244,7 +244,7 @@ describe('eval-session CLI — --verify across a rubric version change (#1400)',
       match: false,
       verdict: 'version-mismatch',
       stored_rubric_version: 'rubric-v1',
-      engine_rubric_version: 'rubric-v2',
+      engine_rubric_version: 'rubric-v3',
     });
   });
 

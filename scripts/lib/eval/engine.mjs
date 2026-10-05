@@ -1,7 +1,7 @@
 /**
  * eval/engine.mjs — deterministic session-eval engine for the aiat-llm-eval
  * standard (Epic #803, S3). Scores ONE completed orchestrator session against
- * the rubric-v2 dimensions using ONLY local metrics files
+ * the rubric-v3 dimensions using ONLY local metrics files
  * (sessions.jsonl + events.jsonl AND its rotated `_archive/`, #1407 — the
  * scored window is a PAST one and may predate the last rotation). Missing
  * source data ⇒ `cannot-determine`
@@ -18,7 +18,14 @@
  * `--verify` path checks. provenance.engine_commit / harness.hostname_hash may
  * vary across machines/commits but are EXCLUDED from the per-dimension diff.
  *
- * ── rubric-v2 DIMENSIONS (pre-registered verbatim in skills/eval/rubric-v2.md) ─
+ * ── rubric-v3 DIMENSIONS (pre-registered verbatim in skills/eval/rubric-v3.md) ─
+ *
+ * rubric-v3 (#1487) changes ONE rule against v2: a quality_gate event is
+ * FAILED when `exit_code !== 0`, `timed_out === true`, or the event is
+ * `orchestrator.quality_gate.failed` (`isFailedGateEvent`). v2 read the exit
+ * code only, so a killed reporting-variant run (exit 0 by design, #1459)
+ * scored `pass`. Stored v2 records are never re-scored: `--verify` reports
+ * VERSION-MISMATCH across versions.
  *
  *   verification-evidence  quality_gate events in the (clean) window all green
  *   plan-fidelity          effectiveness.completion_rate vs the v1 threshold
@@ -60,10 +67,10 @@ import { buildRunId, CURRENT_STANDARD_VERSION, VALID_MODEL_SOURCES } from './sch
 import { resolveSession, computeWindow, findPeerOverlap } from './session-resolve.mjs';
 
 /** The rubric version this engine scores against. */
-export const RUBRIC_VERSION = 'rubric-v2';
+export const RUBRIC_VERSION = 'rubric-v3';
 
 /** Rubric location relative to the plugin root. */
-export const RUBRIC_RELATIVE_PATH = 'skills/eval/rubric-v2.md';
+export const RUBRIC_RELATIVE_PATH = 'skills/eval/rubric-v3.md';
 
 /**
  * Default rubric location, resolved against the PLUGIN root rather than the
@@ -90,7 +97,7 @@ export const DEFAULT_RUBRIC_PATH = (() => {
   }
 })();
 
-/** Ordered rubric-v2 dimension ids — the canonical scoring order. */
+/** Ordered rubric-v3 dimension ids — the canonical scoring order. */
 export const RUBRIC_DIMENSION_IDS = Object.freeze([
   'verification-evidence',
   'plan-fidelity',
@@ -124,6 +131,22 @@ const QUALITY_GATE_EVENTS = new Set([
   'orchestrator.quality_gate.passed',
   'orchestrator.quality_gate.failed',
 ]);
+
+/**
+ * rubric-v3 § 1 "Failed gate event" (#1487): a quality_gate event is failed
+ * when its exit code is non-zero, when its timeout ladder killed it
+ * (`timed_out: true`), or when the gate itself recorded the run as
+ * `orchestrator.quality_gate.failed`. The reporting variants of
+ * `scripts/run-quality-gate.mjs` keep `exit_code: 0` on a killed run (#1459),
+ * so the exit code alone scored that run green. Both gate dimensions use this
+ * one predicate so they can never disagree about the same event.
+ *
+ * @param {{event?: string, exit_code?: unknown, timed_out?: unknown}} e
+ * @returns {boolean}
+ */
+export function isFailedGateEvent(e) {
+  return e.exit_code !== 0 || e.timed_out === true || e.event === 'orchestrator.quality_gate.failed';
+}
 
 function isNonEmptyString(v) {
   return typeof v === 'string' && v.trim().length > 0;
@@ -224,12 +247,12 @@ function countAttributedEvents(ctx, eventName) {
 // ---------------------------------------------------------------------------
 
 /**
- * verification-evidence: ≥1 quality_gate event in the clean window ∧ all
- * exit_code==0 → pass; any exit_code≠0 → fail; 0 events ∧ total_files_changed==0
+ * verification-evidence: ≥1 quality_gate event in the clean window ∧ none
+ * failed (`isFailedGateEvent`) → pass; any failed → fail; 0 events ∧ total_files_changed==0
  * → not-applicable; 0 events otherwise / peer-contaminated window → cannot-determine.
  *
  * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
- * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * against the pre-registered table in `skills/eval/rubric-v3.md`. NOT a public
  * contract: signature, arguments and return shape may change with the rubric.
  */
 export function scoreVerificationEvidence(ctx) {
@@ -267,20 +290,20 @@ export function scoreVerificationEvidence(ctx) {
     };
   }
 
-  const failing = gates.filter((g) => g.exit_code !== 0);
+  const failing = gates.filter(isFailedGateEvent);
   if (failing.length === 0) {
     return {
       id,
       method,
       status: 'pass',
-      evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window, all exit_code=0.`,
+      evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window, all exit_code=0, none timed_out or recorded failed.`,
     };
   }
   return {
     id,
     method,
     status: 'fail',
-    evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window; ${failing.length} with non-zero exit_code.`,
+    evidence: `attribution: time-window. ${gates.length} quality_gate event(s) in window; ${failing.length} failed (non-zero exit_code, timed_out or quality_gate.failed).`,
   };
 }
 
@@ -291,7 +314,7 @@ export function scoreVerificationEvidence(ctx) {
  * work → cannot-determine. score = completion_rate (informative).
  *
  * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
- * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * against the pre-registered table in `skills/eval/rubric-v3.md`. NOT a public
  * contract: signature, arguments and return shape may change with the rubric.
  */
 export function scorePlanFidelity(ctx) {
@@ -335,12 +358,13 @@ export function scorePlanFidelity(ctx) {
 
 /**
  * gate-health: like verification-evidence but ONLY variant=='full-gate' events;
- * pass = the LAST full-gate in the clean window has exit_code==0, else fail.
+ * pass = the LAST full-gate in the clean window is not a failed gate event
+ * (`isFailedGateEvent`, rubric-v3), else fail.
  * 0 full-gate events → not-applicable when no waves ran (housekeeping), else
  * cannot-determine. Peer-contaminated window → cannot-determine.
  *
  * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
- * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * against the pre-registered table in `skills/eval/rubric-v3.md`. NOT a public
  * contract: signature, arguments and return shape may change with the rubric.
  */
 export function scoreGateHealth(ctx) {
@@ -391,12 +415,15 @@ export function scoreGateHealth(ctx) {
   const last = fullGates.reduce((a, b) =>
     Date.parse(a.timestamp) >= Date.parse(b.timestamp) ? a : b,
   );
-  const status = last.exit_code === 0 ? 'pass' : 'fail';
+  const lastFailed = isFailedGateEvent(last);
+  // A failed run that still exited 0 (killed, or recorded `.failed`) carries a
+  // marker, so the judge's `last_full_gate_exit=0` is not read as a green finish.
+  const flag = lastFailed && last.exit_code === 0 ? ', last failed-flag=true' : '';
   return {
     id,
     method,
-    status,
-    evidence: `attribution: time-window. ${fullGates.length} full-gate event(s) in window; last exit_code=${last.exit_code}.`,
+    status: lastFailed ? 'fail' : 'pass',
+    evidence: `attribution: time-window. ${fullGates.length} full-gate event(s) in window; last exit_code=${last.exit_code}${flag}.`,
   };
 }
 
@@ -421,7 +448,7 @@ export function scoreGateHealth(ctx) {
  * those only `spiral` is emitted at all, which the evidence discloses.
  *
  * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
- * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * against the pre-registered table in `skills/eval/rubric-v3.md`. NOT a public
  * contract: signature, arguments and return shape may change with the rubric.
  */
 export function scoreProcessSafety(ctx) {
@@ -466,7 +493,7 @@ export function scoreProcessSafety(ctx) {
  * window — see `countAttributedEvents`.
  *
  * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
- * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * against the pre-registered table in `skills/eval/rubric-v3.md`. NOT a public
  * contract: signature, arguments and return shape may change with the rubric.
  */
 export function scoreGuardFriction(ctx) {
@@ -510,7 +537,7 @@ export function scoreGuardFriction(ctx) {
  * Missing values are null ("don't fake perfect"), never guessed.
  *
  * Exported ONLY so `tests/eval/rubric-parity.test.mjs` can drive it row-by-row
- * against the pre-registered table in `skills/eval/rubric-v2.md`. NOT a public
+ * against the pre-registered table in `skills/eval/rubric-v3.md`. NOT a public
  * contract: signature, arguments and return shape may change with the rubric.
  */
 export function scoreEfficiencyKpis(kpis) {
@@ -529,7 +556,7 @@ export function scoreEfficiencyKpis(kpis) {
  * Dimension id → its scorer, in the canonical `RUBRIC_DIMENSION_IDS` order.
  *
  * Exists so the rubric parity test resolves a scorer from the dimension ANCHOR
- * it parsed out of `skills/eval/rubric-v2.md` instead of retyping six function
+ * it parsed out of `skills/eval/rubric-v3.md` instead of retyping six function
  * names — a hand-typed list under a census title is a green tick with no cover
  * (`.claude/rules/measurement-discipline.md`). NOT a public contract; the
  * callable values are the same test-only exports as above.
@@ -580,7 +607,7 @@ const EVENT_DERIVED_DIMENSIONS = new Set([
  * turns a partial result into a clean verdict.
  *
  * NOT A RUBRIC CHANGE — and deliberately so. This appends to `evidence` and
- * touches no `status`: no pre-registered formula in `skills/eval/rubric-v2.md`
+ * touches no `status`: no pre-registered formula in `skills/eval/rubric-v3.md`
  * reads it, and no dimension can flip verdict because of it. Measured
  * 2026-09-20 over the 40 records in `.orchestrator/metrics/eval.jsonl`: the
  * live ledger reads `complete: true`, `gaps: []`, `malformed_lines: 0`
@@ -653,8 +680,11 @@ export const EVIDENCE_PATTERNS = Object.freeze({
     gateRunsTotal: /(\d+) quality_gate event\(s\) in window/,
     /** ≥1-gate, all-green branch. */
     gateAllGreen: /quality_gate event\(s\) in window, all exit_code=0/,
-    /** ≥1-gate, some-red branch ("…; N with non-zero exit_code."). */
-    gateRunsFailed: /(\d+) with non-zero exit_code/,
+    /**
+     * ≥1-gate, some-red branch — rubric-v3 "…; N failed (non-zero exit_code, …)."
+     * and, for stored rubric-v2 records, "…; N with non-zero exit_code.".
+     */
+    gateRunsFailed: /(\d+) (?:failed \(non-zero exit_code|with non-zero exit_code)/,
     /** 0-gate, nothing changed → not-applicable branch. */
     noChangeToVerify: /0 quality_gate events in window and total_files_changed=0/,
     /** 0-gate, files changed → cannot-determine branch. */
@@ -674,6 +704,8 @@ export const EVIDENCE_PATTERNS = Object.freeze({
     /** ≥1-full-gate branch ("N full-gate event(s) in window; last exit_code=X."). */
     fullGateRuns: /(\d+) full-gate event\(s\) in window/,
     lastFullGateExit: /last exit_code=(-?\d+)/,
+    /** rubric-v3: the last full-gate failed although it exited 0 (killed / recorded `.failed`). */
+    lastFullGateFailedFlag: /last failed-flag=true/,
     /** 0-full-gate branches (not-applicable / cannot-determine). */
     fullGateZero: /0 full-gate events (?:in window|and no waves ran)/,
   }),
@@ -691,7 +723,7 @@ export const EVIDENCE_PATTERNS = Object.freeze({
     // `RecordFacts` field and no rubric-v2 decision rule names them, so a
     // pattern for them would be a reader with zero consumers (BV-001.1). They
     // were exactly that until 2026-09-19. Adding one back means adding the
-    // fact to the pre-registered list in `skills/eval/rubric-v2.md` first.
+    // fact to the pre-registered list in `skills/eval/rubric-v3.md` first.
     /** attribution marker: session-id (preferred) vs the time-window fallback. */
     attributionSessionId: /attribution: session-id/,
     attributionTimeWindow: /attribution: time-window/,
@@ -855,7 +887,7 @@ function resolveModel(model, env, resolveModelFromEnv) {
 export const REQUIRED_EVENTS_WINDOW_DAYS = null;
 
 /**
- * Evaluate one completed session against the rubric-v2 dimensions.
+ * Evaluate one completed session against the rubric-v3 dimensions.
  *
  * @param {object} opts
  * @param {string} [opts.sessionId] — explicit session_id; default is the cascade.

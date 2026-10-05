@@ -129,7 +129,7 @@ describe('evaluateSession — record shape & no-global-score', () => {
       expect(record).not.toHaveProperty(forbidden);
     }
     expect(record.record_kind).toBe('session-eval');
-    expect(record.rubric_version).toBe('rubric-v2');
+    expect(record.rubric_version).toBe('rubric-v3');
     // run_id = <session_id>-eval-<compactISO>, deterministic from the timestamp.
     expect(record.run_id).toBe('sess-clean-eval-20260716T120000000Z');
   });

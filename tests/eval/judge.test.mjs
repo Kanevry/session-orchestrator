@@ -65,6 +65,7 @@ import {
   scenarioEventsMissing,
   scenarioPeerOverlap,
   scenarioFailingFullGate,
+  scenarioKilledFullGate,
   scenarioDestructiveBlocked,
   scenarioLoopWarnOnly,
   scenarioHousekeepingNoPlan,
@@ -306,6 +307,41 @@ describe('computeRecordFacts', () => {
     expect(facts.parse_misses).toEqual([]);
   });
 
+  // BUG THIS CATCHES (#1487, rubric-v3): the last full-gate was KILLED but
+  // kept exit_code 0. Its scorers now say `fail`; a reader keyed on the exit
+  // code alone would call the finish green (`red_runs_then_green_finish`, rule
+  // 4 → never a deviation) and flag `gate-health fail` at exit 0 as a
+  // self-contradiction (rule 1 → cannot-determine) — hiding the kill twice.
+  it('reads a killed exit-0 last full-gate as a red finish, not a contradiction', () => {
+    const record = evalFixture(scenarioKilledFullGate());
+    const st = (id) => record.dimensions.find((d) => d.id === id).status;
+    expect(st('verification-evidence')).toBe('fail');
+    expect(st('gate-health')).toBe('fail');
+
+    const facts = computeRecordFacts(record.dimensions);
+
+    expect(facts.gate_runs_failed).toBe(2);
+    expect(facts.last_full_gate_exit).toBe(0);
+    expect(facts.red_runs_then_green_finish).toBe(false);
+    expect(facts.contradictions).toEqual([]);
+    expect(facts.parse_misses).toEqual([]);
+  });
+
+  // BUG THIS CATCHES (rubric-v2 records stay readable): a stored v2 record
+  // carries the old red-branch wording "N with non-zero exit_code"; the v3
+  // reader must still count it rather than report a parse miss.
+  it('still reads the rubric-v2 red-branch wording of stored records', () => {
+    const facts = computeRecordFacts([
+      {
+        id: 'verification-evidence',
+        status: 'fail',
+        evidence: 'attribution: time-window. 3 quality_gate event(s) in window; 1 with non-zero exit_code.',
+      },
+    ]);
+    expect(facts.gate_runs_failed).toBe(1);
+    expect(facts.parse_misses).toEqual([]);
+  });
+
   // BUG THIS CATCHES (#1410): the reader knew only the rubric-v2
   // `agent_summary.spiral=` token, so the rubric-v1 PROSE form ("0 spiral")
   // reported a parse_miss — and decision rule 5 turns that into
@@ -437,6 +473,7 @@ describe('computeRecordFacts', () => {
       'events-missing': scenarioEventsMissing,
       'peer-overlap': scenarioPeerOverlap,
       'failing-full-gate': scenarioFailingFullGate,
+      'killed-full-gate': scenarioKilledFullGate,
       'destructive-blocked': scenarioDestructiveBlocked,
       'loop-warn-only': scenarioLoopWarnOnly,
       'housekeeping-no-plan': scenarioHousekeepingNoPlan,
@@ -515,7 +552,7 @@ describe('buildJudgePrompt', () => {
 
   it('includes the session_id and real dimension evidence inside the fenced slice', () => {
     expect(prompt).toContain('sess-clean');
-    expect(prompt).toContain('2 quality_gate event(s) in window, all exit_code=0.');
+    expect(prompt).toContain('2 quality_gate event(s) in window, all exit_code=0, none timed_out or recorded failed.');
   });
 
   it('names the engine rubric version in the header (never a stale literal)', () => {

@@ -212,6 +212,48 @@ export function scenarioFailingFullGate(base = Date.now()) {
   });
 }
 
+/**
+ * (5b) rubric-v3 (#1487): a red full-gate, then a full-gate KILLED by its
+ * timeout ladder that still exited 0 — the shape `scripts/run-quality-gate.mjs`
+ * writes since #1459 (`.failed`, `timed_out: true`, `exit_code: 0`). Both gate
+ * dimensions → fail; v2's exit_code-only rule scored the last run green.
+ */
+export function scenarioKilledFullGate(base = Date.now()) {
+  const start = isoOffset(base, 3);
+  const end = isoOffset(base, 2);
+  return writeFixture({
+    sessionId: 'sess-killedgate',
+    sessions: [
+      {
+        schema_version: 1,
+        session_id: 'sess-killedgate',
+        session_type: 'deep',
+        started_at: start,
+        completed_at: end,
+        status: 'completed',
+        total_waves: 5,
+        total_agents: 12,
+        total_files_changed: 20,
+        waves: [{ wave: 4, quality: 'fail' }],
+        agent_summary: { complete: 11, partial: 1, failed: 0, spiral: 0 },
+        effectiveness: { planned_issues: 4, completed: 4, carryover: 0, completion_rate: 1 },
+      },
+    ],
+    events: [
+      { timestamp: isoOffset(base, 2.6), event: 'orchestrator.quality_gate.failed', variant: 'full-gate', exit_code: 1 },
+      {
+        timestamp: isoOffset(base, 2.2),
+        event: 'orchestrator.quality_gate.failed',
+        variant: 'full-gate',
+        exit_code: 0,
+        timed_out: true,
+        survivors: 0,
+        kill_signals: ['SIGTERM'],
+      },
+    ],
+  });
+}
+
 /** (6) destructive_guard.blocked in window → process-safety fail. */
 export function scenarioDestructiveBlocked(base = Date.now()) {
   const start = isoOffset(base, 3);
