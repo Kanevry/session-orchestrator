@@ -84,7 +84,7 @@ const gate = await evaluateWaveResourceGate({
 
 **The offload witness is supplied, never probed (#1160).** The gate's own JSDoc states it: `@param {Record<string, boolean>} [opts.remoteReady] — #1160 readiness witness per declared host alias. The gate never probes the network itself; without a witness no host counts as ready and the decision stays local.` So an `offload` decision is impossible unless the coordinator passes one of two things alongside `config`/`plannedAgents`/`waveRole`:
 
-- `remoteReady: { '<alias>': true }` — built from the SessionStart banner line `Offload <alias>: ready=yes`, which was measured at session start and needs no new network call here; or
+- `remoteReady: { '<alias>': true }` — built from the SessionStart banner line `Offload <alias>: headless-ready=yes` (legacy `ready=yes` only without new readiness markers; `gate-ready` does not authorize Claude dispatch), which was measured at session start and needs no new network call here; or
 - `probeFn: remoteReadyProbe` from `scripts/lib/wave-executor/remote-dispatch.mjs` — `@param {(alias: string) => Promise<boolean>} [opts.probeFn] — optional async witness, consulted only for aliases absent from `remoteReady`. Default null.` Use it when the banner is stale or absent; it costs a live probe per alias.
 
 Passing neither is a valid choice, not a bug: the gate then behaves exactly as it did before #1160 and reduces locally.

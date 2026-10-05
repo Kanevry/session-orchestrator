@@ -412,6 +412,11 @@ export async function dispatchRemote(
  * `Ferdinands-Macbook-2 ready=yes · load 14.23 · mem free 96% · headless: slots
  * none, keychain-route ok · 9 jobs · claude procs 12`
  *
+ * New doctor lines split `gate-ready` and `headless-ready`; only the latter
+ * authorizes Claude dispatch. Legacy `ready` remains accepted without new markers.
+ * `load` also holds the new `load5 (5 min)` reading; `memFreePct` holds free
+ * (Darwin) or available (Linux) percent. No live new-format measurement is implied.
+ *
  * Every metric is `null` when its segment is absent — never a fabricated `0`,
  * which would read as "measured, idle" for a host that answered nothing.
  * @param {string} raw
@@ -420,19 +425,32 @@ export async function dispatchRemote(
  */
 export function parseDoctorLine(raw) {
   const text = String(raw ?? '');
-  const num = (re) => {
+  // New-format markers suppress the legacy fallback, even if their value or
+  // key boundary is malformed. Conflicting/unknown headless values fail closed.
+  const key = /\b(?:gate-ready|headless-ready)\b/i.test(text) ? 'headless-ready' : 'ready';
+  const values = [...text.matchAll(new RegExp(`(?:^|\\s)${key}=([^\\s]*)`, 'gi'))];
+  const count = (re) => {
     const m = re.exec(text);
     return m ? Number(m[1]) : null;
   };
+  const segments = text.split(/[·\r\n]/).map((segment) => segment.trim());
+  const num = (re, max = Infinity) => {
+    const m = segments.map((segment) => re.exec(segment)).find(Boolean);
+    const value = m ? Number(m[1]) : NaN;
+    return Number.isFinite(value) && value <= max ? value : null;
+  };
   return {
-    // `ready` is the ONLY decision field: anything that is not a literal
-    // `ready=yes` is not-ready, including an unparseable line.
-    ready: /\bready=yes\b/i.test(text),
+    // Claude dispatch uses headless readiness, independently of gate readiness.
+    // Only the old format falls back to an exact, standalone `ready=yes` token.
+    ready: values.length > 0 && values.every((m) => /^yes$/i.test(m[1])),
     raw: text,
-    load: num(/\bload\s+([0-9]+(?:\.[0-9]+)?)/i),
-    memFreePct: num(/\bmem free\s+([0-9]+(?:\.[0-9]+)?)\s*%/i),
-    jobs: num(/\b([0-9]+)\s+jobs?\b/i),
-    claudeProcs: num(/\bclaude procs\s+([0-9]+)/i),
+    load: num(/^load(?:5\s+\(5 min\))?\s+([0-9]+(?:\.[0-9]+)?)$/i),
+    // The existing field holds Darwin free % or Linux available %, never kB.
+    memFreePct:
+      num(/^mem (?:free|available)\s+([0-9]+(?:\.[0-9]+)?)\s*%$/i, 100) ??
+      num(/^mem available\s+[0-9]+\s+kB available\s*\/\s*[0-9]+\s+kB total\s+\(([0-9]+(?:\.[0-9]+)?)% available\)$/i, 100),
+    jobs: count(/\b([0-9]+)\s+jobs?\b/i),
+    claudeProcs: count(/\bclaude procs\s+([0-9]+)/i),
   };
 }
 
@@ -491,7 +509,7 @@ export function remoteDoctor({ host, execFn = execFileSync, timeoutMs = 90_000 }
  * @param {string} alias — declared host alias (`remote-hosts[].alias`).
  * @param {object} [opts]
  * @param {Function} [opts.execFn] — `child_process.execFileSync` seam.
- * @returns {Promise<boolean>} true only on a literal `ready=yes` line.
+ * @returns {Promise<boolean>} true only for headless-ready=yes (legacy ready=yes without new markers).
  */
 export async function remoteReadyProbe(alias, { execFn } = {}) {
   try {
