@@ -48,11 +48,11 @@
  * re-derived (not re-cited) if a threshold is ever revisited.
  *
  * **Stage 0 — corpus prep (once per run).**
- *   1. Read through the existing funnel (`io.mjs::readLearnings` →
- *      `schema.mjs::normalizeLearning`) so producer dialects (`files` →
- *      `file_paths`) and type aliases (`gotcha` → `anti-pattern`) are already
- *      canonical. The in-memory entry point re-applies {@link normalizeDialects}
- *      so both entry points score the same shape.
+ *   1. Canonicalise producer dialects (`files` → `file_paths`) and type
+ *      aliases (`gotcha` → `anti-pattern`): the caller reads through the
+ *      existing funnel (`io.mjs::readLearnings` → `schema.mjs::normalizeLearning`),
+ *      and the entry point re-applies {@link normalizeDialects} so raw
+ *      in-memory records score the same shape.
  *   2. Drop expired records — they may neither seed a pool nor join one.
  *   3. Derive `learning_key` = `` `${type}/${kebab(title || subject)}` `` using
  *      the SHARED {@link kebab}. A divergent kebab does not produce an ugly
@@ -184,7 +184,6 @@
  */
 
 import { tokenize } from './affinity.mjs';
-import { readLearnings } from './io.mjs';
 import { learningKeyOf } from './kebab.mjs';
 import { normalizeDialects } from './schema.mjs';
 
@@ -702,26 +701,6 @@ export function buildCandidatePools(records, opts = {}) {
   } catch {
     // Contract point 1 — every reachable path above is already total; this is
     // the last-resort net for an exotic input shape (throwing getter, Proxy).
-    return emptyPools();
-  }
-}
-
-/**
- * File entry-point: read through the existing funnel (`readLearnings` →
- * `normalizeLearning`, so dialects and type aliases are canonical), then pool.
- *
- * There is no second reader here on purpose — a private read path would be a
- * second place for the dialect normalization to drift out of.
- *
- * @param {string} filePath — absolute path to learnings.jsonl
- * @param {object} [opts] — everything {@link buildCandidatePools} accepts
- * @returns {Promise<CandidatePools>} {@link emptyPools} on a missing/unreadable file
- */
-export async function buildCandidatePoolsFromFile(filePath, opts = {}) {
-  try {
-    const { entries } = await readLearnings(filePath);
-    return buildCandidatePools(entries, opts);
-  } catch {
     return emptyPools();
   }
 }
