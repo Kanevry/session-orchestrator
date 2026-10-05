@@ -159,6 +159,10 @@ Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 - [Telemetry](docs/telemetry.md) — what stays on your machine, what the optional anonymous telemetry would send, and every switch that turns it off
 - [Contributing](https://github.com/Kanevry/session-orchestrator/blob/main/CONTRIBUTING.md) · [Plugin architecture](docs/plugin-architecture-v3.md) · [docs/ router](docs/README.md)
 
+## Running many sessions at once
+
+session-orchestrator makes one session reliable. When several sessions run in parallel across repositories, a lead session can coordinate them: who runs next, what each may do, one queue for your decisions, one stop for everything. That is the sibling project [lead-session-orchestrator](https://session-orchestrator.com/lead) ([GitHub](https://github.com/Kanevry/lead-session-orchestrator), npm `lead-session-orchestrator`). Each works alone; together they use the shared fleet contract in `skills/_shared/fleet-protocol.md`.
+
 ## Scope and support
 
 Provided **as-is**: a community project, best-effort maintenance, no SLA. Questions and ideas go to [Discussions](https://github.com/Kanevry/session-orchestrator/discussions), bugs to [Issues](https://github.com/Kanevry/session-orchestrator/issues).

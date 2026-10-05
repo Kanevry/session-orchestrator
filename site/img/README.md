@@ -7,3 +7,7 @@ Generated on 2026-09-10 with the built-in Codex image tool. The tool did not exp
 `agent-production-1536.webp`, `agent-production-800.webp` and `agent-production-480.webp` derive from the same 1536 × 1024 source. The earlier `robotics-studio-*` assets are retained as unused comparison material.
 
 Editable desktop, mobile and social layouts live together in the canonical `session-orchestrator.pen` in the main project checkout. That native source is a local handoff and is not versioned in this repository; the exported artwork and layout specifications are versioned here. The social frame is exported at 1200 × 630 to `site/og.png`. Regenerate exports after editing the design; do not edit the .pen file outside Pen.
+
+## Lead page
+
+`lead-control-room-1536.webp`, `-800.webp` and `-480.webp` are the hero of `/lead`, an original AI-generated illustration in the same series: one person in an elevated control room above four separate workshops, one indicator light per workshop and a stop lever. It is a visual metaphor, not a product screenshot. Generated on 2026-10-05 with the built-in Codex image tool, using the agent-production hero as style reference and the same art direction (graphite architecture, warm white materials, one restrained lime accent, no text or logos). No specific model version is claimed. All three derive from one 1536 x 1024 source.

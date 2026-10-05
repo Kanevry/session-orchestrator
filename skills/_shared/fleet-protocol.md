@@ -8,6 +8,8 @@ knows paths, fields, deadlines and lease validity; `scripts/fleet-checkin.mjs` w
 This file describes them and never redefines them. The coordinator itself is not part of this
 package: it is operated outside the plugin, which owns its operational detail (how it measures,
 which conditions it issues, how it acquires and hands over the lease).
+A public coordinator that implements this contract is lead-session-orchestrator
+(https://session-orchestrator.com/lead); any other tool that writes the same files works too.
 
 **Grundsatz (CSM-003).** Zustand liegt in Dateien; Nachrichten sind nur Hinweise auf eine Datei.
 Der Navigator erteilt keine Freigaben — maßgeblich ist der Owner-Auftrag der Session. Eine Datei,
