@@ -18,10 +18,7 @@
  * own formula.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
 
 import {
   CANDIDATE_FLOOR,
@@ -31,7 +28,6 @@ import {
   PATH_BOOST_EXACT,
   STOPWORDS,
   buildCandidatePools,
-  buildCandidatePoolsFromFile,
   candidateTokens,
   emptyPools,
   learningKey,
@@ -508,26 +504,13 @@ describe('totality', () => {
   });
 });
 
-describe('buildCandidatePoolsFromFile', () => {
-  let tmpDir;
-  let filePath;
-
-  beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), 'candidates-test-'));
-    filePath = join(tmpDir, 'learnings.jsonl');
-  });
-
-  afterEach(() => {
-    rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  // BUG CAUGHT: a private second reader that skips the dialect funnel. The
-  // corpus carries producer dialects — legacy `files` instead of `file_paths`,
-  // aliased types like `gotcha` — and a reader that misses them would compute a
-  // zero path boost for records that DO declare paths, and split one type space
-  // into two. The malformed line proves a corrupt store degrades rather than
-  // throws.
-  it('reads through the funnel so legacy dialects are canonical', async () => {
+describe('producer dialects', () => {
+  // BUG CAUGHT: the entry point scoring raw records without the dialect pass.
+  // The corpus carries producer dialects — legacy `files` instead of
+  // `file_paths`, aliased types like `gotcha` — and skipping them computes a
+  // zero path boost for records that DO declare paths, and splits one type
+  // space into two. (Moved here from the deleted file entry point, #1021.)
+  it('canonicalises legacy dialects before scoring', () => {
     const legacyA = record({
       id: '33333333-0000-4000-8000-000000000001',
       type: 'gotcha',
@@ -542,13 +525,8 @@ describe('buildCandidatePoolsFromFile', () => {
       insight: 'Under the stdout envelope protocol a truncated envelope discards the decision.',
       files: ['hooks/_lib/emit.mjs'],
     });
-    writeFileSync(
-      filePath,
-      `${JSON.stringify(legacyA)}\n{ this is not json\n${JSON.stringify(legacyB)}\n`,
-      'utf8'
-    );
 
-    const res = await buildCandidatePoolsFromFile(filePath, OPTS);
+    const res = buildCandidatePools([legacyA, legacyB], OPTS);
     const pool = res.pools.find(
       (p) => p.seed.subject === 'stdout-truncation-drops-the-decision-envelope'
     );
@@ -558,13 +536,5 @@ describe('buildCandidatePoolsFromFile', () => {
     expect(pool.seed.file_paths).toEqual(['hooks/_lib/emit.mjs']); // `files` dialect resolved
     expect(pool.candidates).toHaveLength(1);
     expect(pool.candidates[0].boost).toBe(PATH_BOOST_EXACT);
-  });
-
-  // BUG CAUGHT: an unhandled rejection on a missing store. /evolve may run in a
-  // repo that has never written a learning; a throw there would abort the phase
-  // rather than report "nothing to reconcile".
-  it('returns empty pools for a missing file', async () => {
-    const res = await buildCandidatePoolsFromFile(join(tmpDir, 'absent.jsonl'), OPTS);
-    expect(res).toEqual(emptyPools());
   });
 });

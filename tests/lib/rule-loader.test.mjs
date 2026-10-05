@@ -16,7 +16,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { loadApplicableRules, parseGlobsFrontmatter } from '@lib/rule-loader.mjs';
+import { isRuleExpired, loadApplicableRules, parseGlobsFrontmatter } from '@lib/rule-loader.mjs';
 
 // ---------------------------------------------------------------------------
 // Temp directory management
@@ -359,6 +359,25 @@ describe('expiry gating (#694)', () => {
     expect(results).toHaveLength(1);
     expect(results[0].alwaysOn).toBe(true);
     expect(results[0].expiresAt).toBe('2026-12-31');
+  });
+
+  // #1521: expires-at is INCLUSIVE — the rule still loads on its own date and
+  // drops out at the following UTC midnight. The old gate (`Date.parse < now`)
+  // excluded it from 00:00 of its expiry day, a day early.
+  it('loads a rule through its whole expires-at day (UTC) and excludes it from the next midnight', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'last-day.md', '---\nexpires-at: 2026-06-01\n---\n\n# Last Day\n');
+
+    const at = (iso) => loadApplicableRules({ rulesDir: dir, scopePaths: [], now: Date.parse(iso) });
+    expect(at('2026-06-01T00:00:00Z')).toHaveLength(1);
+    expect(at('2026-06-01T23:59:59.999Z')).toHaveLength(1);
+    expect(at('2026-06-02T00:00:00Z')).toHaveLength(0);
+  });
+
+  it('isRuleExpired: a bare date is inclusive, a full timestamp is exact', () => {
+    expect(isRuleExpired('2026-06-01', Date.parse('2026-06-01T23:59:59.999Z'))).toBe(false);
+    expect(isRuleExpired('2026-06-01', Date.parse('2026-06-02T00:00:00Z'))).toBe(true);
+    expect(isRuleExpired('2026-06-01T12:00:00Z', Date.parse('2026-06-01T12:00:00.001Z'))).toBe(true);
   });
 
   it('keeps a rule with a malformed expires-at (fail-open)', () => {

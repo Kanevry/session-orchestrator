@@ -186,7 +186,11 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // String fields
   const vcs = _coerceString(kv, 'vcs', undefined);
   const gitlabHost = _coerceString(kv, 'gitlab-host', undefined);
-  const mirror = _coerceString(kv, 'mirror', undefined);
+  // `mirror` keeps an explicit `none` as the string 'none' instead of the
+  // generic _coerceString null (#1034): session-end Phase 4.4 must tell an
+  // explicit opt-out (`mirror: none` → never push) from an absent key
+  // (null → push when a `github` remote exists, the pre-#1034 behaviour).
+  const mirror = _getVal(kv, 'mirror', undefined) === 'none' ? 'none' : _coerceString(kv, 'mirror', undefined);
   const special = _coerceString(kv, 'special', undefined);
   const pencil = _coerceString(kv, 'pencil', undefined);
   const testCommand = _coerceString(kv, 'test-command', 'npm test');

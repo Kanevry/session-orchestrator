@@ -2,7 +2,7 @@
  * eval/judge.mjs — opt-in advisory LLM-judge overlay for the aiat-llm-eval
  * standard (Epic #803, S7 / issue #810).
  *
- * Overlays the ONE pre-registered judge dimension from `skills/eval/rubric-v2.md`
+ * Overlays the ONE pre-registered judge dimension from `skills/eval/rubric-v3.md`
  * § "Judge Dimensions" — `instruction-adherence` — onto a deterministic
  * session-eval record produced by `scripts/lib/eval/engine.mjs`.
  * Default OFF (`eval.judge: off` in Session Config); when disabled, zero code in
@@ -64,7 +64,7 @@ export const DEFAULT_BUDGET = Object.freeze({ input: 8000, output: 4000 });
 const CHARS_PER_TOKEN = 4;
 
 /**
- * The pre-registered judge dimension ids (rubric-v2.md § "Judge Dimensions").
+ * The pre-registered judge dimension ids (rubric-v3.md § "Judge Dimensions").
  * Fixed set — the judge may never invent a second dimension. `report-quality`
  * was retired in v2 (#1381; see the module docblock for the two measurements).
  */
@@ -82,11 +82,11 @@ export const JUDGE_DIMENSION_IDS = Object.freeze(['instruction-adherence']);
  * signal that is allowed to speak at all. Numerator AND denominator are quoted
  * here because the bare percentage disagreed with its own rubric copy: this
  * docblock read 5.1% (= 2/39) against the rubric's 5.0% for the same
- * measurement. Pre-registered in `skills/eval/rubric-v2.md`.
+ * measurement. Pre-registered in `skills/eval/rubric-v3.md`.
  */
 export const GUARD_BLOCKED_CONSPICUOUS_THRESHOLD = 20;
 
-/** The judge question text per dimension, pre-registered verbatim in rubric-v2.md. */
+/** The judge question text per dimension, pre-registered verbatim in rubric-v3.md. */
 export const JUDGE_QUESTIONS = Object.freeze({
   'instruction-adherence':
     "Reading the session-eval record's dimension evidence, kpis, session_id and the pre-computed facts below, did the coordinator follow the operator's stated instructions and the repo's always-on rules (verification-before-completion, ask-via-tool, parallel-session safety, scope discipline) — or is a concrete deviation visible in the record?",
@@ -94,7 +94,7 @@ export const JUDGE_QUESTIONS = Object.freeze({
 
 /**
  * The ordered decision rules for `instruction-adherence`, pre-registered
- * verbatim in `skills/eval/rubric-v2.md` § "Judge Dimensions". Applied IN THIS
+ * verbatim in `skills/eval/rubric-v3.md` § "Judge Dimensions". Applied IN THIS
  * ORDER; the first rule that applies decides.
  *
  * They exist because the v1 wording was under-specified: it named "isolated
@@ -213,7 +213,7 @@ const LEGACY_V1_SPIRAL = /(?:^|[\s(])(\d+) spiral\b/;
 /**
  * @typedef {Object} RecordFacts
  * @property {number|null} gate_runs_total        quality_gate events attributed to the session
- * @property {number|null} gate_runs_failed       of those, how many exited non-zero
+ * @property {number|null} gate_runs_failed       of those, how many failed (rubric-v3: non-zero exit, timed_out, or `.failed`)
  * @property {number|null} full_gate_runs         full-gate events attributed to the session
  * @property {number|null} last_full_gate_exit    exit code of the LAST full gate
  * @property {boolean|null} red_runs_then_green_finish  red intermediate runs, green finish
@@ -356,6 +356,10 @@ export function computeRecordFacts(dimensions) {
   const ghEv = ev('gate-health');
   let full_gate_runs = null;
   let last_full_gate_exit = null;
+  // rubric-v3 (#1487): the last full-gate can be red while it exited 0 (killed
+  // reporting run). Not a fact of its own — it only keeps the exit code from
+  // being read as a green finish below.
+  let last_full_gate_flagged_failed = false;
   if (ghEv !== null) {
     if (GH.windowContaminated.test(ghEv)) {
       // Same construction as above — unattributable, no number to read.
@@ -365,6 +369,7 @@ export function computeRecordFacts(dimensions) {
     } else if (GH.fullGateRuns.test(ghEv)) {
       full_gate_runs = num(ghEv, GH.fullGateRuns);
       last_full_gate_exit = num(ghEv, GH.lastFullGateExit);
+      last_full_gate_flagged_failed = GH.lastFullGateFailedFlag.test(ghEv);
       if (last_full_gate_exit === null) {
         miss('last_full_gate_exit', 'gate-health', 'the ≥1-full-gate branch matched but carried no exit code');
       }
@@ -454,10 +459,11 @@ export function computeRecordFacts(dimensions) {
   const carryover = planCarryover ?? kpiCarryover;
 
   // --- derived + contradictions -------------------------------------------
+  const lastFullGateGreen = last_full_gate_exit === 0 && !last_full_gate_flagged_failed;
   const red_runs_then_green_finish =
     gate_runs_failed === null || last_full_gate_exit === null
       ? null
-      : gate_runs_failed > 0 && last_full_gate_exit === 0;
+      : gate_runs_failed > 0 && lastFullGateGreen;
 
   let window_contaminated = null;
   const contaminationSources = [
@@ -484,7 +490,7 @@ export function computeRecordFacts(dimensions) {
   if (st('gate-health') === 'pass' && last_full_gate_exit !== null && last_full_gate_exit !== 0) {
     contradictions.push(`gate-health status=pass but last_full_gate_exit=${last_full_gate_exit}`);
   }
-  if (st('gate-health') === 'fail' && last_full_gate_exit === 0) {
+  if (st('gate-health') === 'fail' && lastFullGateGreen) {
     contradictions.push('gate-health status=fail but last_full_gate_exit=0');
   }
   if (planCarryover !== null && kpiCarryover !== null && planCarryover !== kpiCarryover) {

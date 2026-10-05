@@ -84,14 +84,17 @@ describe('generated rule expiry — the predicate (#1372)', () => {
     const future = { 'expires-at': '2026-10-01' };
 
     expect(isExpiredGeneratedRule({ meta: past, now })).toBe(true);
-    // Same basis as rule-loader's `applyGates`: a bare date is UTC midnight, so
-    // a rule dated TODAY is already past at 11:00 — the loader drops it too.
-    expect(isExpiredGeneratedRule({ meta: today, now })).toBe(true);
+    // Same basis as rule-loader's `applyGates` (#1521): a bare date is
+    // INCLUSIVE, so a rule dated TODAY still loads at 11:00 — and the banner
+    // must not call it expired while the loader still injects it.
+    expect(isExpiredGeneratedRule({ meta: today, now })).toBe(false);
     expect(isExpiredGeneratedRule({ meta: future, now })).toBe(false);
 
-    expect(daysUntilGeneratedRuleExpiry({ meta: past, now })).toBe(-2);
-    expect(daysUntilGeneratedRuleExpiry({ meta: today, now })).toBe(-1);
-    expect(daysUntilGeneratedRuleExpiry({ meta: future, now })).toBe(14);
+    expect(daysUntilGeneratedRuleExpiry({ meta: past, now })).toBe(-1);
+    expect(daysUntilGeneratedRuleExpiry({ meta: today, now })).toBe(0);
+    expect(daysUntilGeneratedRuleExpiry({ meta: future, now })).toBe(15);
+    // The boundary itself: expired from the next UTC midnight on.
+    expect(isExpiredGeneratedRule({ meta: today, now: Date.parse('2026-09-17T00:00:00Z') })).toBe(true);
   });
 
   // BUG: an unparseable `expires-at` read as "expired" would have the banner

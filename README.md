@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.7.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.8.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -139,14 +139,15 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.7.0)
+## Recent highlights (v5.8.0)
 
-Highlights of the v5.7.0 line:
+Highlights of the v5.8.0 line:
 
-- **Tidy up the vault mirror in place.** `scripts/vault-mirror-prune.mjs` applies the retention rules to existing learning and session notes: dry run with a manifest first, then `--apply` archives duplicates, superseded and expired notes and writes month rollups. Nothing is deleted, and a second run plans nothing (#1513).
-- **Fewer, better vault notes from now on.** A session record without enough free text gets one rollup row instead of a note, an expired learning never becomes a note, and a learning whose insight already exists is refused (#1513).
-- **The commit guard says which manifest it means.** Parse errors and block messages name the manifest file, and the "To proceed" hint prints once (#1514).
-- **Silent failures made visible.** Read errors other than a missing file are now reported instead of turning into `0` or `unknown` (#1216), and lint blocks imports of the deprecated locks shim (#1234).
+- **Your secrets stay out of the plugin cache.** Claude and Codex installs now come from the packed package (`npm pack`), so `.env.local` and session state no longer land in `~/.claude` or `~/.codex` plugin caches (#1515, #1518).
+- **`mirror: none` means none.** `/close` no longer pushes to a GitHub remote when the repo opted out, and a fresh shell without `PLUGIN_ROOT` no longer breaks the mirror push (#1034).
+- **Honest gate scores.** Eval rubric v3 counts a gate run that was killed but exited 0 as failed; older records keep their own rubric version and are never re-scored silently (#1487).
+- **Rules live through their expiry day.** A rule's `expires-at` date is inclusive in the loader, the budget probe, the drift check and the expiry sweep alike (#1521).
+- **vault-sync needs no second install.** The validator resolves `zod`/`yaml` from the plugin's own dependencies and, if they are missing, says exactly which command fixes it (#1070).
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 

@@ -22,8 +22,9 @@ github  https://github.com/Kanevry/session-orchestrator.git                  # p
 - `github` (the mirror) is pushed **directly** by `git push github HEAD` in the
   `github-mirror-push` block of `skills/session-end/SKILL.md` (`:238`, measured
   2026-09-09) — no MR, no review, no gate. Any session's `/close` does this
-  the moment a `github` remote exists (the block does not actually re-check the
-  `mirror: github` Session Config key at runtime, only the remote's presence).
+  the moment a `github` remote exists, unless the Session Config sets
+  `mirror: none` (#1034: an absent key still pushes, so this repo — which sets
+  no `mirror:` key — mirrors on every `/close`).
   `scripts/release.mjs` (`:1333-1338`) does the same for `main` + the tag on
   every `--publish`.
 - **The push runs on the operator's machine, not in CI.** There is no GitLab CI

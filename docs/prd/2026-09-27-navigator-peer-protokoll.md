@@ -135,13 +135,13 @@ Eine `SendMessage` an den Navigator ist optional und nur Hinweis auf die Datei.
 | `konto_slot`, `quota` | `account_slot` als Nummer (`navigator identity`), Quota-Stand aus `navigator quota` oder `nicht messbar` |
 | `stand` | main-, origin/main-, Prod-SHA (sonst `nicht messbar`), offene MRs |
 | `kandidaten`, `schreibbereich` | Issue-Nummern; Verzeichnisse/Dateien |
-| `bedarf` | geplante volle Pipelines, m5-remote-Jobs, prozessstartende Agents |
+| `bedarf` | geplante volle Pipelines, <remote-host>-Jobs, prozessstartende Agents |
 | `vorab_geschrieben`, `rueckfall` | Ausnahmen nach Definition oben; Verhalten ohne Auflagen (3.3) |
 
 ### 3.3 Auflagen (Navigator an Session)
 
 Datei `auflagen/<session_id>.json`, optional mit Hinweis-Nachricht. Felder: Caps (prozessstartende /
-lesende Agents je nach freiem Speicher des lokalen Hosts), volle Pipelines je Repo, m5-remote-Regel
+lesende Agents je nach freiem Speicher des lokalen Hosts), volle Pipelines je Repo, <remote-host>-Regel
 (Lastschwelle, was lokal erlaubt ist), Merge-Protokoll, Zeitregel, Flottenpriorität (Owner 15:28:
 repo-B, repo-D/repo-H, repo-A, Rest; Bremsen von unten), Besitzkonflikte, Satz
 „Freigaben erteile ich keine, maßgeblich ist dein Owner-Auftrag". Fehlt die Datei 10 min nach dem
@@ -149,7 +149,7 @@ Check-in, gelten die **Standard-Auflagen** (konservative Stufe, steht in B1); le
 Schreiben im eigenen Worktree laufen weiter. Das ist kein Warten auf eine Antwort, sondern ein
 Dateistand mit Frist.
 
-> Nachtrag 2026-10-04 (#1487 Pkt. 14): Die „Lastschwelle“ der m5-remote-Regel ist ersetzt; ob m5-remote nutzbar ist, entscheidet `navigator m5-ersatz --quiet` (Exit 0 = nutzbar), siehe Nachträge in A.2.
+> Nachtrag 2026-10-04 (#1487 Pkt. 14): Die „Lastschwelle“ der <remote-host>-Regel ist ersetzt; ob <remote-host> nutzbar ist, entscheidet `navigator <remote-readiness-check> --quiet` (Exit 0 = nutzbar), siehe Nachträge in A.2.
 
 ### 3.4 Merge: Ansage und Lease als Zustand
 
@@ -266,7 +266,7 @@ UUID-Kürzel (`fmt` ab Z. 968); Quelle ist die Registry, Codex eingeschlossen. K
 Zeile „Navigator aktiv: <id>, Check-in nach ~/.config/navigator/checkin/" aus der Lease, oder „kein
 Navigator aktiv". Das erreicht auch Sessions ohne `/session`, in Claude und Codex.
 
-### 4.4 m5-remote-Offload für alle
+### 4.4 <remote-host>-Offload für alle
 
 `applyOffloadDecision()` greift nur bei Urteil `reduce` oder `coordinator-direct`
 (`skills/remote-offload/SKILL.md` Abschnitt 1), und nur 2 von 8 geprüften Repo-`CLAUDE.md` deklarieren
@@ -369,7 +369,7 @@ Owner testet: Koordinator wechseln, Nachfolger arbeitet ohne Rückfrage weiter.
 1. **E1 Arbeitsteilung** wie 4.1 (Protokoll, Adapter, Skill in SO; Mechanik als navigator-CLI). Empfehlung: ja.
 2. **E2 Merge als Zustand** (Ansage/Lease-Dateien mit Ablauf, danach eigene Messung oder `ask`) statt Warten auf Zeichen. Empfehlung: ja.
 3. **E3 Fristen:** Check-in-Rückfall 10 min, Ansage 20 min, Lease 15 min, Navigator-Lease 30 min. Empfehlung: ja, nach S2 nachmessen.
-4. **E4 offload-first** als Session-Config-Schalter (Heavy-Rollen immer auf m5-remote, wenn bereit). Empfehlung: ja, eigenes SO-Issue.
+4. **E4 offload-first** als Session-Config-Schalter (Heavy-Rollen immer auf <remote-host>, wenn bereit). Empfehlung: ja, eigenes SO-Issue.
 5. **E5 Form:** Skill `navigator` (user-invocable) statt Command. Empfehlung: Skill, weil Codex nur Skills generiert bekommt.
 6. **E6 Codex:** Dateien + Hook zuerst, `codex queue` nach Live-Test an Wegwerf-Thread. Empfehlung: ja.
 7. **E7 Flottenpriorität als Datei** (`~/.config/navigator/prioritaet.yaml`). Empfehlung: ja.
@@ -394,14 +394,14 @@ Rückfall (session-D1): schreibende erst nach deiner Antwort oder nach 10 min oh
 
 ### A.2 Auflagen (navigator-A1 an alle fünf, Inhalt gleich; v1-Form, in v2 durch 3.3/3.4 ersetzt)
 
-> Historischer Wortlaut. Die Lastschwelle „5-min-Load < 12" gilt nicht mehr: ob m5-remote nutzbar ist, entscheidet allein `navigator m5-ersatz --quiet` (Exit 0 = nutzbar), siehe `skills/_shared/fleet-protocol.md` § Standard-Auflagen.
+> Historischer Wortlaut. Die Lastschwelle „5-min-Load < 12" gilt nicht mehr: ob <remote-host> nutzbar ist, entscheidet allein `navigator <remote-readiness-check> --quiet` (Exit 0 = nutzbar), siehe `skills/_shared/fleet-protocol.md` § Standard-Auflagen.
 >
-> Nachtrag 2026-10-02: Seit 05c0264f ist `skills/_shared/fleet-protocol.md` ein generischer Dateivertrag und nennt weder den Alias noch `m5-ersatz`; seine Standard-Auflagen verlangen nur noch einen unmittelbar davor als bereit belegten Remote-Host (`skills/remote-offload/SKILL.md`). Die `m5-ersatz`-Prüfung selbst gehört zur Navigator-CLI.
+> Nachtrag 2026-10-02: Seit 05c0264f ist `skills/_shared/fleet-protocol.md` ein generischer Dateivertrag und nennt weder den Alias noch `<remote-readiness-check>`; seine Standard-Auflagen verlangen nur noch einen unmittelbar davor als bereit belegten Remote-Host (`skills/remote-offload/SKILL.md`). Die `<remote-readiness-check>`-Prüfung selbst gehört zur Navigator-CLI.
 
 ```
 Caps: 2 prozessstartende + 2 lesende Agents, solange der lokale Host >= 50 % Speicher frei hat.
 Pipelines: <= 2 volle je Repo; Nachzug-Pushes vorher anmelden.
-Offload: nur Alias m5-remote, nur bei 5-min-Load < 12; alles Schwere dorthin; lokal nur vitest je Datei mit timeout.
+Offload: nur Alias <remote-host>, nur bei 5-min-Load < 12; alles Schwere dorthin; lokal nur vitest je Datei mit timeout.
 Merge: Ansage (MR, Head-SHA, Pipeline-ID + Jobliste inkl. Pflichtjobs, Gate-Log-SHA = Head,
   Review-Stand, Migration ja/nein) -> ich messe am GitLab (Head = Pipeline-SHA = Gate-SHA,
   mergeable, main frei) -> Zeichen -> Merge -> Meldung main-Pipeline + Prod-SHA.

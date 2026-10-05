@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-10-05
+
 ### Added
 
 - **`scripts/lib/plugin-package-stage.mjs`** (#1518): one packed staging for Claude and Codex installs — `npm pack --ignore-scripts`, extract, optional `npm ci --omit=dev --ignore-scripts` and a validate callback on the new copy, then swap; a failed swap restores the previous stage, stale work dirs are swept.
@@ -26,6 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`npm run update:local` installs from `npm pack`** (#1515): only package files reach the plugin cache (no `.env.local`, no `.orchestrator/` beyond `policy/`). It refuses only while a `directory` marketplace points at the clone and names the exact remove/add/install commands; GitHub and npm sources update as before. `evals/` ships in the package (without `evals/results/`).
 - **vault-mirror re-learn** (#1506): new disambiguation files get `-<sha256(record key)[0:8]>` (existing `-<uuid8>` files keep their name); a strictly newer record takes over the main note and the older one moves to its own disambiguation file, crash-safe in write order.
 - **Bootstrap consumer ignore block** (#1507): the three rotated-ledger patterns are ignored in consumer repos too.
+- **`vault-sync/validator.sh` installs nothing** (#1070): it checks that `zod`/`yaml` resolve (they are root dependencies) and otherwise exits 2 with `reason: setup-required` and a shell-quoted `npm ci` hint, emitted as valid JSON; session-end shows that reason instead of discarding stderr. The former silent `pnpm install` is gone.
+- **One source listing for the plugin surface** (#1240): `scripts/lib/plugin-surface.mjs` holds the frontmatter parser, the `commands/`/`skills/` listing and the `_`/`.` private-name filter used by all four adapter generators and the slash-command census. Generated output is unchanged.
+- **Nine more hand-rolled tmp+rename writes use the shared helper** (#1032): reconcile writer, ux-grill run record, vault-sync baseline, bootstrap-lock refresh, autopilot telemetry, and the backfill, migrate, cross-repo-migrate and session-record-repair scripts; their own backup schemes stay. `appendJsonlAtomic` now creates a missing parent directory.
+- **Phase 7.1 premise check runs in housekeeping sessions too** (#1521).
+- **Eval rubric-v3** (#1487): a quality_gate event counts as failed when it exited non-zero, timed out, or was recorded as `orchestrator.quality_gate.failed`. A killed reporting gate run with exit code 0 used to score `pass`. Only `verification-evidence` and `gate-health` change. The 9 stored `rubric-v2` records are not re-scored; `--verify` reports `VERSION-MISMATCH` for them.
+
+### Deprecated
+
+- **Frontend-slop hook** (#1121): `hooks/post-tooluse-frontend-slop.mjs` and the `frontend-slop-hook:` block are removed in the next major. With `enabled: true` the hook writes one deprecation line to stderr per run and otherwise works as before.
+
+### Removed
+
+- **`buildCandidatePoolsFromFile`** (#1021) from `scripts/lib/learnings/candidates.mjs`: no consumer besides its own test (never a documented public API; use `buildCandidatePools`).
+- **The separate `skills/vault-sync` dependency install** in GitLab CI, GitHub Actions and the pre-push gate (#1070): it pulled unlocked `zod`/`yaml` versions that no root `npm audit` saw; the root install already provides both.
 
 ### Fixed
 
@@ -34,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **vault-mirror refreshes a changed main note in the run that archives a stale disambig** (#1519) instead of one run later.
 - **A UTF-8 BOM on the first line of `learnings.jsonl` is stripped** (#1506) instead of making the record malformed.
 - **Unused learnings exports removed** (#1021): twelve exports without a consumer outside their own module.
+- **`OPTIONAL_FIELDS` declares every field the session validator checks** (#986): eleven were missing; the parity test now takes its census from `validateSession` itself.
+- **`mirror: none` is honoured at /close** (#1034): the GitHub mirror push checked only for a `github` remote, so such a repo pushed anyway. An explicit `none` now skips it; no key keeps today's behaviour; an unknown value fails loudly.
+- **A rule stays active through its `expires-at` day** (#1521): the loader used to drop it at 00:00 UTC of that date. Loader, budget guard and expiry sweep share one `ruleExpiryInstantMs`.
+- **A rate-limit HTTP 403 is `query-failed`, not `auth-error`** (#1034) in the mirror-issues banner and the GitHub protection audit, so a rate limit no longer advises a re-login; an unauthenticated rate limit and a 403 without rate-limit wording stay `auth-error`.
+- **Stale docs corrected**: memory-proposal provenance tag (#1027), `auto-commit-per-wave` described as the planned no-op it is (#1219), steering counts (#1515), two gate-event measurement docblocks (#966).
 
 ## [5.7.0] - 2026-10-03
 

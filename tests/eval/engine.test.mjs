@@ -36,7 +36,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
-import { evaluateSession, diffDimensions } from '@lib/eval/engine.mjs';
+import { evaluateSession, diffDimensions, isFailedGateEvent } from '@lib/eval/engine.mjs';
 import { resolveSession, findPeerOverlap, SessionResolutionError } from '@lib/eval/session-resolve.mjs';
 import { validateEvalRecord } from '@lib/eval/schema.mjs';
 import {
@@ -129,7 +129,7 @@ describe('evaluateSession — record shape & no-global-score', () => {
       expect(record).not.toHaveProperty(forbidden);
     }
     expect(record.record_kind).toBe('session-eval');
-    expect(record.rubric_version).toBe('rubric-v2');
+    expect(record.rubric_version).toBe('rubric-v3');
     // run_id = <session_id>-eval-<compactISO>, deterministic from the timestamp.
     expect(record.run_id).toBe('sess-clean-eval-20260716T120000000Z');
   });
@@ -768,5 +768,20 @@ describe('determinism', () => {
     const fresh = [{ id: 'x', method: 'deterministic', status: 'fail', evidence: 'e' }];
     const diffs = diffDimensions(stored, fresh);
     expect(diffs).toEqual([{ id: 'x', field: 'status', stored: 'pass', fresh: 'fail' }]);
+  });
+});
+
+// rubric-v3 § 1 (#1487): each of the three failure signals must count on its
+// own. Real gate events carry .failed and timed_out together, so a test built
+// only from real shapes stays green when either branch is dropped.
+describe('isFailedGateEvent — each v3 signal alone', () => {
+  const passed = 'orchestrator.quality_gate.passed';
+  it.each([
+    ['non-zero exit only', { event: passed, exit_code: 1, timed_out: false }, true],
+    ['timed_out only', { event: passed, exit_code: 0, timed_out: true }, true],
+    ['.failed event only', { event: 'orchestrator.quality_gate.failed', exit_code: 0, timed_out: false }, true],
+    ['none of them', { event: passed, exit_code: 0, timed_out: false }, false],
+  ])('%s → %s', (_label, ev, expected) => {
+    expect(isFailedGateEvent(ev)).toBe(expected);
   });
 });

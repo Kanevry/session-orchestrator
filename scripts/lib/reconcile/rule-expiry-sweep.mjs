@@ -146,6 +146,7 @@ import { join, resolve, sep } from 'node:path';
 import { atomicWriteWithBackup } from '../io.mjs';
 import { readLearnings } from '../learnings/io.mjs';
 import { listMachineGeneratedRules } from '../instruction-budget-guard.mjs';
+import { parseGlobsFrontmatter, ruleExpiryInstantMs } from '../rule-loader.mjs';
 import { markCandidateProcessed } from './idempotency.mjs';
 
 /** Repo-relative learnings store — the only source of a per-entry date. */
@@ -288,6 +289,18 @@ export function parseConsolidatedRule(content) {
       expiresAtLine = i;
       expiresAt = m[1];
       break;
+    }
+  }
+  // The VALUE is taken the loader's way (quote-stripped): a hand-edited
+  // `"2026-06-01"` would otherwise reach Date.parse with its quotes and be read
+  // as LOCAL midnight — up to 26 h before the loader stops injecting the rule.
+  // The line index above stays the rewrite anchor.
+  if (expiresAtLine >= 0) {
+    try {
+      const loaderValue = parseGlobsFrontmatter(String(content ?? '')).meta['expires-at'];
+      if (typeof loaderValue === 'string') expiresAt = loaderValue;
+    } catch {
+      // frontmatter the loader rejects — keep the raw value (fail-open downstream)
     }
   }
 
@@ -617,7 +630,7 @@ export async function planRuleExpirySweep(opts = {}) {
       parsed.pairs.length === 1 &&
       substantive.length === 1 &&
       parsed.expiresAt !== null &&
-      Number.isFinite(Date.parse(parsed.expiresAt))
+      ruleExpiryInstantMs(parsed.expiresAt) !== null
     ) {
       // SINGLE-ENTRY file (#1513): one learning, one pair, no `### ` entries,
       // no counter sentence — the shape the reconciliation engine writes per
@@ -633,7 +646,10 @@ export async function planRuleExpirySweep(opts = {}) {
       // before the unlink, so `/reconcile` does not re-propose it.
       const pair = substantive[0];
       const storeAt = expiryById.has(pair.id) ? Date.parse(expiryById.get(pair.id)) : Number.NaN;
-      const fileAt = Date.parse(parsed.expiresAt);
+      // The file's own `expires-at` goes through the loader's predicate: a bare
+      // date is inclusive (#1521), so the file is not deleted while
+      // `rule-loader.mjs` still injects it on its last day.
+      const fileAt = ruleExpiryInstantMs(parsed.expiresAt);
       const effectiveAt = Number.isFinite(storeAt) ? Math.max(storeAt, fileAt) : fileAt;
       const base = {
         file: rule.file,
@@ -644,7 +660,7 @@ export async function planRuleExpirySweep(opts = {}) {
         headings: 0,
         substantivePairs: 1,
       };
-      if (effectiveAt < cutoffMs) {
+      if (effectiveAt <= cutoffMs) {
         plans.push({
           ...base,
           expiredPairIds: [pair.id],

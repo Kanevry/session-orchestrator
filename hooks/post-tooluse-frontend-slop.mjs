@@ -3,6 +3,10 @@
  * post-tooluse-frontend-slop.mjs — PostToolUse hook that runs the deterministic
  * frontend-slop detector on a UI file right after it is edited.
  *
+ * @deprecated since 5.8.0 (#1121) — removal in the next major. An opted-in
+ * repo (`frontend-slop-hook.enabled: true`) gets one stderr notice per run;
+ * behaviour is otherwise unchanged.
+ *
  * Issue #684 (Track 2 / item B). OPT-IN, warn-only, NON-BLOCKING. PostToolUse
  * fires AFTER the edit is already applied, so this hook can never block — it
  * only surfaces an `additionalContext` roll-up of detector findings so the
@@ -15,7 +19,7 @@
  *   4. file_path gate: exit 0 if absent / non-string.
  *   5. Extension gate: exit 0 unless path.extname(file) ∈ SCANNABLE_EXTS (SSOT).
  *   6. Session Config gate: exit 0 unless `frontend-slop-hook.enabled === true`
- *      (OPT-IN — default off).
+ *      (OPT-IN — default off). Enabled → one deprecation line on stderr (#1121).
  *   7. detectFiles([file]) (fail-soft). No findings → exit 0 silently.
  *   8. Output: additionalContext roll-up on stdout (NEVER blocks). Best-effort
  *      orchestrator.frontend_slop.warning event.
@@ -148,6 +152,12 @@ async function main() {
   // Session Config gate — OPT-IN (default off).
   const config = await loadFrontendSlopHookConfig({ repoRoot: getProjectDir() });
   if (config.enabled !== true) return;
+
+  // #1121: deprecated, not removed. Only opted-in repos hear it, once per run,
+  // on stderr — stdout is the hook-JSON channel the harness parses.
+  process.stderr.write(
+    'ℹ frontend-slop-hook is deprecated, removal in the next major — #1121\n',
+  );
 
   // Run the deterministic detector (fail-soft: unreadable files → []).
   const findings = detectFiles([filePath]);

@@ -451,7 +451,7 @@ const ALLOWLIST = Object.freeze({
   'auto-skill-dispatch':
     'prose-only consumer — skills/using-orchestrator/SKILL.md + skills/_shared/bootstrap-gate.md read this key as an LLM instruction; there is no .mjs gate by design',
   'auto-commit-per-wave':
-    'prose-only consumer — skills/wave-executor/wave-loop.md gates the per-wave commit step on this key; the commit itself is a coordinator action, not a script',
+    'planned no-op (#1219) — only skills/wave-executor/references/wave-loop-review.md names this key, as contract prose; no per-wave commit step runs on it yet (scripts/lib/auto-commit.mjs does not exist)',
   'instruction-budget':
     'dedicated reader outside the parser layer — scripts/lib/instruction-budget-guard.mjs parses this block itself (S2 exemption only; S1 evidence is real)',
 });

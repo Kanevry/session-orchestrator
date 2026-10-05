@@ -15,7 +15,7 @@ args-schema:
   - flag: --verify
     description: "Re-evaluate a stored run-id and diff per-dimension for scoring drift (exit 1 on drift)"
 description: >
-  Use this skill to run an honest session-process evaluation (Standard v1, aiat-llm-eval/1.0) — score the last completed orchestrator session against the pre-registered rubric-v2 dimensions, run /eval, evaluate this session, produce an eval report, or re-verify a stored eval run for reproducibility. Deterministic-first with an optional advisory LLM judge; never produces a global score.
+  Use this skill to run an honest session-process evaluation (Standard v1, aiat-llm-eval/1.0) — score the last completed orchestrator session against the pre-registered rubric-v3 dimensions, run /eval, evaluate this session, produce an eval report, or re-verify a stored eval run for reproducibility. Deterministic-first with an optional advisory LLM judge; never produces a global score.
 ---
 
 > **Platform Note:** State files use the platform's native directory: `.claude/` (Claude Code), `.codex/` (Codex CLI), or `.cursor/` (Cursor IDE). Shared metrics + the eval journal live in `.orchestrator/metrics/`. See `skills/_shared/platform-tools.md`.
@@ -23,7 +23,7 @@ description: >
 # Eval Skill — Session-Process Evaluation (aiat-llm-eval/1.0)
 
 On-demand, honest measurement of ONE completed orchestrator session against the
-pre-registered **rubric-v2** check set. The deterministic engine
+pre-registered **rubric-v3** check set. The deterministic engine
 (`scripts/eval-session.mjs` → `scripts/lib/eval/engine.mjs`) reads only local
 metrics files (`sessions.jsonl` + `events.jsonl`), scores the six deterministic
 dimensions, appends a `session-eval` record to the journal, and optionally
@@ -31,9 +31,10 @@ renders an HTML report. An opt-in LLM judge overlays ONE advisory dimension
 (`instruction-adherence`; `report-quality` was retired in rubric-v2, #1381).
 
 The standard this skill implements is [`docs/eval/aiat-llm-eval-v1.md`](../../docs/eval/aiat-llm-eval-v1.md);
-the frozen, content-hashed check set is [`skills/eval/rubric-v2.md`](./rubric-v2.md)
-(stored records written before 2026-09-19 carry `rubric-v1` and are read against
-[`rubric-v1.md`](./rubric-v1.md), which is never edited again).
+the frozen, content-hashed check set is [`skills/eval/rubric-v3.md`](./rubric-v3.md)
+(stored records carry the version they were scored under: before 2026-09-19
+`rubric-v1` → [`rubric-v1.md`](./rubric-v1.md), 2026-09-19 to 2026-10-05
+`rubric-v2` → [`rubric-v2.md`](./rubric-v2.md); neither is edited again).
 
 ## Invocation
 
@@ -46,7 +47,7 @@ Invoked as `/eval [--session <id>] [--no-write] [--verify <run-id>]` with argume
 
 **On-demand `/eval` runs regardless of `eval.enabled`** — that flag gates only the automatic session-end eval phase (see Phase 1.1).
 
-**Seams used:** `scripts/eval-session.mjs` (deterministic CLI) · `runEvalJudge` / `mergeJudgeDimensions` (`scripts/lib/eval/judge.mjs`, opt-in) · `writeEvalReport` (`scripts/lib/eval/report.mjs`) · `appendEvalRecord` (`scripts/lib/eval/sink.mjs`) · the `eval` config block · [`skills/eval/rubric-v2.md`](./rubric-v2.md) (frozen check set).
+**Seams used:** `scripts/eval-session.mjs` (deterministic CLI) · `runEvalJudge` / `mergeJudgeDimensions` (`scripts/lib/eval/judge.mjs`, opt-in) · `writeEvalReport` (`scripts/lib/eval/report.mjs`) · `appendEvalRecord` (`scripts/lib/eval/sink.mjs`) · the `eval` config block · [`skills/eval/rubric-v3.md`](./rubric-v3.md) (frozen check set).
 
 ## Posture Contract (load-bearing — read before executing)
 
@@ -154,7 +155,7 @@ node scripts/eval-session.mjs [--session <id>] --json \
 Parse the emitted JSON record. It carries `dimensions[]` (6 deterministic
 entries — the two reported-only ones, `guard-friction` and `efficiency-kpis`,
 are always `not-applicable`), `kpis{}`, `provenance.rubric_sha256` (the sha256
-of `rubric-v2.md`; `null` means the rubric file was not found and the append
+of `rubric-v3.md`; `null` means the rubric file was not found and the append
 will fail validation), `model`, `harness`, and `run_id`. Unless `--no-write` was
 passed, the record is already appended to `.orchestrator/metrics/eval.jsonl` by
 the CLI.
@@ -236,7 +237,7 @@ const res = writeEvalReport(record, { generatedAt: new Date().toISOString() });
 Emit a compact, honest per-dimension summary. Status lines only — no global score.
 
 ```
-## /eval — <session_id>  (self-evaluation, aiat-llm-eval/1.0 · rubric-v2 · n=1, no CI)
+## /eval — <session_id>  (self-evaluation, aiat-llm-eval/1.0 · rubric-v3 · n=1, no CI)
 
 Deterministic:
   verification-evidence   PASS   <one-line evidence>
@@ -276,11 +277,9 @@ node scripts/eval-session.mjs --verify <run-id> --json
   changed since the record was written — investigate, do not overwrite.
 - `--verify` reproduces the stored model + timestamp verbatim (no env override),
   so a MATCH is a real reproducibility proof of the scoring, not of model output.
-- **A cross-version DRIFT is not a defect.** A stored `rubric-v1` record
-  re-scored by today's rubric-v2 engine necessarily differs on `process-safety`
-  and reports `present-in-fresh-only: guard-friction`. Read the record's
-  `rubric_version` before treating a diff as a regression (#1400 replaces that
-  report with an explicit version verdict).
+- **A record from another rubric version is not re-scored.** `--verify` reports
+  `VERSION-MISMATCH` (exit 3) when the stored `rubric_version` differs from the
+  engine's (#1400), so a v1 or v2 record never reads as a regression under v3.
 
 ---
 

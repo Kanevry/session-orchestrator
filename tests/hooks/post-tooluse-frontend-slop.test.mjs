@@ -156,6 +156,8 @@ describe('post-tooluse-frontend-slop hook', () => {
     expect(result.status).toBe(0);
     expect(result.stdout.trim()).toBe('');
     expect(readEvents()).toEqual([]);
+    // #1121: the deprecation notice speaks only to repos that opted in.
+    expect(result.stderr).not.toContain('deprecated');
   });
 
   it('(b) enabled + frontend file with slop → exit 0 + additionalContext lists the rule + event', () => {
@@ -179,6 +181,11 @@ describe('post-tooluse-frontend-slop hook', () => {
     expect(events[0].high).toBeGreaterThanOrEqual(1);
     expect(events[0].by_rule['gradient-text']).toBeGreaterThanOrEqual(1);
     expect(events[0].session_id).toBe('slop-test-session');
+
+    // #1121: an opted-in repo is told — once per run, on stderr, never on the
+    // stdout channel the harness parses as hook JSON.
+    expect(result.stderr.match(/deprecated, removal in the next major — #1121/g)).toHaveLength(1);
+    expect(result.stdout).not.toContain('deprecated');
   });
 
   it('(b2) enabled + Write tool (not just Edit) also scans + warns', () => {

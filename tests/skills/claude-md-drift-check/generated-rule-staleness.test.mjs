@@ -28,6 +28,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const CHECKER = resolve(process.cwd(), 'skills/claude-md-drift-check/checker.mjs');
 
@@ -530,5 +531,57 @@ describe('generated-rule-staleness — evidence-digest makes a rule self-contain
     );
     expect(stale).toHaveLength(1);
     expect(stale[0].message).toMatch(/expired on 2020-01-01/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Boundary day (#1521). `expires-at` is INCLUSIVE: a bare date keeps the rule
+// live through that whole UTC day — that is what rule-loader.mjs injects by.
+// This check used to compute `Date.parse(expiry) < now` (exclusive) and so
+// flagged a rule as expired from 00:00 UTC of the very day the loader still
+// injects it. It also read `expires-at` raw: a hand-quoted `"2026-06-01"` went
+// through V8's legacy parser as LOCAL midnight. The clock is injected through
+// a `--import` preload that pins Date.now(), so the CLI path stays the real one.
+// ---------------------------------------------------------------------------
+
+describe('generated-rule-staleness — boundary day uses the loader predicate', () => {
+  const clockDirs = [];
+  afterEach(() => {
+    while (clockDirs.length > 0) rmSync(clockDirs.pop(), { recursive: true, force: true });
+  });
+
+  function runCheckerAt(isoNow) {
+    const dir = mkdtempSync(join(tmpdir(), 'drift-clock-'));
+    clockDirs.push(dir);
+    const preload = join(dir, 'clock.mjs');
+    writeFileSync(preload, `const t = ${Date.parse(isoNow)};\nDate.now = () => t;\n`);
+    const r = spawnSync('node', ['--import', pathToFileURL(preload).href, CHECKER, ...SKIP_OTHERS], {
+      env: { ...process.env, VAULT_DIR: vault, PATH: process.env.PATH },
+      encoding: 'utf8',
+      timeout: 15_000,
+    });
+    return parseJson(r.stdout).warnings.filter((w) => w.check === 'generated-rule-staleness');
+  }
+
+  function writeBoundaryFixture(expiresAt) {
+    writeGeneratedRule(makeRulesDir(), 'boundary.md', 'anti-pattern/boundary-day', expiresAt);
+    writeLearningsJsonl(makeLearningsDir(), [
+      { type: 'anti-pattern', title: 'Boundary Day', confidence: 0.8, expires_at: '2026-06-01' },
+    ]);
+  }
+
+  it('is NOT expired at 11:00 UTC on the expiry day itself', () => {
+    writeBoundaryFixture('2026-06-01');
+    expect(runCheckerAt('2026-06-01T11:00:00.000Z')).toHaveLength(0);
+  });
+
+  it('IS expired one millisecond into the following UTC day', () => {
+    writeBoundaryFixture('2026-06-01');
+    expect(runCheckerAt('2026-06-02T00:00:00.001Z')).toHaveLength(1);
+  });
+
+  it('reads a hand-quoted expires-at the way the loader does (no local-time parse)', () => {
+    writeBoundaryFixture('"2026-06-01"');
+    expect(runCheckerAt('2026-06-01T23:00:00.000Z')).toHaveLength(0);
   });
 });

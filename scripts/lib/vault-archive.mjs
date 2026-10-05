@@ -16,10 +16,8 @@
  *
  * ── Frontmatter schema (mirror, not import) ─────────────────────────────────
  * The canonical vault frontmatter schema is the GENERATED Zod block in
- * skills/vault-sync/validator.mjs (Z.104-134). That schema is NOT exported, and
- * `zod` is not a dependency of scripts/ (it lives only as a skill-local shim in
- * skills/vault-sync/node_modules/). So the field constraints below are a
- * hand-rolled MIRROR of that schema. If the canonical schema changes, update the
+ * skills/vault-sync/validator.mjs (Z.104-134). That schema is NOT exported, so
+ * the field constraints below are a hand-rolled MIRROR of that schema. If the canonical schema changes, update the
  * constants here to match. The mirror is proven equivalent by an integration
  * test that runs the REAL validator subprocess over generated output
  * (tests/lib/vault-archive.test.mjs § "REAL validator").
