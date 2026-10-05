@@ -144,10 +144,10 @@
         <li class="feature"><span class="feature-tag">Signed, not assumed</span><h3>Nothing ships without your yes.</h3><p class="feature-value">What a session may do on its own is written in a file you signed and committed. Anything else needs your yes, every time.</p><p>Each action is <code>frei</code> (free), <code>einzeln</code> (ask each time) or <code>nie</code> (never). <code>authority check</code> checks the schema, the signature by a trusted key and that the file is unchanged against HEAD. <code>authority query</code> answers <code>einzeln</code> as long as no valid file exists.</p></li>
         <li class="feature"><span class="feature-tag">No collisions</span><h3>Sessions stay out of each other&#8217;s way.</h3><p class="feature-value">A new run does not start in a checkout another session is already working in.</p><p><code>slot check</code> looks for a fresh session-orchestrator lock, a fresh Codex session in that repository and a remote on a blocked host. The starters for Claude Code and Codex add disk, memory, the stop and a claim. Given a worktree path, each run works in its own worktree.</p></li>
         <li class="feature"><span class="feature-tag">Proof before merge</span><h3>Merges wait for green.</h3><p class="feature-value">Nothing merges on a red or missing pipeline, and nothing merges because a message said so.</p><p><code>merge-window</code> checks the pipeline on the exact head commit, with all required jobs. Without <code>--execute</code> it only reports. It merges only if the signed file says <code>frei</code> for <code>merge_auf_main</code>. GitLab only for now.</p></li>
-        <li class="feature"><span class="feature-tag">Hard stop</span><h3>One command stops everything.</h3><p class="feature-value">When something looks wrong, no new run starts until you say so.</p><p><code>navigator stop set --reason "maintenance"</code> and every starter refuses with exit 8. <code>navigator stop clear</code> lifts it. The stop keeps a history log.</p></li>
+        <li class="feature"><span class="feature-tag">Hard stop</span><h3>One command stops everything.</h3><p class="feature-value">When something looks wrong, no new run starts until you say so.</p><p><code>navigator stop set --reason "maintenance"</code> and every starter refuses with exit 8. <code>navigator stop clear --reason "&lt;why&gt;" --source &lt;you&gt;</code> lifts it. The stop keeps a history log.</p></li>
         <li class="feature"><span class="feature-tag">Clean handover</span><h3>The next lead picks up.</h3><p class="feature-value">A lead session can end without the fleet losing its thread.</p><p>The lease runs for 30 minutes at a time and passes only to the successor it names. <code>handover</code> drafts the state for the next lead. <code>resume-draft</code> drafts the next phase of a headless run that hit its time limit.</p></li>
       </ul>
-      <p class="feature-more">Also included: <code>situation</code> shows the current picture in at most 60 lines, <code>status</code> and <code>watch</code> list all Claude sessions on this host with open questions first, and <code>costs</code> keeps cost pots for what the lead itself triggered. The CLI is called <code>lead-session-orchestrator</code>, with the short alias <code>navigator</code>.</p>
+      <p class="feature-more">Also included: <code>situation</code> shows the current picture on one screen, <code>status</code> and <code>watch</code> list all Claude sessions on this host with open questions first, and <code>costs</code> keeps cost pots for what the lead itself triggered. The CLI is called <code>lead-session-orchestrator</code>, with the short alias <code>navigator</code>.</p>
     </div>
   </section>
 
@@ -212,6 +212,7 @@
           <caption class="sr">Shared exit codes and their meaning</caption>
           <tbody>
             <tr><th scope="row">0</th><td>done, or nothing found; never an approval</td></tr>
+            <tr><th scope="row">1</th><td>check failed (fail-closed) or write error</td></tr>
             <tr><th scope="row">2</th><td>usage error</td></tr>
             <tr><th scope="row">4</th><td>refused</td></tr>
             <tr><th scope="row">5</th><td>busy</td></tr>
@@ -230,16 +231,16 @@
       <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Coming soon<br>to npm.</h2></div><p>lead-session-orchestrator is not published yet. This is how installing will look. It requires Node.js 24 or newer and git.</p></div>
       <p class="cmd"><code>npm i -g lead-session-orchestrator</code></p>
       <p class="small">Coming soon: the package is not on npm yet, so this command does not work today.</p>
-      <pre class="code">navigator situation                                 # the current picture in at most 60 lines
+      <pre class="code">navigator situation                                 # the current picture on one screen
 navigator status                                    # all Claude sessions on this host, open questions first
 navigator authority query acme-api merge_auf_main   # frei | einzeln | nie; without a trusted signer: einzeln
 navigator slot check acme-api                       # busy gate: 0 no foreign signal, 5 busy, 6 not measurable
-navigator stop set --reason "maintenance"           # nothing new starts until navigator stop clear</pre>
+navigator stop set --reason "maintenance"           # nothing new starts until navigator stop clear --reason ... --source ...</pre>
       <p class="install-guide">Source code: <code>github.com/Kanevry/lead-session-orchestrator</code><span class="lead-soon">coming soon</span></p>
     </div>
   </section>
 
-  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Until then</p><h2>Start with<br>one good session.</h2><p>The lead builds on session-orchestrator. Install that today, and add the lead when it ships.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
+  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Until then</p><h2>Start with<br>one good session.</h2><p>The lead works best with session-orchestrator. Install that today, and add the lead when it ships.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
 </main>
 <footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/">session-orchestrator</a><p>An open-source project by Bernhard Götzendorfer.</p></div><div class="footer-links"><nav aria-label="More links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/lead" aria-current="page">Lead session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Imprint</a><a href="/datenschutz">Privacy</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Buy me a coffee, if this helped.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>
