@@ -11,7 +11,7 @@ Version: 5.8.0 · npm: session-orchestrator · requires Node.js >= 24 (package.j
 - / (English)
 - /de (German)
 - /guide
-- /lead (lead-session-orchestrator, sibling product, coming soon)
+- /lead (lead-session-orchestrator, sibling product, https://github.com/Kanevry/lead-session-orchestrator)
 - /impressum
 - /datenschutz
 - /llms-full.txt
@@ -39,7 +39,7 @@ Version: 5.8.0 · npm: session-orchestrator · requires Node.js >= 24 (package.j
 
 ## Sibling product: lead-session-orchestrator
 
-https://session-orchestrator.com/lead · coming soon, not yet published on npm
+https://session-orchestrator.com/lead · npm: lead-session-orchestrator · source: https://github.com/Kanevry/lead-session-orchestrator
 
 One lead session above several AI coding sessions. It keeps the overview, reads a signed authority file per repository instead of granting approvals, gates runs and merges on what it can measure, and collects open questions into one owner queue. Inside each session, session-orchestrator does the work; the two coordinate through files and each works alone. Version 0.x, GitLab only, tested on macOS, one host.
 

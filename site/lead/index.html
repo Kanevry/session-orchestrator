@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Lead Session Orchestrator | One lead above your AI coding sessions</title>
-<meta name="description" content="Several AI coding sessions at once, without babysitting terminals. One lead session keeps the overview, reads your signed rules and brings every open question to you in one round. Open source, coming soon.">
+<meta name="description" content="Several AI coding sessions at once, without babysitting terminals. One lead session keeps the overview, reads your signed rules and brings every open question to you in one round. Open source, MIT licensed.">
 <link rel="canonical" href="https://session-orchestrator.com/lead">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 
@@ -12,7 +12,7 @@
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/lead">
 <meta property="og:title" content="Lead Session Orchestrator | One lead above your AI coding sessions">
-<meta property="og:description" content="Several AI coding sessions at once, without babysitting terminals. One lead session keeps the overview, reads your signed rules and brings every open question to you in one round. Open source, coming soon.">
+<meta property="og:description" content="Several AI coding sessions at once, without babysitting terminals. One lead session keeps the overview, reads your signed rules and brings every open question to you in one round. Open source, MIT licensed.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -20,14 +20,13 @@
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="Lead Session Orchestrator | One lead above your AI coding sessions">
-<meta name="twitter:description" content="Several AI coding sessions at once, without babysitting terminals. One lead session keeps the overview, reads your signed rules and brings every open question to you in one round. Open source, coming soon.">
+<meta name="twitter:description" content="Several AI coding sessions at once, without babysitting terminals. One lead session keeps the overview, reads your signed rules and brings every open question to you in one round. Open source, MIT licensed.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with an illustration of an agent workshop under human direction.">
 
-<!-- The sibling product is not published yet: no SoftwareApplication node, no
-     downloadUrl, no codeRepository. Add them when the npm package and the
-     GitHub repository exist. Copy source: the lead-session-orchestrator README
-     and docs/*.md of the release export. -->
+<!-- Published 2026-10-05: npm lead-session-orchestrator, source
+     github.com/Kanevry/lead-session-orchestrator. A SoftwareApplication node
+     can follow once the seo-graph tests cover it. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
@@ -64,12 +63,12 @@
   <section class="sec hero-sec" id="top">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">lead-session-orchestrator · coming soon</p>
+        <p class="eyebrow">lead-session-orchestrator · open source</p>
         <h1 class="h-display">Several sessions.<br>One lead.<br>You decide.</h1>
         <p class="hero-lede">One lead session keeps the overview above your AI coding sessions, so you don&#8217;t have to.</p>
         <p class="hero-context">Claude Code in one terminal, Codex in another, three repositories, maybe a headless run in the background. It works, until it doesn&#8217;t. Two sessions edit the same checkout. Each one asks you the same question. One merges while the pipeline is still red. And your evening goes to babysitting terminals instead of deciding the things only you can decide.</p>
         <div class="cta"><a class="btn btn-primary" href="#how">See how it works<span aria-hidden="true">↓</span></a><a class="btn btn-secondary" href="#together">Works with session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
-        <p class="hero-note">Open source · MIT licensed · Not on npm yet</p>
+        <p class="hero-note">Open source · MIT licensed · <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a> · <a href="https://github.com/Kanevry/lead-session-orchestrator">GitHub</a></p>
       </div>
       <figure class="hero-art">
         <img src="/img/lead-control-room-800.webp" srcset="/img/lead-control-room-480.webp 480w, /img/lead-control-room-800.webp 800w, /img/lead-control-room-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="One person in an elevated control room oversees four separate workshops where small agents work, with one indicator light per workshop and a stop lever on the desk.">
@@ -160,7 +159,7 @@
       <div class="section-heading"><div><p class="eyebrow">Better together</p><h2>Each works alone.<br>Together they cover the fleet.</h2></div><p>session-orchestrator runs one session well. lead-session-orchestrator coordinates several of them. Neither calls the other. On the same host they coordinate through files, so a session never waits for a message from the lead.</p></div>
       <div class="cards lead-pair">
         <div class="card"><span class="feature-tag">Inside one session</span><h3>session-orchestrator</h3><p>Plan, waves, quality gates, close. It holds a session lock in its repository and writes a check-in at session start. Available today for Claude Code, Codex, Cursor and Pi.</p><a href="/">Visit session-orchestrator <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
-        <div class="card"><span class="feature-tag">Across sessions</span><h3>lead-session-orchestrator<span class="lead-soon">coming soon</span></h3><p>Lease, gates, ledger and the owner queue. It writes constraints for each session, decides which one runs next and hands over between lead sessions.</p><p>Without session-orchestrator, authority, ledger, stop, owner queue, GitLab gates and handover still work. Busy detection is weaker then: an interactive Claude Code session leaves no lock, so <code>slot check</code> cannot see it.</p></div>
+        <div class="card"><span class="feature-tag">Across sessions</span><h3>lead-session-orchestrator</h3><p>Lease, gates, ledger and the owner queue. It writes constraints for each session, decides which one runs next and hands over between lead sessions.</p><p>Without session-orchestrator, authority, ledger, stop, owner queue, GitLab gates and handover still work. Busy detection is weaker then: an interactive Claude Code session leaves no lock, so <code>slot check</code> cannot see it.</p></div>
       </div>
       <table class="kv lead-who">
         <caption>Who decides what</caption>
@@ -232,19 +231,18 @@
 
   <section class="sec install-sec" id="start">
     <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Coming soon<br>to npm.</h2></div><p>lead-session-orchestrator is not published yet. This is how installing will look. It requires Node.js 24 or newer and git.</p></div>
+      <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Install<br>from npm.</h2></div><p>Requires Node.js 24 or newer and git. It requires Node.js 24 or newer and git.</p></div>
       <p class="cmd"><code>npm i -g lead-session-orchestrator</code></p>
-      <p class="small">Coming soon: the package is not on npm yet, so this command does not work today.</p>
       <pre class="code">navigator situation                                 # the current picture on one screen
 navigator status                                    # all Claude sessions on this host, open questions first
 navigator authority query acme-api merge_auf_main   # frei | einzeln | nie; without a trusted signer: einzeln
 navigator slot check acme-api                       # busy gate: 0 no foreign signal, 5 busy, 6 not measurable
 navigator stop set --reason "maintenance"           # nothing new starts until navigator stop clear --reason ... --source ...</pre>
-      <p class="install-guide">Source code: <code>github.com/Kanevry/lead-session-orchestrator</code><span class="lead-soon">coming soon</span></p>
+      <p class="install-guide">Source code: <a href="https://github.com/Kanevry/lead-session-orchestrator"><code>github.com/Kanevry/lead-session-orchestrator</code></a></p>
     </div>
   </section>
 
-  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Until then</p><h2>Start with<br>one good session.</h2><p>The lead works best with session-orchestrator. Install that today, and add the lead when it ships.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
+  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Start small</p><h2>Start with<br>one good session.</h2><p>The lead works best with session-orchestrator. Start with one good session, then add the lead when you run several.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
 </main>
 <footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/">session-orchestrator</a><p>An open-source project by Bernhard Götzendorfer.</p></div><div class="footer-links"><nav aria-label="More links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/lead" aria-current="page">Lead session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Imprint</a><a href="/datenschutz">Privacy</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Buy me a coffee, if this helped.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>

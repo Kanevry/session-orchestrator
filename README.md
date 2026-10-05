@@ -161,7 +161,7 @@ Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
 ## Running many sessions at once
 
-session-orchestrator makes one session reliable. When several sessions run in parallel across repositories, a lead session can coordinate them: who runs next, what each may do, one queue for your decisions, one stop for everything. That is the sibling project [lead-session-orchestrator](https://session-orchestrator.com/lead) (coming soon). Each works alone; together they use the shared fleet contract in `skills/_shared/fleet-protocol.md`.
+session-orchestrator makes one session reliable. When several sessions run in parallel across repositories, a lead session can coordinate them: who runs next, what each may do, one queue for your decisions, one stop for everything. That is the sibling project [lead-session-orchestrator](https://session-orchestrator.com/lead) ([GitHub](https://github.com/Kanevry/lead-session-orchestrator), npm `lead-session-orchestrator`). Each works alone; together they use the shared fleet contract in `skills/_shared/fleet-protocol.md`.
 
 ## Scope and support
 

@@ -55,7 +55,7 @@ Nothing is learned silently. Sessions append plain-text JSONL records (sessions,
 
 /portfolio aggregates issues/MRs/CI health across all registered repos; /dispatcher ranks free repos by backlog, staleness and readiness, then claims a lease atomically before launching; a vault live-status board shows in-progress/force-closed sessions across every repo on the host. GitLab and GitHub are both first-class (auto-detected; glab and gh drive the full issue/MR lifecycle).
 
-For several sessions running in parallel, the sibling project lead-session-orchestrator (coming soon, https://session-orchestrator.com/lead) acts as one lead session above them: who runs next, what each may do, one queue for the operator's decisions, one stop for everything. It uses the same fleet contract; each tool works alone.
+For several sessions running in parallel, the sibling project lead-session-orchestrator (https://session-orchestrator.com/lead, https://github.com/Kanevry/lead-session-orchestrator) acts as one lead session above them: who runs next, what each may do, one queue for the operator's decisions, one stop for everything. It uses the same fleet contract; each tool works alone.
 
 ## Eval standard
 
