@@ -41,8 +41,19 @@ if ! command -v node >/dev/null 2>&1; then
   exit 2
 fi
 
+# Emit the infra-error envelope via node so a path containing a quote or a
+# backslash still yields valid JSON (paths travel through env, never through
+# the JSON text). Args: reason [detail] [setup].
+infra_error() {
+  SO_VS_REASON="$1" SO_VS_DETAIL="${2:-}" SO_VS_SETUP="${3:-}" node -e '
+    const o = { status: "infra-error", reason: process.env.SO_VS_REASON };
+    if (process.env.SO_VS_DETAIL) o.detail = process.env.SO_VS_DETAIL;
+    if (process.env.SO_VS_SETUP) o.setup = process.env.SO_VS_SETUP;
+    console.error(JSON.stringify(o));' >&2
+}
+
 if [[ ! -f "$VALIDATOR_MJS" ]]; then
-  echo "{\"status\":\"infra-error\",\"reason\":\"validator.mjs not found at $VALIDATOR_MJS\"}" >&2
+  infra_error "validator.mjs not found at $VALIDATOR_MJS"
   exit 2
 fi
 
@@ -54,7 +65,7 @@ fi
 if ! (cd "$SCRIPT_DIR" && node --input-type=module \
       -e "import.meta.resolve('zod'); import.meta.resolve('yaml');") >/dev/null 2>&1; then
   PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-  echo "{\"status\":\"infra-error\",\"reason\":\"setup-required\",\"detail\":\"zod/yaml not resolvable from $SCRIPT_DIR\",\"setup\":\"cd $PLUGIN_ROOT && npm ci\"}" >&2
+  infra_error "setup-required" "zod/yaml not resolvable from $SCRIPT_DIR" "cd '$PLUGIN_ROOT' && npm ci"
   exit 2
 fi
 
