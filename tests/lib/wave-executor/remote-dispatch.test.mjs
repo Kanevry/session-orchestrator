@@ -635,3 +635,74 @@ describe('parseDoctorLine', () => {
     });
   });
 });
+
+// #1524: format fixtures derived from projects-baseline !99's BRIEF printf at
+// b10ee8096a192e4afb122fb55b8f2c915901b381, not from a live host measurement.
+// The historical measured legacy fixture above remains the compatibility control.
+describe('doctor brief compatibility (#1524)', () => {
+  it.each([
+    ['legacy yes', 'host-x ready=yes', true],
+    ['legacy NO', 'host-x ready=NO', false],
+    ['legacy mixed case', 'host-x ReAdY=YeS', true],
+    ['gate yes, headless NO', 'host-x gate-ready=yes · headless-ready=NO', false],
+    ['gate NO, headless yes', 'host-x gate-ready=NO · headless-ready=yes', true],
+    ['new mixed case', 'host-x GATE-READY=no · HEADLESS-READY=YeS', true],
+    ['headless NO overrides legacy', 'host-x ready=yes · gate-ready=yes · headless-ready=NO', false],
+    ['headless unknown overrides legacy', 'host-x ready=yes · headless-ready=nicht messbar', false],
+    ['headless missing overrides legacy', 'host-x ready=yes · gate-ready=yes', false],
+    ['headless empty overrides legacy', 'host-x ready=yes · headless-ready=', false],
+    ['headless malformed overrides legacy', 'host-x ready=yes · headless-ready=yes-extra', false],
+    ['conflicting headless values', 'host-x headless-ready=yes · headless-ready=NO · ready=yes', false],
+    ['unknown alongside headless yes', 'host-x headless-ready=yes · headless-ready=nicht messbar', false],
+    ['empty alongside headless yes', 'host-x headless-ready=yes · headless-ready= · ready=yes', false],
+    ['gate alone', 'host-x gate-ready=yes', false],
+    ['empty', '', false],
+    ['foreign key', 'host-x already=yes', false],
+    ['extended legacy key', 'host-x not-ready=yes', false],
+    ['partial legacy value', 'host-x ready=yes-extra', false],
+    ['extended headless key', 'host-x extra-headless-ready=yes · gate-ready=yes · ready=yes', false],
+    ['partial headless value', 'host-x headless-ready=yesplease', false],
+    ['punctuated value', 'host-x headless-ready=yes!', false],
+    ['missing key separator', 'host-x headless-ready yes · ready=yes', false],
+  ])('uses exact Claude readiness through parser, doctor and probe: %s', async (_name, raw, ready) => {
+    expect(parseDoctorLine(raw).ready).toBe(ready);
+    expect(remoteDoctor({ host: 'host-x', execFn: fakeExec({ out: `${raw}\n` }) }).ready).toBe(ready);
+    await expect(remoteReadyProbe('host-x', { execFn: fakeExec({ out: raw }) })).resolves.toBe(ready);
+  });
+
+  it.each([
+    ['Darwin', 'host-x gate-ready=yes · headless-ready=NO · load5 (5 min) 14.23 · mem free 96% · headless: slots none, keychain-route off · 9 jobs · claude procs 12', false, 14.23, 96, 9, 12],
+    ['Linux', 'host-x gate-ready=NO · headless-ready=yes · load5 (5 min) 0.40 · mem available 4096 kB available / 8192 kB total (50.0% available) · headless: slots 1, keychain-route off · 2 jobs · claude procs 3', true, 0.4, 50, 2, 3],
+    ['Linux percent label', 'host-x headless-ready=yes · load5 (5 min) 0 · mem available 0% · 0 jobs · claude procs 0', true, 0, 0, 0, 0],
+    ['Linux measured zero', 'host-x gate-ready=yes · headless-ready=yes · load5 (5 min) 0 · mem available 0 kB available / 8192 kB total (0.0% available) · headless: slots 1, keychain-route off · 0 jobs · claude procs 0', true, 0, 0, 0, 0],
+    ['Darwin measured zero', 'host-x ready=yes · load 0 · mem free 0% · 0 jobs · claude procs 0', true, 0, 0, 0, 0],
+    ['unreachable', 'host-x unreachable · gate-ready=nicht messbar · headless-ready=nicht messbar · load5 (5 min) nicht messbar · mem nicht messbar', false, null, null, null, null],
+  ])('preserves the metrics record and raw for %s', (_name, raw, ready, load, memFreePct, jobs, claudeProcs) => {
+    const expected = { ready, raw, load, memFreePct, jobs, claudeProcs };
+    expect(parseDoctorLine(raw)).toEqual(expected);
+    expect(remoteDoctor({ host: 'host-x', execFn: fakeExec({ out: `${raw}\n` }) })).toEqual(expected);
+  });
+
+  it.each([
+    'load nicht messbar · mem free nicht messbar',
+    'load5 (5 min) ? · mem available nicht messbar',
+    'load -1 · mem free -1%',
+    'load 1.2bad · mem free 20%bad',
+    'load5 (5 min) 1.2.3 · mem available 101%',
+    'load5 (5 min) Infinity · mem available 4096 kB available',
+    'load5 (5 min) 0foo · mem available 4096 kB available / 8192 kB total (50.0% available)bad',
+  ])('returns null for invalid or unmeasured metrics: %s', (metrics) => {
+    expect(parseDoctorLine(`host-x headless-ready=NO · ${metrics}`)).toMatchObject({
+      ready: false, load: null, memFreePct: null,
+    });
+  });
+
+  it('refuses non-zero doctor and probe even with positive new readiness and metrics', async () => {
+    const raw = 'host-x gate-ready=yes · headless-ready=yes · load5 (5 min) 0 · mem free 96% · 0 jobs · claude procs 0';
+    const err = Object.assign(new Error('Command failed'), { status: 2, stdout: `${raw}\n` });
+    expect(remoteDoctor({ host: 'host-x', execFn: fakeExec({ throws: err }) })).toEqual({
+      ready: false, raw, load: null, memFreePct: null, jobs: null, claudeProcs: null,
+    });
+    await expect(remoteReadyProbe('host-x', { execFn: fakeExec({ throws: err }) })).resolves.toBe(false);
+  });
+});

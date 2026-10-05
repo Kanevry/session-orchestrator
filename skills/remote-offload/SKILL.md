@@ -30,7 +30,7 @@ Exit codes (`offload --help`, measured 2026-09-02): `0` ok · `1` usage/config �
 
 The gate decides, not the coordinator. `applyOffloadDecision()` in `scripts/lib/wave-resource-gate.mjs` fires when the resource verdict is `reduce` or `coordinator-direct` (and, with `offload-first: true`, on `proceed` as well — see below), and only AFTER the HR-004 heavy-repo cap — a capped wave that offloads still respects the cap. It never probes the network; the coordinator supplies a readiness WITNESS:
 
-- `opts.remoteReady` — `{ [alias]: boolean }`, built from the SessionStart banner line `Offload <alias>: ready=yes …`, or
+- `opts.remoteReady` — `{ [alias]: boolean }`, built from the SessionStart banner line `Offload <alias>: headless-ready=yes …` (legacy `ready=yes` only without new readiness markers; `gate-ready` does not authorize Claude dispatch), or
 - `opts.probeFn` — an async `(alias) => boolean` fallback, consulted only for aliases `remoteReady` doesn't answer for (backed by `remoteDoctor()`, i.e. `offload doctor -H <alias> --brief` parsed by `parseDoctorLine()`).
 
 With neither supplied, no host counts as ready and the wave stays local — the gate fails toward local, never toward an unverified host. A role in `NEVER_FOREIGN_ROLES` (`scripts/lib/wave-executor/dispatch-common.mjs`: `impl-core`, `security-review`, `migration`, `release`, `secrets`, `incident`, `refactor-crosscut`) is never offloaded regardless of readiness.
