@@ -277,11 +277,9 @@ node scripts/eval-session.mjs --verify <run-id> --json
   changed since the record was written — investigate, do not overwrite.
 - `--verify` reproduces the stored model + timestamp verbatim (no env override),
   so a MATCH is a real reproducibility proof of the scoring, not of model output.
-- **A cross-version DRIFT is not a defect.** A stored `rubric-v1` record
-  re-scored by today's rubric-v2 engine necessarily differs on `process-safety`
-  and reports `present-in-fresh-only: guard-friction`. Read the record's
-  `rubric_version` before treating a diff as a regression (#1400 replaces that
-  report with an explicit version verdict).
+- **A record from another rubric version is not re-scored.** `--verify` reports
+  `VERSION-MISMATCH` (exit 3) when the stored `rubric_version` differs from the
+  engine's (#1400), so a v1 or v2 record never reads as a regression under v3.
 
 ---
 
