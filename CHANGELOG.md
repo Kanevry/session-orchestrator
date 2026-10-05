@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-10-05
+
 ### Added
 
 - **`scripts/lib/plugin-package-stage.mjs`** (#1518): one packed staging for Claude and Codex installs — `npm pack --ignore-scripts`, extract, optional `npm ci --omit=dev --ignore-scripts` and a validate callback on the new copy, then swap; a failed swap restores the previous stage, stale work dirs are swept.
