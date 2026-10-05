@@ -124,6 +124,12 @@ function classifyFailure(err) {
 
   const stderr = err && typeof err === 'object' ? String(/** @type {any} */ (err).stderr ?? '') : '';
   const haystack = `${message}\n${stderr}`.toLowerCase();
+  // Rate limit BEFORE the auth check (#1034 item 2): GitHub answers a primary
+  // or secondary rate limit with HTTP 403, so the `http 403` test below would
+  // otherwise tell the operator to re-authenticate when waiting is the fix. A
+  // 403 without rate-limit wording (expired token, missing scope) stays
+  // `auth-error`.
+  if (haystack.includes('rate limit')) return 'query-failed';
   if (
     haystack.includes('gh auth login') ||
     haystack.includes('not logged in') ||

@@ -10,8 +10,13 @@
  *      order) that is either status:'completed' or non-abandoned with completed
  *      work. Abandoned records are ALWAYS skipped.
  *
- *   2. WHOSE events? — quality_gate events in events.jsonl carry NO session_id,
- *      so they are attributed to a session by its wall-clock window
+ *   2. WHOSE events? — quality_gate events in events.jsonl do not RELIABLY
+ *      carry a session_id (measured 2026-10-05, this repo's events.jsonl:
+ *      17 of 82 `orchestrator.quality_gate.*` records without one, 65 with —
+ *      `grep '"orchestrator.quality_gate' <file> | grep -c '"session_id"'`;
+ *      the id-less ones are interleaved through the file, not just the oldest),
+ *      so this module attributes them to a
+ *      session by its wall-clock window
  *      [started_at, completed_at] (Decision #1: attribution = time-window).
  *      findPeerOverlap() detects when that window overlaps ANY other session's
  *      window — a contaminated window means gate-attribution is unsafe and the

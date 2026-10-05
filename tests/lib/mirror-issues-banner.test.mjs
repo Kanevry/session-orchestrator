@@ -215,19 +215,18 @@ describe('checkMirrorIssues — degraded states are not "clean"', () => {
     expect(DEGRADED_REASONS).toContain(result.degraded);
   });
 
-  it('classifies an HTTP 403 rate-limit as auth-error (measured, see note)', async () => {
-    // MEASURED, NOT ENDORSED. `DEGRADED_REASONS`' doc comment lists "rate
-    // limit" under `query-failed`; `classifyFailure` routes `http 403` — which
-    // is exactly what GitHub returns for a rate-limit — to `auth-error`. This
-    // test pins what the CODE does so the contradiction cannot be resolved by
-    // accident: a well-meant edit moving `http 403` into the query-failed
-    // bucket to match the comment would also demote every expired-token and
-    // insufficient-scope 403 (the far more common 403 on `gh issue list`) out
-    // of auth-error, and the operator loses the "re-authenticate" signal.
-    // Which side is wrong is a decision for the owner, not this test.
+  it.each([
+    // GitHub answers a rate limit with HTTP 403 — telling the operator to
+    // re-authenticate would be the wrong advice (#1034 item 2).
+    ['primary rate limit', 'query-failed', 'gh: HTTP 403: API rate limit exceeded for user ID 1 (https://api.github.com/graphql)'],
+    ['secondary rate limit', 'query-failed', 'gh: HTTP 403: You have exceeded a secondary rate limit.'],
+    // A 403 WITHOUT rate-limit wording (expired token, missing scope) keeps
+    // the re-authenticate signal.
+    ['insufficient scope', 'auth-error', 'gh: HTTP 403: Resource not accessible by personal access token'],
+  ])('classifies an HTTP 403 %s as %s', async (_label, expected, stderr) => {
     const execFile = makeExecStub(async () => {
       const err = new Error('exit status 1');
-      err.stderr = 'gh: HTTP 403: API rate limit exceeded for user ID 1 (https://api.github.com/graphql)';
+      err.stderr = stderr;
       throw err;
     });
 
@@ -236,7 +235,7 @@ describe('checkMirrorIssues — degraded states are not "clean"', () => {
       { execFile, resolveRepoSpec: () => MIRROR_SPEC },
     );
 
-    expect(result.degraded).toBe('auth-error');
+    expect(result.degraded).toBe(expected);
     expect(DEGRADED_REASONS).toContain(result.degraded);
   });
 });
