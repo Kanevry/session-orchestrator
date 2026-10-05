@@ -531,11 +531,14 @@ describe('repairLine — schema_version absence survives repair', () => {
 // ---------------------------------------------------------------------------
 
 describe('repairLedger — post-verification is fail-safe', () => {
-  it('restores the backup byte-identically when the written file is invalid', () => {
+  it.each([
+    ['golden ledger', GOLDEN_RAW],
+    ['UTC-offset ledger', `${JSON.stringify({ ...goldenRecord(6), started_at: '2026-06-14T00:00:00.994600+00:00' })}\n`],
+  ])('restores the backup byte-identically when the written %s is invalid', (_label, original) => {
     // Seam: a writeFileSync that corrupts the payload — the real failure mode a
     // post-verification exists to catch (truncated / mangled write). Bug caught:
     // trusting the in-memory repair and leaving a corrupt ledger on disk.
-    const { repoRoot, file } = makeRepo(GOLDEN_RAW);
+    const { repoRoot, file } = makeRepo(original);
     const before = readFileSync(file, 'utf8');
 
     const summary = repairLedger({
@@ -916,4 +919,91 @@ describe('repairRecord — a defaulted field keeps its original value in a `_<fi
     expect('_total_files_changed_raw' in record).toBe(false);
     expect('_completed_at_raw' in record).toBe(false);
   });
+});
+
+// Golden line 6 is schema-valid; change only timestamps to isolate #1525.
+describe('#1525 — UTC sub-ms repair at the ledger boundary', () => {
+  it.each(['started_at', 'completed_at', 'lease_acquired_at'])(
+    'normalizes %s +00:00, preserves the actual original and is byte-idempotent', (field) => {
+      const raw = '2026-06-14T12:00:00.994600+00:00';
+      const input = {
+        ...goldenRecord(6),
+        started_at: '2026-06-14T00:00:00.000Z',
+        completed_at: '2026-06-14T23:00:00.000Z',
+        [field]: raw,
+        [`_${field}_raw`]: 'untrusted prior sidecar',
+      };
+      const first = repairLine(JSON.stringify(input));
+      expect(first.status).toBe('repaired');
+      const record = JSON.parse(first.line);
+      expect(record[field]).toBe('2026-06-14T12:00:00.994Z');
+      expect(record[`_${field}_raw`]).toBe(raw);
+      expect(first.incompleteFields).toEqual([]);
+      expect(record._backfill_incomplete_fields).not.toContain(field);
+      const second = repairLine(first.line);
+      expect(second.status).toBe('valid');
+      expect(second.line).toBe(first.line);
+      expect(second.defects).toEqual([]);
+      expect(repairRecord(record).changed).toBe(false);
+    },
+  );
+
+  it('copies ended_at +00:00 without losing its original or adding precision defaults', () => {
+    const raw = '2026-06-14T12:00:00.999999+00:00';
+    const input = without({
+      ...goldenRecord(6), started_at: '2026-06-14T00:00:00.000Z', ended_at: raw,
+    }, 'completed_at');
+    const first = repairLine(JSON.stringify(input));
+    expect(first.status).toBe('repaired');
+    const record = JSON.parse(first.line);
+    expect(record.completed_at).toBe('2026-06-14T12:00:00.999Z');
+    expect(record.ended_at).toBe(raw);
+    expect(first.incompleteFields).toEqual(['completed_at']); // existing missing-field contract
+    expect(repairLine(first.line).line).toBe(first.line);
+    expect(repairRecord(record).changed).toBe(false);
+  });
+
+  it.each([
+    '2026-13-05T12:00:00.994600', '2026-10-00T12:00:00.994600',
+    '2026-04-31T12:00:00.994600', '2026-02-29T12:00:00.994600',
+    '2026-10-05T24:00:00.000000', '2026-10-05T12:60:00.994600',
+    '2026-10-05T12:00:60.994600', 'malformed',
+  ])('leaves invalid calendar/time %s unrepaired, including ended_at copies', (value) => {
+    for (const suffix of ['Z', '+00:00']) {
+      for (const field of ['started_at', 'completed_at', 'lease_acquired_at', 'ended_at']) {
+        const input = {
+          ...goldenRecord(6), started_at: '2026-01-01T00:00:00.000Z',
+          completed_at: '2026-12-31T23:59:59.000Z', [field]: value + suffix,
+        };
+        if (field === 'ended_at') delete input.completed_at;
+        const line = JSON.stringify(input);
+        const result = repairLine(line);
+        // An invalid legacy ended_at must not roll over to a repaired date.
+        expect(result.status).toBe('error');
+        expect(result.line).toBe(line);
+      }
+    }
+  });
+
+  it('truncates a leap-day .999999 pair monotonically and rejects reversed milliseconds', () => {
+    const input = {
+      ...goldenRecord(6), started_at: '2024-02-29T23:59:59.999998+00:00',
+      completed_at: '2024-02-29T23:59:59.999999+00:00',
+    };
+    const result = repairLine(JSON.stringify(input));
+    expect(result.status).toBe('repaired');
+    expect(JSON.parse(result.line).started_at).toBe('2024-02-29T23:59:59.999Z');
+    expect(JSON.parse(result.line).completed_at).toBe('2024-02-29T23:59:59.999Z');
+    const reversed = JSON.stringify({ ...input, started_at: '2024-03-01T00:00:00.000001+00:00' });
+    expect(repairLine(reversed).status).toBe('error');
+    expect(repairLine(reversed).line).toBe(reversed);
+  });
+
+  it.each(['+01:00', '-01:00', '+0000', '+00', 'z'])(
+    'does not extend repair to unsupported timezone spelling %s', (suffix) => {
+      const line = JSON.stringify({ ...goldenRecord(6), started_at: `2026-06-14T00:00:00.123456${suffix}` });
+      expect(repairLine(line).status).toBe('error');
+      expect(repairLine(line).line).toBe(line);
+    },
+  );
 });

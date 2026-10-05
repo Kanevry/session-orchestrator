@@ -772,9 +772,9 @@ describe('checkCiStatus — glab not in PATH', () => {
 describe('checkCiStatus — GitHub green', () => {
   it('returns status=green ok=true when all check_runs have conclusion=success', async () => {
     const checkRuns = [
-      { name: 'test', conclusion: 'success' },
-      { name: 'lint', conclusion: 'success' },
-      { name: 'typecheck', conclusion: 'success' },
+      { name: 'test', status: 'completed', conclusion: 'success' },
+      { name: 'lint', status: 'completed', conclusion: 'success' },
+      { name: 'typecheck', status: 'completed', conclusion: 'success' },
     ];
 
     const mockExecFile = makeExecFileMock([
@@ -800,8 +800,8 @@ describe('checkCiStatus — GitHub green', () => {
 describe('checkCiStatus — GitHub red', () => {
   it('returns status=red, failingJobName set when a check run has conclusion=failure', async () => {
     const checkRuns = [
-      { name: 'test', conclusion: 'success' },
-      { name: 'security-scan', conclusion: 'failure' },
+      { name: 'test', status: 'completed', conclusion: 'success' },
+      { name: 'security-scan', status: 'completed', conclusion: 'failure' },
     ];
 
     const mockExecFile = makeExecFileMock([
@@ -991,11 +991,11 @@ describe('checkCiStatus — #1332 explicit sha', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
       ghRepoViewResponse,
-      ghCheckRunsResponse([{ name: 'test', conclusion: 'success' }]),
+      ghCheckRunsResponse([{ name: 'test', status: 'completed', conclusion: 'success' }]),
       {
         cmd: 'gh',
         args: ['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs`],
-        stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', conclusion: 'failure' }] }),
+        stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', status: 'completed', conclusion: 'failure' }] }),
       },
     ]);
 
@@ -1095,7 +1095,7 @@ describe('checkCiStatus — forced vcs', () => {
       {
         cmd: 'gh',
         args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', 'github.com'],
-        stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', conclusion: 'success' }] }),
+        stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', status: 'completed', conclusion: 'success' }] }),
       },
     ]);
 
@@ -1117,8 +1117,8 @@ describe('checkCiStatus — forced vcs', () => {
         args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', 'github.com'],
         stdout: JSON.stringify({
           check_runs: [
-            { name: 'test (ubuntu-latest)', conclusion: 'success' },
-            { name: 'test (macos-latest)', conclusion: 'failure' },
+            { name: 'test (ubuntu-latest)', status: 'completed', conclusion: 'success' },
+            { name: 'test (macos-latest)', status: 'completed', conclusion: 'failure' },
           ],
         }),
       },
@@ -1170,8 +1170,8 @@ describe('checkCiStatus — GitLab red with no prior green', () => {
 describe('checkCiStatus — GitHub action_required → red', () => {
   it('treats action_required as red and surfaces failingJobName', async () => {
     const checkRuns = [
-      { name: 'approve-deploy', conclusion: 'action_required' },
-      { name: 'test', conclusion: 'success' },
+      { name: 'approve-deploy', status: 'completed', conclusion: 'action_required' },
+      { name: 'test', status: 'completed', conclusion: 'success' },
     ];
 
     const mockExecFile = makeExecFileMock([
@@ -1517,7 +1517,7 @@ describe('checkCiStatus — #872/#1022 GitHub host-pinning', () => {
   it('pins `gh repo view` with a POSITIONAL <spec> (never -R) and `gh api` with --hostname <host>', async () => {
     const spec = 'github.example.com/owner/repo';
     const host = 'github.example.com';
-    const checkRuns = [{ name: 'test', conclusion: 'success' }];
+    const checkRuns = [{ name: 'test', status: 'completed', conclusion: 'success' }];
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
@@ -1706,7 +1706,7 @@ describe('checkCiStatus — #1039 remote selection', () => {
   });
 
   it('prefers `origin` (github) over a losing `gitlab` remote', async () => {
-    const checkRuns = [{ name: 'test', conclusion: 'success' }];
+    const checkRuns = [{ name: 'test', status: 'completed', conclusion: 'success' }];
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(['origin', GITHUB_ORIGIN], ['gitlab', GITLAB_ORIGIN]),
@@ -1734,7 +1734,7 @@ describe('checkCiStatus — #1039 GitHub Enterprise host classification', () => 
     // A GitHub Enterprise host contains no `github.com` substring, so every
     // Enterprise repo fell through to the gitlab branch and the banner drove
     // `glab` at a GitHub instance — a guaranteed failure, swallowed to null.
-    const checkRuns = [{ name: 'test', conclusion: 'success' }];
+    const checkRuns = [{ name: 'test', status: 'completed', conclusion: 'success' }];
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse('git@github.example.com:Kanevry/session-orchestrator.git'),
@@ -1910,5 +1910,55 @@ describe('ci-status-banner — DEGRADED_REASONS enum integrity', () => {
 
   it('is frozen', () => {
     expect(Object.isFrozen(DEGRADED_REASONS)).toBe(true);
+  });
+});
+
+// #856: realistic Check Runs payloads; every command is handled by the stub.
+describe('#856 — GitHub additive check-run diagnostics', () => {
+  const running = { name: 'test', status: 'in_progress', conclusion: null };
+  const queued = { name: 'lint', status: 'queued', conclusion: null };
+  const cancelled = { name: 'build', status: 'completed', conclusion: 'cancelled' };
+  const success = { name: 'test', status: 'completed', conclusion: 'success' };
+  const counts = (overrides) => ({ success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, other: 0, ...overrides });
+
+  it.each([
+    ['running', [running], 'unknown', 'check-runs-in-progress', counts({ inProgress: 1 })],
+    ['queued', [queued], 'unknown', 'check-runs-queued', counts({ queued: 1 })],
+    ['cancelled', [cancelled], 'unknown', 'check-runs-cancelled', counts({ cancelled: 1 })],
+    ['mixed', [success, running, queued, cancelled], 'unknown', 'check-runs-mixed', counts({ success: 1, inProgress: 1, queued: 1, cancelled: 1 })],
+    ['failed and running', [{ name: 'failed', status: 'completed', conclusion: 'failure' }, running], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, inProgress: 1 })],
+    ['action_required and queued', [{ name: 'approval', status: 'completed', conclusion: 'action_required' }, queued], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, queued: 1 })],
+    ['unknown status with success conclusion', [{ name: 'odd', status: 'future', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
+    ['missing status', [{ name: 'odd', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
+    ['unknown conclusion', [{ name: 'odd', status: 'completed', conclusion: 'future' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
+    ['completed null conclusion', [{ name: 'odd', status: 'completed', conclusion: null }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
+    ['malformed row among successes', [success, null, 'bad', {}], 'unknown', 'check-runs-unrecognised', counts({ success: 1, other: 3 })],
+    ['running with stale success', [{ name: 'odd', status: 'in_progress', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
+  ])('diagnoses %s without granting pass authority', async (_name, runs, status, reason, expectedCounts) => {
+    const mock = makeExecFileMock([gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse, ghCheckRunsResponse(runs)]);
+    const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW }, { execFile: mock });
+    expect(result.status).toBe(status);
+    expect(result.ok).toBe(false);
+    expect(result.details.reason).toBe(reason);
+    expect(result.details.checkRunCounts).toEqual(expectedCounts);
+  });
+
+  it.each([[], undefined, null, 'malformed'])(
+    'keeps missing or unusable check_runs=%s unknown', async (runs) => {
+      const mock = makeExecFileMock([gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse, ghCheckRunsResponse(runs)]);
+      const result = await checkCiStatus({ repoRoot: '/fake/repo' }, { execFile: mock });
+      expect(result.status).toBe('unknown');
+      expect(result.ok).toBe(false);
+      expect(result.details.reason).toBe('no-check-runs-for-head');
+    },
+  );
+
+  it('keeps a GitHub API failure degraded and never green', async () => {
+    const mock = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse,
+      { cmd: 'gh', args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs'], error: new Error('synthetic API failure') },
+    ]);
+    const result = await checkCiStatus({ repoRoot: '/fake/repo' }, { execFile: mock });
+    expectDegraded(result, 'query-failed');
   });
 });

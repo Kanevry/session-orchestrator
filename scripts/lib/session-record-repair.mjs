@@ -124,12 +124,11 @@ const INCOMPLETE_FIELD_ORDER = Object.freeze([
 const MS_PRECISION_FIELDS = Object.freeze(['started_at', 'completed_at', 'lease_acquired_at']);
 
 /**
- * ISO-8601 UTC with MORE than three fractional digits (`.994600Z`) — the one
- * rejected shape that has an unambiguous canonical form. Group 1 is the value
- * cut at the millisecond. Offsets, `.3Z` and non-ISO strings do not match and
- * stay for the validator to reject: there is no defensible default for them.
+ * ISO-8601 UTC with MORE than three fractional digits and exactly `Z` or
+ * `+00:00` (#1525). Group 1 is the value cut at the millisecond. Nonzero
+ * offsets, other timezone spellings and shorter fractions stay unrepaired.
  */
-const ISO_UTC_SUB_MS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d+Z$/;
+const ISO_UTC_SUB_MS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d+(?:Z|\+00:00)$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -155,7 +154,13 @@ function isCount(v) {
 function truncateToMs(value) {
   if (typeof value !== 'string') return null;
   const m = ISO_UTC_SUB_MS_RE.exec(value);
-  return m ? `${m[1]}Z` : null;
+  if (!m) return null;
+  const canonical = `${m[1]}Z`;
+  const ms = Date.parse(canonical);
+  // Date.parse rolls over e.g. April 31, non-leap February 29 and 24:00.
+  // Equality with the original calendar components refuses those repairs.
+  if (!Number.isFinite(ms) || new Date(ms).toISOString() !== canonical) return null;
+  return canonical;
 }
 
 function orderIncompleteFields(fields) {
@@ -391,10 +396,16 @@ export function repairRecord(record) {
     preserveRaw(out, 'completed_at', record.completed_at, rescued);
     const endedMs = typeof out.ended_at === 'string' ? Date.parse(out.ended_at) : NaN;
     const startedMs = Date.parse(out.started_at);
-    if (Number.isFinite(endedMs) && Number.isFinite(startedMs) && endedMs >= startedMs) {
+    const endedTruncated = truncateToMs(out.ended_at);
+    if (typeof out.ended_at === 'string' &&
+        (!Number.isFinite(endedMs) ||
+         (ISO_UTC_SUB_MS_RE.test(out.ended_at) && endedTruncated === null))) {
+      // Preserve an invalid legacy measurement for the final schema gate to
+      // reject; do not turn it into a valid default or a rolled-over date.
+      out.completed_at = out.ended_at;
+    } else if (Number.isFinite(endedMs) && Number.isFinite(startedMs) && endedMs >= startedMs) {
       // The COPY is cut to milliseconds; `ended_at` itself is not a validated
       // field and keeps its original bytes, so nothing needs a sidecar here.
-      const endedTruncated = truncateToMs(out.ended_at);
       if (endedTruncated !== null) precisionCut = true;
       out.completed_at = endedTruncated ?? out.ended_at;
     } else {
