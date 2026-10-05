@@ -32,9 +32,9 @@
  *      with the next repo, and exits 2 at the end
  */
 
-import { existsSync, readFileSync, writeFileSync, copyFileSync, renameSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
 import { mkdirSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import {
   migrateLegacyLearning,
@@ -43,6 +43,7 @@ import {
 import { LearningsLockError, withLearningsLock } from './lib/learnings/io.mjs';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
+import { atomicWriteWithBackup, envelopeToError } from './lib/io.mjs';
 
 const LEARNINGS_REL = '.orchestrator/metrics/learnings.jsonl';
 
@@ -316,12 +317,13 @@ function migrateStore(repoPath, learningsPath, apply) {
     try {
       // Backup original
       copyFileSync(learningsPath, backupPath);
-      // Write migrated content atomically
+      // Write migrated content atomically (own backup above keeps its
+      // `.bak-cross-repo-migrate-<ms>` schema, so the helper takes none)
       const body = outputLines.join('\n') + '\n';
-      const tmpPath = `${learningsPath}.migrate-cross-repo-tmp-${process.pid}-${timestamp}`;
-      mkdirSync(dirname(learningsPath), { recursive: true });
-      writeFileSync(tmpPath, body, 'utf8');
-      renameSync(tmpPath, learningsPath);
+      const res = atomicWriteWithBackup(learningsPath, body, {
+        tmpPrefix: `.${basename(learningsPath)}.tmp`,
+      });
+      if (!res.ok) throw envelopeToError(res);
     } catch (err) {
       return {
         repo: repoPath,

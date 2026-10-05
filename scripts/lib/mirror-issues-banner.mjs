@@ -61,7 +61,9 @@ const MESSAGE_ISSUE_CAP = 5;
  *
  * `query-failed` is the residual bucket for a `gh` that ran and exited
  * non-zero for a reason that is neither missing-CLI, timeout, nor auth
- * (network down, repo renamed, rate limit). It is a deliberate fifth member
+ * (network down, repo renamed, rate limit — including GitHub's HTTP 403
+ * rate-limit answer, which `classifyFailure` checks before its 403 → auth
+ * rule). It is a deliberate fifth member
  * beyond the four originally specified: folding those into `parse-error`
  * would mislabel a network failure as malformed output, reintroducing the
  * dishonest-state class this module was built to remove.
@@ -122,6 +124,14 @@ function classifyFailure(err) {
 
   const stderr = err && typeof err === 'object' ? String(/** @type {any} */ (err).stderr ?? '') : '';
   const haystack = `${message}\n${stderr}`.toLowerCase();
+  // Rate limit BEFORE the auth check (#1034 item 2): GitHub answers a primary
+  // or secondary rate limit with HTTP 403, so the `http 403` test below would
+  // otherwise tell the operator to re-authenticate when waiting is the fix. A
+  // 403 without rate-limit wording (expired token, missing scope) stays
+  // `auth-error`, and so does an UNAUTHENTICATED rate limit, whose fix is to
+  // log in. `abuse detection` is GitHub's older wording for the secondary limit.
+  const rateLimited = haystack.includes('rate limit') || haystack.includes('abuse detection');
+  if (rateLimited && !haystack.includes('authenticated requests get a higher')) return 'query-failed';
   if (
     haystack.includes('gh auth login') ||
     haystack.includes('not logged in') ||

@@ -38,8 +38,9 @@
  *    "already_canonical":N,"unmappable":N,"parse_errors":N,"backup":"<path>|null"}
  */
 
-import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { readFileSync, copyFileSync, existsSync } from 'node:fs';
+import { basename } from 'node:path';
+import { atomicWriteWithBackup, envelopeToError } from './lib/io.mjs';
 import { validateSession, normalizeSession, ValidationError } from './lib/session-schema.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -422,11 +423,12 @@ async function main() {
   // Atomic write: backup → tmp → rename
   const iso = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = `${args.file}.bak-${iso}`;
-  const tmpPath = join(dirname(args.file), `.${basename(args.file)}.migrate-tmp-${process.pid}`);
   try {
     copyFileSync(args.file, backupPath);
-    writeFileSync(tmpPath, outputLines.join('\n') + '\n', 'utf8');
-    renameSync(tmpPath, args.file);
+    const res = atomicWriteWithBackup(args.file, outputLines.join('\n') + '\n', {
+      tmpPrefix: `.${basename(args.file)}.tmp`,
+    });
+    if (!res.ok) throw envelopeToError(res);
     summary.backup = backupPath;
   } catch (err) {
     const hint = existsSync(backupPath)

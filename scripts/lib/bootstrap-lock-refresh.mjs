@@ -22,9 +22,9 @@
  * — a missing or structurally invalid lock is refused, not synthesized.
  */
 
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { atomicWriteWithBackup, envelopeToError } from './io.mjs';
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
 
 const PRECONDITION_MESSAGE_SUFFIX =
@@ -84,20 +84,16 @@ function sanitizeLockValue(value) {
 }
 
 /**
- * Atomically write `content` to `filePath` via tmp-file + renameSync — the
- * same crash-safe pattern used by `scripts/lib/io.mjs#writeJsonAtomicSync`
- * and `scripts/lib/session-lock.mjs`, adapted for raw (non-JSON) text.
+ * Atomically write `content` to `filePath` via tmp-file + rename
+ * (`scripts/lib/io.mjs#atomicWriteWithBackup`). Throws on failure with the
+ * original message and `code` (`envelopeToError`).
  *
  * @param {string} filePath
  * @param {string} content
  */
 function writeTextAtomicSync(filePath, content) {
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-  const tmpSuffix = randomBytes(6).toString('hex');
-  const tmpFile = join(dir, `.bootstrap-lock-refresh.${tmpSuffix}.tmp`);
-  writeFileSync(tmpFile, content, { encoding: 'utf8' });
-  renameSync(tmpFile, filePath);
+  const res = atomicWriteWithBackup(filePath, content, { tmpPrefix: '.bootstrap-lock-refresh.tmp' });
+  if (!res.ok) throw envelopeToError(res);
 }
 
 /**

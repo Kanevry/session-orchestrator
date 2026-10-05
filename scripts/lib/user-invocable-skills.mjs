@@ -31,6 +31,7 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { parseAgentFrontmatter } from './agent-frontmatter.mjs';
+import { isHiddenSourceName } from './plugin-surface.mjs';
 
 /**
  * YAML 1.1 boolean lookalikes that YAML 1.2 / js-yaml's CORE_SCHEMA (what
@@ -191,7 +192,7 @@ export function userInvocableSkills(repoRoot) {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
   const names = [];
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
+    if (!entry.isDirectory() || isHiddenSourceName(entry.name)) continue;
     const file = path.join(dir, entry.name, 'SKILL.md');
     if (!existsSync(file) || !statSync(file).isFile()) continue;
     let fm;
@@ -210,7 +211,7 @@ export function commandFileNames(repoRoot) {
   const dir = path.join(repoRoot, 'commands');
   if (!existsSync(dir) || !statSync(dir).isDirectory()) return [];
   return readdirSync(dir)
-    .filter((f) => f.endsWith('.md') && !f.startsWith('.'))
+    .filter((f) => f.endsWith('.md') && !isHiddenSourceName(f))
     .map((f) => f.replace(/\.md$/, ''))
     .sort();
 }

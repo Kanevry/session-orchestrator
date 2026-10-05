@@ -18,6 +18,7 @@ For each claim, run exactly ONE Grep or Read against the actual codebase (or
 transcript discipline as `.claude/rules/parallel-sessions.md` § PSA-006.
 Budget: this phase is a spot-check, not a deep audit. If one grep cannot
 ground the claim, mark UNVERIFIED and move on — do not rabbit-hole.
+Per issue, also run `git log --grep='#<N>'`: fixes often land without closing the issue.
 
 ## Verdicts
 
@@ -44,4 +45,4 @@ decomposing) without re-running the greps.
 
 - Re-verifying every sentence of every issue — cap 3 claims/issue, 8 issues.
 - Treating UNVERIFIED as a blocker — it is informational only.
-- Running this for housekeeping sessions — predefined tasks carry no premise risk worth the latency.
+- Skipping it in housekeeping — items go stale there too (#1521: 4 of 7 were fixed).

@@ -16,6 +16,7 @@ import {
   AGENT_SUMMARY_FIELDS,
   OPTIONAL_FIELDS,
 } from '@lib/session-schema/constants.mjs';
+import { validateSession } from '@lib/session-schema/validator.mjs';
 
 describe('CURRENT_SESSION_SCHEMA_VERSION', () => {
   it('is the number 2', () => {
@@ -142,29 +143,9 @@ describe('OPTIONAL_FIELDS', () => {
     expect(Object.isFrozen(OPTIONAL_FIELDS)).toBe(true);
   });
 
-  // TV-003 consolidation (#964): 10 single-`toContain` tests folded into ONE
-  // membership assertion. Every field is still named, and the failure message
-  // names exactly which one went missing — strictly more informative than 10
-  // separate greens, at a tenth of the volume. `filter`, not `toEqual`, keeps
-  // this a floor: the list may grow additively without editing this test.
-  it('declares every known optional field (ADR-364 + #644 + #773 + #964)', () => {
-    const expected = [
-      'agent_identity',
-      'worktree_path',
-      'parent_run_id',
-      'lease_acquired_at',
-      'lease_ttl_seconds',
-      'expected_cost_tier',
-      'total_token_input', // #644
-      'total_token_output', // #644
-      'subagents_with_tokens', // #644
-      'open_questions_asked', // #773
-      'open_questions_answered', // #773
-      'open_questions_deferred', // #773
-      'effectiveness', // #964
-    ];
-    expect(expected.filter((f) => !OPTIONAL_FIELDS.includes(f))).toEqual([]);
-  });
+  // #986 (TV-002b): the hand-typed membership floor that stood here is gone —
+  // the census test below derives the set from the validator and is strictly
+  // stronger (it named 11 undeclared fields the floor never could).
 
   /**
    * Nameable bug (TV-001): `effectiveness` was shape-checked by
@@ -188,6 +169,63 @@ describe('OPTIONAL_FIELDS', () => {
     expect(OPTIONAL_FIELDS[3]).toBe('lease_acquired_at');
     expect(OPTIONAL_FIELDS[4]).toBe('lease_ttl_seconds');
     expect(OPTIONAL_FIELDS[5]).toBe('expected_cost_tier');
+  });
+
+  /**
+   * Nameable bug (TV-001, #986): `_validateOptionalFields` shape-checked 11
+   * fields that OPTIONAL_FIELDS never declared, and the hand-typed floor that
+   * preceded this test could not notice — it only checks names someone remembered to type. The
+   * census here is taken from the validator ITSELF: a Proxy records every key
+   * `validateSession` reads off a minimal valid record. Minus the required
+   * fields and `schema_version`, what remains is exactly the set of optional
+   * keys the validator inspects. A new `if (entry.x …)` without a declaration
+   * goes red, and so does a declaration whose check is removed.
+   */
+  it('#986: matches the optional keys validateSession actually inspects (census from code)', () => {
+    const minimal = {
+      session_id: 'sess-2026-04-24-test',
+      session_type: 'deep',
+      started_at: '2026-04-24T08:00:00Z',
+      completed_at: '2026-04-24T09:00:00Z',
+      total_waves: 1,
+      waves: [{ wave: 1, role: 'implement' }],
+      agent_summary: { complete: 1, partial: 0, failed: 0, spiral: 0 },
+      total_agents: 1,
+      total_files_changed: 1,
+    };
+    const read = new Set();
+    const probe = new Proxy(minimal, {
+      get(target, key, receiver) {
+        if (typeof key === 'string') read.add(key);
+        return Reflect.get(target, key, receiver);
+      },
+      // `in` and Object.hasOwn checks bypass `get`; record them too.
+      has(target, key) {
+        if (typeof key === 'string') read.add(key);
+        return Reflect.has(target, key);
+      },
+      getOwnPropertyDescriptor(target, key) {
+        if (typeof key === 'string') read.add(key);
+        return Reflect.getOwnPropertyDescriptor(target, key);
+      },
+    });
+    validateSession(probe);
+    const inspected = [...read].filter(
+      (k) => k !== 'schema_version' && !REQUIRED_FIELDS.includes(k)
+    );
+    // Vacuum guard: a probe that records nothing would make both checks pass.
+    expect(inspected).toContain('effectiveness');
+    expect(inspected.length).toBeGreaterThanOrEqual(30);
+
+    expect(inspected.filter((k) => !OPTIONAL_FIELDS.includes(k))).toEqual([]);
+    // Ratchet: declared fields with a live writer but no validator check.
+    // Adding a check for one of them, or declaring another unchecked field,
+    // must edit this list on purpose.
+    expect(OPTIONAL_FIELDS.filter((k) => !inspected.includes(k)).sort()).toEqual([
+      '_repair_source',
+      'raw_session_id',
+      'session_start_ref',
+    ]);
   });
 
   it('has no overlap with REQUIRED_FIELDS', () => {

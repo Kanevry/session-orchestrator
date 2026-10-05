@@ -839,19 +839,27 @@ export function gateKillFields(run) {
  * through two LLM hops: `skills/wave-executor/wave-loop.md` step 7 hand-writes
  * them, `skills/session-end/metrics-collection.md` § 1.7 parses them back out of
  * the STATE.md Wave History header into sessions.jsonl. `counts` is a SECOND,
- * machine-measured emission of the same fact, and as of 2026-07-31 it has zero
- * readers (`grep -c '"counts"' .orchestrator/metrics/events.jsonl` → 0 across
- * 4404 `orchestrator.quality_gate.*` records).
+ * machine-measured emission of the same fact. Measured 2026-10-05 against this
+ * repo's `.orchestrator/metrics/events.jsonl` (main checkout @ 1386a98e; the
+ * file has been rotated since the 4404-record 2026-07-31 reading this note
+ * used to quote): 82 `orchestrator.quality_gate.*` records, 46 carrying
+ * `counts` (`grep '"orchestrator.quality_gate' <file> | grep -c '"counts"'`).
  *
- * Retiring the prose path needs a producer change no docblock can make:
- * `waves[].*` is PER-WAVE, and gate events carry no `wave_number` (0 of those
- * 4404 records). A session-end reader could only attribute a gate event to a
- * wave by a wall-clock window whose own boundaries (`waves[].started_at` /
- * `completed_at`) are themselves LLM-written — one LLM hop traded for another,
- * against the posture `scripts/lib/eval/session-resolve.mjs` already documents
- * for window-attributed gate events ("a contaminated window means
- * gate-attribution is unsafe"). The concrete remaining work is named in
- * `skills/session-end/metrics-collection.md` § 1.7.
+ * `waves[].*` is PER-WAVE, so the event needs a per-wave key. The
+ * `scripts/run-quality-gate.mjs` wrapper emits `wave_number` when a wave-scope
+ * sidecar names one (#966 step 1, `resolveWaveNumber`) and OMITS it otherwise —
+ * 37 of the same 82 records carry it
+ * (`grep '"orchestrator.quality_gate' <file> | grep -c '"wave_number"'`).
+ * Readers exist: `skills/session-end/metrics-collection.md` § 1.7 reads
+ * `counts` by `wave_number` first and keeps the STATE.md header only as a
+ * fallback (#966 step 3), and `scripts/lib/convergence-monitor.mjs` folds a
+ * gate record only when it carries both. THIS emitter still sets no
+ * `wave_number` — its records are mid-wave auto-fix retries, so they fall to
+ * that fallback by design. A record without the key could only be attributed
+ * to a wave by a wall-clock window whose own boundaries (`waves[].started_at`
+ * / `completed_at`) are themselves LLM-written, against the posture
+ * `scripts/lib/eval/session-resolve.mjs` documents for window-attributed gate
+ * events ("a contaminated window means gate-attribution is unsafe").
  *
  * Note also that THIS emitter only runs under `verification-auto-fix.enabled:
  * true` (default `false`, and `false` in this repo's Session Config). The gate

@@ -247,6 +247,25 @@ describe('auditGithubBranchProtection — degraded (query could not be answered)
     expect(result.degraded).toBe('auth-error');
   });
 
+  it.each([
+    ['a rate-limit 403', 'query-failed', 'gh: HTTP 403: API rate limit exceeded for user ID 1'],
+    ['an unauthenticated rate limit', 'auth-error', 'gh: HTTP 403: API rate limit exceeded for 203.0.113.7. (Authenticated requests get a higher rate limit.)'],
+    ['a scope 403', 'auth-error', 'gh: HTTP 403: Resource not accessible by personal access token'],
+  ])('%s degrades to %s (rate limit is not an auth failure, #1034 item 2)', async (_label, expected, stderr) => {
+    const execFile = makeExecStub(async () => {
+      const err = new Error('failed to run gh: exit status 1');
+      err.stderr = stderr;
+      throw err;
+    });
+
+    const result = await auditGithubBranchProtection(
+      { repoRoot: '/tmp/irrelevant' },
+      { execFile, resolveRepoSpec: () => REPO_SPEC, resolveRepoHost: () => REPO_HOST },
+    );
+
+    expect(result.degraded).toBe(expected);
+  });
+
   it('returns no-github-remote and spawns NOTHING when the mirror remote does not resolve', async () => {
     const execFile = makeExecStub(async () => {
       throw new Error('execFile must not run when there is no github remote');

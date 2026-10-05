@@ -17,8 +17,9 @@
  */
 
 import { digestSha256Short } from './crypto-digest-utils.mjs';
-import { readFileSync, writeFileSync, mkdirSync, renameSync, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { atomicWriteWithBackup, envelopeToError } from './io.mjs';
+import { readFileSync, existsSync } from 'node:fs';
+import { basename } from 'node:path';
 
 // ---------------------------------------------------------------------------
 // computeSchemaHash
@@ -60,12 +61,12 @@ export function writeBaseline(filePath, { errors, warnings, schemaHash, isoTimes
     warnings,
   };
 
-  const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
-
-  const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(tmp, JSON.stringify(doc, null, 2) + '\n', 'utf8');
-  renameSync(tmp, filePath);
+  // Parent dirs are created by the helper (mkdir -p); a failure re-raises with
+  // the original message and `code`.
+  const res = atomicWriteWithBackup(filePath, JSON.stringify(doc, null, 2) + '\n', {
+    tmpPrefix: `.${basename(filePath)}.tmp`,
+  });
+  if (!res.ok) throw envelopeToError(res);
 }
 
 // ---------------------------------------------------------------------------

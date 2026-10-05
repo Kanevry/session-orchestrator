@@ -28,8 +28,9 @@
  *   {"mode":"dry-run|apply|mark-deprecated-only","total":N,"rewritten":N,"deprecated":N,"unchanged":N,"backup":"<path>|null"}
  */
 
-import { readFileSync, writeFileSync, renameSync, copyFileSync, existsSync } from 'node:fs';
-import { join, dirname, basename } from 'node:path';
+import { readFileSync, copyFileSync, existsSync } from 'node:fs';
+import { basename } from 'node:path';
+import { atomicWriteWithBackup, envelopeToError } from './lib/io.mjs';
 import { validateSession, normalizeSession, ValidationError } from './lib/session-schema.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/sessions.jsonl';
@@ -253,17 +254,18 @@ async function main() {
   // by a pre-write copy-to-backup. This eliminates the crash window where the
   // canonical path could be briefly missing if the rename dance were split:
   //   1. copyFileSync: canonical → .bak-<ISO>  (backup; canonical still present)
-  //   2. writeFileSync: rewritten → tmp        (new content; canonical still present)
-  //   3. renameSync: tmp → canonical           (atomic replace per POSIX)
+  //   2+3. atomicWriteWithBackup: rewritten → tmp → rename over canonical
+  //        (atomic replace per POSIX; the helper unlinks its tmp on failure)
   // At every point between steps, the canonical file exists and holds either
   // the old content or the new content. Recovery artifact: .bak-<ISO>.
   const iso = new Date().toISOString().replace(/[:.]/g, '-');
   const backupPath = `${args.file}.bak-${iso}`;
-  const tmpPath = join(dirname(args.file), `.${basename(args.file)}.tmp-${process.pid}`);
   try {
     copyFileSync(args.file, backupPath);
-    writeFileSync(tmpPath, rewritten.join('\n') + '\n', 'utf8');
-    renameSync(tmpPath, args.file);
+    const res = atomicWriteWithBackup(args.file, rewritten.join('\n') + '\n', {
+      tmpPrefix: `.${basename(args.file)}.tmp`,
+    });
+    if (!res.ok) throw envelopeToError(res);
     summary.backup = backupPath;
   } catch (err) {
     const recoveryHint = existsSync(backupPath)
