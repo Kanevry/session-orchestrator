@@ -1,8 +1,8 @@
 /**
  * tests/site/structure.test.mjs
  *
- * Structural guards over the six SHIPPED pages of `site/`. There is no build
- * step and no shared layout: six hand-authored HTML files are the whole site,
+ * Structural guards over the SHIPPED pages of `site/`. There is no build
+ * step and no shared layout: the hand-authored HTML files are the whole site,
  * so nothing but a test connects them. Every `describe` below names the concrete
  * regression it catches (`.claude/rules/test-value.md` TV-001); none pins prose.
  *
@@ -34,7 +34,7 @@ const LEAD = 'site/lead/index.html';
 const IMPRESSUM = 'site/impressum/index.html';
 const DATENSCHUTZ = 'site/datenschutz/index.html';
 
-/** The six hand-authored pages, with the per-page facts a page owns alone. */
+/** The hand-authored pages, with the per-page facts a page owns alone. */
 const PAGES = [
   { file: EN, lang: 'en', route: 'https://session-orchestrator.com/' },
   { file: DE, lang: 'de', route: 'https://session-orchestrator.com/de' },

@@ -1,7 +1,7 @@
 /**
  * tests/site/seo-graph.test.mjs
  *
- * The JSON-LD contract of the six shipped pages. tests/site/structure.test.mjs
+ * The JSON-LD contract of the shipped pages. tests/site/structure.test.mjs
  * owns canonical, hreflang, h1, og:image, assets, sitemap and robots, but never
  * parses JSON-LD, so a broken block, a dangling @id or FAQ data that no longer
  * matches the visible FAQ would ship unnoticed. GitLab #1483.

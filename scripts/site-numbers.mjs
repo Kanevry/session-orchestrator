@@ -996,6 +996,9 @@ export const SITEMAP_FILE = 'sitemap.xml';
  * Unknown either way is an ERROR, never a skip (the `METRIC_IDS` rule): a
  * sitemap `<loc>` missing here would never be dated, and a page carrying cells
  * that is missing here would drift unseen.
+ *
+ * A page without counted cells (for example /lead) never has its <lastmod>
+ * raised automatically: bump it by hand whenever its content changes.
  */
 export const SITEMAP_PAGES = Object.freeze([
   { page: 'index.html', loc: 'https://session-orchestrator.com/' },
