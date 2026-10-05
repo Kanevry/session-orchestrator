@@ -29,8 +29,8 @@ Phase 1 ships a self-contained validator that reads every `.md` file under `VAUL
 ### Files
 
 - `validator.mjs` — Node.js ESM validator. Uses `zod` + `yaml` npm packages. Reads `VAULT_DIR` (env or default cwd), walks the tree, skipping `node_modules/`, `.git/`, `.obsidian/`. `90-archive/` is walked but never *checked* (#833): archived notes stay in the link-target register — so an inbound `[[wiki-link]]` to an archived note resolves instead of dangling — while their frontmatter is skipped and counted in `archived_skipped_count`. For each `.md`: parses frontmatter, validates against the inline Zod schema, extracts `[[wiki-links]]`, verifies each target resolves. Emits JSON report on stdout.
-- `validator.sh` — Thin POSIX wrapper. Resolves `VAULT_DIR` from arg 1 or env, self-bootstraps deps via `pnpm install --silent` on first run, execs the Node validator. Session-end and other callers use this entry point.
-- `package.json` — Declares `zod` (`^3.24.0`, matching projects-baseline) and `yaml` (`^2.5.0`) as deps. `pnpm-lock.yaml` is committed; `node_modules/` is gitignored.
+- `validator.sh` — Thin POSIX wrapper. Resolves `VAULT_DIR` from arg 1 or env, checks that `zod` and `yaml` resolve from the skill directory, execs the Node validator. It never installs anything: unresolvable deps exit 2 with `"reason":"setup-required"` and the one setup command, `npm ci` in the plugin root (#1070). Session-end and other callers use this entry point.
+- `package.json` — Declares `zod` (`^3.24.0`, matching projects-baseline) and `yaml` (`^2.5.0`) as deps. No lockfile is committed (`skills/vault-sync/package-lock.json` is gitignored at the repo root); `node_modules/` is gitignored.
 - `tests/validator.bats` — 16 BATS cases covering clean vaults, broken frontmatter, missing required fields, dangling links, no-vault skipping, README-style files, nested directories, and archive/obsidian exclusion.
 - `tests/fixtures/` — Seven fixture vaults matching each test scenario.
 
@@ -42,8 +42,8 @@ The inline Zod schema is vendored from the canonical source at `projects-baselin
 
 `skills/vault-sync/package.json` pins `yaml ^2.5.0` / `zod ^3.24.0` — intentionally NOT the root's `yaml ^2.9.0` / `zod ^3.25.76`. This is not drift to fix:
 
-- Both CI hosts install this sub-package on its own, independent of the root install (`.gitlab-ci.yml:121` and `.github/workflows/test.yml:93`, both: `(cd skills/vault-sync && npm install --no-audit --no-fund)`).
-- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps; `skills/vault-sync/node_modules/` is the only place `zod` resolves for this skill (`scripts/lib/vault-archive.mjs:19-21`).
+- Both CI hosts install this sub-package on its own, independent of the root install (`.gitlab-ci.yml:123` and `.github/workflows/test.yml:95`, both: `(cd skills/vault-sync && npm install --ignore-scripts --no-audit --no-fund)`). `--ignore-scripts` is passed explicitly because the root `.npmrc` does not reach this folder (`npm config get ignore-scripts` → `false` here, `true` at the root; measured 2026-10-05).
+- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps. Where `skills/vault-sync/node_modules/` exists (CI), Node resolves `zod`/`yaml` from it first; where it does not (a fresh worktree, an npm or plugin install), they resolve from the root's own `dependencies` (`yaml ^2.9.0`, `zod ^3.25.76`) — measured 2026-10-05 via `import.meta.resolve('zod')` from this folder → `<root>/node_modules/zod`. That second path is the runtime path for every end user, so the root dependencies must stay.
 - The `zod ^3.24.0` pin deliberately tracks the projects-baseline version, not this repo's own (`scripts/release.mjs:488`).
 
 The root's dependency versions are NOT the SSOT for this folder — do not "fix" this pin to match the root.
