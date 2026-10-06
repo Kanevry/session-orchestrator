@@ -411,11 +411,20 @@ describe('wave-scope-commit-guard — #801 wave-scope path resolution', { timeou
     // lint-staged sweep this guard exists to stop (header § Behavior summary).
     const dir = await mkRepoTracked();
     const pkg = path.join(dir, 'pkg');
-    await writeScope(pkg, JSON.stringify({ allowedPaths: ['src/'] }));
+    // Bind the manifest to the committing process: unknown ownership must
+    // not stand in for the own-session REQ-04 contract.
+    await writeScope(pkg, JSON.stringify({ session_id: 'sess-req04', allowedPaths: ['src/'] }));
+    const env = { CLAUDE_PROJECT_DIR: pkg, CLAUDE_CODE_SESSION_ID: 'sess-req04' };
+    await stageFile(dir, 'pkg/src/ok.mjs');
+    const inScope = await runHook(dir, env);
+    expect(inScope.code).toBe(0);
+    expect(inScope.stderr).toBe('');
+
     await stageFile(dir, 'package-lock.json', '{}\n');
-    const result = await runHook(dir, { CLAUDE_PROJECT_DIR: pkg });
+    const result = await runHook(dir, env);
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*package-lock\.json/);
+    expect(result.stderr).not.toContain('pkg/src/ok.mjs');
   });
 
   it('adopts a subdirectory session root named in a different letter case on a case-insensitive FS', async () => {
