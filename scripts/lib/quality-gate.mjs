@@ -851,7 +851,12 @@ export function gateKillFields(run) {
  * Count fallback is limited to pre-#954 sessions, gates outside the event
  * wrapper, or missing wave attribution; step 7 falls back to this wave's own
  * gate output (its header is not written yet), session end to the header. Auto-fix with a known wave
- * uses the event; missing counts alone do not permit header fallback.
+ * uses the event; missing counts alone do not permit count fallback.
+ * Diagnose own-session events without the counts filter to distinguish absent
+ * events, missing wave attribution, and fail-fast events without counts; never
+ * adopt counts from another session/wave or an unattributed row. A truncated
+ * append can be skipped by fromjson?, leaving an older matching run: that alone
+ * does not establish the current gate result.
  *
  * `suite_platform` comes from this wave's gate run (step 7) or the STATE.md
  * Wave History header `— suite <passed>/<failed> on <platform>` (session end);

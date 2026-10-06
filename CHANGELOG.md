@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`tests/setup/events-ledger-guard.test.mjs` in linked git worktrees** (#1527): the guard test used to map `repoRoot` of a linked worktree onto the main checkout and wrote probe events into the real ledger; probes now run against `mkdtemp` fixtures (own repo root, synthetic `.git` file + `commondir` for the worktree mapping) and the file-wide `ROOT_UNDER_TMP` skip is replaced by observable default-redirect tests.
+
+### Changed
+
+- **Gate-result prose readers** (#1528): the old ledger selector returned a stale value on a corrupt line rather than nothing; step 7 of the wave loop names its fallback "count fallback" (the header is not a source there); a diagnostic query without the `counts` filter separates "no event", "no `wave_number`" and "no counts after fail-fast"; the `appendFile` split-line case is documented as a known limit.
+
 ## [5.9.0] - 2026-10-06
 
 ### Added
