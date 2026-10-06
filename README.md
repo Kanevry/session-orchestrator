@@ -172,4 +172,4 @@ The reasoning behind the method is taught at [agenticbuilders.at](https://agenti
 
 ## License
 
-[MIT](LICENSE) · [Privacy policy](https://gotzendorfer.at/en/session-orchestrator/privacy) · [npm](https://www.npmjs.com/package/session-orchestrator)
+[MIT](LICENSE) · [Privacy policy](https://session-orchestrator.com/datenschutz) · [npm](https://www.npmjs.com/package/session-orchestrator)
