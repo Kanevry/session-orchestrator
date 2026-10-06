@@ -66,6 +66,46 @@ instead of `jq >> events.jsonl`. For callers that manage their own stream path,
 `emitEvent(type, payload, { filePath })` accepts an additive optional path override
 (default = the resolved `eventsFilePath()`); existing two-argument callers are unchanged.
 
+## Quality-gate wave metrics consumers
+
+The readers are two skill readers,
+[`wave-loop-review.md` step 7](../skills/wave-executor/references/wave-loop-review.md)
+and [`metrics-collection.md` § 1.7](../skills/session-end/metrics-collection.md),
+and the convergence monitor (`scripts/lib/convergence-monitor.mjs`), which folds
+`counts` only from gate records that also carry `wave_number`. The two skill readers read `orchestrator.quality_gate.{passed,failed}` as flat records, filtering
+by the existing own `semantic_session_id` and `wave_number`, then taking the
+last matching record with `counts`. `counts.passed` supplies `suite_passed`;
+`counts.failed` supplies `suite_failed`. Their identical jq selectors exclude
+other sessions, other waves, and unrelated events without a time-window join.
+They read the ledger raw (`jq -R` with `fromjson? | objects`), so an unreadable
+line such as a torn tail is skipped instead of aborting `jq` and emptying the result.
+An event without `semantic_session_id` (emitters set it only from the session lock)
+never matches and is treated like a gate outside the event wrapper.
+
+Both emitters supply the same optional counts and wave keys: the CLI emits once
+per CLI run; the library emits once per `runQualityGateWithRetry` call, never
+per retry (`attempts` describes retries). Missing `counts` or `wave_number` stays
+absent, never zero-filled. An empty selector or an event without counts, such
+as fail-fast before the test suite, does not alone permit header fallback.
+Telemetry remains best-effort; emission does not change gate exits or verdicts.
+The event-name and reporting-variant contracts in the catalogue below still apply.
+
+Count fallback is limited to three cases: pre-#954 sessions, a gate outside the
+event wrapper, or missing wave attribution. Its source differs by reader: step 7
+runs before § 3a writes this wave's header and falls back to the output of this
+wave's own gate run; session end falls back to the STATE.md Wave History header
+`— suite <passed>/<failed> on <platform>`.
+An auto-fix call with a known wave uses the event selector. When neither an event
+measurement nor an applicable header fallback supplies counts, omit the two
+count fields: absence means unmeasured; a present zero means measured zero.
+
+`suite_platform` comes separately from the platform of this wave's gate run
+(step 7) or the header that run wrote (session end); there is **no platform field
+in the event payload**. Omit it without such a measurement, and never infer it
+from `variant`. Event-derived
+counts may still be mirrored into the existing header as compatibility output,
+not a second measurement source. Header and sessions.jsonl contracts are unchanged.
+
 ## Naming convention
 
 Orchestrator-owned events use a dotted namespace:

@@ -835,29 +835,30 @@ export function gateKillFields(run) {
  * test gate (fail-fast on lint/typecheck) or its output carried no parseable
  * count. See {@link suiteCountsFromOutput}.
  *
- * IT DOES NOT YET REPLACE THE PROSE PATH (#957/F1 — the earlier wording here
- * claimed it did). `waves[].suite_passed` / `suite_failed` still travel as prose
- * through two LLM hops: `skills/wave-executor/wave-loop.md` step 7 hand-writes
- * them, `skills/session-end/metrics-collection.md` § 1.7 parses them back out of
- * the STATE.md Wave History header into sessions.jsonl. `counts` is a SECOND,
- * machine-measured emission of the same fact. Measured 2026-10-05 against this
- * repo's `.orchestrator/metrics/events.jsonl` (main checkout @ 1386a98e; the
- * file has been rotated since the 4404-record 2026-07-31 reading this note
- * used to quote): 82 `orchestrator.quality_gate.*` records, 46 carrying
- * `counts` (`grep '"orchestrator.quality_gate' <file> | grep -c '"counts"'`).
+ * Both skill readers now take `counts` from `orchestrator.quality_gate.*`:
+ * `skills/wave-executor/references/wave-loop-review.md` step 7 and
+ * `skills/session-end/metrics-collection.md` § 1.7. They filter the flat record
+ * by the same `semantic_session_id` + `wave_number` and select the last
+ * matching gate run; `counts.passed` / `counts.failed` supply the per-wave
+ * `suite_passed` / `suite_failed`. A third reader,
+ * `scripts/lib/convergence-monitor.mjs`, folds `counts` from gate records
+ * that also carry `wave_number`. This library emits ONE record per
+ * `runQualityGateWithRetry` call, not per retry; `attempts` carries retries.
  *
- * `waves[].*` is PER-WAVE, so the event needs a per-wave key. The
- * `scripts/run-quality-gate.mjs` wrapper emits `wave_number` when a wave-scope
- * sidecar names one (#966 step 1, `resolveWaveNumber`) and OMITS it otherwise —
- * 37 of the same 82 records carry it
- * (`grep '"orchestrator.quality_gate' <file> | grep -c '"wave_number"'`).
- * Readers exist: `skills/session-end/metrics-collection.md` § 1.7 reads
- * `counts` by `wave_number` first and keeps the STATE.md header only as a
- * fallback (#966 step 3), and `scripts/lib/convergence-monitor.mjs` folds a
- * gate record only when it carries both. Both emitters resolve the running
- * wave from the existing own-session manifest at the event's repoRoot.
- * Without a usable source they omit the key; no wall-clock attribution or
- * guessed wave number is added.
+ * Both emitters resolve `wave_number` from the existing own-session manifest
+ * at the event's repoRoot and omit it without a usable source. No wall-clock
+ * attribution or guessed wave number is added. Missing counts are not zeros.
+ * Count fallback is limited to pre-#954 sessions, gates outside the event
+ * wrapper, or missing wave attribution; step 7 falls back to this wave's own
+ * gate output (its header is not written yet), session end to the header. Auto-fix with a known wave
+ * uses the event; missing counts alone do not permit header fallback.
+ *
+ * `suite_platform` comes from this wave's gate run (step 7) or the STATE.md
+ * Wave History header `— suite <passed>/<failed> on <platform>` (session end);
+ * the payload has NO platform field.
+ * Event-derived counts may be mirrored into that existing header as
+ * compatibility output, not a second measurement source. Neither the header
+ * nor sessions.jsonl changes its contract.
  *
  * Note also that THIS emitter only runs under `verification-auto-fix.enabled:
  * true` (default `false`, and `false` in this repo's Session Config). The gate
