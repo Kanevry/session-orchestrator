@@ -184,6 +184,21 @@ describe('ORCHESTRATOR_EVENT_RE', () => {
 });
 
 describe('validateEventRecord — valid records', () => {
+  it.each(['passed', 'failed'].flatMap((verdict) =>
+    [[3, true], [Number.MAX_SAFE_INTEGER, true], [0, false], [-1, false], [1.5, false], ['3', false], [null, false], [undefined, false], [Number.MAX_SAFE_INTEGER + 1, false]].map(([wave, valid]) => [verdict, wave, valid]),
+  ))('validates optional quality_gate.%s wave_number=%s', (verdict, wave, valid) => {
+    const record = { timestamp: '2026-01-01T00:00:00.000Z', event: `orchestrator.quality_gate.${verdict}`, wave_number: wave };
+    const result = validateEventRecord(record);
+    expect(result.valid).toBe(valid);
+    if (!result.valid) expect(result.errors).toContain('quality_gate wave_number must be a positive safe integer when present');
+    delete record.wave_number;
+    expect(validateEventRecord(record).valid).toBe(true);
+  });
+
+  it('leaves wave_number on unrelated event payloads unconstrained', () => {
+    expect(validateEventRecord({ timestamp: '2026-01-01T00:00:00Z', event: 'orchestrator.wave.completed', wave_number: null }).valid).toBe(true);
+  });
+
   it('accepts a canonical orchestrator record', () => {
     const result = validateEventRecord({
       timestamp: '2026-05-28T14:35:13.123Z',

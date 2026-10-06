@@ -283,7 +283,8 @@ function checkRunCountsText(result) {
   const parts = [
     ['success', 'successful'], ['failure', 'failed/action required'],
     ['inProgress', 'in progress'], ['queued', 'queued'],
-    ['cancelled', 'cancelled'], ['other', 'unrecognised'],
+    ['cancelled', 'cancelled'], ['skipped', 'skipped'],
+    ['neutral', 'neutral'], ['waiting', 'waiting'], ['other', 'unrecognised'],
   ].filter(([key]) => Number.isSafeInteger(counts[key]) && counts[key] > 0)
     .map(([key, label]) => `${label}: ${counts[key]}`);
   return parts.length ? ` — Check runs: ${parts.join(', ')}` : '';

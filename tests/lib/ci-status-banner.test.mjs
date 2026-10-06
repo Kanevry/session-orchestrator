@@ -1919,9 +1919,15 @@ describe('#856 — GitHub additive check-run diagnostics', () => {
   const queued = { name: 'lint', status: 'queued', conclusion: null };
   const cancelled = { name: 'build', status: 'completed', conclusion: 'cancelled' };
   const success = { name: 'test', status: 'completed', conclusion: 'success' };
-  const counts = (overrides) => ({ success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, other: 0, ...overrides });
+  const counts = (overrides) => ({ success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, skipped: 0, neutral: 0, waiting: 0, other: 0, ...overrides });
 
   it.each([
+    ['skipped', [{ name: 'test', status: 'completed', conclusion: 'skipped' }], 'unknown', 'check-runs-skipped', counts({ skipped: 1 })],
+    ['neutral with success', [success, { name: 'lint', status: 'completed', conclusion: 'neutral' }], 'unknown', 'check-runs-neutral', counts({ success: 1, neutral: 1 })],
+    ...['waiting', 'pending', 'requested'].map((status) => [status, [{ name: 'test', status, conclusion: null }], 'unknown', 'check-runs-waiting', counts({ waiting: 1 })]),
+    ['waiting with stale success', [{ name: 'odd', status: 'waiting', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
+    ['failure with skipped', [{ name: 'failed', status: 'completed', conclusion: 'failure' }, { name: 'test', status: 'completed', conclusion: 'skipped' }], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, skipped: 1 })],
+    ['action_required with neutral', [{ name: 'approval', status: 'completed', conclusion: 'action_required' }, { name: 'test', status: 'completed', conclusion: 'neutral' }], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, neutral: 1 })],
     ['running', [running], 'unknown', 'check-runs-in-progress', counts({ inProgress: 1 })],
     ['queued', [queued], 'unknown', 'check-runs-queued', counts({ queued: 1 })],
     ['cancelled', [cancelled], 'unknown', 'check-runs-cancelled', counts({ cancelled: 1 })],

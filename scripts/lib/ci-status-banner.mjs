@@ -1092,11 +1092,14 @@ async function checkGithub(repoRoot, deps = {}) {
   // #856: lifecycle and conclusion are separate facts. Failure retains
   // priority even in an inconsistent row; only completed success grants green.
   // Counts are additive diagnostics, never a new status or gate authority.
-  const checkRunCounts = { success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, other: 0 };
+  const checkRunCounts = { success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, skipped: 0, neutral: 0, waiting: 0, other: 0 };
   for (const run of checkRuns) {
     if (run?.conclusion === 'failure' || run?.conclusion === 'action_required') checkRunCounts.failure++;
     else if (run?.status === 'completed' && run?.conclusion === 'success') checkRunCounts.success++;
     else if (run?.status === 'completed' && run?.conclusion === 'cancelled') checkRunCounts.cancelled++;
+    else if (run?.status === 'completed' && run?.conclusion === 'skipped') checkRunCounts.skipped++;
+    else if (run?.status === 'completed' && run?.conclusion === 'neutral') checkRunCounts.neutral++;
+    else if (['waiting', 'pending', 'requested'].includes(run?.status) && run?.conclusion === null) checkRunCounts.waiting++;
     else if (run?.status === 'in_progress' && run?.conclusion === null) checkRunCounts.inProgress++;
     else if (run?.status === 'queued' && run?.conclusion === null) checkRunCounts.queued++;
     else checkRunCounts.other++;
@@ -1133,6 +1136,9 @@ async function checkGithub(repoRoot, deps = {}) {
     ['inProgress', 'check-runs-in-progress'],
     ['queued', 'check-runs-queued'],
     ['cancelled', 'check-runs-cancelled'],
+    ['skipped', 'check-runs-skipped'],
+    ['neutral', 'check-runs-neutral'],
+    ['waiting', 'check-runs-waiting'],
     ['other', 'check-runs-unrecognised'],
   ].filter(([key]) => checkRunCounts[key] > 0);
   // Successes may accompany one unknown state; counts expose the whole mix.
@@ -1210,7 +1216,7 @@ async function checkGithub(repoRoot, deps = {}) {
  *     cliUsed: 'glab'|'gh',
  *     reason?: string,
  *     error?: string,
- *     checkRunCounts?: { success: number, failure: number, inProgress: number, queued: number, cancelled: number, other: number },
+ *     checkRunCounts?: { success: number, failure: number, inProgress: number, queued: number, cancelled: number, skipped: number, neutral: number, waiting: number, other: number },
  *     matchedRef?: string,
  *     candidateCount?: number,
  *     candidateStatuses?: string[],
@@ -1228,6 +1234,7 @@ async function checkGithub(repoRoot, deps = {}) {
  * `failure` includes action_required; `other` includes malformed/inconsistent
  * rows and unsupported statuses/conclusions. Non-success reasons are
  * check-runs-in-progress, check-runs-queued, check-runs-cancelled,
+ * check-runs-skipped, check-runs-neutral, check-runs-waiting (#1526),
  * check-runs-unrecognised, or check-runs-mixed (multiple non-success kinds),
  * never as a new status value — consumers fail open on an unknown status string
  * and the session-start renderer prints nothing for one.

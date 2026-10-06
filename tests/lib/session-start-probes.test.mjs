@@ -1170,6 +1170,10 @@ describe('the instruction-budget probe on a repo with no .claude/rules (#1132)',
 
 describe('#856 — GitHub check-run counts reach the session-start banner', () => {
   it.each([
+    ['unknown', 'check-runs-skipped', { skipped: 1 }, 'skipped: 1', 'ran-warn'],
+    ['unknown', 'check-runs-neutral', { success: 1, neutral: 1 }, 'successful: 1, neutral: 1', 'ran-warn'],
+    ['unknown', 'check-runs-waiting', { waiting: 3 }, 'waiting: 3', 'ran-warn'],
+    ['unknown', 'check-runs-unrecognised', { other: 1 }, 'unrecognised: 1', 'ran-warn'],
     ['unknown', 'check-runs-in-progress', { inProgress: 1 }, 'in progress: 1', 'ran-warn'],
     ['unknown', 'check-runs-queued', { queued: 1 }, 'queued: 1', 'ran-warn'],
     ['unknown', 'check-runs-cancelled', { cancelled: 1 }, 'cancelled: 1', 'ran-warn'],

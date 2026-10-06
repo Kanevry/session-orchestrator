@@ -182,6 +182,12 @@ function _validateTimestamps(entry) {
       `started_at must match ISO-8601 UTC ms format (YYYY-MM-DDTHH:MM:SS[.SSS]Z), got: ${entry.started_at}`
     );
   }
+  // Date.parse normalizes impossible calendar dates; compare without mutating the record.
+  const startedCanonical = entry.started_at.includes('.')
+    ? entry.started_at : entry.started_at.replace(/Z$/, '.000Z');
+  if (new Date(startedMs).toISOString() !== startedCanonical) {
+    throw new ValidationError(`started_at must be a valid calendar timestamp, got: ${entry.started_at}`);
+  }
   if (typeof entry.completed_at !== 'string') {
     throw new ValidationError('completed_at must be an ISO timestamp string');
   }
@@ -193,6 +199,12 @@ function _validateTimestamps(entry) {
     throw new ValidationError(
       `completed_at must match ISO-8601 UTC ms format (YYYY-MM-DDTHH:MM:SS[.SSS]Z), got: ${entry.completed_at}`
     );
+  }
+  // Date.parse normalizes impossible calendar dates; compare without mutating the record.
+  const completedCanonical = entry.completed_at.includes('.')
+    ? entry.completed_at : entry.completed_at.replace(/Z$/, '.000Z');
+  if (new Date(completedMs).toISOString() !== completedCanonical) {
+    throw new ValidationError(`completed_at must be a valid calendar timestamp, got: ${entry.completed_at}`);
   }
   if (completedMs < startedMs) {
     throw new ValidationError(

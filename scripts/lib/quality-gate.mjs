@@ -67,6 +67,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { emitEvent, sessionAttribution } from './events.mjs';
+import { resolveWaveNumber } from './quality-gate-wave.mjs';
 import { parsePorcelainZ } from './git-porcelain.mjs';
 import { admitSuiteCounts, extractTestCounts } from './gates/gate-helpers.mjs';
 import {
@@ -853,13 +854,10 @@ export function gateKillFields(run) {
  * Readers exist: `skills/session-end/metrics-collection.md` § 1.7 reads
  * `counts` by `wave_number` first and keeps the STATE.md header only as a
  * fallback (#966 step 3), and `scripts/lib/convergence-monitor.mjs` folds a
- * gate record only when it carries both. THIS emitter still sets no
- * `wave_number` — its records are mid-wave auto-fix retries, so they fall to
- * that fallback by design. A record without the key could only be attributed
- * to a wave by a wall-clock window whose own boundaries (`waves[].started_at`
- * / `completed_at`) are themselves LLM-written, against the posture
- * `scripts/lib/eval/session-resolve.mjs` documents for window-attributed gate
- * events ("a contaminated window means gate-attribution is unsafe").
+ * gate record only when it carries both. Both emitters resolve the running
+ * wave from the existing own-session manifest at the event's repoRoot.
+ * Without a usable source they omit the key; no wall-clock attribution or
+ * guessed wave number is added.
  *
  * Note also that THIS emitter only runs under `verification-auto-fix.enabled:
  * true` (default `false`, and `false` in this repo's Session Config). The gate
@@ -891,12 +889,14 @@ export function gateKillFields(run) {
  */
 async function emitGateEvent(repoRoot, ok, attempts, gate, counts, killRun = null) {
   try {
+    const waveNumber = resolveWaveNumber(repoRoot);
     await emitEvent(
       `orchestrator.quality_gate.${ok ? 'passed' : 'failed'}`,
       {
         variant: 'auto-fix-loop',
         exit_code: ok ? 0 : 1,
         attempts,
+        ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...(gate ? { gate } : {}),
         ...(counts ? { counts } : {}),
         ...gateKillFields(killRun),

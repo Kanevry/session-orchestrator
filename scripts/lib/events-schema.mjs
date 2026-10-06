@@ -239,5 +239,13 @@ export function validateEventRecord(record) {
     );
   }
 
+  if (
+    ['orchestrator.quality_gate.passed', 'orchestrator.quality_gate.failed'].includes(record.event) &&
+    Object.hasOwn(record, 'wave_number') &&
+    (!Number.isSafeInteger(record.wave_number) || record.wave_number <= 0)
+  ) {
+    errors.push('quality_gate wave_number must be a positive safe integer when present');
+  }
+
   return { valid: errors.length === 0, errors };
 }

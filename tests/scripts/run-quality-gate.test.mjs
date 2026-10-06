@@ -464,6 +464,10 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     // The flag is validated against an EXISTING `.orchestrator/` dir — the
     // marker of a root this harness was initialised in (see resolveLedgerRoot).
     mkdirSync(join(ledger, '.orchestrator'), { recursive: true });
+    for (const [dir, wave] of [[ledger, 4], [tmp, 9]]) {
+      mkdirSync(join(dir, '.claude'), { recursive: true });
+      writeFileSync(join(dir, '.claude', 'wave-scope.json'), JSON.stringify({ wave }));
+    }
     try {
       const config = JSON.stringify({
         'typecheck-command': 'skip',
@@ -486,6 +490,7 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
         .map((l) => JSON.parse(l))
         .find((e) => e.event === 'orchestrator.quality_gate.failed');
       expect(ev).toBeDefined();
+      expect(ev.wave_number).toBe(4);
       expect(ev.exit_code).toBe(r.status);
       // The temp tree must stay clean, or the pinning is a copy, not a move.
       expect(readEvents()).toEqual([]);
@@ -633,26 +638,35 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
   // `wave_number: 0` published for a human `npm run quality-gate` from a
   // `git push`, inventing a wave 0 that consumers must special-case. No
   // existing test asserts either direction.
-  it.each([
-    ['reports the sidecar wave when running inside a wave', { wave: 3 }, 3],
-    ['omits wave_number entirely when no wave-scope sidecar exists', null, undefined],
-  ])('%s', (_label, scope, expected) => {
+  it.each([true, false].flatMap((ok) => [
+    ['reports the sidecar wave when running inside a wave', { session_id: 'synthetic-own', wave: 3 }, 3, ok],
+    ['omits wave_number entirely when no wave-scope sidecar exists', null, undefined, ok],
+    ['own wave below peer', { session_id: 'synthetic-own', wave: 3 }, 3, ok],
+    ['omits peer wave', { session_id: 'synthetic-peer', wave: 9 }, undefined, ok],
+    ...[0, -1, 3.5, '3', null, Number.MAX_SAFE_INTEGER + 1].map((wave) =>
+      [`omits invalid wave ${JSON.stringify(wave)}`, { session_id: 'synthetic-own', wave }, undefined, ok]),
+  ]))('%s', (_label, scope, expected, ok) => {
     if (scope) {
       mkdirSync(join(tmp, '.claude'), { recursive: true });
       writeFileSync(join(tmp, '.claude', 'wave-scope.json'), JSON.stringify(scope), 'utf8');
     }
+    if (_label === 'own wave below peer') {
+      mkdirSync(join(tmp, '.pi'), { recursive: true });
+      writeFileSync(join(tmp, '.pi', 'wave-scope.json'), JSON.stringify({ session_id: 'synthetic-peer', wave: 9 }));
+    }
     const config = JSON.stringify({
-      'typecheck-command': 'skip',
+      'typecheck-command': ok ? 'skip' : 'node -e "process.exit(1)"',
       'test-command': 'skip',
       'lint-command': 'skip',
     });
-    const r = run(['--variant', 'full-gate', '--config', config], { CLAUDE_PROJECT_DIR: tmp });
-    expect(r.status).toBe(0);
-
-    const ev = readEvents().find((e) => e.event === 'orchestrator.quality_gate.passed');
+    const r = run(['--variant', 'full-gate', '--config', config], {
+      CLAUDE_PROJECT_DIR: tmp, SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'synthetic-own',
+    });
+    expect(r.status).toBe(ok ? 0 : 2);
+    const ev = readEvents().find((e) => e.event === `orchestrator.quality_gate.${ok ? 'passed' : 'failed'}`);
     expect(ev).toBeDefined();
     expect(ev.wave_number).toBe(expected);
-    if (expected === undefined) expect(Object.keys(ev)).not.toContain('wave_number');
+    if (expected === undefined) expect(Object.hasOwn(ev, 'wave_number')).toBe(false);
   });
 });
 
