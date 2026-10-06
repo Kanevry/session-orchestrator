@@ -7,16 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.9.0] - 2026-10-06
+
+### Added
+
+- **Lead page on the website**: `site/lead/` introduces the sibling project lead-session-orchestrator in the site design, linked from the main, German and guide pages, the sitemap and llms.txt; the README and the fleet contract point to it.
+
 ### Changed
 
-- **CI status banner** names GitHub check runs in the valid states `skipped`, `neutral` and `waiting`/`pending`/`requested` with their own reasons (`check-runs-skipped`, `-neutral`, `-waiting`) and banner labels instead of `check-runs-unrecognised`; the status vocabulary `green | red | unknown` is unchanged (#1526).
+- **CI status banner, GitHub path**: unfinished check runs get their own reasons `check-runs-in-progress`, `check-runs-queued` and `check-runs-cancelled` (several kinds at once: `check-runs-mixed`) instead of `check-runs-not-complete`, and `details.checkRunCounts` carries additive counts per kind, shown by the session-start banner for `unknown`/`red`; the gh hint applies to every GitHub reason. Status vocabulary and severity are unchanged (#856).
+- **CI status banner** names GitHub check runs in the valid states `skipped`, `neutral` and `waiting`/`pending`/`requested` with their own reasons (`check-runs-skipped`, `-neutral`, `-waiting`) and banner labels instead of `check-runs-not-complete`; the status vocabulary `green | red | unknown` is unchanged (#1526).
 - **Session-record validator** rejects millisecond-precise but calendar-invalid timestamps (round-trip check); this deliberately also rejects the ISO end-of-day form `T24:00:00Z`, which no producer writes (#1526).
 - **Prose readers of the gate result** (`skills/wave-executor/references/wave-loop-review.md`, `skills/session-end/metrics-collection.md`) take `suite_passed`/`suite_failed` from the `orchestrator.quality_gate.*` event selected by `semantic_session_id` + `wave_number` (last record of the wave) with one identical `jq` selector that skips unreadable ledger lines instead of silently returning nothing; the counts fallback applies only to pre-#954 sessions, a gate run outside the wrapper (including an event without `semantic_session_id`) and a missing wave, and reads this wave's own gate output in wave-loop step 7 (which runs before the header is written) and the STATE.md header at session end, the same sources as `suite_platform`. `docs/events-schema.md` and the emitter docblocks describe that contract (#966 steps 2–3).
 - **Quality-gate events** carry an optional `wave_number` (positive safe integer from the session's own wave scope, omitted when unknown) on `orchestrator.quality_gate.*` from both the CLI and the library path; the auto-fix-loop record therefore now matches the per-wave selector (#966 step 1).
 
-### Added
+### Fixed
 
-- **Lead page on the website**: `site/lead/` introduces the sibling project lead-session-orchestrator in the site design, linked from the main, German and guide pages, the sitemap and llms.txt; the README and the fleet contract point to it. npm and GitHub are marked as coming soon until it is released.
+- **Remote-offload readiness** (#1524): Claude dispatch authorizes on the new `headless-ready=yes` marker; the legacy `ready=yes` is accepted only when no new readiness marker (`gate-ready`, `headless-ready`) is on the line, and `gate-ready` alone no longer authorizes Claude dispatch. Conflicting or unknown headless values fail closed.
+- **`session-record-repair`** (#1525) also normalizes microsecond-precise timestamps with a `+00:00` offset to milliseconds, after a calendar round-trip check; the original value is preserved, and an invalid `ended_at` produces no substitute.
 
 ## [5.8.0] - 2026-10-05
 
