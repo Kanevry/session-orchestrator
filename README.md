@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.8.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.9.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -139,15 +139,14 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.8.0)
+## Recent highlights (v5.9.0)
 
-Highlights of the v5.8.0 line:
+Highlights of the v5.9.0 line:
 
-- **Your secrets stay out of the plugin cache.** Claude and Codex installs now come from the packed package (`npm pack`), so `.env.local` and session state no longer land in `~/.claude` or `~/.codex` plugin caches (#1515, #1518).
-- **`mirror: none` means none.** `/close` no longer pushes to a GitHub remote when the repo opted out, and a fresh shell without `PLUGIN_ROOT` no longer breaks the mirror push (#1034).
-- **Honest gate scores.** Eval rubric v3 counts a gate run that was killed but exited 0 as failed; older records keep their own rubric version and are never re-scored silently (#1487).
-- **Rules live through their expiry day.** A rule's `expires-at` date is inclusive in the loader, the budget probe, the drift check and the expiry sweep alike (#1521).
-- **vault-sync needs no second install.** The validator resolves `zod`/`yaml` from the plugin's own dependencies and, if they are missing, says exactly which command fixes it (#1070).
+- **Gate counts per wave.** Quality-gate events now carry an optional `wave_number`, and the wave loop and `/close` read `suite_passed`/`suite_failed` from the gate event of exactly that wave, skipping unreadable ledger lines instead of silently returning nothing (#966).
+- **The CI banner says why a check is not green.** GitHub check runs that are in progress, queued, cancelled, `skipped`, `neutral` or waiting get their own reason, with counts per kind, instead of `check-runs-not-complete` (#856, #1526).
+- **Impossible timestamps are rejected.** The session-record validator refuses millisecond-precise timestamps that are not a real calendar date (#1526).
+- **A page for the lead session.** `site/lead/` introduces the sibling project lead-session-orchestrator, linked from the main, German and guide pages.
 
 Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
 
