@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **CI status banner** names GitHub check runs in the valid states `skipped`, `neutral` and `waiting`/`pending`/`requested` with their own reasons (`check-runs-skipped`, `-neutral`, `-waiting`) and banner labels instead of `check-runs-unrecognised`; the status vocabulary `green | red | unknown` is unchanged (#1526).
+- **Session-record validator** rejects millisecond-precise but calendar-invalid timestamps (round-trip check); this deliberately also rejects the ISO end-of-day form `T24:00:00Z`, which no producer writes (#1526).
+- **Quality-gate events** carry an optional `wave_number` (positive safe integer from the session's own wave scope, omitted when unknown) on `orchestrator.quality_gate.*` from both the CLI and the library path; the auto-fix-loop record therefore now matches the per-wave selector (#966 step 1).
+
 ### Added
 
 - **Lead page on the website**: `site/lead/` introduces the sibling project lead-session-orchestrator in the site design, linked from the main, German and guide pages, the sitemap and llms.txt; the README and the fleet contract point to it. npm and GitHub are marked as coming soon until it is released.

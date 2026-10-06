@@ -1216,7 +1216,7 @@ async function checkGithub(repoRoot, deps = {}) {
  *     cliUsed: 'glab'|'gh',
  *     reason?: string,
  *     error?: string,
- *     checkRunCounts?: { success: number, failure: number, inProgress: number, queued: number, cancelled: number, other: number },
+ *     checkRunCounts?: { success: number, failure: number, inProgress: number, queued: number, cancelled: number, skipped: number, neutral: number, waiting: number, other: number },
  *     matchedRef?: string,
  *     candidateCount?: number,
  *     candidateStatuses?: string[],
@@ -1234,6 +1234,7 @@ async function checkGithub(repoRoot, deps = {}) {
  * `failure` includes action_required; `other` includes malformed/inconsistent
  * rows and unsupported statuses/conclusions. Non-success reasons are
  * check-runs-in-progress, check-runs-queued, check-runs-cancelled,
+ * check-runs-skipped, check-runs-neutral, check-runs-waiting (#1526),
  * check-runs-unrecognised, or check-runs-mixed (multiple non-success kinds),
  * never as a new status value — consumers fail open on an unknown status string
  * and the session-start renderer prints nothing for one.
