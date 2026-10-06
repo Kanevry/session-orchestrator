@@ -189,6 +189,28 @@ describe('validateSession — session_type', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — timestamps', () => {
+  it.each(['started_at', 'completed_at'].flatMap((field) =>
+    ['2026-04-31T12:00:00.123Z', '2026-02-29T12:00:00.123Z'].map((value) => [field, value]),
+  ))('rejects normalized calendar date in %s: %s', (field, value) => {
+    const record = { ...VALID(), started_at: '2026-01-01T00:00:00Z', completed_at: '2026-06-01T00:00:00Z', [field]: value };
+    expect(() => validateSession(record)).toThrow(ValidationError);
+    expect(() => validateSession(record)).toThrow(/valid calendar timestamp/);
+  });
+
+  it.each(['2024-02-29T12:00:00.123Z', '2026-04-30T12:00:00Z'])(
+    'preserves valid calendar timestamp %s', (value) => {
+      const result = validateSession({ ...VALID(), started_at: value, completed_at: value });
+      expect(result.started_at).toBe(value);
+      expect(result.completed_at).toBe(value);
+    },
+  );
+
+  it.each(['2026-13-01T12:00:00Z', '2026-04-32T12:00:00Z'])(
+    'retains parse rejection for %s', (value) => {
+      expect(() => validateSession({ ...VALID(), started_at: value })).toThrow(/not a parsable timestamp/);
+    },
+  );
+
   it('throws when completed_at is before started_at', () => {
     const e = {
       ...VALID(),
