@@ -127,6 +127,40 @@ describe('runQualityGateWithRetry — happy path', () => {
 // ---------------------------------------------------------------------------
 
 describe('runQualityGateWithRetry — suite counts on the emitted event (#954)', () => {
+  // #966: reach the real emitter, preserving the existing ownership selector.
+  it.each([true, false].flatMap((ok) => [
+    ['own wave', { session_id: 'synthetic-own', wave: 3 }, 3, ok],
+    ['no source', null, undefined, ok],
+    ['own wave below peer', { session_id: 'synthetic-own', wave: 3 }, 3, ok],
+    ['peer wave', { session_id: 'synthetic-peer', wave: 9 }, undefined, ok],
+    ...[0, -1, 3.5, '3', null, Number.MAX_SAFE_INTEGER + 1].map((wave) =>
+      [`invalid wave ${JSON.stringify(wave)}`, { session_id: 'synthetic-own', wave }, undefined, ok]),
+  ]))('emits %s', async (_label, scope, expected, ok) => {
+    vi.stubEnv('SO_PLATFORM', 'claude');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'synthetic-own');
+    try {
+      if (scope) {
+        mkdirSync(join(repoRoot, '.claude'), { recursive: true });
+        writeFileSync(join(repoRoot, '.claude', 'wave-scope.json'), JSON.stringify(scope));
+      }
+      if (_label === 'own wave below peer') {
+        mkdirSync(join(repoRoot, '.pi'), { recursive: true });
+        writeFileSync(join(repoRoot, '.pi', 'wave-scope.json'), JSON.stringify({ session_id: 'synthetic-peer', wave: 9 }));
+      }
+      const result = await runQualityGateWithRetry({
+        repoRoot, maxRetries: 0, commands: ok ? PASS_COMMANDS : FAIL_LINT_COMMANDS,
+      });
+      expect(result.ok).toBe(ok);
+      const ev = readEvents().find((e) => e.event === `orchestrator.quality_gate.${ok ? 'passed' : 'failed'}`);
+      expect(ev).toBeDefined();
+      expect(ev.wave_number).toBe(expected);
+      if (expected === undefined) expect(Object.hasOwn(ev, 'wave_number')).toBe(false);
+      expect(validateEventRecord(ev).valid).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   /** Read parsed events.jsonl records from the isolated tmp repoRoot. */
   function readEvents() {
     const p = join(repoRoot, '.orchestrator', 'metrics', 'events.jsonl');
