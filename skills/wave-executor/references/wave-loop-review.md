@@ -386,9 +386,33 @@ If the commit itself fails (e.g., nothing to commit, pre-commit hook rejects), d
      ' .orchestrator/metrics/events.jsonl | tail -1
      ```
 
-     `WAVE` and `SEMANTIC_SESSION_ID` come from the existing own session/wave identity; never construct either for this lookup. Filtering by both is mandatory: the ledger accumulates across sessions, and a different session or wave must not supply these counts. `counts.passed` → `suite_passed`, `counts.failed` → `suite_failed`. `tail -1` selects the last matching gate run of the wave, including auto-fix. `-R` with `fromjson? | objects` skips an unreadable ledger line (a torn tail from a killed writer, #1401) instead of letting one parse error end `jq` and silently empty the selector behind `| tail -1`. The library emits one record per `runQualityGateWithRetry` call, not per retry; `attempts` is not a record count.
+     `WAVE` and `SEMANTIC_SESSION_ID` come from the existing own session/wave identity; never construct either for this lookup. Filtering by both is mandatory: the ledger accumulates across sessions, and a different session or wave must not supply these counts. `counts.passed` → `suite_passed`, `counts.failed` → `suite_failed`. `tail -1` selects the last matching gate run of the wave, including auto-fix. `-R` with `fromjson? | objects` skips an unreadable ledger line (a torn tail from a killed writer, #1401) instead of letting one parse error end `jq`. The old pipeline could emit an earlier matching value before the parse error; `tail -1` retained that stale value and could hide the jq failure. Known limit: an interrupted `appendFile` can leave a truncated record that `fromjson?` discards completely; `tail -1` can still select an older matching run, which alone is not evidence of the current gate result. The library emits one record per `runQualityGateWithRetry` call, not per retry; `attempts` is not a record count.
 
-     **Fallback for counts is limited to three cases:** pre-#954 sessions, a gate run outside the event wrapper, or missing wave attribution (including an auto-fix call without a readable own wave scope). An event without `semantic_session_id` cannot match the selector — emitters set it only from the session lock via `sessionAttribution()` — and is treated like a gate run outside the wrapper. In those cases only, fall back to the gate output you read for this wave — the same run whose counts go into the § 3a header — and say so in the progress update. Do not read the STATE.md Wave History header here: this step runs before § 3a writes this wave's header, so the newest header line there belongs to the previous wave. An auto-fix call with a known wave uses the event selector above. An empty selector alone is not a fallback case: an event without `counts`, for example after fail-fast before the test suite, supplies no replacement zeros and does not by itself permit header fallback.
+     An empty counts selector cannot distinguish a missing event, missing wave attribution,
+     or an attributed event without counts after fail-fast. Inspect the own session's
+     records without the counts filter before deciding whether a documented count
+     fallback case applies:
+
+     ```bash
+     jq -cR --argjson w "$WAVE" --arg s "$SEMANTIC_SESSION_ID" '
+       fromjson? | objects
+       | select((.event | type) == "string" and (.event | startswith("orchestrator.quality_gate.")))
+       | select(.semantic_session_id == $s)
+       | select(.wave_number == $w or .wave_number == null)
+       | {event, semantic_session_id, wave_number, counts}
+     ' .orchestrator/metrics/events.jsonl
+     ```
+
+     This is a diagnostic, not a replacement counts source. No rows means no readable
+     matching event; a row without `wave_number` is not proof of this wave's run;
+     a row for this wave without `counts` supplies no measurement. Keep the session
+     filter and never copy counts from another session or wave, or from a row without
+     wave attribution. An event without `semantic_session_id` is not attributable by
+     this query either; diagnose missing session attribution from independent evidence
+     of the own gate run, not by adopting an unrelated unattributed event. Missing
+     attribution or an empty result alone does not prove a fallback source exists.
+
+     **Count fallback is limited to three cases:** pre-#954 sessions, a gate run outside the event wrapper, or missing wave attribution (including an auto-fix call without a readable own wave scope). An event without `semantic_session_id` cannot match the selector — emitters set it only from the session lock via `sessionAttribution()` — and is treated like a gate run outside the wrapper. In those cases only, fall back to the gate output you read for this wave — the same run whose counts go into the § 3a header — and say so in the progress update. Do not read the STATE.md Wave History header here: this step runs before § 3a writes this wave's header, so the newest header line there belongs to the previous wave. An auto-fix call with a known wave uses the event selector above. An empty selector alone is not a fallback case: an event without `counts`, for example after fail-fast before the test suite, supplies no replacement zeros and does not by itself permit count fallback.
 
      If no counts are available and none of those fallback cases applies, omit `suite_passed` and `suite_failed`. Absent means "not measured"; a present `suite_failed: 0` means "measured, zero failures". Never zero-fill missing measurements.
 

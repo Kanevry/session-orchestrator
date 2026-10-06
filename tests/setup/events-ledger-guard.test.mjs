@@ -1,95 +1,133 @@
 /**
- * tests/setup/events-ledger-guard.test.mjs — #1397 item 11.
+ * tests/setup/events-ledger-guard.test.mjs — #1397 item 11, #1527.
  *
- * Named bug (TV-001): a test run appends to the REAL
- * `.orchestrator/metrics/events.jsonl`. Every assertion below writes a random
- * nonce and then looks for it in the sandbox AND in the real ledger, so a
- * concurrent writer to the real ledger (the live session's own hooks) cannot
- * make it pass or fail.
+ * Named bug (TV-001): a test's explicit repoRoot inside a linked worktree maps
+ * its probe into the main checkout's ledger. All destinations below are
+ * throwaway fixtures; even the negative nonce assertions never read live data.
  *
- * This file deliberately does NOT import `./events-ledger-guard.mjs`: importing
- * it would apply the guard itself and mask a missing `setupFiles` entry. The
- * sandbox variable must arrive through `vitest.config.mjs` — that is the wiring
- * under test.
+ * Do NOT import ./events-ledger-guard.mjs here: the sandbox must arrive through
+ * vitest.config.mjs setupFiles, otherwise the wiring test would mask its defect.
  */
 
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { emitEvent, eventsFilePath, EVENTS_LEDGER_SANDBOX_ENV } from '../../scripts/lib/events.mjs';
+import { EVENTS_LEDGER_SANDBOX_ENV } from '../../scripts/lib/events.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const REAL_LEDGER = path.join(ROOT, '.orchestrator', 'metrics', 'events.jsonl');
 const TYPE = 'test.events_ledger_guard.probe';
-
-// The pre-push hook runs the full gate in a checkout materialised UNDER the temp
-// root. There the default destination is already a throwaway tree, and the
-// guard leaves tmp destinations alone by design — the redirect cannot be
-// observed, so the redirect assertions skip rather than fail.
-const ROOT_UNDER_TMP = [tmpdir(), realpathSync(tmpdir())].some((t) =>
-  (ROOT + path.sep).startsWith(path.resolve(t) + path.sep),
-);
-
+const ledger = (root) => path.join(root, '.orchestrator', 'metrics', 'events.jsonl');
 const has = (file, nonce) => existsSync(file) && readFileSync(file, 'utf8').includes(nonce);
 
-describe.skipIf(ROOT_UNDER_TMP)('events-ledger-guard (#1397 item 11)', () => {
+describe('events-ledger-guard (#1397 item 11, #1527)', () => {
   const sandbox = process.env[EVENTS_LEDGER_SANDBOX_ENV];
+  let dir;
+  let project;
+  let emitEvent;
+  let eventsFilePath;
 
-  it('an in-process default emitEvent lands in the sandbox, not the real ledger', async () => {
+  beforeEach(async () => {
     expect(sandbox, 'setupFiles must register tests/setup/events-ledger-guard.mjs').toBeTruthy();
-    const nonce = randomUUID();
-    await emitEvent(TYPE, { nonce });
-    expect(has(sandbox, nonce)).toBe(true);
-    expect(has(REAL_LEDGER, nonce)).toBe(false);
+    dir = realpathSync(mkdtempSync(path.join(tmpdir(), 'events-ledger-probe-')));
+    project = path.join(dir, 'project');
+    mkdirSync(project);
+
+    // Narrow the effective OS temp root to the guard's existing directory.
+    // Our sibling fixture is outside it, so default redirection is observable
+    // even when the checkout itself is under tmp (CI / materialised gates).
+    // Everything remains physically under the original tmpdir().
+    const guardRoot = path.dirname(path.dirname(path.dirname(sandbox)));
+    vi.stubEnv('TMPDIR', guardRoot);
+    vi.stubEnv('TMP', guardRoot);
+    vi.stubEnv('TEMP', guardRoot);
+    expect(realpathSync(tmpdir())).toBe(realpathSync(guardRoot));
+    expect(dir.startsWith(realpathSync(guardRoot) + path.sep)).toBe(false);
+    for (const key of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) {
+      vi.stubEnv(key, project);
+    }
+    vi.stubEnv('CLANK_EVENT_SECRET', undefined);
+    vi.stubEnv('CLANK_EVENT_URL', undefined);
+    // getProjectDir() is memoized; each probe must bind it to this fixture,
+    // including emitEvent's attribution reads, never the invoking checkout.
+    vi.resetModules();
+    ({ emitEvent, eventsFilePath } = await import('../../scripts/lib/events.mjs'));
   });
 
-  it('a script spawned with cwd = repo root lands in the sandbox, not the real ledger', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  it('redirects an in-process default to the setupFiles sandbox', async () => {
+    const nonce = randomUUID();
+    expect(eventsFilePath()).toBe(sandbox);
+    await emitEvent(TYPE, { nonce });
+    expect(has(sandbox, nonce)).toBe(true);
+    expect(has(ledger(project), nonce)).toBe(false);
+  });
+
+  it('redirects a CLI child default to the inherited setupFiles sandbox', () => {
     const nonce = randomUUID();
     const r = spawnSync(
       process.execPath,
       [path.join(ROOT, 'scripts', 'emit-event.mjs'), '--type', TYPE, '--payload', JSON.stringify({ nonce })],
-      { cwd: ROOT, encoding: 'utf8', timeout: 15_000 },
+      { cwd: project, env: { ...process.env }, encoding: 'utf8', timeout: 5_000 },
     );
     expect(r.status, r.stderr).toBe(0);
     expect(has(sandbox, nonce)).toBe(true);
-    expect(has(REAL_LEDGER, nonce)).toBe(false);
+    expect(has(ledger(project), nonce)).toBe(false);
   });
 
-  it('an explicit repoRoot or filePath outside the temp root is never redirected', async () => {
-    // Gitignored scratch dir inside the repo: outside the temp root, so a
-    // redirect WOULD apply if the explicit branches honoured the sandbox.
-    const dir = path.join(ROOT, '.orchestrator', 'tmp', `events-ledger-guard-${randomUUID()}`);
-    try {
-      const viaRoot = randomUUID();
-      await emitEvent(TYPE, { nonce: viaRoot }, { repoRoot: dir });
-      expect(has(path.join(dir, '.orchestrator', 'metrics', 'events.jsonl'), viaRoot)).toBe(true);
-      expect(has(sandbox, viaRoot)).toBe(false);
-
-      const viaFile = randomUUID();
-      const file = path.join(dir, 'explicit.jsonl');
-      await emitEvent(TYPE, { nonce: viaFile }, { filePath: file });
-      expect(has(file, viaFile)).toBe(true);
-      expect(has(sandbox, viaFile)).toBe(false);
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+  it('keeps an explicit repoRoot outside the sandbox on its own fixture', async () => {
+    const nonce = randomUUID();
+    expect(eventsFilePath(project)).toBe(ledger(project));
+    await emitEvent(TYPE, { nonce }, { repoRoot: project });
+    expect(has(ledger(project), nonce)).toBe(true);
+    expect(has(sandbox, nonce)).toBe(false);
   });
 
-  it('a sandbox value outside the temp root, relative, or whitespace-only is ignored', () => {
-    try {
-      delete process.env[EVENTS_LEDGER_SANDBOX_ENV];
-      const unguarded = eventsFilePath();
-      for (const bad of [path.join(ROOT, '.orchestrator', 'decoy.jsonl'), 'rel/events.jsonl', '   ']) {
-        process.env[EVENTS_LEDGER_SANDBOX_ENV] = bad;
-        expect(eventsFilePath(), JSON.stringify(bad)).toBe(unguarded);
-      }
-    } finally {
-      process.env[EVENTS_LEDGER_SANDBOX_ENV] = sandbox;
-    }
+  it('keeps an explicit filePath outside the sandbox on that exact file', async () => {
+    const nonce = randomUUID();
+    const file = path.join(dir, 'explicit.jsonl');
+    await emitEvent(TYPE, { nonce }, { filePath: file });
+    expect(has(file, nonce)).toBe(true);
+    expect(has(sandbox, nonce)).toBe(false);
+    expect(has(ledger(project), nonce)).toBe(false);
+  });
+
+  it('maps an explicit linked-worktree subdirectory into its synthetic main checkout', async () => {
+    // Minimal real Git layout consumed by the spawn-free resolver. No pointer
+    // or common directory connects this fixture to the invoking repository.
+    const main = path.join(dir, 'main');
+    const worktree = path.join(dir, 'worktree');
+    const gitdir = path.join(main, '.git', 'worktrees', 'probe');
+    mkdirSync(gitdir, { recursive: true });
+    mkdirSync(worktree);
+    writeFileSync(path.join(worktree, '.git'), `gitdir: ${gitdir}\n`);
+    writeFileSync(path.join(gitdir, 'commondir'), '../..\n');
+    const root = path.join(worktree, 'probe');
+    const mapped = ledger(path.join(main, 'probe'));
+    const nonce = randomUUID();
+    expect(eventsFilePath(root)).toBe(mapped);
+    await emitEvent(TYPE, { nonce }, { repoRoot: root });
+    expect(has(mapped, nonce)).toBe(true);
+    expect(has(ledger(root), nonce)).toBe(false);
+    expect(has(sandbox, nonce)).toBe(false);
+  });
+
+  it.each(['outside', 'relative', 'whitespace'])('ignores an invalid sandbox value: %s', (kind) => {
+    const invalid = {
+      outside: path.join(dir, 'decoy.jsonl'),
+      relative: 'rel/events.jsonl',
+      whitespace: '   ',
+    };
+    vi.stubEnv(EVENTS_LEDGER_SANDBOX_ENV, invalid[kind]);
+    expect(eventsFilePath()).toBe(ledger(project));
   });
 });
