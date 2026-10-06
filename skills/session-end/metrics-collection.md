@@ -176,16 +176,17 @@ Finalize session metrics by reading the wave data accumulated during execution:
 >   **`suite_passed` / `suite_failed`: read the event FIRST, the STATE.md header only as fallback (#966 step 3).** Since #954/#967 the between-waves gate wrapper `scripts/run-quality-gate.mjs` emits `orchestrator.quality_gate.{passed,failed}` with a machine-measured `counts: {passed, failed, total}` AND the `wave_number` it resolved from the `wave-scope.json` sidecar, so per-wave attribution needs no wall-clock window join. Payload fields are flat at the record's top level; for each wave of this session:
 >
 >   ```bash
->   jq -c --argjson w "$WAVE" --arg s "$SEMANTIC_SESSION_ID" '
->     select(.event | startswith("orchestrator.quality_gate."))
+>   jq -cR --argjson w "$WAVE" --arg s "$SEMANTIC_SESSION_ID" '
+>     fromjson? | objects
+>     | select((.event | type) == "string" and (.event | startswith("orchestrator.quality_gate.")))
 >     | select(.semantic_session_id == $s and .wave_number == $w and .["counts"] != null)
 >     | .["counts"]
 >   ' .orchestrator/metrics/events.jsonl | tail -1
 >   ```
 >
->   `WAVE` and `SEMANTIC_SESSION_ID` come from the existing own session/wave identity; never construct either for this lookup. Filtering by both is mandatory: the ledger accumulates across sessions, and a different session or wave must not supply these counts. `counts.passed` → `suite_passed`, `counts.failed` → `suite_failed`. `tail -1` selects the last matching gate run of the wave, including auto-fix. The library emits one record per `runQualityGateWithRetry` call, not per retry; `attempts` is not a record count.
+>   `WAVE` and `SEMANTIC_SESSION_ID` come from the existing own session/wave identity; never construct either for this lookup. Filtering by both is mandatory: the ledger accumulates across sessions, and a different session or wave must not supply these counts. `counts.passed` → `suite_passed`, `counts.failed` → `suite_failed`. `tail -1` selects the last matching gate run of the wave, including auto-fix. `-R` with `fromjson? | objects` skips an unreadable ledger line (a torn tail from a killed writer, #1401) instead of letting one parse error end `jq` and silently empty the selector behind `| tail -1`. The library emits one record per `runQualityGateWithRetry` call, not per retry; `attempts` is not a record count.
 >
->   **Header fallback for counts is limited to three cases:** pre-#954 sessions, a gate run outside the event wrapper, or missing wave attribution (including an auto-fix call without a readable own wave scope). In those cases only, read the STATE.md Wave History header `— suite <passed>/<failed> on <platform>`. An auto-fix call with a known wave uses the event selector above. An empty selector alone is not a fallback case: an event without `counts`, for example after fail-fast before the test suite, supplies no replacement zeros and does not by itself permit header fallback.
+>   **Header fallback for counts is limited to three cases:** pre-#954 sessions, a gate run outside the event wrapper, or missing wave attribution (including an auto-fix call without a readable own wave scope). An event without `semantic_session_id` cannot match the selector — emitters set it only from the session lock via `sessionAttribution()` — and is treated like a gate run outside the wrapper. In those cases only, read the STATE.md Wave History header `— suite <passed>/<failed> on <platform>`. An auto-fix call with a known wave uses the event selector above. An empty selector alone is not a fallback case: an event without `counts`, for example after fail-fast before the test suite, supplies no replacement zeros and does not by itself permit header fallback.
 >
 >   If no counts are available and none of those fallback cases applies, omit `suite_passed` and `suite_failed`. Absent means "not measured"; a present `suite_failed: 0` means "measured, zero failures". Never zero-fill missing measurements.
 >

@@ -436,10 +436,11 @@ async function main() {
   // stdout is PIPED (not inherited) so the suite counts the gate already computed
   // can be lifted straight off its JSON envelope into telemetry (#954) instead of
   // travelling as prose through the STATE.md header. Both skill readers select
-  // the last matching flat event by semantic_session_id + wave_number; platform
-  // stays in the header, with no platform field on the payload. Count fallback
-  // to that header is limited to pre-#954 sessions, gates outside the event
-  // wrapper, or missing wave attribution (see docs/events-schema.md).
+  // the last matching flat event by semantic_session_id + wave_number; there is
+  // no platform field on the payload. Count fallback (wave-loop step 7: this
+  // wave's own gate output; session end: the STATE.md header) is limited to
+  // pre-#954 sessions, gates outside the event wrapper, or missing wave
+  // attribution (see docs/events-schema.md).
   // The envelope is re-emitted
   // verbatim below, so the stdout contract is unchanged — a gate sub-script writes
   // exactly one JSON line at the very end (its own child commands are captured by

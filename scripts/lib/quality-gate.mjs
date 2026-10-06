@@ -840,18 +840,22 @@ export function gateKillFields(run) {
  * `skills/session-end/metrics-collection.md` § 1.7. They filter the flat record
  * by the same `semantic_session_id` + `wave_number` and select the last
  * matching gate run; `counts.passed` / `counts.failed` supply the per-wave
- * `suite_passed` / `suite_failed`. This library emits ONE record per
+ * `suite_passed` / `suite_failed`. A third reader,
+ * `scripts/lib/convergence-monitor.mjs`, folds `counts` from gate records
+ * that also carry `wave_number`. This library emits ONE record per
  * `runQualityGateWithRetry` call, not per retry; `attempts` carries retries.
  *
  * Both emitters resolve `wave_number` from the existing own-session manifest
  * at the event's repoRoot and omit it without a usable source. No wall-clock
  * attribution or guessed wave number is added. Missing counts are not zeros.
- * Header fallback for counts is limited to pre-#954 sessions, gates outside
- * the event wrapper, or missing wave attribution. Auto-fix with a known wave
+ * Count fallback is limited to pre-#954 sessions, gates outside the event
+ * wrapper, or missing wave attribution; step 7 falls back to this wave's own
+ * gate output (its header is not written yet), session end to the header. Auto-fix with a known wave
  * uses the event; missing counts alone do not permit header fallback.
  *
- * `suite_platform` is read separately from the STATE.md Wave History header
- * `— suite <passed>/<failed> on <platform>`; the payload has NO platform field.
+ * `suite_platform` comes from this wave's gate run (step 7) or the STATE.md
+ * Wave History header `— suite <passed>/<failed> on <platform>` (session end);
+ * the payload has NO platform field.
  * Event-derived counts may be mirrored into that existing header as
  * compatibility output, not a second measurement source. Neither the header
  * nor sessions.jsonl changes its contract.
