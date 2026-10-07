@@ -5,12 +5,14 @@
  * Verifies the new module path resolves and the scope/pattern primitives behave.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { classifyManifestSession } from '@lib/session-identity/own-session.mjs';
 import {
   findScopeFile,
+  resolveScopeContext,
   getEnforcementLevel,
   gateEnabled,
   pathMatchesPattern,
@@ -864,5 +866,48 @@ describe('findOwnScopeFile (#1504 point 6)', () => {
     // allow + foreign_session_ignored disposition.
     const { result, at } = await resolve({ '.codex': PEER, '.claude': { ...PEER, wave: 2 } });
     expect(result).toEqual({ path: null, foreignPath: at('.codex') });
+  });
+});
+
+
+describe('isolated context trust (#1504)', () => {
+  let launch;
+  let agent;
+  let entered;
+  beforeEach(() => {
+    launch = path.join(tmpDir, 'main');
+    agent = path.join(launch, '.claude', 'worktrees', 'agent-a0123456789abcdef0');
+    entered = path.join(tmpDir, 'entered');
+    fs.mkdirSync(path.join(launch, '.git'), { recursive: true });
+    for (const [name, root] of [['agent', agent], ['entered', entered]]) {
+      const admin = path.join(launch, '.git', 'worktrees', name);
+      fs.mkdirSync(admin, { recursive: true });
+      fs.mkdirSync(path.join(root, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(root, '.git'), `gitdir: ${admin}\n`);
+      fs.writeFileSync(path.join(admin, 'commondir'), '../..\n');
+      fs.writeFileSync(path.join(admin, 'gitdir'), `${path.join(root, '.git')}\n`);
+    }
+    vi.stubEnv('CLAUDE_PROJECT_DIR', launch);
+  });
+  afterEach(() => vi.unstubAllEnvs());
+  const context = () => resolveScopeContext({ cwd: agent, ownIds: new Set(['own-isolated']), classify: classifyManifestSession });
+  it.each([
+    ['foreign', JSON.stringify({ session_id: 'foreign', allowedPaths: ['src/'] })],
+    ['unbound', JSON.stringify({ allowedPaths: ['src/'] })],
+    ['corrupt', '{broken'],
+  ])('does not adopt a %s remote manifest', (_name, raw) => {
+    fs.writeFileSync(path.join(entered, '.claude', 'wave-scope.json'), raw);
+    expect(context().path).toBeNull();
+    expect(context().error).toBeNull();
+  });
+  it('keeps corrupt local authority instead of skipping to a readable remote scope', () => {
+    fs.mkdirSync(path.join(launch, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(launch, '.claude', 'wave-scope.json'), '{broken');
+    fs.writeFileSync(path.join(entered, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 'own-isolated' }));
+    expect(context().path).toBe(path.join(fs.realpathSync(launch), '.claude', 'wave-scope.json'));
+  });
+  it('refuses a discovery exceeding its registered-worktree ceiling', () => {
+    Array.from({ length: 255 }, (_, n) => fs.mkdirSync(path.join(launch, '.git', 'worktrees', `stale-${n}`)));
+    expect(context().error).toBe('worktree-limit');
   });
 });

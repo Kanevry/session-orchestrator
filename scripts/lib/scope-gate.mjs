@@ -5,14 +5,15 @@
  * hot-paths — all sync. Re-exported by hardening.mjs as a barrel so existing
  * importers keep working unchanged.
  *
- * Layering: hook-safe — pure functions only; no I/O at import time;
- * ESM-pure for fast hook hot-paths. Hooks (under `hooks/`) import from
- * this lib; this lib MUST NOT reverse-import from `hooks/`. Cross-cutting
- * invariant for all exports below — see #554 A2.
+ * Layering: hook-safe synchronous helpers; no I/O at import time. Guard
+ * context lookups read bounded filesystem state when called. Hooks (under
+ * `hooks/`) import this ESM-only lib; it MUST NOT reverse-import from hooks.
+ * Cross-cutting invariant for all exports below — see #554 A2.
  */
 
-import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
 import path from 'node:path';
+import { resolveSessionRoot, isolatedAgentCheckout, registeredWorktreeRoots } from './platform.mjs';
 
 import { tokenizeCommand, splitChainSegments, resolveSegmentVerb } from './command-blocker.mjs';
 
@@ -104,6 +105,68 @@ export function findOwnScopeFile(projectRoot, ownIds, classify) {
     foreignPath ??= candidate;
   }
   return { path: null, foreignPath };
+}
+
+/**
+ * Guard context: control state belongs to the coordinator, relative grants to
+ * the actual isolated checkout. Remote adoption requires unique OWN identity;
+ * local unknown/corrupt/foreign/missing dispositions remain unchanged.
+ * Root-only discovery deliberately excludes arbitrary worktree subdirectories;
+ * revisit when the harness supplies a coordinator-root witness (#1504).
+ * @param {{cwd: string, ownIds: Set<string>, classify: Function}} options
+ * @returns {{manifestRoot: string, writeRoot: string, path: string|null,
+ *   foreignPath: string|null, isolated: boolean, error: string|null}}
+ */
+export function resolveScopeContext({ cwd, ownIds, classify }) {
+  let manifestRoot = resolveSessionRoot(cwd);
+  try { manifestRoot = realpathSync.native(manifestRoot); } catch { /* preserve non-existing-root fallback */ }
+  const local = findOwnScopeFile(manifestRoot, ownIds, classify);
+  const agent = isolatedAgentCheckout(cwd);
+  const context = { manifestRoot, writeRoot: agent?.writeRoot ?? manifestRoot,
+    ...local, isolated: agent !== null, error: null };
+  if (!agent || local.path || ownIds.size === 0) return context;
+  const candidates = registeredWorktreeRoots(agent.commonDir);
+  if (candidates.error) return { ...context, error: candidates.error };
+  const matches = new Map();
+  for (const root of candidates.roots) {
+    if (root === agent.writeRoot || root === manifestRoot || isolatedAgentCheckout(root)) continue;
+    // Inspect precedence candidates separately. An unsafe candidate has unknown
+    // ownership: it must never turn an isolated session into a no-scope ALLOW.
+    for (const dir of SCOPE_FILE_DIRS) {
+      const file = path.join(root, dir, 'wave-scope.json');
+      let fd;
+      let raw;
+      try {
+        const before = lstatSync(file);
+        if (!before.isFile() || before.size > 1024 * 1024) return { ...context, error: 'unsafe-coordinator-scope' };
+        fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        const opened = fstatSync(fd);
+        if (!opened.isFile() || opened.ino !== before.ino || opened.dev !== before.dev || opened.size > 1024 * 1024) return { ...context, error: 'unsafe-coordinator-scope' };
+        const buffer = Buffer.alloc(1024 * 1024 + 1);
+        let length = 0;
+        while (length < buffer.length) {
+          const n = readSync(fd, buffer, length, buffer.length - length, null);
+          if (n === 0) break;
+          length += n;
+        }
+        if (length > 1024 * 1024) return { ...context, error: 'unsafe-coordinator-scope' };
+        raw = buffer.toString('utf8', 0, length);
+      } catch (err) {
+        if (err?.code === 'ENOENT') continue;
+        return { ...context, error: 'unsafe-coordinator-scope' };
+      } finally { if (fd !== undefined) closeSync(fd); }
+      try {
+        const scope = JSON.parse(raw);
+        if (classify(scope, ownIds).verdict === 'own') {
+          matches.set(realpathSync(file), { root, path: file, foreignPath: null });
+          break; // highest-precedence positively owned manifest in this root
+        }
+      } catch { /* unbound/corrupt remote state is never authority */ }
+    }
+  }
+  if (matches.size > 1) return { ...context, error: 'ambiguous-coordinator-scope' };
+  const match = matches.values().next().value;
+  return match ? { ...context, manifestRoot: match.root, path: match.path, foreignPath: null } : context;
 }
 
 /**

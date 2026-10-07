@@ -13,7 +13,7 @@
  * NOTHING in this module touches the filesystem at import time.
  */
 
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, lstatSync, opendirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { resolvePluginRoot as _resolvePluginRootRobust } from './plugin-root.mjs';
@@ -456,6 +456,75 @@ export function resolveSessionRoot(cwd, toplevel = '') {
   const root = _liftHarnessAgentWorktree(repoRoot);
   const launch = launchDirFromEnv();
   return launch !== '' && _isStrictlyInside(launch, root) ? launch : root;
+}
+
+/** Read small Git metadata after rejecting nonregular or symlink entries. */
+function readWorktreeMetadata(file) {
+  const info = lstatSync(file);
+  if (!info.isFile() || info.size > 8192) throw new TypeError('Invalid worktree metadata');
+  return readFileSync(file, 'utf8').trim();
+}
+
+function worktreeBinding(root) {
+  const text = readWorktreeMetadata(path.join(root, '.git'));
+  const match = /^gitdir: (.+)$/.exec(text);
+  if (!match) throw new TypeError('Invalid worktree pointer');
+  const gitDir = _canonical(path.resolve(root, match[1]));
+  const commonDir = _canonical(path.resolve(gitDir, readWorktreeMetadata(path.join(gitDir, 'commondir'))));
+  if (path.dirname(gitDir) !== path.join(commonDir, 'worktrees')) throw new TypeError('Invalid worktree admin directory');
+  const backPointer = _canonical(readWorktreeMetadata(path.join(gitDir, 'gitdir')));
+  if (backPointer !== _canonical(path.join(root, '.git'))) throw new TypeError('Worktree pointer mismatch');
+  return { gitDir, commonDir };
+}
+
+/**
+ * Verified Claude harness agent checkout, or null for every ordinary checkout.
+ * Keeps resolveSessionRoot's lifecycle contract unchanged (#1504 items 1–2).
+ * @param {string} cwd
+ * @returns {{writeRoot: string, commonDir: string}|null}
+ */
+export function isolatedAgentCheckout(cwd) {
+  const root = typeof cwd === 'string' ? dotGitAncestor(cwd) : '';
+  if (!root || _liftHarnessAgentWorktree(root) === root) return null;
+  try {
+    const binding = worktreeBinding(root);
+    const launchRoot = _liftHarnessAgentWorktree(root);
+    const dotGit = path.join(launchRoot, '.git');
+    const launchCommon = lstatSync(dotGit).isDirectory()
+      ? _canonical(dotGit) : worktreeBinding(launchRoot).commonDir;
+    if (binding.commonDir !== launchCommon) return null;
+    return { writeRoot: _canonical(root), commonDir: binding.commonDir };
+  } catch { return null; }
+}
+
+/**
+ * Enumerate reciprocal worktree roots in one Git admin directory, without a
+ * recursive scan. Ceiling: 256 entries / 8 KiB metadata; revisit if a real repo
+ * exceeds this. An incomplete enumeration is an error, never a clean absence.
+ * @param {string} commonDir
+ * @returns {{roots: string[], error: string|null}}
+ */
+export function registeredWorktreeRoots(commonDir) {
+  const roots = new Set();
+  let dir;
+  try {
+    dir = opendirSync(path.join(commonDir, 'worktrees'));
+    let count = 0;
+    for (let entry; (entry = dir.readSync()) !== null;) {
+      if (++count > 256) return { roots: [], error: 'worktree-limit' };
+      if (!entry.isDirectory()) continue;
+      const admin = path.join(commonDir, 'worktrees', entry.name);
+      try {
+        const pointer = readWorktreeMetadata(path.join(admin, 'gitdir'));
+        if (!path.isAbsolute(pointer) || path.basename(pointer) !== '.git') continue;
+        const root = _canonical(path.dirname(pointer));
+        const binding = worktreeBinding(root);
+        if (binding.commonDir === commonDir && binding.gitDir === _canonical(admin)) roots.add(root);
+      } catch { /* stale or invalid registration cannot lend authority */ }
+    }
+    return { roots: [...roots], error: null };
+  } catch { return { roots: [], error: 'worktree-discovery-unreadable' }; }
+  finally { if (dir) dir.closeSync(); }
 }
 
 // ---------------------------------------------------------------------------

@@ -107,12 +107,12 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 let isPathInside;
 let relativeFromRoot;
 let resolveProjectDir;
-let resolveSessionRoot;
 // The launch dir the harness states — platform.mjs's one definition of the env
 // chain, so the relocation trace below cannot drift from the clamp (#1504).
 let launchDirFromEnv;
 // #1504 point 6 — the manifest that governs THIS session; bound from scope-gate below.
 let findOwnScopeFile;
+let resolveScopeContext;
 let pathMatchesPattern;
 let suggestForScopeViolation;
 let readJson;
@@ -202,7 +202,7 @@ async function bootstrap() {
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
   ({ isPathInside, relativeFromRoot } = modules.pathUtils);
-  ({ resolveProjectDir, resolveSessionRoot, launchDirFromEnv } = modules.platform);
+  ({ resolveProjectDir, launchDirFromEnv } = modules.platform);
   ({ pathMatchesPattern, suggestForScopeViolation } = modules.hardening);
   ({ readJson } = modules.common);
   ({
@@ -212,6 +212,7 @@ async function bootstrap() {
     gradeScopeEntry,
     canonicalizeGrantPrefix,
     findOwnScopeFile,
+    resolveScopeContext,
   } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
 }
@@ -230,38 +231,18 @@ async function main() {
   // Gate 2: file_path must be a non-empty string
   if (!filePath || typeof filePath !== 'string') return emitAllow();
 
-  // #1492 — the SESSION's working copy, not the launch dir: after
-  // `EnterWorktree`, `$CLAUDE_PROJECT_DIR` still names the dir the session was
-  // launched in, while the manifest lives in the worktree. Never above the launch
-  // dir; a harness subagent worktree (`isolation: "worktree"`) is lifted to the
-  // launch checkout it sits under — still unenforced in an entered-worktree
-  // session (named ceiling in `resolveSessionRoot`, scripts/lib/platform.mjs).
-  const projectRootRaw = resolveSessionRoot(input.cwd);
-
-  // Resolve symlinks in the project root itself so that realpath(file) comparisons
-  // are consistent. On macOS /tmp → /private/tmp; mismatches would cause false denials.
-  let projectRoot;
-  try {
-    projectRoot = await fs.realpath(projectRootRaw);
-  } catch {
-    projectRoot = projectRootRaw;
-  }
-
-  // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
-  // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
-  // ownIds : new Set()` — a bare array would silently become EMPTY, making
-  // every manifest read `unknown`. Process-local only (#1194, see Gate 3b).
+  // Control state follows the session coordinator; relative grants follow
+  // the actual isolated agent checkout. Entered coordinator worktrees are
+  // discovered only through bounded reciprocal Git metadata and own identity.
   const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
-
-  // Gate 3: no wave-scope.json → nothing to enforce.
-  //
-  // #1504 point 6 — the first manifest that is not provably a peer's, in the
-  // `.pi` > `.cursor` > `.codex` > `.claude` order. `findScopeFile` stopped at
-  // the first file that exists, so a peer's `.pi`/`.cursor` manifest made Gate
-  // 3b stand down and this session's own `.claude/wave-scope.json` was never
-  // read. Only when EVERY candidate is foreign does the first of them come back
-  // (`foreignPath`), so Gate 3b's stand-down below stays unchanged.
-  const located = findOwnScopeFile(projectRoot, ownIds, classifyManifestSession);
+  const context = resolveScopeContext({ cwd: input.cwd, ownIds, classify: classifyManifestSession });
+  if (context.error) return emitDeny('Scope coordinator cannot be resolved', context.error);
+  const projectRootRaw = context.writeRoot;
+  let projectRoot;
+  try { projectRoot = await fs.realpath(projectRootRaw); }
+  catch { projectRoot = projectRootRaw; }
+  const manifestRoot = context.manifestRoot;
+  const located = context;
   const scopePath = located.path ?? located.foreignPath;
   if (!scopePath) {
     await recordHiddenManifestOncePerWave({ projectRootRaw, projectRoot, ownIds, filePath });
@@ -354,7 +335,7 @@ async function main() {
             wave: scope.wave,
             file_path: filePath,
           },
-          { repoRoot: projectRoot },
+          { repoRoot: manifestRoot },
         );
       } catch { /* observability is best-effort — never blocks the decision */ }
       return emitAllow();
@@ -395,10 +376,10 @@ async function main() {
           role: scope.role,
           parseOk,
           scopeMtimeMs: await mtimeMsOf(scopePath),
-          sessionStartMs: sessionStartedAtMs(projectRoot),
+          sessionStartMs: sessionStartedAtMs(manifestRoot),
         })
       : null;
-  const scopeRelRaw = relativeFromRoot(projectRoot, scopePath);
+  const scopeRelRaw = relativeFromRoot(manifestRoot, scopePath);
   const scopeHint = (scopeRelRaw ?? scopePath).split(path.sep).join('/');
 
   /**
@@ -514,7 +495,7 @@ async function main() {
   if (matchedGrant !== null) {
     const grade = gradeScopeEntry(matchedGrant, { resolve: canonicalizeGrantPrefix });
     if (grade?.verdict === 'error') {
-      await recordRefusedGrantOncePerWave({ scope, scopePath, projectRoot, input, grant: matchedGrant, grade, filePath: resolvedPath });
+      await recordRefusedGrantOncePerWave({ scope, scopePath, projectRoot: manifestRoot, input, grant: matchedGrant, grade, filePath: resolvedPath });
       return emitWarn(
         `Gate 5b honoured an out-of-repo grant that scripts/validate-wave-scope.mjs would REFUSE ` +
           `before dispatch — allowedPaths ${grade.message}. The write to '${resolvedPath}' is ` +
@@ -566,9 +547,9 @@ async function main() {
     // not grant the path (Discovery's `allowedPaths: []`) that is a DENY.
     // #1492: the LAUNCH dir too — the harness keys auto-memory on the path it
     // was launched with, which after `EnterWorktree` is no longer the root.
-    const memoryDirs = await ownMemoryDirs([resolveProjectDir(), projectRootRaw, projectRoot]);
+    const memoryDirs = await ownMemoryDirs([resolveProjectDir(), manifestRoot]);
     const caller = classifyCaller(input);
-    if (caller !== 'subagent' && memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
+    if (!context.isolated && caller !== 'subagent' && memoryDirs.some((dir) => isInsideDir(resolvedPath, dir))) {
       // One event per decision point, awaited before emitAllow() —
       // emitAllow() calls process.exit(), which would discard a pending append.
       try {
@@ -589,7 +570,7 @@ async function main() {
             // `'coordinator'` = `agent_type` without `agent_id`.
             discriminator: caller,
           },
-          { repoRoot: projectRoot },
+          { repoRoot: manifestRoot },
         );
       } catch { /* observability is best-effort — never blocks the decision */ }
       return emitAllow();
@@ -642,7 +623,7 @@ async function main() {
   // `emitAllow()` (`process.exit(0)`, no log, no event), so whether it ever fired
   // was unfalsifiable after the fact.
   const carveoutCaller = classifyCaller(input);
-  if (carveoutCaller !== 'subagent' && isCoordinatorCarveout(normalizedRel, projectRoot, scopePath)) {
+  if (!context.isolated && carveoutCaller !== 'subagent' && isCoordinatorCarveout(normalizedRel, projectRoot, scopePath)) {
     // One event per decision point, awaited before emitAllow() — emitAllow()
     // calls process.exit(), which would discard a pending append.
     try {
@@ -659,7 +640,7 @@ async function main() {
           file_path: normalizedRel,
           discriminator: carveoutCaller,
         },
-        { repoRoot: projectRoot },
+        { repoRoot: manifestRoot },
       );
     } catch { /* observability is best-effort — never blocks the decision */ }
     return emitAllow();

@@ -156,7 +156,6 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
-import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
 // hooks/enforce-scope.mjs can read the same session clock without a hook->hook
@@ -169,7 +168,8 @@ import {
   PEER_RECORD_PREFIX,
   isPeerRecordId,
   isScopeDeclarationPath,
-  findOwnScopeFile,
+  resolveScopeContext,
+  canonicalizeGrantPrefix,
 } from '../scripts/lib/scope-gate.mjs';
 // #1153 P1 — the same process-local ownership check hooks/enforce-scope.mjs
 // applies at Gate 3b. This hook reads the SAME working-copy `wave-scope.json`,
@@ -371,11 +371,23 @@ export function isOutsideSessionRoot(relPath) {
  *
  * @param {string} relPath
  * @param {string[]} allowedPaths
+ * @param {string|null} [writeRoot] actual checkout root for absolute grants
  * @returns {boolean}
  */
-export function isInScope(relPath, allowedPaths) {
+export function isInScope(relPath, allowedPaths, writeRoot = null) {
   if (!Array.isArray(allowedPaths) || allowedPaths.length === 0) return false;
-  return allowedPaths.some((p) => typeof p === 'string' && pathMatchesPattern(relPath, p));
+  return allowedPaths.some((p) => {
+    if (typeof p !== 'string') return false;
+    if (!path.isAbsolute(p)) return pathMatchesPattern(relPath, p);
+    if (typeof writeRoot !== 'string' || !path.isAbsolute(writeRoot) || path.isAbsolute(relPath) || isOutsideSessionRoot(relPath)) return false;
+    // Match the canonical target, as PreToolUse does, but never let an absolute
+    // grant suppress reporting for a path escaping the observed checkout.
+    const root = canonicalizeGrantPrefix(writeRoot);
+    const target = canonicalizeGrantPrefix(path.resolve(root, relPath));
+    const relative = path.relative(root, target);
+    if (path.isAbsolute(relative) || isOutsideSessionRoot(relative.split(path.sep).join('/'))) return false;
+    return pathMatchesPattern(target, p);
+  });
 }
 
 /**
@@ -599,6 +611,7 @@ export function snapshotPathFor(repoRoot) {
  * @param {object} args
  * @param {string[]} args.dirtyPaths     repo-relative paths from git status
  * @param {string[]} args.allowedPaths   wave allowedPaths
+ * @param {string|null} [args.writeRoot] actual checkout root for absolute grants
  * @param {object|null} args.snapshot    previous `{ signature, paths[] }`, or null
  * @param {string} args.signature        current scope signature
  * @param {number|null} [args.scopeMtimeMs] mtime (ms) of wave-scope.json, or null
@@ -606,12 +619,12 @@ export function snapshotPathFor(repoRoot) {
  *   dirty path; null = not attributable (deleted path / stat failure)
  * @returns {{ report: string[], nextSnapshot: { signature: string, paths: string[] }, rebaselined: boolean }}
  */
-export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null, scopeRelPath = null }) {
+export function computeReport({ dirtyPaths, allowedPaths, snapshot, signature, scopeMtimeMs = null, mtimeMs = null, scopeRelPath = null, writeRoot = null }) {
   const outOfScope = dirtyPaths
     .filter((p) => !isIgnoredPath(p))
     // A `../…` path (outside the project root, see rebaseToSessionRoot) is never
     // in scope — not even under a broad glob that would happen to match it.
-    .filter((p) => isOutsideSessionRoot(p) || !isInScope(p, allowedPaths))
+    .filter((p) => isOutsideSessionRoot(p) || !isInScope(p, allowedPaths, writeRoot))
     // The wave-scope.json control file is out-of-scope by construction (it is
     // never under allowedPaths) but its CHANGES are reported via the content-hash
     // control-notice path, not here. Excluding it keeps the mtime re-baseline
@@ -970,18 +983,22 @@ async function main() {
   // G2 — only Bash calls carry the bypass risk this hook watches.
   if (input.tool_name !== 'Bash') return;
 
-  // #1492 — the SESSION's working copy, not the launch dir `$CLAUDE_PROJECT_DIR`
-  // keeps after `EnterWorktree` (the manifest lives in the worktree). See
-  // `resolveSessionRoot` in scripts/lib/platform.mjs.
-  const repoRootRaw = resolveSessionRoot(input.cwd);
-  let repoRoot;
-  try {
-    repoRoot = realpathSync(repoRootRaw);
-  } catch {
-    repoRoot = repoRootRaw;
+  // Coordinator control state and isolated-agent write targets may live in
+  // different working copies; the shared guard context resolves both.
+  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
+  const context = resolveScopeContext({ cwd: input.cwd, ownIds, classify: classifyManifestSession });
+  if (context.error) {
+    emitMessages([`bash-write-verify: scope coordinator unresolved (${context.error})`], true);
+    return;
   }
-
-  const snapFile = snapshotPathFor(repoRoot);
+  const repoRootRaw = context.writeRoot;
+  let repoRoot;
+  try { repoRoot = realpathSync(repoRootRaw); }
+  catch { repoRoot = repoRootRaw; }
+  // Isolated snapshots bind both trees: two agents never share report-once state,
+  // and reselecting a coordinator cannot inherit another manifest's trust.
+  const snapFile = snapshotPathFor(context.isolated
+    ? `${repoRoot}\0${context.manifestRoot}\0${context.path ?? context.foreignPath ?? ""}` : repoRoot);
   const snapshot = readSnapshot(snapFile);
   // The ONE trust decision (see `trustedScopeState`). Every downstream use of a
   // "previous" value reads this binding, so no code path can accidentally act on
@@ -1004,8 +1021,7 @@ async function main() {
   // peer's higher-precedence manifest no longer hides this session's own one;
   // only when every candidate is foreign does the first come back, and G3b
   // below keeps its stand-down and its rebind notice unchanged.
-  const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
-  const located = findOwnScopeFile(repoRoot, ownIds, classifyManifestSession);
+  const located = context;
   const scopePath = located.path ?? located.foreignPath;
   if (!scopePath) {
     if (prevScopeState && prevScopeState.hash !== 'absent') {
@@ -1096,7 +1112,7 @@ async function main() {
             own_session: [...ownIds],
             wave: scope?.wave,
           },
-          { repoRoot },
+          { repoRoot: context.manifestRoot },
         );
       } catch { /* observability is best-effort — never blocks the decision */ }
 
@@ -1156,7 +1172,7 @@ async function main() {
   // `toContain('out-of-scope.mjs')` test to say otherwise.
   const missingSnapshotNotice = prevScopeState === null
     ? formatSnapshotMissingNotice({
-      sessionAge: sessionAgeMs(repoRoot),
+      sessionAge: sessionAgeMs(context.manifestRoot),
       scopeAge: typeof scopeMtimeMs === 'number' ? Date.now() - scopeMtimeMs : null,
       reason: snapshot === null ? 'absent' : 'untrusted',
     })
@@ -1239,6 +1255,7 @@ async function main() {
   const { report, nextSnapshot } = computeReport({
     dirtyPaths,
     allowedPaths,
+    writeRoot: repoRoot,
     // `prevRecord`, not `snapshot`: an untrusted record's report-once list is a
     // forgeable claim about what was already reported (see the binding above).
     snapshot: prevRecord,
