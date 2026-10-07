@@ -7,26 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.10.0] - 2026-10-07
+
 ### Added
 
-- **Known foreign-host paths in drift checks** (#937): an optional `owner.yaml` `drift-check.foreign-host-prefixes` list downgrades only matching missing paths to warnings. Directory boundaries are respected; invalid or overly broad prefixes do not weaken checks for other missing paths.
-- **Vault session host metadata** (#1054): the canonical writer records the stable host identity for new owned sessions; mirrored notes use recorded `host_id`, then `host`, then `host_class` when available. Explicit origins and historical records remain unchanged. The board appends `Host` as column 8 and retains legacy 6- and 7-column rows with an empty host cell; hardware class alone cannot distinguish equally equipped hosts.
+- **Foreign-host path exceptions** (#937): optional `owner.yaml` `drift-check.foreign-host-prefixes` downgrades matching missing paths to warnings. Directory boundaries are respected; broad, malformed or unsafe prefixes cannot weaken other checks.
+- **Session host attribution** (#1054): new owned sessions record their stable originating host. Mirrored notes prefer `host_id`, then `host`, then `host_class`; the board appends a `Host` column while supporting legacy rows. Explicit origins and historical records remain unchanged.
 
 ### Fixed
 
-- **Complete gate failure diagnostics** (#1535): large captured failures retain their assertion tail when piped through the full-gate CLI; output drains before the blocking process exits.
-- **Colored test summaries in gate reports** (#1534): ANSI formatting no longer hides Vitest's final case and file counts, which previously caused the parser to report the plugin validator's earlier count instead.
-- **Isolated agent scope enforcement** (#1504 items 1–2): write and command hooks resolve the coordinator's manifest independently of the agent checkout. Relative grants apply to that checkout; ambiguous coordinator ownership and unsafe remote manifests deny, and isolated agents cannot use coordinator control-file or memory carveouts. Native Codex pre-tool hook wiring remains outside this change.
-- **Owner privacy in published packages** (#1530): private matching literals move to a protected host-local policy. Packed scans inspect file contents, require that policy, retain public attribution exceptions and omit sensitive diagnostic content. Release checks scan the retained archive before publishing those same bytes. Vault tools use configured targets instead of private path defaults.
-- **Development hook dependencies** (#1533): upgrade `lint-staged` to the compatible 16.4 line, removing the `micromatch` → `braces` dependency chain affected by GHSA-vfj7-8cjw-p6xm.
-
-- **`tests/setup/events-ledger-guard.test.mjs` in linked git worktrees** (#1527): the guard test used to map `repoRoot` of a linked worktree onto the main checkout and wrote probe events into the real ledger; probes now run against `mkdtemp` fixtures (own repo root, synthetic `.git` file + `commondir` for the worktree mapping) and the file-wide `ROOT_UNDER_TMP` skip is replaced by observable default-redirect tests.
+- **Isolated agent scope enforcement** (#1504 items 1–2): hooks resolve coordinator authority separately from the agent checkout, apply grants to that checkout and deny ambiguous ownership, unsafe manifests and coordinator-only carveouts. Native Codex pre-tool hook wiring remains outside this change.
+- **Published-package privacy** (#1530): private matching rules live in a protected host-local file. Release checks scan the retained archive's contents and publish those checked bytes; diagnostics omit sensitive content. Vault tools use configured destinations.
+- **Gate diagnostics and counts** (#1534, #1535): colored Vitest summaries retain correct case and file counts, and large piped failures drain their complete assertion output before exit.
+- **Linked-worktree ledger tests** (#1527): probes use temporary fixtures instead of writing to the real checkout's event ledger.
+- **Watcher regression tests** (#1529): monotonic lifetime measurement and explicit spawn/close handling remove timing-related false failures while retaining early-exit detection.
+- **Public presentation**: correct the README privacy-policy link, remove private changelog examples and add SoftwareApplication structured data to the lead page.
 
 ### Changed
 
-- **Remote pre-push full gate** (#1532): configured test-role hosts can run the canonical quality gate against the exact pushed SHA through `offload`. Readiness or transport failures fall back to another route or the local full gate; a failed gate, mismatched receipt or unconfirmed result blocks the push. Remote verdicts are recorded in the originating repository's gate ledger.
+- **Remote pre-push verification** (#1532): configured test-role hosts can run the full gate against the exact pushed SHA. Transport or readiness failures permit fallback; failed gates, mismatched receipts and unconfirmed results block the push. Verdicts enter the originating repository's ledger.
+- **Gate-result documentation** (#1528): clarify corrupt-line handling, per-wave count fallbacks, diagnostic queries and the known split-line append limitation.
+- Update `source-map-js` from 1.2.1 to 1.2.2 in the root and Remotion lockfiles.
 
-- **Gate-result prose readers** (#1528): the old ledger selector returned a stale value on a corrupt line rather than nothing; step 7 of the wave loop names its fallback "count fallback" (the header is not a source there); a diagnostic query without the `counts` filter separates "no event", "no `wave_number`" and "no counts after fail-fast"; the `appendFile` split-line case is documented as a known limit.
+### Security
+
+- Upgrade `lint-staged` to 16.4.0, removing the `micromatch` → `braces` dependency chain affected by GHSA-vfj7-8cjw-p6xm (#1533).
+
+### Upgrade notes
+
+- Hosts relying on embedded owner-specific privacy rules must migrate them to a protected version 1 `owner-patterns.json` before strict release checks. See [Host-local owner privacy patterns](docs/owner-privacy-patterns.md). This is release-host configuration; ordinary consumer scans retain their documented warning behavior when no policy is configured.
 
 ## [5.9.0] - 2026-10-06
 

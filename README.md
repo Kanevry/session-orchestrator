@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.9.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.10.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -139,16 +139,17 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.9.0)
+## Recent highlights (v5.10.0)
 
-Highlights of the v5.9.0 line:
+Highlights of the v5.10.0 line:
 
-- **Gate counts per wave.** Quality-gate events now carry an optional `wave_number`, and the wave loop and `/close` read `suite_passed`/`suite_failed` from the gate event of exactly that wave, skipping unreadable ledger lines instead of silently returning nothing (#966).
-- **The CI banner says why a check is not green.** GitHub check runs that are in progress, queued, cancelled, `skipped`, `neutral` or waiting get their own reason, with counts per kind, instead of `check-runs-not-complete` (#856, #1526).
-- **Impossible timestamps are rejected.** The session-record validator refuses millisecond-precise timestamps that are not a real calendar date (#1526).
-- **A page for the lead session.** `site/lead/` introduces the sibling project lead-session-orchestrator, linked from the main, German and guide pages.
+- **Scope checks follow the agent checkout.** Isolated agents use verified coordinator manifests, with grants applied to their own checkout (#1504).
+- **Release privacy checks inspect the published archive.** Host-specific rules stay in protected local configuration, and the release publishes the bytes it checked (#1530).
+- **Remote push gates verify the pushed commit.** A matching receipt is required; unavailable hosts permit fallback (#1532).
+- **Sessions retain their host.** Mirrored notes and the board show the originating machine, while legacy records remain supported (#1054).
+- **Clearer gate results and host-aware drift checks.** Colored test counts and complete failure output survive capture; narrow foreign-host prefixes can be configured explicitly (#937, #1534, #1535).
 
-Full changes and verification: [CHANGELOG.md](CHANGELOG.md).
+Full changes and upgrade notes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Documentation
 
