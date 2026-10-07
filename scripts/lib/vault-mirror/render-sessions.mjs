@@ -16,6 +16,7 @@
  */
 
 import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
+import { stableHostname } from '../host-identity.mjs';
 import { sourceRecordValue, sourceRecordLine } from './render-learnings.mjs';
 import { sessionNarrativeText } from './retention.mjs';
 
@@ -273,6 +274,17 @@ export function vaultStatusForSession(entry) {
   return Object.hasOwn(VAULT_STATUS_BY_SESSION_STATUS, raw)
     ? VAULT_STATUS_BY_SESSION_STATUS[raw]
     : VAULT_STATUS_FALLBACK;
+}
+
+/**
+ * Recorded identity only: never infer the writer's machine for historical notes.
+ * Hardware class is a fallback, and cannot distinguish equally equipped hosts.
+ */
+function sessionHostLine(entry) {
+  const recorded = [entry?.host_id, entry?.host, entry?.host_class]
+    .find((value) => typeof value === 'string' && value.trim() !== '');
+  if (recorded === undefined) return '';
+  return `host: ${JSON.stringify(stableHostname(recorded))}\n`;
 }
 
 /**
@@ -549,7 +561,7 @@ status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
+${sessionHostLine(entry)}${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
@@ -636,7 +648,7 @@ status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
+${sessionHostLine(entry)}${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}
@@ -763,7 +775,7 @@ status: ${vaultStatus}
 created: ${created}
 updated: ${updated}
 tags: ${tags}
-${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
+${sessionHostLine(entry)}${fmLine('source-repo', repoNs)}${sourceRecordLine(sessionSourceRecord(entry))}_generator: ${GENERATOR_MARKER}
 ---
 
 # Session ${session_id}

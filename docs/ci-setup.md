@@ -598,7 +598,7 @@ green. Revisit trigger: a `main` coverage failure whose MR pipeline was green,
 or a switch to measuring coverage inside the three `test` shards with
 `vitest --merge-reports`.
 
-## Local pre-push gate
+## Pre-push full gate
 
 `.husky/pre-push` runs `npm run quality-gate`
 (`scripts/run-quality-gate.mjs --variant full-gate`: typecheck + full vitest
@@ -611,3 +611,48 @@ suite + lint) and blocks the push on any non-zero exit.
 - `SKIP_QUALITY_GATE=1 git push` is the named bypass. Prefer it over
   `git push --no-verify`, which disables every hook silently and leaves no
   record of what was skipped.
+
+The hook materialises the first content-bearing ref's exact pushed SHA in an
+isolated tracked checkout, so uncommitted, untracked and gitignored source files
+cannot make the pushed tree pass. A multi-ref push warns that only the first
+content-bearing ref is gated. Failure to materialise that commit blocks the push.
+
+### Remote routing (#1532)
+
+Remote execution requires `offload` on the local PATH and a reachable host listed
+in the pushed tree's Session Config `remote-hosts` block with `test` in
+`roles-allowed`. For example, using an SSH alias configured on your machine:
+
+```yaml
+remote-hosts:
+  - alias: gate-host
+    roles-allowed: [test]
+```
+
+The router tries eligible aliases in configuration order, checking each with
+`offload doctor -H <alias> --brief --no-probe`. The alias selects a gate execution
+host; it is independent of the Git remote being pushed to. With no eligible
+host, no `offload` executable, or unavailable remote readiness/transport, the
+hook runs the same local full gate. A classified transport failure can first
+try the next configured host.
+
+On the remote checkout, the command checks out the pushed SHA again, verifies
+`HEAD` and a clean source tree, and runs `npm run --silent quality-gate`.
+Acceptance requires a nonce-bound receipt for that SHA, successful command
+exits, and the canonical `full-gate` JSON report with no stubbed checks: tests
+must pass without failures, suite death or timeout; typecheck and lint must
+report `pass` or an explicitly configured `skip` without a timeout. A gate failure or an unconfirmed result
+blocks the push; it does not trigger a local retry that could hide the failure.
+
+Linked worktrees retain their main repository's basename and original Git
+remote URL in the isolated checkout. Offload 1.5.1 resolves an external temp
+checkout by basename; it has no explicit repository-mapping option. Nested
+`Ventures/org` layouts therefore do not retain their full host path mapping,
+and repositories with the same basename can collide. The gate still verifies
+the exact pushed commit; remote setup failures use the fallback above.
+
+The local router records the remote verdict in the originating repository's
+`orchestrator.quality_gate.passed` or `.failed` event, with `remote_host`,
+`pushed_sha` and available canonical suite counts. Logs identify the chosen
+route and fallback reason. This verifies the pushed commit before publication;
+CI status remains a separate check on the published SHA.

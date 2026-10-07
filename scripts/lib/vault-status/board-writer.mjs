@@ -54,6 +54,7 @@ import path from 'node:path';
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
 import { isLockLive, readLock, DEFAULT_TTL_HOURS } from '../session-lock.mjs';
+import { stableHostname } from '../host-identity.mjs';
 import { readRegistry, repoPathHash, isRegistryEntryFresh } from '../session-registry.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
@@ -351,6 +352,10 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
     const semanticFromRegistry = registryEntry
       ? (registryEntry.semantic_session_id ?? registryEntry.session_id ?? null)
       : null;
+    // Hardware class is only a fallback; it cannot distinguish identical machines.
+    const recordedHost = [lock?.host_id, lock?.host, registryEntry?.host_id, registryEntry?.host, registryEntry?.host_class]
+      .find((value) => typeof value === 'string' && value.trim() !== '');
+    const host = recordedHost === undefined ? null : stableHostname(recordedHost);
     const session = semanticFromLock ?? semanticFromRegistry ?? null;
 
     // branch ONLY exists on the registry entry — the lock has no branch field.
@@ -435,6 +440,7 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
       branch: status === STATUS_FREI ? null : branch,
       mode: status === STATUS_FREI ? null : mode,
       heartbeat: status === STATUS_FREI ? null : heartbeat,
+      host: status === STATUS_FREI ? null : host,
     });
   }
 
@@ -458,7 +464,7 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
  *
  * @param {Array<{ repo: string, key?: string|null, status: string,
  *   session?: string|null, branch?: string|null, mode?: string|null,
- *   heartbeat?: string|null }>} rows
+ *   heartbeat?: string|null, host?: string|null }>} rows
  * @param {{ now: Date, createdIso?: string, updatedPlaceholder?: string }} opts
  * @returns {string} full markdown (frontmatter + table)
  */
@@ -495,13 +501,13 @@ export function renderBoard(rows, opts = {}) {
   lines.push('');
 
   // Board table
-  lines.push('| Repo | Status | Session | Branch | Mode | Last heartbeat | Key |');
-  lines.push('|---|---|---|---|---|---|---|');
+  lines.push('| Repo | Status | Session | Branch | Mode | Last heartbeat | Key | Host |');
+  lines.push('|---|---|---|---|---|---|---|---|');
   for (const row of sortedRows) {
     lines.push(
       `| ${cell(row?.repo)} | ${cell(row?.status)} | ${cell(row?.session)} | ` +
       `${cell(row?.branch)} | ${cell(row?.mode)} | ${cell(fmtHeartbeat(row?.heartbeat))} | ` +
-      `${cell(row?.key)} |`,
+      `${cell(row?.key)} | ${row?.host ? cell(row.host) : ''} |`,
     );
   }
   lines.push('');
@@ -528,9 +534,10 @@ export function normalizeUpdated(content) {
  * (status carry-over + row preservation for repos not in the current update).
  *
  * Tolerant by design: skips the header + separator rows, ignores any line that
- * is not a 6- or 7-column table row, and maps the literal '—' placeholder back
+ * is not a 6-, 7- or 8-column table row, and maps the literal '—' placeholder back
  * to null. Unescapes the `\|` pipe-escaping applied by {@link renderBoard}.
  *
+ * Host is appended as column 8 (#1054); older rows retain a null host.
  * SIX **or** seven columns (#871): the pre-#871 board rendered 6. A hard
  * `length !== 7` filter would silently DROP every row on an operator's existing
  * board on the first run after upgrade — the board would appear to reset. A
@@ -553,7 +560,7 @@ export function parseBoardRows(content) {
       .split(/(?<!\\)\|/)
       .slice(1, -1)
       .map((c) => c.trim());
-    if (cells.length !== 6 && cells.length !== 7) continue;
+    if (cells.length !== 6 && cells.length !== 7 && cells.length !== 8) continue;
     // Skip the header row and the |---|---| separator row.
     if (cells[0] === 'Repo' || /^-+$/.test(cells[0])) continue;
     const unesc = (v) => (v === '—' ? null : v.replace(/\\\|/g, '|'));
@@ -561,12 +568,13 @@ export function parseBoardRows(content) {
     if (repo === null) continue;
     rows.push({
       repo,
-      key: cells.length === 7 ? unesc(cells[6]) : null,
+      key: cells.length >= 7 ? unesc(cells[6]) : null,
       status: cells[1],
       session: unesc(cells[2]),
       branch: unesc(cells[3]),
       mode: unesc(cells[4]),
       heartbeat: unesc(cells[5]),
+      host: cells.length === 8 ? (unesc(cells[7]) || null) : null,
     });
   }
   return rows;

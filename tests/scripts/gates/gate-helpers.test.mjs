@@ -137,6 +137,22 @@ describe('extractCount', () => {
 // ---------------------------------------------------------------------------
 
 describe('extractTestCounts', () => {
+  it('reads the last colored Vitest summary instead of an earlier validator summary', () => {
+    const input = [
+      '[validate-plugin] 234 passed, 0 failed before workers (78.36s)',
+      '\u001b[2m Test Files \u001b[22m \u001b[32m1 passed\u001b[39m (1)',
+      '\u001b[2m      Tests \u001b[22m \u001b[32m48 passed\u001b[39m (48)',
+      '\u001b[2m Test Files \u001b[22m \u001b[31m2 failed\u001b[39m | \u001b[32m700 passed\u001b[39m (702)',
+      '\u001b[2m      Tests \u001b[22m \u001b[31m3 failed\u001b[39m | \u001b[32m17000 passed\u001b[39m | \u001b[33m4 skipped\u001b[39m (17007)',
+    ].join('\n');
+    expect(extractTestCounts(input)).toEqual({
+      passed: 17000, failed: 3, total: 17003,
+      files: { passed: 700, failed: 2, total: 702 },
+    });
+    expect(extractTestCounts('\u001b[32m42 passed\u001b[39m')).toEqual({
+      passed: 42, failed: 0, total: 42, files: null,
+    });
+  });
   // Terse / non-vitest forms: no `Tests`-anchored summary line, so the parser
   // falls back to scanning the whole string. These pin the pre-existing
   // fallback contract unchanged. No `Test Files` line either → the file-level

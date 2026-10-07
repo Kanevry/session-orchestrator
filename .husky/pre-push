@@ -297,7 +297,15 @@ else
     echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
     exit 1
   fi
-  tree=$work/tree
+  # offload resolves linked worktrees through their common git-dir before
+  # deriving the host repository name. Our isolated clone has a .git directory,
+  # so preserve that canonical name explicitly instead of the worktree basename.
+  canonical_repo=$repo_root
+  common_git_dir=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || common_git_dir=''
+  case "$common_git_dir" in
+    (*/.git) canonical_repo=$(cd "$common_git_dir/.." && pwd -P) || canonical_repo=$repo_root ;;
+  esac
+  tree=$work/$(basename "$canonical_repo")
   short_sha=$(printf '%.12s' "$target_sha")
 
   mat_start=$(date +%s)
@@ -430,6 +438,15 @@ start=$(date +%s)
     unset "$root_var"
   done
   unset root_var
+  if [ -n "$repo_root" ] && [ -f "$run_dir/scripts/lib/pre-push-remote-gate.mjs" ]; then
+    node "$run_dir/scripts/lib/pre-push-remote-gate.mjs" "$run_dir" "$target_sha" "$repo_root"
+    remote_status=$?
+    case "$remote_status" in
+      (0) exit 0 ;;
+      (10) : ;; # only explicit transport/readiness fallback reaches npm
+      (*) exit "$remote_status" ;;
+    esac
+  fi
   if [ -n "$repo_root" ]; then
     npm run --silent quality-gate -- --ledger-root "$repo_root"
   else

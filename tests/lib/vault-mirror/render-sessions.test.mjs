@@ -1087,3 +1087,14 @@ describe('#1074 no wave cell renders "?" while a usable value sits in the record
     expect(unrenderedButPresent(records)).toEqual([]);
   });
 });
+
+// #1054: storage metadata must come from the recorded session, never this host.
+it('renders recorded host metadata without attributing legacy sessions to this machine (#1054)', () => {
+  const known = generateSessionNote(makeV1Entry({ host_class: 'macos-arm64-m4pro' }));
+  expect(parseFrontmatter(known).host).toBe('macos-arm64-m4pro');
+  for (const [render, fixture] of [[generateSessionNote, makeV1Entry], [generateSessionNoteV2, makeV2Entry], [generateSessionNoteV3, makeV3Entry]]) {
+    expect(parseFrontmatter(render(fixture({ host_id: ' Worker.LOCAL ', host: 'other.home', host_class: 'linux-x86_64' }))).host).toBe('worker');
+    expect(parseFrontmatter(render(fixture({ host: 'SECOND.home' }))).host).toBe('second');
+    expect(render(fixture())).not.toMatch(/^host:/m);
+  }
+});

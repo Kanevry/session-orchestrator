@@ -272,6 +272,7 @@ describe('sweepBoard happy path', () => {
       branch: null,
       mode: 'deep',
       heartbeat: '2026-06-18T07:00:00.000Z',
+      host: 'test-host',
     });
   });
 
@@ -296,6 +297,7 @@ describe('sweepBoard happy path', () => {
       branch: null,
       mode: 'deep',
       heartbeat: '2026-06-18T12:00:00.000Z',
+      host: 'test-host',
     });
   });
 
@@ -318,6 +320,7 @@ describe('sweepBoard happy path', () => {
       branch: null,
       mode: 'deep',
       heartbeat: '2026-06-18T12:00:00.000Z',
+      host: 'test-host',
     });
   });
 
@@ -393,6 +396,7 @@ describe('sweepBoard — two-level <org>/<repo> topology (#832)', () => {
       branch: null,
       mode: 'deep',
       heartbeat: '2026-06-18T07:00:00.000Z',
+      host: 'test-host',
     });
   });
 
@@ -521,6 +525,7 @@ describe('sweepBoard idempotent merge — frei exclusion', () => {
       branch: 'old-branch',
       mode: 'housekeeping',
       heartbeat: 'old-hb',
+      host: null,
     });
   });
 });
@@ -570,6 +575,7 @@ describe('sweepBoard enumeration-failure fallback', () => {
         key: boardKey(thisRepoRoot),
         status: 'in-progress',
         session: 'this-sess',
+        host: 'test-host',
         branch: null,
         mode: 'deep',
         heartbeat: '2026-06-18T12:00:00.000Z',

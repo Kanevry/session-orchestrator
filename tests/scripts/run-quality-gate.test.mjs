@@ -287,6 +287,34 @@ describe('run-quality-gate.mjs — parser default command integration', () => {
 // ---------------------------------------------------------------------------
 
 describe('run-quality-gate.mjs — full-gate variant', () => {
+  // A failing full-gate used process.exit(2) while its large stderr write was
+  // still buffered. Capturing the real CLI through pipes lost the assertion
+  // tail although the blocking exit and stdout JSON survived.
+  it('preserves the complete large failure diagnostic through captured pipes', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'qg-large-failure-'));
+    writeFileSync(join(tmp, 'fail.mjs'), [
+      "import { writeSync } from 'node:fs';",
+      "writeSync(1, 'x'.repeat(524288) + '\\nUNIQUE_FAILURE_ASSERTION_TAIL\\n');",
+      'process.exitCode = 1;',
+    ].join('\n'));
+    const config = JSON.stringify({
+      'typecheck-command': 'skip',
+      'test-command': 'node fail.mjs',
+      'lint-command': 'skip',
+    });
+    try {
+      const r = run(['--variant', 'full-gate', '--config', config],
+        { CLAUDE_PROJECT_DIR: tmp }, { cwd: tmp });
+      expect(r.status).toBe(2);
+      expect(r.stderr.length).toBeGreaterThan(524288);
+      expect(r.stderr).toContain('UNIQUE_FAILURE_ASSERTION_TAIL\n──── end test');
+      expect(JSON.parse(r.stdout).test.status).toBe('fail');
+      expect(r.stdout.trim().split('\n')).toHaveLength(1);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it('exits 0 when all three checks are skipped', () => {
     const config = JSON.stringify({
       'typecheck-command': 'skip',

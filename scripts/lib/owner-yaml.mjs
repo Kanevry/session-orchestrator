@@ -41,6 +41,9 @@
  *     mode: 'off' | 'warn' | 'strict'  (applied only when weaker than the committed mode;
  *                            precedence env SO_VAULT_INTEGRATION > this > committed.
  *                            An invalid value drops ONLY this section, see loadOwnerConfig)
+ *   drift-check:            (optional; host-local path exceptions — #937)
+ *     foreign-host-prefixes: string[] (narrow absolute directory prefixes;
+ *                            missing matching paths warn, unmatched paths error)
  *   vault-dirs:             (optional list; per-directory vault-dir — agents/vault#319)
  *     - path: string                       (the vault directory)
  *       match: { path-prefix: string }     (required; cwd directory prefix, first match wins)
@@ -54,7 +57,7 @@
  *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
  *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
  *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
- *                                sections (paths/dispatcher/vault-integration/vaults/
+ *                                sections (paths/dispatcher/vault-integration/drift-check/vaults/
  *                                baselines/vault-dirs) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
  *   getDefaults()              — returns sensible default config object
@@ -218,7 +221,7 @@ const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 
  * override", so a dropped section simply leaves the committed gate in force.
  */
 export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
-  Object.freeze(['paths', 'dispatcher', 'vault-integration'])
+  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check'])
 );
 
 /**
@@ -395,6 +398,33 @@ export function validateOwnerSections(obj) {
       }
     }
     sections['hardware-sharing'] = { valid: errors.length === 0, errors };
+  }
+
+  // Host-local exception list only; invalid entries drop the entire section.
+  {
+    const errors = [];
+    const drift = obj['drift-check'];
+    if (drift !== undefined && drift !== null) {
+      if (!isPlainObject(drift)) {
+        errors.push('drift-check must be an object when present');
+      } else if (drift['foreign-host-prefixes'] !== undefined) {
+        const prefixes = drift['foreign-host-prefixes'];
+        if (!Array.isArray(prefixes)) {
+          errors.push('drift-check.foreign-host-prefixes must be an array');
+        } else {
+          for (const prefix of prefixes) {
+            const parts = typeof prefix === 'string' ? prefix.split('/').filter(Boolean) : [];
+            if (typeof prefix !== 'string' || !prefix.startsWith('/') ||
+                !/^\/[A-Za-z0-9._/-]+$/.test(prefix) || prefix.includes('//') ||
+                parts.some((part) => part === '.' || part === '..') ||
+                parts.length < 3 || (['Users', 'home'].includes(parts[0]) && parts.length < 4)) {
+              errors.push('drift-check.foreign-host-prefixes entries must be narrow absolute directory prefixes (no roots, home directories, traversal or globs)');
+            }
+          }
+        }
+      }
+    }
+    sections['drift-check'] = { valid: errors.length === 0, errors };
   }
 
   // ── paths (optional; host-local path overrides — #653) ───────────────────────
@@ -627,7 +657,7 @@ export function validateOwnerConfig(obj) {
  * Per-section tolerance (#820): an invalid REQUIRED section (owner, tone,
  * efficiency, hardware-sharing) still discards the whole file (legacy
  * behaviour, unchanged). An invalid OPTIONAL object section (paths,
- * dispatcher, vault-integration) is instead replaced by its default value — the rest of the
+ * dispatcher, vault-integration, drift-check) is instead replaced by its default value — the rest of the
  * file survives, `source` becomes `'partial'`, and the drop is reported via
  * `droppedSections` + a stderr WARN. OPTIONAL list sections (vaults,
  * baselines, vault-dirs) are passed through UNTOUCHED even when strict-invalid — their

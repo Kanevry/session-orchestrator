@@ -26,6 +26,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serializeSessionLineChecked } from '../../scripts/emit-session.mjs';
+import { stableHostname } from '../../scripts/lib/host-identity.mjs';
+import { generateSessionNoteV2 } from '../../scripts/lib/vault-mirror/render-sessions.mjs';
 import { validateSession, ValidationError } from '../../scripts/lib/session-schema.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -749,5 +751,64 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect(r.status).toBe(0);
     expect('session_start_ref' in readWritten()).toBe(false);
     expect(r.stderr).toContain('session_start_ref=ae452d33 is not a full hex sha');
+  });
+});
+
+// #1054: exercise the actual producer, persisted JSONL, and note renderer.
+describe('emit-session CLI — recorded host provenance', () => {
+  let cwd;
+  let target;
+  beforeEach(() => {
+    cwd = mkdtempSync(join(tmpdir(), 'emit-session-host-'));
+    target = join(cwd, 'sessions.jsonl');
+  });
+  afterEach(() => rmSync(cwd, { recursive: true, force: true }));
+  const renderableEntry = (fields = {}) => validEntry({
+    files_changed: [], effectiveness: {}, ...fields,
+  });
+  function emit(fields = {}, ownAssertion = false) {
+    const args = ['--file', target, '--entry', JSON.stringify(renderableEntry(fields))];
+    // Existing CLI contract: caller explicitly asserts this is its own session;
+    // an arbitrary historical UUID would not prove a historical host's origin.
+    if (ownAssertion) args.push('--session-uuid', 'own-host-test-uuid');
+    const result = runCli(args, null, { cwd });
+    expect(result.status).toBe(0);
+    return JSON.parse(readFileSync(target, 'utf8').trim().split('\n').at(-1));
+  }
+  it('stamps new owned records and exposes the recorded identity in note frontmatter', () => {
+    mkdirSync(join(cwd, '.orchestrator'));
+    writeFileSync(join(cwd, '.orchestrator', 'current-session.json'), JSON.stringify({
+      session_id: 'own-host-test-uuid', semantic_session_id: validEntry().session_id,
+    }));
+    const args = ['--file', target, '--entry', JSON.stringify(renderableEntry())];
+    const result = runCli(args, null, { cwd, env: {
+      CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: '', SO_SESSION_ID: '',
+    } });
+    expect(result.status).toBe(0);
+    const written = JSON.parse(readFileSync(target, 'utf8'));
+    expect(written.host_id).toBe(stableHostname());
+    expect(generateSessionNoteV2(written)).toContain(`host: ${JSON.stringify(stableHostname())}\n`);
+  });
+  it.each(['host_id', 'host', 'host_class'])('preserves explicit %s even with an own-session assertion', (key) => {
+    const written = emit({ [key]: 'foreign-origin.local' }, true);
+    expect(written[key]).toBe('foreign-origin.local');
+    if (key !== 'host_id') expect(written).not.toHaveProperty('host_id');
+    expect(generateSessionNoteV2(written)).toContain('host: "foreign-origin"\n');
+  });
+  it('leaves historical replay origin unknown and keeps preceding history byte-identical', () => {
+    const historical = JSON.stringify(renderableEntry({ session_id: 'historical' })) + '\n';
+    writeFileSync(target, historical);
+    const written = emit({ raw_session_id: 'historical-uuid' }, true);
+    expect(written).not.toHaveProperty('host_id');
+    expect(generateSessionNoteV2(written)).not.toMatch(/^host:/m);
+    expect(readFileSync(target, 'utf8').startsWith(historical)).toBe(true);
+  });
+  it('keeps legacy input without proven ownership compatible and host absent', () => {
+    const written = emit();
+    expect(written).not.toHaveProperty('host_id');
+    expect(generateSessionNoteV2(written)).not.toMatch(/^host:/m);
+  });
+  it('treats an explicit unknown origin as authoritative', () => {
+    expect(emit({ host: null }, true)).not.toHaveProperty('host_id');
   });
 });
