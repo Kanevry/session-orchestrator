@@ -95,10 +95,9 @@ import { pathToFileURL } from 'node:url';
 /** @type {typeof import('../scripts/lib/io.mjs').emitAllow} */ let emitAllow;
 /** @type {typeof import('../scripts/lib/io.mjs').emitDeny} */ let emitDeny;
 /** @type {typeof import('../scripts/lib/io.mjs').emitWarn} */ let emitWarn;
-let resolveSessionRoot;
 let readJson;
 // #1504 point 6 — bound from scope-gate below.
-let findOwnScopeFile;
+let resolveScopeContext;
 let extractBashWriteTargets;
 let pathMatchesPattern;
 /** @type {typeof import('../scripts/lib/session-identity/own-session.mjs').readProcessLocalSessionIds} */
@@ -208,10 +207,9 @@ async function bootstrap() {
   );
 
   ({ readStdin, emitAllow, emitDeny, emitWarn } = modules.io);
-  ({ resolveSessionRoot } = modules.platform);
   ({ readJson } = modules.common);
   ({ extractBashWriteTargets, pathMatchesPattern } = modules.hardening);
-  ({ findOwnScopeFile } = modules.scopeGate);
+  ({ resolveScopeContext } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
   blocker = modules.blocker;
   degradedLabels = degraded;
@@ -281,21 +279,13 @@ async function main() {
     );
   }
 
-  // #1492 — the SESSION's working copy, not the launch dir `$CLAUDE_PROJECT_DIR`
-  // keeps after `EnterWorktree` (the manifest lives in the worktree). See
-  // `resolveSessionRoot` in scripts/lib/platform.mjs.
-  const projectRoot = resolveSessionRoot(input.cwd);
-
-  // `new Set(...)` is load-bearing: `readProcessLocalSessionIds` returns a
-  // string[], and `classifyManifestSession` does `ownIds instanceof Set ?
-  // ownIds : new Set()` — a bare array would silently become EMPTY.
+  // Coordinator control state and isolated-agent write targets may live in
+  // different working copies; the shared guard context resolves both.
   const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
-
-  // G3 — no scope file → allow. #1504 point 6: the first manifest that is not
-  // provably a peer's, so a peer's higher-precedence `.pi`/`.cursor`/`.codex`
-  // manifest no longer hides this session's own one; only when every candidate
-  // is foreign does the first come back, and G3b below stands down as before.
-  const located = findOwnScopeFile(projectRoot, ownIds, classifyManifestSession);
+  const context = resolveScopeContext({ cwd: input.cwd, ownIds, classify: classifyManifestSession });
+  if (context.error) return emitDeny('Scope coordinator cannot be resolved', context.error);
+  const projectRoot = context.writeRoot;
+  const located = context;
   const scopePath = located.path ?? located.foreignPath;
   if (!scopePath) return flushNotices(notices);
 
@@ -350,7 +340,7 @@ async function main() {
             wave: scope.wave,
             command_hash: hashCommand(command),
           },
-          { repoRoot: projectRoot },
+          { repoRoot: context.manifestRoot },
         );
       } catch { /* observability is best-effort — never blocks the decision */ }
       return flushNotices(notices);

@@ -173,7 +173,7 @@ export function renderTemplate({ humanName, slug, tier, gitlabPath, owner }, tem
 
   // owner field — value comes from GitLab API (externally controlled).
   // Use yamlScalar() to produce a quoted scalar, preventing newline injection (CWE-1336, #247).
-  // The template has a bare unquoted owner value (e.g. `owner: bernhard`);
+  // The template has a bare unquoted owner value (e.g. `owner: example-owner`);
   // the regex replaces only the bare value token, preserving any trailing comment.
   out = out.replace(/^(\s*owner:\s*)\S+(.*)$/m, `$1${yamlScalar(owner)}$2`);
 

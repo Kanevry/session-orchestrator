@@ -3,7 +3,7 @@
  * vault-consolidate.mjs — One-shot vault consolidation migration (PRD F1.1, Issue #499).
  *
  * Folds the redundant vault at `~/Projects/vault/` into the canonical
- * `~/Projects/Bernhard/vault/`, with per-file conflict resolution, idempotent
+ * host-configured destination, with per-file conflict resolution, idempotent
  * re-runs, and a compressed backup of the source side BEFORE any write.
  *
  * Design — two-phase coordinator-driven flow for merge resolution
@@ -95,10 +95,10 @@ import {
   stageBackup,
   compressAndCleanupBackup,
 } from './lib/vault-consolidate-fs.mjs';
+import { loadHostPaths, resolveHostPath } from './lib/config/host-paths.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_SOURCE = '~/Projects/vault';
-const DEFAULT_CANONICAL = '~/Projects/Bernhard/vault';
 
 // ---------------------------------------------------------------------------
 // CLI parsing
@@ -122,7 +122,7 @@ Options:
   --source <path>            Path to the redundant (source) vault.
                              Default: ${DEFAULT_SOURCE}
   --canonical <path>         Path to the canonical vault.
-                             Default: ${DEFAULT_CANONICAL}
+                             Default: SO_VAULT_DIR or owner.yaml paths.vault-dir (required when source exists)
   --json                     Newline-delimited JSON output (one record per
                              file, plus a final summary record).
   --resolve <rel>=<choice>   Record a merge decision for the file at the
@@ -215,7 +215,9 @@ async function main() {
   const isJson = parsed.values.json === true;
 
   const sourceRoot = path.resolve(expandTilde(parsed.values.source ?? DEFAULT_SOURCE));
-  const canonicalRoot = path.resolve(expandTilde(parsed.values.canonical ?? DEFAULT_CANONICAL));
+  const canonicalTarget = parsed.values.canonical ?? resolveHostPath('vault-dir', null, loadHostPaths());
+  const canonicalRoot = typeof canonicalTarget === 'string' && canonicalTarget.trim()
+    ? path.resolve(expandTilde(canonicalTarget.trim())) : null;
 
   // Parse --resolve flags into a Map<relPath, "src"|"dst"|"skip">
   const resolutions = new Map();
@@ -255,11 +257,24 @@ async function main() {
     process.exit(0);
   }
 
+  if (!canonicalRoot) {
+    process.stderr.write('ERROR: canonical vault is unconfigured — pass --canonical or set SO_VAULT_DIR / owner.yaml paths.vault-dir\n');
+    process.exit(1);
+  }
+
   if (!(await isDir(canonicalRoot))) {
     process.stderr.write(
       `ERROR: canonical vault not found at ${canonicalRoot} — refusing to consolidate\n`
     );
     process.exit(2);
+  }
+
+  if (await fs.realpath(sourceRoot) === await fs.realpath(canonicalRoot)) {
+    const summary = { kind:'summary', mode:isDryRun ? 'dry-run' : 'apply', source:sourceRoot,
+      canonical:canonicalRoot, counts:{copy:0,'skip-already-present':0,merge:0,'conflict-needs-review':0},
+      notice:'source and canonical resolve to the same vault — nothing to do' };
+    process.stdout.write(isJson ? JSON.stringify(summary) + '\n' : summary.notice + '\n');
+    process.exit(0);
   }
 
   // -------------------------------------------------------------------------

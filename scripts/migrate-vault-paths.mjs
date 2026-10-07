@@ -52,6 +52,7 @@ import { promises as fs, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
+import { load as loadYaml } from 'js-yaml';
 import {
   loadVaultMigrationRules,
   VAULT_MIGRATION_RULES_PATH,
@@ -59,6 +60,7 @@ import {
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { atomicWriteText, envelopeToError } from './lib/io.mjs';
+import { loadHostPaths, resolveHostPath } from './lib/config/host-paths.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,28 +91,9 @@ function _setSegmentsForTest(oldSeg, newSeg) {
 }
 
 // ── Missing-segment class (GitLab #600 D3) ────────────────────────────────────
-// A second, username-independent drift class: a `vault-dir:` value that points at
-// `~/Projects/vault` (or `/Users/<user>/Projects/vault`) — MISSING the canonical
-// `/Bernhard/` owner segment — must become `~/Projects/Bernhard/vault`.
-//
-// Scoping discipline (do NOT blunt-rewrite every `~/Projects/` path):
-//   - Only lines in a `vault-dir:` context (vault-integration.vault-dir /
-//     vault-sync.vault-dir) are touched. `cache: ~/Projects/vault-backups` and
-//     other unrelated `~/Projects/...` paths are left untouched.
-//   - The match anchors the value to `~` or `/Users/<user>` immediately before
-//     `/Projects/vault`, and requires a path boundary AFTER `vault` (negative
-//     lookahead `(?![\w-])`) so `vault-backups` / `vaultfoo` never match.
-//   - Matching `Projects/vault` directly (not `Projects/Bernhard/vault`) yields
-//     idempotency for free: a canonical line has `Projects/Bernhard/vault`, so
-//     the pattern does not match it → no `.../Bernhard/Bernhard/vault`.
-//
-// The owner segment is the canonical `Bernhard`; the rewrite inserts it between
-// `Projects/` and `vault`.
-const MISSING_SEGMENT_OWNER = 'Bernhard';
-
-// Classification label for the missing-/Bernhard/-segment drift class. Referenced
-// in findMissingSegmentHits() (hit record) and the emit() action strings — hoisted
-// here so the literal lives in exactly one place (architect MED #607 D3).
+// Legacy vault-dir values rooted at Projects/vault use an explicit host canonical
+// target. Detection remains narrow; rewriting never guesses a personal segment.
+// Username-owned lines and historical contexts remain separate migration classes.
 const MISSING_SEGMENT_CLASS = 'vault-dir-missing-segment';
 
 const MISSING_SEGMENT_RE = new RegExp(
@@ -243,6 +226,8 @@ historical contexts (decisions.md, history/, archive*).
 
 Both --from and --to are required unless username-rewrites[0] is set in
 ${VAULT_MIGRATION_RULES_PATH}.
+Legacy vault-dir targets use SO_VAULT_DIR or owner.yaml paths.vault-dir;
+unconfigured targets are skipped without guessing a location.
 
 Options:
   --from SEG           Literal source segment (e.g. '/Users/oldname/')
@@ -330,8 +315,7 @@ function findCandidateFiles(roots) {
 /**
  * Discover files containing a missing-segment `vault-dir:` drift (GitLab #600
  * D3) — i.e. a `vault-dir:` line pointing at `~/Projects/vault` (or
- * `/Users/<user>/Projects/vault`) that lacks the canonical `/Bernhard/` owner
- * segment. These files do NOT contain OLD_SEGMENT, so findCandidateFiles() (which
+ * `/Users/<user>/Projects/vault`) that may need an explicitly configured canonical target. These files do NOT contain OLD_SEGMENT, so findCandidateFiles() (which
  * greps OLD_SEGMENT) cannot find them.
  *
  * grep matches the literal `Projects/vault`; per-file classification then applies
@@ -350,7 +334,7 @@ function findMissingSegmentFiles(roots) {
       '--include=*.md',
       // Coarse literal pre-filter; precise vault-dir/idempotency check happens
       // per-line in findMissingSegmentHits(). 'Projects/vault' also matches
-      // canonical 'Projects/Bernhard/vault' lines, but those are dropped later.
+      // longer paths; exact per-line matching prevents unrelated rewrites.
       'Projects/vault',
       ...roots,
     ],
@@ -407,8 +391,8 @@ function classifyHit(filePath, line) {
 /**
  * Does this line carry a missing-segment `vault-dir:` drift (GitLab #600 D3)?
  * Returns true only for a `vault-dir:` value at `~/Projects/vault` or
- * `/Users/<user>/Projects/vault` that is NOT already canonical
- * (`~/Projects/Bernhard/vault`) — see MISSING_SEGMENT_RE for the precise shape.
+ * `/Users/<user>/Projects/vault` matching the legacy shape — see MISSING_SEGMENT_RE.
+ * Whether the target differs is decided separately by the configured rewrite.
  * `RegExp.test` advances lastIndex on a /g regex, so reset it before each probe.
  */
 function lineHasMissingSegment(line) {
@@ -444,7 +428,7 @@ function isOwnedByUsernamePath(line) {
  * deliberately skipped here: a `vault-dir: /Users/oldname/Projects/vault` line is
  * a username drift (→ /Users/newname/Projects/vault), NOT a missing-segment drift.
  * Without this guard the two classes collide and the username output would gain a
- * spurious /Bernhard/ segment.
+ * second, unrelated vault-target rewrite.
  */
 function findMissingSegmentHits(filePath, content) {
   const historical = isHistorical(filePath);
@@ -464,37 +448,40 @@ function findMissingSegmentHits(filePath, content) {
 }
 
 /**
- * Rewrite missing-segment `vault-dir:` values in `content`: insert the canonical
- * `/Bernhard/` owner segment between `Projects/` and `vault`. Only `vault-dir:`
- * lines matching MISSING_SEGMENT_RE are touched — unrelated `~/Projects/...`
- * paths (e.g. `cache: ~/Projects/vault-backups`) are preserved verbatim.
- *
- * `originalContent` (the file BEFORE rewriteContent ran) gates which lines are
- * eligible: any line whose original carried OLD_SEGMENT is owned by the username
- * path and is skipped, even though the username rewrite may have produced a
- * `/Users/newname/Projects/vault` form that would otherwise match the regex.
- * This keeps the two classes from colliding when both transforms chain.
- *
- * `originalContent` is REQUIRED (no default): the collision-gate is meaningless
- * without the pre-rewrite text, and a `= content` default silently fails open if
- * a future caller forgets it — passing the already-rewritten content as its own
- * "original" would let a chained username rewrite leak a spurious /Bernhard/
- * segment. Callers MUST pass the original content explicitly (architect MED #607 D3).
+ * Rewrite a legacy vault-dir base to an explicit canonical target, preserving
+ * suffixes, scalar quotes and comments. Missing/invalid targets leave text intact.
+ * originalContent is required so username-owned lines are never rewritten twice.
  */
-function rewriteMissingSegment(content, originalContent) {
+function rewriteMissingSegment(content, originalContent, canonicalVaultPath) {
   const origLines = originalContent.split('\n');
-  return content
-    .split('\n')
-    .map((line, i) => {
-      // Skip lines the username path owns (matched on the ORIGINAL line text).
-      if (isOwnedByUsernamePath(origLines[i])) return line;
-      MISSING_SEGMENT_RE.lastIndex = 0;
-      return line.replace(
-        MISSING_SEGMENT_RE,
-        (_m, prefix, root) => `${prefix}${root}/Projects/${MISSING_SEGMENT_OWNER}/vault`,
-      );
-    })
-    .join('\n');
+  if (typeof canonicalVaultPath !== 'string' || !canonicalVaultPath.trim()) return content;
+  const target = canonicalVaultPath.trim().replace(/\/+$/, '') || '/';
+  if (!target.startsWith('/') && !target.startsWith('~/')) return content;
+  if ([...target].some((c) => c.charCodeAt(0) < 32)) return content;
+  return content.split('\n').map((line, i) => {
+    if (isOwnedByUsernamePath(origLines[i])) return line;
+    return line.replace(/(vault-dir:\s*)(?:"((?:\\[^\r\n]|[^"\\\r\n])*)"|'((?:''|[^'\r\n])*)'|([^#\r\n]*))/g,
+      (match, prefix, double, single, bare) => {
+        let value = bare;
+        if (double !== undefined || single !== undefined) {
+          // Decode the complete scalar once so YAML escapes retain their path meaning.
+          try {
+            value = loadYaml(double !== undefined ? `"${double}"` : `'${single}'`);
+          } catch {
+            return match; // Leave malformed quoted values untouched.
+          }
+        }
+        const tailSpace = value.match(/\s*$/)[0];
+        const pathValue = value.slice(0, value.length - tailSpace.length);
+        const legacy = /^(?:~|\/Users\/[^/\s'"]+)\/Projects\/vault(?![\w-])(.*)$/.exec(pathValue);
+        if (!legacy) return match;
+        const replacement = target === '/' && legacy[1].startsWith('/') ? legacy[1] : target + legacy[1];
+        if (double !== undefined) return prefix + JSON.stringify(replacement + tailSpace);
+        if (single !== undefined) return prefix + "'" + (replacement + tailSpace).replace(/'/g, "''") + "'";
+        const scalar = /[\s#:'"[\]{}&*!|>]/.test(replacement) ? JSON.stringify(replacement) : replacement;
+        return prefix + scalar + tailSpace;
+      });
+  }).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -554,6 +541,8 @@ function abbrev(filePath) {
 
 async function main() {
   const opts = parseArgs(process.argv);
+  const canonicalVaultPath = resolveHostPath('vault-dir', null, loadHostPaths());
+  let canonicalWarningEmitted = false;
 
   if (opts.help) {
     printHelp();
@@ -659,7 +648,7 @@ async function main() {
     totalScanned++;
     // Two independent drift classes, each discovered per-line:
     //   - OLD_SEGMENT username drift  → rewriteContent (split+join)
-    //   - missing /Bernhard/ segment  → rewriteMissingSegment (#600 D3)
+    //   - legacy vault base → rewriteMissingSegment (#600 D3)
     const hits = findHits(filePath, content);
     const missingHits = findMissingSegmentHits(filePath, content);
     if (hits.length === 0 && missingHits.length === 0) continue;
@@ -669,7 +658,15 @@ async function main() {
     // in mixed files are rare; if any exist, classify each line and skip-count.
     const fixableHits = hits.filter((h) => h.classification !== 'historical');
     const historicalHits = hits.filter((h) => h.classification === 'historical');
-    const fixableMissing = missingHits.filter((h) => h.classification !== 'historical');
+    const pendingMissing = missingHits.filter((h) => h.classification !== 'historical');
+    if (pendingMissing.length && !canonicalVaultPath && !canonicalWarningEmitted) {
+      process.stderr.write('migrate-vault-paths: WARN legacy vault targets skipped — set SO_VAULT_DIR or owner.yaml paths.vault-dir\n');
+      canonicalWarningEmitted = true;
+    }
+    const fixableMissing = pendingMissing.filter((h) => rewriteMissingSegment(h.text, h.text, canonicalVaultPath) !== h.text);
+    for (const h of pendingMissing.filter((hit) => !fixableMissing.includes(hit))) {
+      emit(opts, { action:'skipped', reason: canonicalVaultPath ? 'canonical-target-unchanged-or-invalid' : 'canonical-vault-unconfigured', file:filePath, line:h.line, classification:h.classification });
+    }
     const historicalMissing = missingHits.filter((h) => h.classification === 'historical');
 
     for (const h of [...historicalHits, ...historicalMissing]) {
@@ -695,7 +692,7 @@ async function main() {
     // touches a line the username rewrite already owns (see rewriteMissingSegment).
     let newContent = content;
     if (fixableHits.length > 0) newContent = rewriteContent(newContent);
-    if (fixableMissing.length > 0) newContent = rewriteMissingSegment(newContent, content);
+    if (fixableMissing.length > 0) newContent = rewriteMissingSegment(newContent, content, canonicalVaultPath);
 
     for (const h of fixableHits) {
       totalLinesFixed++;

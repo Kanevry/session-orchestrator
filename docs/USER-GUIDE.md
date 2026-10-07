@@ -1030,6 +1030,8 @@ Set `persistence: false` in your Session Config to disable STATE.md writing and 
 
 ## 15. Safety Features
 
+Configure host-specific leakage protection with the [owner privacy pattern guide](owner-privacy-patterns.md), including protected local policy files, vault-path migration and strict packed-release checks.
+
 ### Scope Enforcement
 
 Before each wave, the wave-executor writes `.claude/wave-scope.json` defining the allowed file paths and blocked commands for that wave's agents. PreToolUse hooks validate Edit/Write operations against `allowedPaths` and Bash commands against `blockedCommands`.

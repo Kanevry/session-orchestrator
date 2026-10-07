@@ -20,13 +20,13 @@
  *    12. Walk skips ignored dirs / files
  *
  * Each test uses isolated tmpdirs in os.tmpdir() — NEVER touches
- * ~/Projects/vault or ~/Projects/Bernhard/vault.
+ * ~/Projects/vault or the host canonical vault.
  *
  * Spawns the actual script via spawnSync('node', [SCRIPT, ...args]) —
  * CLI is the contract.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import {
   mkdtempSync,
   writeFileSync,
@@ -44,10 +44,16 @@ import { installScriptCli } from '../_helpers/executable-fixture.mjs';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/vault-consolidate.mjs');
 
+const HOST_SANDBOX = mkdtempSync(join(tmpdir(), 'consolidate-host-'));
+const HOST_ENV = {...process.env, HOME:HOST_SANDBOX, SO_VAULT_DIR:join(HOST_SANDBOX,'canonical-vault'), SO_CONFIG_HOME:join(HOST_SANDBOX,'config'), XDG_CONFIG_HOME:join(HOST_SANDBOX,'xdg'), SO_CONFIDENTIAL_NAMES_FILE:'', SO_OWNER_PATTERNS_FILE:join(HOST_SANDBOX,'owner-patterns.json')};
+afterAll(() => rmSync(HOST_SANDBOX,{recursive:true,force:true}));
+
 function runScript(args, opts = {}) {
   return spawnSync('node', [SCRIPT, ...args], {
     encoding: 'utf8',
     ...opts,
+    timeout: opts.timeout ?? 20000,
+    env:{...HOST_ENV,...opts.env},
   });
 }
 
@@ -745,7 +751,7 @@ describe('vault-consolidate CLI', () => {
     const result = spawnSync(
       process.execPath,
       [SCRIPT, '--source', source, '--canonical', canonical, '--apply', '--json'],
-      { encoding: 'utf8', env: { PATH: `${fakeBin}:/bin:/usr/bin` } },
+      { encoding: 'utf8', env: {...HOST_ENV, PATH: `${fakeBin}:/bin:/usr/bin` } },
     );
 
     // Copy still succeeded — tar failure only affects backup compression.
@@ -796,7 +802,7 @@ describe('vault-consolidate CLI', () => {
     const result = spawnSync(
       process.execPath,
       [SCRIPT, '--source', source, '--canonical', canonical, '--apply', '--json'],
-      { encoding: 'utf8', env: { PATH: emptyBin } },
+      { encoding: 'utf8', env: {...HOST_ENV, PATH: emptyBin } },
     );
 
     // Copy still succeeded — tar failure only affects the backup compression.
@@ -822,4 +828,48 @@ describe('vault-consolidate CLI', () => {
       readFileSync(join(source, stagingDirs[0], 'note.md'), 'utf8'),
     ).toBe('will-be-copied\n');
   });
+  it('uses the explicit host vault target when --canonical is omitted', () => {
+    const source = mkTmp('host-source');
+    const canonical = mkTmp('host-canonical');
+    const config = mkTmp('host-config');
+    writeFileSync(join(source, 'note.md'), 'fixture note\n');
+    const result = runScript(['--source',source,'--apply','--json'], {env:{HOME:config,SO_VAULT_DIR:canonical,SO_CONFIG_HOME:config,XDG_CONFIG_HOME:config}});
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(canonical,'note.md'),'utf8')).toBe('fixture note\n');
+  });
+
+  it('treats source and canonical realpath aliases as no-op before staging backups', () => {
+    const source = mkTmp('same-root');
+    const aliasParent = mkTmp('same-alias');
+    const alias = join(aliasParent,'vault');
+    symlinkSync(source,alias,'dir');
+    writeFileSync(join(source,'note.md'),'fixture note\n');
+    const result = runScript(['--source',source,'--canonical',alias,'--apply','--json']);
+    expect(result.status).toBe(0);
+    expect(readdirSync(source)).toEqual(['note.md']);
+    expect(result.stdout).toContain('same vault');
+    expect(JSON.parse(result.stdout).counts).toEqual({copy:0,'skip-already-present':0,merge:0,'conflict-needs-review':0});
+  });
+
+  it('uses owner.yaml canonical fallback without reading host configuration', () => {
+    const source = mkTmp('owner-source');
+    const canonical = mkTmp('owner-canonical');
+    const config = mkTmp('owner-config');
+    writeFileSync(join(source,'note.md'),'owner fixture\n');
+    writeFileSync(join(config,'owner.yaml'), `owner: {name: FixtureOwner, language: en}\ntone: {style: direct}\nefficiency: {output-level: full, preamble: minimal}\nhardware-sharing: {enabled: false}\npaths:\n  vault-dir: ${canonical}\n`, {mode:0o600});
+    const result = runScript(['--source',source,'--apply','--json'], {env:{SO_VAULT_DIR:'',SO_CONFIG_HOME:config}});
+    expect(result.status).toBe(0);
+    expect(readFileSync(join(canonical,'note.md'),'utf8')).toBe('owner fixture\n');
+  });
+
+  it('refuses an existing source when the canonical host target is unconfigured', () => {
+    const source = mkTmp('unset-source');
+    const config = mkTmp('unset-config');
+    writeFileSync(join(source,'note.md'),'fixture note\n');
+    const result = runScript(['--source',source,'--apply','--json'], {env:{SO_VAULT_DIR:'',SO_CONFIG_HOME:config}});
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('canonical vault is unconfigured');
+    expect(readdirSync(source)).toEqual(['note.md']);
+  });
+
 });

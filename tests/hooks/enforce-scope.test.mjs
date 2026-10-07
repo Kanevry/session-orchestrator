@@ -81,8 +81,8 @@ async function runHook({ projectDir, stdin, execArgv = [], env = {} }) {
  * Create a temporary project directory with a .claude/wave-scope.json and a git repo.
  * Optionally creates a src/ subdirectory.
  */
-async function mkProject(scope) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-test-'));
+async function mkProject(scope, tempRoot = os.tmpdir()) {
+  const dir = await fs.mkdtemp(path.join(tempRoot, 'hook-scope-test-'));
   await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
   await fs.mkdir(path.join(dir, 'src'), { recursive: true });
   await fs.writeFile(path.join(dir, '.claude/wave-scope.json'), JSON.stringify(scope));
@@ -106,8 +106,8 @@ afterEach(async () => {
   }
 });
 
-async function mkProjectTracked(scope) {
-  const dir = await mkProject(scope);
+async function mkProjectTracked(scope, tempRoot) {
+  const dir = await mkProject(scope, tempRoot);
   tmpDirs.push(dir);
   return dir;
 }
@@ -1955,7 +1955,7 @@ describe('session root after entering a worktree (#1492)', { timeout: 20000 }, (
     expectDeny(result, ["'other/x.mjs' not in allowed paths"]);
   });
 
-  it('keeps an isolation:"worktree" agent on the launch checkout manifest — its harness worktree is no root of its own', async () => {
+  it('judges an isolated agent by the launch manifest but denies a coordinator-tree target', async () => {
     // Bug caught: the agent's payload `cwd` is `<root>/.claude/worktrees/agent-<hex>`,
     // a repo root holding no manifest. Resolved as-is, every isolation:"worktree"
     // agent was allowed everything; before #1492 it resolved `$CLAUDE_PROJECT_DIR`
@@ -1969,7 +1969,7 @@ describe('session root after entering a worktree (#1492)', { timeout: 20000 }, (
       stdin: editPayload(path.join(launch, 'elsewhere', 'x.mjs'), 'Write', { cwd: agentWt, agent_id: AGENT_ID }),
       env: { CLAUDE_CODE_SESSION_ID: null },
     });
-    expectDeny(result, ["'elsewhere/x.mjs' not in allowed paths"]);
+    expectDeny(result, ["outside project root"]);
   });
 
   it('never resolves ABOVE a launch dir in a repo subdirectory — a monorepo package keeps its manifest', async () => {
@@ -2119,5 +2119,94 @@ describe('session root relocated away from the wave manifest (#1504 point 3)', {
     const nested = await mkNested(launch);
     expectAllow(await runHook({ projectDir: launch, stdin: editIn(nested, path.join(nested, 'a.txt')), env: OWN_ENV }));
     expect((await readEvents(launch)).filter((e) => e.event === HIDDEN)).toEqual([]);
+  });
+});
+
+// #1504: real hook protocol, not a resolver-only assertion. Metadata mirrors
+// git's reciprocal linked-worktree registration without touching a live repo.
+async function isolatedFixture(manifestAt = 'entered', tempRoot) {
+  const main = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/'], session_id: 'own-isolated' }, tempRoot);
+  const agent = path.join(main, '.claude', 'worktrees', 'agent-a0123456789abcdef0');
+  const entered = path.join(main, '.claude', 'worktrees', 'session-entered');
+  for (const [name, root] of [['agent', agent], ['entered', entered]]) {
+    const admin = path.join(main, '.git', 'worktrees', name);
+    await fs.mkdir(admin, { recursive: true });
+    await fs.mkdir(path.join(root, 'src'), { recursive: true });
+    await fs.writeFile(path.join(root, '.git'), `gitdir: ${admin}\n`);
+    await fs.writeFile(path.join(admin, 'commondir'), '../..\n');
+    await fs.writeFile(path.join(admin, 'gitdir'), `${path.join(root, '.git')}\n`);
+  }
+  const coordinator = manifestAt === 'launch' ? main : entered;
+  await fs.mkdir(path.join(coordinator, '.claude'), { recursive: true });
+  await fs.writeFile(path.join(coordinator, '.claude', 'wave-scope.json'), JSON.stringify({
+    session_id: 'own-isolated', wave: 1, enforcement: 'strict', allowedPaths: ['src/'],
+  }));
+  if (manifestAt !== 'launch') await fs.unlink(path.join(main, '.claude', 'wave-scope.json'));
+  return { main, agent, entered, coordinator };
+}
+
+async function isolatedWrite(fixture, target) {
+  return runHook({ projectDir: fixture.main,
+    env: { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'own-isolated', CODEX_THREAD_ID: null },
+    stdin: editPayload(target, 'Write', { cwd: fixture.agent, session_id: 'own-isolated' }),
+  });
+}
+
+describe('isolated agent scope roots (#1504)', () => {
+  it.each(['launch', 'entered'])('allows its own src in an isolated checkout, coordinator manifest at %s', async (location) => {
+    const f = await isolatedFixture(location);
+    expectAllow(await isolatedWrite(f, path.join(f.agent, 'src', 'allowed.mjs')));
+  });
+  it('denies agent paths outside the entered coordinator wave', async () => {
+    const f = await isolatedFixture();
+    expectDeny(await isolatedWrite(f, path.join(f.agent, 'other.mjs')));
+  });
+  it('denies a relative grant used to write into the coordinator checkout', async () => {
+    const f = await isolatedFixture('launch');
+    expectDeny(await isolatedWrite(f, path.join(f.main, 'src', 'wrong-tree.mjs')));
+  });
+  it('denies ambiguous matching coordinator roots instead of choosing first', async () => {
+    const f = await isolatedFixture();
+    const other = path.join(f.main, 'other');
+    const admin = path.join(f.main, '.git', 'worktrees', 'other');
+    await fs.mkdir(admin, { recursive: true });
+    await fs.mkdir(path.join(other, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(other, '.git'), `gitdir: ${admin}\n`);
+    await fs.writeFile(path.join(admin, 'commondir'), '../..\n');
+    await fs.writeFile(path.join(admin, 'gitdir'), `${path.join(other, '.git')}\n`);
+    await fs.writeFile(path.join(other, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 'own-isolated', enforcement: 'strict', allowedPaths: ['src/'] }));
+    expectDeny(await isolatedWrite(f, path.join(f.agent, 'src', 'allowed.mjs')), 'cannot be resolved');
+  });
+  it.each([undefined, 42])('denies coordinator memory from proven isolated checkout with agent_id %s (#1504)', async (agentId) => {
+    const f = await isolatedFixture('launch');
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), 'isolated-memory-'));
+    tmpDirs.push(home);
+    const { encodeProjectDir } = await import('../../scripts/lib/wave-transcript-tail.mjs');
+    const target = path.join(home, '.claude', 'projects', encodeProjectDir(f.main), 'memory', 'MEMORY.md');
+    const payload = JSON.parse(editPayload(target, 'Write', { cwd: f.agent, session_id: 'own-isolated' }));
+    if (agentId !== undefined) payload.agent_id = agentId;
+    expectDeny(await runHook({ projectDir: f.main, stdin: JSON.stringify(payload),
+      env: { HOME: home, SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'own-isolated', CODEX_THREAD_ID: null },
+    }));
+  });
+  it.each(['symlink', 'oversized'])('fails closed when an unsafe %s foreign candidate shadows own remote scope (#1504)', async (kind) => {
+    const f = await isolatedFixture();
+    await fs.mkdir(path.join(f.entered, '.pi'), { recursive: true });
+    const file = path.join(f.entered, '.pi', 'wave-scope.json');
+    const foreign = JSON.stringify({ session_id: 'foreign', allowedPaths: ['**'] });
+    if (kind === 'symlink') {
+      const target = path.join(f.main, 'foreign.json');
+      await fs.writeFile(target, foreign);
+      await fs.symlink(target, file);
+    } else await fs.writeFile(file, foreign + ' '.repeat(1024 * 1024));
+    expectDeny(await isolatedWrite(f, path.join(f.agent, 'other.mjs')), 'cannot be resolved');
+  });
+  it('retains an explicit absolute coordinator grant', async () => {
+    // As in mkVault, macOS system temp is denylisted /private/var; use its
+    // sanctioned /tmp root. Other platforms retain their native temporary root.
+    const tempRoot = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+    const f = await isolatedFixture('entered', tempRoot);
+    await fs.writeFile(path.join(f.coordinator, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 'own-isolated', enforcement: 'strict', allowedPaths: [path.join(await fs.realpath(f.coordinator), 'src', '**')] }));
+    expectAllow(await isolatedWrite(f, path.join(f.coordinator, 'src', 'granted.mjs')));
   });
 });

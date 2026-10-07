@@ -481,6 +481,51 @@ describe('post-bash-write-verify E2E', () => {
     if (existsSync(snap)) rmSync(snap, { force: true });
   });
 
+  it('reads dirt from the isolated checkout and scope from entered coordinator (#1504)', () => {
+    const agent = join(tmp, '.claude', 'worktrees', 'agent-a0123456789abcdef0');
+    const entered = join(tmp, '.claude', 'worktrees', 'entered');
+    git('worktree', 'add', '--detach', agent, 'HEAD');
+    git('worktree', 'add', '--detach', entered, 'HEAD');
+    mkdirSync(join(entered, '.claude'), { recursive: true });
+    writeFileSync(join(entered, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 'own-isolated', wave: 1, enforcement: 'strict', allowedPaths: ['src/'] }));
+    const run = () => spawnSync(process.execPath, [HOOK], {
+      cwd: agent,
+      input: JSON.stringify({ cwd: agent, session_id: 'own-isolated', tool_name: 'Bash', tool_input: { command: 'echo x > outside.mjs' } }),
+      encoding: 'utf8', timeout: 20_000,
+      env: { ...process.env, SO_PLATFORM: 'claude', CLAUDE_PROJECT_DIR: tmp, CLAUDE_CODE_SESSION_ID: 'own-isolated', SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
+    });
+    const baseline = run();
+    expect(baseline.stdout).toBe('');
+    writeFileSync(join(agent, 'outside.mjs'), '// isolated write\n');
+    const result = run();
+    expect(result.stdout).toContain('outside.mjs');
+    expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain("OUTSIDE the wave's");
+  });
+
+  it.each(['agent', 'coordinator'])('checks an absolute %s grant against the actual isolated checkout (#1504)', (grantRoot) => {
+    const agent = join(tmp, '.claude', 'worktrees', 'agent-a0123456789abcdef0');
+    const entered = join(tmp, '.claude', 'worktrees', 'entered');
+    git('worktree', 'add', '--detach', agent, 'HEAD');
+    git('worktree', 'add', '--detach', entered, 'HEAD');
+    mkdirSync(join(entered, '.claude'), { recursive: true });
+    const granted = realpathSync(grantRoot === 'agent' ? agent : entered);
+    writeFileSync(join(entered, '.claude', 'wave-scope.json'), JSON.stringify({
+      session_id: 'own-isolated', wave: 1, enforcement: 'strict', allowedPaths: [join(granted, 'hooks', '**')],
+    }));
+    const run = () => spawnSync(process.execPath, [HOOK], {
+      cwd: agent,
+      input: JSON.stringify({ cwd: agent, session_id: 'own-isolated', tool_name: 'Bash', tool_input: { command: 'echo x >> hooks/keep.mjs' } }),
+      encoding: 'utf8', timeout: 20_000,
+      env: { ...process.env, SO_PLATFORM: 'claude', CLAUDE_PROJECT_DIR: tmp, CLAUDE_CODE_SESSION_ID: 'own-isolated', SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
+    });
+    expect(run().stdout).toBe('');
+    writeFileSync(join(agent, 'hooks', 'keep.mjs'), '// isolated write\n');
+    const result = run();
+    expect(result.status).toBe(0);
+    if (grantRoot === 'agent') expect(result.stdout).toBe('');
+    else expect(JSON.parse(result.stdout).hookSpecificOutput.additionalContext).toContain('hooks/keep.mjs');
+  });
+
   afterEach(() => {
     if (tmp && existsSync(tmp)) {
       // The hook keys its snapshot on the REALPATH of the project dir (macOS

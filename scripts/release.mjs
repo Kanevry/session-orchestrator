@@ -23,7 +23,7 @@
 //                         + Unreleased folded, drift sweep, tag collision
 //                         (local, origin, github), github/main mirror parity,
 //                         npm registry collision, npm token liveness, CI green
-//                         on HEAD, leakage gate over `npm pack --dry-run`.
+//                         on HEAD, leakage gate over retained archive filenames and contents.
 //   --publish             Runs --check first, then token publish via temp
 //                         userconfig (NPM_TOKEN from .env.local). A
 //                         target-confirmed npm receipt is the irreversible
@@ -80,10 +80,14 @@ import {
   chmodSync,
   rmSync,
   realpathSync,
+  mkdirSync,
+  lstatSync,
 } from 'node:fs';
-import { join, relative as relativePath, sep } from 'node:path';
+import { join, relative as relativePath, sep, basename, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { packedFilename } from './lib/plugin-package-stage.mjs';
 import { parseArgs } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
@@ -828,6 +832,80 @@ export function evaluateLeakageGate(pack, { minEntries = MIN_PACKED_ENTRIES } = 
     : { ok: true, detail: `${entries} packed entries, 0 leaks` };
 }
 
+/** Strict npm 11/12 inventory, preserving the existing filename policy/floor. */
+export function evaluatePackedInventory(pack, { minEntries = MIN_PACKED_ENTRIES } = {}) {
+  if (pack.status !== 0) return { ok: false, detail: 'npm pack failed' };
+  try {
+    const json = JSON.parse(pack.stdout);
+    const records = Array.isArray(json) ? json : json && typeof json === 'object' ? Object.values(json) : [];
+    if (records.length !== 1) throw new Error('inventory-shape');
+    const record = records[0];
+    const filename = packedFilename([record]);
+    if (!filename || basename(filename) !== filename || !/^[A-Za-z0-9][A-Za-z0-9._-]*\.tgz$/.test(filename)) throw new Error('archive-name');
+    if (!Array.isArray(record.files) || record.files.length > 20000 || record.files.length < minEntries) throw new Error('inventory-floor');
+    const paths = record.files.map((entry) => entry?.path);
+    if (paths.some((name) => typeof name !== 'string' || !name || name.length > 4096 || isAbsolute(name) || name.split('/').some((part) => !part || part === '.' || part === '..') || (name.includes('\\') || [...name].some((c) => c.charCodeAt(0) < 32 || c.charCodeAt(0) === 127))) || new Set(paths).size !== paths.length) throw new Error('inventory-path');
+    const violations = checkLeakage(paths.map((name) => `npm notice 1B ${name}`));
+    if (violations.length) return { ok: false, detail: 'forbidden packed filename class: ' + [...new Set(violations.map((v) => v.name))].join(', ') };
+    return { ok: true, detail: `${paths.length} packed entries, 0 filename leaks`, record, filename, paths };
+  } catch { return { ok: false, detail: 'invalid packed inventory or insufficient entry count' }; }
+}
+
+function archiveDigest(tarballPath) {
+  if (!lstatSync(tarballPath).isFile()) throw new Error('checked archive is not a regular file');
+  return createHash('sha256').update(readFileSync(tarballPath)).digest('hex');
+}
+
+/**
+ * Scan extracted archive bytes, retain that archive for the callback, and always
+ * clean up. Command/scan failures never call the publication callback. The
+ * 20,000-entry inventory ceiling matches the scanner; revisit for larger packs.
+ */
+export async function withCheckedPackage(repoRoot, callback, {
+  runImpl = run, env = process.env, minEntries = MIN_PACKED_ENTRIES, cleanupImpl = rmSync,
+} = {}) {
+  const work = mkdtempSync(join(tmpdir(), 'so-release-pack-'));
+  try {
+    let artifact;
+    let detail;
+    try {
+      const opts = { cwd: repoRoot, env: { ...env, npm_config_loglevel: 'notice' }, timeout: 60000 };
+      const pack = runImpl('npm', ['pack', '--json', '--ignore-scripts', '--pack-destination', work], opts);
+      const inventory = evaluatePackedInventory(pack, { minEntries });
+      if (!inventory.ok) return inventory;
+      const tarballPath = join(work, inventory.filename);
+      const digest = archiveDigest(tarballPath);
+      // Refuse links/special members BEFORE extraction and check the file census.
+      const members = runImpl('tar', ['-tzf', tarballPath], opts);
+      const types = runImpl('tar', ['-tvzf', tarballPath], opts);
+      if (members.status !== 0 || types.status !== 0 || types.stdout.trim().split('\n').some((line) => !/^[-d]/.test(line))) throw new Error('archive-list');
+      const names = members.stdout.trim().split('\n');
+      const files = names.filter((name) => !name.endsWith('/'));
+      const expected = new Set(inventory.paths.map((name) => `package/${name}`));
+      if (names.some((name) => !name.startsWith('package/') || name.split('/').some((part) => part === '..' || part === '.')) || files.length !== expected.size || new Set(files).size !== files.length || files.some((name) => !expected.has(name))) throw new Error('archive-census');
+      const unpacked = join(work, 'unpacked');
+      mkdirSync(unpacked);
+      const extracted = runImpl('tar', ['-xzf', tarballPath, '-C', unpacked], opts);
+      if (extracted.status !== 0) throw new Error('archive-extraction');
+      const inventoryPath = join(work, 'inventory.json');
+      writeFileSync(inventoryPath, JSON.stringify([inventory.record]), { mode: 0o600 });
+      const scanner = fileURLToPath(new URL('./lib/validate/check-owner-leakage.mjs', import.meta.url));
+      const scan = runImpl(process.execPath, [scanner, join(unpacked, 'package'), '--require-owner-patterns', '--packed-files', inventoryPath], opts);
+      const summaries = [...(scan.stdout || '').matchAll(/^Results: (\d+) passed, (\d+) failed \((\d+) scanned files\)$/gm)];
+      if (scan.status !== 0 || summaries.length !== 1 || Number(summaries[0][1]) < 1 || Number(summaries[0][2]) !== 0 || Number(summaries[0][3]) !== inventory.paths.length) return { ok: false, detail: 'required owner policy / packed content scan failed or incomplete' };
+      if (archiveDigest(tarballPath) !== digest) throw new Error('archive-changed');
+      chmodSync(tarballPath, 0o400);
+      artifact = { tarballPath, digest };
+      detail = `${inventory.paths.length} packed files, filenames and contents verified`;
+    } catch { return { ok: false, detail: 'packed archive preparation or content verification failed' }; }
+    return { ok: true, detail, value: await callback(artifact) };
+  } finally {
+    // Cleanup must never replace an irreversible receipt or the original error.
+    try { cleanupImpl(work, { recursive: true, force: true }); }
+    catch { console.error('release: temporary package cleanup failed; release outcome unchanged'); }
+  }
+}
+
 /**
  * Remote-branch parity verdict over `git ls-remote <remote> refs/heads/<branch>`.
  *
@@ -1209,22 +1287,6 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   add('ci-green-on-head', ciRows.gitlab.ok, ciRows.gitlab.detail);
   add('ci-green-on-head-github', ciRows.github.ok, ciRows.github.detail);
 
-  // 7. Leakage gate over the actual pack file list.
-  // `npm_config_loglevel` is INHERITED, and `npm pack --dry-run` writes its whole
-  // file listing as `npm notice` lines. Any ancestor that ran under `npm run
-  // --silent` (the pre-push gate does exactly that) therefore hands this child a
-  // silent loglevel and the listing is EMPTY with exit 0 — measured: 818 notice
-  // lines normally, 0 under `npm_config_loglevel=silent`. The blind-scan floor
-  // turns that into a correct fail-closed verdict, but a red leakage row that
-  // means "we could not look" is not the row anyone reads it as. Pin the level
-  // rather than inherit it, so the gate's input never depends on its caller.
-  const pack = run('npm', ['pack', '--dry-run'], {
-    cwd: repoRoot,
-    env: { ...process.env, npm_config_loglevel: 'notice' },
-  });
-  const leakage = evaluateLeakageGate(pack);
-  add('leakage-gate', leakage.ok, leakage.detail);
-
   return checks;
 }
 
@@ -1407,7 +1469,7 @@ export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
  * reads as unconfirmed, `publish()` throws, and `main()` exits 2 = "pre-receipt,
  * safe to rerun" while the registry already holds the version. That is the worst
  * failure this file can produce, and it is the same inherited-silent trap the
- * leakage gate's `npm pack --dry-run` was already pinned against (see preflight
+ * leakage gate's `npm pack --json` was already pinned against (see preflight
  * step 7). The pin makes the receipt independent of the caller's environment.
  *
  * Exported because `publish()` itself deliberately is not (it is the
@@ -1418,10 +1480,11 @@ export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
  * @param {string} userconfigPath — the 0600 temp npmrc carrying the token
  * @returns {{cmd: string, args: string[], opts: {cwd: string, env: object}}}
  */
-export function publishInvocation(repoRoot, userconfigPath) {
+export function publishInvocation(repoRoot, userconfigPath, artifact) {
+  if (!artifact?.tarballPath || !artifact.digest || archiveDigest(artifact.tarballPath) !== artifact.digest) throw new Error('refusing publish without unchanged checked archive');
   return {
     cmd: 'npm',
-    args: ['publish', '--access', 'public', '--userconfig', userconfigPath],
+    args: ['publish', artifact.tarballPath, '--ignore-scripts', '--access', 'public', '--userconfig', userconfigPath],
     opts: { cwd: repoRoot, env: { ...process.env, npm_config_loglevel: 'notice' } },
   };
 }
@@ -1434,7 +1497,7 @@ function publish(repoRoot, target, deps = {}) {
   const token = loadNpmToken(repoRoot);
   const runImpl = deps.runImpl ?? run;
   const res = withTempUserconfig(token, (tmpRc) => {
-    const call = publishInvocation(repoRoot, tmpRc);
+    const call = publishInvocation(repoRoot, tmpRc, deps.artifact);
     return runImpl(call.cmd, call.args, call.opts);
   });
   const receipt = evaluatePublishReceipt(res, target);
@@ -1919,20 +1982,24 @@ async function main() {
   if (values.check || values.publish) {
     const target = readPackageVersion(repoRoot);
     const checks = await preflight(repoRoot, target, { skipCi: values['skip-ci'] });
-    const ok = printChecks(checks, values.json && !values.publish, target);
-    if (!ok) return 1;
-    if (!values.publish) return 0;
-
-    console.log(`\nPublishing ${PACKAGE_NAME}@${target} ...`);
-    // No spawn timeout is set anywhere in this file, on purpose: a kill in the
-    // middle of `npm publish` or a tag push is the very failure the receipt
-    // boundary exists to avoid. The wall-clock cost is real, though — each of
-    // the two `git push` remotes re-runs the husky pre-push full gate (~2.5 min
-    // each, measured) and the site poll waits up to 120 s.
-    console.log('  This tail can run ~7 minutes (pre-push gate x2 remotes + up to 120s site poll).');
-    console.log('  Run it with a >=600s command timeout or in the background — do NOT kill it mid-run.');
-    const outcome = await runPublishRelease(repoRoot, target, { publishImpl: publish });
-    return printPublishOutcome(outcome, target);
+    const checked = await withCheckedPackage(repoRoot, async (artifact) => {
+      checks.push({ name: 'leakage-gate', ok: true, detail: 'packed filenames and required owner-policy content scan verified' });
+      const ok = printChecks(checks, values.json && !values.publish, target);
+      if (!ok) return 1;
+      if (!values.publish) return 0;
+      console.log(`\nPublishing ${PACKAGE_NAME}@${target} ...`);
+      console.log('  Publish and post-receipt reconciliation may take several minutes; do not kill it mid-run.');
+      const outcome = await runPublishRelease(repoRoot, target, {
+        publishImpl: (root, version) => publish(root, version, { artifact }),
+      });
+      return printPublishOutcome(outcome, target);
+    });
+    if (!checked.ok) {
+      checks.push({ name: 'leakage-gate', ok: false, detail: checked.detail });
+      printChecks(checks, values.json && !values.publish, target);
+      return 1;
+    }
+    return checked.value;
   }
 
   console.error('Nothing to do — pass --check, --publish, or --set-version X.Y.Z (see --help).');

@@ -904,3 +904,22 @@ describe('session root after entering a worktree (#1492)', { timeout: 15000 }, (
     expectDeny(result, 'rm -rf');
   });
 });
+
+
+it('loads blocked commands from an entered coordinator for an isolated agent (#1504)', async () => {
+  const main = await mkProjectTracked({ enforcement: 'strict', blockedCommands: [] });
+  await fs.unlink(path.join(main, '.claude', 'wave-scope.json'));
+  const agent = path.join(main, '.claude', 'worktrees', 'agent-a0123456789abcdef0');
+  const entered = path.join(main, '.claude', 'worktrees', 'entered');
+  for (const [name, root] of [['agent', agent], ['entered', entered]]) {
+    const admin = path.join(main, '.git', 'worktrees', name);
+    await fs.mkdir(admin, { recursive: true });
+    await fs.mkdir(path.join(root, '.claude'), { recursive: true });
+    await fs.writeFile(path.join(root, '.git'), `gitdir: ${admin}\n`);
+    await fs.writeFile(path.join(admin, 'commondir'), '../..\n');
+    await fs.writeFile(path.join(admin, 'gitdir'), `${path.join(root, '.git')}\n`);
+  }
+  await fs.writeFile(path.join(entered, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 'own-isolated', enforcement: 'strict', blockedCommands: ['touch blocked-target'], allowedPaths: ['src/'] }));
+  const result = await runHook({ projectDir: main, env: { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'own-isolated', CODEX_THREAD_ID: null }, stdin: JSON.stringify({ cwd: agent, session_id: 'own-isolated', tool_name: 'Bash', tool_input: { command: 'touch blocked-target' } }) });
+  expectDeny(result, 'Blocked command');
+});

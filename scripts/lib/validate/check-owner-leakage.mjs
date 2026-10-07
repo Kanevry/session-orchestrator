@@ -1,121 +1,13 @@
 #!/usr/bin/env node
-/**
- * check-owner-leakage.mjs — Scan tracked files for owner-privacy leakage patterns.
- * Add --include-untracked to also scan new files that Git does not ignore.
- *
- * Implements the #462 audit trail durable CI guard (#471).
- * Canonicalization-before-matching refactor (issue #661): the historical
- * form-by-form treadmill (a fresh regex per encoding — P1 bare-no-slash #631,
- * P9 dash-encoded #634, …) is replaced by a single CANONICALIZATION step.
- * `canonicalizeLine()` collapses every known textual encoding of a path
- * (URL-percent, dash-as-separator, backslash, double-slash, `\uXXXX`/`%uXXXX`
- * escapes, HTML/numeric entities, unicode homoglyph slashes/dashes, case)
- * into ONE canonical slash-form. CP1 is matched against that canonical form;
- * the four DOT-anchored host/IP rules (CP2, CP3, CP7, CP8) are matched against
- * the raw line AND the canonical form (#1080). The remaining rules stay RAW by
- * measurement, not oversight — see the `canon` comment in the line loop for why
- * the slash-anchored (CP4, CP10) and slug-anchored (CP6) rules must not be
- * canonicalized. A novel encoding of the same path normalizes to the same
- * canonical string, so it is caught structurally — no new regex required. Err
- * toward over-matching: this is a security guard, a false-positive is cheap, a
- * false-negative ships a leak to the public mirror.
- *
- * Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked]
- *
- * Forbidden patterns (canonical rules CP1–CP10):
- *   CP1  personal home path `/Users/bernhardg…` — matched on the CANONICAL form,
- *        so the slash-form (P1, #631), the dash-encoded projects-dir form
- *        (legacy P9, #634), URL-percent-encoded, backslash, and any future
- *        separator-encoding all collapse to one rule.
- *   CP2  private GitLab host `gitlab.gotzendorfer.at`
- *   CP3  private events domain `events.gotzendorfer.at`
- *   CP4  private package scope `@goetzendorfer/…`
- *   CP5  DEFAULT_GITLAB_HOST on line with 'gotzendorfer' OR as exported const
- *   CP6  private project slugs (see PRIVATE_SLUGS constant below). Two scopes:
- *        the tracked-file scan (runScan) uses the FULL 7-slug PRIVATE_SLUGS list;
- *        the in-process vault-namespace guard (isOwnerLeakySegment) uses the
- *        narrower CP6_INPROCESS_PATTERNS — PRIVATE_SLUGS minus VAULT_CLEAR_SLUGS,
- *        leaving only 2 retained slugs. See the VAULT_CLEAR_SLUGS carve-out
- *        (issue #59 owner decision 2026-07-18).
- *   CP7  catch-all `gotzendorfer.at` not matching an allowlisted exclusion
- *   CP8  full RFC1918 private dotted-quad (10.x.x.x / 192.168.x.x / 172.16-31.x.x)
- *        — internal IP leak. Placeholder `.x` forms and CIDR/range notation are NOT
- *        matched (only literal 4-octet IPs), so SSRF-range docs stay clean.
- *   CP10 `~/Projects/<PersonalName>/` — personal-name segment in a Projects path
- *        (name-denylist driven; see PERSONAL_NAMES constant below; issue #653)
- *   CP11 host-local confidential customer/repo names — matched from a NEVER-COMMITTED
- *        list referenced by owner.yaml `paths.confidential-names-file`
- *        (env SO_CONFIDENTIAL_NAMES_FILE; issue #728a). UNIQUE among CP-rules: a CP11
- *        violation REDACTS the matched name span from its reported lineContent, because
- *        this scanner runs in a PUBLIC GitHub-Actions mirror — printing the confidential
- *        name verbatim to the public CI log would be a worse leak than the one guarded.
- *
- * CP11 is INACTIVE unless a host-local names file is configured (the ~99% default),
- * so public CI and unconfigured hosts see no behaviour change.
- *
- * Legacy P-numbering note: P1+P9 are now ONE canonical rule (CP1). The FAIL
- * label still names the offending class for the audit trail.
- *
- * Exclusions (line-scoped, never whole-file):
- *   1. Lines with office@gotzendorfer.at or security@gotzendorfer.at
- *      and no other gotzendorfer.at token
- *   2. https://gotzendorfer.at[...] URLs in README.md and the 3 manifest files
- *   3. Manifest author/email/url/websiteURL/privacyPolicyURL/termsOfServiceURL keys
- *      in .claude-plugin/plugin.json, .claude-plugin/marketplace.json, .codex-plugin/plugin.json
- *      (covered by exclusions 1 + 2 above; listed explicitly for audit trail)
- *   4. .orchestrator/audits/** — never scanned (excluded in file enumeration)
- *   5. tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line:
- *      " *   - No literal `events.gotzendorfer.at` URL appears anywhere in scripts/ or hooks/."
- *      (a real string-literal events.gotzendorfer.at elsewhere in that file still FAILs)
- *   6. tests/scripts/export-hw-learnings.test.mjs — exempt from P8 ONLY: the RFC1918
- *      IPs there are the redaction subject of the anonymizeString suite, not leaks.
- *   7. The public-site URL in the three PUBLISHED site pages (site/index.html,
- *      site/impressum/index.html, site/datenschutz/index.html) — the domain is a
- *      legally mandated publication (Impressum, §5 ECG) plus the JSON-LD
- *      publisher/author identity and the rel="author" footer link. Like every
- *      exclusion above it is LINE-SCOPED and reached only via isAllowlisted(), which
- *      only CP3 and CP7 consult — CP1/CP2/CP4/CP5/CP6/CP8/CP10/CP11 still fail on
- *      these files, on the very same line. (#1076)
- *
- * Exit codes:
- *   0 — all checks passed
- *   1 — at least one failure (or usage error / unreadable root)
- */
 
-import { readFileSync, readdirSync, statSync, existsSync, realpathSync } from 'node:fs';
-import { join, extname, relative, basename, sep, resolve } from 'node:path';
+import { readFileSync, readdirSync, statSync, existsSync, realpathSync, lstatSync, openSync, fstatSync, closeSync, constants } from 'node:fs';
+import { join, extname, relative, basename, sep, resolve, dirname, isAbsolute } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { argv } from 'node:process';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-// NOTE: the two host-local helper modules (../config/host-paths.mjs and
-// ./confidential-names.mjs) are imported DYNAMICALLY inside
-// getConfidentialNamePatterns(), NOT statically here. This scanner is a
-// documented standalone single-file vendoring target (security.md § Owner-Privacy:
-// "Reuse the same scanner") — the .husky/pre-commit E2E and any consumer that
-// copies ONLY this file into a fresh tree would otherwise crash at module load
-// with ERR_MODULE_NOT_FOUND, blocking clean commits. Dynamic import lets CP11 go
-// inert (one WARN line, exit unchanged) when the helpers are absent while CP1–CP10
-// run unchanged. That degrade is scoped to ERR_MODULE_NOT_FOUND ALONE (#1244) —
-// every other CP11 load failure fails CLOSED; see getConfidentialNamePatterns().
 
-// ---------------------------------------------------------------------------
-// CLI / import-mode detection (#661)
-// ---------------------------------------------------------------------------
-//
-// This module is BOTH a CLI script (run by validate-plugin + .husky/pre-commit)
-// AND an importable library (the canonicalization helpers are unit-tested in
-// isolation). When imported, the top-level scan + process.exit() must NOT run.
-// `isMain` is true only when this file is the node entry point.
-// REALPATH BOTH SIDES (#1244 / same class as the #1153 argv[1] main-guard finding).
-// `fileURLToPath(import.meta.url)` is already canonicalized by Node's ESM loader,
-// so a plain `resolve(argv[1])` comparison silently fails whenever the invocation
-// path traverses a symlink — on macOS every `/tmp/...` path does (`/tmp` →
-// `/private/tmp`). The failure mode is the worst one a security guard has: isMain
-// stays false, runScan() never runs, and the process prints NOTHING and exits 0,
-// i.e. a clean-looking pass that never scanned a byte. realpathSync both sides so
-// the two spellings of the same file compare equal; if realpathSync throws (path
-// gone, permission denied) fall back to the historical comparison.
 function canonicalPath(p) {
   try {
     return realpathSync(p);
@@ -127,92 +19,147 @@ const isMain =
   argv[1] !== undefined &&
   canonicalPath(resolve(argv[1])) === canonicalPath(fileURLToPath(import.meta.url));
 
-// CLI: single positional arg required (only enforced when run directly).
-const pluginRoot = argv[2];
+const pluginRoot = argv[2] ? canonicalPath(resolve(argv[2])) : argv[2];
 const includeUntracked = argv.slice(3).includes('--include-untracked');
+const requireOwnerPatterns = argv.slice(3).includes('--require-owner-patterns');
+const packedIndex = argv.indexOf('--packed-files');
+const packedInventoryPath = packedIndex >= 0 ? argv[packedIndex + 1] : null;
+if (isMain && packedIndex >= 0 && (!packedInventoryPath || packedInventoryPath.startsWith('--'))) {
+  console.error('packed-files requires an inventory path'); process.exit(1);
+}
 if (isMain && !pluginRoot) {
   console.error('Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked]');
   process.exit(1);
 }
 
-// ---------------------------------------------------------------------------
-// Private slugs constant — #462 audit trail (list is CLOSED: add only after audit review)
-// ---------------------------------------------------------------------------
-const PRIVATE_SLUGS = [
-  'launchpad-ai-factory',
-  'Codex-Hackathon',
-  'buchhaltgenie',
-  'AngebotsChecker',
-  'wien-forschungsfragen-klima',
-  'aiat-pmo-module',
-  'mail-assistant',
-];
+// Host policy stays outside source and package; this file remains standalone.
+export const VAULT_CLEAR_SLUGS = new Set();
 
-// ---------------------------------------------------------------------------
-// VAULT_CLEAR_SLUGS carve-out (issue #59, owner decision 2026-07-18)
-// ---------------------------------------------------------------------------
-//
-// Slugs that must STILL be blocked from leaking into TRACKED public-mirror files
-// (so they remain in PRIVATE_SLUGS / CP6_PATTERNS, which runScan uses) but are
-// CLEARED for use as an IN-PROCESS vault-namespace segment — the vault is a
-// host-local, gitignored corpus, so collapsing these to the shared 'redacted-repo'
-// bucket needlessly de-isolates per-repo notes without any public-leak benefit.
-// isOwnerLeakySegment iterates the narrower CP6_INPROCESS_PATTERNS (PRIVATE_SLUGS
-// minus these), so a carved-out slug resolves to its own namespace while the
-// tracked-file scanner is UNCHANGED. Comparison is case-insensitive: values are
-// lowercased here and every CP6_INPROCESS_PATTERNS filter lowercases before
-// membership test.
-export const VAULT_CLEAR_SLUGS = new Set([
-  'buchhaltgenie',
-  'mail-assistant',
-  'wien-forschungsfragen-klima',
-  'launchpad-ai-factory',
-  'angebotschecker',
-]);
+// Mirrors the zero-import private-config-dir resolver because vendored copies carry this file alone.
+const POLICY_KEYS = ['usernamePrefixes', 'privateHosts', 'eventsHosts', 'privateDomains', 'packageScopes', 'privateSlugs', 'vaultClearSlugs', 'personalNames', 'publicEmails', 'publicUrls'];
+const POLICY_LIMIT_BYTES = 65536; // At most 256 literals per class; revisit only with measured larger policies.
+let ownerCache;
+let compiledOwnerState;
+let compiledOwnerRules;
+function policySource(env = process.env) {
+  const own = (env.SO_CONFIG_HOME || '').trim();
+  const xdg = (env.XDG_CONFIG_HOME || '').trim();
+  const dir = own || (xdg ? join(xdg, 'session-orchestrator') : join(homedir(), '.config', 'session-orchestrator'));
+  return (env.SO_OWNER_PATTERNS_FILE || '').trim() || join(dir, 'owner-patterns.json');
+}
+function checkedHostFile(filename) {
+  if (!isAbsolute(filename)) throw new Error('unsafe');
+  // Canonical OS aliases (/tmp on macOS) are allowed above the private source parent.
+  let cursor = dirname(filename);
+  const parent = lstatSync(cursor);
+  if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o022)) throw new Error('unsafe');
+  const canonicalParent = realpathSync(cursor);
+  // Reject repo-local data even if ignored; walk every ancestor for a .git marker.
+  cursor = canonicalParent;
+  while (true) {
+    if (existsSync(join(cursor, '.git'))) throw new Error('unsafe');
+    const next = dirname(cursor); if (next === cursor) break; cursor = next;
+  }
+  // Reject user-controlled intermediate symlinks; OS-owned /var and /tmp aliases are trusted.
+  cursor = dirname(filename);
+  while (cursor !== dirname(cursor)) {
+    const st = lstatSync(cursor);
+    if ((st.isSymbolicLink() && st.uid !== 0) || (st.uid !== 0 && (st.mode & 0o022))) throw new Error('unsafe');
+    cursor = dirname(cursor);
+  }
+  const st = lstatSync(filename);
+  if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o7777) !== 0o600 || st.nlink !== 1 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) throw new Error('unsafe');
+  if (st.size > POLICY_LIMIT_BYTES) throw new Error('invalid');
+  const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.ino !== st.ino || opened.dev !== st.dev || (opened.mode & 0o7777) !== 0o600 || opened.size > POLICY_LIMIT_BYTES) throw new Error('unsafe');
+    const raw = readFileSync(fd, 'utf8');
+    if (Buffer.byteLength(raw) > POLICY_LIMIT_BYTES) throw new Error('invalid');
+    return raw;
+  } finally { closeSync(fd); }
+}
+export function inspectOwnerPatterns({ filePath, env = process.env, refresh = false } = {}) {
+  const filename = filePath ?? policySource(env);
+  if (!refresh && ownerCache?.filename === filename) return ownerCache.result;
+  let result;
+  try {
+    const policy = JSON.parse(checkedHostFile(filename));
+    if (!policy || Array.isArray(policy) || policy.version !== 1 || Object.keys(policy).some((key) => key !== 'version' && !POLICY_KEYS.includes(key))) throw new Error('invalid');
+    for (const key of POLICY_KEYS) {
+      if (!Object.hasOwn(policy, key)) policy[key] = [];
+      if (!Array.isArray(policy[key]) || policy[key].length > 256 || policy[key].some((v) => typeof v !== 'string' || !v.trim() || v.length > 256 || v !== v.trim() || [...v].some((c) => c.charCodeAt(0) < 32))) throw new Error('invalid');
+    }
+    if (policy.vaultClearSlugs.some((slug) => !policy.privateSlugs.some((s) => s.toLowerCase() === slug.toLowerCase()))) throw new Error('invalid');
+    if (!POLICY_KEYS.slice(0, 6).concat('personalNames').some((key) => policy[key].length)) throw new Error('invalid');
+    result = { status: 'ok', policy };
+  } catch (err) {
+    result = { status: err.code === 'ENOENT' ? 'missing' : err.message === 'unsafe' || err.code === 'ELOOP' ? 'unsafe' : 'invalid', reason: err.code ?? (err.message === 'unsafe' ? 'unsafe-source' : 'invalid-source') };
+  }
+  ownerCache = {filename, result};
+  VAULT_CLEAR_SLUGS.clear();
+  for (const slug of result.policy?.vaultClearSlugs ?? []) VAULT_CLEAR_SLUGS.add(slug.toLowerCase());
+  return result;
+}
+function countMatches(re, value) { return (value.match(re) || []).length; }
 
-// ---------------------------------------------------------------------------
-// Canonicalization (issue #661)
-// ---------------------------------------------------------------------------
-//
-// The historical evasion class (`encoded-path-forms-evade-slash-form-scanners`,
-// #95) is structural: the SAME personal path is re-spelled with a different
-// SEPARATOR or escape so a slash-anchored regex misses it. Rather than add a
-// fresh regex per encoding, we DECODE every known encoding back to a single
-// canonical slash-form ONCE, then match path patterns against that form.
-//
-// Decodings applied, in order (each is idempotent / safe to over-apply):
-//   1. URL-percent escapes  (%2F → /, %2E → ., %2D → -, %5C → \, %20 → space …)
-//   2. `\uXXXX` / `%uXXXX` JS/JSON unicode escapes for /, ., -, \
-//   3. HTML numeric + named entities for /, ., - (&#47; &#x2F; &sol; …)
-//   4. Unicode homoglyph separators → ASCII (fullwidth / division slash → '/',
-//      various dashes/hyphens → '-')
-//   5. Backslash → forward slash, and any run of separators collapsed
-//   6. Dash-as-separator → slash (Claude Code projects-dir encoding, #634)
-//
-// After decoding, ALL of `/Users/bernhardg.`, `-Users-bernhardg--`,
-// `%2FUsers%2Fbernhardg`, `\Users\bernhardg`, `／Users／bernhardg`, and a
-// novel future spelling collapse to a canonical `/Users/bernhardg…` string the
-// CP1 rule matches. CASE IS PRESERVED through every decode step so the
-// `/Users` (capital-U) case-sensitivity contract and the uppercase-username
-// near-miss guard both survive. Over-matching is intentional (security guard).
+function literalRegex(values, flags = '', prefix = '', suffix = '') {
+  return new RegExp(values.length ? prefix + '(?:' + values.map(escapeRegex).join('|') + ')' + suffix : '(?!)', flags);
+}
+function currentOwnerRules() {
+  const state = inspectOwnerPatterns();
+  if (compiledOwnerState === state) return compiledOwnerRules;
+  const policy = state.policy ?? Object.fromEntries(POLICY_KEYS.map((key) => [key, []]));
+  const insensitiveToken = (token) => [...token].map((c) => /[a-z]/i.test(c) ? '[' + c.toLowerCase() + c.toUpperCase() + ']' : escapeRegex(c)).join('');
+  const prefix = policy.usernamePrefixes.map(insensitiveToken).join('|') || '(?!)';
+  compiledOwnerState = state;
+  compiledOwnerRules = {
+    ...state, policy,
+    CP1_CANON: new RegExp('/Users/(?:' + prefix + ')[a-z.]*(/|\\b)'),
+    CP1_BARE: new RegExp('^(?:' + prefix + ')[a-z]*$'),
+    SCANNER_REGEX_QUOTE_BLANK_G: new RegExp('(Users.)(?:' + prefix + ')(\\[)', 'g'),
+    CP2: literalRegex(policy.privateHosts, '', '\\b', '\\b'),
+    CP3: literalRegex(policy.eventsHosts, '', '\\b', '\\b'),
+    CP3_G: literalRegex(policy.eventsHosts, 'g', '\\b', '\\b'),
+    CP4: literalRegex(policy.packageScopes, '', '@', '/[A-Za-z0-9*_-]+'),
+    CP5_WITH_GOTZ: /DEFAULT_GITLAB_HOST/,
+    CP5_EXPORT: /\bexport\b.*\bconst\b.*\bDEFAULT_GITLAB_HOST\b/,
+    CP6_PATTERNS: policy.privateSlugs.map((slug) => literalRegex([slug], 'i', '\\b', '\\b')),
+    CP6_INPROCESS_PATTERNS: policy.privateSlugs.filter((slug) => !VAULT_CLEAR_SLUGS.has(slug.toLowerCase())).map((slug) => literalRegex([slug], 'i', '\\b', '\\b')),
+    CP7: literalRegex(policy.privateDomains), CP7_G: literalRegex(policy.privateDomains, 'g'),
+    CP10_PATTERNS: policy.personalNames.map((name) => literalRegex([name], '', '(?:~|/Users/[^/]+|/home/[^/]+)/Projects/', '(\\/|\\b)')),
+    redactionPatterns: POLICY_KEYS.filter((key) => !key.startsWith('public')).flatMap((key) => policy[key].map((value) => literalRegex([value], 'i'))),
+  };
+  return compiledOwnerRules;
+}
+function getPackedFiles() {
+  // npm's JSON inventory is bounded; filenames alone never constitute a content scan.
+  const inventoryFd = openSync(packedInventoryPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let raw;
+  try {
+    const stat = fstatSync(inventoryFd);
+    if (!stat.isFile() || stat.size > 16 * 1024 * 1024) throw new Error('invalid-inventory');
+    raw = readFileSync(inventoryFd, 'utf8');
+    if (Buffer.byteLength(raw) > 16 * 1024 * 1024) throw new Error('inventory-too-large');
+  } finally { closeSync(inventoryFd); }
+  const inventory = JSON.parse(raw);
+  const files = Array.isArray(inventory) && inventory.length === 1 ? inventory[0]?.files : null;
+  if (!Array.isArray(files) || !files.length || files.length > 20000) throw new Error('invalid-inventory');
+  const root = pluginRoot;
+  return [...new Set(files.map((entry) => {
+    const name = entry?.path;
+    if (typeof name !== 'string' || !name || name.length > 4096 || isAbsolute(name) || name.split('/').some((part) => part === '..' || part === '.' || !part) || (name.includes('\\') || [...name].some((c) => c.charCodeAt(0) < 32))) throw new Error('unsafe-inventory');
+    let current = root;
+    for (const part of name.split('/')) { current = join(current, part); if (lstatSync(current).isSymbolicLink()) throw new Error('unsafe-inventory'); }
+    if (!lstatSync(current).isFile()) throw new Error('invalid-inventory-entry');
+    return current;
+  }))];
+}
 
-/** Unicode homoglyph / variant SLASH code points that should canonicalize to '/'. */
 const HOMOGLYPH_SLASHES = /[⁄∕／⧸╱]/g; // ⁄ ∕ ／ ⧸ ╱
-/** Unicode homoglyph / variant DASH code points that should canonicalize to '-'. */
 const HOMOGLYPH_DASHES =
   /[‐‑‒–—―−﹘﹣－]/g; // ‐ ‑ ‒ – — ― − ﹘ ﹣ －
 
-/**
- * Zero-width / format / invisible code points that a leak can splice INTO the
- * username (`/Users/bern<U+200B>hardg`) to evade a contiguous-literal match.
- * Stripped from the canonical form before matching (Finding 3). Over-stripping
- * is safe for a security guard — these glyphs never legitimately appear inside a
- * filesystem path segment. Code points (escaped to keep the source ASCII-clean
- * and lint-quiet): tab U+0009, soft-hyphen U+00AD, ZWSP U+200B, ZWNJ U+200C,
- * ZWJ U+200D, word-joiner U+2060, BOM/ZWNBSP U+FEFF. Built from an explicit
- * code-point list via a non-character-class alternation so the combining ZWJ
- * does not trip no-misleading-character-class.
- */
 const ZERO_WIDTH_FORMAT = new RegExp(
   '(?:' +
     ['\\u0009', '\\u00ad', '\\u200b', '\\u200c', '\\u200d', '\\u2060', '\\ufeff'].join('|') +
@@ -220,41 +167,16 @@ const ZERO_WIDTH_FORMAT = new RegExp(
   'gu',
 );
 
-/**
- * Decode the printable-ASCII range of a hex code point, or null when out of
- * range. Used by the percent / unicode-escape decoders so the LETTERS of
- * `Users`/`bernhardg` (e.g. `%55` → `U`, `%62` → `b`) are decoded, not only the
- * separators (Finding 4). Over-decoding into the full printable-ASCII range is
- * intentional and safe for a security guard. CASE IS PRESERVED because the hex
- * value itself encodes the case (`%55`→`U`, `%75`→`u`).
- * @param {number} cp
- * @returns {string|null}
- */
 function printableAsciiFromCodePoint(cp) {
   return cp >= 0x20 && cp <= 0x7e ? String.fromCharCode(cp) : null;
 }
 
-/**
- * Decode URL-percent escapes back to their ASCII characters, WITHOUT touching
- * unrelated literal `%`s (decodeURIComponent would throw on a stray `%`). The
- * decode targets the WHOLE printable-ASCII range — both separators (`%2F` → /)
- * AND the alphanumerics of `Users`/`bernhardg` (`%55` → U, #Finding 4) — and the
- * `%uXXXX` JS/JSON-style percent-unicode escape. Double-encoding (`%252F`) is
- * handled by the fixpoint loop in canonicalizeLine (a single decode pass turns
- * `%252F` → `%2F`; the next pass turns `%2F` → `/`). Only the small set of
- * always-relevant separators is hard-coded; everything else in printable-ASCII
- * is decoded generically.
- * @param {string} s
- * @returns {string}
- */
 function decodePercent(s) {
-  // `%uXXXX` (JS/JSON-style percent-unicode) — BMP code point in printable ASCII.
   let out = s.replace(/%u([0-9a-fA-F]{4})/g, (_m, hex) => {
     const cp = parseInt(hex, 16);
     const ch = printableAsciiFromCodePoint(cp);
     return ch === null ? _m : ch;
   });
-  // `%XX` — any printable-ASCII byte (separators AND letters/digits).
   out = out.replace(/%([0-9a-fA-F]{2})/g, (_m, hex) => {
     const cp = parseInt(hex, 16);
     const ch = printableAsciiFromCodePoint(cp);
@@ -263,13 +185,6 @@ function decodePercent(s) {
   return out;
 }
 
-/**
- * Decode JS/JSON `\uXXXX` escapes back to their ASCII characters — separators
- * AND the alphanumerics of `Users`/`bernhardg` (Finding 4). Out-of-range code
- * points are left intact.
- * @param {string} s
- * @returns {string}
- */
 function decodeUnicodeEscapes(s) {
   return s.replace(/\\u([0-9a-fA-F]{4})/g, (_m, hex) => {
     const cp = parseInt(hex, 16);
@@ -278,292 +193,49 @@ function decodeUnicodeEscapes(s) {
   });
 }
 
-/**
- * Decode HTML named + numeric character references. Named entities cover the
- * path separators; numeric entities (`&#85;`, `&#x55;`) decode the WHOLE
- * printable-ASCII range so the LETTERS of `Users`/`bernhardg` are decoded, not
- * only the separators (Finding 4). Out-of-range code points are left intact.
- * @param {string} s
- * @returns {string}
- */
 function decodeHtmlEntities(s) {
   return s
     .replace(/&sol;/gi, '/')
     .replace(/&period;/gi, '.')
     .replace(/&(?:dash|hyphen);/gi, '-')
-    // numeric hex entity — any printable-ASCII code point
     .replace(/&#x([0-9a-fA-F]+);/g, (_m, hex) => {
       const ch = printableAsciiFromCodePoint(parseInt(hex, 16));
       return ch === null ? _m : ch;
     })
-    // numeric decimal entity — any printable-ASCII code point
     .replace(/&#(\d+);/g, (_m, dec) => {
       const ch = printableAsciiFromCodePoint(parseInt(dec, 10));
       return ch === null ? _m : ch;
     });
 }
 
-/**
- * Canonicalize one line of text into a single slash-form string suitable for
- * separator-agnostic path matching. CASE IS PRESERVED — the owner-path rule
- * (CP1) is anchored on the case-sensitive `/Users/bernhardg` literal, so a
- * deliberately-lowercased `/users/...` source literal and an uppercase-letter
- * username near-miss (`/Users/bernhardgXfoo`) both stay distinguishable after
- * canonicalization. Only SEPARATORS / escapes are normalized, never letter case.
- * Public for unit-testing the decode steps.
- * @param {string} line
- * @returns {string} canonical form (case preserved)
- */
-export function canonicalizeLine(line) {
+export function canonicalizeLine(line, { preserveDashes = false } = {}) {
   let s = String(line);
-  // 0. strip zero-width / format / invisible chars (and tab) spliced into a
-  //    path segment to break a contiguous-literal match (Finding 3). Done first
-  //    AND inside the fixpoint loop so a glyph wedged between two ENCODED chars
-  //    (e.g. `%2<U+200B>F`) also vanishes once its neighbours decode.
   s = s.replace(ZERO_WIDTH_FORMAT, '');
-  // 1–3. decode every textual encoding to a FIXPOINT (Finding 5). A single pass
-  //    only peels one encoding layer; a nested encoding (one decoder's output
-  //    feeding another — `%252F` → `%2F` → `/`, or an entity whose decoded form
-  //    is itself a percent-escape) needs the loop. The decoders are monotone
-  //    (each only ever shrinks/normalizes), so the loop converges; the bound is
-  //    a safety valve against any pathological non-converging input.
   for (let i = 0; i < 12; i++) {
     const before = s;
-    // strip format chars exposed by the previous round's decoding
     s = s.replace(ZERO_WIDTH_FORMAT, '');
-    // percent escapes (separators AND letters, plus %uXXXX)
     s = decodePercent(s);
-    // JS/JSON unicode escapes
     s = decodeUnicodeEscapes(s);
-    // HTML entities (named + numeric, separators AND letters)
     s = decodeHtmlEntities(s);
     if (s === before) break; // fixpoint reached
   }
-  // 4. unicode homoglyph separators → ASCII
   s = s.replace(HOMOGLYPH_SLASHES, '/').replace(HOMOGLYPH_DASHES, '-');
-  // 5. backslash → forward slash
   s = s.replace(/\\/g, '/');
-  // 6. dash-as-separator → slash. The Claude Code projects-dir encoding maps
-  //    BOTH '/' and '.' to '-', so a leading/embedded dash run reconstructs the
-  //    original separators. Converting every '-' run to '/' is over-broad but
-  //    safe for matching: CP1 anchors on `/Users/bernhardg` which only appears
-  //    when the real path is present. Collapse runs of '-'.
-  s = s.replace(/-+/g, '/');
-  // collapse repeated slashes produced by the decodings
+  if (!preserveDashes) s = s.replace(/-+/g, '/');
   s = s.replace(/\/{2,}/g, '/');
   return s;
 }
 
-// ---------------------------------------------------------------------------
-// Forbidden patterns (matched against canonical and/or raw form)
-// ---------------------------------------------------------------------------
-
-/**
- * CP1: personal home path — matched on the CANONICAL (lowercased, slash-form)
- * line. Because canonicalization collapses the slash-form (#631), the
- * dash-encoded projects-dir form (#634), percent/unicode/backslash/homoglyph
- * spellings into one string, a SINGLE rule replaces the old P1+P9 pair and
- * catches future encodings structurally.
- *
- * Mirrors the ORIGINAL P1 regex EXACTLY, applied to the canonical (separator-
- * normalized, case-PRESERVED) form: `/Users/bernhardg` + `[a-z.]*` (lowercase-
- * letter / dot continuation — catches the full-username form
- * `/Users/bernhardgoetzendorfer/`) + a trailing slash OR a word boundary.
- *
- * Because canonicalization is case-preserving, this single rule simultaneously:
- *   - is case-SENSITIVE on the host segment (`/Users`, not `/users`) — a
- *     deliberately-lowercased `/users/bernhardg.` literal does NOT match;
- *   - keeps the #631 fix (bare `/Users/bernhardg.` at EOL matches via `\b`);
- *   - keeps the old false-positive profile (the `[a-z.]*`-then-boundary stops
- *     at an uppercase / digit / underscore continuation):
- *       `/Users/bernhardgXfoo`  → `X` (uppercase) stops `[a-z.]*`, `g`→`X` no `\b` → reject
- *       `/Users/bernhardg9`     → `9` word-char, no `\b` after `g`               → reject
- *       `/Users/bernhardg_home` → `_` word-char, no `\b` after `g`              → reject
- *       `/Users/bernhardo`      → diverges before `g`                           → reject
- *       `/Users/bernhardgoetzendorfer/` → `[a-z.]*` eats `oetzendorfer`, `/`     → MATCH
- *
- * The win over the old P1+P9 pair: every ENCODED separator form (dash #634,
- * percent, backslash, homoglyph, html-entity, unicode-escape, and any future
- * spelling) collapses to `/Users/bernhardg…` in the canonical string, so ONE
- * rule catches them all instead of a fresh regex per encoding.
- *
- * Finding 1 (HIGH): the USERNAME segment is matched CASE-INSENSITIVELY via an
- * explicit per-letter token (`[bB][eE]…[gG]`) — not the `/i` flag, which would
- * also loosen the host anchor, and not an inline `(?i:…)` group, which Node 20
- * does not reliably support. On case-insensitive APFS, `/Users/Bernhardg.` is a
- * real path identifying the operator, so a capitalized username must still be
- * caught. Two case contracts are DELIBERATELY kept narrow:
- *   - the HOST segment stays case-SENSITIVE (`\/Users\/`, capital-U literal) so a
- *     lowercased `/users/bernhardg/x` source literal does NOT match;
- *   - the CONTINUATION class stays lowercase-only (`[a-z.]*`) so an UPPERCASE
- *     letter continuing the segment marks a DIFFERENT user and stops the match:
- *       `/Users/bernhardgXfoo` → `[a-z.]*` matches 0 chars, `g`→`X` (both word
- *       chars) gives no `\b` → reject (continuation-boundary survives).
- */
-const CP1_CANON = /\/Users\/[bB][eE][rR][nN][hH][aA][rR][dD][gG][a-z.]*(\/|\b)/;
-
-/**
- * Self-documentation guard: a line that QUOTES the scanner's own pattern regex
- * (e.g. CHANGELOG / migration-doc prose `…added P9 /-Users-bernhardg[a-z.]*-/…`)
- * contains the username token but is NOT a path — a real macOS home path never
- * embeds a regex character-class `[…]` immediately after the username.
- * This is the same self-reference class that SELF_EXCLUSIONS handles for the
- * scanner's source + test files; here it is line-scoped so a REAL leak elsewhere
- * in the same doc still fails. Without it, the #661 canonical rule (which is now
- * as strict on the dash-form as P1 always was on the slash-form) would newly
- * flag the pre-existing CHANGELOG entries that document the legacy P1/P9 regexes.
- *
- * NOTE: tested against the CANONICAL form, where the dash-run normalization has
- * already turned the regex range `[a-z` into `[a/z`. We therefore anchor on the
- * literal `[` right after `bernhardg` (`bernhardg\[`), which uniquely marks a
- * quoted character-class and never appears in a real path segment. Username is
- * matched case-insensitively to mirror the case-insensitive CP1 username token.
- *
- * Finding 2 (MED): the guard now BLANKS only the matched regex-quote TOKEN
- * (replacing the `bernhardg` username with a sentinel) rather than suppressing
- * the WHOLE line. A real leak that merely SHARES a line with a quoted regex
- * (`Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)`)
- * is still caught: only the `…bernhardg[` token is neutralized, the real
- * `/Users/bernhardg/…` path on the same line survives the residue re-scan.
- * The `Users.bernhardg\[` anchor (with `.` matching the canonicalized slash)
- * leaves the real-path form `Users/bernhardg/` — username followed by a SLASH,
- * not a `[` — untouched.
- */
-const SCANNER_REGEX_QUOTE_BLANK_G = /(Users.)[bB][eE][rR][nN][hH][aA][rR][dD][gG](\[)/g;
-
-/** CP2: private GitLab host */
-const CP2 = /\bgitlab\.gotzendorfer\.at\b/;
-
-/** CP3: private events domain */
-const CP3 = /\bevents\.gotzendorfer\.at\b/;
-
-/** CP4: private package scope */
-const CP4 = /@goetzendorfer\/[A-Za-z0-9*_-]+/;
-
-/** CP5: DEFAULT_GITLAB_HOST on a line with 'gotzendorfer' OR as an exported const */
-const CP5_WITH_GOTZ = /DEFAULT_GITLAB_HOST/;
-const CP5_EXPORT = /\bexport\b.*\bconst\b.*\bDEFAULT_GITLAB_HOST\b/;
-
-/**
- * CP6 (tracked-file scan): private project slugs (word-boundary anchored,
- * case-insensitive — #483 W4-Q6 caught "Buchhaltgenie" capitalized).
- * The FULL 7-slug list — runScan uses this so the public-mirror guard is UNCHANGED.
- */
-const CP6_PATTERNS = PRIVATE_SLUGS.map((slug) => new RegExp(`\\b${escapeRegex(slug)}\\b`, 'i'));
-
-/**
- * CP6 (in-process vault-namespace guard): PRIVATE_SLUGS minus VAULT_CLEAR_SLUGS
- * (issue #59 owner decision 2026-07-18). isOwnerLeakySegment iterates THIS list,
- * so carved-out slugs resolve to their own vault namespace instead of collapsing
- * to 'redacted-repo', while the tracked-file scanner (CP6_PATTERNS) still blocks
- * all 7 from leaking into the public mirror. Effectively only the 2 retained
- * slugs (Codex-Hackathon, aiat-pmo-module). Case-insensitive: filter lowercases
- * before the VAULT_CLEAR_SLUGS membership test, matching the 'i'-flag regex.
- */
-const CP6_INPROCESS_PATTERNS = PRIVATE_SLUGS
-  .filter((slug) => !VAULT_CLEAR_SLUGS.has(slug.toLowerCase()))
-  .map((slug) => new RegExp(`\\b${escapeRegex(slug)}\\b`, 'i'));
-
-/** CP7: catch-all gotzendorfer.at (must not match allowlist) */
-const CP7 = /gotzendorfer\.at/;
-
-/**
- * GLOBAL twins of the two allowlist-consulting domain rules, used to count
- * OCCURRENCES in the raw vs the canonical form of a line (#1080 Finding A).
- *
- * Why an occurrence COUNT and not simply a second `.test()` on the canonical
- * form: CP3 and CP7 are the only rules whose verdict is filtered by
- * isAllowlisted(), and that allowlist matches a LINE FORM — the sanctioned
- * Impressum/author URL, and the exact events doc-comment contract line.
- * Canonicalization folds every `-` run to `/`, which mangles precisely that
- * prose: ` *   - No literal ...` canonicalizes to ` *   / No literal ...`. So
- * re-running isAllowlisted() against the canonical form would fail to recognise
- * its own sanctioned line and turn this gate — and with it .husky/pre-commit —
- * permanently red on a clean tree. Measured, not reasoned: that exact exclusion
- * regex returns true on the raw line and false on its canonical form.
- *
- * The occurrence count separates the two cases without touching the allowlist:
- * when the canonical form carries MORE domain tokens than the raw line, the
- * surplus was produced by DECODING an escape, and a decoded token can never be
- * the sanctioned publication the allowlist covers — so it bypasses the allowlist.
- * When the counts are equal, the rule behaves exactly as it always did and
- * consults the allowlist on the raw line.
- */
-const CP3_G = /\bevents\.gotzendorfer\.at\b/g;
-const CP7_G = /gotzendorfer\.at/g;
-
-/**
- * Count matches of a GLOBAL regex in `s` (0 when none).
- * @param {RegExp} re a regex carrying the `g` flag
- * @param {string} s
- * @returns {number}
- */
-function countMatches(re, s) {
-  return (s.match(re) || []).length;
-}
-
-/**
- * CP8: full RFC1918 private dotted-quad — internal-IP leak.
- * Matches only literal 4-octet private IPs (10.x.x.x, 192.168.x.x, 172.16-31.x.x).
- * Deliberately does NOT match placeholder `.x` forms (10.x, 192.168.x) or CIDR/range
- * notation used in SSRF-range documentation, nor TEST-NET (192.0.2.x, RFC 5737).
- */
 const CP8 = /(?:\b10(?:\.\d{1,3}){3}|\b192\.168(?:\.\d{1,3}){2}|\b172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})/;
 
-/** CP8 allowlist: files where RFC1918 IPs are a legitimate test subject (IP-redaction fixtures). */
 const CP8_ALLOWLIST = new Set(['tests/scripts/export-hw-learnings.test.mjs']);
 
-/**
- * Match an owner personal-home-path leak in a line, using canonicalization.
- * Returns the offending class label, or null when clean.
- *
- * Strategy: canonicalize separators/escapes (case preserved), then run the
- * single CP1 rule once. Because canonicalization collapses every known
- * encoding of `/Users/bernhardg…` to one string while preserving letter case,
- * this ONE structural rule replaces the P1-bare-slash + P9-dash regex
- * treadmill AND catches future encodings (percent / backslash / homoglyph /
- * html-entity / unicode-escape / dash) without a new regex per form.
- * @param {string} line
- * @returns {string|null}
- */
 export function matchOwnerPath(line) {
-  const canon = canonicalizeLine(line);
-  // Self-documentation guard (line-scoped, Finding 2): BLANK only the quoted
-  // regex TOKEN (`…bernhardg[`) — replacing the username with a sentinel — then
-  // re-scan the RESIDUE. This neutralizes prose that quotes the scanner's own
-  // pattern (`…bernhardg[a-z.]*…` — not a path) WITHOUT suppressing a real leak
-  // that happens to share the line. Tested against the CANONICAL form because
-  // the documented regex source spells separators with `\/` (escaped slash)
-  // which only normalizes to `/` after canonicalization. See
-  // SCANNER_REGEX_QUOTE_BLANK_G.
-  const residue = canon.replace(SCANNER_REGEX_QUOTE_BLANK_G, '$1__REGEXQUOTE__$2');
-  if (CP1_CANON.test(residue)) return 'CP1 (personal home path — canonicalized)';
-  return null;
+  const { CP1_CANON, SCANNER_REGEX_QUOTE_BLANK_G } = currentOwnerRules();
+  const residue = canonicalizeLine(line).replace(SCANNER_REGEX_QUOTE_BLANK_G, '$1__REGEXQUOTE__$2');
+  return CP1_CANON.test(residue) ? 'CP1 (personal home path — canonicalized)' : null;
 }
 
-/** CP10: personal-name owner segment in a ~/Projects/<Name>/ path (#653).
- *  Name-denylist driven (CLOSED list, audit-reviewed) — mirrors PRIVATE_SLUGS (CP6).
- *  A generic ~/Projects/[A-Z][a-z]+/ would false-positive on legit capitalized
- *  project dirs (~/Projects/MyApp/), so we match only known personal names.
- *
- *  Matches the tilde form (`~/Projects/Bernhard`) OR an absolute home form
- *  (`/Users/<user>/Projects/Bernhard`, `/home/<user>/Projects/Bernhard`), then a
- *  trailing-slash OR word boundary. The slash-OR-word-boundary alternation is the
- *  Finding-1 fix for the original `…/<Name>/` form, which REQUIRED a slash after the
- *  name and so let a bare `~/Projects/Bernhard` (end-of-line, before `&&`) pass
- *  undetected — the same blindspot CP1 was patched for (see CP1 doc above). The
- *  absolute-home alternation is the Finding-3 defense-in-depth: a leak in a
- *  non-owner home (`/Users/alice/Projects/Bernhard/vault`) slipped both CP1 and the
- *  old tilde-only CP10. The trailing word boundary keeps the false-positive profile
- *  tight: `~/Projects/Bernhardt/` (denylisted name + a continuation letter) does
- *  NOT match, so names that merely START with a denylisted name are not flagged. */
-const PERSONAL_NAMES = ['Bernhard'];
-const CP10_PATTERNS = PERSONAL_NAMES.map(
-  (name) => new RegExp(`(?:~|/Users/[^/]+|/home/[^/]+)/Projects/${escapeRegex(name)}(\\/|\\b)`),
-);
-
-/** CP10 allowlist: files where ~/Projects/Bernhard is a deliberate test subject
- *  (migration/drift fixtures) or a legitimate one-shot-migration source/target. */
 const CP10_ALLOWLIST = new Set([
   'tests/scripts/vault-consolidate.test.mjs',
   'tests/scripts/migrate-vault-paths.test.mjs',
@@ -579,149 +251,16 @@ function escapeRegex(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// DELIBERATE DUPLICATE — do not replace the function below with an import from
-// `scripts/lib/redact-spans.mjs`. This scanner is a documented STANDALONE
-// SINGLE-FILE vendoring target (`.claude/rules/security.md` § "Owner-Privacy
-// Pre-Commit Hook": consumer repos copy exactly this ONE file into their tree as
-// a pre-commit stage). A static import resolves in-tree but throws
-// ERR_MODULE_NOT_FOUND in every vendored copy — under the husky stage that means
-// empty stdout + exit 1 on a CLEAN tree, i.e. every commit blocked. Not
-// hypothetical: `tests/husky/pre-commit-owner-leakage.test.mjs` cpSync()s this
-// single file into a tmp repo, and the static-import variant turned all three of
-// its cases red (#974).
-//
-// The dynamic-import degrade used by getConfidentialNamePatterns() is NOT
-// available here. That helper degrades to `[]` for the standalone-copy case alone
-// — CP11 goes inert, CP1–CP10 keep running, nothing leaks (every OTHER load
-// failure there is now a counted FAIL, #1244). A failed REDACTION has the opposite
-// failure direction:
-// it prints confidential names verbatim into a PUBLIC GitHub-Actions log, which
-// is precisely the exposure this function exists to prevent (Fix 1 below). The
-// redaction sink must be unconditionally present, so it lives inline.
-//
-// `scripts/lib/redact-spans.mjs` is the shared primitive for IN-TREE consumers
-// (e.g. `scripts/lib/secret-masker.mjs`); this copy serves the vendored path.
-// The two are pinned byte-for-byte against each other by the drift guard in
-// `tests/lib/redact-spans.test.mjs` — change one and that suite goes red until
-// both agree again.
-/**
- * Redact every confidential-name span from `line`, ORDER-INDEPENDENTLY (Fix 1 + Fix 2).
- *
- * This is the single redaction sink for the confidential-names privacy invariant.
- * It is applied at the print choke-point over EVERY violation's lineContent — not
- * only CP11 hits — because this scanner runs in a PUBLIC GitHub-Actions mirror: a
- * confidential customer/repo name that co-occurs with a CP1–CP10 hit on the same
- * line (e.g. a name beside an RFC1918 IP that fails CP8) would otherwise be echoed
- * verbatim to the public CI log (Fix 1).
- *
- * ORDER-INDEPENDENCE (Fix 2): a naïve chain of `.replace()` calls is order-dependent
- * — when one configured name is a PREFIX of another (`['acme','acme-corp-secret']`),
- * redacting the shorter first destroys the longer's match and leaks a suffix residue
- * (`[REDACTED]-corp-secret`). Instead we compute ALL match spans against the ORIGINAL
- * (unmutated) string across every pattern, merge overlapping/adjacent intervals, and
- * splice `[REDACTED]` per merged interval. No pattern ever sees a string another
- * pattern already rewrote, so prefix/suffix overlap cannot leak regardless of list
- * order.
- *
- * @param {string} line — the raw (already-trimmed) violation lineContent.
- * @param {RegExp[]} patterns — confidential-name regexes (word-boundary, case-insensitive).
- * @returns {string} the line with every configured name span replaced by [REDACTED].
- */
-function redactSpans(line, patterns) {
-  if (!Array.isArray(patterns) || patterns.length === 0) return line;
-
-  // 1. Collect [start, end) spans of every match of every pattern against the
-  //    ORIGINAL line (never a partially-mutated one). Global clone so exec() walks
-  //    all matches; zero-width guard prevents an infinite loop on a degenerate regex.
-  const spans = [];
-  for (const re of patterns) {
-    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
-    let m;
-    while ((m = g.exec(line)) !== null) {
-      if (m[0].length === 0) {
-        g.lastIndex += 1;
-        continue;
-      }
-      spans.push([m.index, m.index + m[0].length]);
-    }
-  }
-  if (spans.length === 0) return line;
-
-  // 2. Merge overlapping / adjacent intervals (sorted by start).
-  spans.sort((a, b) => a[0] - b[0]);
-  const merged = [];
-  for (const [s, e] of spans) {
-    const last = merged[merged.length - 1];
-    if (last && s <= last[1]) {
-      last[1] = Math.max(last[1], e);
-    } else {
-      merged.push([s, e]);
-    }
-  }
-
-  // 3. Splice [REDACTED] per merged interval, left-to-right over the ORIGINAL line.
-  let out = '';
-  let cursor = 0;
-  for (const [s, e] of merged) {
-    out += line.slice(cursor, s) + '[REDACTED]';
-    cursor = e;
-  }
-  out += line.slice(cursor);
-  return out;
-}
-
-/**
- * The THREE modules getConfidentialNamePatterns() imports directly, as absolute
- * URLs resolved against THIS file. Used only to classify an ERR_MODULE_NOT_FOUND:
- * `err.url` carries the URL of the module that could not be found (measured on
- * Node 24 — a relative specifier yields `url`, a bare package specifier yields
- * none), so a miss on one of these three is the standalone single-file copy,
- * while a miss anywhere DEEPER (a transitive of an in-tree helper, or a bare
- * package) is a broken install that must fail CLOSED rather than go inert.
- */
 const CP11_DIRECT_SIBLING_URLS = new Set(
   ['../config/host-paths.mjs', './confidential-names.mjs', '../owner-yaml.mjs'].map(
     (spec) => new URL(spec, import.meta.url).href,
   ),
 );
 
-/**
- * True when an ERR_MODULE_NOT_FOUND names one of this scanner's own three DIRECT
- * helper imports — i.e. the documented standalone-vendoring shape. False for a
- * transitive relative module or a bare package (no `err.url` at all), which is a
- * broken in-tree install: CP11 then fails closed instead of silently returning
- * zero patterns while names ARE configured.
- *
- * @param {{ url?: string }} err
- * @returns {boolean}
- */
 function isMissingDirectSibling(err) {
   return typeof err?.url === 'string' && CP11_DIRECT_SIBLING_URLS.has(err.url);
 }
 
-/**
- * Was `paths.confidential-names-file` actually written into owner.yaml?
- *
- * WHY THIS RE-READS THE FILE. `loadOwnerConfig()` reports an invalid OPTIONAL
- * section only as `droppedSections: [{ section: 'paths', errors }]` and replaces
- * `config.paths` with the DEFAULTS — the raw keys of the dropped section are not
- * recoverable from its return value, and its `errors[]` name a key only for the
- * per-key `paths.<key> must be a string` case (a `paths: 42` shape names none).
- * So the one question CP11's verdict turns on — did the operator configure a
- * names file AT ALL — has no answer in the loader's contract today. Re-parsing
- * the file for that single key is the minimal derivation; widening the loader's
- * return shape would touch every one of its callers.
- *
- * Only reached when the YAML already parsed once inside loadOwnerConfig (the
- * dropped-section branch implies that), so `js-yaml` is resolvable here; 'unknown'
- * is the defensive residue and makes the caller fail closed.
- *
- * Returns a CLASS, never the value: the configured path is host-local and this
- * scanner's output is captured by a PUBLIC CI mirror (see the no-path rule above).
- *
- * @param {string} ownerYamlPath
- * @returns {'configured'|'absent'|'unknown'}
- */
 function rawConfidentialNamesKeyState(ownerYamlPath) {
   let parsed;
   try {
@@ -732,92 +271,23 @@ function rawConfidentialNamesKeyState(ownerYamlPath) {
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return 'unknown';
   const paths = parsed.paths;
-  // `paths:` absent, null, or not a mapping at all → the key cannot be in there.
   if (paths === null || typeof paths !== 'object' || Array.isArray(paths)) return 'absent';
   const value = paths['confidential-names-file'];
   if (value === undefined || value === null) return 'absent';
-  // A non-string (or empty-string) value is still an ATTEMPT to configure CP11 —
-  // except '' , which is the schema's documented "no override" spelling.
   if (typeof value === 'string' && value.trim() === '') return 'absent';
   return 'configured';
 }
 
-/**
- * CP11: build word-boundary, case-insensitive regexes from the host-local
- * confidential-names list (#728a). Mirrors CP6_PATTERNS (private slugs), but the
- * name source is LOADED from a never-committed host-local file instead of a
- * closed in-source array — the confidential customer/repo names must never live
- * in a committed file.
- *
- * LAZY BY CONTRACT: this reads the host-local file (owner.yaml + env), so it MUST
- * be called only from runScan() — NOT at module top-level. This module is
- * dual-mode (CLI entry point AND importable library, `isMain` guard); a top-level
- * fs read would fire on every library import (e.g. pseudonym-map.mjs importing
- * isOwnerLeakySegment). inspectConfidentialNames caches per path, so calling this
- * once per scan reads the file at most once.
- *
- * STANDALONE-SAFE: the two host-local helper modules are DYNAMICALLY imported
- * here (not statically at the top of the file) so a single-file copy of this
- * scanner — the documented vendoring pattern (security.md § Owner-Privacy: "Reuse
- * the same scanner"; exercised by tests/husky/pre-commit-owner-leakage.test.mjs,
- * which copies ONLY this file into a tmp repo) — does not crash at module load
- * with ERR_MODULE_NOT_FOUND. When the helpers are unresolvable (or throw), CP11
- * degrades to inert ([] patterns) and CP1–CP10 run unchanged.
- *
- * FAIL CLOSED WHEN CP11 WAS EXPECTED (GitLab #1244). The single bare
- * `try { … } catch { return [] }` this function used to be conflated three
- * outcomes that must not share a verdict, and printed `PASS` for all three:
- *   (a) the helpers are unresolvable — the STANDALONE single-file copy. The
- *       intended degrade, and the ONLY one: inert + one WARN line, exit unchanged.
- *   (b) CP11 is not configured at all (no names file, no env) — the ~99% default:
- *       inactive, silent, PASS. Unchanged. This INCLUDES an owner.yaml whose
- *       `paths:` section was dropped as invalid for some OTHER key (the #1244
- *       fix over-reached here and failed every commit on such a host): the raw
- *       key is re-read (rawConfidentialNamesKeyState) and, when absent, CP11 is
- *       INACTIVE — one WARN naming the dropped section, no FAIL, exit unchanged.
- *   (c) CP11 IS configured — env set, a names file resolved, or the raw
- *       `paths.confidential-names-file` key present in a `paths:` section that
- *       was dropped as invalid — or its configuration is unknowable because
- *       owner.yaml exists but cannot be parsed (e.g. `js-yaml` missing) — and
- *       could not be loaded. Previously indistinguishable from (b): the scanner matched
- *       nothing and printed `PASS: no owner-privacy leakage found`. A guard that
- *       cannot run must say so and FAIL, never report the clean verdict it did
- *       not earn — so this returns a `disabledReason` that runScan turns into a
- *       `CP11 DISABLED` stderr line plus a counted FAIL (exit 1).
- *
- * The reason strings deliberately carry NO PATH. This scanner's stdout+stderr are
- * captured by a PUBLIC GitHub-Actions mirror, and the confidential-names path is
- * host-local — echoing it there would leak the very `/Users/<name>/…` shape CP1
- * exists to block. The operator knows their own path; the CLASS of failure is what
- * this line has to convey.
- *
- * @param {{ loadHostPaths?: typeof import('../config/host-paths.mjs').loadHostPaths }} [opts]
- * @returns {Promise<{ patterns: RegExp[], disabledReason?: string, inertWarn?: string }>}
- */
 export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
   let helpers;
   try {
     helpers = {
       hostPaths: await import('../config/host-paths.mjs'),
       confidentialNames: await import('./confidential-names.mjs'),
-      // Already a transitive dependency (host-paths.mjs imports it statically), so
-      // this adds no file to the standalone-copy chain the husky E2E mirrors.
       ownerYaml: await import('../owner-yaml.mjs'),
     };
   } catch (err) {
     if (err?.code === 'ERR_MODULE_NOT_FOUND' && isMissingDirectSibling(err)) {
-      // (a) standalone single-file vendoring. The degrade is documented — but it
-      // must not swallow a CP11 that the operator DID configure (GitLab #1262).
-      // No helper resolved here, so the only configuration signal still readable
-      // is the raw env var: a literal mirror of ENV_KEYS['confidential-names-file']
-      // in scripts/lib/config/host-paths.mjs, which cannot be imported on this
-      // branch by construction.
-      //
-      // LIMIT (named, not hidden): an owner.yaml-configured names file is
-      // STRUCTURALLY undetectable in a standalone copy — resolveOwnerYamlPath()
-      // lives in the very module chain that failed to resolve, so there is no way
-      // to learn that owner.yaml even exists, let alone what it configures. Only
-      // the env route can fail closed here; the owner.yaml route degrades inert.
       const envNamesPath = process.env.SO_CONFIDENTIAL_NAMES_FILE;
       if (typeof envNamesPath === 'string' && envNamesPath.trim() !== '') {
         return {
@@ -831,7 +301,6 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
         inertWarn: 'CP11 inert — confidential-names helpers not resolvable (standalone copy)',
       };
     }
-    // Any OTHER import failure is a broken in-tree install, not the vendoring case.
     return { patterns: [], disabledReason: `confidential-names helpers failed to load (${err?.name ?? 'Error'})` };
   }
 
@@ -840,23 +309,8 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
     const { inspectConfidentialNames } = helpers.confidentialNames;
     const { resolveOwnerYamlPath } = helpers.ownerYaml;
 
-    // ONE owner.yaml load. Since #1251 loadHostPaths() passes the loader's own
-    // health (source / reason / droppedSections) straight through, so the
-    // env>owner.yaml>default precedence and the load's diagnosis come from the
-    // same read — no second loadOwnerConfig() call to recover what was discarded.
     const hostCtx = (loadHostPaths ?? helpers.hostPaths.loadHostPaths)();
 
-    // FAIL-CLOSED on an unknowable load (LOW-2). `loadHostPaths` has its own
-    // defensive catch that swallows a THROWING owner loader and returns
-    // `{ ownerConfig: undefined, env, source: undefined, reason: undefined }`.
-    // Without this branch that shape resolves `namesPath` to '' , fires no
-    // reason branch, and returns `{ patterns: [] }` — a silent PASS.
-    // Only the throw produces all-undefined: `loadOwnerConfig` returns
-    // `{ config: getDefaults(), source: 'defaults', errors: [] }` for a
-    // genuinely ABSENT owner.yaml (owner-yaml.mjs:587-590) and `source:
-    // 'defaults'` with a `reason` for every read/parse failure — so a missing
-    // file keeps taking the normal path below. Latent today (the loader
-    // returns on every error path), load-bearing if that ever changes.
     if (
       hostCtx.ownerConfig === undefined &&
       hostCtx.source === undefined &&
@@ -872,9 +326,6 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
     const namesPath = resolveHostPath('confidential-names-file', '', hostCtx);
 
     if (typeof namesPath !== 'string' || namesPath.trim() === '') {
-      // Nothing resolves a names file. That is either (b) — genuinely
-      // unconfigured — or a state in which the answer is UNKNOWABLE because the
-      // owner.yaml that would carry it could not be read. Unknowable is (c).
       if (existsSync(resolveOwnerYamlPath())) {
         if (hostCtx.reason === 'yaml-parser-missing') {
           return {
@@ -891,10 +342,6 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
           };
         }
         if (hostCtx.droppedSections?.some((d) => d.section === 'paths')) {
-          // The paths: section was replaced by its default because SOME key in it
-          // is invalid — which says nothing yet about whether CP11 was configured.
-          // Re-read the RAW file for that one key (the loader does not expose it on
-          // this branch; see rawConfidentialNamesKeyState) and only then decide.
           const rawKey = rawConfidentialNamesKeyState(resolveOwnerYamlPath());
           if (rawKey === 'configured') {
             return {
@@ -910,8 +357,6 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
                 'owner.yaml has an invalid paths: section and could not be re-read, so a configured confidential-names-file cannot be ruled out',
             };
           }
-          // 'absent' — CP11 was never configured here. Inactive, not disabled:
-          // ONE WARN naming the dropped section, no FAIL, exit unchanged.
           return {
             patterns: [],
             inertWarn:
@@ -922,15 +367,6 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
       return { patterns: [] }; // (b) the ~99% default — inactive, silent.
     }
 
-    // A names file IS configured. Since #1250 the loader REPORTS the class it
-    // used to collapse into `null`, so the verdict reads straight off `status` —
-    // no second read of the file to re-derive it. Only `[]` ('empty') is an
-    // operator choice (inactive, silent); 'missing'/'malformed'/'all-dropped'
-    // mean a configured guard cannot run, which is (c) and fails closed. The
-    // reasons carry no path (see above). `inspectConfidentialNames` is the
-    // discriminated entry point; `loadConfidentialNames` keeps its 4.0.0
-    // `string[] | null` shape for external deep-importers and cannot express
-    // this distinction.
     const { status, names } = inspectConfidentialNames({ namesPath });
     if (status === 'missing') {
       return { patterns: [], disabledReason: 'a confidential-names-file is configured but does not exist' };
@@ -942,10 +378,6 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
       };
     }
     if (status === 'all-dropped') {
-      // W4 finding F3 (fail-open): the file listed entries and validation rejected
-      // every one of them (non-strings, blanks, over-long). That is a CORRUPTED
-      // list, not the `[]` opt-out — CP11 would run with zero patterns and report
-      // the clean verdict it never earned. Same class as 'malformed'.
       return {
         patterns: [],
         disabledReason:
@@ -955,39 +387,10 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
     if (status !== 'ok') return { patterns: [] }; // 'empty' — the operator's `[]` opt-out.
     return { patterns: names.map((name) => new RegExp(`\\b${escapeRegex(name)}\\b`, 'i')) };
   } catch (err) {
-    // The helpers resolved but something below threw. CP11 cannot run — fail closed.
     return { patterns: [], disabledReason: `confidential-names resolution failed (${err?.name ?? 'Error'})` };
   }
 }
 
-// ---------------------------------------------------------------------------
-// Text-scan extension allowlist (spec A.2)
-// ---------------------------------------------------------------------------
-// '.html' (#1076): the site/ tree is PUBLICLY SHIPPED (vercel.json outputDirectory:
-// "site"), so it is the highest-consequence class to scan, yet it was ungated here and
-// therefore invisible to all eleven CP rules.
-//
-// CORRECTION (#1080 Finding A). An earlier revision of this comment justified '.html'
-// partly by claiming its addition "revives canonicalizeLine()'s HTML-entity decoding,
-// which was dead in practice". That was true of exactly ONE of the eleven rules.
-// matchOwnerPath() (CP1) was the SOLE consumer of the canonical form — CP2-CP8, CP10
-// and CP11 each tested the RAW line — so an entity-encoded private host inside an href
-// (a link the BROWSER resolves and the scanner did not) still reported nothing. The
-// per-line canonical re-test in the scan loop below is what actually closes that, and
-// only for the four dot-anchored rules; see the `canon` comment there for why the rest
-// stay raw.
-//
-// '.xml', '.svg', '.css' (#1080 Finding B): the PUBLICLY-SHIPPED sentence above is true
-// VERBATIM of site/sitemap.xml and site/favicon.svg — same directory, same publication,
-// same consequence — which the '.html' addition walked past. Measured with one identical
-// planted defect per class before adding: the .html and .txt copies FAILed, the .xml and
-// .svg copies reported nothing. Cost is zero: the five tracked files in these classes
-// (assets/icon.svg, assets/og-card.svg, site/favicon.svg, site/sitemap.xml,
-// templates/static-html/styles.css) carry no hits — 1542 -> 1547 scanned, 0 findings.
-// `.jsonl` closes a gap this very wave opened: the harvested golden-record fixture at
-// tests/lib/vault-mirror/fixtures/golden-sessions.jsonl is tracked production data that
-// `.json` does not match, so the scanner would have skipped it for good. Measured before
-// adding: all 7 tracked `.jsonl` files pass (1525 -> 1532 scanned, 0 findings).
 const TEXT_EXTS = new Set([
   '.md',
   '.mdx',
@@ -1006,9 +409,6 @@ const TEXT_EXTS = new Set([
   '.css',
 ]);
 
-// Dotfiles to include (checked by basename, BEFORE the extension gate —
-// extname('.env.example') is '.example' (truthy), so an extension-first check
-// would make that allowlist entry unreachable; W3-P3 finding, 2026-06-10)
 const DOTFILE_ALLOWLIST = new Set(['.env.example', '.nvmrc', '.vault.yaml']);
 
 function isTextFile(filePath) {
@@ -1018,16 +418,8 @@ function isTextFile(filePath) {
   return ext ? TEXT_EXTS.has(ext) : false;
 }
 
-// ---------------------------------------------------------------------------
-// File enumeration: git ls-files primary, recursive fs walk fallback (spec A.2)
-// Exclusions: .git/, node_modules/, .orchestrator/audits/
-// ---------------------------------------------------------------------------
-
 function getTrackedFiles() {
   try {
-    // NUL delimiters preserve Unicode, spaces and newlines without Git's quoted
-    // filename encoding. --exclude-standard applies only to untracked entries;
-    // tracked files remain visible even if an ignore rule now matches them.
     const args = ['ls-files', '-z', '--cached'];
     if (includeUntracked) args.push('--others', '--exclude-standard');
     const output = execFileSync('git', args, { cwd: pluginRoot, encoding: 'utf8' });
@@ -1036,7 +428,6 @@ function getTrackedFiles() {
       .filter(Boolean)
       .map((f) => join(pluginRoot, f));
   } catch {
-    // git unavailable or not a git repo — fall back to recursive fs walk
     return walkDir(pluginRoot);
   }
 }
@@ -1050,7 +441,6 @@ function walkDir(dir, acc = []) {
   }
   for (const entry of entries) {
     const full = join(dir, entry);
-    // Exclusions: .git, node_modules, .orchestrator/audits
     if (entry === '.git' || entry === 'node_modules') continue;
     const rel = relative(pluginRoot, full);
     if (rel === join('.orchestrator', 'audits') || rel.startsWith(join('.orchestrator', 'audits') + sep)) continue;
@@ -1069,89 +459,37 @@ function walkDir(dir, acc = []) {
   return acc;
 }
 
-// ---------------------------------------------------------------------------
-// Allowlist helpers (spec A.4)
-// ---------------------------------------------------------------------------
-
-/**
- * Return true if this gotzendorfer.at hit is covered by the exclusion allowlist.
- * @param {string} relPath - path relative to pluginRoot (forward slashes)
- * @param {string} line    - the raw line content
- * @returns {boolean}
- */
 function isAllowlisted(relPath, line) {
-  // Normalize to forward-slash for matching
+  const {policy, CP7_G} = currentOwnerRules();
   const norm = relPath.replace(/\\/g, '/');
-
-  // A.4 exclusion 5: tests/lib/events-default-url.test.mjs — ONLY the exact JSDoc contract line
+  // Only published attribution files permit public URLs; email contacts work everywhere.
+  const urlsAllowed = new Set(['README.md', '.claude-plugin/plugin.json', '.claude-plugin/marketplace.json', '.codex-plugin/plugin.json', '.cursor-plugin/plugin.json', 'site/index.html', 'site/de/index.html', 'site/impressum/index.html', 'site/datenschutz/index.html']).has(norm);
+  let residue = line;
+  for (const email of policy.publicEmails) residue = residue.replace(new RegExp(escapeRegex(email) + '(?![\\w-]|\\.[\\w])', 'g'), '');
+  if (urlsAllowed) {
+    for (const url of policy.publicUrls) residue = residue.replace(new RegExp(escapeRegex(url) + '(?![\\w-]|\\.[\\w])', 'g'), '');
+  }
+  // Preserve the single documented contract comment; no arbitrary line exemption.
   if (norm === 'tests/lib/events-default-url.test.mjs') {
-    // The exact doc-comment line: " *   - No literal `events.gotzendorfer.at` URL..."
-    // Match the literal backtick-quoted pattern in a JSDoc/comment line
-    if (/^\s+\*\s+- No literal `events\.gotzendorfer\.at`/.test(line)) {
-      return true;
-    }
-    // Any other gotzendorfer.at in this file is NOT excluded
-    return false;
-  }
-
-  // A.4 exclusion 1: lines with office@ or security@ gotzendorfer.at and NO other gotzendorfer.at token
-  // (i.e., the only gotzendorfer.at occurrence is an email address — count occurrences)
-  const SANCTIONED_EMAILS = /(?:office|security)@gotzendorfer\.at/g;
-  const allGotzTokens = [...line.matchAll(/gotzendorfer\.at/g)];
-  const sanctionedMatches = [...line.matchAll(SANCTIONED_EMAILS)];
-  if (allGotzTokens.length > 0 && allGotzTokens.length === sanctionedMatches.length) {
-    // All gotzendorfer.at occurrences are the sanctioned email addresses
-    return true;
-  }
-
-  // A.4 exclusion 2 + 3: https://gotzendorfer.at URLs in README.md and the 3 manifest files
-  const ALLOWLISTED_URL_PATHS = new Set([
-    'README.md',
-    '.claude-plugin/plugin.json',
-    '.claude-plugin/marketplace.json',
-    '.codex-plugin/plugin.json',
-    // A.4 exclusion 7 (#1076): the three PUBLISHED static pages (vercel.json
-    // outputDirectory: "site"). Rule-based, never file-based — membership here only
-    // buys the line-form test below, and isAllowlisted() is consulted by CP3 and CP7
-    // ONLY. A SELF_EXCLUSIONS entry would instead have switched off all eleven rules
-    // for these files; that broad form is deliberately NOT used.
-    'site/index.html',
-    'site/impressum/index.html',
-    'site/datenschutz/index.html',
-    // The German landing page (2026-09-07 redesign) carries the same publisher
-    // identity (JSON-LD @id + footer rel="author") as site/index.html. Exact
-    // path, never a site/de/ prefix — site/guide/index.html stays outside.
-    'site/de/index.html',
-  ]);
-  const inAllowlistedFile = ALLOWLISTED_URL_PATHS.has(norm);
-
-  if (inAllowlistedFile) {
-    // Check that the only gotzendorfer.at occurrences on this line are sanctioned URLs or emails
-    const SANCTIONED_URL = /https?:\/\/gotzendorfer\.at\b/g;
-    // The published site uses the www. host throughout, which SANCTIONED_URL cannot
-    // match — it requires the bare domain IMMEDIATELY after the scheme. Without this
-    // second form the three site entries above would exclude NOTHING and the gate
-    // (including .husky/pre-commit) would be permanently red. The two forms are
-    // DISJOINT: the www. prefix is mandatory here and impossible there, so no line
-    // can be counted twice (README.md stays at 1 token / 1 sanctioned match).
-    const SANCTIONED_PUBLIC_SITE = /(?:https?:\/\/)?www\.gotzendorfer\.at\b/g;
-    const allGotzOnLine = [...line.matchAll(/gotzendorfer\.at/g)];
-    const sanctionedUrlMatches = [...line.matchAll(SANCTIONED_URL)];
-    const sanctionedSiteMatches = [...line.matchAll(SANCTIONED_PUBLIC_SITE)];
-    const emailMatches = [...line.matchAll(SANCTIONED_EMAILS)];
-    const totalSanctioned =
-      sanctionedUrlMatches.length + sanctionedSiteMatches.length + emailMatches.length;
-    if (allGotzOnLine.length > 0 && allGotzOnLine.length === totalSanctioned) {
-      return true;
+    for (const host of policy.eventsHosts) {
+      const contract = ' *   - No literal `' + host + '` URL appears anywhere in scripts/ or hooks/.';
+      if (line === contract) return true;
     }
   }
-
-  return false;
+  return countMatches(CP7_G, line) > 0 && countMatches(CP7_G, residue) === 0;
 }
 
-// ---------------------------------------------------------------------------
-// Counting
-// ---------------------------------------------------------------------------
+function safeDiagnosticPath(value, confidentialPatterns = []) {
+  const rules = currentOwnerRules();
+  const patterns = [...confidentialPatterns, ...rules.redactionPatterns];
+  // Replace whole offending filename segments, retaining only safe location context.
+  return value.split('/').map((segment) => {
+    const forms = [segment, canonicalizeLine(segment, {preserveDashes:true}), canonicalizeLine(segment)];
+    const privateSegment = forms.some((form) => isOwnerLeakySegment(form) ||
+      patterns.some((re) => { re.lastIndex = 0; return re.test(form); }));
+    return privateSegment ? '[REDACTED]' : segment;
+  }).join('/');
+}
 
 let passed = 0;
 let failed = 0;
@@ -1166,73 +504,40 @@ function fail(msg) {
   failed++;
 }
 
-// ---------------------------------------------------------------------------
-// Main check — only runs when invoked as the CLI entry point (#661). When this
-// module is imported (for unit-testing the canonicalization helpers), the scan
-// and process.exit() below are skipped.
-// ---------------------------------------------------------------------------
-
 async function runScan() {
 console.log('--- Check 11: owner-privacy leakage ---');
 
 if (!existsSync(pluginRoot)) {
-  fail(`plugin root does not exist: ${pluginRoot}`);
+  fail('plugin root does not exist');
   console.log('');
   console.log(`Results: ${passed} passed, ${failed} failed`);
   process.exit(1);
 }
 
-const allFiles = getTrackedFiles();
-const textFiles = allFiles.filter(isTextFile);
+const owner = inspectOwnerPatterns();
+if (owner.status !== 'ok') {
+  console.error(`WARN owner-patterns: ${owner.status} (${owner.reason ?? 'source-unavailable'}); host-specific rules unavailable`);
+  if (owner.status !== 'missing' || requireOwnerPatterns) fail('<scan-wide> — CP1 (guard disabled): owner patterns unavailable');
+}
+const { CP2, CP3, CP4, CP5_WITH_GOTZ, CP5_EXPORT, CP6_PATTERNS, CP7, CP3_G, CP7_G, CP10_PATTERNS, policy } = currentOwnerRules();
+const allFiles = packedInventoryPath ? getPackedFiles() : getTrackedFiles();
+const textFiles = packedInventoryPath ? allFiles : allFiles.filter(isTextFile);
 
-// Exclusions:
-//   - .orchestrator/audits/** never scanned (A.2/A.4-5)
-//   - This guard's own source file (pattern-doc-comments define the scanner — not leaks).
-//   - This guard's own test file (string-literal fixtures exercise the detector — not leaks).
-// Self-exclusions are the design-time fix for the latent bug exposed when scanner
-// fixture files transition from untracked → tracked in the same commit that tightens
-// detection (commit a68e94f for the original two; commit 95c8237 deep-3 W4 added the
-// case-insensitive P6 regex + introduced content-lint.test.mjs in the same commit,
-// producing a pre-commit false-pass — see pipeline #4365 / housekeeping-2 2026-05-19).
 const SELF_EXCLUSIONS = new Set([
-  'scripts/lib/validate/check-owner-leakage.mjs',
   'tests/lib/validate/check-owner-leakage.test.mjs',
-  // content-lint.test.mjs entry removed with the file itself (#985 Tier A,
-  // 2026-08-05) — a dangling exclusion would pre-authorize any future file
-  // at that path to bypass this scanner.
   'tests/husky/pre-commit-owner-leakage.test.mjs',
-  // #634: encoding-contract fixtures (`-Users-bernhardg-` expected-value literals
-  // are load-bearing for the resolveMemoryDir() assertions; P9 would self-flag them)
   'tests/lib/memory-paths.test.mjs',
-  // #660: owner-leakage redaction-test fixtures — namespace.test.mjs feeds the real
-  // CP1/CP6/CP10 leak literals into resolveRepoNamespace to prove they redact to
-  // 'redacted-repo'; the assertion literals are fixtures, not leaks (same class as
-  // check-owner-leakage.test.mjs above).
   'tests/lib/vault-mirror/namespace.test.mjs',
-  // #700: vault-relocation classifier redaction-test fixtures — both files feed the
-  // real CP6 private slugs (BuchhaltGenie / aiat-pmo-module) into the classifier to
-  // prove they redact to 'redacted-repo'; assertion literals are fixtures, not leaks
-  // (same class as namespace.test.mjs above).
   'tests/lib/vault-relocation-rules.test.mjs',
   'tests/scripts/relocate-vault-corpus.test.mjs',
 ]);
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
-  if (rel.startsWith('.orchestrator/audits/')) return false;
-  if (SELF_EXCLUSIONS.has(rel)) return false;
+  if (!packedInventoryPath && rel.startsWith('.orchestrator/audits/')) return false;
+  if (!packedInventoryPath && SELF_EXCLUSIONS.has(rel)) return false;
   return true;
 });
 
-// CP11 (#728a): load the host-local confidential-names patterns ONCE per scan.
-// [] when unconfigured (the default) OR when the host-local helper modules are
-// unresolvable (standalone single-file copy) → the CP11 block below is a no-op.
-// Awaited once, before the per-line loop, because the helpers are now dynamically
-// imported (standalone-safe) — CP1–CP10 behaviour is unchanged.
-//
-// #1244: a CP11 that was EXPECTED but could not load is a DISABLED guard, not a
-// clean scan — it is announced on stderr and counted as a FAIL so the run exits
-// non-zero. CP1–CP10 still run to completion either way: a disabled CP11 must not
-// suppress the findings the other ten rules can still make.
 const cp11 = await getConfidentialNamePatterns();
 const cp11Patterns = cp11.patterns;
 if (cp11.inertWarn) {
@@ -1240,22 +545,24 @@ if (cp11.inertWarn) {
 }
 if (cp11.disabledReason) {
   console.error(`CP11 DISABLED: ${cp11.disabledReason}`);
-  // Shaped like the per-file FAIL lines (`<where> — <CPn label>: <content>`) so the
-  // report's `— CPn` attribution parser sees CP11 here too; `<scan-wide>` stands in
-  // for the file position because a disabled guard is a property of the RUN, not of
-  // any one file. The reason carries no path (see getConfidentialNamePatterns).
   fail(`<scan-wide> — CP11 (guard disabled): ${cp11.disabledReason}`);
 }
 
-/** @type {Array<{relPath: string, lineNum: number, pattern: string, lineContent: string}>} */
 const violations = [];
 
 for (const filePath of scanFiles) {
   let content;
   try {
-    content = readFileSync(filePath, 'utf8');
+    if (packedInventoryPath) {
+      const fd = openSync(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        if (!fstatSync(fd).isFile() || realpathSync(filePath) !== filePath) throw new Error('unsafe-inventory');
+        content = readFileSync(fd, 'utf8');
+      } finally { closeSync(fd); }
+    } else { content = readFileSync(filePath, 'utf8'); }
   } catch {
-    continue; // unreadable — skip
+    fail(`${safeDiagnosticPath(relative(pluginRoot, filePath), cp11Patterns)} — file unreadable`);
+    continue;
   }
 
   const relPath = relative(pluginRoot, filePath).replace(/\\/g, '/');
@@ -1264,103 +571,53 @@ for (const filePath of scanFiles) {
   lines.forEach((line, idx) => {
     const lineNum = idx + 1;
 
-    // The canonical form of this line, computed ONCE (#1080 Finding A). Until now
-    // matchOwnerPath (CP1) was the ONLY consumer of canonicalizeLine; every other rule
-    // tested the raw line, so an entity-encoded private host inside an href resolved in
-    // the browser and reported nothing here. The four DOT-anchored rules (CP2, CP3, CP7,
-    // CP8) are re-tested against it below.
-    //
-    // Why exactly those four, and not every rule — the discriminator is which character
-    // the rule ANCHORS on, and it was measured, not assumed:
-    //   - Canonicalization can FABRICATE a '/' out of any benign hyphen run
-    //     (`@goetzendorfer-team` -> `@goetzendorfer/team`, `~-Projects-Bernhard` ->
-    //     `~/Projects/Bernhard`; both flip false -> true under canon). So the
-    //     SLASH-anchored rules CP4 and CP10 would gain folding artifacts, and stay raw.
-    //   - It can never fabricate a '.' from a separator: `gitlab-gotzendorfer-at`
-    //     canonicalizes to `gitlab/gotzendorfer/at`, dot-free. A '.' appears in the
-    //     canonical form ONLY by decoding an escape — which is the evasion itself. So for
-    //     the DOT-anchored rules (CP2, CP3, CP7, CP8) every canonical-only hit is a
-    //     decoded evasion by construction, and the false-positive surface is empty.
-    //   - CP6 stays raw for the mirror-image reason: it anchors on `\b`-delimited slug
-    //     literals, and the dash folding SHREDS five of the seven slugs
-    //     (`mail-assistant` -> `mail/assistant`, which `\bmail-assistant\b` no longer
-    //     matches), so a canonical test there is a no-op at best.
-    //   - CP5 anchors on an identifier and CP11 on host-local names; neither is a path or
-    //     host spelling, so neither is re-tested.
-    // Repo-wide cost of the four, measured over 1547 tracked files before landing: 0 new
-    // findings.
     const canon = canonicalizeLine(line);
 
-    // CP1: personal home path — CANONICALIZED match (#661). One structural rule
-    // replaces the slash-form (P1, #631) + dash-encoded (P9, #634) treadmill and
-    // catches percent/unicode/backslash/homoglyph encodings of the same path.
     const ownerPathHit = matchOwnerPath(line);
     if (ownerPathHit) {
       violations.push({ relPath, lineNum, pattern: ownerPathHit, lineContent: line.trim() });
     }
 
-    // CP2: private GitLab host — raw OR canonical (#1080). ONE `if` per rule, so a
-    // line matching BOTH forms still reports exactly ONE violation. (The pre-existing
-    // 'CP2: private GitLab host' scan row, which expects fails: 2 for the CP2+CP7 pair,
-    // is the standing guard against a double-count regression here.) CP2 consults no
-    // allowlist, so the raw/canonical split CP3 and CP7 need does not arise.
     if (CP2.test(line) || CP2.test(canon)) {
-      violations.push({ relPath, lineNum, pattern: 'CP2 (gitlab.gotzendorfer.at)', lineContent: line.trim() });
+      violations.push({ relPath, lineNum, pattern: 'CP2 (private host)', lineContent: line.trim() });
     }
 
-    // CP3: private events domain — the raw form consults the exclusion allowlist
-    // exactly as before; a DECODED surplus occurrence (canonical count > raw count)
-    // bypasses it, because an encoded spelling is never the sanctioned publication.
-    // See CP3_G / CP7_G for why this is a count and not isAllowlisted(relPath, canon).
     const cp3Decoded = countMatches(CP3_G, canon) > countMatches(CP3_G, line);
     if (CP3.test(line) || cp3Decoded) {
       if (cp3Decoded || !isAllowlisted(relPath, line)) {
-        violations.push({ relPath, lineNum, pattern: 'CP3 (events.gotzendorfer.at)', lineContent: line.trim() });
+        violations.push({ relPath, lineNum, pattern: 'CP3 (private events host)', lineContent: line.trim() });
       }
     }
 
-    // CP4: private package scope
     if (CP4.test(line)) {
-      violations.push({ relPath, lineNum, pattern: 'CP4 (@goetzendorfer/ scope)', lineContent: line.trim() });
+      violations.push({ relPath, lineNum, pattern: 'CP4 (private scope/ scope)', lineContent: line.trim() });
     }
 
-    // CP5: DEFAULT_GITLAB_HOST with gotzendorfer OR as exported const
-    if (CP5_WITH_GOTZ.test(line) && /gotzendorfer/.test(line)) {
-      violations.push({ relPath, lineNum, pattern: 'CP5 (DEFAULT_GITLAB_HOST on gotzendorfer line)', lineContent: line.trim() });
+    if (CP5_WITH_GOTZ.test(line) && policy.privateDomains.some((token) => line.includes(token.split('.')[0]))) {
+      violations.push({ relPath, lineNum, pattern: 'CP5 (DEFAULT_GITLAB_HOST on owner line)', lineContent: line.trim() });
     } else if (CP5_EXPORT.test(line)) {
       violations.push({ relPath, lineNum, pattern: 'CP5 (DEFAULT_GITLAB_HOST exported const)', lineContent: line.trim() });
     }
 
-    // CP6: private project slugs
     for (let i = 0; i < CP6_PATTERNS.length; i++) {
       if (CP6_PATTERNS[i].test(line)) {
-        violations.push({ relPath, lineNum, pattern: `CP6 (private slug: ${PRIVATE_SLUGS[i]})`, lineContent: line.trim() });
+        violations.push({ relPath, lineNum, pattern: 'CP6 (private slug)', lineContent: line.trim() });
         break; // one violation per line per slug is enough
       }
     }
 
-    // CP7: catch-all gotzendorfer.at — same split as CP3: the raw form consults the
-    // exclusion allowlist, a decoded surplus occurrence bypasses it. This is the arm
-    // that catches the sharpest shape of #1080 Finding A — a WORKING link on a published
-    // page, `<a href="https://gitlab&#46;gotzendorfer&#46;at/...">`, which the browser
-    // resolves and the raw-only rule read as ordinary text.
     const cp7Decoded = countMatches(CP7_G, canon) > countMatches(CP7_G, line);
     if (CP7.test(line) || cp7Decoded) {
       if (cp7Decoded || !isAllowlisted(relPath, line)) {
-        violations.push({ relPath, lineNum, pattern: 'CP7 (gotzendorfer.at catch-all)', lineContent: line.trim() });
+        violations.push({ relPath, lineNum, pattern: 'CP7 (private domain catch-all)', lineContent: line.trim() });
       }
     }
 
-    // CP8: full RFC1918 private dotted-quad — internal IP leak (redaction-test fixtures
-    // exempt). Raw OR canonical: `10&#46;11&#46;12&#46;13` decodes to a literal quad.
-    // The allowlist here is PATH-scoped, not line-scoped, so it needs no raw/canonical
-    // split — it applies identically to both forms.
-    if ((CP8.test(line) || CP8.test(canon)) && !CP8_ALLOWLIST.has(relPath)) {
+    if ((CP8.test(line) || CP8.test(canon)) && (packedInventoryPath || !CP8_ALLOWLIST.has(relPath))) {
       violations.push({ relPath, lineNum, pattern: 'CP8 (RFC1918 private IP)', lineContent: line.trim() });
     }
 
-    // CP10: personal-name segment in a ~/Projects/<name>/ path (allowlisted migration fixtures exempt) — #653
-    if (!CP10_ALLOWLIST.has(relPath)) {
+    if (packedInventoryPath || !CP10_ALLOWLIST.has(relPath)) {
       for (const re of CP10_PATTERNS) {
         if (re.test(line)) {
           violations.push({ relPath, lineNum, pattern: 'CP10 (~/Projects/<name>/ personal segment)', lineContent: line.trim() });
@@ -1369,28 +626,13 @@ for (const filePath of scanFiles) {
       }
     }
 
-    // CP11: host-local confidential customer/repo names (#728a). INACTIVE unless a
-    // names file is configured (cp11Patterns is [] by default).
-    //
-    // DETECTION ONLY here — the confidential-name REDACTION is applied at the print
-    // choke-point (redactSpans over EVERY violation's lineContent), so a name that
-    // rides in on a CP1–CP10 hit on the same line is scrubbed too (Fix 1), and a
-    // name that is a prefix of another configured name cannot leak a suffix residue
-    // (Fix 2). cp11Patterns are non-global, so `.test()` is stateless.
     if (cp11Patterns.length > 0 && cp11Patterns.some((re) => re.test(line))) {
       violations.push({ relPath, lineNum, pattern: 'CP11 (confidential name)', lineContent: line.trim() });
     }
   });
 }
 
-// Deduplicate: CP7 and CP3 can overlap — de-dup by (relPath, lineNum, pattern)
-// But CP3 and CP7 are distinct patterns so they'd produce separate entries.
-// However, one line could match both CP3 and CP7 — treat as two violations.
-// The spec does not say to deduplicate, so keep as-is.
-
 if (violations.length === 0) {
-  // #1244: only claim the clean verdict the run actually earned. With CP11
-  // disabled, ten of eleven rules ran — say that instead of "no leakage found".
   if (cp11.disabledReason) {
     console.log(`  (CP1–CP10 found no leakage across ${scanFiles.length} scanned files; CP11 did not run)`);
   } else {
@@ -1398,15 +640,8 @@ if (violations.length === 0) {
   }
 } else {
   for (const v of violations) {
-    // Choke-point redaction (Fix 1 + Fix 2): scrub every configured confidential
-    // name from EVERY violation's lineContent — not only CP11 hits — BEFORE it
-    // reaches stdout (the public GitHub-Actions log). redactSpans is order-
-    // independent (span-merge, never chained .replace), and is a no-op when no
-    // names file is configured (cp11Patterns === []), so the CP1–CP10 default-path
-    // output is byte-identical to before. Redact first, THEN truncate, so a name
-    // straddling the 120-char boundary can never leak its tail.
-    const safeContent = redactSpans(v.lineContent, cp11Patterns);
-    fail(`${v.relPath}:${v.lineNum} — ${v.pattern}: ${safeContent.slice(0, 120)}`);
+    // Violation content is omitted: canonical detection may hide reversible spellings.
+    fail(`${safeDiagnosticPath(v.relPath, cp11Patterns)}:${v.lineNum} — ${v.pattern}: [REDACTED]`);
   }
 }
 
@@ -1415,71 +650,19 @@ console.log(`Results: ${passed} passed, ${failed} failed (${scanFiles.length} sc
 process.exit(failed === 0 ? 0 : 1);
 }
 
-// ---------------------------------------------------------------------------
-// Exported helper for in-process leak detection (Issue #660 namespace guard)
-// ---------------------------------------------------------------------------
-
-/**
- * Test whether a single value (a repo identifier or sanitised slug segment)
- * matches any owner-privacy leakage pattern.
- *
- * Runs the canonical CP1 check (via canonicalizeLine + CP1_CANON) and the
- * word-boundary CP6 (private project slugs) and CP10 (personal name in a
- * Projects path) checks against the raw value. Returns the matched pattern id
- * string or null when clean.
- *
- * CP6 here uses the NARROWER CP6_INPROCESS_PATTERNS (PRIVATE_SLUGS minus
- * VAULT_CLEAR_SLUGS — issue #59 owner decision 2026-07-18), so carved-out slugs
- * (buchhaltgenie, mail-assistant, wien-forschungsfragen-klima, launchpad-ai-factory,
- * angebotschecker) resolve to their own vault namespace here while the tracked-file
- * scanner (runScan, full CP6_PATTERNS) still blocks them from the public mirror.
- *
- * This is the single source of truth for in-process leak detection — do NOT
- * reimplement these pattern checks outside this module. The `namespace.mjs`
- * resolver uses this to guard vault path segments before any filesystem write.
- *
- * @param {string} value — raw repo identifier or sanitised slug to test.
- * @returns {'CP1'|'CP6'|'CP10'|null}
- */
 export function isOwnerLeakySegment(value) {
   if (typeof value !== 'string' || !value) return null;
-
-  // CP1: personal home path — canonicalize then match.
-  const ownerPathMatch = matchOwnerPath(value);
-  if (ownerPathMatch !== null) return 'CP1';
-
-  // CP1 (bare): the personal-username token standing alone — e.g. the macOS login
-  // name surfacing via deriveRepo()'s basename(process.cwd()) fallback when cwd is
-  // the home directory. CP1_CANON only fires with a `/Users/` prefix, so the bare
-  // segment would otherwise slip through into a committed vault path (#660 Q3-LOW-1).
-  if (/^[bB][eE][rR][nN][hH][aA][rR][dD][gG][a-z]*$/.test(value)) return 'CP1';
-
-  // CP6: private project slugs (word-boundary, case-insensitive). In-process
-  // guard uses the VAULT_CLEAR_SLUGS-carved list, NOT the full CP6_PATTERNS the
-  // tracked-file scanner uses (issue #59).
-  for (const re of CP6_INPROCESS_PATTERNS) {
-    if (re.test(value)) return 'CP6';
-  }
-
-  // CP10: personal name in a ~/Projects/<name>/ path.
-  for (const re of CP10_PATTERNS) {
-    if (re.test(value)) return 'CP10';
-  }
-
+  const rules = currentOwnerRules();
+  if (rules.status !== 'ok' && (rules.status !== 'missing' || (process.env.SO_OWNER_PATTERNS_FILE || '').trim())) return 'CP1';
+  if (matchOwnerPath(value) || rules.CP1_BARE.test(value)) return 'CP1';
+  if (rules.CP6_INPROCESS_PATTERNS.some((re) => re.test(value))) return 'CP6';
+  if (rules.CP10_PATTERNS.some((re) => re.test(value))) return 'CP10';
   return null;
 }
 
-// Run the scan only when invoked directly as a CLI (#661).
 if (isMain) {
-  // runScan is async (the CP11 confidential-names helpers are now dynamically
-  // imported, standalone-safe) and self-terminates via process.exit(). We do NOT
-  // await it — that would make this a top-level-await module and force every static
-  // importer of isOwnerLeakySegment to become async. Instead we attach a `.catch`
-  // (Fix 4): while runScan's sole async step swallows its own errors today, an
-  // unhandled rejection from ANY future refactor must fail CLOSED with context and a
-  // deterministic exit 1 — never a silent unhandled-rejection warning + exit 0.
   runScan().catch((err) => {
-    console.error('check-owner-leakage crashed:', err);
+    console.error('check-owner-leakage failed:', (['ENOENT','EACCES','EPERM','ELOOP','ENOTDIR','EISDIR'].includes(err?.code) ? err.code : ['unsafe-inventory','invalid-inventory','inventory-too-large','invalid-inventory-entry'].includes(err?.message) ? err.message : 'scan-error'));
     process.exit(1);
   });
 }
