@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Isolated agent scope enforcement** (#1504 items 1–2): write and command hooks resolve the coordinator's manifest independently of the agent checkout. Relative grants apply to that checkout; ambiguous coordinator ownership and unsafe remote manifests deny, and isolated agents cannot use coordinator control-file or memory carveouts. Native Codex pre-tool hook wiring remains outside this change.
+- **Owner privacy in published packages** (#1530): private matching literals move to a protected host-local policy. Packed scans inspect file contents, require that policy, retain public attribution exceptions and omit sensitive diagnostic content. Release checks scan the retained archive before publishing those same bytes. Vault tools use configured targets instead of private path defaults.
+- **Development hook dependencies** (#1533): upgrade `lint-staged` to the compatible 16.4 line, removing the `micromatch` → `braces` dependency chain affected by GHSA-vfj7-8cjw-p6xm.
+
 - **`tests/setup/events-ledger-guard.test.mjs` in linked git worktrees** (#1527): the guard test used to map `repoRoot` of a linked worktree onto the main checkout and wrote probe events into the real ledger; probes now run against `mkdtemp` fixtures (own repo root, synthetic `.git` file + `commondir` for the worktree mapping) and the file-wide `ROOT_UNDER_TMP` skip is replaced by observable default-redirect tests.
 
 ### Changed
