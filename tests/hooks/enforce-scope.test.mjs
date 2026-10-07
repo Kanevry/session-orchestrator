@@ -81,8 +81,8 @@ async function runHook({ projectDir, stdin, execArgv = [], env = {} }) {
  * Create a temporary project directory with a .claude/wave-scope.json and a git repo.
  * Optionally creates a src/ subdirectory.
  */
-async function mkProject(scope) {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-test-'));
+async function mkProject(scope, tempRoot = os.tmpdir()) {
+  const dir = await fs.mkdtemp(path.join(tempRoot, 'hook-scope-test-'));
   await fs.mkdir(path.join(dir, '.claude'), { recursive: true });
   await fs.mkdir(path.join(dir, 'src'), { recursive: true });
   await fs.writeFile(path.join(dir, '.claude/wave-scope.json'), JSON.stringify(scope));
@@ -106,8 +106,8 @@ afterEach(async () => {
   }
 });
 
-async function mkProjectTracked(scope) {
-  const dir = await mkProject(scope);
+async function mkProjectTracked(scope, tempRoot) {
+  const dir = await mkProject(scope, tempRoot);
   tmpDirs.push(dir);
   return dir;
 }
@@ -2124,8 +2124,8 @@ describe('session root relocated away from the wave manifest (#1504 point 3)', {
 
 // #1504: real hook protocol, not a resolver-only assertion. Metadata mirrors
 // git's reciprocal linked-worktree registration without touching a live repo.
-async function isolatedFixture(manifestAt = 'entered') {
-  const main = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/'], session_id: 'own-isolated' });
+async function isolatedFixture(manifestAt = 'entered', tempRoot) {
+  const main = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['src/'], session_id: 'own-isolated' }, tempRoot);
   const agent = path.join(main, '.claude', 'worktrees', 'agent-a0123456789abcdef0');
   const entered = path.join(main, '.claude', 'worktrees', 'session-entered');
   for (const [name, root] of [['agent', agent], ['entered', entered]]) {
@@ -2202,8 +2202,11 @@ describe('isolated agent scope roots (#1504)', () => {
     expectDeny(await isolatedWrite(f, path.join(f.agent, 'other.mjs')), 'cannot be resolved');
   });
   it('retains an explicit absolute coordinator grant', async () => {
-    const f = await isolatedFixture();
+    // As in mkVault, macOS system temp is denylisted /private/var; use its
+    // sanctioned /tmp root. Other platforms retain their native temporary root.
+    const tempRoot = process.platform === 'darwin' ? '/tmp' : os.tmpdir();
+    const f = await isolatedFixture('entered', tempRoot);
     await fs.writeFile(path.join(f.coordinator, '.claude', 'wave-scope.json'), JSON.stringify({ session_id: 'own-isolated', enforcement: 'strict', allowedPaths: [path.join(await fs.realpath(f.coordinator), 'src', '**')] }));
-    expectWarn(await isolatedWrite(f, path.join(f.coordinator, 'src', 'granted.mjs')), ['out-of-repo grant', 'ALLOWED']);
+    expectAllow(await isolatedWrite(f, path.join(f.coordinator, 'src', 'granted.mjs')));
   });
 });
