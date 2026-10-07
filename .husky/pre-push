@@ -291,6 +291,15 @@ if [ -z "$repo_root" ]; then
   run_dir=$(pwd)
   tree_label='working tree'
 else
+  # Annotated tags name tag objects, but checkout and the remote receipt verify
+  # commit HEAD. Peel the selected pushed object rather than using current HEAD.
+  if ! commit_sha=$(git rev-parse --verify "${target_sha}^{commit}" 2>/dev/null); then
+    echo "✗ pre-push: $target_sha ($target_ref) does not resolve to a commit. Push blocked." >&2
+    exit 1
+  fi
+  target_sha=$commit_sha
+  unset commit_sha
+
   work=$(mktemp -d)
   if [ -z "$work" ] || [ ! -d "$work" ]; then
     echo "✗ pre-push: could not create a temp dir for the tracked-tree gate. Push blocked." >&2

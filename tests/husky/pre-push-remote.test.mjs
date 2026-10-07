@@ -8,7 +8,7 @@ const root = resolve(import.meta.dirname, '../..');
 const dirs = [];
 afterEach(() => { while (dirs.length) removeTree(dirs.pop()); });
 
-function runHook(mode, linked = false) {
+function runHook(mode, linked = false, tagKind) {
   const dir = makeTmpDir('pre-push-remote-');
   dirs.push(dir);
   const repo = linked ? join(dir, 'Ventures/org/canonical') : join(dir, 'repo');
@@ -92,9 +92,28 @@ function runHook(mode, linked = false) {
     fs.writeSync(2, r.stderr ?? '');
     process.exit(r.status ?? 1);
   `, { mode: 0o755 });
-  const res = spawnSync('sh', [join(root, '.husky/pre-push')], {
+  let command = 'sh';
+  let args = [join(root, '.husky/pre-push')];
+  let input = `refs/heads/x ${sha} refs/heads/x ${'0'.repeat(40)}\n`;
+  if (tagKind) {
+    const target = tagKind === 'commit' ? sha : fixtureGit(['-C', repo, 'rev-parse', `${sha}:payload.txt`],
+      undefined, { encoding: 'utf8' }).trim();
+    fixtureGit(['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+      'tag', '-a', 'v1.0.0', target, '-m', 'release']);
+    const destination = join(dir, 'destination.git');
+    fixtureGit(['init', '--bare', '-q', destination]);
+    fixtureGit(['-C', source, 'remote', 'add', 'publish-fixture', destination]);
+    const hooks = join(dir, 'hooks');
+    mkdirSync(hooks);
+    writeFileSync(join(hooks, 'pre-push'), `#!/bin/sh\nexec sh '${join(root, '.husky/pre-push')}' "$@"\n`,
+      { mode: 0o755 });
+    command = 'git';
+    args = ['-c', `core.hooksPath=${hooks}`, 'push', 'publish-fixture', 'v1.0.0'];
+    input = undefined;
+  }
+  const res = spawnSync(command, args, {
     cwd: source, encoding: 'utf8', timeout: 30_000,
-    input: `refs/heads/x ${sha} refs/heads/x ${'0'.repeat(40)}\n`,
+    input,
     env: { ...process.env, SKIP_QUALITY_GATE: '', PATH: `${bin}:${process.env.PATH}`,
       TRACE: trace, MODE: mode, CLAUDE_PROJECT_DIR: repo },
   });
@@ -145,4 +164,21 @@ it('routes a dirty linked worktree through its canonical repository name and usa
       .toEqual([['canonical', 'https://example.com/org/canonical.git']]);
     expect(records.filter((r) => r.gate).map((r) => [r.payload, r.extra, r.project]))
       .toEqual([['pushed', false, null]]);
+  });
+
+// Write-gate: Git supplies annotated tag objects, while a checked-out HEAD is a
+// commit. Branch-only cases miss release pushes; exercise real Git stdin and
+// protect older target content plus denial of tags with no commit tree.
+it.each(['commit', 'blob'])('actual annotated %s tag push gates its target commit or blocks before routing',
+  { timeout: 40_000 }, (tagKind) => {
+    const { res, records } = runHook('pass', false, tagKind);
+    if (tagKind === 'commit') {
+      expect(res.status, res.stderr).toBe(0);
+      expect(records.filter((r) => r.gate).map((r) => [r.remote, r.payload, r.extra, r.project]))
+        .toEqual([['1', 'pushed', false, null]]);
+    } else {
+      expect(res.status, res.stderr).not.toBe(0);
+      expect(res.stderr).toContain('does not resolve to a commit');
+      expect(records).toEqual([]);
+    }
   });

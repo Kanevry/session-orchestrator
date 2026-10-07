@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Annotated release tags** (#1536): pre-push verification resolves tag objects to their target commit before remote execution. Tags targeting older commits verify that target, and non-commit tags remain blocked.
 - **Isolated agent scope enforcement** (#1504 items 1–2): hooks resolve coordinator authority separately from the agent checkout, apply grants to that checkout and deny ambiguous ownership, unsafe manifests and coordinator-only carveouts. Native Codex pre-tool hook wiring remains outside this change.
 - **Published-package privacy** (#1530): private matching rules live in a protected host-local file. Release checks scan the retained archive's contents and publish those checked bytes; diagnostics omit sensitive content. Vault tools use configured destinations.
 - **Gate diagnostics and counts** (#1534, #1535): colored Vitest summaries retain correct case and file counts, and large piped failures drain their complete assertion output before exit.
