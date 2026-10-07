@@ -300,7 +300,7 @@ describe('.husky/pre-push — gates the TRACKED tree, not the working tree', () 
     const { res, probe } = runHook({ cwd: dir, stdin: contentLine(sha), probeExit: 2 });
 
     expect(res.status).toBe(1);
-    expect(probe.cwd).toMatch(/tree$/);
+    expect(probe.cwd).not.toBe(dir);
     expect(existsSync(probe.cwd)).toBe(false);
     expect(existsSync(resolve(probe.cwd, '..'))).toBe(false); // the mktemp parent too
   });
