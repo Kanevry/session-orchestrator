@@ -285,7 +285,7 @@ describe('renderBoard', () => {
 
   it('renders a markdown table header with the #871 Key column', () => {
     const out = renderBoard([{ repo: 'alpha', status: 'in-progress' }], { now: FIXED_NOW });
-    expect(out).toContain('| Repo | Status | Session | Branch | Mode | Last heartbeat | Key |');
+    expect(out).toContain('| Repo | Status | Session | Branch | Mode | Last heartbeat | Key | Host |');
     expect(out).toContain('|---|---|---|---|---|---|---|');
   });
 
@@ -547,7 +547,7 @@ describe('collectRows status derivation', () => {
 
   it('registry-fresh: no lock + no prior + fresh registry entry → in-progress', async () => {
     const repoRoot = ghostRepo('reg-fresh-repo');
-    const registry = [buildRegistryEntry({ repoRoot, branch: 'wip', heartbeatAgeMin: 1, now: FIXED_NOW })];
+    const registry = [{ ...buildRegistryEntry({ repoRoot, branch: 'wip', heartbeatAgeMin: 1, now: FIXED_NOW }), host_class: 'linux-x86_64' }];
 
     const rows = await collectRows({
       repos: [{ repoRoot }],
@@ -557,6 +557,7 @@ describe('collectRows status derivation', () => {
 
     expect(rows[0].status).toBe('in-progress');
     expect(rows[0].branch).toBe('wip');
+    expect(rows[0].host).toBe('linux-x86_64');
   });
 
   it('frei: no lock + no prior + no registry → frei with null fields', async () => {
@@ -663,6 +664,7 @@ describe('parseBoardRows', () => {
       branch: 'main',
       mode: 'deep',
       heartbeat: 'h-a',
+      host: null,
     });
     expect(parsed[1].repo).toBe('bravo');
     expect(parsed[1].status).toBe('frei');
@@ -690,6 +692,7 @@ describe('parseBoardRows', () => {
         branch: 'main',
         mode: 'deep',
         heartbeat: 'old-hb',
+        host: null,
       },
     ]);
   });
@@ -765,6 +768,7 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
       branch: null,
       mode: 'deep',
       heartbeat: freshLock.last_heartbeat,
+      host: 'test-host',
     });
   });
 
@@ -817,6 +821,7 @@ describe('mirrorBoard — case-insensitive key folding (issue #719)', () => {
         branch: null,
         mode: null,
         heartbeat: '2026-06-10T00:00:00.000Z',
+        host: null,
       });
     },
   );
@@ -1401,7 +1406,7 @@ describe('mirrorBoard — TTL-staleness re-derivation on preserved rows (#829)',
     // second run still shows exactly one force-closed row, unchanged.
     const rows = parseBoardRows(afterSecond);
     expect(rows.filter((r) => r.repo === 'stale-idem-repo')).toEqual([
-      { repo: 'stale-idem-repo', key: null, status: 'force-closed', session: 'sess-idem', branch: 'main', mode: 'deep', heartbeat: staleHb },
+      { repo: 'stale-idem-repo', key: null, host: null, status: 'force-closed', session: 'sess-idem', branch: 'main', mode: 'deep', heartbeat: staleHb },
     ]);
   });
 });
@@ -1755,4 +1760,27 @@ describe('mirrorBoard — canonical-vault guard (#1450)', () => {
     expect(existsSync(boardPath)).toBe(false);
     expect(dropWarns).toHaveLength(1);
   });
+});
+
+it('preserves old seven-column board rows alongside known hosts during migration (#1054)', async () => {
+  const old = '| Repo | Status | Session | Branch | Mode | Last heartbeat | Key |\n|---|---|---|---|---|---|---|\n| old | closed | old-session | main | deep | old-heartbeat | 12345678 |\n';
+  const migrated = renderBoard([...parseBoardRows(old), { repo: 'new', key: 'abcdef12', status: 'in-progress', host: 'worker' }], { now: FIXED_NOW });
+  expect(migrated).toContain('| Key | Host |');
+  const rows = parseBoardRows(migrated);
+  expect(rows).toHaveLength(2);
+  expect(rows.find((r) => r.repo === 'old')).toMatchObject({ key: '12345678', session: 'old-session', host: null });
+  expect(rows.find((r) => r.repo === 'new').host).toBe('worker');
+  expect(migrated).toContain('| 12345678 |  |');
+  const vaultDir = makeVaultDir();
+  const outputPath = resolveBoardPath(vaultDir);
+  mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+  writeFileSync(outputPath, renderBoard([], { now: FIXED_NOW }).split('| Repo |')[0] + old);
+  const repoRoot = makeThisRepoConfig('new', vaultDir);
+  const lock = { ...buildLockBody({ sessionId: 'new-session', now: FIXED_NOW }), host_id: 'Worker.LOCAL' };
+  makeRepo('new', lock);
+  expect((await mirrorBoard({ repoRoot, now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS })).action).toBe('written');
+  const merged = parseBoardRows(readFileSync(outputPath, 'utf8'));
+  expect(merged).toHaveLength(2);
+  expect(merged.find((r) => r.repo === 'old')).toEqual(rows.find((r) => r.repo === 'old'));
+  expect(merged.find((r) => r.repo === 'new').host).toBe('worker');
 });

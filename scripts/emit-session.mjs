@@ -48,6 +48,7 @@ import {
   aliasLegacyEndedAt,
   normalizeWaveKeys,
 } from './lib/session-schema.mjs';
+import { stableHostname } from './lib/host-identity.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 /**
@@ -296,6 +297,20 @@ async function main() {
     override: args.sessionUuid,
     recordSessionId: repaired.session_id,
   });
+
+  // #1054: origin belongs to the session, not the later mirror writer.
+  // Only the owned new-record path may derive this machine's identity:
+  // resolveOwnSessionUuid gates shared markers, while --session-uuid is the
+  // caller's explicit assertion that this is its own session (not proof of a
+  // historical import's origin). Incoming raw_session_id signals replayed
+  // provenance: leave its host unknown rather than guess. Explicit host keys,
+  // including null/empty values, always win. Never backfill existing records.
+  const carriesOrigin = ['raw_session_id', 'host_id', 'host', 'host_class']
+    .some((key) => Object.prototype.hasOwnProperty.call(repaired, key));
+  if (ownUuid && !carriesOrigin) {
+    const hostId = stableHostname();
+    if (hostId) repaired = { ...repaired, host_id: hostId };
+  }
 
   // An explicit session_start_ref that is not a full sha (#1443) names a
   // DIFFERENT commit once the short form becomes ambiguous. Dropped with a WARN
