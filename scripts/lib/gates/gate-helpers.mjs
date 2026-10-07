@@ -565,6 +565,8 @@ export function extractTestCounts(output) {
   const EMPTY = { passed: 0, failed: 0, total: 0, files: null };
   if (!output) return EMPTY;
 
+  // Colored Vitest labels must match the same summaries as piped plain text.
+  output = output.replace(ANSI_ESCAPE, '');
   const lines = output.split('\n');
   const summaryLines = lines.filter((line) => TEST_SUMMARY_LINE.test(line));
   const scope = summaryLines.length > 0 ? summaryLines[summaryLines.length - 1] : output;

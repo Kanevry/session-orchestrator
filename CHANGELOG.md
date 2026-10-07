@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Known foreign-host paths in drift checks** (#937): an optional `owner.yaml` `drift-check.foreign-host-prefixes` list downgrades only matching missing paths to warnings. Directory boundaries are respected; invalid or overly broad prefixes do not weaken checks for other missing paths.
+- **Vault session host metadata** (#1054): the canonical writer records the stable host identity for new owned sessions; mirrored notes use recorded `host_id`, then `host`, then `host_class` when available. Explicit origins and historical records remain unchanged. The board appends `Host` as column 8 and retains legacy 6- and 7-column rows with an empty host cell; hardware class alone cannot distinguish equally equipped hosts.
+
 ### Fixed
 
+- **Colored test summaries in gate reports** (#1534): ANSI formatting no longer hides Vitest's final case and file counts, which previously caused the parser to report the plugin validator's earlier count instead.
 - **Isolated agent scope enforcement** (#1504 items 1–2): write and command hooks resolve the coordinator's manifest independently of the agent checkout. Relative grants apply to that checkout; ambiguous coordinator ownership and unsafe remote manifests deny, and isolated agents cannot use coordinator control-file or memory carveouts. Native Codex pre-tool hook wiring remains outside this change.
 - **Owner privacy in published packages** (#1530): private matching literals move to a protected host-local policy. Packed scans inspect file contents, require that policy, retain public attribution exceptions and omit sensitive diagnostic content. Release checks scan the retained archive before publishing those same bytes. Vault tools use configured targets instead of private path defaults.
 - **Development hook dependencies** (#1533): upgrade `lint-staged` to the compatible 16.4 line, removing the `micromatch` → `braces` dependency chain affected by GHSA-vfj7-8cjw-p6xm.
@@ -16,6 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`tests/setup/events-ledger-guard.test.mjs` in linked git worktrees** (#1527): the guard test used to map `repoRoot` of a linked worktree onto the main checkout and wrote probe events into the real ledger; probes now run against `mkdtemp` fixtures (own repo root, synthetic `.git` file + `commondir` for the worktree mapping) and the file-wide `ROOT_UNDER_TMP` skip is replaced by observable default-redirect tests.
 
 ### Changed
+
+- **Remote pre-push full gate** (#1532): configured test-role hosts can run the canonical quality gate against the exact pushed SHA through `offload`. Readiness or transport failures fall back to another route or the local full gate; a failed gate, mismatched receipt or unconfirmed result blocks the push. Remote verdicts are recorded in the originating repository's gate ledger.
 
 - **Gate-result prose readers** (#1528): the old ledger selector returned a stale value on a corrupt line rather than nothing; step 7 of the wave loop names its fallback "count fallback" (the header is not a source there); a diagnostic query without the `counts` filter separates "no event", "no `wave_number`" and "no counts after fail-fast"; the `appendFile` split-line case is documented as a known limit.
 
