@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Complete gate failure diagnostics** (#1535): large captured failures retain their assertion tail when piped through the full-gate CLI; output drains before the blocking process exits.
 - **Colored test summaries in gate reports** (#1534): ANSI formatting no longer hides Vitest's final case and file counts, which previously caused the parser to report the plugin validator's earlier count instead.
 - **Isolated agent scope enforcement** (#1504 items 1–2): write and command hooks resolve the coordinator's manifest independently of the agent checkout. Relative grants apply to that checkout; ambiguous coordinator ownership and unsafe remote manifests deny, and isolated agents cannot use coordinator control-file or memory carveouts. Native Codex pre-tool hook wiring remains outside this change.
 - **Owner privacy in published packages** (#1530): private matching literals move to a protected host-local policy. Packed scans inspect file contents, require that policy, retain public attribution exceptions and omit sensitive diagnostic content. Release checks scan the retained archive before publishing those same bytes. Vault tools use configured targets instead of private path defaults.

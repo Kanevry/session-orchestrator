@@ -227,4 +227,10 @@ if (failed) {
   }
 }
 
+// stderr is asynchronous when piped (pre-push/offload capture). Drain queued
+// writes before the forced exit; natural exit would retain kill-ladder timers.
+await Promise.all([
+  new Promise((resolve) => process.stdout.write('', resolve)),
+  new Promise((resolve) => process.stderr.write('', resolve)),
+]);
 process.exit(failed ? 2 : 0);
