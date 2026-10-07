@@ -31,7 +31,7 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync, lstatSync, realpathSync } from 'node:fs';
-import { join, relative, resolve } from 'node:path';
+import { join, relative, resolve, posix } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
@@ -41,6 +41,7 @@ import { isSessionConfigHeading } from '../../scripts/lib/config/section-extract
 import { FRONTMATTER_NOT_AT_TOP, isRuleExpired, parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
+import { loadOwnerConfig } from '../../scripts/lib/owner-yaml.mjs';
 import { learningKeyOf } from '../../scripts/lib/learnings/kebab.mjs';
 
 const FORWARD_HEADING_RE =
@@ -1016,6 +1017,9 @@ function main() {
   if (!args.skipSessionFiles) checksRun.push('session-file-existence');
   for (const s of activeSurfaces) checksRun.push(s.id);
 
+  const foreignHostPrefixes = args.skipPathResolver ? [] :
+    (loadOwnerConfig().config['drift-check']?.['foreign-host-prefixes'] ?? [])
+      .map((prefix) => prefix.replace(/\/+$/, ''));
   const errors = [];
   const warnings = [];
   // Informational findings — never block, never count as a warning. Currently
@@ -1731,9 +1735,16 @@ function main() {
         while ((m = pathRegex.exec(line)) !== null) {
           const p = m[0].replace(/[.,;:)\]`"']+$/, '');
           if (!existsSync(p)) {
-            errors.push({
+            // Lexical containment must use the effective POSIX path: '..' can
+            // escape an allowed foreign directory. Keep p for diagnostics.
+            const normalizedPath = posix.normalize(p);
+            const foreign = foreignHostPrefixes.some((prefix) =>
+              normalizedPath === prefix || normalizedPath.startsWith(`${prefix}/`));
+            (foreign ? warnings : errors).push({
               check: 'path-resolver', file: rel, line: lineNum,
-              message: `Absolute path does not exist: ${p}`,
+              message: foreign
+                ? `Known foreign-host path does not exist on this host: ${p}`
+                : `Absolute path does not exist: ${p}`,
               extracted: p,
             });
           }

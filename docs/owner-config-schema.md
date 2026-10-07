@@ -140,3 +140,16 @@ hardware-sharing:
 ## Owner privacy pattern source
 
 Host-local owner leakage patterns use a separate protected version 1 JSON file, not an owner.yaml section. See [Owner privacy patterns](owner-privacy-patterns.md) for source precedence, schema, migration and strict packed-release checks. `paths.vault-dir` remains the canonical vault target used by the vault migration and consolidation tools; `SO_VAULT_DIR` overrides it.
+
+### Host-local drift path exceptions (#937)
+
+Optional `drift-check.foreign-host-prefixes` is an array of absolute directory
+prefixes belonging to known foreign hosts, for example
+`/Users/remote-user/Projects/foreign-layout`. Missing `/Users/…` references
+under a declared prefix become warnings; other missing paths remain errors.
+Matching respects directory boundaries and accepts a trailing slash. Prefixes
+must contain at least three components (four under `/Users` or `/home`); roots,
+home directories, broad Projects roots, traversal, globs and malformed entries
+are rejected. One invalid entry drops the entire optional `drift-check` section
+while preserving other valid owner settings. This section does not change
+`drift-check.mode` or its precedence. No default allowlist is supplied.

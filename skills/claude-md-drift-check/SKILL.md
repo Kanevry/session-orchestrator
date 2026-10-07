@@ -34,7 +34,7 @@ PHASE 1 IMPLEMENTED (2026-04-19). Session-end opt-in quality gate. Upstream of `
 
 | # | Check | What it scans | How |
 |---|-------|---------------|-----|
-| 1 | `path-resolver` | Every absolute path `/Users/…` in scope files | `existsSync(path)` |
+| 1 | `path-resolver` | Every absolute path `/Users/…` in scope files | `existsSync(path)`; missing paths under validated owner.yaml `drift-check.foreign-host-prefixes` are warnings (#937) |
 | 2 | `project-count-sync` | Hardcoded "N registered" / "N projects" claims next to `01-projects/` | compare to `ls -d 01-projects/*/` |
 | 3 | `issue-reference-freshness` | `#NN` in forward-looking sections (What's Next, Backlog, Open Issues, Offene Themen, Todo, Next Steps) | `glab issue view NN --repo <origin>` |
 | 4 | `session-file-existence` | `50-sessions/YYYY-MM-DD-*.md` references anywhere in scope | `existsSync(vault/50-sessions/<file>)` |
