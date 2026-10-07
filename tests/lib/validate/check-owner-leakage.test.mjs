@@ -24,9 +24,9 @@
  * (line-scoped semantics a table would flatten into unreadability).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, cpSync, symlinkSync, realpathSync } from 'node:fs';
+import { mkdirSync, writeFileSync, cpSync, symlinkSync, realpathSync, unlinkSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // #661: the scanner now exports its canonicalization helpers; the script is
@@ -38,11 +38,24 @@ import {
   isOwnerLeakySegment,
   VAULT_CLEAR_SLUGS,
   getConfidentialNamePatterns,
+  inspectOwnerPatterns,
 } from '../../../scripts/lib/validate/check-owner-leakage.mjs';
 import { loadHostPaths } from '../../../scripts/lib/config/host-paths.mjs';
 import { fixtureGitSpawn, makeTmpDir } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
+const inventedOwnerPolicyDir = makeTmpDir('invented-owner-policy-');
+const inventedOwnerPolicyPath = join(inventedOwnerPolicyDir, 'owner-patterns.json');
+writeFileSync(inventedOwnerPolicyPath, JSON.stringify({
+  version: 1, usernamePrefixes: ['sampleg'], privateHosts: ['gitlab.example.invalid'], eventsHosts: ['events.example.invalid'], privateDomains: ['example.invalid'], packageScopes: ['example'],
+  privateSlugs: ['project-launchpad','Project-Hackathon','project-ledger','Project-Quotes','project-climate','project-private-module','project-mail'],
+  vaultClearSlugs: ['project-ledger','project-mail','project-climate','project-launchpad','project-quotes'], personalNames: ['Sample'],
+  publicEmails: ['office@example.invalid','security@example.invalid'], publicUrls: ['https://example.invalid','http://example.invalid','https://www.example.invalid','http://www.example.invalid','www.example.invalid'],
+}), {mode: 0o600});
+vi.stubEnv('SO_OWNER_PATTERNS_FILE', inventedOwnerPolicyPath);
+inspectOwnerPatterns({refresh:true});
+beforeEach(() => { vi.stubEnv('SO_OWNER_PATTERNS_FILE', inventedOwnerPolicyPath); });
+
 const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs');
 
@@ -155,12 +168,12 @@ const SCAN_CASES = [
   // --- CP1: personal home path, slash form + #631 trailing/bare blindspots ---
   {
     name: 'CP1: plain /Users/<owner>/ path in a tracked .md',
-    files: { 'leak.md': '# test\nPath: /Users/bernhardg/secret/config.txt\n' },
+    files: { 'leak.md': '# test\nPath: /Users/sampleg/secret/config.txt\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1: tracked MDX content is scanned (#1267)',
-    files: { 'post.mdx': '<Note>See /Users/bernhardg/private</Note>\n' },
+    files: { 'post.mdx': '<Note>See /Users/sampleg/private</Note>\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
@@ -170,124 +183,124 @@ const SCAN_CASES = [
   },
   {
     name: 'CP1: bare trailing-dot home path at end-of-line (#631)',
-    files: { 'leak.md': 'home: /Users/bernhardg.\n' },
+    files: { 'leak.md': 'home: /Users/sampleg.\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1: trailing-dot home path before " && ls" (#631)',
-    files: { 'leak.sh': 'cd /Users/bernhardg. && ls\n' },
+    files: { 'leak.sh': 'cd /Users/sampleg. && ls\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: home=/Users/bernhardg. followed by a newline (#631)',
-    files: { 'leak.txt': 'home=/Users/bernhardg.\nnext line\n' },
+    name: 'CP1: home=/Users/sampleg. followed by a newline (#631)',
+    files: { 'leak.txt': 'home=/Users/sampleg.\nnext line\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: slash forms /Users/bernhardg./ and /…/Projects/x — one FAIL per line',
-    files: { 'leak.md': 'a: /Users/bernhardg./\nb: /Users/bernhardg./Projects/x\n' },
+    name: 'CP1: slash forms /Users/sampleg./ and /…/Projects/x — one FAIL per line',
+    files: { 'leak.md': 'a: /Users/sampleg./\nb: /Users/sampleg./Projects/x\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: bare /Users/bernhardg (no dot) at end-of-line — \\b arm of the regex',
-    // Mutation guard: the OLD regex /\/Users\/bernhardg[a-z.]*\// required a slash
+    name: 'CP1: bare /Users/sampleg (no dot) at end-of-line — \\b arm of the regex',
+    // Mutation guard: the OLD regex /\/Users\/sampleg[a-z.]*\// required a slash
     // after the username, so this bare EOL form would NOT match → #631 class.
-    files: { 'leak.txt': 'USER_HOME=/Users/bernhardg\n' },
+    files: { 'leak.txt': 'USER_HOME=/Users/sampleg\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: /Users/bernhardg. inside a JSON string value',
-    files: { 'config.json': '{"home": "/Users/bernhardg."}\n' },
+    name: 'CP1: /Users/sampleg. inside a JSON string value',
+    files: { 'config.json': '{"home": "/Users/sampleg."}\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: env-assignment form BERNHARD_HOME=/Users/bernhardg. in a .sh file',
-    files: { 'setup.sh': '#!/bin/sh\nBERNHARD_HOME=/Users/bernhardg.\nexport BERNHARD_HOME\n' },
+    name: 'CP1: env-assignment form BERNHARD_HOME=/Users/sampleg. in a .sh file',
+    files: { 'setup.sh': '#!/bin/sh\nBERNHARD_HOME=/Users/sampleg.\nexport BERNHARD_HOME\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1: two home paths on ONE line report a single per-line violation',
-    files: { 'multi.sh': 'cp /Users/bernhardg./src /Users/bernhardg./dst\n' },
+    files: { 'multi.sh': 'cp /Users/sampleg./src /Users/sampleg./dst\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: legacy full username /Users/bernhardgoetzendorfer/ (#605 drift class)',
+    name: 'CP1: legacy full username /Users/samplegaccount/ (#605 drift class)',
     // Mutation: removing [a-z.]* from the username token makes this row fail.
-    files: { 'legacy.md': 'Path: /Users/bernhardgoetzendorfer/projects/\n' },
+    files: { 'legacy.md': 'Path: /Users/samplegaccount/projects/\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1: hyphen-suffixed /Users/bernhardg-backup/ (owner prefix + non-word boundary)',
-    files: { 'a.md': 'path: /Users/bernhardg-backup/x\n' },
+    name: 'CP1: hyphen-suffixed /Users/sampleg-backup/ (owner prefix + non-word boundary)',
+    files: { 'a.md': 'path: /Users/sampleg-backup/x\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1: dash-encoded Claude-Code projects-dir form (#634)',
-    files: { 'doc.md': 'See .claude/projects/-Users-bernhardg--Projects-x/memory/foo.md for details\n' },
+    files: { 'doc.md': 'See .claude/projects/-Users-sampleg--Projects-x/memory/foo.md for details\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: url-percent-encoded home path (#661 novel encoding)',
-    files: { 'leak.md': 'config path: %2FUsers%2Fbernhardg%2Fsecret\n' },
+    files: { 'leak.md': 'config path: %2FUsers%2Fsampleg%2Fsecret\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: backslash-separated home path (Windows-style spelling)',
-    files: { 'leak.txt': String.raw`p=\Users\bernhardg\config` + '\n' },
+    files: { 'leak.txt': String.raw`p=\Users\sampleg\config` + '\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: homoglyph-slash home path (unicode evasion)',
-    files: { 'leak.md': 'p=∕Users∕bernhardg∕secret\n' },
+    files: { 'leak.md': 'p=∕Users∕sampleg∕secret\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: html-entity-encoded home path',
-    files: { 'leak.md': 'p=&#47;Users&#47;bernhardg\n' },
+    files: { 'leak.md': 'p=&#47;Users&#47;sampleg\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
-    name: 'CP1 e2e: capitalized username /Users/Bernhardg. (#661 Finding 1)',
-    files: { 'leak.md': 'home: /Users/Bernhardg./Projects/secret\n' },
+    name: 'CP1 e2e: capitalized username /Users/Sampleg. (#661 Finding 1)',
+    files: { 'leak.md': 'home: /Users/Sampleg./Projects/secret\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: zero-width space spliced into the username (#661 Finding 3)',
-    files: { 'leak.md': 'p: /Users/bern\u200bhardg/secret\n' },
+    files: { 'leak.md': 'p: /Users/sam\u200bpleg/secret\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: percent-encoded LETTERS of the path (#661 Finding 4)',
-    files: { 'leak.md': 'p: /%55sers/%62ernhardg/secret\n' },
+    files: { 'leak.md': 'p: /%55sers/%73ampleg/secret\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
     name: 'CP1 e2e: home-path leak inside .env.example (dotfile-allowlist reachability)',
     // Mutation caught: reverting isTextFile() to extension-first (extname of
     // '.env.example' is '.example') skips the file entirely → status 0.
-    files: { '.env.example': 'OWNER_HOME=/Users/bernhardg.\n' },
+    files: { '.env.example': 'OWNER_HOME=/Users/sampleg.\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
 
   // --- CP1 false-positive guards (near-miss usernames stay clean) ---
   {
-    name: 'CLEAN: near-miss prefixes /Users/bernhardo-other/ and /Users/bernhardgXfoo',
-    files: { 'clean.md': 'a: /Users/bernhardo-other/\nb: /Users/bernhardgXfoo\n' },
+    name: 'CLEAN: near-miss prefixes /Users/sampleo-other/ and /Users/samplegXfoo',
+    files: { 'clean.md': 'a: /Users/sampleo-other/\nb: /Users/samplegXfoo\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
-    name: 'CLEAN: lowercase /users/bernhardg. (CP1 host stays case-SENSITIVE)',
-    files: { 'notes.md': 'see /users/bernhardg. for config\n' },
+    name: 'CLEAN: lowercase /users/sampleg. (CP1 host stays case-SENSITIVE)',
+    files: { 'notes.md': 'see /users/sampleg. for config\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
-    name: 'CLEAN: digit continuation /Users/bernhardg9/ (different user)',
-    files: { 'a.md': 'path: /Users/bernhardg9/proj\n' },
+    name: 'CLEAN: digit continuation /Users/sampleg9/ (different user)',
+    files: { 'a.md': 'path: /Users/sampleg9/proj\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
-    name: 'CLEAN: underscore continuation /Users/bernhardg_home (different user)',
-    files: { 'a.md': 'path: /Users/bernhardg_home\n' },
+    name: 'CLEAN: underscore continuation /Users/sampleg_home (different user)',
+    files: { 'a.md': 'path: /Users/sampleg_home\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
@@ -302,7 +315,7 @@ const SCAN_CASES = [
   },
   {
     name: 'CLEAN: leak string only in a .png file (outside the TEXT_EXTS allowlist)',
-    files: { 'image.png': '/Users/bernhardg./secret\n' },
+    files: { 'image.png': '/Users/sampleg./secret\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
@@ -314,42 +327,42 @@ const SCAN_CASES = [
   // --- CP2 / CP3 / CP4 / CP6 / CP7: hosts, domains, scopes, private slugs ---
   {
     name: 'CP2: private GitLab host (also trips the CP7 catch-all)',
-    files: { 'config.md': 'host: gitlab.gotzendorfer.at\n' },
+    files: { 'config.md': 'host: gitlab.example.invalid\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: 'CP3: events domain as a string-literal (NOT the excluded doc-comment form)',
-    files: { 'config.mjs': "const EVENTS_URL = 'https://events.gotzendorfer.at/hook';\n" },
+    files: { 'config.mjs': "const EVENTS_URL = 'https://events.example.invalid/hook';\n" },
     expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
   },
   {
     name: 'CP3: events domain inside a JSON value',
-    files: { 'settings.json': '{"webhookUrl": "https://events.gotzendorfer.at/webhook"}\n' },
+    files: { 'settings.json': '{"webhookUrl": "https://events.example.invalid/webhook"}\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
   },
   {
-    name: 'CP4: @goetzendorfer/ package-scope import',
-    files: { 'index.mjs': "import { createFactory } from '@goetzendorfer/testing-utils';\n" },
+    name: 'CP4: @example/ package-scope import',
+    files: { 'index.mjs': "import { createFactory } from '@example/testing-utils';\n" },
     expected: { status: 1, fails: 1, checkpoints: ['CP4'] },
   },
   {
-    name: 'CP6: private project slug "buchhaltgenie"',
-    files: { 'notes.md': 'See repo buchhaltgenie for details.\n' },
+    name: 'CP6: private project slug "project-ledger"',
+    files: { 'notes.md': 'See repo project-ledger for details.\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
   },
   {
-    name: 'CP6: private project slug "AngebotsChecker" (case-insensitive)',
-    files: { 'test.mjs': '// target: AngebotsChecker\n' },
+    name: 'CP6: private project slug "Project-Quotes" (case-insensitive)',
+    files: { 'test.mjs': '// target: Project-Quotes\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
   },
   {
-    name: 'CP6: carved-out slug "mail-assistant" STILL fails the tracked-file scan (#59 split proof)',
-    files: { 'notes.md': 'Deploy notes for mail-assistant service.\n' },
+    name: 'CP6: carved-out slug "project-mail" STILL fails the tracked-file scan (#59 split proof)',
+    files: { 'notes.md': 'Deploy notes for project-mail service.\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
   },
   {
-    name: 'CP6: carved-out slug "launchpad-ai-factory" STILL fails the tracked-file scan (#59)',
-    files: { 'notes.md': 'See launchpad-ai-factory for the epic.\n' },
+    name: 'CP6: carved-out slug "project-launchpad" STILL fails the tracked-file scan (#59)',
+    files: { 'notes.md': 'See project-launchpad for the epic.\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
   },
   {
@@ -389,35 +402,35 @@ const SCAN_CASES = [
 
   // --- CP10: personal-name segment in a Projects path (#653) ---
   {
-    name: 'CP10: ~/Projects/Bernhard/vault (trailing-slash base case)',
-    files: { 'config.yaml': 'vault-dir: ~/Projects/Bernhard/vault\n' },
+    name: 'CP10: ~/Projects/Sample/vault (trailing-slash base case)',
+    files: { 'config.yaml': 'vault-dir: ~/Projects/Sample/vault\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
   },
   {
-    name: 'CP10: BARE ~/Projects/Bernhard at end-of-line (Finding-1 regression guard)',
+    name: 'CP10: BARE ~/Projects/Sample at end-of-line (Finding-1 regression guard)',
     // Mutation guard: the OLD mandatory-trailing-slash form would NOT match here.
-    files: { 'notes.md': 'plan-baseline-path: ~/Projects/Bernhard\n' },
+    files: { 'notes.md': 'plan-baseline-path: ~/Projects/Sample\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
   },
   {
-    name: 'CP10: absolute /Users/<other-user>/Projects/Bernhard/x (Finding-3 defense-in-depth)',
-    files: { 'ci.sh': 'cp /Users/someone/Projects/Bernhard/data ./out\n' },
+    name: 'CP10: absolute /Users/<other-user>/Projects/Sample/x (Finding-3 defense-in-depth)',
+    files: { 'ci.sh': 'cp /Users/someone/Projects/Sample/data ./out\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
   },
   {
-    name: 'CP10: absolute /home/<user>/Projects/Bernhard (Linux home, no trailing slash)',
-    files: { 'ci.yml': 'workdir: /home/ci/Projects/Bernhard\n' },
+    name: 'CP10: absolute /home/<user>/Projects/Sample (Linux home, no trailing slash)',
+    files: { 'ci.yml': 'workdir: /home/ci/Projects/Sample\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
   },
   {
     name: 'CP10: the same legacy path at a NON-allowlisted file still fails (allowlist is path-scoped)',
-    files: { 'somewhere-else.mjs': "const LEGACY = '~/Projects/Bernhard/vault';\n" },
+    files: { 'somewhere-else.mjs': "const LEGACY = '~/Projects/Sample/vault';\n" },
     expected: { status: 1, fails: 1, checkpoints: ['CP10'] },
   },
   {
-    name: 'CLEAN: ~/Projects/Bernhard inside a CP10_ALLOWLIST migration source',
+    name: 'CLEAN: ~/Projects/Sample inside a CP10_ALLOWLIST migration source',
     files: {
-      'scripts/migrate-vault-paths.mjs': "const LEGACY = '~/Projects/Bernhard/vault';\nexport default LEGACY;\n",
+      'scripts/migrate-vault-paths.mjs': "const LEGACY = '~/Projects/Sample/vault';\nexport default LEGACY;\n",
     },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
@@ -427,8 +440,8 @@ const SCAN_CASES = [
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
-    name: 'CLEAN: ~/Projects/Bernhardt/ (name merely BEGINS with a denylisted name)',
-    files: { 'clean.md': 'path: ~/Projects/Bernhardt/app\n' },
+    name: 'CLEAN: ~/Projects/Samplet/ (name merely BEGINS with a denylisted name)',
+    files: { 'clean.md': 'path: ~/Projects/Samplet/app\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
@@ -439,18 +452,18 @@ const SCAN_CASES = [
 
   // --- Sanctioned exclusions (public-facing owner references) ---
   {
-    name: 'CLEAN: SECURITY.md with only security@gotzendorfer.at',
-    files: { 'SECURITY.md': '# Security\n\n**Email:** security@gotzendorfer.at\n' },
+    name: 'CLEAN: SECURITY.md with only security@example.invalid',
+    files: { 'SECURITY.md': '# Security\n\n**Email:** security@example.invalid\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
-    name: 'CLEAN: SECURITY.md with only office@gotzendorfer.at',
-    files: { 'SECURITY.md': 'Contact: office@gotzendorfer.at for issues.\n' },
+    name: 'CLEAN: SECURITY.md with only office@example.invalid',
+    files: { 'SECURITY.md': 'Contact: office@example.invalid for issues.\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
     name: 'CLEAN: README.md homepage URL',
-    files: { 'README.md': '- [Homepage](https://gotzendorfer.at/en/session-orchestrator)\n' },
+    files: { 'README.md': '- [Homepage](https://example.invalid/en/session-orchestrator)\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
@@ -460,8 +473,8 @@ const SCAN_CASES = [
         JSON.stringify(
           {
             name: 'test-plugin',
-            author: { email: 'office@gotzendorfer.at', url: 'https://gotzendorfer.at' },
-            homepage: 'https://gotzendorfer.at/en/session-orchestrator',
+            author: { email: 'office@example.invalid', url: 'https://example.invalid' },
+            homepage: 'https://example.invalid/en/session-orchestrator',
           },
           null,
           2,
@@ -476,7 +489,7 @@ const SCAN_CASES = [
         [
           '/**',
           ' * Contract:',
-          ' *   - No literal `events.gotzendorfer.at` URL appears anywhere in scripts/ or hooks/.',
+          ' *   - No literal `events.example.invalid` URL appears anywhere in scripts/ or hooks/.',
           ' */',
           "import { describe, it } from 'vitest';",
           "describe('placeholder', () => { it('runs', () => {}); });",
@@ -501,20 +514,20 @@ const SCAN_CASES = [
       'site/index.html':
         [
           '<script type="application/ld+json">{',
-          '  "publisher": { "@id": "https://www.gotzendorfer.at/#person" },',
-          '  "url": "https://www.gotzendorfer.at",',
+          '  "publisher": { "@id": "https://www.example.invalid/#person" },',
+          '  "url": "https://www.example.invalid",',
           '}</script>',
-          '<a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>',
+          '<a href="https://www.example.invalid" rel="author">Maintainer</a>',
         ].join('\n') + '\n',
       'site/impressum/index.html':
         [
           '<!--',
-          '  https://www.gotzendorfer.at/impressum. Die Datenschutzerklaerung ist NICHT',
+          '  https://www.example.invalid/impressum. Die Datenschutzerklaerung ist NICHT',
           '-->',
-          '<div><dt>Website</dt><dd><a href="https://www.gotzendorfer.at">www.gotzendorfer.at</a></dd></div>',
+          '<div><dt>Website</dt><dd><a href="https://www.example.invalid">www.example.invalid</a></dd></div>',
         ].join('\n') + '\n',
       'site/datenschutz/index.html':
-        '<!--\n  https://www.gotzendorfer.at/impressum. Die Datenschutzerklaerung ist NICHT\n-->\n',
+        '<!--\n  https://www.example.invalid/impressum. Die Datenschutzerklaerung ist NICHT\n-->\n',
     },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
@@ -522,7 +535,7 @@ const SCAN_CASES = [
   // --- Exclusion bypass: an exclusion covers a LINE FORM, never a whole file ---
   {
     name: 'BYPASS: SECURITY.md with a real /Users/ home path still FAILs (email exclusion does not cover it)',
-    files: { 'SECURITY.md': '**Email:** security@gotzendorfer.at\nSee: /Users/bernhardg/secret.key\n' },
+    files: { 'SECURITY.md': '**Email:** security@example.invalid\nSee: /Users/sampleg/secret.key\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
   {
@@ -531,10 +544,10 @@ const SCAN_CASES = [
       'tests/lib/events-default-url.test.mjs':
         [
           '/**',
-          ' *   - No literal `events.gotzendorfer.at` URL appears anywhere.',
+          ' *   - No literal `events.example.invalid` URL appears anywhere in scripts/ or hooks/.',
           ' */',
           '// This is a real string literal (NOT the excluded doc-comment form):',
-          "const HARDCODED = 'https://events.gotzendorfer.at/hook';",
+          "const HARDCODED = 'https://events.example.invalid/hook';",
         ].join('\n') + '\n',
     },
     expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
@@ -552,8 +565,8 @@ const SCAN_CASES = [
     files: {
       'site/impressum/index.html':
         [
-          '<div><dt>Website</dt><dd><a href="https://www.gotzendorfer.at">www.gotzendorfer.at</a></dd></div>',
-          '<!-- &#47;Users&#47;bernhardg&#47;Projects&#47;PLACEHOLDER <a href="https://www.gotzendorfer.at">x</a> -->',
+          '<div><dt>Website</dt><dd><a href="https://www.example.invalid">www.example.invalid</a></dd></div>',
+          '<!-- &#47;Users&#47;sampleg&#47;Projects&#47;PLACEHOLDER <a href="https://www.example.invalid">x</a> -->',
         ].join('\n') + '\n',
     },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
@@ -564,7 +577,7 @@ const SCAN_CASES = [
     name: 'BYPASS: the same www. link text in templates/static-html/index.html is NOT allowlisted',
     files: {
       'templates/static-html/index.html':
-        '<a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>\n',
+        '<a href="https://www.example.invalid" rel="author">Maintainer</a>\n',
     },
     expected: { status: 1, fails: 1, checkpoints: ['CP7'] },
   },
@@ -576,7 +589,7 @@ const SCAN_CASES = [
     name: 'BYPASS: site/guide/index.html is inside site/ but NOT allowlisted (exact paths, not a prefix)',
     files: {
       'site/guide/index.html':
-        '<a href="https://www.gotzendorfer.at" rel="author">Maintainer</a>\n',
+        '<a href="https://www.example.invalid" rel="author">Maintainer</a>\n',
     },
     expected: { status: 1, fails: 1, checkpoints: ['CP7'] },
   },
@@ -596,22 +609,22 @@ const SCAN_CASES = [
   // =========================================================================
   {
     name: '#1080 A: entity-encoded private GitLab host in an .html link → CP2 + CP7',
-    files: { 'site/guide/index.html': '<a href="https://gitlab&#46;gotzendorfer&#46;at/runner">CI</a>\n' },
+    files: { 'site/guide/index.html': '<a href="https://gitlab&#46;example&#46;invalid/runner">CI</a>\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 A: percent-encoded private GitLab host → CP2 + CP7 (same axis, other encoding)',
-    files: { 'site/guide/index.html': '<a href="https://gitlab%2Egotzendorfer%2Eat/runner">CI</a>\n' },
+    files: { 'site/guide/index.html': '<a href="https://gitlab%2Eexample%2Einvalid/runner">CI</a>\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 A: hex-entity private GitLab host → CP2 + CP7',
-    files: { 'site/guide/index.html': '<a href="https://gitlab&#x2E;gotzendorfer&#x2E;at/x">y</a>\n' },
+    files: { 'site/guide/index.html': '<a href="https://gitlab&#x2E;example&#x2E;invalid/x">y</a>\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 A: entity-encoded events domain → CP3 + CP7',
-    files: { 'site/guide/index.html': '<img src="https://events&#46;gotzendorfer&#46;at/px.gif">\n' },
+    files: { 'site/guide/index.html': '<img src="https://events&#46;example&#46;invalid/px.gif">\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP3', 'CP7'] },
   },
   {
@@ -620,7 +633,7 @@ const SCAN_CASES = [
     expected: { status: 1, fails: 1, checkpoints: ['CP8'] },
   },
   {
-    // The sharpest arm. On an ALLOWLISTED page every RAW gotzendorfer.at token is
+    // The sharpest arm. On an ALLOWLISTED page every RAW example.invalid token is
     // the sanctioned www. publication, so isAllowlisted(raw) is true. A naive fix
     // ("if raw OR canonical matches, then consult isAllowlisted(raw)") would let
     // that verdict cover the ENCODED private host riding on the same line — the
@@ -631,13 +644,13 @@ const SCAN_CASES = [
     name: '#1080 A: sanctioned www. URL + an encoded private host on ONE allowlisted line still FAILs',
     files: {
       'site/index.html':
-        '<a href="https://www.gotzendorfer.at" rel="author">M</a><!-- gitlab&#46;gotzendorfer&#46;at -->\n',
+        '<a href="https://www.example.invalid" rel="author">M</a><!-- gitlab&#46;example&#46;invalid -->\n',
     },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 A: the same allowlisted page WITHOUT an encoded token stays CLEAN (allowlist intact)',
-    files: { 'site/index.html': '<a href="https://www.gotzendorfer.at" rel="author">M</a>\n' },
+    files: { 'site/index.html': '<a href="https://www.example.invalid" rel="author">M</a>\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
   {
@@ -645,12 +658,12 @@ const SCAN_CASES = [
     // (canonicalization is a no-op on a dot-separated domain). Two separate per-rule
     // conditionals would report 4 here; the single OR-ed conditional reports 2.
     name: '#1080 A: a raw host matching BOTH forms still reports exactly 2 (no double-count)',
-    files: { 'c.md': 'host: gitlab.gotzendorfer.at\n' },
+    files: { 'c.md': 'host: gitlab.example.invalid\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     // CP6 is DELIBERATELY left raw: canonicalization folds dash runs to slashes,
-    // which SHREDS five of the seven private slugs (mail-assistant becomes
+    // which SHREDS five of the seven private slugs (project-mail becomes
     // mail/assistant), so a canonical CP6 test is a no-op at best. This row pins the
     // other direction — the dash folding must not MANUFACTURE a slug hit out of
     // ordinary hyphenation.
@@ -660,7 +673,7 @@ const SCAN_CASES = [
   },
   {
     name: '#1080 A: CP6 dash-bearing slug still fires on the RAW line (unchanged by the canonical pass)',
-    files: { 'notes.md': 'Deploy notes for mail-assistant service.\n' },
+    files: { 'notes.md': 'Deploy notes for project-mail service.\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP6'] },
   },
 
@@ -676,22 +689,22 @@ const SCAN_CASES = [
   // =========================================================================
   {
     name: '#1080 B: planted private host in site/sitemap.xml → CP2 + CP7',
-    files: { 'site/sitemap.xml': '<loc>https://gitlab.gotzendorfer.at/x</loc>\n' },
+    files: { 'site/sitemap.xml': '<loc>https://gitlab.example.invalid/x</loc>\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 B: planted private host in site/favicon.svg → CP2 + CP7',
-    files: { 'site/favicon.svg': '<svg><desc>gitlab.gotzendorfer.at</desc></svg>\n' },
+    files: { 'site/favicon.svg': '<svg><desc>gitlab.example.invalid</desc></svg>\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 B: planted private host in a .css file → CP2 + CP7',
-    files: { 'templates/static-html/styles.css': '/* gitlab.gotzendorfer.at */\n' },
+    files: { 'templates/static-html/styles.css': '/* gitlab.example.invalid */\n' },
     expected: { status: 1, fails: 2, checkpoints: ['CP2', 'CP7'] },
   },
   {
     name: '#1080 B: an entity-encoded home path in .svg → CP1 (findings A and B compose)',
-    files: { 'site/favicon.svg': '<svg><desc>&#47;Users&#47;bernhardg&#47;PLACEHOLDER</desc></svg>\n' },
+    files: { 'site/favicon.svg': '<svg><desc>&#47;Users&#47;sampleg&#47;PLACEHOLDER</desc></svg>\n' },
     expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
   },
 
@@ -724,9 +737,9 @@ describe('#1267: untracked scan opt-in', () => {
     const root = makeTmpRepo({ 'tracked.md': 'Clean tracked content\n' });
     writeFileSync(join(root, '.gitignore'), 'ignored.mdx\n');
     writeFileSync(join(root, '.git', 'info', 'exclude'), 'local-only.md\n');
-    writeFileSync(join(root, 'draft café.mdx'), '/Users/bernhardg/private\n');
-    writeFileSync(join(root, 'ignored.mdx'), 'buchhaltgenie\n');
-    writeFileSync(join(root, 'local-only.md'), 'buchhaltgenie\n');
+    writeFileSync(join(root, 'draft café.mdx'), '/Users/sampleg/private\n');
+    writeFileSync(join(root, 'ignored.mdx'), 'project-ledger\n');
+    writeFileSync(join(root, 'local-only.md'), 'project-ledger\n');
     const result = runCheck(root, null, args);
     expect(summarizeScan(result)).toEqual(expected);
     expect(result.stdout).toContain(`${scanned} scanned files`);
@@ -751,7 +764,7 @@ describe('check-owner-leakage CLI — report format', () => {
   });
 
   it('names the offending file and line number in the FAIL line', () => {
-    const root = makeTmpRepo({ 'leak.md': '# doc\nrun: /Users/bernhardg./Projects/foo/bar.mjs\n' });
+    const root = makeTmpRepo({ 'leak.md': '# doc\nrun: /Users/sampleg./Projects/foo/bar.mjs\n' });
     const result = runCheck(root);
     expect(failLines(result)[0]).toContain(`leak.md:2 — ${CP1_LABEL}`);
     expect(result.stdout).toContain('1 scanned files');
@@ -774,13 +787,13 @@ describe('SELF_EXCLUSIONS: detection-fixture files are exempt by PATH', () => {
   // in flux.
   const SELF_EXCLUDED_PATH = 'tests/husky/pre-commit-owner-leakage.test.mjs';
   const FIXTURE_BODY = [
-    "import { describe, it, expect } from 'vitest';",
+    "import { describe, it, expect, beforeEach, vi } from 'vitest';",
     "describe('owner-leakage guard', () => {",
     "  it('blocks a personal home path', () => {",
-    "    expect(hookOutput).toContain('/Users/bernhardg./Projects/x');",
+    "    expect(hookOutput).toContain('/Users/sampleg./Projects/x');",
     '  });',
-    "  it('blocks a private repo name buchhaltgenie', () => {",
-    "    expect(content).not.toContain('buchhaltgenie');",
+    "  it('blocks a private repo name project-ledger', () => {",
+    "    expect(content).not.toContain('project-ledger');",
     '  });',
     '});',
     '',
@@ -807,44 +820,44 @@ describe('SELF_EXCLUSIONS: detection-fixture files are exempt by PATH', () => {
 // The one-encoding-at-a-time regex treadmill (P1 slash-form #631, P9
 // dash-encoded #634, …) is replaced by a single canonicalization step. These
 // rows pin that every historical evasion variant AND a panel of NOVEL encodings
-// canonicalize to the same /Users/bernhardg… form and are DETECTED, while the
+// canonicalize to the same /Users/sampleg… form and are DETECTED, while the
 // lookalike negatives and the case-sensitivity contract are NOT flagged.
 // Expected values are hardcoded literals (the CP1 label / null).
 // ===========================================================================
 
 describe('#661 corpus: matchOwnerPath — historical + novel encodings DETECTED', () => {
   const DETECTED = [
-    ['CP1 plain slash-form', '/Users/bernhardg/secret/config.txt'],
-    ['CP1 trailing-dot', 'home: /Users/bernhardg.'],
-    ['CP1 bare no-dot at EOL (#631)', 'USER_HOME=/Users/bernhardg'],
-    ['CP1 before " && ls" (#631)', 'cd /Users/bernhardg. && ls'],
-    ['CP1 inside JSON quotes', '{"home": "/Users/bernhardg."}'],
-    ['CP1 hyphen-suffixed', 'path: /Users/bernhardg-backup/x'],
-    ['CP1 full legacy username', 'Path: /Users/bernhardgoetzendorfer/projects/'],
-    ['CP1 full legacy username, bare trailing slash', '/Users/bernhardgoetzendorfer/'],
-    ['dash-encoded projects-dir (#634)', 'See -Users-bernhardg--Projects-x/memory/foo.md'],
-    ['dash-encoded bare', 'dir=-Users-bernhardg'],
-    ['NOVEL url-percent encoded', 'p=%2FUsers%2Fbernhardg%2Fsecret'],
-    ['NOVEL url-percent uppercase hex', 'p=%2fUsers%2fbernhardg'],
-    ['NOVEL double-percent encoded', 'p=%252FUsers%252Fbernhardg'],
-    ['NOVEL backslash separators', String.raw`p=\Users\bernhardg\secret`],
-    ['NOVEL homoglyph division-slash (∕)', 'p=∕Users∕bernhardg∕secret'],
-    ['NOVEL homoglyph fullwidth-slash (／)', 'p=／Users／bernhardg'],
-    ['NOVEL html numeric entity (&#47;)', 'p=&#47;Users&#47;bernhardg'],
-    ['NOVEL html hex entity (&#x2F;)', 'p=&#x2F;Users&#x2F;bernhardg'],
-    ['NOVEL html named entity (&sol;)', 'p=&sol;Users&sol;bernhardg'],
+    ['CP1 plain slash-form', '/Users/sampleg/secret/config.txt'],
+    ['CP1 trailing-dot', 'home: /Users/sampleg.'],
+    ['CP1 bare no-dot at EOL (#631)', 'USER_HOME=/Users/sampleg'],
+    ['CP1 before " && ls" (#631)', 'cd /Users/sampleg. && ls'],
+    ['CP1 inside JSON quotes', '{"home": "/Users/sampleg."}'],
+    ['CP1 hyphen-suffixed', 'path: /Users/sampleg-backup/x'],
+    ['CP1 full legacy username', 'Path: /Users/samplegaccount/projects/'],
+    ['CP1 full legacy username, bare trailing slash', '/Users/samplegaccount/'],
+    ['dash-encoded projects-dir (#634)', 'See -Users-sampleg--Projects-x/memory/foo.md'],
+    ['dash-encoded bare', 'dir=-Users-sampleg'],
+    ['NOVEL url-percent encoded', 'p=%2FUsers%2Fsampleg%2Fsecret'],
+    ['NOVEL url-percent uppercase hex', 'p=%2fUsers%2fsampleg'],
+    ['NOVEL double-percent encoded', 'p=%252FUsers%252Fsampleg'],
+    ['NOVEL backslash separators', String.raw`p=\Users\sampleg\secret`],
+    ['NOVEL homoglyph division-slash (∕)', 'p=∕Users∕sampleg∕secret'],
+    ['NOVEL homoglyph fullwidth-slash (／)', 'p=／Users／sampleg'],
+    ['NOVEL html numeric entity (&#47;)', 'p=&#47;Users&#47;sampleg'],
+    ['NOVEL html hex entity (&#x2F;)', 'p=&#x2F;Users&#x2F;sampleg'],
+    ['NOVEL html named entity (&sol;)', 'p=&sol;Users&sol;sampleg'],
     // Finding 1 (HIGH): username matched case-INSENSITIVELY (real path on APFS).
-    ['Finding 1: capitalized username', '/Users/Bernhardg./Projects/secret'],
-    ['Finding 1: lowercase control', '/Users/bernhardg/secret'],
+    ['Finding 1: capitalized username', '/Users/Sampleg./Projects/secret'],
+    ['Finding 1: lowercase control', '/Users/sampleg/secret'],
     // Finding 3 (MED): zero-width / format chars spliced into the username.
-    ['Finding 3: zero-width space in username', '/Users/bern\u200bhardg/secret'],
-    ['Finding 3: soft-hyphen in username', '/Users/bern\u00adhardg/secret'],
-    ['Finding 3: tab in username', '/Users/bern\thardg/secret'],
+    ['Finding 3: zero-width space in username', '/Users/sam\u200bpleg/secret'],
+    ['Finding 3: soft-hyphen in username', '/Users/sam\u00adpleg/secret'],
+    ['Finding 3: tab in username', '/Users/sam\tpleg/secret'],
     // Findings 4+5 (LOW): decoders cover LETTERS, and loop to a FIXPOINT.
-    ['Finding 4: percent-encoded letters', '/%55sers/%62ernhardg/secret'],
-    ['Finding 4: decimal entity for a letter', '/&#85;sers/bernhardg/secret'],
-    ['Finding 4: hex entity for a letter', '/&#x55;sers/bernhardg/secret'],
-    ['Finding 5: NESTED double-percent letter encoding (%2555 → %55 → U)', '/%2555sers/%2562ernhardg/secret'],
+    ['Finding 4: percent-encoded letters', '/%55sers/%73ampleg/secret'],
+    ['Finding 4: decimal entity for a letter', '/&#85;sers/sampleg/secret'],
+    ['Finding 4: hex entity for a letter', '/&#x55;sers/sampleg/secret'],
+    ['Finding 5: NESTED double-percent letter encoding (%2555 → %55 → U)', '/%2555sers/%2573ampleg/secret'],
   ];
 
   it.each(DETECTED)('DETECTS: %s', (_label, line) => {
@@ -854,15 +867,15 @@ describe('#661 corpus: matchOwnerPath — historical + novel encodings DETECTED'
 
 describe('#661 corpus: matchOwnerPath — benign + lookalike NOT flagged', () => {
   const CLEAN = [
-    ['near-miss diverges before g (bernhardo)', '/Users/bernhardo-other/'],
-    ['near-miss uppercase continuation (bernhardgXfoo)', '/Users/bernhardgXfoo'],
-    ['near-miss digit continuation (bernhardg9)', '/Users/bernhardg9/proj'],
-    ['near-miss underscore continuation (bernhardg_home)', '/Users/bernhardg_home'],
-    ['case-sensitivity contract: lowercase /users', 'see /users/bernhardg. for config'],
-    ['case-sensitivity contract: lowercase /users with path', '/users/bernhardg/x'],
+    ['near-miss diverges before g (sampleo)', '/Users/sampleo-other/'],
+    ['near-miss uppercase continuation (samplegXfoo)', '/Users/samplegXfoo'],
+    ['near-miss digit continuation (sampleg9)', '/Users/sampleg9/proj'],
+    ['near-miss underscore continuation (sampleg_home)', '/Users/sampleg_home'],
+    ['case-sensitivity contract: lowercase /users', 'see /users/sampleg. for config'],
+    ['case-sensitivity contract: lowercase /users with path', '/users/sampleg/x'],
     ['other-user dash-encoded (alice)', '-Users-alice--Projects-x/memory/foo.md'],
-    ['self-doc: quotes old P1 regex', 'P1 regex `/\\/Users\\/bernhardg[a-z.]*(\\/|\\b)/` is tight'],
-    ['self-doc: quotes P9 dash regex', 'added P9 `/-Users-bernhardg[a-z.]*-/`'],
+    ['self-doc: quotes old P1 regex', 'P1 regex `/\\/Users\\/sampleg[a-z.]*(\\/|\\b)/` is tight'],
+    ['self-doc: quotes P9 dash regex', 'added P9 `/-Users-sampleg[a-z.]*-/`'],
     ['benign capitalized project dir', '~/Projects/MyApp/src'],
     ['benign clean url', 'API_URL=https://api.example.com'],
     ['benign unrelated percent escape (%20)', 'cache%20dir is fine'],
@@ -876,14 +889,14 @@ describe('#661 corpus: matchOwnerPath — benign + lookalike NOT flagged', () =>
 
 describe('#661 corpus: canonicalizeLine — separator normalization (case preserved)', () => {
   const NORMALIZES = [
-    ['url-percent slashes', '%2FUsers%2Fbernhardg', '/Users/bernhardg'],
-    ['backslash separators', String.raw`\Users\bernhardg`, '/Users/bernhardg'],
-    ['dash-encoded projects-dir', '-Users-bernhardg--Projects-x', '/Users/bernhardg'],
-    ['homoglyph division-slash (∕)', '∕Users∕bernhardg', '/Users/bernhardg'],
-    ['html numeric entity &#47;', '&#47;Users&#47;bernhardg', '/Users/bernhardg'],
+    ['url-percent slashes', '%2FUsers%2Fsampleg', '/Users/sampleg'],
+    ['backslash separators', String.raw`\Users\sampleg`, '/Users/sampleg'],
+    ['dash-encoded projects-dir', '-Users-sampleg--Projects-x', '/Users/sampleg'],
+    ['homoglyph division-slash (∕)', '∕Users∕sampleg', '/Users/sampleg'],
+    ['html numeric entity &#47;', '&#47;Users&#47;sampleg', '/Users/sampleg'],
     // Case-sensitivity contract: uppercase continuation survives so the
     // lowercase-only [a-z.]* username token stops at it.
-    ['uppercase username continuation is preserved', '/Users/bernhardgXfoo', 'bernhardgX'],
+    ['uppercase username continuation is preserved', '/Users/samplegXfoo', 'samplegX'],
   ];
 
   it.each(NORMALIZES)('canonicalizes %s', (_label, input, expectedSubstring) => {
@@ -891,7 +904,7 @@ describe('#661 corpus: canonicalizeLine — separator normalization (case preser
   });
 
   it('PRESERVES letter case — a lowercase /users path is never upper-cased into a false hit', () => {
-    expect(canonicalizeLine('/users/bernhardg.')).not.toContain('/Users/bernhardg');
+    expect(canonicalizeLine('/users/sampleg.')).not.toContain('/Users/sampleg');
   });
 });
 
@@ -903,26 +916,26 @@ describe('#661 corpus: canonicalizeLine — separator normalization (case preser
 
 describe('#661 follow-up: Finding 2 — regex-quote blanks only the token, not the line', () => {
   it('DETECTS a real path on a line that ALSO quotes the scanner regex (residue re-scan)', () => {
-    // The real `/Users/bernhardg/Projects/secret` shares the line with a quoted
-    // regex `/Users/bernhardg[a-z.]*`. Before the fix the whole line was
-    // suppressed; now only the `…bernhardg[` token is blanked and the real path
+    // The real `/Users/sampleg/Projects/secret` shares the line with a quoted
+    // regex `/Users/sampleg[a-z.]*`. Before the fix the whole line was
+    // suppressed; now only the `…sampleg[` token is blanked and the real path
     // is caught.
     expect(
-      matchOwnerPath('Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)'),
+      matchOwnerPath('Real: /Users/sampleg/Projects/secret (see regex /Users/sampleg[a-z.]*)'),
     ).toBe(CP1_LABEL);
   });
 
   it('CLEAN on a line that ONLY quotes the old P1 regex (self-doc, no real path)', () => {
-    expect(matchOwnerPath('P1 regex `/\\/Users\\/bernhardg[a-z.]*(\\/|\\b)/` is tight')).toBe(null);
+    expect(matchOwnerPath('P1 regex `/\\/Users\\/sampleg[a-z.]*(\\/|\\b)/` is tight')).toBe(null);
   });
 
   it('CLEAN on a line that ONLY quotes the P9 dash regex (self-doc)', () => {
-    expect(matchOwnerPath('added P9 `/-Users-bernhardg[a-z.]*-/`')).toBe(null);
+    expect(matchOwnerPath('added P9 `/-Users-sampleg[a-z.]*-/`')).toBe(null);
   });
 
   it('exits 1 end-to-end when a real leak shares a line with a quoted regex', () => {
     const root = makeTmpRepo({
-      'doc.md': 'Real: /Users/bernhardg/Projects/secret (see regex /Users/bernhardg[a-z.]*)\n',
+      'doc.md': 'Real: /Users/sampleg/Projects/secret (see regex /Users/sampleg[a-z.]*)\n',
     });
     expect(summarizeScan(runCheck(root))).toEqual({ status: 1, fails: 1, checkpoints: ['CP1'] });
   });
@@ -1033,13 +1046,13 @@ describe('CP11: confidential-name leak (host-local list)', () => {
 
 describe('VAULT_CLEAR_SLUGS carve-out — isOwnerLeakySegment (in-process guard)', () => {
   const SEGMENTS = [
-    ['carved-out slug', 'buchhaltgenie', null],
-    ['carved-out slug, mixed case', 'BuchhaltGenie', null],
+    ['carved-out slug', 'project-ledger', null],
+    ['carved-out slug, mixed case', 'Project-Ledger', null],
     ['carved-out slug, upper case', 'MAIL-ASSISTANT', null],
-    ['carved-out slug, camel case', 'AngebotsChecker', null],
+    ['carved-out slug, camel case', 'Project-Quotes', null],
     // The carve-out did NOT blanket-disable CP6 — retained slugs still bite.
-    ['retained slug', 'aiat-pmo-module', 'CP6'],
-    ['retained slug, mixed case', 'Codex-Hackathon', 'CP6'],
+    ['retained slug', 'project-private-module', 'CP6'],
+    ['retained slug, mixed case', 'Project-Hackathon', 'CP6'],
   ];
 
   it.each(SEGMENTS)('%s "%s" → %s', (_label, segment, expected) => {
@@ -1214,7 +1227,7 @@ describe('#1244: CP11 fails CLOSED when it was expected but could not run', () =
     cpSync(join(REPO_ROOT, 'scripts'), join(realDir, 'scripts'), { recursive: true });
     symlinkSync(realDir, join(stage, 'link'), 'dir');
     const linkedScript = join(stage, 'link', 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs');
-    const root = makeTmpRepo({ 'leak.md': 'p: /Users/bernhardg/secret\n' });
+    const root = makeTmpRepo({ 'leak.md': 'p: /Users/sampleg/secret\n' });
 
     // Empty SO_CONFIG_HOME (no owner.yaml) + no names env: CP11 is unconfigured,
     // so this row isolates the isMain defect from the CP11 fail-closed rows above.
@@ -1640,4 +1653,99 @@ describe("W4-F3/F4: 'empty' is an opt-out, 'all-dropped' and 'malformed' fail cl
     expect(result.stdout).toContain('PASS: no owner-privacy leakage found');
     expect(result.stderr).not.toContain('CP11 DISABLED');
   });
+});
+
+// #1530: a harmless packed filename must not hide private file contents.
+it('loads invented host patterns and inspects packed operational contents', () => {
+  const hostDir = realpathSync(makeTmpDir('host-policy-regression-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version: 1, privateHosts: ['gitlab.example.invalid'], privateDomains: ['example.invalid']}), {mode: 0o600});
+  const root = makeTmpRepo({'operational.mjs': 'export const endpoint = "gitlab.example.invalid";\n'}, {initGit: false});
+  const inventory = join(hostDir, 'inventory.json');
+  writeFileSync(inventory, JSON.stringify([{files:[{path:'operational.mjs'}]}]));
+  const result = spawnSync(process.execPath, [SCRIPT, root, '--require-owner-patterns', '--packed-files', inventory], {encoding:'utf8', timeout: 20000, env:{...process.env, SO_OWNER_PATTERNS_FILE:policyPath, SO_CONFIG_HOME:hostDir}});
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('CP2');
+});
+
+it.each(['missing', 'malformed', 'permissions', 'symlink', 'traversal', 'unreadable'])('fails closed for required owner policy / packed inventory: %s', (failure) => {
+  const hostDir = realpathSync(makeTmpDir('host-policy-safety-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1, privateDomains:['example.invalid']}), {mode: failure === 'permissions' ? 0o644 : 0o600});
+  if (failure === 'missing') unlinkSync(policyPath);
+  if (failure === 'malformed') writeFileSync(policyPath, '{');
+  if (failure === 'symlink') { const target = join(hostDir, 'target.json'); renameSync(policyPath, target); symlinkSync(target, policyPath); }
+  const root = makeTmpRepo({'clean.mjs': 'export const clean = true;\n'}, {initGit:false});
+  const inventory = join(hostDir, 'inventory.json');
+  writeFileSync(inventory, JSON.stringify([{files:[{path: failure === 'traversal' ? '../outside.mjs' : failure === 'unreadable' ? 'absent.mjs' : 'clean.mjs'}]}]));
+  const result = spawnSync(process.execPath, [SCRIPT, root, '--require-owner-patterns', '--packed-files', inventory], {encoding:'utf8', timeout:20000, env:{...process.env, SO_OWNER_PATTERNS_FILE:policyPath, SO_CONFIG_HOME:hostDir}});
+  expect(result.status).toBe(1);
+  expect(result.stdout + result.stderr).not.toContain(policyPath);
+});
+
+it('rejects explicitly null owner-pattern arrays', () => {
+  const hostDir = realpathSync(makeTmpDir('host-null-policy-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1, privateHosts:null, privateDomains:['example.invalid']}), {mode:0o600});
+  expect(inspectOwnerPatterns({filePath:policyPath,refresh:true}).status).toBe('invalid');
+});
+
+it('keeps encoded owner values and private filename segments out of diagnostics', () => {
+  const hostDir = realpathSync(makeTmpDir('host-safe-diagnostics-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1, usernamePrefixes:['sampleg'], privateHosts:['gitlab.example.invalid'], privateDomains:['example.invalid'], privateSlugs:['project-secret']}), {mode:0o600});
+  const encodedHost = [...'gitlab.example.invalid'].map((c) => '%' + c.charCodeAt(0).toString(16)).join('');
+  const root = makeTmpRepo({'project-secret/notes.md': '/Users/%73amplegaccount/private\n' + encodedHost + '\n'});
+  const result = spawnSync(process.execPath, [SCRIPT, root], {encoding:'utf8',timeout:20000,env:{...process.env,SO_OWNER_PATTERNS_FILE:policyPath}});
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('CP1');
+  expect(result.stdout).toContain('CP2');
+  expect(result.stdout).toContain('[REDACTED]');
+  for (const value of ['%73amplegaccount','samplegaccount',encodedHost,'gitlab.example.invalid','project-secret']) expect(result.stdout + result.stderr).not.toContain(value);
+});
+
+it.each(['missing-root', 'invalid-inventory'])('keeps private paths out of scan-wide diagnostics: %s', (failure) => {
+  const hostDir = realpathSync(makeTmpDir('host-scan-error-'));
+  const root = failure === 'missing-root' ? join(hostDir, 'project-secret-missing') : makeTmpRepo({'clean.mjs':'export const clean = true;\n'}, {initGit:false});
+  const inventory = join(hostDir, 'project-secret-inventory.json');
+  writeFileSync(inventory, '{project-secret');
+  const args = [SCRIPT, root, ...(failure === 'invalid-inventory' ? ['--packed-files', inventory] : [])];
+  const result = spawnSync(process.execPath, args, {encoding:'utf8',timeout:20000});
+  expect(result.status).toBe(1);
+  expect(result.stdout + result.stderr).not.toContain('project-secret');
+});
+
+it('uses one canonical packed root through a symlink alias and preserves safe diagnostic filenames', () => {
+  const hostDir = realpathSync(makeTmpDir('packed-alias-policy-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1, privateDomains:['example.invalid'], privateHosts:['gitlab.example.invalid'], privateSlugs:['project-secret'], publicUrls:['https://www.example.invalid']}), {mode:0o600});
+  const root = makeTmpRepo({'.claude-plugin/plugin.json':'{"homepage":"https://www.example.invalid"}\n'}, {initGit:false});
+  const alias = join(hostDir, 'root-alias');
+  symlinkSync(root, alias, 'dir');
+  const inventory = join(hostDir, 'inventory.json');
+  writeFileSync(inventory, JSON.stringify([{files:[{path:'.claude-plugin/plugin.json'}]}]));
+  const scan = () => spawnSync(process.execPath, [SCRIPT,alias,'--require-owner-patterns','--packed-files',inventory], {encoding:'utf8',timeout:20000,env:{...process.env,SO_OWNER_PATTERNS_FILE:policyPath}});
+  expect(scan().status).toBe(0);
+  writeFileSync(join(root,'.claude-plugin/plugin.json'), '{"homepage":"https://www.example.invalid", "private":"gitlab.example.invalid"}\n');
+  const result = scan();
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('FAIL: .claude-plugin/plugin.json:1');
+  expect(result.stdout).toContain('CP2');
+  expect(result.stdout).toContain('CP7');
+  expect(result.stdout).not.toContain('root-alias');
+  expect(result.stdout).not.toContain('gitlab.example.invalid');
+});
+
+it('checks packed operational legacy filenames despite ordinary CP10 and CP8 exemptions', () => {
+  const hostDir = realpathSync(makeTmpDir('packed-legacy-policy-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1,personalNames:['FixtureOwner']}), {mode:0o600});
+  const root = makeTmpRepo({'scripts/migrate-vault-paths.mjs':'const oldPath = "~/Projects/FixtureOwner/work";\n', 'tests/scripts/export-hw-learnings.test.mjs':'const privateIp = "10.12.34.56";\n'}, {initGit:false});
+  const inventory = join(hostDir, 'inventory.json');
+  writeFileSync(inventory, JSON.stringify([{files:[{path:'scripts/migrate-vault-paths.mjs'},{path:'tests/scripts/export-hw-learnings.test.mjs'}]}]));
+  const result = spawnSync(process.execPath, [SCRIPT,root,'--require-owner-patterns','--packed-files',inventory], {encoding:'utf8',timeout:20000,env:{...process.env,SO_OWNER_PATTERNS_FILE:policyPath}});
+  expect(result.status).toBe(1);
+  expect(result.stdout).toContain('CP10');
+  expect(result.stdout).toContain('CP8');
+  expect(result.stdout).not.toContain('FixtureOwner');
 });

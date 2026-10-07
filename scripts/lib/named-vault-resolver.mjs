@@ -209,7 +209,7 @@ export function canonicalSuffixesFromVaults(vaults, envOverride) {
  *
  * First-match-wins; caller is responsible for WARN on ambiguity if needed.
  *
- * @param {string} repoSlug — e.g. 'bernhard-group/foo'
+ * @param {string} repoSlug — e.g. 'example-org/foo'
  * @param {Array<{name:string, suffix:string, root:string, match:{'org-prefix'?:string}}>} vaults
  * @returns {{name:string, suffix:string, root:string, match:object}|null}
  */

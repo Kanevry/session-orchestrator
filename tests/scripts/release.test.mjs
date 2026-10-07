@@ -21,8 +21,9 @@
 //      GitHub state authorizes a duplicate create.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import {
   SURFACES,
@@ -39,6 +40,8 @@ import {
   isDependencyRangeOnly,
   evaluateRegistryCollision,
   evaluateLeakageGate,
+  evaluatePackedInventory,
+  withCheckedPackage,
   evaluateRemoteHeadParity,
   evaluateNpmAuth,
   evaluateCiRow,
@@ -1409,6 +1412,12 @@ describe('evaluateCiRow', () => {
 // ── The publish spawn must not inherit a silent loglevel ─────────────────────
 
 describe('publishInvocation', () => {
+  let artifact;
+  beforeEach(() => {
+    const tarballPath = join(root, 'checked.tgz');
+    writeFileSync(tarballPath, 'checked bytes');
+    artifact = { tarballPath, digest: createHash('sha256').update('checked bytes').digest('hex') };
+  });
   // BUG this catches (TV-001): the `npm publish` spawn inherited
   // `npm_config_loglevel`. Under a silent ancestor (`npm run --silent`, which
   // the husky pre-push gate uses) npm publishes and prints NOTHING, so the
@@ -1418,19 +1427,25 @@ describe('publishInvocation', () => {
   // version. No existing test looks at the publish spawn's environment at all;
   // the pinned-env test above covers `npm pack`, a different call site.
   it('pins npm_config_loglevel=notice so the receipt line is always printed', () => {
-    const call = publishInvocation('/repo', '/tmp/rc/npmrc');
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact);
     expect(call.opts.env.npm_config_loglevel).toBe('notice');
   });
 
   it('publishes the package publicly through the temp userconfig, from the repo root', () => {
-    const call = publishInvocation('/repo', '/tmp/rc/npmrc');
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact);
     expect(call.cmd).toBe('npm');
-    expect(call.args).toEqual(['publish', '--access', 'public', '--userconfig', '/tmp/rc/npmrc']);
+    expect(call.args).toEqual(['publish', artifact.tarballPath, '--ignore-scripts', '--access', 'public', '--userconfig', '/tmp/rc/npmrc']);
     expect(call.opts.cwd).toBe('/repo');
   });
 
+  it('refuses an absent or changed checked archive (#1530)', () => {
+    expect(() => publishInvocation('/repo', '/tmp/rc/npmrc')).toThrow('unchanged checked archive');
+    writeFileSync(artifact.tarballPath, 'replacement');
+    expect(() => publishInvocation('/repo', '/tmp/rc/npmrc', artifact)).toThrow('unchanged checked archive');
+  });
+
   it('keeps the rest of the environment — the pin is an override, not a replacement', () => {
-    const call = publishInvocation('/repo', '/tmp/rc/npmrc');
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact);
     expect(call.opts.env.PATH).toBe(process.env.PATH);
   });
 });
@@ -1574,4 +1589,135 @@ describe('evaluateCiPreflightRows', () => {
       github: { ok: true, detail: 'github.com/Owner/repo — status: green' },
     });
   });
+});
+
+
+describe('required packed-content release gate (#1530)', () => {
+  function fixture(content = 'export const clean = true;') {
+    const repo = join(root, 'repo');
+    const host = join(root, 'host');
+    mkdirSync(repo); mkdirSync(host);
+    writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'synthetic-release-fixture', version: '1.0.0', files: ['operational.mjs'] }));
+    writeFileSync(join(repo, 'operational.mjs'), content);
+    const policy = join(host, 'owner-patterns.json');
+    writeFileSync(policy, JSON.stringify({ version: 1, privateHosts: ['gitlab.example.invalid'], privateDomains: ['example.invalid'], publicEmails: ['office@example.invalid'], publicUrls: ['https://example.invalid'] }), { mode: 0o600 });
+    return { repo, policy, env: { ...process.env, SO_OWNER_PATTERNS_FILE: policy, SO_CONFIG_HOME: host, SO_CONFIDENTIAL_NAMES_FILE: '' } };
+  }
+  const actualRun = (cmd, args, opts) => spawnSync(cmd, args, { ...opts, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60000 });
+
+  it('blocks private contents behind harmless filenames in a real npm archive before publisher', async () => {
+    const f = fixture('export const endpoint = "gitlab.example.invalid";');
+    const publisher = vi.fn();
+    const result = await withCheckedPackage(f.repo, publisher, { env: f.env, minEntries: 1, runImpl: actualRun });
+    expect(result).toMatchObject({ ok: false, detail: expect.stringContaining('content scan') });
+    expect(publisher).not.toHaveBeenCalled();
+  }, 60000);
+
+  it.each(['native', 'npm12-object'])('retains checked archive bytes after source mutation and removes them after receipt (%s)', async (shape) => {
+    const f = fixture();
+    let retained;
+    const result = await withCheckedPackage(f.repo, (artifact) => {
+      retained = dirname(artifact.tarballPath);
+      writeFileSync(join(f.repo, 'operational.mjs'), 'export const endpoint = "gitlab.example.invalid";');
+      const content = actualRun('tar', ['-xOzf', artifact.tarballPath, 'package/operational.mjs'], {}).stdout;
+      expect(content).toBe('export const clean = true;');
+      const call = publishInvocation(f.repo, '/synthetic/rc', artifact);
+      expect(call.args.slice(0, 3)).toEqual(['publish', artifact.tarballPath, '--ignore-scripts']);
+      return { receipt: { confirmed: true, target: '1.0.0' } };
+    }, { env: f.env, minEntries: 1, runImpl: (cmd, args, opts) => {
+      const result = actualRun(cmd, args, opts);
+      if (cmd === 'npm' && result.status === 0 && shape === 'npm12-object') {
+        const json = JSON.parse(result.stdout);
+        result.stdout = JSON.stringify({ fixture: Array.isArray(json) ? json[0] : Object.values(json)[0] });
+      }
+      return result;
+    } });
+    expect(result.ok).toBe(true);
+    expect(result.value.receipt.confirmed).toBe(true);
+    expect(existsSync(retained)).toBe(false);
+  }, 60000);
+
+  it('preserves sanctioned public attribution while inspecting real packed bytes', async () => {
+    const f = fixture();
+    const pkg = JSON.parse(readFileSync(join(f.repo, 'package.json'), 'utf8'));
+    pkg.files.push('README.md');
+    writeFileSync(join(f.repo, 'package.json'), JSON.stringify(pkg));
+    writeFileSync(join(f.repo, 'README.md'), 'Contact office@example.invalid — https://example.invalid\n');
+    const result = await withCheckedPackage(f.repo, () => 0, { env: f.env, minEntries: 1, runImpl: actualRun });
+    expect(result.ok).toBe(true);
+  }, 60000);
+
+  it('requires host policy before callback and cleans preparation failures', async () => {
+    const f = fixture();
+    const publisher = vi.fn();
+    let work;
+    const result = await withCheckedPackage(f.repo, publisher, { env: { ...f.env, SO_OWNER_PATTERNS_FILE: join(root, 'missing.json') }, minEntries: 1,
+      runImpl: (cmd, args, opts) => { if (cmd === 'npm') work = args.at(-1); return actualRun(cmd, args, opts); },
+    });
+    expect(result.ok).toBe(false);
+    expect(publisher).not.toHaveBeenCalled();
+    expect(existsSync(work)).toBe(false);
+  }, 60000);
+
+  it('cleans checked archive on check-only and pre-receipt callback failure', async () => {
+    const f = fixture();
+    let work;
+    const deps = { env: f.env, minEntries: 1, runImpl: actualRun };
+    const result = await withCheckedPackage(f.repo, (artifact) => { work = dirname(artifact.tarballPath); return 0; }, deps);
+    expect(result.ok).toBe(true); expect(existsSync(work)).toBe(false);
+    await expect(withCheckedPackage(f.repo, (artifact) => { work = dirname(artifact.tarballPath); throw new Error('synthetic pre-receipt failure'); }, deps)).rejects.toThrow('synthetic pre-receipt');
+    expect(existsSync(work)).toBe(false);
+  }, 60000);
+
+  it('preserves a confirmed receipt when temporary archive cleanup fails (#1530)', async () => {
+    const f = fixture(); let work;
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = await withCheckedPackage(f.repo, () => ({ receipt: { confirmed: true, target: '1.0.0' } }), {
+        env: f.env, minEntries: 1, runImpl: actualRun,
+        cleanupImpl: (dir) => { work = dir; throw new Error('private cleanup path'); },
+      });
+      expect(result).toMatchObject({ ok: true, value: { receipt: { confirmed: true, target: '1.0.0' } } });
+      expect(warning).toHaveBeenCalledWith('release: temporary package cleanup failed; release outcome unchanged');
+    } finally { warning.mockRestore(); removeTree(work); }
+  }, 60000);
+
+  it('preserves the pre-receipt error when temporary archive cleanup also fails (#1530)', async () => {
+    const f = fixture(); let work;
+    const warning = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await expect(withCheckedPackage(f.repo, () => { throw new Error('original pre-receipt failure'); }, {
+        env: f.env, minEntries: 1, runImpl: actualRun,
+        cleanupImpl: (dir) => { work = dir; throw new Error('private cleanup path'); },
+      })).rejects.toThrow('original pre-receipt failure');
+      expect(warning).toHaveBeenCalledWith('release: temporary package cleanup failed; release outcome unchanged');
+    } finally { warning.mockRestore(); removeTree(work); }
+  }, 60000);
+
+  it.each(['array', 'npm12-object'])('accepts %s inventory with the same strict filename policy', (shape) => {
+    const record = { filename: 'package-1.0.0.tgz', files: Array.from({ length: MIN_PACKED_ENTRIES }, (_, i) => ({ path: `src/file${i}.mjs` })) };
+    const stdout = JSON.stringify(shape === 'array' ? [record] : { fixture: record });
+    expect(evaluatePackedInventory({ status: 0, stdout }).ok).toBe(true);
+    record.files[0].path = '.claude/settings.json';
+    expect(evaluatePackedInventory({ status: 0, stdout: JSON.stringify([record]) }).ok).toBe(false);
+  });
+  it.each(['malformed', 'empty', 'multiple', 'traversal', 'duplicate', 'missing-filename', 'floor'])('fails closed for %s packed evidence', (kind) => {
+    const record = { filename: 'package-1.0.0.tgz', files: [{ path: 'clean.mjs' }] };
+    if (kind === 'traversal') record.files[0].path = '../outside.mjs';
+    if (kind === 'duplicate') record.files.push({ path: 'clean.mjs' });
+    if (kind === 'missing-filename') delete record.filename;
+    const stdout = kind === 'malformed' ? '{' : JSON.stringify(kind === 'empty' ? [] : kind === 'multiple' ? [record, record] : [record]);
+    expect(evaluatePackedInventory({ status: 0, stdout }, { minEntries: kind === 'floor' ? MIN_PACKED_ENTRIES : 1 }).ok).toBe(false);
+  });
+  it.each(['pack', 'extraction', 'summary'])('blocks %s failure and cleans staging', async (kind) => {
+    const f = fixture(); let work;
+    const publisher = vi.fn();
+    const result = await withCheckedPackage(f.repo, publisher, { env: f.env, minEntries: 1, runImpl: (cmd, args, opts) => {
+      if (cmd === 'npm') { work = args.at(-1); if (kind === 'pack') return { status: 1, stdout: '' }; }
+      if (kind === 'extraction' && cmd === 'tar' && args[0] === '-xzf') return { status: 1, stdout: '' };
+      if (kind === 'summary' && cmd === process.execPath) return { status: 0, stdout: 'Results: 1 passed, 0 failed (0 scanned files)' };
+      return actualRun(cmd, args, opts);
+    } });
+    expect(result.ok).toBe(false); expect(publisher).not.toHaveBeenCalled(); expect(existsSync(work)).toBe(false);
+  }, 60000);
 });

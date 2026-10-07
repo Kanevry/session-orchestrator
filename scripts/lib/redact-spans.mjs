@@ -9,28 +9,19 @@
  *
  * Behaviour is unchanged from the original: this module is a move, not a rewrite.
  *
- * DELIBERATE SECOND COPY — `check-owner-leakage.mjs` still carries its OWN inline
- * `redactSpans()` and must keep it. That scanner is a documented standalone
- * single-file vendoring target (`.claude/rules/security.md` § "Owner-Privacy
- * Pre-Commit Hook"): consumer repos copy that ONE file, so a static import of this
- * module throws ERR_MODULE_NOT_FOUND in every vendored copy and blocks all commits
- * (proven by the three cases in `tests/husky/pre-commit-owner-leakage.test.mjs`).
- * Unlike CP11's confidential-names helpers, a redaction sink cannot degrade to
- * inert — an absent redaction prints confidential names into a PUBLIC CI log.
- * So: THIS module serves in-tree consumers, the inline copy serves the vendored
- * path, and `tests/lib/redact-spans.test.mjs` pins the two byte-for-byte against
- * each other. Edit one → that drift guard goes red until both agree again.
+ * The owner-leakage scanner remains a standalone vendoring target. Since #1530
+ * it omits offending line content entirely and redacts private filename segments,
+ * so it no longer carries a second copy of this primitive. In-tree consumers
+ * that retain surrounding text use this module; its overlap and ordering
+ * contracts are covered by tests/lib/redact-spans.test.mjs.
  */
 
 /**
  * Redact every confidential-name span from `line`, ORDER-INDEPENDENTLY (Fix 1 + Fix 2).
  *
- * This is the single redaction sink for the confidential-names privacy invariant.
- * In `check-owner-leakage.mjs` it is applied at the print choke-point over EVERY
- * violation's lineContent — not only CP11 hits — because that scanner runs in a
- * PUBLIC GitHub-Actions mirror: a confidential customer/repo name that co-occurs
- * with a CP1–CP10 hit on the same line (e.g. a name beside an RFC1918 IP that
- * fails CP8) would otherwise be echoed verbatim to the public CI log (Fix 1).
+ * Consumers must pass every relevant confidential pattern before emitting text.
+ * This helper matches the supplied text literally; callers handling reversible
+ * encodings must normalize first or omit the sensitive text entirely.
  *
  * ORDER-INDEPENDENCE (Fix 2): a naïve chain of `.replace()` calls is order-dependent
  * — when one configured name is a PREFIX of another (`['acme','acme-corp-secret']`),

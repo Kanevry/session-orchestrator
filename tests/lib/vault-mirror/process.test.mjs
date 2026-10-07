@@ -21,6 +21,15 @@ vi.mock('node:child_process', async () => {
   return { ...actual };
 });
 
+// These are process/output unit tests whose fs doubles replace policy reads.
+// Keep namespace logic real; isolate the external host-policy predicate at that
+// seam. Guard detection and unsafe-source behavior use real fixtures in the
+// scanner/namespace tests, and are not the subject of this unit file.
+vi.mock('../../../scripts/lib/validate/check-owner-leakage.mjs', () => ({
+  isOwnerLeakySegment: vi.fn((value) =>
+    typeof value === 'string' && value.includes('fixture-private-module') ? 'CP6' : null),
+}));
+
 // #1147: emitAction now also writes an `orchestrator.vault.mirror_completed`
 // ledger record. These are UNIT tests of the stdout protocol — without this mock
 // every processLearning/processSession case here would append synthetic records

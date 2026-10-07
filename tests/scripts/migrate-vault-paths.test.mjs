@@ -20,7 +20,8 @@
  * real ~/Projects.
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll } from 'vitest';
+import { load as loadYaml } from 'js-yaml';
 import { spawnSync } from 'node:child_process';
 import {
   mkdtempSync,
@@ -48,6 +49,11 @@ const SCRIPT = join(REPO_ROOT, 'scripts', 'migrate-vault-paths.mjs');
 // when the system tmp is symlinked (e.g. /var → /private/var on macOS).
 const TMP_REAL = realpathSync(tmpdir());
 
+const HOST_SANDBOX = mkdtempSync(join(TMP_REAL, 'mvp-host-'));
+const CANONICAL_VAULT = join(HOST_SANDBOX, 'canonical-vault');
+const HOST_ENV = {...process.env, HOME:HOST_SANDBOX, SO_VAULT_DIR:CANONICAL_VAULT, SO_CONFIG_HOME:join(HOST_SANDBOX,'config'), XDG_CONFIG_HOME:join(HOST_SANDBOX,'xdg'), SO_CONFIDENTIAL_NAMES_FILE:'', SO_OWNER_PATTERNS_FILE:join(HOST_SANDBOX,'owner-patterns.json')};
+afterAll(() => rmSync(HOST_SANDBOX, {recursive:true,force:true}));
+
 const OLD = '/Users/oldname/';
 const NEW = '/Users/newname/';
 
@@ -68,10 +74,11 @@ function mkTmp(prefix = 'mvp-test-') {
  * --from / --to so tests are self-contained (no dependency on the operator's
  * vault-migration-rules.yaml). Returns the spawnSync result.
  */
-function runScript(extraArgs = []) {
+function runScript(extraArgs = [], envOverrides = {}) {
   return spawnSync(process.execPath, [SCRIPT, '--from', OLD, '--to', NEW, ...extraArgs], {
     encoding: 'utf8',
     timeout: 20_000,
+    env: {...HOST_ENV,...envOverrides},
   });
 }
 
@@ -414,16 +421,16 @@ describe('migrate-vault-paths — classification', () => {
 //
 // A second drift class, independent of the OLD_SEGMENT username rewrite: a
 // `vault-dir:` value that points at ~/Projects/vault (MISSING the canonical
-// /Bernhard/ owner segment) must become ~/Projects/Bernhard/vault. These files
+// /FixtureOwner/ owner segment) must become ~/Projects/FixtureOwner/vault. These files
 // do NOT contain the OLD username, so they exercise the dedicated discovery +
 // classification + rewrite path. Tests still pass --from/--to (via runScript)
 // to keep the script self-contained; the missing-segment path fires regardless.
 // ---------------------------------------------------------------------------
 
-const CANONICAL_VAULT = '~/Projects/Bernhard/vault';
+
 
 describe('migrate-vault-paths — missing-segment class (#600 D3)', () => {
-  it('rewrites vault-dir: ~/Projects/vault to ~/Projects/Bernhard/vault on --apply', () => {
+  it(`rewrites vault-dir: ~/Projects/vault to ${CANONICAL_VAULT} on --apply`, () => {
     const repo = mkTmp();
     const filePath = writeFile(repo, 'CLAUDE.md', 'vault-dir: ~/Projects/vault\n');
 
@@ -431,7 +438,7 @@ describe('migrate-vault-paths — missing-segment class (#600 D3)', () => {
 
     expect(result.status).toBe(0);
     // Hardcoded expected output — the canonical owner segment is inserted.
-    expect(readFileSync(filePath, 'utf8')).toBe('vault-dir: ~/Projects/Bernhard/vault\n');
+    expect(readFileSync(filePath, 'utf8')).toBe(`vault-dir: ${CANONICAL_VAULT}\n`);
     expect(result.stdout).toContain('vault-dir-missing-segment-fixed');
     expect(result.stderr).toContain('1 lines fixed');
   });
@@ -442,7 +449,7 @@ describe('migrate-vault-paths — missing-segment class (#600 D3)', () => {
 
     runScript(['--repos', repo, '--apply']);
 
-    expect(readFileSync(filePath, 'utf8')).toBe('vault-dir: /Users/bob/Projects/Bernhard/vault\n');
+    expect(readFileSync(filePath, 'utf8')).toBe(`vault-dir: ${CANONICAL_VAULT}\n`);
   });
 
   it('default dry-run reports would-fix without mutating the file', () => {
@@ -464,9 +471,9 @@ describe('migrate-vault-paths — missing-segment class (#600 D3)', () => {
     const result = runScript(['--repos', repo, '--apply']);
 
     expect(result.status).toBe(0);
-    // Unchanged — no ~/Projects/Bernhard/Bernhard/vault.
+    // Unchanged — no ~/Projects/FixtureOwner/FixtureOwner/vault.
     expect(readFileSync(filePath, 'utf8')).toBe(`vault-dir: ${CANONICAL_VAULT}\n`);
-    expect(readFileSync(filePath, 'utf8')).not.toContain('Bernhard/Bernhard');
+    expect(readFileSync(filePath, 'utf8')).not.toContain('FixtureOwner/FixtureOwner');
     expect(result.stderr).toContain('0 lines fixed');
   });
 
@@ -500,7 +507,7 @@ describe('migrate-vault-paths — missing-segment class (#600 D3)', () => {
 
     runScript(['--repos', repo, '--apply']);
 
-    expect(readFileSync(filePath, 'utf8')).toBe('vault-dir: ~/Projects/Bernhard/vault/sub/dir\n');
+    expect(readFileSync(filePath, 'utf8')).toBe(`vault-dir: ${CANONICAL_VAULT}/sub/dir\n`);
   });
 
   it('discovers a missing-segment file that contains NO OLD_SEGMENT username', () => {
@@ -564,9 +571,9 @@ describe('migrate-vault-paths — missing-segment class (#600 D3)', () => {
 describe('migrate-vault-paths — mixed-class & idempotency edges', () => {
   it('a single file with BOTH username-drift and missing-segment lines is rewritten correctly per-class, no double-rewrite', () => {
     // Layer-collision regression: if the missing-segment regex were applied to
-    // the username-rewrite output, the file would gain a spurious /Bernhard/
+    // the username-rewrite output, the file would gain a spurious /FixtureOwner/
     // segment in the username-rewritten line (yielding /Users/newname/Projects/
-    // Bernhard/vault). The originalContent gate in rewriteMissingSegment
+    // FixtureOwner/vault). The originalContent gate in rewriteMissingSegment
     // prevents this.
     const repo = mkTmp();
     const filePath = writeFile(
@@ -583,16 +590,16 @@ describe('migrate-vault-paths — mixed-class & idempotency edges', () => {
 
     expect(result.status).toBe(0);
     // Hardcoded expected: username line → /Users/newname/Projects/vault (NO
-    // /Bernhard/ injection); missing-segment line → ~/Projects/Bernhard/vault.
+    // /FixtureOwner/ injection); missing-segment line → ~/Projects/FixtureOwner/vault.
     expect(readFileSync(filePath, 'utf8')).toBe(
       [
         `vault-dir: ${NEW}Projects/vault`,
-        `vault-dir: ~/Projects/Bernhard/vault`,
+        `vault-dir: ${CANONICAL_VAULT}`,
         '',
       ].join('\n'),
     );
     // Symmetric anti-injection check.
-    expect(readFileSync(filePath, 'utf8')).not.toContain('newname/Projects/Bernhard');
+    expect(readFileSync(filePath, 'utf8')).not.toContain('newname/Projects/FixtureOwner');
     expect(result.stderr).toContain('2 lines fixed');
   });
 
@@ -612,9 +619,9 @@ describe('migrate-vault-paths — mixed-class & idempotency edges', () => {
 
     expect(result.status).toBe(0);
     expect(readFileSync(driftFile, 'utf8')).toBe(
-      'vault-dir: ~/Projects/Bernhard/vault\n',
+      `vault-dir: ${CANONICAL_VAULT}\n`,
     );
-    // Canonical file byte-for-byte unchanged (no Bernhard/Bernhard injection).
+    // Canonical file byte-for-byte unchanged (no FixtureOwner/FixtureOwner injection).
     expect(readFileSync(canonicalFile, 'utf8')).toBe(
       `vault-dir: ${CANONICAL_VAULT}\n`,
     );
@@ -634,7 +641,7 @@ describe('migrate-vault-paths — mixed-class & idempotency edges', () => {
     runScript(['--repos', repo, '--apply']);
 
     expect(readFileSync(filePath, 'utf8')).toBe(
-      'vault-dir: ~/Projects/Bernhard/vault   # canonical Meta-Vault location\n',
+      `vault-dir: ${CANONICAL_VAULT}   # canonical Meta-Vault location\n`,
     );
   });
 });
@@ -652,7 +659,7 @@ describe('migrate-vault-paths — ENOENT guard (#600 F2)', () => {
       {
         encoding: 'utf8',
         timeout: 20_000,
-        env: { PATH: join(repo, 'no-such-bin-dir') },
+        env: {...HOST_ENV, PATH: join(repo, 'no-such-bin-dir') },
       },
     );
 
@@ -661,4 +668,39 @@ describe('migrate-vault-paths — ENOENT guard (#600 F2)', () => {
     // Must NOT be the old masked empty-stderr message.
     expect(result.stderr).not.toMatch(/grep failed:\s*\n/);
   });
+});
+
+it('leaves legacy vault-dir untouched when no host canonical target is configured', () => {
+  const repo = mkTmp();
+  const file = writeFile(repo,'CLAUDE.md','vault-dir: ~/Projects/vault\n');
+  const result = runScript(['--repos',repo,'--apply','--json'], {SO_VAULT_DIR:''});
+  expect(result.status).toBe(0);
+  expect(readFileSync(file,'utf8')).toBe('vault-dir: ~/Projects/vault\n');
+  expect(result.stdout).toContain('canonical-vault-unconfigured');
+  expect(result.stderr).toContain('set SO_VAULT_DIR or owner.yaml paths.vault-dir');
+  expect(result.stderr).toContain('0 lines fixed');
+});
+
+it('does not count an already-equal legacy canonical target as fixed', () => {
+  const repo = mkTmp();
+  const file = writeFile(repo,'CLAUDE.md','vault-dir: ~/Projects/vault\n');
+  const result = runScript(['--repos',repo,'--apply'], {SO_VAULT_DIR:'~/Projects/vault'});
+  expect(result.status).toBe(0);
+  expect(readFileSync(file,'utf8')).toBe('vault-dir: ~/Projects/vault\n');
+  expect(result.stderr).toContain('0 lines fixed');
+});
+
+
+it('preserves decoded escaped YAML suffixes on actual CLI apply', () => {
+  const repo = mkTmp();
+  const input = 'vault-dir: "~/Projects/vault/a\\\\b\\"c" # keep\n';
+  const file = writeFile(repo, 'CLAUDE.md', input);
+  const target = join(HOST_SANDBOX, 'Fixture "Vault"');
+  const result = runScript(['--repos', repo, '--apply'], { SO_VAULT_DIR: target });
+  expect(result.status).toBe(0);
+  const output = readFileSync(file, 'utf8');
+  expect(loadYaml(output)['vault-dir']).toBe(target + '/a\\b"c');
+  expect(output).toContain(' # keep\n');
+  expect(runScript(['--repos', repo, '--apply'], { SO_VAULT_DIR: target }).status).toBe(0);
+  expect(readFileSync(file, 'utf8')).toBe(output);
 });

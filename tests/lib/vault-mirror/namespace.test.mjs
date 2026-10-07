@@ -24,6 +24,16 @@ import {
 } from '@lib/vault-mirror/namespace.mjs';
 import { _resetPseudonymMapCache } from '@lib/vault-mirror/pseudonym-map.mjs';
 
+
+const inventedOwnerPolicyDir = makeTmpDir('invented-owner-policy-');
+const inventedOwnerPolicyPath = join(inventedOwnerPolicyDir, 'owner-patterns.json');
+writeFileSync(inventedOwnerPolicyPath, JSON.stringify({
+  version: 1, usernamePrefixes: ['sampleg'], privateHosts: ['gitlab.example.invalid'], eventsHosts: ['events.example.invalid'], privateDomains: ['example.invalid'], packageScopes: ['example'],
+  privateSlugs: ['project-launchpad','Project-Hackathon','project-ledger','Project-Quotes','project-climate','project-private-module','project-mail'],
+  vaultClearSlugs: ['project-ledger','project-mail','project-climate','project-launchpad','project-quotes'], personalNames: ['Sample'],
+  publicEmails: ['office@example.invalid','security@example.invalid'], publicUrls: ['https://example.invalid','http://example.invalid','https://www.example.invalid','http://www.example.invalid','www.example.invalid'],
+}), {mode: 0o600});
+beforeEach(() => { vi.stubEnv('SO_OWNER_PATTERNS_FILE', inventedOwnerPolicyPath); });
 // Insulate EVERY test in this file from the machine's real owner.yaml: force
 // "no pseudonym map" by default so the existing redaction/slug pins stay
 // deterministic and green regardless of any host-local namespace map (#725 D5).
@@ -62,26 +72,14 @@ function writeMap(obj) {
 // ---------------------------------------------------------------------------
 
 describe('resolveRepoNamespace — vaultName override', () => {
-  it('simple kebab name passes through unchanged', () => {
-    expect(resolveRepoNamespace({ vaultName: 'test-vault' })).toBe('test-vault');
-  });
-
-  it('spaces are STRIPPED (not converted to hyphens) — matches subjectToSlug behavior', () => {
-    // "My Repo" → lowercase → strip non-[a-z0-9-] (space is stripped) → "myrepo"
-    expect(resolveRepoNamespace({ vaultName: 'My Repo' })).toBe('myrepo');
-  });
-
-  it('uppercase is lowercased', () => {
-    expect(resolveRepoNamespace({ vaultName: 'MyVault' })).toBe('myvault');
-  });
-
-  it('dots and underscores are replaced with hyphens', () => {
-    // "my.vault_name" → "my-vault-name"
-    expect(resolveRepoNamespace({ vaultName: 'my.vault_name' })).toBe('my-vault-name');
-  });
-
-  it('a plain lowercase kebab slug is returned as-is', () => {
-    expect(resolveRepoNamespace({ vaultName: 'session-orchestrator' })).toBe('session-orchestrator');
+  it.each([
+    ['test-vault', 'test-vault'],
+    ['My Repo', 'myrepo'],
+    ['MyVault', 'myvault'],
+    ['my.vault_name', 'my-vault-name'],
+    ['session-orchestrator', 'session-orchestrator'],
+  ])('normalizes vaultName %s to %s', (vaultName, expected) => {
+    expect(resolveRepoNamespace({ vaultName })).toBe(expected);
   });
 
   it('whitespace-only vaultName falls back to deriveRepo() (treated as absent)', () => {
@@ -99,29 +97,17 @@ describe('resolveRepoNamespace — vaultName override', () => {
 
 describe('resolveRepoNamespace — owner-privacy leak redaction', () => {
   // CP6 in-process guard now uses the VAULT_CLEAR_SLUGS carve-out (issue #59,
-  // owner decision 2026-07-18): only Codex-Hackathon + aiat-pmo-module still
+  // owner decision 2026-07-18): only Project-Hackathon + project-private-module still
   // redact in-process; the other 5 slugs resolve to their own vault namespace
   // (the tracked-file scanner, runScan, still blocks ALL 7 from the public
   // mirror — proven by check-owner-leakage.test.mjs Positive-3/3b staying green).
-  it('CP6 (retained): private slug "Codex-Hackathon" is redacted to "redacted-repo"', () => {
-    // isOwnerLeakySegment('Codex-Hackathon') returns 'CP6' (NOT carved out)
-    expect(resolveRepoNamespace({ vaultName: 'Codex-Hackathon' })).toBe('redacted-repo');
-  });
-
-  it('CP6 (retained): private slug "aiat-pmo-module" is redacted to "redacted-repo"', () => {
-    // isOwnerLeakySegment('aiat-pmo-module') returns 'CP6' (NOT carved out) —
-    // proves the in-process CP6 guard still bites for retained slugs.
-    expect(resolveRepoNamespace({ vaultName: 'aiat-pmo-module' })).toBe('redacted-repo');
-  });
-
-  it('CP1: personal home path "/Users/bernhardg/x" is redacted to "redacted-repo"', () => {
-    // isOwnerLeakySegment('/Users/bernhardg/x') returns 'CP1'
-    expect(resolveRepoNamespace({ vaultName: '/Users/bernhardg/x' })).toBe('redacted-repo');
-  });
-
-  it('CP10: personal Projects path "~/Projects/Bernhard" is redacted to "redacted-repo"', () => {
-    // isOwnerLeakySegment('~/Projects/Bernhard') returns 'CP10'
-    expect(resolveRepoNamespace({ vaultName: '~/Projects/Bernhard' })).toBe('redacted-repo');
+  it.each([
+    ['CP6 retained slug', 'Project-Hackathon'],
+    ['CP6 retained module', 'project-private-module'],
+    ['CP1 personal home', '/Users/sampleg/x'],
+    ['CP10 personal Projects', '~/Projects/Sample'],
+  ])('%s redacts to redacted-repo', (_rule, vaultName) => {
+    expect(resolveRepoNamespace({ vaultName })).toBe('redacted-repo');
   });
 });
 
@@ -136,26 +122,14 @@ describe('resolveRepoNamespace — owner-privacy leak redaction', () => {
 // ---------------------------------------------------------------------------
 
 describe('resolveRepoNamespace — VAULT_CLEAR_SLUGS carve-out (#59)', () => {
-  it('carved slug "buchhaltgenie" resolves to its own namespace (not redacted)', () => {
-    expect(resolveRepoNamespace({ vaultName: 'buchhaltgenie' })).toBe('buchhaltgenie');
-  });
-
-  it('carved slug "mail-assistant" resolves to its own namespace (not redacted)', () => {
-    expect(resolveRepoNamespace({ vaultName: 'mail-assistant' })).toBe('mail-assistant');
-  });
-
-  it('carved slug "wien-forschungsfragen-klima" resolves to its own namespace (not redacted)', () => {
-    expect(resolveRepoNamespace({ vaultName: 'wien-forschungsfragen-klima' })).toBe('wien-forschungsfragen-klima');
-  });
-
-  it('carved slug "launchpad-ai-factory" resolves to its own namespace (not redacted)', () => {
-    // Flipped from the pre-#59 redaction pin: launchpad-ai-factory is now carved out.
-    expect(resolveRepoNamespace({ vaultName: 'launchpad-ai-factory' })).toBe('launchpad-ai-factory');
-  });
-
-  it('carved slug "AngebotsChecker" resolves to its lowercased slug (not redacted)', () => {
-    // subjectToSlug lowercases the clean value once it is no longer CP6-leaky.
-    expect(resolveRepoNamespace({ vaultName: 'AngebotsChecker' })).toBe('angebotschecker');
+  it.each([
+    ['project-ledger', 'project-ledger'],
+    ['project-mail', 'project-mail'],
+    ['project-climate', 'project-climate'],
+    ['project-launchpad', 'project-launchpad'],
+    ['Project-Quotes', 'project-quotes'],
+  ])('cleared slug %s resolves to %s', (vaultName, expected) => {
+    expect(resolveRepoNamespace({ vaultName })).toBe(expected);
   });
 });
 
@@ -214,8 +188,8 @@ describe('resolveRepoNamespace — default (no vaultName)', () => {
 // clean repos never touch the map (and never trigger the lazy owner.yaml read).
 //
 // Fixture-name policy: pseudonym VALUES use invented slugs ('alpha-team'). The
-// only real token used is 'bernhardg' — an owner USERNAME (CP1), already present
-// in this scanner-allowlisted redaction-fixture file above — reused ONLY to drive
+// username token 'sampleg' is invented and configured by the test policy above;
+// it is reused ONLY to drive
 // the leaky-repo redaction site (the map is leaky-only, so a leaky KEY is required
 // to exercise it) and to prove a leaky pseudonym VALUE is rejected. No real CP6
 // project slug is introduced. Exhaustive map-parsing edge cases (invalid slug,
@@ -224,34 +198,34 @@ describe('resolveRepoNamespace — default (no vaultName)', () => {
 
 describe('resolveRepoNamespace — pseudonym mapping', () => {
   it('a MAPPED owner-leaky repo returns its stable pseudonym instead of "redacted-repo"', () => {
-    // 'bernhardg' is owner-leaky (CP1). With a host-local mapping it resolves to the
+    // 'sampleg' is owner-leaky (CP1). With a host-local mapping it resolves to the
     // pseudonym — preserving per-repo write-isolation (#660) instead of collapsing to
     // the shared 'redacted-repo' bucket.
-    _setNamespaceMapPath(writeMap({ bernhardg: 'alpha-team' }));
-    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('alpha-team');
+    _setNamespaceMapPath(writeMap({ sampleg: 'alpha-team' }));
+    expect(resolveRepoNamespace({ vaultName: 'sampleg' })).toBe('alpha-team');
   });
 
   it('CONTROL: the same owner-leaky repo still redacts when NO map is configured', () => {
     _setNamespaceMapPath(null);
-    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+    expect(resolveRepoNamespace({ vaultName: 'sampleg' })).toBe('redacted-repo');
   });
 
   it('a CLEAN repo is returned as-is even when a map is configured (map is leaky-only)', () => {
     // The map is consulted only at the redaction site, so a non-leaky repo never
     // touches it — 'acme-internal' resolves to itself, not to any mapped value.
-    _setNamespaceMapPath(writeMap({ bernhardg: 'alpha-team' }));
+    _setNamespaceMapPath(writeMap({ sampleg: 'alpha-team' }));
     expect(resolveRepoNamespace({ vaultName: 'acme-internal' })).toBe('acme-internal');
   });
 
   it('an owner-leaky repo NOT present in the map still redacts (backward-compatible)', () => {
     // Map exists but has no entry for this repo → falls through to redaction.
-    _setNamespaceMapPath(writeMap({ bernhardg: 'alpha-team' }));
-    expect(resolveRepoNamespace({ vaultName: '~/Projects/Bernhard' })).toBe('redacted-repo');
+    _setNamespaceMapPath(writeMap({ sampleg: 'alpha-team' }));
+    expect(resolveRepoNamespace({ vaultName: '~/Projects/Sample' })).toBe('redacted-repo');
   });
 
   it('missing map file → owner-leaky repo redacts (fallback)', () => {
     _setNamespaceMapPath('/tmp/definitely-not-a-real-namespace-map-xyz/map.json');
-    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+    expect(resolveRepoNamespace({ vaultName: 'sampleg' })).toBe('redacted-repo');
   });
 
   it('malformed JSON map → owner-leaky repo redacts + WARN', () => {
@@ -261,7 +235,7 @@ describe('resolveRepoNamespace — pseudonym mapping', () => {
       return true;
     });
     _setNamespaceMapPath(writeMap('{ not: valid json'));
-    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+    expect(resolveRepoNamespace({ vaultName: 'sampleg' })).toBe('redacted-repo');
     expect(writes.some((w) => /malformed JSON/.test(w))).toBe(true);
   });
 
@@ -273,8 +247,8 @@ describe('resolveRepoNamespace — pseudonym mapping', () => {
     });
     // The mapped pseudonym is itself owner-leaky → dropped by loadPseudonymMap, so the
     // repo falls back to redaction rather than writing the leaky value into the vault.
-    _setNamespaceMapPath(writeMap({ bernhardg: 'bernhardg' }));
-    expect(resolveRepoNamespace({ vaultName: 'bernhardg' })).toBe('redacted-repo');
+    _setNamespaceMapPath(writeMap({ sampleg: 'sampleg' }));
+    expect(resolveRepoNamespace({ vaultName: 'sampleg' })).toBe('redacted-repo');
     expect(writes.some((w) => /owner-leaky/.test(w))).toBe(true);
   });
 });
@@ -469,12 +443,12 @@ describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable f
   });
 
   it('B2: a declared slug that trips the owner-leakage guard is STILL redacted — the lookup sits ABOVE the guard, never around it', async () => {
-    // 'aiat-pmo-module' is a CP6 private slug (see the redaction block above);
+    // 'project-private-module' is a CP6 private slug (see the redaction block above);
     // choosing the declared slug after the guard would have written it to the
     // vault verbatim.
     const dir = join(makeDir('ns-vaultyaml-leaky-'), 'plain-dir');
     mkdirSync(dir);
-    writeVaultYaml(dir, 'aiat-pmo-module');
+    writeVaultYaml(dir, 'project-private-module');
 
     process.chdir(dir);
     const mod = await freshNamespaceModule();

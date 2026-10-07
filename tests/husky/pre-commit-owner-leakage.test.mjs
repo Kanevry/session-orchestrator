@@ -15,12 +15,22 @@
  * We do NOT touch the real repo's commit history.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync, writeFileSync, cpSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { installGitHook } from '../_helpers/executable-fixture.mjs';
+
+const inventedOwnerPolicyDir = makeTmpDir('invented-owner-policy-');
+const inventedOwnerPolicyPath = join(inventedOwnerPolicyDir, 'owner-patterns.json');
+writeFileSync(inventedOwnerPolicyPath, JSON.stringify({
+  version: 1, usernamePrefixes: ['sampleg'], privateHosts: ['gitlab.example.invalid'], eventsHosts: ['events.example.invalid'], privateDomains: ['example.invalid'], packageScopes: ['example'],
+  privateSlugs: ['project-launchpad','Project-Hackathon','project-ledger','Project-Quotes','project-climate','project-private-module','project-mail'],
+  vaultClearSlugs: ['project-ledger','project-mail','project-climate','project-launchpad','project-quotes'], personalNames: ['Sample'],
+  publicEmails: ['office@example.invalid','security@example.invalid'], publicUrls: ['https://example.invalid','http://example.invalid','https://www.example.invalid','http://www.example.invalid','www.example.invalid'],
+}), {mode: 0o600});
+beforeEach(() => { vi.stubEnv('SO_OWNER_PATTERNS_FILE', inventedOwnerPolicyPath); });
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -102,7 +112,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
 
     it.each(['md', 'mdx'])('blocks commit when a planted .%s leak file is staged', (ext) => {
       // Plant a clear P1 (personal home path) leak
-      writeFileSync(join(tmpDir, `doc.${ext}`), 'See /Users/bernhardgoetzendorfer/Projects/vault for notes.\n');
+      writeFileSync(join(tmpDir, `doc.${ext}`), 'See /Users/samplegaccount/Projects/vault for notes.\n');
       fixtureGit(['-C', tmpDir, 'add', `doc.${ext}`]);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
       expect(result.status).not.toBe(0);
@@ -116,8 +126,8 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // that the scanner had not run at all (`CP11 DISABLED`, an unrelated
       // owner.yaml typo), which is what teaches --no-verify. The hook now prints the
       // scanner's output tail; that is safe because every violation line passes
-      // through redactSpans() before it reaches stdout.
-      writeFileSync(join(tmpDir, 'doc.md'), 'See /Users/bernhardgoetzendorfer/Projects/vault for notes.\n');
+      // omits offending content and redacts private filename segments before stdout.
+      writeFileSync(join(tmpDir, 'doc.md'), 'See /Users/samplegaccount/Projects/vault for notes.\n');
       fixtureGit(['-C', tmpDir, 'add', 'doc.md']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
       expect(result.status).not.toBe(0);
@@ -127,7 +137,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
     });
 
     it('blocks commit when a planted P6 (private slug) leak is staged', () => {
-      writeFileSync(join(tmpDir, 'notes.md'), '# Tracking buchhaltgenie deployment\n');
+      writeFileSync(join(tmpDir, 'notes.md'), '# Tracking project-ledger deployment\n');
       fixtureGit(['-C', tmpDir, 'add', 'notes.md']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'leak attempt']);
       expect(result.status).not.toBe(0);
@@ -136,7 +146,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
 
     it('allows a clean MDX commit while an untracked draft contains a leak (#1267 default)', () => {
       writeFileSync(join(tmpDir, 'doc.mdx'), '<Note>A perfectly fine document with no leaks.</Note>\n');
-      writeFileSync(join(tmpDir, 'draft.md'), '/Users/bernhardg/private\n');
+      writeFileSync(join(tmpDir, 'draft.md'), '/Users/sampleg/private\n');
       fixtureGit(['-C', tmpDir, 'add', 'doc.mdx']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'clean commit']);
       expect(result.status).toBe(0);
@@ -146,7 +156,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // The scanner now canonicalizes encodings before matching, so a home path
       // re-spelled with url-percent separators — which the old slash-form regex
       // would have MISSED — is caught end-to-end through the git hook.
-      writeFileSync(join(tmpDir, 'enc.md'), 'leak: %2FUsers%2Fbernhardg%2Fsecret\n');
+      writeFileSync(join(tmpDir, 'enc.md'), 'leak: %2FUsers%2Fsampleg%2Fsecret\n');
       fixtureGit(['-C', tmpDir, 'add', 'enc.md']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'encoded leak']);
       expect(result.status).not.toBe(0);
@@ -154,11 +164,11 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
     });
 
     it('blocks commit when a CAPITALIZED-username home path is staged (#661 Finding 1 HIGH)', () => {
-      // /Users/Bernhardg. is a real operator path on case-insensitive APFS. The
+      // /Users/Sampleg. is a real operator path on case-insensitive APFS. The
       // username segment is now matched case-INSENSITIVELY, so the capitalized
       // form — which the old case-sensitive regex MISSED (exploitable false
       // negative) — is blocked end-to-end through the git hook.
-      writeFileSync(join(tmpDir, 'cap.md'), 'home: /Users/Bernhardg./Projects/secret\n');
+      writeFileSync(join(tmpDir, 'cap.md'), 'home: /Users/Sampleg./Projects/secret\n');
       fixtureGit(['-C', tmpDir, 'add', 'cap.md']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'capitalized leak']);
       expect(result.status).not.toBe(0);
@@ -168,7 +178,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
     it('blocks commit when a zero-width-spliced home path is staged (#661 Finding 3)', () => {
       // A zero-width space wedged into the username breaks a contiguous-literal
       // match; the scanner now strips format chars from the canonical form.
-      writeFileSync(join(tmpDir, 'zw.md'), 'p: /Users/bern\u200bhardg/secret\n');
+      writeFileSync(join(tmpDir, 'zw.md'), 'p: /Users/sam\u200bpleg/secret\n');
       fixtureGit(['-C', tmpDir, 'add', 'zw.md']);
       const result = fixtureGitSpawn(['-C', tmpDir, 'commit', '-m', 'zero-width leak']);
       expect(result.status).not.toBe(0);
@@ -180,7 +190,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // is attempted. Before #494 a manual local scan (running before the add)
       // would miss it; the hook scanner runs AFTER add, so it sees the staged
       // tree and blocks.
-      writeFileSync(join(tmpDir, 'fresh.md'), 'New file: /Users/bernhardg./private/path/here\n');
+      writeFileSync(join(tmpDir, 'fresh.md'), 'New file: /Users/sampleg./private/path/here\n');
       // Verify the file is untracked
       const statusBefore = fixtureGit(['-C', tmpDir, 'status', '--short']);
       expect(statusBefore).toContain('?? fresh.md');
@@ -297,7 +307,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       // The hook's owner-leakage stage now PRINTS the scanner's output tail
       // (W4-F6) instead of discarding it, so this assertion is no longer carried
       // by suppression: what keeps the confidential name out of the git-commit
-      // capture is the scanner's own choke-point redaction (redactSpans), and
+      // capture is the scanner's own omission of offending content, and
       // this row is what proves the two changes compose.
       expect(result.stdout).not.toContain('zenithcorp');
       expect(result.stderr).not.toContain('zenithcorp');

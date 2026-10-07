@@ -69,7 +69,7 @@ function writeFile(base, rel, content) {
  * Fixture layout:
  *   50-sessions/s1.md                          — type:session, repo:infrastructure/session-orchestrator
  *   50-sessions/s2.md                          — type:session, NO repo → _unsorted
- *   50-sessions/priv.md                        — type:session, repo:products/aiat-pmo-module → redacted-repo
+ *   50-sessions/priv.md                        — type:session, repo:products/project-secret-module → redacted-repo
  *   40-learnings/l1.md                         — type:learning, source_session:"[[s1]]" → transitive session-orchestrator
  *   40-learnings/l2.md                         — type:learning, NO source_session → _unsorted
  *   50-sessions/session-orchestrator/existing.md — already-namespaced (idempotency target)
@@ -88,12 +88,9 @@ function createFixtureVault() {
     '---\ntype: session\n---\n# s2\n');
 
   // priv: session with private repo → redacted-repo (CP6 leak guard).
-  // Uses aiat-pmo-module — a RETAINED CP6 slug — deliberately: after the #59
-  // VAULT_CLEAR_SLUGS carve-out, buchhaltgenie/etc. now resolve to their own
-  // namespace in-process, so the "redacted-repo / non-confident" intent needs a
-  // slug that STILL fires the in-process CP6 guard.
+  // Invented host policy below marks this fixture slug as private.
   writeFile(vault, '50-sessions/priv.md',
-    '---\ntype: session\nrepo: products/aiat-pmo-module\n---\n# priv\n');
+    '---\ntype: session\nrepo: products/project-secret-module\n---\n# priv\n');
 
   // l1: learning transitively linked to s1 → session-orchestrator
   writeFile(vault, '40-learnings/l1.md',
@@ -204,9 +201,12 @@ function createBackfillFixture(opts = {}) {
  * @param {{ timeout?: number }} [opts]
  */
 function runScript(args = [], opts = {}) {
+  const policyPath = join(mkTmp('rvt-owner-policy-'), 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1, privateSlugs:['project-secret-module']}), {mode:0o600});
   return spawnSync(process.execPath, [SCRIPT, ...args], {
     encoding: 'utf8',
     timeout: opts.timeout ?? 20_000,
+    env: {...process.env, SO_OWNER_PATTERNS_FILE:policyPath},
   });
 }
 

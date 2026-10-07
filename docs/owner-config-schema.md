@@ -126,7 +126,7 @@ hardware-sharing: { enabled: true }
 
 # ACCEPTED — all four required sections present and valid
 owner:
-  name: Bernhard
+  name: Example Owner
   language: de
 tone:
   style: direct
@@ -136,3 +136,7 @@ efficiency:
 hardware-sharing:
   enabled: false
 ```
+
+## Owner privacy pattern source
+
+Host-local owner leakage patterns use a separate protected version 1 JSON file, not an owner.yaml section. See [Owner privacy patterns](owner-privacy-patterns.md) for source precedence, schema, migration and strict packed-release checks. `paths.vault-dir` remains the canonical vault target used by the vault migration and consolidation tools; `SO_VAULT_DIR` overrides it.

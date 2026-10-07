@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
+import { load as loadYaml } from 'js-yaml';
 import {
   rewriteMissingSegment,
   rewriteContent,
@@ -51,18 +52,12 @@ describe('MISSING_SEGMENT_CLASS', () => {
 // ---------------------------------------------------------------------------
 
 describe('isOwnedByUsernamePath', () => {
-  it('returns true for a line containing the OLD_SEGMENT literal', () => {
-    expect(isOwnedByUsernamePath(`vault-dir: ${OLD}Projects/vault`)).toBe(true);
-  });
-
-  it('returns false for a line without the OLD_SEGMENT literal', () => {
-    expect(isOwnedByUsernamePath('vault-dir: ~/Projects/vault')).toBe(false);
-  });
-
-  it('returns false for undefined (shorter original-content array)', () => {
-    // The collision-gate in rewriteMissingSegment can index past the end of the
-    // original-content lines; an undefined line is not owned by the username path.
-    expect(isOwnedByUsernamePath(undefined)).toBe(false);
+  it.each([
+    [`vault-dir: ${OLD}Projects/vault`, true],
+    ['vault-dir: ~/Projects/vault', false],
+    [undefined, false],
+  ])('checks original username ownership for %s: %s', (line, expected) => {
+    expect(isOwnedByUsernamePath(line)).toBe(expected);
   });
 
   it('matches only the exact OLD_SEGMENT literal, not a username substring', () => {
@@ -79,36 +74,17 @@ describe('isOwnedByUsernamePath', () => {
 // ---------------------------------------------------------------------------
 
 describe('isHistorical', () => {
-  it('flags decisions.md basename as historical', () => {
-    expect(isHistorical('/repo/01-projects/foo/decisions.md')).toBe(true);
-  });
-
-  it('flags any file under a /history/ directory', () => {
-    expect(isHistorical('/repo/history/notes.md')).toBe(true);
-  });
-
-  it('flags a -history/ suffixed directory (pricing-history/)', () => {
-    expect(isHistorical('/repo/pricing-history/q1.md')).toBe(true);
-  });
-
-  it('flags a numbered vault archive directory (90-archive/)', () => {
-    expect(isHistorical('/repo/90-archive/old.md')).toBe(true);
-  });
-
-  it('flags a bare /archive/ directory', () => {
-    expect(isHistorical('/repo/archive/old.md')).toBe(true);
-  });
-
-  it('flags a basename containing "archive"', () => {
-    expect(isHistorical('/repo/ARCHIVE-INSTRUCTIONS.md')).toBe(true);
-  });
-
-  it('returns false for an ordinary source file', () => {
-    expect(isHistorical('/repo/CLAUDE.md')).toBe(false);
-  });
-
-  it('is case-insensitive on the path', () => {
-    expect(isHistorical('/repo/History/Notes.md')).toBe(true);
+  it.each([
+    ['/repo/01-projects/foo/decisions.md', true],
+    ['/repo/history/notes.md', true],
+    ['/repo/pricing-history/q1.md', true],
+    ['/repo/90-archive/old.md', true],
+    ['/repo/archive/old.md', true],
+    ['/repo/ARCHIVE-INSTRUCTIONS.md', true],
+    ['/repo/CLAUDE.md', false],
+    ['/repo/History/Notes.md', true],
+  ])('classifies historical path %s: %s', (filePath, expected) => {
+    expect(isHistorical(filePath)).toBe(expected);
   });
 });
 
@@ -117,30 +93,13 @@ describe('isHistorical', () => {
 // ---------------------------------------------------------------------------
 
 describe('classifyHit', () => {
-  it('classifies a vault-dir: line carrying the old username as vault-dir-drift', () => {
-    expect(classifyHit('/repo/CLAUDE.md', `vault-dir: ${OLD}Projects/vault`)).toBe(
-      'vault-dir-drift',
-    );
-  });
-
-  it('classifies a non-vault-dir old-username reference as path-drift', () => {
-    expect(classifyHit('/repo/STATE.md', `plan-file: ${OLD}Projects/foo/bar.md`)).toBe(
-      'path-drift',
-    );
-  });
-
-  it('classifies any hit in a historical file as historical (overrides shape)', () => {
-    // Even a vault-dir: line is "historical" when the file is a decisions log.
-    expect(classifyHit('/repo/decisions.md', `vault-dir: ${OLD}Projects/vault`)).toBe(
-      'historical',
-    );
-  });
-
-  it('requires the literal Projects/vault tail for vault-dir-drift (not just vault-dir:)', () => {
-    // A vault-dir: line whose value is NOT the vault-path literal is path-drift.
-    expect(classifyHit('/repo/CLAUDE.md', `vault-dir: ${OLD}Projects/other`)).toBe(
-      'path-drift',
-    );
+  it.each([
+    ['/repo/CLAUDE.md', `vault-dir: ${OLD}Projects/vault`, 'vault-dir-drift'],
+    ['/repo/STATE.md', `plan-file: ${OLD}Projects/foo/bar.md`, 'path-drift'],
+    ['/repo/decisions.md', `vault-dir: ${OLD}Projects/vault`, 'historical'],
+    ['/repo/CLAUDE.md', `vault-dir: ${OLD}Projects/other`, 'path-drift'],
+  ])('classifies %s with %s as %s', (filePath, line, expected) => {
+    expect(classifyHit(filePath, line)).toBe(expected);
   });
 });
 
@@ -171,32 +130,19 @@ describe('rewriteContent', () => {
 });
 
 // ---------------------------------------------------------------------------
-// lineHasMissingSegment — single-line missing-/Bernhard/-segment probe
+// lineHasMissingSegment — single-line legacy vault-base probe
 // ---------------------------------------------------------------------------
 
 describe('lineHasMissingSegment', () => {
-  it('matches a tilde vault-dir pointing at ~/Projects/vault', () => {
-    expect(lineHasMissingSegment('vault-dir: ~/Projects/vault')).toBe(true);
-  });
-
-  it('matches the expanded /Users/<user>/Projects/vault form', () => {
-    expect(lineHasMissingSegment('vault-dir: /Users/bob/Projects/vault')).toBe(true);
-  });
-
-  it('does NOT match an already-canonical ~/Projects/Bernhard/vault (idempotency)', () => {
-    expect(lineHasMissingSegment('vault-dir: ~/Projects/Bernhard/vault')).toBe(false);
-  });
-
-  it('does NOT match a vault-backups path (trailing path-boundary guard)', () => {
-    expect(lineHasMissingSegment('vault-dir: ~/Projects/vault-backups')).toBe(false);
-  });
-
-  it('does NOT match a non-vault-dir ~/Projects/vault line (context guard)', () => {
-    expect(lineHasMissingSegment('cache: ~/Projects/vault-backups')).toBe(false);
-  });
-
-  it('matches even when a trailing comment follows the value', () => {
-    expect(lineHasMissingSegment('vault-dir: ~/Projects/vault   # comment')).toBe(true);
+  it.each([
+    ['vault-dir: ~/Projects/vault', true],
+    ['vault-dir: /Users/bob/Projects/vault', true],
+    ['vault-dir: /srv/fixture-vault', false],
+    ['vault-dir: ~/Projects/vault-backups', false],
+    ['cache: ~/Projects/vault-backups', false],
+    ['vault-dir: ~/Projects/vault   # comment', true],
+  ])('detects a legacy vault base in %s: %s', (line, expected) => {
+    expect(lineHasMissingSegment(line)).toBe(expected);
   });
 
   it('is stateless across calls despite the /g regex lastIndex', () => {
@@ -221,7 +167,7 @@ describe('findMissingSegmentHits', () => {
   });
 
   it('returns no hits when every vault-dir line is already canonical', () => {
-    const content = 'vault-dir: ~/Projects/Bernhard/vault\n';
+    const content = 'vault-dir: /srv/fixture-vault\n';
     expect(findMissingSegmentHits('/repo/CLAUDE.md', content)).toEqual([]);
   });
 
@@ -252,60 +198,30 @@ describe('findMissingSegmentHits', () => {
 });
 
 // ---------------------------------------------------------------------------
-// rewriteMissingSegment — insert the /Bernhard/ owner segment
+// rewriteMissingSegment — use the explicit configured canonical vault target
 // (originalContent is REQUIRED — no default; #607 D3)
 // ---------------------------------------------------------------------------
 
 describe('rewriteMissingSegment', () => {
-  it('inserts the canonical owner segment for a tilde vault-dir', () => {
-    const input = 'vault-dir: ~/Projects/vault\n';
-    expect(rewriteMissingSegment(input, input)).toBe('vault-dir: ~/Projects/Bernhard/vault\n');
-  });
-
-  it('inserts the owner segment for the expanded /Users/<user> form', () => {
-    const input = 'vault-dir: /Users/bob/Projects/vault\n';
-    expect(rewriteMissingSegment(input, input)).toBe(
-      'vault-dir: /Users/bob/Projects/Bernhard/vault\n',
-    );
-  });
-
-  it('is idempotent — an already-canonical line is left unchanged', () => {
-    const input = 'vault-dir: ~/Projects/Bernhard/vault\n';
-    expect(rewriteMissingSegment(input, input)).toBe('vault-dir: ~/Projects/Bernhard/vault\n');
-  });
-
-  it('preserves a trailing path after vault, inserting the owner at the root only', () => {
-    const input = 'vault-dir: ~/Projects/vault/sub/dir\n';
-    expect(rewriteMissingSegment(input, input)).toBe(
-      'vault-dir: ~/Projects/Bernhard/vault/sub/dir\n',
-    );
-  });
-
-  it('preserves a trailing inline comment on the rewritten line', () => {
-    const input = 'vault-dir: ~/Projects/vault   # canonical Meta-Vault location\n';
-    expect(rewriteMissingSegment(input, input)).toBe(
-      'vault-dir: ~/Projects/Bernhard/vault   # canonical Meta-Vault location\n',
-    );
-  });
-
-  it('preserves a trailing slash on the rewritten vault-dir value', () => {
-    const input = 'vault-dir: ~/Projects/vault/\n';
-    expect(rewriteMissingSegment(input, input)).toBe('vault-dir: ~/Projects/Bernhard/vault/\n');
-  });
-
-  it('leaves a vault-backups line untouched (path-boundary guard)', () => {
-    const input = 'vault-dir: ~/Projects/vault-backups\n';
-    expect(rewriteMissingSegment(input, input)).toBe('vault-dir: ~/Projects/vault-backups\n');
+  it.each([
+    ['vault-dir: ~/Projects/vault\n', 'vault-dir: /srv/fixture-vault\n'],
+    ['vault-dir: /Users/bob/Projects/vault\n', 'vault-dir: /srv/fixture-vault\n'],
+    ['vault-dir: /srv/fixture-vault\n', 'vault-dir: /srv/fixture-vault\n'],
+    ['vault-dir: ~/Projects/vault/sub/dir\n', 'vault-dir: /srv/fixture-vault/sub/dir\n'],
+    ['vault-dir: ~/Projects/vault   # canonical Meta-Vault location\n', 'vault-dir: /srv/fixture-vault   # canonical Meta-Vault location\n'],
+    ['vault-dir: ~/Projects/vault/\n', 'vault-dir: /srv/fixture-vault/\n'],
+    ['vault-dir: ~/Projects/vault-backups\n', 'vault-dir: ~/Projects/vault-backups\n'],
+  ])('rewrites explicit canonical base while preserving %s', (input, expected) => {
+    expect(rewriteMissingSegment(input, input, '/srv/fixture-vault')).toBe(expected);
   });
 
   it('skips a working line whose ORIGINAL carried OLD_SEGMENT (collision gate)', () => {
     // Simulate the chained-transform case: the username rewrite already ran, so
     // the working line is the NEW-username form, but the ORIGINAL line carried
-    // OLD_SEGMENT. The missing-segment pass must NOT inject /Bernhard/ here.
+    // OLD_SEGMENT. The canonical-target pass must leave that line untouched.
     const original = `vault-dir: ${OLD}Projects/vault\n`;
     const working = `vault-dir: ${NEW}Projects/vault\n`; // post username-rewrite
-    expect(rewriteMissingSegment(working, original)).toBe(working);
-    expect(rewriteMissingSegment(working, original)).not.toContain('Bernhard');
+    expect(rewriteMissingSegment(working, original, '/srv/fixture-vault')).toBe(working);
   });
 
   it('rewrites a genuine missing-segment line even when another line is username-owned', () => {
@@ -315,8 +231,8 @@ describe('rewriteMissingSegment', () => {
     const working = [`vault-dir: ${NEW}Projects/vault`, 'vault-dir: ~/Projects/vault', ''].join(
       '\n',
     );
-    expect(rewriteMissingSegment(working, original)).toBe(
-      [`vault-dir: ${NEW}Projects/vault`, 'vault-dir: ~/Projects/Bernhard/vault', ''].join('\n'),
+    expect(rewriteMissingSegment(working, original, '/srv/fixture-vault')).toBe(
+      [`vault-dir: ${NEW}Projects/vault`, 'vault-dir: /srv/fixture-vault', ''].join('\n'),
     );
   });
 
@@ -339,11 +255,45 @@ describe('rewriteMissingSegment — un-anchored over-match (known limitation)', 
   it('CURRENTLY rewrites a commented-out vault-dir line (no left anchor)', () => {
     const input = '# vault-dir: ~/Projects/vault\n';
     // Documents present behaviour; a start-of-line anchor would change this to a no-op.
-    expect(rewriteMissingSegment(input, input)).toBe('# vault-dir: ~/Projects/Bernhard/vault\n');
+    expect(rewriteMissingSegment(input, input, '/srv/fixture-vault')).toBe('# vault-dir: /srv/fixture-vault\n');
   });
 
   it('CURRENTLY rewrites a nested-key vault-dir line (no left anchor)', () => {
     const input = 'note: vault-dir: ~/Projects/vault\n';
-    expect(rewriteMissingSegment(input, input)).toBe('note: vault-dir: ~/Projects/Bernhard/vault\n');
+    expect(rewriteMissingSegment(input, input, '/srv/fixture-vault')).toBe('note: vault-dir: /srv/fixture-vault\n');
   });
+});
+
+
+it('rewrites to an explicit whole canonical vault target without guessing an owner segment', () => {
+  const input = 'vault-dir: ~/Projects/vault/subdir  # retain\n';
+  expect(rewriteMissingSegment(input, input, '/srv/fixture-vault')).toBe('vault-dir: /srv/fixture-vault/subdir  # retain\n');
+});
+
+it('does not guess a canonical owner when the target is unconfigured or relative', () => {
+  const input = 'vault-dir: ~/Projects/vault\n';
+  expect(rewriteMissingSegment(input,input,null)).toBe(input);
+  expect(rewriteMissingSegment(input,input,'relative/vault')).toBe(input);
+});
+
+it('preserves scalar quotes and safely quotes configured paths with spaces', () => {
+  const input = 'vault-dir: "~/Projects/vault/sub" # keep\n';
+  expect(rewriteMissingSegment(input,input,'/srv/Fixture Vault')).toBe('vault-dir: "/srv/Fixture Vault/sub" # keep\n');
+  const bare = 'vault-dir: ~/Projects/vault/sub # keep\n';
+  expect(rewriteMissingSegment(bare,bare,'/srv/Fixture Vault')).toBe('vault-dir: "/srv/Fixture Vault/sub" # keep\n');
+});
+
+
+it.each([
+  ['"~/Projects/vault/a\\\\b"', '/a\\b'],
+  ['"~/Projects/vault/a\\"b"', '/a"b'],
+  ['"~/Projects/vault/a\\u0062"', '/ab'],
+  ["'~/Projects/vault/O''Brien'", "/O'Brien"],
+])('preserves decoded quoted suffix %s during vault migration', (scalar, suffix) => {
+  const input = `vault-dir: ${scalar} # retain\n`;
+  const target = '/srv/Fixture "Vault"\\Root';
+  const output = rewriteMissingSegment(input, input, target);
+  expect(loadYaml(output)['vault-dir']).toBe(target + suffix);
+  expect(output).toContain(' # retain\n');
+  expect(rewriteMissingSegment(output, output, target)).toBe(output);
 });
