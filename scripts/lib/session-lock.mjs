@@ -527,8 +527,10 @@ export function readLockDetailed(opts = {}) {
  *   result — this keeps acquire() synchronous.
  *
  * Returns one of:
- *   { ok: true, lock, exclusivityClass? }
- *       — lock created
+ *   { ok: true, lock, exclusivityClass?, ownerProof }
+ *       — lock created. `ownerProof` reports the owner-proof rewrite that
+ *         follows every successful lock write (#1541, see withOwnerProof()):
+ *         `{ ok: true }` or `{ ok: false, reason }` — never thrown.
  *   { ok: false, reason: 'active', existingLock, ageHours, exclusivityClass? }
  *       — local lock held: its last_heartbeat is within ttl_hours. `ageHours`
  *         is the age from `started_at` (null when unparseable). `existingLock`
@@ -777,7 +779,7 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
     const createResult = createSessionLockExclusive(lockFile, lock);
 
     if (createResult.ok) {
-      return { ok: true, lock, exclusivityClass: callerClass };
+      return withOwnerProof({ ok: true, lock, exclusivityClass: callerClass }, repoRoot);
     }
     if (createResult.reason === 'fs-error') {
       return { ok: false, reason: 'fs-error', error: createResult.error, exclusivityClass: callerClass };
@@ -804,7 +806,8 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * Call only after the user has explicitly authorised stale-lock takeover.
  *
  * Returns:
- *   { ok: true, lock, replacedLock? }               — lock written (replacedLock present if one was overwritten)
+ *   { ok: true, lock, replacedLock?, ownerProof }   — lock written (replacedLock present if one was overwritten;
+ *                                                     ownerProof as on acquire(), #1541)
  *   { ok: false, reason: 'missing-session-id' }     — no usable `sessionId` given; NOTHING was written
  *   { ok: false, reason: 'fs-error', ... }          — filesystem failure
  *
@@ -833,6 +836,43 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  *
  * @param {{ sessionId: string, mode: string, ttlHours?: number, repoRoot?: string, semanticSessionId?: string, onlyIfNotLive?: boolean }} args
  */
+/**
+ * Rewrite `.orchestrator/runtime/lock-owner-proof.json` for a lock this module
+ * has JUST written, and report the outcome on the result (#1541).
+ *
+ * Invariant: proof = current lock. Before #1541 only the SessionStart bootstrap
+ * wrote the proof, so a lock taken on the prose path (Phase 1.2 `acquire()`
+ * after a `/close` in the same conversation, or a force-take / reclaim) left
+ * the PREVIOUS lock's proof on disk — and `release()` answered
+ * `proof-mismatch` for the session's own lock at its next `/close`.
+ *
+ * Called only on the `ok: true` paths, directly after the lock write, with the
+ * same `repoRoot` the lock path was resolved from (both fall back to
+ * `process.cwd()`), so the proof lands beside the lock it describes. The
+ * bootstrap's own later writeOwnerProof() on the enriched lock yields the same
+ * triple (enrichment never touches pid/host/started_at) — idempotent.
+ *
+ * Never throws and never turns `ok: true` into a failure: the lock IS held, and
+ * a missing proof only degrades `/close` to the session_id-only release.
+ *
+ * Ceiling (BV-004): two plain forceAcquire() calls racing on one path are
+ * last-writer-wins for the lock AND the proof, and the two writes can
+ * interleave (A lock, B lock, B proof, A proof). The proof then names A while B
+ * holds the lock — the same state as before #1541, and safe: release() still
+ * gates on the raw session_id first, so the mismatched proof can only refuse a
+ * release, never grant one. Revisit if `release-proof-mismatch` shows up after
+ * a force-take.
+ *
+ * @param {{ ok: true, lock: object }} result
+ * @param {string|undefined} repoRoot
+ * @returns {object} the same result object, with `ownerProof` set
+ */
+function withOwnerProof(result, repoRoot) {
+  const w = writeOwnerProof({ repoRoot, lock: result.lock });
+  result.ownerProof = w.ok ? { ok: true } : { ok: false, reason: w.reason };
+  return result;
+}
+
 /**
  * A `sessionId` is usable only when it is a non-blank string. ONE predicate,
  * shared by acquire() and forceAcquire(), so the two entry points cannot drift
@@ -863,7 +903,7 @@ export function forceAcquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, re
 
     const result = { ok: true, lock };
     if (replacedLock !== null) result.replacedLock = replacedLock;
-    return result;
+    return withOwnerProof(result, repoRoot);
   } catch (err) {
     return { ok: false, reason: 'fs-error', error: err.message };
   }
@@ -948,7 +988,7 @@ function reclaimIfNotLive({ sessionId, mode, ttlHours, repoRoot, semanticSession
     if (created.ok) {
       const result = { ok: true, lock };
       if (moved !== null) result.replacedLock = moved;
-      return result;
+      return withOwnerProof(result, repoRoot);
     }
     if (created.reason === 'exists') return reacquire();
     return created;
@@ -1108,10 +1148,12 @@ export function isLockOwnedByProof(lock, proof) {
  * persistence at lock genesis; Part 2, the on-session-end consumption side,
  * is a separate change).
  *
- * Intended caller: `bootstrapLock()` (hooks/_lib/lock-bootstrap.mjs)
- * immediately after its enriched-lock write — the `lock` argument there is
- * byte-identical to the on-disk lock, so the proof it yields will verify via
- * `isLockOwnedByProof()` against any later re-read of that same lock.
+ * Callers: `acquire()` / `forceAcquire()` on every `ok: true` lock write
+ * (#1541, via withOwnerProof()), and `bootstrapLock()`
+ * (hooks/_lib/lock-bootstrap.mjs) again immediately after its enriched-lock
+ * write. In every case the `lock` argument is byte-identical to the on-disk
+ * lock, so the proof it yields will verify via `isLockOwnedByProof()` against
+ * any later re-read of that same lock.
  *
  * Envelope shape (schema_version 1):
  *   {
