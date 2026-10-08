@@ -25,8 +25,8 @@ function runHook(mode, linked = false, tagKind) {
     fs.appendFileSync(process.env.TRACE, JSON.stringify({ gate: true, remote: process.env.REMOTE,
       payload: fs.readFileSync('payload.txt', 'utf8'), extra: fs.existsSync('untracked.txt'),
       project: process.env.CLAUDE_PROJECT_DIR ?? null }) + '\\n');
-    const failed = process.env.MODE === 'fail' && process.env.REMOTE;
     const mode = process.env.MODE;
+    const failed = mode === 'fail' && process.env.REMOTE || mode === 'local-fail' && !process.env.REMOTE;
     const report = { variant: 'full-gate', typecheck: {status:'pass'},
       test: {status:failed ? 'fail' : 'pass'}, lint: {status:'pass'} };
     if (mode.startsWith('stub-')) report.stubbed = { [mode.slice(5)]: {kind:'echo'} };
@@ -64,7 +64,7 @@ function runHook(mode, linked = false, tagKind) {
       record.origin = spawnSync('git', ['remote','get-url','origin'], {cwd:a[3], encoding:'utf8'}).stdout.trim();
     }
     fs.appendFileSync(process.env.TRACE, JSON.stringify(record) + '\\n');
-    if (a[0] === 'doctor') process.exit(mode === 'not-ready' ? 2 : 0);
+    if (a[0] === 'doctor') process.exit(mode === 'not-ready' || mode === 'local-fail' ? 2 : 0);
     if (mode === 'transport' || mode === 'next' && a[2] === 'first') process.exit(2);
     if (mode === 'empty') process.exit(0);
     if (mode === 'unknown') process.exit(7);
@@ -92,8 +92,11 @@ function runHook(mode, linked = false, tagKind) {
     fs.writeSync(2, r.stderr ?? '');
     process.exit(r.status ?? 1);
   `, { mode: 0o755 });
+  // `sh -e`, exactly as husky 9 starts the hook (.husky/_/h). Under plain `sh`
+  // a bare `cmd; rc=$?` survives a non-zero cmd, so the exit-10 local fallback
+  // looked fine here while every real push aborted before reaching it (#1540).
   let command = 'sh';
-  let args = [join(root, '.husky/pre-push')];
+  let args = ['-e', join(root, '.husky/pre-push')];
   let input = `refs/heads/x ${sha} refs/heads/x ${'0'.repeat(40)}\n`;
   if (tagKind) {
     const target = tagKind === 'commit' ? sha : fixtureGit(['-C', repo, 'rev-parse', `${sha}:payload.txt`],
@@ -105,7 +108,7 @@ function runHook(mode, linked = false, tagKind) {
     fixtureGit(['-C', source, 'remote', 'add', 'publish-fixture', destination]);
     const hooks = join(dir, 'hooks');
     mkdirSync(hooks);
-    writeFileSync(join(hooks, 'pre-push'), `#!/bin/sh\nexec sh '${join(root, '.husky/pre-push')}' "$@"\n`,
+    writeFileSync(join(hooks, 'pre-push'), `#!/bin/sh\nexec sh -e '${join(root, '.husky/pre-push')}' "$@"\n`,
       { mode: 0o755 });
     command = 'git';
     args = ['-c', `core.hooksPath=${hooks}`, 'push', 'publish-fixture', 'v1.0.0'];
@@ -129,6 +132,7 @@ it.each([
   ['next', 0, ['first', 'second'], ['1']],
   ['transport', 0, ['first', 'second'], [undefined]],
   ['not-ready', 0, [], [undefined]],
+  ['local-fail', 1, [], [undefined]],
   ['empty', 1, ['first'], []],
   ['unknown', 1, ['first'], []],
   ['stub-test', 1, ['first'], ['1']],

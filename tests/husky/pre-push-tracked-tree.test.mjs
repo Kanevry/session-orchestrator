@@ -215,7 +215,8 @@ function runHook({ cwd, stdin, probeExit = 0, env = {}, hookPath = HOOK_PATH }) 
   delete childEnv.SKIP_QUALITY_GATE;
   Object.assign(childEnv, { PROBE_OUT: probeOut, PROBE_EXIT: String(probeExit) }, env);
 
-  const res = spawnSync('sh', [hookPath], {
+  // `sh -e`, as husky 9 runs the hook (.husky/_/h) — plain `sh` hid #1540.
+  const res = spawnSync('sh', ['-e', hookPath], {
     cwd,
     input: stdin,
     encoding: 'utf8',

@@ -555,6 +555,10 @@ const AUDIT_VALUE_FLAGS = new Set([
 const AUDIT_BOOLEAN_FLAGS = new Set([
   '-r', '--recursive', '-s', '--silent', '-g', '--global', '--workspaces', '--offline',
 ]);
+// Python tool runners (#1538): subcommand words after the verb, and the runner
+// options that consume the next token.
+const RUNNER_SUBCOMMANDS = { uvx: [], pipx: ['run'], uv: ['tool', 'run'] };
+const RUNNER_VALUE_FLAGS = new Set(['--from', '--spec', '--python', '-p', '--with']);
 
 /** Inspect executable job/step locations, never arbitrary keys named run/script. */
 function hasAuditStep({ text, platform }) {
@@ -682,6 +686,39 @@ function hasAuditSegment(segment, depth = 0) {
       || tokens.some((token) => token.redirect)) return false;
     const trailingArgs = index < 0 ? [] : segment.slice(index);
     return hasAuditSegment([...tokens, ...trailingArgs], depth + 1);
+  }
+  if (verb === 'uvx' || verb === 'pipx' || verb === 'uv') {
+    let i = index + 1;
+    // `uvx` is an alias of `uv tool run`; `pipx` executes only through `run`.
+    for (const word of RUNNER_SUBCOMMANDS[verb]) {
+      if (segment[i]?.text !== word) return false;
+      i++;
+    }
+    // Runner options before the tool. Unknown flags count as value-less, so an
+    // unlisted value-taking flag makes its value the "tool" and the line is
+    // missed — a false finding, never a false pass. Revisit if a real CI line
+    // with such a flag is reported as missing its audit.
+    // `--from`/`--spec` name the package that provides the tool; another
+    // package exposing a `pip-audit` entry point is not the audit.
+    let sourcePackage = null;
+    while (segment[i]) {
+      const { text, redirect } = segment[i];
+      // A redirect operand is data, even when it names the audit package.
+      if (redirect) return false;
+      if (text === '--') { i++; break; }
+      if (!text.startsWith('-')) break;
+      if (RUNNER_VALUE_FLAGS.has(text)) {
+        if (!segment[i + 1] || segment[i + 1].redirect) return false;
+        if (text === '--from' || text === '--spec') sourcePackage = segment[i + 1].text;
+        i += 2;
+      } else {
+        i++;
+      }
+    }
+    if (!segment[i] || segment[i].redirect) return false;
+    if (segment.slice(index + 1).some((token) => ['-h', '--help', '--version'].includes(token.text))) return false;
+    if (sourcePackage !== null && !/^pip-audit(?:\s*(?:[=<>~!]=?|@)\s*[\w.+*-]+)?$/.test(sourcePackage)) return false;
+    return /^pip-audit(?:@[\w.+-]+)?$/.test(segment[i].text);
   }
   if (verb === 'corepack' || verb === 'npx') {
     index++;

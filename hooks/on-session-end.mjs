@@ -43,6 +43,7 @@ import {
   release,
   loadOwnerProof,
   OWNER_PROOF_RELPATH,
+  isLockOwnedByProof,
 } from '../scripts/lib/session-lock.mjs';
 import { parseSessionId } from '../scripts/lib/session-id.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -789,8 +790,14 @@ async function main() {
           // millisecond started_at cannot match any FUTURE lock, so it
           // self-invalidates), this just avoids the stale artifact. ENOENT
           // (no proof was ever written) lands in the same swallow.
+          // Only when the proof still describes the lock we released: since
+          // #1541 every acquire() rewrites it, so a successor that acquired
+          // during the awaited emit above owns a fresh proof we must not
+          // remove. A narrow window between this read and the unlink remains.
           try {
-            await fs.unlink(path.join(projectRoot, OWNER_PROOF_RELPATH));
+            if (isLockOwnedByProof(lock, loadOwnerProof({ repoRoot: projectRoot }))) {
+              await fs.unlink(path.join(projectRoot, OWNER_PROOF_RELPATH));
+            }
           } catch { /* best-effort — a leftover proof is self-invalidating */ }
         }
       } else {
