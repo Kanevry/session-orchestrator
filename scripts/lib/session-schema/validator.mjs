@@ -27,6 +27,17 @@ import {
 const EXPECTED_COST_TIERS = Object.freeze(['quick', 'standard', 'deep']);
 
 /**
+ * Valid values for the optional `cost_basis` field (#1470 Pkt 4). Must contain
+ * `COST_BASIS` from scripts/lib/telemetry/pricing.mjs — the value emit-session
+ * writes beside `total_cost_usd`. There is deliberately no payment value: no
+ * writer can see what was actually billed.
+ */
+const COST_BASES = Object.freeze(['api-list-equivalent']);
+
+/** `pricing_table_date` (#1470 Pkt 6): a calendar date, `YYYY-MM-DD`. */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
  * Valid values for the optional `status` field (Epic #724 C1).
  * `completed`  — record written by a normal /close flow.
  * `abandoned`  — stub backfilled by the SessionEnd hook because the session
@@ -454,6 +465,28 @@ function _validateOptionalFields(entry) {
       `cost_records_priced must not exceed cost_records_total, got: ` +
         `${entry.cost_records_priced} > ${entry.cost_records_total}`
     );
+  }
+
+  // #1470 Pkt 4/6 — what the cost figure is and which price table produced it.
+  if (entry.cost_basis !== undefined && entry.cost_basis !== null) {
+    if (!COST_BASES.includes(entry.cost_basis)) {
+      throw new ValidationError(
+        `cost_basis must be one of ${COST_BASES.join('|')} or null, got: ${entry.cost_basis}`
+      );
+    }
+  }
+  if (entry.pricing_table_date !== undefined && entry.pricing_table_date !== null) {
+    if (
+      typeof entry.pricing_table_date !== 'string' ||
+      !ISO_DATE_RE.test(entry.pricing_table_date) ||
+      // Round-trip, not Date.parse alone: V8 rolls 2026-02-30 over to March.
+      Number.isNaN(Date.parse(`${entry.pricing_table_date}T00:00:00Z`)) ||
+      new Date(`${entry.pricing_table_date}T00:00:00Z`).toISOString().slice(0, 10) !== entry.pricing_table_date
+    ) {
+      throw new ValidationError(
+        `pricing_table_date must be an ISO date (YYYY-MM-DD) or null, got: ${entry.pricing_table_date}`
+      );
+    }
   }
 
   // Epic #724 C1 — SessionEnd close-through backfill provenance fields.

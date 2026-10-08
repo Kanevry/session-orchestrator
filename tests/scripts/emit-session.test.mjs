@@ -29,6 +29,7 @@ import { serializeSessionLineChecked } from '../../scripts/emit-session.mjs';
 import { stableHostname } from '../../scripts/lib/host-identity.mjs';
 import { generateSessionNoteV2 } from '../../scripts/lib/vault-mirror/render-sessions.mjs';
 import { validateSession, ValidationError } from '../../scripts/lib/session-schema.mjs';
+import { COST_BASIS, PRICING_TABLE_DATE } from '../../scripts/lib/telemetry/pricing.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'emit-session.mjs');
@@ -596,9 +597,36 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     // ledger, so an omitted cost could not be told from an unmeasured one.
     expect(w.cost_records_priced).toBe(0);
     expect(w.cost_records_total).toBe(2);
+    // #1470 — no dollar figure, so no basis label; the counters still name the
+    // price table that judged them.
+    expect('cost_basis' in w).toBe(false);
+    expect(w.pricing_table_date).toBe(PRICING_TABLE_DATE);
     // The rollup's diagnostics explain an omission; they never enter the ledger.
     expect('match_status' in w).toBe(false);
     expect('ledger_records' in w).toBe(false);
+  });
+
+  // #1470 Pkt 4/6. Bugs caught: a persisted dollar figure with nothing saying
+  // it is an API list-price equivalent rather than a payment, and a cost whose
+  // price-table version is not recorded (or is a hand-copied date that does not
+  // follow PRICING_TABLE_DATE when the table is re-read).
+  it('labels a priced cost as api-list-equivalent and stamps the price table date', () => {
+    const priced = {
+      ...stop('a1', 1_000_000, 1_000_000),
+      model: 'claude-opus-5-5',
+      token_input_uncached: 1_000_000,
+      token_cache_read: 0,
+      token_cache_creation: 0,
+    };
+    writeJsonlIn('subagents.jsonl', [priced]);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    const w = readWritten();
+    // 1M uncached × $4 + 1M output × $20 (claude-opus-5-5 row).
+    expect(w.total_cost_usd).toBeCloseTo(24, 10);
+    expect(w.cost_basis).toBe(COST_BASIS);
+    expect(w.cost_basis).toBe('api-list-equivalent');
+    expect(w.pricing_table_date).toBe(PRICING_TABLE_DATE);
   });
 
   it('an explicit total_tokens on the entry wins and suppresses the merge', () => {
@@ -632,7 +660,7 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
       'total_tokens', 'total_token_input', 'total_token_output',
       'total_token_input_uncached', 'total_token_cache_read', 'total_token_cache_creation',
       'total_cost_usd', 'subagents_with_tokens', 'matched_records', '_token_schema',
-      'cost_records_priced', 'cost_records_total',
+      'cost_records_priced', 'cost_records_total', 'cost_basis', 'pricing_table_date',
       'match_status', 'ledger_records',
     ]) {
       expect(key in w).toBe(false);

@@ -11,7 +11,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -207,7 +207,12 @@ describe('maybeTriggerOrphanScan', () => {
     // *_PROJECT_DIR) answered `error` — and on-stop stamps `reaper_trigger`
     // for every reason but `disabled`, on a host whose reaper is OFF.
     // Production shape: a real process whose cwd is gone before node starts.
-    const gone = mkdtempSync(join(tmpdir(), 'reaper-trigger-cwd-'));
+    // Inside `rtmp`, never directly in tmpdir(): macOS getcwd() on an unlinked
+    // cwd scans the PARENT for the inode, so every getcwd costs O(parent
+    // entries) — 321 ms per call under m5's 157k-entry TMPDIR (ETIMEDOUT under
+    // load), 0.04 ms under a near-empty parent (measured 2026-10-08).
+    const gone = join(rtmp, 'gone');
+    mkdirSync(gone);
     const env = { ...process.env };
     for (const k of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) delete env[k];
     const url = pathToFileURL(join(process.cwd(), 'scripts', 'lib', 'orphan-reaper', 'trigger.mjs')).href;

@@ -35,17 +35,25 @@
 //                         propagation, and polls the live site. A tag/push
 //                         failure skips the tag-dependent GitHub-release and
 //                         site phases and returns reconciliation guidance.
+//                         After the receipt it writes the publish proof
+//                         .orchestrator/runtime/release-<target>.json (#1537).
+//   --reconcile           Read-only resume after an accepted upload: from the
+//                         proof, verify the exact version is served as latest
+//                         with the checked integrity, then that a consumer
+//                         download hashes to it. Never publishes, tags or pushes.
 //
 // USAGE:
 //   node scripts/release.mjs --check [--json] [--skip-ci]
 //   node scripts/release.mjs --set-version 3.19.0
 //   node scripts/release.mjs --publish [--json]
+//   node scripts/release.mjs --reconcile [--target X.Y.Z] [--json]
 //
 // EXIT CODES:
 //   0  success
 //   1  preflight/check failure (stale surface, missing CHANGELOG entry,
 //      tag/registry collision, mirror behind, dead token, CI not green,
-//      leakage-gate hit) OR post-publish reconciliation required
+//      leakage-gate hit) OR post-publish reconciliation required OR
+//      --reconcile not yet installable (pending / failed / proof missing)
 //   2  system/usage error before the npm receipt (git/npm spawn failure,
 //      missing NPM_TOKEN, unknown flag, --skip-ci combined with --publish)
 //
@@ -93,6 +101,7 @@ import { fileURLToPath } from 'node:url';
 
 import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
 import { enumerateRepoFiles } from './lib/validate/enumerate-repo-files.mjs';
+import { writeJsonAtomicSync } from './lib/io.mjs';
 
 const PACKAGE_NAME = 'session-orchestrator';
 const SPAWN_OPTS = { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 };
@@ -857,6 +866,19 @@ function archiveDigest(tarballPath) {
 }
 
 /**
+ * npm's Subresource-Integrity form of an archive (`sha512-<base64>`), the exact
+ * shape npm serves as `dist.integrity` — so the checked bytes can later be
+ * compared with what the registry and a consumer download actually carry.
+ *
+ * @param {string} tarballPath
+ * @returns {string}
+ */
+export function archiveIntegrity(tarballPath) {
+  if (!lstatSync(tarballPath).isFile()) throw new Error('archive is not a regular file');
+  return `sha512-${createHash('sha512').update(readFileSync(tarballPath)).digest('base64')}`;
+}
+
+/**
  * Scan extracted archive bytes, retain that archive for the callback, and always
  * clean up. Command/scan failures never call the publication callback. The
  * 20,000-entry inventory ceiling matches the scanner; revisit for larger packs.
@@ -895,7 +917,7 @@ export async function withCheckedPackage(repoRoot, callback, {
       if (scan.status !== 0 || summaries.length !== 1 || Number(summaries[0][1]) < 1 || Number(summaries[0][2]) !== 0 || Number(summaries[0][3]) !== inventory.paths.length) return { ok: false, detail: 'required owner policy / packed content scan failed or incomplete' };
       if (archiveDigest(tarballPath) !== digest) throw new Error('archive-changed');
       chmodSync(tarballPath, 0o400);
-      artifact = { tarballPath, digest };
+      artifact = { tarballPath, digest, integrity: archiveIntegrity(tarballPath) };
       detail = `${inventory.paths.length} packed files, filenames and contents verified`;
     } catch { return { ok: false, detail: 'packed archive preparation or content verification failed' }; }
     return { ok: true, detail, value: await callback(artifact) };
@@ -1056,6 +1078,22 @@ export function validateFlags(values) {
         '--skip-ci is refused under --publish: it makes ci-green-on-head pass without checking anything, and publish is irreversible.\n' +
         'Run `--check --skip-ci` to inspect the other surfaces, then `--publish` once CI is actually green on HEAD.',
     };
+  }
+  // --reconcile is the read-only resume path after an accepted upload (#1537).
+  // Combining it with a mode that writes would blur exactly the separation it
+  // exists for, so every combination is a usage error rather than a precedence rule.
+  if (values.reconcile && (values.publish || values.check || values['set-version'] || values['skip-ci'])) {
+    return {
+      ok: false,
+      code: 2,
+      message: '--reconcile cannot be combined with --publish, --check, --set-version or --skip-ci: it only verifies an already accepted upload.',
+    };
+  }
+  if (values.target !== undefined && !values.reconcile) {
+    return { ok: false, code: 2, message: '--target is only valid with --reconcile.' };
+  }
+  if (values.target !== undefined && !/^\d+\.\d+\.\d+$/.test(values.target)) {
+    return { ok: false, code: 2, message: `invalid --target: ${values.target} (expected X.Y.Z)` };
   }
   return { ok: true };
 }
@@ -1448,15 +1486,271 @@ export function waitForRegistryPropagation(repoRoot, target, deps = {}) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Accepted -> available -> installable (#1537).
+//
+// npm's PUT answers HTTP 202 and the CLI prints the target receipt BEFORE the
+// version is publicly served: publish-time scanning runs asynchronously and can
+// hold a version for far longer than any in-process poll should wait (5.10.0
+// stayed 404 for more than 25 minutes after its receipt). So the receipt is
+// persisted as a proof file, and `--reconcile` resumes the verification later
+// from that proof alone. That path is structurally separate from publishing: it
+// never reaches publish(), tagAndPush(), a push, or an `npm pack` of the repo.
+// ---------------------------------------------------------------------------
+
+const RELEASE_PROOF_DIR = join('.orchestrator', 'runtime');
+const INTEGRITY_RE = /^sha512-[A-Za-z0-9+/]{86}==$/;
+
+/** Path of the persisted publish proof for `target` (gitignored runtime dir). */
+export function releaseProofPath(repoRoot, target) {
+  return join(repoRoot, RELEASE_PROOF_DIR, `release-${target}.json`);
+}
+
 /**
- * Publish and return the receipt boundary plus the registry reconciliation
- * result. Pre-receipt failures throw; post-receipt propagation failures return.
+ * The evidence `--reconcile` needs to verify an accepted upload later without
+ * the original archive: which bytes were checked (sha256 + npm-style sha512
+ * integrity), when npm issued the receipt, and which commit/tag they belong to.
+ *
+ * @param {{target: string, artifact: {digest: string, integrity: string}, commit: string|null, receiptAt: string}} input
+ */
+export function buildReleaseProof({ target, artifact, commit, receiptAt }) {
+  return {
+    schema: 1,
+    package: PACKAGE_NAME,
+    target,
+    tag: `v${target}`,
+    commit: commit || null,
+    receiptAt,
+    sha256: artifact.digest,
+    integrity: artifact.integrity,
+  };
+}
+
+/**
+ * Persist the proof atomically. Never throws: it runs after the irreversible
+ * receipt, where a write failure must be reported, not turned into a pre-receipt
+ * style abort.
+ *
+ * @returns {{ok: boolean, path: string, detail: string}}
+ */
+export function writeReleaseProof(repoRoot, proof, { writeImpl = writeJsonAtomicSync } = {}) {
+  const path = releaseProofPath(repoRoot, proof.target);
+  try {
+    const res = writeImpl(path, proof, { tmpPrefix: '.release-proof' });
+    if (res?.ok) return { ok: true, path, detail: `publish proof written to ${relativePath(repoRoot, path)}` };
+    return { ok: false, path, detail: `publish proof NOT written (${res?.error ?? 'unknown error'})` };
+  } catch (err) {
+    return { ok: false, path, detail: `publish proof NOT written (${err?.message ?? err})` };
+  }
+}
+
+/**
+ * Read and validate the proof for `target`. A missing or malformed proof is a
+ * refusal — success is never derived from `latest` alone.
+ *
+ * @returns {{ok: true, proof: object, path: string} | {ok: false, path: string, detail: string}}
+ */
+export function readReleaseProof(repoRoot, target, { readImpl = readFileSync } = {}) {
+  const path = releaseProofPath(repoRoot, target);
+  let proof;
+  try {
+    proof = JSON.parse(readImpl(path, 'utf8'));
+  } catch (err) {
+    const missing = err?.code === 'ENOENT';
+    return { ok: false, path, detail: missing ? `proof missing: ${relativePath(repoRoot, path)} does not exist` : `proof unreadable: ${err?.message ?? err}` };
+  }
+  if (!proof || typeof proof !== 'object' || proof.package !== PACKAGE_NAME || proof.target !== target || !INTEGRITY_RE.test(proof.integrity ?? '') || !/^[0-9a-f]{64}$/.test(proof.sha256 ?? '')) {
+    return { ok: false, path, detail: `proof invalid: ${relativePath(repoRoot, path)} does not describe ${PACKAGE_NAME}@${target} with sha256 + sha512 integrity` };
+  }
+  return { ok: true, proof, path };
+}
+
+/**
+ * Judge one `npm view <pkg>@<target> --json` answer against the proof.
+ * A 404 is `pending` — never read as "held" or "blocked": the package token
+ * cannot see npm's internal scan state, so a 404 alone carries no diagnosis.
+ *
+ * `superseded` = exact version + integrity served, but `latest` already points
+ * at a semver-greater release.
+ *
+ * @returns {{state: 'available'|'superseded'|'pending'|'failed', reason: string, detail: string}}
+ */
+export function evaluateRegistryManifest(view, target, proof) {
+  const raw = (view?.stdout || '').trim();
+  let json;
+  try { json = raw ? JSON.parse(raw) : null; } catch { json = undefined; }
+  if (view?.status !== 0) {
+    if (json?.error?.code === 'E404' || /\bE404\b/.test(`${view?.stderr || ''}`)) {
+      return { state: 'pending', reason: 'not-visible', detail: `registry answers 404 for ${PACKAGE_NAME}@${target} — not yet publicly served; a 404 alone is not evidence of a hold or block` };
+    }
+    return { state: 'pending', reason: 'query-failed', detail: `npm view exited ${view?.status}: ${(json?.error?.summary || view?.stderr || raw).trim().slice(0, 300)}` };
+  }
+  if (json === null) return { state: 'pending', reason: 'not-visible', detail: `registry returned no manifest for ${PACKAGE_NAME}@${target}` };
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return { state: 'pending', reason: 'unparseable', detail: 'npm view output is not a single manifest object' };
+  if (json.version !== target) return { state: 'pending', reason: 'not-visible', detail: `registry manifest reports version ${json.version ?? 'none'}, not ${target}` };
+  const integrity = json.dist?.integrity;
+  if (!integrity) return { state: 'pending', reason: 'integrity-missing', detail: 'registry manifest carries no dist.integrity yet' };
+  if (integrity !== proof.integrity) {
+    return { state: 'failed', reason: 'integrity-mismatch', detail: `registry dist.integrity ${integrity} differs from the checked archive ${proof.integrity}` };
+  }
+  const latest = json['dist-tags']?.latest;
+  if (latest !== target) {
+    // A later release can only have been published after this one was
+    // accepted, so `latest` will never come back to the target. Keeping that
+    // `pending` forever would be a standing false alarm; the exact version and
+    // its bytes are still verified (here, and by the download that follows).
+    if (isNewerRelease(latest, target)) {
+      return { state: 'superseded', reason: 'superseded', detail: `registry serves ${target} with the checked integrity; dist-tags.latest is already the later ${latest}` };
+    }
+    return { state: 'pending', reason: 'latest-not-target', detail: `dist-tags.latest is ${latest ?? 'unset'}, not ${target}` };
+  }
+  return { state: 'available', reason: 'available', detail: `registry serves ${target} as latest with the checked integrity` };
+}
+
+/** True when `candidate` is a plain X.Y.Z strictly greater than `target`; prereleases never count. */
+function isNewerRelease(candidate, target) {
+  const parse = (v) => (/^\d+\.\d+\.\d+$/.test(v ?? '') ? v.split('.').map(Number) : null);
+  const a = parse(candidate);
+  const b = parse(target);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
+}
+
+/**
+ * Download the published tarball the way a consumer resolves it (`npm pack
+ * <pkg>@<target> --ignore-scripts` into an empty temp dir), hash it, and compare
+ * with the proof. Nothing from the download is extracted or executed.
+ *
+ * @returns {{state: 'installable'|'pending'|'failed', reason: string, detail: string}}
+ */
+export function checkInstallable(target, proof, deps = {}) {
+  const runImpl = deps.runImpl ?? run;
+  const integrityImpl = deps.integrityImpl ?? archiveIntegrity;
+  const dir = (deps.mkTempImpl ?? (() => mkdtempSync(join(tmpdir(), 'so-release-reconcile-'))))();
+  try {
+    let pack;
+    try {
+      pack = runImpl('npm', ['pack', `${PACKAGE_NAME}@${target}`, '--json', '--ignore-scripts', '--prefer-online', '--pack-destination', dir], { cwd: dir, timeout: 120000 });
+    } catch (err) {
+      return { state: 'pending', reason: 'download-failed', detail: `npm pack ${PACKAGE_NAME}@${target} failed: ${err?.message ?? err}` };
+    }
+    if (pack?.status !== 0) {
+      return { state: 'pending', reason: 'download-failed', detail: `npm pack ${PACKAGE_NAME}@${target} exited ${pack?.status}: ${(pack?.stderr || '').trim().slice(0, 300)}` };
+    }
+    let filename;
+    try {
+      const records = JSON.parse(pack.stdout);
+      filename = Array.isArray(records) && records.length === 1 ? records[0]?.filename : null;
+    } catch { filename = null; }
+    if (typeof filename !== 'string' || basename(filename) !== filename || !filename.endsWith('.tgz')) {
+      return { state: 'pending', reason: 'download-unparseable', detail: 'npm pack output did not name exactly one downloaded tarball' };
+    }
+    let integrity;
+    try { integrity = integrityImpl(join(dir, filename)); } catch (err) {
+      return { state: 'pending', reason: 'download-unreadable', detail: `downloaded tarball unreadable: ${err?.message ?? err}` };
+    }
+    if (integrity !== proof.integrity) {
+      return { state: 'failed', reason: 'integrity-mismatch', detail: `downloaded tarball ${integrity} differs from the checked archive ${proof.integrity}` };
+    }
+    return { state: 'installable', reason: 'installable', detail: `downloaded ${filename} matches the checked archive integrity` };
+  } finally {
+    try { (deps.cleanupImpl ?? rmSync)(dir, { recursive: true, force: true }); } catch { /* temp download dir only */ }
+  }
+}
+
+/**
+ * Resume verification of an accepted upload: accepted (proof exists) ->
+ * available (exact version served as latest with the checked integrity) ->
+ * installable (a consumer download hashes to the checked integrity).
+ *
+ * Budget defaults to 20 attempts 60 s apart (19 min between first and last
+ * query): npm's changelog (2026-07-28, read 2026-10-08) names ~5 min typical
+ * and "up to 15 minutes or more" for publish-time scanning, without guarantee.
+ * The budget is therefore a bound, not the fix — it is resumable: a `pending`
+ * result is not a failure, the next `--reconcile` starts over from the same
+ * proof. Only an integrity mismatch is `failed`.
  *
  * @param {string} repoRoot
  * @param {string} target
- * @param {{runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} [deps]
- * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>}}
+ * @param {{attempts?: number, delaySeconds?: number, runImpl?: Function, waitImpl?: Function, readImpl?: Function, integrityImpl?: Function, mkTempImpl?: Function, cleanupImpl?: Function}} [deps]
+ * @returns {{ok: boolean, state: 'installable'|'superseded'|'pending'|'failed'|'proof-missing', target: string, accepted: boolean, available: boolean, installable: boolean, attempts: number, reason: string, detail: string, proofPath: string}}
  */
+export function reconcileRelease(repoRoot, target, deps = {}) {
+  const attempts = deps.attempts ?? 20;
+  const delaySeconds = deps.delaySeconds ?? 60;
+  const runImpl = deps.runImpl ?? run;
+  const waitImpl = deps.waitImpl ?? (() => runImpl('sleep', [String(delaySeconds)], { cwd: repoRoot }));
+  const base = { target, accepted: false, available: false, installable: false, attempts: 0 };
+
+  const read = readReleaseProof(repoRoot, target, { readImpl: deps.readImpl });
+  if (!read.ok) {
+    return { ...base, ok: false, state: 'proof-missing', reason: 'proof-missing', detail: read.detail, proofPath: read.path };
+  }
+  const { proof } = read;
+  const done = (state, step, attempt, extra) => ({ ...base, accepted: true, ...extra, ok: state === 'installable' || state === 'superseded', state, attempts: attempt, reason: step.reason, detail: step.detail, proofPath: read.path });
+
+  let last = { reason: 'not-run', detail: 'no attempt ran' };
+  let available = false;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    let view;
+    try {
+      view = runImpl('npm', ['view', `${PACKAGE_NAME}@${target}`, '--json'], { cwd: repoRoot, timeout: 60000 });
+    } catch (err) {
+      view = { status: null, stdout: '', stderr: err?.message ?? String(err) };
+    }
+    const manifest = evaluateRegistryManifest(view, target, proof);
+    if (manifest.state === 'failed') return done('failed', manifest, attempt, { available: false });
+    if (manifest.state === 'available' || manifest.state === 'superseded') {
+      available = true;
+      const install = checkInstallable(target, proof, deps);
+      if (install.state === 'installable') {
+        // Superseded keeps its own state (and exit 0): the release's bytes are
+        // verified installable, only the `latest` tag moved on — not a failure,
+        // but worth saying so the operator does not read it as "is latest".
+        if (manifest.state === 'superseded') return done('superseded', { reason: 'superseded', detail: `${manifest.detail}; ${install.detail}` }, attempt, { available: true, installable: true });
+        return done('installable', install, attempt, { available: true, installable: true });
+      }
+      if (install.state === 'failed') return done('failed', install, attempt, { available: true });
+      last = install;
+    } else {
+      available = false;
+      last = manifest;
+    }
+    if (attempt < attempts) {
+      let wait;
+      try { wait = waitImpl({ attempt, delaySeconds }); } catch (err) { wait = { status: null, error: err }; }
+      if (!wait || wait.status !== 0 || wait.error) {
+        return done('pending', { reason: 'wait-failed', detail: `wait failed after attempt ${attempt}/${attempts}; last state: ${last.detail}` }, attempt, { available });
+      }
+    }
+  }
+  return done('pending', { reason: last.reason, detail: `${last.detail} (after ${attempts} attempts; run \`--reconcile --target ${target}\` again later)` }, attempts, { available });
+}
+
+/** Print a reconcile result and return the exit code (0 only when installable or superseded). */
+export function printReconcileResult(result, { json = false, log = console.log, error = console.error } = {}) {
+  if (json) {
+    log(JSON.stringify(result, null, 2));
+    return result.ok ? 0 : 1;
+  }
+  const mark = (flag) => (flag ? 'yes' : 'no');
+  log(`${PACKAGE_NAME}@${result.target}: ${result.state} — accepted ${mark(result.accepted)}, available ${mark(result.available)}, installable ${mark(result.installable)}`);
+  if (result.ok) {
+    log(`  ${result.detail}`);
+    if (result.state === 'superseded') log(`  Note: ${result.target} is installable but no longer \`latest\` — a later release took the tag.`);
+    return 0;
+  }
+  error(`  ${result.reason}: ${result.detail}`);
+  if (result.state === 'pending') {
+    error(`  Still pending, not failed. Run \`node scripts/release.mjs --reconcile --target ${result.target}\` again later;`);
+    error('  the owner-visible package state is on npmjs.com (package page / account notifications). Never rerun --publish.');
+  } else if (result.state === 'proof-missing') {
+    error('  Without the publish proof there is nothing to verify the registry bytes against; success is never inferred from `latest`.');
+  }
+  return 1;
+}
+
 /**
  * The exact `npm publish` invocation: argv plus spawn options.
  *
@@ -1500,8 +1794,37 @@ function publish(repoRoot, target, deps = {}) {
     const call = publishInvocation(repoRoot, tmpRc, deps.artifact);
     return runImpl(call.cmd, call.args, call.opts);
   });
+  return settlePublishReceipt(repoRoot, target, res, { ...deps, runImpl });
+}
+
+/**
+ * Everything `publish()` does AFTER `npm publish` returned: judge the receipt,
+ * persist the publish proof, then wait for the registry. Split out of the
+ * unexported publisher so the order "proof before registry wait" is testable
+ * (#1537) — this function receives an npm result and cannot publish anything.
+ * Pre-receipt failures throw; post-receipt propagation failures return.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{status: number|null, stdout?: string, stderr?: string}} res — the `npm publish` result
+ * @param {{artifact: {digest: string, integrity: string}, runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} deps
+ * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>, proof: ReturnType<typeof writeReleaseProof>}}
+ */
+export function settlePublishReceipt(repoRoot, target, res, deps = {}) {
+  const runImpl = deps.runImpl ?? run;
   const receipt = evaluatePublishReceipt(res, target);
   if (!receipt.confirmed) throw new Error(receipt.detail);
+
+  // Persist the proof BEFORE the registry wait: if this process dies while
+  // waiting, `--reconcile` can still resume from it (#1537). Never throws.
+  let commit = null;
+  try {
+    const head = runImpl('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+    if (head.status === 0) commit = head.stdout.trim();
+  } catch { /* commit stays null; the proof is still useful */ }
+  const proof = writeReleaseProof(repoRoot, buildReleaseProof({
+    target, artifact: deps.artifact, commit, receiptAt: new Date().toISOString(),
+  }));
 
   const propagation = waitForRegistryPropagation(repoRoot, target, {
     attempts: deps.attempts,
@@ -1509,7 +1832,7 @@ function publish(repoRoot, target, deps = {}) {
     runImpl,
     waitImpl: deps.waitImpl,
   });
-  return { receipt, propagation };
+  return { receipt, propagation, proof };
 }
 
 function tagAndPush(repoRoot, target) {
@@ -1603,6 +1926,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
       release: { ok: false, skipped: true, state: 'skipped-prerequisite', detail: `GitHub release ${prerequisite}` },
       live: { ok: false, skipped: true, state: 'skipped-prerequisite', detail: `live-site verification ${prerequisite}` },
       propagation,
+      proof: publication.proof,
       reconciliation: [
         { phase: 'tag-and-push', kind: 'failed', detail: err instanceof Error ? err.message : String(err) },
         { phase: 'github-release', kind: 'skipped-prerequisite', detail: `GitHub release ${prerequisite}` },
@@ -1633,6 +1957,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
     release,
     live,
     propagation,
+    proof: publication.proof,
     reconciliation,
   };
 }
@@ -1691,10 +2016,17 @@ export function printPublishOutcome(outcome, target, io = {}) {
   const tagAndPushFailed = outcome.reconciliation.some((item) => item.phase === 'tag-and-push');
 
   log(`  + ${PACKAGE_NAME}@${target} — target-confirmed npm receipt.`);
+  if (outcome.proof) {
+    if (outcome.proof.ok) log(`  ${outcome.proof.detail}.`);
+    else error(`\nWARN: ${outcome.proof.detail} — \`--reconcile\` cannot verify this release without it.`);
+  }
   if (outcome.propagation.ok) {
     log(`  registry verified (${outcome.propagation.detail}).`);
   } else {
-    error(`\nRECONCILIATION: registry propagation is not yet verified — ${outcome.propagation.detail}`);
+    // An accepted upload can stay unserved for many minutes while npm's
+    // publish-time checks run (#1537) — this is not a short propagation delay.
+    error(`\nRECONCILIATION: registry availability is not yet verified — ${outcome.propagation.detail}`);
+    error(`  npm accepted the upload; resume verification with: node scripts/release.mjs --reconcile --target ${target}`);
   }
   if (!tagAndPushFailed) {
     log(`  tagged ${outcome.tag} (AFTER publish) and pushed main+tag to: ${outcome.pushed.join(', ')}.`);
@@ -1744,6 +2076,7 @@ export function printPublishOutcome(outcome, target, io = {}) {
       error(`  - ${item.phase}${item.kind ? ` (${item.kind})` : ''}: ${item.detail}`);
     }
     error('  Do NOT rerun `--publish`; reconcile the listed post-publish state directly.');
+    if (!outcome.propagation.ok) error(`  Registry state: \`node scripts/release.mjs --reconcile --target ${target}\` (read-only, resumable).`);
     return 1;
   }
 
@@ -1923,6 +2256,8 @@ async function main() {
       check: { type: 'boolean', default: false },
       publish: { type: 'boolean', default: false },
       'skip-ci': { type: 'boolean', default: false },
+      reconcile: { type: 'boolean', default: false },
+      target: { type: 'string' },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
       version: { type: 'boolean', default: false },
@@ -1930,12 +2265,14 @@ async function main() {
   });
 
   if (values.help) {
-    console.log('Usage: node scripts/release.mjs [--set-version X.Y.Z | --check | --publish] [--skip-ci] [--json]');
+    console.log('Usage: node scripts/release.mjs [--set-version X.Y.Z | --check | --publish | --reconcile [--target X.Y.Z]] [--skip-ci] [--json]');
     console.log('Release als ein Dispatch: surface sync, preflight checks, token publish, tag AFTER publish.');
     console.log('  Receipt boundary: before the confirmed npm receipt, failure aborts; after it, never rerun --publish.');
     console.log('  Tag/push failure after receipt skips GitHub-release and site phases and returns reconciliation guidance.');
     console.log('  --skip-ci  allowed with --check only; REFUSED with --publish (it verifies nothing).');
-    console.log('Exit codes: 0 success, 1 preflight/check failure or post-publish reconciliation, 2 pre-receipt system/usage error.');
+    console.log('  --reconcile  read-only resume after an accepted upload: proof -> available -> installable. Never publishes, tags or pushes.');
+    console.log('               --target defaults to package.json version; needs .orchestrator/runtime/release-<target>.json from --publish.');
+    console.log('Exit codes: 0 success (--reconcile: installable or superseded), 1 preflight/check failure, post-publish reconciliation or --reconcile pending/failed/proof missing, 2 pre-receipt system/usage error.');
     return 0;
   }
 
@@ -1950,6 +2287,17 @@ async function main() {
   }
 
   const repoRoot = repoRootOf();
+
+  if (values.reconcile) {
+    // Deliberately before and apart from the --check/--publish branch: no
+    // preflight, no withCheckedPackage (no pack of the repo), no publisher.
+    const target = values.target ?? readPackageVersion(repoRoot);
+    if (!/^\d+\.\d+\.\d+$/.test(target)) {
+      console.error(`invalid package.json version for --reconcile: ${target} (expected X.Y.Z; pass --target)`);
+      return 2;
+    }
+    return printReconcileResult(reconcileRelease(repoRoot, target), { json: values.json });
+  }
 
   if (values['set-version']) {
     const target = values['set-version'];
@@ -2002,7 +2350,7 @@ async function main() {
     return checked.value;
   }
 
-  console.error('Nothing to do — pass --check, --publish, or --set-version X.Y.Z (see --help).');
+  console.error('Nothing to do — pass --check, --publish, --reconcile, or --set-version X.Y.Z (see --help).');
   return 2;
 }
 
