@@ -36,6 +36,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
+import { ensureOrchestratorIgnore } from './_lib/orchestrator-ignore.mjs';
 
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
 import { readNavigatorLease } from '../scripts/lib/fleet-protocol.mjs';
@@ -780,6 +781,12 @@ function maybeQueueConsentNudge() {
 
 async function main() {
   const projectRoot = resolveProjectDir();
+
+  // #1515 Pkt 5 — before this hook's own writers (host.json, session.lock,
+  // events.jsonl) run: an un-bootstrapped repo gets `.orchestrator/.gitignore`
+  // so the runtime state never shows up in `git status`. Bootstrapped repos
+  // pay two existsSync and nothing else. Never throws.
+  await ensureOrchestratorIgnore(projectRoot);
 
   // Read optional stdin payload in parallel with git info so we don't stall
   // the hook. Both are best-effort and the promise races against a 500 ms cap
