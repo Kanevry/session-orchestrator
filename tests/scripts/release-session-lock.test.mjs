@@ -20,6 +20,8 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
+import { acquire, readLock, writeOwnerProof } from '../../scripts/lib/session-lock.mjs';
+
 const CLI = path.resolve(import.meta.dirname, '../../scripts/release-session-lock.mjs');
 const LOCK_REL = path.join('.orchestrator', 'session.lock');
 const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
@@ -167,5 +169,33 @@ describe('scripts/release-session-lock.mjs (#1395)', { timeout: 15000 }, () => {
     expect(res.code).toBe(0);
     expect(JSON.parse(res.stdout)).toMatchObject({ ok: true, outcome: 'absent' });
     expect(await readEvents(repo)).toEqual([]);
+  });
+
+  // BUG (#1541): a second session in the same conversation (no new SessionStart
+  // hook) takes its lock via the prose path's acquire(), which left the FIRST
+  // lock's owner proof on disk. The second /close then refused the session's
+  // own lock with release-proof-mismatch, exit 2, and the lock sat until TTL.
+  it('second /close in one conversation: a lock re-taken via acquire() releases with exit 0 (#1541)', async () => {
+    const repo = await mkRepo();
+    const prevAliases = process.env.SO_HOST_ALIASES_FILE;
+    process.env.SO_HOST_ALIASES_FILE = path.join(repo, 'host-aliases.json');
+    try {
+      // Session 1: the SessionStart bootstrap wrote lock + proof.
+      await seedLock(repo);
+      expect(writeOwnerProof({ repoRoot: repo, lock: readLock({ repoRoot: repo }) }).ok).toBe(true);
+      const first = await runCli(['--repo-root', repo, '--session-id', OWN_ID, '--json'], repo);
+      expect(first.code).toBe(0);
+
+      // Session 2: Phase 1.2 prose path, same raw id, no hook.
+      expect(acquire({ sessionId: OWN_ID, mode: 'feature', repoRoot: repo }).ok).toBe(true);
+
+      const second = await runCli(['--repo-root', repo, '--session-id', OWN_ID, '--json'], repo);
+      expect(second.code).toBe(0);
+      expect(JSON.parse(second.stdout)).toMatchObject({ ok: true, outcome: 'deleted', verified: true });
+      expect(await lockExists(repo)).toBe(false);
+    } finally {
+      if (prevAliases !== undefined) process.env.SO_HOST_ALIASES_FILE = prevAliases;
+      else delete process.env.SO_HOST_ALIASES_FILE;
+    }
   });
 });
