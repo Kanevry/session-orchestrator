@@ -92,6 +92,7 @@ import {
   assertFileScopeSubset,
   assertTestSiblingCoverage,
   testSiblingExpansionApplies,
+  testSiblingsFor,
   TEST_SIBLING_EXPANSION_ROLES,
   findScopeCollisions,
   unionFileScopes,
@@ -664,14 +665,51 @@ function knownRepoFiles() {
 }
 
 /**
+ * WARN — never fail — when two agents' RAW scopes are disjoint but test-sibling
+ * expansion hands both the same synthesized glob (#1026 point 2, owner decision
+ * option a). `scripts/lib/foo.mjs` and `hooks/foo.mjs` share no file, yet both
+ * expand to `tests/**\/foo*.test.mjs`, so the union grants each agent the
+ * other's tests. Exit code is unchanged: the glob is a GRANT that may match no
+ * file at all, so failing the wave on it would block plans that never collide.
+ *
+ * `role` gates expansion exactly as `--union` does; `undefined` (sidecar-only
+ * `--no-manifest`, or a manifest without a role) checks anyway, because there
+ * the expansion that will run later is unknown and silence would hide it.
+ * Compares synthesized siblings only, by exact string — a sibling glob one agent
+ * DECLARED by hand is not matched (named ceiling; revisit if a wave plan is seen
+ * declaring sibling globs explicitly).
+ *
+ * @param {Array<{id?: string, files: string[]}>} agentScopes
+ * @param {string|undefined} role
+ */
+function warnSiblingGlobCollisions(agentScopes, role) {
+  if (role !== undefined && !testSiblingExpansionApplies({ role })) return;
+  const owners = new Map(); // sibling glob -> agent ids, first-seen order
+  agentScopes.forEach((rec, i) => {
+    const id = typeof rec.id === 'string' && rec.id.length > 0 ? rec.id : `<unnamed#${i}>`;
+    for (const glob of testSiblingsFor(rec.files)) {
+      const ids = owners.get(glob) ?? [];
+      if (!ids.includes(id)) ids.push(id);
+      owners.set(glob, ids);
+    }
+  });
+  for (const [glob, ids] of owners) {
+    if (ids.length < 2) continue;
+    warn(
+      `sibling-glob: agents ${ids.map((id) => `"${id}"`).join(', ')} are disjoint as declared but test-sibling expansion grants each of them ${glob} — split the same-basename files across waves or name the tests explicitly (#1026)`,
+    );
+  }
+}
+
+/**
  * Assert that no file is claimed by two agents of the SAME wave (#1020).
  * Exits 1 with one message per collision (plus one per duplicate agent id);
  * returns silently when the wave is clean.
  *
  * @param {string} sidecarPath
  */
-function assertDisjointOrDie(sidecarPath) {
-  if (!reportScopeCollisions(sidecarPath)) process.exit(1);
+function assertDisjointOrDie(sidecarPath, role) {
+  if (!reportScopeCollisions(sidecarPath, role)) process.exit(1);
 }
 
 /**
@@ -683,8 +721,9 @@ function assertDisjointOrDie(sidecarPath) {
  * @param {string} sidecarPath
  * @returns {boolean} true when the wave is disjoint
  */
-function reportScopeCollisions(sidecarPath) {
+function reportScopeCollisions(sidecarPath, role) {
   const agentScopes = readAgentScopesOrDie(sidecarPath, '--assert-disjoint');
+  warnSiblingGlobCollisions(agentScopes, role);
   const { ok, collisions, duplicateIds } = findScopeCollisions(agentScopes, {
     knownFiles: knownRepoFiles(),
   });
@@ -706,6 +745,15 @@ function reportScopeCollisions(sidecarPath) {
     `ERROR: ${collisions.length} scope collision(s), ${duplicateIds.length} duplicate id(s) — every file must belong to exactly ONE agent per wave (#1020; .claude/rules/parallel-sessions.md § Decision Tree)\n`,
   );
   return false;
+}
+
+/**
+ * The manifest's `role` when it is a string, else `undefined` (unknown).
+ * @param {unknown} obj
+ * @returns {string|undefined}
+ */
+function roleOf(obj) {
+  return obj !== null && typeof obj === 'object' && typeof obj.role === 'string' ? obj.role : undefined;
 }
 
 /**
@@ -757,7 +805,7 @@ function validate(
     }
     // #1026.4 — the collision check reads only the sidecar, so a schema error
     // must not hide its findings: report both, exit 1 either way.
-    if (assertDisjointPath) reportScopeCollisions(assertDisjointPath);
+    if (assertDisjointPath) reportScopeCollisions(assertDisjointPath, roleOf(obj));
     process.exit(1);
   }
 
@@ -771,7 +819,7 @@ function validate(
   // violates BOTH the subset relation and disjointness must keep the older,
   // byte-pinned subset message. Only ever ADDS a failure mode.
   if (assertDisjointPath) {
-    assertDisjointOrDie(assertDisjointPath);
+    assertDisjointOrDie(assertDisjointPath, roleOf(obj));
   }
 
   // #1020 QUERY MODE — replaces the echo below; see the STDOUT CONTRACT note in
