@@ -479,7 +479,9 @@ function _validateOptionalFields(entry) {
     if (
       typeof entry.pricing_table_date !== 'string' ||
       !ISO_DATE_RE.test(entry.pricing_table_date) ||
-      Number.isNaN(Date.parse(`${entry.pricing_table_date}T00:00:00Z`))
+      // Round-trip, not Date.parse alone: V8 rolls 2026-02-30 over to March.
+      Number.isNaN(Date.parse(`${entry.pricing_table_date}T00:00:00Z`)) ||
+      new Date(`${entry.pricing_table_date}T00:00:00Z`).toISOString().slice(0, 10) !== entry.pricing_table_date
     ) {
       throw new ValidationError(
         `pricing_table_date must be an ISO date (YYYY-MM-DD) or null, got: ${entry.pricing_table_date}`

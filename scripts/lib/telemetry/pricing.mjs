@@ -68,7 +68,7 @@ export const PRICING_TABLE_DATE = '2026-09-29';
  * quota, purchased credits and what was actually billed are not visible to
  * this module, so a consumer must not present the figure as any of them.
  * Written beside every persisted cost as `cost_basis`; the session validator's
- * `VALID_COST_BASES` must contain it.
+ * `COST_BASES` must contain it (pinned by tests/scripts/emit-session.test.mjs).
  * @type {'api-list-equivalent'}
  */
 export const COST_BASIS = 'api-list-equivalent';

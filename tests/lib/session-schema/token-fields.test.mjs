@@ -125,6 +125,7 @@ describe('validateSession — token-field constraint violations', () => {
     ['cost_basis', 'paid', 'a payment claim'],
     ['pricing_table_date', '2026-9-29', 'not YYYY-MM-DD'],
     ['pricing_table_date', '2026-13-01', 'an impossible month'],
+    ['pricing_table_date', '2026-02-30', 'a day past the month end (V8 rolls it over)'],
   ])('rejects %s when it is %s, naming the field in the message', (field, value) => {
     const entry = { ...BASE(), [field]: value };
 
