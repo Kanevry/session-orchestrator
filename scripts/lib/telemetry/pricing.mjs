@@ -63,6 +63,17 @@
 export const PRICING_TABLE_DATE = '2026-09-29';
 
 /**
+ * What a dollar figure computed from this table IS (#1470 Pkt 4): the API
+ * list-price equivalent of the metered tokens — never a payment. Subscription
+ * quota, purchased credits and what was actually billed are not visible to
+ * this module, so a consumer must not present the figure as any of them.
+ * Written beside every persisted cost as `cost_basis`; the session validator's
+ * `VALID_COST_BASES` must contain it.
+ * @type {'api-list-equivalent'}
+ */
+export const COST_BASIS = 'api-list-equivalent';
+
+/**
  * @typedef {Object} PricingRow
  * @property {number} input           - USD per 1M uncached prompt tokens.
  * @property {number} cache_read      - USD per 1M tokens served from the prompt cache.

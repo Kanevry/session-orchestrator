@@ -121,6 +121,10 @@ describe('validateSession — token-field constraint violations', () => {
     // #1475 — the persisted cost-coverage counters.
     ['cost_records_priced', -1, 'negative'],
     ['cost_records_total', 1.5, 'a non-integer float'],
+    // #1470 — a cost may not claim to be a payment, and the table date must be a date.
+    ['cost_basis', 'paid', 'a payment claim'],
+    ['pricing_table_date', '2026-9-29', 'not YYYY-MM-DD'],
+    ['pricing_table_date', '2026-13-01', 'an impossible month'],
   ])('rejects %s when it is %s, naming the field in the message', (field, value) => {
     const entry = { ...BASE(), [field]: value };
 
