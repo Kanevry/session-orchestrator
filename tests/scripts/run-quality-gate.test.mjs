@@ -478,6 +478,26 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
     expect(ev.exit_code).toBe(0);
   });
 
+  // #1487 point 3 (owner decision, option a) — a reporting variant exits 0 and
+  // records `.passed` even when a check failed, so the ledger could not tell a
+  // red baseline from a green one. The verdict now rides as `check_failed`;
+  // event name and exit code stay as they were.
+  it.each([
+    ['true on a failing typecheck in the baseline variant', 'baseline', 'node -e "process.exit(1)"', true],
+    ['false on a baseline run whose typecheck really passed (measured, not defaulted)', 'baseline', 'node -e "process.exit(0)"', false],
+    ['absent when every check was skipped — nothing was measured', 'baseline', 'skip', undefined],
+    ['absent on full-gate, whose event name already carries the verdict', 'full-gate', 'skip', undefined],
+  ])('check_failed is %s (#1487)', (_label, variant, typecheck, expected) => {
+    const config = JSON.stringify({ 'typecheck-command': typecheck, 'test-command': 'skip', 'lint-command': 'skip' });
+    const r = run(['--variant', variant, '--config', config], { CLAUDE_PROJECT_DIR: tmp });
+    expect(r.status).toBe(0);
+    const events = readEvents().filter((e) => e.event.startsWith('orchestrator.quality_gate.'));
+    expect(events).toHaveLength(1);
+    expect(events[0].event).toBe('orchestrator.quality_gate.passed');
+    expect(events[0].check_failed).toBe(expected);
+    if (expected === undefined) expect(Object.hasOwn(events[0], 'check_failed')).toBe(false);
+  });
+
   // THE BUG, measured 2026-09-06: the husky pre-push gate BLOCKED a push and
   // left NO `orchestrator.quality_gate.failed` line in this repo's ledger that
   // day. `.husky/pre-push` runs the gate inside a materialised tracked tree

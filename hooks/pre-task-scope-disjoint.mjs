@@ -301,6 +301,18 @@ const DISPATCH_TOOL = 'Agent';
  * A flat sibling, not a directory, on purpose: bootstrap's `store-lock-ignore`
  * step (#1495) ignores `.orchestrator/wave-dispatch-scopes.*` in consumer repos,
  * which covers this name; a directory would surface untracked in each of them.
+ *
+ * NAMED CEILING (BV-004, #1504 point 7a): nothing ever deletes a per-session
+ * file — the hook only writes its own, and no sweep exists (a sweep would delete
+ * files that may be a live peer's state, PSA-003). Each FILE is bounded: it holds
+ * one `waveKey`'s agents, reset on the next wave. The DIRECTORY is not: it grows
+ * by one file (plus a transient `.lock`) per session that dispatched an agent.
+ * Measured 2026-10-08 in this repo's main checkout: 7 files, largest 2918 bytes,
+ * oldest 2026-10-03 — negligible. Fine under ~500 files; the hook never lists
+ * the directory, so the count costs disk, not latency.
+ * Revisit-Trigger: `ls .orchestrator/wave-dispatch-scopes.*.json | wc -l`
+ * passes 500 in any repo, OR a reader starts enumerating these files — then
+ * build an age-gated sweep that skips any session with a live `session.lock`.
  */
 const LEDGER_DIR_REL = '.orchestrator';
 const LEDGER_STEM = 'wave-dispatch-scopes';

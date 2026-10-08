@@ -1299,10 +1299,23 @@ async function main() {
     ? []
     : readPeerScopeRecords(path.dirname(scopePath), scope.wave, sidecarRaw);
   if (sidecarBinding.notify) {
-    messages.push(formatSidecarMismatchNotice(
-      path.relative(repoRoot, path.join(path.dirname(scopePath), 'filescopes', `wave-${scope.wave}.scopes.json`)),
-    ));
+    const relSidecar = path.relative(
+      repoRoot,
+      path.join(path.dirname(scopePath), 'filescopes', `wave-${scope.wave}.scopes.json`),
+    );
+    messages.push(formatSidecarMismatchNotice(relSidecar));
     warn = true;
+    // #1514 point 6 (HR-105) — the notice alone left its firing rate unmeasurable.
+    // Same once-per-new-hash dedupe as the notice (`bindPeerSidecar().notify`);
+    // awaited so the append cannot be lost to the process exiting.
+    try {
+      const { emitEvent } = await import('../scripts/lib/events.mjs');
+      await emitEvent(
+        'orchestrator.scope.sidecar_mismatch',
+        { hook: 'post-bash-write-verify', sidecar: relSidecar.split(path.sep).join('/'), wave: scope.wave },
+        { repoRoot: context.manifestRoot },
+      );
+    } catch { /* observability is best-effort — never blocks the notice */ }
   }
   const violations = [];
   for (const relPath of report) {

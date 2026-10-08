@@ -14,7 +14,7 @@ SEC identifiers are sequential; gaps are intentional:
 - **SEC-010 to SEC-012**: compliance (baseline `security-compliance` rules, not vendored into this plugin)
 - **SEC-013 to SEC-015**: advanced protection (XXE, SSRF, crypto)
 - **SEC-016 to SEC-017**: data integrity (CSV injection, session hardening — rules/opt-in-stack/security-web.md)
-- **SEC-018 to SEC-019**: reserved candidates (prototype pollution CWE-1321, unsafe deserialization CWE-502 — currently covered by SEC-006)
+- **SEC-018**: CSRF (security-web.md); **SEC-019**: reserved (prototype pollution CWE-1321, unsafe deserialization CWE-502 — covered by SEC-006)
 - **SEC-020**: supply chain security (dependency trust, build script control)
 - **SEC-021**: settings-allowlist token guard (PAT/token leakage into `.claude/settings.json` / `.claude/settings.local.json` permission entries)
 
@@ -75,7 +75,7 @@ A secret value must never reach stdout, a log, or a session transcript. Masking 
 
 **Scope note — check the package manager before reading an omission as a gap.** Only `ignore-scripts` below is read by BOTH npm and pnpm; the other four keys are **pnpm-only directives npm silently ignores**. An npm-canonical repo omitting them is CORRECT — this repo is one (tracked `package-lock.json`, `development.md` § Package Management); its `.npmrc` records the omission in a comment. Measured 2026-08-22 @ `141d418`: `npm config get ignore-scripts` → `true`.
 
-- **npm + pnpm** — `ignore-scripts=true` in `.npmrc` as the global default: no package runs install/postinstall/prepare scripts unless allowlisted via `only-built-dependencies-of[]` (pnpm-only; under npm the switch is all-or-nothing). The single most effective defense against Axios-style postinstall attacks.
+- **npm + pnpm** — `ignore-scripts=true` in `.npmrc` as the global default: no package runs install/postinstall/prepare scripts unless allowlisted via package.json `pnpm.onlyBuiltDependencies` (pnpm-only; npm: all-or-nothing). The single most effective defense against Axios-style postinstall attacks.
 - **pnpm** — allowlisted packages (native binaries that genuinely need install scripts): `@your-org/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Add a new entry only after verifying the package requires postinstall.
 - **pnpm** — `block-exotic-subdeps=true` in `.npmrc` stops transitive deps using git or tarball sources. Mitigates PackageGate-class attacks (CVE-2026-xxxx).
 - **pnpm** — `minimum-release-age=1440` (24 hours) delays updates, giving security vendors time to detect malicious releases.

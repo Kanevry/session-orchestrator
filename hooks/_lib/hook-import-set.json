@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-05T10:45:41.038Z",
-  "head": "94dc4a0cf182a06492feb217162d290e9fd0e921",
+  "generated_at": "2026-10-08T18:11:08.022Z",
+  "head": "644743cc786ebc1653f34b44edcc7fc0c066faaf",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -32,6 +32,12 @@
       "file": "hooks/_lib/lock-reconcile.mjs",
       "reachable_from": [
         "on-session-end.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/orchestrator-ignore.mjs",
+      "reachable_from": [
+        "on-session-start.mjs"
       ]
     },
     {

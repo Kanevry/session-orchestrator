@@ -932,6 +932,37 @@ describe('post-bash-write-verify E2E', () => {
     expect(second.stderr).toContain('OUTSIDE the wave');
   });
 
+  it('emits one orchestrator.scope.sidecar_mismatch per NEW sidecar hash, none on repeat (#1514 point 6, HR-105)', () => {
+    // The bug: the mismatch notice had no event, so its firing rate was unmeasurable.
+    mkdirSync(join(tmp, '.claude', 'filescopes'), { recursive: true });
+    writeFileSync(
+      join(tmp, '.claude', 'wave-scope.json'),
+      JSON.stringify({ wave: 4, role: 'Impl', enforcement: 'warn', allowedPaths: ['hooks/**'] }),
+    );
+    const sidecar = join(tmp, '.claude', 'filescopes', 'wave-4.scopes.json');
+    const mismatches = () => {
+      const f = join(tmp, '.orchestrator', 'metrics', 'events.jsonl');
+      if (!existsSync(f)) return [];
+      return readFileSync(f, 'utf8').trim().split('\n').filter(Boolean)
+        .map((l) => JSON.parse(l)).filter((e) => e.event === 'orchestrator.scope.sidecar_mismatch');
+    };
+    writeFileSync(sidecar, JSON.stringify([{ id: 'a1', files: ['hooks/**'] }]));
+    runHook(); // baseline — binds the sidecar
+    expect(mismatches()).toHaveLength(0);
+
+    writeFileSync(sidecar, JSON.stringify([{ id: 'a1', files: ['hooks/**'] }, { id: 'peer-session-b', files: ['p/**'] }]));
+    runHook();
+    runHook(); // same hash again — no second record
+    expect(mismatches()).toHaveLength(1);
+    expect(mismatches()[0]).toMatchObject({
+      hook: 'post-bash-write-verify', sidecar: '.claude/filescopes/wave-4.scopes.json', wave: 4,
+    });
+
+    writeFileSync(sidecar, JSON.stringify([{ id: 'a1', files: ['hooks/**'] }, { id: 'peer-session-c', files: ['q/**'] }]));
+    runHook(); // a further NEW hash notifies (and records) again
+    expect(mismatches()).toHaveLength(2);
+  });
+
   it('is unchanged when the aggregate sidecar is absent (#1195)', () => {
     writeScope(['hooks/**']);
     runHook();

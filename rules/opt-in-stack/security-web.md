@@ -19,7 +19,7 @@ tier: wave-only
 
 CSRF, rate limiting, CSP, and transport security. Core security rules are in `security.md` (always-on).
 
-## CSRF Protection (SEC-005)
+## CSRF Protection (SEC-018)
 - **Next.js 15+ Server Actions**: Built-in CSRF protection via Origin header validation against Host header. No manual CSRF token needed.
 - **Manual CSRF tokens required for**: custom API routes (`/api/*`), form submissions to external endpoints, any non-Server-Action mutation endpoint.
 - For manual CSRF token validation, use `crypto.timingSafeEqual()` for timing-safe comparison.

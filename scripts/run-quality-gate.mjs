@@ -227,6 +227,49 @@ function failedFilesFromGateStdout(stdout) {
 }
 
 /**
+ * The reporting variants — they exit 0 even after a failing check, so their
+ * event NAME never carries the check verdict (#1459). `full-gate` exits non-zero
+ * on a failing check, so the name already says it there.
+ */
+const REPORTING_VARIANTS = new Set(['baseline', 'incremental', 'per-file']);
+
+/**
+ * Did any check of a reporting-variant envelope fail? (#1487 point 3)
+ *
+ * Three states, never two — the same absent-is-not-zero contract as `counts`:
+ *   - `true`  — `typecheck` or `test` carries `status: 'fail'` (a killed command
+ *               is published as `fail` too, see `runCheck`);
+ *   - `false` — both command objects are present, neither is stubbed, at least
+ *               one actually `pass`ed and none failed — the envelope MEASURED
+ *               that nothing failed;
+ *   - `null`  — the envelope is unparseable or a command object is missing or
+ *               carries an unknown status, a command is a stub (echo/noop
+ *               reports `pass` without running), or both were skipped. The
+ *               caller then OMITS the key: a
+ *               default `false` would read as "measured green" for a run that
+ *               measured nothing.
+ *
+ * Never throws.
+ *
+ * @param {string} stdout — the gate sub-script's captured stdout.
+ * @returns {boolean|null}
+ */
+function checkFailedFromGateStdout(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const statuses = ['typecheck', 'test'].map((name) => parsed?.[name]?.status);
+  if (statuses.includes('fail')) return true;
+  if (parsed?.stubbed?.typecheck || parsed?.stubbed?.test) return null;
+  if (!statuses.every((st) => st === 'pass' || st === 'skip')) return null;
+  return statuses.includes('pass') ? false : null;
+}
+
+/**
  * Validate and resolve the `--ledger-root` flag (see the telemetry block below).
  *
  * Only the pre-push hook passes this, and it hands over a path the gate then
@@ -570,12 +613,16 @@ async function main() {
     // record that run as `passed`. Their exit code stays 0 on purpose: it has
     // never carried the check verdict there (a failing check exits 0 too).
     const failed = exitCode !== 0 || killFields.timed_out === true;
+    // #1487 point 3 (owner decision, option a): the reporting variants keep
+    // `.passed` and their exit code, but carry the check verdict as a field.
+    const checkFailed = REPORTING_VARIANTS.has(variant) ? checkFailedFromGateStdout(gateStdout) : null;
     await emitEvent(
       `orchestrator.quality_gate.${failed ? 'failed' : 'passed'}`,
       {
         variant,
         exit_code: exitCode,
         ...killFields,
+        ...(checkFailed !== null ? { check_failed: checkFailed } : {}),
         ...(counts ? { counts } : {}),
         ...(failedFiles ? { failed_files: failedFiles } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
