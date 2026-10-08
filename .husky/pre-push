@@ -300,7 +300,9 @@ else
   target_sha=$commit_sha
   unset commit_sha
 
-  work=$(mktemp -d)
+  # `|| work=''`: under husky's `sh -e` a failing assignment ends the hook
+  # before the message below could explain the block (#1540).
+  work=$(mktemp -d) || work=''
   if [ -z "$work" ] || [ ! -d "$work" ]; then
     echo "✗ pre-push: could not create a temp dir for the tracked-tree gate. Push blocked." >&2
     echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
@@ -441,6 +443,8 @@ start=$(date +%s)
 # stays the single definition of the gate command. Passed only when repo_root is
 # non-empty (the non-git degrade path above has no root to pin to); an invalid
 # value makes the gate WARN and fall back, never fail.
+# Inside `if ( … )` the shell ignores `-e`: every command in this subshell
+# whose failure must block the push needs its own `|| exit` or if/else.
 if (
   cd "$run_dir" || exit 1
   for root_var in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -E 'PROJECT_DIR$|PLUGIN_ROOT$|RULES_DIR$'); do

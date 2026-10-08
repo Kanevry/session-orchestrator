@@ -698,6 +698,9 @@ function hasAuditSegment(segment, depth = 0) {
     // unlisted value-taking flag makes its value the "tool" and the line is
     // missed — a false finding, never a false pass. Revisit if a real CI line
     // with such a flag is reported as missing its audit.
+    // `--from`/`--spec` name the package that provides the tool; another
+    // package exposing a `pip-audit` entry point is not the audit.
+    let sourcePackage = null;
     while (segment[i]) {
       const { text, redirect } = segment[i];
       // A redirect operand is data, even when it names the audit package.
@@ -706,6 +709,7 @@ function hasAuditSegment(segment, depth = 0) {
       if (!text.startsWith('-')) break;
       if (RUNNER_VALUE_FLAGS.has(text)) {
         if (!segment[i + 1] || segment[i + 1].redirect) return false;
+        if (text === '--from' || text === '--spec') sourcePackage = segment[i + 1].text;
         i += 2;
       } else {
         i++;
@@ -713,6 +717,7 @@ function hasAuditSegment(segment, depth = 0) {
     }
     if (!segment[i] || segment[i].redirect) return false;
     if (segment.slice(index + 1).some((token) => ['-h', '--help', '--version'].includes(token.text))) return false;
+    if (sourcePackage !== null && !/^pip-audit(?:\s*(?:[=<>~!]=?|@)\s*[\w.+*-]+)?$/.test(sourcePackage)) return false;
     return /^pip-audit(?:@[\w.+-]+)?$/.test(segment[i].text);
   }
   if (verb === 'corepack' || verb === 'npx') {

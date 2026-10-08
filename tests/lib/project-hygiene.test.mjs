@@ -445,6 +445,7 @@ describe('checkCiConfig', () => {
     'unknown-wrapper uvx pip-audit@2.10.1',
     'pipx run ruff pip-audit@2.10.1',
     'uvx --from pip-audit echo hi',
+    'uvx --from evil pip-audit',
     'uvx pip-audit@',
     'uvx',
     'pipx run > audit-report.txt pip-audit@2.10.1',
