@@ -441,17 +441,22 @@ start=$(date +%s)
 # stays the single definition of the gate command. Passed only when repo_root is
 # non-empty (the non-git degrade path above has no root to pin to); an invalid
 # value makes the gate WARN and fall back, never fail.
-(
+if (
   cd "$run_dir" || exit 1
   for root_var in $(env | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=.*/\1/p' | grep -E 'PROJECT_DIR$|PLUGIN_ROOT$|RULES_DIR$'); do
     unset "$root_var"
   done
   unset root_var
   if [ -n "$repo_root" ] && [ -f "$run_dir/scripts/lib/pre-push-remote-gate.mjs" ]; then
-    node "$run_dir/scripts/lib/pre-push-remote-gate.mjs" "$run_dir" "$target_sha" "$repo_root"
-    remote_status=$?
+    # `if cmd; then … else rc=$?` and never `cmd; rc=$?`: husky 9 runs this file
+    # under `sh -e` (.husky/_/h), where a bare non-zero `cmd` ends the subshell
+    # before `rc=$?` is reached — exit 10 then never fell back to npm (#1540).
+    if node "$run_dir/scripts/lib/pre-push-remote-gate.mjs" "$run_dir" "$target_sha" "$repo_root"; then
+      exit 0
+    else
+      remote_status=$?
+    fi
     case "$remote_status" in
-      (0) exit 0 ;;
       (10) : ;; # only explicit transport/readiness fallback reaches npm
       (*) exit "$remote_status" ;;
     esac
@@ -461,8 +466,13 @@ start=$(date +%s)
   else
     npm run --silent quality-gate
   fi
-)
-status=$?
+); then
+  status=0
+else
+  # Same `sh -e` reason as above: a bare `( … ); status=$?` aborted the hook on a
+  # red gate before the FAILED / Push-blocked message below could print (#1540).
+  status=$?
+fi
 elapsed=$(( $(date +%s) - start ))
 
 if [ "$status" -ne 0 ]; then
