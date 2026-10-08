@@ -54,7 +54,7 @@ The script gates mechanics. These three are yours, and it will not make them for
 
 ## Post-publish — the human half
 
-`--publish` attempts registry verification and polls the live site itself. A target-confirmed receipt plus a delayed registry result is a reconciliation outcome, not a failed publish or a retry instruction: the receipt is persisted as `.orchestrator/runtime/release-<target>.json`, and `--reconcile` resumes from it. What still needs a person:
+`--publish` attempts registry verification and polls the live site itself. A target-confirmed receipt plus a delayed registry result is a reconciliation outcome, not a failed publish or a retry instruction: the receipt is persisted as `.orchestrator/runtime/release-<target>.json`, and `--reconcile` resumes from it. The proof lives in the gitignored runtime dir of the checkout or worktree that ran `--publish`: run `--reconcile` from that same checkout, because any other checkout reports `proof-missing`. What still needs a person:
 
 1. **Rotate/delete the token** at https://www.npmjs.com/settings/<user>/tokens. A token that ever transited a conversation, a screenshot, or any log is burned — rotate immediately.
 2. **pi.dev gallery**: indexing is asynchronous — check https://pi.dev/packages later; do not block on it.

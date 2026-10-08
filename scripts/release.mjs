@@ -1570,7 +1570,10 @@ export function readReleaseProof(repoRoot, target, { readImpl = readFileSync } =
  * A 404 is `pending` — never read as "held" or "blocked": the package token
  * cannot see npm's internal scan state, so a 404 alone carries no diagnosis.
  *
- * @returns {{state: 'available'|'pending'|'failed', reason: string, detail: string}}
+ * `superseded` = exact version + integrity served, but `latest` already points
+ * at a semver-greater release.
+ *
+ * @returns {{state: 'available'|'superseded'|'pending'|'failed', reason: string, detail: string}}
  */
 export function evaluateRegistryManifest(view, target, proof) {
   const raw = (view?.stdout || '').trim();
@@ -1591,8 +1594,27 @@ export function evaluateRegistryManifest(view, target, proof) {
     return { state: 'failed', reason: 'integrity-mismatch', detail: `registry dist.integrity ${integrity} differs from the checked archive ${proof.integrity}` };
   }
   const latest = json['dist-tags']?.latest;
-  if (latest !== target) return { state: 'pending', reason: 'latest-not-target', detail: `dist-tags.latest is ${latest ?? 'unset'}, not ${target}` };
+  if (latest !== target) {
+    // A later release can only have been published after this one was
+    // accepted, so `latest` will never come back to the target. Keeping that
+    // `pending` forever would be a standing false alarm; the exact version and
+    // its bytes are still verified (here, and by the download that follows).
+    if (isNewerRelease(latest, target)) {
+      return { state: 'superseded', reason: 'superseded', detail: `registry serves ${target} with the checked integrity; dist-tags.latest is already the later ${latest}` };
+    }
+    return { state: 'pending', reason: 'latest-not-target', detail: `dist-tags.latest is ${latest ?? 'unset'}, not ${target}` };
+  }
   return { state: 'available', reason: 'available', detail: `registry serves ${target} as latest with the checked integrity` };
+}
+
+/** True when `candidate` is a plain X.Y.Z strictly greater than `target`; prereleases never count. */
+function isNewerRelease(candidate, target) {
+  const parse = (v) => (/^\d+\.\d+\.\d+$/.test(v ?? '') ? v.split('.').map(Number) : null);
+  const a = parse(candidate);
+  const b = parse(target);
+  if (!a || !b) return false;
+  for (let i = 0; i < 3; i++) if (a[i] !== b[i]) return a[i] > b[i];
+  return false;
 }
 
 /**
@@ -1609,7 +1631,7 @@ export function checkInstallable(target, proof, deps = {}) {
   try {
     let pack;
     try {
-      pack = runImpl('npm', ['pack', `${PACKAGE_NAME}@${target}`, '--json', '--ignore-scripts', '--pack-destination', dir], { cwd: dir, timeout: 120000 });
+      pack = runImpl('npm', ['pack', `${PACKAGE_NAME}@${target}`, '--json', '--ignore-scripts', '--prefer-online', '--pack-destination', dir], { cwd: dir, timeout: 120000 });
     } catch (err) {
       return { state: 'pending', reason: 'download-failed', detail: `npm pack ${PACKAGE_NAME}@${target} failed: ${err?.message ?? err}` };
     }
@@ -1652,7 +1674,7 @@ export function checkInstallable(target, proof, deps = {}) {
  * @param {string} repoRoot
  * @param {string} target
  * @param {{attempts?: number, delaySeconds?: number, runImpl?: Function, waitImpl?: Function, readImpl?: Function, integrityImpl?: Function, mkTempImpl?: Function, cleanupImpl?: Function}} [deps]
- * @returns {{ok: boolean, state: 'installable'|'pending'|'failed'|'proof-missing', target: string, accepted: boolean, available: boolean, installable: boolean, attempts: number, reason: string, detail: string, proofPath: string}}
+ * @returns {{ok: boolean, state: 'installable'|'superseded'|'pending'|'failed'|'proof-missing', target: string, accepted: boolean, available: boolean, installable: boolean, attempts: number, reason: string, detail: string, proofPath: string}}
  */
 export function reconcileRelease(repoRoot, target, deps = {}) {
   const attempts = deps.attempts ?? 20;
@@ -1666,7 +1688,7 @@ export function reconcileRelease(repoRoot, target, deps = {}) {
     return { ...base, ok: false, state: 'proof-missing', reason: 'proof-missing', detail: read.detail, proofPath: read.path };
   }
   const { proof } = read;
-  const done = (state, step, attempt, extra) => ({ ...base, accepted: true, ...extra, ok: state === 'installable', state, attempts: attempt, reason: step.reason, detail: step.detail, proofPath: read.path });
+  const done = (state, step, attempt, extra) => ({ ...base, accepted: true, ...extra, ok: state === 'installable' || state === 'superseded', state, attempts: attempt, reason: step.reason, detail: step.detail, proofPath: read.path });
 
   let last = { reason: 'not-run', detail: 'no attempt ran' };
   let available = false;
@@ -1679,10 +1701,16 @@ export function reconcileRelease(repoRoot, target, deps = {}) {
     }
     const manifest = evaluateRegistryManifest(view, target, proof);
     if (manifest.state === 'failed') return done('failed', manifest, attempt, { available: false });
-    if (manifest.state === 'available') {
+    if (manifest.state === 'available' || manifest.state === 'superseded') {
       available = true;
       const install = checkInstallable(target, proof, deps);
-      if (install.state === 'installable') return done('installable', install, attempt, { available: true, installable: true });
+      if (install.state === 'installable') {
+        // Superseded keeps its own state (and exit 0): the release's bytes are
+        // verified installable, only the `latest` tag moved on — not a failure,
+        // but worth saying so the operator does not read it as "is latest".
+        if (manifest.state === 'superseded') return done('superseded', { reason: 'superseded', detail: `${manifest.detail}; ${install.detail}` }, attempt, { available: true, installable: true });
+        return done('installable', install, attempt, { available: true, installable: true });
+      }
       if (install.state === 'failed') return done('failed', install, attempt, { available: true });
       last = install;
     } else {
@@ -1700,7 +1728,7 @@ export function reconcileRelease(repoRoot, target, deps = {}) {
   return done('pending', { reason: last.reason, detail: `${last.detail} (after ${attempts} attempts; run \`--reconcile --target ${target}\` again later)` }, attempts, { available });
 }
 
-/** Print a reconcile result and return the exit code (0 only when installable). */
+/** Print a reconcile result and return the exit code (0 only when installable or superseded). */
 export function printReconcileResult(result, { json = false, log = console.log, error = console.error } = {}) {
   if (json) {
     log(JSON.stringify(result, null, 2));
@@ -1710,6 +1738,7 @@ export function printReconcileResult(result, { json = false, log = console.log, 
   log(`${PACKAGE_NAME}@${result.target}: ${result.state} — accepted ${mark(result.accepted)}, available ${mark(result.available)}, installable ${mark(result.installable)}`);
   if (result.ok) {
     log(`  ${result.detail}`);
+    if (result.state === 'superseded') log(`  Note: ${result.target} is installable but no longer \`latest\` — a later release took the tag.`);
     return 0;
   }
   error(`  ${result.reason}: ${result.detail}`);
@@ -1722,15 +1751,6 @@ export function printReconcileResult(result, { json = false, log = console.log, 
   return 1;
 }
 
-/**
- * Publish and return the receipt boundary plus the registry reconciliation
- * result. Pre-receipt failures throw; post-receipt propagation failures return.
- *
- * @param {string} repoRoot
- * @param {string} target
- * @param {{runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} [deps]
- * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>}}
- */
 /**
  * The exact `npm publish` invocation: argv plus spawn options.
  *
@@ -1774,6 +1794,24 @@ function publish(repoRoot, target, deps = {}) {
     const call = publishInvocation(repoRoot, tmpRc, deps.artifact);
     return runImpl(call.cmd, call.args, call.opts);
   });
+  return settlePublishReceipt(repoRoot, target, res, { ...deps, runImpl });
+}
+
+/**
+ * Everything `publish()` does AFTER `npm publish` returned: judge the receipt,
+ * persist the publish proof, then wait for the registry. Split out of the
+ * unexported publisher so the order "proof before registry wait" is testable
+ * (#1537) — this function receives an npm result and cannot publish anything.
+ * Pre-receipt failures throw; post-receipt propagation failures return.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{status: number|null, stdout?: string, stderr?: string}} res — the `npm publish` result
+ * @param {{artifact: {digest: string, integrity: string}, runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} deps
+ * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>, proof: ReturnType<typeof writeReleaseProof>}}
+ */
+export function settlePublishReceipt(repoRoot, target, res, deps = {}) {
+  const runImpl = deps.runImpl ?? run;
   const receipt = evaluatePublishReceipt(res, target);
   if (!receipt.confirmed) throw new Error(receipt.detail);
 
@@ -2234,7 +2272,7 @@ async function main() {
     console.log('  --skip-ci  allowed with --check only; REFUSED with --publish (it verifies nothing).');
     console.log('  --reconcile  read-only resume after an accepted upload: proof -> available -> installable. Never publishes, tags or pushes.');
     console.log('               --target defaults to package.json version; needs .orchestrator/runtime/release-<target>.json from --publish.');
-    console.log('Exit codes: 0 success (--reconcile: installable), 1 preflight/check failure, post-publish reconciliation or --reconcile pending/failed/proof missing, 2 pre-receipt system/usage error.');
+    console.log('Exit codes: 0 success (--reconcile: installable or superseded), 1 preflight/check failure, post-publish reconciliation or --reconcile pending/failed/proof missing, 2 pre-receipt system/usage error.');
     return 0;
   }
 
@@ -2254,6 +2292,10 @@ async function main() {
     // Deliberately before and apart from the --check/--publish branch: no
     // preflight, no withCheckedPackage (no pack of the repo), no publisher.
     const target = values.target ?? readPackageVersion(repoRoot);
+    if (!/^\d+\.\d+\.\d+$/.test(target)) {
+      console.error(`invalid package.json version for --reconcile: ${target} (expected X.Y.Z; pass --target)`);
+      return 2;
+    }
     return printReconcileResult(reconcileRelease(repoRoot, target), { json: values.json });
   }
 

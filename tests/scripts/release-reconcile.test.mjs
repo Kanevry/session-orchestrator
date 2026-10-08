@@ -8,7 +8,7 @@
  * network: every npm call goes through an injected runImpl.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { writeFileSync, readFileSync } from 'node:fs';
+import { writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import {
   archiveIntegrity,
@@ -19,6 +19,7 @@ import {
   printReconcileResult,
   printPublishOutcome,
   validateFlags,
+  settlePublishReceipt,
 } from '../../scripts/release.mjs';
 import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
@@ -58,13 +59,13 @@ const manifest = (integrity, latest = TARGET) => ({
 });
 
 /** Registry fake: 404 until `availableFrom`, then the manifest; `npm pack` drops `packBytes`. */
-function registry({ availableFrom = 1, integrity, packBytes = BYTES, calls }) {
+function registry({ availableFrom = 1, integrity, latest = TARGET, packBytes = BYTES, calls }) {
   let views = 0;
   return (cmd, args, opts) => {
     calls.push([cmd, ...args]);
     if (cmd === 'npm' && args[0] === 'view') {
       views += 1;
-      return views >= availableFrom ? manifest(integrity) : NOT_FOUND;
+      return views >= availableFrom ? manifest(integrity, latest) : NOT_FOUND;
     }
     if (cmd === 'npm' && args[0] === 'pack') {
       const dest = args[args.indexOf('--pack-destination') + 1];
@@ -125,9 +126,11 @@ describe('reconcileRelease (#1537)', () => {
     expect(calls.filter(([cmd, sub]) => cmd === 'npm' && sub === 'publish')).toHaveLength(0);
     expect(calls.filter(([cmd, sub]) => cmd === 'git' && (sub === 'tag' || sub === 'push'))).toHaveLength(0);
     // The only download is the registry spec — never a pack of the repo itself.
-    for (const call of calls.filter(([cmd, sub]) => cmd === 'npm' && sub === 'pack')) {
-      expect(call[2]).toBe(`session-orchestrator@${TARGET}`);
-    }
+    const packs = calls.filter(([cmd, sub]) => cmd === 'npm' && sub === 'pack');
+    expect(packs).toHaveLength(1);
+    expect(packs[0][2]).toBe(`session-orchestrator@${TARGET}`);
+    // A cached tarball would verify the local cache, not the registry.
+    expect(packs[0]).toContain('--prefer-online');
   });
 
   it('an integrity mismatch is failed — in the registry manifest or in the downloaded tarball', () => {
@@ -156,6 +159,61 @@ describe('reconcileRelease (#1537)', () => {
     expect(result.detail).toContain('proof missing');
     expect(calls).toEqual([]);
     expect(printReconcileResult(result, { json: true, log: () => {} })).toBe(1);
+  });
+});
+
+describe('superseded (#1537 follow-up)', () => {
+  it('a semver-greater latest with matching version + integrity is superseded and exits 0, not pending forever', () => {
+    const proof = persistProof();
+    const result = reconcileRelease(root, TARGET, {
+      attempts: 3, runImpl: registry({ integrity: proof.integrity, latest: '9.10.0', calls: [] }), waitImpl: () => ({ status: 0 }),
+    });
+    expect(result).toMatchObject({ ok: true, state: 'superseded', available: true, installable: true, attempts: 1 });
+    const out = [];
+    expect(printReconcileResult(result, { log: (l) => out.push(l), error: () => {} })).toBe(0);
+    expect(out.join('\n')).toContain('no longer `latest`');
+  });
+
+  it('a lower or non-release latest stays pending', () => {
+    const proof = persistProof();
+    for (const latest of ['9.9.0', '9.10.0-rc.1']) {
+      const result = reconcileRelease(root, TARGET, {
+        attempts: 2, runImpl: registry({ integrity: proof.integrity, latest, calls: [] }), waitImpl: () => ({ status: 0 }),
+      });
+      expect(result).toMatchObject({ ok: false, state: 'pending', reason: 'latest-not-target' });
+    }
+  });
+});
+
+describe('settlePublishReceipt — the proof is written after the receipt, before the registry wait', () => {
+  const artifact = () => ({ digest: 'b'.repeat(64), integrity: archiveIntegrity(archive) });
+
+  it('writes the proof before the first registry query', () => {
+    // Bug caught: dropping the writeReleaseProof call leaves every test of
+    // --reconcile green while every real --reconcile ends proof-missing.
+    const seen = [];
+    const result = settlePublishReceipt(root, TARGET, { status: 0, stdout: `+ session-orchestrator@${TARGET}\n`, stderr: '' }, {
+      artifact: artifact(),
+      attempts: 1,
+      runImpl: (cmd, args) => {
+        if (cmd === 'git') return { status: 0, stdout: 'c8f3f3ee\n', stderr: '' };
+        seen.push({ call: `${cmd} ${args[0]}`, proofOnDisk: existsSync(releaseProofPath(root, TARGET)) });
+        return { status: 0, stdout: `${TARGET}\n`, stderr: '' };
+      },
+      waitImpl: () => ({ status: 0 }),
+    });
+    expect(seen).toEqual([{ call: 'npm view', proofOnDisk: true }]);
+    expect(result.proof).toMatchObject({ ok: true });
+    expect(JSON.parse(readFileSync(releaseProofPath(root, TARGET), 'utf8'))).toMatchObject({
+      target: TARGET, commit: 'c8f3f3ee', sha256: 'b'.repeat(64), integrity: archiveIntegrity(archive),
+    });
+  });
+
+  it('writes no proof without a target-confirmed receipt', () => {
+    expect(() => settlePublishReceipt(root, TARGET, { status: 0, stdout: '', stderr: '' }, {
+      artifact: artifact(), runImpl: () => { throw new Error('must not query'); },
+    })).toThrow('did not emit a target-confirmed receipt');
+    expect(existsSync(releaseProofPath(root, TARGET))).toBe(false);
   });
 });
 
