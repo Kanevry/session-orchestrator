@@ -108,13 +108,15 @@ const INCOMPLETE_FIELD_ORDER = Object.freeze([
   'total_agents',
   'total_files_changed',
 ]);
-// `timestamp_precision` (#1442) deliberately adds NOTHING to the list above: a
-// truncated timestamp is still a measurement (exact to the millisecond), not a
-// default. Listing it would make consumers discard a real value —
-// `sessions-staleness-banner.mjs` returns null for any timestamp named in
-// `_backfill_incomplete_fields`, `session-close-backfill.mjs` keys on
-// `includes('started_at')`. The sub-millisecond original survives in the
-// `_<field>_raw` sidecar instead.
+// `timestamp_precision` (#1442) and `timestamp_offset` (#1525) deliberately add
+// NOTHING to the list above: a truncated or UTC-converted timestamp is still a
+// measurement (exact to the millisecond), not a default. Listing it would make
+// consumers discard a real value — `sessions-staleness-banner.mjs` returns null
+// for any timestamp named in `_backfill_incomplete_fields`,
+// `session-close-backfill.mjs` keys on `includes('started_at')`. The original
+// spelling survives in the `_<field>_raw` sidecar instead. Two classes because
+// the losses differ: `precision` drops sub-ms digits, `offset` drops nothing
+// but the zone spelling (the instant is kept exactly).
 
 /**
  * Timestamp fields `validateSession` holds to `ISO_8601_UTC_MS_RE`
@@ -124,11 +126,15 @@ const INCOMPLETE_FIELD_ORDER = Object.freeze([
 const MS_PRECISION_FIELDS = Object.freeze(['started_at', 'completed_at', 'lease_acquired_at']);
 
 /**
- * ISO-8601 UTC with MORE than three fractional digits and exactly `Z` or
- * `+00:00` (#1525). Group 1 is the value cut at the millisecond. Nonzero
- * offsets, other timezone spellings and shorter fractions stay unrepaired.
+ * Strict ISO-8601 timestamp the repair may normalize (#1525): seconds required,
+ * fraction optional and of any length, zone exactly `Z` or `±HH:MM`. Anything
+ * looser (`+0000`, `+00`, lowercase `z`, no zone) stays unrepaired, so the
+ * lenient `Date.parse` never gets to decide what a value meant.
+ * Groups: 1 wall-clock date-time to the second, 2 fraction digits, 3 zone,
+ * 4 offset sign, 5 offset hours, 6 offset minutes.
  */
-const ISO_UTC_SUB_MS_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3})\d+(?:Z|\+00:00)$/;
+const ISO_REPAIRABLE_RE =
+  /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d+))?(Z|([+-])(\d{2}):(\d{2}))$/;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -144,23 +150,45 @@ function isCount(v) {
 }
 
 /**
- * Cut a sub-millisecond ISO-8601 UTC timestamp to milliseconds. TRUNCATES,
- * never rounds: `.9999Z` must not roll into the next second, and truncation is
- * monotone, so `completed_at >= started_at` survives on every pair it held on.
+ * Normalize a timestamp to the validator's UTC-millisecond shape (#1442, #1525).
+ *
+ * - `precision`: a fraction of other than 0 or 3 digits. Sub-millisecond
+ *   digits are TRUNCATED, never rounded: `.9999Z` must not roll into the next
+ *   second, and truncation is monotone, so `completed_at >= started_at`
+ *   survives on every pair it held on. Shorter fractions are zero-padded.
+ * - `offset`: any zone spelled other than `Z`. Converting `±HH:MM` to UTC keeps
+ *   the instant exactly (offsets are whole minutes), so it is lossless and
+ *   commutes with the truncation above.
  *
  * @param {unknown} value
- * @returns {string|null} the truncated value, or null when there is nothing to cut
+ * @returns {null | {invalid: true} | {value: string, precision: boolean, offset: boolean}}
+ *   null when there is nothing to normalize (not a string, not the strict
+ *   shape, or already canonical); `{invalid: true}` when the shape matches but
+ *   the calendar/clock components or the offset are out of range.
  */
-function truncateToMs(value) {
+function normalizeTimestamp(value) {
   if (typeof value !== 'string') return null;
-  const m = ISO_UTC_SUB_MS_RE.exec(value);
+  const m = ISO_REPAIRABLE_RE.exec(value);
   if (!m) return null;
-  const canonical = `${m[1]}Z`;
-  const ms = Date.parse(canonical);
+  const [, wall, fraction = '', zone, sign, offH, offM] = m;
+  const precision = fraction.length !== 0 && fraction.length !== 3;
+  const offset = zone !== 'Z';
+  if (!precision && !offset) return null; // already what the validator accepts
+  const wallCanonical = `${wall}.${fraction.slice(0, 3).padEnd(3, '0')}Z`;
+  const wallMs = Date.parse(wallCanonical);
   // Date.parse rolls over e.g. April 31, non-leap February 29 and 24:00.
   // Equality with the original calendar components refuses those repairs.
-  if (!Number.isFinite(ms) || new Date(ms).toISOString() !== canonical) return null;
-  return canonical;
+  if (!Number.isFinite(wallMs) || new Date(wallMs).toISOString() !== wallCanonical) {
+    return { invalid: true };
+  }
+  let offsetMin = 0;
+  if (offset) {
+    if (Number(offH) > 23 || Number(offM) > 59) return { invalid: true };
+    offsetMin = (sign === '-' ? -1 : 1) * (Number(offH) * 60 + Number(offM));
+  }
+  const utc = new Date(wallMs - offsetMin * 60_000);
+  if (!Number.isFinite(utc.getTime())) return { invalid: true };
+  return { value: utc.toISOString(), precision, offset };
 }
 
 function orderIncompleteFields(fields) {
@@ -377,12 +405,14 @@ export function repairRecord(record) {
   // `started_at` — a microsecond `started_at` would otherwise be copied into
   // `completed_at` and spread the defect instead of fixing it.
   let precisionCut = false;
+  let offsetNormalized = false;
   for (const key of MS_PRECISION_FIELDS) {
-    const truncated = truncateToMs(out[key]);
-    if (truncated === null) continue;
+    const norm = normalizeTimestamp(out[key]);
+    if (norm === null || 'invalid' in norm) continue;
     preserveRaw(out, key, record[key], rescued);
-    out[key] = truncated;
-    precisionCut = true;
+    out[key] = norm.value;
+    precisionCut ||= norm.precision;
+    offsetNormalized ||= norm.offset;
   }
 
   // -- completed_at ---------------------------------------------------------
@@ -396,18 +426,20 @@ export function repairRecord(record) {
     preserveRaw(out, 'completed_at', record.completed_at, rescued);
     const endedMs = typeof out.ended_at === 'string' ? Date.parse(out.ended_at) : NaN;
     const startedMs = Date.parse(out.started_at);
-    const endedTruncated = truncateToMs(out.ended_at);
+    const endedNorm = normalizeTimestamp(out.ended_at);
     if (typeof out.ended_at === 'string' &&
-        (!Number.isFinite(endedMs) ||
-         (ISO_UTC_SUB_MS_RE.test(out.ended_at) && endedTruncated === null))) {
+        (!Number.isFinite(endedMs) || (endedNorm !== null && 'invalid' in endedNorm))) {
       // Preserve an invalid legacy measurement for the final schema gate to
       // reject; do not turn it into a valid default or a rolled-over date.
       out.completed_at = out.ended_at;
     } else if (Number.isFinite(endedMs) && Number.isFinite(startedMs) && endedMs >= startedMs) {
       // The COPY is cut to milliseconds; `ended_at` itself is not a validated
       // field and keeps its original bytes, so nothing needs a sidecar here.
-      if (endedTruncated !== null) precisionCut = true;
-      out.completed_at = endedTruncated ?? out.ended_at;
+      if (endedNorm !== null) {
+        precisionCut ||= endedNorm.precision;
+        offsetNormalized ||= endedNorm.offset;
+      }
+      out.completed_at = endedNorm?.value ?? out.ended_at;
     } else {
       out.completed_at = out.started_at;
     }
@@ -415,6 +447,7 @@ export function repairRecord(record) {
     incomplete.add('completed_at');
   }
   if (precisionCut) defects.push('timestamp_precision');
+  if (offsetNormalized) defects.push('timestamp_offset');
 
   if (defects.length === 0) {
     return { record, defects: [], incompleteFields: [], changed: false };

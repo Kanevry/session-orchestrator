@@ -999,7 +999,40 @@ describe('#1525 — UTC sub-ms repair at the ledger boundary', () => {
     expect(repairLine(reversed).line).toBe(reversed);
   });
 
-  it.each(['+01:00', '-01:00', '+0000', '+00', 'z'])(
+  // Owner decision on #1525: offsets other than 0 are repaired too. Bug caught:
+  // these three live shapes stayed schema-invalid and unrepairable on HEAD.
+  it.each([
+    ['UTC offset, ms fraction', '2026-06-14T12:00:18.859+00:00', '2026-06-14T12:00:18.859Z', ['timestamp_offset']],
+    ['UTC offset, no fraction', '2026-06-14T12:00:18+00:00', '2026-06-14T12:00:18.000Z', ['timestamp_offset']],
+    ['+02:00, ms fraction', '2026-06-14T12:00:18.859+02:00', '2026-06-14T10:00:18.859Z', ['timestamp_offset']],
+    ['-05:30, sub-ms, crosses midnight', '2026-06-14T20:00:18.8591234-05:30', '2026-06-15T01:30:18.859Z',
+      ['timestamp_precision', 'timestamp_offset']],
+    ['Z, one fraction digit', '2026-06-14T12:00:18.8Z', '2026-06-14T12:00:18.800Z', ['timestamp_precision']],
+  ])('normalizes %s to the same instant in UTC ms', (_name, raw, expected, defects) => {
+    const input = {
+      ...goldenRecord(6), started_at: raw, completed_at: '2026-06-16T00:00:00.000Z',
+    };
+    const first = repairLine(JSON.stringify(input));
+    expect(first.status).toBe('repaired');
+    expect(first.defects).toEqual(defects);
+    const record = JSON.parse(first.line);
+    expect(record.started_at).toBe(expected);
+    expect(Date.parse(record.started_at)).toBe(Math.trunc(Date.parse(raw)));
+    expect(record._started_at_raw).toBe(raw);
+    expect(record._backfill_incomplete_fields).not.toContain('started_at');
+    expect(repairLine(first.line).line).toBe(first.line);
+  });
+
+  it('copies an offset ended_at into completed_at as UTC', () => {
+    const input = without({
+      ...goldenRecord(6), started_at: '2026-06-14T00:00:00.000Z', ended_at: '2026-06-14T12:00:00+02:00',
+    }, 'completed_at');
+    const record = JSON.parse(repairLine(JSON.stringify(input)).line);
+    expect(record.completed_at).toBe('2026-06-14T10:00:00.000Z');
+    expect(record.ended_at).toBe('2026-06-14T12:00:00+02:00');
+  });
+
+  it.each(['+0000', '+00', 'z', '+24:00', '-01:60'])(
     'does not extend repair to unsupported timezone spelling %s', (suffix) => {
       const line = JSON.stringify({ ...goldenRecord(6), started_at: `2026-06-14T00:00:00.123456${suffix}` });
       expect(repairLine(line).status).toBe('error');

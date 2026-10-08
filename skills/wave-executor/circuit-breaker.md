@@ -50,6 +50,7 @@ The coordinator determines each agent's status after the wave completes:
 | **partial** | Agent made progress but couldn't finish | Turn limit hit, or agent reports `STATUS: partial` | Carry forward remaining work to next wave with context |
 | **failed** | Agent couldn't make meaningful progress | Tool errors, invalid assumptions, agent reports `STATUS: failed` | Re-dispatch with corrected instructions and narrower scope |
 | **spiral** | Agent got stuck in an edit loop | Same file edited 3+ times (detected post-wave) | Revert agent's changes, narrow scope, split task if needed |
+| **limit** | Agent stopped by a session/usage limit or HTTP 429 mid-wave — not by its task | Output ends in a limit/429 error instead of a `STATUS:` line | No re-dispatch, no carryover issue: read `git diff` in the agent's worktree, finish the small remaining fix passes coordinator-direct, log a Deviation via `appendDeviationOnDisk()` (`scripts/lib/state-md.mjs`) |
 
 3. **Recovery protocol**:
    - FAILED agent → log in STATE.md, add fix task to next wave with corrected instructions, AND auto-create a carryover issue (see "Carryover Auto-Create" below) the first time this task is marked FAILED (check STATE.md Wave History for a prior `→ issue #NNN` on this task before filing).
