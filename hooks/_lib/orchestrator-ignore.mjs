@@ -37,9 +37,12 @@
  */
 
 import { readFile, writeFile, link, unlink, mkdir } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, lstatSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+
+/** Directories that hold durable project data, never plugin runtime output. */
+const PROJECT_DATA_DIRS = ['steering', 'peers', 'policy'];
 
 export const GENERATED_IGNORE = [
   '# Written by session-orchestrator (#1515): this repo has no .orchestrator/bootstrap.lock,',
@@ -66,7 +69,7 @@ function trackedUnderOrchestrator(repoRoot) {
 
 /**
  * @param {string} repoRoot
- * @returns {Promise<'written'|'removed'|'bootstrapped'|'present'|'tracked'|'no-git'|'error'>}
+ * @returns {Promise<'written'|'removed'|'bootstrapped'|'present'|'project-data'|'symlink'|'tracked'|'no-git'|'error'>}
  */
 export async function ensureOrchestratorIgnore(repoRoot) {
   try {
@@ -83,6 +86,12 @@ export async function ensureOrchestratorIgnore(repoRoot) {
       return 'bootstrapped';
     }
     if (existsSync(target)) return 'present';
+    // Durable project data (bootstrap/_shared-template.md #store-lock-ignore)
+    // the user may hold untracked on purpose: ignoring it would hide it from
+    // git status without a word. Only plugin runtime output may be swept.
+    if (PROJECT_DATA_DIRS.some((d) => existsSync(path.join(dir, d)))) return 'project-data';
+    // A symlinked .orchestrator would put the file outside the repo.
+    if (existsSync(dir) && lstatSync(dir).isSymbolicLink()) return 'symlink';
     const tracked = await trackedUnderOrchestrator(repoRoot);
     if (tracked === null) return 'no-git';
     if (tracked) return 'tracked';

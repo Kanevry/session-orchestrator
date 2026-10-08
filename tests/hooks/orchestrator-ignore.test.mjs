@@ -146,3 +146,34 @@ describe('orchestrator-ignore exceptions cover every bootstrap-staged path', () 
     expect(variable).toBeLessThanOrEqual(templates.length);
   });
 });
+
+// Review finding (2026-10-08): untracked project data under .orchestrator/
+// (steering/, peers/, policy/) vanished from `git status` without a word.
+describe('ensureOrchestratorIgnore leaves project data and symlinks alone', () => {
+  const made = [];
+  afterEach(() => { for (const d of made.splice(0)) rmSync(d, { recursive: true, force: true }); });
+  const repo = () => {
+    const d = mkdtempSync(path.join(os.tmpdir(), 'so-orch-ign-'));
+    made.push(d);
+    spawnSync('git', ['init', '-q'], { cwd: d });
+    return d;
+  };
+  it.each(['steering', 'peers', 'policy'])('writes nothing when .orchestrator/%s exists', async (sub) => {
+    const { ensureOrchestratorIgnore } = await import('../../hooks/_lib/orchestrator-ignore.mjs');
+    const d = repo();
+    mkdirSync(path.join(d, '.orchestrator', sub), { recursive: true });
+    writeFileSync(path.join(d, '.orchestrator', sub, 'x.md'), 'mine\n');
+    expect(await ensureOrchestratorIgnore(d)).toBe('project-data');
+    expect(existsSync(path.join(d, '.orchestrator', '.gitignore'))).toBe(false);
+  });
+  it('writes nothing through a symlinked .orchestrator', async () => {
+    const { ensureOrchestratorIgnore } = await import('../../hooks/_lib/orchestrator-ignore.mjs');
+    const { symlinkSync } = await import('node:fs');
+    const d = repo();
+    const outside = mkdtempSync(path.join(os.tmpdir(), 'so-orch-out-'));
+    made.push(outside);
+    symlinkSync(outside, path.join(d, '.orchestrator'));
+    expect(await ensureOrchestratorIgnore(d)).toBe('symlink');
+    expect(existsSync(path.join(outside, '.gitignore'))).toBe(false);
+  });
+});
