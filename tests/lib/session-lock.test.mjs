@@ -832,15 +832,70 @@ describe('writeOwnerProof() / loadOwnerProof() — durable genesis proof (#987 P
       ttl_hours: 4,
     };
     writeOwnerProof({ repoRoot, lock: prevLock });
+    // Captured BEFORE the new acquire: since #1541 acquire() rewrites the proof
+    // file for its own lock, so the leftover triple is only observable here.
+    const staleProof = loadOwnerProof({ repoRoot });
 
     // A NEW session acquires the lock (same pid + host in this process, but a
     // fresh millisecond started_at — the discriminator).
     const { lock: newLock } = acquire({ sessionId: 'main-2026-08-03-deep-1', mode: 'deep', repoRoot });
     expect(newLock.started_at).not.toBe(prevLock.started_at);
 
-    const staleProof = loadOwnerProof({ repoRoot });
-
     expect(isLockOwnedByProof(newLock, staleProof)).toBe(false);
+  });
+
+  // #1541: only the SessionStart bootstrap wrote the proof, so a lock taken on
+  // the prose path (force-take of a live lock, reclaim of a stale one) kept the
+  // PREVIOUS owner's proof — and release() refused the new owner's own lock
+  // with proof-mismatch. The reclaim branch writes its lock on a separate code
+  // path (reclaimIfNotLive), hence both shapes.
+  it.each([
+    ['force-take of a live lock', true, {}],
+    ['reclaim of a stale lock (onlyIfNotLive)', false, { onlyIfNotLive: true }],
+  ])('forceAcquire() — %s — rewrites the proof for the NEW lock', (_label, live, extra) => {
+    const foreign = acquire({ sessionId: 'sess-foreign', mode: 'deep', repoRoot });
+    expect(foreign.ok).toBe(true);
+    if (!live) {
+      const stale = { ...foreign.lock, last_heartbeat: new Date(Date.now() - 48 * 3600_000).toISOString() };
+      writeFileSync(join(repoRoot, LOCK_PATH), JSON.stringify(stale, null, 2) + '\n');
+    }
+
+    const result = forceAcquire({ sessionId: 'sess-new', mode: 'deep', repoRoot, ...extra });
+
+    expect(result.ok).toBe(true);
+    expect(result.ownerProof).toEqual({ ok: true });
+    expect(isLockOwnedByProof(readLock({ repoRoot }), loadOwnerProof({ repoRoot }))).toBe(true);
+    expect(release({ sessionId: 'sess-new', repoRoot, proof: loadOwnerProof({ repoRoot }) }).deleted).toBe(true);
+  });
+
+  // A proof write on a FAILED acquire would point the proof at a lock that was
+  // never written — and break the release of the session that does hold it.
+  // The only ok:false exit that has already built its own lock is the lost
+  // create race: the loser read "absent", then the holder took lock + proof
+  // before the loser's create link. Injected at the loser's up-front read.
+  it('acquire() that loses the create race leaves the winner\'s proof untouched (#1541)', () => {
+    const realRead = fs.readFileSync;
+    const lockFile = join(repoRoot, LOCK_PATH);
+    let holder = null;
+    vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) => {
+      if (holder === null && p === lockFile) {
+        holder = 'pending';
+        holder = acquire({ sessionId: 'sess-holder', mode: 'deep', repoRoot });
+        throw Object.assign(new Error('ENOENT (read before the holder won)'), { code: 'ENOENT' });
+      }
+      return realRead(p, ...rest);
+    });
+    let loser;
+    try {
+      loser = acquire({ sessionId: 'sess-loser', mode: 'deep', repoRoot });
+    } finally {
+      vi.restoreAllMocks();
+    }
+
+    expect(holder.ok).toBe(true);
+    expect(loser).toMatchObject({ ok: false, reason: 'active' });
+    expect(loser.ownerProof).toBeUndefined();
+    expect(loadOwnerProof({ repoRoot })).toEqual(buildLockOwnerProof(holder.lock));
   });
 });
 

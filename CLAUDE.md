@@ -163,6 +163,8 @@ custom-phases:
 remote-hosts:
   - alias: m5
     roles-allowed: [test, ui, perf]
+  - alias: m5-remote
+    roles-allowed: [test, ui, perf]
 evolve:
   extra-sources: []
 dialectic:

@@ -139,7 +139,7 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
     const childEnv = { ...process.env };
     delete childEnv.SKIP_QUALITY_GATE;
     Object.assign(childEnv, { GATE_RAN_FILE: gateRanFile, GATE_EXIT: String(gateExit) }, env);
-    const res = spawnSync('sh', [HOOK_PATH, ...args], {
+    const res = spawnSync('sh', ['-e', HOOK_PATH, ...args], {
       cwd: dir,
       input: stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
       encoding: 'utf8',
@@ -175,7 +175,10 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
   const childEnv = { ...process.env };
   delete childEnv.SKIP_QUALITY_GATE;
   Object.assign(childEnv, env);
-  const res = spawnSync('sh', [HOOK_PATH], {
+  // `sh -e` as husky 9 runs it (.husky/_/h): under plain `sh` a red gate's
+  // `( … ); status=$?` survived and printed "Push blocked"; under -e it aborted
+  // silently before the message — the suite stayed green on that bug (#1540).
+  const res = spawnSync('sh', ['-e', HOOK_PATH], {
     cwd: dir,
     input: stdin,
     encoding: 'utf8',
