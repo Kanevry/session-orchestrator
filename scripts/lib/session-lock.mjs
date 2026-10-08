@@ -863,6 +863,11 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
  * release, never grant one. Revisit if `release-proof-mismatch` shows up after
  * a force-take.
  *
+ * Known limit: the proof is one file per repo and identifies the process that
+ * last wrote the lock, never the conversation. Twins sharing one raw
+ * session_id (two terminals resuming the same conversation) are therefore
+ * indistinguishable to it — either can release after the other force-took.
+ *
  * @param {{ ok: true, lock: object }} result
  * @param {string|undefined} repoRoot
  * @returns {object} the same result object, with `ownerProof` set
