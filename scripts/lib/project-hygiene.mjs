@@ -683,6 +683,14 @@ function hasAuditSegment(segment, depth = 0) {
     const trailingArgs = index < 0 ? [] : segment.slice(index);
     return hasAuditSegment([...tokens, ...trailingArgs], depth + 1);
   }
+  if (verb === 'uvx' || verb === 'pipx') {
+    if (verb === 'pipx' && segment[index + 1]?.text !== 'run') return false;
+    const toolIndex = index + (verb === 'pipx' ? 2 : 1);
+    // A redirect operand is data, even when it names the audit package.
+    if (segment.slice(0, toolIndex + 1).some((token) => token.redirect)) return false;
+    if (segment.slice(index + 1).some((token) => ['-h', '--help', '--version'].includes(token.text))) return false;
+    return /^pip-audit(?:@[\w.+-]+)?$/.test(segment[toolIndex]?.text ?? '');
+  }
   if (verb === 'corepack' || verb === 'npx') {
     index++;
     while (['-y', '--yes', '--no-install', '--'].includes(segment[index]?.text)) index++;
