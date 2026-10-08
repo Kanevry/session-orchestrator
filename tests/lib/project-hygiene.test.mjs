@@ -416,15 +416,20 @@ describe('checkCiConfig', () => {
     expect(checkCiConfig(root)).toEqual([]);
   });
 
+  // #1538: one case per recognition class; uvx, pipx run and uv tool run share
+  // one code path, so each class is exercised through one runner, not all three.
   it.each([
     'uvx pip-audit@2.10.1 --requirement /tmp/requirements-audit.txt --no-deps --strict --progress-spinner off $AUDIT_IGNORES',
-    'pipx run pip-audit@2.10.1 --requirement /tmp/requirements-audit.txt --no-deps --strict --progress-spinner off $AUDIT_IGNORES',
-    'uvx pip-audit',
     'pipx run pip-audit',
+    'uv tool run pip-audit@2.10.1',
     'uvx pip-audit@2.10.1 > audit-report.txt',
-    'pipx run pip-audit@2.10.1 2> audit-errors.txt',
+    'uvx --from pip-audit==2.10.1 pip-audit',
+    'pipx run --spec pip-audit==2.10.1 pip-audit',
+    'uvx --python 3.12 pip-audit@2.10.1',
+    'uvx -q pip-audit',
+    'uvx -- pip-audit',
+    'pipx run -- pip-audit',
   ])('recognises a Python audit executed through a tool runner: %s', (command) => {
-    // #1538: pinned tool-runner invocations are executable audits, not installs.
     writeFileSync(join(root, 'pyproject.toml'), '[project]\nname="x"\n');
     writeFileSync(join(root, '.gitlab-ci.yml'), `audit:\n  script:\n    - ${command}\n`);
     expect(checkCiConfig(root)).toEqual([]);
@@ -432,29 +437,18 @@ describe('checkCiConfig', () => {
 
   it.each([
     'echo "uvx pip-audit@2.10.1"',
-    'echo "pipx run pip-audit@2.10.1"',
-    'printf "%s" "uvx pip-audit@2.10.1"',
-    'printf "%s" "pipx run pip-audit@2.10.1"',
+    '# pipx run pip-audit@2.10.1',
     'uvx pip-audit@2.10.1 --help',
-    'uvx pip-audit@2.10.1 --version',
-    'pipx run pip-audit@2.10.1 --help',
-    'pipx run pip-audit@2.10.1 --version',
-    'uvx --help pip-audit@2.10.1',
     'pipx run --version pip-audit@2.10.1',
     'uv tool install pip-audit@2.10.1',
     'pipx install pip-audit@2.10.1',
     'unknown-wrapper uvx pip-audit@2.10.1',
-    'unknown-wrapper pipx run pip-audit@2.10.1',
-    'uvx ruff pip-audit@2.10.1',
     'pipx run ruff pip-audit@2.10.1',
+    'uvx --from pip-audit echo hi',
+    'uvx pip-audit@',
     'uvx',
-    'pipx run',
-    'uvx > audit-report.txt pip-audit@2.10.1',
     'pipx run > audit-report.txt pip-audit@2.10.1',
     'uvx > pip-audit@2.10.1',
-    'pipx run > pip-audit@2.10.1',
-    'uvx ruff > pip-audit@2.10.1',
-    'pipx run ruff > pip-audit@2.10.1',
   ])('does not count Python runner data, informational commands or redirect targets as an audit: %s', (command) => {
     writeFileSync(join(root, 'pyproject.toml'), '[project]\nname="x"\n');
     writeFileSync(join(root, '.gitlab-ci.yml'), `test:\n  script:\n    - ${command}\n`);
