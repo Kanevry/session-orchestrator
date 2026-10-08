@@ -39,6 +39,7 @@ import {
 import { parseStateMd, readSessionProfile, resolveStateMdPath } from './lib/state-md.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { rollupSessionTokens } from './lib/session-token-rollup.mjs';
+import { COST_BASIS, PRICING_TABLE_DATE } from './lib/telemetry/pricing.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
 import {
   validateSession,
@@ -541,6 +542,18 @@ async function main() {
           continue;
         }
         merged[key] = rollup[key];
+      }
+      // #1470 Pkt 4/6 — label the merged cost fields. A dollar figure is the
+      // API list-price equivalent, never a payment (`cost_basis`, only beside
+      // a written `total_cost_usd`). The coverage counters, too, depend on
+      // which models the table knows, so `pricing_table_date` names the table
+      // that produced them — read from pricing.mjs, the same module the rollup
+      // priced with, never a second copy of the date.
+      if ('total_cost_usd' in merged && !hasOwn('cost_basis')) {
+        merged.cost_basis = COST_BASIS;
+      }
+      if ('cost_records_total' in merged && !hasOwn('pricing_table_date')) {
+        merged.pricing_table_date = PRICING_TABLE_DATE;
       }
       // Enrichment must never be the reason the ledger gains no line: validate
       // the enriched record first and fall back to the un-enriched one. Blamed

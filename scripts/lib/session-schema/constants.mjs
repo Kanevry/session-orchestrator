@@ -252,6 +252,14 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // 2026-10-01), so the counters say which of the two it is.
   'cost_records_priced',
   'cost_records_total',
+  // #1470 Pkt 4/6 — what `total_cost_usd` is and which price table produced
+  // the cost fields. Merged by scripts/emit-session.mjs from
+  // scripts/lib/telemetry/pricing.mjs (`COST_BASIS`, `PRICING_TABLE_DATE`):
+  // `cost_basis` only beside a written `total_cost_usd`, `pricing_table_date`
+  // beside the cost counters. Absent on every record before #1470 — such a
+  // cost is not thereby a verified payment either.
+  'cost_basis',
+  'pricing_table_date',
   // #986 — shape-checked by `_validateOptionalFields` since before this list
   // existed, never declared until the census test made the gap visible.
   'discovery_stats',
