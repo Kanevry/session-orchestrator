@@ -239,10 +239,13 @@ const REPORTING_VARIANTS = new Set(['baseline', 'incremental', 'per-file']);
  * Three states, never two — the same absent-is-not-zero contract as `counts`:
  *   - `true`  — `typecheck` or `test` carries `status: 'fail'` (a killed command
  *               is published as `fail` too, see `runCheck`);
- *   - `false` — both command objects are present and each is `pass` or `skip`,
- *               i.e. the envelope MEASURED that nothing failed;
+ *   - `false` — both command objects are present, neither is stubbed, at least
+ *               one actually `pass`ed and none failed — the envelope MEASURED
+ *               that nothing failed;
  *   - `null`  — the envelope is unparseable or a command object is missing or
- *               carries an unknown status. The caller then OMITS the key: a
+ *               carries an unknown status, a command is a stub (echo/noop
+ *               reports `pass` without running), or both were skipped. The
+ *               caller then OMITS the key: a
  *               default `false` would read as "measured green" for a run that
  *               measured nothing.
  *
@@ -261,7 +264,9 @@ function checkFailedFromGateStdout(stdout) {
   }
   const statuses = ['typecheck', 'test'].map((name) => parsed?.[name]?.status);
   if (statuses.includes('fail')) return true;
-  return statuses.every((st) => st === 'pass' || st === 'skip') ? false : null;
+  if (parsed?.stubbed?.typecheck || parsed?.stubbed?.test) return null;
+  if (!statuses.every((st) => st === 'pass' || st === 'skip')) return null;
+  return statuses.includes('pass') ? false : null;
 }
 
 /**

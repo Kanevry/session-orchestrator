@@ -484,7 +484,8 @@ describe('run-quality-gate.mjs — quality_gate telemetry emission (#610)', () =
   // event name and exit code stay as they were.
   it.each([
     ['true on a failing typecheck in the baseline variant', 'baseline', 'node -e "process.exit(1)"', true],
-    ['false on an all-green baseline run (measured, not defaulted)', 'baseline', 'skip', false],
+    ['false on a baseline run whose typecheck really passed (measured, not defaulted)', 'baseline', 'node -e "process.exit(0)"', false],
+    ['absent when every check was skipped — nothing was measured', 'baseline', 'skip', undefined],
     ['absent on full-gate, whose event name already carries the verdict', 'full-gate', 'skip', undefined],
   ])('check_failed is %s (#1487)', (_label, variant, typecheck, expected) => {
     const config = JSON.stringify({ 'typecheck-command': typecheck, 'test-command': 'skip', 'lint-command': 'skip' });

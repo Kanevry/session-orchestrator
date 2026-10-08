@@ -142,9 +142,6 @@ describe('validate-wave-scope.mjs — --assert-disjoint findings (#1020)', () =>
   });
 });
 
-// BUG (#1026.4): validate() exited on a schema error BEFORE the collision check,
-// although that check never reads the manifest — a broken manifest hid a real
-// double assignment. Measured 2026-10-03 @ 8292050e: only the schema error printed.
 // #1026 point 2 (owner decision, option a) — BUG CAUGHT: two agents whose raw
 // scopes are disjoint but share a basename both receive the same synthesized
 // test-sibling glob from `--union`, and --assert-disjoint said nothing.
@@ -175,6 +172,9 @@ describe('validate-wave-scope.mjs — --assert-disjoint sibling-glob WARN (#1026
   });
 });
 
+// BUG (#1026.4): validate() exited on a schema error BEFORE the collision check,
+// although that check never reads the manifest — a broken manifest hid a real
+// double assignment. Measured 2026-10-03 @ 8292050e: only the schema error printed.
 describe('validate-wave-scope.mjs — --assert-disjoint under a schema error (#1026.4)', () => {
   it('reports the schema error AND the collision, exit 1', () => {
     const { enforcement: _omitted, ...brokenManifest } = MANIFEST;

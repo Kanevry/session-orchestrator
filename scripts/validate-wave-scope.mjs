@@ -677,7 +677,8 @@ function knownRepoFiles() {
  * the expansion that will run later is unknown and silence would hide it.
  * Compares synthesized siblings only, by exact string — a sibling glob one agent
  * DECLARED by hand is not matched (named ceiling; revisit if a wave plan is seen
- * declaring sibling globs explicitly).
+ * declaring sibling globs explicitly). Overlapping globs of DIFFERENT basenames
+ * (`foo*` also covers `foo-bar.test.mjs`) are not matched either.
  *
  * @param {Array<{id?: string, files: string[]}>} agentScopes
  * @param {string|undefined} role
@@ -723,11 +724,15 @@ function assertDisjointOrDie(sidecarPath, role) {
  */
 function reportScopeCollisions(sidecarPath, role) {
   const agentScopes = readAgentScopesOrDie(sidecarPath, '--assert-disjoint');
-  warnSiblingGlobCollisions(agentScopes, role);
   const { ok, collisions, duplicateIds } = findScopeCollisions(agentScopes, {
     knownFiles: knownRepoFiles(),
   });
-  if (ok) return true;
+  // Only a raw-disjoint wave gets the sibling hint: its text says the scopes
+  // are disjoint as declared, which is false once a real collision exists.
+  if (ok) {
+    warnSiblingGlobCollisions(agentScopes, role);
+    return true;
+  }
 
   // Duplicate ids FIRST: they are a malformed plan, and a reader who fixes them
   // may well change which collisions remain.
