@@ -28,7 +28,7 @@ import path from 'node:path';
 import { rmSync } from 'node:fs';
 
 import { appendProposal, countProposalsForWave, readWaveSummary } from '@lib/memory-proposals/store.mjs';
-import { createProposalRecord } from '@lib/memory-proposals/schema.mjs';
+import { createProposalRecord, validateProposalRecord } from '@lib/memory-proposals/schema.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -545,6 +545,22 @@ process.exit(0);
     expect(readdirSync(metrics).filter((f) => f.includes('proposals-write.lock'))).toHaveLength(0);
   }, 60_000);
 
+  it('C11 (#1545): 12 writers across rotation preserve the seed and every rejected record', async () => {
+    const repoRoot = tmpRepo();
+    const metrics = join(repoRoot, '.orchestrator/metrics');
+    const seed = JSON.stringify(makeRecord({ subject: 'seed' })) + '\n';
+    writeFileSync(join(metrics, 'proposals-overflow.jsonl'), seed + '\n'.repeat(1024 * 1024 - Buffer.byteLength(seed) - 100));
+
+    const results = await raceWorkers(repoRoot, 12, 0);
+
+    expect(results.filter((r) => r.status === 'quota-exceeded')).toHaveLength(12);
+    const archives = readdirSync(metrics).filter((f) => f.includes('.archive-'));
+    expect(archives).toHaveLength(1);
+    const records = [...readJsonl(join(metrics, archives[0])), ...readJsonl(join(metrics, 'proposals-overflow.jsonl'))];
+    expect(records.map((r) => r.subject).sort()).toEqual(['seed', ...Array.from({ length: 12 }, (_, i) => `race-worker-${i}`)].sort());
+    expect(existsSync(join(metrics, 'proposals-write.lock'))).toBe(false);
+  }, 60_000);
+
 });
 
 // ---------------------------------------------------------------------------
@@ -881,5 +897,220 @@ describe('appendProposal — store path guard (#1027 1b)', () => {
     const result = await appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' });
 
     expect(result).toEqual({ status: 'queued', position: '1/5' });
+  });
+});
+
+// Rotation only changes overflow persistence, never quota/queue/summary policy.
+describe('appendProposal — lossless overflow rotation (#1545)', () => {
+  const cap = 1024 * 1024;
+  const activeOf = (root) => join(root, '.orchestrator/metrics/proposals-overflow.jsonl');
+  const filesOf = (root, suffix) => readdirSync(join(root, '.orchestrator/metrics'))
+    .filter((name) => name.includes('.archive-') && name.endsWith(suffix))
+    .map((name) => join(root, '.orchestrator/metrics', name));
+  const archivesOf = (root) => filesOf(root, '.jsonl');
+  const partialsOf = (root) => filesOf(root, '.partial');
+  const appendRejected = (root, record) => appendProposal({ record, repoRoot: root, waveId: 'W1', quotaPerWave: 0 });
+
+  it('G1: exactly 1 MiB remains active; the next UTF8 record rotates byte-exact old content', async () => {
+    const root = tmpRepo();
+    const record = makeRecord({ subject: 'unicode', insight: 'é'.repeat(500) });
+    const line = JSON.stringify(record) + '\n';
+    const seed = Buffer.from('\n'.repeat(cap - Buffer.byteLength(line)));
+    writeFileSync(activeOf(root), seed);
+
+    const atBoundary = await appendRejected(root, record);
+    const afterBoundary = await appendRejected(root, record);
+
+    expect(atBoundary.status).toBe('quota-exceeded');
+    expect(afterBoundary.status).toBe('quota-exceeded');
+    expect(archivesOf(root)).toHaveLength(1);
+    expect(readFileSync(archivesOf(root)[0])).toEqual(Buffer.concat([seed, Buffer.from(line)]));
+    expect(readFileSync(activeOf(root), 'utf8')).toBe(line);
+    expect(fs.statSync(archivesOf(root)[0]).size).toBe(1048576);
+  });
+
+  it.each(['{"partial":', '{"complete":"é"}'])('G2: unterminated bytes %s are archived without corrupting the next record', async (tail) => {
+    const root = tmpRepo();
+    const record = makeRecord();
+    writeFileSync(activeOf(root), tail);
+
+    const result = await appendRejected(root, record);
+
+    expect(result.status).toBe('quota-exceeded');
+    expect(archivesOf(root)).toHaveLength(1);
+    expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe(tail);
+    expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
+    expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+  });
+
+  it('G3: exclusive archive collision keeps preexisting bytes and original active content', async () => {
+    const root = tmpRepo();
+    writeFileSync(activeOf(root), '{"partial":');
+    const realOpen = fs.openSync;
+    vi.spyOn(fs, 'openSync').mockImplementation((file, flags, ...args) => {
+      const name = String(file);
+      if (name.endsWith('.partial')) writeFileSync(name.replace(/\.partial$/, '.jsonl'), 'existing archive');
+      return realOpen(file, flags, ...args);
+    });
+
+    const result = await appendRejected(root, makeRecord());
+
+    expect(result.status).toBe('fs-error');
+    expect(result.error).toMatch(/EEXIST/);
+    expect(readFileSync(activeOf(root), 'utf8')).toBe('{"partial":');
+    expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('existing archive');
+    expect(readFileSync(partialsOf(root)[0], 'utf8')).toBe('{"partial":');
+    expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+  });
+
+  function injectRotationFailure(stage) {
+    const descriptors = new Map();
+    const realOpen = fs.openSync;
+    const realWrite = fs.writeFileSync;
+    const realSync = fs.fsyncSync;
+    let directorySyncs = 0;
+    const failure = () => { throw new Error(`synthetic ${stage} failure`); };
+    vi.spyOn(fs, 'openSync').mockImplementation((file, ...args) => {
+      const fd = realOpen(file, ...args);
+      descriptors.set(fd, String(file));
+      return fd;
+    });
+    vi.spyOn(fs, 'writeFileSync').mockImplementation((file, bytes, ...args) => {
+      const name = descriptors.get(file) ?? '';
+      if (stage === 'archive-write' && name.includes('.archive-')) {
+        realWrite(file, Buffer.from(bytes).subarray(0, 3));
+        failure();
+      }
+      if (stage === 'temp-write' && name.includes('.tmp-')) failure();
+      return realWrite(file, bytes, ...args);
+    });
+    vi.spyOn(fs, 'fsyncSync').mockImplementation((fd) => {
+      const name = descriptors.get(fd) ?? '';
+      if (stage === 'archive-sync' && name.includes('.archive-')) failure();
+      if (stage === 'temp-sync' && name.includes('.tmp-')) failure();
+      if (name.endsWith('/metrics')) {
+        directorySyncs++;
+        if (stage === 'directory-before' && directorySyncs === 1) failure();
+        if (stage === 'directory-after' && directorySyncs === 2) failure();
+      }
+      return realSync(fd);
+    });
+    if (stage === 'rename') vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+      if (String(source).includes('proposals-overflow.jsonl.tmp-')) failure();
+      return fsRename(source, target);
+    });
+  }
+  const fsRename = fs.renameSync;
+
+  it.each(['archive-write', 'archive-sync', 'directory-before', 'temp-write', 'temp-sync', 'rename'])('G4: %s failure preserves exact active bytes and releases the lock', async (stage) => {
+    const root = tmpRepo();
+    writeFileSync(activeOf(root), '{"partial":');
+    injectRotationFailure(stage);
+
+    const result = await appendRejected(root, makeRecord());
+    const copyAborted = stage.startsWith('archive-');
+
+    expect(result).toEqual({ status: 'fs-error', error: `synthetic ${stage} failure` });
+    expect(readFileSync(activeOf(root), 'utf8')).toBe('{"partial":');
+    // An aborted copy leaves only a .partial, never a truncated archive name.
+    expect(archivesOf(root)).toHaveLength(copyAborted ? 0 : 1);
+    expect(partialsOf(root)).toHaveLength(copyAborted ? 1 : 0);
+    if (!copyAborted) expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('{"partial":');
+    expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+  });
+
+  it('G5: directory flush failure after rename retains every byte in archive and active', async () => {
+    const root = tmpRepo();
+    const record = makeRecord();
+    writeFileSync(activeOf(root), '{"partial":');
+    injectRotationFailure('directory-after');
+
+    const result = await appendRejected(root, record);
+
+    expect(result).toEqual({ status: 'fs-error', error: 'synthetic directory-after failure' });
+    expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('{"partial":');
+    expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
+    expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+  });
+
+  it('G6: symlink-root alias rotates within the canonical metrics directory', async () => {
+    const root = tmpRepo();
+    const aliasParent = tmpRepo();
+    const alias = join(aliasParent, 'root-alias');
+    symlinkSync(root, alias);
+    writeFileSync(activeOf(root), '{"partial":');
+    const record = makeRecord();
+
+    const result = await appendRejected(alias, record);
+
+    expect(result.status).toBe('quota-exceeded');
+    expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('{"partial":');
+    expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
+  });
+
+  it('G7: an oversized legacy file copies in bounded chunks without losing bytes', async () => {
+    const root = tmpRepo();
+    const oldBytes = Buffer.from('\n'.repeat(2 * cap + 17));
+    const record = makeRecord();
+    writeFileSync(activeOf(root), oldBytes);
+    const realOpenSync = fs.openSync;
+    const activeFds = new Set();
+    // The store opens the realpath; on macOS the tmp root is /var -> /private/var.
+    const activePaths = new Set([path.resolve(activeOf(root)), fs.realpathSync(activeOf(root))]);
+    vi.spyOn(fs, 'openSync').mockImplementation((file, ...args) => {
+      const fd = realOpenSync(file, ...args);
+      if (activePaths.has(path.resolve(String(file)))) activeFds.add(fd);
+      return fd;
+    });
+    const reads = vi.spyOn(fs, 'readSync');
+
+    const result = await appendRejected(root, record);
+    // Only reads of the legacy file count: Node's own readFileSync also goes
+    // through fs.readSync with whole-file lengths and must not be attributed.
+    const copyReads = reads.mock.calls.filter((call) => activeFds.has(call[0]));
+
+    expect(result.status).toBe('quota-exceeded');
+    expect(readFileSync(archivesOf(root)[0])).toEqual(oldBytes);
+    expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
+    expect(copyReads.every((call) => call[3] <= 65536)).toBe(true);
+    expect(copyReads.filter((call) => call[3] === 65536).length).toBeGreaterThan(32);
+  });
+
+  it.each([
+    ['absent', undefined, []],
+    ['empty', '', []],
+    ['existing', '{"seed":true}\n', ['{"seed":true}\n']],
+  ])('G8: a schema-valid oversized record survives an %s active file and the next rotation', async (_kind, initial, oldArchiveBytes) => {
+    const root = tmpRepo();
+    const largeRecord = makeRecord({ proposedByAgent: 'x'.repeat(cap) });
+    const smallRecord = makeRecord({ subject: 'after-oversized' });
+    const largeLine = JSON.stringify(largeRecord) + '\n';
+    if (initial !== undefined) writeFileSync(activeOf(root), initial);
+
+    const largeResult = await appendRejected(root, largeRecord);
+    const largeActive = readFileSync(activeOf(root), 'utf8');
+    const smallResult = await appendRejected(root, smallRecord);
+
+    expect(validateProposalRecord(largeRecord)).toEqual({ ok: true });
+    expect(Buffer.byteLength(largeLine)).toBeGreaterThan(1048576);
+    expect(largeResult.status).toBe('quota-exceeded');
+    expect(largeActive).toBe(largeLine);
+    expect(smallResult.status).toBe('quota-exceeded');
+    expect(archivesOf(root).map((file) => readFileSync(file, 'utf8')).sort()).toEqual([...oldArchiveBytes, largeLine].sort());
+    expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(smallRecord);
+  });
+
+  it.skipIf(process.platform === 'win32')('G9: rotation retains private inode permissions on archive and replacement', async () => {
+    const root = tmpRepo();
+    const record = makeRecord();
+    writeFileSync(activeOf(root), '{"partial":', { mode: 0o600 });
+
+    const result = await appendRejected(root, record);
+
+    expect(result.status).toBe('quota-exceeded');
+    expect(fs.statSync(archivesOf(root)[0]).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(activeOf(root)).mode & 0o777).toBe(0o600);
+    expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('{"partial":');
+    expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
   });
 });
