@@ -8,6 +8,9 @@
  *    `createStateLockExclusive` pattern (POSIX-atomic create-or-fail).
  *  - Proposals JSONL: `.orchestrator/metrics/proposals.jsonl` (O_APPEND)
  *  - Per-wave summary: `.orchestrator/metrics/proposals-summary-<wave-id>.json`
+ *  - Overflow JSONL: `.orchestrator/metrics/proposals-overflow.jsonl` — validated
+ *    proposals the quota rejected (#1027 1b). Never counted against the quota,
+ *    never read by the collector; written under the same lock as the queue.
  *  - Confidence floor check: BEFORE lock acquisition (no I/O, no lock held).
  *  - Quota check: INSIDE lock (count + decide + write serialized).
  *
@@ -26,6 +29,7 @@ import { writeJsonAtomicSync } from '../io.mjs';
 // ---------------------------------------------------------------------------
 
 const PROPOSALS_JSONL = '.orchestrator/metrics/proposals.jsonl';
+const PROPOSALS_OVERFLOW_JSONL = '.orchestrator/metrics/proposals-overflow.jsonl';
 const PROPOSALS_LOCK = '.orchestrator/metrics/proposals-write.lock';
 const PROPOSALS_SUMMARY_PREFIX = '.orchestrator/metrics/proposals-summary-';
 
@@ -60,18 +64,84 @@ const LOCK_POLL_MS = 50;
  */
 function safePath(repoRoot, relPath) {
   const result = validatePathInsideProject(relPath, repoRoot, { canonicalizeRoot: true });
-  if (!result.ok) {
-    const resolved = path.resolve(repoRoot, relPath);
-    // #548 A5 — surface result.reason ('lexical' | 'symlink' | 'input') in the
-    // error so operators can distinguish path-traversal classes at a glance:
-    //  - 'lexical' → relPath escaped repoRoot via ../../ before symlink resolution
-    //  - 'symlink' → relPath resolved through a symlink that points outside repoRoot
-    //  - 'input'   → relPath was malformed (empty, non-string, null byte)
-    throw new TypeError(
-      `store.mjs: path traversal blocked: ${resolved} is outside ${repoRoot} (reason: ${result.reason})`
+  // #548 A5 — surface result.reason ('lexical' | 'symlink' | 'input') in the
+  // error so operators can distinguish path-traversal classes at a glance:
+  //  - 'lexical' → relPath escaped repoRoot via ../../ before symlink resolution
+  //  - 'symlink' → relPath resolved through a symlink that points outside repoRoot
+  //  - 'input'   → relPath was malformed (empty, non-string, null byte)
+  const blocked = (reason) =>
+    new TypeError(
+      `store.mjs: path traversal blocked: ${path.resolve(repoRoot, relPath)} is outside ${repoRoot} (reason: ${reason})`
     );
+  if (!result.ok) throw blocked(result.reason);
+  // The shared validator swallows ENOENT on the target and returns the lexical
+  // path unchecked, so a symlinked ancestor (or a dangling symlink AT the
+  // target) lets the first write land outside the repo (#1027 1b). Closed here,
+  // store-side, so the shared validator's other callers keep their behaviour.
+  if (result.realPath === undefined && !existingAncestorInsideRoot(repoRoot, result.lexicalPath)) {
+    throw blocked('symlink');
   }
   return result.realPath ?? result.lexicalPath;
+}
+
+/**
+ * True when the nearest EXISTING component of `lexicalPath` (the path itself
+ * or the closest ancestor) resolves inside the canonical `repoRoot`. A
+ * symlink there whose target is missing (dangling) counts as an escape — the
+ * write that follows would create the target wherever the link points.
+ *
+ * Only node:fs/node:path on purpose: store-safepath-reason.test.mjs mocks
+ * `@lib/path-utils.mjs` with a single export, so no second import from it.
+ *
+ * Check-then-write TOCTOU: a link swapped in between this check and the
+ * append is not caught (O_NOFOLLOW would narrow the final component only).
+ * Accepted under the local-trust model; revisit if the metrics dir ever
+ * becomes writable by another principal.
+ *
+ * @param {string} repoRoot
+ * @param {string} lexicalPath — absolute, already known to be lexically inside repoRoot
+ * @returns {boolean}
+ */
+function existingAncestorInsideRoot(repoRoot, lexicalPath) {
+  let root = repoRoot;
+  try {
+    root = fs.realpathSync(repoRoot);
+  } catch (err) {
+    if (err?.code !== 'ENOENT' && err?.code !== 'EACCES') throw err;
+  }
+  const fold = (p) => (process.platform === 'win32' ? p.toLowerCase() : p);
+  const inside = (p) => {
+    const rel = path.relative(fold(root), fold(p));
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  for (let cur = lexicalPath; ; cur = path.dirname(cur)) {
+    // Climbed above the root: root itself is missing, so nothing under it can
+    // be a link — the later mkdir creates a plain tree.
+    if (!inside(cur)) return true;
+    try {
+      fs.lstatSync(cur);
+    } catch (err) {
+      if (err?.code !== 'ENOENT') throw err;
+      continue;
+    }
+    let real;
+    try {
+      real = fs.realpathSync(cur);
+    } catch {
+      // Dangling link or loop at the nearest existing component → escape.
+      // But the lock file is created and unlinked by concurrent writers all
+      // the time: if the component vanished between lstat and realpath it was
+      // never a link, so step up to its parent instead of rejecting.
+      try {
+        fs.lstatSync(cur);
+      } catch (err) {
+        if (err?.code === 'ENOENT') continue;
+        throw err;
+      }
+      return false;
+    }
+    return inside(real);
+  }
 }
 
 /**
@@ -98,6 +168,15 @@ function lockPathFor(repoRoot) {
  */
 function jsonlPathFor(repoRoot) {
   return safePath(repoRoot, PROPOSALS_JSONL);
+}
+
+/**
+ * Build the absolute path to the quota-overflow JSONL file.
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+function overflowPathFor(repoRoot) {
+  return safePath(repoRoot, PROPOSALS_OVERFLOW_JSONL);
 }
 
 /**
@@ -372,6 +451,25 @@ export async function appendProposal({
     // Step 3b: Quota check.
     // ------------------------------------------------------------------
     if (currentCount >= quotaPerWave) {
+      // Keep the validated proposal (#1027 1b): the quota caps what enters the
+      // queue, not what an agent found. A failed write is fs-error — never a
+      // quota-exceeded that implies the content was preserved. No size cap:
+      // growth is bounded by rejected proposals only; revisit if the file
+      // passes ~1 MB (rotation belongs with the quota policy, not here).
+      let overflowPath;
+      try {
+        overflowPath = overflowPathFor(repoRoot);
+      } catch (err) {
+        incrementSummary(summaryPath, 'fs_error'); // traversal still throws, like every store path
+        throw err;
+      }
+      try {
+        ensureDir(overflowPath);
+        fs.appendFileSync(overflowPath, serializeProposal(record) + '\n', 'utf8');
+      } catch (err) {
+        incrementSummary(summaryPath, 'fs_error');
+        return { status: 'fs-error', error: err.message };
+      }
       const summary = readSummary(summaryPath);
       const droppedSoFar = summary.dropped;
       incrementSummary(summaryPath, 'dropped');

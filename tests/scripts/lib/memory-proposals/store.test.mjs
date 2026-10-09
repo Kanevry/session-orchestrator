@@ -19,7 +19,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readFileSync, readdirSync, existsSync } from 'node:fs';
-import { writeFileSync } from 'node:fs';
+import fs, { writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -418,13 +418,12 @@ describe('appendProposal + readWaveSummary — boundary', () => {
 
 describe('appendProposal — parallel race', () => {
 
-  it('C9: 8 parallel child_processes with quota=5 yields exactly 5 queued + 3 quota-exceeded', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'proposals-race-'));
-    tmpDirsToCleanup.push(repoRoot);
-    mkdirSync(join(repoRoot, '.orchestrator/metrics'), { recursive: true });
-
-    // Write a tiny worker script that calls appendProposal once and prints the result.
-    // It reads its index from process.argv[2] to produce a unique subject per worker.
+  /**
+   * Spawn `workers` child processes that each call appendProposal once with
+   * `quotaPerWave`, and resolve with their parsed results.
+   */
+  async function raceWorkers(repoRoot, workers, quotaPerWave) {
+    // The worker reads its index from process.argv[2] to produce a unique subject.
     const workerScript = `
 import { appendProposal } from ${JSON.stringify(join(PROJECT_ROOT, 'scripts/lib/memory-proposals/store.mjs'))};
 import { createProposalRecord } from ${JSON.stringify(join(PROJECT_ROOT, 'scripts/lib/memory-proposals/schema.mjs'))};
@@ -442,8 +441,8 @@ const result = await appendProposal({
   record,
   repoRoot: ${JSON.stringify(repoRoot)},
   waveId: 'W1',
-  quotaPerWave: 5,
-  lockTimeoutMs: 5000,
+  quotaPerWave: ${quotaPerWave},
+  lockTimeoutMs: 20000,
 });
 
 process.stdout.write(JSON.stringify(result));
@@ -452,9 +451,8 @@ process.exit(0);
     const workerPath = join(repoRoot, 'worker.mjs');
     writeFileSync(workerPath, workerScript, 'utf8');
 
-    // Spawn 8 child processes in parallel
-    const results = await Promise.all(
-      Array.from({ length: 8 }, (_, i) =>
+    return Promise.all(
+      Array.from({ length: workers }, (_, i) =>
         new Promise((resolve, reject) => {
           let stdout = '';
           let stderr = '';
@@ -476,6 +474,22 @@ process.exit(0);
         })
       )
     );
+  }
+
+  /** Parse a JSONL file, failing loudly on any non-JSON line. */
+  function readJsonl(file) {
+    return readFileSync(file, 'utf8')
+      .split('\n')
+      .filter((l) => l.trim().length > 0)
+      .map((l) => JSON.parse(l));
+  }
+
+  it('C9: 8 parallel child_processes with quota=5 yields exactly 5 queued + 3 quota-exceeded', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'proposals-race-'));
+    tmpDirsToCleanup.push(repoRoot);
+    mkdirSync(join(repoRoot, '.orchestrator/metrics'), { recursive: true });
+
+    const results = await raceWorkers(repoRoot, 8, 5);
 
     const queued = results.filter((r) => r.status === 'queued');
     const dropped = results.filter((r) => r.status === 'quota-exceeded');
@@ -485,25 +499,51 @@ process.exit(0);
     expect(dropped).toHaveLength(3);
 
     // proposals.jsonl must have exactly 5 non-empty lines
-    const raw = readFileSync(join(repoRoot, '.orchestrator/metrics/proposals.jsonl'), 'utf8');
-    const lines = raw.split('\n').filter((l) => l.trim().length > 0);
+    const metrics = join(repoRoot, '.orchestrator/metrics');
+    const lines = readJsonl(join(metrics, 'proposals.jsonl'));
     expect(lines).toHaveLength(5);
 
     // All 5 lines must be valid JSON with wave_id='W1'
-    for (const line of lines) {
-      const parsed = JSON.parse(line);
+    for (const parsed of lines) {
       expect(parsed.wave_id).toBe('W1');
     }
 
     // No leftover lock file or tmp file in the metrics dir
-    const metricsDir = readdirSync(join(repoRoot, '.orchestrator/metrics'));
+    const metricsDir = readdirSync(metrics);
     const lockFiles = metricsDir.filter((f) => f.includes('proposals-write.lock'));
     expect(lockFiles).toHaveLength(0);
 
     // Positions reported by queued workers must form exactly the set 1/5..5/5
     const positions = queued.map((r) => r.position).sort();
     expect(positions).toEqual(['1/5', '2/5', '3/5', '4/5', '5/5']);
+
+    // The 3 rejected proposals are all preserved in the overflow file (#1027 1b)
+    const overflow = readJsonl(join(metrics, 'proposals-overflow.jsonl'));
+    expect(overflow).toHaveLength(3);
   }, 30_000); // 30s timeout for parallel child_process spawn
+
+  // FALSIFICATION: an overflow that lost lines under 12 writers, wrote a torn
+  // line, or counted against the quota (shrinking the queue below 2) turns this
+  // red. It does NOT pin that the append happens under the lock: small O_APPEND
+  // lines do not tear, so a deferred append would still pass.
+  it('C10 (#1027 1b): 12 parallel writers with quota=2 keep 2 queued + all 10 rejected, none lost or torn', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'proposals-race-'));
+    tmpDirsToCleanup.push(repoRoot);
+    mkdirSync(join(repoRoot, '.orchestrator/metrics'), { recursive: true });
+
+    const results = await raceWorkers(repoRoot, 12, 2);
+
+    expect(results.filter((r) => r.status === 'queued')).toHaveLength(2);
+    expect(results.filter((r) => r.status === 'quota-exceeded')).toHaveLength(10);
+    const metrics = join(repoRoot, '.orchestrator/metrics');
+    const queue = readJsonl(join(metrics, 'proposals.jsonl'));
+    const overflow = readJsonl(join(metrics, 'proposals-overflow.jsonl'));
+    expect(queue).toHaveLength(2);
+    expect(overflow).toHaveLength(10);
+    const subjects = [...queue, ...overflow].map((r) => r.subject).sort();
+    expect(subjects).toEqual(Array.from({ length: 12 }, (_, i) => `race-worker-${i}`).sort());
+    expect(readdirSync(metrics).filter((f) => f.includes('proposals-write.lock'))).toHaveLength(0);
+  }, 60_000);
 
 });
 
@@ -662,4 +702,184 @@ describe('appendProposal — stale-lock override (G3) + lock-timeout (G4)', () =
     expect(onDisk).toBe(holderBody);
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Section E — Quota overflow (#1027 1b)
+// ---------------------------------------------------------------------------
+//
+// The quota caps the QUEUE; a validated proposal beyond it used to exist only
+// in the agent's transcript. It now lands in proposals-overflow.jsonl while the
+// queue, the quota and the quota-exceeded return stay exactly as they were.
+
+describe('appendProposal — quota overflow (#1027 1b)', () => {
+  const metricsOf = (repoRoot) => join(repoRoot, '.orchestrator/metrics');
+  const jsonl = (file) =>
+    readFileSync(file, 'utf8').split('\n').filter((l) => l.trim().length > 0).map((l) => JSON.parse(l));
+
+  // FALSIFICATION: drop the overflow append in the quota branch -> the file is
+  // absent and the full-content assertion fails.
+  it('E1: the quota-rejected proposal is kept with its full validated content, the queue stays at 5', async () => {
+    const repoRoot = tmpRepo();
+    for (let i = 0; i < 5; i++) {
+      await appendProposal({ record: makeRecord({ subject: `queued-${i}` }), repoRoot, waveId: 'W1' });
+    }
+    const rejected = makeRecord({ subject: 'rejected-6', insight: 'insight that must survive the quota' });
+
+    const result = await appendProposal({ record: rejected, repoRoot, waveId: 'W1' });
+
+    expect(result).toEqual({ status: 'quota-exceeded', quota: 5, dropped: 1 });
+    expect(jsonl(join(metricsOf(repoRoot), 'proposals-overflow.jsonl'))).toEqual([rejected]);
+    expect(jsonl(join(metricsOf(repoRoot), 'proposals.jsonl'))).toHaveLength(5);
+    expect(await countProposalsForWave({ repoRoot, waveId: 'W1' })).toBe(5);
+  });
+
+  it('E2: every rejected proposal is kept in order and the summary keeps the dropped contract', async () => {
+    const repoRoot = tmpRepo();
+    for (let i = 0; i < 8; i++) {
+      await appendProposal({ record: makeRecord({ subject: `p-${i}` }), repoRoot, waveId: 'W1' });
+    }
+
+    const overflow = jsonl(join(metricsOf(repoRoot), 'proposals-overflow.jsonl'));
+
+    expect(overflow.map((r) => r.subject)).toEqual(['p-5', 'p-6', 'p-7']);
+    expect(await readWaveSummary({ repoRoot, waveId: 'W1' })).toEqual({
+      queued: 5, dropped: 3, below_floor: 0, fs_error: 0,
+    });
+  });
+
+  // FALSIFICATION: swallow the write error and fall through to quota-exceeded
+  // -> status is quota-exceeded and fs_error stays 0.
+  it('E3: a failing overflow write returns fs-error (not quota-exceeded), counts fs_error not dropped, frees the lock', async () => {
+    const repoRoot = tmpRepo();
+    for (let i = 0; i < 5; i++) {
+      await appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' });
+    }
+    mkdirSync(join(metricsOf(repoRoot), 'proposals-overflow.jsonl')); // append -> EISDIR
+
+    const result = await appendProposal({ record: makeRecord({ subject: 'lost' }), repoRoot, waveId: 'W1' });
+
+    expect(result.status).toBe('fs-error');
+    expect(result.error).toMatch(/EISDIR/);
+    expect(await readWaveSummary({ repoRoot, waveId: 'W1' })).toEqual({
+      queued: 5, dropped: 0, below_floor: 0, fs_error: 1,
+    });
+    expect(existsSync(join(metricsOf(repoRoot), 'proposals-write.lock'))).toBe(false);
+    expect(jsonl(join(metricsOf(repoRoot), 'proposals.jsonl'))).toHaveLength(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Section F — Store path guard: ancestors and dangling links (#1027 1b)
+// ---------------------------------------------------------------------------
+//
+// The shared validator swallows ENOENT on the target and returns the lexical
+// path unchecked, so a link above (or at) a not-yet-existing store file let the
+// first write land outside the repo. All fixtures live under fresh tmp dirs.
+
+describe('appendProposal — store path guard (#1027 1b)', () => {
+  function outsideDir() {
+    const d = mkdtempSync(join(tmpdir(), 'proposals-outside-'));
+    tmpDirsToCleanup.push(d);
+    return d;
+  }
+
+  // FALSIFICATION: remove the ancestor check in safePath -> result is queued
+  // and proposals.jsonl + the summary appear in `outside`.
+  it('F1: a metrics dir that is a symlink to outside the repo is rejected, nothing is written outside', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'proposals-store-'));
+    tmpDirsToCleanup.push(repoRoot);
+    mkdirSync(join(repoRoot, '.orchestrator'));
+    const outside = outsideDir();
+    symlinkSync(outside, join(repoRoot, '.orchestrator/metrics'));
+
+    await expect(appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' }))
+      .rejects.toThrow(/reason: symlink\)/);
+
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it('F2: a dangling symlink AT proposals.jsonl pointing outside is rejected, the target is not created', async () => {
+    const repoRoot = tmpRepo();
+    const outside = outsideDir();
+    symlinkSync(join(outside, 'stolen.jsonl'), join(repoRoot, '.orchestrator/metrics/proposals.jsonl'));
+
+    await expect(appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' }))
+      .rejects.toThrow(/reason: symlink\)/);
+
+    expect(readdirSync(outside)).toEqual([]);
+  });
+
+  it('F3: a dangling symlink at the overflow target is rejected, the lock is released and the queue is untouched', async () => {
+    const repoRoot = tmpRepo();
+    for (let i = 0; i < 5; i++) {
+      await appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' });
+    }
+    const outside = outsideDir();
+    symlinkSync(join(outside, 'stolen.jsonl'), join(repoRoot, '.orchestrator/metrics/proposals-overflow.jsonl'));
+
+    await expect(appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' }))
+      .rejects.toThrow(/reason: symlink\)/);
+
+    expect(readdirSync(outside)).toEqual([]);
+    expect(existsSync(join(repoRoot, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+    expect(await countProposalsForWave({ repoRoot, waveId: 'W1' })).toBe(5);
+    expect((await readWaveSummary({ repoRoot, waveId: 'W1' })).fs_error).toBe(1);
+  });
+
+  // Guards against a false positive: a repoRoot reached THROUGH a symlink is
+  // legitimate (macOS /var -> /private/var, symlinked checkouts).
+  it('F4: a repoRoot given via a symlink to the real checkout still works', async () => {
+    const real = tmpRepo();
+    const holder = outsideDir();
+    const viaLink = join(holder, 'link-to-repo');
+    symlinkSync(real, viaLink);
+
+    const result = await appendProposal({ record: makeRecord(), repoRoot: viaLink, waveId: 'W1' });
+
+    expect(result).toEqual({ status: 'queued', position: '1/5' });
+    expect(existsSync(join(real, '.orchestrator/metrics/proposals.jsonl'))).toBe(true);
+  });
+
+  // FALSIFICATION: flip the "climbed above the root" branch to false -> a repo
+  // whose root does not exist yet is rejected instead of created.
+  it('F5: a repoRoot that does not exist yet is created as a plain tree', async () => {
+    const parent = outsideDir();
+    const repoRoot = join(parent, 'not', 'yet');
+
+    const result = await appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' });
+
+    expect(result).toEqual({ status: 'queued', position: '1/5' });
+    expect(existsSync(join(repoRoot, '.orchestrator/metrics/proposals.jsonl'))).toBe(true);
+  });
+
+  // The lock file is created and unlinked by concurrent writers. If it is seen
+  // by lstat and gone by realpath it was never a link — the proposal must not
+  // be rejected as a symlink escape.
+  it('F6: a lock file that vanishes between lstat and realpath is not mistaken for a dangling link', async () => {
+    const repoRoot = tmpRepo();
+    const lock = join(repoRoot, '.orchestrator/metrics/proposals-write.lock');
+    const realLstat = fs.lstatSync;
+    const realRealpath = fs.realpathSync;
+    let appeared = false;
+    let vanished = false;
+    vi.spyOn(fs, 'lstatSync').mockImplementation((p, ...rest) => {
+      if (!appeared && String(p).endsWith('proposals-write.lock')) {
+        appeared = true;
+        writeFileSync(lock, 'x'); // a peer just created it
+      }
+      return realLstat(p, ...rest);
+    });
+    vi.spyOn(fs, 'realpathSync').mockImplementation((p, ...rest) => {
+      if (appeared && !vanished && String(p).endsWith('proposals-write.lock')) {
+        vanished = true;
+        rmSync(lock); // ...and released it again
+      }
+      return realRealpath(p, ...rest);
+    });
+
+    const result = await appendProposal({ record: makeRecord(), repoRoot, waveId: 'W1' });
+
+    expect(result).toEqual({ status: 'queued', position: '1/5' });
+  });
 });
