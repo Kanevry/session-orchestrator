@@ -963,6 +963,165 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
   });
 
+  function injectArchiveLinkFailure(code) {
+    const realLink = fs.linkSync;
+    const attempts = [];
+    const spy = vi.spyOn(fs, 'linkSync').mockImplementation((source, target) => {
+      if (String(source).endsWith('.partial') && String(target).endsWith('.jsonl')) {
+        attempts.push({ source: String(source), target: String(target), bytes: readFileSync(source) });
+        // The message deliberately omits code: the public error must retain both.
+        throw Object.assign(new Error('archive publication unavailable'), { code });
+      }
+      return realLink(source, target);
+    });
+    return { spy, attempts };
+  }
+
+  function injectPartialCleanupFailure() {
+    const realUnlink = fs.unlinkSync;
+    return vi.spyOn(fs, 'unlinkSync').mockImplementation((file) => {
+      if (String(file).endsWith('.partial')) {
+        throw Object.assign(new Error('partial cleanup denied'), { code: 'EACCES' });
+      }
+      return realUnlink(file);
+    });
+  }
+
+  it.each([
+    ['EPERM', '1 MiB newline', '\n'.repeat(cap)],
+    ['EPERM', 'unterminated UTF8', '{"complete":"é"}'],
+    ['ENOTSUP', '1 MiB newline', '\n'.repeat(cap)],
+    ['ENOTSUP', 'unterminated UTF8', '{"complete":"é"}'],
+    ['EXDEV', '1 MiB newline', '\n'.repeat(cap)],
+    ['EXDEV', 'unterminated UTF8', '{"complete":"é"}'],
+  ])('G10 (#1546): %s publication failure cleans its complete partial for %s and permits retry', async (code, _kind, initial) => {
+    const root = tmpRepo();
+    const metrics = join(root, '.orchestrator/metrics');
+    const oldBytes = Buffer.from(initial, 'utf8');
+    const record = makeRecord({ subject: 'publication-retry', insight: 'new UTF8 é proposal' });
+    const originalRecord = globalThis.structuredClone(record);
+    const unrelatedPartial = join(metrics, 'proposals-overflow.jsonl.archive-unrelated.partial');
+    const existingArchive = join(metrics, 'proposals-overflow.jsonl.archive-existing.jsonl');
+    writeFileSync(activeOf(root), oldBytes);
+    writeFileSync(unrelatedPartial, 'unrelated partial');
+    writeFileSync(existingArchive, 'existing archive');
+    const { spy, attempts } = injectArchiveLinkFailure(code);
+
+    const first = await appendRejected(root, record);
+    const firstPartials = partialsOf(root);
+    const firstActive = readFileSync(activeOf(root));
+    const firstArchives = archivesOf(root);
+    const firstLockExists = existsSync(join(metrics, 'proposals-write.lock'));
+    const second = await appendRejected(root, record);
+    const failedSummary = await readWaveSummary({ repoRoot: root, waveId: 'W1' });
+
+    expect(first.status).toBe('fs-error');
+    expect(first.error).toContain(code);
+    expect(first.error).toContain('archive publication unavailable');
+    expect(first.error).toContain('new proposal not stored');
+    expect(second.status).toBe('fs-error');
+    expect(second.error).toContain(code);
+    expect(second.error).toContain('archive publication unavailable');
+    expect(firstPartials).toEqual([unrelatedPartial]);
+    expect(firstActive).toEqual(oldBytes);
+    expect(firstArchives).toEqual([existingArchive]);
+    expect(firstLockExists).toBe(false);
+    expect(partialsOf(root)).toEqual([unrelatedPartial]);
+    expect(archivesOf(root)).toEqual([existingArchive]);
+    expect(readFileSync(unrelatedPartial, 'utf8')).toBe('unrelated partial');
+    expect(readFileSync(existingArchive, 'utf8')).toBe('existing archive');
+    expect(readFileSync(activeOf(root))).toEqual(oldBytes);
+    expect(record).toEqual(originalRecord);
+    expect(existsSync(join(metrics, 'proposals.jsonl'))).toBe(false);
+    expect(readdirSync(metrics).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(existsSync(join(metrics, 'proposals-write.lock'))).toBe(false);
+    expect(failedSummary).toEqual({ queued: 0, dropped: 0, below_floor: 0, fs_error: 2 });
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0].bytes).toEqual(oldBytes);
+    expect(attempts[1].bytes).toEqual(oldBytes);
+    expect(attempts[0].source).not.toBe(attempts[1].source);
+    expect(existsSync(attempts[0].source)).toBe(false);
+    expect(existsSync(attempts[1].source)).toBe(false);
+    expect(existsSync(attempts[0].target)).toBe(false);
+    expect(existsSync(attempts[1].target)).toBe(false);
+
+    spy.mockRestore();
+    const retry = await appendRejected(root, record);
+
+    expect(retry).toEqual({ status: 'quota-exceeded', quota: 0, dropped: 1 });
+    expect(archivesOf(root)).toHaveLength(2);
+    expect(archivesOf(root).map((file) => readFileSync(file))).toEqual(expect.arrayContaining([
+      oldBytes, Buffer.from('existing archive'),
+    ]));
+    expect(readFileSync(activeOf(root), 'utf8')).toBe(JSON.stringify(originalRecord) + '\n');
+    expect(record).toEqual(originalRecord);
+    expect(partialsOf(root)).toEqual([unrelatedPartial]);
+    expect(readFileSync(unrelatedPartial, 'utf8')).toBe('unrelated partial');
+    expect(readFileSync(existingArchive, 'utf8')).toBe('existing archive');
+    expect(readdirSync(metrics).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(existsSync(join(metrics, 'proposals-write.lock'))).toBe(false);
+    expect(await readWaveSummary({ repoRoot: root, waveId: 'W1' })).toEqual({
+      queued: 0, dropped: 1, below_floor: 0, fs_error: 2,
+    });
+  });
+
+  it('G11 (#1546): cleanup failure retains its complete partial and reports publication and cleanup errors', async () => {
+    const root = fs.realpathSync(tmpRepo());
+    const record = makeRecord();
+    const originalRecord = globalThis.structuredClone(record);
+    writeFileSync(activeOf(root), '{"complete":"é"}');
+    const { attempts } = injectArchiveLinkFailure('EPERM');
+    const cleanup = injectPartialCleanupFailure();
+
+    const result = await appendRejected(root, record);
+
+    expect(result.status).toBe('fs-error');
+    expect(result.error).toContain('EPERM');
+    expect(result.error).toContain('archive publication unavailable');
+    expect(result.error).toContain('EACCES');
+    expect(result.error).toContain('partial cleanup denied');
+    expect(result.error).toContain('new proposal not stored');
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].bytes).toEqual(Buffer.from('{"complete":"é"}'));
+    expect(cleanup).toHaveBeenCalledWith(attempts[0].source);
+    expect(partialsOf(root)).toEqual([attempts[0].source]);
+    expect(readFileSync(attempts[0].source, 'utf8')).toBe('{"complete":"é"}');
+    expect(readFileSync(activeOf(root), 'utf8')).toBe('{"complete":"é"}');
+    expect(archivesOf(root)).toEqual([]);
+    expect(record).toEqual(originalRecord);
+    expect(readdirSync(join(root, '.orchestrator/metrics')).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+    expect(await readWaveSummary({ repoRoot: root, waveId: 'W1' })).toEqual({
+      queued: 0, dropped: 0, below_floor: 0, fs_error: 1,
+    });
+  });
+
+  it('G12 (#1546): non-target EIO publication failure retains its complete partial and original message', async () => {
+    const root = fs.realpathSync(tmpRepo());
+    const record = makeRecord();
+    const originalRecord = globalThis.structuredClone(record);
+    writeFileSync(activeOf(root), '{"complete":"é"}');
+    const { attempts } = injectArchiveLinkFailure('EIO');
+    const cleanup = vi.spyOn(fs, 'unlinkSync');
+
+    const result = await appendRejected(root, record);
+
+    expect(result).toEqual({ status: 'fs-error', error: 'archive publication unavailable' });
+    expect(attempts).toHaveLength(1);
+    expect(attempts[0].bytes).toEqual(Buffer.from('{"complete":"é"}'));
+    expect(cleanup).not.toHaveBeenCalledWith(attempts[0].source);
+    expect(partialsOf(root)).toEqual([attempts[0].source]);
+    expect(readFileSync(attempts[0].source, 'utf8')).toBe('{"complete":"é"}');
+    expect(readFileSync(activeOf(root), 'utf8')).toBe('{"complete":"é"}');
+    expect(archivesOf(root)).toEqual([]);
+    expect(record).toEqual(originalRecord);
+    expect(readdirSync(join(root, '.orchestrator/metrics')).filter((name) => name.includes('.tmp'))).toEqual([]);
+    expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
+    expect(await readWaveSummary({ repoRoot: root, waveId: 'W1' })).toEqual({
+      queued: 0, dropped: 0, below_floor: 0, fs_error: 1,
+    });
+  });
+
   function injectRotationFailure(stage) {
     const descriptors = new Map();
     const realOpen = fs.openSync;
