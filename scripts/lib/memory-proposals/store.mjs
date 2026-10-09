@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { serializeProposal } from './schema.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { tryAcquireFileLock, releaseFileLock } from '../file-lock.mjs';
@@ -30,6 +31,7 @@ import { writeJsonAtomicSync } from '../io.mjs';
 
 const PROPOSALS_JSONL = '.orchestrator/metrics/proposals.jsonl';
 const PROPOSALS_OVERFLOW_JSONL = '.orchestrator/metrics/proposals-overflow.jsonl';
+const OVERFLOW_MAX_BYTES = 1024 * 1024;
 const PROPOSALS_LOCK = '.orchestrator/metrics/proposals-write.lock';
 const PROPOSALS_SUMMARY_PREFIX = '.orchestrator/metrics/proposals-summary-';
 
@@ -177,6 +179,108 @@ function jsonlPathFor(repoRoot) {
  */
 function overflowPathFor(repoRoot) {
   return safePath(repoRoot, PROPOSALS_OVERFLOW_JSONL);
+}
+
+/** Flush a directory entry before depending on its persistence. */
+function syncOverflowDirectory(directory) {
+  const fd = fs.openSync(directory, 'r');
+  try {
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Create a file without replacing anything, retaining leftovers on failure. */
+function writeOverflowExclusive(file, bytes, mode) {
+  const fd = fs.openSync(file, 'wx', mode);
+  try {
+    fs.writeFileSync(fd, bytes);
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** Copy legacy files with bounded memory; the archive is never overwritten. */
+function archiveOverflowExclusive(active, archive, mode) {
+  const source = fs.openSync(active, 'r');
+  try {
+    const destination = fs.openSync(archive, 'wx', mode);
+    try {
+      const chunk = Buffer.alloc(64 * 1024);
+      let count;
+      while ((count = fs.readSync(source, chunk, 0, chunk.length, null)) > 0) {
+        fs.writeFileSync(destination, chunk.subarray(0, count));
+      }
+      fs.fsyncSync(destination);
+    } finally {
+      fs.closeSync(destination);
+    }
+  } finally {
+    fs.closeSync(source);
+  }
+}
+
+/**
+ * Preserve the old bytes durably before replacing the active overflow file.
+ * The proposals lock serializes writers of this append/rotation decision.
+ * Failures before rename leave the active file intact; after rename, the
+ * durable archive preserves the old bytes and the replacement has the new
+ * record. Incomplete archives/temps remain for inspection, never deleted.
+ * BV-004: archive aggregate size is unbounded (no retention authorization).
+ * Revisit growth when active file >= 1 MiB or first rotation: measure it.
+ */
+function appendOverflow(repoRoot, overflowPath, line) {
+  ensureDir(overflowPath);
+  let oldSize = 0;
+  let oldMode = 0o600;
+  let unterminated = false;
+  try {
+    const fd = fs.openSync(overflowPath, 'r');
+    try {
+      const oldStat = fs.fstatSync(fd);
+      oldSize = oldStat.size;
+      oldMode = oldStat.mode & 0o777;
+      if (oldSize > 0) {
+        const lastByte = Buffer.alloc(1);
+        if (fs.readSync(fd, lastByte, 0, 1, oldSize - 1) !== 1) {
+          throw new Error('overflow changed while checking its final byte');
+        }
+        unterminated = lastByte[0] !== 10;
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  const lineBytes = Buffer.from(line, 'utf8');
+  // Optional schema fields have no aggregate size limit. A single oversized
+  // record is preserved whole even though the active file exceeds the cap;
+  // the next record rotates it. Empty/absent files need no recovery archive.
+  if (oldSize === 0 || (!unterminated && oldSize + lineBytes.length <= OVERFLOW_MAX_BYTES)) {
+    fs.appendFileSync(overflowPath, lineBytes);
+    return;
+  }
+  const root = fs.realpathSync(repoRoot);
+  const directory = path.dirname(overflowPath);
+  const token = randomUUID();
+  const archive = safePath(root, path.relative(root, `${overflowPath}.archive-${token}.jsonl`));
+  const temporary = safePath(root, path.relative(root, `${overflowPath}.tmp-${token}`));
+  // Existing arbitrarily large files copy in bounded chunks.
+  // Preserve access restrictions; rotation must not widen a private inode's
+  // mode through the process umask's default creation permissions.
+  archiveOverflowExclusive(overflowPath, archive, oldMode);
+  // Persist the archive's name and any newly created ancestors BEFORE
+  // replacing the sole active copy. All these directories are inside root.
+  for (let current = directory; ; current = path.dirname(current)) {
+    syncOverflowDirectory(current);
+    if (current === root) break;
+  }
+  writeOverflowExclusive(temporary, lineBytes, oldMode);
+  fs.renameSync(temporary, overflowPath);
+  syncOverflowDirectory(directory);
 }
 
 /**
@@ -453,9 +557,8 @@ export async function appendProposal({
     if (currentCount >= quotaPerWave) {
       // Keep the validated proposal (#1027 1b): the quota caps what enters the
       // queue, not what an agent found. A failed write is fs-error — never a
-      // quota-exceeded that implies the content was preserved. No size cap:
-      // growth is bounded by rejected proposals only; revisit if the file
-      // passes ~1 MB (rotation belongs with the quota policy, not here).
+      // quota-exceeded that implies the content was preserved. Rotation keeps
+      // every old byte in an exclusive archive before replacing the active file.
       let overflowPath;
       try {
         overflowPath = overflowPathFor(repoRoot);
@@ -464,8 +567,7 @@ export async function appendProposal({
         throw err;
       }
       try {
-        ensureDir(overflowPath);
-        fs.appendFileSync(overflowPath, serializeProposal(record) + '\n', 'utf8');
+        appendOverflow(repoRoot, overflowPath, serializeProposal(record) + '\n');
       } catch (err) {
         incrementSummary(summaryPath, 'fs_error');
         return { status: 'fs-error', error: err.message };

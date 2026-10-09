@@ -42,7 +42,7 @@
  */
 
 import { appendFile, mkdir, readdir, rm } from 'node:fs/promises';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { appendLearning } from '../learnings/io.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
@@ -63,6 +63,66 @@ const PROPOSALS_ARCHIVE_REL = path.join('.orchestrator', 'runtime', 'proposals-a
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Close the shared validator's ENOENT gap for sink targets (#1544).
+ * Resolve the nearest existing component, including dangling symlinks, before
+ * mkdir/append can follow it. Canonical roots permit root aliases and temporary
+ * directory aliases. Like the store guard, this is check-before-write: revisit
+ * if another principal can modify these parents between validation and writing.
+ */
+function validateSinkTarget(relPath, repoRoot) {
+  try {
+    let root = path.resolve(repoRoot);
+    for (let ancestor = root; ; ancestor = path.dirname(ancestor)) {
+      try {
+        lstatSync(ancestor);
+      } catch (err) {
+        if (err?.code === 'ENOENT') continue;
+        throw err;
+      }
+      try {
+        root = path.resolve(realpathSync(ancestor), path.relative(ancestor, root));
+      } catch (err) {
+        if (err?.code === 'ENOENT' || err?.code === 'ELOOP') return { ok: false, reason: 'symlink' };
+        throw err;
+      }
+      break;
+    }
+    const result = validatePathInsideProject(relPath, root, { canonicalizeRoot: true });
+    if (!result.ok || result.realPath !== undefined) return result;
+    const fold = (p) => process.platform === 'win32' ? p.toLowerCase() : p;
+    const inside = (p) => {
+      const relative = path.relative(fold(root), fold(p));
+      return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+    };
+    for (let current = result.lexicalPath; inside(current); current = path.dirname(current)) {
+      try {
+        lstatSync(current);
+      } catch (err) {
+        if (err?.code === 'ENOENT') continue;
+        throw err;
+      }
+      try {
+        return inside(realpathSync(current)) ? result : { ok: false, reason: 'symlink' };
+      } catch (err) {
+        if (err?.code !== 'ENOENT' && err?.code !== 'ELOOP') throw err;
+        // A dangling link is an existing component whose resolution failed.
+        // A concurrently removed ordinary component can safely defer upward.
+        try {
+          lstatSync(current);
+        } catch (retryErr) {
+          if (retryErr?.code === 'ENOENT') continue;
+          throw retryErr;
+        }
+        return { ok: false, reason: 'symlink' };
+      }
+    }
+    return result; // A missing trusted root will be created as a plain tree.
+  } catch {
+    return { ok: false, reason: 'filesystem' };
+  }
+}
 
 /**
  * Build a learning record from an approved proposal.
@@ -159,7 +219,7 @@ export async function writeApproved({ approved, repoRoot, sessionId, ...rest }) 
     return { written: 0, errors: [] };
   }
 
-  const learningsResult = validatePathInsideProject(LEARNINGS_REL, repoRoot, { canonicalizeRoot: true });
+  const learningsResult = validateSinkTarget(LEARNINGS_REL, repoRoot);
   if (!learningsResult.ok) {
     return { written: 0, errors: [`path-safety: ${learningsResult.reason} (${LEARNINGS_REL})`] };
   }
@@ -202,7 +262,7 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
     return { archived: 0, errors: [] };
   }
 
-  const rejectedResult = validatePathInsideProject(REJECTED_LOG_REL, repoRoot, { canonicalizeRoot: true });
+  const rejectedResult = validateSinkTarget(REJECTED_LOG_REL, repoRoot);
   if (!rejectedResult.ok) {
     return { archived: 0, errors: [`path-safety: ${rejectedResult.reason} (${REJECTED_LOG_REL})`] };
   }
@@ -260,8 +320,9 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
  *     call actually wrote anything, so a caller-side mistake (wrong arg name,
  *     partial write failure) no longer means the queued proposals are gone
  *     for good — they are recoverable from the archive sidecar. Best-effort:
- *     an archive failure never blocks the clear itself, and an empty/missing
- *     proposals.jsonl produces no archive append (nothing to preserve).
+ *     ordinary archive I/O failures do not block clear. An unsafe required
+ *     recovery target blocks clear and preserves the queue and summaries.
+ *     An empty/missing proposals.jsonl produces no archive append.
  *  1. Clear proposals.jsonl via tmp-file + rename (POSIX-atomic on the same
  *     filesystem) instead of an in-place `writeFileSync` truncate — this also
  *     brings the implementation in line with the documented contract in
@@ -282,30 +343,31 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
  *
  * @param {object} opts
  * @param {string} opts.repoRoot - absolute project root path
- * @returns {Promise<{ cleared: boolean, summariesCleared: number }>}
+ * @returns {Promise<{ cleared: boolean, summariesCleared: number, reason?: string }>}
  */
 export async function clearProposalsJsonl({ repoRoot }) {
-  const proposalsResult = validatePathInsideProject(PROPOSALS_REL, repoRoot, { canonicalizeRoot: true });
+  const proposalsResult = validateSinkTarget(PROPOSALS_REL, repoRoot);
   if (!proposalsResult.ok) {
-    return { cleared: false, summariesCleared: 0 };
+    return { cleared: false, summariesCleared: 0, reason: `path-safety: ${proposalsResult.reason}` };
   }
   const proposalsPath = proposalsResult.realPath ?? proposalsResult.lexicalPath;
   const metricsDirPath = path.dirname(proposalsPath);
 
   // Step 0 (#797): archive pre-clear content before truncating. Best-effort
-  // — never lets an archive-side failure block the clear (same never-throw
-  // contract as the rest of this function).
+  // — ordinary archive I/O failures do not block clear; an unsafe required
+  // recovery target does, preserving the queue and its summaries.
   if (existsSync(proposalsPath)) {
     try {
       const preClearContent = readFileSync(proposalsPath, 'utf8');
       if (preClearContent.length > 0) {
-        const archiveResult = validatePathInsideProject(PROPOSALS_ARCHIVE_REL, repoRoot, { canonicalizeRoot: true });
-        if (archiveResult.ok) {
-          const archivePath = archiveResult.realPath ?? archiveResult.lexicalPath;
-          await mkdir(path.dirname(archivePath), { recursive: true });
-          const normalized = preClearContent.endsWith('\n') ? preClearContent : `${preClearContent}\n`;
-          await appendFile(archivePath, normalized, 'utf8');
+        const archiveResult = validateSinkTarget(PROPOSALS_ARCHIVE_REL, repoRoot);
+        if (!archiveResult.ok) {
+          return { cleared: false, summariesCleared: 0, reason: `path-safety: ${archiveResult.reason}` };
         }
+        const archivePath = archiveResult.realPath ?? archiveResult.lexicalPath;
+        await mkdir(path.dirname(archivePath), { recursive: true });
+        const normalized = preClearContent.endsWith('\n') ? preClearContent : `${preClearContent}\n`;
+        await appendFile(archivePath, normalized, 'utf8');
       }
     } catch {
       // Best-effort — a read/append failure on the archive sidecar must not
@@ -501,6 +563,6 @@ export async function promoteAndClear({ approved, sessionId, repoRoot, ...rest }
     expected,
     cleared: c.cleared,
     summariesCleared: c.summariesCleared,
-    skippedReason: null,
+    skippedReason: c.cleared ? null : (c.reason ?? 'clear-failed'),
   };
 }

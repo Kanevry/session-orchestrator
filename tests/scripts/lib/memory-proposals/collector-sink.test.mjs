@@ -51,6 +51,7 @@ import {
   writeApproved,
   archiveRejected,
   clearProposalsJsonl,
+  promoteAndClear,
 } from '@lib/memory-proposals/sink.mjs';
 
 // ---------------------------------------------------------------------------
@@ -934,6 +935,86 @@ describe('collector-sink integration (#501 F2.1)', () => {
       // through the symlink.
       const escapeContents = readFileSync(escapeFile, 'utf8');
       expect(escapeContents).toBe('');
+    });
+  });
+
+  describe('#1544 — missing sink targets under symlink parents', () => {
+    let fixture;
+    beforeEach(() => {
+      fixture = realpathSync(mkdtempSync(join(tmpdir(), 'mp-parent-fixture-')));
+    });
+    afterEach(() => rmSync(fixture, { recursive: true, force: true }));
+
+    it.each(['external', 'dangling'])('blocks all missing targets under a %s parent without writes', async (kind) => {
+      const outside = join(fixture, 'outside');
+      if (kind === 'external') mkdirSync(outside);
+      symlinkSync(outside, join(tmpRepo, '.orchestrator'));
+      const approved = await writeApproved({ approved: [makeRecord()], repoRoot: tmpRepo, sessionId: SESSION_ID });
+      const rejected = await archiveRejected({ rejected: [makeRecord()], repoRoot: tmpRepo, reason: 'user-declined' });
+      const cleared = await clearProposalsJsonl({ repoRoot: tmpRepo });
+      expect(approved).toMatchObject({ written: 0, errors: [expect.stringContaining('path-safety: symlink')] });
+      expect(rejected).toMatchObject({ archived: 0, errors: [expect.stringContaining('path-safety: symlink')] });
+      expect(cleared).toMatchObject({ cleared: false, summariesCleared: 0, reason: 'path-safety: symlink' });
+      expect(kind === 'external' ? readdirSync(outside) : existsSync(outside)).toEqual(kind === 'external' ? [] : false);
+    });
+
+    it.each(['external', 'dangling', 'existing-target'])('preserves queue and summary when required recovery uses a %s escape', async (kind) => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+      const summary = join(tmpRepo, '.orchestrator', 'metrics', 'proposals-summary-W1.json');
+      const before = [readFileSync(proposalsJsonlPath, 'utf8'), readFileSync(summary, 'utf8')];
+      const outside = join(fixture, 'outside');
+      if (kind !== 'dangling') mkdirSync(outside);
+      if (kind === 'existing-target') writeFileSync(join(outside, 'proposals-archive.jsonl'), 'sentinel\n');
+      symlinkSync(outside, join(tmpRepo, '.orchestrator', 'runtime'));
+      const result = await clearProposalsJsonl({ repoRoot: tmpRepo });
+      expect(result).toMatchObject({ cleared: false, summariesCleared: 0, reason: 'path-safety: symlink' });
+      expect([readFileSync(proposalsJsonlPath, 'utf8'), readFileSync(summary, 'utf8')]).toEqual(before);
+      if (kind === 'dangling') expect(existsSync(outside)).toBe(false);
+      else expect(readdirSync(outside)).toEqual(kind === 'existing-target' ? ['proposals-archive.jsonl'] : []);
+      if (kind === 'existing-target') expect(readFileSync(join(outside, 'proposals-archive.jsonl'), 'utf8')).toBe('sentinel\n');
+    });
+
+    it('promoteAndClear surfaces the refused clear reason instead of null', async () => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+      const outside = join(fixture, 'outside');
+      mkdirSync(outside);
+      symlinkSync(outside, join(tmpRepo, '.orchestrator', 'runtime'));
+      const result = await promoteAndClear({ approved: [makeRecord()], repoRoot: tmpRepo, sessionId: SESSION_ID });
+      expect(result).toMatchObject({ written: 1, expected: 1, cleared: false, skippedReason: 'path-safety: symlink' });
+    });
+
+    it.each(['dangling-root', 'missing-root-under-dangling-parent'])('rejects a %s without throwing or creating its destination', async (kind) => {
+      const absent = join(fixture, 'absent');
+      const alias = join(fixture, 'alias');
+      symlinkSync(absent, alias);
+      const root = kind === 'dangling-root' ? alias : join(alias, 'missing-root');
+      await expect(clearProposalsJsonl({ repoRoot: root })).resolves.toMatchObject({ cleared: false, summariesCleared: 0, reason: 'path-safety: symlink' });
+      expect(existsSync(absent)).toBe(false);
+    });
+
+    it('keeps ordinary safe recovery I/O errors best-effort', async () => {
+      await appendProposal({ record: makeRecord(), repoRoot: tmpRepo, waveId: 'W1' });
+      // An in-root directory is a safe target, but append fails with EISDIR.
+      mkdirSync(join(tmpRepo, '.orchestrator', 'runtime', 'proposals-archive.jsonl'), { recursive: true });
+      await expect(clearProposalsJsonl({ repoRoot: tmpRepo })).resolves.toEqual({ cleared: true, summariesCleared: 1 });
+      expect(readFileSync(proposalsJsonlPath, 'utf8')).toBe('');
+    });
+
+    it.each(['root-alias', 'internal-parent'])('accepts missing targets under a safe %s', async (kind) => {
+      let root = tmpRepo;
+      if (kind === 'root-alias') {
+        root = join(fixture, 'root-alias');
+        symlinkSync(tmpRepo, root);
+      } else {
+        const internal = join(tmpRepo, 'internal');
+        mkdirSync(internal);
+        symlinkSync(internal, join(tmpRepo, '.orchestrator'));
+      }
+      expect(await writeApproved({ approved: [makeRecord()], repoRoot: root, sessionId: SESSION_ID })).toMatchObject({ written: 1, errors: [] });
+      expect(await archiveRejected({ rejected: [makeRecord()], repoRoot: root, reason: 'user-declined' })).toMatchObject({ archived: 1, errors: [] });
+      await appendProposal({ record: makeRecord(), repoRoot: root, waveId: 'W1' });
+      expect(await clearProposalsJsonl({ repoRoot: root })).toMatchObject({ cleared: true, summariesCleared: 1 });
+      expect(readJsonlLines(join(root, '.orchestrator', 'runtime', 'proposals-archive.jsonl'))).toHaveLength(1);
     });
   });
 
