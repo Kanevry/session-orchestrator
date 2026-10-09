@@ -208,7 +208,8 @@ function writeOverflowExclusive(file, bytes, mode) {
  * Copy legacy files with bounded memory into an exclusive `.partial` file,
  * then hard-link it to the archive name. An interrupted copy leaves only the
  * `.partial` name behind, never a truncated file under the archive name; the
- * link fails with EEXIST instead of overwriting an existing archive.
+ * link fails with EEXIST instead of overwriting an existing archive. Unsupported
+ * link operations discard only our completed staging copy, leaving active intact.
  */
 function archiveOverflowExclusive(active, archive, partial, mode) {
   const source = fs.openSync(active, 'r');
@@ -229,7 +230,26 @@ function archiveOverflowExclusive(active, archive, partial, mode) {
   } finally {
     fs.closeSync(source);
   }
-  fs.linkSync(partial, archive);
+  try {
+    fs.linkSync(partial, archive);
+  } catch (err) {
+    if (!['EPERM', 'ENOTSUP', 'EXDEV'].includes(err?.code)) throw err;
+    // We exclusively created this complete copy and have not replaced active.
+    // Do not accumulate another full copy on every unsupported-link retry.
+    // Copy/flush failures and collisions deliberately retain their evidence.
+    let cleanupError = '';
+    try {
+      fs.unlinkSync(partial);
+    } catch (cleanup) {
+      cleanupError = `; partial cleanup failed (${cleanup?.code ?? 'unknown'}): ${cleanup.message}`;
+    }
+    // appendProposal exposes message, so preserve the filesystem code there.
+    // This statement is specific to publication failure, never post-rename I/O.
+    throw new Error(
+      `overflow archive publication failed (${err.code}): ${err.message}; new proposal not stored${cleanupError}`,
+      { cause: err }
+    );
+  }
   fs.unlinkSync(partial);
 }
 
