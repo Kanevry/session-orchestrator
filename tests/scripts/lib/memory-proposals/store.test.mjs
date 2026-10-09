@@ -1055,9 +1055,11 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     writeFileSync(activeOf(root), oldBytes);
     const realOpenSync = fs.openSync;
     const activeFds = new Set();
+    // The store opens the realpath; on macOS the tmp root is /var -> /private/var.
+    const activePaths = new Set([path.resolve(activeOf(root)), fs.realpathSync(activeOf(root))]);
     vi.spyOn(fs, 'openSync').mockImplementation((file, ...args) => {
       const fd = realOpenSync(file, ...args);
-      if (path.resolve(String(file)) === path.resolve(activeOf(root))) activeFds.add(fd);
+      if (activePaths.has(path.resolve(String(file)))) activeFds.add(fd);
       return fd;
     });
     const reads = vi.spyOn(fs, 'readSync');
