@@ -11,3 +11,5 @@ Editable desktop, mobile and social layouts live together in the canonical `sess
 ## Lead page
 
 `lead-control-room-1536.webp`, `-800.webp` and `-480.webp` are the hero of `/lead`, an original AI-generated illustration in the same series: one person in an elevated control room above four separate workshops, one indicator light per workshop and a stop lever. It is a visual metaphor, not a product screenshot. Generated on 2026-10-05 with the built-in Codex image tool, using the agent-production hero as style reference and the same art direction (graphite architecture, warm white materials, one restrained lime accent, no text or logos). No specific model version is claimed. All three derive from one 1536 x 1024 source.
+
+The social preview `site/og-lead.png` (1200 x 630) derives from `lead-control-room-1536.webp` without cropping: `sips -s format png --resampleHeight 630`, then `sips --padToHeightWidth 630 1200 --padColor 111315`. `og:image` and `twitter:image` on `/lead` point to it.
