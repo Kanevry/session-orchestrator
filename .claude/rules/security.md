@@ -15,8 +15,8 @@ SEC identifiers are sequential; gaps are intentional:
 - **SEC-013 to SEC-015**: advanced protection (XXE, SSRF, crypto)
 - **SEC-016 to SEC-017**: data integrity (CSV injection, session hardening — rules/opt-in-stack/security-web.md)
 - **SEC-018**: CSRF (security-web.md); **SEC-019**: reserved (prototype pollution CWE-1321, unsafe deserialization CWE-502 — covered by SEC-006)
-- **SEC-020**: supply chain security (dependency trust, build script control)
-- **SEC-021**: settings-allowlist token guard (PAT/token leakage into `.claude/settings.json` / `.claude/settings.local.json` permission entries)
+- **SEC-020**: supply chain security; **SEC-021 to 024**: baseline (not vendored)
+- **SEC-025**: settings-allowlist token guard (PAT/token leakage into `.claude/settings.json` / `.claude/settings.local.json` permission entries)
 
 ## Authentication (SEC-004: Auth-at-Boundary)
 - Every server action MUST authenticate first: `const { user, businessId, supabase } = await requireAuth()`
@@ -144,7 +144,7 @@ Classifications:
 - `git commit --no-verify` bypass remains available — use only after triage.
 - Regression test: `tests/husky/pre-commit-owner-leakage.test.mjs` (hook carries the scanner invocation; E2E leaks planted in a tmp git repo block the commit).
 
-## Settings-Allowlist Token Guard (SEC-021, #728b)
+## Settings-Allowlist Token Guard (SEC-025, #728b)
 - Never place a live PAT/token as a permission-allowlist entry in `.claude/settings.json` or `.claude/settings.local.json` (e.g. a `Bash(glab ... glpat-…:...)` line). A live GitLab PAT once surfaced this way in cleartext in a portfolio repo. Use an env-var reference or the OS keychain — never the raw secret value.
 - `.gitleaks.toml` (37 rules) is the canonical regex source for token shapes (`glpat-`, `ghp_`, `github_pat_`, `sk-ant-`, `AKIA`, …); `scripts/lib/validate/check-test-fixture-shapes.mjs` (patterns F5–F8) is the in-repo prior art for the same shapes in test fixtures. Do not maintain a fifth copy — the `repo-audit` Category 6 grep row (`skills/repo-audit/SKILL.md`) is a deliberate high-signal SUBSET of the 5 prefixes above, not a competing source of truth.
 - **Why `check-owner-leakage.mjs` does not cover this:** it scans `git ls-files` (tracked only, by design), and `.claude/settings.local.json` is conventionally untracked, so a token there is invisible to the pre-commit hook. `repo-audit`'s on-disk grep is the only mechanism here that reads the live file regardless of tracked status.

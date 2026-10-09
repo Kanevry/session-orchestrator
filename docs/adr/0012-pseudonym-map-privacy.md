@@ -210,5 +210,5 @@ WARN.
 
 - Implementation: `scripts/lib/vault-mirror/pseudonym-map.mjs` (load + validate + per-path cache) · `scripts/lib/vault-mirror/namespace.mjs` (redaction-site lookup, lazy path, `_setNamespaceMapPath` test seam) · `scripts/lib/config/host-paths.mjs` (env > `owner.yaml` > unset precedence).
 - Tests: `tests/lib/vault-mirror/namespace.test.mjs` · `tests/lib/vault-mirror/pseudonym-map.test.mjs`.
-- Rules: `.claude/rules/owner-persona.md` (host-local-data contract, CP11 redaction) · `.claude/rules/security.md` § Owner-Privacy Pre-Commit Hook (#494) and § SEC-021.
+- Rules: `.claude/rules/owner-persona.md` (host-local-data contract, CP11 redaction) · `.claude/rules/security.md` § Owner-Privacy Pre-Commit Hook (#494) and § SEC-025.
 - Issues: #725 (Epic, D5) · #660 (per-repo vault namespacing) · #728a (`confidential-names-file`, same committed-path split) · #734 (this ADR, plus the cycle break and the `atomicWriteWithBackup` primitive shipped alongside it).
