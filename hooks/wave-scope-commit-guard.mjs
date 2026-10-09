@@ -336,7 +336,10 @@ async function main() {
   // when every candidate is foreign the first comes back and
   // `scopeCommitVerdict` passes it as before. The git process inherits the
   // committing session's env; there is no hook payload here, so the env tier is
-  // the only process-local identity.
+  // the only process-local identity. CEILING (#1504 point 7b): a shell that
+  // exports a foreign CLAUDE_CODE_SESSION_ID makes this session's manifest read
+  // `foreign` and the guard stands down: the same power `--no-verify` grants, so it
+  // stays named, not fixed (docs/scope-collision-guard.md § 6 item 12).
   const ownIds = new Set(readProcessLocalSessionIds());
 
   // #1511 point d — ALSO read the manifest at the SESSION root the scope guards
