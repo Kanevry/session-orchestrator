@@ -555,10 +555,11 @@ function buildSurfaceDescriptors(vaultDir, commandsDir) {
       id: 'test-count',
       noun: 'test files',
       actual: countTestFiles(vaultDir),
-      // "N test files" — the README badge claims a runtime PASS count
+      // "N test files" or "N+ test files" (an explicit lower bound).
+      // The README badge claims a runtime PASS count
       // ("9303 tests"), which a static checker cannot derive, so we match only
-      // the explicit file-count phrasing. No doc claims this today → skipped.
-      claimRe: /\b(\d+)\s+test\s+files?\b/gi,
+      // the explicit file-count phrasing.
+      claimRe: /\b(\d+)(\+)?\s+test\s+files?\b/gi,
       skipMsg: 'test-count: no tests/ directory found',
     },
   ];
@@ -1831,7 +1832,7 @@ function main() {
         }
       }
 
-      // Surface-count family: one EXACT-count drift check per active surface.
+      // Surface counts are exact, except explicit "N+ test files" lower bounds.
       // A surface only fires when the doc makes an explicit numeric claim that
       // its regex matches; an unclaimed surface produces no errors (skip).
       for (const surface of activeSurfaces) {
@@ -1840,10 +1841,11 @@ function main() {
         let m;
         while ((m = re.exec(line)) !== null) {
           const claimed = parseInt(m[1], 10);
-          if (claimed !== surface.actual) {
+          const lowerBound = surface.id === 'test-count' && m[2] === '+';
+          if (lowerBound ? surface.actual < claimed : claimed !== surface.actual) {
             const err = {
               check: surface.id, file: rel, line: lineNum,
-              message: `Narrative claims ${claimed} ${surface.noun} but actual on-disk count is ${surface.actual}`,
+              message: `Narrative claims ${claimed}${lowerBound ? '+' : ''} ${surface.noun} but actual on-disk count is ${surface.actual}`,
               extracted: m[0],
               count: { surface: surface.id, actual: surface.actual, claimed },
             };

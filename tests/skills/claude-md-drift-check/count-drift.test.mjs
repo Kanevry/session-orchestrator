@@ -9,8 +9,8 @@
  *
  * For each surface the checker derives an ACTUAL on-disk count (glob / hooks.json
  * wiring) and compares it to a CLAIMED count regex-extracted from a scanned doc.
- * These are EXACT-count drift checks by design (the point is catching drift) —
- * NO floor/ceiling here (see .claude/rules/testing.md "Dynamic Artifact Counts"
+ * Counts are exact except explicit "N+ test files" claims, which state a
+ * lower bound (see .claude/rules/testing.md "Dynamic Artifact Counts"
  * carve-out, which explicitly exempts drift checks).
  *
  * Strategy: scaffold an ephemeral tmp vault with a known on-disk count per
@@ -247,6 +247,59 @@ describe('surface: hook-matcher-count', () => {
 // ── test-count (test files under tests/) ─────────────────────────────────────
 
 describe('surface: test-count', () => {
+  it.each([
+    ['warn', 'files', 0],
+    ['strict', 'file', 1],
+    ['hard', 'files', 1],
+  ])('reports an unmet lower bound in mode=%s with test %s phrasing', (mode, noun, code) => {
+    makeTestFiles(7);
+    writeClaim(`Suite contains 8+ test ${noun}.`);
+    const r = runChecker(vault, ['--mode', mode]);
+    const j = parseJson(r.stdout);
+    const errs = errorsFor(j, 'test-count');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toBe('Narrative claims 8+ test files but actual on-disk count is 7');
+    expect(errs[0].extracted).toBe(`8+ test ${noun}`);
+    expect(errs[0].count).toEqual({ surface: 'test-count', actual: 7, claimed: 8 });
+    expect(j.status).toBe('invalid');
+    expect(r.code).toBe(code);
+  });
+
+  it.each([
+    [7, 'files'],
+    [7, 'file'],
+    [6, 'files'],
+    [6, 'file'],
+  ])('accepts a satisfied lower bound of %i+ test %s', (claimed, noun) => {
+    makeTestFiles(7);
+    writeClaim(`Suite contains ${claimed}+ test ${noun}.`);
+    const r = runChecker(vault, ['--mode', 'hard']);
+    const j = parseJson(r.stdout);
+    expect(errorsFor(j, 'test-count')).toHaveLength(0);
+    expect(j.checks_run).toContain('test-count');
+    expect(j.status).toBe('ok');
+    expect(r.code).toBe(0);
+  });
+
+  it('compares each exact or lower-bound claim on the same line independently', () => {
+    makeTestFiles(7);
+    writeClaim('8+ test files, 6+ test files, 7 test files and 9 test files.');
+    const j = parseJson(runChecker(vault).stdout);
+    expect(errorsFor(j, 'test-count').map((e) => e.extracted)).toEqual([
+      '8+ test files', '9 test files',
+    ]);
+  });
+
+  it('flags an exact claim above the actual test-file count', () => {
+    makeTestFiles(7);
+    writeClaim('Suite contains 9 test files.');
+    const r = runChecker(vault, ['--mode', 'hard']);
+    const errs = errorsFor(parseJson(r.stdout), 'test-count');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].count).toEqual({ surface: 'test-count', actual: 7, claimed: 9 });
+    expect(r.code).toBe(1);
+  });
+
   it('flags a drifted "N test files" claim (ignores non-.test.mjs)', () => {
     makeTestFiles(7); // 7 *.test.mjs + helper.mjs (ignored)
     writeClaim('Suite contains 5 test files.');
