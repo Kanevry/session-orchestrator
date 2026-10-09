@@ -1063,7 +1063,7 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     expect(await readWaveSummary({ repoRoot: root, waveId: 'W1' })).toEqual({
       queued: 0, dropped: 1, below_floor: 0, fs_error: 2,
     });
-  });
+  }, 120_000); // 1-MiB-Fälle brauchen unter Coverage-Instrumentierung mehr als 30 s (main-Pipeline 22436)
 
   it('G11 (#1546): cleanup failure retains its complete partial and reports publication and cleanup errors', async () => {
     const root = fs.realpathSync(tmpRepo());
