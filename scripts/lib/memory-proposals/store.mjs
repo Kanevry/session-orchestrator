@@ -195,6 +195,8 @@ function syncOverflowDirectory(directory) {
 function writeOverflowExclusive(file, bytes, mode) {
   const fd = fs.openSync(file, 'wx', mode);
   try {
+    // The umask may narrow the creation mode; restore exactly the old mode.
+    fs.fchmodSync(fd, mode);
     fs.writeFileSync(fd, bytes);
     fs.fsyncSync(fd);
   } finally {
@@ -202,12 +204,19 @@ function writeOverflowExclusive(file, bytes, mode) {
   }
 }
 
-/** Copy legacy files with bounded memory; the archive is never overwritten. */
-function archiveOverflowExclusive(active, archive, mode) {
+/**
+ * Copy legacy files with bounded memory into an exclusive `.partial` file,
+ * then hard-link it to the archive name. An interrupted copy leaves only the
+ * `.partial` name behind, never a truncated file under the archive name; the
+ * link fails with EEXIST instead of overwriting an existing archive.
+ */
+function archiveOverflowExclusive(active, archive, partial, mode) {
   const source = fs.openSync(active, 'r');
   try {
-    const destination = fs.openSync(archive, 'wx', mode);
+    const destination = fs.openSync(partial, 'wx', mode);
     try {
+      // The umask may narrow the creation mode; restore exactly the old mode.
+      fs.fchmodSync(destination, mode);
       const chunk = Buffer.alloc(64 * 1024);
       let count;
       while ((count = fs.readSync(source, chunk, 0, chunk.length, null)) > 0) {
@@ -220,6 +229,8 @@ function archiveOverflowExclusive(active, archive, mode) {
   } finally {
     fs.closeSync(source);
   }
+  fs.linkSync(partial, archive);
+  fs.unlinkSync(partial);
 }
 
 /**
@@ -267,16 +278,21 @@ function appendOverflow(repoRoot, overflowPath, line) {
   const directory = path.dirname(overflowPath);
   const token = randomUUID();
   const archive = safePath(root, path.relative(root, `${overflowPath}.archive-${token}.jsonl`));
+  const partial = safePath(root, path.relative(root, `${overflowPath}.archive-${token}.partial`));
   const temporary = safePath(root, path.relative(root, `${overflowPath}.tmp-${token}`));
   // Existing arbitrarily large files copy in bounded chunks.
   // Preserve access restrictions; rotation must not widen a private inode's
   // mode through the process umask's default creation permissions.
-  archiveOverflowExclusive(overflowPath, archive, oldMode);
-  // Persist the archive's name and any newly created ancestors BEFORE
-  // replacing the sole active copy. All these directories are inside root.
+  archiveOverflowExclusive(overflowPath, archive, partial, oldMode);
+  // Persist the archive's name (and the partial's removal) plus any newly
+  // created ancestors BEFORE replacing the sole active copy. All these
+  // directories are inside root.
   for (let current = directory; ; current = path.dirname(current)) {
     syncOverflowDirectory(current);
     if (current === root) break;
+    if (current === path.dirname(current)) {
+      throw new Error('overflow directory is not inside the repository root');
+    }
   }
   writeOverflowExclusive(temporary, lineBytes, oldMode);
   fs.renameSync(temporary, overflowPath);

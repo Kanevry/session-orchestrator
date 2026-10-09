@@ -904,9 +904,11 @@ describe('appendProposal — store path guard (#1027 1b)', () => {
 describe('appendProposal — lossless overflow rotation (#1545)', () => {
   const cap = 1024 * 1024;
   const activeOf = (root) => join(root, '.orchestrator/metrics/proposals-overflow.jsonl');
-  const archivesOf = (root) => readdirSync(join(root, '.orchestrator/metrics'))
-    .filter((name) => name.includes('.archive-'))
+  const filesOf = (root, suffix) => readdirSync(join(root, '.orchestrator/metrics'))
+    .filter((name) => name.includes('.archive-') && name.endsWith(suffix))
     .map((name) => join(root, '.orchestrator/metrics', name));
+  const archivesOf = (root) => filesOf(root, '.jsonl');
+  const partialsOf = (root) => filesOf(root, '.partial');
   const appendRejected = (root, record) => appendProposal({ record, repoRoot: root, waveId: 'W1', quotaPerWave: 0 });
 
   it('G1: exactly 1 MiB remains active; the next UTF8 record rotates byte-exact old content', async () => {
@@ -946,7 +948,8 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     writeFileSync(activeOf(root), '{"partial":');
     const realOpen = fs.openSync;
     vi.spyOn(fs, 'openSync').mockImplementation((file, flags, ...args) => {
-      if (String(file).includes('.archive-')) writeFileSync(file, 'existing archive');
+      const name = String(file);
+      if (name.endsWith('.partial')) writeFileSync(name.replace(/\.partial$/, '.jsonl'), 'existing archive');
       return realOpen(file, flags, ...args);
     });
 
@@ -956,6 +959,7 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     expect(result.error).toMatch(/EEXIST/);
     expect(readFileSync(activeOf(root), 'utf8')).toBe('{"partial":');
     expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('existing archive');
+    expect(readFileSync(partialsOf(root)[0], 'utf8')).toBe('{"partial":');
     expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
   });
 
@@ -1004,10 +1008,14 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     injectRotationFailure(stage);
 
     const result = await appendRejected(root, makeRecord());
+    const copyAborted = stage.startsWith('archive-');
 
     expect(result).toEqual({ status: 'fs-error', error: `synthetic ${stage} failure` });
     expect(readFileSync(activeOf(root), 'utf8')).toBe('{"partial":');
-    expect(archivesOf(root)).toHaveLength(1);
+    // An aborted copy leaves only a .partial, never a truncated archive name.
+    expect(archivesOf(root)).toHaveLength(copyAborted ? 0 : 1);
+    expect(partialsOf(root)).toHaveLength(copyAborted ? 1 : 0);
+    if (!copyAborted) expect(readFileSync(archivesOf(root)[0], 'utf8')).toBe('{"partial":');
     expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
   });
 
@@ -1045,15 +1053,25 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     const oldBytes = Buffer.from('\n'.repeat(2 * cap + 17));
     const record = makeRecord();
     writeFileSync(activeOf(root), oldBytes);
+    const realOpenSync = fs.openSync;
+    const activeFds = new Set();
+    vi.spyOn(fs, 'openSync').mockImplementation((file, ...args) => {
+      const fd = realOpenSync(file, ...args);
+      if (path.resolve(String(file)) === path.resolve(activeOf(root))) activeFds.add(fd);
+      return fd;
+    });
     const reads = vi.spyOn(fs, 'readSync');
 
     const result = await appendRejected(root, record);
+    // Only reads of the legacy file count: Node's own readFileSync also goes
+    // through fs.readSync with whole-file lengths and must not be attributed.
+    const copyReads = reads.mock.calls.filter((call) => activeFds.has(call[0]));
 
     expect(result.status).toBe('quota-exceeded');
     expect(readFileSync(archivesOf(root)[0])).toEqual(oldBytes);
     expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
-    expect(reads.mock.calls.every((call) => call[3] <= 65536)).toBe(true);
-    expect(reads.mock.calls.filter((call) => call[3] === 65536).length).toBeGreaterThan(32);
+    expect(copyReads.every((call) => call[3] <= 65536)).toBe(true);
+    expect(copyReads.filter((call) => call[3] === 65536).length).toBeGreaterThan(32);
   });
 
   it.each([
