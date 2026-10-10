@@ -141,6 +141,7 @@ dokumentiert diesen Zyklusgrund. Events bleiben bei den Aufrufern.
 
 **Empfehlung zur späteren Prüfung: zuerst den gesamten Session-Lock-Kern als
 eine Implementation hinter dem bestehenden Barrel bündeln.** Hypothetischer
+<!-- path-check: planned #990 -->
 neuer Pfad: `scripts/lib/locks/session-core.mjs`; er wird hier nicht angelegt.
 Die zwei schon getrennten Kurzzeitprotokolle und ihre Leafs bleiben bestehen.
 
