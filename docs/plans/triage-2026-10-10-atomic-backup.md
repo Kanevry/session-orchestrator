@@ -210,10 +210,15 @@ Für Doku hier nur gezielte Prettierprüfung/Scopecheck; volle MR-Pipeline mit t
 
 Versionierte GitLab-main-Regeln lösen Default-Branch-Prüfpipeline plus Coverage (`:758–761`) aus;
 Stages `:37–44` und Jobinventar enthalten keinen Deploy-/Release-/Publishjob. vault-watcher nur benannter Schedule (`:1032–1033`).
-**Versionierter Gegenbeleg:** `.claude/rules/security.md:100` dokumentiert, dass direkter Push auf GitHub-`main` den Vercel-Produktivdeploy von session-orchestrator.com auslöst; `/close` und Release spiegeln laut diesem Vertrag dorthin.
-Die vorhandene `.github/workflows/test.yml:4–5` reagiert ebenfalls auf main-Push; eine dort fehlende Deployjob-Definition widerlegt den externen Vercel-Trigger nicht.
-**Externe Projektkonfiguration nicht live messbar**; der Lead muss vor Merge den tatsächlichen Veröffentlichungsweg prüfen und GitHub-Mirror/Prod-Deploy parken. Kein autonomer `/close`-Mirror; bei einem main-Merge, der veröffentlicht, gilt die Owner-Sperre.
-Kein pauschales „main veröffentlicht nichts“ über die versionierte GitLab-Datei hinaus.
+Ein GitLab-Merge auf SO-main löst die GitLab-Branch-Pipeline samt Coverage aus,
+aber keine GitHub-Spiegelung. Messbeleg des Leads für Projekt-ID 74:
+`glab api projects/infrastructure%2Fsession-orchestrator/remote_mirrors` → `[]`,
+gemessen am `2026-10-10T08:34:20Z`; `remote_mirrors` ist leer.
+GitHub-Spiegeltests (`.github/workflows/test.yml:3–6`) und Vercel-Prod laufen nur
+über den GitHub-Mirror-Push durch `/close` bzw. `scripts/release.mjs`
+(`.claude/rules/security.md:100`). Die Bedingung „Merge geparkt, bis Veröffentlichung
+belegbar ausgeschlossen“ ist für den GitLab-Merge erfüllt; Mirror-Push und
+Veröffentlichung bleiben geparkt.
 
 Commitvorschlag für die einzige Produktänderung:
 `docs(io): Begründe Backupverträge und Entscheidungsgrenzen für #1032`.
@@ -223,5 +228,5 @@ Commitvorschlag für die einzige Produktänderung:
 
 Main-SHA: `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`.
 Messdatum: `2026-10-10T07:19:37Z`.
-Methode: `git grep -n 'atomicWriteWithBackup(' <Main-SHA> -- scripts hooks skills` und analog `atomicWriteWithBackupAsync(`.
+Methode: `git grep -n 'atomicWriteWithBackup(' <Main-SHA> -- scripts hooks skills` und analog `atomicWriteText(`.
 Ergebnis: 19 Sync-Treffer einschließlich Definition, 18 Aufrufstellen; 10 Async-Treffer einschließlich Definition, 9 Aufrufstellen in 7 Dateien.

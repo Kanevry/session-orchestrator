@@ -116,13 +116,13 @@ Versionierte Main-Wirkung: `.gitlab-ci.yml:37–78` definiert Prüfungsstages un
 
 ## Beantwortete und geparkte Fragen / Risiken
 
-Beantwortet und gedeckt: ausschließlich #856-Verlaufsrest statt Komplettbau; vorhandene Lifecycle-Fixtures erhalten; isolierter Plan statt Deep-Wellen; freigegebenen SHA direkt lesen; kein Commit/Push; npm-kanonisches Repo, daher keine pnpm-Installation. Zeitgedeckelte Offline-Fixtureprüfung zulässig im vorhandenen Offload-Job.
+Beantwortet und gedeckt: ausschließlich #856-Verlaufsrest statt Komplettbau; vorhandene Lifecycle-Fixtures erhalten; isolierter Plan statt Deep-Wellen; freigegebenen SHA direkt lesen; kein Commit/Push; npm-kanonisches Repo, daher keine pnpm-Installation. Zeitgedeckelte Offline-Fixtureprüfung zulässig.
 
 Geparkt und ungedeckt: Wahl Check-Runs/Workflow-Runs/Kombination; Definition und Beleg der relevanten vollständigen Menge; sichtbare Zeilen versus komplette Versuchshistorie; repräsentative pipelineId; konservative Auslassung oder Untergrenzenanzeige; 10 Zusatzrequests/20-s-Historienbudget/40-s-Gesamtbudget. Empfehlung jeweils wie oben, keine stillschweigende Umsetzung dieser Wahl.
 
 Geparkt: offizielle API-/gh-Versionverträge und Live-Abfragen, Tokens/Rechte, aktuelle Issue-/MR-/CI-Lage, externe Projektkonfiguration, alle Außenwirkung, Release/Publish und Code. Größtes fachliches Risiko: falsches lastGreen aus einem Teilworkflow. Größtes Betriebsrisiko: zusätzliche Sessionstart-Latenz und unbekannte Gegenflächen. Der strenge Vollständigkeitsvertrag kann häufig keinen Verlauf liefern; das ist vor Umsetzung bewusst zu entscheiden. Sandbox-Grün ist kein macOS-/Windows-native-/Live-GitHub-Beleg; reine Doku benötigt keine neue Ziel-OS-Wirkungsprüfung.
 
-Für reinen Doku-Diff keine eigene Vitest-Vollsuite; obige Einzeldatei reproduziert nur die historischen Anker. Typecheck prüft mjs-Code, ESLint JS/mjs, beide berühren diese Markdown-Datei nicht; Dokumentationsausnahme `.claude/rules/verification-before-completion.md:59`. CI-Jobpflicht wird dadurch nicht aufgehoben. Validator-Pfadprüfung scannt auch docs und erwartet geplante Pfade auf gleicher/unmittelbar voriger Zeile (`scripts/lib/validate/check-skill-script-paths.mjs:1–60`).
+Für reinen Doku-Diff keine eigene Vitest-Vollsuite. Typecheck prüft mjs-Code, ESLint JS/mjs, beide berühren diese Markdown-Datei nicht; Dokumentationsausnahme `.claude/rules/verification-before-completion.md:59`. CI-Jobpflicht wird dadurch nicht aufgehoben. Validator-Pfadprüfung scannt auch docs und erwartet geplante Pfade auf gleicher/unmittelbar voriger Zeile (`scripts/lib/validate/check-skill-script-paths.mjs:1–60`).
 
 Commit-Vorschlag für den Lead: `docs(ci): Bereite den GitHub-Verlaufsvertrag vor`. Keine Issue-Schließung aus diesem Teilplan. Dieser Lauf endet nach der Entscheidungsvorlage; Implementierung bleibt bis Vertragswahl und neuem freigegebenem Scope geparkt.
 

@@ -277,8 +277,10 @@ Plancheck → Formatcheck → anhalten. Kein zweites Issue, keine Discovery-Well
 | Commit / Push / MR / Merge | Lead | Nur Plan soll zunächst integriert werden, kein Split |
 
 Ein GitLab-Merge auf SO-main löst die GitLab-Branch-Pipeline samt Coverage aus,
-aber keine GitHub-Spiegelung: `remote_mirrors` ist leer. GitHub-Spiegeltests
-(`.github/workflows/test.yml:3–6`) und Vercel-Prod laufen nur über den GitHub-
+aber keine GitHub-Spiegelung. Messbeleg des Leads für Projekt-ID 74:
+`glab api projects/infrastructure%2Fsession-orchestrator/remote_mirrors` → `[]`,
+gemessen am `2026-10-10T08:34:20Z`; `remote_mirrors` ist leer.
+GitHub-Spiegeltests (`.github/workflows/test.yml:3–6`) und Vercel-Prod laufen nur über den GitHub-
 Mirror-Push durch `/close` bzw. `scripts/release.mjs` (`.claude/rules/security.md:100`).
 GitLab definiert keine Deploy-/Release-/Publish-Jobs; npm-Publish ist gesondert
 (`.claude/rules/development.md:89–93`). `vercel.json:3–5` konfiguriert die Website.
