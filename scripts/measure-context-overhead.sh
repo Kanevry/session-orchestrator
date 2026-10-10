@@ -44,6 +44,8 @@
 set -uo pipefail
 
 PROMPT='Antworte nur mit dem Wort: OK'
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+FORMATTER="$SCRIPT_DIR/lib/context-overhead-format.mjs"
 
 measure_one() {
   local dir="$1" label="$2"
@@ -51,29 +53,10 @@ measure_one() {
     printf '%s\tNO-SUCH-DIR\n' "$label"
     return
   fi
-  ( cd "$dir" && claude -p "$PROMPT" --output-format json 2>/dev/null ) | node -e "
-let s = '';
-process.stdin.on('data', (d) => (s += d)).on('end', () => {
-  const label = process.argv[1];
-  try {
-    const j = JSON.parse(s);
-    const u = j.usage || {};
-    const ctx =
-      (u.input_tokens || 0) +
-      (u.cache_creation_input_tokens || 0) +
-      (u.cache_read_input_tokens || 0);
-    process.stdout.write(
-      [label, ctx, u.cache_creation_input_tokens || 0, u.cache_read_input_tokens || 0,
-       u.output_tokens || 0, (j.total_cost_usd || 0).toFixed(4)].join('\t') + '\n',
-    );
-  } catch {
-    process.stdout.write(label + '\tPARSE-ERROR\n');
-  }
-});
-" "$label"
+  ( cd "$dir" && claude -p "$PROMPT" --output-format json 2>/dev/null ) | node "$FORMATTER" -- "$label"
 }
 
-header() { printf 'LABEL\tCONTEXT_TOK\tcache_create\tcache_read\toutput\tUSD\n'; }
+header() { node "$FORMATTER" --header; }
 
 # ── --ablate mode ───────────────────────────────────────────────────
 if [ "${1:-}" = "--ablate" ]; then
