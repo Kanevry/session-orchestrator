@@ -90,6 +90,16 @@ describe('role-profile evidence contract v1', () => {
     rejected(r, 'INVALID_RELATION', ['authorization', 'status']);
     authorize(r);
     expect(roleProfileEvidenceSchema.safeParse(r).success).toBe(true);
+    const receipt = r.authorization.sourceRef;
+    for (const [code, change] of [
+      ['INVALID_TYPE', a => { a.sourceRef = null; }],
+      ['INVALID_TYPE', a => { a.sourceRef = ' '; }],
+      ['MISSING_FIELD', a => { delete a.sourceRef; }],
+    ]) {
+      change(r.authorization);
+      rejected(r, code, ['authorization', 'sourceRef']);
+      r.authorization.sourceRef = receipt;
+    }
     r.authorization.scope.effort.value = 'high';
     rejected(r, 'INVALID_RELATION', ['authorization', 'scope', 'effort', 'value']);
   });
