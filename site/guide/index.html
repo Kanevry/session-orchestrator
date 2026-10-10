@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Guide: install session-orchestrator and run your first session</title>
+<title>Guide: install session-orchestrator and run a session</title>
 <meta name="description" content="Install Session Orchestrator on Claude Code, Codex CLI, Cursor or Pi. Requirements, first-session commands, platform limits and troubleshooting.">
 <link rel="canonical" href="https://session-orchestrator.com/guide">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Session Orchestrator">
 <meta property="og:url" content="https://session-orchestrator.com/guide">
-<meta property="og:title" content="Guide: install session-orchestrator and run your first session">
+<meta property="og:title" content="Guide: install session-orchestrator and run a session">
 <meta property="og:description" content="Install Session Orchestrator on Claude Code, Codex CLI, Cursor or Pi. Requirements, first-session commands, platform limits and troubleshooting.">
 <meta property="og:image" content="https://session-orchestrator.com/og.png">
 <meta property="og:image:width" content="1200">
@@ -17,29 +17,75 @@
 <meta property="og:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
 <meta property="og:locale" content="en_US">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="Guide: install session-orchestrator and run your first session">
+<meta name="twitter:title" content="Guide: install session-orchestrator and run a session">
 <meta name="twitter:description" content="Install Session Orchestrator on Claude Code, Codex CLI, Cursor or Pi. Requirements, first-session commands, platform limits and troubleshooting.">
 <meta name="twitter:image" content="https://session-orchestrator.com/og.png">
 <meta name="twitter:image:alt" content="Session Orchestrator: Plan, Go, Close with a robotics illustration.">
 <link rel="icon" href="/favicon.svg">
 <link rel="alternate" type="text/plain" href="/llms.txt" title="llms.txt">
 
-<!-- TechArticle: this page is documentation, not the product page. isPartOf
-     and about point at the WebSite/SoftwareApplication nodes carried by the
-     site's own graph (site/index.html): no author/publisher node here, the
-     site node already carries them, and this file carries no author-domain
-     string by design (leakage rule CP7). -->
+<!-- Self-contained documentation graph: shared site/product identities are
+     defined here so a crawler does not need the homepage to resolve them.
+     No author/publisher node or author-domain string (leakage rule CP7).
+     The source-review date stays historical; metadata edits are not a new
+     review of the installation guidance. -->
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
-  "@type": "TechArticle",
-  "@id": "https://session-orchestrator.com/guide#article",
-  "headline": "Install. Run a session.<br>Check the result.",
-  "inLanguage": "en",
-  "mainEntityOfPage": "https://session-orchestrator.com/guide",
-  "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
-  "about": { "@id": "https://session-orchestrator.com/#software" },
-  "dateModified": "2026-09-08"
+  "@graph": [
+    {
+      "@type": "WebPage",
+      "@id": "https://session-orchestrator.com/guide",
+      "url": "https://session-orchestrator.com/guide",
+      "name": "Guide: install session-orchestrator and run a session",
+      "inLanguage": "en",
+      "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
+      "mainEntity": { "@id": "https://session-orchestrator.com/guide#article" },
+      "breadcrumb": { "@id": "https://session-orchestrator.com/guide#breadcrumb" }
+    },
+    {
+      "@type": "BreadcrumbList",
+      "@id": "https://session-orchestrator.com/guide#breadcrumb",
+      "itemListElement": [
+        {
+          "@type": "ListItem",
+          "position": 1,
+          "name": "Session Orchestrator",
+          "item": "https://session-orchestrator.com/"
+        },
+        {
+          "@type": "ListItem",
+          "position": 2,
+          "name": "Guide",
+          "item": "https://session-orchestrator.com/guide"
+        }
+      ]
+    },
+    {
+      "@type": "WebSite",
+      "@id": "https://session-orchestrator.com/#website",
+      "url": "https://session-orchestrator.com/",
+      "name": "Session Orchestrator",
+      "alternateName": "session-orchestrator",
+      "inLanguage": ["en", "de"]
+    },
+    {
+      "@type": "SoftwareApplication",
+      "@id": "https://session-orchestrator.com/#software",
+      "name": "Session Orchestrator",
+      "url": "https://session-orchestrator.com/"
+    },
+    {
+      "@type": "TechArticle",
+      "@id": "https://session-orchestrator.com/guide#article",
+      "headline": "Install. Run a session. Check the result.",
+      "inLanguage": "en",
+      "mainEntityOfPage": "https://session-orchestrator.com/guide",
+      "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
+      "about": { "@id": "https://session-orchestrator.com/#software" },
+      "dateModified": "2026-09-08"
+    }
+  ]
 }
 </script>
 

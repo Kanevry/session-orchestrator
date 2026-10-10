@@ -85,10 +85,13 @@ describe('site JSON-LD: 1. block integrity', () => {
   });
 });
 
-describe('site JSON-LD: 2. cross-page reference resolution', () => {
-  // A renamed node leaves a reference on another page pointing at nothing.
-  it.each(PAGES)('$file resolves every pure @id reference across all shipped pages', ({ file }) => {
-    const documents = PAGES.map((page) => document(page.file));
+describe('site JSON-LD: 2. reference resolution', () => {
+  // A crawler can read each entry page alone. The guide used to rely on
+  // entities only defined on the homepage; the remaining pages retain their
+  // existing cross-page contract until their own graphs are expanded.
+  it.each(PAGES)('$file resolves every pure @id reference in its supported graph', ({ file }) => {
+    const selfContained = PAGES.slice(0, 3).some((page) => page.file === file);
+    const documents = (selfContained ? [{ file }] : PAGES).map((page) => document(page.file));
     const registry = new Set();
     for (const data of documents) {
       const topLevel = Array.isArray(data) ? data : (data['@graph'] ?? [data]);
@@ -98,11 +101,14 @@ describe('site JSON-LD: 2. cross-page reference resolution', () => {
         }
       }
     }
-    const unresolved = objects(documents[PAGES.findIndex((page) => page.file === file)])
+    const unresolved = objects(document(file))
       .filter((node) => Object.keys(node).length === 1 && '@id' in node)
       .map((node) => node['@id'])
       .filter((id) => !registry.has(id));
-    expect(unresolved, `${file}: unresolved JSON-LD references`).toEqual([]);
+    expect(
+      unresolved,
+      `${file}: unresolved ${selfContained ? 'local' : 'cross-page'} references`,
+    ).toEqual([]);
   });
 });
 
@@ -116,7 +122,9 @@ describe('site JSON-LD: 3. page identity', () => {
         `${file}: ${type} node`,
       ).toHaveLength(1);
     }
-    for (const node of nodes.filter((entry) => hasType(entry, 'WebPage'))) {
+    const webPages = nodes.filter((entry) => hasType(entry, 'WebPage'));
+    expect(webPages, `${file}: explicit WebPage identity`).toHaveLength(1);
+    for (const node of webPages) {
       const fields = ['@id', 'url'].filter((key) => key in node);
       expect(fields.length, `${file}: WebPage needs @id or url`).toBeGreaterThan(0);
       for (const key of fields) {
@@ -130,10 +138,54 @@ describe('site JSON-LD: 3. page identity', () => {
         `${file}: TechArticle.mainEntityOfPage`,
       ).toBe(route);
     }
-    // / and /de carry no WebPage node: the FAQPage @id is their page identity.
+    // The FAQ is a fragment of this page, not a second canonical page.
     for (const node of nodes.filter((entry) => hasType(entry, 'FAQPage'))) {
       expect(String(node['@id']).split('#')[0], `${file}: FAQPage.@id page`).toBe(route);
     }
+  });
+});
+
+describe('site JSON-LD: entry-page navigation', () => {
+  // Copying a graph must not keep another page's breadcrumb or confuse the
+  // translated page URL with the shared site's identity.
+  it.each(PAGES.slice(0, 3))(
+    '$file connects its page to the site and correct breadcrumb trail',
+    ({ file, route }) => {
+      const [page] = nodesOfType(file, 'WebPage');
+      const websites = nodesOfType(file, 'WebSite');
+      expect(websites, `${file}: WebSite`).toHaveLength(1);
+      expect(websites[0].url).toBe('https://session-orchestrator.com/');
+      expect(websites[0].alternateName).toEqual(expect.any(String));
+      expect(websites[0].alternateName.trim()).not.toBe('');
+      expect(page?.isPartOf?.['@id']).toBe(websites[0]['@id']);
+
+      const breadcrumbs = nodesOfType(file, 'BreadcrumbList');
+      expect(breadcrumbs, `${file}: BreadcrumbList`).toHaveLength(1);
+      expect(page?.breadcrumb?.['@id']).toBe(breadcrumbs[0]['@id']);
+      const items = breadcrumbs[0].itemListElement;
+      const routes =
+        route === 'https://session-orchestrator.com/'
+          ? [route]
+          : ['https://session-orchestrator.com/', route];
+      expect(items.map((item) => item.item)).toEqual(routes);
+      expect(items.map((item) => item.position)).toEqual(routes.map((_, index) => index + 1));
+      for (const item of items) {
+        expect(hasType(item, 'ListItem')).toBe(true);
+        expect(item.name).toEqual(expect.any(String));
+        expect(item.name.trim()).not.toBe('');
+      }
+    },
+  );
+});
+
+describe('site JSON-LD: guide headline', () => {
+  // Copying a visible heading's markup into JSON-LD exposes literal HTML to crawlers.
+  it('represents the visible heading as plain text', () => {
+    const file = 'site/guide/index.html';
+    const [article] = nodesOfType(file, 'TechArticle');
+    const heading = read(file).match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1];
+    expect(heading, `${file}: visible heading`).toBeDefined();
+    expect(article.headline).toBe(text(heading.replace(/<br\s*\/?\s*>/gi, ' ')));
   });
 });
 
