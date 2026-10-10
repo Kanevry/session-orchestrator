@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-10T03:25:42.383Z",
-  "head": "4ee1ffa48534ae6d7a7752771b1f387facc2ef9b",
+  "generated_at": "2026-10-10T12:04:56.821Z",
+  "head": "f4f6200c067d28025bf70e34296cd5ebabcfc7f8",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1162,6 +1162,19 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/native-command.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-templates-first.mjs"
       ]
     },
     {

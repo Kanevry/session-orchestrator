@@ -96,45 +96,19 @@ describe('warn', () => {
 
 describe('requireJq', () => {
   it('does not throw when jq is available (live system check)', async () => {
-    // jq is required in the dev environment (common.sh already gates on it)
+    // Global setup requires jq; a platform-specific lookup failure must fail here.
     const { requireJq } = await import('@lib/common.mjs');
-    // If jq is not installed this test is informational — skip gracefully
-    try {
-      expect(() => requireJq()).not.toThrow();
-    } catch {
-      // jq not installed in this environment — acceptable
-    }
+    expect(() => requireJq()).not.toThrow();
   });
 
-  it('throws an Error when jq is not on PATH', async () => {
-    // Force PATH to an empty string so execSync cannot find jq
+  it('preserves the installation error when jq is not on PATH', async () => {
     const { requireJq } = await import('@lib/common.mjs');
     const savedPath = process.env.PATH;
     process.env.PATH = '';
     try {
-      expect(() => requireJq()).toThrow(Error);
-    } finally {
-      process.env.PATH = savedPath;
-    }
-  });
-
-  it('thrown error message mentions "jq"', async () => {
-    const { requireJq } = await import('@lib/common.mjs');
-    const savedPath = process.env.PATH;
-    process.env.PATH = '';
-    try {
-      expect(() => requireJq()).toThrow(/jq/);
-    } finally {
-      process.env.PATH = savedPath;
-    }
-  });
-
-  it('thrown error message mentions install instructions', async () => {
-    const { requireJq } = await import('@lib/common.mjs');
-    const savedPath = process.env.PATH;
-    process.env.PATH = '';
-    try {
-      expect(() => requireJq()).toThrow(/brew install jq/);
+      expect(() => requireJq()).toThrow(
+        'jq is required but not installed. Install via: brew install jq',
+      );
     } finally {
       process.env.PATH = savedPath;
     }
