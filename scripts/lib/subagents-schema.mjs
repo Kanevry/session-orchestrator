@@ -55,6 +55,8 @@
  *   total_cost_usd    number  | null — native total cost in USD (#624, fractional,
  *                                      best-effort: null when the harness does not
  *                                      expose it; no rate table is applied)
+ *   cost_basis        'api-list-equivalent' | null — explicitly supplied cost
+ *                                      provenance; null means unknown (#1543)
  *
  * OTel aliases (optional, stop-only, additive — #411, schema_version=1 backwards-compat):
  *   gen_ai.usage.input_tokens   integer | null — RAW UNCACHED prompt tokens (OTel
@@ -69,6 +71,7 @@
 import { readFile, appendFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { COST_BASIS } from './telemetry/pricing.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -267,6 +270,11 @@ export function validateSubagent(entry, options = {}) {
     }
   }
 
+  // #1543 additive: never infer provenance from a native dollar value.
+  if (entry.cost_basis !== undefined && entry.cost_basis !== null && entry.cost_basis !== COST_BASIS) {
+    throw new ValidationError(`cost_basis must be ${COST_BASIS} or null`, 'cost_basis');
+  }
+
   // OTel alias — #411 additive, schema_version=1 backwards-compat
   const otelInputTokens = entry['gen_ai.usage.input_tokens'];
   if (otelInputTokens !== undefined && otelInputTokens !== null) {
@@ -334,6 +342,7 @@ export function normalizeSubagent(entry) {
     model: entry.model ?? null,
     // total_cost_usd — #624 additive, best-effort native cost (null when absent)
     total_cost_usd: entry.total_cost_usd ?? null,
+    cost_basis: entry.cost_basis ?? null,
     // OTel alias — #411 additive, schema_version=1 backwards-compat
     'gen_ai.usage.input_tokens': entry['gen_ai.usage.input_tokens'] ?? null,
     'gen_ai.usage.cache_read_input_tokens': entry['gen_ai.usage.cache_read_input_tokens'] ?? null,

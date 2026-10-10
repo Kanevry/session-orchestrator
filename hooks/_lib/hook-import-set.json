@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-08T18:11:08.022Z",
-  "head": "644743cc786ebc1653f34b44edcc7fc0c066faaf",
+  "generated_at": "2026-10-10T03:25:42.383Z",
+  "head": "4ee1ffa48534ae6d7a7752771b1f387facc2ef9b",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1637,6 +1637,12 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/telemetry/pricing.mjs",
+      "reachable_from": [
+        "subagent-telemetry.mjs"
       ]
     },
     {
