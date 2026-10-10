@@ -1,7 +1,7 @@
 # Session Orchestrator
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.10.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-5.11.0-blue.svg)](CHANGELOG.md)
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 
 **Give your agents a working rhythm.**
@@ -139,15 +139,15 @@ How this compares to other orchestrators, with measured results kept separate fr
 
 All four platforms share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex leaves its `PreToolUse` handlers empty because these guards do not yet match its tool names and edit payloads ([why](docs/codex-setup.md#why-our-pretooluse-guards-stay-unwired--the-reason-corrected)). Cursor and Pi have known event-coverage limits — see [`docs/cursor-setup.md`](docs/cursor-setup.md) and [`docs/pi-setup.md`](docs/pi-setup.md).
 
-## Recent highlights (v5.10.0)
+## Recent highlights (v5.11.0)
 
-Highlights of the v5.10.0 line:
+Highlights of the v5.11.0 line:
 
-- **Scope checks follow the agent checkout.** Isolated agents use verified coordinator manifests, with grants applied to their own checkout (#1504).
-- **Release privacy checks inspect the published archive.** Host-specific rules stay in protected local configuration, and the release publishes the bytes it checked (#1530).
-- **Remote push gates verify the pushed commit.** A matching receipt is required; unavailable hosts permit fallback (#1532).
-- **Sessions retain their host.** Mirrored notes and the board show the originating machine, while legacy records remain supported (#1054).
-- **Clearer gate results and host-aware drift checks.** Colored test counts and complete failure output survive capture; narrow foreign-host prefixes can be configured explicitly (#937, #1534, #1535).
+- **Accounting distinguishes unknown values and estimates.** Missing usage and costs remain explicit; computed session costs carry their API list-price basis and pricing-table date (#1470, #1543, #1547).
+- **Quota-rejected proposals remain recoverable.** Overflow records survive rotation, and unsafe recovery paths preserve the queue (#1027, #1544, #1545).
+- **Accepted releases can be verified later.** Reconciliation checks receipt proof, registry integrity and consumer downloads, including versions superseded by a newer `latest` (#1537).
+- **Session and gate diagnostics are more reliable.** Acquisition attempts to refresh lock proofs, eligible fresh repositories ignore runtime state, and scope and gate records expose measured problems (#1515, #1541, #1026, #1487, #1514).
+- **Lead links have their own social preview.** The lead page uses a dedicated image and descriptive alternative text (#1531).
 
 Full changes and upgrade notes: [CHANGELOG.md](CHANGELOG.md).
 

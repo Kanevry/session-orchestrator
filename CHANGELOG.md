@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.11.0] - 2026-10-10
+
+### Added
+
+- **Recoverable proposal overflow** (#1027): validated memory proposals rejected by the wave quota are retained in `proposals-overflow.jsonl` for later inspection. They remain outside the collector and quota; a failed overflow write reports an error rather than claiming retention.
+- **Resumable release verification** (#1537): `--reconcile --target X.Y.Z` verifies an accepted npm upload against a persisted receipt proof, registry integrity and a consumer tarball download. It distinguishes pending availability from integrity failure and reports verified versions as superseded when a newer release holds `latest`.
+- **Lead social preview** (#1531): the lead page uses its own Open Graph and Twitter image with descriptive alternative text, making shared links identify the lead project.
+
+### Fixed
+
+- **Unknown accounting values** (#1547): context-overhead output reports absent usage as `NO-USAGE`, and missing costs remain unknown in overhead and ablation results. Ablation totals stay unknown when any cell lacks a cost, while an explicitly reported zero remains zero.
+- **Overflow rotation without data loss** (#1545): rotation preserves existing proposals in durable, exclusive archives before replacing the active file, retaining file permissions and incomplete-write evidence. Unsupported archive hard links preserve the active file and report the filesystem error without accumulating completed staging copies.
+- **Session lock ownership** (#1541): successful acquisition, takeover and reclaim now attempt to refresh the owner proof so a subsequent session can release its own lock. Session-end cleanup checks that the proof still identifies the released lock before removing it.
+- **Clean session-start status** (#1515): repositories without bootstrap, tracked state or steering, peer and policy data receive runtime ignore rules, keeping fresh repository status clear. Existing ignore files are preserved and symlinked state directories are rejected.
+- **Scope and gate diagnostics** (#1026, #1487, #1514): disjoint wave scopes warn when synthesized test-sibling globs grant the same tests to multiple agents, and sidecar mismatches enter the event ledger. Reporting gate variants record `check_failed` only when a verdict was measured, so skipped or stubbed checks cannot appear green through a default value.
+- **Pre-push fallback under Husky** (#1540): shell error handling permits the documented local fallback after remote transport or readiness failure and preserves blocked-push diagnostics after a failed gate.
+- **Python audit detection** (#1538): hygiene checks recognize pinned `pip-audit` invocations through `uvx`, `pipx run` and `uv tool run`, including runner options. Help output and unrelated source packages cannot satisfy the audit requirement.
+- **Record repair and drift checks**: timestamp repair converts explicit offsets to UTC while preserving the original spelling and rejecting invalid calendar values; pricing-table dates also receive calendar validation. Explicit `N+ test files` claims are treated as lower bounds, avoiding false drift reports as the suite grows.
+
+### Changed
+
+- **Cost provenance** (#1470, #1543): session rollups label computed costs as API list-price equivalents and record the pricing-table date, making clear that these figures do not measure payments. Subagent and overhead records retain recognized provenance only when explicitly supplied alongside a valid cost; otherwise the basis remains unknown.
+
+### Security
+
+- **Proposal sink path safety** (#1544): missing write targets are checked through their existing ancestors to reject escaping or dangling symlinks. An unsafe recovery archive prevents queue clearing and preserves proposals and summaries for recovery.
+
 ## [5.10.0] - 2026-10-07
 
 ### Added
