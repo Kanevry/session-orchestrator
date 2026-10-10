@@ -113,6 +113,7 @@ import { appendSubagent } from '../scripts/lib/subagents-schema.mjs';
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 import { readTailWindow } from '../scripts/lib/tail-window.mjs';
+import { COST_BASIS } from '../scripts/lib/telemetry/pricing.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -859,14 +860,18 @@ async function main() {
     // the rollup can price it part by part; absent on every other record.
     if (modelsUsage !== null) record.models_usage = modelsUsage;
 
-    // Cost is best-effort / forward-compat (#624): the native transcript does
-    // NOT expose total_cost_usd today, so this is null in practice. No rate
-    // table is applied HERE — use the native cost only, default null when absent.
+    // Cost is best-effort (#624): retain the native payload value when valid,
+    // including a genuine zero; use null when absent. No rate table is applied
+    // HERE. Provenance (#1543) requires an explicit recognized payload basis;
+    // a native number alone says nothing about billing or API list prices.
     const totalCostUsd =
       typeof input.total_cost_usd === 'number' && Number.isFinite(input.total_cost_usd) && input.total_cost_usd >= 0
         ? input.total_cost_usd
         : null;
     record.total_cost_usd = totalCostUsd;
+    record.cost_basis = totalCostUsd !== null && input.cost_basis === COST_BASIS
+      ? input.cost_basis
+      : null;
 
     // OTel alias — #411 additive. `gen_ai.usage.input_tokens` stays the RAW
     // UNCACHED value (OTel semantic), which is why it is deliberately NOT equal

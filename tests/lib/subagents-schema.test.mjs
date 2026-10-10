@@ -103,6 +103,18 @@ describe('ValidationError', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSubagent', () => {
+  it.each([1, 2])('accepts additive cost provenance on schema v%s', (schema_version) => {
+    expect(() => validateSubagent({ ...validStop(), schema_version, total_cost_usd: 0, cost_basis: 'api-list-equivalent' })).not.toThrow();
+    expect(() => validateSubagent({ ...validStop(), schema_version, total_cost_usd: 1.25, cost_basis: null })).not.toThrow();
+    expect(() => validateSubagent({ ...validStop(), schema_version, total_cost_usd: 1.25 })).not.toThrow();
+  });
+
+  it('rejects unsupported cost provenance', () => {
+    for (const cost_basis of ['measured', '', 0, {}, []]) {
+      expect(() => validateSubagent({ ...validStop(), total_cost_usd: 1.25, cost_basis })).toThrow(/cost_basis/);
+    }
+  });
+
   it('accepts a valid event=start record', () => {
     const entry = validStart();
     expect(() => validateSubagent(entry)).not.toThrow();
@@ -218,6 +230,15 @@ describe('validateSubagent', () => {
 // ---------------------------------------------------------------------------
 
 describe('normalizeSubagent', () => {
+  it.each([
+    [{ total_cost_usd: 0 }, 0, null],
+    [{ total_cost_usd: 1.25, cost_basis: 'api-list-equivalent' }, 1.25, 'api-list-equivalent'],
+  ])('preserves legacy cost and defaults only absent provenance: %j', (fields, cost, basis) => {
+    const record = normalizeSubagent({ ...validStop(), ...fields });
+    expect(record.total_cost_usd).toBe(cost);
+    expect(record.cost_basis).toBe(basis);
+  });
+
   it('fills schema_version with CURRENT_SCHEMA_VERSION when missing', () => {
     const entry = { timestamp: '2026-05-08T10:00:00Z', event: 'start', agent_id: 'a1' };
     const result = normalizeSubagent(entry);

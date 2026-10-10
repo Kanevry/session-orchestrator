@@ -18,6 +18,7 @@ import {
   mkdirSync,
   rmSync,
   existsSync,
+  readFileSync,
   writeFileSync,
   appendFileSync,
   statSync,
@@ -161,6 +162,27 @@ function subagentTranscriptPath(agentId) {
 }
 
 describe('subagent-telemetry hook', () => {
+  it.each([
+    [{ total_cost_usd: 0 }, 0, null],
+    [{ total_cost_usd: null }, null, null],
+    [{ total_cost_usd: 0, cost_basis: 'api-list-equivalent' }, 0, 'api-list-equivalent'],
+    [{ total_cost_usd: 1.25, cost_basis: 'measured' }, 1.25, null],
+    [{ total_cost_usd: -1, cost_basis: 'api-list-equivalent' }, null, null],
+    [{ cost_basis: 'api-list-equivalent' }, null, null],
+  ])('persists only evidenced cost provenance from the hook payload: %j', (fields, cost, basis) => {
+    const result = runHook(JSON.stringify({
+      hook_event_name: 'SubagentStop',
+      agent_id: 'cost-provenance-agent',
+      ...fields,
+    }));
+    // Inspect the raw producer record: reader defaults must not hide omissions.
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const record = JSON.parse(readFileSync(join(tmp, JSONL_REL), 'utf8').trim());
+    expect(record.total_cost_usd).toBe(cost);
+    expect(record.cost_basis).toBe(basis);
+  });
+
   it('happy path: SubagentStop payload appends a valid record and exits 0', async () => {
     const payload = JSON.stringify({
       hook_event_name: 'SubagentStop',
