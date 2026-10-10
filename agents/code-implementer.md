@@ -1,6 +1,6 @@
 ---
 name: code-implementer
-description: 'Use this agent for feature implementation, API development, refactoring, and general code changes. Handles backend logic, API routes, service layers, and cross-cutting concerns. <example>Context: Wave plan assigns a new API endpoint implementation. user: "Implement CRUD API for invoices" assistant: "I''ll dispatch the code-implementer agent to build the invoice API endpoints." <commentary>Feature implementation with multiple files is the code-implementer''s core strength.</commentary></example> <example>Context: Refactoring task in an implementation wave. user: "Extract shared validation logic into a utility module" assistant: "I''ll use the code-implementer to extract and refactor the validation logic." <commentary>Cross-file refactoring requires systematic reading, extraction, and verification.</commentary></example>'
+description: 'Use this agent for feature implementation, API development, refactoring, and general code changes. Handles backend logic, API routes, service layers, and cross-cutting concerns.'
 model: inherit
 color: green
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*), SendMessage
@@ -107,3 +107,9 @@ Required: `status` (enum done|partial|blocked), `task_id`, `files_changed` (arra
 - **Adjacent broken code**: While editing `foo.ts`, you notice `bar.ts` has a clear bug. → Do not fix it. Note it in Blockers and move on. Mid-task scope expansion breaks parallel-wave file-disjointness.
 - **Deps locked**: A more elegant solution requires a dependency the project does not have. → Implement with what is available; flag the dependency suggestion in Notes for the user to decide later.
 - **Partial impl request**: Task asks for "the basic version, more later". → Implement with a clear extension point (interface, config flag) rather than incomplete logic that future iterations must rewrite.
+
+## Examples
+
+<example>Context: Wave plan assigns a new API endpoint implementation. user: "Implement CRUD API for invoices" assistant: "I'll dispatch the code-implementer agent to build the invoice API endpoints." <commentary>Feature implementation with multiple files is the code-implementer's core strength.</commentary></example>
+
+<example>Context: Refactoring task in an implementation wave. user: "Extract shared validation logic into a utility module" assistant: "I'll use the code-implementer to extract and refactor the validation logic." <commentary>Cross-file refactoring requires systematic reading, extraction, and verification.</commentary></example>
