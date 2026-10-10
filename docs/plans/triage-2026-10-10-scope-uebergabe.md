@@ -94,6 +94,7 @@ Behauptung, alle bestehenden Hooks würden mechanisch fail-closed arbeiten.
 ## Drei Zustandsfälle und Abnahme
 
 Als gemeinsame Datei dient ausschließlich die synthetische Datei
+<!-- path-check: example -->
 `docs/fixture-shared.md`; A ist bisheriger Besitzer, B der vorgeschlagene neue.
 
 | Zustand | Erforderlicher Beleg | Erwartung und Abnahme |
