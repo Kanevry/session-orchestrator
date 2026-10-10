@@ -80,6 +80,8 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 
 **Resolution order** (highest precedence first): `CLAUDE_CODE_SUBAGENT_MODEL` environment variable → the invocation-time model parameter (if the dispatcher passes one explicitly) → the agent's own frontmatter `model:` value. An agent's `model:` is therefore a default, not a guarantee — a session or environment override can supersede it.
 
+See the [offline role-profile evidence contract](role-profile-contract.md).
+
 ## Git-Write Ban Requirement (PSA-007, #724)
 
 Every agent definition with `repo-write` sandbox-tier (i.e. `Edit`/`Write` present in `tools:`) MUST carry an explicit git-write ban line in its `## Rules` section:
