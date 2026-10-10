@@ -77,6 +77,9 @@ async function inspect(root, name) {
 }
 
 async function readSnapshot({ target, stat }) {
+  // The parent check above and this open are not atomic: a same-user process can swap a parent
+  // directory in between. Fine while the operator names the snapshot files and the result grants
+  // nothing; revisit (#1549) once paths come from a foreign owner or the result gates a decision.
   if (typeof constants.O_NOFOLLOW !== 'number' || typeof constants.O_NONBLOCK !== 'number') {
     throw failure('unsupported-safe-open', 2);
   }
