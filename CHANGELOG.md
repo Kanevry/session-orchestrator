@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Pre-push fallback under Husky** (#1540): shell error handling permits the documented local fallback after remote transport or readiness failure and preserves blocked-push diagnostics after a failed gate.
 - **Python audit detection** (#1538): hygiene checks recognize pinned `pip-audit` invocations through `uvx`, `pipx run` and `uv tool run`, including runner options. Help output and unrelated source packages cannot satisfy the audit requirement.
 - **Record repair and drift checks**: timestamp repair converts explicit offsets to UTC while preserving the original spelling and rejecting invalid calendar values; pricing-table dates also receive calendar validation. Explicit `N+ test files` claims are treated as lower bounds, avoiding false drift reports as the suite grows.
+- **Site page identities** (#1483): the English, German and guide pages declare their own page and breadcrumb identity in structured data with resolvable page-local references, so search engines attribute each page correctly. Visible content and reviewed dates are unchanged.
 
 ### Changed
 
