@@ -5,35 +5,14 @@ Refs #990. Das Issue bleibt offen; der vorhandene Teilsplit erledigt den Rest ni
 
 ## Auftrag und Belegstand
 
-Der Lead begrenzt so-bb5 auf genau dieses neue Planartefakt. Keine Phase 2,
+Der Lead begrenzt die Planphase auf genau dieses neue Planartefakt. Keine Phase 2,
 keine Welle, kein `/go`, keine Quell-, Test-, Config-, Hook- oder Runtime-Schreibvorgänge.
 Der abweichende Dateiname aus dem ursprünglichen Triage-Zitat wird nicht angelegt.
-Der Starter hat das Grenz-Tor auf dem M4 als `frei` gemessen; dieser Beleg gilt
-laut Brief auf m5. Kein eigener Tor-/Slot-Aufruf, keine Suche in anderen Repos.
 
-Messung aus der Host-Uhr: **2026-10-10T07:48:17Z**, m5/Darwin, Node v24.20.0.
-Alle folgenden Main-Anker beziehen sich auf das vorhandene Git-Objekt
-**`e9674ea2df3afedd2790f904ce9188575e3d6d2d`** (Main des Leads), abgeleitet aus
+Messdatum: **2026-10-10T07:48:17Z**. Alle Main-Anker beziehen sich auf
+**`e9674ea2df3afedd2790f904ce9188575e3d6d2d`**, gelesen mit
 `git show e9674ea2df3afedd2790f904ce9188575e3d6d2d:<datei>` mit Zeilennummerierung.
-Keine Drei-Punkte-Diff-Koordinaten. Die untersuchten Quell-/Testdateien und CI-Dateien
-haben gegenüber dem Offload-HEAD keinen Diff.
-
-| Messpunkt | Ergebnis / Aussagegrenze |
-| --- | --- |
-| `git rev-parse HEAD` | `bc9e3237bebd607ce9c2d2a2222c4f430e558bad`, Offload-Sync-Snapshot |
-| `git rev-parse --verify origin/main` | Ref fehlt; kein Fetch erlaubt, Remote-Aktualität nicht messbar |
-| `git show-ref --heads` | Nur lokales `main`: `1d0d0873c0c61ba668a9d6fe9148459d1a9bd364`; dieser ältere Ref ist nicht der Main-Beleg des Leads |
-| `git branch --show-current` | Leer: detached HEAD; gewünschter Lead-Branch `docs/so-bb5-990-lock-split` wird hier nicht angelegt |
-| `git status --porcelain --untracked-files=all` vor Änderung | Leer; keine sichtbaren fremden Arbeitsbaumänderungen |
-| Bootstrap / Konfiguration | `.orchestrator/bootstrap.lock:2–4`: version 1, tier deep; Session Config und Steering vorhanden, nur gelesen |
-| Besitz / andere Autoren | Lead-Lage: keine laufende Session; keine aktuelle vollständige Besitzliste, daher ungeklärt; kein Lock gelesen oder als eigene Identität interpretiert |
-| Issue / CI / MRs / Flotte | Issue-Status und Labels aus Brief übernommen; kein Netz, kein glab, keine Live- oder Grünbehauptung |
-
-Sessionstart ist damit auf die zulässige lesende Einarbeitung begrenzt.
-Generische Skill-Schritte für Fetch, Acquire, Heartbeat, STATE.md, Telemetrie,
-Vault, externe Recherche, Issue-Updates und ausführbare Wellenpläne entfallen
-wegen der engeren Owner-/Lead-Vorgaben. Owner-Dateien außerhalb des Arbeitsordners
-werden nicht gelesen. Es wird kein ausführbarer Sessionplan materialisiert.
+Keine Drei-Punkte-Diff-Koordinaten.
 
 ### Prämisse je Kandidat
 
@@ -269,9 +248,7 @@ Job-Endzustände und Logs muss der Lead nachweisen; jetzt nicht messbar.
 ## Dateifläche und Kollisionsmatrix
 
 **Vollständige Schreibfläche dieses Bündels:** ausschließlich neu
-`docs/plans/triage-2026-10-10-lock-split.md`. Keine Parkplatz-/STATE-/Metrikdatei:
-die engere Ein-Datei-Vorgabe verhindert zusätzliche lokale Protokollwrites;
-Antworten und Parkplatz stehen deshalb hier.
+`docs/plans/triage-2026-10-10-lock-split.md`. Keine zusätzliche Runtime-Schreibfläche; die engere Ein-Datei-Vorgabe gilt.
 
 | Gegenbündel / Fläche | Kollision / Urteil |
 | --- | --- |
@@ -287,33 +264,35 @@ Autoren materialisieren; diese Kandidatenliste erteilt keinen Schreibscope.
 
 ## Ablauf, Rollen und Entscheidungen
 
-**Ausführbare Wellen in so-bb5: null.** Phase-1-Reihenfolge: Prämisse/Main-
+**Ausführbare Wellen in der Planphase: null.** Phase-1-Reihenfolge: Prämisse/Main-
 Belege → Code-/Consumerkarte → Alternativen/Verträge → unabhängiger lesender
 Plancheck → Formatcheck → anhalten. Kein zweites Issue, keine Discovery-Welle.
 
-| Spätere Phase, nur Vorschlag | Rolle / Modell | Host und Voraussetzung |
+| Spätere Phase, nur Vorschlag | Rolle | Voraussetzung |
 | --- | --- | --- |
-| Native Sicherheits-/Architekturprüfung | Opus 5.5 | Nativ nach Lead-Auftrag; prüft Reclaim-, Proof-, Release-Verträge und Abbruchkriterien. Hier nicht verfügbar/ausgeführt |
-| Vollständige Scope- und Probeplanung | Routine-Leser/Doku `gpt-6.1-sol`, Effort Medium | Eigenes freigegebenes Repo, anschließend Opus-Prüfung; noch keine Umsetzung |
-| Eventuelle Implementation und Review | Opus 5.5 für Ermessen/Review, Routine per `gpt-6.1-sol` Medium | Erst ausdrückliche Owner-/Lead-Freigabe und disjunkte Dateifläche; keine automatische Fortsetzung durch `/go` dieses Plans |
-| Gates | `gpt-6.1-sol` Medium nach klarer Vorgabe | Heavy Roles nativ m5/CI; seriell je Datei, danach vollständige Gates auf genau dem resultierenden SHA |
-| Commit / Push / MR / Merge | Lead auf M4 | Hier keine Git-Schreibaktion. Nur Plan soll zunächst integriert werden, kein Split |
+| Native Sicherheits-/Architekturprüfung | Sicherheits-/Architekturreview | Nach Lead-Auftrag; prüft Reclaim-, Proof-, Release-Verträge und Abbruchkriterien |
+| Vollständige Scope- und Probeplanung | Routine-Leser/Doku und Sicherheitsreview | Freigegebenes Repo; noch keine Umsetzung |
+| Eventuelle Implementation und Review | Implementierer und unabhängiger Reviewer | Erst ausdrückliche Owner-/Lead-Freigabe und disjunkte Dateifläche; keine automatische Fortsetzung durch `/go` dieses Plans |
+| Gates | Routine-Gates nach klarer Vorgabe | Zulässiger Offload/CI; seriell je Datei, danach vollständige Gates auf genau dem resultierenden SHA |
+| Commit / Push / MR / Merge | Lead | Nur Plan soll zunächst integriert werden, kein Split |
 
-Main löst GitLab-Branch-Pipeline samt Coverage und GitHub-Spiegeltests aus
-(`.github/workflows/test.yml:3–6`). GitLab definiert keine Deploy-/Release-/Publish-
-Jobs; npm-Publish ist gesondert (`.claude/rules/development.md:89–93`).
-`vercel.json:3–5` konfiguriert die Website, externe Git-/Produktionsintegration
-bleibt offline unbekannt. Nach „im Zweifel löst aus“ bleibt Merge auf main
-geparkt, bis der Lead Veröffentlichung belegbar ausschließt.
+Ein GitLab-Merge auf SO-main löst die GitLab-Branch-Pipeline samt Coverage aus,
+aber keine GitHub-Spiegelung: `remote_mirrors` ist leer. GitHub-Spiegeltests
+(`.github/workflows/test.yml:3–6`) und Vercel-Prod laufen nur über den GitHub-
+Mirror-Push durch `/close` bzw. `scripts/release.mjs` (`.claude/rules/security.md:100`).
+GitLab definiert keine Deploy-/Release-/Publish-Jobs; npm-Publish ist gesondert
+(`.claude/rules/development.md:89–93`). `vercel.json:3–5` konfiguriert die Website.
+Die Bedingung „Merge geparkt, bis Veröffentlichung belegbar ausgeschlossen“ ist
+für den GitLab-Merge erfüllt; Mirror-Push und Veröffentlichung bleiben geparkt.
 
 Beantwortet: nur #990 aufnehmen; historischen Teilsplit anerkennen; gesamten
 Kern als ersten möglichen Strukturschnitt empfehlen; Proof-Familie zusammenhalten;
 kein Issue schließen, keine Welle starten, fehlende Remote-/Besitz-/CI-Messung
 offen ausweisen. Diese Arbeitsentscheidungen sind durch Brief und Code gedeckt.
 
-Geparkt: tatsächlicher Split/Prioritätsanhebung, Opus-Abnahme, neue vollständige
+Geparkt: tatsächlicher Split/Prioritätsanhebung, Sicherheitsabnahme, neue vollständige
 Besitz-/Scope-Messung, native Race-/OS-Prüfungen, vollständige CI-Abnahme,
-Commit/Push/MR durch Lead, Merge bei ungeklärter Veröffentlichung. Ebenfalls
+Commit/Push/MR durch Lead, Mirror-Push bei ungeklärter Veröffentlichung. Ebenfalls
 echte Locks, Heartbeats, Reaper, Kill-/Recoveryaktionen, Release, Prod, Server,
 Publish und Versand/Nachrichten. Labels und Identität geben keine Betriebsfreigabe.
 
@@ -324,36 +303,19 @@ Racegrenzen als neue Defekte oder den Split als deren Reparatur deklarieren;
 Sandbox-Skips als native Grünfälle zählen; incomplete Scope als Parallelfreigabe
 verwenden; eine generische Skill-Fortsetzung trotz Ein-Datei-Auftrag starten.
 
-## Abnahme und Übergabe
+## Abnahmekriterien
 
 Plan akzeptabel, wenn der unabhängige Leser Exporte/Consumerkarte, Einweg-Graph,
 Proof-Kopplung, null-Proof-Vertrag, dokumentierte Racegrenzen, Probe-/CI-Pflichten
 und Ein-Datei-Scope bestätigt. Keine Sicherheitsabnahme einer Implementation.
 
-| Prüfung | Ort / voller geprüfter SHA | Ergebnis / Log |
-| --- | --- | --- |
-| Quellen-/Historienprüfung per `git show`, `git diff`, Census | m5, Main `e9674ea2df3afedd2790f904ce9188575e3d6d2d`; Snapshot `bc9e3237bebd607ce9c2d2a2222c4f430e558bad` | Lesende Messungen erfolgreich; `origin/main` nicht vorhanden; Belege oben, Tool-Ausgabe so-bb5 |
-| Unabhängiger lesender Plancheck | m5, Snapshot `bc9e3237bebd607ce9c2d2a2222c4f430e558bad` plus uncommittetes Planartefakt, Quellen am Main-SHA oben | `plan_read_review`, `gpt-6.1-sol` Medium: bestanden; CI-Needs-Anker korrigiert, Prozessbaum-Grenze ergänzt. Agent beendet; keine Opus-Sicherheitsabnahme, kein Gate-Exit erfunden |
-| Einzeldatei-Prettier (Befehl oben) | m5, Snapshot `bc9e3237bebd607ce9c2d2a2222c4f430e558bad` plus uncommittetes Planartefakt | Exit 0, Prettier 3.8.3; Tool-Ausgabe so-bb5: „All matched files use Prettier code style!“; Abschlussprüfung auf finalem Artefakt |
-| Native Lock-/Race-/OS-Gates | Später nativ / CI | Nicht ausgeführt, keine Zielsystem-Abnahme |
-| Vollständige MR-/Main-Pipeline | Später CI auf resultierendem Head-SHA | Nicht messbar, keine Pipeline-ID/Grünbehauptung |
-
 Commit-Vorschlag für den Lead:
 `docs(lock): Plane sichere Grenzen für den Session-Lock-Split`.
 Refs #990 im Commit-Body; kein automatisches Schließwort.
-Arbeitsbauminventar bei `2026-10-10T07:51:29Z`:
-`git status --porcelain --untracked-files=all` meldet ausschließlich
-`?? docs/plans/triage-2026-10-10-lock-split.md`. Die traditionelle Ignored-Abfrage
-fasst Untracked als `?? docs/plans/` zusammen. Bereits vor der Änderung vorhanden:
-`!! marketing/remotion/node_modules/`, `!! node_modules/`,
-`!! skills/claude-md-drift-check/node_modules/`, `!! skills/vault-sync/node_modules/`,
-`!! skills/vault-sync/package-lock.json`. Herkunft/Besitz nicht neu bestimmt;
-unverändert stehen gelassen. Keine eigenen Temp-/Install-/Runtime-Reste.
-`git diff --check` Exit 0 erfasst den getrackten Diff; das neue untracked Artefakt
-wird durch den expliziten Prettier-Pfad geprüft.
 
-Prozesskontrolle `ps -o pid=,ppid=,comm= -p $$` ist in der Sandbox verweigert (Exit 127):
-**nicht messbar**, kein PPID-/Waisenfreiheitsbeleg. Der einzige Gate-Aufruf ist
-im Vordergrund mit Exit 0 abgeschlossen, die lesende Census-Exec ebenfalls;
-kein Test-/Build-/Offload-/Pipelinejob gestartet. Reader abgeschlossen, alle
-Lesebefehle laut Rückmeldung beendet. Direkt bezahlte Modell-/API-Aufrufe: keine.
+## Abnahme und Übergabe
+
+Main-SHA: `e9674ea2df3afedd2790f904ce9188575e3d6d2d`.
+Messdatum: `2026-10-10T07:48:17Z`.
+Methode: `git show <sha>:scripts/lib/session-lock.mjs | wc -l`, `git log <main-sha> --format=%H -- scripts/lib/session-lock.mjs` und Importer-Zensus wie oben.
+Ergebnis: historische Größen reproduziert; Teilsplit und gekoppelte Kern-/Proofmechanik bestätigt, sichere Modulaufteilung offen.

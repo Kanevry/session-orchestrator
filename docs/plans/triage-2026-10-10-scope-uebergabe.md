@@ -16,45 +16,11 @@ Offener Arbeitsauftrag ist diese Zustandsfall-Analyse; ein neuer Produktdefekt
 ist nicht belegt. Das Sammel-Issue wird weder pauschal geschlossen noch werden
 seine weiteren Punkte erneut implementiert. Labels erteilen keine Freigabe.
 
-## Startbeleg und Grenzen der Messung
+## Messgrundlage
 
-Messung aus der Host-Uhr: `2026-10-10T07:14:45Z`, Offload-Host m5, Darwin,
-Node `v24.20.0`; Perl vorhanden. Starter-Grenz-Tor laut Brief `frei` auf M4,
-für diesen eingeschränkten m5-Lauf übernommen. Kein eigener Tor-/Slot-Aufruf.
-Alle Lesezugriffe betreffen dieses Repo; kein Netz, Fetch oder Fremdcheckout.
-
-| Bezug | Voller SHA / Ergebnis | Einordnung |
-| --- | --- | --- |
-| Freigegebener main-Beleg aus dem Brief | `fb94819e31e04fe435b7180dde2ab49d97bd4cd8` | Lokal vorhandenes Commit-Objekt; Briefmessung `2026-10-10T07:10:16Z` |
-| Arbeitsbaum-Basis / HEAD | `098523941bf96a7227bfdb99b841108b5bf03910` | Offload-Sync-Snapshot, detached HEAD |
-| Lokaler Branch `main` | `1d0d0873c0c61ba668a9d6fe9148459d1a9bd364` | Abweichender lokaler Ref; keine neue Freigabe daraus ableiten |
-| `origin/main` | Nicht vorhanden, `git rev-parse --verify origin/main` Exit 128 | Ahead/behind und aktueller Remote-Head nicht messbar |
-| Lauf-Branch laut Brief | `fix/so-bb2-1026-dateibesitz` | Lead-Ziel; hier kein Branchwechsel, kein Commit |
-
-Die Anker unten stammen aus `git show fb94819e31e04fe435b7180dde2ab49d97bd4cd8:<datei> | nl -ba`,
-also aus dem ausdrücklich freigegebenen main-Objekt, nicht aus Merge-Base-Zeilen.
-`git diff --quiet fb94819e31e04fe435b7180dde2ab49d97bd4cd8 HEAD --` für
-`docs/scope-collision-guard.md`, `scripts/validate-wave-scope.mjs`,
-`scripts/lib/scope-gate.mjs`, `hooks/pre-task-scope-disjoint.mjs`,
-`scripts/materialize-wave-scope.mjs`, `.gitlab-ci.yml` und die Regeln
-`development.md`/`security.md` ergab Exit 0: diese Vertragsdateien stimmen überein.
-Kein Beleg eines frisch abgefragten Remote-Heads. Vor Integration misst der Lead
-main erneut und prüft die Anker bei Abweichung erneut.
-
-Bootstrap-Artefakt und Session Config vorhanden; Bootstrap offen. Der Startbaum
-war ohne getrackte oder ungetrackte Änderungen. Keine lokale `STATE.md`, kein
-Session-Lock und keine Scope-Sidecars in den geprüften lokalen Zustandsordnern.
-Die vorhandene `.codex/session-plan.md` beschreibt eine historische andere
-Session vom 2026-09-08 und wird nicht fortgesetzt. Das Fehlen lokaler Sidecars
-belegt weder Agent-Abschluss noch freie Dateien im regulären Repo.
-
-Der enge Offload-Auftrag hat Vorrang vor dem allgemeinen Deep-Workflow:
-keine Lock-/STATE-/Telemetry-Schreibvorgänge, Vault-Spiegelung, Archivierung,
-Cross-Repo-/Prozess-/Transkriptproben, VCS-Abfragen oder Issue-Updates.
-Live-CI, vollständige Issue-Kommentare und externe Besitzlisten sind hier nicht
-nachgemessen; die Issue-Einordnung verwendet den Brief plus lokale Codebelege.
-Vollsuite/Build nicht ausgeführt. Der Sessionstart ist eine begrenzte lokale
-Bestandsaufnahme, keine vollständig live verifizierte reguläre Deep-Session.
+Main-SHA: `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`; Messdatum `2026-10-10T07:14:45Z`.
+Anker aus `git show <Main-SHA>:<datei> | nl -ba` für die unten genannten Vertragsdateien.
+Die Planphase erteilt keine Freigabe für echte Scopeübernahmen, Runtime-Schreibvorgänge oder Codeänderungen.
 
 ## Prämisse je Kandidat
 
@@ -167,11 +133,9 @@ Entscheid muss separat zum Lead; diese Vorlage eröffnet sie nicht erneut.
 
 ## Dateifläche und Kollisionsmatrix
 
-Vollständige Produkt-Schreibfläche dieses Laufs: ausschließlich neu
-`docs/plans/triage-2026-10-10-scope-uebergabe.md`. Administratives, vom Vorspann
-angeordnetes Anhängeprotokoll: `.fleet-m5/parkplatz.txt`; kein Produktartefakt.
-Temporäre Gate-Logs bleiben im temporären Laufordner. Code/Hook/Tests bleiben
-unverändert. Künftige Implementierungsfläche unvollständig, nicht freigegeben.
+Vollständige Produkt-Schreibfläche: ausschließlich
+`docs/plans/triage-2026-10-10-scope-uebergabe.md`.
+Künftige Implementierungsfläche unvollständig, nicht freigegeben.
 
 | Gegenbündel / Fläche | Beleglage | Urteil |
 | --- | --- | --- |
@@ -179,8 +143,7 @@ unverändert. Künftige Implementierungsfläche unvollständig, nicht freigegebe
 | Reguläre / laufende Sessions | Keine vollständige Besitzliste; Starter-Prämisse „keine Session“ ist keine eigene Live-Messung | Ungeklärt; keine Implementierungswelle und keine echte Besitzübernahme starten |
 | Jeder bestätigte Besitzer derselben Datei | Gemeinsame Datei | Seriell; danach main und Dateibesitz erneut messen |
 
-Kein belegter Konflikt mit dem neuen Planpfad im lokalen Startbaum. Das ist nur
-die lokale Prüfung; daraus folgt keine globale Disjunktheit.
+Aus der Planfläche folgt keine globale Disjunktheit; vollständige Besitzlisten bleiben erforderlich.
 
 ## Wellenplan für den Lead, nicht gestartet
 
@@ -189,14 +152,14 @@ ein neuer Dokupfad), keine Füllwellen. Für diesen Lauf sind alle Wellen gesper
 
 | Welle / Rolle | Vorgesehene Besetzung und Scope | Abnahme / Freigabe |
 | --- | --- | --- |
-| 1 Discovery / Planreview | Zwei unabhängige Leser, Routine `gpt-6.1-sol` Medium, Architektur/Sicherheit Opus 5.5 beim Lead; ausschließlich dieses Repo und Plan-/Vertragsdateien lesend | SHA, Owner-Anker, Zustandsfälle, zwei Formen und Kollisionsmatrix gegeneinander prüfen; kein Dispatch hier |
+| 1 Discovery / Planreview | Zwei unabhängige Leser und Architektur-/Sicherheitsreview beim Lead; ausschließlich dieses Repo und Plan-/Vertragsdateien lesend | SHA, Owner-Anker, Zustandsfälle, zwei Formen und Kollisionsmatrix gegeneinander prüfen; kein Dispatch hier |
 | 2 Impl-Core | 0 Agents | Keine Codefreigabe; übersprungen |
 | 3 Impl-Polish | 0 Agents | Keine Codefreigabe; übersprungen |
 | 4 Quality | Lead prüft Doku-Diff; vorhandene Repo-Gates über CI-MR am finalen Commit | CI-Endstatus und Pflichtjobs belegen; keine lokale Vollsuite |
-| 5 Finalization | Lead auf M4, nach Review; nur Planartefakt ins Produkt | Commit/Push/MR beim Lead; kein automatisches Schließen von #1026 |
+| 5 Finalization | Lead, nach Review; nur Planartefakt ins Produkt | Commit/Push/MR beim Lead; kein automatisches Schließen von #1026 |
 
 Maximal vier gleichzeitige Agents. Native SO-Code-/Testarbeit mit Ermessen
-bleibt Opus beim Lead und außerhalb dieser Planphase. Heavy Roles (Tests,
+bleibt beim Lead und außerhalb dieser Planphase. Heavy Roles (Tests,
 Build, Lint, Audit) später zulässiger m5-Offload oder CI; keine neuen Heavy Jobs
 in diesem Lauf. Eine Fortsetzung mit `/go` ersetzt nicht den ausdrücklich
 erforderlichen Lead-Entscheid über konkrete Phase-2-Arbeit und vollständige Scopes.
@@ -239,7 +202,7 @@ kein Netz/Commit/Branchwechsel (Offload-Vorspann), keine Vollsuite (Lead-Vorgabe
 lokalen Plan trotz fehlendem Remote-Ref erstellen (freigegebenes Objekt vorhanden,
 relevante Verträge identisch; Integration bleibt offen).
 
-Geparkt: aktueller Remote-main-/CI-Beleg und Branchzuordnung auf M4;
+Geparkt: aktueller Remote-main-/CI-Beleg und Branchzuordnung;
 vollständige Besitzlisten regulärer Sessions; Live-Prozess-/Transkriptproben;
 reale Scopeübernahmen; Autorisierungsänderungen und weitere Issue-Punkte;
 Phase 2 ohne Lead-Entscheid; Prod/Release/Publish/Mirror-Push/Servereingriffe,
@@ -250,41 +213,14 @@ nach Abschluss, Materialisierung während Dispatch, nur eine statt zwei Formen,
 Hook-ALLOW als vermeintliche Schreibfreigabe, timeout als vermeintlich grünes
 Gate und versehentlicher Mirror-Deploy. Diese Grenzen bleiben vor Integration
 offen. Kein OS-Verhalten geändert; keine Ziel-OS-Abnahme behauptet. Eigene
-Gate-Kinder vor Abschluss prüfen; gesperrtes `ps` ausdrücklich als nicht messbar
-melden. Kein bezahlter API-Aufruf.
+Gate-Kinder vor Abschluss prüfen. Kein bezahlter API-Aufruf.
 
 Commit-Vorschlag für den Lead:
 `docs(scope): Dokumentiere die statische Dateibesitzübergabe`.
 
-## Gate-Belege und Übergabestatus
+## Prüfbelege und Übergabestatus
 
-Ausführungsort jeweils m5-Offload-Arbeitsbaum. Geprüfte Basis jeweils
-`098523941bf96a7227bfdb99b841108b5bf03910`; Doku-Prüfungen betreffen den neuen,
-uncommitteten Plan darüber, keinen fertigen neuen Commit-SHA.
-
-| Befehl / Prüfung | Tatsächlicher Exit / Ergebnis | Log / Beleg |
-| --- | --- | --- |
-| `git diff --quiet fb94819e31e04fe435b7180dde2ab49d97bd4cd8 HEAD --` mit den acht oben aufgeführten Vertragsdateien | 0, Vertragsdateien identisch | Startmessung; geprüfter Vergleichs-SHA vollständig oben |
-| `perl -e 'alarm shift; exec @ARGV' 30 node node_modules/prettier/bin/prettier.cjs --check docs/plans/triage-2026-10-10-scope-uebergabe.md` | 0, aber Markdown ignoriert; übersprungen, keine Formatabnahme | `/tmp/so-bb2/plan.LAHOa6/format-check.log`; `--file-info` bestätigt `ignored: true`, Exit 0 |
-| `git diff --no-index --check /dev/null docs/plans/triage-2026-10-10-scope-uebergabe.md` | 1 wegen neuem Datei-Diff; keine Whitespace-Diagnose, Log leer | `/tmp/so-bb2/plan.LAHOa6/diff-check.log`; kein als grün umgedeuteter Exit |
-| `ps -o pid=,ppid=,comm= -u UID` | 127, in dieser Sandbox nicht ausführbar; Prozesskontrolle nicht messbar | `/tmp/so-bb2/plan.LAHOa6/processes.log`; Parkplatz |
-| Vollsuite, Build, synthetische Reproduktion, Ziel-OS-Verhaltensprüfung | Nicht ausgeführt, gemäß Planphase; kein Gate-Erfolg behauptet | Keine Job-ID |
-| Live-CI / MR-Gesamtgate | Offen, kein Netz/Push/MR hier | Lead misst am finalen Commit-SHA |
-
-Alle gestarteten Prüfaufrufe haben ein Ende geliefert; keine Hintergrundjobs
-oder Subagents gestartet. Live-Prozessfreiheit bleibt wegen `ps` offen.
-
-Abschlussstatus des lokalen Baums: `git status --porcelain --untracked-files=all`
-zeigt ausschließlich `?? docs/plans/triage-2026-10-10-scope-uebergabe.md`.
-`git status --porcelain --ignored=traditional` zeigt `?? docs/plans/`,
-`!! .fleet-m5/` sowie die bereits beim Start vorhandenen ignorierten Bestände
-`marketing/remotion/node_modules/`, `node_modules/`,
-`skills/claude-md-drift-check/node_modules/`, `skills/vault-sync/node_modules/`
-und `skills/vault-sync/package-lock.json`. Diese Bestände wurden nicht verändert.
-Eigener ignorierter Bestand ist nur das angeordnete `.fleet-m5/parkplatz.txt`;
-beim Rücktransport separat sichern, nicht als Produktänderung aufnehmen.
-Eigene temporäre Logs liegen ausschließlich im oben genannten temporären
-Laufordner und bleiben als Belege stehen. Keine Änderungen im Index.
-
-Phase 1 endet hier. Planreview, aktuelle main-/Besitzmessung und das CI-Gate
-bleiben Aufgaben des Leads; diese Übergabe erteilt keine Phase-2-Freigabe.
+Main-SHA: `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`.
+Messdatum: `2026-10-10T07:14:45Z`.
+Methode: `git show <Main-SHA>:<datei> | nl -ba` für Scope-Runbook, Validator, Scope-Gate, Hook und Materialisierung.
+Ergebnis: statischer CLI-Vertrag und explizite Besitzeränderung bestätigt; Zustandsfälle analysiert, synthetische Reproduktion nur geplant.

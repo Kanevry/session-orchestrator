@@ -1,7 +1,7 @@
-# #1032: Backupteil der Schreibprimitive — Analyse und Entscheidungsvorlage
+# #1032: Backupteil der Schreibprimitive: Analyse und Entscheidungsvorlage
 
 Status: Phase 1 abgeschlossen; ausschließlich Plan/Analyse. Keine Umsetzungswelle freigegeben.
-Refs #1032. Auftrag: so-bb3, Lauf-Branch beim Lead `fix/so-bb3-1032-backup-schreibprimitive`.
+Refs #1032. Auftrag: Analyse des Backupteils der Schreibprimitive.
 
 ## Empfehlung und Entscheidungsgrenze
 
@@ -18,10 +18,7 @@ Ein späteres `/go` darf erst nach Lead-/Vertragsentscheid und vollständiger ne
 
 - Im Brief vom Lead gemessener main: `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`, Messdatum `2026-10-10T07:10:27Z`.
 - Hier erneut vorhandenes Commitobjekt und Code gemessen: `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`, Messdatum `2026-10-10T07:19:37Z` (Uhr: `date -u +%FT%TZ`).
-- Lokaler geprüfter HEAD: `c6d53e746e1de540e66f41f760546c148e346660` (Offload-Snapshot), abgelöst, kein Lauf-Branch lokal ausgecheckt. Kein Branchwechsel/Indexschreiben.
-- `origin/main` fehlt; keine Netzaktualisierung erlaubt. Lokal gespeicherter `main` ist `1d0d0873c0c61ba668a9d6fe9148459d1a9bd364`, nicht als aktueller Remote-Stand verwendet.
-- `git diff --name-only fb94819e31e04fe435b7180dde2ab49d97bd4cd8 HEAD`: nur `agents/code-implementer.md` und `skills/claude-md-drift-check/package-lock.json`; sämtliche untersuchten scripts, Tests und CI sind unverändert. Alle untenstehenden Zeilenkoordinaten beziehen sich auf das gemessene main-Objekt, nicht auf eine Drei-Punkte-Merge-Base.
-- `git rev-list --left-right --count fb94819e31e04fe435b7180dde2ab49d97bd4cd8...HEAD` = `0 3`; das ist keine Aussage über heutiges Remote-main.
+- Alle Zeilenkoordinaten beziehen sich auf das gemessene main-Objekt, nicht auf eine Drei-Punkte-Merge-Base.
 - Live-Issue, Kommentare, Labels, MR-/CI-Status und externe Consumer: **nicht messbar**, Netz/glab verboten. Issueprämissen stammen aus dem Owner-/Lead-Brief, keine neue API-Verifikation behauptet.
 - `triage-belegvertrag.md` und die externe Triage-Datei sind hier nicht vorhanden; der im Brief vollständig wiedergegebene Belegvertrag wird angewandt. Keine anderen Repos gelesen.
 
@@ -90,10 +87,8 @@ Anker: `scripts/lib/learnings/io.mjs:401,422–475,563–594`.
 
 ## Isolierte Reproduktionen und Grenzen
 
-Am unveränderten HEAD mit Node `v24.20.0` ausgeführt:
-`perl -e 'alarm shift; exec @ARGV' 60 node /private/tmp/so-bb3-1032.JtB37O/probe.mjs`.
-Log: `/private/tmp/so-bb3-1032.JtB37O/probe.log`; tatsächlicher Exit **0** und terminale Zeile
-`TESTENDE cases=8 exit=0 fs=memory-only`.
+Vertragsprobe: `perl -e 'alarm shift; exec @ARGV' 60 node <Memory-only-Probeskript>`, acht Fälle für unveränderte Fachmodule am Main-SHA
+`fb94819e31e04fe435b7180dde2ab49d97bd4cd8`, Messdatum `2026-10-10T07:19:37Z`: Exit **0**.
 
 1. Sync erstellt Vorher-Snapshot vor Write/Rename, mit erwartetem Namen; keine Rotation.
 2. Synthetischer Copy-`EACCES` erhält Originalbytes und verhindert Write/Rename; Envelope behält code.
@@ -105,7 +100,7 @@ Log: `/private/tmp/so-bb3-1032.JtB37O/probe.log`; tatsächlicher Exit **0** und 
 8. Board mit Map-write/rename und fehlendem copy liefert `written` bei deaktiviertem Backup.
 
 Sämtliche Ziel-/Backup-/Tmpbytes nur in Maps; keine realen Board-/Ledger-/Lock-/STATE-Dateien, keine reale Rotation oder Datenlöschung.
-Probeskript und Logs bleiben als eigene temporäre Belege stehen. Dies ist Vertragsanalyse, kein neuer Repo-Test.
+Dies ist Vertragsanalyse, kein neuer Repo-Test.
 Vorhandene einschlägige Tests wurden gelesen (`tests/lib/io.test.mjs:660–675,737–785,860–898`,
 `tests/lib/vault-status/board-writer.test.mjs:212–249,344–363`); nicht ausgeführt.
 
@@ -135,27 +130,7 @@ Die APIs sind exportiert und in `package.json` ohne `exports`-Map öffentlich de
 Entfernung/Umbenennung/veränderte Laufzeitsemantik muss den Migration-/Breaking-Vertrag aus
 `.claude/rules/development.md:89–93` und § Package Lifecycle beachten; kein Patch-Removal auf Basis eines lokalen Zensus.
 
-## Sessionstart: jede Phase geprüft, eingeschränkter Offload-Vertrag
-
-Der spezielle Phase-1-Auftrag ersetzt die schreibenden/externalen Teile des regulären Sessionstarts. Kein vollständiger normaler Sessionstart behauptet.
-
-| Phase | Befund / Behandlung |
-|---|---|
-| 0 Bootstrap | AGENTS/CLAUDE mit Session Config vorhanden; bootstrap.lock gültiger version/tier-Marker; offen |
-| 0.5, 1.2 Peer/Besitz | Startbaum sauber; keine lokale session.lock, STATE.md oder Filescopes vorhanden; Zielplan noch nicht vorhanden. Starterbeleg übernommen; kein slot check, keine Lockidentität abgeleitet. Laufende externe Autoren **ungeklärt** |
-| 1 Config | Committed Config gelesen: deep, persistence true, enforcement warn, npm, docs-orchestrator false, vault true. Keine owner.yaml außerhalb cwd gelesen; Defaults full/minimal/neutral; kein Override/Configwrite |
-| 1.05, 1.1 | Telemetrieschreibfläche nicht freigegeben; kein Self-report. Dispatcherblock vorhanden, kein Migrationsbedarf |
-| 1.5–1.6 | Kein STATE und keine lokalen metrics sessions/learnings; keine historische Continuity/Trendbehauptung. Keine Metricsanlage |
-| 1.7, 2.7 | Vault/Portfolio nicht ausgeführt: andere Repos und Vaultschreiben verboten |
-| 2 Git | HEAD, 20 jüngste Commits, sauberer Baum, lokale Branches und Vergleich zum Brief-SHA gelesen; Remote ahead/behind unbekannt; kein Fetch |
-| 2.5–2.6 | Docs-Orchestrator deaktiviert; Steering product/tech/structure gelesen; Plan als einzige Produktdatei |
-| 3 VCS | Ausschließlich Brieflage #1032; offene/geschlossene Issues, MR, CI live nicht messbar |
-| 4 Umgebung | Node 24.20.0 und Perl vorhanden; npm-canonical/package-lock; Dependencies schon vorhanden, keine Installation. CI **nicht gemessen**, nicht als grün behauptet |
-| 4.5 Ressourcen | Höchstens zwei lesende Subagents plus Koordinator; kein Heavy-Gate. ps sandboxgesperrt (Exit 127), Live-Prozess-/Waisenmessung nicht messbar |
-| 5 Cross-Repo | Nicht konfiguriert/freigegeben; kein fremdes Repo gelesen |
-| 6, 6.5–6.8 | Synergie Backup/Fehlerverträge; keine lokalen STATE-Fragen/Learnings; Claude-Memory auf Codex nicht verfügbar; keine Telemetrie-Consentfrage im Headless-Lauf |
-| 7, 7.1, 7.5 | Main-Prämissen durch direkten Zensus und unveränderten Diff geprüft; expliziter deep-Analyseauftrag bleibt; keine Mode-/Learningswrites |
-| 8–9 Alignment/Plan | Analyse-only bereits gedeckt; beantwortete Entscheidungen unten protokolliert. Mechanische Shape nur dry-run; kein STATE-/Issuewrite, keine Welle |
+Die Planphase ersetzt keine vollständige Live-Prüfung von Issues, CI oder Besitzlisten.
 
 ## Wellenplan als Vorlage nach Vertragsentscheid
 
@@ -165,20 +140,19 @@ keine neuen Issues oder Sweep-Aufträge. Erledigte 1a/2a und abgegrenzte 1b/1c n
 
 Shape-Aufruf:
 `perl -e 'alarm shift; exec @ARGV' 30 node scripts/session-shape.mjs --repo-root "$PWD" --session-type deep --known-scope true --task-count 1 --no-event`.
-Exit 0, Log `/private/tmp/so-bb3-1032.JtB37O/shape.log`: vier Rollen (Impl-Core, Impl-Polish, Quality, Finalization), Discovery entfällt bei known-scope.
+Am Main-SHA `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`, Messdatum `2026-10-10T07:19:37Z`, Exit 0: vier Rollen (Impl-Core, Impl-Polish, Quality, Finalization), Discovery entfällt bei known-scope.
 **Ownerabweichung:** Hier ausschließlich abgeschlossene Analyse; kein ausführbarer Vierwellenplan und keine Welle gestartet.
 Future-Scope derzeit unvollständig, daher keine automatische Übernahme von known-scope in /go.
 
-| Mögliche spätere Welle | Agenten / Modelle / Ort | Aufgabe und Startvoraussetzung |
+| Mögliche spätere Welle | Agenten / Rollen | Aufgabe und Startvoraussetzung |
 |---|---|---|
-| Vorcheckpoint, seriell | Lead/Opus 5.5 auf M4; Sol 6.1 Medium als lesender Vertragsanalyst | Option entscheiden; aktuelle Peerflächen, Issue, main und komplette Code-/Testfläche belegen. Keine API-Entfernung ohne Ownervertrag |
-| 1 Impl-Core | 1 Implementierer Opus 5.5 nativ gemäß SO-Code/Testvorgabe, M4; unabhängiger lesender Reviewer Opus 5.5 | Nur beschlossener kleiner Adapter-/Callerfall; konkrete Dateien erst nach Entscheid. Keine Sweepmigration |
-| 2 Impl-Polish | 1 Sol 6.1 Medium für Doku; Implementierung mit Ermessen Opus 5.5 | Nur aus dem Review begründete Nacharbeit, sonst leer; keine Aufgaben zum Füllen der Rolle |
-| 3 Quality | 1 Testrolle Opus 5.5 für SO-Code/Test; Sol 6.1 Medium für vorgegebene Gates, M5/CI; 1 Opus-Reviewer | Einzeldatei-Tests zeitgedeckelt, gegenseitiger Vertragsreview, volle passende CI; OS-Pfade gezielt prüfen |
-| 4 Finalization | Lead Opus 5.5 auf M4 | Vollständiger Diff/Peer-/CI-Review; Commit/Push/MR/ggf. Merge ausschließlich Lead; keine Veröffentlichung |
+| Vorcheckpoint, seriell | Lead und lesender Vertragsanalyst | Option entscheiden; aktuelle Peerflächen, Issue, main und komplette Code-/Testfläche belegen. Keine API-Entfernung ohne Ownervertrag |
+| 1 Impl-Core | 1 Implementierer nativ gemäß SO-Code/Testvorgabe; unabhängiger lesender Reviewer | Nur beschlossener kleiner Adapter-/Callerfall; konkrete Dateien erst nach Entscheid. Keine Sweepmigration |
+| 2 Impl-Polish | 1 Dokurolle; Implementierer für Nacharbeit | Nur aus dem Review begründete Nacharbeit, sonst leer; keine Aufgaben zum Füllen der Rolle |
+| 3 Quality | 1 Testrolle für SO-Code/Test; Routine-Gates im zulässigen Offload/CI; 1 Reviewer | Einzeldatei-Tests zeitgedeckelt, gegenseitiger Vertragsreview, volle passende CI; OS-Pfade gezielt prüfen |
+| 4 Finalization | Lead | Vollständiger Diff/Peer-/CI-Review; Commit/Push/MR/ggf. Merge ausschließlich Lead; keine Veröffentlichung |
 
 Maximal vier aktive Subagents, für diese kleine Fläche regelmäßig ein Autor und ein lesender Reviewer; gemeinsam beschriebene Dateien seriell.
-In Phase 1 tatsächlich eingesetzt: Codex-Koordinator mit zwei nativen, ausschließlich lesenden Subagents (`gpt-6.1-sol`, Effort Medium), Rollen Aufruferzensus und unabhängiger Vertrags-/Planreview. Keine Opus-Ausführung behauptet; die Modelle der zukünftigen Wellen sind Anforderungen an den Lead, keine bereits verfügbaren oder gestarteten Prozesse.
 M5 erhält nur zugelassene Heavy-Rollen/Gates nach Reservierungs-/Lastprüfung, nie parallele Vollsuiten.
 Auf main soll in Phase 1 allenfalls dieser geprüfte Plan landen; spätere Codeänderung erst nach dem Vorcheckpoint.
 
@@ -187,8 +161,6 @@ Auf main soll in Phase 1 allenfalls dieser geprüfte Plan landen; spätere Code�
 ## Vollständige Schreibfläche und Kollisionsmatrix
 
 Phase-1-Produktfläche vollständig: **nur neu `docs/plans/triage-2026-10-10-atomic-backup.md`**.
-Zusätzlicher ausdrücklich vorgeschriebener Offload-Parkplatz: **neu `.fleet-m5/parkplatz.txt`** (Startertransport, keine Codefläche).
-Eigene Arbeitsbelege ausschließlich `/private/tmp/so-bb3-1032.JtB37O/`; keine sonstigen Repo-Arbeitsdateien.
 Künftige Adapter-/Testfläche **unvollständig**; genannte Vergleichsmodule sind Leseflächen, keine künftige Schreibfreigabe.
 
 | Gegenbündel / Autor | Belegte Gegenfläche | Verhältnis / Behandlung |
@@ -198,18 +170,18 @@ Künftige Adapter-/Testfläche **unvollständig**; genannte Vergleichsmodule sin
 | S1026 | Keine vollständige lokale Dateifläche im Brief/Checkout | Laut Lead disjunkt/parallel planbar; unabhängig aktuell ungeklärt |
 | S1021 | Keine vollständige lokale Dateifläche im Brief/Checkout | Laut Lead disjunkt/parallel planbar; unabhängig aktuell ungeklärt |
 | S990 | Keine vollständige lokale Dateifläche im Brief/Checkout | Laut Lead disjunkt/parallel planbar; unabhängig aktuell ungeklärt |
-| Laufende externe Autoren | Lokale Locks/Scopes fehlen; ps gesperrt, andere Repos unzulässig | Ungeklärt bis Lead aktuelle Gegenflächen vorlegt |
-| Analyseagent contracts / review_basis | Keine Schreibfläche, nur cwd-lesend | Disjunkt zu Planautor; beide abgeschlossen vor Ende |
+| Laufende externe Autoren | Vollständige aktuelle Gegenflächen fehlen | Ungeklärt bis Lead aktuelle Gegenflächen vorlegt |
+| Analyseagent contracts / review_basis | Keine Schreibfläche, nur cwd-lesend | Reine Lesefläche, keine Produkt-Schreibfläche |
 | Spätere io-/Board-/Callerautoren | Künftige Schreibfläche unvollständig | Gemeinsame Datei seriell; keine parallele Umsetzung ableiten |
 
 Nur vollständig belegte disjunkte Flächen erlauben „parallel planbar“ als eigene Schlussfolgerung.
-Keine belegte Kollision ist kein Disjunktheitsbeleg. Der Planpfad war bei Beginn unbelegt/untracked; nur Koordinator schreibt ihn.
+Keine belegte Kollision ist kein Disjunktheitsbeleg. Nur der Koordinator schreibt den Planpfad.
 
 ## Fragen, Parkplatz und Risiken
 
 Beantwortet und gedeckt:
 1. Analyseumfang? Nur #1032 und neue Plandatei, keine Welle; Ownerbrief.
-2. Fehlende origin/main-Ref? Vorhandenes Brief-Commitobjekt verwenden, Snapshotabweichungen offen nennen, kein Fetch.
+2. Fehlende origin/main-Ref? Vorhandenes Brief-Commitobjekt verwenden, kein Fetch.
 3. Historische Aufrufzahlen/Async neu bauen? Verwerfen; aktueller Zensus und vorhandener Zwilling.
 4. Rotation zentralisieren? Nein, keine zwei gleichen keep-N-Verträge.
 5. Baseline-Vollsuite? Keine lokale Vollsuite für Plan-Diff; sichere Map-Proben und bestehende Dokuprüfung, CI beim Lead bleibt offen.
@@ -218,32 +190,14 @@ Geparkt und ungedeckt:
 - API-Verkleinerung/Removal, Migration und Retentionpflicht bis Vertrags-/Ownerentscheid; externe Consumer unbekannt.
 - Board-2b-/Legacy-Real-FS-Nachweis, echte Ledger/Lock/STATE-Proben, Löschungen und reale Backuprotation.
 - Aktuelle externe Autorflächen, Remote-/Issue-/CI-Zustand und Projektkonfiguration durch Lead messen.
-- Ziel-OS-Dateisystemwirkung sowie ps-Waisenbeleg; Sandbox verweigert ps, keine OS-Abnahme behaupten.
+- Ziel-OS-Dateisystemwirkung; keine OS-Abnahme behaupten.
 - Commit/Push/MR/Merge/Release/Publish und jede Außenwirkung; hier nicht durchgeführt.
 
 Risiken für einen unbeaufsichtigten Folge-Lauf: historische Zahlen als offene Migration missverstehen; keep-0 aus fehlenden Backups ableiten;
 fehlendes Original plötzlich als Erstschreiben erlauben; Recoverytexte/backup_path/Lock-Reihenfolge verlieren;
 Board-Fallback durch Totaladapterpflicht blockieren; Telemetrie/Queues als Cache behandeln; externe Deep-Imports brechen;
 aus Map-Proben FS- oder OS-Garantien ableiten; unbekannte Peerflächen als disjunkt behandeln.
-Alle eigenen Prüfaufrufe haben abgeschlossene Toolresultate; beide Analyseagenten einschließlich Planreview haben finale Berichte geliefert. Unabhängige Prozess-/Waisenmessung per ps bleibt nicht messbar.
-
-## Gate-Tabelle und Lead-Übergabe
-
-Alle lokalen Prüfungen am vollständigen HEAD `c6d53e746e1de540e66f41f760546c148e346660`,
-uncommittete Fläche ausschließlich Plan/Parkplatz. Ausführungsort: dieser m5-Offload-Arbeitsordner.
-Kein grüner Einzelbeleg ersetzt Repo-CI.
-
-| Befehl / Prüfung | SHA / tatsächliches Ergebnis | Log / Ort |
-|---|---|---|
-| git cat-file -t fb94819e31e04fe435b7180dde2ab49d97bd4cd8; git diff --name-only Brief-SHA HEAD | main-Objekt vorhanden; unveränderte Fachmodule; Exit 0 | Toolprotokoll und Belegstand oben |
-| git grep der zwei Funktionsnamen am Brief-SHA | main-SHA oben; Exit 0; 18 sync / 9 async ohne Definition | Vollständige Aufrufermatrix |
-| Perl 60s node probe.mjs (Befehl oben) | HEAD oben; Exit 0; TESTENDE, 8 Memoryfälle | /private/tmp/so-bb3-1032.JtB37O/probe.log |
-| Perl 30s node scripts/session-shape.mjs … --no-event | HEAD oben; Exit 0; 4 Rollen als dry-run | /private/tmp/so-bb3-1032.JtB37O/shape.log |
-| Perl 60s node node_modules/prettier/bin/prettier.cjs --check docs/plans/triage-2026-10-10-atomic-backup.md | HEAD oben; Exit 0, All matched files use Prettier code style | /private/tmp/so-bb3-1032.JtB37O/prettier.log |
-| git diff --check; beide geforderten status-Varianten | HEAD oben; Exit 0; nur Plan untracked, eigener Parkplatz und bekannte Dependencyreste ignoriert | /private/tmp/so-bb3-1032.JtB37O/status.log |
-| Lokale Parkplatz-Formatprüfung (9 Zeilen, UTC-Stempel, Felder) | HEAD oben; Exit 0; 9/9 korrekt; navigator ledger verify hier nicht verfügbar | /private/tmp/so-bb3-1032.JtB37O/status.log |
-| ps -o pid=,ppid=,command= -p $$ | Exit 127, operation not permitted; **nicht messbar** | Sandbox-Toolprotokoll |
-| Vollständige MR-Pipeline am zukünftigen Head | Nicht ausgeführt, kein Netz; offen beim Lead | Noch keine Pipeline-/Job-ID |
+## Repo-Gates und Außenwirkung
 
 CI hat keine docs-Pfadausnahme: `.gitlab-ci.yml:74–78` aktiviert die gemeinsamen MR-/Branch-Gates.
 Erforderlich: gitleaks-scan, npm-audit, npm-audit-signatures, semgrep, lint, commitlint, typecheck,
@@ -261,13 +215,13 @@ Die vorhandene `.github/workflows/test.yml:4–5` reagiert ebenfalls auf main-Pu
 **Externe Projektkonfiguration nicht live messbar**; der Lead muss vor Merge den tatsächlichen Veröffentlichungsweg prüfen und GitHub-Mirror/Prod-Deploy parken. Kein autonomer `/close`-Mirror; bei einem main-Merge, der veröffentlicht, gilt die Owner-Sperre.
 Kein pauschales „main veröffentlicht nichts“ über die versionierte GitLab-Datei hinaus.
 
-Finaler Scopebeleg: `git status --porcelain --untracked-files=all` zeigt ausschließlich den neuen Plan.
-`git status --porcelain --ignored=traditional` zeigt `?? docs/plans/` und den eigenen neuen Parkplatz als `!! .fleet-m5/`; der Starter muss `.fleet-m5/parkplatz.txt` ausdrücklich mittransportieren, reguläres git staging erfasst ihn nicht.
-Zusätzlich ignoriert sind die bereits vor Beginn vorhandenen
-`marketing/remotion/node_modules/`, `node_modules/`, `skills/claude-md-drift-check/node_modules/`, `skills/vault-sync/node_modules/` und `skills/vault-sync/package-lock.json`.
-Diese Reste gehören zum Starter-/Dependency-Snapshot, wurden hier nicht erzeugt oder verändert und bleiben unangetastet.
-Eigene Tempbelege: `/private/tmp/so-bb3-1032.JtB37O/probe.mjs`, `probe.log`, `shape.log`, `prettier-write.log`, `prettier.log`, `status.log`; stehen lassen, keine Löschung.
-
 Commitvorschlag für die einzige Produktänderung:
 `docs(io): Begründe Backupverträge und Entscheidungsgrenzen für #1032`.
-Parkplatz als Starterprotokoll separat behandeln, kein Commit hier.
+
+
+## Prüfbelege und Lead-Übergabe
+
+Main-SHA: `fb94819e31e04fe435b7180dde2ab49d97bd4cd8`.
+Messdatum: `2026-10-10T07:19:37Z`.
+Methode: `git grep -n 'atomicWriteWithBackup(' <Main-SHA> -- scripts hooks skills` und analog `atomicWriteWithBackupAsync(`.
+Ergebnis: 19 Sync-Treffer einschließlich Definition, 18 Aufrufstellen; 10 Async-Treffer einschließlich Definition, 9 Aufrufstellen in 7 Dateien.

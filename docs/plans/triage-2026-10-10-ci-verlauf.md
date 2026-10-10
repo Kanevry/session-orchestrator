@@ -6,21 +6,11 @@ Empfehlung: Workflow-Runs als Zeilenquelle mit einer zusammengeführten, konserv
 ## Auftrag, Messung und Besitz
 
 - Freigegebener Main-SHA: `e9674ea2df3afedd2790f904ce9188575e3d6d2d`.
-- Neue lokale Messung: `2026-10-10T07:50:57Z`; Objekt mit `git cat-file -t` als Commit bestätigt. Dateivergleich gegen HEAD Exit 0 für Quelle, Fixtures, CI, Validator und Verifikationsregel.
-- Offload-HEAD: `84508434c644a3457186d8ce049bc4ee4d2ef72e` (Starter-Snapshot), detached HEAD. `git rev-list --left-right --count <Main-SHA>...HEAD` ergibt `0 1`; das ist keine Aussage über den heutigen Serverstand. Der Snapshot fügt ausschließlich `skills/claude-md-drift-check/package-lock.json` hinzu; fremder Starterbestand, nicht ändern.
-- `origin/main` ist hier nicht vorhanden. Alle Main-Koordinaten unten stammen aus `git show <freigegebener-SHA>:<datei> | nl -ba`, nicht aus einem Drei-Punkte-Diff. Kein Fetch/Netz und keine neu angelegte Remote.
-- Zu Beginn keine getrackten oder ungetrackten Änderungen. Die Plan-Datei existierte weder im freigegebenen Tree noch im Arbeitsbaum. Aktuelle vollständige Gegenflächen anderer Läufe fehlen; keine Behauptung einer neu gemessenen freien Flotte.
-- Vollständige Produkt-Schreibfläche dieses Laufs: `docs/plans/triage-2026-10-10-ci-verlauf.md`. <!-- path-check: planned #856 -->
-- Betriebsprotokoll separat gemäß Offload-Vorspann: `.fleet-m5/parkplatz.txt`. <!-- path-check: planned #856 -->
+- Neue lokale Messung: `2026-10-10T07:50:57Z`; Objekt mit `git cat-file -t` als Commit bestätigt.
+- Main-Koordinaten: `git show <freigegebener-SHA>:<datei> | nl -ba`.
 - Künftige Code-/Testfläche ausdrücklich **unvollständig und ungefreigegeben**. Vor Umsetzung müssen Dateien und Kollisionsmatrix neu festgelegt werden. Bereits existierende Anker sind `scripts/lib/ci-status-banner.mjs` und `tests/lib/ci-status-banner.test.mjs`; daraus entsteht keine Schreibfreigabe.
 
-## Sessionstart unter der engeren Offload-Freigabe
-
-Bootstrap offen: `CLAUDE.md`, Session Config und `.orchestrator/bootstrap.lock` mit `version`/`tier` vorhanden. Session Config und die drei Dateien unter `.orchestrator/steering/` gelesen. Modus deep, begrenzte Planaufgabe M, Phase-1-Deckel 1500 s. Die gewöhnliche Deep-Ausführung mit fünf Wellen wird hier durch den ausdrücklichen Planstopp ersetzt; null Ausführungswellen gestartet.
-
-Der Starter-Grenzbeleg `frei` und die übernommene Aussage „keine Session läuft“ gelten als Auftragslage. Keine eigene Slot-/Prozessidentität daraus ableiten. Kein zweiter Worktree, keine Lock-/STATE-/Metrics-Schreibvorgänge, keine Vault-/Portfolio-Suche, keine Skill-Selbstmeldung außerhalb der Schreibfläche. Repo-interne historische STATE-/Metrics-Dateien waren hier nicht vorhanden; keine daraus abgeleitete Fortsetzung. Host-Konfiguration außerhalb des Arbeitsordners wird nicht gelesen. Defaults für Ausgabe gelten.
-
-VCS-Deep-Dive, aktuelle Issues/MRs, CI-Endstatus, externe Projektkonfiguration, globale Ressourcen-/Peer-Erfassung und Baseline-Vollsuite sind unter dem Netz-/Scopevertrag nicht messbar beziehungsweise nicht ausgeführt. Labels und Issue-Prämisse stammen aus dem Brief; nur der Quellbefund wird neu bestätigt. Keine Issue-Statusänderung oder Schließung. Die zwingende Schreibflächenbegrenzung hat Vorrang vor den normalen persistierenden Sessionstart-Phasen; dieser Plan behauptet keinen vollständig ausgeführten Live-Sessionstart.
+Die Planphase erteilt keine Codefreigabe; Issue-Prämissen stammen aus dem Brief, Quellbefunde aus dem gemessenen main-Objekt.
 
 ## Prämisse je Kandidat
 
@@ -33,7 +23,7 @@ Einziger Kandidat: #856. Main-SHA und Messdatum wie oben; historische Komplettbe
 | GitHub kennt nur red/green und keinen Checknamen | `scripts/lib/ci-status-banner.mjs:1092–1153` | Widerlegt: Lifecycle-Zähler, unknown-Gründe und failingJobName vorhanden; Kommentar bei 1023 ist überholt |
 | GitHub liefert noch keinen Verlauf | `scripts/lib/ci-status-banner.mjs:1111–1120` | Offen: Failure liefert Placeholder, weder lastGreen noch redCount |
 | GitHub-Lifecycle braucht einen Komplettbau | `tests/lib/ci-status-banner.test.mjs:1917–1969` | Widerlegt durch bestehende Offline-Matrix; erhalten |
-| Failure-Name/Placeholder nur hypothetisch | `tests/lib/ci-status-banner.test.mjs:800–823` | Bestehender Fixtureanker; gezielte Ausführung unten |
+| Failure-Name/Placeholder nur hypothetisch | `tests/lib/ci-status-banner.test.mjs:800–823` | Bestehender Fixtureanker; erhalten |
 
 Synergie: nur den Verlauf an die vorhandenen Begriffe anschließen. GitLab-Statusmechanik, Consumer, Releasepolitik und GitLab-Historienfilter gehören nicht zum Bündel.
 
@@ -79,7 +69,7 @@ Beispiel zur Einheitenwahl: aktueller SHA A hat zwei non-success-Laufzeilen; äl
 - Repository-Lookup und aktueller Head bleiben Teil der bestehenden Abfrage; vorgeschlagen höchstens zwei Head-Checkseiten. Somit höchstens 13 GitHub-Abfragen einschließlich Repository-Lookup; lokale Git-Aufrufe getrennt zählen. Falls der bestehende Headpfad diese Pagination nicht ohne Semantikänderung aufnehmen kann, muss der Lead dessen Codefläche ausdrücklich ergänzen.
 - Bestehender Timeout ist 8000 ms je CLI (`scripts/lib/ci-status-banner.mjs:44`). Vorschlag: Geschichte zusätzlich insgesamt maximal 20 s, je Aufruf höchstens 8 s oder Restbudget; Gesamtlauf maximal 40 s einschließlich lokaler Identitätsermittlung. Ein engeres Aufruferbudget gewinnt. Bei Deadline Kinder abbrechen und abwarten; keine Hintergrundfortsetzung. Diese zusätzliche Latenz ist noch nicht freigegeben und muss gegen Sessionstart-Probenbudget geprüft werden.
 - Bei 403/429 oder erschöpftem belegtem Rate-Budget stoppen, nicht schlafen/retryen oder Token wechseln. Paginationfehler nicht als leere Seite deuten. Angegebene remaining/reset/Retry-After nur als Diagnose verwenden, keine Token/Header-Geheimnisse loggen. Kein API-Limit als konstante Anbieterzahl behaupten; keine reale Rate-/Latenzmessung vorhanden.
-- Kostenbegrenzung durch Request-/Zeit-/Datenfenster, keine Zusatzdienste, keine neuen Auth-Rechte ohne Owner. Geldkosten und Enterprise-Verhalten hier nicht messbar. Keine bezahlten Modell-API-Aufrufe; native Abo-/Harness-Subagents verwendet.
+- Kostenbegrenzung durch Request-/Zeit-/Datenfenster, keine Zusatzdienste, keine neuen Auth-Rechte ohne Owner. Geldkosten und Enterprise-Verhalten hier nicht messbar.
 
 ## Offline-Fixturevertrag für eine spätere Umsetzung
 
@@ -114,44 +104,31 @@ Vorhandene Fixtures erhalten, neue Fälle später im vorhandenen Testanker ergä
 
 Es gibt keine ausführbare `/go`-Freigabe aus diesem Dokument. Der allgemeine Phase-1-Text „Resume mit /go“ wird für S856 ausdrücklich durch „Vertragswahl, dann neuen Umsetzungsbrief“ ersetzt.
 
-| Schritt / mögliche spätere Welle | Rollen / Modell | Ort / Bedingung |
+| Schritt / mögliche spätere Welle | Rollen | Ort / Bedingung |
 | --- | --- | --- |
-| Dieser Planlauf: Quell-/Fixtureanalyse, Alternativen, Vorlage, Gegenprüfung | Koordinator im vorhandenen Codex-Harness; lesender Fixtureprüfer gpt-6.1-sol medium; lesender Vertragsreview gpt-6.1-sol medium. Opus 5.5 ist in diesem Harness nicht verfügbar; nicht als benutzt ausgeben | Eigener win-wsl-Offload-Job; keine Ausführungswelle |
-| Nach ausdrücklicher Vertragswahl: Scope-/API-Verträge und Fixtures festlegen | Nativ Opus für Vertrags-/Architekturreview; Routine Sol 6.1 medium | Lead nativ; reale Abfragen nur separat autorisiert |
-| Später: Implementierung und unabhängiges Review | Nativ Opus für Code mit Ermessen/Review; genaue Agentenzahl erst nach vollständiger Fläche | Nicht gestartet; keine automatische Phase 2 |
-| Später: Quality | Sol-Routine-Gates mit Opus-Review der Befunde | Zulässiger Offload mit Zeitdeckeln, anschließend CI auf Head-SHA |
-| Lead: Doku-MR / eventuell spätere Umsetzung | Lead verantwortet Commit/Push/MR/Merge | Auf main soll aus diesem Lauf ausschließlich die Entscheidungsvorlage landen; #856 bleibt offen |
+| Quell-/Fixtureanalyse, Alternativen, Vorlage, Gegenprüfung | Koordinator, Fixtureprüfer und Vertragsreview | Planphase; keine Ausführungswelle |
+| Nach ausdrücklicher Vertragswahl: Scope-/API-Verträge und Fixtures festlegen | Vertrags-/Architekturreview und Routineanalyse | Lead; reale Abfragen nur separat autorisiert |
+| Später: Implementierung und unabhängiges Review | Implementierer und unabhängiger Reviewer; genaue Agentenzahl erst nach vollständiger Fläche | Keine automatische Phase 2 |
+| Später: Quality | Routine-Gates und Review der Befunde | Zulässiger Offload mit Zeitdeckeln, anschließend CI auf Head-SHA |
+| Lead: Doku-MR / eventuell spätere Umsetzung | Lead verantwortet Commit/Push/MR/Merge | Auf main soll ausschließlich die Entscheidungsvorlage landen; #856 bleibt offen |
 
-Versionierte Main-Wirkung: `.gitlab-ci.yml:37–78` definiert Prüfungsstages und Branch-/MR-Workflow ohne Doku-Pfadausnahme; `:518–524` entfernt die Manifest-Pfadausnahme; `:917–939` verlangt reguläre Sicherheits-/Validierungs-/Test-/Fan-in-Gates. Coverage nur Default-Branch (`:732–761`), nach Merge vom Lead kontrollieren. Vault-watcher ausschließlich schedule (`:1032–1033`). Kein Prod-Deploy-/Release-/Publish-Job im gelesenen vollständigen CI-Tree; npm-Publishing separat gemäß `.claude/rules/development.md:89–93`. Externe Projektkonfiguration bleibt ohne Netz nicht messbar; Merge-/Releaseentscheidung beim Lead, dieser Lauf führt sie nicht aus.
+Versionierte Main-Wirkung: `.gitlab-ci.yml:37–78` definiert Prüfungsstages und Branch-/MR-Workflow ohne Doku-Pfadausnahme; `:518–524` entfernt die Manifest-Pfadausnahme; `:917–939` verlangt reguläre Sicherheits-/Validierungs-/Test-/Fan-in-Gates. Coverage nur Default-Branch (`:732–761`), nach Merge vom Lead kontrollieren. Vault-watcher ausschließlich schedule (`:1032–1033`). Kein Prod-Deploy-/Release-/Publish-Job im gelesenen vollständigen CI-Tree; der Weg GitHub-Mirror → Vercel-Prod wird über `/close` bzw. `scripts/release.mjs` ausgelöst (`.claude/rules/security.md:100`); npm-Publishing separat gemäß `.claude/rules/development.md:89–93`. Externe Projektkonfiguration bleibt ohne Netz nicht messbar; Merge-/Releaseentscheidung beim Lead, dieser Lauf führt sie nicht aus.
 
 ## Beantwortete und geparkte Fragen / Risiken
 
-Beantwortet und gedeckt: ausschließlich #856-Verlaufsrest statt Komplettbau; vorhandene Lifecycle-Fixtures erhalten; isolierter Plan statt Deep-Wellen; freigegebenen SHA direkt lesen, da origin/main fehlt; kein Commit/Push; npm-kanonisches Repo, daher keine pnpm-Installation. Zeitgedeckelte Offline-Fixtureprüfung zulässig im vorhandenen Offload-Job.
+Beantwortet und gedeckt: ausschließlich #856-Verlaufsrest statt Komplettbau; vorhandene Lifecycle-Fixtures erhalten; isolierter Plan statt Deep-Wellen; freigegebenen SHA direkt lesen; kein Commit/Push; npm-kanonisches Repo, daher keine pnpm-Installation. Zeitgedeckelte Offline-Fixtureprüfung zulässig im vorhandenen Offload-Job.
 
 Geparkt und ungedeckt: Wahl Check-Runs/Workflow-Runs/Kombination; Definition und Beleg der relevanten vollständigen Menge; sichtbare Zeilen versus komplette Versuchshistorie; repräsentative pipelineId; konservative Auslassung oder Untergrenzenanzeige; 10 Zusatzrequests/20-s-Historienbudget/40-s-Gesamtbudget. Empfehlung jeweils wie oben, keine stillschweigende Umsetzung dieser Wahl.
 
 Geparkt: offizielle API-/gh-Versionverträge und Live-Abfragen, Tokens/Rechte, aktuelle Issue-/MR-/CI-Lage, externe Projektkonfiguration, alle Außenwirkung, Release/Publish und Code. Größtes fachliches Risiko: falsches lastGreen aus einem Teilworkflow. Größtes Betriebsrisiko: zusätzliche Sessionstart-Latenz und unbekannte Gegenflächen. Der strenge Vollständigkeitsvertrag kann häufig keinen Verlauf liefern; das ist vor Umsetzung bewusst zu entscheiden. Sandbox-Grün ist kein macOS-/Windows-native-/Live-GitHub-Beleg; reine Doku benötigt keine neue Ziel-OS-Wirkungsprüfung.
 
-## Prüfbelege und Übergabe
-
-Alle ausgeführten Prüfungen laufen im Arbeitsordner auf win-wsl/Linux mit Node v24.21.0, gegen Offload-HEAD `84508434c644a3457186d8ce049bc4ee4d2ef72e` plus uncommitted Plan-Diff. Ein Commit-SHA für den neuen Plan existiert bewusst nicht. Logpfade unter `/tmp/so-bb4-856/` sind lokal und müssen vom Starter/Lead gesichert werden; keine erfundene externe Job-ID.
-
-| Prüfung | Befehl / Ort | Exit / Beleg |
-| --- | --- | --- |
-| Freigegebene Anker unverändert | git diff --exit-code Main-SHA HEAD -- Quelle Fixtures CI Validator Verifikationsregel; offload | 0; Main-Tree-Belege oben, Snapshotänderung außerhalb dieses Scopes |
-| Vorhandene Offline-Fixtures | timeout -k 30 120 node_modules/.bin/vitest --run tests/lib/ci-status-banner.test.mjs --reporter=default; offload | 124 (äußerer Zeitdeckel), TESTENDE gelesen; 0 Fixtures ausgeführt, globalSetup scheiterte mit spawnSync /usr/local/bin/node EPERM, status=null/signal=SIGTERM; Log /tmp/so-bb4-856/fixtures.log |
-| Separate vorhandene Pfadprüfung | timeout -k 30 30 node scripts/lib/validate/check-skill-script-paths.mjs; offload | 124, TESTENDE gelesen; nur Überschrift, kein Abschlussbefund, nicht messbar; Log /tmp/so-bb4-856/paths.log |
-| Plan-/Pluginprüfung inklusive Pfade | timeout -k 30 600 node scripts/validate-plugin.mjs; offload | 124, tatsächliches TESTENDE gelesen 2026-10-10T08:04:36Z; keine gültige Results-Summe, leere Kindprüfungen und fehlende Vergleichsmarker, nicht messbar; Log /tmp/so-bb4-856/validate-plugin.log |
-| CI nach Push/Merge | Lead: reguläre Pipeline auf neuem vollem Head-SHA, Coverage auf Main | Nicht ausgeführt, offen; keine CI-Grünbehauptung |
-
 Für reinen Doku-Diff keine eigene Vitest-Vollsuite; obige Einzeldatei reproduziert nur die historischen Anker. Typecheck prüft mjs-Code, ESLint JS/mjs, beide berühren diese Markdown-Datei nicht; Dokumentationsausnahme `.claude/rules/verification-before-completion.md:59`. CI-Jobpflicht wird dadurch nicht aufgehoben. Validator-Pfadprüfung scannt auch docs und erwartet geplante Pfade auf gleicher/unmittelbar voriger Zeile (`scripts/lib/validate/check-skill-script-paths.mjs:1–60`).
 
-Review: unabhängiger lesender Sol-6.1-medium-Prüfer bestätigte die Main-Anker; erste Blocking-Lücken (Gruppenanker/Intervall und mehrere Run-IDs) wurden in Ziffern 3/4/6 und Fixtures präzisiert. Nachprüfung: beide geschlossen, keine neuen Blocking-Befunde. Das ist Vertragsreview, kein Gate-Erfolg.
-
-Ursachenprüfung nach Debug-Anleitung, ausschließlich lesend: `tests/setup/validate-plugin.mjs:20–25` startet den Pflichtvalidator per spawnSync mit 120000-ms-Deckel vor Testworkern; `vitest.config.mjs:19` bindet dieses Setup ein. Tatsächliches Fehlerlog nennt EPERM, keinen fehlgeschlagenen #856-Assert. Betroffene Quell-/Setup-Dateien wurden nicht verändert, keine Instrumentierung oder Umgehung. Dediziertes Debug-Artefakt außerhalb der vollständigen Schreibfläche ist nicht freigegeben; Befund und Logs bleiben in dieser Vorlage. Sandbox-/Kindprozessursache ist eine Hypothese, kein nativer Zielsystembefund. Vollständigen Validator und Fixture-Reproduktion muss der Lead auf einem zulässigen Runner nachholen.
-
-Abschließende Übergabe: vollständige Produktänderung ausschließlich diese neue Plan-Datei. `git status --porcelain --untracked-files=all` meldet `?? docs/plans/triage-2026-10-10-ci-verlauf.md`; keine getrackten Änderungen, kein Index geschrieben. `git status --porcelain --ignored=traditional` meldet das neue Plan-Verzeichnis und ignoriert `.fleet-m5/`, `node_modules/`, `marketing/remotion/node_modules/`, `skills/claude-md-drift-check/node_modules/`, `skills/vault-sync/node_modules/`, `skills/vault-sync/package-lock.json`. Nur Parkplatz ist eigener ignorierter Bestand; übrige Reste waren vor Arbeit vorhanden und wurden nicht behandelt. Starter-Snapshot-Lockfile ist bereits in HEAD und gehört nicht zu diesem Diff. Eigene Logs verbleiben unter exakt `/tmp/so-bb4-856/`; nichts gelöscht. Vollständige Statusausgaben dort in status-untracked.txt und status-ignored.txt sichern. Parkplatz ist Betriebsprotokoll, nicht Teil des Doku-Commits.
-
-Alle drei gestarteten Prüfungen sind beendet; beide lesenden Subagents abgeschlossen. `ps -eo pid,ppid,comm` liefert in dieser Sandbox nur PID 1 codex sowie die aktuelle Shell/timeout/ps-Kette (Exit 0); damit keine hostweite Waisenprüfung behaupten. Hostweite Prozesskontrolle ist nicht messbar, kein fremder Prozess angefasst. Linux wurde mit uname -s gemessen; win-wsl ist die Starterangabe, kein Windows-nativer Nachweis. Endprüfung/Log-Sicherung beim Lead; kein CI-Grün, keine Codeabnahme und keine automatische Fortsetzung.
-
 Commit-Vorschlag für den Lead: `docs(ci): Bereite den GitHub-Verlaufsvertrag vor`. Keine Issue-Schließung aus diesem Teilplan. Dieser Lauf endet nach der Entscheidungsvorlage; Implementierung bleibt bis Vertragswahl und neuem freigegebenem Scope geparkt.
+
+## Prüfbelege und Übergabe
+
+Main-SHA: `e9674ea2df3afedd2790f904ce9188575e3d6d2d`.
+Messdatum: `2026-10-10T07:50:57Z`.
+Methode: `git cat-file -t <Main-SHA>` und `git show <Main-SHA>:<datei> | nl -ba` für Quelle, Fixtures, CI, Validator und Verifikationsregel.
+Ergebnis: Commitobjekt und Main-Anker bestätigt; GitHub-Verlaufsrest offen, Lifecycle-Fixtures vorhanden.
