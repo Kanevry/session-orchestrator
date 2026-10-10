@@ -243,7 +243,7 @@ function runCell(variant, kase, run) {
   if (DRY) return { variant: variant.id, case: kase.id, run, dry: true, workdir: wd };
 
   let usage = {};
-  let cost = 0;
+  let cost = null;
   let text = '';
   let error = null;
   try {
@@ -255,7 +255,9 @@ function runCell(variant, kase, run) {
     });
     const j = JSON.parse(out);
     usage = j.usage || {};
-    cost = j.total_cost_usd || 0;
+    // Missing or non-numeric cost stays unknown; a reported 0 stays 0 (#1547).
+    const c = j.total_cost_usd;
+    cost = typeof c === 'number' && Number.isFinite(c) && c >= 0 ? c : null;
     text = typeof j.result === 'string' ? j.result : '';
   } catch (e) {
     error = String(e.message || e).slice(0, 300);
@@ -275,7 +277,7 @@ function runCell(variant, kase, run) {
     error,
     context_tokens: ctx,
     output_tokens: usage.output_tokens || 0,
-    cost_usd: Number(cost.toFixed(4)),
+    cost_usd: cost === null ? null : Number(cost.toFixed(4)),
     oracles,
     reply_excerpt: text.slice(0, 300),
     workdir: wd,
@@ -300,7 +302,7 @@ for (const kase of cases) {
       const rec = runCell(variant, kase, run);
       records.push(rec);
       if (!DRY) appendFileSync(outFile, JSON.stringify(rec) + '\n');
-      process.stderr.write(rec.dry ? 'built\n' : `${rec.pass ? 'PASS' : 'FAIL'} (${rec.cost_usd ?? 0} USD)\n`);
+      process.stderr.write(rec.dry ? 'built\n' : `${rec.pass ? 'PASS' : 'FAIL'} (${rec.cost_usd ?? 'unknown'} USD)\n`);
     }
   }
 }
@@ -324,13 +326,16 @@ for (const kase of cases) {
   console.log(row.join('\t'));
 }
 
-const spend = records.reduce((a, r) => a + (r.cost_usd || 0), 0);
+// One unknown cell makes the total unknown; a partial sum would read as complete.
+const spend = records.some((r) => r.cost_usd === null)
+  ? 'unknown'
+  : records.reduce((a, r) => a + r.cost_usd, 0).toFixed(2);
 const ctxAvg = (id) => {
   const c = records.filter((r) => r.variant === id && r.context_tokens);
   return c.length ? Math.round(c.reduce((a, r) => a + r.context_tokens, 0) / c.length) : 0;
 };
 console.log('\n=== mean context tokens by variant ===');
 for (const v of variants) console.log(`${v.id}\t${ctxAvg(v.id)}`);
-console.log(`\ntotal spend: USD ${spend.toFixed(2)}`);
+console.log(`\ntotal spend: USD ${spend}`);
 console.log(`results:     ${outFile}`);
 console.log(`workdirs:    ${ROOT}  (throwaway; inspect failures there, remove when done)`);

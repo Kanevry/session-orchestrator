@@ -8,7 +8,7 @@ export const CONTEXT_OVERHEAD_HEADER =
 /**
  * @param {string} text JSON response text
  * @param {string} label measurement label
- * @returns {string} TSV row, or a recognizable parse-error row
+ * @returns {string} TSV row, or a recognizable PARSE-ERROR / NO-USAGE row
  */
 export function formatContextOverhead(text, label) {
   let response;
@@ -17,7 +17,11 @@ export function formatContextOverhead(text, label) {
   } catch {
     return `${label}\tPARSE-ERROR\n`;
   }
-  const usage = response?.usage || {};
+  const usage = response?.usage;
+  // An error reply (e.g. "Not logged in") carries no usage; 0 tokens would be invented (#1547).
+  if (typeof usage !== 'object' || usage === null || Array.isArray(usage)) {
+    return `${label}\tNO-USAGE\n`;
+  }
   const context =
     (usage.input_tokens || 0) +
     (usage.cache_creation_input_tokens || 0) +

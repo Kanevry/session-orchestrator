@@ -33,8 +33,19 @@ describe('context overhead cost provenance', () => {
   });
 
   it('rejects numeric overflow without mistaking valid JSON for a parse failure', () => {
-    expect(formatContextOverhead('{"total_cost_usd":1e400,"cost_basis":"api-list-equivalent"}', 'overflow'))
-      .toBe('overflow\t0\t0\t0\t0\tunknown\tunknown\n');
+    expect(formatContextOverhead(`{"usage":${JSON.stringify(usage)},"total_cost_usd":1e400,"cost_basis":"api-list-equivalent"}`, 'overflow'))
+      .toBe('overflow\t60\t20\t30\t2\tunknown\tunknown\n');
+  });
+
+  // #1547: an error reply without usage must not read as a 0-token measurement.
+  it.each([
+    ['missing', '{"is_error":true,"result":"Not logged in"}'],
+    ['null', '{"usage":null,"total_cost_usd":0}'],
+    ['non-object', '{"usage":"n/a"}'],
+    ['array', '{"usage":[]}'],
+    ['top-level null', 'null'],
+  ])('marks %s usage instead of reporting zero tokens', (_name, text) => {
+    expect(formatContextOverhead(text, 'nousage')).toBe('nousage\tNO-USAGE\n');
   });
 
   it('keeps malformed JSON recognizable', () => {
