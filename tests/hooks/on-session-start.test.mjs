@@ -522,22 +522,54 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     const dir1 = await mkProjectTracked();
     const dir2 = await mkProjectTracked();
     // Simulate a first session.
-    await runHook({ projectDir: dir1 });
-    // Second session should detect the first as a peer.
-    const result = await runHook({ projectDir: dir2 });
+    const first = await runHook({ projectDir: dir1, useCwd: true });
+    expect(first.code).toBe(0);
+    const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
+    const [foreignFile] = await fs.readdir(activeDir);
+    const foreignPeer = JSON.parse(await fs.readFile(path.join(activeDir, foreignFile), 'utf8'));
+    const branch = spawnSync('git', ['branch', '--show-current'], { cwd: dir1, encoding: 'utf8' });
+    expect(branch.status).toBe(0);
+    const { repoPathHash } = await import('../../scripts/lib/session-registry.mjs');
+    // Derive the same-copy fixture from the real hook's registry record.
+    await fs.writeFile(path.join(activeDir, 'peer-same-copy.json'), JSON.stringify({
+      ...foreignPeer,
+      session_id: 'peer-same-copy',
+      semantic_session_id: 'same-copy-fixture',
+      repo_path_hash: repoPathHash(dir2),
+      repo_name: path.basename(dir2),
+      branch: 'feat/same-copy',
+      current_wave: 3,
+    }));
+    const result = await runHook({ projectDir: dir2, useCwd: true });
+    expect(result.code).toBe(0);
     const events = await readEvents(dir2);
-    expect(events.at(-1).peer_count).toBe(1);
-    // Banner should contain a peer line.
+    expect(events.at(-1).peer_count).toBe(2);
     const banners = result.stdout
       .split('\n')
-      .filter((l) => l.trim().startsWith('{'))
-      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-      .filter(Boolean)
-      .filter((l) => l.systemMessage);
-    // #1089: all banner lines leave as ONE systemMessage (see flushBanner) —
-    // search the combined text, not for a dedicated object.
-    const peerBanner = banners.find((l) => /Peers: \d+ live on this host/.test(l.systemMessage));
-    expect(peerBanner).toBeDefined();
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l));
+    expect(banners).toHaveLength(1);
+    expect(banners[0].systemMessage).toEqual(expect.any(String));
+    const assertPeerContract = (message) => {
+      const lines = message.split('\n');
+      expect(lines.find((l) => l.includes('👥 Peers:'))).toBe('⚠️ 👥 Peers: 2 live on this host');
+      // Exact data rows exclude native busy/waiting/idle assignments without
+      // rejecting those words in the explanation of the structural limit.
+      expect(lines.find((l) => l.includes('in THIS working copy'))).toBe(
+        '   ⚠️  1 in THIS working copy — coordinate before editing (same-copy-fixture#peer-sam:feat/same-copy:wave-3)',
+      );
+      expect(lines.find((l) => l.includes('other repos (host capacity only):'))).toBe(
+        `   other repos (host capacity only): ${path.basename(dir1)}:${branch.stdout.trim()}`,
+      );
+      expect(lines.find((l) => l.includes('(registry view:'))).toBe(
+        '   (registry view: repo/branch/wave. Liveness (busy/idle) is model-side — not available in this hook.)',
+      );
+    };
+    const message = banners[0].systemMessage;
+    assertPeerContract(message);
+    // #1052: prove sensitivity using only a copy of the received output.
+    const withoutLimitation = message.split('\n').filter((l) => !l.includes('(registry view:')).join('\n');
+    expect(() => assertPeerContract(withoutLimitation)).toThrow();
   });
 
   it('prepends a WARN icon when peer count meets concurrent-sessions-warn threshold', async () => {

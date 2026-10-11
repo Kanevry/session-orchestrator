@@ -106,8 +106,10 @@ Out-of-Scope).
       der Roh-Socket, und der ist gemessen unbrauchbar (M-6) und ausdrücklich Out-of-Scope.
       - **A3a (Hook, bleibt wo es ist):** das bestehende Peer-Banner in
         `hooks/on-session-start.mjs` liefert weiter die Registry-Semantik
-        (`repo_name`, `branch`, `mode`, `current_wave`) und weist aus, dass Liveness dort
-        strukturell nicht verfügbar ist.
+        (`repo_name`, `branch`, `current_wave`): Details zur selben Working Copy
+        zeigen Peer-Identität, Branch und Wave; andere Working Copies erscheinen
+        als Host-Kapazitätsübersicht mit Repo und Branch. Das Banner weist aus,
+        dass Liveness dort strukturell nicht verfügbar ist.
       - **A3b (Koordinator, Skill-Prosa):** `skills/session-start/SKILL.md` ruft in der
         Peer-Erkennungsphase `ListAgents` auf und legt den nativen Status
         (`busy`/`waiting`/`idle`) über die Hook-Zeilen.
@@ -277,7 +279,8 @@ Out-of-Scope).
 ```gherkin
 Given eine zweite Claude-Code-Session ist im selben Working Copy aktiv
 When der SessionStart-Hook sein Peer-Banner rendert
-Then nennt es je Peer Repo, Branch, Mode und Wave aus der Host-Registry
+Then nennt es in den Details zur selben Working Copy Peer-Identität, Branch und Wave aus der Host-Registry
+ And es zeigt vorhandene andere Working Copies als Host-Kapazitätsübersicht mit Repo und Branch
  And es weist aus, dass Liveness im Hook strukturell nicht verfügbar ist
  And es behauptet KEINEN nativen Status
 ```

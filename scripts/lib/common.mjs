@@ -12,7 +12,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { promises as fs, existsSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { commandOnPath } from './native-command.mjs';
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -182,9 +182,7 @@ export function warn(message) {
  * @throws {Error} when jq is not on PATH
  */
 export function requireJq() {
-  try {
-    execSync('command -v jq', { stdio: 'ignore', shell: true });
-  } catch {
+  if (!commandOnPath('jq')) {
     throw new Error('jq is required but not installed. Install via: brew install jq');
   }
 }
