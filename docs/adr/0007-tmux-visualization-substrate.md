@@ -65,3 +65,15 @@ Adapter is the falsifiable middle, inheriting the ADR 0002 (Agent Teams) and ADR
 - **Child issue — `/tmux-layout debug` variant.** Second layout for the `/debug` 4-phase skill: pane 1 coordinator, pane 2 hypothesis-test runner (`npm test -- --watch` or equivalent), pane 3 `tail -F .orchestrator/debug/*.md`, pane 4 `git diff --stat | watch`. `depends-on:` parent. Labels: `best-practice-2026, type:feature, area:skills, priority:low, status:ready`.
 - **Child issue — telemetry + promotion gate.** Define metrics (skill-invocation count via `events.jsonl` event-type `tmux-layout.invoked`, layout-completion rate, user-survey signal after 3 deep sessions) + N≥3-quiet-deep-session threshold before promoting to default-recommended in the session-start banner. Mirrors ADR 0002 / ADR 0003 / ADR-364 graduated-adoption precedent (ADR 0002 and ADR 0003 never reached promotion — see the dated notes above). Labels: `best-practice-2026, type:chore, area:metrics, priority:low, status:ready`.
 - **Promotion criteria (codified at parent issue close-out):** invocation count ≥ 5 across ≥ 3 distinct deep sessions over ≥ 2 calendar weeks, layout-completion rate ≥ 80%, zero coordinator-chat regressions reported, operator-reported time-to-CI-result reduction confirmed in survey. Fail any → stays opt-in indefinitely or rolls back.
+
+## Nachtrag 2026-10-10: native Mod-Anzeige (#1508)
+
+Mit `mods/so-hud` kommt eine native Claude-Code-Statuszeile mit bedingtem Band
+als zweite Anzeigeoption neben tmux hinzu. Beide Anzeigen lesen dieselben
+SO-Quellen; `scripts/so-hud.mjs --json` stellt dafür den versionierten
+Schnappschuss bereit. Die Rollen- und STATE-Grenzen dieses ADR gelten weiterhin:
+nur lesen, STATE.md bleibt unter der bestehenden Coordinator-/Wave-Ownership,
+keine zweite Zustandsführung. Der Mod hält lediglich einen Messwert-Cache und
+einen eigenen Session-Beacon für den UI-Lebenszyklus, keine alternative
+Session- oder Wave-Autorität. Fehlende Messungen bleiben unbekannt. Die native
+Anzeige ersetzt weder tmux noch dessen Einsatz in anderen Harnesses.
