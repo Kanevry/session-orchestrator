@@ -12,7 +12,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -92,6 +92,25 @@ describe('parse-config.mjs unknown top-level keys (#1562)', () => {
     expect(r.stderr).toContain('unknown Session Config key check did not run');
     expect(r.stderr).toContain('it was not found');
     expect(r.stderr).not.toContain(`${REPORT} 'persistance'`);
+  });
+
+  /**
+   * BUG CAUGHT (REFUTE review F1): the report fired on configs the plugin writes
+   * itself — `project-name` from both bootstrap templates and `skill-evolution`,
+   * which the parser reads from the whole file and applies — telling a first-run
+   * user "it has no effect". The blocks are read from the real scaffolding files,
+   * so a template that starts writing a new key turns this red.
+   */
+  it('the plugin\'s own bootstrap scaffolding produces no report', () => {
+    const fast = readFileSync(join(REPO_ROOT, 'skills', 'bootstrap', 'fast-template.md'), 'utf8');
+    const heredoc = fast.match(/cat >> CLAUDE\.md <<'EOF'\n([\s\S]*?)\nEOF/)[1];
+    const minimal = readFileSync(join(REPO_ROOT, 'templates', '_minimal', 'CLAUDE.md.tmpl'), 'utf8');
+    const minimalBlock = minimal.slice(minimal.indexOf('## Session Config'));
+    for (const scaffold of [heredoc, minimalBlock]) {
+      const filled = `# Fixture\n${scaffold.replace(/\{\{[A-Z_]+\}\}|<[^>\n]+>/g, 'x')}\n`;
+      expect(filled).toContain('## Session Config');
+      expect(reportedLines(run(filled).stderr)).toEqual([]);
+    }
   });
 });
 

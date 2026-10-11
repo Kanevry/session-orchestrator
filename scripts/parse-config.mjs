@@ -245,8 +245,9 @@ if (unparsableLines.length > 0) {
 // cleanly, so the gate above never sees it: the key lands in the KV map under a
 // name nothing reads, and the real key keeps its default. The population of
 // known keys is the plugin's OWN template (first + last `## Session Config`
-// block, the population drift-check Check 6 reads), so it moves with the
-// plugin version, never with the repo.
+// block, the population drift-check Check 6 reads) plus every top-level key
+// `parseSessionConfig()` emits, so it moves with the plugin version, never
+// with the repo.
 //
 // A report, never a refusal — even under `strict`: a key from a newer plugin
 // version is not a defect of the repo. Three states stay apart on purpose:
@@ -261,6 +262,11 @@ if (enforcement !== 'off') {
   try {
     known = knownTemplateKeys(readFileSync(templatePath, 'utf8'));
     if (!known) notRunReason = 'it has no distinct starter and opt-in `## Session Config` blocks';
+    // A key the parser itself emits is read, wherever the template documents it:
+    // `skill-evolution` and `dispatcher-autonomy` are parsed from the whole file
+    // (their parity-exempt template blocks sit outside `## Session Config`), so
+    // the same key inside the block is applied and must not read "no effect".
+    else for (const key of Object.keys(config)) known.add(key);
   } catch (err) {
     notRunReason = err.code === 'ENOENT' ? 'it was not found' : `it could not be read (${err.code ?? err.message})`;
   }

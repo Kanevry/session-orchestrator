@@ -697,6 +697,7 @@ enforcement: warn
 # Session structure
 recent-commits: 20
 special: "follow .claude/rules/parallel-sessions.md"
+project-name: my-project               # informational: written by /bootstrap, names the repo for readers; no runtime reader
 
 # VCS & infrastructure
 vcs: gitlab
