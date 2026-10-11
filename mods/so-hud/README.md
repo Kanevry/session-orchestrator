@@ -1,12 +1,12 @@
 # so-hud 0.1.0
 
-A native, read-only Session Orchestrator display for Claude Code (package A, #1508): a status line for the running session, a warning band when something needs attention, and one beacon file per session so peer sessions are visible.
+A native, read-only Session Orchestrator display for Claude Code (package A, #1508): a status line for the running session, a warning band when something needs attention, and one beacon file per session that other sessions can read through `$.so.beacons()`. The status line shows how many peer sessions are running (from the session registry).
 
 ## Requirements
 
 - Claude Code with mod support; tested with **2.1.296**. Claude Code only — Codex, Cursor and Pi do not load this mod.
 - **Node.js 24** or later.
-- The **session-orchestrator** plugin installed: the mod reads all state through its `scripts/so-hud.mjs`.
+- **Session Orchestrator** from the release that ships this mod or later, as the plugin or as a checkout set through `soRoot`: the mod reads all state through its `scripts/so-hud.mjs`, which earlier releases do not have.
 
 ## Install
 
@@ -15,9 +15,9 @@ A native, read-only Session Orchestrator display for Claude Code (package A, #15
 /plugin install so-hud@kanevry
 ```
 
-The mod finds the Session Orchestrator installation in this order: the `soRoot` setting (an absolute path), a root registered with `node scripts/so-hud.mjs --register-root` inside that installation, then `claude plugin list --json`. For a local checkout you can also load this directory directly with `claude --plugin-dir ./mods/so-hud`.
+The mod finds the Session Orchestrator installation in this order: the `soRoot` setting (an absolute path), then the path cached from an earlier lookup, then a root registered with `node scripts/so-hud.mjs --register-root` inside that installation, then `claude plugin list --json`. The first hit is cached, so after a move only `soRoot` replaces it. None of these install actions is run by the development tests. For a local checkout you can also load this directory directly with `claude --plugin-dir ./mods/so-hud`.
 
-Settings: `strictness` is `locker` (relaxed), `ausgewogen` (balanced, the default) or `streng` (strict); `soRoot` is optional.
+Settings: `strictness` is `locker` (relaxed), `ausgewogen` (balanced, the default) or `streng` (strict); it is shown in the status line and returned by `$.so.profile()`, and does not change the warnings yet. `soRoot` is optional.
 
 ## What it does
 

@@ -153,11 +153,11 @@ All four platforms share the same skills, commands and scripts; only the hooks d
 
 Highlights of the v5.12.0 line:
 
-- **A status line inside Claude Code.** The new `so-hud` mod shows the session state and a warning band when something needs attention, and lists peer sessions; install it with `/plugin install so-hud@kanevry` (#1508).
+- **A status line inside Claude Code.** The new `so-hud` mod shows the session state and a warning band when something needs attention, and how many peer sessions are running; install it with `/plugin install so-hud@kanevry` (#1508).
 - **Mode recommendations reach the next session.** The STATE.md idle reset at session start is code now and keeps the previous session's recommendation for the mode selector (#1560).
 - **A first `/session` asks before it starts.** Without any session history of its own, a bare `/session` asks for the task and the mode instead of starting `deep` (#1561).
 - **Solo use stays quiet.** Without fleet integration there is no fleet line and no check-in file, and a repo that is not set up yet is pointed to `/bootstrap` first (#1559).
-- **Vault files are no longer left behind unnoticed.** `/close` names untracked files the session left in the vault, and new vault slugs keep umlauts (#1563, #1548).
+- **Vault files are no longer left behind unnoticed.** `/close` names untracked vault files modified since the session started, and new learning-note slugs keep umlauts (#1563, #1548).
 - **One repo, one identity.** A repo reached through a symlink counts as the same repo for peer discovery and the live-status board (#1557).
 
 Full changes and upgrade notes: [CHANGELOG.md](CHANGELOG.md).
