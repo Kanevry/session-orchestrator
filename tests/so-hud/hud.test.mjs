@@ -3,6 +3,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
 import { collectSnapshot, scopePaths } from '../../scripts/lib/so-hud/collect.mjs';
 import { readEventTail, discover } from '../../scripts/lib/so-hud/runtime.mjs';
 import { main } from '../../scripts/so-hud.mjs';
@@ -44,13 +45,36 @@ describe('collector boundaries', () => {
   });
   it('joins bound dispatch and agent status but rejects foreign session status', async () => {
     const root = await fixture({ '.claude/wave-scope.json': { session_id: 'own', wave: 2, role: 'Impl-Core' }, '.orchestrator/wave-dispatch-scopes.own.json': { waveKey: 'own|w2|Impl-Core', agents: [{ id: 'a', model: 'sonnet' }, { id: 'b' }, { id: 'c' }] }, '.claude/STATE.md': '---\nsession-id: own\nsession-type: deep\ncurrent-wave: 2\ntotal-waves: 5\nstatus: active\n---\n' });
-    const s = await collectSnapshot(root, readers({ sessionId: 'own', agents: async () => ({ entries: { a: { sessionId: 'own', wave: 2, text: 'running' }, foreign: { sessionId: 'other', wave: 2, text: 'done' } }, source: 'ledger', at: stamp }) }));
+    const s = await collectSnapshot(root, readers({ sessionId: 'own', lock: async () => ({ status: 'ok', lock: { session_id: 'own' } }), agents: async () => ({ entries: { a: { sessionId: 'own', wave: 2, text: 'running' }, foreign: { sessionId: 'other', wave: 2, text: 'done' } }, source: 'ledger', at: stamp }) }));
     expect(s.wave).toMatchObject({ running: true, number: 2, role: 'Impl-Core', agents_total: 3 });
     expect(s.agents.entries).toHaveLength(3);
     expect(s.agents.entries[0]).toMatchObject({ status: 'running', modellfamilie: 'sonnet', tokens: null, letzter_request_at: null });
     expect(s.state).toMatchObject({ session_type: 'deep', current_wave: 2, total_waves: 5 });
     const unbound = await collectSnapshot(root, readers({ agents: async () => ({ entries: { old: { text: 'running' } } }) }));
     expect(unbound.agents.entries).toEqual([]);
+  });
+  it('requires a live session-bound lock even with a remaining wave manifest', async () => {
+    const root = await fixture({ '.claude/wave-scope.json': { session_id: 'own', wave: 2 } });
+    for (const [lock, live, expected] of [
+      [{ session_id: 'own' }, false, false], [null, false, false],
+      [{ session_id: 'other' }, true, false], [{ session_id: 'own' }, true, true],
+    ]) {
+      const s = await collectSnapshot(root, readers({ sessionId: 'own', lock: async () => ({ status: lock ? 'ok' : 'absent', lock }), isLockLive: () => live }));
+      expect(s.wave.running).toBe(expected);
+    }
+  });
+  it('keeps the red gate through unproven events until proven green', async () => {
+    const root = await fixture();
+    const events = [
+      { event: 'orchestrator.quality_gate.failed', variant: 'full-gate', exit_code: 1, timestamp: stamp },
+      { event: 'orchestrator.quality_gate.passed', variant: 'baseline', exit_code: 0, timestamp: new Date(now + 1000).toISOString() },
+    ];
+    const deps = readers({ events: async () => ({ text: events.map(e => JSON.stringify(e)).join('\n') }) });
+    expect((await collectSnapshot(root, deps)).gate.last).toMatchObject({ passed: false, exit_code: 1, at: stamp });
+    events.push({ event: 'orchestrator.quality_gate.passed', variant: 'baseline', exit_code: 0, check_failed: false, timestamp: new Date(now + 2000).toISOString() });
+    expect((await collectSnapshot(root, deps)).gate.last.passed).toBe(true);
+    events.push({ event: 'orchestrator.quality_gate.passed', variant: 'baseline', exit_code: 0, timestamp: new Date(now + 3000).toISOString() });
+    expect((await collectSnapshot(root, deps)).gate.last.passed).toBeNull();
   });
   it('does not label reporting-variant passed events green without check evidence', async () => {
     const events = [
@@ -141,6 +165,25 @@ describe('mod pure logic', () => {
     expect(ageBeacon(beacon(), now + 120000, false).zustand).toBe('bereit');
     expect(completeState('Weiter mit 2.')).toEqual({ zustand: 'wartet', warte_grund: 'frage', heuristisch: true });
   });
+  it('keeps untrusted gate, mirror and status text single-line and bounded', async () => {
+    const root = await fixture();
+    const s = await collectSnapshot(root, readers());
+    const hostile = 'foreign\n\r\t\x1b\x00\u0085\u2028\u2029\u202e' + 'x'.repeat(1000);
+    s.gate.last = { variant: hostile, passed: false, at: stamp, exit_code: 1 };
+    s.vault.last_run = { at: stamp, failed: 1, aborted: hostile };
+    s.state.session_type = hostile;
+    s.wave.role = hostile;
+    const warnings = findings(s, {}, null, now);
+    expect(warnings).toHaveLength(2);
+    expect(warnings[0]).toMatch(/^Gate rot: foreign {9}/);
+    for (const line of [...warnings, statusText(s, 'locker')]) {
+      expect(line).not.toMatch(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+      expect(line).toContain('foreign');
+      expect(line).not.toContain('x'.repeat(121));
+      expect(line.length).toBeLessThanOrEqual(800);
+    }
+    expect(warnings.every(line => line.length <= 120)).toBe(true);
+  });
   it('orders status fields and only raises the specified band findings', async () => {
     const root = await fixture();
     const s = await collectSnapshot(root, readers());
@@ -162,7 +205,7 @@ describe('mod pure logic', () => {
 });
 
 it('real CLI produces JSON with a fixture registry; records 20-run p95 without reading the host fleet', async () => {
-  const root = await fixture({ 'CLAUDE.md': '## Session Config\n\nvault-integration:\n  enabled: false\n  mode: warn\n' });
+  const root = await fixture({ 'CLAUDE.md': '# Project instructions\n', 'AGENTS.md': '## Session Config\n\nvault-integration:\n  enabled: false\n  mode: warn\n' });
   const cli = path.resolve('scripts/so-hud.mjs');
   const durations = [];
   for (let i = 0; i < 20; i++) {
@@ -182,3 +225,8 @@ it('real CLI produces JSON with a fixture registry; records 20-run p95 without r
   process.stdout.write(`so-hud fixture CLI: 20 runs, p95=${p95.toFixed(1)} ms\n`);
   expect(p95).toBeLessThanOrEqual(1500);
 }, 30000);
+
+it('ships the HUD manifest with a contributor author rather than personal identity', async () => {
+  const manifest = JSON.parse(await fs.readFile(new URL('../../mods/so-hud/.claude-plugin/plugin.json', import.meta.url), 'utf8'));
+  expect(manifest.author).toEqual({ name: 'session-orchestrator contributors' });
+});

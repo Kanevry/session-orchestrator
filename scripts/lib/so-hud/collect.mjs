@@ -89,6 +89,12 @@ export async function collectSnapshot(repoRoot, readers) {
   if (agentStatus.degraded) degraded.push('agents:degraded');
   const events = parseEvents(eventsRead.text ?? '');
   const gates = events.filter(e => (e.event ?? e.event_type).startsWith('orchestrator.quality_gate.'));
+  const lastGate = gates.reduce((last, event) => {
+    const next = gateFromEvent(event);
+    return last?.passed === false && next.passed === null ? last : next;
+  }, null);
+  const lockLive = lock ? readers.isLockLive(lock, now) : false;
+  const sessionLockLive = lockLive && sid !== null && lock.session_id === sid;
   const latest = name => events.filter(e => (e.event ?? e.event_type) === name && e.dry_run !== true).at(-1);
   const mirror = latest('orchestrator.vault.mirror_run_completed');
   const board = latest('orchestrator.vault.board_written');
@@ -110,13 +116,13 @@ export async function collectSnapshot(repoRoot, readers) {
   }));
   return {
     schema_version: 1, measured_at: new Date(now).toISOString(), repo: { root: repoRoot, name: path.basename(repoRoot) },
-    lock: lock ? { session_id: text(lock.session_id), live: readers.isLockLive(lock, now), last_heartbeat: text(lock.last_heartbeat) } : null,
+    lock: lock ? { session_id: text(lock.session_id), live: lockLive, last_heartbeat: text(lock.last_heartbeat) } : null,
     session: sid ? { session_id: sid, semantic_session_id: text(lock?.semantic_session_id) } : null,
-    wave: { running: waveRead.absent ? false : ownWave ? true : null, number: waveNumber, role: text(ownWave?.role),
+    wave: { running: waveRead.absent ? false : ownWave ? sessionLockLive : null, number: waveNumber, role: text(ownWave?.role),
       agents_total: Array.isArray(currentDispatch?.agents) ? currentDispatch.agents.length : null, source: ownWave ? '.claude/wave-scope.json' : null },
     agents: { entries: [...entries.values()], source: agentStatus.source ?? (currentDispatch ? 'dispatch' : null), at: agentStatus.at ?? text(currentDispatch?.updated), degraded: agentStatus.degraded ?? null },
     state: { status: text(state.status), session_type: text(state['session-type'] ?? state.type ?? state.mode), current_wave: positive(state['current-wave']), total_waves: positive(state['total-waves'] ?? state.waves) },
-    gate: { last: gateFromEvent(gates.at(-1)), last_green_sha: typeof greenRead.value === 'string' && /^[a-f0-9]{7,64}$/i.test(greenRead.value.trim()) ? greenRead.value.trim() : null },
+    gate: { last: lastGate, last_green_sha: typeof greenRead.value === 'string' && /^[a-f0-9]{7,64}$/i.test(greenRead.value.trim()) ? greenRead.value.trim() : null },
     peers, vault: { enabled: config.enabled ?? null, mode: config.mode ?? null,
       last_run: mirror ? { at: text(mirror.timestamp), created: number(mirror.created), updated: number(mirror.updated), failed: number(mirror.failed), aborted: mirror.aborted ?? null } : null,
       board: board ? { action: text(board.action), at: text(board.timestamp) } : null }, degraded: [...new Set(degraded)],

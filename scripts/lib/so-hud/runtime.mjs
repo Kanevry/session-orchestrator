@@ -57,7 +57,7 @@ async function config(repoRoot) {
   for (const name of ['CLAUDE.md', 'AGENTS.md']) {
     try {
       const source = await fs.readFile(path.join(repoRoot, name), 'utf8');
-      if (!/^vault-integration:/m.test(source)) return { enabled: null, mode: null };
+      if (!/^vault-integration:/m.test(source)) continue;
       // No host-local owner.yaml reads and no vault path resolution outside this repo.
       const parsed = parseSessionConfig(source, { hostPaths: { env: {}, ownerConfig: {} } });
       const value = parsed['vault-integration'];

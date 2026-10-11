@@ -98,8 +98,12 @@ export const register: Register = (on, options) => {
       const value = JSON.parse(result.stdout) as SoSnapshot
       if (value.schema_version !== 1 || !Number.isFinite(Date.parse(value.measured_at)) || !value.wave || !value.state || !value.gate || !value.vault || !Array.isArray(value.peers) || !Array.isArray(value.degraded)) throw new Error('invalid-snapshot')
       current = value
-      problems.delete('refresh-failed')
-    } catch { problems.add('refresh-failed') }
+      for (const reason of ['not-configured', 'refresh-failed', 'collector-failed', 'invalid-snapshot']) problems.delete(reason)
+    } catch (error) {
+      for (const reason of ['not-configured', 'refresh-failed', 'collector-failed', 'invalid-snapshot']) problems.delete(reason)
+      const reason = error instanceof Error ? error.message : ''
+      problems.add(['not-configured', 'collector-failed', 'invalid-snapshot'].includes(reason) ? reason : 'refresh-failed')
+    }
     finally { refreshing = false }
     try {
       const usage = await io.usage()
@@ -145,7 +149,7 @@ export const register: Register = (on, options) => {
     await initialize(io, e.cwd)
     const updateUI = async () => {
       if (interactive && !ending) {
-        $.ui.status(statusText(await snapshot(io), profile))
+        $.ui.status(statusText(await snapshot(io), profile, 'de', [...problems]))
         $.ui.invalidate('ui.render')
       }
     }
@@ -163,7 +167,7 @@ export const register: Register = (on, options) => {
       await initialize(io, await io.cwd())
       const updateUI = async () => {
         if (interactive && !ending) {
-          $.ui.status(statusText(await snapshot(io), profile))
+          $.ui.status(statusText(await snapshot(io), profile, 'de', [...problems]))
           $.ui.invalidate('ui.render')
         }
       }
@@ -206,7 +210,7 @@ export const register: Register = (on, options) => {
   }).catch(($, e, next) => next(e))
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const usage = await io.usage()
-    const lines = findings(await snapshot(io), usage.context, own?.letzter_request_at ?? null, await io.now())
+    const lines = findings(await snapshot(io), usage.context, own?.letzter_request_at ?? null, await io.now(), [...problems])
     if (!lines.length) return next(e)
     const below = await next(e)
     const { Box, Text } = $.ui.resolve(e)

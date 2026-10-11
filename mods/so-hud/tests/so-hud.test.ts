@@ -11,7 +11,7 @@ const measured: Omit<SoSnapshot, 'age_ms'> = {
   gate: { last: { variant: 'full-gate', passed: true, check_failed: null, exit_code: 0, at }, last_green_sha: null },
   peers: [], vault: { enabled: false, mode: 'warn', last_run: null, board: null }, degraded: [],
 }
-function world(on: On) {
+function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' = 'ok') {
   const writes: SoBeacon[] = []
   const statuses: string[] = []
   mock.clock(on, { now: Date.parse(at) })
@@ -27,7 +27,11 @@ function world(on: On) {
     let stdout = 'null'
     if (e.argv.includes('identity')) stdout = '{"pid":123}'
     else if (e.argv.includes('write')) writes.push(JSON.parse(e.init?.stdin ?? '{}') as SoBeacon)
-    else if (e.argv.some(a => a.endsWith('/scripts/so-hud.mjs'))) stdout = JSON.stringify(measured)
+    else if (e.argv.some(a => a.endsWith('/scripts/so-hud.mjs'))) {
+      if (collector === 'failed') return { value: { exitCode: 6, stdout: '', stderr: 'measurement failed', isStdoutTruncated: false, isStderrTruncated: false } }
+      stdout = collector === 'invalid' ? '{}' : JSON.stringify(measured)
+    }
+    else if (collector === 'missing' && e.argv.includes('list')) stdout = '[]'
     else if (e.argv.includes('alive')) stdout = '[123]'
     else throw new Error(`Unexpected process: ${e.argv[0]}`)
     return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
@@ -78,3 +82,17 @@ test('status uses the measured sequence and selected profile', { options: { soRo
   expect(result.snapshot.age_ms).toBe(0)
   expect(result.profile).toBe('locker')
 })
+
+for (const failure of ['failed', 'invalid', 'missing'] as const) {
+  test(`first measurement exposes ${failure} instead of losing the reason`, { options: failure === 'missing' ? {} : { soRoot: '/so' } }, async ($, on) => {
+    const { statuses } = world(on, failure)
+    await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+    const status = statuses.at(-1) ?? ''
+    if (failure === 'missing') expect(status).toContain('nicht eingerichtet')
+    else {
+      expect(status).toContain('Messung fehlgeschlagen')
+      expect(status).toContain(failure === 'failed' ? 'collector-failed' : 'invalid-snapshot')
+      expect(status).not.toContain('nicht eingerichtet')
+    }
+  })
+}
