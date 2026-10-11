@@ -99,15 +99,15 @@ describe('fleet-checkin CLI', () => {
     expect(await readEvents()).toEqual([]);
   });
 
-  // A headless run is always started by a coordinator — also on a remote host
-  // whose navigator directory does not exist yet. Skipping it would drop the
-  // check-in AND the Standard-Auflagen fallback for exactly the runs the fleet
-  // started (#1559 review, MED 1).
-  it('a kopflos check-in is written even without fleet integration (#1559)', async () => {
+  // `plattform: kopflos` is no proof of a coordinator: a solo user's headless
+  // run can carry it. Writing would create ~/.config/navigator/, and that
+  // directory turns every later solo session into a fleet session (#1559
+  // second review, MED).
+  it('a kopflos check-in without fleet integration creates no navigator directory (#1559)', async () => {
     const r = await runCli(JSON.stringify(checkin()), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
     expect(r.code, r.stderr).toBe(0);
-    expect(JSON.parse(r.stdout).skipped).toBeUndefined();
-    expect(await exists(path.join(tmp, '.config', 'navigator', 'checkin', 'sess-1.json'))).toBe(true);
+    expect(JSON.parse(r.stdout).skipped).toBe('no-fleet');
+    expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);
   });
 
   it('valid input → 0600 file in a 0700 dir, zeit stamped, one event without auftrag_ref', async () => {

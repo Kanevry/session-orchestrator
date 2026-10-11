@@ -16,8 +16,9 @@
  * payload `{ session, repo, modus, kandidaten, navigator_state }` — no paths, no
  * quota, no `auftrag_ref`.
  * Without fleet integration, valid input exits 0 with `skipped: "no-fleet"` and no directory, file or event.
- * A `plattform: "kopflos"` record always counts as fleet: a headless run is started by a coordinator,
- * also on a remote host whose navigator directory does not exist yet (#1559 review).
+ * That holds for `plattform: "kopflos"` too: the record cannot prove a coordinator started the run,
+ * and a write would create the navigator directory, which then flips every later solo session to
+ * fleet. A headless run without fleet integration applies the Standard-Auflagen instead (#1559 review).
  *
  * stdout: one JSON line
  * `{ ok, path, navigator_state, navigator_adresse, fallback_due_at, event }`.
@@ -151,7 +152,7 @@ async function main() {
     return 2;
   }
 
-  if (record.plattform !== 'kopflos' && !fleetIntegrationEnabled()) {
+  if (!fleetIntegrationEnabled()) {
     process.stdout.write(JSON.stringify({
       ok: true,
       skipped: 'no-fleet',

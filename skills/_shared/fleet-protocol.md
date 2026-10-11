@@ -146,9 +146,11 @@ die Lease schreibt. Ohne Flottenintegration validiert `fleet-checkin.mjs` die Ei
 (ungültig → Exit 2), schreibt dann aber nichts, legt kein Verzeichnis an, emittiert kein Event und
 meldet `{"ok":true,"skipped":"no-fleet",…}`. Es gelten keine Auflagen, auch keine Standard-Auflagen:
 ohne Flotte gibt es nichts zu koordinieren. Die Navigator-Zeile im Sessionstart-Banner entfällt
-ebenso. Ausnahme: ein Check-in mit `plattform: kopflos` zählt immer als Flotte, denn einen
-kopflosen Lauf startet immer ein Koordinator — auch auf einem Remote-Host, auf dem das Verzeichnis
-noch fehlt.
+ebenso. Das gilt auch für `plattform: kopflos`: der Datensatz beweist keinen Koordinator, und ein
+Schreiben legte das Verzeichnis an, das danach jede Solo-Session zur Flotte macht. Ein kopfloser
+Lauf ohne Flottenintegration wendet stattdessen die Standard-Auflagen sofort an — er kann niemanden
+fragen. Ein Flotten-Starter, der auf einem frischen Remote-Host startet, setzt deshalb
+`NAVIGATOR_CONFIG_DIR` oder legt das Verzeichnis vorher an.
 
 ## Verhalten ohne Navigator
 
