@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { resolveSessionInvocation } from '@lib/session-invocation.mjs';
 
@@ -66,6 +69,34 @@ describe('session invocation resolution', () => {
       invalidMode: 'invalid',
     });
     expect(result.stderr).toContain("Invalid session type 'invalid'");
+  });
+
+  // #1561: a bare /session in a repo without its own history must not start deep silently.
+  it.each([
+    ['no ledger', null, { sessionType: 'deep', context: '', defaultReason: 'no-session-history' }],
+    ['only abandoned records', '{"session_id":"s-1","status":"abandoned"}\n', {
+      sessionType: 'deep',
+      context: '',
+      defaultReason: 'no-session-history',
+    }],
+    ['one real session', '{"session_id":"s-1","session_type":"deep"}\n', { sessionType: 'deep', context: '' }],
+  ])('names the bare default when the repo has %s', (_label, ledger, expected) => {
+    const repo = mkdtempSync(join(tmpdir(), 'so-invocation-'));
+    try {
+      if (ledger !== null) {
+        mkdirSync(join(repo, '.orchestrator', 'metrics'), { recursive: true });
+        writeFileSync(join(repo, '.orchestrator', 'metrics', 'sessions.jsonl'), ledger);
+      }
+      const result = spawnSync(process.execPath, [cli, '--json', '--repo-root', repo], {
+        input: ' \n',
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual(expected);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 
   it('rejects positional arguments so task text cannot become CLI options', () => {
