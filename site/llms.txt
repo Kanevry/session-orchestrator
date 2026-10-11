@@ -4,7 +4,7 @@
 
 German landing page: https://session-orchestrator.com/de
 
-Version: 5.10.0 · npm: session-orchestrator · requires Node.js >= 24 (package.json engines) · Codex CLI >= 0.144.4; no minimum pinned for Claude Code, Cursor, or Pi
+Version: 5.11.0 · npm: session-orchestrator · requires Node.js >= 24 (package.json engines) · Codex CLI >= 0.144.4; no minimum pinned for Claude Code, Cursor, or Pi
 
 ## Pages
 
