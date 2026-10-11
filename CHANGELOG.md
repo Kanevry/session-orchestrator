@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **One identity for a repo reached through a symlink** (#1557): `repoPathHash()` and the registry's `repo_name` resolve the real path (`realpathSync.native`, falling back to `path.resolve` when the path is unavailable), so a session in a symlink and one in its target count as the same repo for peer discovery, session transition and the live-status board. Board keys of canonical paths are unchanged. A board row stored under a pre-#1557 alias key is adopted on its first fresh write when it names the same repo; a row of another repo that merely shares the 8-character key stays. Registry entries written before the update keep their old hash until the session registers again.
+
 ## [5.11.0] - 2026-10-11
 
 ### Added

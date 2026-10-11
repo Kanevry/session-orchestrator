@@ -38,7 +38,7 @@ import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { digestSha256 } from './crypto-digest-utils.mjs';
 
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
 
 import { utcTimestamp, appendJsonl } from './common.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
@@ -89,14 +89,24 @@ function entryPath(sessionId) {
 // ---------------------------------------------------------------------------
 
 /**
- * Stable SHA-256 hex of an absolute path. Used so registry entries can be
+ * Stable SHA-256 hex of a canonical repo path. Used so registry entries can be
  * correlated by repo without exposing local filesystem layout.
  */
 export function repoPathHash(absPath) {
   if (typeof absPath !== 'string' || absPath.length === 0) {
     throw new TypeError('repoPathHash: absPath must be a non-empty string');
   }
-  return digestSha256(path.resolve(absPath));
+  return digestSha256(resolveRepoPath(absPath));
+}
+
+/** Resolve symlinks and on-disk casing; unavailable paths keep their old identity. */
+function resolveRepoPath(repoPath) {
+  const resolved = path.resolve(repoPath);
+  try {
+    return realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 function _assertSessionId(sessionId) {
@@ -255,7 +265,7 @@ export async function registerSelf(opts) {
     pid: opts.pid ?? process.pid,
     platform: opts.platform ?? null,
     repo_path_hash: repoPathHash(projectRoot),
-    repo_name: path.basename(path.resolve(projectRoot)),
+    repo_name: path.basename(resolveRepoPath(projectRoot)),
     branch: opts.branch ?? null,
     started_at: now,
     last_heartbeat: now,
