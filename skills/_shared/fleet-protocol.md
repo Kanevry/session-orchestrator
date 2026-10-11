@@ -75,7 +75,14 @@ die vom Lease-Validator akzeptierte `adresse` einer aktiven Lease, sonst `null` 
 Lease, kein Eintrag oder ein abgelehnter Wert — nie ein ungeprüfter String). `fallback_due_at` ist
 der Zeitpunkt, ab dem die Standard-Auflagen (unten) gelten, in der Form von `zeit` (Code:
 `fallbackDueAt()`); er steht nur auf stdout, die Check-in-Datei behält ihr Schema. Exit 0
-geschrieben, 2 ungültige Eingabe (Fehlerliste auf stderr, keine Datei), 1 Schreibfehler.
+geschrieben, 2 ungültige Eingabe (Fehlerliste auf stderr, keine Datei) oder semantische Session-ID
+von einem anderen Repo belegt (eine Zeile auf stderr mit JSON-escaped Repo-Namen, fremde Datei unverändert,
+tmp entfernt, kein Event), 1 Schreibfehler.
+Vor dem `rename` lehnt der Schreiber ein vorhandenes String-`repo` ungleich dem eigenen ab;
+gleiches `repo`, unlesbare Dateien und ungültiges JSON dürfen überschrieben werden.
+Die Prüfung folgt keinen Symlinks, öffnet nichtblockierend und liest nur reguläre Dateien
+bis 64 KiB. Symlinks, andere Dateitypen, größere Dateien oder fehlende sichere Open-Flags
+gelten für diese Prüfung als unlesbar (fail-open zum `rename`).
 
 | Feld | Inhalt |
 |---|---|

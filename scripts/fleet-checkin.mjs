@@ -29,11 +29,11 @@
  * Exit codes:
  *   0 — check-in written (an event failure only WARNs; `event: false` on stdout)
  *   1 — write error
- *   2 — invalid input (not JSON, not an object, or validation errors; no file)
+ *   2 — invalid input or semantic session ID occupied by another repo (no write/event)
  */
 
 import { randomBytes } from 'node:crypto';
-import { promises as fs } from 'node:fs';
+import { promises as fs, constants as fsConstants } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from './lib/events.mjs';
@@ -63,6 +63,7 @@ async function readStdin() {
  * planted symlink cannot redirect the chmod or the write.
  * @param {string} target
  * @param {object} record
+ * @returns {Promise<boolean>} false when another repo already owns the target
  */
 async function writeCheckinFile(target, record) {
   const checkinDir = path.dirname(target);
@@ -79,7 +80,46 @@ async function writeCheckinFile(target, record) {
     await fs.writeFile(tmp, JSON.stringify(record, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
     // The creation mode is filtered through the umask; pin it explicitly.
     await fs.chmod(tmp, 0o600);
+    let existing;
+    try {
+      // Fail-open on platforms without safe-open flags; never fall back to a
+      // potentially blocking read that follows symlinks.
+      if (typeof fsConstants.O_NOFOLLOW === 'number' && typeof fsConstants.O_NONBLOCK === 'number') {
+        const handle = await fs.open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+        try {
+          const stat = await handle.stat();
+          const limit = 64 * 1024;
+          // Check-ins are small: non-files and larger targets are unreadable for
+          // this guard and fail-open. Bound reads even if the file grows after stat.
+          if (stat.isFile() && stat.size <= limit) {
+            const buffer = Buffer.alloc(limit);
+            let length = 0;
+            while (length < limit) {
+              const { bytesRead } = await handle.read(buffer, length, limit - length, length);
+              if (bytesRead === 0) break;
+              length += bytesRead;
+            }
+            if ((await handle.stat()).size <= limit) {
+              existing = JSON.parse(buffer.subarray(0, length).toString('utf8'));
+            }
+          }
+        } finally {
+          await handle.close();
+        }
+      }
+    } catch {
+      // Fail-open: an unreadable or invalid-JSON target gives the navigator no readable check-in to preserve.
+    }
+    if (typeof existing?.repo === 'string' && existing.repo !== record.repo) {
+      await fs.rm(tmp, { force: true });
+      process.stderr.write(`${PREFIX} semantic session ID ${record.session} is already occupied by another repo: ${JSON.stringify(existing.repo)}\n`);
+      return false;
+    }
+    // BV-004 ceiling: protects an already-visible foreign check-in, not concurrent
+    // writers between read and rename; revisit with atomic coordination when a
+    // simultaneous cross-repo collision is observed.
     await fs.rename(tmp, target);
+    return true;
   } catch (err) {
     await fs.rm(tmp, { force: true }).catch(() => {});
     throw err;
@@ -109,7 +149,7 @@ async function main() {
 
   const target = checkinPath(record.session);
   try {
-    await writeCheckinFile(target, record);
+    if (!await writeCheckinFile(target, record)) return 2;
   } catch (err) {
     process.stderr.write(`${PREFIX} write failed: ${err instanceof Error ? err.message : String(err)}\n`);
     return 1;

@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -39,9 +39,10 @@ afterEach(async () => {
 
 /**
  * @param {string} stdin
+ * @param {number} [timeout]
  * @returns {Promise<{ code: number|null, stdout: string, stderr: string }>}
  */
-function runCli(stdin) {
+function runCli(stdin, timeout) {
   const env = {
     ...process.env,
     NAVIGATOR_CONFIG_DIR: navDir,
@@ -54,7 +55,7 @@ function runCli(stdin) {
   delete env.CLANK_EVENT_SECRET;
   delete env.CLANK_EVENT_URL;
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [CLI], { env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [CLI], { env, cwd: tmp, stdio: ['pipe', 'pipe', 'pipe'], timeout });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', (d) => { stdout += d; });
@@ -115,6 +116,86 @@ describe('fleet-checkin CLI', () => {
     expect(events[0].navigator_state).toBe('none');
     expect(events[0].session).toBe('sess-1');
     expect(events[0]).not.toHaveProperty('auftrag_ref');
+  });
+
+  it('a check-in with a foreign repo is not silently replaced → exit 2, unchanged bytes, no tmp or event', async () => {
+    const dir = path.join(navDir, 'checkin');
+    const file = path.join(dir, 'sess-1.json');
+    const foreign = JSON.stringify(checkin({ repo: 'other/project', zeit: '2026-10-11T14:00:00Z' })) + '\n';
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, foreign);
+
+    const r = await runCli(JSON.stringify(checkin()));
+    expect(r.code, r.stderr).toBe(2);
+    expect(await fs.readFile(file)).toEqual(Buffer.from(foreign));
+    expect(await fs.readdir(dir)).toEqual(['sess-1.json']);
+    expect(r.stderr.trim().split('\n')).toHaveLength(1);
+    expect(r.stderr).toContain('semantic session ID');
+    expect(r.stderr).toContain('other/project');
+    expect(r.stdout).toBe('');
+    expect(await readEvents()).toEqual([]);
+  });
+
+  it('a foreign repo containing control characters produces one stderr line without terminal escapes', async () => {
+    const dir = path.join(navDir, 'checkin');
+    const file = path.join(dir, 'sess-1.json');
+    const repo = 'other\nFORGED\u001b[2J\r\t';
+    const foreign = JSON.stringify(checkin({ repo }));
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, foreign);
+
+    const r = await runCli(JSON.stringify(checkin()));
+    expect(r.code, r.stderr).toBe(2);
+    expect(r.stderr.split('\n')).toHaveLength(2);
+    expect(r.stderr.endsWith('\n')).toBe(true);
+    expect(r.stderr).not.toContain('\u001b');
+    expect(r.stderr).toContain(JSON.stringify(repo));
+    expect(await fs.readFile(file, 'utf8')).toBe(foreign);
+    expect(await fs.readdir(dir)).toEqual(['sess-1.json']);
+    expect(await readEvents()).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')('a FIFO without a writer is replaced promptly without a tmp remainder', async () => {
+    const dir = path.join(navDir, 'checkin');
+    const file = path.join(dir, 'sess-1.json');
+    await fs.mkdir(dir, { recursive: true });
+    execFileSync('mkfifo', [file]);
+
+    const r = await runCli(JSON.stringify(checkin()), 2000);
+    expect(r.code, r.stderr).toBe(0);
+    expect((await fs.lstat(file)).isFile()).toBe(true);
+    expect(JSON.parse(await fs.readFile(file, 'utf8'))).toMatchObject(checkin());
+    expect(await fs.readdir(dir)).toEqual(['sess-1.json']);
+  });
+
+  it.each([
+    ['invalid JSON', '{', 0],
+    ['a foreign regular file at 64 KiB', '{"repo":"other/project"}'.padEnd(64 * 1024, ' '), 2],
+    ['a foreign regular file over 64 KiB', '{"repo":"other/project"}'.padEnd(64 * 1024 + 1, ' '), 0],
+  ])('%s → bounded target inspection and no tmp remainder', async (_shape, original, code) => {
+    const dir = path.join(navDir, 'checkin');
+    const file = path.join(dir, 'sess-1.json');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, original);
+
+    const r = await runCli(JSON.stringify(checkin()));
+    expect(r.code, r.stderr).toBe(code);
+    const content = await fs.readFile(file, 'utf8');
+    if (code === 2) expect(content).toBe(original);
+    else expect(JSON.parse(content)).toMatchObject(checkin());
+    expect(await fs.readdir(dir)).toEqual(['sess-1.json']);
+  });
+
+  it('a second check-in for the same repo updates its own session', async () => {
+    const first = await runCli(JSON.stringify(checkin()));
+    expect(first.code, first.stderr).toBe(0);
+    const updated = checkin({ kandidaten: ['#1556'] });
+    const second = await runCli(JSON.stringify(updated));
+    expect(second.code, second.stderr).toBe(0);
+    const content = JSON.parse(await fs.readFile(path.join(navDir, 'checkin', 'sess-1.json'), 'utf8'));
+    expect(content).toMatchObject(updated);
+    expect(await fs.readdir(path.join(navDir, 'checkin'))).toEqual(['sess-1.json']);
+    expect((await readEvents()).filter((e) => e.event === 'orchestrator.fleet.checkin')).toHaveLength(2);
   });
 
   it('missing repo → exit 2, stderr names repo, no file', async () => {

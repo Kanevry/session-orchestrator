@@ -34,8 +34,10 @@ bleiben dann null. Peer-Scope ist unbekannt, wenn eine der beiden Scope-Quellen
 fehlt oder Scope-Signale lückenhaft sind. Events betrachten nur die letzten
 512 KB; dies wird als `events:tail-only` gemeldet. Keine vollständige Historie.
 
-Prüfung: `npx vitest --run tests/so-hud` im SO-Repo. Engine-Integration separat
-mit `claude plugin test mods/so-hud`; unter Claude Code 2.1.296 bestehen alle
-drei Kit-Tests (Runde 3). `tsconfig.json` folgt dem Header der Typdatei;
+Prüfung: `npx vitest --run tests/so-hud` im SO-Repo (CI-Job `test`); CI-Job
+`mods:plugin` prüft je Mod `claude plugin validate --strict --json` und
+`claude plugin test`. Engine-Integration separat
+mit `claude plugin test mods/so-hud`; unter Claude Code 2.1.296 bestehen die
+Kit-Tests. `tsconfig.json` folgt dem Header der Typdatei;
 die Engine erzeugt `.claude-plugin/types` beim Laden. Kein Rollout, keine Gates,
 keine Commands aus späteren Paketen und keine zweite SO-Zustandsführung.
