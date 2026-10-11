@@ -1531,7 +1531,7 @@ Implementation: `scripts/lib/recommendations-v0.mjs` → `computeV0Recommendatio
 
 - Pre-v1.1 STATE.md files (produced by sessions before Epic #271 shipped) simply do not contain these fields. The parser returns `null` from `parseRecommendations`; the banner silently no-ops.
 - `schema-version` is NOT bumped to `1.1` in the frontmatter — the existing `schema-version: 1` remains canonical. The v1.1 label is documentation-only, describing the additive surface.
-- Idle Reset (session-start Phase 1.5) archives these fields into the `## Previous Session` body block of STATE.md as a human-readable block, then removes them from the frontmatter — so a fresh session never inherits stale recommendations in its live frontmatter.
+- Idle Reset (session-start Phase 1.5, `scripts/state-md-idle-reset.mjs`) copies these fields into the `## Previous Session` body block of STATE.md as a human-readable block and KEEPS them in the frontmatter: they are the handoff the Phase 7.5 Mode-Selector reads after the reset (#1560). Deleting them, as the reset did before #1560, left the selector at confidence 0 after every clean `/close`. The next session-end Phase 3.7a overwrites them.
 
 ### Reader behavior
 
@@ -1552,8 +1552,8 @@ The banner renders with one of the following shapes:
 
 - **Writer:** `skills/session-end/SKILL.md` § Phase 3.7a "Compute and Write Recommendations" (runs after Phase 3.7 sessions.jsonl write, before Phase 3.4 `status: completed` setting).
 - **Reader:** `skills/session-start/SKILL.md` § Phase 1.5 "Recommendations Banner" (renders on `status: completed` branch only).
-- **Archival:** `skills/session-start/SKILL.md` § Idle Reset rule 6 (removes fields from frontmatter, prepends readable block to `## Previous Session`).
-- **Future consumer:** Phase B Mode-Selector skill (planned in Epic #271) will read these fields as the primary input for autonomous mode selection.
+- **Archival:** `skills/session-start/references/phase-1-5-session-continuity.md` § Idle Reset rule 6 (keeps the fields in the frontmatter, prepends a readable block to `## Previous Session`).
+- **Mode-Selector:** `skills/session-start/phase-7-5-mode-selector.md` reads these fields through `buildLiveSignals()` (`scripts/lib/build-live-signals.mjs`) as its primary input.
 
 ## Frontend-Slop Hook (#684) — deprecated
 

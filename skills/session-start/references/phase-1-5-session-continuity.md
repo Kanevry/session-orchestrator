@@ -98,14 +98,22 @@ When (and only when) the prior `status` is `completed`, rewrite STATE.md to a cl
 
 Reset rules — applies ONLY on the `completed` branch. Do NOT perform this reset on `active` or `paused`; those paths stay user-interactive via AskUserQuestion.
 
+Run it as code, after the Recommendations Banner — never rewrite STATE.md by hand (#1560):
+
+```bash
+node "${PLUGIN_ROOT}/scripts/state-md-idle-reset.mjs" --json
+```
+
+It prints `{"changed": <bool>, "reason": <string|null>, "path": "<STATE.md>"}` and writes under the STATE.md lock (`resetStateMdToIdle` in `scripts/lib/state-md/idle-reset.mjs`). Any status other than `completed` is a no-op (`reason: "status-not-completed"`, exit 0). Exit 2 means the write failed or a STATE.md guard refused it (`reason` names the guard) — report it as a Deviation and continue. The rules below are the contract that code implements:
+
 1. Set frontmatter `status: idle`.
 2. Clear `current-wave` (set to `0`).
-3. Move the existing `## Wave History` body into a new `## Previous Session` archive section (retain the record, but demote it below the new session's live state). Remove the original `## Wave History` section — wave-executor will recreate it on the next wave.
+3. Move the existing `## Wave History` body into a new `## Previous Session` archive section under `### Wave History (<session>)`, replacing any earlier `## Previous Session` section (retain the record, but demote it below the new session's live state). Remove the original `## Wave History` section — wave-executor will recreate it on the next wave.
 4. Clear `## Deviations` (leave the heading with an empty body so the schema is preserved).
    - **PRESERVE `## What Not To Retry` (#623):** do NOT clear, demote, or drop this section during the Idle Reset. Unlike `## Deviations` (per-session, emptied above) and `## Wave History` (demoted into `## Previous Session`), `## What Not To Retry` is a **cross-session continuity slot** — its entries must survive into the next session so session-start Phase 6.5.1 can surface them. Leave the section, its heading, and all entries byte-for-byte intact.
    - **PRESERVE `## Open Questions` (#772):** do NOT clear, demote, or drop this section during the Idle Reset. Unlike `## Deviations` (per-session, emptied above) and `## Wave History` (demoted into `## Previous Session`), `## Open Questions` is a **cross-session continuity slot** — unanswered entries must survive into the next session so session-start Phase 6.5.2 can surface them as a forced-read. Leave the section, its heading, and all entries (answered and unanswered) byte-for-byte intact.
 5. Leave other frontmatter fields (`schema-version`, `session-type`, `branch`, `issues`, `started_at`, `total-waves`) intact until Phase 1b overwrites them with the new session's values.
-6. **v1.1 Recommendation-field archival (Epic #271 Phase A, AC2):** If ANY of the 5 Recommendation fields (`recommended-mode`, `top-priorities`, `carryover-ratio`, `completion-rate`, `rationale`) is present in the frontmatter, remove them from the frontmatter via `updateFrontmatterFields(contents, {field: null, ...})` (null value deletes the key). Then prepend a readable block (NOT YAML) to the `## Previous Session` body:
+6. **v1.1 Recommendation fields STAY in the frontmatter (Epic #271 Phase A, AC2; changed by #1560):** do NOT remove `recommended-mode`, `top-priorities`, `carryover-ratio`, `completion-rate`, `rationale`. They are the handoff Phase 7.5 reads; session-end Phase 3.7a, their only writer, overwrites them at the next `/close`. If ANY of them is present, also prepend a readable copy (NOT YAML) to the `## Previous Session` body:
 
    ```markdown
    ### Recommendations (archived from v1.1 frontmatter)
@@ -117,9 +125,9 @@ Reset rules — applies ONLY on the `completed` branch. Do NOT perform this rese
    ```
 
    Omit individual bullets for null-valued fields. If all 5 are null (i.e., `parseRecommendations` returned non-null but every field is null after type-coercion), skip the archival block entirely.
-7. **Scope-baseline key deletion (Epic #894 S5, #898):** If ANY of the 5 `scope-baseline-*` frontmatter keys (`scope-baseline-intent`, `scope-baseline-owner-boundary`, `scope-baseline-planned-files`, `scope-baseline-session`, `scope-baseline-frozen-at`) is present, remove them via the same `updateFrontmatterFields(contents, {field: null, ...})` mechanism as rule 6 (null value deletes the key). Rule 5 leaves unknown frontmatter fields intact and no other rule removes these five — without this step they survive into session N+1 and silently corrupt the next session's drift-baseline denominator. This is a hygiene layer only: the primary defense is mechanical — `scripts/lib/scope-baseline.mjs` compares `scope-baseline-session` against the canonical `session` field, so a stale baseline self-invalidates (`readBaseline()` returns `{stale: true, …}`) even if this rule were skipped. Delete exactly these five keys; do not remove any other unknown key.
+7. **Scope-baseline key deletion (Epic #894 S5, #898):** If ANY of the 5 `scope-baseline-*` frontmatter keys (`scope-baseline-intent`, `scope-baseline-owner-boundary`, `scope-baseline-planned-files`, `scope-baseline-session`, `scope-baseline-frozen-at`) is present, remove them via `updateFrontmatterFields(contents, {field: null, ...})` (null value deletes the key). Rule 5 leaves unknown frontmatter fields intact and no other rule removes these five — without this step they survive into session N+1 and silently corrupt the next session's drift-baseline denominator. This is a hygiene layer only: the primary defense is mechanical — `scripts/lib/scope-baseline.mjs` compares `scope-baseline-session` against the canonical `session` field, so a stale baseline self-invalidates (`readBaseline()` returns `{stale: true, …}`) even if this rule were skipped. Delete exactly these five keys; do not remove any other unknown key.
 
-Rationale: `/close` intentionally keeps STATE.md as a record so the next session-start can read it. This reset completes that contract by demoting the record before new session state is written, so a fresh session never appears "already completed". The Recommendation archival (rule 6) preserves the session-to-session handoff in a human-readable form after the Recommendations Banner has rendered — Phase B's Mode-Selector will read the LIVE frontmatter of the current session and does not need the archived copy, so this is purely informational for humans browsing STATE.md history.
+Rationale: `/close` intentionally keeps STATE.md as a record so the next session-start can read it. This reset completes that contract by demoting the record before new session state is written, so a fresh session never appears "already completed". Rule 6 keeps the Recommendation fields because the Phase 7.5 Mode-Selector (`buildLiveSignals()`) reads them from this same frontmatter later in session-start, and the current session writes its own only at session-end Phase 3.7a. Deleting them (the rule until #1560) left the selector with no recommendation after every clean `/close`: `{"mode":"feature","rationale":"missing/invalid recommendedMode → default","confidence":0}`. The archived block is a human-readable copy for browsing STATE.md history.
 
 ### Snapshot Recovery (#196)
 

@@ -7,7 +7,7 @@ Run immediately before Phase 8 so the Mode-Selector recommendation can influence
 
 ## Distinction from Phase 1.5 Recommendations Banner
 
-Phase 1.5 renders a `📋` banner that reads the **previous** session's archived Recommendation fields from STATE.md (`recommended-mode`, `rationale`, `completion-rate`, etc., written by session-end Phase 3.7a). It is a backward-looking handoff signal.
+Phase 1.5 renders a `📋` banner that reads the **previous** session's Recommendation fields from the STATE.md frontmatter (`recommended-mode`, `rationale`, `completion-rate`, etc., written by session-end Phase 3.7a). It is a backward-looking handoff signal.
 
 Phase 7.5 runs `selectMode(signals)` — a **forward-looking** computation over live signals gathered this session (current carryover ratios, recent sessions trend, learnings, bootstrap tier). It emits a `📊` banner.
 
@@ -44,6 +44,8 @@ truncated window (fixed in `c20d4d2`).
 `buildLiveSignals` is the single SSOT for the Signals shape consumed by `selectMode` and by the autopilot driver protocol (see `skills/autopilot/SKILL.md § Production Wiring`). Phase 7.5 here and the autopilot in-process driver MUST go through this helper — do not inline the recipe in either call site.
 
 **Key source bindings (Phase → field):**
+
+The five Recommendation fields are read from the STATE.md frontmatter that session-end Phase 3.7a wrote at the previous `/close`. The Phase 1.5 Idle Reset keeps them there (#1560; before, it deleted them and this step saw `recommendedMode: null`, confidence 0); the "Phase" column names the phase that surfaces them first, not a writer.
 
 | `signals` field | Populated from | Phase |
 |---|---|---|

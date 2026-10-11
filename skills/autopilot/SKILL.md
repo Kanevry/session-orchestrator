@@ -249,8 +249,9 @@ import { detectPeers } from '$PLUGIN_ROOT/scripts/lib/session-registry.mjs';
 const flags = parseFlags(process.argv.slice(2));
 
 const modeSelector = async () => {
-  // Each iteration rebuilds signals from current disk state. STATE.md will be
-  // freshly idle-reset by the previous /close, sessions.jsonl will have the
+  // Each iteration rebuilds signals from current disk state. STATE.md will
+  // carry the recommendation the previous /close wrote (the idle reset at the
+  // next session-start keeps those keys, #1560), sessions.jsonl will have the
   // new tail entry, etc. This is the contract: live signals every iteration.
   // `repoRoot` is passed explicitly (#1071) rather than left to the helper's
   // cwd default. Do NOT hand-write a `backlogLimit` here — the window default

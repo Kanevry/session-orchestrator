@@ -115,6 +115,19 @@ body
     expect(rec.rationale).toBeNull();
   });
 
+  it('normalises "#42"/"42" priorities and drops free text instead of nulling the list', () => {
+    // A coordinator-written `["#370 …", "other-repo#74 …"]` used to null the
+    // whole list; digits inside free text may be another repo's issue.
+    const parsed = parseStateMd(`---
+top-priorities: ["#42", "43", 44, "#370 fix banner", "other-repo#74"]
+---
+
+body
+`);
+    expect(parseRecommendations(parsed.frontmatter).priorities).toEqual([42, 43, 44]);
+    expect(parseRecommendations({ 'top-priorities': ['#370 fix banner'] }).priorities).toBeNull();
+  });
+
   it('updateFrontmatterFields is additive — preserves unknown extension keys', () => {
     const input = `---
 schema-version: 1
