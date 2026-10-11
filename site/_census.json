@@ -6,15 +6,15 @@
     "commands": "30",
     "agents": "14",
     "hooks": "29",
-    "tests": "748",
-    "sessions": "475",
-    "learnings": "220",
+    "tests": "749",
+    "sessions": "481",
+    "learnings": "115",
     "rules": "25",
     "rules-generated": "7",
     "blocked-commands": "16",
     "npm-downloads-30d": "3576",
     "github-stars": "53",
     "counted-at": "2026-10-11",
-    "counted-sha": "1984b0aa"
+    "counted-sha": "c588e6d8"
   }
 }
