@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.11.0] - 2026-10-11
+
+### Added
+
+- **Recoverable proposal overflow** (#1027): validated memory proposals rejected by the wave quota are retained in `proposals-overflow.jsonl` for later inspection. They remain outside the collector and quota; a failed overflow write reports an error rather than claiming retention.
+- **Resumable release verification** (#1537): `--reconcile --target X.Y.Z` verifies an accepted npm upload against a persisted receipt proof, registry integrity and a consumer tarball download. It distinguishes pending availability from integrity failure and reports verified versions as superseded when a newer release holds `latest`.
+- **Lead social preview** (#1531): the lead page uses its own Open Graph and Twitter image with descriptive alternative text, making shared links identify the lead project.
+- **Role-profile evidence contract** (#1469): a versioned, offline schema in `scripts/lib/role-profile/schema.mjs` records the requested and the observed model separately, keeps unknown evidence unknown and requires evidence for owner overrides. It validates structure only and changes no model selection; see `docs/role-profile-contract.md`.
+- **Read-only fleet check-in audit** (#1462): `scripts/fleet-checkin-audit.mjs` joins explicitly supplied registry and check-in snapshots for a named repo, matching only on the exact session id. Missing or incomplete populations report "not measurable" instead of zero; nothing is scanned implicitly. See `docs/fleet-checkin-audit.md`.
+
+### Fixed
+
+- **Unknown accounting values** (#1547): context-overhead output reports absent usage as `NO-USAGE`, and missing costs remain unknown in overhead and ablation results. Ablation totals stay unknown when any cell lacks a cost, while an explicitly reported zero remains zero.
+- **Overflow rotation without data loss** (#1545): rotation preserves existing proposals in durable, exclusive archives before replacing the active file, retaining file permissions and incomplete-write evidence. Unsupported archive hard links preserve the active file and report the filesystem error without accumulating completed staging copies.
+- **Session lock ownership** (#1541): successful acquisition, takeover and reclaim now attempt to refresh the owner proof so a subsequent session can release its own lock. Session-end cleanup checks that the proof still identifies the released lock before removing it.
+- **Clean session-start status** (#1515): repositories without bootstrap, tracked state or steering, peer and policy data receive runtime ignore rules, keeping fresh repository status clear. Existing ignore files are preserved and symlinked state directories are rejected.
+- **Scope and gate diagnostics** (#1026, #1487, #1514): disjoint wave scopes warn when synthesized test-sibling globs grant the same tests to multiple agents, and sidecar mismatches enter the event ledger. Reporting gate variants record `check_failed` only when a verdict was measured, so skipped or stubbed checks cannot appear green through a default value.
+- **Pre-push fallback under Husky** (#1540): shell error handling permits the documented local fallback after remote transport or readiness failure and preserves blocked-push diagnostics after a failed gate.
+- **Python audit detection** (#1538): hygiene checks recognize pinned `pip-audit` invocations through `uvx`, `pipx run` and `uv tool run`, including runner options. Help output and unrelated source packages cannot satisfy the audit requirement.
+- **Record repair and drift checks**: timestamp repair converts explicit offsets to UTC while preserving the original spelling and rejecting invalid calendar values; pricing-table dates also receive calendar validation. Explicit `N+ test files` claims are treated as lower bounds, avoiding false drift reports as the suite grows.
+- **Site page identities** (#1483): the English, German and guide pages declare their own page and breadcrumb identity in structured data with resolvable page-local references, so search engines attribute each page correctly. Visible content and reviewed dates are unchanged.
+- **jq detection on Windows** (#1394): the jq precondition uses the native command locator instead of a POSIX `command -v`, so an installed jq is found without a POSIX shell. The missing-tool error is unchanged.
+
+### Changed
+
+- **Cost provenance** (#1470, #1543): session rollups label computed costs as API list-price equivalents and record the pricing-table date, making clear that these figures do not measure payments. Subagent and overhead records retain recognized provenance only when explicitly supplied alongside a valid cost; otherwise the basis remains unknown.
+- **Peer banner limitation pinned** (#1052): a same-copy hook test now asserts that the peer banner states its liveness limitation, and the PRD describes the three registry fields as they are.
+
+### Security
+
+- **Proposal sink path safety** (#1544): missing write targets are checked through their existing ancestors to reject escaping or dangling symlinks. An unsafe recovery archive prevents queue clearing and preserves proposals and summaries for recovery.
+
 ## [5.10.0] - 2026-10-07
 
 ### Added
