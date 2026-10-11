@@ -106,10 +106,17 @@ describe('parse-config.mjs unknown top-level keys (#1562)', () => {
     const heredoc = fast.match(/cat >> CLAUDE\.md <<'EOF'\n([\s\S]*?)\nEOF/)[1];
     const minimal = readFileSync(join(REPO_ROOT, 'templates', '_minimal', 'CLAUDE.md.tmpl'), 'utf8');
     const minimalBlock = minimal.slice(minimal.indexOf('## Session Config'));
-    for (const scaffold of [heredoc, minimalBlock]) {
+    const fallback = readFileSync(join(REPO_ROOT, 'skills', 'bootstrap', 'public-fallback.md'), 'utf8');
+    const fallbackBlock = fallback.match(/```markdown\n(## Session Config\n[\s\S]*?)\n```/)[1];
+    // The product-vault block that _shared-template.md appends INTO an existing Session Config.
+    const shared = readFileSync(join(REPO_ROOT, 'skills', 'bootstrap', '_shared-template.md'), 'utf8');
+    const vaultBlock = `## Session Config\n\npersistence: true\n${shared.match(/```yaml\n(vault:\n[\s\S]*?)\n```/)[1]}`;
+    for (const scaffold of [heredoc, minimalBlock, fallbackBlock, vaultBlock]) {
       const filled = `# Fixture\n${scaffold.replace(/\{\{[A-Z_]+\}\}|<[^>\n]+>/g, 'x')}\n`;
       expect(filled).toContain('## Session Config');
-      expect(reportedLines(run(filled).stderr)).toEqual([]);
+      const r = run(filled);
+      expect(r.status).toBe(0);
+      expect(reportedLines(r.stderr)).toEqual([]);
     }
   });
 });

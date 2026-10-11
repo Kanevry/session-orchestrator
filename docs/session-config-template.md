@@ -794,6 +794,13 @@ vault-integration:
   vault-name:                          # optional (#660) — per-project vault namespace override; null/absent → deriveRepo()
   gitlab-groups: []
 
+# Product-vault registration — written by /bootstrap (skills/bootstrap/_shared-template.md);
+# its presence is the marker hasVaultConfig() reads so bootstrap does not ask again
+vault:
+  path: ~/Projects/vault
+  product-domain: my-domain
+  persona-db:
+
 # GitLab portfolio dashboard — /portfolio (GH #41); needs vault-integration.vault-dir
 gitlab-portfolio:
   enabled: false                       # opt-in; only the literal true enables it
