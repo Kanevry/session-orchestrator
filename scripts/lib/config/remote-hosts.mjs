@@ -18,7 +18,7 @@ import { preprocessBlockLinesNoDash } from './block-preprocess.mjs';
  *
  * Block shape:
  *   remote-hosts:
- *     - alias: m5                        # required; becomes `-H <alias>` argv
+ *     - alias: build-host                # required; becomes `-H <alias>` argv
  *       roles-allowed: [test, ui, perf]  # subset of ALLOWED_REMOTE_ROLES
  *       repo-path: ~/Projects/Alice   # optional
  *       claude-path: ~/.local/bin/claude # optional
@@ -54,7 +54,7 @@ export const ALLOWED_REMOTE_ROLES = Object.freeze(['test', 'ui', 'perf']);
 // The first character is anchored separately from the rest because a charset
 // cannot express a POSITION: an alias of `-H` passes any hyphen-inclusive
 // allowlist and then reaches argv as an OPTION token, where the CLI swallows the
-// operand behind it. Interior hyphens (`m5-box`) stay legal.
+// operand behind it. Interior hyphens (`build-host`) stay legal.
 const SAFE_NAME_RE = /^[A-Za-z0-9._][A-Za-z0-9._-]*$/;
 
 // `repo-path` / `claude-path` are filesystem paths handed to a remote shell —

@@ -15,6 +15,10 @@
  * Then reads the navigator lease and emits `orchestrator.fleet.checkin` with the
  * payload `{ session, repo, modus, kandidaten, navigator_state }` — no paths, no
  * quota, no `auftrag_ref`.
+ * Without fleet integration, valid input exits 0 with `skipped: "no-fleet"` and no directory, file or event.
+ * That holds for `plattform: "kopflos"` too: the record cannot prove a coordinator started the run,
+ * and a write would create the navigator directory, which then flips every later solo session to
+ * fleet. A headless run without fleet integration applies the Standard-Auflagen instead (#1559 review).
  *
  * stdout: one JSON line
  * `{ ok, path, navigator_state, navigator_adresse, fallback_due_at, event }`.
@@ -39,6 +43,7 @@ import path from 'node:path';
 import { emitEvent } from './lib/events.mjs';
 import {
   checkinPath,
+  fleetIntegrationEnabled,
   fallbackDueAt,
   navigatorDir,
   readNavigatorLease,
@@ -145,6 +150,19 @@ async function main() {
   if (errors.length > 0) {
     for (const e of errors) process.stderr.write(`${PREFIX} ${e}\n`);
     return 2;
+  }
+
+  if (!fleetIntegrationEnabled()) {
+    process.stdout.write(JSON.stringify({
+      ok: true,
+      skipped: 'no-fleet',
+      path: null,
+      navigator_state: 'none',
+      navigator_adresse: null,
+      fallback_due_at: null,
+      event: false,
+    }) + '\n');
+    return 0;
   }
 
   const target = checkinPath(record.session);

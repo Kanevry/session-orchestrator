@@ -327,7 +327,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     // dispatched natively, exactly as before.
     //   impl: code-implementer      → native Agent dispatch (unchanged)
     //   impl: cursor:composer-2.5   → foreign model over the Cursor channel
-    //   test: ssh:m5                → same Claude, another host (#1160)
+    //   test: ssh:build-host        → same Claude, another host (#1160)
     // An unknown prefix is a typo or a channel this build cannot route, and
     // must fail loudly: silently accepting it would dispatch to an agent that
     // does not exist, which surfaces only as an empty wave much later.

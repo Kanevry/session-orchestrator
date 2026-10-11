@@ -150,3 +150,17 @@ describe('npm packlist — paths the harness manifests declare', () => {
     expect(missing).toEqual([]);
   });
 });
+
+/**
+ * TV-001, the bug this names (#1559 finding 5): `files[]` listed `AGENTS.md`,
+ * the GENERATED twin of this repo's own `CLAUDE.md`. It carries the operator's
+ * Session Config — `vault-integration.vault-dir`, the `remote-hosts` aliases —
+ * and no consumer reads a plugin-root instruction file (Codex, Pi and Claude
+ * Code load instructions from the PROJECT, not from the installed package).
+ * Every npm consumer received a private host config for nothing.
+ */
+describe('npm packlist — no repo-own instruction file', () => {
+  it.each(['AGENTS.md', 'CLAUDE.md'])('does not ship the root %s', (file) => {
+    expect(packedPaths).not.toContain(file);
+  });
+});

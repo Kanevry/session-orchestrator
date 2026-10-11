@@ -22,6 +22,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {
   navigatorDir,
+  fleetIntegrationEnabled,
   leasePath,
   checkinPath,
   auflagenPath,
@@ -108,6 +109,32 @@ describe('readNavigatorLease — fail-closed', () => {
     const r = await readNavigatorLease({ now: NOW, env });
     expect(r.state).toBe('unreadable');
     expect(r.reason).toMatch(/plattform/);
+  });
+});
+
+describe('fleetIntegrationEnabled (#1559)', () => {
+  it('a trimmed override opts in even when its directory does not exist', () => {
+    expect(fleetIntegrationEnabled({ env: { NAVIGATOR_CONFIG_DIR: `  ${tmp}/missing  ` }, home: tmp })).toBe(true);
+  });
+
+  it('without an override or default directory there is no fleet', () => {
+    expect(fleetIntegrationEnabled({ env: {}, home: tmp })).toBe(false);
+  });
+
+  it('an existing default directory enables the fleet', async () => {
+    await fs.mkdir(path.join(tmp, '.config', 'navigator'), { recursive: true });
+    expect(fleetIntegrationEnabled({ env: {}, home: tmp })).toBe(true);
+  });
+
+  it('a file at the default path does not enable the fleet', async () => {
+    await fs.mkdir(path.join(tmp, '.config'));
+    await fs.writeFile(path.join(tmp, '.config', 'navigator'), 'not a directory');
+    expect(fleetIntegrationEnabled({ env: {}, home: tmp })).toBe(false);
+  });
+
+  it.each([['other', false], ['navigator', true]])('a whitespace override falls back to the default directory (%s)', async (directory, present) => {
+    await fs.mkdir(path.join(tmp, '.config', directory), { recursive: true });
+    expect(fleetIntegrationEnabled({ env: { NAVIGATOR_CONFIG_DIR: '   ' }, home: tmp })).toBe(present);
   });
 });
 

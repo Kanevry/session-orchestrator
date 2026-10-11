@@ -29,7 +29,7 @@
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { writeSync } from 'node:fs';
+import { existsSync, writeSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
@@ -39,7 +39,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { ensureOrchestratorIgnore } from './_lib/orchestrator-ignore.mjs';
 
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
-import { readNavigatorLease } from '../scripts/lib/fleet-protocol.mjs';
+import { readNavigatorLease, fleetIntegrationEnabled } from '../scripts/lib/fleet-protocol.mjs';
 import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { getPlatform, resolveProjectDir } from '../scripts/lib/platform.mjs';
@@ -819,13 +819,10 @@ async function main() {
   let bannerData = null;
   if (hostBannerEnabled) {
     bannerData = await emitHostBanner(projectRoot);
-    // Always-on nudge: a user decision has three legitimate forms and AUQ-001
-    // routes between them in order — operator verb first (nothing is blocked
-    // while the operator picks his moment), then derive-and-report from Session
-    // Config / STATE.md / git, and only then the tool. The banner carries the
-    // ORDER, not an absolute; full routing + exceptions in
-    // .claude/rules/ask-via-tool.md.
-    pushBanner('🎯 Decide: operator verb (/go) > derive+report > AUQ if blocking (.claude/rules/ask-via-tool.md).');
+    // AUQ-001 in plain words (#1559): name the command when nothing is
+    // blocked, read available answers from config / STATE.md / git, and ask
+    // only when blocked — then with the question tool, never as a prose list.
+    pushBanner('🎯 Next step: name the command (/go, /close) when nothing is blocked; read answers from config, STATE.md or git; when blocked, ask with the question tool, never as a prose list.');
   }
 
   // F1.3 cold-start abandonment fix (PRD 2026-05-21). Emit a one-shot
@@ -846,6 +843,18 @@ async function main() {
         silenceAfterSessions: coldStartCfg['silence-after-sessions'] ?? 1,
         enabled: coldStartCfg.enabled !== false,
       });
+      // #1559: setup guidance is a hook display, not a detector emission.
+      // Judged at the git toplevel, not at projectRoot: a session started in a
+      // subdirectory of a bootstrapped repo has no lock under projectRoot, and
+      // outside a git repository there is nothing /bootstrap could set up.
+      if (
+        decision.reason === 'no-bootstrap-lock'
+        && hostBannerEnabled
+        && topLevel
+        && !existsSync(path.join(topLevel, '.orchestrator', 'bootstrap.lock'))
+      ) {
+        pushBanner('ℹ New here? Start with /bootstrap — it sets up this repo for session-orchestrator.');
+      }
       if (decision.shouldEmit) {
         // #1133 — the DISPLAY rides the enable-host-banner opt-out like every
         // other start-of-session emitter ("users who silence one expect
@@ -1040,7 +1049,8 @@ async function main() {
   // Gated like the peer lines above: no host banner → no navigator line. A read
   // failure must never block the hook — the helper is fail-closed itself, the
   // try/catch only guards against the unexpected.
-  if (bannerData) {
+  // #1559: solo users without fleet integration see no fleet line.
+  if (bannerData && fleetIntegrationEnabled()) {
     try {
       pushBanner(navigatorBannerLine(await readNavigatorLease()));
     } catch { /* swallow — hook must remain non-blocking */ }

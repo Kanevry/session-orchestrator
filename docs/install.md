@@ -72,25 +72,29 @@ claude -p "/session-orchestrator:plan feature"
 Every other command keeps its bare form (`/go`, `/close`, `/test`, …), and
 interactive sessions are unaffected.
 
-### Claude Code: install the Node dependencies once
+### Claude Code: check the Node dependencies
 
-For Claude Code, also install the package's Node dependencies **once** and
-restart Claude Code. First locate the installed plugin:
+Current Claude Code installs the plugin's Node dependencies itself during
+`/plugin install` (measured 2026-09-13: a clean install of plugin 5.0.0 left a
+populated `node_modules/` in the install path). Older versions did not, so
+check once. First locate the installed plugin:
 
 ```bash
 claude plugin list --json
 ```
 
 Find the enabled `session-orchestrator@kanevry` entry, then replace the
-placeholder below with its `installPath` value:
+placeholder below with its `installPath` value. The command installs only when
+the dependencies are missing:
 
 ```bash
-cd "/absolute/installPath/from/the/list" && npm install
+cd "/absolute/installPath/from/the/list" && { [ -d node_modules/js-yaml ] && echo "dependencies present, nothing to do" || npm install; }
 ```
 
-If that entry is missing or disabled, resolve it through `/plugin` first. Use
-the path reported for that entry; another cached version or a nested dependency
-is not the installed plugin.
+If it ran `npm install`, restart Claude Code. If the entry is missing or
+disabled, resolve it through `/plugin` first. Use the path reported for that
+entry; another cached version or a nested dependency is not the installed
+plugin.
 
 Setup guides: [Codex](codex-setup.md) · [Cursor IDE](cursor-setup.md) ·
 [Pi](pi-setup.md). Per-IDE notes on which instruction file each harness reads:
