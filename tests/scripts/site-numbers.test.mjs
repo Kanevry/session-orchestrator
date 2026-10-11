@@ -669,6 +669,43 @@ describe('census snapshot — writing it', () => {
   });
 
   /**
+   * BUG CAUGHT (#1555): a --write from a tree without the gitignored ledgers (a
+   * release worktree) republished the snapshot's sessions and learnings as if
+   * measured — 5.11.0 and 5.12.0 both shipped 475 / 220. The served site must
+   * refuse and stay byte-identical.
+   */
+  it('refuses to republish snapshot ledger values on the served site', () => {
+    const root = synthFullRepo({ omit: ['ledgers'], snapshot: fullSnapshot(), page: true });
+    const census = readFileSync(join(root, 'site', '_census.json'), 'utf8');
+    const page = readFileSync(join(root, 'site', 'index.html'), 'utf8');
+
+    const res = run(['--write'], { root });
+    expect(res.code).toBe(2);
+    expect(res.stderr).toContain('sessions, learnings not measurable');
+    expect(readFileSync(join(root, 'site', '_census.json'), 'utf8')).toBe(census);
+    expect(readFileSync(join(root, 'site', 'index.html'), 'utf8')).toBe(page);
+  });
+
+  /**
+   * BUG CAUGHT (#1555): the ledgers are gitignored, so a linked worktree has
+   * none and fell back to the snapshot although its main checkout had them.
+   */
+  it('reads the main checkout ledgers from a linked worktree', () => {
+    const main = synthFullRepo({ snapshot: fullSnapshot() });
+    const gitDir = join(main, '.git', 'worktrees', 'wt');
+    mkdirSync(gitDir, { recursive: true });
+    writeFileSync(join(gitDir, 'commondir'), '../..\n', 'utf8');
+    const wt = synthFullRepo({ omit: ['ledgers'], snapshot: fullSnapshot() });
+    writeFileSync(join(wt, '.git'), `gitdir: ${gitDir}\n`, 'utf8');
+
+    const res = collect(wt);
+    expect(res.values.sessions).toBe('3');
+    expect(res.values.learnings).toBe('3');
+    expect(res.fromSnapshot).not.toContain('sessions');
+    expect(res.fromSnapshot).not.toContain('learnings');
+  });
+
+  /**
    * BUG CAUGHT: a root-anchored write that ignores `--site`. Every fixture test
    * in this file runs `--write --site <tmpdir>` against the REAL repo root
    * (that is where the census lives), so a snapshot writer keyed on the root
