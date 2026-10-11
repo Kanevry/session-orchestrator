@@ -533,3 +533,41 @@ describe('generateLearningNote bare-link lockdown guard (Issue #704 Task 2)', ()
     expect(out).not.toContain('[[01-projects/');
   });
 });
+
+describe('#1548 record identity is independent of transliterated note names', () => {
+  it('keeps alias-derived historical id and renders that record under a new name', () => {
+    const raw = { summary: 'Größe Übergabe', detail: 'Use explicit provenance', confidence: 0.9,
+      created_at: '2026-10-01T10:00:00Z' };
+    const entry = normalizeLearningEntry(raw);
+    expect(entry.id).toBe('gre-bergabe');
+    expect(raw).not.toHaveProperty('id');
+    const note = generateLearningNote(entry, 'groesse-uebergabe', { repoNs: 'fixture-tool' });
+    for (const fm of [parseFrontmatter(note), YAML.load(note.split('---')[1])]) {
+      expect(fm.id).toBe('groesse-uebergabe');
+      expect(fm['source-record']).toBe('gre-bergabe');
+    }
+  });
+  it.each(['explicit-record', 'Größe'])('never derives source-record from retained filename for %s', (id) => {
+    const entry = normalizeLearningEntry(makeV1Entry({ id, subject: 'Größe' }));
+    expect(entry.id).toBe(id);
+    const fm = parseFrontmatter(generateLearningNote(entry, 'gre'));
+    expect(fm.id).toBe('gre');
+    expect(fm['source-record']).toBe(id === 'Größe' ? undefined : id);
+  });
+});
+
+// #1548 review: rendering an update must not migrate persistent tag values.
+describe('historical Unicode tags', () => {
+  it('retains source and learning-type tags on a v1 update', () => {
+    const fm = parseFrontmatter(generateLearningNote(makeV1Entry({ source_session: 'Größe', type: 'grünes' }), 'groesse'));
+    expect(fm.tags).toContain('source/gre');
+    expect(fm.tags).toContain('learning/grnes');
+    expect(fm.tags).not.toContain('source/groesse');
+  });
+  it('retains scope and learning-type tags on a v2 update', () => {
+    const fm = parseFrontmatter(generateLearningNoteV2(makeV2Entry({ scope: 'Übergabe', type: 'café' }), 'new-note'));
+    expect(fm.tags).toContain('scope/bergabe');
+    expect(fm.tags).toContain('learning/caf');
+    expect(fm.tags).not.toContain('scope/uebergabe');
+  });
+});

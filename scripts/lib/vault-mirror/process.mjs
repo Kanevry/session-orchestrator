@@ -10,7 +10,7 @@ import { basename, join, resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createSecretValueMasker } from '../secret-masker.mjs';
-import { subjectToSlug, isValidSlug, uuidPrefix8, recordKeySuffix8, toDate, parseFrontmatter } from './utils.mjs';
+import { subjectToSlug, legacySubjectToSlug, isValidSlug, uuidPrefix8, recordKeySuffix8, toDate, parseFrontmatter } from './utils.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2, learningSourceRecord } from './render-learnings.mjs';
@@ -19,7 +19,6 @@ import { emitMirrorEvent } from './telemetry.mjs';
 import {
   ARCHIVE_ROOT,
   canonicalNamespace,
-  legacyConcatSlug,
   noteNarrativeChars,
   markArchived,
   noteInsightKey,
@@ -904,7 +903,7 @@ function maskEntrySecrets(entry) {
  * @param {'v1'|'v2'} schema
  * @returns {string}
  */
-function learningSlug(entry, schema) {
+function learningSlug(entry, schema, slugger = learningNameSlugger(entry)) {
   const entryId = entry.id;
   let slugSource;
   if (schema === 'v2') {
@@ -916,7 +915,7 @@ function learningSlug(entry, schema) {
   }
   let slug;
   if (typeof slugSource === 'string' && slugSource.length > 0) {
-    slug = subjectToSlug(slugSource);
+    slug = slugger(slugSource);
   } else {
     slug = '';
   }
@@ -933,6 +932,52 @@ function learningSlug(entry, schema) {
   }
 
   return slug;
+}
+
+
+/** A record without representable provenance (v1 or v2) keeps its historical name. */
+function learningNameSlugger(entry) {
+  return learningSourceRecord(entry) === null ? legacySubjectToSlug : subjectToSlug;
+}
+
+/** Compare BEFORE filename capping so a changed concatenated name is protected. */
+function hasLearningSlugTransition(entry, schema) {
+  if (learningNameSlugger(entry) === legacySubjectToSlug) return false;
+  const source = schema === 'v2' ? entry.id : entry.subject;
+  if (typeof source !== 'string' || source.length === 0) return false;
+  const normalized = schema === 'v1' ? source.trim().replace(/\s+/g, '-') : source;
+  return subjectToSlug(normalized) !== legacySubjectToSlug(normalized) ||
+    (schema === 'v1' && subjectToSlug(source) !== legacySubjectToSlug(source));
+}
+
+function historicalConcatSlug(subject) {
+  if (typeof subject !== 'string') return '';
+  return legacySubjectToSlug(subject);
+}
+
+/** All historical names, including both generations of disambiguation suffix. */
+function learningSlugVariants(entry, schema) {
+  const bases = new Set([learningSlug(entry, schema), learningSlug(entry, schema, legacySubjectToSlug)]);
+  if (schema === 'v1') {
+    const concat = historicalConcatSlug(entry.subject);
+    if (isValidSlug(concat)) {
+      bases.add(concat);
+      if (concat.length > 240) bases.add(concat.slice(0, 240).replace(/-+$/, ''));
+    }
+  }
+  const names = new Set(bases);
+  const id = String(entry.id);
+  for (const base of bases) {
+    names.add(`${base}-${uuidPrefix8(id)}`);
+    names.add(`${base}-${recordKeySuffix8(learningSourceRecord(entry) ?? id)}`);
+  }
+  return [...names];
+}
+
+/** Only explicit, exact provenance permits assigning an old name to a record. */
+function positiveLearningOwner(fm, name, repoNs, recordKey) {
+  return recordKey !== null && notOurGenerator(fm) === null &&
+    fm['id'] === name && fm['source-record'] === recordKey && fm['source-repo'] === repoNs;
 }
 
 
@@ -1023,10 +1068,8 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // #1513 review M2: a hyphen alias (`gotzendorferv2`) resolves to the
   // canonical folder already in the vault (`gotzendorfer-v2`), so the mirror
   // and the pruner agree on where a repo's notes live.
-  const repoNs = canonicalNamespace(
-    vaultDir,
-    resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
-  );
+  const stableNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null });
+  const repoNs = canonicalNamespace(vaultDir, stableNs);
   // #725 D2: thread the resolved repo namespace into the learning frontmatter as
   // `source-repo` for cross-repo attribution. repoNs is already sanitised +
   // leak-guarded by resolveRepoNamespace, so it is safe to interpolate as-is. The
@@ -1075,9 +1118,47 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     return null;
   };
   const targetDir = join(resolve(vaultDir), '40-learnings', repoNs);
-  if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   let targetPath = join(targetDir, `${slug}.md`);
+
+  // #1548: inspect EVERY candidate before mutation when normalization changes
+  // a name. Missing/foreign/ambiguous provenance is not permission to create a
+  // second note, including under --force. Keep the actual flat or namespace path.
+  const slugTransition = hasLearningSlugTransition(entry, schema);
+  if (slugTransition) {
+    const matches = [];
+    for (const dir of [targetDir, join(resolve(vaultDir), '40-learnings')]) {
+      for (const name of learningSlugVariants(entry, schema)) {
+        const path = join(dir, `${name}.md`);
+        if (!existsSync(path)) continue;
+        const fm = parseFrontmatter(readFileSync(path, 'utf8'));
+        matches.push({ path, name, valid: positiveLearningOwner(fm, name, repoNs, writer.recordKey) });
+      }
+    }
+    if (matches.length > 1 || matches.some((match) => !match.valid)) {
+      return emitEntryAction(_lineNum, ctx, {
+        action: 'skipped-foreign-owner', path: null, id: entryId,
+        meta: { reason: 'slug transition: ambiguous or missing/contradictory provenance' },
+      });
+    }
+    if (matches.length === 1) {
+      slug = matches[0].name;
+      targetPath = matches[0].path;
+    }
+  }
+
+  // A provenance-less flat v2 note cannot be assigned to this namespace.
+  // Keep it untouched rather than creating a second copy on an advanced date.
+  if (schema === 'v2' && writer.recordKey === null &&
+      learningSlugVariants(entry, schema).some((name) =>
+        existsSync(join(resolve(vaultDir), '40-learnings', name + '.md')))) {
+    return emitEntryAction(_lineNum, ctx, {
+      action: 'skipped-foreign-owner', path: null, id: entryId,
+      meta: { reason: 'flat note: missing representable source provenance' },
+    });
+  }
+
+  if (!dryRun) mkdirSync(targetDir, { recursive: true });
 
   // #1513 LEGACY SLUG: until #725 D1 a v1 subject was slugged WITHOUT the
   // whitespace → hyphen pre-map ("3parallelimplagents…"); the canonical form
@@ -1085,8 +1166,8 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // THIS record's note exists, it IS the note: it is updated in place under
   // its own name instead of a second file being created beside it (the vault
   // carried 364 such twins). New notes always get the canonical name.
-  if (schema === 'v1') {
-    const legacySlug = legacyConcatSlug(entry.subject);
+  if (!slugTransition && schema === 'v1') {
+    const legacySlug = historicalConcatSlug(entry.subject);
     const flatDir = join(resolve(vaultDir), '40-learnings');
     if (
       isValidSlug(legacySlug) &&
@@ -1104,7 +1185,9 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
           foreignOwnerReason(legacyFm, writer) === null
         ) {
           slug = legacySlug;
-          targetPath = join(targetDir, `${legacySlug}.md`);
+          targetPath = positiveLearningOwner(legacyFm, legacySlug, repoNs, writer.recordKey)
+            ? legacyPath
+            : join(targetDir, `${legacySlug}.md`);
           break;
         }
       }
@@ -1114,8 +1197,8 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
   // #660 IDEMPOTENCY DUAL-PROBE: before treating the namespaced path as absent,
   // also check the legacy flat path. If a note with the same slug already exists
   // in the flat layout (pre-namespace migration), treat it as existing to avoid
-  // duplicating the note. The deferred-migration decision means we only skip;
-  // we do NOT move the flat note into the namespaced dir here.
+  // duplicating the note. Positive provenance also permits an update at the
+  // actual flat path; notes without that evidence keep their historical rules.
   const legacyFlatPath = join(resolve(vaultDir), '40-learnings', `${slug}.md`);
   // Set when a still-leaking legacy flat note was healed in place below, so the
   // action emitted for THIS entry can say so (see the write sites at the end).
@@ -1142,7 +1225,11 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     if (legacyForeign && legacyStillLeaks) {
       healedForeignLeak = maskForeignNoteInPlace(legacyFlatPath, legacyContent, ctx);
     }
-    if (legacyMarked && !legacyForeign) {
+    if (positiveLearningOwner(legacyFm, slug, repoNs, writer.recordKey)) {
+      // A proven flat note is the update target. Let the common existing-note
+      // branch below compare/render/heal it ONCE; never pre-write a healed copy.
+      targetPath = legacyFlatPath;
+    } else if (legacyMarked && !legacyForeign) {
       const entryUpdated = toDate(dateSource);
       if (!force && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         // Date has not advanced — but content may have changed (confidence, insight, etc.).
@@ -1313,7 +1400,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
 
     // #1506.2: the main note is this record's — a live disambiguation copy of
     // the same record (left by an interrupted takeover) is superseded.
-    const stale = fm['source-record'] === writer.recordKey
+    const stale = !slugTransition && fm['source-record'] === writer.recordKey
       ? staleOwnDisambig(targetDir, slug, entryId, writer)
       : null;
 
@@ -1351,14 +1438,19 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: slug });
     }
 
-    // Overwrite with advanced updated date (or forced re-render)
+    // Overwrite with advanced updated date (or forced re-render). A retained
+    // flat note, including an old Unicode slug, is healed by this single write.
     const content = generator(entry, slug, generatorOpts);
+    healedLegacyFlat = !dryRun && targetPath === legacyFlatPath && maskerWouldChange(existingContent);
     if (!dryRun) writeFileSync(targetPath, content, 'utf8');
     return emitEntryAction(_lineNum, ctx, {
       action: 'updated',
       path: targetPath,
       id: slug,
-      ...(stale !== null ? { meta: { superseded_id: basename(stale.path, '.md') } } : {}),
+      ...((stale !== null || healedLegacyFlat) ? { meta: {
+        ...(stale !== null ? { superseded_id: basename(stale.path, '.md') } : {}),
+        ...(healedLegacyFlat ? { healed_legacy_flat: true } : {}),
+      } } : {}),
     });
   }
 
@@ -1465,17 +1557,7 @@ function takeOverMainNote({
 export function learningNoteSlugs(rawEntry) {
   const entry = normalizeLearningEntry(rawEntry);
   if (!entry || entry.id === null || entry.id === undefined) return [];
-  const schema = detectLearningSchema(entry);
-  const slugs = [learningSlug(entry, schema)];
-  if (schema === 'v1') {
-    const legacy = legacyConcatSlug(entry.subject);
-    if (isValidSlug(legacy) && !slugs.includes(legacy)) slugs.push(legacy);
-  }
-  const id = String(entry.id);
-  for (const name of [`${slugs[0]}-${uuidPrefix8(id)}`, `${slugs[0]}-${recordKeySuffix8(learningSourceRecord(entry) ?? id)}`]) {
-    if (!slugs.includes(name)) slugs.push(name);
-  }
-  return slugs;
+  return learningSlugVariants(entry, detectLearningSchema(entry));
 }
 
 /**
@@ -1515,13 +1597,36 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
       meta: { reason: 'archived record: a live record owns this note' },
     });
   if (names.length === 0) return liveOwned();
-  const repoNs = canonicalNamespace(
-    vaultDir,
-    resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
-  );
+  const stableNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null });
+  const repoNs = canonicalNamespace(vaultDir, stableNs);
   const nsDir = join(resolve(vaultDir), '40-learnings', repoNs);
   const flatDir = join(resolve(vaultDir), '40-learnings');
   const writer = { recordKey: learningSourceRecord(entry) };
+  const schema = detectLearningSchema(entry);
+  if (schema === 'v2' && writer.recordKey === null &&
+      allNames.some((name) => existsSync(join(flatDir, name + '.md')))) {
+    return emitEntryAction(_lineNum, ctx, {
+      action: 'skipped-foreign-owner', path: null, id: entry.id,
+      meta: { reason: 'flat note: missing representable source provenance' },
+    });
+  }
+  if (hasLearningSlugTransition(entry, schema)) {
+    const matches = [];
+    for (const dir of [nsDir, flatDir]) {
+      for (const name of allNames) {
+        const path = join(dir, `${name}.md`);
+        if (!existsSync(path)) continue;
+        const fm = parseFrontmatter(readFileSync(path, 'utf8'));
+        matches.push(positiveLearningOwner(fm, name, repoNs, writer.recordKey));
+      }
+    }
+    if (matches.length > 1 || matches.some((valid) => !valid)) {
+      return emitEntryAction(_lineNum, ctx, {
+        action: 'skipped-foreign-owner', path: null, id: entry.id,
+        meta: { reason: 'slug transition: ambiguous or missing/contradictory provenance' },
+      });
+    }
+  }
   for (const dir of [nsDir, flatDir]) {
     for (const name of names) {
       const path = join(dir, `${name}.md`);
@@ -1615,8 +1720,8 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   const generator =
     schema === 'v3' ? generateSessionNoteV3 : schema === 'v2' ? generateSessionNoteV2 : generateSessionNote;
 
-  // Validate session_id as a filesystem-safe slug; fall back via subjectToSlug
-  // (which collapses slashes to last segment + strips invalid chars) before
+  // Validate session_id as a filesystem-safe slug; preserve old Session identity
+  // with the historical sanitizer (collapse slash paths + strip invalid chars), before
   // resorting to a uuid-derived slug. Without subjectToSlug, raw slashes in
   // rawSessionId (e.g. "feat/opus-4-7-...") would survive uuidPrefix8 and
   // produce a path with directory separators in the basename.
@@ -1624,7 +1729,7 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   if (isValidSlug(rawSessionId)) {
     session_id = rawSessionId;
   } else if (typeof rawSessionId === 'string' && rawSessionId.length > 0) {
-    const sanitised = subjectToSlug(rawSessionId);
+    const sanitised = legacySubjectToSlug(rawSessionId);
     session_id = isValidSlug(sanitised) ? sanitised : `session-${uuidPrefix8(rawSessionId)}`;
   } else {
     session_id = `session-${uuidPrefix8(randomUUID())}`;
@@ -1671,10 +1776,8 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // owner-leaky repo's real name reached the vault through the session-note
   // frontmatter even though the directory AND the learning `source-repo` field
   // were already pseudonym-mapped/redacted (#732 leak-guard bypass).
-  const repoNs = canonicalNamespace(
-    vaultDir,
-    resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null }),
-  );
+  const stableNs = resolveRepoNamespace({ vaultName: ctx?.vaultName ?? null, repoRoot: ctx?.repoRoot ?? null });
+  const repoNs = canonicalNamespace(vaultDir, stableNs);
 
   // Narrative gate (#1513, replaces the PRD F1.2 rendered-length gate). A
   // session gets its own note only when its FREE-TEXT fields (`notes`,
