@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.11.0] - 2026-10-10
+## [5.11.0] - 2026-10-11
 
 ### Added
 
 - **Recoverable proposal overflow** (#1027): validated memory proposals rejected by the wave quota are retained in `proposals-overflow.jsonl` for later inspection. They remain outside the collector and quota; a failed overflow write reports an error rather than claiming retention.
 - **Resumable release verification** (#1537): `--reconcile --target X.Y.Z` verifies an accepted npm upload against a persisted receipt proof, registry integrity and a consumer tarball download. It distinguishes pending availability from integrity failure and reports verified versions as superseded when a newer release holds `latest`.
 - **Lead social preview** (#1531): the lead page uses its own Open Graph and Twitter image with descriptive alternative text, making shared links identify the lead project.
+- **Role-profile evidence contract** (#1469): a versioned, offline schema in `scripts/lib/role-profile/schema.mjs` records the requested and the observed model separately, keeps unknown evidence unknown and requires evidence for owner overrides. It validates structure only and changes no model selection; see `docs/role-profile-contract.md`.
+- **Read-only fleet check-in audit** (#1462): `scripts/fleet-checkin-audit.mjs` joins explicitly supplied registry and check-in snapshots for a named repo, matching only on the exact session id. Missing or incomplete populations report "not measurable" instead of zero; nothing is scanned implicitly. See `docs/fleet-checkin-audit.md`.
 
 ### Fixed
 
@@ -26,10 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Python audit detection** (#1538): hygiene checks recognize pinned `pip-audit` invocations through `uvx`, `pipx run` and `uv tool run`, including runner options. Help output and unrelated source packages cannot satisfy the audit requirement.
 - **Record repair and drift checks**: timestamp repair converts explicit offsets to UTC while preserving the original spelling and rejecting invalid calendar values; pricing-table dates also receive calendar validation. Explicit `N+ test files` claims are treated as lower bounds, avoiding false drift reports as the suite grows.
 - **Site page identities** (#1483): the English, German and guide pages declare their own page and breadcrumb identity in structured data with resolvable page-local references, so search engines attribute each page correctly. Visible content and reviewed dates are unchanged.
+- **jq detection on Windows** (#1394): the jq precondition uses the native command locator instead of a POSIX `command -v`, so an installed jq is found without a POSIX shell. The missing-tool error is unchanged.
 
 ### Changed
 
 - **Cost provenance** (#1470, #1543): session rollups label computed costs as API list-price equivalents and record the pricing-table date, making clear that these figures do not measure payments. Subagent and overhead records retain recognized provenance only when explicitly supplied alongside a valid cost; otherwise the basis remains unknown.
+- **Peer banner limitation pinned** (#1052): a same-copy hook test now asserts that the peer banner states its liveness limitation, and the PRD describes the three registry fields as they are.
 
 ### Security
 

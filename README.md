@@ -148,6 +148,7 @@ Highlights of the v5.11.0 line:
 - **Accepted releases can be verified later.** Reconciliation checks receipt proof, registry integrity and consumer downloads, including versions superseded by a newer `latest` (#1537).
 - **Session and gate diagnostics are more reliable.** Acquisition attempts to refresh lock proofs, eligible fresh repositories ignore runtime state, and scope and gate records expose measured problems (#1515, #1541, #1026, #1487, #1514).
 - **Lead links have their own social preview.** The lead page uses a dedicated image and descriptive alternative text (#1531).
+- **Offline evidence contracts for roles and check-ins.** A versioned role-profile schema separates requested from observed models, and a read-only audit joins explicit registry and check-in snapshots without inventing zeros (#1469, #1462).
 
 Full changes and upgrade notes: [CHANGELOG.md](CHANGELOG.md).
 
