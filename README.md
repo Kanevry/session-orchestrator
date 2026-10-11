@@ -1,9 +1,38 @@
 # Session Orchestrator
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-5.12.0-blue.svg)](CHANGELOG.md)
+Plan, run and verify multi-agent coding sessions with quality gates and resumable handovers: a Claude Code plugin, with workflows for Codex CLI, Cursor IDE and Pi.
+
 [![npm](https://img.shields.io/npm/v/session-orchestrator.svg)](https://www.npmjs.com/package/session-orchestrator)
 [![Release](https://img.shields.io/github/v/release/Kanevry/session-orchestrator)](https://github.com/Kanevry/session-orchestrator/releases/latest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Version](https://img.shields.io/badge/version-5.12.0-blue.svg)](CHANGELOG.md)
+
+## Install in Claude Code
+
+You need Node.js 24 or later and a git repository. In Claude Code, two lines:
+
+```text
+/plugin marketplace add Kanevry/session-orchestrator
+/plugin install session-orchestrator@kanevry
+```
+
+Then [check the Node dependencies once](docs/install.md#claude-code-check-the-node-dependencies) (current Claude Code installs them for you). Codex CLI, Cursor IDE and Pi install differently: see [Install](#install).
+
+## 30-second example
+
+In your project, run `/bootstrap` once and check the Session Config it writes. Then:
+
+```text
+/session feature    # read the repo, propose a scope, wait for your correction
+/go                 # run the agreed work, with tests and typecheck after each implementation wave
+/close              # check the plan against what happened, commit, file the rest as issues
+```
+
+The example takes seconds to read; setup and the coding itself depend on your project.
+
+[Codex setup](docs/codex-setup.md) · [Cursor setup](docs/cursor-setup.md) · [Pi setup](docs/pi-setup.md) · [User guide](docs/USER-GUIDE.md) · [Website](https://session-orchestrator.com)
+
+## What it does
 
 **Give your agents a working rhythm.**
 
