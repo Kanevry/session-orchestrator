@@ -1,0 +1,11 @@
+{
+  "name": "so-hud",
+  "version": "0.1.0",
+  "author": { "name": "session-orchestrator contributors" },
+  "description": "Lesende SO-Statuszeile, Warnband und Session-Beacons; $.so Vertrag v1.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "strictness": { "title": "Strenge-Profil", "type": "string", "description": "Strenge-Profil", "options": ["locker", "ausgewogen", "streng"], "default": "ausgewogen" },
+    "soRoot": { "title": "Session-Orchestrator-Pfad", "type": "string", "description": "Optionaler absoluter Pfad zur Session-Orchestrator-Installation", "required": false }
+  }
+}
