@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir, utimes } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir, utimes, symlink } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -74,6 +75,7 @@ describe('session-registry', () => {
       const abs = repoPathHash(path.resolve('not-a-real-subdir'));
       const rel = repoPathHash('not-a-real-subdir');
       expect(abs).toBe(rel);
+      expect(rel).toBe(createHash('sha256').update(path.resolve('not-a-real-subdir')).digest('hex'));
     });
 
     it('produces different hashes for different paths', () => {
@@ -86,6 +88,20 @@ describe('session-registry', () => {
   });
 
   describe('registerSelf', () => {
+    it('gives symlink and target the same key (hash and repo_name)', async () => {
+      const target = path.join(tmpBase, 'TargetRepo');
+      const alias = path.join(tmpBase, 'navigator');
+      await mkdir(target);
+      await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+      const realEntry = await registerSelf({ sessionId: 'target', projectRoot: target });
+      const aliasEntry = await registerSelf({ sessionId: 'alias', projectRoot: alias });
+      expect(repoPathHash(alias)).toBe(repoPathHash(target));
+      expect(aliasEntry.repo_path_hash).toBe(realEntry.repo_path_hash);
+      expect(aliasEntry.repo_name).toBe('TargetRepo');
+      expect(aliasEntry.repo_name).toBe(realEntry.repo_name);
+    });
+
     it('writes a valid heartbeat file that can be round-tripped', async () => {
       const entry = await registerSelf({
         sessionId: 'abc',
