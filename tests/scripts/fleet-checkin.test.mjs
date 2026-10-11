@@ -92,11 +92,22 @@ async function exists(p) {
 
 describe('fleet-checkin CLI', () => {
   it('without fleet integration skips writing, directory creation and events (#1559)', async () => {
-    const r = await runCli(JSON.stringify(checkin()), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    const r = await runCli(JSON.stringify(checkin({ plattform: 'claude' })), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toBe('{"ok":true,"skipped":"no-fleet","path":null,"navigator_state":"none","navigator_adresse":null,"fallback_due_at":null,"event":false}\n');
     expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);
     expect(await readEvents()).toEqual([]);
+  });
+
+  // A headless run is always started by a coordinator — also on a remote host
+  // whose navigator directory does not exist yet. Skipping it would drop the
+  // check-in AND the Standard-Auflagen fallback for exactly the runs the fleet
+  // started (#1559 review, MED 1).
+  it('a kopflos check-in is written even without fleet integration (#1559)', async () => {
+    const r = await runCli(JSON.stringify(checkin()), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    expect(r.code, r.stderr).toBe(0);
+    expect(JSON.parse(r.stdout).skipped).toBeUndefined();
+    expect(await exists(path.join(tmp, '.config', 'navigator', 'checkin', 'sess-1.json'))).toBe(true);
   });
 
   it('valid input → 0600 file in a 0700 dir, zeit stamped, one event without auftrag_ref', async () => {

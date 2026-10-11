@@ -29,7 +29,7 @@
  */
 
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
-import { writeSync } from 'node:fs';
+import { existsSync, writeSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
@@ -819,9 +819,10 @@ async function main() {
   let bannerData = null;
   if (hostBannerEnabled) {
     bannerData = await emitHostBanner(projectRoot);
-    // AUQ-001: name the command when nothing is blocked, read available
-    // answers from config / STATE.md / git, and ask only when blocked.
-    pushBanner('🎯 Next step: name the command (/go, /close) when nothing is blocked; read answers from config, STATE.md or git; ask only when blocked.');
+    // AUQ-001 in plain words (#1559): name the command when nothing is
+    // blocked, read available answers from config / STATE.md / git, and ask
+    // only when blocked — then with the question tool, never as a prose list.
+    pushBanner('🎯 Next step: name the command (/go, /close) when nothing is blocked; read answers from config, STATE.md or git; when blocked, ask with the question tool, never as a prose list.');
   }
 
   // F1.3 cold-start abandonment fix (PRD 2026-05-21). Emit a one-shot
@@ -843,7 +844,15 @@ async function main() {
         enabled: coldStartCfg.enabled !== false,
       });
       // #1559: setup guidance is a hook display, not a detector emission.
-      if (decision.reason === 'no-bootstrap-lock' && hostBannerEnabled) {
+      // Judged at the git toplevel, not at projectRoot: a session started in a
+      // subdirectory of a bootstrapped repo has no lock under projectRoot, and
+      // outside a git repository there is nothing /bootstrap could set up.
+      if (
+        decision.reason === 'no-bootstrap-lock'
+        && hostBannerEnabled
+        && topLevel
+        && !existsSync(path.join(topLevel, '.orchestrator', 'bootstrap.lock'))
+      ) {
         pushBanner('ℹ New here? Start with /bootstrap — it sets up this repo for session-orchestrator.');
       }
       if (decision.shouldEmit) {

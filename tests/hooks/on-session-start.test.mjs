@@ -2390,6 +2390,8 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     const home = await mkNavDir(undefined);
     const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: '', HOME: home } });
     expect(result.code).toBe(0);
+    // The banner itself must still render — only the Navigator line goes.
+    expect(JSON.parse(result.stdout.trim()).systemMessage).toContain('🎯 Next step:');
     expect(navigatorLines(result.stdout)).toEqual([]);
   });
 
@@ -2404,6 +2406,12 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     await fs.writeFile(path.join(dir, '.orchestrator', 'bootstrap.lock'), `bootstrapped-at: ${new Date().toISOString()}\n`);
     const after = await runHook({ projectDir: dir });
     expect(JSON.parse(after.stdout.trim()).systemMessage).not.toContain('ℹ New here?');
+    // A session started in a subdirectory of the bootstrapped repo has no lock
+    // under its projectRoot — the hint must judge the git toplevel (#1559 review).
+    const sub = path.join(dir, 'packages', 'app');
+    await fs.mkdir(sub, { recursive: true });
+    const inSub = await runHook({ projectDir: sub });
+    expect(JSON.parse(inSub.stdout.trim()).systemMessage).not.toContain('ℹ New here?');
   });
 
   it('renders exactly one "aktiv" line from a valid lease, naming adresse over session_id', async () => {
