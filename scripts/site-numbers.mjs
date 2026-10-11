@@ -113,6 +113,7 @@ import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
 import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { slashCommandNames } from './lib/user-invocable-skills.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 /** Machine-readable schema tag for the --json envelope. */
 export const SCHEMA = 'site-numbers/1';
@@ -393,6 +394,28 @@ export function isDirty(root) {
   }
 }
 
+/** Metrics counted from a gitignored ledger — the ones `--write` must never republish from the snapshot. */
+const LEDGER_METRICS = Object.freeze(['sessions', 'learnings']);
+
+/**
+ * Path of a gitignored metrics ledger. A linked worktree carries none of its own,
+ * so it reads its main checkout's copy (#1555) — the same mapping
+ * `scripts/resolve-session-invocation.mjs` applies to sessions.jsonl. Returns the
+ * root's own path when neither exists, so an absent ledger still reads as `null`
+ * downstream and the snapshot fallback stays reachable for a fresh clone.
+ *
+ * @param {string} root
+ * @param {string} name  e.g. `sessions.jsonl`
+ * @returns {string}
+ */
+function ledgerFile(root, name) {
+  const own = join(root, '.orchestrator', 'metrics', name);
+  if (existsSync(own)) return own;
+  const main = resolveEventsLedgerRoot(root);
+  const shared = join(main, '.orchestrator', 'metrics', name);
+  return main !== resolve(root) && existsSync(shared) ? shared : own;
+}
+
 // ---------------------------------------------------------------------------
 // The metric table — the part that must never be re-derived by hand
 // ---------------------------------------------------------------------------
@@ -474,7 +497,7 @@ export const METRIC_DEFS = Object.freeze([
     // bug's magnitude this migration removes.
     source: 'grep -c . .orchestrator/metrics/sessions.jsonl   (then deduped per session_id — see readCanonicalSessions, #1186)',
     compute: (root) => {
-      const file = join(root, '.orchestrator', 'metrics', 'sessions.jsonl');
+      const file = ledgerFile(root, 'sessions.jsonl');
       // Same absent/non-file guard as countJsonlEntries, kept explicit here
       // because readCanonicalSessions returns [] (not null) on a missing ledger
       // — collapsing that into fmtCount(0) would silently defeat the
@@ -497,7 +520,7 @@ export const METRIC_DEFS = Object.freeze([
     snapshotFallback: true,
     source: 'grep -c . .orchestrator/metrics/learnings.jsonl',
     compute: (root) => {
-      const r = countJsonlEntries(join(root, '.orchestrator', 'metrics', 'learnings.jsonl'));
+      const r = countJsonlEntries(ledgerFile(root, 'learnings.jsonl'));
       return r === null ? null : fmtCount(r.entries);
     },
   },
@@ -743,7 +766,7 @@ export function collect(root, ctx = {}) {
     ['sessions', 'sessions.jsonl'],
     ['learnings', 'learnings.jsonl'],
   ]) {
-    const r = countJsonlEntries(join(root, '.orchestrator', 'metrics', file));
+    const r = countJsonlEntries(ledgerFile(root, file));
     if (r && r.malformed > 0) {
       // #1186: the two ledgers now disagree on what a malformed line DOES to
       // the published count. `learnings` is still the raw countJsonlEntries
@@ -759,7 +782,7 @@ export function collect(root, ctx = {}) {
     }
   }
 
-  return { values, missing, warnings, fromSnapshot };
+  return { values, missing, warnings, fromSnapshot, localFallbacks };
 }
 
 // ---------------------------------------------------------------------------
@@ -1307,11 +1330,27 @@ export function main(argv = process.argv.slice(2), env = {}) {
     return 2;
   }
 
-  const { values, missing, warnings, fromSnapshot } = collect(root, { usage: env.usage });
+  const { values, missing, warnings, fromSnapshot, localFallbacks } = collect(root, { usage: env.usage });
   if (missing.length > 0) {
     stderr(
       `Error: could not measure ${missing.join(', ')} under ${root} — ` +
         'refusing to publish a partial census (is this the repository root?)',
+    );
+    return 2;
+  }
+  // #1555: a --write of the SERVED site publishes what it measured. A ledger
+  // metric answered by the snapshot is the previous release's number, not a
+  // measurement (5.11.0 and 5.12.0 both republished 475 sessions / 220
+  // learnings from a release worktree), so it is refused. Only the real site/
+  // is guarded; a --write --site <fixture> run publishes nothing. counted-sha
+  // keeps its snapshot answer — the tested no-.git contract below.
+  const writesServedSite = args.write && resolve(siteDir) === resolve(join(root, 'site'));
+  const staleLedgers = localFallbacks.filter((id) => LEDGER_METRICS.includes(id));
+  if (writesServedSite && staleLedgers.length > 0) {
+    stderr(
+      `Error: ${staleLedgers.join(', ')} not measurable under ${root} — the gitignored ledgers are absent ` +
+        `here and in the main checkout; refusing to republish the old ${CENSUS_FILE.join('/')} values. ` +
+        'Run --write from a checkout that has them.',
     );
     return 2;
   }
@@ -1489,7 +1528,7 @@ export function main(argv = process.argv.slice(2), env = {}) {
   // release preflight's clean-tree check. A fixture run is a read of the repo,
   // never a write to it.
   let censusWritten = false;
-  const writesCensus = args.write && resolve(siteDir) === resolve(join(root, 'site'));
+  const writesCensus = writesServedSite;
   if (writesCensus && ok) {
     const res = writeCensusSnapshot(root, values);
     if (res.ok) {

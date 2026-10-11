@@ -33,6 +33,11 @@
  *                                  owner-leakage scanner's CP11 rule matches against tracked files.
  *                                  The names live in the referenced file ONLY — NEVER inline in
  *                                  owner.yaml. Never committed; env SO_CONFIDENTIAL_NAMES_FILE overrides.)
+ *     projects-root: string ('' = no override; #1562 — host-local cross-repo confinement / scan
+ *                                  root, default ~/Projects. A leading ~ expands to the home
+ *                                  directory; a value that is not absolute after expansion is
+ *                                  ignored with a WARN by getConfinementRoot (config/cross-repo.mjs).
+ *                                  Never committed; env SO_PROJECTS_ROOT overrides.)
  *   dispatcher:             (optional; host-local cross-repo dispatcher autonomy override — #679)
  *     autonomy: string      ('' = no override; resolver enum off | advisory | autonomous-gated;
  *                            precedence env SO_DISPATCHER_AUTONOMY > this > committed > off)
@@ -283,6 +288,7 @@ export function getDefaults() {
       'baseline-path': '',
       'namespace-map-path': '',
       'confidential-names-file': '',
+      'projects-root': '',
     },
     dispatcher: {
       autonomy: '',
@@ -435,7 +441,7 @@ export function validateOwnerSections(obj) {
       if (!isPlainObject(paths)) {
         errors.push('paths must be an object when present');
       } else {
-        for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path', 'confidential-names-file']) {
+        for (const key of ['vault-dir', 'baseline-path', 'namespace-map-path', 'confidential-names-file', 'projects-root']) {
           const v = paths[key];
           if (v !== undefined && v !== null && typeof v !== 'string') {
             errors.push(`paths.${key} must be a string`);

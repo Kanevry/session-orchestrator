@@ -124,6 +124,8 @@ Present exactly one `AskUserQuestion` unless:
 - `$ARGUMENTS` includes `--fast`, `--standard`, or `--deep` (tier pre-selected, skip question)
 - `--retroactive` flag (no scaffolding at all, skip to Phase 4)
 
+**Language (#1562).** The question texts in this skill are written in German. Render every question, option description and report line in the operator's language: `owner.language` from `~/.config/session-orchestrator/owner.yaml` when that file exists (`de` or `en`), otherwise the language the operator writes in this session. Tier labels (`fast`, `standard`, `deep`) and archetype ids stay verbatim, because they are values; `(Empfohlen)` and `Abbrechen` follow the language (`(Recommended)`, `Cancel`).
+
 ```
 AskUserQuestion({
   questions: [{

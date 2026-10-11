@@ -8,7 +8,8 @@
  * committed default act as a fallback for unconfigured hosts.
  *
  * Precedence (highest first):
- *   1. env-var               (SO_VAULT_DIR / SO_BASELINE_PATH)
+ *   1. env-var               (SO_VAULT_DIR / SO_BASELINE_PATH / SO_NAMESPACE_MAP /
+ *                             SO_CONFIDENTIAL_NAMES_FILE / SO_PROJECTS_ROOT — see ENV_KEYS)
  *   2. owner.yaml paths[key]  (host-local, never committed — ~/.config/session-orchestrator/owner.yaml)
  *   3. committed Session Config default (the value the committed CLAUDE.md —
  *      AGENTS.md on Codex CLI — produced)
@@ -40,6 +41,9 @@ const ENV_KEYS = /** @type {const} */ ({
   'namespace-map-path': 'SO_NAMESPACE_MAP',
   // #728a — host-local confidential customer/repo name list for CP11 leak scanning.
   'confidential-names-file': 'SO_CONFIDENTIAL_NAMES_FILE',
+  // #1562 — host-local cross-repo confinement / scan root (default ~/Projects);
+  // consumed by getConfinementRoot() in config/cross-repo.mjs.
+  'projects-root': 'SO_PROJECTS_ROOT',
 });
 
 /**
@@ -86,7 +90,7 @@ export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig
  * (fall through to the next tier). When no override is set, `committedDefault`
  * passes through unchanged — including `null`/`undefined`, preserving back-compat.
  *
- * @param {'vault-dir'|'baseline-path'|'namespace-map-path'|'confidential-names-file'} key — logical path key
+ * @param {'vault-dir'|'baseline-path'|'namespace-map-path'|'confidential-names-file'|'projects-root'} key — logical path key
  * @param {string|null|undefined} committedDefault — value the committed Session Config produced
  * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [ctx] — from loadHostPaths()
  * @returns {string|null|undefined} resolved value

@@ -3,7 +3,8 @@
  *
  * NAMED BUG (2026-09-06 Wave 1): `parse-config.mjs` read `process.argv[2]` as
  * the positional config path unconditionally, so the flag in the command
- * `docs/session-config-template.md` documents at lines 13 and 965 —
+ * `docs/session-config-template.md` documents ("How to use" and "Validation &
+ * Bootstrap") —
  * `node scripts/parse-config.mjs --json` — was swallowed by the path slot and
  * rejected with `parse-config.mjs: File not found: --json`, exit 1. The
  * documented validation command could not be run as written.

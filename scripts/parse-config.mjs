@@ -8,17 +8,23 @@
  *
  * Output: Single JSON object to stdout with ALL config fields (defaults applied).
  *   `--json` is an explicit NO-OP alias for that default — accepted because
- *   `docs/session-config-template.md` (lines 13 and 965) documents
- *   `node scripts/parse-config.mjs --json` as THE validation command, and the
- *   flag used to be swallowed by the positional-path slot and rejected with
- *   `File not found: --json` (exit 1). `cli-design.md` § JSON-First Output also
- *   requires every CLI to accept `--json`.
+ *   `docs/session-config-template.md` ("How to use" and "Validation &
+ *   Bootstrap") documents `node scripts/parse-config.mjs --json` as THE
+ *   validation command, and the flag used to be swallowed by the
+ *   positional-path slot and rejected with `File not found: --json` (exit 1).
+ *   `cli-design.md` § JSON-First Output also requires every CLI to accept
+ *   `--json`.
  * Exit codes: 0 success, 1 error (message to stderr)
  *
  * Unparsable lines inside `## Session Config` (#1097) are reported per line on
  * stderr under `enforcement: warn` (the default) and refuse the run under
  * `enforcement: strict`; `off` is silent. stdout is unchanged for any
  * well-formed block — a warning never alters the emitted JSON.
+ *
+ * Unknown top-level keys (#1562) — a key the plugin's own
+ * `docs/session-config-template.md` does not document, i.e. a typo or a key
+ * from a newer plugin version — are reported per line on stderr under `warn`
+ * AND `strict` (a report, never a refusal); `off` is silent. stdout unchanged.
  *
  * Environment:
  *   SO_CONFIG_FILE             — override filename (e.g. "AGENTS.md") resolved from project root
@@ -30,7 +36,8 @@ import { spawnSync } from 'node:child_process';
 import { join, dirname, resolve, parse as parsePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseSessionConfig } from './lib/config.mjs';
-import { collectUnparsableLines } from './lib/config/section-extractor.mjs';
+import { collectUnparsableLines, collectTopLevelKeyLines } from './lib/config/section-extractor.mjs';
+import { knownTemplateKeys } from './lib/config/template-keys.mjs';
 import { findUnterminatedComment } from './lib/config/block-preprocess.mjs';
 import { ENFORCEMENT_VALUES } from './lib/config-schema.mjs';
 
@@ -189,15 +196,15 @@ try {
 
 const unparsableLines = collectUnparsableLines(content);
 
-if (unparsableLines.length > 0) {
-  // Belt-and-braces, not a live branch: `parseSessionConfig` already REFUSES
-  // an out-of-vocabulary enforcement value above (measured: `enforcement:
-  // banana` exits 1 with "must be strict|warn|off" and never reaches here), so
-  // `config.enforcement` is one of the three by the time this line runs. The
-  // fallback exists for the direction that matters if that ever loosens — an
-  // unknown value must degrade to `warn`, never arm the `strict` refusal.
-  const enforcement = ENFORCEMENT_VALUES.has(config.enforcement) ? config.enforcement : 'warn';
+// Belt-and-braces, not a live branch: `parseSessionConfig` already REFUSES
+// an out-of-vocabulary enforcement value above (measured: `enforcement:
+// banana` exits 1 with "must be strict|warn|off" and never reaches here), so
+// `config.enforcement` is one of the three by the time this line runs. The
+// fallback exists for the direction that matters if that ever loosens — an
+// unknown value must degrade to `warn`, never arm the `strict` refusal.
+const enforcement = ENFORCEMENT_VALUES.has(config.enforcement) ? config.enforcement : 'warn';
 
+if (unparsableLines.length > 0) {
   if (enforcement !== 'off') {
     // Ceiling: 20 named lines. A whole prose section pasted into the block is
     // one defect, not 200, and the strict path below exits immediately after
@@ -227,6 +234,56 @@ if (unparsableLines.length > 0) {
         'unparsable Session Config block.\n',
     );
     process.exit(1);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unknown-key report (#1562) — a typo'd key is not a silent default either
+// ---------------------------------------------------------------------------
+//
+// A well-formed line with a mis-spelled key (`persistance: true`) parses
+// cleanly, so the gate above never sees it: the key lands in the KV map under a
+// name nothing reads, and the real key keeps its default. The population of
+// known keys is the plugin's OWN template (first + last `## Session Config`
+// block, the population drift-check Check 6 reads) plus every top-level key
+// `parseSessionConfig()` emits, so it moves with the plugin version, never
+// with the repo.
+//
+// A report, never a refusal — even under `strict`: a key from a newer plugin
+// version is not a defect of the repo. Three states stay apart on purpose:
+// measured with findings (one line per key), measured clean (silence), and NOT
+// measured (one line saying why) — "the check could not run" must never read
+// like "no unknown keys".
+
+if (enforcement !== 'off') {
+  const templatePath = join(SCRIPT_DIR, '..', 'docs', 'session-config-template.md');
+  let known = null;
+  let notRunReason = null;
+  try {
+    known = knownTemplateKeys(readFileSync(templatePath, 'utf8'));
+    if (!known) notRunReason = 'it has no distinct starter and opt-in `## Session Config` blocks';
+    // A key the parser itself emits is read, wherever the template documents it:
+    // `skill-evolution` and `dispatcher-autonomy` are parsed from the whole file
+    // (their parity-exempt template blocks sit outside `## Session Config`), so
+    // the same key inside the block is applied and must not read "no effect".
+    else for (const key of Object.keys(config)) known.add(key);
+  } catch (err) {
+    notRunReason = err.code === 'ENOENT' ? 'it was not found' : `it could not be read (${err.code ?? err.message})`;
+  }
+
+  if (notRunReason) {
+    process.stderr.write(
+      `⚠ parse-config.mjs: unknown Session Config key check did not run — ${templatePath}: ${notRunReason}\n`,
+    );
+  } else {
+    const configName = parsePath(configFile).base;
+    for (const { line, key } of collectTopLevelKeyLines(content)) {
+      if (known.has(key)) continue;
+      process.stderr.write(
+        `⚠ ${configName}:${line}: unknown Session Config key '${key}' — not in docs/session-config-template.md ` +
+          '(a typo, or a key from a newer plugin version); it has no effect\n',
+      );
+    }
   }
 }
 

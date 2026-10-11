@@ -54,8 +54,12 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
    ```bash
    CONFIG_OUT="$(node "$PLUGIN_ROOT/scripts/parse-config.mjs" 2>&1 >/dev/null)"
    # parse-config.mjs emits validation warnings to stderr when enforcement=warn.
-   # Grep for 'must be' lines (issued by validate-config.mjs) to detect missing fields.
-   MISSING_FIELDS="$(echo "$CONFIG_OUT" | grep -oE '(test-command|typecheck-command|lint-command|agents-per-wave|waves|persistence|enforcement)' | sort -u || true)"
+   # Only 'must be' lines (issued by validate-config.mjs) name an INVALID mandatory field. Filter
+   # them first: stderr also carries the unknown-key report (#1562), whose key (e.g.
+   # `test-command-e2e`) would otherwise match a mandatory name. Ceiling: an ABSENT field is
+   # never reported here — parseSessionConfig() fills all 7 with defaults — so this step only
+   # catches invalid values; absent-key detection is a follow-up.
+   MISSING_FIELDS="$(echo "$CONFIG_OUT" | grep 'must be' | grep -oE '(test-command|typecheck-command|lint-command|agents-per-wave|waves|persistence|enforcement)' | sort -u || true)"
    if [[ -n "$MISSING_FIELDS" ]]; then
      # Detect package manager to pick sensible defaults for commands.
      PM_DEFAULTS="$(node --input-type=module -e "

@@ -433,8 +433,8 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   const eventsRotation = _parseEventsRotation(mdContent);
 
   // express-path: parsed from full content (standalone top-level block, #214/#1119).
-  // Documented in docs/session-config-template.md:585 and
-  // docs/session-config-reference.md:1519 since #214, but never in the key schema —
+  // Documented in docs/session-config-template.md § Express Path and
+  // docs/session-config-reference.md § Express Path (#214) since #214, but never in the key schema —
   // measured 2026-08-23, a probe carrying `express-path:\n  enabled: false` produced
   // 88 keys and none of them was `express-path`. The key was dropped even when it
   // stood in the file, so the documented default was prose rather than a value.

@@ -397,8 +397,8 @@ describe('_coerceCollisionRisk', () => {
 // ---------------------------------------------------------------------------
 // express-path (#214 / #1119)
 //
-// The key was documented in docs/session-config-template.md:585 and
-// docs/session-config-reference.md:1519 from the day #214 shipped, and the
+// The key was documented in docs/session-config-template.md § Express Path and
+// docs/session-config-reference.md § Express Path (#214) from the day #214 shipped, and the
 // parser never knew it. Measured 2026-08-23 at HEAD 4f6404e:
 //
 //   grep -c "express" scripts/lib/config.mjs                       → 0

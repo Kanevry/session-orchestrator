@@ -348,6 +348,7 @@ describe('paths: section (#653)', () => {
       'baseline-path': '',
       'namespace-map-path': '',
       'confidential-names-file': '',
+      'projects-root': '',
     });
   });
 
@@ -358,6 +359,7 @@ describe('paths: section (#653)', () => {
         'baseline-path': '/b',
         'namespace-map-path': '/m.json',
         'confidential-names-file': '/names.json',
+        'projects-root': '/srv/code',
       },
     });
     const result = validateOwnerConfig(cfg);
@@ -372,25 +374,11 @@ describe('paths: section (#653)', () => {
     expect(result.errors).toHaveLength(0);
   });
 
-  it('rejects a non-string paths.confidential-names-file member (#728a)', () => {
-    const cfg = validConfig({ paths: { 'confidential-names-file': 42 } });
-    const result = validateOwnerConfig(cfg);
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain('paths.confidential-names-file must be a string');
-  });
-
   it('accepts a paths object WITHOUT namespace-map-path (additive back-compat)', () => {
     const cfg = validConfig({ paths: { 'vault-dir': '/v' } });
     const result = validateOwnerConfig(cfg);
     expect(result.valid).toBe(true);
     expect(result.errors).toHaveLength(0);
-  });
-
-  it('rejects a non-string paths.namespace-map-path member (#725)', () => {
-    const cfg = validConfig({ paths: { 'namespace-map-path': 42 } });
-    const result = validateOwnerConfig(cfg);
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain('paths.namespace-map-path must be a string');
   });
 
   it('accepts a legacy config WITHOUT a paths key (absent-tolerant back-compat)', () => {
@@ -408,12 +396,15 @@ describe('paths: section (#653)', () => {
     expect(result.errors).toContain('paths must be an object when present');
   });
 
-  it('rejects a non-string paths.vault-dir member', () => {
-    const cfg = validConfig({ paths: { 'vault-dir': 42 } });
-    const result = validateOwnerConfig(cfg);
-    expect(result.valid).toBe(false);
-    expect(result.errors).toContain('paths.vault-dir must be a string');
-  });
+  // #653 vault-dir, #725 namespace-map-path, #728a confidential-names-file, #1562 projects-root
+  it.each(['vault-dir', 'baseline-path', 'namespace-map-path', 'confidential-names-file', 'projects-root'])(
+    'rejects a non-string paths.%s member',
+    (key) => {
+      const result = validateOwnerConfig(validConfig({ paths: { [key]: 42 } }));
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(`paths.${key} must be a string`);
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

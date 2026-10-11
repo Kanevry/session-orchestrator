@@ -8,13 +8,14 @@
  *   parseSessionConfig deprecation WARN emission (B.6) — when persona-reviewers:
  *                      is present in a CLAUDE.md, parseSessionConfig emits exactly
  *                      1 byte-identical stderr WARN.
+ *   getConfinementRoot — host-local projects-root precedence (#1562).
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { _parseCrossRepo, getCrossRepoProjects } from '@lib/config/cross-repo.mjs';
+import { _parseCrossRepo, getConfinementRoot, getCrossRepoProjects } from '@lib/config/cross-repo.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
 import { validatePathInsideProject } from '../../../scripts/lib/path-utils.mjs';
 
@@ -375,5 +376,70 @@ describe('parseSessionConfig — persona-reviewers deprecation WARN emission (B.
 
     const warns = stderrCapture.filter((m) => m.includes("'persona-reviewers' is deprecated"));
     expect(warns).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getConfinementRoot — projects-root precedence (#1562)
+//
+// Bug: a host whose repos live outside ~/Projects could not point the
+// confinement root anywhere, so every host-wide sweep found nothing.
+// HOME is pinned so os.homedir() — and every expected value — is a literal.
+// ---------------------------------------------------------------------------
+
+describe('getConfinementRoot — projects-root precedence (#1562)', () => {
+  const ENV_KEYS = ['HOME', 'CROSS_REPO_CONFINEMENT_ROOT', 'SO_PROJECTS_ROOT', 'SO_CONFIG_HOME'];
+  let saved;
+  let stderrCapture;
+  let cfgDir;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
+    process.env.HOME = '/home/fixed';
+    stderrCapture = [];
+    vi.spyOn(process.stderr, 'write').mockImplementation((msg) => {
+      stderrCapture.push(String(msg));
+      return true;
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    if (cfgDir) rmSync(cfgDir, { recursive: true, force: true });
+    cfgDir = undefined;
+  });
+
+  const owner = (root) => ({ paths: { 'projects-root': root } });
+
+  it.each([
+    ['CROSS_REPO_CONFINEMENT_ROOT wins over every tier',
+      { CROSS_REPO_CONFINEMENT_ROOT: '/conf', SO_PROJECTS_ROOT: '/env-root' }, owner('/owner-root'), '/conf', null],
+    ['SO_PROJECTS_ROOT beats owner.yaml', { SO_PROJECTS_ROOT: '/env-root' }, owner('/owner-root'), '/env-root', null],
+    ['owner.yaml beats the default', {}, owner('/owner-root'), '/owner-root', null],
+    ['nothing set → ~/Projects', {}, {}, '/home/fixed/Projects', null],
+    ['~/x expands to the home directory', { SO_PROJECTS_ROOT: '~/Code' }, {}, '/home/fixed/Code', null],
+    ['bare ~ expands to the home directory', {}, owner('~'), '/home/fixed', null],
+    ['blank env falls through silently', { SO_PROJECTS_ROOT: '   ' }, owner('/owner-root'), '/owner-root', null],
+    ['relative env is rejected, owner.yaml used', { SO_PROJECTS_ROOT: 'rel/dir' }, owner('/owner-root'), '/owner-root',
+      'cross-repo: ignoring env SO_PROJECTS_ROOT="rel/dir" — not an absolute path after ~ expansion; falling back\n'],
+    ['relative owner.yaml is rejected, default used', {}, owner('Code'), '/home/fixed/Projects',
+      'cross-repo: ignoring owner.yaml paths.projects-root="Code" — not an absolute path after ~ expansion; falling back\n'],
+  ])('%s', (_name, env, ownerConfig, expected, warn) => {
+    expect(getConfinementRoot({ env, ownerConfig })).toBe(expected);
+    expect(stderrCapture).toEqual(warn ? [warn] : []);
+  });
+
+  it('zero-arg call reads paths.projects-root from the real owner.yaml loader', () => {
+    cfgDir = mkdtempSync(join(tmpdir(), 'so-projects-root-'));
+    writeFileSync(join(cfgDir, 'owner.yaml'), 'paths:\n  projects-root: /wired/root\n');
+    process.env.SO_CONFIG_HOME = cfgDir;
+    delete process.env.CROSS_REPO_CONFINEMENT_ROOT;
+    delete process.env.SO_PROJECTS_ROOT;
+
+    expect(getConfinementRoot()).toBe('/wired/root');
   });
 });

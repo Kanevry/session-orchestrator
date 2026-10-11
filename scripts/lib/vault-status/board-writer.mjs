@@ -1339,7 +1339,8 @@ export function buildSweepRepos(candidates, { thisRepoRoot } = {}) {
  * @param {object} [opts]
  * @param {string} opts.repoRoot — the calling repo (always included in the sweep).
  * @param {string} [opts.startDir] — enumeration root; omitted in production so
- *   {@link enumerateCandidates} defaults to `getConfinementRoot()` (~/Projects).
+ *   {@link enumerateCandidates} defaults to `getConfinementRoot()` (~/Projects
+ *   unless the host sets `projects-root`, #1562).
  *   Test seam only — do NOT compute `path.dirname(repoRoot)` here.
  * @param {Date|number} [opts.now] — clock seam. A `Date` is used as-is; a finite
  *   number is treated as epoch-ms (matching {@link collectRows}'s own
