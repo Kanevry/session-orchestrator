@@ -140,6 +140,38 @@ describe('resetStateMdToIdle rules', () => {
     );
   });
 
+  // A coordinator-direct close writes recommendations but no Wave History: the
+  // earlier archive must survive below them (its old recommendations copy is
+  // superseded), and `## Wave History Archive` is a section of its own.
+  it('keeps the earlier archive when there is no new Wave History', () => {
+    const input = COMPLETED.replace(
+      '## Wave History\n\n- W1 Discovery: mapped the reset\n- W2 Impl: wrote the module\n',
+      '## Wave History Archive\n\n- kept in place\n',
+    ).replace(
+      '## Previous Session\n',
+      '## Previous Session\n\n### Recommendations (archived from v1.1 frontmatter)\n- **Recommended mode:** deep\n',
+    );
+    const { contents } = resetStateMdToIdle(input);
+
+    expect(section(contents, 'Wave History Archive')).toBe('## Wave History Archive\n\n- kept in place\n');
+    expect(section(contents, 'Previous Session')).toBe(
+      [
+        '## Previous Session',
+        '',
+        '### Recommendations (archived from v1.1 frontmatter)',
+        '- **Recommended mode:** housekeeping',
+        '- **Rationale:** v0: default clean completion',
+        '- **Completion rate:** 100%',
+        '- **Carryover ratio:** 0%',
+        '- **Top priorities:** #1560',
+        '',
+        '### Wave History (main-2026-10-10-session-3)',
+        '- older record that the new archive replaces',
+        '',
+      ].join('\n'),
+    );
+  });
+
   it.each([
     ['active', COMPLETED.replace('status: completed', 'status: active'), 'status-not-completed'],
     ['paused', COMPLETED.replace('status: completed', 'status: paused'), 'status-not-completed'],

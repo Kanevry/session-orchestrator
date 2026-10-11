@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /** session-start Phase 1.5 Idle Reset (#1560): rewrite a completed STATE.md to idle, under the STATE.md lock. */
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resetStateMdToIdleOnDisk } from './lib/state-md/idle-reset.mjs';
@@ -11,7 +11,8 @@ Reset the repo's STATE.md to idle when its status is completed (session-start
 Phase 1.5, Idle Reset rules 1-7): status idle, current-wave 0, Wave History
 demoted into Previous Session, Deviations emptied, scope-baseline-* keys
 deleted. The five recommendation keys stay in the frontmatter so the Phase 7.5
-Mode-Selector can read them. Any other status is a no-op.
+Mode-Selector can read them. Any other status is a no-op; reasons:
+status-not-completed, unparseable, missing (no or empty STATE.md).
 
   --repo-root <dir>  Repository root holding the state dir (default: cwd)
   --json             Emit {"changed", "reason", "path"} instead of one line
@@ -20,7 +21,8 @@ Mode-Selector can read them. Any other status is a no-op.
 
 Example: node scripts/state-md-idle-reset.mjs --json
 Exit codes: 0 reset or no-op, 1 bad CLI arguments,
-            2 I/O error or a write the STATE.md guards refused
+            2 I/O error, --repo-root not a directory, or a write the
+              STATE.md guards refused
 `;
 
 /** Reasons under which writeStateMd refused a wanted write. */
@@ -50,6 +52,12 @@ if (options.help) {
   );
 } else {
   const repoRoot = resolve(options['repo-root'] ?? process.cwd());
+  // The STATE.md lock would otherwise create <repoRoot>/.orchestrator/ for a
+  // root that does not exist and report a harmless-looking `missing`.
+  if (!statSync(repoRoot, { throwIfNoEntry: false })?.isDirectory()) {
+    process.stderr.write(`state-md-idle-reset: --repo-root is not a directory: ${repoRoot}\n`);
+    process.exit(2);
+  }
   let result;
   try {
     result = await resetStateMdToIdleOnDisk(repoRoot);

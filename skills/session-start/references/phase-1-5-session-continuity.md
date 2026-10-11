@@ -104,7 +104,7 @@ Run it as code, after the Recommendations Banner — never rewrite STATE.md by h
 node "${PLUGIN_ROOT}/scripts/state-md-idle-reset.mjs" --json
 ```
 
-It prints `{"changed": <bool>, "reason": <string|null>, "path": "<STATE.md>"}` and writes under the STATE.md lock (`resetStateMdToIdle` in `scripts/lib/state-md/idle-reset.mjs`). Any status other than `completed` is a no-op (`reason: "status-not-completed"`, exit 0). Exit 2 means the write failed or a STATE.md guard refused it (`reason` names the guard) — report it as a Deviation and continue. The rules below are the contract that code implements:
+It prints `{"changed": <bool>, "reason": <string|null>, "path": "<STATE.md>"}` and writes under the STATE.md lock (`resetStateMdToIdle` in `scripts/lib/state-md/idle-reset.mjs`). A no-op exits 0 with `changed: false` and one of `reason: "status-not-completed"` (any status other than `completed`), `"unparseable"` (no frontmatter) or `"missing"` (no or empty STATE.md). Exit 2 means `--repo-root` is not a directory, the write failed, or a STATE.md guard refused it (`reason` names the guard) — report it as a Deviation and continue. Without a new `## Wave History` (a coordinator-direct session) the earlier `## Previous Session` body is kept below the new recommendations copy. The rules below are the contract that code implements:
 
 1. Set frontmatter `status: idle`.
 2. Clear `current-wave` (set to `0`).

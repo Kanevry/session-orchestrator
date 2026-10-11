@@ -82,6 +82,13 @@ const REPO_REDIRECT_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_CO
  */
 const LS_FILES_MAX_BUFFER = 16 * 1024 * 1024;
 
+/**
+ * A vault on a hung network filesystem must not stall /close: past this the
+ * call is killed and the result is `unavailable` (git-failed). 20k untracked
+ * files took 0.46 s (2026-10-11), so 20 s is a hang, not a slow vault.
+ */
+const LS_FILES_TIMEOUT_MS = 20_000;
+
 /** @param {string} absPath @returns {boolean} true when the head names one of our generators */
 function isGeneratorOwned(absPath) {
   let fd;
@@ -149,6 +156,7 @@ export function findVaultOrphans({ vaultDir, sinceMs, execFileFn, statFn } = {})
         encoding: 'utf8',
         env,
         maxBuffer: LS_FILES_MAX_BUFFER,
+        timeout: LS_FILES_TIMEOUT_MS,
         stdio: ['ignore', 'pipe', 'pipe'],
       });
     } catch (err) {

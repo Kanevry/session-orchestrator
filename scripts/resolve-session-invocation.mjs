@@ -1,10 +1,31 @@
 #!/usr/bin/env node
 /** Stdin-only boundary for commands/session.md; never executes task context. */
-import { readFileSync } from 'node:fs';
+import { accessSync, constants, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resolveSessionInvocation } from './lib/session-invocation.mjs';
 import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { isRealSession } from './lib/session-schema/filters.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
+
+/**
+ * Whether the repo holds a real session of its own: `true`/`false`, or
+ * `undefined` when that cannot be measured. sessions.jsonl is gitignored, so a
+ * linked worktree reads its main checkout's ledger (`resolveEventsLedgerRoot`);
+ * a ledger that exists but cannot be read is "not measured", never "no history".
+ *
+ * @param {string} repoRoot
+ * @returns {boolean|undefined}
+ */
+function measureHistory(repoRoot) {
+  const file = join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl');
+  try {
+    accessSync(file, constants.R_OK);
+  } catch (error) {
+    return error?.code === 'ENOENT' ? false : undefined;
+  }
+  return readCanonicalSessions({ filePath: file }).some(isRealSession);
+}
 
 const HELP = `Usage: node scripts/resolve-session-invocation.mjs [--json] [--repo-root <dir>] < arguments.txt
 
@@ -14,7 +35,8 @@ the rest as task context. Empty input defaults to deep. An invalid mode emits
 a warning and resolves to deep, as the session command has always specified.
 A bare /session in a repo whose .orchestrator/metrics/sessions.jsonl holds no
 real session adds defaultReason "no-session-history": ask for task and mode
-before starting.
+before starting. A linked git worktree reads its main checkout's ledger; an
+unreadable ledger counts as not measured and adds nothing.
 
   --json             Emit one JSON object instead of a human-readable summary
   --repo-root <dir>  Project root whose session history is read (default: cwd)
@@ -58,9 +80,7 @@ if (options.help) {
   }
   // History is read only for a bare /session: an explicit mode never needs it.
   const hasHistory =
-    input.trim() === ''
-      ? readCanonicalSessions({ repoRoot: options['repo-root'] || process.cwd() }).some(isRealSession)
-      : undefined;
+    input.trim() === '' ? measureHistory(options['repo-root'] || process.cwd()) : undefined;
   const resolved = resolveSessionInvocation(input, { hasHistory });
   if (resolved.invalidMode !== undefined) {
     process.stderr.write(

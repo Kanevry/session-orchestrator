@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 import { resolveSessionInvocation } from '@lib/session-invocation.mjs';
 
 const cli = fileURLToPath(new URL('../../scripts/resolve-session-invocation.mjs', import.meta.url));
@@ -96,6 +97,36 @@ describe('session invocation resolution', () => {
       expect(JSON.parse(result.stdout)).toEqual(expected);
     } finally {
       rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // The ledger is gitignored, so a linked worktree has none of its own; an
+  // unreadable ledger is not a measurement either. Neither may claim "no history".
+  it('reads the main checkout ledger from a linked worktree and treats an unreadable ledger as unmeasured', () => {
+    const base = makeTmpDir('so-invocation-wt-');
+    const main = join(base, 'main');
+    const git = (...args) => fixtureGitSpawn(args, main);
+    const bare = (repoRoot) =>
+      JSON.parse(
+        spawnSync(process.execPath, [cli, '--json', '--repo-root', repoRoot], {
+          input: '',
+          encoding: 'utf8',
+          timeout: 10000,
+        }).stdout,
+      );
+    try {
+      mkdirSync(main);
+      git('init', '-q');
+      git('-c', 'user.name=t', '-c', 'user.email=t@example.org', 'commit', '-q', '--allow-empty', '-m', 'init');
+      expect(git('worktree', 'add', '-q', join(base, 'wt')).status).toBe(0);
+      const ledger = join(main, '.orchestrator', 'metrics', 'sessions.jsonl');
+      mkdirSync(join(main, '.orchestrator', 'metrics'), { recursive: true });
+      writeFileSync(ledger, '{"session_id":"s-1","session_type":"deep"}\n');
+      expect(bare(join(base, 'wt'))).toEqual({ sessionType: 'deep', context: '' });
+      chmodSync(ledger, 0o000);
+      expect(bare(main)).toEqual({ sessionType: 'deep', context: '' });
+    } finally {
+      removeTree(base);
     }
   });
 

@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,5 +48,15 @@ describe('scripts/state-md-idle-reset.mjs', () => {
     expect(written).toMatch(/^status: idle$/m);
     expect(written).toMatch(/^recommended-mode: deep$/m);
     expect(written).toContain('### Wave History (s-1)\n- W1 done');
+  });
+
+  // A mistyped root used to get an .orchestrator/ lock dir created and exit 0 "missing".
+  it('exits 2 and creates nothing for a --repo-root that does not exist', () => {
+    const missing = join(sandbox, 'does-not-exist');
+    const run = spawnSync(process.execPath, [SCRIPT, '--repo-root', missing, '--json'], { encoding: 'utf8' });
+
+    expect(run.status).toBe(2);
+    expect(run.stdout).toBe('');
+    expect(existsSync(missing)).toBe(false);
   });
 });
