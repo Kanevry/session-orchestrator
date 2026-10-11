@@ -48,7 +48,7 @@
  * canonical-vault refusal (#1450). Plain Node ESM. No external deps.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -56,6 +56,7 @@ import { emitEvent, sessionAttribution } from '../events.mjs';
 import { isLockLive, readLock, DEFAULT_TTL_HOURS } from '../session-lock.mjs';
 import { stableHostname } from '../host-identity.mjs';
 import { readRegistry, repoPathHash, isRegistryEntryFresh } from '../session-registry.mjs';
+import { digestSha256 } from '../crypto-digest-utils.mjs';
 import { parseFrontmatter } from '../vault-mirror/utils.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
@@ -136,8 +137,27 @@ const CASE_INSENSITIVE_FS = process.platform === 'darwin' || process.platform ==
 export function boardKey(repoRoot) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
   try {
+    let resolved = path.resolve(repoRoot);
+    try { resolved = realpathSync.native(resolved); } catch { /* Keep unavailable paths' legacy identity. */ }
+    // Fold AFTER realpath, then hash directly: repoPathHash would restore
+    // on-disk casing and change existing case-folded board keys on macOS.
+    return digestSha256(CASE_INSENSITIVE_FS ? resolved.toLowerCase() : resolved).slice(0, KEY_LENGTH);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pre-#1557 lexical board key, used to migrate rows when alias paths now
+ * resolve to a canonical key. BV-004 revisit/deletion trigger: remove once a
+ * host-wide board audit confirms no rows written before the #1557 canonical-key
+ * rollout remain for 30 consecutive days; age alone does not prove migration.
+ */
+function legacyBoardKey(repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
+  try {
     const resolved = path.resolve(repoRoot);
-    return repoPathHash(CASE_INSENSITIVE_FS ? resolved.toLowerCase() : resolved).slice(0, KEY_LENGTH);
+    return digestSha256(CASE_INSENSITIVE_FS ? resolved.toLowerCase() : resolved).slice(0, KEY_LENGTH);
   } catch {
     return null;
   }
@@ -435,6 +455,7 @@ export async function collectRows({ repos, now = new Date(), registry, priorStat
     rows.push({
       repo: repoName,
       key,
+      legacyKey: legacyBoardKey(repo.repoRoot), // Internal migration identity; never rendered.
       status,
       session: status === STATUS_FREI ? null : session,
       branch: status === STATUS_FREI ? null : branch,
@@ -1098,8 +1119,8 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
     // skips `frei` candidates and the TTL pass only rewrites `status`, never
     // removes a row), and the board would grow a permanent duplicate per repo.
     // So a fresh row first claims its hash slot; if that slot is new, it ADOPTS
-    // the legacy name slot for the same folded name — one board write converts
-    // the row, and the migration is complete for that repo.
+    // the legacy name slot for the same folded name and the pre-#1557 lexical
+    // key slot — one board write converts the row for that repo.
     const merged = new Map(staleRederivedRows);
     for (const row of rows) {
       const slot = row.key ? hashSlot(row.key) : nameSlot(row.repo);
@@ -1107,6 +1128,13 @@ async function mirrorBoardInner({ repoRoot, repos, explicitStatus, now = new Dat
         // First keyed write for this repo — take over its legacy row rather than
         // rendering a second one beside it.
         merged.delete(nameSlot(row.repo));
+        if (row.legacyKey && row.legacyKey !== row.key) {
+          // An 8-char key can collide: adopt the legacy-key row only when it
+          // names this repo, never another repo's row that shares the prefix.
+          const legacySlot = hashSlot(row.legacyKey);
+          const legacyRow = merged.get(legacySlot);
+          if (legacyRow && foldKey(legacyRow.repo) === foldKey(row.repo)) merged.delete(legacySlot);
+        }
       }
       merged.set(slot, row);
     }

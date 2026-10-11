@@ -14,8 +14,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync, existsSync } from 'node:fs';
-import { tmpdir, homedir } from 'node:os';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync, existsSync, realpathSync, symlinkSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import os, { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
@@ -67,6 +68,19 @@ afterEach(() => {
     rmSync(d, { recursive: true, force: true });
   }
   extraCleanupDirs = [];
+});
+
+it('keeps the legacy board key for a normal directory and shares it with a symlink', () => {
+  // Use a canonical parent so macOS /var -> /private/var is not a second alias.
+  const target = join(realpathSync.native(sandbox), 'CaseDir');
+  const alias = join(sandbox, 'navigator');
+  mkdirSync(target);
+  symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  const legacyPath = process.platform === 'darwin' || process.platform === 'win32'
+    ? target.toLowerCase() : target;
+  const legacyKey = createHash('sha256').update(legacyPath).digest('hex').slice(0, 8);
+  expect(boardKey(target)).toBe(legacyKey);
+  expect(boardKey(alias)).toBe(legacyKey);
 });
 
 /** Create a temp repo dir with an optional crafted session.lock. */
@@ -1087,6 +1101,47 @@ describe('mirrorBoard — path-derived identity (#871)', () => {
     const byKey = Object.fromEntries(twins.map((r) => [r.key, r]));
     expect(byKey[boardKey(repoA)].status).toBe('frei');
     expect(byKey[boardKey(repoB)].status).toBe('frei');
+  });
+
+  it.each([
+    { name: 'adopts the pre-#1557 keyed row of the same repo', priorRepo: 'CaseDir', rowCount: 1 },
+    { name: 'keeps another repo whose key collides with the legacy key', priorRepo: 'OtherRepo', rowCount: 2 },
+  ])('$name for a /tmp symlink', async ({ priorRepo, rowCount }) => {
+    const testHome = realpathSync.native(sandbox);
+    const vaultDir = join(testHome, 'vault');
+    const boardPath = resolveBoardPath(vaultDir);
+    mkdirSync(join(vaultDir, '01-projects'), { recursive: true });
+    const target = makeRepo('CaseDir', buildLockBody({ sessionId: 'alias-sess', now: FIXED_NOW }));
+    // A symlink guarantees different lexical/canonical keys even on Linux,
+    // where /tmp itself usually is not an alias of /private/tmp.
+    const aliasDir = mkdtempSync('/tmp/board-writer-alias-');
+    extraCleanupDirs.push(aliasDir);
+    const repoRoot = join(aliasDir, 'CaseDir');
+    symlinkSync(realpathSync.native(target), repoRoot, process.platform === 'win32' ? 'junction' : 'dir');
+    const legacyPath = process.platform === 'darwin' || process.platform === 'win32'
+      ? repoRoot.toLowerCase() : repoRoot;
+    const legacyKey = createHash('sha256').update(legacyPath).digest('hex').slice(0, 8);
+    expect(boardKey(repoRoot)).not.toBe(legacyKey);
+    writeFileSync(boardPath, renderBoard([
+      { repo: priorRepo, key: legacyKey, status: 'in-progress', session: 'old-sess' },
+    ], { now: FIXED_NOW }));
+    const thisRepoRoot = makeThisRepoConfig('alias-caller', vaultDir);
+    // Keep the home-bound vault guard hermetic without creating files in HOME.
+    const homeSpy = vi.spyOn(os, 'homedir').mockReturnValue(testHome);
+    try {
+      const result = await mirrorBoard({
+        repoRoot: thisRepoRoot, repos: [{ repoRoot }], now: FIXED_NOW, hostPaths: HERMETIC_HOST_PATHS,
+      });
+      expect(result.action).toBe('written');
+      const content = readFileSync(boardPath, 'utf8');
+      const rows = parseBoardRows(content);
+      expect(rows).toHaveLength(rowCount);
+      expect(rows.find((r) => r.key === boardKey(repoRoot))).toMatchObject({ repo: 'CaseDir', session: 'alias-sess' });
+      if (rowCount === 1) expect(content).not.toContain(legacyKey);
+      else expect(rows.find((r) => r.key === legacyKey)).toMatchObject({ repo: 'OtherRepo', session: 'old-sess' });
+    } finally {
+      homeSpy.mockRestore();
+    }
   });
 
   it('adopts a legacy 6-column row exactly once: run 1 converts it to a keyed row, run 2 is a noop (no duplicate)', async () => {
