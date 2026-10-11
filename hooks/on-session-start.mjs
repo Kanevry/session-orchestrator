@@ -817,12 +817,23 @@ async function main() {
   // null on its own error paths, which would silently re-open the nudge.
   const hostBannerEnabled = await isHostBannerEnabled(projectRoot);
   let bannerData = null;
+  // #1559: a git repository with no bootstrap.lock — neither at its toplevel
+  // nor under projectRoot (a bootstrapped sub-project) — has one first step,
+  // /bootstrap; /go and /close do not work before it. Judged at the toplevel
+  // too, so a session started in a subdirectory of a bootstrapped repo is not
+  // told to bootstrap again; outside a git repository there is nothing to set up.
+  const needsBootstrap = Boolean(topLevel)
+    && !existsSync(path.join(topLevel, '.orchestrator', 'bootstrap.lock'))
+    && !existsSync(path.join(projectRoot, '.orchestrator', 'bootstrap.lock'));
   if (hostBannerEnabled) {
     bannerData = await emitHostBanner(projectRoot);
     // AUQ-001 in plain words (#1559): name the command when nothing is
     // blocked, read available answers from config / STATE.md / git, and ask
     // only when blocked — then with the question tool, never as a prose list.
-    pushBanner('🎯 Next step: name the command (/go, /close) when nothing is blocked; read answers from config, STATE.md or git; when blocked, ask with the question tool, never as a prose list.');
+    // Before bootstrap, the setup step replaces it as the first action.
+    pushBanner(needsBootstrap
+      ? 'ℹ New here? Start with /bootstrap — it sets up this repo for session-orchestrator.'
+      : '🎯 Next step: name the command (/go, /close) when nothing is blocked; read answers from config, STATE.md or git; when blocked, ask with the question tool, never as a prose list.');
   }
 
   // F1.3 cold-start abandonment fix (PRD 2026-05-21). Emit a one-shot
@@ -843,18 +854,6 @@ async function main() {
         silenceAfterSessions: coldStartCfg['silence-after-sessions'] ?? 1,
         enabled: coldStartCfg.enabled !== false,
       });
-      // #1559: setup guidance is a hook display, not a detector emission.
-      // Judged at the git toplevel, not at projectRoot: a session started in a
-      // subdirectory of a bootstrapped repo has no lock under projectRoot, and
-      // outside a git repository there is nothing /bootstrap could set up.
-      if (
-        decision.reason === 'no-bootstrap-lock'
-        && hostBannerEnabled
-        && topLevel
-        && !existsSync(path.join(topLevel, '.orchestrator', 'bootstrap.lock'))
-      ) {
-        pushBanner('ℹ New here? Start with /bootstrap — it sets up this repo for session-orchestrator.');
-      }
       if (decision.shouldEmit) {
         // #1133 — the DISPLAY rides the enable-host-banner opt-out like every
         // other start-of-session emitter ("users who silence one expect
