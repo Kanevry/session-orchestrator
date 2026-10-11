@@ -99,7 +99,7 @@
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.11.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.12.0</span></span></a>
     <nav class="nav" aria-label="Guide sections">
       <a href="#install">Install</a>
       <a href="#first-session">First session</a>
@@ -198,20 +198,20 @@
       </div>
       <p class="small muted">Both lines run inside Claude Code, not in a shell.</p>
 
-      <p>Then install the Node dependencies once, in a shell, and restart Claude Code:</p>
+      <p>Current Claude Code installs the Node dependencies with the plugin. To check once, in a shell:</p>
       <div class="cmd">
         <pre class="code">claude plugin list --json</pre>
         <button class="copy" type="button" data-copy="claude plugin list --json">Copy</button>
       </div>
       <p>Find the enabled <code>session-orchestrator@kanevry</code> entry. Replace the placeholder below with its <code>installPath</code>. If the entry is missing or disabled, resolve that through <code>/plugin</code> first. If several entries match, check the active installation instead of guessing.</p>
       <div class="cmd">
-        <pre class="code">cd "/absolute/installPath/from/the/list" &amp;&amp; npm install</pre>
-        <button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; npm install">Copy</button>
+        <pre class="code">cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</pre>
+        <button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Copy</button>
       </div>
 
       <div class="card">
         <p><strong>Install the runtime dependencies</strong></p>
-        <p>The plugin runtime imports npm packages. A marketplace install does not install these dependencies, so run <code>npm install</code> in the installed plugin directory before starting a session.</p>
+        <p>The plugin runtime imports npm packages. Current Claude Code installs them with the plugin; the command above runs <code>npm install</code> in the installed plugin directory only when they are missing. If it did, restart Claude Code before starting a session.</p>
         <p>Older instructions used <code>claude plugin dir</code>, which is not a supported subcommand. Use the public plugin list to find the active installation.</p>
       </div>
 

@@ -205,7 +205,7 @@
 <a class="skip" href="#main">Zum Inhalt</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.11.0</span></span></a>
+    <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.12.0</span></span></a>
     <nav class="nav" aria-label="Hauptnavigation"><a href="#loop">Ablauf</a><a href="#features">Funktionen</a><a href="#install">Installation</a><a href="/guide">Guide</a><a href="/lead" hreflang="en">Lead-Session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/"  lang="en">EN</a><a href="/de" aria-current="page" lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#loop">Ablauf</a><a href="#features">Funktionen</a><a href="#install">Installation</a><a href="/guide">Guide</a><a href="/lead" hreflang="en">Lead-Session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
@@ -284,10 +284,10 @@
   <section class="sec install-sec" id="install"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Installation</p><h2>Dein Tool.<br>Deine nächste Session.</h2></div><p>Wähle deinen Installationsweg. Du brauchst Node.js 24 oder neuer und ein Git-Repository. Das Plugin ist kostenlos; die Kosten deines Coding-Tools bleiben davon unabhängig.</p></div><div class="install-list"><details class="install-option" name="install-tool" open><summary><span class="install-name">Claude Code</span><span class="meta">Plugin-Marketplace</span></summary><div class="install-body">
           <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Kopieren</button></p>
           <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Kopieren</button></p>
-          <p class="small">Danach einmal <code>npm install</code> im Plugin-Cache laufen lassen und Claude Code neu starten.</p>
+          <p class="small">Aktuelles Claude Code installiert die Node-Abhängigkeiten mit dem Plugin. Zum einmaligen Prüfen, oder falls das bei dir nicht passiert ist, den Befehl unten in einer Shell ausführen: er startet <code>npm install</code> nur, wenn die Abhängigkeiten fehlen. Danach Claude Code neu starten, falls er installiert hat.</p>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Kopieren</button></p>
           <p class="small">Suche den aktivierten Eintrag <code>session-orchestrator@kanevry</code>. Ersetze den Platzhalter unten durch dessen <code>installPath</code>. Fehlt der Eintrag oder ist er deaktiviert, kläre das zuerst über <code>/plugin</code>. Bei mehreren Treffern die aktive Installation prüfen.</p>
-          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; npm install">Kopieren</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Kopieren</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Kopieren</button></p>
@@ -300,7 +300,7 @@
           <p class="small"><b>Zielprojekt.</b> Gib den Projektpfad ausdrücklich an. Ohne Pfad verwendet der Installer das aktuelle Verzeichnis.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">Paketmanager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Kopieren</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Kopieren</button></p>
-          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die anderen drei brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide">Der Guide führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Nachvollziehbar.<br>Bis in den Code.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
+          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die Klone für Codex CLI und Cursor brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide">Der Guide führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Nachvollziehbar.<br>Bis in den Code.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
           <p class="lede">Ein Teil des Schutzes läuft als Code, ein Teil besteht aus Anweisungen an den Agenten. Die Wirkung hängt vom Werkzeug und der Konfiguration ab.</p>
@@ -359,19 +359,19 @@
     </div></details><details class="technical-detail" id="measured"><summary>Repository-Zahlen mit Zählbeleg</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.11.0</span></p><p class="l">aktuelle Version</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.12.0</span></p><p class="l">aktuelle Version</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="skills">51</span></p><p class="l">Skills</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="commands">30</span></p><p class="l">Slash-Befehle</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typisierte Sub-Agenten</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">29</span></p><p class="l">Hook-Dateien</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">743</span></p><p class="l">Testdateien</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">748</span></p><p class="l">Testdateien</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="sessions">475</span></p><p class="l">Session-Aufzeichnungen im Repository</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="learnings">220</span></p><p class="l">Learnings in diesem Repository</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3612</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3576</span></p><p class="l">npm-Downloads, letzte 30 Tage</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub-Sterne</p></div>
       </div>
 
-      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-10-11</span> bei Commit <span class="num" data-metric="counted-sha">8c0e0599</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-10-11</span> bei Commit <span class="num" data-metric="counted-sha">1984b0aa</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">Häufige Fragen</p>

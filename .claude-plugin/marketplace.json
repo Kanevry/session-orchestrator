@@ -7,7 +7,7 @@
   },
   "metadata": {
     "description": "A repeatable Plan, Go, Close workflow for AI coding sessions: /session reads your repo and agrees the scope, /go runs the work in waves with a quality gate between each, /close verifies and commits. Runs on Claude Code, Codex CLI, Cursor and Pi.",
-    "version": "5.11.0"
+    "version": "5.12.0"
   },
   "plugins": [
     {
@@ -24,6 +24,17 @@
       "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates", "subagents"],
       "category": "productivity",
       "tags": ["session-management", "wave-execution", "vcs-integration", "code-review", "agent-orchestration"]
+    },
+    {
+      "name": "so-hud",
+      "source": "./mods/so-hud",
+      "description": "See Session Orchestrator status, warnings and session beacons in Claude Code. Read-only; needs the Session Orchestrator release that ships it, or later.",
+      "author": { "name": "session-orchestrator contributors" },
+      "homepage": "https://session-orchestrator.com",
+      "repository": "https://github.com/Kanevry/session-orchestrator",
+      "license": "MIT",
+      "category": "productivity",
+      "tags": ["status-line", "session-management", "agent-orchestration"]
     }
   ]
 }

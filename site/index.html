@@ -199,7 +199,7 @@
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.11.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.12.0</span></span></a>
     <nav class="nav" aria-label="Main"><a href="#loop">Workflow</a><a href="#features">Features</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/" aria-current="page" lang="en">EN</a><a href="/de"  lang="de">DE</a></p>
     <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#loop">Workflow</a><a href="#features">Features</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
@@ -278,10 +278,10 @@
   <section class="sec install-sec" id="install"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Install</p><h2>Your tool.<br>Your next session.</h2></div><p>Choose your installation path. You need Node.js 24 or later and a Git repository. The plugin is free; your coding tool has its own costs.</p></div><div class="install-list"><details class="install-option" name="install-tool" open><summary><span class="install-name">Claude Code</span><span class="meta">plugin marketplace</span></summary><div class="install-body">
           <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Copy</button></p>
           <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Copy</button></p>
-          <p class="small">Then run <code>npm install</code> once inside the plugin cache and restart Claude Code.</p>
+          <p class="small">Current Claude Code installs the Node dependencies with the plugin. To check once, or if yours did not, run the command below in a shell: it runs <code>npm install</code> only when the dependencies are missing. Restart Claude Code if it did.</p>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Copy</button></p>
           <p class="small">Find the enabled <code>session-orchestrator@kanevry</code> entry. Replace the placeholder below with its <code>installPath</code>. If the entry is missing or disabled, resolve that through <code>/plugin</code> first. If several entries match, check the active installation instead of guessing.</p>
-          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; npm install">Copy</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">clone and installer</span></summary><div class="install-body">
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Copy</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">clone and installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
           <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Copy</button></p>
@@ -294,7 +294,7 @@
           <p class="small"><b>Target project.</b> Pass the target project explicitly. Without a path, the installer uses the current directory.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">package manager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Copy</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Copy</button></p>
-          <p class="small">This path installs its own dependencies; the other three need <code>npm install</code> once.</p></div></details></div><p class="install-guide">Setting up for the first time? <a href="/guide">The guide covers installation and bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>Follow the rules.<br>Right down to the code.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
+          <p class="small">This path installs its own dependencies; the Codex CLI and Cursor clones need <code>npm install</code> once.</p></div></details></div><p class="install-guide">Setting up for the first time? <a href="/guide">The guide covers installation and bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>Follow the rules.<br>Right down to the code.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
           <p class="lede">Some protections run in code; others are instructions the agent must follow. Their strength depends on the tool and configuration.</p>
@@ -352,19 +352,19 @@
     </div></details><details class="technical-detail" id="measured"><summary>Repository numbers and their receipt</summary><div class="detail-body">
 
       <div class="cards">
-        <div class="card"><p class="n">v<span class="num" data-metric="version">5.11.0</span></p><p class="l">current release</p></div>
+        <div class="card"><p class="n">v<span class="num" data-metric="version">5.12.0</span></p><p class="l">current release</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="skills">51</span></p><p class="l">skills</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="commands">30</span></p><p class="l">slash commands</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="agents">14</span></p><p class="l">typed sub-agents</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="hooks">29</span></p><p class="l">hook files</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="tests">743</span></p><p class="l">test files</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="tests">748</span></p><p class="l">test files</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="sessions">475</span></p><p class="l">session records in this repo</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="learnings">220</span></p><p class="l">learnings in this repo</p></div>
-        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3612</span></p><p class="l">npm downloads, last 30 days</p></div>
+        <div class="card"><p class="n"><span class="num" data-metric="npm-downloads-30d">3576</span></p><p class="l">npm downloads, last 30 days</p></div>
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-11</span> at commit <span class="num" data-metric="counted-sha">8c0e0599</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-11</span> at commit <span class="num" data-metric="counted-sha">1984b0aa</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">A few practical questions</p>
