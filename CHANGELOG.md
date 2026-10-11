@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **No overwriting another repo's fleet check-in** (#1556): `scripts/fleet-checkin.mjs` exits 2 and writes nothing when the check-in file for the same semantic session id already belongs to another repo; the same repo still updates its own check-in. The existing file is opened without following symlinks and without blocking, read only as a regular file of at most 64 KiB, and the foreign repo name is printed as a JSON string on one stderr line.
+
 ## [5.11.0] - 2026-10-11
 
 ### Added
