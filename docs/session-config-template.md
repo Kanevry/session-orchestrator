@@ -393,7 +393,7 @@ Opt-in declaration of ssh-reachable hosts that heavy wave roles may be OFFLOADED
 
 ```yaml
 remote-hosts:
-  - alias: m5                          # required, SAFE slug ([A-Za-z0-9._-]); reaches argv as `-H <alias>`
+  - alias: build-host                  # required, SAFE slug ([A-Za-z0-9._-]); reaches argv as `-H <alias>`
     roles-allowed: [test, ui, perf]    # subset of test|ui|perf (default: all three)
     repo-path: ~/Projects/Alice     # optional SAFE path (default: null)
     claude-path: ~/.local/bin/claude   # optional SAFE path (default: null)
@@ -890,7 +890,7 @@ custom-phases:
 
 # Remote hosts — ssh-reachable offload targets for heavy roles (#1160)
 remote-hosts:
-  - alias: m5                          # required, SAFE slug; reaches argv as `-H <alias>`
+  - alias: build-host                  # required, SAFE slug; reaches argv as `-H <alias>`
     roles-allowed: [test, ui, perf]    # subset of test|ui|perf (default: all three)
     repo-path: ~/Projects/Alice     # optional SAFE path (default: null)
     claude-path: ~/.local/bin/claude   # optional SAFE path (default: null)

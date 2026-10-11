@@ -36,7 +36,7 @@ You need **Node.js 24 or later**, a git repository, and one of the four agents b
 
 | Platform | Install |
 |---|---|
-| **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry`, then [install its Node dependencies once](docs/install.md#claude-code-install-the-node-dependencies-once). |
+| **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry`, then [check its Node dependencies once](docs/install.md#claude-code-check-the-node-dependencies) (current Claude Code installs them for you). |
 | **Codex CLI** | `git clone` the repo, `npm install`, then `node scripts/codex-install.mjs` ([guide](docs/codex-setup.md)). |
 | **Cursor IDE** | `git clone` the repo, `npm install`, then `node scripts/cursor-install.mjs /path/to/your/project` ([guide](docs/cursor-setup.md)). |
 | **Pi** | `pi install npm:session-orchestrator` ([guide](docs/pi-setup.md)). |
@@ -45,9 +45,9 @@ After a clone-based install (Codex CLI, Cursor IDE, or contributing), run `npx h
 
 ## Quick Start
 
-**1. Run `/bootstrap` once in your project.** It creates the minimum structure and writes `.orchestrator/bootstrap.lock`. `/session` refuses to start until that file exists.
+**1. Run `/bootstrap` once in your project.** It creates the minimum structure, writes `.orchestrator/bootstrap.lock` and adds a Session Config. `/session` refuses to start until the lock exists. For the shortest path, `/bootstrap --fast --no-interview` skips the tier question and the personal-preferences interview; run that interview later with `/bootstrap --owner-reset`.
 
-**2. Add a Session Config** to your project's instruction file — `CLAUDE.md` on Claude Code and Cursor, `AGENTS.md` on Codex CLI and Pi ([which file each platform reads](skills/_shared/instruction-file-resolution.md)). These seven fields are enough:
+**2. Check the Session Config** that `/bootstrap` wrote into your project's instruction file — `CLAUDE.md` on Claude Code and Cursor, `AGENTS.md` on Codex CLI and Pi ([which file each platform reads](skills/_shared/instruction-file-resolution.md)). Add it by hand only if the block is missing. These seven fields are enough:
 
 ```yaml
 ## Session Config

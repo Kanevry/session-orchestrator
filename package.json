@@ -28,7 +28,6 @@
   },
   "files": [
     ".mcp.json",
-    "AGENTS.md",
     "CHANGELOG.md",
     "pi/",
     "skills/",
