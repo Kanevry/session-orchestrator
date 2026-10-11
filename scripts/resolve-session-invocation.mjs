@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /** Stdin-only boundary for commands/session.md; never executes task context. */
-import { accessSync, constants, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { accessSync, constants, readFileSync, statSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resolveSessionInvocation } from './lib/session-invocation.mjs';
 import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
@@ -9,22 +9,42 @@ import { isRealSession } from './lib/session-schema/filters.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 /**
- * Whether the repo holds a real session of its own: `true`/`false`, or
- * `undefined` when that cannot be measured. sessions.jsonl is gitignored, so a
- * linked worktree reads its main checkout's ledger (`resolveEventsLedgerRoot`);
- * a ledger that exists but cannot be read is "not measured", never "no history".
+ * One ledger: `false` when absent, `undefined` when present but not a readable
+ * file, else whether it holds a real session.
  *
- * @param {string} repoRoot
+ * @param {string} root
  * @returns {boolean|undefined}
  */
-function measureHistory(repoRoot) {
-  const file = join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl');
+function ledgerHasHistory(root) {
+  const file = join(root, '.orchestrator', 'metrics', 'sessions.jsonl');
   try {
+    if (!statSync(file).isFile()) return undefined;
     accessSync(file, constants.R_OK);
   } catch (error) {
     return error?.code === 'ENOENT' ? false : undefined;
   }
   return readCanonicalSessions({ filePath: file }).some(isRealSession);
+}
+
+/**
+ * Whether the repo holds a real session of its own: `true`/`false`, or
+ * `undefined` when that cannot be measured. sessions.jsonl is gitignored, so a
+ * linked worktree also reads its main checkout's ledger (`resolveEventsLedgerRoot`);
+ * one with history in either place has history. A ledger that exists but
+ * cannot be read is "not measured", never "no history".
+ *
+ * @param {string} repoRoot
+ * @returns {boolean|undefined}
+ */
+function measureHistory(repoRoot) {
+  const roots = [...new Set([resolve(repoRoot), resolveEventsLedgerRoot(repoRoot)])];
+  let unmeasured = false;
+  for (const root of roots) {
+    const has = ledgerHasHistory(root);
+    if (has === true) return true;
+    if (has === undefined) unmeasured = true;
+  }
+  return unmeasured ? undefined : false;
 }
 
 const HELP = `Usage: node scripts/resolve-session-invocation.mjs [--json] [--repo-root <dir>] < arguments.txt

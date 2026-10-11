@@ -54,7 +54,13 @@ if (options.help) {
   const repoRoot = resolve(options['repo-root'] ?? process.cwd());
   // The STATE.md lock would otherwise create <repoRoot>/.orchestrator/ for a
   // root that does not exist and report a harmless-looking `missing`.
-  if (!statSync(repoRoot, { throwIfNoEntry: false })?.isDirectory()) {
+  let rootStat;
+  try {
+    rootStat = statSync(repoRoot, { throwIfNoEntry: false });
+  } catch {
+    rootStat = undefined; // EACCES / ELOOP: an I/O error, exit 2 below
+  }
+  if (!rootStat?.isDirectory()) {
     process.stderr.write(`state-md-idle-reset: --repo-root is not a directory: ${repoRoot}\n`);
     process.exit(2);
   }

@@ -17,7 +17,8 @@
  */
 
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
-import { updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mjs';
+import { existsSync } from 'node:fs';
+import { resolveStateMdPath, updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mjs';
 import { parseRecommendations } from './recommendations.mjs';
 
 /** Rule 7: the drift-baseline keys that must not survive into session N+1. */
@@ -114,7 +115,7 @@ function dropSubsection(lines, heading) {
   const out = [];
   let skipping = false;
   for (const line of lines) {
-    if (line === heading) skipping = true;
+    if (line.trimEnd() === heading) skipping = true;
     else if (skipping && /^#{2,3}\s/.test(line)) skipping = false;
     if (!skipping) out.push(line);
   }
@@ -213,6 +214,10 @@ export async function resetStateMdToIdleOnDisk(repoRoot, opts = {}) {
   if (!repoRoot) {
     throw new Error(`resetStateMdToIdleOnDisk: repoRoot is required (got ${typeof repoRoot}).`);
   }
+  // No STATE.md: answer before the lock, which would otherwise create
+  // <repoRoot>/.orchestrator/ in whatever directory a mistyped root names.
+  const statePath = resolveStateMdPath(repoRoot);
+  if (!existsSync(statePath)) return { changed: false, reason: 'missing', path: statePath };
   let reason;
   const result = await writeStateMd(
     repoRoot,

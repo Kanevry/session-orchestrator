@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { permsEnforced } from '../_helpers/perms.mjs';
 import { resolveSessionInvocation } from '@lib/session-invocation.mjs';
 
 const cli = fileURLToPath(new URL('../../scripts/resolve-session-invocation.mjs', import.meta.url));
@@ -123,8 +124,15 @@ describe('session invocation resolution', () => {
       mkdirSync(join(main, '.orchestrator', 'metrics'), { recursive: true });
       writeFileSync(ledger, '{"session_id":"s-1","session_type":"deep"}\n');
       expect(bare(join(base, 'wt'))).toEqual({ sessionType: 'deep', context: '' });
-      chmodSync(ledger, 0o000);
-      expect(bare(main)).toEqual({ sessionType: 'deep', context: '' });
+      // A ledger path that is not a readable file (a directory here; mode 000
+      // where permissions are enforced, i.e. not as root) is unmeasured.
+      const odd = join(base, 'odd');
+      mkdirSync(join(odd, '.orchestrator', 'metrics', 'sessions.jsonl'), { recursive: true });
+      expect(bare(odd)).toEqual({ sessionType: 'deep', context: '' });
+      if (permsEnforced()) {
+        chmodSync(ledger, 0o000);
+        expect(bare(main)).toEqual({ sessionType: 'deep', context: '' });
+      }
     } finally {
       removeTree(base);
     }

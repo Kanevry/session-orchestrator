@@ -59,4 +59,16 @@ describe('scripts/state-md-idle-reset.mjs', () => {
     expect(run.stdout).toBe('');
     expect(existsSync(missing)).toBe(false);
   });
+
+  // An existing directory without STATE.md (a typo hitting a real dir) must not get a lock dir either.
+  it('reports missing and creates no .orchestrator/ in a directory without STATE.md', () => {
+    const run = spawnSync(process.execPath, [SCRIPT, '--repo-root', sandbox, '--json'], {
+      encoding: 'utf8',
+      env: { ...process.env, SO_PLATFORM: 'claude', SO_STATE_DIR: '' },
+    });
+
+    expect(run.status).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ changed: false, reason: 'missing' });
+    expect(existsSync(join(sandbox, '.orchestrator'))).toBe(false);
+  });
 });
