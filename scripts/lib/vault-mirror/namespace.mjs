@@ -55,7 +55,7 @@
 
 import { basename, resolve } from 'node:path';
 
-import { subjectToSlug } from './utils.mjs';
+import { legacySubjectToSlug } from './utils.mjs';
 import { isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs';
 import { loadPseudonymMap } from './pseudonym-map.mjs';
 import { loadHostPaths, resolveHostPath } from '../config/host-paths.mjs';
@@ -311,7 +311,8 @@ export function resolveRepoNamespace({ vaultName = null, repoRoot = null } = {})
     : (declaredSlug ?? deriveRepo({ repoRoot: root }));
 
   // Sanitise: collapse to last path segment, lowercase, strip non-[a-z0-9-].
-  const seg = subjectToSlug(base);
+  // Repository storage identity stays historical; only new note names transliterate.
+  const seg = legacySubjectToSlug(base);
 
   // Leak-guard: check both the raw base AND the sanitised segment.
   // A personal home path or a private project slug must be caught before writing

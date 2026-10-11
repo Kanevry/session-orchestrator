@@ -14,6 +14,8 @@ import { describe, it, expect } from 'vitest';
 import { load as parseYaml } from 'js-yaml';
 import {
   subjectToSlug,
+  slugifyTagSegment,
+  slugifyIdSafe,
   isValidSlug,
   uuidPrefix8,
   toDate,
@@ -219,5 +221,42 @@ describe('resolveSourceSessionLink', () => {
     { why: 'target is the RAW value, not the slugified one', input: '[object', opts: undefined, expected: { isLink: false, target: '[object' } },
   ])('$why', ({ input, opts, expected }) => {
     expect(resolveSourceSessionLink(input, opts)).toEqual(expected);
+  });
+});
+
+// #1548: note names transliterate; persistent tags retain historical deletion.
+describe('Unicode slug normalization', () => {
+  it.each([
+    ['grünes', 'gruenes', 'grnes'], ['Größe', 'groesse', 'gre'], ['Übergabe', 'uebergabe', 'bergabe'],
+    ['café', 'cafe', 'caf'], ['ÄÖÜẞ', 'aeoeuess', 'unknown'], ['Gru\u0308ße', 'gruesse', 'grue'],
+    ['cafe\u0301', 'cafe', 'cafe'], ['ascii-123', 'ascii-123', 'ascii-123'],
+  ])('%s keeps distinct note-name and historical tag contracts', (input, expected, tag) => {
+    expect(subjectToSlug(input)).toBe(expected);
+    expect(slugifyTagSegment(input)).toBe(tag);
+  });
+  it('preserves subject/tag separators and empty fallbacks', () => {
+    expect(subjectToSlug('path/Größe ü.foo_bar')).toBe('groesseue-foo-bar');
+    expect(slugifyTagSegment('Größe ü.foo_bar')).toBe('gre-foo-bar');
+    expect(subjectToSlug('!!!')).toBe('');
+    expect(slugifyTagSegment('!!!')).toBe('unknown');
+  });
+});
+
+// Shared new-name normalization must not migrate existing Session IDs.
+describe('slugifyIdSafe preserves historical Session identity', () => {
+  it.each([
+    ['Größe', 'gre'], ['Übergabe', 'bergabe'], ['ascii-123', 'ascii-123'],
+    ['a', 'a-x'], ['!!!', null],
+  ])('%s retains its existing ID contract', (input, expected) => {
+    expect(slugifyIdSafe(input)).toBe(expected);
+  });
+});
+
+describe('historical Unicode source-session link identity', () => {
+  it('links to the existing historical Session filename', () => {
+    expect(resolveSourceSessionLink('Größe', { noteExists: (slug) => slug === 'gre' })).toEqual({ isLink: true, target: 'gre' });
+  });
+  it('does not link to an unrelated transliterated ASCII Session', () => {
+    expect(resolveSourceSessionLink('Größe', { noteExists: (slug) => slug === 'groesse' })).toEqual({ isLink: false, target: 'Größe' });
   });
 });

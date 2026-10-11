@@ -5,7 +5,7 @@
  *          sourceRecordValue, learningSourceRecord, sourceRecordLine (#1503)
  */
 
-import { toDate, truncateAtWord, yamlQuoteIfNeeded, subjectToSlug, isValidSlug, buildTag, resolveSourceSessionLink } from './utils.mjs';
+import { toDate, truncateAtWord, yamlQuoteIfNeeded, legacySubjectToSlug, isValidSlug, buildTag, resolveSourceSessionLink } from './utils.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -118,9 +118,10 @@ export function normalizeLearningEntry(entry) {
     e.evidence = joinList(e.evidence_sessions) ?? joinList(e.files) ?? joinList(e.sessions) ?? '(none recorded)';
   }
   if (e.id === null || e.id === undefined) {
-    // subjectToSlug strips whitespace without hyphenating (designed for
+    // Keep historical ASCII deletion for record identity; only note names
+    // transliterate. The old slugger strips whitespace (designed for
     // kebab-ish inputs) — pre-map whitespace to hyphens for prose subjects.
-    const derived = firstString(e.subject) ? subjectToSlug(e.subject.trim().replace(/\s+/g, '-')) : '';
+    const derived = firstString(e.subject) ? legacySubjectToSlug(e.subject.trim().replace(/\s+/g, '-')) : '';
     if (isValidSlug(derived)) e.id = derived;
   }
   if (e.source_session === null || e.source_session === undefined) {
@@ -157,7 +158,7 @@ export function generateLearningNote(entry, slug, opts = {}) {
   // through buildTag so each is kebab-slugified and capped at 64 chars. The
   // existing source/<session> slug is preserved (buildTag is idempotent for an
   // already-kebab value and adds the length cap).
-  const sourceTag = subjectToSlug(String(source_session)) || 'unknown';
+  const sourceTag = legacySubjectToSlug(String(source_session)) || 'unknown';
   const tags = `[${buildTag(['learning', type])}, ${buildTag(['status', status])}, ${buildTag(['source', sourceTag])}]`;
 
   // Check if expires has a value; it's optional in schema
@@ -230,7 +231,7 @@ export function generateLearningNoteV2(entry, slug, opts = {}) {
   const title = yamlQuoteIfNeeded(titleRaw);
 
   // #602: type/status interpolated raw upstream — slugify + cap each segment.
-  const scopeTag = subjectToSlug(scope) || 'unscoped';
+  const scopeTag = legacySubjectToSlug(scope) || 'unscoped';
   const tags = `[${buildTag(['learning', type])}, ${buildTag(['status', status])}, ${buildTag(['scope', scopeTag])}]`;
 
   // #725 D2: emit `source-repo` for cross-repo attribution when the caller threads
