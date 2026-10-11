@@ -2380,12 +2380,14 @@ describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal'
     // BEHAVIOUR FIRST, shape after: the mutation must turn this RED on the
     // rewrite itself, never on the ledger flag that merely describes it.
     const byPath = new Map(writeFileSyncSpy.mock.calls.map(([p, c]) => [p, c]));
-    // Both files exist after this run and NEITHER may carry the raw needle.
+    // The authoritative flat note is healed in one write, with no namespace copy.
     expect(byPath.has(legacyFlatPath)).toBe(true);
     expect(byPath.get(legacyFlatPath)).toContain('[REDACTED]');
     expect(byPath.get(legacyFlatPath)).not.toContain(needle);
-    expect(byPath.has(targetPath)).toBe(true);
-    expect(byPath.get(targetPath)).not.toContain(needle);
+    expect(byPath.has(targetPath)).toBe(false);
+    expect(writeFileSyncSpy).toHaveBeenCalledTimes(1);
+    expect(lines[0].action).toBe('updated');
+    expect(lines[0].path).toBe('40-learnings/legacy-flat-heal-1028.md');
     // The ledger says the legacy plaintext was healed, not just bypassed.
     expect(lines[0].healed_legacy_flat).toBe(true);
   });
@@ -2848,4 +2850,377 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
     const { lines } = await captureStdout(() => processSession(entry, 1, ctxFor('session', alphaRoot)));
     expect(lines[0]).toMatchObject({ action: 'skipped-noop', id: 'releaseprep' });
   });
+});
+
+// #1548: real files establish identity, layout and absence of duplicate writes.
+describe('#1548 Unicode slug transition preserves explicit provenance', () => {
+  const dirs = [];
+  let vault;
+  let repoRoot;
+  let ctx;
+  const entry = {
+    id: 'a1b2c3d4-0001-4000-8000-000000000001', type: 'general', subject: 'Größe',
+    insight: 'Use explicit provenance before updating old notes', evidence: 'fixture',
+    confidence: 0.9, source_session: 'unknown', created_at: '2026-10-01T10:00:00Z',
+  };
+  beforeEach(() => {
+    vi.resetModules();
+    vault = mkdtempSync(join(tmpdir(), 'vm-1548-vault-'));
+    repoRoot = mkdtempSync(join(tmpdir(), 'vm-1548-repo-'));
+    dirs.push(vault, repoRoot);
+    vi.stubEnv('SO_VAULT_DIR', vault);
+    fs.writeFileSync(join(repoRoot, '.vault.yaml'), 'apiVersion: vault.example/v1\nkind: Repository\nmetadata:\n  name: Fixture\n  slug: fixture-tool\n  tier: active\n');
+    ctx = { vaultDir: vault, repoRoot, dryRun: false, kind: 'learning' };
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+  async function seed(name = 'gre', flat = false, overrides = {}, record = entry, namespace = 'fixture-tool') {
+    const { generateLearningNote } = await import('@lib/vault-mirror/render-learnings.mjs');
+    const dir = join(vault, '40-learnings', ...(flat ? [] : [namespace]));
+    fs.mkdirSync(dir, { recursive: true });
+    const path = join(dir, `${name}.md`);
+    let content = generateLearningNote(record, name, { repoNs: namespace });
+    for (const [key, value] of Object.entries(overrides)) {
+      content = content.replace(new RegExp(`^${key}:.*\\n`, 'm'), value === null ? '' : `${key}: ${value}\n`);
+    }
+    fs.writeFileSync(path, content);
+    return path;
+  }
+  function notes() {
+    const root = join(vault, '40-learnings');
+    const walk = (dir) => fs.readdirSync(dir, { withFileTypes: true }).flatMap((f) =>
+      f.isDirectory() ? walk(join(dir, f.name)) : f.name.endsWith('.md') ? [join(dir, f.name)] : []);
+    return fs.existsSync(root) ? walk(root).sort() : [];
+  }
+  it('creates one transliterated note and keeps its record identity over repeated runs', async () => {
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const first = await captureStdout(() => processLearning(entry, 1, ctx));
+    expect(first.lines[0].action).toBe('created');
+    await captureStdout(() => processLearning(entry, 1, ctx));
+    const paths = notes();
+    expect(paths).toEqual([join(vault, '40-learnings', 'fixture-tool', 'groesse.md')]);
+    expect(YAML.load(fs.readFileSync(paths[0], 'utf8').split('---')[1])['source-record']).toBe(entry.id);
+  });
+  it.each([
+    ['namespace', 'gre'], ['flat', 'gre'], ['namespace', 'gre-a1b2c3d4'],
+    ['flat', `gre-${createHash('sha256').update(entry.id).digest('hex').slice(0, 8)}`],
+    ['namespace', 'groesse'],
+  ])('updates %s %s in place including force', async (layout, name) => {
+    const path = await seed(name, layout === 'flat');
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const changed = { ...entry, insight: 'Changed insight with an advanced date', created_at: '2026-10-02T10:00:00Z' };
+    for (const force of [false, true, false]) {
+      await captureStdout(() => processLearning(changed, 1, { ...ctx, force }));
+      expect(notes()).toEqual([path]);
+      const content = fs.readFileSync(path, 'utf8');
+      const fm = YAML.load(content.split('---')[1]);
+      expect(fm.id).toBe(name);
+      expect(fm['source-record']).toBe(entry.id);
+      expect(content).toContain(changed.insight);
+    }
+  });
+  it.each([
+    ['source-record', null], ['source-record', 'other-record'],
+    ['source-repo', null], ['source-repo', 'other-tool'],
+    ['_generator', null], ['_generator', 'other-generator'], ['id', 'other-name'],
+  ])('leaves %s=%s untouched without creating a second note', async (key, value) => {
+    const path = await seed('gre', false, { [key]: value });
+    const before = fs.readFileSync(path, 'utf8');
+    const { processLearning, processArchivedLearning } = await import('@lib/vault-mirror/process.mjs');
+    for (const force of [false, true]) {
+      const result = await captureStdout(() => processLearning(entry, 1, { ...ctx, force }));
+      expect(result.lines[0].action).toBe('skipped-foreign-owner');
+      expect(result.lines[0].reason).toContain('slug transition');
+    }
+    await captureStdout(() => processArchivedLearning(entry, 1, ctx));
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+  });
+  it.each(['old-new', 'namespace-flat', 'mixed-owner'])('blocks ambiguous %s matches before any mutation', async (shape) => {
+    const a = await seed('gre');
+    const b = await seed(shape === 'old-new' ? 'groesse' : 'gre', shape !== 'old-new',
+      shape === 'mixed-owner' ? { 'source-record': 'other-record' } : {});
+    const before = [a, b].map((p) => fs.readFileSync(p, 'utf8'));
+    const { processLearning, processArchivedLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning(entry, 1, { ...ctx, force: true }));
+    expect(result.lines[0].action).toBe('skipped-foreign-owner');
+    await captureStdout(() => processArchivedLearning(entry, 1, ctx));
+    expect(notes()).toEqual([a, b].sort());
+    expect([a, b].map((p) => fs.readFileSync(p, 'utf8'))).toEqual(before);
+  });
+  it.each([
+    ['Ä', 'learning-a1b2c3d4'], ['Größe Übergabe', 'grebergabe'],
+    [`${'a'.repeat(250)} Größe`, 'a'.repeat(240)],
+  ])('finds historical fallback, concat or capped slug for %s', async (subject, name) => {
+    const record = { ...entry, subject };
+    const path = await seed(name, false, {}, record);
+    const { processLearning, learningNoteSlugs } = await import('@lib/vault-mirror/process.mjs');
+    await captureStdout(() => processLearning({ ...record, insight: 'Updated historical note' }, 1, ctx));
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toContain('Updated historical note');
+    expect(learningNoteSlugs(record)).toContain(name);
+    expect(learningNoteSlugs(record)).toContain(`${name}-a1b2c3d4`);
+  });
+  it('keeps the historical note without a duplicate when the source record cannot round-trip', async () => {
+    const record = { ...entry, id: 'unicode-ä' };
+    const path = await seed('gre', false, {}, record);
+    const before = fs.readFileSync(path, 'utf8');
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning(record, 1, ctx));
+    // Without representable provenance the historical slugger applies, as on main: no transition, no new spelling.
+    expect(result.lines[0].action).toBe('skipped-noop');
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+  });
+  it('blocks a foreign record at the new ASCII spelling instead of takeover or suffix creation', async () => {
+    const path = await seed('groesse', false, { 'source-record': 'other-record' });
+    const before = fs.readFileSync(path, 'utf8');
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning({ ...entry, created_at: '2026-10-03T00:00:00Z' }, 1, { ...ctx, force: true }));
+    expect(result.lines[0].action).toBe('skipped-foreign-owner');
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+  });
+  it('updates the same fresh Unicode v2 note on a second run', async () => {
+    const record = { id: 'grüne-tests', type: 'general', text: 'First Unicode insight', scope: 'global', confidence: 0.9,
+      first_seen: '2026-10-01T00:00:00Z' };
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const first = await captureStdout(() => processLearning(record, 1, ctx));
+    expect(first.lines[0].action).toBe('created');
+    const path = notes()[0];
+    const changed = { ...record, text: 'Updated Unicode insight', first_seen: '2026-10-02T00:00:00Z' };
+    const second = await captureStdout(() => processLearning(changed, 2, ctx));
+    expect(second.lines[0].action).toBe('updated');
+    expect(notes()).toEqual([path]);
+    const fm = YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]);
+    expect(fm.id).toBe('grne-tests');
+    expect(fm['source-record']).toBeUndefined();
+    expect(fs.readFileSync(path, 'utf8')).toContain(changed.text);
+  });
+  it('updates the same fresh Unicode v1 note with an unrepresentable id on a second run', async () => {
+    const record = { id: 'größe 1', type: 'general', subject: 'Grüne Tests', insight: 'First Unicode insight', evidence: 'x',
+      confidence: 0.9, source_session: 'unknown', created_at: '2026-10-01T10:00:00Z' };
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const first = await captureStdout(() => processLearning(record, 1, ctx));
+    expect(first.lines[0].action).toBe('created');
+    const path = notes()[0];
+    const changed = { ...record, insight: 'Updated Unicode insight', created_at: '2026-10-05T10:00:00Z' };
+    const second = await captureStdout(() => processLearning(changed, 2, ctx));
+    expect(second.lines[0].action).toBe('updated');
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toContain(changed.insight);
+  });
+  it('never archives or reserves the modern spelling of an unrelated ASCII record', async () => {
+    const foreign = { id: 'gruene-tests', type: 'general', text: 'An independent ASCII record', scope: 'global', confidence: 0.9,
+      first_seen: '2026-10-01T00:00:00Z' };
+    const record = { ...foreign, id: 'grüne-tests', text: 'Historical Unicode record' };
+    const { generateLearningNoteV2 } = await import('@lib/vault-mirror/render-learnings.mjs');
+    const dir = join(vault, '40-learnings', 'fixture-tool');
+    fs.mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'gruene-tests.md');
+    const before = generateLearningNoteV2(foreign, 'gruene-tests', { repoNs: 'fixture-tool' });
+    fs.writeFileSync(path, before);
+    const own = join(dir, 'grne-tests.md');
+    fs.writeFileSync(own, generateLearningNoteV2(record, 'grne-tests', { repoNs: 'fixture-tool' }));
+    const { processArchivedLearning, learningNoteSlugs } = await import('@lib/vault-mirror/process.mjs');
+    expect(learningNoteSlugs(record)).toContain('grne-tests');
+    expect(learningNoteSlugs(record)).not.toContain('gruene-tests');
+    await captureStdout(() => processArchivedLearning(record, 1, ctx));
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+    expect(YAML.load(fs.readFileSync(own, 'utf8').split('---')[1]).status).toBe('archived');
+    expect(notes()).toEqual([own, path].sort());
+  });
+  it.each(['canonical', 'hash-suffix'])('leaves provenance-less flat Unicode v2 %s unchanged without a namespace duplicate', async (shape) => {
+    const record = { id: 'grüne-tests', type: 'general', text: 'Old Unicode record', scope: 'global', confidence: 0.9,
+      first_seen: '2026-10-01T00:00:00Z' };
+    const { generateLearningNoteV2 } = await import('@lib/vault-mirror/render-learnings.mjs');
+    const dir = join(vault, '40-learnings');
+    fs.mkdirSync(dir, { recursive: true });
+    const slug = shape === 'canonical' ? 'grne-tests' : 'grne-tests-' + createHash('sha256').update(record.id).digest('hex').slice(0, 8);
+    const path = join(dir, slug + '.md');
+    const before = generateLearningNoteV2(record, slug, { repoNs: 'fixture-tool' });
+    fs.writeFileSync(path, before);
+    const { processLearning, processArchivedLearning } = await import('@lib/vault-mirror/process.mjs');
+    for (const force of [false, true]) {
+      const result = await captureStdout(() => processLearning({ ...record, text: 'New Unicode insight', first_seen: '2026-10-02T00:00:00Z' }, 1, { ...ctx, force }));
+      expect(result.lines[0].action).toBe('skipped-foreign-owner');
+      expect(notes()).toEqual([path]);
+      expect(fs.readFileSync(path, 'utf8')).toBe(before);
+    }
+    const archived = await captureStdout(() => processArchivedLearning(record, 1, ctx));
+    expect(archived.lines[0].action).toBe('skipped-foreign-owner');
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+    expect(notes()).toEqual([path]);
+    expect(fs.existsSync(join(dir, 'fixture-tool'))).toBe(false);
+  });
+  it('updates a historical Unicode v2 note without changing its identity', async () => {
+    const record = { id: 'Größe', type: 'general', text: 'v2 insight', scope: 'global', confidence: 0.9,
+      first_seen: '2026-10-01T00:00:00Z' };
+    const { generateLearningNoteV2 } = await import('@lib/vault-mirror/render-learnings.mjs');
+    const dir = join(vault, '40-learnings', 'fixture-tool');
+    fs.mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'gre.md');
+    const before = generateLearningNoteV2(record, 'gre', { repoNs: 'fixture-tool' });
+    fs.writeFileSync(path, before);
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning({ ...record, text: 'Updated historical v2 insight' }, 1, { ...ctx, force: true }));
+    expect(result.lines[0].action).toBe('updated');
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toContain('Updated historical v2 insight');
+    expect(YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]).id).toBe('gre');
+  });
+  it('keeps positive flat dry-run bytes and guards live historical names from archive', async () => {
+    const path = await seed('gre', true);
+    const before = fs.readFileSync(path, 'utf8');
+    const { processLearning, processArchivedLearning, learningNoteSlugs } = await import('@lib/vault-mirror/process.mjs');
+    const changed = { ...entry, insight: 'A changed dry-run insight' };
+    await captureStdout(() => processLearning(changed, 1, { ...ctx, dryRun: true }));
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+    expect(notes()).toEqual([path]);
+    await captureStdout(() => processArchivedLearning(entry, 1, { ...ctx, liveLearningSlugs: new Set(learningNoteSlugs(entry)) }));
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+    await captureStdout(() => processArchivedLearning(entry, 1, ctx));
+    const fm = YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]);
+    expect(fm.id).toBe('gre');
+    expect(fm['source-record']).toBe(entry.id);
+    expect(fm.status).toBe('archived');
+    expect(notes()).toEqual([path]);
+  });
+
+  it('keeps the historical Unicode namespace from an override', async () => {
+    ctx.vaultName = 'Größe';
+    const { resolveRepoNamespace } = await import('@lib/vault-mirror/namespace.mjs');
+    const { canonicalNamespace } = await import('@lib/vault-mirror/retention.mjs');
+    // Identical expression to scripts/vault-mirror.mjs Auto-Commit namespace.
+    const commitNamespace = canonicalNamespace(vault, resolveRepoNamespace({ vaultName: ctx.vaultName, repoRoot }));
+    expect(commitNamespace).toBe('gre');
+    const path = await seed('gre', false, {}, entry, commitNamespace);
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    await captureStdout(() => processLearning({ ...entry, insight: 'Updated Unicode namespace' }, 1, ctx));
+    expect(notes()).toEqual([path]);
+    const content = fs.readFileSync(path, 'utf8');
+    expect(content).toContain('Updated Unicode namespace');
+    const fm = YAML.load(content.split('---')[1]);
+    expect(fm.id).toBe('gre');
+    expect(fm['source-repo']).toBe('gre');
+  });
+  it('does not guess missing provenance inside the historical Unicode namespace', async () => {
+    ctx.vaultName = 'Größe';
+    const path = await seed('gre', false, { 'source-record': null }, entry, 'gre');
+    const before = fs.readFileSync(path, 'utf8');
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning(entry, 1, { ...ctx, force: true }));
+    expect(result.lines[0].action).toBe('skipped-foreign-owner');
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toBe(before);
+  });
+  it.each(['missing-source', 'canonical-concat'])('protects Unicode beyond the capped filename: %s', async (shape) => {
+    const record = { ...entry, subject: 'a '.repeat(121) + 'Größe' };
+    const concat = 'a'.repeat(121) + 'gre';
+    const canonical = ('a-'.repeat(120)).replace(/-+$/, '');
+    const path = await seed(concat, false, shape === 'missing-source' ? { 'source-record': null } : {}, record);
+    const paths = [path];
+    if (shape === 'canonical-concat') paths.push(await seed(canonical, false, {}, record));
+    const before = paths.map((p) => fs.readFileSync(p, 'utf8'));
+    const { processLearning, processArchivedLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning(record, 1, { ...ctx, force: true }));
+    expect(result.lines[0].action).toBe('skipped-foreign-owner');
+    await captureStdout(() => processArchivedLearning(record, 1, ctx));
+    expect(notes()).toEqual([...paths].sort());
+    expect(paths.map((p) => fs.readFileSync(p, 'utf8'))).toEqual(before);
+  });
+
+  it('keeps rejecting a Unicode declared slug and uses the existing repo fallback', async () => {
+    fs.writeFileSync(join(repoRoot, '.vault.yaml'), 'apiVersion: vault.example/v1\nkind: Repository\nmetadata:\n  name: Fixture\n  slug: Größe\n  tier: active\n');
+    const { readVaultSlug } = await import('@lib/vault-yaml.mjs');
+    expect(readVaultSlug(repoRoot)).toBe(null);
+    const { resolveRepoNamespace } = await import('@lib/vault-mirror/namespace.mjs');
+    const namespace = resolveRepoNamespace({ repoRoot });
+    expect(namespace).not.toBe('gre');
+    expect(namespace).not.toBe('groesse');
+    const path = await seed('gre', false, {}, entry, namespace);
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    await captureStdout(() => processLearning({ ...entry, insight: 'Updated through existing repo fallback' }, 1, ctx));
+    expect(notes()).toEqual([path]);
+    expect(fs.readFileSync(path, 'utf8')).toContain('Updated through existing repo fallback');
+  });
+
+  it.each(['grüne', 'grne'])('shares existing namespace privacy redaction for %s', async (privateSegment) => {
+    const { resolveRepoNamespace, _setNamespaceMapPath } = await import('@lib/vault-mirror/namespace.mjs');
+    _setNamespaceMapPath(null);
+    const { isOwnerLeakySegment } = await import('../../../scripts/lib/validate/check-owner-leakage.mjs');
+    const original = isOwnerLeakySegment.getMockImplementation();
+    isOwnerLeakySegment.mockImplementation((value) => value === privateSegment ? 'CP6' : original(value));
+    try {
+      const privateCtx = { ...ctx, vaultName: 'grüne', force: true };
+      const namespace = resolveRepoNamespace({ vaultName: privateCtx.vaultName, repoRoot });
+      expect(namespace).toBe('redacted-repo');
+      const path = await seed('gre', false, {}, entry, namespace);
+      const { processLearning, processArchivedLearning, processSession } = await import('@lib/vault-mirror/process.mjs');
+      await captureStdout(() => processLearning({ ...entry, insight: 'Updated redacted namespace' }, 1, privateCtx));
+      expect(notes()).toEqual([path]);
+      expect(fs.readFileSync(path, 'utf8')).toContain('Updated redacted namespace');
+      await captureStdout(() => processArchivedLearning(entry, 1, privateCtx));
+      expect(YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]).status).toBe('archived');
+      const session = await captureStdout(() => processSession({
+        session_id: 'namespace-fixture-2026-10-01-deep-1', session_type: 'deep',
+        started_at: '2026-10-01T08:00:00Z', completed_at: '2026-10-01T10:00:00Z',
+        duration_seconds: 7200, waves: 1, agents_dispatched: 2,
+        effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
+        notes: 'A safe synthetic Session narrative for namespace privacy checks. '.repeat(12),
+      }, 1, { ...privateCtx, kind: 'session' }));
+      expect(session.lines[0].path).toContain('50-sessions/' + namespace + '/');
+      expect(fs.readdirSync(join(vault, '40-learnings'))).toEqual([namespace]);
+    } finally {
+      isOwnerLeakySegment.mockImplementation(original);
+    }
+  });
+
+  it('heals a retained Unicode flat note once and reports the healing', async () => {
+    const needle = `so-test-needle-${randomUUID()}`;
+    const record = { ...entry, evidence: `Private token ${needle}` };
+    const path = await seed('gre', true, {}, record);
+    vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
+    const writeSpy = vi.spyOn(fs, 'writeFileSync');
+    const { processLearning } = await import('@lib/vault-mirror/process.mjs');
+    const result = await captureStdout(() => processLearning(record, 1, ctx));
+    expect(result.lines[0].action).toBe('updated');
+    expect(result.lines[0].healed_legacy_flat).toBe(true);
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(notes()).toEqual([path]);
+    const content = fs.readFileSync(path, 'utf8');
+    expect(content).not.toContain(needle);
+    expect(content).toContain('[REDACTED]');
+    expect(YAML.load(content.split('---')[1]).id).toBe('gre');
+  });
+
+  it('does not migrate a Session filename or rendered id through the shared slug utility', async () => {
+    const session = {
+      session_id: 'Größe', session_type: 'feature',
+      started_at: '2026-09-01T08:00:00Z', completed_at: '2026-09-01T10:00:00Z',
+      duration_seconds: 7200, waves: 1, agents_dispatched: 2,
+      effectiveness: { planned_issues: 1, completed_issues: 1, carryover: 0, completion_rate: 1.0 },
+      notes: 'A Session narrative that supplies explicit provenance. '.repeat(12),
+    };
+    const { generateSessionNoteV3 } = await import('@lib/vault-mirror/render-sessions.mjs');
+    const dir = join(vault, '50-sessions', 'fixture-tool');
+    fs.mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'gre.md');
+    fs.writeFileSync(path, generateSessionNoteV3(session, { repoNs: 'fixture-tool' }));
+    const { processSession } = await import('@lib/vault-mirror/process.mjs');
+    const changed = { ...session, completed_at: '2026-10-02T10:00:00Z', notes: session.notes + 'Changed narrative' };
+    for (const force of [false, true, false]) {
+      await captureStdout(() => processSession(changed, 1, { ...ctx, kind: 'session', force }));
+      expect(fs.readdirSync(dir)).toEqual(['gre.md']);
+      const content = fs.readFileSync(path, 'utf8');
+      const fm = YAML.load(content.split('---')[1]);
+      expect(fm.id).toBe('gre');
+      expect(fm['source-record']).toBe(session.started_at);
+      expect(content).toContain('Changed narrative');
+    }
+  });
+
 });

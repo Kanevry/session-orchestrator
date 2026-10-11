@@ -135,6 +135,35 @@ describe('vault-mirror CLI', () => {
     return p;
   }
 
+  it('#1548 creates transliterated slugs and updates a flat historical note without copying it', () => {
+    const vaultDir = tmp();
+    const repoRoot = tmp();
+    writeFileSync(join(repoRoot, '.vault.yaml'), 'apiVersion: vault.example/v1\nkind: Repository\nmetadata:\n  name: Fixture\n  slug: fixture-tool\n  tier: active\n');
+    const entry = { ...JSON.parse(VALID_LEARNING), subject: 'Größe', expires_at: '2099-01-01T00:00:00Z' };
+    const sourceFile = writeJsonl(repoRoot, JSON.stringify(entry));
+    const args = ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning', '--repo-root', repoRoot];
+    const fresh = runMirror(args, { env: { SO_VAULT_DIR: vaultDir } });
+    expect(fresh.status).toBe(0);
+    const path = join(vaultDir, '40-learnings', 'fixture-tool', 'groesse.md');
+    const first = readFileSync(path, 'utf8');
+    expect(first).toContain(`source-record: "${entry.id}"`);
+    const historicalVault = tmp();
+    mkdirSync(join(historicalVault, '40-learnings'), { recursive: true });
+    const flat = join(historicalVault, '40-learnings', 'gre.md');
+    writeFileSync(flat, first.replace('id: groesse\n', 'id: gre\n'));
+    writeFileSync(sourceFile, JSON.stringify({ ...entry, insight: 'Changed historical insight', created_at: '2026-10-02T10:00:00Z' }) + '\n');
+    const oldArgs = ['--vault-dir', historicalVault, '--source', sourceFile, '--kind', 'learning', '--repo-root', repoRoot];
+    for (const extra of [[], ['--force'], []]) {
+      const result = runMirror([...oldArgs, ...extra], { env: { SO_VAULT_DIR: historicalVault } });
+      expect(result.status).toBe(0);
+      expect(readFileSync(flat, 'utf8')).toContain('id: gre\n');
+      expect(readFileSync(flat, 'utf8')).toContain('Changed historical insight');
+      expect(existsSync(join(historicalVault, '40-learnings', 'fixture-tool', 'groesse.md'))).toBe(false);
+      expect(existsSync(join(historicalVault, '40-learnings', 'fixture-tool', 'gre.md'))).toBe(false);
+      expect(readdirSync(join(historicalVault, '40-learnings')).filter((name) => name.endsWith('.md'))).toEqual(['gre.md']);
+    }
+  });
+
   it('exits 1 and prints usage when --vault-dir is missing', () => {
     const vaultDir = tmp();
     const sourceFile = writeJsonl(vaultDir, VALID_LEARNING);
