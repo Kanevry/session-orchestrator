@@ -37,10 +37,7 @@ export function parseRecommendations(frontmatter) {
   const mode = typeof frontmatter['recommended-mode'] === 'string'
     ? frontmatter['recommended-mode']
     : null;
-  const priorities = Array.isArray(frontmatter['top-priorities'])
-    && frontmatter['top-priorities'].every((x) => Number.isInteger(x))
-    ? frontmatter['top-priorities'].slice()
-    : null;
+  const priorities = parsePriorities(frontmatter['top-priorities']);
   const carryoverRatio = typeof frontmatter['carryover-ratio'] === 'number'
     && !Number.isNaN(frontmatter['carryover-ratio'])
     ? frontmatter['carryover-ratio']
@@ -54,4 +51,29 @@ export function parseRecommendations(frontmatter) {
     : null;
 
   return { mode, priorities, carryoverRatio, completionRate, rationale };
+}
+
+/** An entry that is exactly an issue reference of THIS repo: `42` or `#42`. */
+const ISSUE_REF_RE = /^#?\d+$/;
+
+/**
+ * Normalises `top-priorities` to issue numbers. Integers pass; strings that are
+ * exactly an issue ref (`"#42"`, `"42"`) become integers; every other entry is
+ * dropped. A hand-written `"#370 fix banner"` or `"other-repo#74"` is never
+ * mined for digits, because the number may belong to another repo. An array
+ * that held entries but keeps none is a type mismatch (`null`), as before.
+ *
+ * @param {unknown} raw
+ * @returns {number[]|null}
+ */
+function parsePriorities(raw) {
+  if (!Array.isArray(raw)) return null;
+  const ids = [];
+  for (const entry of raw) {
+    if (Number.isInteger(entry)) ids.push(entry);
+    else if (typeof entry === 'string' && ISSUE_REF_RE.test(entry.trim())) {
+      ids.push(Number.parseInt(entry.trim().replace('#', ''), 10));
+    }
+  }
+  return raw.length > 0 && ids.length === 0 ? null : ids;
 }

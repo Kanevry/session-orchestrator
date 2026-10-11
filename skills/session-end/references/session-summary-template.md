@@ -46,6 +46,10 @@ Present to the user:
 - Custom Phases: [render based on Phase 2.5 result — omit the line entirely if `custom-phases` was absent/empty]
   - Per phase: `<name>: <pass|FAIL> (exit <code>, mode=<mode>)[ — review: <path>]`
   - None ran (all filtered out by `when`): `none applicable for session-type=<type>.`
+- Vault orphans: [render based on Phase 3.7e — omit the line entirely when `vault-integration.enabled` is not `true`]
+  - Candidates present: `<N> untracked vault file(s) modified since session start (candidates, mtime is no proof): <path>, <path>, ... — recorded as Open Question, nothing committed or deleted.`
+  - None: `none since session start (<U> untracked in total).`
+  - Could not measure (exit 2 / `status: unavailable`): `could not measure (<reason>)` — never "none".
 - Enforcement: [N violations blocked / M warnings] (or "N/A" if enforcement off)
 - Circuit breaker: [N agents hit limits, M spirals detected] (or "none")
 - Metrics written to: `.orchestrator/metrics/sessions.jsonl`
