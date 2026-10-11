@@ -83,6 +83,8 @@ variables:
   # this patch and the digest together when updating. Used by every job that
   # runs `node:${NODE_VERSION}` (or `node:${NODE_VERSION}-alpine`).
   NODE_VERSION: "24.18.0"
+  # Mod API is build-specific; see mods/so-hud/README.md.
+  CLAUDE_CODE_VERSION: "2.1.296"
   # Bump to bust stale CI cache
   CI_CACHE_VERSION: "v3"
 
@@ -524,6 +526,40 @@ plugin-schema-validate:
   rules: *gate-rules
   allow_failure: false
 
+# mods:plugin — PRD F14 engine validation and tests for every mod.
+# Always runs on gate pipelines, covering F14's "on mod changes" without
+# a fail-open rules:changes filter (see plugin-schema-validate above).
+# No repo dependencies needed. SEC-020 keeps postinstall disabled; call the
+# optional platform binary directly, since the npm bin placeholder needs it.
+# Resolve the host platform for Mac shell executors too (image ignored, #408);
+# node:${NODE_VERSION} uses glibc, so Linux needs no musl suffix.
+mods:plugin:
+  stage: validate
+  image: node:${NODE_VERSION}
+  interruptible: true
+  timeout: 10m
+  script:
+    - |
+      set -eu
+      claude_tmp=$(mktemp -d "${TMPDIR:-/tmp}/mods-plugin.XXXXXX")
+      trap 'rm -rf "$claude_tmp"' EXIT
+      export CLAUDE_CONFIG_DIR="$claude_tmp/config"
+      export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+      mkdir "$CLAUDE_CONFIG_DIR"
+      unset ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN
+      npm install --prefix "$claude_tmp/cc" --no-audit --no-fund --ignore-scripts "@anthropic-ai/claude-code@$CLAUDE_CODE_VERSION"
+      npm audit signatures --prefix "$claude_tmp/cc"
+      claude_platform=$(node -p 'process.platform + "-" + process.arch')
+      claude_bin="$claude_tmp/cc/node_modules/@anthropic-ai/claude-code-$claude_platform/claude"
+      "$claude_bin" --version
+      for mod in mods/*/; do
+        [ -d "$mod" ] || continue
+        "$claude_bin" plugin validate --strict --json "./$mod"
+        "$claude_bin" plugin test "./$mod"
+      done
+  rules: *gate-rules
+  allow_failure: false
+
 # hook-import-set-check — drift guard for the committed hook-reachable
 # allowlist hooks/_lib/hook-import-set.json (#1224). That file gates
 # hooks/post-edit-import-probe.mjs: a stale allowlist does not make the probe
@@ -925,6 +961,7 @@ pipeline-gate:
     - owner-leakage
     - fixture-shape
     - plugin-schema-validate
+    - mods:plugin
     - hook-import-set-check
     - package-manager-guard
     - test

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Mod CI gate** (#1508): the `mods:plugin` job runs `claude plugin validate --strict --json` and `claude plugin test` for every mod under `mods/` with Claude Code pinned once in `CLAUDE_CODE_VERSION` (2.1.296). It verifies the registry signatures of both downloaded packages, calls the platform binary directly so `ignore-scripts` stays on, runs without credentials or nonessential traffic, and is a hard dependency of `pipeline-gate`.
+
 ### Fixed
 
 - **No overwriting another repo's fleet check-in** (#1556): `scripts/fleet-checkin.mjs` exits 2 and writes nothing when the check-in file for the same semantic session id already belongs to another repo; the same repo still updates its own check-in. The existing file is opened without following symlinks and without blocking, read only as a regular file of at most 64 KiB, and the foreign repo name is printed as a JSON string on one stderr line.
