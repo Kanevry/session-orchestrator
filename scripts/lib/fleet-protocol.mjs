@@ -65,6 +65,23 @@ export function navigatorDir({ env = process.env, home = os.homedir() } = {}) {
 }
 
 /**
+ * True when fleet integration is explicitly configured or its default directory exists.
+ * A nonblank override opts in even before the directory is created; stat errors disable it.
+ * @param {{ env?: Record<string, string|undefined>, home?: string }} [opts]
+ * @returns {boolean}
+ */
+export function fleetIntegrationEnabled({ env = process.env, home = os.homedir() } = {}) {
+  const raw = env[NAVIGATOR_CONFIG_DIR_ENV];
+  const override = typeof raw === 'string' ? raw.trim() : '';
+  if (override) return true;
+  try {
+    return fsSync.statSync(path.join(home, '.config', 'navigator')).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Path of the navigator lease file.
  * @param {{ env?: Record<string, string|undefined>, home?: string }} [opts]
  * @returns {string}

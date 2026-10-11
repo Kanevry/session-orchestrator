@@ -40,14 +40,16 @@ afterEach(async () => {
 /**
  * @param {string} stdin
  * @param {number} [timeout]
+ * @param {Record<string, string>} [envOverrides]
  * @returns {Promise<{ code: number|null, stdout: string, stderr: string }>}
  */
-function runCli(stdin, timeout) {
+function runCli(stdin, timeout, envOverrides = {}) {
   const env = {
     ...process.env,
     NAVIGATOR_CONFIG_DIR: navDir,
     [EVENTS_LEDGER_SANDBOX_ENV]: ledger,
     CLAUDE_PROJECT_DIR: tmp,
+    ...envOverrides,
   };
   // Removed, not set: the live session id must not stamp the record, and a
   // configured webhook must not turn the test into a network client.
@@ -89,6 +91,14 @@ async function exists(p) {
 }
 
 describe('fleet-checkin CLI', () => {
+  it('without fleet integration skips writing, directory creation and events (#1559)', async () => {
+    const r = await runCli(JSON.stringify(checkin()), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    expect(r.code, r.stderr).toBe(0);
+    expect(r.stdout).toBe('{"ok":true,"skipped":"no-fleet","path":null,"navigator_state":"none","navigator_adresse":null,"fallback_due_at":null,"event":false}\n');
+    expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);
+    expect(await readEvents()).toEqual([]);
+  });
+
   it('valid input → 0600 file in a 0700 dir, zeit stamped, one event without auftrag_ref', async () => {
     const r = await runCli(JSON.stringify(checkin()));
     expect(r.code, r.stderr).toBe(0);
@@ -214,10 +224,15 @@ describe('fleet-checkin CLI', () => {
     expect(await exists(navDir)).toBe(false);
   });
 
-  it('non-JSON stdin → exit 2', async () => {
-    const r = await runCli('not json');
-    expect(r.code).toBe(2);
+  it('non-JSON stdin → exit 2, with and without fleet integration', async () => {
+    const withFleet = await runCli('not json');
+    expect(withFleet.code).toBe(2);
     expect(await exists(navDir)).toBe(false);
+
+    const solo = await runCli('not json', 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    expect(solo.code).toBe(2);
+    expect(solo.stdout).toBe('');
+    expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);
   });
 
   // navigator_adresse is what session-start addresses its one hint to: only a

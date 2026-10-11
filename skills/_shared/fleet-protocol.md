@@ -137,9 +137,20 @@ aktiven Navigator ist `fallback_due_at` gleich `zeit`, die Auflagen gelten also 
 Lesende Arbeit und Schreiben im eigenen Worktree laufen währenddessen weiter; der Rückfall ist ein
 Dateistand mit Frist, kein Warten auf eine Antwort.
 
+## Verhalten ohne Flotte
+
+Flottenintegration liegt vor, wenn `NAVIGATOR_CONFIG_DIR` gesetzt und nicht leer ist (ausdrückliches
+Opt-in, auch vor dem ersten Anlegen) oder `~/.config/navigator/` als Verzeichnis existiert (Code:
+`fleetIntegrationEnabled()`, #1559). Ein Flottenhost hat das Verzeichnis, weil der Koordinator dort
+die Lease schreibt. Ohne Flottenintegration validiert `fleet-checkin.mjs` die Eingabe wie immer
+(ungültig → Exit 2), schreibt dann aber nichts, legt kein Verzeichnis an, emittiert kein Event und
+meldet `{"ok":true,"skipped":"no-fleet",…}`. Es gelten keine Auflagen, auch keine Standard-Auflagen:
+ohne Flotte gibt es nichts zu koordinieren. Die Navigator-Zeile im Sessionstart-Banner entfällt
+ebenso.
+
 ## Verhalten ohne Navigator
 
-Lease `none` oder `unreadable`: die Check-in-Datei wird **trotzdem** geschrieben (sie ist der
+Flottenintegration vorhanden, Lease `none` oder `unreadable`: die Check-in-Datei wird **trotzdem** geschrieben (sie ist der
 zählbare Beleg), die Standard-Auflagen gelten sofort, es geht keine Nachricht ab. Kopflose Läufe
 sind per Nachricht nicht erreichbar und nutzen dieselben Dateien: vor jeder Welle `auflagen/` lesen.
 

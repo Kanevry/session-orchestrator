@@ -2385,6 +2385,27 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     };
   }
 
+  it('a solo home without an override emits no Navigator line (#1559)', async () => {
+    const dir = await mkProjectTracked();
+    const home = await mkNavDir(undefined);
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: '', HOME: home } });
+    expect(result.code).toBe(0);
+    expect(navigatorLines(result.stdout)).toEqual([]);
+  });
+
+  it('the bootstrap hint appears once before setup and disappears with a lock (#1559)', async () => {
+    const dir = await mkProjectTracked();
+    const before = await runHook({ projectDir: dir });
+    const message = JSON.parse(before.stdout.trim()).systemMessage;
+    expect(message.split('\n').filter((line) => line.startsWith('ℹ New here?'))).toEqual([
+      'ℹ New here? Start with /bootstrap — it sets up this repo for session-orchestrator.',
+    ]);
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.orchestrator', 'bootstrap.lock'), `bootstrapped-at: ${new Date().toISOString()}\n`);
+    const after = await runHook({ projectDir: dir });
+    expect(JSON.parse(after.stdout.trim()).systemMessage).not.toContain('ℹ New here?');
+  });
+
   it('renders exactly one "aktiv" line from a valid lease, naming adresse over session_id', async () => {
     const dir = await mkProjectTracked();
     const navDir = await mkNavDir(validLease('nav-raw-id', { adresse: 'navigator-A1' }));
