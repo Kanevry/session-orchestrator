@@ -96,7 +96,7 @@ describe('checkOwnerConfig — whole-file discard with a survived optional secti
     const loader = () => ({
       config: {
         owner: { name: '', language: 'en' },
-        paths: { 'vault-dir': '', 'baseline-path': '', 'namespace-map-path': '', 'confidential-names-file': '' },
+        paths: { ...getDefaults().paths },
         dispatcher: { autonomy: '' },
       },
       source: 'defaults',

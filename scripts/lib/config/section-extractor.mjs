@@ -345,8 +345,11 @@ export function _parseKV(lines) {
  * and at any indent. Deliberately NOT imported from block-header.mjs: that
  * matcher answers "does this line open the block for THIS key" for a known key,
  * while here the key is unknown by construction.
+ *
+ * Group 1 captures the key, for `collectTopLevelKeyLines` below; `.test()`
+ * callers are unaffected by the group.
  */
-const NESTED_BLOCK_HEADER_RE = /^\s*(?:-\s+)?(?:\*\*)?[a-zA-Z][a-zA-Z0-9_.-]*:(?:\*\*)?\s*$/;
+const NESTED_BLOCK_HEADER_RE = /^\s*(?:-\s+)?(?:\*\*)?([a-zA-Z][a-zA-Z0-9_.-]*):(?:\*\*)?\s*$/;
 
 /** A YAML sequence element that is not a `key: value` pair (`  - some-value`). */
 const LIST_ITEM_RE = /^\s*-\s+\S/;
@@ -391,8 +394,67 @@ const COMMENT_RE = /^\s*(?:#|<!--|>)/;
 export function collectUnparsableLines(content) {
   if (typeof content !== 'string' || content === '') return [];
 
-  const lines = content.split(/\r?\n/);
   const unparsable = [];
+  for (const { lineNo, line } of liveBlockLines(content)) {
+    if (_matchKVLine(line)) continue;
+    if (NESTED_BLOCK_HEADER_RE.test(line)) continue;
+    if (LIST_ITEM_RE.test(line)) continue;
+
+    unparsable.push({ line: lineNo, text: sanitizeReportText(line.trim()) });
+  }
+
+  return unparsable;
+}
+
+/**
+ * Collect the TOP-LEVEL keys the runtime reads from `## Session Config` — the
+ * local half of the unknown-key report in `scripts/parse-config.mjs` (#1562).
+ *
+ * Same block, same walk, same line acceptance as `collectUnparsableLines`
+ * (both iterate `liveBlockLines`), so a key inside a multi-line `<!-- -->`
+ * comment, a fence, or a `#` line is never collected. A line counts as a
+ * top-level key when it starts at column 0 and is either a key/value pair the
+ * reader accepts (`_matchKVLine`, both spellings) or a nested-block header
+ * (`vault-integration:`); indented lines are children of a nested block.
+ *
+ * Ceiling (deliberate): a compact YAML sequence written at column 0 under a
+ * nested header (`custom-phases:` then `- name: x` unindented) yields `name`
+ * here. `extractTopLevelKeys` in `template-keys.mjs` reads that line the
+ * same way, so drift-check Check 6 and this collector agree on it. Revisit if
+ * a fleet CLAUDE.md is ever measured writing that form.
+ *
+ * @param {string} content — full markdown document
+ * @returns {Array<{ line: number, key: string }>} 1-based document line numbers
+ *   in document order (a repeated key appears once per line); empty when the
+ *   block is absent or the content is not a string. Keys are passed through
+ *   `sanitizeReportText` because the bold spelling admits any character but
+ *   `*` and `:`, and the one consumer prints them on a terminal.
+ */
+export function collectTopLevelKeyLines(content) {
+  if (typeof content !== 'string' || content === '') return [];
+
+  const keys = [];
+  for (const { lineNo, line } of liveBlockLines(content)) {
+    if (/^\s/.test(line)) continue;
+    const kv = _matchKVLine(line);
+    const key = kv ? kv.key : NESTED_BLOCK_HEADER_RE.exec(line)?.[1];
+    if (key) keys.push({ line: lineNo, key: sanitizeReportText(key) });
+  }
+  return keys;
+}
+
+/**
+ * The lines of the FIRST `## Session Config` block that can carry meaning:
+ * everything except blank lines, fences, `#`/`<!--`/`>` documentation lines and
+ * the inside of a multi-line HTML comment. The one walk both classifiers share,
+ * in the order `_extractConfigSection` applies the same skips — the shared
+ * `htmlCommentSkipper` call is what keeps the accept-sets identical.
+ *
+ * @param {string} content
+ * @returns {Generator<{ lineNo: number, line: string }>} 1-based line numbers
+ */
+function* liveBlockLines(content) {
+  const lines = content.split(/\r?\n/);
   let inSection = false;
   const skipHtmlComment = htmlCommentSkipper();
 
@@ -406,20 +468,12 @@ export function collectUnparsableLines(content) {
     if (!inSection) continue;
     if (/^## /.test(line)) break;
 
-    // A multi-line HTML comment: everything up to `-->` is documentation.
-    // Same call, same order, as `_extractConfigSection` — that shared call is
-    // what makes the two accept-sets identical rather than merely similar.
     if (skipHtmlComment(line)) continue;
 
     if (!line.trim()) continue;
     if (isCodeFence(line)) continue;
     if (COMMENT_RE.test(line)) continue;
-    if (_matchKVLine(line)) continue;
-    if (NESTED_BLOCK_HEADER_RE.test(line)) continue;
-    if (LIST_ITEM_RE.test(line)) continue;
 
-    unparsable.push({ line: i + 1, text: sanitizeReportText(line.trim()) });
+    yield { lineNo: i + 1, line };
   }
-
-  return unparsable;
 }

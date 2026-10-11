@@ -8,11 +8,29 @@
 
 1. Pick the host file: `CLAUDE.md (or AGENTS.md on Codex CLI)`. Never both.
 2. Add a single `## Session Config` H2. The header must match exactly — `skills/_shared/config-reading.md` parses the block under that heading.
-3. Start from the [Full minimal baseline](#full-minimal-baseline-copy-paste) at the bottom of this document. Add opt-in blocks one at a time as you adopt features.
+3. Start from the [Starter config](#starter-config-copy-paste) directly below. Add opt-in blocks one at a time as you adopt features; the [Full opt-in baseline](#full-opt-in-baseline-copy-paste) near the end shows every block at once.
 4. Run `/bootstrap --retroactive` to schema-validate the result.
 5. Validate at any time with `node scripts/parse-config.mjs --json`.
 
-The format is the same on every platform. Fields not listed here are silently ignored — typos do **not** raise.
+The format is the same on every platform. A top-level key this template does not list has no effect, so `node scripts/parse-config.mjs` reports it on stderr with file, line and key — a typo, or a key from a newer plugin version. The report appears under `enforcement: warn` and `strict` and never refuses the run; `enforcement: off` silences it.
+
+## Starter config (copy-paste)
+
+The smallest valid Session Config — passes `validate-config` without warnings on a typical Node/TS repo:
+
+```yaml
+## Session Config
+
+test-command: npm test
+typecheck-command: npm run typecheck
+lint-command: npm run lint
+agents-per-wave: 6
+waves: 5
+persistence: true
+enforcement: warn
+```
+
+That's enough for `/session feature` → `/go` → `/close` to work end-to-end. Every other field falls back to documented defaults.
 
 ## Where this file lives
 
@@ -659,24 +677,6 @@ agent-mapping:
 Read by: `skills/session-plan/SKILL.md`, `skills/wave-executor/wave-loop.md`.
 
 The dispatch resolution is three-tier: project agents (`.claude/agents/`) > plugin agents (`session-orchestrator:*`) > `general-purpose`.
-
-## Full minimal baseline (copy-paste)
-
-The smallest valid Session Config — passes `validate-config` without warnings on a typical Node/TS repo:
-
-```yaml
-## Session Config
-
-test-command: npm test
-typecheck-command: npm run typecheck
-lint-command: npm run lint
-agents-per-wave: 6
-waves: 5
-persistence: true
-enforcement: warn
-```
-
-That's enough for `/session feature` → `/go` → `/close` to work end-to-end. Every other field falls back to documented defaults.
 
 ## Full opt-in baseline (copy-paste)
 

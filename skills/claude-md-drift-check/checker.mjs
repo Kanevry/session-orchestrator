@@ -38,6 +38,7 @@ import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
 import { _parseVaultIntegration } from '../../scripts/lib/config/vault-integration.mjs';
 import { _parseDriftCheck } from '../../scripts/lib/config/drift-check.mjs';
 import { isSessionConfigHeading } from '../../scripts/lib/config/section-extractor.mjs';
+import { extractSessionConfigBlock, extractTopLevelKeys } from '../../scripts/lib/config/template-keys.mjs';
 import { FRONTMATTER_NOT_AT_TOP, isRuleExpired, parseGlobsFrontmatter } from '../../scripts/lib/rule-loader.mjs';
 import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
@@ -131,88 +132,6 @@ function walkDir(dir, visit) {
     if (entry.isDirectory()) walkDir(full, visit);
     else if (entry.isFile()) visit(full);
   }
-}
-
-/**
- * Extract the YAML block under a `## Session Config` heading from a Markdown
- * document. Tries fenced YAML first (```yaml ... ```) *within the matched
- * heading's own body slice*, then falls back to the raw body up to the next
- * `^## ` heading or EOF.
- *
- * `docs/session-config-template.md` carries TWO literal `## Session Config`
- * lines — both live INSIDE fenced ```yaml example blocks: the "Full minimal
- * baseline" (7 mandatory keys) and the "Full opt-in baseline" (the complete
- * key catalog, a strict superset of the minimal block). By default this
- * function matches the FIRST occurrence (correct for a local CLAUDE.md /
- * AGENTS.md instruction file, which has exactly one real heading). Pass
- * `{ occurrence: 'last' }` to match the LAST occurrence instead — the template
- * call site uses this to reach the opt-in baseline's full key set rather than
- * silently stopping at the 7-key minimal block (issue #785).
- *
- * Returns { body: string, headingLine: number } or null when no heading found.
- *
- * @param {string} content
- * @param {{ occurrence?: 'first'|'last' }} [options]
- */
-function extractSessionConfigBlock(content, { occurrence = 'first' } = {}) {
-  const lines = content.split('\n');
-  const headingIdxs = [];
-  for (let i = 0; i < lines.length; i++) {
-    // SSOT predicate (#968). The previous local `/^##\s+Session Config\b/`
-    // was the loosest JS comparator in the repo: no end anchor and `\s+`
-    // instead of a single space, so it accepted `##  Session Config` (two
-    // spaces) and `## Session Config Convention` — both of which the runtime
-    // parser rejects. This checker's whole job is to report on the block the
-    // runtime reads, so matching a heading the runtime cannot see made it
-    // audit a section that does not exist.
-    if (isSessionConfigHeading(lines[i])) headingIdxs.push(i);
-  }
-  if (headingIdxs.length === 0) return null;
-
-  const targetIdx = occurrence === 'last' ? headingIdxs[headingIdxs.length - 1] : headingIdxs[0];
-  const headingLine = targetIdx + 1; // 1-based line number for error reporting
-
-  // Raw body: from the line after the heading up to the next `## ` heading or EOF.
-  let endIdx = lines.length;
-  for (let i = targetIdx + 1; i < lines.length; i++) {
-    if (/^##\s+/.test(lines[i])) { endIdx = i; break; }
-  }
-  const rawBody = lines.slice(targetIdx + 1, endIdx).join('\n');
-
-  // Prefer a fenced YAML block found anywhere within the raw body slice
-  // (tolerates a blank line between the heading and the fence); fall back to
-  // the raw body itself when no fence is present.
-  const fenced = rawBody.match(/```ya?ml\r?\n([\s\S]*?)\r?\n```/);
-  const body = fenced ? fenced[1] : rawBody;
-
-  return { body, headingLine };
-}
-
-/**
- * Extract top-level YAML keys from a YAML body. Only column-0 keys are
- * collected (indented keys are children and ignored).
- *
- * Accepts four equivalent forms consumer CLAUDE.md files write a Session
- * Config key in: bare `key:`, Markdown bullet `- key:`, bold `**key:**`
- * (closing bold before the colon), and the bold-bullet consumer shape
- * `- **key:** value` (bold wraps the key AND colon together, closing bold
- * AFTER the colon). Baseline issue #60: the original bare-only regex
- * extracted zero keys from bullet-form local files, so session-config-parity
- * (Check 6, below) either false-positived on every mandatory key (local side
- * reads as empty) or, when the TEMPLATE side also used bullet form, passed
- * vacuously (both sides empty, so the diff was always empty). Sibling
- * precedent: `scripts/lib/config/block-header.mjs` recognizes only header
- * lines, not individual key-value pairs — this function is the per-key
- * counterpart.
- */
-function extractTopLevelKeys(body) {
-  const keys = [];
-  const re = /^(?:-\s+)?(?:\*\*)?([A-Za-z][\w-]*)(?:\*\*)?:/gm;
-  let m;
-  while ((m = re.exec(body)) !== null) {
-    keys.push(m[1]);
-  }
-  return keys;
 }
 
 /**
@@ -1067,13 +986,13 @@ function main() {
   // and was wrong about two of them:
   //   awk '/^## /{sec=$0} /^auto-skill-dispatch:|^issue-budget:/{print NR,sec}' \
   //     docs/session-config-template.md
-  //   → auto-skill-dispatch line 87 (## Auto-Skill Dispatch)
-  //   → issue-budget        line 123 (## Issue Budget)
+  //   → auto-skill-dispatch under ## Auto-Skill Dispatch
+  //   → issue-budget        under ## Issue Budget
   //   rg -c "'auto-skill-dispatch'" scripts/  → 4 files, non-zero
   //   rg -c "'issue-budget'" scripts/         → non-zero
   // Both are documented in the template FILE and both are read at runtime;
-  // only their absence from the two `## Session Config` blocks (lines 658/676)
-  // was ever true. The message below now asserts only that.
+  // only their absence from the two `## Session Config` blocks (starter and
+  // opt-in baseline) was ever true. The message below now asserts only that.
   //
   // `mode: hard`/`strict` still keys off `errors[]` only, so neither notes
   // nor the new warnings can block `runConfigValidationGate()`.
@@ -1091,10 +1010,11 @@ function main() {
       const localContent = readFileSync(instr.path, 'utf8');
       // 'last' occurrence reaches the "Full opt-in baseline" block (the full
       // key catalog, a strict superset of the minimal block) — issue #785.
-      // 'first' occurrence reaches the "Full minimal baseline" (7 mandatory
-      // keys) — used here to classify which missing keys are mandatory vs
-      // opt-in. When the template has only ONE `## Session Config` heading
-      // (e.g. a test fixture, or a repo that never split the two baselines),
+      // 'first' occurrence reaches the "Starter config" (formerly "Full
+      // minimal baseline"; 7 mandatory keys) — used here to classify which
+      // missing keys are mandatory vs opt-in. When the template has only ONE
+      // `## Session Config` heading (e.g. a test fixture, or a repo that never
+      // split the two baselines),
       // 'first' and 'last' resolve to the SAME block, so every key is
       // treated as mandatory — preserving pre-existing behaviour for
       // single-block templates.

@@ -17,20 +17,68 @@
 // `getCrossRepoProjects` would re-run `_parseCrossRepo` (double-parse). By calling
 // `_parseCrossRepo` directly on the raw content we parse exactly once. (issue #664)
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join } from 'node:path';
 import { readConfigFile } from './io.mjs';
+import { loadHostPaths, resolveHostPath } from './host-paths.mjs';
 import { matchBlockHeader } from './block-header.mjs';
 import { preprocessBlockLines } from './block-preprocess.mjs';
 
 /**
- * Resolve the cross-repo confinement root. Defaults to ~/Projects.
- * Override via CROSS_REPO_CONFINEMENT_ROOT env (test-only — never set in production).
+ * Expand a leading `~` / `~/` to the home directory and accept the result only
+ * when it is absolute. A relative value would otherwise resolve against the
+ * process cwd — a different root per caller — so it is rejected instead.
  *
- * @returns {string} absolute path
+ * @param {string} raw — non-blank value from one precedence tier
+ * @param {string} source — tier name for the WARN (`env SO_PROJECTS_ROOT` / `owner.yaml paths.projects-root`)
+ * @returns {string|null} absolute path, or null when rejected
  */
-export function getConfinementRoot() {
-  const v = process.env.CROSS_REPO_CONFINEMENT_ROOT;
-  return (v && v.trim()) ? v : join(homedir(), 'Projects');
+function expandProjectsRoot(raw, source) {
+  const v = raw.trim();
+  const expanded = v === '~' ? homedir() : v.startsWith('~/') ? join(homedir(), v.slice(2)) : v;
+  if (isAbsolute(expanded)) return expanded;
+  process.stderr.write(
+    `cross-repo: ignoring ${source}=${JSON.stringify(raw)} — not an absolute path after ~ expansion; falling back\n`,
+  );
+  return null;
+}
+
+/**
+ * Resolve the cross-repo confinement root — the directory host-wide sweeps scan
+ * and outside which `cross-repo.projects` entries are dropped (#1562).
+ *
+ * Precedence (highest first):
+ *   1. env CROSS_REPO_CONFINEMENT_ROOT — test-only, never set in production;
+ *      returned verbatim when non-blank (no ~ expansion, no absolute check).
+ *   2. env SO_PROJECTS_ROOT            — host-local, via resolveHostPath.
+ *   3. owner.yaml paths.projects-root  — host-local, via resolveHostPath.
+ *   4. ~/Projects                      — default.
+ * Tiers 2 and 3 expand a leading `~`; a value that is still not absolute is
+ * ignored with one stderr WARN and the next tier is tried. owner.yaml is read
+ * only when tiers 1 and 2 yield nothing usable.
+ *
+ * @param {{ env?: Record<string, string|undefined>, ownerConfig?: object }} [ctx]
+ *   injection seam for tests, mirroring resolveHostPath; `ownerConfig` omitted →
+ *   owner.yaml is loaded from disk via loadHostPaths()
+ * @returns {string} confinement root
+ */
+export function getConfinementRoot({ env = process.env, ownerConfig } = {}) {
+  const v = env.CROSS_REPO_CONFINEMENT_ROOT;
+  if (v && v.trim()) return v;
+
+  const fromEnv = resolveHostPath('projects-root', undefined, { env, ownerConfig: undefined });
+  if (typeof fromEnv === 'string') {
+    const root = expandProjectsRoot(fromEnv, 'env SO_PROJECTS_ROOT');
+    if (root) return root;
+  }
+
+  const owner = ownerConfig ?? loadHostPaths({ env }).ownerConfig;
+  const fromOwner = resolveHostPath('projects-root', undefined, { env: {}, ownerConfig: owner });
+  if (typeof fromOwner === 'string') {
+    const root = expandProjectsRoot(fromOwner, 'owner.yaml paths.projects-root');
+    if (root) return root;
+  }
+
+  return join(homedir(), 'Projects');
 }
 
 // Allowlist: only characters that are safe in shell contexts and file paths.
