@@ -1233,7 +1233,7 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     expect(JSON.parse(readFileSync(activeOf(root), 'utf8'))).toEqual(record);
     expect(copyReads.every((call) => call[3] <= 65536)).toBe(true);
     expect(copyReads.filter((call) => call[3] === 65536).length).toBeGreaterThan(32);
-  });
+  }, 120_000); // 2-MiB-Kopie riss unter Coverage-Last das 30-s-Limit (main-Pipeline 23685, #1566); Decke 120 s wie G10 — reißt auch die, Dateigröße senken statt Limit heben
 
   it.each([
     ['absent', undefined, []],
