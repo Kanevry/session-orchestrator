@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify, parseArgs } from 'node:util';
 import { measure } from './lib/so-hud/runtime.mjs';
+import { isMainModule } from './lib/is-main-module.mjs';
 const exec = promisify(execFile);
 const SO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -41,4 +42,4 @@ export async function main(argv, deps = {}) {
   try { output(`${JSON.stringify(await (deps.measure ?? measure)(root))}\n`); return 0; }
   catch { error('so-hud: Messung fehlgeschlagen\n'); return 6; }
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) process.exitCode = await main(process.argv.slice(2));
+if (isMainModule(import.meta.url)) process.exitCode = await main(process.argv.slice(2));
