@@ -39,9 +39,9 @@ Version: 5.12.0 · npm: session-orchestrator · requires Node.js >= 24 (package.
 
 ## Sibling product: lead-session-orchestrator
 
-https://session-orchestrator.com/lead · npm: lead-session-orchestrator · source: https://github.com/Kanevry/lead-session-orchestrator
+https://session-orchestrator.com/lead · npm: lead-session-orchestrator · source: https://github.com/Kanevry/lead-session-orchestrator · release 0.2.0: https://github.com/Kanevry/lead-session-orchestrator/releases/tag/v0.2.0
 
-One lead session above several AI coding sessions. It keeps the overview, reads a signed authority file per repository instead of granting approvals, gates runs and merges on what it can measure, and collects open questions into one owner queue. Inside each session, session-orchestrator does the work; the two coordinate through files and each works alone. Version 0.x, GitLab only, tested on macOS, one host.
+One lead session above several AI coding sessions. It keeps the overview, reads a signed authority file per repository instead of granting approvals, gates runs and merges on what it can measure, and collects open questions into one owner queue. Inside each session, session-orchestrator does the work; the two coordinate through files and each works alone. Version 0.2.0, GitLab only, tested on macOS, one host. Install: npm i -g lead-session-orchestrator. Optional Claude Code mods from its marketplace (/plugin marketplace add Kanevry/lead-session-orchestrator, then /plugin install <name>@navigator-mods): owner-inbox collects the open owner questions in one place; lead shows peer cards and fleet actions that run only after the owner confirms them; freigabe blocks actions with an effect outside, such as pushes, merges and deploys, and grants no approvals.
 
 ## Plan, Go, Close
 
