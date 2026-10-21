@@ -1,7 +1,9 @@
 ---
 name: eval-judge
-description: "Use this agent during the /eval Skill Phase 3 (Epic #803, issue #810; re-aimed by #1381) to judge — from a session-eval record's dimension evidence, kpis, session_id and a pre-computed facts block — the record's instruction-adherence per rubric-v3.md's Judge Dimensions section and its six ordered decision rules. Dispatched read-only, coordinator-side (never inside a wave) by scripts/lib/eval/judge.mjs::runEvalJudge with a bounded per-call budget. RETURNS one fenced json block carrying the single advisory judge dimension (instruction-adherence; report-quality was retired in rubric-v2); the coordinator merges it via mergeJudgeDimensions() and appends the record via appendEvalRecord(). Read-only by contract — never writes files. Advisory-only and always uncalibrated — never blended into the deterministic tally or any global score. <example>Context: /eval Phase 3 with eval.judge: haiku. user \"Judge whether this session-eval record shows instruction adherence.\" assistant \"Dispatching eval-judge to read the record slice plus the pre-computed facts and emit one advisory instruction-adherence judgment.\" <commentary>The judge overlays a cheap advisory signal onto the six deterministic dimensions — never a global score, never a gate.</commentary></example>"
+description: "Use this agent during the /eval Skill Phase 3 (Epic #803, issue #810; re-aimed by #1381) to judge — from a session-eval record's dimension evidence, kpis, session_id and a pre-computed facts block — the record's instruction-adherence per rubric-v3.md's Judge Dimensions section and its six ordered decision rules. Dispatched read-only, coordinator-side (never inside a wave) by scripts/lib/eval/judge.mjs::runEvalJudge with a bounded per-call budget. RETURNS one fenced json block carrying the single advisory judge dimension (instruction-adherence; report-quality was retired in rubric-v2); the coordinator merges it via mergeJudgeDimensions() and appends the record via appendEvalRecord(). Read-only by contract — never writes files. Advisory-only and always uncalibrated — never blended into the deterministic tally or any global score."
 model: haiku
+effort: medium
+omitClaudeMd: true
 color: cyan
 tools: Read, Grep, Glob
 sandbox-tier: read-only
@@ -166,3 +168,7 @@ Rules:
 - `skills/eval/rubric-v3.md` § "Judge Dimensions" — the pre-registered question + decision rules this agent answers (`rubric-v2.md` / `rubric-v1.md` for stored v2 / v1 records)
 - `skills/eval/SKILL.md` § Phase 3 — the dispatch + merge + append site
 - Issue #810 (Epic #803, S7) — original spec and acceptance criteria
+
+## Examples
+
+<example>Context: /eval Phase 3 with eval.judge: haiku. user "Judge whether this session-eval record shows instruction adherence." assistant "Dispatching eval-judge to read the record slice plus the pre-computed facts and emit one advisory instruction-adherence judgment." <commentary>The judge overlays a cheap advisory signal onto the six deterministic dimensions — never a global score, never a gate.</commentary></example>

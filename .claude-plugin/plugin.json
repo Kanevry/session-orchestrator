@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "session-orchestrator",
-  "version": "5.12.0",
+  "version": "5.13.0",
   "description": "A repeatable Plan, Go, Close workflow for AI coding sessions: /session reads your repo and agrees the scope, /go runs the work in waves with a quality gate between each, /close verifies and commits. Runs on Claude Code, Codex CLI, Cursor and Pi.",
   "author": {
     "name": "Bernhard Goetzendorfer",
@@ -12,6 +12,9 @@
   "repository": "https://github.com/Kanevry/session-orchestrator",
   "license": "MIT",
   "keywords": ["session", "orchestration", "waves", "gitlab", "github", "quality-gates", "verification-gates", "multi-agent", "codex", "cursor", "pi"],
+  "mcpServers": {
+    "session-orchestrator": { "command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/mcp-server.mjs"] }
+  },
   "experimental": {
     "monitors": "./monitors/monitors.json",
     "evals": "./evals"

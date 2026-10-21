@@ -91,7 +91,7 @@ function _serializedByteLength(entries) {
  * via tmp-file + `renameSync` in the SAME directory (same-filesystem rename
  * is atomic on POSIX — mirrors `writeJsonAtomicSync` in `scripts/lib/io.mjs`,
  * which has no NDJSON-array variant). Creates the parent directory with
- * `mkdirSync(dir, { recursive: true })` first.
+ * `mkdirSync(dir, { recursive: true, mode: 0o700 })` first.
  *
  * @param {string} filePath
  * @param {Array<object>} entries
@@ -101,10 +101,10 @@ function _serializedByteLength(entries) {
  */
 function _writeEntriesAtomicSync(filePath, entries) {
   const dir = dirname(filePath);
-  mkdirSync(dir, { recursive: true });
+  mkdirSync(dir, { recursive: true, mode: 0o700 }); // private config dir; 0777 under umask 000 otherwise (#1629)
   const tmpSuffix = randomBytes(6).toString('hex');
   const tmpFile = join(dir, `.tmp.${tmpSuffix}`);
-  writeFileSync(tmpFile, _toNdjson(entries), 'utf8');
+  writeFileSync(tmpFile, _toNdjson(entries), { encoding: 'utf8', mode: 0o600 }); // rename keeps this mode (#1632)
   renameSync(tmpFile, filePath);
 }
 

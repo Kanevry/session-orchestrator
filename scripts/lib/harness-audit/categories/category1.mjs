@@ -5,13 +5,14 @@
  *         orchestrator-layout
  *
  * Stdlib + intra-repo helpers only (node:fs, node:path, ./helpers.mjs,
- * ../../sessions-canonical.mjs).
+ * ../../platform.mjs, ../../sessions-canonical.mjs).
  */
 
 import { existsSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
+import { resolveEventsLedgerRoot } from '../../platform.mjs';
 import { canonicalizeSessions } from '../../sessions-canonical.mjs';
 
 export function runCategory1(root) {
@@ -54,7 +55,10 @@ export function runCategory1(root) {
 
   // c1.2 sessions-jsonl-growth
   {
-    const p = join(root, '.orchestrator/metrics/sessions.jsonl');
+    // #1592: the repo's ONE sessions ledger, as c4.2 reads it — a linked
+    // worktree holds no ledger of its own since #1584, so `<root>/…` would
+    // report "missing" for a repo that records every session.
+    const p = join(resolveEventsLedgerRoot(root), '.orchestrator/metrics/sessions.jsonl');
     const text = safeRead(p);
     const relPath = '.orchestrator/metrics/sessions.jsonl';
     if (!text) {

@@ -50,6 +50,7 @@ function makeSession({ mode = 'feature', autopilotRunId = null, completion = 0.8
 function makeLegacySession({ mode = 'feature', autopilotRunId = null, completion = 0.8, carryover = 0.1 } = {}) {
   const s = {
     mode,
+    total_waves: 1,
     completion_rate: completion,
     carryover_ratio: carryover,
   };
@@ -274,7 +275,7 @@ function makeAbandonedPhantom() {
   // bucket it, `status: 'abandoned'`, 0 waves — and NO `effectiveness` block
   // at all. The counter assertions are the discriminator for this shape.
   return {
-    status: 'abandoned',
+    status: 'abandoned', _synthetic: true,
     session_type: 'feature',
     total_waves: 0,
     waves: [],
@@ -290,7 +291,7 @@ function makeAbandonedPhantom() {
  */
 function makeAbandonedPhantomWithMetrics() {
   return {
-    status: 'abandoned',
+    status: 'abandoned', _synthetic: true,
     session_type: 'feature',
     total_waves: 0,
     effectiveness: { completion_rate: 0, carryover_ratio: 1 },
@@ -327,13 +328,13 @@ describe('autopilot-effectiveness — #834: abandoned-session filtering', () => 
     expect(out[0].evidence.carryover_ratio_autopilot).toBe(0.1);
   });
 
-  it('groupByMode() drops abandoned records entirely (0 contribution to either variant)', () => {
+  it('groupByMode() drops synthetic completed records entirely (0 contribution to either variant)', () => {
     const runs = [makeRun('r1')];
     const sessions = [
       makeCanonicalSession({ mode: 'feature' }),
       makeCanonicalSession({ mode: 'feature', autopilotRunId: 'r1' }),
-      { status: 'abandoned', session_type: 'feature' },
-      { status: 'abandoned', session_type: 'feature', autopilot_run_id: 'r1' },
+      { status: 'completed', _synthetic: true, session_type: 'feature' },
+      { status: 'completed', _synthetic: true, session_type: 'feature', autopilot_run_id: 'r1' },
     ];
     const map = groupByMode(runs, sessions);
     const feat = map.get('feature');
@@ -343,6 +344,19 @@ describe('autopilot-effectiveness — #834: abandoned-session filtering', () => 
 });
 
 describe('autopilot-effectiveness — #834: session_type is canonical, mode is the legacy fallback', () => {
+  it('counts known non-synthetic abandoned work and rejects unknown rows without waves or agents', () => {
+    const groups = groupByMode([], [
+      { session_type: 'deep', status: 'abandoned' },
+      { mode: 'housekeeping', total_agents: 1 },
+      { session_type: 'unknown' },
+      { mode: 'feature' },
+    ]);
+    expect(groups.get('deep').n_manual).toBe(1);
+    expect(groups.get('housekeeping').n_manual).toBe(1);
+    expect(groups.has('unknown')).toBe(false);
+    expect(groups.has('feature')).toBe(false);
+  });
+
   it('reads session_type as the primary mode key', () => {
     const sessions = [
       { session_type: 'deep', effectiveness: { completion_rate: 0.9, carryover_ratio: 0.05 } },

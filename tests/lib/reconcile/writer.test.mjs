@@ -1419,7 +1419,7 @@ describe('writeApprovedRules — instruction-budget pre-flight', () => {
 
   /** A path-scoped rule whose body is `n` bytes plus one newline. */
   function scopedRule(n) {
-    return `---\nglobs:\n  - "src/**"\n---\n${'a'.repeat(n)}\n`;
+    return `---\nglobs:\n  - "src/**"\npaths:\n  - "src/**"\n---\n${'a'.repeat(n)}\n`;
   }
 
   function setPathScopedCeiling(bytes) {

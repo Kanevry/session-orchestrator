@@ -43,6 +43,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { eventsFilePath } from './events.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 import { readCanonicalSessions } from './sessions-canonical.mjs';
 import { readTailWindow } from './tail-window.mjs';
 import { withStateMdLock } from './session-lock.mjs';
@@ -144,7 +145,11 @@ function isValidMode(mode) {
  *   only across DIFFERENT ids — never the same id twice, see above).
  */
 async function readSessionIdsFromHistory(repoRoot) {
-  const filePath = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
+  // #1592: the repo's ONE sessions ledger (main checkout of a linked worktree,
+  // where every close writes since #1584). Aggregation is a monotone max, so the
+  // wider ledger can only raise n — the events source does not always cover a
+  // closed session (rotated ledger, no lock event), the worktree read was empty.
+  const filePath = path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl');
   return readCanonicalSessions({ filePath }).map((rec) => rec.session_id);
 }
 
@@ -266,6 +271,9 @@ async function readSessionIdsFromEvents(repoRoot) {
  * @returns {Promise<string|null>}  The session_id string, or null when absent.
  */
 async function readSessionIdFromStateMd(repoRoot) {
+  // #1636 decision: deliberately the READ resolver, foreign STATE.md included —
+  // this source only collects ids already TAKEN, so a foreign one can only raise
+  // n (max over a union) and ignoring it could re-mint a peer's id.
   const filePath = resolveStateMdPath(repoRoot);
   let raw;
   try {

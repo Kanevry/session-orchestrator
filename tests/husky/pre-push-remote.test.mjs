@@ -8,14 +8,16 @@ const root = resolve(import.meta.dirname, '../..');
 const dirs = [];
 afterEach(() => { while (dirs.length) removeTree(dirs.pop()); });
 
-function runHook(mode, linked = false, tagKind) {
+function runHook(mode, linked = false, tagKind, gateHosts) {
   const dir = makeTmpDir('pre-push-remote-');
   dirs.push(dir);
   const repo = linked ? join(dir, 'Ventures/org/canonical') : join(dir, 'repo');
   const bin = join(dir, 'bin');
   mkdirSync(join(repo, 'scripts/lib'), { recursive: true });
   mkdirSync(bin);
-  symlinkSync(join(root, 'scripts/lib/pre-push-remote-gate.mjs'), join(repo, 'scripts/lib/pre-push-remote-gate.mjs'));
+  // old-router: a pushed tree cut before #1626 whose router ignores SO_GATE_HOSTS.
+  if (mode === 'old-router') writeFileSync(join(repo, 'scripts/lib/pre-push-remote-gate.mjs'), 'process.exit(10);\n');
+  else symlinkSync(join(root, 'scripts/lib/pre-push-remote-gate.mjs'), join(repo, 'scripts/lib/pre-push-remote-gate.mjs'));
   writeFileSync(join(repo, 'scripts/run-quality-gate.mjs'), '// existence probe\n');
   writeFileSync(join(repo, 'CLAUDE.md'), '## Session Config\nremote-hosts:\n  - alias: first\n    roles-allowed: [test]\n  - alias: second\n    roles-allowed: [test]\n');
   writeFileSync(join(repo, 'package.json'), JSON.stringify({ scripts: { 'quality-gate': 'node gate.cjs' } }));
@@ -32,6 +34,14 @@ function runHook(mode, linked = false, tagKind) {
     if (mode.startsWith('stub-')) report.stubbed = { [mode.slice(5)]: {kind:'echo'} };
     if (mode.startsWith('timeout-')) report[mode.slice(8)].timed_out = true;
     if (mode === 'skip') report.typecheck.status = report.lint.status = 'skip';
+    if (mode === 'failed-count') report.test.failed = 2;
+    const rerun = { files: ['a.test.mjs'], status: 'pass', failed: 0, timed_out: false, kill_signals: [], survivors: [] };
+    if (mode.startsWith('rerun-')) Object.assign(report.test, { failed: 2, failed_files: ['a.test.mjs'], rerun });
+    if (mode === 'rerun-failed') rerun.failed = 3;
+    if (mode === 'rerun-killed') rerun.timed_out = true;
+    if (mode === 'rerun-other-file') report.test.failed_files = ['b.test.mjs'];
+    if (mode === 'rerun-extra-file') rerun.files = ['a.test.mjs', 'c.test.mjs'];
+    if (mode === 'rerun-signalled') rerun.kill_signals = ['SIGTERM'];
     console.log(JSON.stringify(report));
     process.exit(failed ? 2 : 0);
   `);
@@ -64,6 +74,9 @@ function runHook(mode, linked = false, tagKind) {
       record.origin = spawnSync('git', ['remote','get-url','origin'], {cwd:a[3], encoding:'utf8'}).stdout.trim();
     }
     fs.appendFileSync(process.env.TRACE, JSON.stringify(record) + '\\n');
+    // #1627: real doctor output carries gate-ready=; its exit also covers headless readiness.
+    if (a[0] === 'doctor' && mode === 'gate-ready-only') { fs.writeSync(2, 'h gate-ready=yes · headless-ready=NO\\n'); process.exit(1); }
+    if (a[0] === 'doctor' && mode === 'gate-not-ready') { fs.writeSync(1, 'h gate-ready=no · headless-ready=yes\\n'); process.exit(0); }
     if (a[0] === 'doctor') process.exit(mode === 'not-ready' || mode === 'local-fail' ? 2 : 0);
     if (mode === 'transport' || mode === 'next' && a[2] === 'first') process.exit(2);
     if (mode === 'empty') process.exit(0);
@@ -114,11 +127,20 @@ function runHook(mode, linked = false, tagKind) {
     args = ['-c', `core.hooksPath=${hooks}`, 'push', 'publish-fixture', 'v1.0.0'];
     input = undefined;
   }
+  // SO_GATE_HOSTS (#1626): a fake offload registry with exactly `first` and
+  // `second`, so an override can only pass validation for those two aliases.
+  const overrideEnv = {};
+  if (gateHosts !== undefined) {
+    const home = join(dir, 'home');
+    mkdirSync(join(home, '.config/remote-offload/hosts'), { recursive: true });
+    for (const alias of ['first', 'second']) writeFileSync(join(home, '.config/remote-offload/hosts', `${alias}.env`), '');
+    Object.assign(overrideEnv, { HOME: home, OFFLOAD_CONFIG_DIR: '', SO_GATE_HOSTS: gateHosts });
+  }
   const res = spawnSync(command, args, {
     cwd: source, encoding: 'utf8', timeout: 30_000,
     input,
     env: { ...process.env, SKIP_QUALITY_GATE: '', PATH: `${bin}:${process.env.PATH}`,
-      TRACE: trace, MODE: mode, CLAUDE_PROJECT_DIR: repo },
+      TRACE: trace, MODE: mode, CLAUDE_PROJECT_DIR: repo, ...overrideEnv },
   });
   return { res, records: readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) };
 }
@@ -132,6 +154,8 @@ it.each([
   ['next', 0, ['first', 'second'], ['1']],
   ['transport', 0, ['first', 'second'], [undefined]],
   ['not-ready', 0, [], [undefined]],
+  ['gate-ready-only', 0, ['first'], ['1']],
+  ['gate-not-ready', 0, [], [undefined]],
   ['local-fail', 1, [], [undefined]],
   ['empty', 1, ['first'], []],
   ['unknown', 1, ['first'], []],
@@ -139,6 +163,15 @@ it.each([
   ['stub-typecheck', 1, ['first'], ['1']],
   ['stub-lint', 1, ['first'], ['1']],
   ['skip', 0, ['first'], ['1']],
+  // #1673: failed tests in a `pass` report are accepted only behind a clean re-run.
+  ['failed-count', 1, ['first'], ['1']],
+  ['rerun-pass', 0, ['first'], ['1']],
+  // Codex review M4: the verifier judges the re-run's own fields, not its status word.
+  ['rerun-failed', 1, ['first'], ['1']],
+  ['rerun-killed', 1, ['first'], ['1']],
+  ['rerun-other-file', 1, ['first'], ['1']],
+  ['rerun-extra-file', 1, ['first'], ['1']],
+  ['rerun-signalled', 1, ['first'], ['1']],
   ['timeout-test', 1, ['first'], ['1']],
   ['timeout-typecheck', 1, ['first'], ['1']],
   ['timeout-lint', 1, ['first'], ['1']],
@@ -186,3 +219,29 @@ it.each(['commit', 'blob'])('actual annotated %s tag push gates its target commi
       expect(records).toEqual([]);
     }
   });
+
+// #1626 SO_GATE_HOSTS. Bugs: the override is ignored (config order first,second
+// wins), and an override falls back to the local gate instead of blocking: both
+// for an unknown alias and when none of the named hosts can run the gate.
+it.each([
+  ['second,first', 'transport', 1, ['second', 'first'], []],
+  ['second, nope', 'pass', 1, [], []],
+])('SO_GATE_HOSTS=%s replaces the host order or blocks without a local gate',
+  { timeout: 40_000 }, (gateHosts, mode, status, hosts, gateRoutes) => {
+    const { res, records } = runHook(mode, false, undefined, gateHosts);
+    expect(res.status, res.stderr).toBe(status);
+    expect(records.filter((r) => r.cmd === 'run').map((r) => r.host)).toEqual(hosts);
+    expect(records.filter((r) => r.gate).map((r) => r.remote)).toEqual(gateRoutes);
+    expect(res.stderr).toMatch(gateHosts.includes('nope')
+      ? /SO_GATE_HOSTS names unknown or invalid host 'nope'/
+      : /no SO_GATE_HOSTS route could run the gate \(second, first\)/);
+  });
+
+// #1626 review: a pushed tree with an older router ignores SO_GATE_HOSTS and
+// returns 10; the hook itself must still refuse the local gate.
+it('SO_GATE_HOSTS blocks the local gate even when the pushed router predates it', { timeout: 40_000 }, () => {
+  const { res, records } = runHook('old-router', false, undefined, 'first');
+  expect(res.status, res.stderr).toBe(1);
+  expect(records.filter((r) => r.gate)).toEqual([]);
+  expect(res.stderr).toMatch(/SO_GATE_HOSTS is set but no listed host ran the gate/);
+});

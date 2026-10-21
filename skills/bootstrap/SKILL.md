@@ -274,7 +274,7 @@ selection, scaffolding and initial commit. Rule selection may read the lock ID.
    export PLUGIN_ROOT CONFIRMED_ARCHETYPE DRY_RUN RULES_CATEGORIES
    node --input-type=module <<'NODE'
    import { pathToFileURL } from 'node:url';
-   const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+   const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
    const categories = (process.env.RULES_CATEGORIES || '').split(',').map(value => value.trim()).filter(Boolean);
    const result = await syncBootstrapRules({ repoRoot: process.cwd(), archetype: process.env.CONFIRMED_ARCHETYPE || undefined,
      dryRun: process.env.DRY_RUN === 'true', categories: categories.length ? categories : null });

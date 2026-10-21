@@ -48,8 +48,9 @@ For session-end specifically: the preamble is DETECTION-ONLY. The lock-release p
 
 ```javascript
 try {
+  const { pathToFileURL } = await import('node:url');
   const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
-    await import('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs');
+    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
   const nodePath = await import('node:path');
   await appendSkillInvocation(nodePath.join(process.cwd(), DEFAULT_SKILL_INVOCATIONS_PATH), {
     timestamp: new Date().toISOString(),
@@ -63,7 +64,7 @@ try {
 
 ## Phase 1: Plan Verification
 
-> Always runs, first. Reads back the agreed plan and dispositions every item: 1.1 Done (verify with evidence) + 1.1a File-Level Grounding, 1.2 / 1.3 / 1.4 which COLLECT carryover candidates and file nothing (#769), 1.5 Discovery Scan, 1.6 Safety Review + 1.6.6 "What Not To Retry", then **1.65 Handover Alignment Gate** — the only place `[Carryover]` filing is authorized to originate, fail-open to "everything carries" — followed by 1.7 Metrics Collection, 1.8 Session Review, and 1.9 / 1.10 Mission-Status classification + breakdown. Full procedure: [`plan-verification.md`](plan-verification.md).
+> Always runs, first. Reads back the agreed plan and dispositions every item: 1.1 Done (verify with evidence) + 1.1a File-Level Grounding + 1.1b External Acceptance (open `[Abnahme]` issues, closed only on oracle evidence), 1.2 / 1.3 / 1.4 which COLLECT carryover candidates and file nothing (#769), 1.5 Discovery Scan, 1.6 Safety Review + 1.6.6 "What Not To Retry", then **1.65 Handover Alignment Gate** — the only place `[Carryover]` filing is authorized to originate, fail-open to "everything carries" — followed by 1.7 Metrics Collection, 1.8 Session Review, and 1.9 / 1.10 Mission-Status classification + breakdown. Full procedure: [`plan-verification.md`](plan-verification.md).
 
 ## Phase 2: Quality Gate
 
@@ -159,7 +160,7 @@ node scripts/release-session-lock.mjs --session-id "<raw session_id>" --json
 
 `--session-id` is the PHYSICAL raw value established by session-start Phase 1.2 and stored in `.orchestrator/session.lock` `session_id` — never STATE.md `session:` and never `semantic_session_id`, both of which are attribution labels.
 
-The command releases the lock only when that raw id owns it, emits the terminal `orchestrator.session.lock.released` breadcrumb, and then RE-READS the lock path: **exit 0 means the lock is provably gone.** It replaces the hand-executed `release()` this phase used to prescribe, which deleted the lock silently — the SessionEnd hook then found `status: 'absent'` and emitted nothing either, so a lock lifecycle ended with no terminal event at all (#1395: 5 `lock.acquired` against 0 `lock.released` in this repo). `outcome: "absent"` is a normal exit-0 result (idempotent re-run; nothing was released, so no event is written).
+The command releases the lock only when that raw id owns it, emits the terminal `orchestrator.session.lock.released` breadcrumb, and then RE-READS the lock path: **exit 0 means the lock is provably gone.** It replaces the hand-executed `release()` this phase used to prescribe, which deleted the lock silently — the SessionEnd hook then found `status: 'absent'` and emitted nothing either, so a lock lifecycle ended with no terminal event at all (#1395: 5 `lock.acquired` against 0 `lock.released` in this repo). `outcome: "absent"` is a normal exit-0 result (idempotent re-run; nothing was released, so no event is written). A verified release also leaves `.orchestrator/runtime/lock-released/<raw session_id>.json` (`release_marker: true` in the JSON), so a later `compact` or `resume` of the same raw session does not re-create the lock (#1651); `startup` and `clear` take a lock as before, and the session's next `acquire()` removes the marker.
 
 A non-zero exit is a WARN, never a blocker — log `⚠ session-lock: <outcome>` and continue; the TTL provides automatic expiry for the next session:
 
@@ -187,7 +188,7 @@ Use Conventional Commits format:
 type(scope): description
 
 - [bullet points of what changed]
-- Closes #IID1, #IID2 (if applicable)
+- Closes #IID1, #IID2 (if applicable — never an `[Abnahme]` IID, plan-verification 1.1b)
 
 Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 ```
@@ -218,7 +219,37 @@ between the markers and executes it, so no second copy of this command may exist
 # so a consumer repo (even one without a Session Config) skips with exit 0.
 # With a remote, Session Config `mirror` decides (#1034), read through parse-config.mjs:
 #   `mirror: none`       → never push, even with a 'github' remote (explicit opt-out)
-#   `mirror: github` or key absent (`mirror: null` counts as absent) → push
+#   `mirror: github` or key absent (`mirror: null` counts as absent) → push HEAD,
+#                          but only after `github-export.mjs --plain-guard` (#1645):
+#                          when HEAD or origin's main (ls-remote, fetched if not
+#                          local) carries .orchestrator/policy/public-export.json,
+#                          the repo publishes curated only — a checkout whose
+#                          CLAUDE.md predates `mirror: curated` must not push its
+#                          full private history → WARN, exit 1, nothing pushed.
+#                          origin unreadable → same refusal (fail closed); no
+#                          'origin' remote → refused unless `mirror: github` is
+#                          set explicitly (nothing to check the policy against).
+#   `mirror: curated`    → publish ONE squash snapshot (scripts/github-export.mjs,
+#                          #1631) on top of the verified public github main,
+#                          never HEAD. Source anchor: only when HEAD is on branch
+#                          `main` AND equals origin's main (`git ls-remote`, after
+#                          the 4.3 push) — GitHub main deploys production, so a
+#                          feature branch or unpushed/unreviewed local commits
+#                          skip (exit 0, nothing pushed); origin unreadable →
+#                          WARN, exit 1. Export exit 3 = nothing to publish (no
+#                          push), other non-zero → WARN, exit 1. Bound to the
+#                          scanned sha (read from the export's stdout only):
+#                          push URL must equal fetch URL, then `--verify <sha>`
+#                          re-checks it right before the push (one commit on the
+#                          ls-remote-verified github main, trailer
+#                          `Source-Commit: <origin main>`, no excluded path in its
+#                          tree), else WARN, exit 1; the push sends that sha, not
+#                          the export ref. Plain push, no lease: the commit's
+#                          parent IS the verified sha, and a plain push is
+#                          fast-forward-only, so GitHub itself rejects it if its
+#                          main moved to anything that is not an ancestor of that
+#                          sha — the same anchor a lease would enforce, without a
+#                          force flag (blocked by the destructive-command guard).
 #   any other value / config unreadable → loud WARN, no push, exit 1
 # The plugin root is resolved, not assumed: a fresh /close shell often lacks
 # PLUGIN_ROOT. Order per skills/_shared/config-reading.md (native PLUGIN_ROOT,
@@ -260,8 +291,49 @@ elif ! mirror_cfg=$(printf '%s' "$cfg_json" | node -e 'let s="";process.stdin.on
   exit 1
 elif [ "$mirror_cfg" = "none" ]; then
   echo "GitHub mirror: 'mirror: none' in Session Config — skipping (not an error)."
-elif [ -n "$mirror_cfg" ] && [ "$mirror_cfg" != "github" ]; then
-  echo "WARN GitHub mirror: unknown 'mirror: ${mirror_cfg}' (expected none | github) — nothing pushed." >&2
+elif [ -n "$mirror_cfg" ] && [ "$mirror_cfg" != "github" ] && [ "$mirror_cfg" != "curated" ]; then
+  echo "WARN GitHub mirror: unknown 'mirror: ${mirror_cfg}' (expected none | github | curated) — nothing pushed." >&2
+  exit 1
+elif [ "$mirror_cfg" = "curated" ]; then
+  if ! origin_ls=$(git ls-remote origin refs/heads/main 2>&1); then
+    echo "WARN GitHub mirror: cannot read origin's main — curated source not verifiable, nothing pushed." >&2
+    echo "  git said: ${origin_ls}" >&2
+    exit 1
+  fi
+  origin_main=$(printf '%s\n' "$origin_ls" | awk '$2 == "refs/heads/main" { print $1 }')
+  if [ "$(git symbolic-ref --short -q HEAD)" != "main" ] || [ -z "$origin_main" ] || [ "$(git rev-parse HEAD)" != "$origin_main" ]; then
+    echo "GitHub mirror: 'mirror: curated' publishes only a HEAD on main that equals origin's main (HEAD $(git symbolic-ref --short -q HEAD || echo detached) $(git rev-parse --short HEAD), origin main ${origin_main:-none}) — skipping (not an error)."
+  else
+    # stdout carries ONLY the sha (stderr goes straight to the operator), so the
+    # sha pushed below is the one the export scanned — never a ref name that could
+    # be moved in between.
+    export_sha=$(GIT_NO_REPLACE_OBJECTS=1 node "$so_root/scripts/github-export.mjs" --source "$origin_main")
+    export_rc=$?
+    if [ "$export_rc" -eq 3 ]; then
+      echo "GitHub mirror: curated snapshot of ${origin_main} unchanged — nothing to publish."
+    elif [ "$export_rc" -ne 0 ]; then
+      echo "WARN GitHub mirror: curated export REFUSED (exit ${export_rc}, reason above) — nothing pushed." >&2
+      exit 1
+    elif ! printf '%s' "$export_sha" | grep -Eqx '[0-9a-f]{40}([0-9a-f]{24})?'; then
+      echo "WARN GitHub mirror: the export printed no commit sha — nothing pushed." >&2
+      exit 1
+    elif [ "$(git remote get-url github)" != "$(git remote get-url --push github)" ]; then
+      echo "WARN GitHub mirror: the push URL of 'github' differs from its fetch URL (pushurl or pushInsteadOf) — the verified main would not describe the push target; nothing pushed." >&2
+      exit 1
+    elif ! GIT_NO_REPLACE_OBJECTS=1 node "$so_root/scripts/github-export.mjs" --verify "$export_sha" --source "$origin_main"; then
+      echo "WARN GitHub mirror: ${export_sha} is not one clean snapshot of ${origin_main} on the verified github main — nothing pushed." >&2
+      exit 1
+    elif push_out=$(git push github "${export_sha}:refs/heads/main" 2>&1); then
+      echo "GitHub mirror: pushed curated snapshot ${export_sha} (source ${origin_main}) -> ${mirror_url}"
+    else
+      echo "WARN GitHub mirror PUSH FAILED: curated snapshot ${export_sha} is NOT on ${mirror_url}" >&2
+      echo "${push_out}" >&2
+      echo "WARN Mirror is stale — anything wired to it (site deploy) will not update." >&2
+      exit 1
+    fi
+  fi
+elif ! GIT_NO_REPLACE_OBJECTS=1 node "$so_root/scripts/github-export.mjs" --plain-guard --mirror-key "${mirror_cfg:-unset}"; then
+  echo "WARN GitHub mirror: plain push of HEAD REFUSED (reason above) — this repo publishes curated only; nothing pushed." >&2
   exit 1
 elif push_out=$(git push github HEAD 2>&1); then
   echo "GitHub mirror: pushed $(git rev-parse HEAD) -> ${mirror_url}"
@@ -278,6 +350,12 @@ State 3 exits non-zero on purpose: it is the only machine-readable signal that t
 behind. Report it to the operator in the session summary; do not retry silently and do not
 swallow it with `|| true`.
 
+### 4.5 Only a Pipeline or Release Train Left
+
+Do not wait for a pipeline or release train inside session-end. If the session has no other work left, apply `skills/_shared/fleet-protocol.md` § Rücklauf an den Navigator (Pflicht) with the wait case `zug-<name>`: exactly one report in this `/close` turn, only with fleet integration (`flotte: true`). That the waiting answer before `/close` already reported the train is intended — every waiting turn triggered by an input (`/close` is one) reports once (#1611); turns woken by `/loop`, a Monitor event, an own background agent or shell, or ScheduleWakeup do not. Write NO handover or train manifest here — a coordinator only acts on one written with the waiting answer before `/close` (same section, Übergabe und Zug-Manifest) — and never invoke `/close` or another close yourself. Then continue with Phase 4a; never gate the close on a reply (CSM-004).
+
+**Queue marks on the own handover (#1639).** With fleet integration — whether or not a train is left — re-check the newest own handover or train manifest in the fleet folder (fleet-protocol § Flotten-Ordner und Session-Name gives `<name>`, `<cwd>` and `<startedAt>`): `node "$PLUGIN_ROOT/scripts/handover-queue-check.mjs" --name <name> --fleet-dir <cwd>/.orchestrator/runtime/fleet --since <startedAt> --apply --repo <repo> [--navigator-cli <koordinator-cli>]`, same `<repo>` and CLI as fleet-protocol Schritt 1a. It files every open point that still lacks a `queue:#`/`issue:#` mark and writes the id into the file; this edits the existing file and is not the forbidden new handover. `--since` keeps a predecessor's file of the same session name out (names repeat across days). Exit 3 (points left unmarked, e.g. the CLI is unreachable): name `Übergabe ohne Queue-IDs: <n> Punkte` with the listed points in the session summary. It never blocks the close; without fleet integration or without an own file it is a silent no-op (exit 0).
+
 ## Phase 4a: Auto-Promoted Worktree Cleanup (#575 P3.2)
 
 > Skip when `persistence: false`; skip silently unless the CURRENT worktree is an auto-promoted sibling — `detectAutoPromotedWorktree()` from `scripts/lib/session-end/worktree-cleanup.mjs` (marker `.orchestrator/promoted-from.json` first, legacy basename match as fallback, #1069). Runs AFTER the Phase 4 commit+push, never before (#490 durableCommit ordering). Clean worktree → auto-remove with WARN; dirty → the 3-option AUQ (`Behalten` / `Löschen` / `Manuell`) before any destructive action, per PSA-003. Full procedure: [`references/phase-4a-worktree-cleanup.md`](references/phase-4a-worktree-cleanup.md).
@@ -292,7 +370,7 @@ swallow it with `|| true`.
 
 ## Phase 6: Final Report
 
-Present to the user the **Session Summary**: Completed / Carried Over / Dropped at Handover Gate (#769) / New Issues Created / Unresolved Review Findings (MED-LOW, #617) / Metrics — including the Docs Health line rendered from the Phase 2.3 result and the Custom Phases line from Phase 2.5 — / Next Session Recommendations. Full template plus the Test-delta and Documentation-Coverage anchors: [`references/session-summary-template.md`](references/session-summary-template.md).
+Present to the user the **Session Summary**: Completed / Abnahme offen (open `[Abnahme]` issues from Phase 1.1b — never counted as Completed, #1678) / Carried Over / Dropped at Handover Gate (#769) / New Issues Created / Unresolved Review Findings (MED-LOW, #617) / Metrics — including the Docs Health line rendered from the Phase 2.3 result and the Custom Phases line from Phase 2.5 — / Next Session Recommendations. Full template plus the Test-delta and Documentation-Coverage anchors: [`references/session-summary-template.md`](references/session-summary-template.md).
 
 ## Sub-File Reference
 
@@ -318,7 +396,7 @@ Present to the user the **Session Summary**: Completed / Carried Over / Dropped 
 | `references/phase-3-documentation-updates.md` § 3.7d | Session-Eval (opt-in — #803) — `node scripts/eval-session.mjs --json` scores the just-closed session; gated on `eval.enabled` + `eval.mode != off` (parsed by `scripts/lib/config/eval.mjs`), optional `eval-judge` dispatch + `writeEvalReport`, advisory/never-blocks-close, ordered after 3.7 (record must exist) and before 3.4/Phase 4 (record committed with the session). Full flow in `skills/eval/SKILL.md` |
 | `references/phase-3-7e-vault-orphans.md` | Phase 3.7e Vault Orphans (#1563) — `node scripts/vault-orphans.mjs --since <started_at> --json` (`findVaultOrphans` in `scripts/lib/session-end/vault-orphans.mjs`, read-only `git ls-files --others`) names untracked vault files modified since the session start, minus `_generator: session-orchestrator-` files; candidates only (mtime is no proof), one Open Question via `appendOpenQuestionOnDisk`, never commits/moves/deletes in the vault; `unavailable` = "could not measure", never "no orphans"; gated on `vault-integration.enabled`, ordered after 3.7d and before 3.4 |
 | (inline) Phase 3.8 | Session Lock Release — `release()` uses the physical raw `session_id`; raw mismatch/absent is non-fatal but never repaired with semantic labels or proof (live ambiguity remains for TTL/Reaper); fs-errors are non-fatal; runs after STATE.md writes and before Phase 4 commit staging |
-| (inline) Phase 4 | Commit & Push — stage individually (PSA-004), commit, push to origin, then the `github-mirror-push` block (4 states: not-a-repo / no `github` remote / pushed / push failed) |
+| (inline) Phase 4 | Commit & Push — stage individually (PSA-004), commit, push to origin, then the `github-mirror-push` block (4 states: not-a-repo / no `github` remote / pushed / push failed), then 4.5 (only a pipeline or train left → one fleet Rücklauf `zug-<name>` in this turn, fleet integration only; no manifest, no self-close) |
 | `references/phase-4a-worktree-cleanup.md` | Phase 4a full procedural body — auto-promoted-worktree detection (`detectAutoPromotedWorktree`, marker-keyed since #1069), clean-check, clean auto-remove path, dirty 3-option AUQ (`Behalten`/`Löschen`/`Manuell`), PSA-003 + #490 ordering rationale |
 | `references/phase-4b-worktree-orphan-sweep.md` | Phase 4b full procedural body — `checkWorktreeOrphans()` read-only proposal set, the coordinator-rendered AUQ, opt-in `worktree-orphans.enabled` gate |
 | `references/phase-5-issue-cleanup.md` | Phase 5 full procedural body — close resolved issues via `node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close` (strip `status:*` → close → re-read; `closed: false` is a finding, not done, #308), Step 3 filing of the Phase 1.65 carry-list incl. the deferred `createSpiralCarryoverIssue` and `markOpenQuestionAnsweredOnDisk`, Step 3b `[Backlog-Sammel]` overflow, discovery-issue creation |

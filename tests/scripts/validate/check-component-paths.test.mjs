@@ -87,6 +87,26 @@ const COMPONENT_PATH_CASES = [
     stdout: ['FAIL: commands path does not exist: ./my-commands'],
     expected: { status: 1, missingStdout: [], missingStderr: [] },
   },
+  {
+    // plugin.json declares the Claude Code MCP server inline (#1612); the
+    // validator crashed on it with "relPath.startsWith is not a function".
+    name: 'accepts an inline mcpServers object',
+    fixture: {
+      pluginJson: JSON.stringify({ mcpServers: { s: { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/s.mjs'] } } }),
+      components: ALL_CONVENTIONAL_COMPONENTS,
+    },
+    stdout: ['PASS: mcpServers is an inline config object', '0 failed'],
+    expected: { status: 0, missingStdout: [], missingStderr: [] },
+  },
+  {
+    name: 'checks each path in an mcpServers array and fails a missing one',
+    fixture: {
+      pluginJson: JSON.stringify({ mcpServers: ['./.mcp.json', { s: { command: 'node' } }, './missing.json'] }),
+      components: ALL_CONVENTIONAL_COMPONENTS,
+    },
+    stdout: ['PASS: mcpServers resolves to: ./.mcp.json', 'PASS: mcpServers inline config entry', 'FAIL: mcpServers path does not exist: ./missing.json'],
+    expected: { status: 1, missingStdout: [], missingStderr: [] },
+  },
 ];
 
 describe('check-component-paths.mjs — current repo smoke', () => {
@@ -97,7 +117,7 @@ describe('check-component-paths.mjs — current repo smoke', () => {
           'PASS: commands auto-discovered at: ./commands',
           'PASS: agents auto-discovered at: ./agents',
           'PASS: hooks auto-discovered at: ./hooks/hooks.json',
-          'PASS: mcpServers auto-discovered at: ./.mcp.json',
+          'PASS: mcpServers is an inline config object',
           'Results:',
           '0 failed',
         ],

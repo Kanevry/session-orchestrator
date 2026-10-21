@@ -173,6 +173,20 @@ describe('runCategory4', () => {
   // -------------------------------------------------------------------------
   // Edge case — 30-day boundary: exactly 29 days ago passes, 31 days fails
   // -------------------------------------------------------------------------
+  it('reads measured history from the main checkout when auditing a linked worktree', () => {
+    const main = join(root, 'main');
+    const admin = join(main, '.git', 'worktrees', 'fixture');
+    ensureDir(admin);
+    ensureDir(join(main, '.orchestrator', 'metrics'));
+    writeFileSync(join(admin, 'commondir'), '../..\n');
+    writeFileSync(join(root, '.git'), `gitdir: ${admin}\n`);
+    writeFileSync(join(main, '.orchestrator', 'metrics', 'sessions.jsonl'),
+      JSON.stringify({ session_type: 'deep', completed_at: '2026-05-08T08:00:00Z' }));
+    const recent = runCategory4(root).find((c) => c.check_id === 'sessions-jsonl-recent');
+    expect(recent.status).toBe('pass');
+    expect(recent.evidence.ageInDays).toBe(1);
+  });
+
   it('passes sessions-jsonl-recent for 29-day-old entry but fails for 31-day-old entry', () => {
     ensureDir(join(root, '.orchestrator/metrics'));
 
@@ -183,7 +197,7 @@ describe('runCategory4', () => {
     // --- Test 29 days ---
     writeFileSync(
       join(root, '.orchestrator/metrics/sessions.jsonl'),
-      JSON.stringify({ completed_at: twentyNineDaysAgo }) + '\n',
+      JSON.stringify({ session_type: 'deep', completed_at: twentyNineDaysAgo }) + '\n',
     );
     const checks29 = runCategory4(root);
     const recent29 = checks29.find((c) => c.check_id === 'sessions-jsonl-recent');
@@ -193,7 +207,7 @@ describe('runCategory4', () => {
     // --- Test 31 days ---
     writeFileSync(
       join(root, '.orchestrator/metrics/sessions.jsonl'),
-      JSON.stringify({ completed_at: thirtyOneDaysAgo }) + '\n',
+      JSON.stringify({ total_waves: 1, completed_at: thirtyOneDaysAgo }) + '\n',
     );
     const checks31 = runCategory4(root);
     const recent31 = checks31.find((c) => c.check_id === 'sessions-jsonl-recent');
@@ -206,7 +220,7 @@ describe('runCategory4', () => {
   // Abandoned-stub tail skip (#834) — c4.2 must scan backward to the last
   // REAL session, not trust the raw last line.
   // -------------------------------------------------------------------------
-  it('fails sessions-jsonl-recent when the last line is a RECENT abandoned stub but the last REAL session is > 30 days old', () => {
+  it('fails sessions-jsonl-recent when the last line is a RECENT synthetic completed stub but the last REAL session is > 30 days old', () => {
     ensureDir(join(root, '.orchestrator/metrics'));
 
     // Pinned "now" is 2026-05-09T08:00:00Z (see beforeEach).
@@ -219,10 +233,10 @@ describe('runCategory4', () => {
     const lines = [
       JSON.stringify({ completed_at: realCompletedAt, session_type: 'deep' }),
       JSON.stringify({
-        completed_at: abandonedCompletedAt,
+        completed_at: abandonedCompletedAt, _synthetic: true,
         session_type: 'housekeeping',
         agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
-        status: 'abandoned',
+        status: 'completed',
       }),
     ];
     writeFileSync(join(root, '.orchestrator/metrics/sessions.jsonl'), lines.join('\n') + '\n');
@@ -256,7 +270,7 @@ describe('runCategory4', () => {
       // correction marks it abandoned. A raw backward scan finds this LAST
       // line, skips it (abandoned), then falls back to the FIRST occurrence
       // above and (pre-#1209b bug) reports the session as recent.
-      JSON.stringify({ session_id: 'main-2026-05-08-session-1', session_type: 'deep', status: 'abandoned' }),
+      JSON.stringify({ session_id: 'main-2026-05-08-session-1', session_type: 'deep', status: 'abandoned', _synthetic: true }),
     ];
     writeFileSync(join(root, '.orchestrator/metrics/sessions.jsonl'), lines.join('\n') + '\n');
 

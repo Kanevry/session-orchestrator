@@ -15,6 +15,9 @@ import { dirname, resolve as resolvePath } from 'node:path';
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
 import { withStateMdLock } from '../session-lock.mjs';
 import { resolveStateDir } from '../platform.mjs';
+// Hook-closure note: own-session.mjs imports only node:* and the import-free
+// session-lock-shape.mjs, both already in the hook import set.
+import { readProcessLocalSessionIds } from '../session-identity/own-session.mjs';
 
 /**
  * Sets frontmatter.updated to the given ISO 8601 timestamp and returns the
@@ -85,26 +88,167 @@ const STATE_DIR_CANDIDATES = ['.claude', '.codex', '.cursor', '.pi'];
  * @returns {string} Absolute artifact path.
  */
 export function resolveStateArtifactPath(repoRoot, filename) {
-  const root = repoRoot ?? process.cwd();
-  const override = (process.env.SO_STATE_DIR ?? '').trim();
-  const active = resolveStateDir();
-  const directories = [...new Set([override || active, active, ...STATE_DIR_CANDIDATES])];
-  const candidates = directories.map((directory) => resolvePath(root, directory, filename));
+  const { candidates } = stateArtifactCandidates(repoRoot, filename);
   return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
 }
 
 /**
- * Resolve the active STATE.md path under a given repo root.
+ * Shared candidate list: SO_STATE_DIR override (if set), the active harness's
+ * state dir, then the legacy harness dirs. `preferredCount` is how many of the
+ * leading entries are override/active (as opposed to legacy).
+ *
+ * @param {string|undefined} repoRoot
+ * @param {string} filename
+ * @returns {{ candidates: string[], preferredCount: number }}
+ */
+function stateArtifactCandidates(repoRoot, filename) {
+  const root = repoRoot ?? process.cwd();
+  const override = (process.env.SO_STATE_DIR ?? '').trim();
+  const active = resolveStateDir();
+  const preferred = [...new Set([override || active, active])];
+  const directories = [...new Set([...preferred, ...STATE_DIR_CANDIDATES])];
+  return {
+    candidates: directories.map((directory) => resolvePath(root, directory, filename)),
+    preferredCount: preferred.length,
+  };
+}
+
+/**
+ * May THIS process write into the existing STATE.md at `candidate`?
+ * Always yes for a placeholder (no frontmatter or no `session-id`), a
+ * `status: idle` record, or a `session-id` naming this process
+ * (`readProcessLocalSessionIds()`). An unreadable file is never a target.
+ *
+ * Otherwise the answer depends on where the candidate sits:
+ *   - Legacy (other-platform) dir: no — #1618, unchanged.
+ *   - SO_STATE_DIR / active dir (`preferred`): refused ONLY when it is
+ *     `status: completed` AND this process has a measurable own id (#1640 —
+ *     the measured damage: session-end Phase 3.7a wrote into a FINISHED
+ *     foreign session's record). A non-completed record keeps the pre-#1640
+ *     behaviour: one checkout has one session.lock owner, and after `/clear`
+ *     the process carries a NEW raw id while its own active STATE.md still
+ *     names the old one — refusing that file made `/close` unable to finish.
+ *     `completedHandoff` (Idle Reset) may take a completed record too: that
+ *     rewrite IS the hand-over to the next session.
+ *
+ * CEILING (BV-004): a `/clear`ed session's active file is still identified by
+ * its OLD id until close, where {@link markStateMdCompletedOnDisk} re-stamps
+ * it; a live parallel session in the same checkout is PSA territory, not
+ * this guard's. Revisit when the raw id survives `/clear` (resume linkage).
+ *
+ * @param {string} candidate
+ * @param {string[]} ownIds
+ * @param {{ preferred: boolean, completedHandoff?: boolean }} opts
+ * @returns {boolean}
+ */
+function isWritableStateMd(candidate, ownIds, { preferred, completedHandoff = false }) {
+  let frontmatter;
+  try {
+    frontmatter = parseStateMd(readFileSync(candidate, 'utf8'))?.frontmatter ?? null;
+  } catch {
+    return false;
+  }
+  const raw = frontmatter?.['session-id'];
+  const sessionId = typeof raw === 'string' ? raw.trim() : '';
+  if (!sessionId) return true;
+  const status = frontmatter.status;
+  if (status === 'idle') return true;
+  if (ownIds.includes(sessionId)) return true;
+  if (!preferred) return false;
+  return status !== 'completed' || completedHandoff || ownIds.length === 0;
+}
+
+/**
+ * Resolve the active STATE.md path under a given repo root — READ side.
  *
  * Returns the first existing candidate, checking the active platform first.
  * Falls back to the active platform's state dir when none exist (matches the
- * create-on-first-write semantics expected by callers).
+ * create-on-first-write semantics expected by callers). The legacy fallback to
+ * another platform's STATE.md is kept for readers (#890); writers must use
+ * {@link resolveStateMdWritePath}.
  *
  * @param {string|undefined} repoRoot
  * @returns {string}  Absolute path to STATE.md.
  */
 export function resolveStateMdPath(repoRoot) {
   return resolveStateArtifactPath(repoRoot, 'STATE.md');
+}
+
+/**
+ * Resolve the STATE.md path a WRITE may target (#1618, #1640).
+ *
+ * Every existing candidate — SO_STATE_DIR, the active platform's dir, the
+ * legacy dirs — must pass the ownership rule ({@link isWritableStateMd}); the
+ * first one that does wins. Before #1640 the override/active candidates were
+ * taken unchecked, so session-end Phase 3.7a wrote its recommendation fields
+ * into a FOREIGN completed `.claude/STATE.md` while this session's own record
+ * lived elsewhere. Without a qualifying candidate the preferred path is
+ * returned for create-on-first-write — unless that path itself holds a foreign
+ * file, in which case `blocked` is true and writers refuse.
+ *
+ * @param {string|undefined} repoRoot
+ * @returns {string}  Absolute path to STATE.md.
+ */
+export function resolveStateMdWritePath(repoRoot) {
+  return resolveStateMdWriteTarget(repoRoot).path;
+}
+
+/**
+ * Like {@link resolveStateMdWritePath}, but also names the first STATE.md
+ * that was REJECTED on the way (#1618 review): `rejected` is the absolute path
+ * of an existing STATE.md not proven to be this process's, set only when the
+ * returned `path` is NOT a qualifying existing file (absent → create, or
+ * `blocked`). Callers use it to say why nothing was written instead of
+ * returning a silent no-op. `blocked` means `path` exists and is foreign:
+ * nothing may be written there (#1640).
+ *
+ * `opts.statePath` (#1640) pins the target explicitly — session-end passes the
+ * same path to Phase 3.7a and Phase 3.4 so both land in one file — and is
+ * subject to the same ownership rule (treated as a preferred candidate).
+ * `opts.completedHandoff` lets the Idle Reset take a preferred
+ * `status: completed` record (see {@link isWritableStateMd}).
+ *
+ * @param {string|undefined} repoRoot
+ * @param {{ statePath?: string, completedHandoff?: boolean }} [opts]
+ * @returns {{ path: string, rejected: string|null, blocked: boolean }}
+ */
+export function resolveStateMdWriteTarget(repoRoot, opts = {}) {
+  const { statePath, completedHandoff = false } = opts;
+  const ownIds = readProcessLocalSessionIds();
+  const explicit = typeof statePath === 'string' && statePath.trim() !== '';
+  const { candidates, preferredCount } = explicit
+    ? { candidates: [resolvePath(repoRoot ?? process.cwd(), statePath)], preferredCount: 1 }
+    : stateArtifactCandidates(repoRoot, 'STATE.md');
+  let rejected = null;
+  for (const [index, candidate] of candidates.entries()) {
+    if (!existsSync(candidate)) continue;
+    if (isWritableStateMd(candidate, ownIds, { preferred: index < preferredCount, completedHandoff })) {
+      return { path: candidate, rejected: null, blocked: false };
+    }
+    rejected ??= candidate;
+  }
+  const path = candidates[0];
+  return { path, rejected, blocked: existsSync(path) };
+}
+
+/**
+ * One stderr line naming a rejected foreign STATE.md, so a fail-closed
+ * write target never degrades into a silent no-op (#1618 review). When the
+ * rejected file IS the target (#1640 `blocked`), the line says nothing is
+ * written instead of naming a different target.
+ *
+ * @param {string} caller
+ * @param {string} rejected
+ * @param {string} target
+ */
+export function warnForeignStateMd(caller, rejected, target) {
+  const outcome = rejected === target
+    ? 'nothing written — it is no session-own write target'
+    : `write target is ${target}`;
+  process.stderr.write(
+    `⚠ ${caller}: ignoring ${rejected} — its session-id is not this process's ` +
+      `(no matching process-local session id); ${outcome} (#1618/#1640)\n`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -351,27 +495,40 @@ function writeFileAtomic(filePath, contents) {
  *   frontmatter-unsafe breach throws an `Error`
  *   (`.code === 'STATE_MD_FRONTMATTER_UNSAFE'`) instead of returning a no-op
  *   result. Default `false`.
+ * @param {string} [opts.statePath]  — explicit STATE.md target (#1640), absolute
+ *   or repo-relative; still ownership-checked. A foreign existing target is
+ *   refused with `reason: 'foreign-state-md'`, never overwritten.
+ * @param {boolean} [opts.completedHandoff]  — Idle Reset only: a preferred
+ *   `status: completed` record qualifies as write target (#1640).
  * @returns {Promise<{ written: boolean, path: string, contents: string|null, reason?: string }>}
  */
 export async function writeStateMd(repoRoot, transformer, opts = {}) {
   if (typeof transformer !== 'function') {
     throw new TypeError('writeStateMd: transformer must be a function');
   }
-  const statePath = resolveStateMdPath(repoRoot);
+  const { path: statePath, rejected, blocked } = resolveStateMdWriteTarget(repoRoot, {
+    statePath: opts.statePath,
+    completedHandoff: opts.completedHandoff,
+  });
+  if (rejected) warnForeignStateMd('writeStateMd', rejected, statePath);
+  const foreign = rejected ? { reason: 'foreign-state-md' } : {};
+  // #1640: the only existing file at the target belongs to another session —
+  // never overwrite it, never call the transformer on its contents.
+  if (blocked) return { written: false, path: statePath, contents: null, ...foreign };
   return withStateMdLock(
     repoRoot,
     async () => {
       const before = existsSync(statePath) ? readFileSync(statePath, 'utf8') : '';
       const after = await transformer(before);
       if (after === null || after === undefined) {
-        return { written: false, path: statePath, contents: null };
+        return { written: false, path: statePath, contents: null, ...foreign };
       }
       if (typeof after !== 'string') {
         throw new TypeError('writeStateMd: transformer must return a string or null');
       }
       if (after === before) {
         // No textual change — skip the write to keep mtime stable.
-        return { written: false, path: statePath, contents: before };
+        return { written: false, path: statePath, contents: before, ...foreign };
       }
 
       const ceilingBytes = typeof opts._ceilingBytes === 'number' && opts._ceilingBytes > 0
@@ -454,6 +611,107 @@ function requireRepoRoot(repoRoot, fnName) {
 export async function updateFrontmatterFieldsOnDisk(repoRoot, fields, opts = {}) {
   requireRepoRoot(repoRoot, 'updateFrontmatterFieldsOnDisk');
   return writeStateMd(repoRoot, (contents) => updateFrontmatterFields(contents, fields), opts);
+}
+
+/**
+ * Why the STATE.md `session-id` `sessionId` may NOT be taken over by this
+ * process (#1640 review MED-1), or `null` when it may. A non-completed record
+ * passes the write rule even with a foreign id (a `/clear`ed session's own
+ * file still names its pre-`/clear` id), so before re-stamping the id and
+ * completing the file we ask the host session registry whether that id is
+ * still REGISTERED at all (`readRegistry()`; the caller already excludes our
+ * own id). A registered session owns the file: completing it would lock that
+ * session out of its own record. No freshness window: the heartbeat is only
+ * written at turn end (hooks/on-stop.mjs), and 92 of 954 consecutive
+ * `orchestrator.turn.stopped` gaps (48 of 64 sessions) exceeded 15 min —
+ * an idle-but-live peer would look dead. Measured 2026-10-15: 13 of 13
+ * sessions that ended with SessionEnd `reason: clear` were already
+ * deregistered (on-session-end.mjs deregisters on every reason), so a
+ * `/clear` predecessor does not block its successor's close.
+ *
+ * Fail-closed: a registry directory that exists but cannot be read refuses.
+ * An absent registry (ENOENT) means no live peers.
+ *
+ * CEILING (BV-004): the registry is host-wide, not per checkout, and the
+ * check runs inside the STATE.md lock but not under the registry's. A session
+ * that crashed without SessionEnd (or whose deregistration failed) stays
+ * registered until `sweepZombies()` removes it after 60 min of inactivity at
+ * the next SessionStart of ANY session — until then no other session can
+ * complete its STATE.md (fail-closed direction, refused loudly). Revisit if
+ * that refusal shows up in close transcripts.
+ *
+ * Lazy import: this module is in the hook import closure; the registry is
+ * only needed on this async session-end path.
+ *
+ * @param {string} sessionId
+ * @param {string|undefined} ownId
+ * @returns {Promise<string|null>}
+ */
+async function liveForeignOwner(sessionId) {
+  try {
+    const { activeDir, readRegistry } = await import('../session-registry.mjs');
+    const { readdir } = await import('node:fs/promises');
+    try {
+      await readdir(activeDir());
+    } catch (err) {
+      if (err?.code === 'ENOENT') return null;
+      return `session registry unreadable (${err?.code ?? 'error'})`;
+    }
+    const entries = await readRegistry();
+    return entries.some((entry) => entry.session_id === sessionId)
+      ? 'its session-id belongs to a session still registered on this host'
+      : null;
+  } catch (err) {
+    return `session registry unreadable (${err?.code ?? err?.message ?? 'error'})`;
+  }
+}
+
+/**
+ * session-end Phase 3.4 (#1640): finalize THIS session's STATE.md in one
+ * locked write — `status: completed`, `updated`, optionally `current-wave`,
+ * and `session-id` re-stamped to the closing process's own raw id when one is
+ * measurable. The re-stamp keeps a `/clear`ed session's record its own after
+ * 3.4: the writers that run LATER in the close — Phase 5's
+ * `markOpenQuestionAnsweredOnDisk` — would otherwise find a completed record
+ * naming the pre-`/clear` id and be refused as foreign. Without a measurable
+ * id the existing `session-id` is left as is.
+ *
+ * Refused (`reason: 'foreign-state-md'`, one stderr line, file byte-identical)
+ * when the record's `session-id` is neither this process's nor free to take
+ * over — see {@link liveForeignOwner}. Placeholder (no `session-id`), idle and
+ * own records are never checked against the registry.
+ *
+ * @param {string} repoRoot  — absolute path to the repository root (required)
+ * @param {object} [opts]  — `writeStateMd` options; pass the SAME `statePath` as Phase 3.7a.
+ * @param {number} [opts.currentWave]  — final wave count, written as `current-wave`.
+ * @returns {Promise<{ written: boolean, path: string, contents: string|null, reason?: string }>}
+ * @throws {Error} when repoRoot is undefined, null, or empty
+ */
+export async function markStateMdCompletedOnDisk(repoRoot, opts = {}) {
+  requireRepoRoot(repoRoot, 'markStateMdCompletedOnDisk');
+  const { currentWave, ...writeOpts } = opts;
+  const fields = { status: 'completed', updated: new Date().toISOString() };
+  if (Number.isInteger(currentWave)) fields['current-wave'] = currentWave;
+  const [ownId] = readProcessLocalSessionIds();
+  if (ownId) fields['session-id'] = ownId;
+  let refusal = null;
+  const result = await writeStateMd(
+    repoRoot,
+    async (contents) => {
+      const frontmatter = parseStateMd(contents)?.frontmatter;
+      const raw = frontmatter?.['session-id'];
+      const sessionId = typeof raw === 'string' ? raw.trim() : '';
+      if (sessionId && sessionId !== ownId && frontmatter.status !== 'idle') {
+        refusal = await liveForeignOwner(sessionId);
+        if (refusal) return null;
+      }
+      return updateFrontmatterFields(contents, fields);
+    },
+    writeOpts,
+  );
+  if (!refusal) return result;
+  process.stderr.write(`⚠ markStateMdCompletedOnDisk: refusing ${result.path} — ${refusal}; nothing written (#1640)\n`);
+  return { ...result, written: false, reason: 'foreign-state-md' };
 }
 
 /**

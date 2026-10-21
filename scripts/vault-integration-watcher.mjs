@@ -31,6 +31,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { sep as pathSep } from 'node:path';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { resolveRepoSpec, redactUrlCredentials } from './lib/vcs-repo-spec.mjs';
@@ -279,14 +282,58 @@ function buildTickBody(issueMap, depIds, verdict, streak, date) {
 }
 
 /**
- * Build the flip-ready trigger comment body.
- * @param {string[]} repos
+ * Canonical spelling of an absolute path: realpath (native) when it exists, else as given.
+ * On macOS the native realpath also returns the on-disk letter case.
+ * @param {string} p
  * @returns {string}
  */
-function buildFlipBody(repos) {
+function canonicalPath(p) {
+  try {
+    return realpathSync.native(p);
+  } catch {
+    return p;
+  }
+}
+
+/**
+ * Path of `root` relative to the home dir, or null when it is not under home (#1622).
+ *
+ * Both sides go through realpath first, so symlinks and (on macOS) a differently
+ * cased spelling of an existing dir resolve to the same string. A root that does not
+ * exist cannot be canonicalised; on darwin/win32 the default volumes are
+ * case-insensitive, so the prefix compare is case-folded there as a fallback.
+ * Ceiling: a case-sensitive APFS volume could fold two distinct non-existent paths
+ * together; the snippet would then name a dir that is not there either way.
+ * @param {string} root
+ * @returns {string|null} '' when root IS home, the relative rest when inside, else null
+ */
+function homeRelative(root) {
+  const home = canonicalPath(homedir());
+  const canonRoot = canonicalPath(root);
+  const fold = process.platform === 'darwin' || process.platform === 'win32';
+  const cmp = (s) => (fold ? s.toLocaleLowerCase('en-US') : s);
+  if (cmp(canonRoot) === cmp(home)) return '';
+  for (const sep of new Set(['/', pathSep])) {
+    if (cmp(canonRoot).startsWith(cmp(`${home}${sep}`))) return canonRoot.slice(home.length + 1);
+  }
+  return null;
+}
+
+/**
+ * Build the flip-ready trigger comment body.
+ * @param {string[]} repos
+ * @param {string} root — projects root the repo names resolve against
+ *   (getConfinementRoot(), so the snippet follows `projects-root`, #1567)
+ * @returns {string}
+ */
+function buildFlipBody(repos, root) {
   // Defense-in-depth: regex+confinement upstream already filter, but shell-quote here
   // makes the embedded bash safe under any future bypass.
   const repoList = repos.map(shellQuote).join(' ');
+  // The body is posted to a GitLab issue: a root under the home dir is written
+  // as "$HOME"/… so the comment never carries the owner's home path (#1490).
+  const rel = homeRelative(root);
+  const rootQ = rel === null ? shellQuote(root) : rel === '' ? '"$HOME"' : `"$HOME"/${shellQuote(rel)}`;
   // The sed/add/commit one-liner targets the project-instruction file. Most
   // ecosystem repos use CLAUDE.md, but Codex-CLI repos use AGENTS.md as a
   // transparent alias — see skills/_shared/instruction-file-resolution.md.
@@ -296,14 +343,15 @@ function buildFlipBody(repos) {
 
 Lokaler Befehl (ein-Liner pro Repo, aber besser per Session orchestriert; CLAUDE.md and AGENTS.md sind Aliase):
 \`\`\`bash
+root=${rootQ}
 for d in ${repoList}; do
   for f in CLAUDE.md AGENTS.md; do
-    [ -s ~/Projects/$d/$f ] || continue
-    sed -i.bak 's/mode: warn }/mode: strict }/' ~/Projects/$d/$f
-    git -C ~/Projects/$d add $f
+    [ -s "$root/$d/$f" ] || continue
+    sed -i.bak 's/mode: warn }/mode: strict }/' "$root/$d/$f"
+    git -C "$root/$d" add "$f"
     break
   done
-  git -C ~/Projects/$d commit -m 'chore(orchestrator): Promote vault-integration to strict mode — closes #305'
+  git -C "$root/$d" commit -m 'chore(orchestrator): Promote vault-integration to strict mode — closes #305'
 done
 \`\`\``;
 }
@@ -402,7 +450,7 @@ async function main() {
   // 7. If streak == 3 (or more), post flip-ready trigger
   if (newStreak >= 3) {
     log(`streak=${newStreak} >= 3 — posting flip-ready trigger`);
-    postComment(TRACKING_ISSUE, buildFlipBody(flipRepos));
+    postComment(TRACKING_ISSUE, buildFlipBody(flipRepos, watcherRoot));
     emit({ action: 'flip-ready-posted', issue: TRACKING_ISSUE });
   }
 

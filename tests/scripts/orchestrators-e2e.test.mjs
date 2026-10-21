@@ -11,9 +11,9 @@
  * assertions there), so this file adds that gap coverage.
  */
 
-import { describe, it, expect, inject } from 'vitest';
+import { describe, it, expect, inject, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,6 +29,7 @@ const SKIP_CONFIG_WITH_LINT = JSON.stringify({
 // Every wrapper spawn registers its gate children in a ledger; keep that out of
 // the LIVE .orchestrator/runtime/gate-processes.jsonl of this checkout (q-1 H1).
 const TEST_LEDGER_ROOT = mkdtempSync(path.join(tmpdir(), 'orch-e2e-ledger-'));
+afterAll(() => rmSync(TEST_LEDGER_ROOT, { recursive: true, force: true }));
 // resolveLedgerRoot() only honours a root that already carries .orchestrator/ —
 // a bare tmp dir would fall back to the checkout silently.
 mkdirSync(path.join(TEST_LEDGER_ROOT, '.orchestrator'), { recursive: true });

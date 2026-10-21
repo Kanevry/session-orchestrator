@@ -5,9 +5,9 @@
  * Spawns the script via node, injects env vars, and asserts on JSON stdout + exit codes.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -17,11 +17,12 @@ const SCRIPT = path.resolve(
   '../../../scripts/lib/gates/gate-full.mjs',
 );
 const TEST_LEDGER_ROOT = mkdtempSync(path.join(tmpdir(), 'gate-test-ledger-'));
+afterAll(() => rmSync(TEST_LEDGER_ROOT, { recursive: true, force: true }));
 
 /**
  * Spawn gate-full.mjs with the given extra env vars.
  */
-function run(extraEnv = {}) {
+function run(extraEnv = {}, cwd = undefined) {
   const env = { ...process.env };
   // Never let a spawned gate script register its children in the LIVE
   // .orchestrator/runtime/gate-processes.jsonl of this checkout (q-1 H1, W5).
@@ -32,6 +33,7 @@ function run(extraEnv = {}) {
   return spawnSync('node', [SCRIPT], {
     encoding: 'utf8',
     env: { ...env, ...extraEnv },
+    ...(cwd ? { cwd } : {}),
   });
 }
 
@@ -309,5 +311,139 @@ describe('gate-full — inner per-command kill ladder', () => {
     // Skipped commands spawned nothing: absent, never `false`.
     expect(json.lint).not.toHaveProperty('timed_out');
     expect(json.test).not.toHaveProperty('timed_out');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Serial re-run of timeout-only failures (#1673)
+// ---------------------------------------------------------------------------
+
+describe.skipIf(process.platform === 'win32')('gate-full — serial re-run of timeout-only failures', () => {
+  const FIRST_SUMMARY = [' Test Files  1 failed | 4 passed (5)', '      Tests  1 failed | 9 passed (10)'];
+  const SLOW = 'tests/slow.test.mjs';
+  const timeoutBlock = (file) => [` FAIL  ${file} > slow`, 'Error: Test timed out in 10000ms.'];
+  const firstRun = (blocks, summary = FIRST_SUMMARY) =>
+    [...blocks.flatMap((b, i) => ['', ...b, `⎯⎯[${i + 1}/${blocks.length}]⎯`]), '', ...summary].join('\n');
+
+  /**
+   * A tmp project whose TEST_CMD is its own `node_modules/.bin/vitest run` — the
+   * re-run appends to that same command (Codex review round 2, H2). The stub
+   * records every argv; without `--outputFile.json` it replays `first` with
+   * exit `firstRc`, with it it writes `report` (vitest's JSON-reporter shape,
+   * names relative to the project) there and exits `rerunRc`.
+   */
+  const dirs = [];
+  afterAll(() => dirs.forEach((d) => rmSync(d, { recursive: true, force: true })));
+  const STUB_TEST_CMD = 'node_modules/.bin/vitest run';
+  function project({ first, report = null, rerunRc = 0, firstRc = 1, firstSignal = null }) {
+    const dir = mkdtempSync(path.join(tmpdir(), 'gate-full-rerun-'));
+    dirs.push(dir);
+    mkdirSync(path.join(dir, 'node_modules', '.bin'), { recursive: true });
+    mkdirSync(path.join(dir, 'tests', 'other', 'tests'), { recursive: true });
+    for (const f of [SLOW, 'tests/other/tests/slow.test.mjs']) writeFileSync(path.join(dir, f), '');
+    writeFileSync(path.join(dir, 'first.txt'), first);
+    const absolute = report && { ...report, testResults: report.testResults.map((t) => ({ ...t, name: path.join(dir, t.name) })) };
+    writeFileSync(path.join(dir, 'spec.json'), JSON.stringify({ report: absolute, rerunRc, firstRc, firstSignal }));
+    writeFileSync(path.join(dir, 'node_modules', '.bin', 'vitest'), [
+      '#!/usr/bin/env node',
+      "const fs = require('node:fs');",
+      `const dir = ${JSON.stringify(dir)};`,
+      "fs.appendFileSync(dir + '/calls.txt', process.argv.slice(2).join(' ') + '\\n');",
+      "const spec = JSON.parse(fs.readFileSync(dir + '/spec.json', 'utf8'));",
+      "const out = process.argv.find((a) => a.startsWith('--outputFile.json='));",
+      "if (!out) { fs.writeSync(1, fs.readFileSync(dir + '/first.txt', 'utf8')); if (spec.firstSignal) process.kill(process.pid, spec.firstSignal); else process.exit(spec.firstRc); }",
+      "if (spec.report) fs.writeFileSync(out.slice('--outputFile.json='.length), JSON.stringify(spec.report));",
+      'process.exit(spec.rerunRc);',
+    ].join('\n'), { mode: 0o755 });
+    return dir;
+  }
+  const cleanReport = (files) => ({
+    success: true, numPassedTests: 3, numFailedTests: 0, testResults: files.map((name) => ({ name, status: 'passed' })),
+  });
+  const gate = (dir, testCmd = STUB_TEST_CMD) => run({ TYPECHECK_CMD: 'skip', LINT_CMD: 'skip', TEST_CMD: testCmd }, dir);
+  const calls = (dir) => readFileSync(path.join(dir, 'calls.txt'), 'utf8').trim().split('\n');
+
+  // The #1673 block: a load-only timeout used to fail the push; a clean serial
+  // re-run of exactly that file now passes it and names it.
+  it('passes the gate when every failure was a timeout and the serial re-run is clean', () => {
+    const dir = project({ first: firstRun([timeoutBlock(SLOW)]), report: cleanReport([SLOW]) });
+    const r = gate(dir);
+    expect(r.status).toBe(0);
+    // Same command, same selection: only the filters and reporters are added.
+    expect(calls(dir)).toEqual([
+      'run',
+      expect.stringMatching(/^run --no-file-parallelism --reporter=default --reporter=json --outputFile.json=\S+ tests\/slow\.test\.mjs$/),
+    ]);
+    const json = JSON.parse(r.stdout);
+    expect(json.test.status).toBe('pass');
+    // The first run's measurement is kept, not rewritten.
+    expect(json.test.failed).toBe(1);
+    expect(json.test.suite_died).toBe(false);
+    expect(json.test.rerun).toMatchObject({ files: [SLOW], status: 'pass', failed: 0, passed: 3 });
+    expect(r.stderr).toContain('re-ran serially → pass');
+    expect(r.stderr).toContain(`  ${SLOW}`);
+  });
+
+  it('keeps the gate red when the serial re-run still fails', () => {
+    const report = { success: false, numPassedTests: 2, numFailedTests: 1, testResults: [{ name: SLOW, status: 'failed' }] };
+    const dir = project({ first: firstRun([timeoutBlock(SLOW)]), report, rerunRc: 1 });
+    const r = gate(dir);
+    expect(r.status).toBe(2);
+    const json = JSON.parse(r.stdout);
+    expect(json.test.status).toBe('fail');
+    expect(json.test.rerun).toMatchObject({ files: [SLOW], status: 'fail', reason: 'exit-non-zero' });
+    expect(r.stderr).toContain('test re-run FAILED');
+  });
+
+  // Exit 0 and a passed count are not proof (Codex review of de97b46c, H2):
+  // only the report shows WHICH file ran. A filter that matched another file
+  // must stay red, and so must a re-run that wrote no report at all.
+  it.each([
+    ['another file ran', cleanReport(['tests/other/tests/slow.test.mjs']), 'file-set-mismatch'],
+    ['no report', null, 'report-unreadable'],
+  ])('keeps the gate red when the re-run exits 0 but the report proves nothing (%s)', (_label, report, reason) => {
+    const dir = project({ first: firstRun([timeoutBlock(SLOW)]), report });
+    const r = gate(dir);
+    expect(r.status).toBe(2);
+    expect(JSON.parse(r.stdout).test.rerun).toMatchObject({ status: 'fail', reason });
+  });
+
+  // Lead 32, 2026-10-20: an assertion failure is never re-run, even beside
+  // timeouts. Codex review M3: neither is a first run that did not exit 1.
+  // Round 2, H2: nor a test command whose trailing arguments may not reach vitest.
+  it.each([
+    ['an assertion failure', firstRun([timeoutBlock(SLOW), [' FAIL  tests/bad.test.mjs > bad', 'AssertionError: expected 1 to be 2']],
+      [' Test Files  2 failed | 3 passed (5)', '      Tests  2 failed | 8 passed (10)']), 1, STUB_TEST_CMD],
+    ['a first run that did not exit 1', firstRun([timeoutBlock(SLOW)]), 143, STUB_TEST_CMD],
+    ['a test command of unknown shape', firstRun([timeoutBlock(SLOW)]), 1, `${STUB_TEST_CMD} && true`],
+    ['a wrapper in front of vitest', firstRun([timeoutBlock(SLOW)]), 1, `node node_modules/.bin/vitest run`],
+  ])('does not re-run anything after %s', (_label, first, firstRc, testCmd) => {
+    const dir = project({ first, report: cleanReport([SLOW]), firstRc });
+    const r = gate(dir, testCmd);
+    expect(r.status).toBe(2);
+    expect(calls(dir)).toEqual(['run']);
+    expect(JSON.parse(r.stdout).test).not.toHaveProperty('rerun');
+  });
+
+  // Codex review round 3, M3: with `exec` the test process IS the spawned
+  // child, so a signal ends it with no exit code — which `exitCode` reports as
+  // 1. Only `exitSignal` tells this run from a normal failure.
+  it('does not re-run anything after a first run that ended by a signal', () => {
+    const dir = project({ first: firstRun([timeoutBlock(SLOW)]), report: cleanReport([SLOW]), firstSignal: 'SIGTERM' });
+    const r = gate(dir, `exec ${STUB_TEST_CMD}`);
+    expect(r.status).toBe(2);
+    expect(calls(dir)).toEqual(['run']);
+    expect(JSON.parse(r.stdout).test).not.toHaveProperty('rerun');
+  });
+
+  // Codex review rounds 2+3, M4: a re-run that cannot even start (no temp dir)
+  // keeps the step red, names the files, and does not crash the gate.
+  it('stays red and names the files when the re-run cannot start', () => {
+    const dir = project({ first: firstRun([timeoutBlock(SLOW)]), report: cleanReport([SLOW]) });
+    const r = run({ TYPECHECK_CMD: 'skip', LINT_CMD: 'skip', TEST_CMD: STUB_TEST_CMD, TMPDIR: path.join(dir, 'missing') }, dir);
+    expect(r.status).toBe(2);
+    const json = JSON.parse(r.stdout);
+    expect(json.test.rerun).toMatchObject({ files: [SLOW], status: 'fail', reason: 'rerun-error: ENOENT' });
+    expect(r.stderr).toContain('(not run: rerun-error: ENOENT)');
   });
 });

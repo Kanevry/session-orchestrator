@@ -267,3 +267,52 @@ describe('category1 c1.2 sessions-jsonl-growth counts identities (#1167)', () =>
     expect(check.evidence.lineCount).toBe(2);
   });
 });
+
+
+/**
+ * A real git repo `<base>/main` (one empty commit) plus a linked worktree
+ * `<base>/wt` — the layout #1514/#1584 map back to the main checkout.
+ */
+function makeLinkedWorktree(spawnGit, base) {
+  const main = join(base, 'main');
+  const wt = join(base, 'wt');
+  mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawnGit('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  return { main, wt };
+}
+
+describe('category1 c1.2 reads the MAIN checkout ledger from a linked worktree (#1592)', () => {
+  /**
+   * Bug this catches: c4.2 already reads the shared ledger through
+   * resolveEventsLedgerRoot, c1.2 still read `<root>/…` — an audit run from a
+   * linked worktree failed c1.2 with "sessions.jsonl missing" while the main
+   * checkout held every record.
+   */
+  it('passes on the main checkout\'s two sessions when audited from the worktree', async () => {
+    const { spawnSync } = await import('node:child_process');
+    const base = mkdtempSync(join(tmpdir(), 'cat1-1592-'));
+    try {
+      const { main, wt } = makeLinkedWorktree(spawnSync, base);
+      const lines = [1, 2].map((n) => JSON.stringify({
+        session_id: `main-2026-09-0${n}-session-1`,
+        session_type: 'deep',
+        started_at: `2026-09-0${n}T08:00:00.000Z`,
+      }));
+      scaffold(main, '.orchestrator/metrics/sessions.jsonl', lines.join('\n') + '\n');
+      _resetWarnFlags();
+
+      const check = runCategory1(wt).find((c) => c.check_id === 'sessions-jsonl-growth');
+
+      expect(check.status).toBe('pass');
+      expect(check.message).toBe('sessions.jsonl has 2 distinct sessions in 2 valid lines');
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});

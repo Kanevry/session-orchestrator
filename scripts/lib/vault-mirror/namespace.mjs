@@ -56,7 +56,7 @@
 import { basename, resolve } from 'node:path';
 
 import { legacySubjectToSlug } from './utils.mjs';
-import { isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs';
+import { inspectOwnerPatterns, isOwnerLeakySegment } from '../../lib/validate/check-owner-leakage.mjs';
 import { loadPseudonymMap } from './pseudonym-map.mjs';
 import { loadHostPaths, resolveHostPath } from '../config/host-paths.mjs';
 import { isQueryFailure, resolvePreferredRemote } from '../vcs-repo-spec.mjs';
@@ -262,6 +262,22 @@ function lookupPseudonym(base, seg) {
 }
 
 /**
+ * WARN line for a redaction. An unsafe private config dir (#1629, e.g. 0777 under
+ * umask 000) makes isOwnerLeakySegment() fail closed with CP1 for EVERY segment —
+ * the redaction stays, but calling that a leak hid the real cause.
+ *
+ * @param {string} where
+ * @param {string} pattern
+ * @returns {string}
+ */
+function redactionWarning(where, pattern) {
+  if (inspectOwnerPatterns().reason === 'unsafe-config-dir') {
+    return `WARN vault-mirror/namespace: owner policy unavailable (unsafe config dir); redacting ${where} to 'redacted-repo'\n`;
+  }
+  return `WARN vault-mirror/namespace: owner-privacy leak detected in ${where} (pattern: ${pattern}); redacting to 'redacted-repo'\n`;
+}
+
+/**
  * Resolve the sanitised repository namespace segment for vault path scoping.
  *
  * @param {object}  [opts]
@@ -332,9 +348,7 @@ export function resolveRepoNamespace({ vaultName = null, repoRoot = null } = {})
   if (rawMatch !== null) {
     const pseudonym = lookupPseudonym(base, seg);
     if (pseudonym) return pseudonym;
-    process.stderr.write(
-      `WARN vault-mirror/namespace: owner-privacy leak detected in repo identifier (pattern: ${rawMatch}); redacting to 'redacted-repo'\n`,
-    );
+    process.stderr.write(redactionWarning('repo identifier', rawMatch));
     return 'redacted-repo';
   }
 
@@ -342,9 +356,7 @@ export function resolveRepoNamespace({ vaultName = null, repoRoot = null } = {})
   if (segMatch !== null) {
     const pseudonym = lookupPseudonym(base, seg);
     if (pseudonym) return pseudonym;
-    process.stderr.write(
-      `WARN vault-mirror/namespace: owner-privacy leak detected in sanitised namespace segment (pattern: ${segMatch}); redacting to 'redacted-repo'\n`,
-    );
+    process.stderr.write(redactionWarning('sanitised namespace segment', segMatch));
     return 'redacted-repo';
   }
 

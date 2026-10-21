@@ -101,6 +101,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 const SESSIONS_REL = ['.orchestrator', 'metrics', 'sessions.jsonl'];
 
@@ -211,6 +212,51 @@ export function isBackfillStub(rec) {
   const hasWork = (Array.isArray(rec.waves) && rec.waves.length > 0)
     || rec.total_waves > 0 || rec.total_agents > 0 || rec.total_files_changed > 0;
   return !hasWork;
+}
+
+/** Session types a record must carry (or show work) to count as measured. */
+const MEASURED_SESSION_TYPES = new Set(['housekeeping', 'feature', 'deep']);
+
+/**
+ * True when a record is a MEASURED session — one a decision may count:
+ * "sessions", deep share, close rate, staleness, dispatcher ranking, site
+ * numbers, cold-start history. A record is measured when it is a parseable
+ * object, is NOT a backfill stub (`isBackfillStub`), does NOT carry
+ * `_synthetic: true`, and EITHER carries a known `session_type`
+ * (`housekeeping|feature|deep`) OR shows at least one wave/agent.
+ *
+ * Why: 59.1 % of fleet session records are synthetic backfill stubs written by
+ * `hooks/on-session-end.mjs` via `session-close-backfill.mjs::synthesizeRecord`
+ * (`_synthetic: true`, `session_type: 'unknown'`, 0 waves/agents) — measured by
+ * D1 on 2026-10-12 (audit E1, `docs/audits/2026-10-12-portfolio-analyse/`).
+ * `isRealSession` (`session-schema/filters.mjs`) only drops `status:
+ * 'abandoned'`, so a `state-md-completed` stub with `status: 'completed'` still
+ * read as a real session; a stub-only ledger then counted as session history.
+ * This predicate is the narrower READER question; it does not replace
+ * `isRealSession` (whose fail-open contract schema/render readers rely on).
+ * Decision readers use this definition alone, including legacy known-type
+ * records without a completed status. The staleness banner separately retains
+ * unmeasured starts as activity anchors, never as measured completion times.
+ *
+ * CEILING (BV-004): a legacy pre-4.0.0 record with no `session_type` but with
+ * waves counts as measured — waves are evidence of real work, the missing type
+ * is only a schema gap. Conversely a known-type record with 0 waves (a
+ * coordinator-direct housekeeping close) counts too.
+ * Revisit-Trigger: if a writer starts emitting unknown-type records WITH waves
+ * that are not real work, or `_synthetic` records stop carrying 0 waves.
+ *
+ * @param {unknown} rec
+ * @returns {boolean}
+ */
+export function isMeasuredSession(rec) {
+  if (!isRecordObject(rec)) return false;
+  if (isBackfillStub(rec) || rec._synthetic === true) return false;
+  if (MEASURED_SESSION_TYPES.has(rec.session_type)) return true;
+  return (Array.isArray(rec.waves) && rec.waves.length > 0)
+    || rec.total_waves > 0 || rec.total_agents > 0
+    // Legacy records may carry measured agent counts only in agent_summary.
+    || (isRecordObject(rec.agent_summary)
+      && ['complete', 'partial', 'failed', 'spiral'].some((key) => rec.agent_summary[key] > 0));
 }
 
 /**
@@ -463,10 +509,16 @@ export function canonicalizeSessions(records, opts) {
  * so id-less records are counted as-is and only the id-bearing ones go through
  * the identity collapse.
  *
+ * `measuredOnly` drops every record `isMeasuredSession` rejects (backfill
+ * stubs, `_synthetic`, unknown type without work) — for a reader whose count
+ * is a "has this repo real session history?" decision (cold-start, audit E1).
+ *
  * @param {string} raw — full file contents.
+ * @param {object} [opts]
+ * @param {boolean} [opts.measuredOnly=false]
  * @returns {number}
  */
-export function countSessionsInJsonl(raw) {
+export function countSessionsInJsonl(raw, { measuredOnly = false } = {}) {
   if (typeof raw !== 'string' || raw.length === 0) return 0;
   const parsed = [];
   for (const line of raw.split('\n')) {
@@ -479,6 +531,12 @@ export function countSessionsInJsonl(raw) {
     }
   }
   const identified = parsed.filter((r) => isRecordObject(r) && isNonEmptyString(r.session_id));
+  if (measuredOnly) {
+    const anonymousMeasured = parsed.filter(
+      (r) => isMeasuredSession(r) && !isNonEmptyString(r.session_id),
+    ).length;
+    return canonicalizeSessions(identified).filter(isMeasuredSession).length + anonymousMeasured;
+  }
   const anonymous = parsed.length - identified.length;
   return canonicalizeSessions(identified).length + anonymous;
 }
@@ -515,7 +573,7 @@ export function countSessionsInJsonl(raw) {
  *
  * @param {object} [args]
  * @param {string} [args.repoRoot] project root; the ledger is resolved as
- *   `<repoRoot>/.orchestrator/metrics/sessions.jsonl`. Defaults to
+ *   the main checkout's `.orchestrator/metrics/sessions.jsonl`. Defaults to
  *   `process.cwd()` when neither this nor `filePath` is given.
  * @param {string} [args.filePath] explicit ledger path (wins over `repoRoot`).
  * @returns {Array<object>} canonical records
@@ -523,7 +581,7 @@ export function countSessionsInJsonl(raw) {
 export function readCanonicalSessions({ repoRoot, filePath } = {}) {
   const resolved = isNonEmptyString(filePath)
     ? filePath
-    : path.join(isNonEmptyString(repoRoot) ? repoRoot : process.cwd(), ...SESSIONS_REL);
+    : path.join(resolveEventsLedgerRoot(isNonEmptyString(repoRoot) ? repoRoot : process.cwd()), ...SESSIONS_REL);
 
   let raw;
   try {

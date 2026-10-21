@@ -229,8 +229,19 @@ async function mkProject({ policy = FIXTURE_POLICY, claudeMdExtra = '' } = {}) {
 const tmpDirs = [];
 
 afterEach(async () => {
-  for (const d of tmpDirs.splice(0)) {
+  const dirs = tmpDirs.splice(0);
+  for (const d of dirs) {
     await fs.rm(d, { recursive: true, force: true });
+  }
+  // The guard's HEAD-fallback banner writes its throttle marker under
+  // os.tmpdir(), scoped by the project dir's digest; remove the ones these
+  // projects caused (#1648).
+  if (dirs.length === 0) return;
+  const scopes = dirs.map((d) => `-${markerScopeOf(d)}-`);
+  for (const name of await fs.readdir(os.tmpdir())) {
+    if (name.startsWith('session-orchestrator-guard-') && scopes.some((s) => name.includes(s))) {
+      await fs.rm(path.join(os.tmpdir(), name), { force: true });
+    }
   }
 });
 
@@ -914,8 +925,11 @@ describe('#935 $TMPDIR token expansion (exit 0)', { timeout: 15000 }, () => {
     // own semantics. `${TMPDIR}so-x` with TMPDIR=/tmp is /tmpso-x, and /tmpso-x is
     // not under /tmp/. Pinning it stops a future reader from "fixing" the guard to
     // accept a path bash itself would never have produced.
+    // The temp ROOT, not os.tmpdir(): under the per-run TMPDIR (#1646)
+    // os.tmpdir() is a subdirectory, and `<root>/so-vitest-Xso-x` would stay
+    // inside the `/tmp/` policy prefix on Linux.
     const dir = await mkProjectTracked();
-    const tmp = realpathSync(os.tmpdir());
+    const tmp = realpathSync('/tmp');
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('rm -rf ${TMPDIR}so-ablation-eval-x'),
@@ -1178,6 +1192,14 @@ describe('#983 rm-target collection skips redirect tokens', { timeout: 15000 }, 
 // ---------------------------------------------------------------------------
 
 describe('#982 wrapper-aware rm target parsing', { timeout: 15000 }, () => {
+  // #1667: the shared lexer glued `(` onto the verb, so the allowlisted target
+  // was never parsed and a harmless subshell delete failed closed.
+  it('allows `true && (rm -rf /tmp/ok)` — the subshell target is parsed, allowlist applies', async () => {
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('true && (rm -rf /tmp/ok)') });
+    expectAllow(result);
+  });
+
   it('allows `sudo rm -rf /tmp/ok` — wrapper unwraps, allowlist still applies', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({ projectDir: dir, stdin: bashPayload('sudo rm -rf /tmp/ok') });
@@ -1491,6 +1513,29 @@ describe('#992 — load-failure visibility and HEAD fallback', { timeout: 30000 
       execArgv: brokenBlockerBoot(),
     });
     expectDeny(result, 'rm-rf-destructive');
+  });
+
+  it('DENIES (fail-closed) when main() throws at runtime on an otherwise harmless command (#1671)', async () => {
+    // Bug this catches (measured): an internal error inside main() — the real
+    // trigger was a tokenizer RangeError on a long command — exited 0 with an
+    // empty stdout, i.e. ALLOW. Seam: the working-tree command-blocker.mjs is the
+    // REAL module (re-exported via a `?real` URL the loader does not match) with
+    // ONE export replaced by a thrower. The shape check passes, so the guard arms
+    // normally and the throw happens inside main(), not at load time.
+    const dir = await mkProjectTracked();
+    const realBlocker = path.resolve(import.meta.dirname, '../../scripts/lib/command-blocker.mjs');
+    const result = await runHook({
+      projectDir: dir,
+      stdin: bashPayload('echo hello'),
+      execArgv: brokenBlockerBoot({
+        workingSource:
+          `export * from ${JSON.stringify(`file://${realBlocker}?real`)};\n` +
+          "export function commandMatchesBlocked() { throw new RangeError('Maximum call stack size exceeded'); }\n",
+      }),
+    });
+    expectDeny(result, 'internal error');
+    expect(result.stdout).toContain('Split the command');
+    expect(result.stderr).not.toContain('GUARD INACTIVE');
   });
 
   it.skipIf(!HAS_GIT)('banners the HEAD fallback on stderr, naming the consequence — never silently', async () => {
@@ -1893,6 +1938,18 @@ describe('#1401 — delete/rename of a ledger file under .orchestrator/metrics/'
     ['env assignment prefix', 'env FOO=1 rm -f .orchestrator/metrics/events.jsonl'],
     ['chain position', 'echo hi; rm -f .orchestrator/metrics/events.jsonl'],
     ['compound-statement head', 'for f in a; do rm -f .orchestrator/metrics/events.jsonl; done'],
+    // #1679 point 1: the head `f()` / `function f` sat in the body's segment,
+    // so the verb was `f()` and the ledger operand was never judged.
+    ['a `name()` function body', 'f() { unlink .orchestrator/metrics/events.jsonl; }; f'],
+    ['a function body with an adjacent brace', 'f(){ unlink .orchestrator/metrics/events.jsonl; }; f'],
+    ['a function body without spaces around its opener', 'f(){unlink .orchestrator/metrics/events.jsonl;}'],
+    ['a function with an adjacent subshell body', 'f()(unlink .orchestrator/metrics/events.jsonl)'],
+    ['a `function name` body', 'function f { mv .orchestrator/metrics/events.jsonl /tmp/x; }; f'],
+    ['a function body in a subshell', '(f() { unlink .orchestrator/metrics/events.jsonl; }; f)'],
+    // #1699 item 13 — zsh 5.9 runs both: an anonymous function executes on the
+    // spot, and a `{` glued to the body's first word is still the opener.
+    ['a zsh anonymous function', 'function { unlink .orchestrator/metrics/events.jsonl; }'],
+    ['a zsh brace opener glued to the verb', 'function f() {unlink .orchestrator/metrics/events.jsonl;}; f'],
     ['literal -c payload', 'bash -c "rm -f .orchestrator/metrics/events.jsonl"'],
     ['literal eval payload', 'eval "rm -f .orchestrator/metrics/events.jsonl"'],
   ])('blocks through %s', async (_label, command) => {

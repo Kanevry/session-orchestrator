@@ -63,24 +63,24 @@ Review `<state-dir>/rules/` files that are relevant to this session's work:
 
 ### 3.4 Update STATE.md
 
-> **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` plus the optional `updated` timestamp (#184), and — as of Phase A of Epic #271 — the 5 Recommendation fields written by Phase 3.7a. No other fields.
+> **Ownership Reference:** See `skills/_shared/state-ownership.md`. session-end is authorized to set `status: completed` plus the optional `updated` timestamp (#184), the final `current-wave`, the re-stamped `session-id` (#1640, see step 1), and — as of Phase A of Epic #271 — the 5 Recommendation fields written by Phase 3.7a. No other fields.
 
 > **Runtime Ordering Note (Epic #271 Phase A):** Phase 3.4's `status: completed` write executes LAST in Phase 3, AFTER Phase 3.7 (sessions.jsonl) and Phase 3.7a (Compute and Write Recommendations). The ordinal position here (3.4) is kept for historical compatibility; the canonical runtime order is `3.1 → 3.2 → 3.3 → 3.4a → 3.5 → 3.5a → 3.6 → 3.6.3 → 3.6.4 → 3.6.6 → 3.6.8 → 3.7 → 3.45 → 3.7a → 3.7b → 3.7c → 3.7d → 3.7e → 3.4` (3.6.3/3.6.4/3.6.6 were missing from this note pre-#724; 3.6.5 Auto-Dream and 3.6.7 Auto-Dialectic were RETIRED 2026-09-09 — see `phase-3-6-tail.md` — leaving four live tail phases, not six; the Tail-Diät skip-plan dispatcher dispatches exactly those four mechanically). Rationale: Phase 3.7a reads in-memory session metrics and writes the 5 Recommendation fields via `updateFrontmatterFields`; that write must complete BEFORE the STATE.md frontmatter is finalized with `status: completed` so the Recommendation fields are visible to the next session-start while STATE.md is still `status: active`. Crash-resilience: if `/close` aborts between 3.7a and 3.4, STATE.md carries `status: active` + Recommendations; session-start Phase 1.5 offers resume (and the banner renders). If the reverse ordering were used (status: completed first), a crash would leave `status: completed` without Recommendations — the Reader would silently no-op the banner, losing the handoff. Phase 3.45 (Telemetry Flush, #844) sits AFTER Phase 3.7 because it drains the send-queue with the just-written `sessions.jsonl` record already included, and BEFORE Phase 3.7a because it is a fire-and-forget side-effect with no dependency on the Recommendation-write ordering below it. Phase 3.7d (Session-Eval, #803) sits AFTER Phase 3.7 because it scores the `sessions.jsonl` record that phase just wrote — the record must exist first — and BEFORE Phase 3.4 because its `eval.jsonl` output is advisory and must never block the close.
 
 > Gate: Only run if `persistence` is enabled in Session Config and `<state-dir>/STATE.md` exists.
-1. Set frontmatter `status: completed`
-2. Record final wave count and completion time in the frontmatter
-3. Touch `updated: <ISO 8601 UTC>` in the frontmatter (issue #184). Use `scripts/lib/state-md.mjs` → `touchUpdatedField` for safety:
+1. Finalize the frontmatter in ONE lock-guarded write, into the SAME file Phase 3.7a wrote (#1640 — identical `statePath`, passed explicitly): `status: completed`, `updated: <ISO 8601 UTC>` (#184), the final wave count as `current-wave`, and `session-id` re-stamped to this process's own raw id when one is measurable (after a mid-session `/clear` the record still names the pre-`/clear` id; the re-stamp keeps it this session's). Do not hand-edit any of these fields:
    ```bash
    node --input-type=module -e "
-   import {readFileSync, writeFileSync} from 'node:fs';
-   import {touchUpdatedField} from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
-   const p = '<state-dir>/STATE.md';
-   writeFileSync(p, touchUpdatedField(readFileSync(p, 'utf8'), new Date().toISOString()));
+   import {execSync} from 'node:child_process';
+   import {markStateMdCompletedOnDisk} from '${PLUGIN_ROOT}/scripts/lib/state-md/frontmatter-mutators.mjs';
+   const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
+   const statePath = '<state-dir>/STATE.md'; // same value as Phase 3.7a
+   const res = await markStateMdCompletedOnDisk(repoRoot, {statePath, currentWave: <final wave number>});
+   console.log(res.written ? 'STATE.md completed: ' + res.path : 'STATE.md NOT written (' + (res.reason ?? 'no change') + '): ' + res.path);
    "
    ```
-   Silent no-op if the file has no frontmatter.
-4. Keep the file as a record — do NOT delete it (next session-start reads it)
+   No-op if the file has no frontmatter. `reason: 'foreign-state-md'` means the path holds another session's completed record — report it as a Deviation, never hand-edit it.
+2. Keep the file as a record — do NOT delete it (next session-start reads it)
 
 If STATE.md doesn't exist, skip this subsection.
 

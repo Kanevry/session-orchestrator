@@ -2,7 +2,7 @@
 
 > Vetted Monitor-tool snippets for the recurring observation points in the
 > session-orchestrator workflow. Each snippet ships with the description
-> string, recommended timeout / persistent flag, and an explicit failure
+> string, recommended timeout, and an explicit failure
 > coverage note (per the **silence-is-not-success** rule from
 > `.claude/rules/loop-and-monitor.md`).
 
@@ -10,14 +10,36 @@
 
 Anthropic recommends `Monitor` over `/loop` for any stream-able event
 (https://code.claude.com/docs/en/scheduled-tasks). The Monitor tool turns
-each stdout line into a notification, avoiding poll-token cost. But a
-naïve filter that matches only the success marker reads identical to a
+each output or exit event into one notification, avoiding poll-token cost.
+Output may contain multiple stdout lines; it is not a notification per line.
+A naïve filter that matches only the success marker reads identical to a
 crash — silent. The snippets below are calibrated to emit on **every
 terminal state**, not just the happy path.
 
 When in doubt, copy a snippet, adjust the path or repo, and arm it. Do
 not invent new filters from scratch unless you have re-derived the
 coverage check.
+
+---
+
+## Deadline and re-arm (Claude Code v2.1.271+)
+
+Every Monitor watch has a deadline: 5 minutes by default, at most 30 minutes
+(10 in single-prompt `-p` runs). The former no-timeout option was removed. At
+the deadline the watch ends and Claude gets one exit notice, so the coordinator
+re-arms the same snippet if the watch is still needed. Output and exit each
+produce one notification; an exit notice is not proof that the watched job
+succeeded. Inspect the terminal state and actual exit code. Filters keep the
+coverage rule: match every terminal state, so silence at expiry is the
+deadline notice, never a success signal. Source: CHANGELOG 2.1.271 and
+https://code.claude.com/docs/en/tools-reference (retrieved 2026-10-12).
+
+The snippets below use interactive timeout recommendations. For a `-p` run,
+set `timeout_ms` to at most `600000` (10 minutes), as stated at each snippet.
+Background detachment and Monitor watches do not keep a single-prompt run alive
+after its turn ends. In unattended `-p` workflows, wait in the foreground with
+a bounded command, read its actual exit, and repeat the wait if needed; do not
+finish the turn while a watched job is still running.
 
 ---
 
@@ -29,9 +51,7 @@ the GitHub mirror's main-branch SHA so the operator can confirm parity.
 
 **Description.** `pipeline + mirror sync after push`
 
-**timeout_ms.** `1800000` (30 min — most pipelines finish well inside)
-
-**persistent.** `false`
+**timeout_ms.** Interactive: `1800000` (30 min). Single-prompt `-p`: `600000` (10 min). Re-arm on expiry while the pipeline is still running.
 
 ```bash
 prev=""
@@ -116,9 +136,7 @@ and any failure signature without re-running the suite.
 
 **Description.** `vitest progress + failure signatures`
 
-**timeout_ms.** `1200000` (20 min)
-
-**persistent.** `false`
+**timeout_ms.** Interactive: `1200000` (20 min). Single-prompt `-p`: `600000` (10 min). Re-arm on expiry while the suite is still running.
 
 ```bash
 # Pre-req: npm test 2>&1 | tee vitest.log was started in another terminal
@@ -142,10 +160,9 @@ a live dashboard in terminal B without building telemetry tooling.
 
 **Description.** `autopilot iteration + kill-switch tail`
 
-**timeout_ms.** `3600000` (1 h — the 1 h ceiling this file uses; repo-internal convention, upstream documents no explicit `timeout_ms` maximum)
+**timeout_ms.** Interactive: `1800000` (30 min, the upstream maximum since v2.1.271). Single-prompt `-p`: `600000` (10 min).
 
-**persistent.** `true` (run for the lifetime of the session — autopilot
-runs can take hours)
+**Re-arm.** The watch ends at its deadline; autopilot runs can take hours, so re-arm on the expiry notice (see "Deadline and re-arm").
 
 ```bash
 tail -f .orchestrator/metrics/autopilot.jsonl | jq -r --line-buffered '
@@ -160,7 +177,8 @@ kill-switch firings (the ten tracked in
 silent autopilot run means autopilot is not actually writing to the
 JSONL — that itself is a signal worth surfacing manually.
 
-**Detachment seam (Spike #640).** A headless autopilot run detached via
+**Interactive detachment seam (Spike #640).** In an interactive session,
+a headless autopilot run detached via
 Bash `run_in_background` (`node scripts/autopilot.mjs --headless … &`)
 is observed through the returned **task-id**, its **output-file**
 (`.../tasks/<id>.output`), and the **completion notification** — never
@@ -180,9 +198,9 @@ fires only at session-end / evolve. Surfaces drift before it accumulates.
 
 **Description.** `vault 40-learnings/50-sessions backlog`
 
-**timeout_ms.** `3600000` (1 h)
+**timeout_ms.** Interactive: `1800000` (30 min, the upstream maximum since v2.1.271). Single-prompt `-p`: `600000` (10 min).
 
-**persistent.** `true`
+**Re-arm.** Re-arm on the expiry notice while the backlog is still of interest (see "Deadline and re-arm").
 
 ```bash
 prev=0
@@ -198,7 +216,9 @@ done
 
 **Coverage.** Emits **only on change** to keep the stream quiet during
 idle work. A drop to zero is also reported (e.g. when session-end runs
-mirror-commit). Silence = no drift, which is the desired idle state. The
+mirror-commit). Silence = no drift, which is the desired idle state. For
+single-prompt `-p` runs, replace `sleep 1800` with `sleep 300` so the
+watch can observe another sample before its 10-minute deadline. Interactive
 30-min sleep matches the `1200s+` idle-tick band from
 `.claude/rules/loop-and-monitor.md` LM-003 (idle observation-rate; under the
 1-hour subscription cache TTL there is no cache penalty here anyway).
@@ -214,9 +234,7 @@ parity bit the operator a day later.
 
 **Description.** `github mirror parity vs local main`
 
-**timeout_ms.** `300000` (5 min — push usually completes in seconds; this is the wall-clock ceiling **for this watch**, **not** the `/loop` cadence band that LM-003 in `.claude/rules/loop-and-monitor.md` warns against)
-
-**persistent.** `false`
+**timeout_ms.** `300000` (5 min, valid for both interactive and single-prompt `-p` runs — push usually completes in seconds; this is the wall-clock ceiling **for this watch**, **not** the `/loop` cadence band that LM-003 in `.claude/rules/loop-and-monitor.md` warns against)
 
 ```bash
 local_sha=$(git rev-parse main)
@@ -301,7 +319,7 @@ discipline:
 
 ---
 
-## Pattern — `/tmux-layout` (operator-side persistent visualization)
+## Pattern — `/tmux-layout` (operator-side standing visualization)
 
 > Per ADR-0007 + GitLab #561 #562 #563. Opt-in skill, NOT Monitor/loop replacement.
 
@@ -309,9 +327,9 @@ discipline:
 
 | Primitive | Purpose | When to use |
 |---|---|---|
-| **`Monitor` tool** | Event-driven stream → coordinator reaction | The coordinator must REACT to each terminal-state line (CI fails → take action, build error → patch). Each stdout line = one coordinator notification. |
+| **`Monitor` tool** | Event-driven stream → coordinator reaction | The coordinator must REACT to each terminal-state line (CI fails → take action, build error → patch). Each output or exit event produces one coordinator notification; output may contain multiple lines. |
 | **`/loop` skill** | Periodic coordinator-side polling | "Check vault-staleness every 30 minutes while session runs." Lives inside the coordinator's turn budget. |
-| **`/tmux-layout` skill** | Operator-side persistent visualization (4-pane) | The OPERATOR (human) wants to peripherally observe side-channels — STATE.md tail, CI watch, events.jsonl — in a SECOND terminal without coordinator reaction. Pure observability. |
+| **`/tmux-layout` skill** | Operator-side standing visualization (4-pane) | The OPERATOR (human) wants to peripherally observe side-channels — STATE.md tail, CI watch, events.jsonl — in a SECOND terminal without coordinator reaction. Pure observability. |
 
 **Key distinction:** `/tmux-layout` visualizes the *outputs* of `Monitor` and `/loop` peripherally so the coordinator pane stays focused on decisions (AUQ-001). It does NOT replace either — Pane 3 of the default layout, for example, runs a `glab ci status` poll-loop equivalent to a `/loop` cadence, but the coordinator does not see those refreshes (the operator does).
 
@@ -326,9 +344,10 @@ discipline:
   spams notifications and gets auto-stopped by Monitor's volume guard.
 - **Forgetting `--line-buffered`** in `grep` pipes — pipe buffering
   delays events by minutes, which usually masks itself as "no events".
-- **Unbounded `tail -f` for one-shot signals** — use Bash with
-  `run_in_background` and an `until` loop instead. See the Monitor tool
-  docs.
+- **Unbounded `tail -f` for one-shot signals** — use a bounded foreground
+  wait in single-prompt `-p` runs and inspect the actual exit code. Interactive
+  sessions may use a Bash background task with a completion notification;
+  do not carry that detachment pattern into unattended `-p` runs.
 - **Using Monitor as a `/loop` replacement for periodic scans without a
   stream** (e.g. polling `glab issue list`). Use `/loop` dynamic mode.
 

@@ -30,7 +30,7 @@
  *       0 would be a false green (Epic #1425 A3).
  *
  * The gate sub-scripts in scripts/lib/gates/ are NOT reimplemented here; they are
- * invoked via spawnInGroup() — a detached, process-group-leading shell — with the
+ * invoked via spawnInGroup() using argv (a detached group on POSIX) with the
  * required env vars.
  *
  * References:
@@ -59,7 +59,6 @@ import { resolveWaveNumber } from './lib/quality-gate-wave.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 import { gateKillFields } from './lib/quality-gate.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
-import { shellQuote } from './lib/sh-quote.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -227,6 +226,28 @@ function failedFilesFromGateStdout(stdout) {
 }
 
 /**
+ * Lift `test.rerun` (`{ files, status }`) out of a gate sub-script's JSON
+ * stdout envelope (#1673). Only `gate-full.mjs` publishes it, and only when it
+ * re-ran timeout-only failures. `null` for every other case. Never throws.
+ *
+ * @param {string} stdout — the gate sub-script's captured stdout.
+ * @returns {{ files: string[], status: 'pass'|'fail' }|null}
+ */
+function rerunFromGateStdout(stdout) {
+  if (typeof stdout !== 'string' || !stdout.trim()) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  const rerun = parsed?.test?.rerun;
+  if (!rerun || !Array.isArray(rerun.files) || (rerun.status !== 'pass' && rerun.status !== 'fail')) return null;
+  const files = rerun.files.filter((f) => typeof f === 'string' && f.trim());
+  return files.length > 0 ? { files, status: rerun.status } : null;
+}
+
+/**
  * The reporting variants — they exit 0 even after a failing check, so their
  * event NAME never carries the check verdict (#1459). `full-gate` exits non-zero
  * on a failing check, so the name already says it there.
@@ -379,7 +400,9 @@ async function main() {
   if (config) {
     if (existsSync(config)) {
       try {
-        configJson = JSON.parse(readFileSync(config, 'utf8'));
+        // Windows PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM, which
+        // JSON.parse rejects; the gate then ran the npm defaults instead (#1612).
+        configJson = JSON.parse(readFileSync(config, 'utf8').replace(/^\uFEFF/, ''));
       } catch (err) {
         warn(`Could not parse config file '${config}': ${err.message}; using defaults`);
       }
@@ -496,9 +519,8 @@ async function main() {
   // Handing it a child with `stderr: 'inherit'` leaves `child.stderr` null, the
   // module's own `child.stderr?.on(…)` a no-op, and the gate's warnings live on
   // the operator's terminal exactly as before.
-  // Quoted: the gate path derives from `import.meta.url`, so a space in the
-  // checkout path must not split the command.
-  const gateCommand = `node ${shellQuote(gatePath)}`;
+  // argv preserves spaces and apostrophes on POSIX and Windows.
+  const gateCommand = [process.execPath, gatePath];
   // Derived from the SAME resolved per-command ceiling published as
   // `GATE_TIMEOUT_MS` above — not from `resolveGateTimeoutMs()` a second time.
   // The outer cap must stay strictly ABOVE the inner one so the inner kill fires
@@ -531,7 +553,7 @@ async function main() {
     // terminal's foreground group: the first read from an inherited TTY earns it
     // SIGTTIN, which stops the whole group until the outer ceiling kills it. An
     // ignored stdin turns that hang into an immediate EOF.
-    spawnFn: (command, options) => spawn(command, { ...options, stdio: ['ignore', 'pipe', 'inherit'] }),
+    spawnFn: (command, args, options) => spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'inherit'] }),
   });
 
   // `pid: -1` is `spawnInGroup`'s spawn-failure channel (it never rejects).
@@ -595,6 +617,9 @@ async function main() {
     // The names behind `counts.failed`. Absent, never `[]` — see
     // `failedFilesFromGateStdout`.
     const failedFiles = failedFilesFromGateStdout(gateStdout);
+    // The serial re-run of timeout-only failures (#1673): which files it named
+    // and how it ended, so the rate of load-rescued gates stays measurable.
+    const rerun = rerunFromGateStdout(gateStdout);
     // Wave-scope sidecar is read from the SAME project dir the event lands in
     // (emitEvent's own destination precedence), so a tmp-scoped run cannot pick
     // up the host repo's live wave. Mirrors the hook's projectDir resolution.
@@ -625,6 +650,7 @@ async function main() {
         ...(checkFailed !== null ? { check_failed: checkFailed } : {}),
         ...(counts ? { counts } : {}),
         ...(failedFiles ? { failed_files: failedFiles } : {}),
+        ...(rerun ? { rerun } : {}),
         ...(waveNumber !== null ? { wave_number: waveNumber } : {}),
         ...sessionAttribution(ledgerRoot ?? repoRoot),
       },

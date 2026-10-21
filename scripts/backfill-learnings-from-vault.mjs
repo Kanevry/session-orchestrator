@@ -72,6 +72,13 @@ import { subjectToSlug, parseFrontmatter } from './lib/vault-mirror/utils.mjs';
 import { kebab } from './lib/learnings/kebab.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { appendLearning, isBackupOf, withLearningsLock } from './lib/learnings/io.mjs';
+import {
+  isCanonicalStore,
+  inboxPathFor,
+  receiptsPathFor,
+  archivePathFor,
+  resolveStoreRole,
+} from './lib/learnings/store-role.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_RULES_DIR = '.claude/rules';
@@ -622,6 +629,39 @@ function idsInStore(filePath) {
 }
 
 /**
+ * Inbox ids that count as already present for the canonical store (#1516,
+ * #1685). The rule depends on this host's store role:
+ *
+ * - `inbox`: EVERY inbox id is present. `appendLearning()` lands a restore in
+ *   the inbox here, and re-appending a receipted or archived id is pointless —
+ *   the receipt or archive hides it again, so every --apply would re-append.
+ * - any other role (`writer`, `invalid` — invalid refuses the write anyway):
+ *   only VISIBLE inbox ids, i.e. not receipted and not archived, mirroring
+ *   `readInboxView()` in io.mjs. A receipted id that later left the live store
+ *   is seen by no reader, so it must stay an orphan the backfill restores.
+ *   Live ids need no exclusion here: callers check the live store themselves.
+ *
+ * `hidden` is the subset of `present` that no reader sees (receipted or
+ * archived) — non-empty only on an inbox host, where such ids still count as
+ * present. The report gives them their own status (`present-in-inbox-hidden`,
+ * #1689) instead of claiming they sit in the store's read view.
+ *
+ * Both empty for a non-canonical store path, which has no inbox semantics.
+ *
+ * @param {string} storeAbs
+ * @returns {{ present: Set<string>, hidden: Set<string> }}
+ */
+function presentInboxIds(storeAbs) {
+  if (!isCanonicalStore(storeAbs)) return { present: new Set(), hidden: new Set() };
+  const inboxIds = idsInStore(inboxPathFor(storeAbs));
+  // Receipt lines are `{id, ingested_at}` — idsInStore reads their ids.
+  const hiddenAny = new Set([...idsInStore(receiptsPathFor(storeAbs)), ...idsInStore(archivePathFor(storeAbs))]);
+  const hidden = new Set([...inboxIds].filter((id) => hiddenAny.has(id)));
+  if (resolveStoreRole().role === 'inbox') return { present: inboxIds, hidden };
+  return { present: new Set([...inboxIds].filter((id) => !hidden.has(id))), hidden: new Set() };
+}
+
+/**
  * List `<store>.bak[-.]*` siblings (a verbatim original beats any
  * reconstruction). Both delimiter forms count — the legacy dot form
  * (`learnings.jsonl.bak.evolve-<ts>`) is still on disk in consumer repos and
@@ -681,7 +721,7 @@ function printHuman(report) {
   out.push(`  vault     : ${report.vault_learnings_dir} (${s.vault_notes_indexed} learning notes indexed)`);
   out.push('');
   out.push(
-    `Rules with provenance: ${s.rules_with_provenance} · resolved in store: ${s.present_in_store} · in archive: ${s.present_in_archive} · recoverable verbatim from a .bak: ${s.recoverable_from_backup} · ORPHANED: ${s.orphans}`
+    `Rules with provenance: ${s.rules_with_provenance} · resolved in store: ${s.present_in_store} · in archive: ${s.present_in_archive} · in inbox, hidden: ${s.present_in_inbox_hidden} · recoverable verbatim from a .bak: ${s.recoverable_from_backup} · ORPHANED: ${s.orphans}`
   );
   out.push('');
 
@@ -834,6 +874,7 @@ export async function main(argv = [], deps = {}) {
 
   // ── Load inputs ──────────────────────────────────────────────────────────
   const storeIds = idsInStore(storeAbs);
+  const { present: inboxIds, hidden: hiddenInboxIds } = presentInboxIds(storeAbs);
   const archiveIds = idsInStore(archiveAbs);
   const backups = backupPaths(storeAbs).map((p) => ({ path: p, ids: idsInStore(p) }));
   const { notes, unreadable } = indexVaultNotes(learningsAbs);
@@ -868,12 +909,20 @@ export async function main(argv = [], deps = {}) {
     const id = prov.learningId;
     const foundIn = [];
     if (storeIds.has(id)) foundIn.push('store');
+    if (inboxIds.has(id)) foundIn.push('inbox');
     if (archiveIds.has(id)) foundIn.push('archive');
     for (const b of backups) if (b.ids.has(id)) foundIn.push(basename(b.path));
 
     let status;
+    // A visible inbox id is part of the store's read view (readers union it
+    // in), so it counts as present-in-store — after the archive, which wins
+    // for an id in both; `found_in` names the file. A present but HIDDEN one
+    // (inbox host, receipted/archived) is seen by no reader, so it is not
+    // claimed as part of the store (#1689).
     if (storeIds.has(id)) status = 'present-in-store';
     else if (archiveIds.has(id)) status = 'present-in-archive';
+    else if (hiddenInboxIds.has(id)) status = 'present-in-inbox-hidden';
+    else if (inboxIds.has(id)) status = 'present-in-store';
     else if (foundIn.length > 0) status = 'recoverable-verbatim-from-backup';
     else status = 'orphan';
 
@@ -942,7 +991,7 @@ export async function main(argv = [], deps = {}) {
       // appendLearning() re-enters the held lock (reentrant per async call
       // chain, io.mjs).
       await withLearningsLock(storeAbs, async () => {
-        const present = new Set([...idsInStore(storeAbs), ...idsInStore(archiveAbs)]);
+        const present = new Set([...idsInStore(storeAbs), ...presentInboxIds(storeAbs).present, ...idsInStore(archiveAbs)]);
         for (const r of candidates) {
           // This is what makes a second --apply a no-op rather than a
           // duplicate append; `present.add` below covers two rules naming one id.
@@ -983,6 +1032,7 @@ export async function main(argv = [], deps = {}) {
       vault_notes_indexed: notes.length,
       present_in_store: records.filter((r) => r.status === 'present-in-store').length,
       present_in_archive: records.filter((r) => r.status === 'present-in-archive').length,
+      present_in_inbox_hidden: records.filter((r) => r.status === 'present-in-inbox-hidden').length,
       recoverable_from_backup: records.filter((r) => r.status === 'recoverable-verbatim-from-backup').length,
       orphans: orphans.length,
       located_in_vault: orphans.filter((r) => r.vault_note).length,

@@ -779,3 +779,48 @@ describe('gc-stale-worktrees — discoverWorktrees', () => {
     expect(Math.abs(result[0].createdAt.getTime() - created.getTime())).toBeLessThan(1000);
   });
 });
+
+describe('gc-stale-worktrees from a linked worktree (#1592)', () => {
+  // Bug: the session references were read from `<worktree>/…/sessions.jsonl`
+  // (absent since #1584), so a run from a linked worktree saw no reference and
+  // --apply removed a stale-by-age worktree a recent session still names.
+  it('keeps a worktree referenced in the main checkout ledger', async () => {
+    const nodeFs = await import('node:fs');
+    const nodePath = (await import('node:path')).default;
+    const { tmpdir: osTmpdir } = await import('node:os');
+    const base = nodeFs.realpathSync(nodeFs.mkdtempSync(nodePath.join(osTmpdir(), 'gc-wt-1592-')));
+    try {
+      const mainDir = nodePath.join(base, 'main');
+      const wt = nodePath.join(base, 'wt');
+      nodeFs.mkdirSync(mainDir, { recursive: true });
+      const git = (...args) => {
+        const r = spawnSync('git', args, { cwd: mainDir, encoding: 'utf8' });
+        if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+      };
+      git('init', '-q');
+      git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+      git('worktree', 'add', '-q', '--detach', wt);
+      const worktreeRoot = nodePath.join(base, 'so-worktrees');
+      const metaDir = nodePath.join(wt, '.orchestrator', 'tmp', 'worktree-meta');
+      nodeFs.mkdirSync(worktreeRoot, { recursive: true });
+      nodeFs.mkdirSync(metaDir, { recursive: true });
+      const wtPath = makeWorktreeDir(worktreeRoot, 'ref1592');
+      writeWorktreeMeta(metaDir, 'ref1592', { createdAt: new Date(Date.now() - MS_8_DAYS).toISOString() });
+      nodeFs.mkdirSync(nodePath.join(mainDir, '.orchestrator', 'metrics'), { recursive: true });
+      nodeFs.writeFileSync(
+        nodePath.join(mainDir, '.orchestrator', 'metrics', 'sessions.jsonl'),
+        JSON.stringify({ session_id: 'main-2026-10-13-session-1', completed_at: new Date().toISOString(), worktree_path: wtPath }) + '\n',
+      );
+
+      const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+      try {
+        await main({ worktreeRoot, metaDir, repoRoot: wt, argv: ['--apply'] });
+      } finally {
+        out.mockRestore();
+      }
+      expect(existsSync(wtPath)).toBe(true);
+    } finally {
+      nodeFs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+});

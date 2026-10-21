@@ -888,13 +888,14 @@ export async function writeJsonAtomic(filePath, value, opts = {}) {
  * @param {object} [opts]
  * @param {number} [opts.indent=2]      JSON.stringify indent.
  * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
+ * @param {number} [opts.mode]  File mode of the tmp file, kept by the rename (#1632).
  * @returns {{ ok: true } | { ok: false, reason: 'fs-error', error: string, code: string|null }}
  *   `code` is the failing call's `err.code` (`'ENOSPC'`, `'EACCES'`, …), or `null`
  *   when the error carried none (a serialization TypeError, the partial-adapter
  *   refusal). Additive (#1032): `error` keeps its exact text.
  */
 export function writeJsonAtomicSync(filePath, data, opts = {}) {
-  const { indent = 2, tmpPrefix = '.tmp' } = opts;
+  const { indent = 2, tmpPrefix = '.tmp', mode } = opts;
 
   let body;
   try {
@@ -903,7 +904,7 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
     return _fsErrorEnvelope(err);
   }
 
-  const res = atomicWriteWithBackup(filePath, body, { tmpPrefix });
+  const res = atomicWriteWithBackup(filePath, body, { tmpPrefix, mode });
   return res.ok ? { ok: true } : res;
 }
 
@@ -980,6 +981,7 @@ export function writeJsonAtomicSync(filePath, data, opts = {}) {
  * @param {BufferEncoding} [opts.encoding='utf8']  Encoding for a string `body`.
  * @param {boolean} [opts.backup=false]  Snapshot the existing file to `.bak-<ISO>` first.
  * @param {string} [opts.tmpPrefix='.tmp']  Tmp-file prefix (callers pick their domain prefix).
+ * @param {number} [opts.mode]  File mode of the tmp file, kept by the rename (#1632).
  * @param {Date} [opts.now]  Clock seam for the backup stamp (tests).
  * @param {{ mkdirSync?: Function, writeFileSync?: Function, renameSync?: Function,
  *   copyFileSync?: Function, existsSync?: Function, unlinkSync?: Function }} [opts.fs]
@@ -995,6 +997,7 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
     encoding = 'utf8',
     backup = false,
     tmpPrefix = '.tmp',
+    mode,
     now = new Date(),
     fs: injectedFs,
   } = opts;
@@ -1043,7 +1046,7 @@ export function atomicWriteWithBackup(filePath, body, opts = {}) {
     }
 
     tmpFile = _tmpPathFor(dir, tmpPrefix);
-    fsWriteFile(tmpFile, body, encoding);
+    fsWriteFile(tmpFile, body, mode === undefined ? encoding : { encoding, mode });
     fsRename(tmpFile, filePath);
 
     return { ok: true, path: filePath, bytes: _byteLength(body, encoding), backupPath };

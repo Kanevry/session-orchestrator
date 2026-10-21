@@ -6,7 +6,7 @@
 
 > **VCS Reference:** Use CLI commands per the "Common CLI Commands" section of the gitlab-ops skill.
 
-1. **Close resolved issues — one command strips, closes and verifies (#308):** run the CLI ONCE with every resolved issue ID, `--vcs` taken from Session Config:
+1. **Close resolved issues — one command strips, closes and verifies (#308):** run the CLI ONCE with every resolved issue ID, `--vcs` taken from Session Config. An `[Abnahme]` issue is never in that list: it closes only on oracle evidence (`plan-verification.md` § 1.1b, #1678).
 
    ```bash
    node "$PLUGIN_ROOT/scripts/lib/issue-close-strip-labels.mjs" --close --vcs <gitlab|github> <iid> [<iid> ...]

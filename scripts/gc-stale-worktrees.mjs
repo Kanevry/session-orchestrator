@@ -27,6 +27,7 @@ import path from 'node:path';
 
 import { validateWorkspacePath } from './lib/worktree/lifecycle.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -79,7 +80,11 @@ export function isPidAlive(pid) {
  */
 function loadRecentSessionRefs(repoRoot) {
   const refs = new Set();
-  const sessionsPath = path.join(repoRoot, SESSIONS_JSONL);
+  // #1592: the repo's ONE ledger (main checkout from a linked worktree, which
+  // has none since #1584) — reading the worktree's would drop every "kept"
+  // reference and let GC remove a worktree a recent session still names.
+  // The worktree-meta dir stays per checkout: it is tmp state, not the ledger.
+  const sessionsPath = path.join(resolveEventsLedgerRoot(repoRoot), SESSIONS_JSONL);
 
   let raw;
   try {

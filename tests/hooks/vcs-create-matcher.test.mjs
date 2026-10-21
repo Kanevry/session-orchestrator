@@ -114,9 +114,12 @@ describe('vcs-create-matcher — the narrowing that pairs with the widening (#11
     expect(isIssueCreate('"/usr/bin/glab issue create" --title x')).toBe(false);
   });
 
-  // Named ceiling, pinned so a future reader sees it is a decision, not a gap.
-  it('a paren glued to the verb is the inherited lexer ceiling, still unmatched', () => {
-    expect(isIssueCreate('(glab issue create --title f)')).toBe(false);
+  // Formerly a named ceiling, INVERTED at #1667: the shared lexer now splits an unquoted `(` / `$(` into
+  // its own command position, so a subshell or substitution no longer hides a
+  // create from the issue-budget gate (it was an uncounted bypass before).
+  it('a create inside a subshell or command substitution is matched (#1667)', () => {
+    expect(isIssueCreate('(glab issue create --title f)')).toBe(true);
+    expect(isIssueCreate('true && (glab issue create --title f)')).toBe(true);
   });
 });
 
@@ -243,11 +246,11 @@ describe('vcs-create-matcher — the REST-API route (#1163 BUG-2)', () => {
   // NAMED CEILINGS (BV-004). Pinned so the widening above stays DELIBERATE: if
   // one of these ever starts matching, it happened by accident and this test
   // says so rather than the behaviour changing silently.
-  it('keeps bash -c / $( ) as documented misses — but no longer xargs (#1289)', () => {
+  it('keeps bash -c as a documented miss — but no longer xargs (#1289) or $( ) (#1667)', () => {
     expect(isIssueCreate("bash -c 'glab api --method POST projects/1/issues -f title=X'")).toBe(
       false,
     );
-    expect(isIssueCreate('x=$(gh api repos/o/r/issues -f title=X)')).toBe(false);
+    expect(isIssueCreate('x=$(gh api repos/o/r/issues -f title=X)')).toBe(true);
     expect(isIssueCreate("bash -c 'glab issue create --title X'")).toBe(false);
     // Inverted with #1289: the xargs lane is matched now, so the two remaining
     // ceilings stay individually pinned instead of riding on a shared label.

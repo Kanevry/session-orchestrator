@@ -103,7 +103,9 @@ const DEFAULT_DEPS = {
 function parseNames(raw, label, d) {
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    // #1613: Windows PowerShell 5.1 (`Set-Content -Encoding utf8`) writes a UTF-8 BOM,
+    // which JSON.parse rejects — and a rejected names file silently switches CP11 off.
+    parsed = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
   } catch (err) {
     // Fix 3 (security-reviewer): NEVER embed err.message — V8's JSON.parse error
     // text echoes the first ~10 chars of the file body, which for a confidential-

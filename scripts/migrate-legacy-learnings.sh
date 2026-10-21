@@ -7,6 +7,28 @@ set -euo pipefail
 ROOT="${1:-$(pwd)}"
 CANONICAL="$ROOT/.orchestrator/metrics/learnings.jsonl"
 TODAY="$(date +%Y-%m-%d)"
+
+# #1516: a host whose learnings-store role is `inbox` never rewrites the
+# canonical store. The role resolver is the JS one (env SO_LEARNINGS_STORE_ROLE
+# > owner.yaml learnings.store-role > writer), imported relative to this script.
+# Fail-closed: if node fails, or the role is `invalid` (set but unusable) or
+# anything other than writer/inbox, nothing is written and the script exits 4.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+STORE_ROLE="$(node --input-type=module -e '
+const { pathToFileURL } = await import("node:url");
+const m = await import(pathToFileURL(process.argv[1]).href);
+process.stdout.write(m.resolveStoreRole().role);
+' "$SCRIPT_DIR/lib/learnings/store-role.mjs" 2>/dev/null)" || STORE_ROLE="unresolved"
+if [ "$STORE_ROLE" = "inbox" ]; then
+  echo "migrate-legacy-learnings: learnings store role is inbox on this host (#1516) — nothing written; run it on the writer host" >&2
+  printf '{"status":"refused_store_role"}\n'
+  exit 3
+fi
+if [ "$STORE_ROLE" != "writer" ]; then
+  echo "migrate-legacy-learnings: learnings store role is ${STORE_ROLE} on this host (#1516) — nothing written; fix owner.yaml learnings.store-role or SO_LEARNINGS_STORE_ROLE" >&2
+  printf '{"status":"refused_store_role_invalid"}\n'
+  exit 4
+fi
 LEGACY_PATHS=("$ROOT/.claude/metrics/learnings.jsonl" "$ROOT/.codex/metrics/learnings.jsonl" "$ROOT/.cursor/metrics/learnings.jsonl")
 
 tmp=""

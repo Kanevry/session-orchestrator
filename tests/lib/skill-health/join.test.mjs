@@ -72,11 +72,14 @@ function appendInv({ skill, session_id }) {
  * status is optional — pass 'abandoned' to simulate a session-close-backfill
  * phantom stub (#834).
  */
-function appendSession({ session_id, agent_summary, status }) {
+function appendSession({ session_id, agent_summary, status, ...extra }) {
   const rec = {
     session_id,
+    session_type: status === 'abandoned' ? 'unknown' : 'deep',
+    ...(status === 'abandoned' ? { _synthetic: true } : {}),
     ...(agent_summary ? { agent_summary } : {}),
     ...(status ? { status } : {}),
+    ...extra,
   };
   appendFileSync(sessPath, JSON.stringify(rec) + '\n');
 }
@@ -395,6 +398,17 @@ describe('agent_summary field summation', () => {
 // ---------------------------------------------------------------------------
 
 describe('abandoned-session join routing (#834)', () => {
+  it.each([
+    ['synthetic completed', 'completed', true, 'unknown', 0],
+    ['legacy abandoned', 'abandoned', false, 'deep', 1],
+  ])('counts the measured outcome population for %s', async (_label, status, synthetic, sessionType, joined) => {
+    appendInv({ skill: 'discovery', session_id: 'population-record' });
+    appendSession({ session_id: 'population-record', status, _synthetic: synthetic,
+      session_type: sessionType, agent_summary: { complete: 0 } });
+    const result = await joinSkillOutcomes({ invocationsPath: invPath, sessionsPath: sessPath });
+    expect(result.sessionsJoined).toBe(joined);
+    expect(result.sessionsAbandoned).toBe(1 - joined); // Legacy bucket carries unmeasured records.
+  });
   it('an invocation pointing at an abandoned session_id is NOT counted as a plain successful join', async () => {
     appendInv({ skill: 'discovery', session_id: 'sess-ghost' });
     appendSession({

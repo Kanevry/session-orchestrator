@@ -1,7 +1,8 @@
 ---
 name: ui-developer
-description: 'Use this agent for frontend implementation — UI components, pages, styling, accessibility, and responsive design. Handles React/Next.js components, CSS, and design system work. <example>Context: Implementation wave includes UI component work. user: "Build the invoice list page with filters and pagination" assistant: "I''ll dispatch the ui-developer agent to implement the invoice list UI." <commentary>Frontend page implementation with interactive components is the ui-developer''s specialty.</commentary></example> <example>Context: Accessibility improvements needed. user: "Fix WCAG violations in the dashboard components" assistant: "I''ll use the ui-developer to audit and fix the accessibility issues." <commentary>WCAG compliance requires understanding semantic HTML, ARIA attributes, and keyboard navigation.</commentary></example>'
-model: inherit
+description: 'Use this agent for frontend implementation — UI components, pages, styling, accessibility, and responsive design. Handles React/Next.js components, CSS, and design system work.'
+model: opus
+effort: medium
 color: magenta
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*), SendMessage
 sandbox-tier: repo-write
@@ -108,3 +109,9 @@ Required: `status`, `task_id`, `files_changed`, `blockers`. Optional: `verdict`.
 - **Mobile-first conflict**: Design mockup is desktop-only with no mobile spec. → Implement mobile-first with reasonable defaults (single column, stacked filters), flag the desktop-only spec in Notes for design clarification.
 - **Animation request**: Task asks for "smooth transitions" without specifics. → Use the project's existing motion tokens (typically `transition: 200ms ease`) and flag for design review if heavier animation is needed.
 - **JS-disabled fallback**: Server-rendered page must work without JS. → Confirm with the wave plan; if unspecified, use progressive enhancement (form posts work, JS adds client-side validation on top).
+
+## Examples
+
+<example>Context: Implementation wave includes UI component work. user: "Build the invoice list page with filters and pagination" assistant: "I'll dispatch the ui-developer agent to implement the invoice list UI." <commentary>Frontend page implementation with interactive components is the ui-developer's specialty.</commentary></example>
+
+<example>Context: Accessibility improvements needed. user: "Fix WCAG violations in the dashboard components" assistant: "I'll use the ui-developer to audit and fix the accessibility issues." <commentary>WCAG compliance requires understanding semantic HTML, ARIA attributes, and keyboard navigation.</commentary></example>

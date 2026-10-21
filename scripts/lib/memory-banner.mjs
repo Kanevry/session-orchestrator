@@ -28,6 +28,7 @@ import { readDreamSignals } from './auto-dream.mjs';
 import { readPeerCards } from './peer-cards/reader.mjs';
 import { surfaceTopN, decayOptsFromConfig } from './learnings/surface.mjs';
 import { countSessionsInJsonl } from './sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -385,11 +386,8 @@ export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now
   try {
     const signals = await readDreamSignals({ repoRoot, memoryDir: memDir });
     const memoryFiles = await countMemoryFiles(memDir);
-    // We deliberately use the actual sessions.jsonl path under repoRoot for
-    // the count of "sessions ever" — readDreamSignals exposes sessionsFilePath
-    // computed the same way, so we re-derive locally to keep this dependency
-    // surface lean and explicit.
-    const sessionsPath = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
+    // Use the same main-checkout ledger as the cleanup signals above.
+    const sessionsPath = path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl');
     const sessionsEver = await countSessionIdentities(sessionsPath);
 
     let daysSinceCleanup = null;

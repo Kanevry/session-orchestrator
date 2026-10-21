@@ -29,7 +29,6 @@ import { ARCHIVE_DIR_NAME, ROTATION_EVENT, validateEventRecord } from '@lib/even
 async function importEventsWithDir(dir) {
   // platform.mjs fast-path: CLAUDE_PROJECT_DIR beats CWD walk.
   process.env.CLAUDE_PROJECT_DIR = dir;
-  vi.resetModules();
   return import('@lib/events.mjs');
 }
 
@@ -65,6 +64,7 @@ describe('emitEvent — JSONL output', () => {
   const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
 
   beforeEach(async () => {
+    vi.resetModules();
     tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-test-'));
     delete process.env.CLANK_EVENT_SECRET;
     delete process.env.CLANK_EVENT_URL;
@@ -137,11 +137,12 @@ describe('emitEvent — JSONL output', () => {
 // 3. emitEvent — fetch not called without CLANK_EVENT_SECRET
 // ---------------------------------------------------------------------------
 
-describe('emitEvent — no fetch when CLANK_EVENT_SECRET is unset', () => {
+describe('emitEvent — no HTTP when CLANK_EVENT_SECRET is unset', () => {
   let tmpDir;
   const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
 
   beforeEach(async () => {
+    vi.resetModules();
     tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-test-'));
     delete process.env.CLANK_EVENT_SECRET;
     delete process.env.CLANK_EVENT_URL;
@@ -160,28 +161,29 @@ describe('emitEvent — no fetch when CLANK_EVENT_SECRET is unset', () => {
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('does not call fetch when CLANK_EVENT_SECRET is unset', async () => {
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+  it('does not call httpRequest when CLANK_EVENT_SECRET is unset', async () => {
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await emitEvent('no.secret', { x: 1 });
     await new Promise(r => setImmediate(r));
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(requestSpy).not.toHaveBeenCalled();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 4. emitEvent — fetch IS called when CLANK_EVENT_SECRET is set
+// 4. emitEvent — HTTP IS called when CLANK_EVENT_SECRET is set
 // ---------------------------------------------------------------------------
 
 // #228: Both CLANK_EVENT_SECRET and CLANK_EVENT_URL are required to POST.
 // Setting only CLANK_EVENT_SECRET without a URL is a safe no-op (no personal-domain default).
-describe('emitEvent — fetch called when both CLANK_EVENT_SECRET and CLANK_EVENT_URL are set', () => {
+describe('emitEvent — HTTP called when both CLANK_EVENT_SECRET and CLANK_EVENT_URL are set', () => {
   let tmpDir;
   const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
 
   beforeEach(async () => {
+    vi.resetModules();
     tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-test-'));
     delete process.env.CLANK_EVENT_URL;
   });
@@ -202,32 +204,32 @@ describe('emitEvent — fetch called when both CLANK_EVENT_SECRET and CLANK_EVEN
   it('calls fetch once when both CLANK_EVENT_SECRET and CLANK_EVENT_URL are set', async () => {
     process.env.CLANK_EVENT_SECRET = 'test-secret-token';
     process.env.CLANK_EVENT_URL = 'https://events.example.com';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await emitEvent('with.secret', { session: 's1' });
     await new Promise(r => setImmediate(r));
-    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(requestSpy).toHaveBeenCalledTimes(1);
   });
 
-  it('passes the correct Authorization header to fetch', async () => {
+  it('passes the correct Authorization header to httpRequest', async () => {
     process.env.CLANK_EVENT_SECRET = 'my-secret';
     process.env.CLANK_EVENT_URL = 'https://events.example.com';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await emitEvent('auth.header.test', {});
     await new Promise(r => setImmediate(r));
-    const [_url, init] = fetchSpy.mock.calls[0];
+    const [_url, init] = requestSpy.mock.calls[0];
     expect(init.headers['Authorization']).toBe('Bearer my-secret');
   });
 
   it('swallows a network error — emitEvent still resolves', async () => {
     process.env.CLANK_EVENT_SECRET = 'test-secret-token';
     process.env.CLANK_EVENT_URL = 'https://events.example.com';
-    vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('Network failure'));
+    vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockRejectedValue(new Error('Network failure'));
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await expect(emitEvent('network.error', {})).resolves.toBeUndefined();
     await new Promise(r => setImmediate(r));
@@ -238,13 +240,13 @@ describe('emitEvent — fetch called when both CLANK_EVENT_SECRET and CLANK_EVEN
   it('webhook body carries event_type (dotted name), source, and the full payload', async () => {
     process.env.CLANK_EVENT_SECRET = 'sek';
     process.env.CLANK_EVENT_URL = 'https://events.example.com';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await emitEvent('orchestrator.session.stopped', { session_id: 's1', branch: 'main', commit: 'abc123', wave: 2 });
     await new Promise(r => setImmediate(r));
-    const [, init] = fetchSpy.mock.calls[0];
+    const [, init] = requestSpy.mock.calls[0];
     const body = JSON.parse(init.body);
     expect(body.event_type).toBe('orchestrator.session.stopped');
     expect(body.source).toBe('session-orchestrator');
@@ -261,6 +263,7 @@ describe('emitEvent output conforms to events-schema validateEventRecord', () =>
   let origClaudeProjectDir;
 
   beforeEach(async () => {
+    vi.resetModules();
     tmpDir = await mkdtemp(path.join(tmpdir(), 'events-schema-conform-'));
     origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
   });
@@ -289,6 +292,7 @@ describe('emitEvent — schema_version + validation (#1177)', () => {
   const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
 
   beforeEach(async () => {
+    vi.resetModules();
     tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-schema-'));
     delete process.env.CLANK_EVENT_SECRET;
     delete process.env.CLANK_EVENT_URL;
@@ -338,13 +342,13 @@ describe('emitEvent — schema_version + validation (#1177)', () => {
   it('an invalid record fires no webhook POST', async () => {
     process.env.CLANK_EVENT_SECRET = 'sek';
     process.env.CLANK_EVENT_URL = 'https://events.example.com';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await expect(emitEvent('orchestrator.bad', {})).rejects.toThrow();
     await new Promise(r => setImmediate(r));
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(requestSpy).not.toHaveBeenCalled();
   });
 
   // Bug: schema_version leaks into the webhook envelope, changing a published
@@ -353,13 +357,13 @@ describe('emitEvent — schema_version + validation (#1177)', () => {
   it('webhook body carries the raw payload without schema_version', async () => {
     process.env.CLANK_EVENT_SECRET = 'sek';
     process.env.CLANK_EVENT_URL = 'https://events.example.com';
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 })
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await emitEvent('orchestrator.session.stopped', { session_id: 's1' });
     await new Promise(r => setImmediate(r));
-    const [, init] = fetchSpy.mock.calls[0];
+    const [, init] = requestSpy.mock.calls[0];
     const body = JSON.parse(init.body);
     expect(body.payload).toEqual({ session_id: 's1' });
     expect(Object.keys(body).sort()).toEqual(['event_type', 'payload', 'source']);
@@ -374,6 +378,7 @@ describe('readEventsWithRotations', () => {
   let dir;
 
   beforeEach(async () => {
+    vi.resetModules();
     dir = await mkdtemp(path.join(tmpdir(), 'events-read-'));
   });
 
@@ -706,6 +711,7 @@ describe('streaming reads across rotations', () => {
   let dir;
 
   beforeEach(async () => {
+    vi.resetModules();
     dir = await mkdtemp(path.join(tmpdir(), 'events-scan-'));
   });
 

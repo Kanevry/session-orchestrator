@@ -17,7 +17,7 @@ You are beginning a new development session. The complete text following `/sessi
 
 **Explicit execution requests:** Ordinary housekeeping uses the coordinator-direct maintenance shape returned by `scripts/session-shape.mjs`. If the user explicitly requests parallel subagents or waves in the context, carry that request into the session plan as an override for this run, following [User-authorized housekeeping execution deviation](../skills/session-plan/SKILL.md#user-authorized-housekeeping-execution-deviation). Retain `session-type: housekeeping`, keep the resolver's default shape distinct from the actual plan, and preserve global Session Config and the user's model settings. The planning and execution skills apply this exception before their housekeeping shortcuts; the request does not implicitly authorize unrelated external actions.
 
-### Argument alias: `ultradeep` (PRD `docs/prd/2026-09-06-ultradeep-session-profile.md`)
+### Argument alias: `ultradeep` (spec: internal session-profile PRD, 2026-09-06)
 
 `/session ultradeep` is an alias, NOT a fourth `session_type`. Resolve it to TWO STATE.md frontmatter values and then continue exactly as a `deep` session would:
 

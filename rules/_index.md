@@ -39,7 +39,7 @@ baseline project type (`nextjs-saas`, `express-service`, `docker-service`,
 - `always-on/test-value.md` — TV-001..005: name the bug a test catches, or do not write it; deletion is a feature
 - `always-on/build-value.md` — BV-001..004: the seven-rung build ladder, the four protections never simplified away
 - `always-on/cross-session-messaging.md` — CSM-001..005: messaging is transport, not shared state; no permission laundering
-- `always-on/loop-and-monitor.md` — LM-001..008: routing between `/goal`, Workflows, Channels, Monitor, `/loop`, and Routines
+- `always-on/loop-and-monitor.md` — LM-001..008: routing between `/goal`, Workflows, Channels, Monitor, `/loop`, and Routines (short form ≤ 4 kB; long form with filter examples in `docs/reference/loop-and-monitor-routing.md`, not vendored — #1624)
 - `always-on/bash-harness-pitfalls.md` — six false-green shell-harness failure classes (path-scoped via `globs:` + `paths:` frontmatter carrying identical lists — `paths:` is what Claude Code reads, `globs:` what `rule-loader.mjs` reads first; #1449)
 
 ## opt-in-stack (vendored on match)

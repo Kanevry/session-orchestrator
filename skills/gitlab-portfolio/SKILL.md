@@ -185,9 +185,9 @@ repos: 2
 
 ## Error handling
 
-Behaviour is governed by `mode`. `warn`: emit warning to stderr, continue with partial data; repo rows show `(fetch failed)`. `strict`: any repo fetch failure or missing vault-dir exits 3 immediately. `off`: all errors are silently swallowed, partial data written.
+Behaviour is governed by `mode`. `warn`: emit warning to stderr, continue with partial data; repo rows show `(fetch failed)`. `strict`: any repo fetch failure exits 2 after the scan. `off`: the CLI exits 0 with one line before resolving the vault-dir or scanning any repo, and writes nothing (#1619).
 
-`--vault-dir` not found and write errors always exit 2 regardless of `mode`. `_PORTFOLIO.md` with no `_generator` key always results in `skipped-handwritten` (all modes). No repos discovered: `warn` → exit 0 (no file written); `strict` → exit 3.
+`--vault-dir` not found and write errors always exit 2 regardless of `mode`. `_PORTFOLIO.md` with no `_generator` key always results in `skipped-handwritten` (all modes). No repos discovered: exit 0 in every mode (no file written).
 
 ## Anti-Patterns
 

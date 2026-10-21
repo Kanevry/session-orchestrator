@@ -37,8 +37,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/loop-guard.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/loop-guard.mjs', import.meta.url));
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
 
 const CLAUDE_MD_DISABLED = [

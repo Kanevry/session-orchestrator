@@ -28,6 +28,7 @@
 
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /** Max files to scan before sampling — protects against huge trees. */
 const MAX_FILES = 2000;
@@ -127,7 +128,10 @@ export default async function frontendSlop({ repoRoot }) {
 
   // Defensive import — mirrors supply-chain-slopcheck's pattern so the probe
   // never hard-crashes the discovery run if the detector is absent.
-  const detectPath = join(repoRoot, 'scripts', 'lib', 'frontend-detect', 'detect.mjs');
+  // The detector ships with the PLUGIN, not with the scanned repo: resolve it
+  // from this module, never from repoRoot (#1653 — in every consumer repo the
+  // repoRoot path is absent and the probe skipped silently).
+  const detectPath = fileURLToPath(new URL('../../../scripts/lib/frontend-detect/detect.mjs', import.meta.url));
   if (!existsSync(detectPath)) {
     return {
       probe,
@@ -137,7 +141,7 @@ export default async function frontendSlop({ repoRoot }) {
           title: 'frontend-slop: detector module unavailable',
           evidence: { file: detectPath, classification: 'SKIPPED' },
           recommendation:
-            'scripts/lib/frontend-detect/detect.mjs is missing. Re-run /discovery after it is committed.',
+            'scripts/lib/frontend-detect/detect.mjs is missing from the plugin install. Reinstall or update the plugin.',
         },
       ],
       summary: { total: 0, filesScanned: 0, sampled: false, errors: 0, skipped_reason: 'detector-unavailable' },
@@ -146,7 +150,7 @@ export default async function frontendSlop({ repoRoot }) {
 
   let detectFiles, SCANNABLE_EXTS;
   try {
-    ({ detectFiles, SCANNABLE_EXTS } = await import(detectPath));
+    ({ detectFiles, SCANNABLE_EXTS } = await import(pathToFileURL(detectPath).href));
   } catch (err) {
     return {
       probe,

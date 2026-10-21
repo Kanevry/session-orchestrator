@@ -85,8 +85,7 @@ function makeSession(sessionType, completionRate = 0.8) {
 
 /**
  * Session JSONL line with an explicit session_id and optional status (#834 —
- * abandoned-phantom filtering tests need to identify individual records by id
- * and control their status independently of makeSession()'s random id).
+ * phantom fixtures carry the same synthetic/zero-work markers as backfill.
  */
 function makeSessionWithId(sessionId, status) {
   const record = {
@@ -107,6 +106,11 @@ function makeSessionWithId(sessionId, status) {
     schema_version: 1,
   };
   if (status !== undefined) record.status = status;
+  if (status === 'abandoned') Object.assign(record, {
+    session_type: 'unknown', _synthetic: true, _backfill_source: 'events-jsonl',
+    total_waves: 0, waves: [], total_agents: 0, total_files_changed: 0,
+    agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+  });
   return JSON.stringify(record);
 }
 
@@ -560,6 +564,15 @@ describe('defaults and options', () => {
 // ---------------------------------------------------------------------------
 
 describe('#834 — sessionTailN excludes abandoned phantom sessions', () => {
+  it('keeps a nonsynthetic known-type legacy record even when its status is abandoned', async () => {
+    const legacy = { ...JSON.parse(makeSessionWithId('legacy-work')), status: 'abandoned' };
+    const sessionsPath = writeFixture('sessions.jsonl', JSON.stringify(legacy));
+    const signals = await buildLiveSignals({
+      statePath: sandboxPath('.claude/STATE.md'), sessionsPath,
+      lockPath: sandboxPath('bootstrap.lock'), _scanBacklog: nullScanBacklog,
+    });
+    expect(signals.recentSessions.map((s) => s.session_id)).toEqual(['legacy-work']);
+  });
   it('fake-regression: a trailing block of phantoms does not evict real sessions from the window', async () => {
     // 15 lines total: 7 real, then 8 trailing phantoms — mirrors the shape
     // that caused the bug (a slice(-N) window landing entirely on stubs).

@@ -5,8 +5,9 @@
  * cases: with only one axis elevated, a `<`→`<=` flip now moves the verdict
  * from "no signal" to "one soft signal", and both still decide `proceed` — so
  * the boundary test stayed green while the mutant it exists to catch survived.
- * Each case below therefore holds a SECOND soft signal steady (`peerSessions`
- * at the threshold), which makes the axis under test the deciding one again:
+ * Each case below therefore holds a SECOND soft signal steady (high CPU or
+ * low RAM — since #1654 `peerSessions` only reports and can no longer be the
+ * companion), which makes the axis under test the deciding one again:
  * one signal → proceed, two → reduce. Without that companion signal these are
  * assert-nothing tests, which is worse than not having them.
  *
@@ -41,7 +42,7 @@ describe('wave-resource-gate — threshold/cap boundary semantics (mutation #910
       config: baseConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Core',
-      probeOverride: { ramFreeGb: 2, cpuLoadPct: 10, peerSessions: 3 },
+      probeOverride: { ramFreeGb: 2, cpuLoadPct: 90, cpuLoad5mPct: 90 },
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3);
@@ -49,13 +50,13 @@ describe('wave-resource-gate — threshold/cap boundary semantics (mutation #910
 
   it('CPU load EXACTLY at the max threshold does NOT reduce (survivor wr6: `> max`)', async () => {
     // cpuLoadPct == max (85), strict `> max` → false → CPU contributes NO
-    // signal, so the lone peer signal cannot reach two → proceed.
+    // signal, so the lone RAM signal (3 < min 4) cannot reach two → proceed.
     // Mutant `>= max` adds a second signal at exactly 85% and halves the wave.
     const result = await evaluateWaveResourceGate({
       config: baseConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Core',
-      probeOverride: { ramFreeGb: 16, cpuLoadPct: 85, cpuLoad5mPct: 85, peerSessions: 3 },
+      probeOverride: { ramFreeGb: 3, cpuLoadPct: 85, cpuLoad5mPct: 85 },
     });
     expect(result.decision).toBe('proceed');
     expect(result.agents).toBe(6);

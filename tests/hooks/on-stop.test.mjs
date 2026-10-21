@@ -1140,12 +1140,13 @@ describe('missing node_modules — graceful degradation (GH#63)', { timeout: 300
 // node_modules. `zx` is the last one.
 //
 /**
- * Bare specifiers KNOWN to sit on the hook import graph, re-measured 2026-09-06.
+ * Bare specifiers KNOWN to sit on the hook import graph. #1612 moved zx
+ * from worktree/listing.mjs into the shared wrapper (2026-10-14).
  * This map may SHRINK (a dep removed, as `js-yaml` just was) but must never grow
  * without a deliberate decision — growth is the regression the guard exists to name.
  */
 const KNOWN_BARE_GRAPH_DEPS = {
-  'scripts/lib/worktree/listing.mjs': ['zx'],
+  'scripts/lib/zx.mjs': ['zx'],
 };
 
 /** Bare (non-relative, non-`node:`) specifiers statically imported by `source`. */
@@ -1165,7 +1166,7 @@ function staticThirdPartyImports(source) {
 }
 
 describe('hooks static-import guard (GH#63 recurrence class)', () => {
-  it('the hook import graph carries only the two known bare deps', async () => {
+  it('the hook import graph carries only the known bare dependency', async () => {
     const repoRoot = path.resolve(import.meta.dirname, '../..');
     const graph = JSON.parse(
       await fs.readFile(path.join(repoRoot, 'hooks/_lib/hook-import-set.json'), 'utf8'),

@@ -73,12 +73,15 @@
  *      prune/rewrite, store lock not acquired). Unparseable store lines are
  *      NOT an error: they are kept verbatim, counted as `malformed` in the
  *      summary, and WARNed on stderr with their line numbers.
+ *   4  Refused: this host's learnings store role is invalid (owner.yaml
+ *      `learnings` or SO_LEARNINGS_STORE_ROLE, #1516/#1686) — nothing written
  */
 
 import { readFileSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { LearningsLockError, readLearnings, withLearningsLock } from './lib/learnings/io.mjs';
+import { LearningsStoreRoleError } from './lib/learnings/store-role.mjs';
 import { pruneLearnings } from './lib/learnings/expiry-sweep.mjs';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -429,6 +432,10 @@ async function main(argv) {
       // Joins the lock held below reentrantly; takes none on a dry run.
       res = await pruneLearnings({ filePath, archivePath, entries: built.next, now, dryRun: !opts.apply });
     } catch (err) {
+      if (err instanceof LearningsStoreRoleError) {
+        process.stderr.write(`apply-session-learnings: ${err.message}\n`);
+        return { code: 4 };
+      }
       process.stderr.write(`apply-session-learnings: prune/rewrite failed: ${err.message}\n`);
       return { code: 2 };
     }
@@ -442,6 +449,10 @@ async function main(argv) {
     if (err instanceof LearningsLockError) {
       process.stderr.write(`apply-session-learnings: ${err.message}\n`);
       return 2;
+    }
+    if (err instanceof LearningsStoreRoleError) {
+      process.stderr.write(`apply-session-learnings: ${err.message}\n`);
+      return 4;
     }
     throw err;
   }
@@ -466,14 +477,20 @@ async function main(argv) {
     archived: res.archived,
     kept: res.kept,
     by_reason: byReason,
-    written: opts.apply ? res.kept : 0,
+    // On an inbox-role host (#1516) the live store is not rewritten: only
+    // records with new ids reach learnings-inbox.jsonl, so `kept` is no count
+    // of written records there (io.mjs prints the real numbers on stderr).
+    written: opts.apply && !res.skipped ? res.kept : 0,
+    ...(res.skipped ? { skipped: res.skipped } : {}),
   };
 
   // The event's presence is documented as proof the write ran
   // (docs/events-schema.md). pruneLearnings() returns early WITHOUT writing
   // exactly when the store and the next generation are both empty — the only
   // path that reports `scanned: 0` — so no store + empty input emits nothing.
-  if (opts.apply && res.scanned > 0) {
+  // No event on an inbox-role host (#1516): the store write it attests to did
+  // not happen there.
+  if (opts.apply && res.scanned > 0 && !res.skipped) {
     await emitSessionWriteApplied({
       repoRoot,
       filePath,
@@ -494,7 +511,7 @@ async function main(argv) {
       `${summary.dry_run ? '[dry-run] ' : ''}learnings: read ${summary.read}, confirmed ${summary.confirmed}, ` +
         `contradicted ${summary.contradicted}, appended ${summary.appended}, decayed ${summary.decayed} ` +
         `(rate ${decayRate}), pruned ${pruned}, consolidated ${summary.consolidated}, kept ${summary.kept}` +
-        `${summary.dry_run ? ' — nothing written' : ` — wrote ${summary.written}`}\n`,
+        `${summary.dry_run ? ' — nothing written' : summary.skipped ? ` — ${summary.skipped}: live store not rewritten` : ` — wrote ${summary.written}`}\n`,
     );
   }
   return 0;

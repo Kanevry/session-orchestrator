@@ -23,6 +23,7 @@ import {
   checkProjectHygiene,
   checkReleaseHygiene,
   checkStaleArtifacts,
+  checkTrackedSessionsLedger,
 } from '@lib/project-hygiene.mjs';
 
 let root;
@@ -410,6 +411,8 @@ describe('checkCiConfig', () => {
     "env -S 'npm' audit",
     'cargo audit',
     'osv-scanner --recursive .',
+    // #1667: the shared lexer glued `(` onto the verb, so `(npm` hid the audit.
+    'true && (npm audit)',
   ])('recognises the audit command in a CI script: %s', (command) => {
     writeFileSync(join(root, 'package.json'), '{"name":"x"}');
     writeFileSync(join(root, '.gitlab-ci.yml'), `audit:\n  script:\n    - ${command}\n`);
@@ -564,6 +567,35 @@ describe('checkEnvDocumentation', () => {
     writeFileSync(join(root, 'app.mjs'), 'export const x = 1;\n');
     commitN(1);
     expect(checkEnvDocumentation(root)).toBeNull();
+  });
+});
+
+// ── Tracked session ledger (#1666) ───────────────────────────────────────────
+
+describe('checkTrackedSessionsLedger', () => {
+  function writeLedger() {
+    mkdirSync(join(root, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'sessions.jsonl'), '{"session_id":"s1"}\n');
+  }
+
+  it('reports a tracked sessions ledger with an untrack hint', () => {
+    // Bug this catches: a consumer repo tracking the ledger got no hint, and
+    // every linked worktree kept its own copy where foreign records landed (#1660).
+    writeLedger();
+    commitN(1);
+    expect(checkTrackedSessionsLedger(root)).toEqual({
+      check: 'tracked-sessions-ledger',
+      fixable: false,
+      message: expect.stringContaining('git rm --cached .orchestrator/metrics/sessions.jsonl'),
+    });
+  });
+
+  it('stays silent when the ledger exists on disk but is untracked', () => {
+    // The healthy state (this repo's own): ignored ledger on disk, nothing tracked.
+    writeFileSync(join(root, '.gitignore'), '.orchestrator/metrics/sessions.jsonl\n');
+    writeLedger();
+    commitN(1);
+    expect(checkTrackedSessionsLedger(root)).toBeNull();
   });
 });
 

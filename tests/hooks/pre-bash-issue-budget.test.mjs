@@ -44,6 +44,8 @@ const RAW_SESSION_ID = '11111111-2222-3333-4444-555555555555';
 const BUDGET_DIR = ['.orchestrator', 'runtime', 'issue-budget'];
 
 let repo;
+/** Every repo makeRepo() created in the current test (tests re-assign `repo`). */
+let madeRepos = [];
 
 /**
  * A minimal repo whose CLAUDE.md carries just the `issue-budget` block the hook
@@ -51,6 +53,7 @@ let repo;
  */
 function makeRepo({ mode = 'strict', max = 12 } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'issue-budget-hook-'));
+  madeRepos.push(dir);
   mkdirSync(join(dir, '.orchestrator'), { recursive: true });
   writeFileSync(
     join(dir, 'CLAUDE.md'),
@@ -107,7 +110,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  rmSync(repo, { recursive: true, force: true });
+  for (const d of madeRepos) rmSync(d, { recursive: true, force: true });
+  madeRepos = [];
 });
 
 describe('pre-bash-issue-budget — per-statement charging (#1163 BUG-1)', () => {

@@ -23,9 +23,10 @@
  * queue (bounded, oldest-dropped) and the session closes with zero user-facing
  * error.
  *
- * Node ESM. The only network dependency is the global `fetch`.
+ * Node ESM. Networking uses the Stdlib HTTP helper.
  */
 
+import { httpRequest } from '../http-request.mjs';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
@@ -46,7 +47,7 @@ import { resolveEventsLedgerRoot } from '../platform.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { resolvePrivateConfigDir } from '../config/private-config-dir.mjs';
 import { readSessionProfile } from '../state-md.mjs';
-import { resolveStateMdPath } from '../state-md/frontmatter-mutators.mjs';
+import { resolveStateMdWriteTarget } from '../state-md/frontmatter-mutators.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -73,7 +74,7 @@ function resolveEndpoint(env) {
 
 /**
  * The default network sender: one POST carrying the whole batch array as the
- * JSON body (the server accepts arrays), with an AbortSignal timeout. Resolves
+ * JSON body (the server accepts arrays), with a wall-clock timeout. Resolves
  * on a 2xx status, rejects on anything else (which routes the caller into the
  * offline queue).
  *
@@ -85,11 +86,12 @@ function resolveEndpoint(env) {
 function defaultSender({ env, timeoutMs }) {
   const endpoint = resolveEndpoint(env);
   return async (batches) => {
-    const res = await fetch(endpoint, {
+    const res = await httpRequest(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(batches),
-      signal: AbortSignal.timeout(timeoutMs),
+      timeoutMs,
+      maxBytes: 64 * 1024,
     });
     if (!res.ok) {
       // The status travels ON the error: `flush` needs it to tell a TRANSPORT
@@ -307,7 +309,15 @@ export function readSessionProfileForMetricsDir(metricsDir) {
     // metricsDir is `<repoRoot>/.orchestrator/metrics` by construction (every
     // caller builds it that way); two levels up is the repo root.
     const repoRoot = path.resolve(metricsDir, '..', '..');
-    return readSessionProfile(fs.readFileSync(resolveStateMdPath(repoRoot), 'utf8'));
+    // #1636: the write side's ownership rule — another platform's STATE.md not
+    // proven to be this process's is no profile source (ABSENT IS NOT EMPTY:
+    // null ⇒ the ping omits the field). Deliberately NO warnForeignStateMd line:
+    // this runs inside flush, which the hooks call in-process at SessionEnd or
+    // spawn detached with `stdio: 'ignore'` — the line would be hook noise or
+    // lost, and an omitted optional field needs no operator action.
+    const { path: stateMdPath, rejected } = resolveStateMdWriteTarget(repoRoot);
+    if (rejected) return null;
+    return readSessionProfile(fs.readFileSync(stateMdPath, 'utf8'));
   } catch {
     return null;
   }

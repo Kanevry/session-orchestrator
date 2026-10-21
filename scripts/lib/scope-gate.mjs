@@ -704,10 +704,12 @@ export function assertTestSiblingCoverage(fileScope, allowedPaths, opts = {}) {
  * module importing the barrel WOULD cycle).
  *
  * Two deltas the shared token stream does not carry, handled locally below:
- *   - `(`/`)`: `tokenizeCommand` keeps them inside word text (they are not
- *     control operators for its purpose). {@link peelSubshellParens} splits them
- *     back out as separators so `(echo x > y)` still yields `y` and
- *     `> >(cat)` still yields nothing.
+ *   - `(`/`)`: since #1667 `tokenizeCommand` already emits a subshell's parens
+ *     as `;` separators and hoists `$( … )` / backtick bodies as their own
+ *     commands. What still reaches this pass glued is word text the lexer keeps
+ *     on purpose — a process substitution word (`>(cat)`), `f()`, `arr=(…)`,
+ *     case patterns. {@link peelSubshellParens} splits those so `> >(cat)`
+ *     still yields nothing (the peeled `cat` lands in command-head position).
  *   - here-doc BODY tokens arrive as ordinary quoted words. They are DATA, and a
  *     body is multi-line, so the whitespace skip rule in
  *     {@link shouldSkipWriteTarget} drops them. (The delimiter word itself now
@@ -906,13 +908,13 @@ const INPUT_REDIRECT_OP_RE = /^\d*(?:<<<|<)$/;
  * Split leading `(` / trailing `)` off an UNQUOTED word token into standalone
  * separator tokens.
  *
- * `tokenizeCommand` does not treat parentheses as control operators (it does not
- * need to), so `(echo x > y)` arrives as words `(echo` … `y)`. Without this the
- * subshell's redirect target would read as the literal `y)` and be dropped by the
- * paren skip rule in {@link shouldSkipWriteTarget} — a silent DETECTION LOSS
- * versus the pre-#970 lexer. Peeling restores it, and process substitution
- * `> >(cat)` still yields nothing because the peeled `cat` lands in command-head
- * position rather than redirect-target position.
+ * Since #1667 `tokenizeCommand` splits a word-start subshell `(` / `)` itself,
+ * so `(echo x > y)` arrives as `;` `echo` `x` `>` `y` `;`. What still arrives
+ * glued is paren text the lexer deliberately keeps inside a word — a process
+ * substitution word (`>(cat)`), `f()`, `arr=(…)`, case patterns, and openers
+ * past its nesting cap. Peeling keeps those from reading as a literal `y)`
+ * target, and `> >(cat)` still yields nothing because the peeled `cat` lands in
+ * command-head position rather than redirect-target position.
  *
  * Quoted tokens are never peeled: `echo '(' x` must keep its literal paren.
  *
@@ -2021,6 +2023,11 @@ const DENIED_ABSOLUTE_TOP_SEGMENTS = Object.freeze([
   'Library',
   'Applications',
   'Windows',
+  // Windows machine-wide program and data roots (#1612, Opus review M3): the
+  // drive-less spelling of C:/ProgramData/** and C:/Program Files/** lands here.
+  'ProgramData',
+  'Program Files',
+  'Program Files (x86)',
 ]);
 
 /**
@@ -2151,7 +2158,10 @@ const CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS = 4;
  * @returns {boolean}
  */
 function isSensitiveHomeSegment(segment) {
-  return segment.startsWith('.') || foldPath(segment) === 'library';
+  // AppData is Windows' counterpart of ~/Library: gh/glab tokens, browser
+  // profiles, credential caches (#1612, Opus review M3).
+  const folded = foldPath(segment);
+  return segment.startsWith('.') || folded === 'library' || folded === 'appdata';
 }
 
 /**
@@ -2267,14 +2277,24 @@ function classifyHomeGrant(normalizedEntry) {
   const cacheCarveout =
     foldPath(firstBelowHome) === CACHE_CARVEOUT_SEGMENT &&
     literal.length >= CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS;
-  if (!cacheCarveout && isSensitiveHomeSegment(firstBelowHome)) {
+  // #1612 — Windows' os.tmpdir() is ~/AppData/Local/Temp, where worktrees and
+  // fixtures live. Same DEPTH rule as ~/.cache: the Temp root stays refused,
+  // a named directory below it is honoured.
+  const below = HOME_MIN_LITERAL_SEGMENTS - 1;
+  const windowsTempCarveout =
+    foldPath(firstBelowHome) === 'appdata' &&
+    literal.length >= below + 4 &&
+    foldPath(literal[below + 1]) === 'local' &&
+    foldPath(literal[below + 2]) === 'temp';
+  if (!cacheCarveout && !windowsTempCarveout && isSensitiveHomeSegment(firstBelowHome)) {
     return {
       verdict: 'error',
       reason:
-        `grants a sensitive home subdirectory ("${firstBelowHome}") — dot-directories and Library ` +
+        `grants a sensitive home subdirectory ("${firstBelowHome}") — dot-directories, Library and AppData ` +
         `hold credentials, tokens, owner.yaml and the agent guards themselves; scope a project ` +
-        `directory instead (the sole exception is ~/.cache/<project>/…, which must name at least ` +
-        `${CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS} literal segments — #1406)`,
+        `directory instead (the exceptions are ~/.cache/<project>/…, which must name at least ` +
+        `${CACHE_CARVEOUT_MIN_LITERAL_SEGMENTS} literal segments — #1406, and a named directory ` +
+        `below Windows' temp root ~/AppData/Local/Temp — #1612)`,
     };
   }
 
@@ -2396,6 +2416,13 @@ export function canonicalizeGrantPrefix(absPath) {
  */
 export function gradeScopeEntry(entry, opts = {}) {
   if (typeof entry !== 'string' || entry.length === 0) return null;
+  // Windows drive-absolute grants (#1612): every check below speaks POSIX
+  // separators and Gate 5b matches the realpath candidate in its forward-slash
+  // form ("C:/Users/..."). Graded verbatim, `C:\a\b\**` had no "/" prefix at
+  // all ("/" resolves to "C:/") and a clean grant was reported non-canonical,
+  // so scripts/validate-wave-scope.mjs refused it (measured on Windows 11).
+  const windowsDrive = /^[A-Za-z]:[\\/]/.test(entry);
+  if (windowsDrive) entry = entry.replace(/\\/g, '/');
   const bag = opts !== null && typeof opts === 'object' ? opts : {};
   const resolver = typeof bag.resolve === 'function' ? bag.resolve : null;
   /** @param {string} p @returns {string} */
@@ -2431,7 +2458,7 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
-  if (!path.isAbsolute(entry)) return null;
+  if (!windowsDrive && !path.isAbsolute(entry)) return null;
 
   // `.` segments are collapsed BEFORE any classification (#1398): without it,
   // `/Users/./alice/.ssh/**` has a literal prefix whose third element is
@@ -2440,8 +2467,12 @@ export function gradeScopeEntry(entry, opts = {}) {
   // any entry containing `../`, whatever else it is.
   const normalized = path.posix.normalize(entry);
   const literalPrefix = literalGrantPrefix(normalized);
+  // The system-directory and home-root rules are written for POSIX roots; a
+  // drive-less spelling makes `C:/Users/<name>/**` as strict as `/Users/<name>/**`
+  // (before #1612 a Windows home grant was never classified at all).
+  const rootless = windowsDrive ? normalized.replace(/^[A-Za-z]:/, '') : normalized;
 
-  const deniedLiteral = deniedRootFor(literalPrefix, (p) => p);
+  const deniedLiteral = deniedRootFor(literalGrantPrefix(rootless), (p) => p);
   if (deniedLiteral !== null) {
     return {
       verdict: 'error',
@@ -2452,7 +2483,7 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
-  const home = classifyHomeGrant(normalized);
+  const home = classifyHomeGrant(rootless);
   if (home !== null) {
     return home.verdict === 'error'
       ? { verdict: 'error', code: 'home-grant', message: `${home.reason}: ${entry}` }
@@ -2481,7 +2512,11 @@ export function gradeScopeEntry(entry, opts = {}) {
     };
   }
 
-  if (canonicalPrefix !== literalPrefix) {
+  // Windows: realpath answers in forward slashes with an upper-case drive letter.
+  const comparable = (p) => (windowsDrive
+    ? p.replace(/\\/g, '/').replace(/^([a-z]):/, (_, d) => `${d.toUpperCase()}:`)
+    : p);
+  if (comparable(canonicalPrefix) !== comparable(literalPrefix)) {
     return {
       verdict: 'error',
       code: 'non-canonical',

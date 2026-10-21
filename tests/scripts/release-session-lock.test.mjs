@@ -20,7 +20,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { acquire, readLock, writeOwnerProof } from '../../scripts/lib/session-lock.mjs';
+import { acquire, readLock, writeOwnerProof, hasReleaseMarker } from '../../scripts/lib/session-lock.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../../scripts/release-session-lock.mjs');
 const LOCK_REL = path.join('.orchestrator', 'session.lock');
@@ -127,7 +127,11 @@ describe('scripts/release-session-lock.mjs (#1395)', { timeout: 15000 }, () => {
       session_id: OWN_ID,
       semantic_session_id: SEMANTIC_ID,
       event_emitted: true,
+      release_marker: true,
     });
+    // #1651: without this marker the next compaction's SessionStart re-creates
+    // the lock the session just freed for a headless run.
+    expect(hasReleaseMarker({ repoRoot: repo, sessionId: OWN_ID })).toBe(true);
 
     const released = (await readEvents(repo))
       .filter((e) => e.event === 'orchestrator.session.lock.released');
@@ -167,8 +171,10 @@ describe('scripts/release-session-lock.mjs (#1395)', { timeout: 15000 }, () => {
     const res = await runCli(['--repo-root', repo, '--session-id', OWN_ID, '--json'], repo);
 
     expect(res.code).toBe(0);
-    expect(JSON.parse(res.stdout)).toMatchObject({ ok: true, outcome: 'absent' });
+    expect(JSON.parse(res.stdout)).toMatchObject({ ok: true, outcome: 'absent', release_marker: true });
     expect(await readEvents(repo)).toEqual([]);
+    // #1651: without the marker a later compaction re-creates a lock for a closed session.
+    expect(hasReleaseMarker({ repoRoot: repo, sessionId: OWN_ID })).toBe(true);
   });
 
   // BUG (#1541): a second session in the same conversation (no new SessionStart

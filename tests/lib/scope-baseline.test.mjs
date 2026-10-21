@@ -24,8 +24,8 @@
  * live STATE.md, which happens to carry both keys with identical values).
  */
 
-import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdirSync, writeFileSync, readFileSync, realpathSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 
@@ -483,6 +483,27 @@ describe('writeBaseline()', () => {
     expect(result).toEqual({ written: false, reason: 'unreadable-state-md' });
     expect(readFileSync(statePath, 'utf8')).toBe(FIXTURE_MALFORMED);
   });
+
+  // #1640 — bug: a refused foreign target surfaced as `unreadable-state-md`,
+  // pointing the operator at a parse problem that does not exist.
+  it('foreign completed STATE.md → {written:false, reason:"foreign-state-md"}, file untouched (#1640)', async () => {
+    const root = makeTmpDir();
+    const foreign = FIXTURE_WITH_SESSION_A.replace('status: active', 'session-id: foreign-0000\nstatus: completed');
+    const statePath = seedState(root, foreign);
+    vi.stubEnv('SO_PLATFORM', 'claude');
+    vi.stubEnv('SO_STATE_DIR', '');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'own-1111');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
+
+      expect(result).toEqual({ written: false, reason: 'foreign-state-md' });
+      expect(readFileSync(statePath, 'utf8')).toBe(foreign);
+    } finally {
+      stderr.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 // ─── readBaseline() ─────────────────────────────────────────────────────
@@ -527,6 +548,26 @@ describe('readBaseline()', () => {
       branch: 'feature/scope-governor',
       sessionStartRef: 'abc1234',
     });
+  });
+
+  // #1636 — bug: the read side took the first existing STATE.md, so a Codex
+  // session read a peer's `.claude/STATE.md` baseline (and its
+  // session-start-ref) as its own and measured drift against it.
+  it('returns null for another platform\'s foreign STATE.md, and computeDrift() skips as no-state-md (#1636)', () => {
+    const root = makeTmpDir();
+    seedState(root, FIXTURE_WITH_SESSION_A.replace(
+      'status: active',
+      'session-id: foreign-0000\nstatus: active\nscope-baseline-session: session-A\nscope-baseline-planned-files: 5',
+    ));
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('SO_STATE_DIR', '');
+    vi.stubEnv('CODEX_THREAD_ID', 'own-1111');
+    try {
+      expect(readBaseline(root)).toBe(null);
+      expect(computeDrift({ repoRoot: root })).toEqual({ ok: true, skipped: true, reason: 'no-state-md' });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 
@@ -1082,5 +1123,53 @@ describe('frontmatter round-trip', () => {
     const parsed3 = parseStateMd(reserialized2);
 
     expect(parsed3.frontmatter['scope-baseline-intent']).toBe('freeze scope: five deliverables');
+  });
+});
+
+// ─── #1659 — commits in the session's OTHER own work trees ─────────────────
+// Named bug (TV-001): `session-start-ref` is one sha in the coordinator's own
+// checkout, so a file the same session committed in a second linked worktree
+// was invisible to the drift numerator. The recorded `(tree, start_ref)` pair
+// for the session's process-local raw id must add it — and only for that id.
+describe('computeDrift() — other own work trees (#1659)', () => {
+  const OWN = '11111111-1111-4111-8111-111111111111';
+
+  it('adds a file committed in a second worktree recorded for the own raw id, and not without the record', () => {
+    const root = makeTmpRepo();
+    const sha = initialCommit(root);
+    seedState(root, driftStateFixture({ session: 'session-A', baselineSession: 'session-A', sessionStartRef: sha, plannedFiles: 1 }));
+    const wt = join(makeTmpDir(), 'wt');
+    fixtureGit(['worktree', 'add', '-q', '-b', 'side', wt], root);
+    const wtStart = fixtureGit(['rev-parse', 'HEAD'], wt).trim();
+    writeFilesAndCommit(wt, ['src/side.mjs'], 'side commit');
+
+    const ledger = join(makeTmpDir(), 'events.jsonl');
+    writeFileSync(ledger, '', 'utf8');
+    const env = { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: OWN };
+
+    const without = computeDrift({ repoRoot: root, env, eventsFile: ledger });
+    expect(without.actualFiles).toBe(0);
+    expect(without.otherWorkTrees).toBeUndefined();
+
+    writeFileSync(ledger, `${JSON.stringify({
+      timestamp: '2026-10-17T10:00:00.000Z',
+      event: 'orchestrator.session.work_tree',
+      session_id: OWN,
+      tree: realpathSync(wt),
+      start_ref: wtStart,
+    })}\n{"event":"orchestrator.session.wo\n`, 'utf8');
+
+    // The truncated second line must surface as `malformed`, never be dropped
+    // silently — a partial read is not a clean "one tree" verdict.
+    const withTree = computeDrift({ repoRoot: root, env, eventsFile: ledger });
+    expect(withTree.actualFiles).toBe(1);
+    expect(withTree.otherWorkTrees).toEqual({ counted: 1, skipped: 0, otherRepo: 0, malformed: 1, invalid: 0 });
+
+    const foreignId = computeDrift({
+      repoRoot: root,
+      env: { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'someone-else' },
+      eventsFile: ledger,
+    });
+    expect(foreignId.actualFiles).toBe(0);
   });
 });

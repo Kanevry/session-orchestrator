@@ -326,7 +326,7 @@ async function blockCommand(pattern, ruleId, rationale, command, sessionId) {
  */
 async function isGitStashNonEmpty(projectDir) {
   try {
-    const { $: zx$ } = await import('zx');
+    const { $: zx$ } = await import('../scripts/lib/zx.mjs');
     zx$.verbose = false;
     zx$.quiet = true;
     const cwd = projectDir || process.cwd();
@@ -1020,9 +1020,13 @@ async function main() {
 //      crash with 0 bytes of stdout — indistinguishable from an allow, and
 //      therefore invisible. Now it exits 0 (still fail-open, so a broken module
 //      cannot brick the session) but SAYS SO, loudly, once per session.
-//   2. RUNTIME failure inside `main()`: pre-existing behaviour, unchanged.
-//      The guard armed and then tripped over a specific command; that is a
-//      narrower blast radius and keeps its historical `internal error` line.
+//   2. RUNTIME failure inside `main()` (#1671 item 1): the guard armed and then
+//      tripped over a specific command. That command is DENIED (fail-closed),
+//      like enforce-commands / enforce-scope (SECURITY-REQ-01). It used to exit
+//      0 = ALLOW, so any future crash on an input shape (the measured trigger was
+//      a tokenizer RangeError on a long command) silently opened the guard for
+//      exactly the inputs it cannot parse. The blast radius is one command, and
+//      the reason tells the operator how out: split or simplify it.
 // ---------------------------------------------------------------------------
 try {
   await bootstrap();
@@ -1054,11 +1058,14 @@ if (isMainModule(import.meta.url)) {
   // #211: exit 0 immediately (silent allow) when this hook is disabled via profile/env
   if (!shouldRunHook('pre-bash-destructive-guard')) process.exit(0);
 
-  // Top-level error handler — never let exit 1 leak
+  // Top-level error handler — never let exit 1 leak, never fail open (#1671).
+  // emitDeny is bound here: bootstrap() succeeded, and it never throws.
   main().catch((e) => {
-    process.stderr.write(
-      `⚠ pre-bash-destructive-guard: internal error — ${e?.message || e}\n`
+    const detail = String(e?.message || e).split('\n')[0];
+    process.stderr.write(`⚠ pre-bash-destructive-guard: internal error — ${detail}\n`);
+    emitDeny(
+      `pre-bash-destructive-guard hit an internal error and blocked this command for safety (${detail}).`,
+      'Split the command into smaller, simpler Bash calls and retry. See issue #1671.'
     );
-    process.exit(0); // fail-open on internal errors to avoid blocking legitimate work
   });
 }

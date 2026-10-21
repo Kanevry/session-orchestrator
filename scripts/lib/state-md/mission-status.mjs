@@ -23,7 +23,7 @@
  */
 
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
-import { updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mjs';
+import { resolveStateMdWriteTarget, updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mjs';
 
 const MISSION_STATUS_HEADING_RE = /^##\s+Mission Status\s*$/;
 const WRITER_TIMESTAMP_SOURCE = '\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z';
@@ -677,9 +677,13 @@ const REFUSAL_REASONS = Object.freeze({
  */
 export async function setMissionStatusOnDisk(repoRoot, taskId, status, opts = {}) {
   let refused;
+  // A fail-closed write target (#1618) hands an empty buffer; writeStateMd
+  // already names the rejected foreign STATE.md, so do not blame its content.
+  const foreign = resolveStateMdWriteTarget(repoRoot, opts).rejected !== null;
   const result = await writeStateMd(
     repoRoot,
     (contents) => {
+      if (foreign && contents === '') return contents;
       const outcome = setMissionStatusDetailed(contents, taskId, status);
       refused = outcome.refused;
       if (outcome.refused) {

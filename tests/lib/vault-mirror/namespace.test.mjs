@@ -11,8 +11,8 @@
  * and isOwnerLeakySegment() so a bug in the production function fails the assertion.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,7 @@ import { _resetPseudonymMapCache } from '@lib/vault-mirror/pseudonym-map.mjs';
 
 
 const inventedOwnerPolicyDir = makeTmpDir('invented-owner-policy-');
+afterAll(() => removeTree(inventedOwnerPolicyDir));
 const inventedOwnerPolicyPath = join(inventedOwnerPolicyDir, 'owner-patterns.json');
 writeFileSync(inventedOwnerPolicyPath, JSON.stringify({
   version: 1, usernamePrefixes: ['sampleg'], privateHosts: ['gitlab.example.invalid'], eventsHosts: ['events.example.invalid'], privateDomains: ['example.invalid'], packageScopes: ['example'],
@@ -479,7 +480,11 @@ describe('deriveRepo (#1039) — preferred-remote resolution + distinguishable f
     expect(mod.resolveRepoNamespace({})).toBe('widget-service');
   });
 
-  it('B5: THIS repo still namespaces as "session-orchestrator" — the real vault folder is 40-learnings/session-orchestrator', async () => {
+  // The curated GitHub snapshot excludes `.vault.yaml` (.orchestrator/policy/public-export.json),
+  // and with it the live data this case guards; without a remote the namespace is then the
+  // checkout directory, so the pre-push gate of every curated push failed here (2026-10-21).
+  // Revisit if the export ever ships `.vault.yaml`.
+  it.skipIf(!existsSync(join(ORIGINAL_CWD, '.vault.yaml')))('B5: THIS repo still namespaces as "session-orchestrator" — the real vault folder is 40-learnings/session-orchestrator', async () => {
     // Guards the one case with live data behind it: the repo root is the cwd
     // every production caller runs in, and its tracked `.vault.yaml` declares
     // `session-orchestrator`, which is also what the git remote derived before

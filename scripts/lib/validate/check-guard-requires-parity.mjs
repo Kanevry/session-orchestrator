@@ -889,7 +889,7 @@ function loadModuleVersions(pluginRoot, modulePath, cache) {
 
   const workingSource = readFileSync(modulePath, 'utf8');
   const working = parseModule(workingSource, modulePath);
-  const gitPath = relative.split(path.sep).join('/');
+  const gitPath = relative.replace(/\\/g, '/');
   const env = {};
   for (const key of GIT_ENV_ALLOWLIST) {
     if (process.env[key] !== undefined) env[key] = process.env[key];
@@ -1027,8 +1027,8 @@ export function inspectGuardRequiresParity(pluginRoot) {
         result.summary.requires += requires.requires.length;
 
         const modulePath = path.resolve(pluginRoot, MODULE_RELATIVE_PREFIX, ...specifier.segments);
-        const moduleRelative = path.relative(pluginRoot, modulePath);
-        if (moduleRelative.startsWith('..') || path.isAbsolute(moduleRelative) || !moduleRelative.startsWith(`${MODULE_RELATIVE_PREFIX}${path.sep}`)) {
+        const moduleRelative = path.relative(pluginRoot, modulePath).replace(/\\/g, '/');
+        if (moduleRelative.startsWith('..') || path.isAbsolute(moduleRelative) || !moduleRelative.startsWith(`${MODULE_RELATIVE_PREFIX}/`)) {
           report('dynamic-contract', `${namespace}: specifier resolves outside ${MODULE_RELATIVE_PREFIX}`, specifierValue);
           continue;
         }

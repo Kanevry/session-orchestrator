@@ -1045,7 +1045,7 @@ describe('provenance header before frontmatter (#722, retired by #1449)', () => 
     const dir = makeTmpRulesDir();
     writeRule(dir, 'body.md', content);
 
-    expect(parseGlobsFrontmatter(content)).toEqual({ globs: null, meta: {} });
+    expect(parseGlobsFrontmatter(content)).toEqual({ globs: null, paths: null, meta: {} });
     const results = loadApplicableRules({ rulesDir: dir, scopePaths: [] });
     expect(results).toHaveLength(1);
     expect(results[0].alwaysOn).toBe(true);
@@ -1223,6 +1223,27 @@ describe('parseGlobsFrontmatter — paths: alias (#795)', () => {
     const result = parseGlobsFrontmatter('---\nglobs:\n  - a/**\npaths:\n  - b/**\n---\n');
 
     expect(result.globs).toEqual(['a/**']);
+    expect(result.paths).toEqual(['b/**']);
+  });
+});
+
+describe('loadApplicableRules — scopeKey (#1638)', () => {
+  it('globs-only: scoped for wave injection (merged, default), always-on for Claude Code (paths)', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'globs-only.md', '---\nglobs:\n  - src/**\n---\n\n# G\n');
+
+    expect(loadApplicableRules({ rulesDir: dir, scopePaths: [] })).toHaveLength(0);
+    const native = loadApplicableRules({ rulesDir: dir, scopePaths: [], scopeKey: 'paths' });
+    expect(native.map((r) => r.alwaysOn)).toEqual([true]);
+  });
+
+  it('both keys diverge: merged matches on globs, paths matches on paths', () => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'both.md', '---\nglobs:\n  - src/**\npaths:\n  - docs/**\n---\n\n# B\n');
+
+    expect(loadApplicableRules({ rulesDir: dir, scopePaths: ['src/a.ts'] })).toHaveLength(1);
+    expect(loadApplicableRules({ rulesDir: dir, scopePaths: ['src/a.ts'], scopeKey: 'paths' })).toHaveLength(0);
+    expect(loadApplicableRules({ rulesDir: dir, scopePaths: ['docs/a.md'], scopeKey: 'paths' })).toHaveLength(1);
   });
 });
 

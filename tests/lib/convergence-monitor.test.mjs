@@ -24,8 +24,9 @@ import { spawn } from 'node:child_process';
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { classify, _evaluateSignals } from '@lib/convergence-monitor.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 describe('convergence-monitor classify — event-type gate (#966)', () => {
   it.each([
@@ -143,6 +144,7 @@ describe('convergence-monitor classify — event-type gate (#966)', () => {
     // no events.jsonl and can only poll — it neither reads nor writes anything
     // real. Falsification: restore `t.unref?.()` in sleep() and this goes red.
     const repo = mkdtempSync(join(tmpdir(), 'cm-live-'));
+    onTestFinished(() => removeTree(repo));
     const child = spawn(
       process.execPath,
       [join(import.meta.dirname, '../../scripts/lib/convergence-monitor.mjs'), '--tail', '--interval=1'],
@@ -312,6 +314,7 @@ describe('convergence-monitor — tail tick evaluation (live binary)', () => {
     // Falsification: re-admit `orchestrator.wave.started` in isWaveScopedEvent
     // and no shrinking_diff line arrives before the deadline.
     const repo = mkdtempSync(join(tmpdir(), 'cm-tick-'));
+    onTestFinished(() => removeTree(repo));
     const eventsPath = join(repo, '.orchestrator', 'metrics', 'events.jsonl');
     mkdirSync(dirname(eventsPath), { recursive: true });
     writeFileSync(eventsPath, '');
@@ -362,7 +365,9 @@ describe('convergence-monitor — project root (#1517)', () => {
     // monitor resolved exists. Falsification: restore the CLAUDE_PLUGIN_ROOT
     // fallback and the first event becomes `no-events-yet`.
     const project = mkdtempSync(join(tmpdir(), 'cm-proj-'));
+    onTestFinished(() => removeTree(project));
     const plugin = mkdtempSync(join(tmpdir(), 'cm-plugin-'));
+    onTestFinished(() => removeTree(plugin));
     const eventsPath = join(project, '.orchestrator', 'metrics', 'events.jsonl');
     mkdirSync(dirname(eventsPath), { recursive: true });
     writeFileSync(eventsPath, '');

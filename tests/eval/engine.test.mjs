@@ -504,6 +504,7 @@ describe('session resolution cascade', () => {
       { session_id: 'a', status: 'abandoned', completed_at: new Date(base - 3000).toISOString() },
       {
         session_id: 'b',
+        session_type: 'deep',
         completed_at: new Date(base - 1000).toISOString(),
         agent_summary: { complete: 3 },
       },
@@ -522,6 +523,7 @@ describe('session resolution cascade', () => {
     const records = [
       {
         session_id: 'old-completed',
+        session_type: 'deep',
         status: 'completed',
         started_at: new Date(base - 10000).toISOString(),
         completed_at: new Date(base - 5000).toISOString(),
@@ -534,6 +536,7 @@ describe('session resolution cascade', () => {
       },
       {
         session_id: 'fresh-deep',
+        session_type: 'deep',
         completed_at: new Date(base - 1000).toISOString(),
         agent_summary: { complete: 9 },
         effectiveness: { completion_rate: 1 },
@@ -549,11 +552,13 @@ describe('session resolution cascade', () => {
     const records = [
       {
         session_id: 'old-fallback',
+        session_type: 'deep',
         completed_at: new Date(base - 10000).toISOString(),
         agent_summary: { complete: 5 },
       },
       {
         session_id: 'newest-completed',
+        session_type: 'deep',
         status: 'completed',
         started_at: new Date(base - 3000).toISOString(),
         completed_at: new Date(base - 1000).toISOString(),
@@ -783,5 +788,49 @@ describe('isFailedGateEvent — each v3 signal alone', () => {
     ['none of them', { event: passed, exit_code: 0, timed_out: false }, false],
   ])('%s → %s', (_label, ev, expected) => {
     expect(isFailedGateEvent(ev)).toBe(expected);
+  });
+});
+
+/**
+ * #1592 fixture: a real repo `<base>/main` (one empty commit) plus a linked
+ * worktree `<base>/wt`; `base` is realpath'd so path comparisons hold on macOS.
+ */
+async function makeLinkedWorktree1592(prefix) {
+  const nodeFs = await import('node:fs');
+  const nodePath = (await import('node:path')).default;
+  const { tmpdir: osTmpdir } = await import('node:os');
+  const { spawnSync: spawn } = await import('node:child_process');
+  const base = nodeFs.realpathSync(nodeFs.mkdtempSync(nodePath.join(osTmpdir(), prefix)));
+  const main = nodePath.join(base, 'main');
+  const wt = nodePath.join(base, 'wt');
+  nodeFs.mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawn('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  const mainMetrics = nodePath.join(main, '.orchestrator', 'metrics');
+  nodeFs.mkdirSync(mainMetrics, { recursive: true });
+  return { base, main, wt, mainMetrics, cleanup: () => nodeFs.rmSync(base, { recursive: true, force: true }) };
+}
+
+describe('evaluateSession from a linked worktree (#1592)', () => {
+  // Bug: events resolved to the main checkout's ledger but sessions.jsonl was
+  // read from `<worktree>/.orchestrator/metrics` (absent since #1584), so a
+  // worktree run threw SessionResolutionError for a recorded session.
+  it('resolves the session from the main checkout ledger', async () => {
+    const nodeFs = await import('node:fs');
+    const sc = scenarioOneWaveNoGate({});
+    dirsToClean.push(sc.dir);
+    const fx = await makeLinkedWorktree1592('eval-wt-');
+    try {
+      nodeFs.cpSync(sc.dir, fx.mainMetrics, { recursive: true });
+      const run = () => evalFixture({ ...sc, dir: path.join(fx.wt, '.orchestrator', 'metrics') });
+      expect(run).not.toThrow();
+    } finally {
+      fx.cleanup();
+    }
   });
 });

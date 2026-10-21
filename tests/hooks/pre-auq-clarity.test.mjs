@@ -16,7 +16,7 @@
  * stayed green with their named defect installed.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import path from 'node:path';
@@ -27,6 +27,7 @@ import { expectDeny, expectAllow, expectGuardInactive, isDeny } from '../_helper
 // Konstante geprüft, damit eine verschobene Schwelle den Satz mitzieht.
 import * as schemaModule from '../../scripts/lib/auq/schema.mjs';
 import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-auq-clarity.mjs');
@@ -55,6 +56,7 @@ const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-auq-clarity.mjs');
  */
 function runHook(stdin, { hook = HOOK, execArgv = [] } = {}) {
   const eventsHome = mkdtempSync(path.join(os.tmpdir(), 'auq-events-'));
+  onTestFinished(() => removeTree(eventsHome));
   const result = spawnSync(process.execPath, [...execArgv, hook], {
     input: stdin,
     encoding: 'utf8',
@@ -474,6 +476,7 @@ describe('pre-auq-clarity — telemetry (the guard must be falsifiable)', () => 
     // Re-run against a project dir whose events.jsonl is a DIRECTORY, so the
     // append throws EISDIR inside the hook.
     const home = mkdtempSync(path.join(os.tmpdir(), 'auq-broken-'));
+    onTestFinished(() => removeTree(home));
     mkdirSync(path.join(home, '.orchestrator', 'metrics', 'events.jsonl'), { recursive: true });
     const broken = spawnSync(process.execPath, [HOOK], {
       input: envelope([h2Question()]),
@@ -496,6 +499,7 @@ describe('pre-auq-clarity — fake regression (proves the guard bites)', () => {
    */
   function stageHookCopy(mutate) {
     const root = mkdtempSync(path.join(os.tmpdir(), 'auqc-fake-'));
+    onTestFinished(() => removeTree(root));
     mkdirSync(path.join(root, 'hooks'), { recursive: true });
     symlinkSync(path.join(REPO_ROOT, 'scripts'), path.join(root, 'scripts'), 'dir');
     symlinkSync(path.join(REPO_ROOT, 'hooks', '_lib'), path.join(root, 'hooks', '_lib'), 'dir');

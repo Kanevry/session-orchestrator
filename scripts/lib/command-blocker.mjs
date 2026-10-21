@@ -373,9 +373,94 @@ function readHeredocBody(command, from, delim, stripTabs) {
  *     with it `rm -rf /tmp/x &> log` staying ALLOWED); the `;`/`|`/`&` branch runs
  *     first and is never shadowed.
  *
+ * ## Subshells and command substitutions (#1667)
+ *
+ * Before #1667 `(`, `$(`, `)` and backticks were word characters, so
+ * `true && (rm -rf X)` resolved the verb `(rm` and every verb- or target-based
+ * check (path-delete denylist, rm allowlist, issue budget, staging fence)
+ * missed X. The ledger guard had fixed this in its own scanner (#1665); the
+ * shared lexer now carries it for every consumer:
+ *   - An unquoted `(` at WORD START opens a subshell: it and its `)` become
+ *     `{ text: ';', operator: 'subshell' }` separators, the body stays in place.
+ *   - `$( … )`, backticks (unquoted AND inside double quotes) and process
+ *     substitution `<( … )` / `>( … )` are WORDS whose body runs as a command:
+ *     the outer word keeps the RAW source text (`$(pwd)/x` stays one operand,
+ *     so no outer word boundary moves) and the body's tokens are HOISTED to the
+ *     end of the stream behind a `{ text: ';', operator: 'substitution' }`.
+ *   - Unchanged on purpose: `$((`/`((` arithmetic, a mid-word `(` (`f()`,
+ *     `arr=(…)`, whose `)` stays word text), an unmatched `)`, the parens of a
+ *     case HEAD (`(a)` patterns), quoted/escaped parens, `{`/`}` (brace groups
+ *     were already split by COMMAND_POSITION_KEYWORDS), here-doc bodies.
+ *   - A case pattern's closing `)` is followed by a `{ text: ';', operator:
+ *     'case-pattern' }` separator, so an arm's first command (`a) rm x;;`)
+ *     heads its own segment; in an arm body `(` opens a subshell again.
+ *   - Fail direction: an unclosed substitution is closed at end of input and
+ *     STILL hoisted (verb visible). Past MAX_TOKENIZER_NESTING an unquoted
+ *     opener degrades to a plain separator (verb visible); a double-quoted one
+ *     stays literal text there.
+ *
  * @param {string} command
  * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string } }>}
  */
+/** Unquoted chain-operator texts — a word after one of them is in command position. */
+const CHAIN_OPERATOR_TEXTS = new Set([';', '&&', '||', '|', '&']);
+
+/**
+ * Reserved words that are followed by a COMMAND (#1671): a word after one of
+ * them — itself in command position — is in command position too. The opener
+ * half of COMMAND_POSITION_KEYWORDS (closers like `fi`/`done` end a command, so
+ * `fi case` is no case) plus `time`, which bash parses as a pipeline prefix.
+ * `(` is absent on purpose: since #1667 the lexer emits it as a separator.
+ */
+const COMMAND_POSITION_OPENERS = new Set([
+  '{', '!', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', 'time', 'coproc',
+]);
+
+/** A function-definition head `name()` — its body is a compound command. */
+const FUNCTION_HEAD_RE = /^[^\s()$`'"]+\(\)$/;
+
+/**
+ * Is the word at index `end` of `sink` (default: the NEXT word pushed) in
+ * command position (#1671)? Walks back over
+ * a run of unquoted opener keywords (`if ! case …`, `then { case …`) to the
+ * statement start: an operator/separator or the start of the sink. An opener
+ * that is itself an argument (`echo then case`) does not count. Also openers:
+ * `coproc`, a function head `name()` / `function name`, and `time -p`.
+ * A case pattern is followed by a `case-pattern` separator token (see
+ * {@link tokenizeCommand}), so the first word of a case ARM is in command
+ * position through the operator branch.
+ *
+ * @param {Array<{ text: string, quoted: boolean, operator?: string }>} sink
+ * @param {number} [end=sink.length]
+ * @returns {boolean}
+ */
+function nextWordInCommandPosition(sink, end = sink.length) {
+  for (let i = end - 1; i >= 0; i--) {
+    const tok = sink[i];
+    if (tok.quoted) return false;
+    if (tok.operator !== undefined || CHAIN_OPERATOR_TEXTS.has(tok.text)) return true;
+    const prev = sink[i - 1];
+    const prevIs = (word) => prev !== undefined && !prev.quoted && prev.text === word;
+    // `time -p cmd`: the POSIX-format flag is part of the `time` prefix.
+    if (tok.text === '-p' && prevIs('time')) continue;
+    // `function name { … }` / `function name() …`: skip the keyword+name pair.
+    if (prevIs('function')) { i--; continue; }
+    if (FUNCTION_HEAD_RE.test(tok.text)) continue;
+    if (!COMMAND_POSITION_OPENERS.has(tok.text)) return false;
+  }
+  return true;
+}
+
+/**
+ * How many `$( … )` / backtick / `( … )` levels {@link tokenizeCommand} tracks
+ * (#1667, mirroring the ledger guard's MAX_SCAN_NESTING). The lexer is a loop
+ * with an explicit frame stack, so this is a work bound, not a stack-safety
+ * bound. Past it an unquoted opener is read as a plain separator: the verb
+ * behind it stays visible (fail-closed for verb checks), only the word-boundary
+ * fidelity of that pathological level is given up.
+ */
+const MAX_TOKENIZER_NESTING = 256;
+
 export function tokenizeCommand(command) {
   const tokens = [];
   if (typeof command !== 'string' || command.length === 0) return tokens;
@@ -384,17 +469,91 @@ export function tokenizeCommand(command) {
   let text = '';
   let started = false;     // a token is in progress
   let sawQuote = false;    // any char of the current token came from inside quotes
+  // Index of the last BARE `(` appended to a word (`f(`, `arr=(`). An escaped
+  // `\(` or a quoted one never sets it, so `$(echo \()` still closes there.
+  let bareParenAt = -1;
   let state = 'normal';    // 'normal' | 'single' | 'double' | 'ansi'
   let arithDepth = 0;      // open `$((` / `((` levels — inside them `<<` is a shift
+  // One entry per open `case … esac` level, innermost last. Each names what the
+  // NEXT word at that level is: 'subject' (`case WORD`), 'in' (the `in`),
+  // 'pattern' (a clause pattern, or `esac`) or 'body' (commands of an arm).
+  // In the three head states `(`/`)` are pattern syntax; an unquoted `)` in
+  // 'pattern' ENDS the pattern and emits a `case-pattern` separator, so the
+  // arm's first word (`a) rm -f x`, `a)rm -f x`) heads its own segment.
+  let caseStates = [];
+  const caseTop = () => (caseStates.length > 0 ? caseStates[caseStates.length - 1] : null);
+  const setCaseTop = (s) => { caseStates[caseStates.length - 1] = s; };
   const pendingHeredocs = [];
+
+  // #1667 nesting: `sink` receives the tokens of the CURRENT command context.
+  // A `$( … )` / backtick / process-substitution body gets its own sink and is
+  // HOISTED (appended after the outer stream, behind a separator) on close; a
+  // `( … )` subshell stays in place between two separators. `stack` holds one
+  // frame per open level — see the tokenizeCommand docblock.
+  let sink = tokens;
+  const hoisted = [];
+  const stack = [];
 
   const flush = () => {
     if (started) {
-      tokens.push({ text, quoted: sawQuote });
+      // #1671: BOTH words count only where bash reads them as reserved words.
+      // An argument `esac` (`echo esac`) used to close a case early, and a
+      // `case` behind `then`/`do`/`else`/`{`/`!` was never opened — either way
+      // the next pattern `)` closed the enclosing `$( … )` and moved the rest
+      // of the body (an `rm` operand) into the outer statement.
+      const top = caseTop();
+      if (top === 'subject') setCaseTop('in');
+      else if (top === 'in') { if (!sawQuote && text === 'in') setCaseTop('pattern'); }
+      else if (top === 'pattern') {
+        // `case w in esac` / `;; esac` — `esac` where a pattern may start.
+        if (!sawQuote && text === 'esac') caseStates.pop();
+      } else if (!sawQuote && text === 'case' && nextWordInCommandPosition(sink)) {
+        caseStates.push('subject');
+      } else if (top === 'body' && !sawQuote && text === 'esac' && nextWordInCommandPosition(sink)) {
+        // `a) esac` (last clause without `;;`) is covered too: the pattern's
+        // `case-pattern` separator puts `esac` in command position.
+        caseStates.pop();
+      }
+      sink.push({ text, quoted: sawQuote });
       text = '';
       started = false;
       sawQuote = false;
     }
+  };
+
+  // Open a substitution level whose BODY is lexed into a fresh sink. The outer
+  // word in progress (`x=` in `x=$(…)`, or the double-quoted run around
+  // `"$(…)"`) is parked in the frame and resumed on close.
+  const openSubstitution = (kind, start) => {
+    stack.push({ kind, start, text, started, sawQuote, state, sink, arithDepth, caseStates });
+    text = ''; started = false; sawQuote = false; state = 'normal'; arithDepth = 0; caseStates = [];
+    sink = [];
+  };
+
+  // Close the innermost substitution level. `end` is the index just past its
+  // closing character (or the input length when it never closed). The body is
+  // hoisted; the outer word gets the RAW source text of the whole substitution
+  // appended, so the outer token stream is byte-identical to the pre-#1667
+  // lexer's word boundaries (`rm -rf $(pwd)/x` keeps ONE operand).
+  const closeSubstitution = (end) => {
+    if (state !== 'normal') sawQuote = true;
+    flush();
+    const frame = stack.pop();
+    // Loops, never `push(...arr)`: a spread passes every element as a call
+    // argument, and a body of ~125k tokens throws RangeError — which the
+    // destructive guard's top-level catch turns into ALLOW (fail-open).
+    hoisted.push({ text: ';', quoted: false, operator: 'substitution' });
+    for (const t of sink) hoisted.push(t);
+    ({ text, started, sawQuote, state, sink, arithDepth, caseStates } = frame);
+    const raw = command.slice(frame.start, end);
+    text += raw; started = true;
+    if (/["']/.test(raw)) sawQuote = true;
+  };
+
+  const topKind = () => (stack.length > 0 ? stack[stack.length - 1].kind : null);
+  const pushSubshellSeparator = () => {
+    flush();
+    sink.push({ text: ';', quoted: false, operator: 'subshell' });
   };
 
   // A leading all-digit word is the fd of a redirect (`2> log`), not an argument.
@@ -429,6 +588,20 @@ export function tokenizeCommand(command) {
         text += next; started = true; sawQuote = true; i++;
         continue;
       }
+      // Double quotes do NOT stop command substitution (#1667): `"$(rm x)"` runs
+      // `rm`. The quoted run is parked and the body is lexed as a command.
+      // `$((` stays literal arithmetic text, exactly as before.
+      if (state === 'double' && stack.length < MAX_TOKENIZER_NESTING) {
+        if (ch === '`') {
+          if (topKind() === 'backtick') { closeSubstitution(i + 1); continue; }
+          openSubstitution('backtick', i);
+          continue;
+        }
+        if (ch === '$' && command[i + 1] === '(' && command[i + 2] !== '(') {
+          openSubstitution('subst', i); i++;
+          continue;
+        }
+      }
       text += ch; started = true; sawQuote = true;
       continue;
     }
@@ -460,7 +633,7 @@ export function tokenizeCommand(command) {
         // real newline (#999).
         if (!terminated) { lastTerm = false; pendingHeredocs.length = 0; break; }
         lastTerm = true;
-        if (body.length > 0) tokens.push({ text: body, quoted: true });
+        if (body.length > 0) sink.push({ text: body, quoted: true });
         j = end;
       }
       // `readHeredocBody` returns `end` pointing PAST the newline that closes the
@@ -514,6 +687,86 @@ export function tokenizeCommand(command) {
       continue;
     }
 
+    // Nesting (#1667) — subshells, command substitutions, backticks and process
+    // substitutions. Arithmetic (`$((`/`((`, taken above) keeps every paren as
+    // text; inside `case … esac` a paren is pattern syntax (`(a)` / `a)`) and
+    // also stays text, the pre-#1667 behaviour.
+    if (arithDepth === 0) {
+      const atCap = stack.length >= MAX_TOKENIZER_NESTING;
+      if (ch === '`') {
+        if (topKind() === 'backtick') { closeSubstitution(i + 1); continue; }
+        if (atCap) { pushSubshellSeparator(); continue; }
+        openSubstitution('backtick', i);
+        continue;
+      }
+      if (ch === '$' && command[i + 1] === '(') {
+        if (atCap) { pushSubshellSeparator(); i++; continue; }
+        openSubstitution('subst', i); i++;
+        continue;
+      }
+      // Inside a case HEAD (`subject`/`in`/`pattern`) a word-start `(` is the
+      // optional leading paren of a pattern (`(a)`); in an arm BODY it is a
+      // subshell like anywhere else (`a) (rm x);;`).
+      const top = caseTop();
+      if (ch === '(' && !started && (top === null || top === 'body')) {
+        if (atCap) { pushSubshellSeparator(); continue; }
+        // `<(cmd)` / `>(cmd)`: a process substitution is a WORD (a filename),
+        // so it is hoisted like `$(…)` and the redirect keeps its operand.
+        const prev = sink[sink.length - 1];
+        if (i > 0 && (command[i - 1] === '<' || command[i - 1] === '>') && prev && prev.redirect) {
+          openSubstitution('subst', i);
+          continue;
+        }
+        // `caseLen`: a subshell opened in an arm body closes only at that
+        // same case level, never through a pattern `)` of a nested case.
+        stack.push({ kind: 'paren', caseLen: caseStates.length });
+        pushSubshellSeparator();
+        continue;
+      }
+      if (ch === ')') {
+        // `esac)` must close its case before the paren is judged.
+        if (started && !sawQuote && text === 'esac') flush();
+        // End of a case PATTERN (`a)`, `(a)`, `"a")`, `a)rm …`): keep the `)`
+        // on the pattern word and start the arm as a new statement, so its
+        // first word is a segment head (#1671 follow-up F1) and a `case`
+        // there opens (F2).
+        if (caseTop() === 'pattern') {
+          text += ch; started = true;
+          flush();
+          sink.push({ text: ';', quoted: false, operator: 'case-pattern' });
+          setCaseTop('body');
+          continue;
+        }
+        // `f()` / `arr=()` — the `)` right after a MID-WORD `(` is that word's
+        // own text, never the close of an enclosing `$( … )` / subshell.
+        // Keyed on WHERE that `(` came from, not on the raw previous char: an
+        // escaped `\(` would otherwise keep a `"$(echo \()"` open and swallow
+        // every following command (refute review of 8f323ad8, HIGH).
+        if (started && bareParenAt === i - 1 && text.endsWith('(')) {
+          text += ch;
+          // #1679: an adjacent compound body must start a fresh token too:
+          // `f(){unlink X;}` / `f()(unlink X)`. Only a bare, unquoted head in
+          // command position qualifies; argument text must stay an argument.
+          const bodyOpener = command[i + 1];
+          if (!sawQuote && FUNCTION_HEAD_RE.test(text) && nextWordInCommandPosition(sink) &&
+              (bodyOpener === '{' || bodyOpener === '(')) {
+            flush();
+            if (bodyOpener === '{') {
+              sink.push({ text: '{', quoted: false });
+              i++;
+            }
+          }
+          continue;
+        }
+        const frame = stack[stack.length - 1];
+        if (topKind() === 'paren' && caseStates.length === frame.caseLen &&
+            (caseTop() === null || caseTop() === 'body')) {
+          stack.pop(); pushSubshellSeparator(); continue;
+        }
+        if (caseStates.length === 0 && topKind() === 'subst') { closeSubstitution(i + 1); continue; }
+      }
+    }
+
     // A REAL (non-continued) newline is a command separator, exactly like `;`
     // in the POSIX grammar (#981). MUST stay below the pending-here-doc branch
     // above: a newline that opens or ends a here-doc body is consumed there and
@@ -528,7 +781,7 @@ export function tokenizeCommand(command) {
     // consumers that care, mirroring how `redirect` marks redirect tokens.
     if (ch === '\n') {
       flush();
-      tokens.push({ text: ';', quoted: false, operator: 'newline' });
+      sink.push({ text: ';', quoted: false, operator: 'newline' });
       continue;
     }
 
@@ -544,10 +797,10 @@ export function tokenizeCommand(command) {
     if (ch === '&' && command[i + 1] === '>') {
       flush();
       if (command[i + 2] === '>') {
-        tokens.push({ text: '&>>', quoted: false, redirect: { fd: null, mode: 'append' } });
+        sink.push({ text: '&>>', quoted: false, redirect: { fd: null, mode: 'append' } });
         i += 2;
       } else {
-        tokens.push({ text: '&>', quoted: false, redirect: { fd: null, mode: 'truncate' } });
+        sink.push({ text: '&>', quoted: false, redirect: { fd: null, mode: 'truncate' } });
         i += 1;
       }
       continue;
@@ -555,7 +808,7 @@ export function tokenizeCommand(command) {
     if (ch === '<') {
       if (command[i + 1] === '<' && command[i + 2] === '<') {
         flush();
-        tokens.push({ text: '<<<', quoted: false, redirect: { fd: null, mode: 'herestring' } });
+        sink.push({ text: '<<<', quoted: false, redirect: { fd: null, mode: 'herestring' } });
         i += 2;
         continue;
       }
@@ -576,7 +829,7 @@ export function tokenizeCommand(command) {
         const fdDigits = takeFdPrefix();
         const fdNum = fdDigits === '' ? null : Number.parseInt(fdDigits, 10);
         const opText = `${fdDigits}<<${stripTabs ? '-' : ''}`;
-        tokens.push({ text: opText, quoted: false, redirect: { fd: fdNum, mode: 'heredoc' } });
+        sink.push({ text: opText, quoted: false, redirect: { fd: fdNum, mode: 'heredoc' } });
         if (value && command[end] !== ')') {
           pendingHeredocs.push({ delim: value, stripTabs });
           i = end - 1;
@@ -587,7 +840,7 @@ export function tokenizeCommand(command) {
       }
       const fdDigits = takeFdPrefix();
       const fdNum = fdDigits === '' ? null : Number.parseInt(fdDigits, 10);
-      tokens.push({ text: `${fdDigits}<`, quoted: false, redirect: { fd: fdNum, mode: 'read' } });
+      sink.push({ text: `${fdDigits}<`, quoted: false, redirect: { fd: fdNum, mode: 'read' } });
       continue;
     }
     if (ch === '>') {
@@ -605,20 +858,20 @@ export function tokenizeCommand(command) {
       }
       const fdText = fd === null ? '' : String(fd);
       if (command[i + 1] === '>') {
-        tokens.push({ text: `${fdText}>>`, quoted: false, redirect: { fd, mode: 'append' } });
+        sink.push({ text: `${fdText}>>`, quoted: false, redirect: { fd, mode: 'append' } });
         i += 1;
       } else if (command[i + 1] === '&' && /[0-9]/.test(command[i + 2] ?? '')) {
         // N>&M / >&M — fd duplication; the target fd is inline, no operand word.
         let j = i + 2;
         let dupTarget = '';
         while (j < command.length && /[0-9]/.test(command[j])) { dupTarget += command[j]; j++; }
-        tokens.push({ text: `${fdText}>&${dupTarget}`, quoted: false, redirect: { fd, mode: 'dup' } });
+        sink.push({ text: `${fdText}>&${dupTarget}`, quoted: false, redirect: { fd, mode: 'dup' } });
         i = j - 1;
       } else if (command[i + 1] === '|') {
-        tokens.push({ text: `${fdText}>|`, quoted: false, redirect: { fd, mode: 'truncate' } });
+        sink.push({ text: `${fdText}>|`, quoted: false, redirect: { fd, mode: 'truncate' } });
         i += 1;
       } else {
-        tokens.push({ text: `${fdText}>`, quoted: false, redirect: { fd, mode: 'truncate' } });
+        sink.push({ text: `${fdText}>`, quoted: false, redirect: { fd, mode: 'truncate' } });
       }
       continue;
     }
@@ -630,12 +883,17 @@ export function tokenizeCommand(command) {
     // #983 redirect token class), so this branch only ever sees a bare chain `&`.
     if (ch === ';' || ch === '|' || ch === '&') {
       flush();
+      // `;;` / `;&` / `;;&` end an arm: the next word at this level is a pattern.
+      if (ch === ';' && (command[i + 1] === ';' || command[i + 1] === '&') && caseTop() === 'body') {
+        setCaseTop('pattern');
+      }
       let op = ch;
       if ((ch === '&' || ch === '|') && command[i + 1] === ch) { op = ch + ch; i++; }
-      tokens.push({ text: op, quoted: false });
+      sink.push({ text: op, quoted: false });
       continue;
     }
 
+    if (ch === '(') bareParenAt = i;
     text += ch; started = true;
   }
 
@@ -644,6 +902,18 @@ export function tokenizeCommand(command) {
   // guard that blocks every Bash call is strictly worse than a missed enforcement.
   if (state !== 'normal') sawQuote = true;
   flush();
+
+  // Unclosed nesting levels (#1667): an open `( …` just ends; an open
+  // substitution is closed at end of input, so its body is STILL hoisted — the
+  // conservative direction (the verb inside stays visible) — and the outer word
+  // keeps the raw remainder.
+  while (stack.length > 0) {
+    if (topKind() === 'paren') { stack.pop(); continue; }
+    closeSubstitution(command.length);
+    if (state !== 'normal') sawQuote = true;
+    flush();
+  }
+  for (const t of hoisted) tokens.push(t); // no spread — see closeSubstitution
 
   return tokens;
 }
@@ -672,18 +942,51 @@ export function tokenizeCommand(command) {
  *     one table: a second entry here would fork the wrapper-vs-keyword decision
  *     the way `VERB_PREFIXES` once forked WRAPPER_UNWRAP (#991).
  *
- * NAMED CEILING (BV-004): only a STANDALONE token is dropped. bash requires
- * whitespace around `{` / `}`, so brace groups are always covered; a subshell
- * written WITHOUT the space (`(rm -rf /)`) lexes as the glued word `(rm` and is
- * not reached — the pre-#1145 behaviour, unchanged. Peeling the paren off the
- * token TEXT would mutate a token five consumers read positionally, which is a
- * larger contract change than this defect justifies. Revisit if a glued-paren
- * form shows up in a real overflow triage or guard-bypass measurement.
+ * Only a STANDALONE token is dropped. bash requires whitespace around `{` /
+ * `}`, so brace groups are always covered; a subshell written WITHOUT the space
+ * (`(rm -rf /)`) no longer reaches this table at all — since #1667 the lexer
+ * emits its parens as separators (see {@link tokenizeCommand}).
  */
 const COMMAND_POSITION_KEYWORDS = new Set([
   '{', '(', '!', 'if', 'elif', 'then', 'else', 'while', 'until', 'do',
   '}', ')', 'fi', 'done', 'esac',
 ]);
+
+/**
+ * Is `segment` exactly a function-definition head: `name()`, `function name`
+ * or `function name()`, all unquoted?
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {boolean}
+ */
+function isFunctionHead(segment) {
+  // Length first: splitSegments asks this per token, so a scan of a long
+  // segment here would make the split quadratic.
+  if (segment.length === 0 || segment.length > 2 || segment.some((t) => t.quoted)) return false;
+  // A lone `function` is zsh's anonymous function (`function { …; }`), which
+  // zsh runs on the spot — measured: zsh 5.9 prints `hi` for
+  // `function { echo hi; }` (#1699 item 13).
+  if (segment.length === 1) return segment[0].text === 'function' || FUNCTION_HEAD_RE.test(segment[0].text);
+  return segment.length === 2 && segment[0].text === 'function';
+}
+
+/**
+ * Does `tok` carry a brace-group opener glued to its command word (`{unlink`)?
+ * zsh reads a leading `{` in command position as the reserved word even
+ * without a following blank — measured with zsh 5.9: `{echo hi;}`,
+ * `f() {echo hi;}; f` and `function f() {echo hi;}; f` all print `hi`, and
+ * `{echo,hi}` fails as `command not found: echo,hi` (#1699 item 13). bash
+ * rejects or brace-expands these forms; splitting the `{` off never hides a
+ * verb there either, since the remainder was no verb before. A token that
+ * also ENDS in `}` (`{}`, `{fd}` of a named-fd redirection `{fd}>file`) is
+ * left alone: it closes itself, so no command word sits behind its `{`.
+ *
+ * @param {{ text: string, quoted: boolean }} tok
+ * @returns {boolean}
+ */
+function hasGluedBraceOpener(tok) {
+  return !tok.quoted && tok.text.length > 1 && tok.text[0] === '{' && !tok.text.endsWith('}');
+}
 
 /**
  * Split a tokenized command into chained segments on shell control operators
@@ -728,6 +1031,20 @@ function splitSegments(tokens) {
     // position (`do { rm …` peels both). A keyword anywhere else is an ordinary
     // argument and is kept verbatim (#1145).
     if (current.length === 0 && !tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text)) {
+      continue;
+    }
+    // A function head (`f()`, `function f`, `function f()`) before its compound
+    // body (#1679 point 1): the head is no command, and the body runs on every
+    // call, so drop the head and judge the body in command position like a bare
+    // brace group. Before, `f() { unlink <ledger>; }; f` resolved to verb `f()`.
+    if (!tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text) && isFunctionHead(current)) {
+      current = [];
+      continue;
+    }
+    // A `{` glued to the first word of a brace group (zsh, #1699 item 13):
+    // drop the opener, so the word behind it is the segment head.
+    if (hasGluedBraceOpener(tok) && (current.length === 0 || isFunctionHead(current))) {
+      current = [{ ...tok, text: tok.text.slice(1) }];
       continue;
     }
     current.push(tok);

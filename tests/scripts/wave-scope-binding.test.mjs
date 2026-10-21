@@ -22,8 +22,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const CLI = new URL('../../scripts/wave-scope-binding.mjs', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../../scripts/wave-scope-binding.mjs', import.meta.url));
 
 const OWN_ID = 'OWN-UUID-2222';
 

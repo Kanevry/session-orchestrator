@@ -1,4 +1,9 @@
 import { describe, it, expect } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import {
   parseFrontmatter,
   buildTag,
@@ -183,7 +188,7 @@ describe('generateSessionNote (v1) emits schema-valid frontmatter (#602)', () =>
   it('produces schema-valid frontmatter for normal input', () => {
     const fm = parseFrontmatter(generateSessionNote(v1Session(), { repoNs: 'org-repo' }));
     assertSchemaValid(fm);
-    expect(fm.id).toBe('2026-05-23-deep');
+    expect(fm.id).toBe('org-repo-2026-05-23-deep');
     expect(parseTags(fm.tags)).toContain('session/deep');
     expect(parseTags(fm.tags)).toContain('status/verified');
     // #732: session notes emit `source-repo` (schema field, vaultFrontmatterSchema
@@ -211,7 +216,7 @@ describe('generateSessionNote (v1) emits schema-valid frontmatter (#602)', () =>
     // "DEEP Mode!!" → lowercase, whitespace→hyphen, "!!" stripped → "deep-mode".
     expect(parseTags(fm.tags)).toContain('session/deep-mode');
     // id: ISO uppercase T/Z/:/. all sanitized to a kebab slug.
-    expect(fm.id).toBe('2026-05-28t174403-123z-deep');
+    expect(fm.id).toBe('org-repo-2026-05-28t174403-123z-deep');
   });
 });
 
@@ -229,7 +234,7 @@ describe('generateSessionNoteV3 emits schema-valid frontmatter (#602)', () => {
   it('produces schema-valid frontmatter for normal input', () => {
     const fm = parseFrontmatter(generateSessionNoteV3(v3Session(), { repoNs: 'org-repo' }));
     assertSchemaValid(fm);
-    expect(fm.id).toBe('2026-05-23-deep-3');
+    expect(fm.id).toBe('org-repo-2026-05-23-deep-3');
   });
 
   it('produces schema-valid frontmatter for hostile input (raw ISO id + non-kebab type)', () => {
@@ -272,5 +277,55 @@ describe('generateLearningNoteV2 emits schema-valid frontmatter (#602)', () => {
     );
     assertSchemaValid(fm);
     expect(parseTags(fm.tags)).toContain('learning/anti-pattern');
+  });
+});
+
+// #1601: the REAL vault-sync validator (yaml parse + zod `.max(128)` + `z.string()`)
+// rejected generator output — a 200-char learning subject rendered a 200-char id,
+// and an all-digit subject rendered `id: 433`, which YAML types as a number.
+describe('generated ids pass the vault-sync validator of the same plugin (#1601)', () => {
+  it('accepts the notes of a 200-char subject and an all-digit subject', () => {
+    const vault = mkdtempSync(join(tmpdir(), 'vm-id-1601-'));
+    try {
+      mkdirSync(join(vault, '_meta'));
+      const dir = join(vault, '40-learnings', 'org-repo');
+      mkdirSync(dir, { recursive: true });
+      const long = `${'a'.repeat(100)}-${'b'.repeat(99)}`;
+      expect(long).toHaveLength(200);
+      // The all-digit note is rendered WITHOUT a namespace: the repo prefix would
+      // make the id non-numeric on its own, so only the quoting guards this shape.
+      for (const [slug, repoNs] of [[long, 'org-repo'], ['433', undefined]]) {
+        const note = generateLearningNote(v1Learning({ subject: slug }), slug, { repoNs });
+        writeFileSync(join(dir, `${slug}.md`), note, 'utf8');
+      }
+      const validator = fileURLToPath(new URL('../../skills/vault-sync/validator.mjs', import.meta.url));
+      const run = spawnSync(process.execPath, [validator], {
+        encoding: 'utf8',
+        env: { ...process.env, VAULT_DIR: vault },
+      });
+      expect(`${run.stdout}${run.stderr}`).not.toMatch(/at most 128|Expected string/);
+      expect(run.status).toBe(0);
+    } finally {
+      rmSync(vault, { recursive: true, force: true });
+    }
+  });
+});
+
+// #1602: the id was the bare session id / subject slug, so the same session id
+// (or learning subject) in two repo folders produced one vault id twice; #1601's
+// cap must not merge two long slugs that share their first 128 chars.
+describe('generated ids are unique across the vault (#1602)', () => {
+  const longA = `${'x'.repeat(150)}-alpha`;
+  const longB = `${'x'.repeat(150)}-beta`;
+  it.each([
+    ['same session id, two repos', () => generateSessionNoteV3(v3Session(), { repoNs: 'repo-a' }), () => generateSessionNoteV3(v3Session(), { repoNs: 'repo-b' })],
+    ['same learning subject, two repos', () => generateLearningNote(v1Learning(), 'deep-session-sizing', { repoNs: 'repo-a' }), () => generateLearningNote(v1Learning(), 'deep-session-sizing', { repoNs: 'repo-b' })],
+    ['two long subjects sharing a prefix, one repo', () => generateLearningNote(v1Learning(), longA, { repoNs: 'repo-a' }), () => generateLearningNote(v1Learning(), longB, { repoNs: 'repo-a' })],
+  ])('%s → distinct ids', (_label, renderA, renderB) => {
+    const a = parseFrontmatter(renderA());
+    const b = parseFrontmatter(renderB());
+    assertSchemaValid(a);
+    assertSchemaValid(b);
+    expect(a.id).not.toBe(b.id);
   });
 });

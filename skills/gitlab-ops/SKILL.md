@@ -111,8 +111,8 @@ done
 **Taxonomy convention — `priority` REVERSED to scoped `::` (supersedes #727 for this one axis).**
 
 - **`priority::<level>` is canonical.** #727's stated rationale was that "this repo mirrors to GitHub, which has no scoped-label semantics … while a migration would break every existing label reference and issue." Both halves were checked on 2026-07-25 and neither holds:
-  - **Issues are not mirrored at all.** `aiat-poc-infra/docs/github-mirror-runbook.md:1,5` describes a git **push-mirror** with GitHub as "read-only downstream"; the external team-organization audit `docs/gitlab-team-org-2026-06-21.md:45` confirms there is no two-way GitLab issue sync. Nothing crosses the boundary that a label rename could break. <!-- path-check: example -->
-  - **GitHub already uses the scoped form.** `gh api "repos/AIAT-AIandBusinessgrowth/aiat-barrierefrei-engine/labels"` returns `priority::high`, `priority::low`, `priority::med`, `priority::medium` across 77 open issues, and **zero** `priority:high`. Same pattern on `aiat-doc-vlm`. GitHub treats `::` as an ordinary string; it merely does not enforce mutual exclusion.
+  - **Issues are not mirrored at all.** A consumer infra repo's GitHub-mirror runbook describes a git **push-mirror** with GitHub as "read-only downstream"; the external team-organization audit `docs/gitlab-team-org-2026-06-21.md:45` confirms there is no two-way GitLab issue sync. Nothing crosses the boundary that a label rename could break. <!-- path-check: example -->
+  - **GitHub already uses the scoped form.** On a GitHub consumer repo, `gh api "repos/<owner>/<repo>/labels"` returns `priority::high`, `priority::low`, `priority::med`, `priority::medium` across 77 open issues, and **zero** `priority:high`. Same pattern on a second consumer repo. GitHub treats `::` as an ordinary string; it merely does not enforce mutual exclusion.
   - Volume agrees independently: **416 `priority::` against 249 `priority:` and 7 bare** at the time of the decision. Chasing the minority spelling would mean re-labelling the majority.
   Producers were migrated FIRST (this change); the label-data migration follows separately, because migrating data before producers means the divergence returns within a day.
 - **`area:` / `type:` / `status:` / `from:` stay SINGLE-COLON** — but NOT on #727's rationale, which is disproven above. They stay because nothing measured argues for flipping them, and because each axis is its own migration cost. Flipping them is a separate decision and is explicitly NOT made here. Note that `status` in particular is the worst-disciplined axis on the instance (354 assignments, only 48 percent scoped, 5 genuine value conflicts), so any future flip there needs a conflict-resolution pass first.
@@ -355,9 +355,10 @@ Accepted template paths are configured in `.orchestrator/policy/templates-policy
 
 1. **Read the template first** — re-run the `create` call after a `Read` on the template
    path; the hook re-evaluates and sees the Read.
-2. **Session acknowledgement** — write `.orchestrator/runtime/templates-acknowledged.json`
-   containing `{ sessionId, acknowledgedAt }`; the hook allows all subsequent `create`
-   calls in this session.
+2. **Session acknowledgement** — run `/templates-ack [reason]` (`commands/templates-ack.md`);
+   it verifies the invoking session before recording the acknowledgement, and the hook
+   then allows all subsequent `create` calls in this session. Never write the
+   acknowledgement file by hand — that skips the command's session check.
 
 **What the hook mechanically enforces** (what this skill previously documented as convention only):
 
@@ -391,6 +392,6 @@ gh pr create -R <OWNER>/<REPO> --title "..." --body "..."
 - Hook implementation: `hooks/pre-bash-templates-first.mjs`
 - Read-history helper: `hooks/_lib/transcript-history.mjs` (checks session transcript for prior Reads)
 - Enforcement policy: `.orchestrator/policy/templates-policy.json`
-- Session acknowledgement: `.orchestrator/runtime/templates-acknowledged.json`
+- Session acknowledgement: `/templates-ack` (`commands/templates-ack.md`), the only sanctioned writer
 - Sister hook (destructive-command model): `hooks/pre-bash-destructive-guard.mjs`
 - PRD: "gsd Pattern Adoption Quick-Wins" (#519; archived in the private Meta-Vault) § Pattern 3 + § 3 Gherkin Pattern 3

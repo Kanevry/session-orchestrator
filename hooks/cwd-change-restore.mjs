@@ -31,6 +31,7 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
+import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -88,7 +89,10 @@ async function main() {
     new_cwd: newCwd,
   };
 
-  const sessionFile = path.join(getProjectDir(), '.orchestrator', 'current-session.json');
+  // #1605 B5 — annotate THIS session's current-session.json where
+  // on-session-start.mjs put it (the entered worktree after a /clear there),
+  // found by the lock carrying the raw payload id; launch dir otherwise.
+  const sessionFile = path.join(resolveOwnLockRoot(input, getProjectDir()), '.orchestrator', 'current-session.json');
 
   const result = await atomicMutateJson(sessionFile, {}, (current) => {
     const existing = Array.isArray(current.cwd_changes)

@@ -23,8 +23,9 @@ import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs'
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join as joinPath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/post-tool-batch-wave-signal.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/post-tool-batch-wave-signal.mjs', import.meta.url));
 const SESSION_REL = join('.orchestrator', 'current-session.json');
 
 let tmp;

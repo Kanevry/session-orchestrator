@@ -481,6 +481,11 @@ runCheck('check-learning-provenance.mjs');
 process.stdout.write('\n');
 runCheck('check-vcs-repo-flag.mjs');
 
+// Separate advice contract (#1024): name the PR or drop a rejected repo flag.
+// WARN-only, with tool errors surfaced through FAIL lines as in the bare census.
+process.stdout.write('\n');
+runCheck('check-vcs-repo-flag-positional.mjs');
+
 // WARN-only (#1023): a `gh`/`glab` command cited in docs that no released CLI
 // ever had — `glab repo edit --visibility`, `glab group list` — costs an
 // operator a failed command and a re-derivation. The oracle is the CLI's own

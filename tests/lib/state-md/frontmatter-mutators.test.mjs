@@ -1,14 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parseStateMd } from '@lib/state-md/yaml-parser.mjs';
+import { setMissionStatusOnDisk } from '@lib/state-md/mission-status.mjs';
+import { registerSelf } from '@lib/session-registry.mjs';
+import { resetStateMdToIdleOnDisk } from '@lib/state-md/idle-reset.mjs';
 import {
   evaluateFrontmatterSafe,
   resolveStateArtifactPath,
   resolveStateMdPath,
+  resolveStateMdWritePath,
+  markStateMdCompletedOnDisk,
   touchUpdatedField,
   updateFrontmatterFields,
+  updateFrontmatterFieldsOnDisk,
   writeStateMd,
 } from '@lib/state-md/frontmatter-mutators.mjs';
 
@@ -186,6 +192,249 @@ describe('resolveStateMdPath', () => {
       vi.stubEnv('SO_PLATFORM', platform);
 
       expect(resolveStateMdPath(root)).toBe(join(root, stateDir, 'STATE.md'));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1618 — the bug: with the active platform's STATE.md absent, the resolver
+  // took the first EXISTING legacy candidate, so a tracked `.codex/STATE.md`
+  // of a finished foreign session received this session's mission-status
+  // write. A foreign-platform file is only taken for a WRITE when its
+  // `session-id` names this process (CLAUDE_CODE_SESSION_ID under
+  // SO_PLATFORM=claude); the read resolver keeps its legacy fallback (#890).
+  // Review follow-up: the rejected write must say why (one stderr WARN plus
+  // `reason: 'foreign-state-md'`) instead of a silent `written: false` — also
+  // when the process carries no id at all (Cursor/Pi, a bare shell).
+  it.each([
+    ['foreign session-id → active path, foreign file byte-identical', 'own-1111', 'foreign-0000', '.claude'],
+    ['no process-local id → fail-closed, foreign file byte-identical', '', 'cur-1', '.claude'],
+    ['own raw session-id → the other-platform file is this session\'s', 'own-1111', 'own-1111', '.codex'],
+  ])('%s (#1618)', async (_name, ownId, codexSessionId, expectedDirectory) => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-owner-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', ownId);
+      mkdirSync(join(root, '.codex'), { recursive: true });
+      const codexPath = join(root, '.codex', 'STATE.md');
+      const codexState = BASE.replace('status: active', `session-id: ${codexSessionId}\nstatus: completed`)
+        .replace('## Body', '## Body\n\n## Mission Status\n\n- m-1 — task (wave 1): in-dev');
+      writeFileSync(codexPath, codexState, 'utf8');
+
+      expect(resolveStateMdWritePath(root)).toBe(join(root, expectedDirectory, 'STATE.md'));
+      const result = await setMissionStatusOnDisk(root, 'm-1', 'completed');
+      const warned = stderr.mock.calls.some(([line]) => String(line).includes('#1618'));
+      if (expectedDirectory === '.claude') {
+        expect(result.written).toBe(false);
+        expect(result.reason).toBe('foreign-state-md');
+        expect(warned).toBe(true);
+        expect(readFileSync(codexPath, 'utf8')).toBe(codexState);
+      } else {
+        expect(result.written).toBe(true);
+        expect(warned).toBe(false);
+      }
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1636 Pkt 4 review (session-80, REFUTE HIGH): a Codex shell started from
+  // a live Claude session inherits the parent's CLAUDE_CODE_SESSION_ID next to
+  // its own CODEX_THREAD_ID. The parent id must never prove the parent's
+  // `.claude/STATE.md` own — closing it would end a live peer's record (#1640
+  // class). Pinned for both rows: the parent record stays byte-identical. Since
+  // #1636 Pkt 4 the shell resolves 'codex' (CODEX_THREAD_ID, detectPlatform()
+  // step 3), so the default target lands in the shell's OWN `.codex` record and
+  // closes it; the explicit `.claude` target is still refused.
+  it.each([
+    ['default target', undefined, true, 'completed'],
+    ['explicit .claude target (session-end 3.4)', '.claude/STATE.md', false, 'active'],
+  ])('never closes the live parent .claude record from a nested two-id shell — %s (#1636)', async (_name, statePath, expectedWritten, expectedCodexStatus) => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-1636-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      for (const key of ['SO_PLATFORM', 'CODEX_PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT', 'CURSOR_RULES_DIR', 'PI_PLUGIN_ROOT']) vi.stubEnv(key, '');
+      vi.stubEnv('CODEX_THREAD_ID', 'codex-1');
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'claude-parent');
+      vi.stubEnv('SO_SESSION_REGISTRY_DIR', join(root, 'registry'));
+      await registerSelf({ sessionId: 'claude-parent', projectRoot: root, branch: 'main', platform: 'claude', mode: 'deep' });
+      mkdirSync(join(root, '.claude-plugin'), { recursive: true });
+      for (const [dir, id] of [['.claude', 'claude-parent'], ['.codex', 'codex-1']]) {
+        mkdirSync(join(root, dir), { recursive: true });
+        writeFileSync(join(root, dir, 'STATE.md'), BASE.replace('status: active', `session-id: ${id}\nstatus: active`), 'utf8');
+      }
+      const parentPath = join(root, '.claude', 'STATE.md');
+      const parentBefore = readFileSync(parentPath, 'utf8');
+
+      const result = await markStateMdCompletedOnDisk(root, statePath ? { currentWave: 1, statePath } : { currentWave: 1 });
+      expect(result.written).toBe(expectedWritten);
+      expect(readFileSync(join(root, '.codex', 'STATE.md'), 'utf8')).toMatch(new RegExp(`^status: ${expectedCodexStatus}$`, 'm'));
+      expect(readFileSync(parentPath, 'utf8')).toBe(parentBefore);
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1618 review: the idle-reset path must report the rejected foreign file
+  // too, and a rejected `.codex` must NOT be reported when a later candidate
+  // (`.cursor`) is this session's own and actually receives the write.
+  it.each([
+    ['idle reset reports a foreign-only STATE.md', 'foreign-0000', null, 'foreign-state-md'],
+    ['an own later candidate silences the rejected earlier one', 'foreign-0000', 'own-1111', null],
+  ])('%s (#1618)', async (_name, codexSessionId, cursorSessionId, expectedReason) => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-owner-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'own-1111');
+      const write = (dir, sid) => {
+        mkdirSync(join(root, dir), { recursive: true });
+        const body = BASE.replace('status: active', `session-id: ${sid}\nstatus: completed`);
+        writeFileSync(join(root, dir, 'STATE.md'), body, 'utf8');
+        return body;
+      };
+      const codexState = write('.codex', codexSessionId);
+      if (cursorSessionId) write('.cursor', cursorSessionId);
+
+      const result = await resetStateMdToIdleOnDisk(root);
+      const warned = stderr.mock.calls.some(([line]) => String(line).includes('#1618'));
+      expect(readFileSync(join(root, '.codex', 'STATE.md'), 'utf8')).toBe(codexState);
+      if (expectedReason) {
+        expect(result).toMatchObject({ changed: false, reason: expectedReason });
+        expect(warned).toBe(true);
+      } else {
+        expect(result.path).toBe(join(root, '.cursor', 'STATE.md'));
+        expect(warned).toBe(false);
+      }
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1640 — the bug: the ownership rule only gated LEGACY candidates, so an
+  // existing active-dir `.claude/STATE.md` of a FINISHED foreign session took
+  // session-end Phase 3.7a's recommendation fields while this session's own
+  // record was `.orchestrator/STATE.md` (measured in growth-engine). A
+  // completed foreign record is now refused loudly, never written.
+  it('foreign completed .claude/STATE.md is untouched and named on stderr (#1640)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-1640-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'own-1111');
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      mkdirSync(join(root, '.orchestrator'), { recursive: true });
+      const foreignPath = join(root, '.claude', 'STATE.md');
+      const foreignState = BASE.replace('status: active', 'session-id: foreign-0000\nstatus: completed');
+      writeFileSync(foreignPath, foreignState, 'utf8');
+      writeFileSync(join(root, '.orchestrator', 'STATE.md'), BASE.replace('status: active', 'session-id: own-1111\nstatus: active'), 'utf8');
+
+      const result = await updateFrontmatterFieldsOnDisk(root, { 'recommended-mode': 'deep' });
+
+      expect(readFileSync(foreignPath, 'utf8')).toBe(foreignState);
+      expect(result).toMatchObject({ written: false, reason: 'foreign-state-md' });
+      expect(stderr.mock.calls.some(([line]) => String(line).includes(foreignPath))).toBe(true);
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1640 review HIGH-1 — the bug: after `/clear` the process carries a NEW
+  // raw id while its own ACTIVE `.claude/STATE.md` still names the old one;
+  // treating that file as foreign left `/close` unable to write
+  // `status: completed`. Walks the close in its documented order on ONE
+  // explicit statePath (AC3): 3.7a recommendations → 3.4 completion (which
+  // re-stamps `session-id` to the closing id) → a 3.7a re-run, which must
+  // still find its own completed record.
+  it('a /clear\'ed session closes its own active record on one statePath (#1640)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-1640-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'after-clear-2222');
+      vi.stubEnv('SO_SESSION_REGISTRY_DIR', join(root, 'registry'));
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      const ownPath = join(root, '.claude', 'STATE.md');
+      writeFileSync(ownPath, BASE.replace('status: active', 'session-id: before-clear-1111\nstatus: active'), 'utf8');
+      const statePath = '.claude/STATE.md';
+
+      const rec = await updateFrontmatterFieldsOnDisk(root, { 'recommended-mode': 'deep' }, { statePath });
+      const done = await markStateMdCompletedOnDisk(root, { statePath, currentWave: 3 });
+      const rerun = await updateFrontmatterFieldsOnDisk(root, { 'recommended-mode': 'feature' }, { statePath });
+
+      expect([rec.written, done.written, rerun.written]).toEqual([true, true, true]);
+      expect(parseStateMd(readFileSync(ownPath, 'utf8')).frontmatter).toMatchObject({
+        'session-id': 'after-clear-2222',
+        status: 'completed',
+        'current-wave': 3,
+        'recommended-mode': 'feature',
+      });
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1640 review MED-1 — the bug: Phase 3.4's completion re-stamped the
+  // session-id of a LIVE parallel session's active STATE.md (peer-B) to the
+  // closing session's, locking B out of its own record. Rows: B is a
+  // registered peer; B is registered but idle (heartbeat 20 min old — a
+  // freshness window re-opened the steal, review fix-pass 4); the registry
+  // cannot be read (fail-closed).
+  it.each([
+    ['a live peer session owns the record', 'live'],
+    ['an idle peer (20-min-old heartbeat) owns the record', 'idle'],
+    ['the session registry is unreadable', 'unreadable'],
+  ])('3.4 completion refuses when %s, file byte-identical (#1640)', async (_name, registry) => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-1640-'));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'closing-A');
+      const registryDir = join(root, 'registry');
+      vi.stubEnv('SO_SESSION_REGISTRY_DIR', registryDir);
+      if (registry !== 'unreadable') {
+        await registerSelf({ sessionId: 'peer-B', projectRoot: root, branch: 'main', platform: 'claude', mode: 'deep' });
+        if (registry === 'idle') {
+          const entryFile = join(registryDir, 'active', 'peer-B.json');
+          const entry = JSON.parse(readFileSync(entryFile, 'utf8'));
+          entry.last_heartbeat = new Date(Date.now() - 20 * 60_000).toISOString();
+          writeFileSync(entryFile, JSON.stringify(entry), 'utf8');
+        }
+      } else {
+        mkdirSync(registryDir, { recursive: true });
+        writeFileSync(join(registryDir, 'active'), 'not a directory', 'utf8');
+      }
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      const peerPath = join(root, '.claude', 'STATE.md');
+      const peerState = BASE.replace('status: active', 'session-id: peer-B\nstatus: active');
+      writeFileSync(peerPath, peerState, 'utf8');
+
+      const result = await markStateMdCompletedOnDisk(root, { statePath: '.claude/STATE.md', currentWave: 2 });
+
+      expect(result).toMatchObject({ written: false, reason: 'foreign-state-md' });
+      expect(readFileSync(peerPath, 'utf8')).toBe(peerState);
+      expect(stderr.mock.calls.some(([line]) => String(line).includes(peerPath))).toBe(true);
+    } finally {
+      stderr.mockRestore();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // #1640 counterpart: the session-start Idle Reset IS the hand-over that
+  // rewrites the previous (foreign) session's completed record — the stricter
+  // write rule must not refuse it.
+  it('idle reset still takes the previous session\'s completed active-dir record (#1640)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'state-md-1640-'));
+    try {
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'own-1111');
+      mkdirSync(join(root, '.claude'), { recursive: true });
+      writeFileSync(join(root, '.claude', 'STATE.md'), BASE.replace('status: active', 'session-id: prev-0000\nstatus: completed'), 'utf8');
+
+      const result = await resetStateMdToIdleOnDisk(root);
+
+      expect(result).toMatchObject({ changed: true, path: join(root, '.claude', 'STATE.md') });
+      expect(parseStateMd(readFileSync(join(root, '.claude', 'STATE.md'), 'utf8')).frontmatter.status).toBe('idle');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

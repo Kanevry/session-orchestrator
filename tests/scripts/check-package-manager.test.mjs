@@ -345,7 +345,7 @@ describe('check-package-manager.mjs', () => {
         skipped: false,
         repoRoot: tmp,
         findings: [],
-        hooks: { hooksPath: '', active: false, skipped: 'no-husky-dir' },
+        hooks: { hooksPath: '', active: false, missingDir: false, skipped: 'no-husky-dir' },
       });
     });
 
@@ -411,6 +411,7 @@ describe('check-package-manager.mjs', () => {
       expect(checkHuskyHooksPath(tmp, { env: isolatedEnv() })).toEqual({
         hooksPath: '',
         active: false,
+        missingDir: false,
         skipped: null,
       });
     });
@@ -419,17 +420,34 @@ describe('check-package-manager.mjs', () => {
       expect(checkHuskyHooksPath(tmp, { env: isolatedEnv({ CI: 'true' }) })).toEqual({
         hooksPath: '',
         active: false,
+        missingDir: false,
         skipped: 'ci',
       });
     });
 
-    it('core.hooksPath=.husky/_ → active', () => {
+    it('core.hooksPath=.husky/_ with the directory present → active', () => {
       fixtureGitSpawn(['config', 'core.hooksPath', '.husky/_'], tmp);
+      mkdirSync(join(tmp, '.husky', '_'));
       expect(checkHuskyHooksPath(tmp, { env: isolatedEnv() })).toEqual({
         hooksPath: '.husky/_',
         active: true,
+        missingDir: false,
         skipped: null,
       });
+    });
+
+    it('#1662: core.hooksPath=.husky/_ inherited but .husky/_ missing (linked worktree) → inactive, missingDir', () => {
+      fixtureGitSpawn(['config', 'core.hooksPath', '.husky/_'], tmp);
+      expect(checkHuskyHooksPath(tmp, { env: isolatedEnv() })).toEqual({
+        hooksPath: '.husky/_',
+        active: false,
+        missingDir: true,
+        skipped: null,
+      });
+      const r = runCli([], { cwd: tmp, env: isolatedEnv() });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toContain('MISSING in this worktree');
+      expect(r.stderr).toContain('Run: npx husky');
     });
 
     it('CLI warns with the npx husky hint but still exits 0 (advisory, never fatal)', () => {
@@ -438,8 +456,9 @@ describe('check-package-manager.mjs', () => {
       expect(r.stderr).toContain('Run: npx husky');
     });
 
-    it('CLI stays quiet about husky once core.hooksPath=.husky/_ is set', () => {
+    it('CLI stays quiet about husky once core.hooksPath=.husky/_ is set and present', () => {
       fixtureGitSpawn(['config', 'core.hooksPath', '.husky/_'], tmp);
+      mkdirSync(join(tmp, '.husky', '_'));
       const r = runCli([], { cwd: tmp, env: isolatedEnv() });
       expect(r.status).toBe(0);
       expect(r.stderr).not.toContain('npx husky');

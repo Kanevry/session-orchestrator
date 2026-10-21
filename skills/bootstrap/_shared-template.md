@@ -28,7 +28,7 @@ mkdir -p "$REPO_ROOT/.claude"
 export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
 RULES_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
-const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
 const result = await syncBootstrapRules({ repoRoot: process.env.REPO_ROOT, archetype: process.env.CONFIRMED_ARCHETYPE || undefined });
 process.stdout.write(`${JSON.stringify(result)}\n`);
 if (result.status === 'error') process.exitCode = 2;
@@ -151,7 +151,7 @@ if [[ "${PATH_TYPE:-public}" = "private" ]]; then
   export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
   BASELINE_RULES_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
-const { applyBaselineRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const { applyBaselineRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
 const result = await applyBaselineRules({
   repoRoot: process.env.REPO_ROOT,
   archetype: process.env.CONFIRMED_ARCHETYPE,
@@ -200,7 +200,7 @@ MANIFEST
 import { readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-const { pluginRuleTargets } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const { pluginRuleTargets } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
 const owned = new Set(pluginRuleTargets(process.env.PLUGIN_ROOT));
 const files = readFileSync(process.env.RULES_MANIFEST, 'utf8').split('\n')
   .filter(file => file && !owned.has(path.posix.basename(file)));
@@ -281,7 +281,7 @@ if [[ "${PATH_TYPE:-public}" = private ]]; then
   export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
   POLICY_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
-const { writeBaselineQualityPolicy } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const { writeBaselineQualityPolicy } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
 const result = await writeBaselineQualityPolicy({ repoRoot: process.env.REPO_ROOT, archetype: process.env.CONFIRMED_ARCHETYPE });
 process.stdout.write(`${JSON.stringify(result)}\n`);
 if (result.status === 'error') process.exitCode = 2;

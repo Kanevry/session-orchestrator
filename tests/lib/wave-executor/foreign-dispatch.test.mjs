@@ -441,6 +441,7 @@ describe('dispatchForeign outcome classification', () => {
       '--force',
       '--sandbox',
       'enabled',
+      '--disable-codebase-ref', // #1683: without it worker-server + LSP outlive the run
       '--model',
       'composer-2.5',
       '--output-format',

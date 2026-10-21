@@ -80,14 +80,44 @@ function tailOf(text) {
  * SIGKILL (PRD B6: a sent signal proves nothing).
  *
  * @param {number} timeoutMs
- * @param {{pgid: number, killSignals: string[], survivors: number[]}} run
+ * @param {{pgid: number, killSignals: string[], survivors: number[]|null, error?: string}} run
  * @returns {string}
  */
 function timeoutLine(timeoutMs, run) {
   const ladder = (run.killSignals ?? []).join('\u2192') || 'no signal sent';
   return `gate: TIMEOUT after ${timeoutMs} ms \u2014 process group ${run.pgid} ${ladder}, `
-    + `survivors: [${(run.survivors ?? []).join(', ')}]`;
+    + (run.survivors === null
+      ? `Überlebende nicht messbar: ${run.error}`
+      : `survivors: [${(run.survivors ?? []).join(', ')}]`);
 }
+
+const LEFTOVER_GROUP_PREFIX = 'gate: reaped process group ';
+const LEFTOVER_GROUP_INFIX = ' left running after exit: ';
+const LEFTOVER_NO_SIGNAL = 'no signal sent';
+/**
+ * The line that names a process group still alive after a NORMAL exit and
+ * reaped by {@link spawnInGroup} (#1704, its `leftoverGroup` field). Reported,
+ * never a status change: pass/fail stays the command's own (HR-105).
+ *
+ * @param {{pgid: number, signals: string[], survivors: number[]}} leftover
+ * @returns {string}
+ */
+export function leftoverGroupLine(leftover) {
+  const ladder = (leftover.signals ?? []).join('→') || LEFTOVER_NO_SIGNAL;
+  const survivors = leftover.survivors ?? [];
+  return `${LEFTOVER_GROUP_PREFIX}${leftover.pgid}${LEFTOVER_GROUP_INFIX}${ladder}`
+    + (survivors.length > 0 ? `, survivors: [${survivors.join(', ')}]` : '');
+}
+/**
+ * Exactly the line {@link leftoverGroupLine} produces, anchored, built from the
+ * same constants so the two cannot drift. The timeout-only parser admits it
+ * after the FAIL blocks: it is the gate's own report, not a vitest error.
+ */
+const LEFTOVER_GROUP_LINE_RE = new RegExp(
+  `^${LEFTOVER_GROUP_PREFIX}\\d+${LEFTOVER_GROUP_INFIX}`
+  + `(?:${LEFTOVER_NO_SIGNAL}|SIG[A-Z0-9]+(?:→SIG[A-Z0-9]+)*)`
+  + String.raw`(?:, survivors: \[\d+(?:, \d+)*\])?$`,
+);
 
 /**
  * The stdout envelope `scripts/run-quality-gate.mjs` publishes when the GATE
@@ -106,10 +136,10 @@ function timeoutLine(timeoutMs, run) {
  * @param {object} args
  * @param {string} args.variant  The `--variant` value the run was started with.
  * @param {number} args.timeoutMs  Ceiling that fired.
- * @param {{pgid: number, durationMs: number, killSignals: string[], survivors: number[]}} args.run
+ * @param {{pgid: number, durationMs: number, killSignals: string[], survivors: number[]|null, error?: string}} args.run
  *   The {@link spawnInGroup} result.
  * @returns {{variant: string, error: 'gate-timeout', timeout_ms: number, duration_ms: number,
- *   pgid: number, kill_signals: string[], survivors: number[]}}
+ *   pgid: number, kill_signals: string[], survivors: number[]|null, cleanup_error?: string, ok?: boolean}}
  */
 export function gateTimeoutEnvelope({ variant, timeoutMs, run }) {
   return {
@@ -119,7 +149,8 @@ export function gateTimeoutEnvelope({ variant, timeoutMs, run }) {
     duration_ms: run?.durationMs ?? 0,
     pgid: run?.pgid ?? -1,
     kill_signals: run?.killSignals ?? [],
-    survivors: run?.survivors ?? [],
+    survivors: run?.survivors === null ? null : (run?.survivors ?? []),
+    ...(run?.survivors === null ? { cleanup_error: run.error, ok: false } : {}),
   };
 }
 
@@ -136,9 +167,10 @@ export function gateTimeoutEnvelope({ variant, timeoutMs, run }) {
  * Absent is not zero: a result that spawned nothing (skip, stub) carries no
  * `timedOut` boolean, and gets NO keys — never `false` / `[]`.
  *
- * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]}} result
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]|null, error?: string}} result
  *   A {@link runCheck} result.
- * @returns {{timed_out: boolean, kill_signals: string[], survivors: number[]}|{}}
+ * @returns {{timed_out: boolean, kill_signals: string[], survivors: number[]|null, error?: string,
+ *   leftover_group?: {pgid: number, signals: string[], survivors: number[]}}|{}}
  *   `survivors` are the pids, same as {@link gateTimeoutEnvelope}.
  */
 export function commandKillFields(result) {
@@ -146,7 +178,14 @@ export function commandKillFields(result) {
   return {
     timed_out: result.timedOut,
     kill_signals: Array.isArray(result.killSignals) ? [...result.killSignals] : [],
-    survivors: Array.isArray(result.survivors) ? [...result.survivors] : [],
+    survivors: result.survivors === null ? null : (Array.isArray(result.survivors) ? [...result.survivors] : []),
+    ...(result.survivors === null ? { error: result.error, ok: false } : {}),
+    // #1704: additive, only when a group was reaped after a normal exit.
+    ...(result.leftoverGroup ? { leftover_group: {
+      pgid: result.leftoverGroup.pgid,
+      signals: [...(result.leftoverGroup.signals ?? [])],
+      survivors: [...(result.leftoverGroup.survivors ?? [])],
+    } } : {}),
   };
 }
 
@@ -163,7 +202,8 @@ const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
  *   a boolean `timed_out` or provably spawned nothing — `status: 'skip'` or
  *   listed in `stubbed`): `timed_out` = outer OR any inner; `kill_signals` =
  *   outer followed by each command's, in execution order; `survivors` = outer
- *   count plus every inner pid count.
+ *   count plus every inner pid count. Any explicit null makes the joined
+ *   count null and retains the measurement error.
  * - inner NOT measured (a variant whose envelope does not publish it, an
  *   unparseable envelope, or the outer ceiling killed the sub-script before it
  *   wrote one): the outer ladder alone when it fired — a kill is a kill — and
@@ -173,10 +213,10 @@ const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
  * Never throws.
  *
  * @param {object} args
- * @param {{timed_out: boolean, survivors: number, kill_signals: string[]}} args.outer
+ * @param {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}} args.outer
  *   `gateKillFields()` of the sub-script's `spawnInGroup` result.
  * @param {string} args.gateStdout  The sub-script's stdout envelope (`''` on an outer kill).
- * @returns {{timed_out: boolean, survivors: number, kill_signals: string[]}|{}}
+ * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}|{}}
  */
 export function joinGateKillFields({ outer, gateStdout }) {
   let parsed = null;
@@ -199,12 +239,15 @@ export function joinGateKillFields({ outer, gateStdout }) {
     || parsed[name].status === 'skip'
     || Boolean(stubbed[name]));
 
-  if (!innerKnown) return outer?.timed_out === true ? { ...outer } : {};
+  if (!innerKnown) return outer?.timed_out === true || outer?.survivors === null ? { ...outer } : {};
+
+  const unmeasurable = [outer, ...inner].filter((c) => c?.survivors === null);
 
   return {
     timed_out: outer?.timed_out === true || inner.some((c) => c.timed_out),
-    survivors: (outer?.survivors ?? 0)
+    survivors: unmeasurable.length > 0 ? null : (outer?.survivors ?? 0)
       + inner.reduce((n, c) => n + (Array.isArray(c.survivors) ? c.survivors.length : 0), 0),
+    ...(unmeasurable.length > 0 ? { error: unmeasurable.map((c) => c.error).join('; '), ok: false } : {}),
     kill_signals: [
       ...(outer?.kill_signals ?? []),
       ...inner.flatMap((c) => (Array.isArray(c.kill_signals) ? c.kill_signals : [])),
@@ -237,7 +280,7 @@ export function joinGateKillFields({ outer, gateStdout }) {
  *
  * @param {object} args
  * @param {{fullOutput?: string, exitCode?: number, timedOut?: boolean, pgid?: number,
- *   durationMs?: number, killSignals?: string[], survivors?: number[]}} args.result
+ *   durationMs?: number, killSignals?: string[], survivors?: number[]|null, error?: string}} args.result
  *   The {@link spawnInGroup} result for the gate sub-script.
  * @param {string} args.variant  The `--variant` value the run was started with.
  * @param {number} args.timeoutMs  The OUTER ceiling that applied to the sub-script.
@@ -254,14 +297,16 @@ export function publishGateOutcome({ result, variant, timeoutMs }) {
     return { stdout: capture, stderr: '', exitCode, warnings: [] };
   }
 
-  const survivors = result.survivors ?? [];
+  const survivors = result.survivors === null ? null : (result.survivors ?? []);
   return {
     stdout: `${JSON.stringify(gateTimeoutEnvelope({ variant, timeoutMs, run: result }))}\n`,
     stderr: capture.trim()
       ? `\n\u2500\u2500\u2500\u2500 gate TIMED OUT \u2014 captured output before the kill \u2500\u2500\u2500\u2500\n${capture}\n\u2500\u2500\u2500\u2500 end \u2500\u2500\u2500\u2500\n`
       : '',
     exitCode,
-    warnings: survivors.length > 0
+    warnings: survivors === null
+      ? [`Überlebende nicht messbar: ${result.error}`]
+      : survivors.length > 0
       ? [`gate process group ${result.pgid} left survivors after SIGKILL: ${survivors.join(', ')}`]
       : [],
   };
@@ -342,10 +387,12 @@ function isTestFile(filePath) {
  * @param {number|null} [opts.timeoutMs] - Wall-clock ceiling; defaults to
  *   {@link resolveGateTimeoutMs} (`SO_GATE_TIMEOUT_MS` or 900_000). `null`
  *   disables the clock — the byte cap still applies.
+ * @param {string} [opts.platform] - Host platform for missing-command classification.
  * @param {string} [opts.repoRoot] - Root whose gate-process ledger the spawn is
  *   recorded in; defaults to `process.cwd()`, which is the tree under test.
  * @returns {Promise<{ status: 'pass'|'fail'|'skip', output: string, fullOutput: string,
- *   exitCode: number, timedOut?: boolean, killSignals?: string[], survivors?: number[],
+ *   exitCode: number, timedOut?: boolean, killSignals?: string[], survivors?: number[]|null, error?: string,
+ *   leftoverGroup?: {pgid: number, signals: string[], survivors: number[]},
  *   stubbed?: { kind: 'echo'|'noop' } }>}
  */
 export async function runCheck(cmd, opts = {}) {
@@ -364,12 +411,30 @@ export async function runCheck(cmd, opts = {}) {
     repoRoot: process.cwd(),
     commandSignature: buildCommandSignature(cmd),
     ...opts,
+    // #1675: the CLI gate path (`.husky/pre-push` → `npm run quality-gate` →
+    // gate-full → here) must bound Vitest's workers exactly like `runGate()` in
+    // scripts/lib/quality-gate.mjs; without it the pre-push gate ran 18 workers
+    // on an 18-core host and timed out under load (#1673). Applied AFTER the
+    // `opts` spread so a caller-supplied `env` keeps its keys but cannot drop
+    // the bound. typecheck/lint ignore the flag, so it is set unconditionally.
+    // NAMED CEILING (BV-004): the policy is duplicated in exactly two spawn
+    // sites (this one and `runGate`); revisit by extracting one shared helper
+    // if a third gate entrypoint appears or the bound needs a value other
+    // than the flag `vitest.config.mjs` reads.
+    env: { ...(opts.env ?? process.env), SO_BOUNDED_WORKERS: '1' },
     timeoutMs,
   });
 
   // Reported in every returned shape below, so a consumer never has to ask a
   // second question to learn whether the group is actually gone.
-  const groupFields = { killSignals: run.killSignals, survivors: run.survivors };
+  const groupFields = { killSignals: run.killSignals, survivors: run.survivors,
+    ...(run.survivors === null ? { error: run.error, ok: false } : {}),
+    ...(run.leftoverGroup ? { leftoverGroup: run.leftoverGroup } : {}) };
+  // #1704: a group reaped after a NORMAL exit is named in the output of the
+  // non-timeout shapes (a timeout run never carries one); status is unchanged.
+  const runFullOutput = run.leftoverGroup
+    ? `${run.fullOutput}\n${leftoverGroupLine(run.leftoverGroup)}\n`
+    : run.fullOutput;
 
   if (run.timedOut) {
     const fullOutput = `${run.fullOutput}\n${timeoutLine(timeoutMs, run)}\n`;
@@ -383,17 +448,25 @@ export async function runCheck(cmd, opts = {}) {
     };
   }
 
-  // Exit code 127 means command not found — treat as skip.
-  if (run.exitCode === 127) {
-    return { status: 'skip', output: 'command not found', fullOutput: '', exitCode: 127, timedOut: false, ...groupFields };
+  // A missing configured command is a failure, never an implicit opt-out.
+  // cmd.exe sets ERRORLEVEL 9009 for an unknown command, but `cmd /d /s /c`
+  // (Node's shell on win32) exits 1 for it (measured 2026-10-14, #1612), so a
+  // missing command there is an ordinary `fail` without this hint; 9009
+  // only surfaces when a batch file propagates it with `exit /b`.
+  if (run.exitCode === 127 || ((opts.platform ?? process.platform) === 'win32' && run.exitCode === 9009)) {
+    const message = `command not found (exit ${run.exitCode}); correct the command or explicitly set it to skip in the Session Config.`;
+    const fullOutput = `${runFullOutput}\n${message}`.trim();
+    return { status: 'fail', output: tailOf(fullOutput), fullOutput, exitCode: run.exitCode, timedOut: false, ...groupFields };
   }
 
   return {
     status: run.exitCode === 0 ? 'pass' : 'fail',
-    output: tailOf(run.fullOutput),
-    fullOutput: run.fullOutput,
+    output: tailOf(runFullOutput),
+    fullOutput: runFullOutput,
     exitCode: run.exitCode,
     timedOut: false,
+    // #1673: an end by signal, which `exitCode` alone reports as 1.
+    exitSignal: run.exitSignal ?? null,
     ...groupFields,
   };
 }
@@ -655,6 +728,134 @@ export function extractFailedTestFiles(output, cwd = process.cwd()) {
   }
 
   return [...seen];
+}
+
+/**
+ * vitest's own wording for a test or hook that ran past its timeout (vitest
+ * 4.1.11, `makeTimeoutError` in @vitest/runner): `Test timed out in 5000ms.`,
+ * with the `If this is a long-running …` hint after a newline, so it is the
+ * NEXT line ({@link TIMEOUT_BLOCK_LINE}). Anchored at the end: any further text
+ * on the error line is not a plain timeout.
+ */
+const TIMEOUT_ERROR_LINE = /^(?:Error:\s+)?(?:Test|Hook) timed out in \d+ms\.?$/;
+/**
+ * `⎯⎯⎯[k/N]⎯` — closes every numbered error block. N is the run's error total
+ * counted BEFORE vitest merges identical errors (`printErrorsSummary`, vitest
+ * 4.1.11), so it equals the number of FAIL headers, not of blocks.
+ */
+const ERROR_BLOCK_COUNTER = /^\s*⎯+\[(\d+)\/(\d+)\]⎯*\s*$/;
+/**
+ * The only lines a timeout block may carry after its error line: vitest's
+ * hint, a stack frame (` ❯ …`) and the code frame (`      2| …`, `       | ^`).
+ * Anything else — `Caused by:`, a serialized error, a second error — makes the
+ * block something other than a plain timeout.
+ */
+const TIMEOUT_BLOCK_LINE = /^(?:If this is a long-running (?:test|hook),|\s*❯\s|\s+\d+\|(?: |$)|\s+\|\s*\^)/;
+/**
+ * Once the first FAIL block opened, the only lines vitest prints OUTSIDE a
+ * block are the section rules and the closing summary, each in its exact
+ * numeric shape (vitest 4.1.11, measured). Any other line there — a package
+ * manager's own error line included — is an error the block list does not hold
+ * (Codex review round 3, H1: prefix-only matches admitted `npm error
+ * AssertionError …` and `⎯⎯ AssertionError … ⎯⎯`).
+ */
+const AFTER_FAILURES_LINE = new RegExp(
+  [
+    String.raw`^\s*⎯+ Failed (?:Tests|Suites) \d+ ⎯+\s*$`,
+    String.raw`^\s*Test Files\s+\d+ (?:failed|passed)(?: \| \d+ (?:passed|skipped|todo))* \(\d+\)\s*$`,
+    String.raw`^\s*Tests\s+\d+ (?:failed|passed)(?: \| \d+ (?:passed|skipped|todo))* \(\d+\)\s*$`,
+    String.raw`^\s*Start at\s+\d{2}:\d{2}:\d{2}\s*$`,
+    String.raw`^\s*Duration\s+\d+(?:\.\d+)?m?s(?: \([^()]*\))?\s*$`,
+  ].join('|'),
+);
+/**
+ * Errors vitest reports OUTSIDE the numbered FAIL blocks: the `Unhandled
+ * Errors` section and its `Errors  N error(s)` summary line. Either one means a
+ * failure the block list does not hold (measured, vitest 4.1.11).
+ */
+const UNCOUNTED_ERRORS_LINE = /^(?:⎯+\s*Unhandled\b|\s*Errors\s+\d+\s+errors?\b)/;
+
+/**
+ * Which failing files failed ONLY by timeout — the set the full gate may run a
+ * second time, serially (#1673).
+ *
+ * Under host load the parallel suite loses tests to their timeout while the
+ * code is fine; four pre-push runs on m5 blocked with four different red sets
+ * (11, 11, 2, 7 tests), none touching the pushed diff. A timeout is the one
+ * failure that load alone produces. An assertion failure is NOT eligible, even
+ * one that load provoked: re-running it would let a genuine flake through the
+ * gate (Lead 32, 2026-10-20).
+ *
+ * Shape (measured, vitest 4.1.11): every error block starts with one or more
+ * `FAIL <file> …` headers, then the error line, and ends in `⎯[k/N]⎯`.
+ * Several headers share one block when vitest's `printTaskErrors` merges their
+ * errors: same `stack` AND same `diff`, same project, and (for tests) deep-equal
+ * annotations. A timeout's stack is the place the test or hook was DECLARED, so
+ * one `beforeEach` that times out for every test of a file, or the cases of one
+ * `it.each`, print as one block under several headers. Each header is one
+ * (task, error) pair, and N counts those pairs before the merge, so the
+ * completeness check compares N with the HEADERS read, not with the blocks.
+ *
+ * Fail-closed: `eligible` is true only when EVERY counted error was parsed and
+ * EVERY block is a timeout. A header count that differs from N (an unhandled
+ * error, an unknown layout), no counter at all, or one non-timeout block makes
+ * the whole run ineligible.
+ *
+ * @param {string} output - Captured test-runner stdout/stderr.
+ * @param {string} [cwd=process.cwd()] - Root to relativise absolute paths against.
+ * @returns {{ eligible: boolean, files: string[], reason: string }}
+ */
+export function extractTimeoutOnlyFailedFiles(output, cwd = process.cwd()) {
+  if (!output || typeof output !== 'string') return { eligible: false, files: [], reason: 'no-output' };
+
+  const prefix = cwd.endsWith('/') ? cwd : `${cwd}/`;
+  const files = new Set();
+  let pending = [];
+  let inBlock = false;
+  let sawFail = false;
+  let blocks = 0;
+  let errors = 0;
+  let declaredTotal = null;
+  let allTimeouts = true;
+
+  for (const rawLine of output.split('\n')) {
+    const line = rawLine.replace(ANSI_ESCAPE, '');
+    if (UNCOUNTED_ERRORS_LINE.test(line)) return { eligible: false, files: [], reason: 'uncounted-errors' };
+    const counter = ERROR_BLOCK_COUNTER.exec(line);
+    if (counter) {
+      declaredTotal = Number(counter[2]);
+      inBlock = false;
+      continue;
+    }
+    const header = FAIL_LINE.exec(line);
+    if (header) {
+      pending.push(header[1].startsWith(prefix) ? header[1].slice(prefix.length) : header[1]);
+      inBlock = false;
+      sawFail = true;
+      continue;
+    }
+    if (line.trim() === '') continue;
+    if (inBlock) {
+      if (!TIMEOUT_BLOCK_LINE.test(line)) allTimeouts = false;
+      continue;
+    }
+    if (pending.length === 0) {
+      if (sawFail && !AFTER_FAILURES_LINE.test(line) && !LEFTOVER_GROUP_LINE_RE.test(line)) return { eligible: false, files: [], reason: 'line-outside-blocks' };
+      continue;
+    }
+    blocks += 1;
+    errors += pending.length;
+    if (!TIMEOUT_ERROR_LINE.test(line.trim())) allTimeouts = false;
+    for (const file of pending) files.add(file);
+    pending = [];
+    inBlock = true;
+  }
+
+  if (pending.length > 0) return { eligible: false, files: [], reason: 'header-without-error' };
+  if (declaredTotal === null || blocks === 0) return { eligible: false, files: [], reason: 'no-error-blocks' };
+  if (errors !== declaredTotal) return { eligible: false, files: [], reason: `parsed-${errors}-of-${declaredTotal}` };
+  if (!allTimeouts) return { eligible: false, files: [], reason: 'non-timeout-failure' };
+  return { eligible: true, files: [...files], reason: 'timeouts-only' };
 }
 
 /**

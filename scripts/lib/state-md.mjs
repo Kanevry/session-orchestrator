@@ -19,6 +19,7 @@
 import { parseStateMd as _parseStateMd } from './state-md/yaml-parser.mjs';
 import { updateFrontmatterFields as _updateFrontmatterFields } from './state-md/frontmatter-mutators.mjs';
 import { readLock as _readLock } from './session-lock.mjs';
+import { readProcessLocalSessionIds as _readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 
 export { parseStateMd, serializeStateMd } from './state-md/yaml-parser.mjs';
 
@@ -195,27 +196,49 @@ export function resolveSessionStartedAt({ repoRoot } = {}) {
 /**
  * The session ids a STATE.md writer may stamp into frontmatter: `session-id`
  * (the RAW/native harness id) and `session` (the semantic attribution label),
- * both read from the live lock.
+ * both read from the live lock — and `session-id` only when the lock is
+ * provably THIS process's own (#1663).
  *
- * Both fields are `null` when no usable lock exists — ABSENCE IS NEVER
- * COERCED, and a writer must then OMIT the key rather than write a
- * placeholder. Neither id grants ownership of anything (see
+ * The lock is repo-global: a session that lost the acquire race, or a
+ * pre-#1641 lock without `claude_pid` that survives until its TTL, names a
+ * PEER. Since #1661 `/close` decides ownership by comparing STATE.md
+ * `session-id` against `readProcessLocalSessionIds()`, so stamping the peer's
+ * id would make this session's own STATE.md read `foreign` and stop its own
+ * close. Hence:
+ *   - `session_id` is the lock's raw id only when it is contained in
+ *     `readProcessLocalSessionIds({ env })`; otherwise `null`. A process that
+ *     cannot name its own id (Cursor, Pi, Codex without a thread id) gets
+ *     `null` too — unprovable is not own.
+ *   - `semantic_session_id` is `null` when the lock is PROVABLY foreign (this
+ *     process has an id and the lock names another). Ceiling (BV-004): when
+ *     the process has no id at all, the label is still taken from the lock,
+ *     as before #1663, so the #429 label join keeps working on those
+ *     harnesses — it may then name a peer. Revisit when every harness
+ *     exposes a native id.
+ *
+ * ABSENCE IS NEVER COERCED: a writer must OMIT a `null` key rather than write
+ * a placeholder. Neither id grants ownership of anything (see
  * `skills/_shared/state-ownership.md`); `session-id` exists so `/close`'s #429
  * pre-check can join STATE.md to sessions.jsonl on a native identity instead
  * of falling through to the label + timestamp path.
  *
  * Never throws.
  *
- * @param {{ repoRoot?: string }} [opts]
+ * @param {{ repoRoot?: string, env?: object }} [opts]  `env` defaults to
+ *   `process.env`; injectable for tests.
  * @returns {{ session_id: string|null, semantic_session_id: string|null }}
  */
-export function resolveSessionIds({ repoRoot } = {}) {
+export function resolveSessionIds({ repoRoot, env = process.env } = {}) {
   const pick = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : null);
   try {
     const lock = _readLock({ repoRoot });
+    const lockId = pick(lock?.session_id);
+    const ownIds = _readProcessLocalSessionIds({ env });
+    const own = lockId !== null && ownIds.includes(lockId);
+    const provablyForeign = lockId !== null && ownIds.length > 0 && !own;
     return {
-      session_id: pick(lock?.session_id),
-      semantic_session_id: pick(lock?.semantic_session_id),
+      session_id: own ? lockId : null,
+      semantic_session_id: provablyForeign ? null : pick(lock?.semantic_session_id),
     };
   } catch {
     return { session_id: null, semantic_session_id: null };

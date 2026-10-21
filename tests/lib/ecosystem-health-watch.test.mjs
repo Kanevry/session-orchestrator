@@ -23,12 +23,13 @@
  * and writes nothing anywhere. stdout/stderr are ignored; the child is SIGKILLed.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const SCRIPT = join(import.meta.dirname, '../../scripts/lib/ecosystem-health.mjs');
 
@@ -86,6 +87,7 @@ async function waitUntil(deadline) {
 describe('ecosystem-health --watch stays alive (#980 defect A1, third copy)', () => {
   it('is still running 2.5 s after start — measured by DURATION, not by exit code', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'eco-health-live-'));
+    onTestFinished(() => removeTree(cwd));
     const startedAt = performance.now();
     const child = spawn(process.execPath, [SCRIPT, '--watch', '--interval=1'], {
       cwd,
@@ -118,7 +120,9 @@ describe('ecosystem-health --watch project root (#1517)', () => {
     // file exists. Falsification: restore the CLAUDE_PLUGIN_ROOT fallback and
     // the first event becomes `no-state-yet`.
     const project = mkdtempSync(join(tmpdir(), 'eco-health-proj-'));
+    onTestFinished(() => removeTree(project));
     const plugin = mkdtempSync(join(tmpdir(), 'eco-health-plugin-'));
+    onTestFinished(() => removeTree(plugin));
     mkdirSync(join(project, '.orchestrator', 'metrics'), { recursive: true });
     writeFileSync(join(project, '.orchestrator', 'metrics', 'ecosystem-health.jsonl'), '{"ok":true}\n');
     const startedAt = performance.now();

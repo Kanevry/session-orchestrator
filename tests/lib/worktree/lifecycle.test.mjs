@@ -9,14 +9,14 @@
  * fixtures for meta file creation).
  *
  * Mocking strategy:
- *   - vi.mock('zx')          — suppress real git calls; $ is a vi.fn()
+ *   - vi.mock('@lib/zx.mjs')          — suppress real git calls; $ is a vi.fn()
  *   - vi.mock('@lib/worktree/listing.mjs') — listWorktrees/applyWorktreeExcludes
  *   - vi.mock('@lib/worktree/meta.mjs')    — _writeWorktreeMeta (meta write)
  *   - vi.mock('@lib/config.mjs')           — readConfigFile/parseSessionConfig
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, existsSync, writeFileSync, symlinkSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { mkdtempSync, rmSync, rmdirSync, mkdirSync, existsSync, writeFileSync, symlinkSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +33,7 @@ const mockProcessOutputClass = class MockProcessOutput extends Error {
   constructor(msg) { super(msg); this.stderr = msg; this.stdout = ''; }
 };
 
-vi.mock('zx', () => {
+vi.mock('@lib/zx.mjs', () => {
   const $fn = vi.fn().mockImplementation((_cwdOpts) => {
     // $({ cwd }) returns a tagged-template function
     const tagFn = vi.fn().mockImplementation(() => {
@@ -87,6 +87,13 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(sandbox, { recursive: true, force: true });
   vi.restoreAllMocks();
+});
+
+// #1648: the orphan tests create the shared base `<os.tmpdir()>/so-worktrees`
+// (as createWorktree would). Drop it once this file is done, but only when empty —
+// the base is a host-shared namespace (#984) and may hold a peer's worktree.
+afterAll(() => {
+  try { rmdirSync(join(tmpdir(), 'so-worktrees')); } catch { /* not empty or already gone */ }
 });
 
 // ---------------------------------------------------------------------------

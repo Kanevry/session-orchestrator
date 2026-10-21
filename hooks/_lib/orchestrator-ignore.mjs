@@ -52,6 +52,9 @@ export const GENERATED_IGNORE = [
   '!*/',
   '!/bootstrap.lock',
   '!/metrics/learnings.jsonl',
+  // #1516: the inbox-role store and its receipts travel with learnings.jsonl.
+  '!/metrics/learnings-inbox.jsonl',
+  '!/metrics/learnings-inbox-ingested.jsonl',
   '!/metrics/sessions.jsonl',
   '!/metrics/README.md',
   '!/policy/quality-gates.json',

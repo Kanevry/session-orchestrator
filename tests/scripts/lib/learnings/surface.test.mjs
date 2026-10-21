@@ -502,3 +502,18 @@ describe('surfaceTopN ← decayOptsFromConfig integration (#670)', () => {
     expect(result[1].id).toBe('stale-high');
   });
 });
+
+describe('surfaceTopN — inbox store records (#1516)', () => {
+  // Bug: surfaceTopN read the live file raw, so a learning appended on an
+  // inbox-role host (to learnings-inbox.jsonl) never reached the banner. The
+  // inbox copy of an id already live stays hidden (the live record wins).
+  it('surfaces a visible inbox record beside the live ones, ranked with them', async () => {
+    writeLines(entry({ id: 'live', confidence: 0.6 }));
+    const inbox = [entry({ id: 'inboxed', confidence: 0.9 }), entry({ id: 'live', confidence: 0.1 })];
+    writeFileSync(join(tmpDir, 'learnings-inbox.jsonl'), inbox.map((e) => `${JSON.stringify(e)}\n`).join(''), 'utf8');
+
+    const result = await surfaceTopN(filePath, 5, { decay: { enabled: false } });
+
+    expect(result.map((e) => [e.id, e.confidence])).toEqual([['inboxed', 0.9], ['live', 0.6]]);
+  });
+});

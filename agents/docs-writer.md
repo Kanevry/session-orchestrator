@@ -1,7 +1,8 @@
 ---
 name: docs-writer
-description: 'Use this agent when documentation needs to be generated or updated as part of a session — user-facing READMEs, dev-focused CLAUDE.md sections, or vault narratives (context.md, decisions.md, people.md). <example>Context: a feature session added a new CLI flag. user: "Update the README with the new --no-vault flag." assistant: "I''ll dispatch the docs-writer agent to scan the diff and update README plus the Dev CLAUDE.md section if warranted." <commentary>Scope touches user-facing docs — docs-writer decides audience split and cites the diff.</commentary></example>'
-model: inherit
+description: 'Use this agent when documentation needs to be generated or updated as part of a session — user-facing READMEs, dev-focused CLAUDE.md sections, or vault narratives (context.md, decisions.md, people.md).'
+model: sonnet
+effort: medium
 color: cyan
 tools: Read, Edit, Write, Glob, Grep, Bash, Skill(session-orchestrator:*), SendMessage
 sandbox-tier: repo-write
@@ -113,3 +114,7 @@ After the prose status report above, append a fenced ```json block matching `age
 ```
 
 Required: `verdict` (enum PROCEED|PROCEED_WITH_FOLLOWUPS|FIX_REQUIRED|BLOCKED), `status` (enum done|partial|blocked), `files_updated` (array). Optional: `review_markers_added`, `notes`. The coordinator's `validateAgentOutput()` parses the LAST fenced ```json block; place it at the end of your response.
+
+## Examples
+
+<example>Context: a feature session added a new CLI flag. user: "Update the README with the new --no-vault flag." assistant: "I'll dispatch the docs-writer agent to scan the diff and update README plus the Dev CLAUDE.md section if warranted." <commentary>Scope touches user-facing docs — docs-writer decides audience split and cites the diff.</commentary></example>

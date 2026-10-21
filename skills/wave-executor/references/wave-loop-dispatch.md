@@ -117,7 +117,7 @@ Use the **Agent tool** to dispatch this wave's agents. **`run_in_background: tru
 
 Dispatch in **SMALL BATCHES of 3–4 Agent() calls per message** (cumulative up to the wave's `agents-per-wave` cap). Large single-message fan-outs (>4 Agent() calls in one message) remain **FORBIDDEN** — fleet evidence (conf 1.0, 5 sessions) shows they drop Agent() calls SILENTLY (the coordinator receives fewer results than it dispatched, with no error), whereas serial / small-batch dispatch held 13/13 and 8/8. That evidence PREDATES backgrounding and is untouched by it; what backgrounding changes is the *cost* of batching, which is now near zero — a background batch returns its launch acks immediately, so batches no longer serialize the wave. Dispatch a batch, let its acks return, then dispatch the next, until every planned agent is started; then run **Started-Set Verification** below. The archived, private spec `docs/specs/2026-07-02-fleet-mining-followup-grill.md` (C4) records the batching-policy rationale. The `worker-pool.enabled: true` path (above) is the mechanised opt-in alternative to manual batching. <!-- path-check: historical -->
 
-**What is NOT the reason for 3–4 (platform caps, as of Claude Code 2.1.232).** The batch size defends against the SILENT DROP measured above. It is not, and never was, a workaround for a platform concurrency limit — and the upstream numbers no longer permit reading it as one: **2.1.217** set the concurrent-subagent cap to **20** (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`), **2.1.219** set subagent nesting depth to **3**, **2.1.224** REMOVED the former 200-spawn-per-session cap, and **2.1.232** made background the spawn default (above). So neither 3–4, nor `agents-per-wave: 6`, nor `deep: 18` sits anywhere near a platform ceiling; the only ceiling a wave can actually reach is the concurrency cap of 20, and only through the worker-pool `maxParallel` path. The rule stays at 3–4 because the drop evidence is about how many `Agent()` calls survive ONE assistant message — a question no version bump has addressed. **Revisit-Trigger:** a measurement showing a >4-call single message delivering 100% of its calls. A raised cap is not that measurement. Version provenance: `docs/audits/2026-09-06-360-audit/w1/d9-claude-code-fable.md` (FA-6, 2026-09-06).
+**What is NOT the reason for 3–4 (platform caps, as of Claude Code 2.1.232).** The batch size defends against the SILENT DROP measured above. It is not, and never was, a workaround for a platform concurrency limit — and the upstream numbers no longer permit reading it as one: **2.1.217** set the concurrent-subagent cap to **20** (`CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`), **2.1.219** set subagent nesting depth to **3**, **2.1.224** REMOVED the former 200-spawn-per-session cap, and **2.1.232** made background the spawn default (above). So neither 3–4, nor `agents-per-wave: 6`, nor `deep: 18` sits anywhere near a platform ceiling; the only ceiling a wave can actually reach is the concurrency cap of 20, and only through the worker-pool `maxParallel` path. The rule stays at 3–4 because the drop evidence is about how many `Agent()` calls survive ONE assistant message — a question no version bump has addressed. **Revisit-Trigger:** a measurement showing a >4-call single message delivering 100% of its calls. A raised cap is not that measurement. Version provenance: the Claude Code release-notes report of the 2026-09-06 360° audit (FA-6; internal, not in the public mirror).
 
 Read each wave's dispatch metadata from the session plan header (e.g., `(4 agents, parallel, isolation: worktree)`). When the plan specifies `isolation`, use it verbatim. When the plan does not specify, resolve the effective value via `resolveIsolation({ agentCount, sessionType, collisionRisk, configIsolation })` from `scripts/lib/wave-sizing.mjs` — the graduated default (#194) replaces the previous session-type-only switch. Pass the resolved value to each Agent() tool call per `circuit-breaker.md` (omit the parameter when resolved to `none`).
 
@@ -137,7 +137,7 @@ Before dispatching, verify the wave's agent count does not exceed `$CONFIG.agent
 | Advancing to the next wave | BLOCKS on the wave's AskUserQuestion. This is the one wave whose purpose is to stop; never auto-advance past it. |
 | STATE.md Wave History (§ 3a in `wave-loop-review.md`) | Record the wave with its role and `agents: 0`, so the wave count stays honest. |
 
-Rationale and the first consumer (the ultradeep profile's wave 2, "Synthesis-Gate"): `docs/prd/2026-09-06-ultradeep-session-profile.md`. Not restated here.
+Rationale and the first consumer (the ultradeep profile's wave 2, "Synthesis-Gate"): the internal ultradeep session-profile PRD (2026-09-06, not in the public mirror). Not restated here.
 
 #### Contract-Lock Serialization (Pattern A, #730/H1)
 
@@ -311,8 +311,11 @@ For each agent in this wave:
       - Any repo-state fact carried from an earlier wave: in the ASSERTED/UNVERIFIED form, never as a bare value (see Pre-Dispatch: Fact-Staleness Annotation above)
       - VCS issue reference if applicable
       - What NOT to touch (other agents' files)
+      - Git-write ban (PSA-007): "Do NOT run git add, git commit, git stash, git mv, git rm, git push or git reset. The coordinator commits." A wave prompt never carries a WORKTREE-MODE line, so the worktree exception of code-implementer never applies inside a wave.
+      - Waiting rule (#1615): "Do not wait longer than 5 minutes for anything (pipeline, remote run, rerun). Report your intermediate state and end; the coordinator waits with Monitor and continues you with SendMessage." A subagent's prompt cache lives 5 minutes, so every longer wait rebuilds its whole context.
       >",
     subagent_type: "<from session plan>",   // resolved agent type
+    model: "sonnet",   // ONLY when subagent_type is "Explore" (#1614): on a subscription the built-in Explore otherwise runs on the opus alias. Plugin agents pin model + effort in their own frontmatter — pass nothing for them.
     run_in_background: true   // RECOMMENDED — verify the started set via meta.json sidecars, never via the launch ack (§ Started-Set Verification)
   })
       - Turn budget and status reporting: "You have a maximum of [maxTurns] turns for this task. If you cannot complete within this budget, report STATUS: partial with what was accomplished and what remains. At the end of your work, report STATUS: done (all acceptance criteria met) or STATUS: partial (some criteria unmet — list which ones)."
@@ -330,6 +333,8 @@ The colon heuristic (§ "How to detect project agents") has **three** readings, 
 5. **`removeForeignWorktree({ repoRoot, worktreePath })` after the review** — never before, because a failed run must stay inspectable. It **refuses a `worktreePath` outside `<tmpdir>/so-foreign*`** (returns `{ok:false, reason:'unsafe-...'}` and makes no git call), so it cannot `--force`-remove a sibling session's worktree.
 
 **Trust boundary.** A foreign run bypasses the ENTIRE hook chain — no `PreToolUse:Agent`, no scope enforcement, no `SubagentStop` telemetry (verified against `hooks/hooks.json`, W1/D4). Everything inside the detached worktree is **untrusted** until a Claude coordinator has read the diff and applied it. The replacement ledger record is the `orchestrator.foreign_dispatch.completed` event the adapter emits (payload in `docs/events-schema.md`), which fires on refusals too — a blocked dispatch is a record, not a silence.
+
+**No codebase index (#1683).** The argv carries `--disable-codebase-ref` (`FOREIGN_AGENT_BASE_ARGS`). Without it each run leaves a `worker-server` and a `typescript-language-server` behind with PPID 1, out of reach of the timeout kill. The foreign agent therefore has no semantic search and no LSP lints, only read and grep; the diff review above stays the quality gate. The hidden `--disable-indexing` flag is not needed (#1687): it only switches off the codebase sync inside that `worker-server`, which never starts here — measured 2026-10-20 on cursor-agent 2026.10.01-e373342, 52–71 KB outbound per run with or without it against a 1.5 MB worktree.
 
 **Composition.** A foreign run is a background Bash task, so it composes with background `Agent()` dispatch in the same wave. It is **NOT** part of § Started-Set Verification: no `meta.json` sidecar exists for it and no task-notification arrives. Its lifecycle is the adapter's return value — do not count it as planned/started/completed, and do not read its absence from the started set as a drop.
 
@@ -595,7 +600,7 @@ Rules:
 
 **Resolution chain** (if the plan does not specify `subagent_type` for an agent):
 
-1. **Discovery waves** → `"Explore"` (always, read-only)
+1. **Discovery waves** → `"Explore"` (always, read-only; dispatched with `model: "sonnet"`, see the template above)
 2. **Quality review** → `"session-orchestrator:session-reviewer"` (always)
 3. **Impl-Core / Impl-Polish / Quality (test-writing)** → check in order:
    a. Project agent matching the task domain (e.g., `"database-architect"` for DB tasks)

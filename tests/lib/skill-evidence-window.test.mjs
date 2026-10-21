@@ -31,7 +31,7 @@
  */
 
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -43,6 +43,7 @@ import {
   locateSkillAnchors,
   readTranscriptRecords,
   renderEvidence,
+  resolveRawSessionId,
 } from '@lib/skill-evidence-window.mjs';
 
 const SKILL = 'session-orchestrator:session-start';
@@ -596,5 +597,40 @@ describe('production wiring pin — skills/session-end/phase-3-6-tail.md', () =>
 
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatch(/includeSubagents:\s*true/);
+  });
+});
+
+describe('resolveRawSessionId — lock fallback only for an OWN id (#1664)', () => {
+  const LOCK_ID = '11111111-2222-4333-8444-555555555555';
+  function repoWithLiveLock() {
+    const repoRoot = tmp();
+    const now = new Date().toISOString();
+    mkdirSync(join(repoRoot, '.orchestrator'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.orchestrator', 'session.lock'),
+      JSON.stringify({
+        session_id: LOCK_ID,
+        started_at: now,
+        last_heartbeat: now,
+        mode: 'deep',
+        pid: 999999,
+        host: hostname(),
+        ttl_hours: 4,
+      }),
+      'utf8',
+    );
+    return repoRoot;
+  }
+
+  // Bug: with no Claude id in the env, a live PEER lock was returned as this
+  // session's id, so the judge read the peer's transcript.
+  it('returns null for a live peer lock when the env names no own id', () => {
+    expect(resolveRawSessionId({ repoRoot: repoWithLiveLock(), env: {} })).toBeNull();
+  });
+
+  it('keeps the lock fallback when the lock id is this process\'s own (Codex thread id)', () => {
+    expect(
+      resolveRawSessionId({ repoRoot: repoWithLiveLock(), env: { SO_PLATFORM: 'codex', CODEX_THREAD_ID: LOCK_ID } }),
+    ).toEqual({ sessionId: LOCK_ID, source: 'session.lock' });
   });
 });

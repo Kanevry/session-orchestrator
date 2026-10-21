@@ -14,22 +14,23 @@
  *   G3  file_path present
  *   G4  file extension filter — only .ts|.tsx|.js|.jsx|.mjs|.cjs
  *   G5  gate check — wave-scope.json.gates['post-edit-validate'] === false → exit 0
- *   G6  resolve typecheck command: Session Config → tsgo → tsc → npx tsc → skip
- *   G7  run typecheck with 2s AbortController timeout
+ *   G6  resolve typecheck command: Session Config → tsgo → tsc → local tsc → skip
+ *   G7  run typecheck with 2s process-group timeout
  *   G8  emit JSONL result to stderr
  *
- * Output (stderr): {"check":"typecheck","status":"pass|fail|skip","file":"<rel>","duration_ms":<int>}
+ * Output (stderr): {"check":"typecheck","status":"pass|fail|timeout|skip","file":"<rel>","duration_ms":<int>}
  * Exit codes: 0 — always (PostToolUse hooks are informational)
  *
  * SECURITY notes:
  *   REQ-01  top-level try/catch → silent exit 0 on unexpected error (never blocks)
- *   REQ-02  typecheck process uses AbortController (not shell `timeout` — cross-platform)
+ *   REQ-02  typecheck runs the intact shell command; timeout kills its process tree
  *   REQ-03  relative path computed via path.relative(projectRoot, absFilePath)
  */
 
 import path from 'node:path';
+import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { performance } from 'node:perf_hooks';
+import { spawnInGroup } from '../scripts/lib/process-group.mjs';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
@@ -54,9 +55,9 @@ const TS_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs']);
 /**
  * Emit the JSONL result line to stderr.
  * @param {string} file            - relative file path
- * @param {'pass'|'fail'|'skip'} status
+ * @param {'pass'|'fail'|'timeout'|'skip'} status
  * @param {number} [duration_ms]   - omit for skip
- * @param {string} [reason]        - human-readable reason for skip or fail
+ * @param {string} [reason]        - human-readable reason for skip, timeout or fail
  * @param {string} [remediation]   - actionable fix hint for fail status only
  */
 function emitResult(file, status, duration_ms, reason, remediation) {
@@ -69,10 +70,10 @@ function emitResult(file, status, duration_ms, reason, remediation) {
 
 /**
  * Try to resolve the typecheck command.
- * Order: Session Config typecheck-command → tsgo → tsc → npx tsc → null
+ * Order: Session Config typecheck-command → tsgo → tsc → local tsc → null
  *
  * @param {string} projectRoot
- * @returns {Promise<{cmd: string, args: string[]}|null>}
+ * @returns {Promise<string|string[]|null>}
  */
 async function resolveTypecheckCommand(projectRoot) {
   // 1. Session Config typecheck-command
@@ -81,8 +82,8 @@ async function resolveTypecheckCommand(projectRoot) {
     const config = parseSessionConfig(md);
     const cmd = config['typecheck-command'];
     if (cmd && typeof cmd === 'string') {
-      const parts = cmd.trim().split(/\s+/);
-      return { cmd: parts[0], args: parts.slice(1) };
+      const command = cmd.trim();
+      return command === 'skip' ? null : command || null;
     }
   } catch {
     // config unavailable — fall through
@@ -90,15 +91,16 @@ async function resolveTypecheckCommand(projectRoot) {
 
   // 2. tsgo
   const tsgoParts = _tryWhich('tsgo');
-  if (tsgoParts) return { cmd: tsgoParts, args: ['--noEmit'] };
+  if (tsgoParts) return 'tsgo --noEmit';
 
   // 3. tsc
   const tscParts = _tryWhich('tsc');
-  if (tscParts) return { cmd: tscParts, args: ['--noEmit'] };
+  if (tscParts) return 'tsc --noEmit';
 
-  // 4. npx tsc
-  const npxParts = _tryWhich('npx');
-  if (npxParts) return { cmd: npxParts, args: ['tsc', '--noEmit'] };
+  // 4. Only an installed project compiler; npx may install the unrelated
+  // npm package `tsc` in projects without TypeScript (#1612).
+  const localTsc = path.join(projectRoot, 'node_modules', 'typescript', 'bin', 'tsc');
+  if (existsSync(localTsc)) return [process.execPath, localTsc, '--noEmit'];
 
   return null;
 }
@@ -111,9 +113,11 @@ async function resolveTypecheckCommand(projectRoot) {
  * @returns {string|null}
  */
 function _tryWhich(name) {
-  const whichCmd = process.platform === 'win32' ? 'where' : 'which';
+  const whichCmd = process.platform === 'win32' ? 'where.exe' : 'which';
+  // Two lookups get at most 1s total; revisit together with the outer
+  // 5s hook budget if a host needs slower executable discovery.
   try {
-    const result = spawnSync(whichCmd, [name], { encoding: 'utf8', timeout: 2000 });
+    const result = spawnSync(whichCmd, [name], { encoding: 'utf8', timeout: 500 });
     if (result.status === 0 && result.stdout.trim()) return name;
   } catch {
     // ignore
@@ -122,43 +126,32 @@ function _tryWhich(name) {
 }
 
 /**
- * Run the typecheck command with a 2s AbortController timeout.
- *
- * @param {string} cmd
- * @param {string[]} args
- * @returns {{status: 'pass'|'fail', duration_ms: number, reason?: string}}
+ * Configured commands retain shell semantics; the local compiler uses Node argv.
+ * Keep cleanup short for hooks.json's 5s budget; Windows skips CIM verification.
+ * @param {string|string[]} cmd
+ * @param {string} projectRoot
+ * @returns {Promise<{status: 'pass'|'fail'|'timeout', duration_ms: number, reason?: string}>}
  */
-function runTypecheck(cmd, args) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 2000);
-
-  const start = performance.now();
-  let spawnResult;
-  try {
-    spawnResult = spawnSync(cmd, args, {
-      signal: controller.signal,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: 2000,
-    });
-  } finally {
-    clearTimeout(timer);
+async function runTypecheck(cmd, projectRoot) {
+  const result = await spawnInGroup(cmd, {
+    cwd: projectRoot,
+    timeoutMs: 2000,
+    // Hook-specific ceiling: escalate quickly so an uncooperative compiler
+    // cannot consume the outer 5s hook budget. Revisit if compiler cleanup
+    // needs more than 100ms; the hook's outer budget must change with it.
+    killGraceMs: 100,
+    verifyWaitMs: 100,
+    // Two PowerShell startups would exceed the remaining hook budget (R1-04).
+    verifyTree: false,
+  });
+  const duration_ms = Math.max(0, Math.round(result.durationMs));
+  if (result.timedOut) {
+    return { status: 'timeout', duration_ms, reason: 'typecheck timed out after 2s' };
   }
-
-  const duration_ms = Math.max(0, Math.round(performance.now() - start));
-
-  // AbortError or SIGTERM from timeout
-  if (spawnResult.error?.name === 'AbortError' || spawnResult.signal === 'SIGTERM') {
-    return { status: 'fail', duration_ms, reason: 'typecheck timed out after 2s' };
-  }
-
-  if (spawnResult.status !== 0) {
-    // Capture the first non-empty line of stderr/stdout as a compact reason.
-    const combined = ((spawnResult.stderr ?? '') + (spawnResult.stdout ?? '')).trim();
-    const firstLine = combined.split('\n').find((l) => l.trim()) ?? 'typecheck exited non-zero';
+  if (result.exitCode !== 0) {
+    const firstLine = result.fullOutput.split('\n').find((line) => line.trim()) ?? 'typecheck exited non-zero';
     return { status: 'fail', duration_ms, reason: firstLine.slice(0, 256) };
   }
-
   return { status: 'pass', duration_ms };
 }
 
@@ -216,7 +209,7 @@ async function main() {
   }
 
   // G7: run typecheck with 2s timeout (REQ-02)
-  const { status, duration_ms, reason } = runTypecheck(tc.cmd, tc.args);
+  const { status, duration_ms, reason } = await runTypecheck(tc, projectRoot);
 
   // G8: emit JSONL result to stderr
   const remediation =

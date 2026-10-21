@@ -471,6 +471,29 @@ describe('vault-narrative-staleness probe', () => {
     });
   });
 
+  describe('passive marker (#1690)', () => {
+    it('reports a stale narrative only for the project without _passive.md, and counts the skip', async () => {
+      const root = tmp();
+      const { vaultDir, projectsDir } = makeVault(root);
+      const stale = { 'context.md': narrativeWithUpdated(daysAgo(400)) };
+      makeProject(projectsDir, 'live-proj', { tier: 'active' }, stale);
+      makeProject(projectsDir, 'passive-proj', { tier: 'active' }, stale);
+      writeFileSync(join(projectsDir, 'passive-proj', '_passive.md'), '---\nstatus: archived\n---\n', 'utf8');
+
+      const result = await runProbe(root, {
+        'vault-integration': { 'vault-dir': vaultDir },
+      });
+
+      expect(result.findings.map((f) => f.evidence.slug)).toEqual(['live-proj']);
+      expect(result.metrics.scanned_projects).toBe(1);
+      expect(result.metrics.passive_skipped).toBe(1);
+      const record = JSON.parse(
+        readFileSync(join(root, '.orchestrator/metrics/vault-narrative-staleness.jsonl'), 'utf8').trim(),
+      );
+      expect(record.passive_skipped).toBe(1);
+    });
+  });
+
   describe('duration_ms', () => {
     it('returns a non-negative duration_ms in every result', async () => {
       const savedEnv = process.env.VAULT_DIR;

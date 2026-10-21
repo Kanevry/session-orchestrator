@@ -52,6 +52,7 @@ section is replaced by its default and reported via `droppedSections`
 | `paths.namespace-map-path`          | string                               | no       | `''`      | Host-local repo-pseudonym JSON map (#725 D5).      |
 | `paths.confidential-names-file`     | string                               | no       | `''`      | Host-local JSON array of names for the CP11 leakage rule (#728a). Names live in that file only, never inline here. |
 | `dispatcher.autonomy`               | `off` \| `advisory` \| `autonomous-gated` \| `''` | no | `''` | `''` = no override (#679).                         |
+| `learnings.store-role`              | `writer` \| `inbox`                  | no       | absent    | Absent, or an empty `learnings:`, = `writer`. Env `SO_LEARNINGS_STORE_ROLE` overrides it. `inbox` = this host (every repo on it) only appends to `learnings-inbox.jsonl` (#1516). Any other value, any other key in `learnings` (e.g. `store_role`), or an unreadable/unparseable owner.yaml that names `learnings`, is `invalid`: canonical-store writes refuse (`LearningsStoreRoleError`), they do not fall back to `writer`. |
 | `vaults`, `baselines`               | lists                                | no       | absent    | Passed through untouched; parsed leniently at point of use. |
 
 ### Privacy Contract

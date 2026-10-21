@@ -21,7 +21,7 @@
  * operator's real ledger.
  */
 
-import { describe, it, expect, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, afterAll, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -32,6 +32,7 @@ process.env.CLAUDE_PROJECT_DIR = SENTINEL;
 
 const { runExpiredSweep, runTailPhases } = await import('@lib/session-end/tail-runner.mjs');
 const { planTailPhases } = await import('@lib/session-end/phase-skip.mjs');
+const { _resetStoreRoleCacheForTests } = await import('@lib/learnings/store-role.mjs');
 
 const SENTINEL_LEDGER = join(SENTINEL, '.orchestrator', 'metrics', 'events.jsonl');
 
@@ -142,6 +143,25 @@ describe('runExpiredSweep', () => {
     expect(sweeps[0]).toMatchObject({ scanned: 2, archived: 1, malformed, source: 'session-end-3.6.4' });
     // Ledger-safety guard: nothing leaked to the ambient destination.
     expect(existsSync(SENTINEL_LEDGER)).toBe(false);
+  });
+
+  it('returns ran:false and emits no sweep_applied on an inbox-role host (#1516)', async () => {
+    // Bug: the inbox-role sweep writes nothing, yet the runner reported
+    // ran:true and emitted sweep_applied — whose presence claims a rewrite.
+    const root = seedStore(makeRepo());
+    const plan = await planFor(root);
+    vi.stubEnv('SO_LEARNINGS_STORE_ROLE', 'inbox');
+    _resetStoreRoleCacheForTests();
+    try {
+      const res = await runExpiredSweep({ repoRoot: root, plan });
+
+      expect(res).toEqual({ ran: false, reason: 'store-role-inbox' });
+      expect(readJsonl(metric(root, 'learnings.jsonl'))).toHaveLength(2);
+      expect(existsSync(metric(root, 'events.jsonl'))).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      _resetStoreRoleCacheForTests();
+    }
   });
 
   it('does nothing when the plan says skip', async () => {

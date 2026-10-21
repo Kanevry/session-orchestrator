@@ -20,6 +20,13 @@ import { spawnSync } from 'node:child_process';
 // dynamically. Import at module level is safe — cwd is passed explicitly via `cwd` param.
 import { checkWorktreeBaseRefFresh } from '@lib/worktree-freshness.mjs';
 
+// #1648: createWorktree creates the shared base `<os.tmpdir()>/so-worktrees`
+// and never removes it. Drop it once this file is done, but only when empty —
+// the base is a host-shared namespace (#984) and may hold a peer's worktree.
+afterAll(() => {
+  try { fsSync.rmdirSync(path.join(os.tmpdir(), 'so-worktrees')); } catch { /* not empty or already gone */ }
+});
+
 // Note: createWorktree / removeWorktree use zx which captures cwd at import time.
 // The roundtrip test (test 8) imports these in a dedicated beforeAll AFTER chdir,
 // matching the pattern used by tests/lib/worktree.test.mjs.

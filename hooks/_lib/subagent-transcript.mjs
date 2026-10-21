@@ -27,7 +27,7 @@
  *      claim, with an `occurrences` count (#1198: the fleet's worst repo held
  *      3,360 records over 205 distinct `claim_text` values = duplication
  *      factor 16.4, measured 2026-09-06 over
- *      `extern/aiat-barrierefrei-engine/.orchestrator/metrics/events.jsonl`).
+ *      a consumer repo's `.orchestrator/metrics/events.jsonl`).
  *
  * @module hooks/_lib/subagent-transcript
  */
@@ -495,7 +495,7 @@ const MAX_OBSERVATIONS = 50;
  * of them was measured as a live false-positive class.
  *
  * Measured 2026-09-06 over the 205 DISTINCT `claim_text` values in
- * `~/Projects/extern/aiat-barrierefrei-engine/.orchestrator/metrics/events.jsonl`
+ * a consumer repo's `.orchestrator/metrics/events.jsonl`
  * (the fleet's worst-affected repo; command in the module test header):
  * 201/205 re-fire on the pre-#1218 matcher, of which 35 are markdown table
  * rows and 9 are ATX headings — 44 firings, 21.9% of the corpus, with a true

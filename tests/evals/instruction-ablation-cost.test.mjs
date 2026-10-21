@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,5 +77,8 @@ process.stdout.write(JSON.stringify(responses[run - 1]));
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
+    // #1648: the shared scratch parent goes too, but only once it is empty —
+    // a concurrent run may still own a sibling `ablation-cost-*` inside it.
+    try { rmdirSync(scratch); } catch { /* not empty or already gone */ }
   }
 }, 30_000);

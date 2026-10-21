@@ -25,12 +25,13 @@
  *   2 — system error (network, file I/O, AJV compile)
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PLUGIN_ROOT = join(__dirname, '..', '..', '..');
@@ -78,6 +79,7 @@ function isNetworkFailure(result) {
  */
 function makeTmpRoot(setupFn) {
   const root = mkdtempSync(join(os.tmpdir(), 'plugin-manifests-test-'));
+  onTestFinished(() => removeTree(root));
   setupFn(root);
   return root;
 }

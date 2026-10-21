@@ -2,7 +2,7 @@
 
 > Status: Accepted · 2026-09-22 · session main-2026-09-21-session-4 · Epic #1425 (issues #1426–#1433)
 > Authoritative implementation: [`scripts/lib/process-group.mjs`](../../scripts/lib/process-group.mjs) (`spawnInGroup`, `killProcessGroup`, `verifyProcessIdentity`) and [`scripts/lib/orphan-reaper.mjs`](../../scripts/lib/orphan-reaper.mjs) (stable entry + CLI) over [`scripts/lib/orphan-reaper/`](../../scripts/lib/orphan-reaper/) (`reaper-decide.mjs` → `decideReapCandidates`, `scan.mjs` → `runOrphanScan`, `reaper-audit.mjs` → the B5 audit)
-> Source PRD: [`docs/prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md`](../prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md)
+> Source PRD: the internal process-group-kill and orphan-reaper PRD (2026-09-20, not in the public mirror)
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
 ## Context
@@ -61,7 +61,7 @@ Rejected on measurement, 2026-09-21: **538 of 784 processes on this host (68.6 %
 ## References
 
 - Epic #1425 — Prozessgruppen-Kill und Waisen-Wächter (issues #1426–#1433)
-- PRD [`docs/prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md`](../prd/2026-09-20-prozessgruppen-kill-und-waisen-waechter.md) — Stufe 1 / Stufe 2 split, parameter table, acceptance criteria
+- PRD the internal process-group-kill and orphan-reaper PRD (2026-09-20, not in the public mirror) — Stufe 1 / Stufe 2 split, parameter table, acceptance criteria
 - `.claude/rules/host-resources.md` § HR-107 (the orphan condition as a rule), § HR-101 (firing-rate ceiling), § HR-104 (report-never-count), § HR-105 (a rule you cannot falsify), § HR-106 (the banner reports what the rule judged)
 - `docs/events-schema.md` § `orchestrator.reaper.scan_completed`
 - `docs/session-config-reference.md` § `reaper:` and § `gate:`

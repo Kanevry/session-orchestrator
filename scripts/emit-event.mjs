@@ -31,7 +31,7 @@
 
 import { parseArgs } from 'node:util';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -141,7 +141,7 @@ if (payloadRaw !== undefined) {
 
 let emitEvent;
 try {
-  ({ emitEvent } = await import(join(__dirname, 'lib', 'events.mjs')));
+  ({ emitEvent } = await import(pathToFileURL(join(__dirname, 'lib', 'events.mjs')).href));
 } catch (err) {
   fail(`failed to load events.mjs: ${err.message}`, 2, jsonMode);
 }

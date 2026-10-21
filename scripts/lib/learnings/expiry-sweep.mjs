@@ -70,8 +70,15 @@
 import { constants as fsConstants, existsSync } from 'node:fs';
 import { mkdir, appendFile, copyFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readLearnings, readLearningsSnapshot, rewriteLearnings, withLearningsLock } from './io.mjs';
+import {
+  appendInboxReceipts,
+  readLearnings,
+  readLearningsSnapshot,
+  rewriteLearnings,
+  withLearningsLock,
+} from './io.mjs';
 import { redactHomeDir } from '../common.mjs';
+import { assertStoreRoleUsable, isCanonicalStore, resolveStoreRole } from './store-role.mjs';
 
 /**
  * Thrown by {@link pruneLearnings} when `expectedGeneration` no longer matches
@@ -215,6 +222,26 @@ function reconcileKey(entry) {
  * fails closed on a missing pointer, before anything touches disk.
  */
 export const ARCHIVE_REASONS = Object.freeze(['expired', 'pruned', 'superseded', 'merged']);
+
+/**
+ * Value of the additive `skipped` result field when an APPLY ran on a host
+ * whose learnings-store role is `inbox` (#1516).
+ */
+export const SKIPPED_STORE_ROLE_INBOX = 'store-role-inbox';
+
+/**
+ * True when an apply against `filePath` must not archive or rewrite (#1516):
+ * the canonical store on an `inbox`-role host. There `rewriteLearnings()`
+ * never touches the live store, so an archive append would record learnings
+ * that are still live. Dry runs are unaffected — they write nothing and keep
+ * reporting what a writer host would do.
+ *
+ * @param {unknown} filePath
+ * @returns {boolean}
+ */
+function isInboxRoleStore(filePath) {
+  return typeof filePath === 'string' && isCanonicalStore(filePath) && resolveStoreRole().role === 'inbox';
+}
 
 /** Reason -> the tombstone field that reason MUST carry. */
 const TOMBSTONE_FIELD = Object.freeze({
@@ -360,7 +387,7 @@ function resolveNowMs(now) {
  * @param {number} opts.nowMs
  * @param {boolean} opts.dryRun
  * @returns {Promise<{kept: number, archived: number, byReason: Record<string, number>,
- *   malformedField: {malformed?: number}}>}
+ *   malformedField: {malformed?: number}, skipped?: string}>}
  */
 async function archiveThenRewrite({
   filePath,
@@ -372,6 +399,21 @@ async function archiveThenRewrite({
   nowMs,
   dryRun,
 }) {
+  if (!dryRun && isInboxRoleStore(filePath)) {
+    // Inbox role (#1516): no archive line — the live store keeps every record,
+    // so archiving one would duplicate a live learning. The rewrite still runs:
+    // on this role it only appends the batch's NEW ids to the inbox (e.g. the
+    // session's fresh learnings from apply-session-learnings) and drops every
+    // update, removal and consolidation.
+    await rewriteLearnings(filePath, keep, { dryRun: false, malformedLines: malformed });
+    return {
+      kept: keep.length,
+      archived: 0,
+      byReason: {},
+      malformedField: malformedField(filePath, malformed, malformedLineNumbers),
+      skipped: SKIPPED_STORE_ROLE_INBOX,
+    };
+  }
   const byReason = countByReason(archiveBatch);
   const result = {
     kept: keep.length,
@@ -402,6 +444,18 @@ async function archiveThenRewrite({
         .join('\n') + '\n';
     await mkdir(path.dirname(archivePath), { recursive: true });
     await appendFile(archivePath, body, 'utf8');
+    // Inbox receipts (#1516) for archived ids that came from the inbox: the
+    // archive is not synced to the inbox host, so without a receipt the record
+    // turns visible there again. Written AFTER the archive append (a crash
+    // cannot leave a receipt for a record that is neither live nor archived)
+    // and BEFORE the rewrite. A crash between the archive append and this
+    // receipt still leaves an archived inbox record without one; the next
+    // writer rewriteLearnings() heals it (io.mjs `unreceiptedArchivedIds`).
+    // Both callers hold the store lock here, as appendInboxReceipts requires.
+    await appendInboxReceipts(
+      filePath,
+      archiveBatch.map(({ entry }) => entry?.id)
+    );
   }
 
   // Re-validates (cheap, idempotent) and snapshots a `.bak-<ISO>` backup of
@@ -431,16 +485,24 @@ async function archiveThenRewrite({
  *   malformed?: number}>} `malformed` is present only when the store held
  *   unparseable lines: their count. They are kept verbatim at the end of the
  *   rewritten store, never archived, and not counted in `scanned`/`kept`.
- *   Never throws on a missing store — returns the zeroed shape instead. Both
+ *   Never throws on a missing store — returns the zeroed shape instead. An
+ *   apply on an `inbox`-role host (#1516) reads and writes nothing and returns
+ *   the zeroed shape plus `skipped: 'store-role-inbox'`. Both
  *   `filePath` and `archivePath` are required; a missing/invalid `filePath`
  *   throws a plain `Error` (programmer error, not a runtime data condition).
+ * @throws {LearningsStoreRoleError} an apply on the canonical store while the
+ *   host's store role is invalid (#1516) — nothing archived or rewritten
  */
 export async function sweepExpiredLearnings(opts = {}) {
   const { filePath, dryRun = true } = opts;
+  // Fail-closed (#1516): an apply under an invalid store role refuses before
+  // the archive append — archived-but-live records would follow otherwise.
+  if (!dryRun && typeof filePath === 'string') assertStoreRoleUsable(filePath);
   // The read → rewrite runs under the store lock (#1447 point 8). A run that
   // cannot write takes no lock: a dry run, an absent store (zeroed shape, see
   // below), or an unusable `filePath` (the body owns that error).
-  if (dryRun || typeof filePath !== 'string' || !existsSync(filePath)) {
+  // An inbox-role apply (#1516) writes nothing either — no lock.
+  if (dryRun || typeof filePath !== 'string' || !existsSync(filePath) || isInboxRoleStore(filePath)) {
     return sweepExpiredLearningsUnlocked(opts);
   }
   return withLearningsLock(filePath, () => sweepExpiredLearningsUnlocked(opts));
@@ -462,6 +524,13 @@ async function sweepExpiredLearningsUnlocked({
   }
   if (typeof archivePath !== 'string' || archivePath.length === 0) {
     throw new Error('sweepExpiredLearnings: archivePath is required');
+  }
+
+  if (!dryRun && isInboxRoleStore(filePath)) {
+    // Inbox role (#1516): an expiry sweep is a pure removal, which this host
+    // never performs on the live store — the writer host sweeps. Zeroed counts
+    // so no caller reads "archived N"; `skipped` names why.
+    return { scanned: 0, kept: 0, archived: 0, dryRun, archivePath, skipped: SKIPPED_STORE_ROLE_INBOX };
   }
 
   if (!existsSync(filePath)) {
@@ -575,11 +644,18 @@ async function sweepExpiredLearningsUnlocked({
  *   byReason: Record<string, number>, dryRun: boolean, archivePath: string,
  *   malformed?: number}>} `malformed` as in {@link sweepExpiredLearnings}: the
  *   store's unparseable lines, kept verbatim — no caller generation can carry
- *   them, so they are never read as caller drops.
+ *   them, so they are never read as caller drops. On an `inbox`-role host
+ *   (#1516) an apply archives nothing (`archived: 0`, `byReason: {}`) and adds
+ *   `skipped: 'store-role-inbox'`; its rewrite only appends the next
+ *   generation's new ids to `learnings-inbox.jsonl`.
  * @throws {StoreGenerationMismatchError} when `expectedGeneration` is stale
+ * @throws {LearningsStoreRoleError} an apply on the canonical store while the
+ *   host's store role is invalid (#1516) — nothing archived or rewritten
  */
 export async function pruneLearnings(opts = {}) {
   const { filePath, dryRun = true } = opts;
+  // Fail-closed (#1516): refuse before the archive append, see sweepExpiredLearnings.
+  if (!dryRun && typeof filePath === 'string') assertStoreRoleUsable(filePath);
   // The read → archive → rewrite runs under the store lock (#1447 point 8): an
   // append landing after the read below would otherwise vanish in the rename
   // with no archive line. A dry run writes nothing and takes no lock; an
@@ -722,7 +798,7 @@ async function pruneLearningsUnlocked({
     dropped += 1;
   }
 
-  const { kept, archived, byReason, malformedField: malformedCount } = await archiveThenRewrite({
+  const { kept, archived, byReason, malformedField: malformedCount, skipped } = await archiveThenRewrite({
     filePath,
     archivePath,
     keep,
@@ -741,6 +817,7 @@ async function pruneLearningsUnlocked({
     dryRun,
     archivePath,
     ...malformedCount,
+    ...(skipped ? { skipped } : {}),
   };
 }
 
@@ -842,8 +919,12 @@ function dropSnapshotPath(filePath, nowMs) {
  *   remainingMalformed: number, recordBearing: number, dryRun: boolean, snapshot: string|null}>}
  *   `generation` is the store's as read; `chars` the line's full length, `preview` its first
  *   {@link DROP_PREVIEW_CHARS} characters with the home dir as `~`; `recordBearing` counts the
- *   dropped lines that held a readable record
+ *   dropped lines that held a readable record. On an `inbox`-role host (#1516)
+ *   an apply writes nothing: it returns the dry-run result (`dryRun: true`,
+ *   `snapshot: null`) plus `skipped: 'store-role-inbox'`
  * @throws {StoreGenerationMismatchError} the store is not at `expectedGeneration` — nothing written
+ * @throws {LearningsStoreRoleError} an apply on the canonical store while the
+ *   host's store role is invalid (#1516) — nothing written
  * @throws {MalformedLineRefusedError} a line is not unparseable, or (apply without
  *   `acceptEmbedded`) still holds a readable record — nothing written
  */
@@ -863,6 +944,17 @@ export async function dropMalformedLines({
   }
   if (!dryRun && (typeof expectedGeneration !== 'string' || expectedGeneration.length === 0)) {
     throw new Error('dropMalformedLines: expectedGeneration is required to apply');
+  }
+  // Fail-closed (#1516): refuse before the snapshot and the rewrite.
+  if (!dryRun) assertStoreRoleUsable(filePath);
+  if (!dryRun && isInboxRoleStore(filePath)) {
+    // Inbox role (#1516): the live store is never rewritten on this host, so
+    // no snapshot and no rewrite. The checks still run (dry), so a stale
+    // generation or a wrong line still throws; the result says nothing moved.
+    const probe = await dropMalformedLinesUnlocked({
+      filePath, lines, expectedGeneration, acceptEmbedded, dryRun: true, now,
+    });
+    return { ...probe, skipped: SKIPPED_STORE_ROLE_INBOX };
   }
   const run = () => dropMalformedLinesUnlocked({ filePath, lines, expectedGeneration, acceptEmbedded, dryRun, now });
   // An absent store has no line to drop — the body refuses without a lock.

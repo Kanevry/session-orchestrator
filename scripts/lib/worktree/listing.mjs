@@ -10,7 +10,7 @@
  * lifecycle import chain (lifecycle imports listing, not the reverse).
  */
 
-import { $ as defaultDollar } from 'zx';
+import { $ as defaultDollar } from '../zx.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 

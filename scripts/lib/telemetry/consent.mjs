@@ -159,11 +159,13 @@ export function readTelemetryState({ path } = {}) {
 export function writeTelemetryState(record, { path } = {}) {
   const target = path || TELEMETRY_JSON_PATH;
   try {
-    mkdirSync(dirname(target), { recursive: true });
+    // 0o700: the default target is the private config dir, which must not come
+    // out 0777 under umask 000 (#1629).
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
   } catch (err) {
     return { ok: false, error: err?.message ?? String(err) };
   }
-  const res = writeJsonAtomicSync(target, record);
+  const res = writeJsonAtomicSync(target, record, { mode: 0o600 }); // consent + anon_id are host-private (#1632)
   return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
 

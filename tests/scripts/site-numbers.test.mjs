@@ -507,7 +507,7 @@ describe('safe-value allowlist', () => {
  * Reused verbatim for `learnings.jsonl`, whose raw-line count does not care
  * about the extra field.
  */
-const LEDGER = '{"session_id":"s-1","a":1}\n{"session_id":"s-2","b":2}\n{"session_id":"s-3","c":3}\n';
+const LEDGER = '{"session_id":"s-1","session_type":"feature","a":1}\n{"session_id":"s-2","session_type":"feature","b":2}\n{"session_id":"s-3","session_type":"feature","c":3}\n';
 
 /**
  * A synthetic repository complete enough for all thirteen metrics — the CLI's

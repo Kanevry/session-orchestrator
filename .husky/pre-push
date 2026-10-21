@@ -232,6 +232,20 @@ if [ "$so_scratch" -eq 1 ]; then
 fi
 unset so_scratch so_remote so_remote_url so_origin_url so_origin_host so_target_host
 
+# Is the destination `origin` (by NAME, or by its exact push URL)? Only then may a
+# failed remote route fall back to the local PARTIAL gate (#1642): an origin MR
+# branch has the MR pipeline behind it as the full-suite net. Every other target —
+# the GitHub mirror (a push there IS the deploy, #1079), a URL to anything else, a
+# hand invocation with empty $1 — keeps the full local fallback.
+so_origin_target=0
+if [ -n "$1" ]; then
+  if [ "$1" = origin ]; then
+    so_origin_target=1
+  elif git remote get-url --push --all origin 2>/dev/null | grep -qFx -- "$2"; then
+    so_origin_target=1
+  fi
+fi
+
 # git feeds one line per pushed ref on stdin:
 #   <local_ref> <local_sha> <remote_ref> <remote_sha>
 # An all-zero local sha means the ref is being DELETED. A push that only deletes
@@ -242,11 +256,25 @@ has_content=0
 content_refs=0
 target_sha=''
 target_ref=''
-while read -r local_ref local_sha _remote_ref _remote_sha; do
+# 1 while EVERY content line goes to a branch other than main/master: only then may
+# the local partial route apply (#1642). git does not order the lines by the command
+# line, so a later `main` or tag line must veto it, not just the first line.
+so_partial_refs=1
+# Every content line as `<local_ref> <local_sha>`, for the moved-ref re-check that
+# runs after the gate passes (#1623, see the block above the final success line).
+pushed_refs=''
+while read -r local_ref local_sha remote_ref _remote_sha; do
   [ -z "$local_sha" ] && continue
   [ "$local_sha" = "$zero" ] && continue
   has_content=1
   content_refs=$(( content_refs + 1 ))
+  pushed_refs="$pushed_refs$local_ref $local_sha
+"
+  case "$remote_ref" in
+    (refs/heads/main|refs/heads/master) so_partial_refs=0 ;;
+    (refs/heads/?*) : ;;
+    (*) so_partial_refs=0 ;;
+  esac
   if [ -z "$target_sha" ]; then
     target_sha=$local_sha
     target_ref=$local_ref
@@ -372,7 +400,8 @@ else
   fi
 fi
 
-echo "pre-push: running the full quality gate (typecheck + tests + lint)" >&2
+echo "pre-push: running the full quality gate (typecheck + tests + lint; if no remote host can run it," >&2
+echo "          an origin MR branch falls back to the local partial gate, #1642)" >&2
 echo "          against the $tree_label — NOT your working copy." >&2
 echo "          Output is buffered by the gate, so expect ~2 min of silence." >&2
 echo "          Bypass with SKIP_QUALITY_GATE=1 (never silently with --no-verify)." >&2
@@ -460,9 +489,37 @@ if (
     else
       remote_status=$?
     fi
+    # 2 = SO_GATE_HOSTS named an unknown host or none of its hosts could run the
+    # gate (#1626): falls into (*) and BLOCKS,
+    # deliberately without the local fallback — the operator chose a host.
     case "$remote_status" in
       (10) : ;; # only explicit transport/readiness fallback reaches npm
       (*) exit "$remote_status" ;;
+    esac
+  fi
+  # SO_GATE_HOSTS forbids the local gate even when the pushed tree carries an older
+  # router that ignores the variable (exit 10) or no router at all (#1626 review).
+  case "$(printf '%s' "${SO_GATE_HOSTS:-}" | tr -d '[:space:]')" in
+    ('') : ;;
+    (*) echo "pre-push: SO_GATE_HOSTS is set but no listed host ran the gate for this tree — Push blocked (no local fallback)." >&2
+        exit 2 ;;
+  esac
+  # Local PARTIAL gate (#1642) — only when EVERY pushed ref is an origin branch other
+  # than main (so_partial_refs): a push touching main, a tag (release) or any other target keeps the full local gate,
+  # because no MR pipeline stands between those and the result. Exit 10 from the
+  # partial gate (no merge-base, a config file changed, a source file deleted or
+  # renamed, a tool missing) falls
+  # through to the full gate below: fail-closed.
+  if [ -n "$repo_root" ] && [ "$so_origin_target" -eq 1 ] && [ "$so_partial_refs" -eq 1 ] \
+    && [ -f "$run_dir/scripts/lib/pre-push-local-partial.mjs" ]; then
+    if node "$run_dir/scripts/lib/pre-push-local-partial.mjs" "$run_dir" "$target_sha" "$repo_root"; then
+      exit 0
+    else
+      partial_status=$?
+    fi
+    case "$partial_status" in
+      (10) : ;;
+      (*) exit "$partial_status" ;;
     esac
   fi
   if [ -n "$repo_root" ]; then
@@ -491,5 +548,40 @@ if [ "$status" -ne 0 ]; then
   echo "  Bypass (only after triaging): SKIP_QUALITY_GATE=1 git push" >&2
   exit 1
 fi
+
+# ---------------------------------------------------------------------------
+# Moved-ref re-check (#1623) — the gate verified the SHAs git handed us on stdin.
+# ---------------------------------------------------------------------------
+# A gate run takes minutes; a commit made in the same worktree meanwhile moves
+# the pushed ref. Measured 2026-10-14 (git 2.56.0, local bare remote, a hook that
+# sleeps while a second commit lands): git sends the sha it resolved BEFORE the
+# hook, the remote received the gated sha and never the new commit. Re-measured
+# 2026-10-14 over SSH (remote bare repo on another host, two probes): same
+# result, the newer commit object never reached the remote. So a moved ref does
+# NOT mean an ungated sha goes out — it means a newer commit stays behind. The
+# check therefore WARNS and lets the gated push through; blocking only forced a
+# second full gate run for a push whose sha the gate had already verified.
+# Compared WITHOUT peeling: an annotated tag's local_sha is the tag object, and
+# `rev-parse <ref>` returns that same object. Refs that no longer resolve (or a
+# raw-sha source) are skipped: there is nothing newer to have slipped through.
+moved_refs=0
+while read -r chk_ref chk_sha; do
+  [ -n "$chk_ref" ] || continue
+  case "$chk_ref" in
+    (refs/*|HEAD) : ;;
+    (*) continue ;;
+  esac
+  chk_now=$(git rev-parse --verify --quiet "$chk_ref" 2>/dev/null) || continue
+  if [ "$chk_now" != "$chk_sha" ]; then
+    echo "⚠ pre-push: $chk_ref moved during the gate: gated $chk_sha, now $chk_now." >&2
+    moved_refs=1
+  fi
+done <<EOF
+$pushed_refs
+EOF
+if [ "$moved_refs" -ne 0 ]; then
+  echo "  Pushing the gated commit only — the newer commit is neither pushed nor gated. Push again to gate and send it." >&2
+fi
+unset moved_refs chk_ref chk_sha chk_now
 
 echo "✓ pre-push: quality gate passed in ${elapsed}s against the $tree_label." >&2

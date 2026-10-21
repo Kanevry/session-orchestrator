@@ -104,7 +104,7 @@ Run it as code, after the Recommendations Banner — never rewrite STATE.md by h
 node "${PLUGIN_ROOT}/scripts/state-md-idle-reset.mjs" --json
 ```
 
-It prints `{"changed": <bool>, "reason": <string|null>, "path": "<STATE.md>"}` and writes under the STATE.md lock (`resetStateMdToIdle` in `scripts/lib/state-md/idle-reset.mjs`). A no-op exits 0 with `changed: false` and one of `reason: "status-not-completed"` (any status other than `completed`), `"unparseable"` (no frontmatter) or `"missing"` (no or empty STATE.md). Exit 2 means `--repo-root` is not a directory, the write failed, or a STATE.md guard refused it (`reason` names the guard) — report it as a Deviation and continue. Without a new `## Wave History` (a coordinator-direct session) the earlier `## Previous Session` body is kept below the new recommendations copy. The rules below are the contract that code implements:
+It prints `{"changed": <bool>, "reason": <string|null>, "path": "<STATE.md>"}` and writes under the STATE.md lock (`resetStateMdToIdle` in `scripts/lib/state-md/idle-reset.mjs`). A no-op exits 0 with `changed: false` and one of `reason: "status-not-completed"` (any status other than `completed`), `"unparseable"` (no frontmatter) `"missing"` (no or empty STATE.md) or `"foreign-state-md"` (the only STATE.md belongs to another platform's foreign session and is left untouched, #1618 — treat like `missing`). Exit 2 means `--repo-root` is not a directory, the write failed, or a STATE.md guard refused it (`reason` names the guard) — report it as a Deviation and continue. Without a new `## Wave History` (a coordinator-direct session) the earlier `## Previous Session` body is kept below the new recommendations copy. The rules below are the contract that code implements:
 
 1. Set frontmatter `status: idle`.
 2. Clear `current-wave` (set to `0`).
@@ -247,7 +247,7 @@ Also read `<state-dir>/STATUS.md` if it exists for additional project-level cont
 
 ### Session-Profile Persistence (`ultradeep` alias)
 
-> **CONTENT ADDITION — not part of the #1157 move.** Applies to the STATE.md initialization write (Phase 1b), the same write that sets `session-type`. Rationale, wave shape and budgets: `docs/prd/2026-09-06-ultradeep-session-profile.md` — do not restate them here. Alias resolution: `commands/session.md` § Argument alias.
+> **CONTENT ADDITION — not part of the #1157 move.** Applies to the STATE.md initialization write (Phase 1b), the same write that sets `session-type`. Rationale, wave shape and budgets: the internal ultradeep session-profile PRD (2026-09-06, not in the public mirror) — do not restate them here. Alias resolution: `commands/session.md` § Argument alias.
 
 When the `/session` argument was the `ultradeep` ALIAS, persist the profile alongside the type:
 

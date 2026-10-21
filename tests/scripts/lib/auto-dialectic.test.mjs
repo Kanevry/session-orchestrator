@@ -24,7 +24,7 @@ import {
   symlinkSync,
   utimesSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
@@ -154,6 +154,34 @@ describe('readDialecticLastRun', () => {
 // ---------------------------------------------------------------------------
 
 describe('readDialecticSignals', () => {
+  it('reads main-checkout sessions while keeping dialectic state worktree-local', async () => {
+    const { repoRoot: main } = makeFakeRepo({ sessions: [
+      { session_id: 'main', session_type: 'deep', started_at: '2026-05-03T10:00:00Z' },
+    ] });
+    const { repoRoot: worktree } = makeFakeRepo({ lastRunAt: '2026-05-02T10:00:00Z', sessions: [
+      { session_id: 'shadow', session_type: 'deep', started_at: '2026-05-01T10:00:00Z' },
+    ] });
+    const admin = join(main, '.git', 'worktrees', 'fixture');
+    mkdirSync(admin, { recursive: true });
+    writeFileSync(join(admin, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${admin}\n`);
+    const signals = await readDialecticSignals({ repoRoot: worktree });
+    expect(signals.sessionsSinceLast).toBe(1);
+    expect(signals.lastRunAt).toBe('2026-05-02T10:00:00Z');
+  });
+
+  it('counts ID-less measured work and deduplicates identified work without accepting synthetic or unknown empty rows', async () => {
+    const { repoRoot } = makeFakeRepo({ sessions: [
+      { session_type: 'deep', status: 'abandoned', started_at: '2026-05-01T10:00:00Z' },
+      { total_waves: 1, started_at: '2026-05-02T10:00:00Z' },
+      { session_id: 'dup', session_type: 'feature', started_at: '2026-05-03T10:00:00Z' },
+      { session_id: 'dup', session_type: 'feature', started_at: '2026-05-03T10:00:00Z' },
+      { session_type: 'deep', status: 'completed', _synthetic: true, started_at: '2026-05-04T10:00:00Z' },
+      { session_type: 'unknown', started_at: '2026-05-05T10:00:00Z' },
+    ] });
+    expect((await readDialecticSignals({ repoRoot })).sessionsSinceLast).toBe(3);
+  });
+
   it('returns zero counts and null lastRunAt when .orchestrator/ is absent', async () => {
     const repoRoot = tmp(); // no .orchestrator dir seeded
     const result = await readDialecticSignals({ repoRoot });
@@ -163,9 +191,9 @@ describe('readDialecticSignals', () => {
   it('counts all sessions when no lastRunAt exists (3 sessions → sessionsSinceLast: 3)', async () => {
     const { repoRoot } = makeFakeRepo({
       sessions: [
-        { started_at: '2026-05-01T10:00:00Z' },
-        { started_at: '2026-05-02T10:00:00Z' },
-        { started_at: '2026-05-03T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-01T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-02T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-03T10:00:00Z' },
       ],
     });
     const result = await readDialecticSignals({ repoRoot });
@@ -177,9 +205,9 @@ describe('readDialecticSignals', () => {
   it('counts only sessions newer than lastRunAt', async () => {
     const { repoRoot } = makeFakeRepo({
       sessions: [
-        { started_at: '2026-04-01T10:00:00Z' }, // older than lastRunAt — excluded
-        { started_at: '2026-05-10T10:00:00Z' }, // newer — counted
-        { started_at: '2026-05-11T10:00:00Z' }, // newer — counted
+        { session_type: 'deep', started_at: '2026-04-01T10:00:00Z' }, // older than lastRunAt — excluded
+        { session_type: 'deep', started_at: '2026-05-10T10:00:00Z' }, // newer — counted
+        { session_type: 'deep', started_at: '2026-05-11T10:00:00Z' }, // newer — counted
       ],
       lastRunAt: '2026-05-05T00:00:00Z',
     });
@@ -201,6 +229,17 @@ describe('readDialecticSignals', () => {
     expect(result.learningsSinceLast).toBe(2);
   });
 
+  it('#1685: counts a visible inbox-only learning (inbox host, no live store)', async () => {
+    const { repoRoot, learningsPath } = makeFakeRepo({ lastRunAt: '2026-05-05T00:00:00Z' });
+    writeFileSync(
+      join(dirname(learningsPath), 'learnings-inbox.jsonl'),
+      JSON.stringify({ id: 'inbox-only', created_at: '2026-05-10T00:00:00Z' }) + '\n',
+      'utf8'
+    );
+    const result = await readDialecticSignals({ repoRoot });
+    expect(result.learningsSinceLast).toBe(1);
+  });
+
   it('falls back to updated_at when created_at is absent for learnings', async () => {
     const { repoRoot } = makeFakeRepo({
       learnings: [
@@ -219,9 +258,9 @@ describe('readDialecticSignals', () => {
     writeFileSync(
       sessionsPath,
       [
-        JSON.stringify({ started_at: '2026-05-01T10:00:00Z' }),
+        JSON.stringify({ session_type: 'deep', started_at: '2026-05-01T10:00:00Z' }),
         'not-valid-json{{{',
-        JSON.stringify({ started_at: '2026-05-02T10:00:00Z' }),
+        JSON.stringify({ session_type: 'deep', started_at: '2026-05-02T10:00:00Z' }),
       ].join('\n'),
       'utf8',
     );
@@ -264,7 +303,7 @@ describe('readDialecticSignals', () => {
     // Seed valid sessions
     writeFileSync(
       join(metricsDir, 'sessions.jsonl'),
-      JSON.stringify({ started_at: '2026-05-01T10:00:00Z' }) + '\n',
+      JSON.stringify({ session_type: 'deep', started_at: '2026-05-01T10:00:00Z' }) + '\n',
       'utf8',
     );
     // learnings.jsonl as directory → readFile rejects with EISDIR
@@ -286,14 +325,14 @@ describe('readDialecticSignals', () => {
 // must not fire /evolve --dialectic off zero real work.
 
 describe('readDialecticSignals — #834: abandoned phantom stubs excluded from cadence count', () => {
-  it('5 abandoned phantoms + 2 real sessions since last run: sessionsSinceLast counts only the 2 real sessions', async () => {
+  it('5 synthetic phantoms (including completed) + 2 measured sessions since last run: sessionsSinceLast counts only the 2 real sessions', async () => {
     const abandoned = Array.from({ length: 5 }, (_, i) => ({
-      status: 'abandoned',
-      started_at: `2026-06-0${i + 1}T08:00:00Z`,
+      status: i === 0 ? 'completed' : 'abandoned', _synthetic: true,
+      session_type: 'deep', started_at: `2026-06-0${i + 1}T08:00:00Z`,
     }));
     const real = [
-      { started_at: '2026-06-10T08:00:00Z' },
-      { started_at: '2026-06-11T08:00:00Z' },
+      { session_type: 'deep', started_at: '2026-06-10T08:00:00Z' },
+      { session_type: 'deep', started_at: '2026-06-11T08:00:00Z' },
     ];
     const { repoRoot } = makeFakeRepo({ sessions: [...abandoned, ...real] });
     const result = await readDialecticSignals({ repoRoot });
@@ -304,12 +343,12 @@ describe('readDialecticSignals — #834: abandoned phantom stubs excluded from c
 describe('shouldDispatchAutoDialectic — #834: cadence must not fire off abandoned phantom stubs', () => {
   it('5 abandoned + 2 real sessions (7 raw lines), cadence=5: does NOT trigger (today it would, on 7 total)', async () => {
     const abandoned = Array.from({ length: 5 }, (_, i) => ({
-      status: 'abandoned',
-      started_at: `2026-06-0${i + 1}T08:00:00Z`,
+      status: i === 0 ? 'completed' : 'abandoned', _synthetic: true,
+      session_type: 'deep', started_at: `2026-06-0${i + 1}T08:00:00Z`,
     }));
     const real = [
-      { started_at: '2026-06-10T08:00:00Z' },
-      { started_at: '2026-06-11T08:00:00Z' },
+      { session_type: 'deep', started_at: '2026-06-10T08:00:00Z' },
+      { session_type: 'deep', started_at: '2026-06-11T08:00:00Z' },
     ];
     const { repoRoot } = makeFakeRepo({ sessions: [...abandoned, ...real] });
     const result = await shouldDispatchAutoDialectic({ repoRoot, cadence: 5 });
@@ -392,11 +431,11 @@ describe('shouldDispatchAutoDialectic — decision branches', () => {
   it('reads signals from disk when signals param is omitted', async () => {
     const { repoRoot } = makeFakeRepo({
       sessions: [
-        { started_at: '2026-05-01T10:00:00Z' },
-        { started_at: '2026-05-02T10:00:00Z' },
-        { started_at: '2026-05-03T10:00:00Z' },
-        { started_at: '2026-05-04T10:00:00Z' },
-        { started_at: '2026-05-05T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-01T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-02T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-03T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-04T10:00:00Z' },
+        { session_type: 'deep', started_at: '2026-05-05T10:00:00Z' },
       ],
     });
     // No pre-computed signals — module must read from disk

@@ -36,8 +36,9 @@ does not generate:
     taxonomy, part of the Six Tactics in `skills/grill/soul.md`.
   - `/brainstorm` — three-lens (PM / Designer / Engineer) divergent ideation
     pass plus Mom-Test interview discipline, in `skills/brainstorm/SKILL.md`.
-  - `/plan` — Opportunity Score ranking, Impact×Risk 2×2 triage, and an
-    optional job-story format, in `skills/plan/SKILL.md` / `mode-feature.md`.
+  - `/plan` — evidence-ranked candidates, Impact×Risk 2×2 triage, a two-brief
+    pre-mortem panel (`skills/plan/prd-premortem-panel.md`) and an optional
+    job-story format, in `skills/plan/SKILL.md` / `mode-feature.md`.
   - `/discovery feature` — grounded, grep-verified intent-drift and
     stubbed/dead-feature probes (`skills/discovery/probes-feature.md`),
     routing judgment-based PM work (OST, personas, market-sizing) out to
@@ -68,7 +69,7 @@ roster, to limit auto-dispatch noise (see § Warnings).
 |---|---|---|---|
 | Assumption interrogation / red-teaming a plan | `strategy-red-team`-class pm-skills ↔ `/grill` | `skills/grill/soul.md` (Six Tactics, kill-assumption workup, pre-mortem) | Overlap — prefer `/grill` (session/gate-integrated, codebase-grounded) |
 | Divergent ideation / brainstorming | `brainstorm-ideas-*`-class pm-skills ↔ `/brainstorm` | `skills/brainstorm/SKILL.md` (three-lens PM/Designer/Engineer pass, Mom-Test) | Overlap — prefer `/brainstorm` (HARD-GATE + PRD hand-off already wired) |
-| PRD generation / feature scoping / prioritization | `create-prd`-class pm-skills ↔ `/plan feature` | `skills/plan/SKILL.md`, `mode-feature.md` (Opportunity Score, 2×2 risk triage, job-story option) | Overlap — prefer `/plan` (researched Q&A engine, issue creation, appetite/scope discipline already wired) |
+| PRD generation / feature scoping / prioritization | `create-prd`-class pm-skills ↔ `/plan feature` | `skills/plan/SKILL.md`, `mode-feature.md` (evidence-ranked candidates, 2×2 risk triage, pre-mortem panel, job-story option) | Overlap — prefer `/plan` (researched Q&A engine, issue creation, appetite/scope discipline already wired) |
 | Documented-vs-enforced intent auditing | No pm-skills equivalent | `/discovery feature` (`skills/discovery/probes-feature.md`) | Unique to this plugin — grep-verified, not judgment-based |
 | Roadmap documents, stakeholder maps, persona trees as standalone artifacts | No equivalent here — this plugin folds personas/roadmap input into PRDs, not standalone living documents | `phuryn/pm-skills` | Unique to pm-skills — install alongside if a repo needs these as first-class artifacts |
 | Opportunity Solution Tree (OST) as a maintained document | No equivalent here (OST reasoning is routed out of `/discovery`'s verified pipeline per its Non-Goals) | `phuryn/pm-skills` | Unique to pm-skills |

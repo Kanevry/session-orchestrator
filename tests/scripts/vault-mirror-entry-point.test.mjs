@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, afterAll, onTestFinished } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, symlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -61,6 +61,7 @@ const VALID_SESSION = JSON.stringify({
 // `/agents/vault` suffix, so the guard suites below would pass or fail by
 // whatever the operator's machine declares. No owner.yaml → built-in defaults.
 const EMPTY_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'vault-mirror-entry-config-'));
+afterAll(() => removeTree(EMPTY_CONFIG_HOME));
 
 /**
  * Pin `CLAUDE_PROJECT_DIR` at a caller-owned (or throwaway) tmp dir.
@@ -79,6 +80,7 @@ const EMPTY_CONFIG_HOME = mkdtempSync(join(tmpdir(), 'vault-mirror-entry-config-
  */
 function pinnedLedgerEnv(projectDir) {
   const dir = projectDir ?? mkdtempSync(join(tmpdir(), 'vault-mirror-entry-events-'));
+  if (!projectDir) onTestFinished(() => removeTree(dir));
   return { CLAUDE_PROJECT_DIR: dir, SO_VAULT_DIR: dir, SO_CONFIG_HOME: EMPTY_CONFIG_HOME };
 }
 

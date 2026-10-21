@@ -11,13 +11,13 @@
  * touching the host's session.lock.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi, onTestFinished } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync, mkdirSync, renameSync, linkSync, unlinkSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 
-import { bootstrapLock, SAME_LOGICAL_SESSION_SOURCES } from '../../hooks/_lib/lock-bootstrap.mjs';
-import { forceAcquire as realForceAcquire } from '../../scripts/lib/session-lock.mjs';
+import { bootstrapLock, readClaudePid, SAME_LOGICAL_SESSION_SOURCES } from '../../hooks/_lib/lock-bootstrap.mjs';
+import { forceAcquire as realForceAcquire, writeReleaseMarker, hasReleaseMarker } from '../../scripts/lib/session-lock.mjs';
 
 // ── sandbox helpers ──────────────────────────────────────────────────────────
 
@@ -1198,5 +1198,308 @@ describe('bootstrapLock — same-logical-session force-refresh (#1091 F2)', () =
     // which share this Set as their SSOT. `startup` must stay OUT.
     expect([...SAME_LOGICAL_SESSION_SOURCES].sort()).toEqual(['clear', 'compact', 'resume']);
     expect(SAME_LOGICAL_SESSION_SOURCES.has('startup')).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1635 — a fleet lead's active lease keeps a /clear|resume session out of the
+// MAIN checkout. THE BUG THIS CATCHES: after /clear the tab session took the
+// lock in the main checkout while the lead ran headless jobs there, so the
+// lead's slot check reported the repo occupied and blocked its runs.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — lead lease holds the main checkout (#1635)', () => {
+  const activeLease = (sessionId) => vi.fn(async () => ({ state: 'active', lease: { session_id: sessionId } }));
+
+  function asMainCheckout({ fleet = true } = {}) {
+    mkdirSync(join(sandbox, '.git'), { recursive: true });
+    if (fleet) mkdirSync(join(sandbox, '.orchestrator', 'runtime', 'fleet'), { recursive: true });
+  }
+
+  function asLinkedWorktree() {
+    writeFileSync(join(sandbox, '.git'), 'gitdir: /elsewhere/.git/worktrees/wt\n');
+  }
+
+  async function run({ nativeSource, readLease, onNotice = vi.fn(), predecessorSessionId = null }) {
+    const acquire = makeAcquireStub();
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: 'tab-session-raw',
+      predecessorSessionId,
+      mode: 'deep',
+      nativeSource,
+      _acquireImpl: acquire,
+      _forceAcquireImpl: vi.fn(),
+      _emitEventImpl: noopEmit,
+      _readLeaseImpl: readLease,
+      onNotice,
+    });
+    return { result, acquire, onNotice };
+  }
+
+  it.each([['clear'], ['resume']])('%s in the main checkout + foreign active lease → no lock, notice', async (src) => {
+    asMainCheckout();
+    const { result, acquire, onNotice } = await run({ nativeSource: src, readLease: activeLease('lead-abcdef123456') });
+    expect(result).toBeNull();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readLock()).toBeNull();
+    expect(onNotice).toHaveBeenCalledWith(
+      'Haupt-Checkout belegt durch Lead lead-abc, arbeite im Worktree',
+      '🧭 Haupt-Checkout belegt durch Lead lead-abc — kein Session-Lock, arbeite im Worktree',
+    );
+  });
+
+  it('a main checkout of a repo the fleet does not work in (no runtime/fleet dir) → lock acquired', async () => {
+    // The lease is host-global: without this gate every repo on the host yielded.
+    asMainCheckout({ fleet: false });
+    const { result, onNotice } = await run({ nativeSource: 'clear', readLease: activeLease('lead-abcdef123456') });
+    expect(result?.session_id).toBe('tab-session-raw');
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('clear in the main checkout without a lease → lock acquired as before, silent', async () => {
+    asMainCheckout();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const { result, onNotice } = await run({ nativeSource: 'clear', readLease: vi.fn(async () => ({ state: 'none' })) });
+    expect(result?.session_id).toBe('tab-session-raw');
+    expect(readLock()?.session_id).toBe('tab-session-raw');
+    expect(onNotice).not.toHaveBeenCalled();
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
+  it('clear in the main checkout with an unreadable lease → lock acquired, one WARN', async () => {
+    asMainCheckout();
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const { result } = await run({
+      nativeSource: 'clear',
+      readLease: vi.fn(async () => ({ state: 'unreadable', reason: 'lease is not valid JSON' })),
+    });
+    expect(result?.session_id).toBe('tab-session-raw');
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(String(stderr.mock.calls[0][0])).toContain('navigator lease unreadable');
+  });
+
+  it('clear in a linked worktree + foreign active lease → lock acquired as before', async () => {
+    asLinkedWorktree();
+    const { result, onNotice } = await run({ nativeSource: 'clear', readLease: activeLease('lead-abcdef123456') });
+    expect(result?.session_id).toBe('tab-session-raw');
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('startup in the main checkout + foreign active lease → lock acquired as before', async () => {
+    asMainCheckout();
+    const readLease = activeLease('lead-abcdef123456');
+    const { result, onNotice } = await run({ nativeSource: 'startup', readLease });
+    expect(result?.session_id).toBe('tab-session-raw');
+    expect(onNotice).not.toHaveBeenCalled();
+    expect(readLease).not.toHaveBeenCalled();
+  });
+
+  it('the lead\'s own tab after /clear (lease = predecessor raw id, new raw id) does not yield', async () => {
+    asMainCheckout();
+    const { result, onNotice } = await run({
+      nativeSource: 'clear',
+      predecessorSessionId: 'lead-previous-raw',
+      readLease: activeLease('lead-previous-raw'),
+    });
+    expect(result?.session_id).toBe('tab-session-raw');
+    expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  it('a throwing lease reader falls back to the old acquire path', async () => {
+    asMainCheckout();
+    const { result } = await run({ nativeSource: 'clear', readLease: vi.fn(async () => { throw new Error('boom'); }) });
+    expect(result?.session_id).toBe('tab-session-raw');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1641 — after /clear the same Claude Code process holds a NEW raw id and a
+// re-minted label, so neither the raw id nor the label names its predecessor.
+// THE BUG THIS CATCHES: the force branch never fired after /clear and the new
+// session ran lockless while its own predecessor's lock blocked the checkout
+// for the 4 h TTL; the #1635 lead-yield release left that lock standing too.
+// Real acquire/release: the claude_pid stamp, the owner proof and the release
+// all go through session-lock.mjs exactly as in production.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — predecessor in the same Claude Code process (#1641)', () => {
+  let emit;
+  beforeEach(() => { emit = vi.fn(async () => {}); });
+  const reclaimedOf = (sid) => emit.mock.calls.find(([n, p]) => n === 'orchestrator.session.lock.acquired' && p.session_id === sid)?.[1]?.reclaimed;
+
+  async function start({ sessionId, nativeSource, claudePid, semanticSessionId, readLease }) {
+    return bootstrapLock({
+      repoRoot: sandbox,
+      sessionId,
+      semanticSessionId,
+      mode: 'deep',
+      nativeSource,
+      claudePid,
+      _emitEventImpl: emit,
+      ...(readLease ? { _readLeaseImpl: readLease } : {}),
+    });
+  }
+
+  it.each([
+    ['the same process', 4242, 'raw-after-clear'],
+    ['another process', 4243, 'raw-before-clear'],
+    ['no CLAUDE_PID (Codex/Cursor)', null, 'raw-before-clear'],
+  ])('clear after startup, pid from %s (%s) → lock owner %s', async (_label, clearPid, expectedOwner) => {
+    await start({ sessionId: 'raw-before-clear', nativeSource: 'startup', claudePid: 4242, semanticSessionId: 'main-2026-10-15-deep-1' });
+    expect(readLock()?.claude_pid).toBe(4242);
+    // The label is re-minted as maxN+1 after /clear (measured): (b) cannot hold.
+    await start({ sessionId: 'raw-after-clear', nativeSource: 'clear', claudePid: clearPid, semanticSessionId: 'main-2026-10-15-deep-2' });
+    expect(readLock()?.session_id).toBe(expectedOwner);
+    // The /clear takeover is countable — the rate that falsifies this branch.
+    expect(reclaimedOf('raw-after-clear')).toBe(expectedOwner === 'raw-after-clear' ? 'own-process' : undefined);
+  });
+
+  it.each([
+    ['its direct parent', { CLAUDE_PID: '4242' }, 4242, 4242],
+    ['an ancestor further up (a Codex child of a Claude session)', { CLAUDE_PID: '4242' }, 7777, null],
+    ['unset', {}, 4242, null],
+    ['not a pid', { CLAUDE_PID: '42x' }, 4242, null],
+  ])('readClaudePid: CLAUDE_PID naming %s → %s', (_label, env, ppid, expected) => {
+    expect(readClaudePid(env, ppid)).toBe(expected);
+  });
+
+  it('a startup in the same pid does not take a live lock (only a re-entry source may)', async () => {
+    await start({ sessionId: 'raw-before', nativeSource: 'startup', claudePid: 4242 });
+    await start({ sessionId: 'raw-other', nativeSource: 'startup', claudePid: 4242 });
+    expect(readLock()?.session_id).toBe('raw-before');
+  });
+
+  it('a lock from another host with the same claude_pid is never ours', async () => {
+    await start({ sessionId: 'raw-remote', nativeSource: 'startup', claudePid: 4242 });
+    const lockPath = join(sandbox, '.orchestrator', 'session.lock');
+    writeFileSync(lockPath, JSON.stringify({ ...readLock(), host: 'some-other-machine', host_id: 'some-other-machine' }));
+    await start({ sessionId: 'raw-local', nativeSource: 'clear', claudePid: 4242 });
+    expect(readLock()?.session_id).toBe('raw-remote');
+  });
+
+  it.each([
+    ['the same process', 4242, false],
+    ['another process', 4243, true],
+  ])('lead-yield release after /clear, pid from %s (%s) → predecessor lock kept: %s', async (_label, clearPid, kept) => {
+    mkdirSync(join(sandbox, '.git'), { recursive: true });
+    mkdirSync(join(sandbox, '.orchestrator', 'runtime', 'fleet'), { recursive: true });
+    await start({ sessionId: 'raw-before-clear', nativeSource: 'startup', claudePid: 4242 });
+    const result = await start({
+      sessionId: 'raw-after-clear',
+      nativeSource: 'clear',
+      claudePid: clearPid,
+      readLease: vi.fn(async () => ({ state: 'active', lease: { session_id: 'lead-abcdef123456' } })),
+    });
+    expect(result).toBeNull();
+    expect(readLock()?.session_id ?? null).toBe(kept ? 'raw-before-clear' : null);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1636 Pkt 2 — lock.acquired records whether a live peer WORKS in this checkout
+// while its lock lives elsewhere (ExitWorktree, #1634 Pkt 1). THE BUGS THIS
+// CATCHES: an unreadable registry reported as `false` (a missing measurement
+// that looks like zero), and a peer in a linked worktree NESTED under this
+// checkout (`.claude/worktrees/<name>`) counted as working here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — foreign_work_root on lock.acquired (#1636 Pkt 2)', () => {
+  let registryDir;
+  beforeEach(() => {
+    registryDir = mkdtempSync(join(tmpdir(), 'lock-bootstrap-registry-'));
+    vi.stubEnv('SO_SESSION_REGISTRY_DIR', registryDir);
+    mkdirSync(join(sandbox, '.git'), { recursive: true });
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    rmSync(registryDir, { recursive: true, force: true });
+  });
+
+  function peer(name, body) {
+    mkdirSync(join(registryDir, 'active'), { recursive: true });
+    const now = new Date().toISOString();
+    writeFileSync(join(registryDir, 'active', `${name}.json`), typeof body === 'string' ? body
+      : JSON.stringify({ session_id: name, started_at: now, last_heartbeat: now, mode: 'deep', ...body }));
+  }
+
+  async function acquiredPayload() {
+    const emit = vi.fn(async () => {});
+    await bootstrapLock({ repoRoot: sandbox, sessionId: 'own-raw', mode: 'deep', _acquireImpl: makeAcquireStub(), _forceAcquireImpl: vi.fn(), _emitEventImpl: emit });
+    return emit.mock.calls.find(([name]) => name === 'orchestrator.session.lock.acquired')?.[1];
+  }
+
+  it.each([
+    { label: 'no registry at all', seed: () => {}, expected: false },
+    { label: 'a peer whose lock sits in another checkout but works here', seed: () => {
+      const other = mkdtempSync(join(tmpdir(), 'lock-bootstrap-other-'));
+      onTestFinished(() => rmSync(other, { recursive: true, force: true }));
+      mkdirSync(join(other, '.git'));
+      peer('peer-a', { session_root: other, work_root: sandbox });
+    }, expected: true },
+    { label: 'a peer working in a worktree nested under this checkout', seed: () => {
+      const nested = join(sandbox, '.claude', 'worktrees', 'wt');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(nested, '.git'), 'gitdir: x\n');
+      peer('peer-b', { session_root: nested, work_root: nested });
+    }, expected: false },
+    { label: 'an unreadable registry entry', seed: () => peer('peer-c', '{ not json'), expected: null },
+  ])('$label → foreign_work_root $expected', async ({ seed, expected }) => {
+    seed();
+    expect((await acquiredPayload())?.foreign_work_root).toBe(expected);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1651 — a lock the session released on purpose stays released on re-entry.
+// THE BUG THIS CATCHES: after `release-session-lock.mjs` freed the slot for a
+// headless run, the next context compaction re-ran SessionStart with
+// source=compact and re-created the lock, so `navigator slot check` reported
+// the repo occupied (exit 5) until a manual release. The other rows pin the
+// edges a fix could break: compact WITHOUT a release must still re-take the
+// lock (#1091), and startup/clear are new work that takes it — and that
+// acquire must drop the marker, or a later compaction of THAT work would skip.
+// Real acquire()/forceAcquire(), so the clear-on-acquire wiring is exercised.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — a deliberately released lock stays released on re-entry (#1651)', () => {
+  beforeEach(() => {
+    vi.stubEnv('SO_HOST_ALIASES_FILE', join(sandbox, 'host-aliases.json'));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const SID = 'released-raw-1651';
+
+  it.each([
+    { nativeSource: 'compact', released: true, lock: false },
+    { nativeSource: 'resume', released: true, lock: false },
+    { nativeSource: 'compact', released: false, lock: true },
+    { nativeSource: 'startup', released: true, lock: true },
+    { nativeSource: 'clear', released: true, lock: true },
+  ])('$nativeSource, released=$released → lock=$lock', async ({ nativeSource, released, lock }) => {
+    if (released) expect(writeReleaseMarker({ repoRoot: sandbox, sessionId: SID }).ok).toBe(true);
+    const onNotice = vi.fn();
+
+    const result = await bootstrapLock({
+      repoRoot: sandbox,
+      sessionId: SID,
+      mode: 'deep',
+      nativeSource,
+      _emitEventImpl: noopEmit,
+      onNotice,
+    });
+
+    expect(readLock()?.session_id ?? null).toBe(lock ? SID : null);
+    expect(result?.session_id ?? null).toBe(lock ? SID : null);
+    // The skip is named to the model and the operator; an acquire clears the marker.
+    expect(onNotice).toHaveBeenCalledTimes(lock ? 0 : 1);
+    expect(hasReleaseMarker({ repoRoot: sandbox, sessionId: SID })).toBe(!lock);
+  });
+
+  it('a path-traversing session id never reaches the filesystem as a marker', () => {
+    expect(writeReleaseMarker({ repoRoot: sandbox, sessionId: '../escape' })).toEqual({ ok: false, reason: 'unsafe-session-id' });
+    expect(existsSync(join(sandbox, '.orchestrator', 'runtime', 'escape.json'))).toBe(false);
   });
 });

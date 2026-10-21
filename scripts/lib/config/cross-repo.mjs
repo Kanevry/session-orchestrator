@@ -16,8 +16,10 @@
 // here). We deliberately do NOT import `parseSessionConfig` — calling it from
 // `getCrossRepoProjects` would re-run `_parseCrossRepo` (double-parse). By calling
 // `_parseCrossRepo` directly on the raw content we parse exactly once. (issue #664)
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
+import { expandTilde } from '../common.mjs';
 import { readConfigFile } from './io.mjs';
 import { loadHostPaths, resolveHostPath } from './host-paths.mjs';
 import { matchBlockHeader } from './block-header.mjs';
@@ -27,19 +29,36 @@ import { preprocessBlockLines } from './block-preprocess.mjs';
  * Expand a leading `~` / `~/` to the home directory and accept the result only
  * when it is absolute. A relative value would otherwise resolve against the
  * process cwd — a different root per caller — so it is rejected instead.
+ * An existing non-directory (a file) is rejected too (#1567): every sweep under
+ * it would find nothing. A path that does not exist yet is accepted, like the
+ * ~/Projects default — callers guard with existsSync, and falling back from an
+ * unmounted volume to ~/Projects would widen the confinement root.
  *
  * @param {string} raw — non-blank value from one precedence tier
  * @param {string} source — tier name for the WARN (`env SO_PROJECTS_ROOT` / `owner.yaml paths.projects-root`)
  * @returns {string|null} absolute path, or null when rejected
  */
 function expandProjectsRoot(raw, source) {
-  const v = raw.trim();
-  const expanded = v === '~' ? homedir() : v.startsWith('~/') ? join(homedir(), v.slice(2)) : v;
-  if (isAbsolute(expanded)) return expanded;
-  process.stderr.write(
-    `cross-repo: ignoring ${source}=${JSON.stringify(raw)} — not an absolute path after ~ expansion; falling back\n`,
-  );
-  return null;
+  const expanded = expandTilde(raw.trim());
+  if (!isAbsolute(expanded)) {
+    process.stderr.write(
+      `cross-repo: ignoring ${source}=${JSON.stringify(raw)} — not an absolute path after ~ expansion; falling back\n`,
+    );
+    return null;
+  }
+  let stat;
+  try {
+    stat = statSync(expanded, { throwIfNoEntry: false });
+  } catch {
+    stat = undefined; // unreadable (EACCES/ENOTDIR): treated like a missing path — never throw here
+  }
+  if (stat && !stat.isDirectory()) {
+    process.stderr.write(
+      `cross-repo: ignoring ${source}=${JSON.stringify(raw)} — exists but is not a directory; falling back\n`,
+    );
+    return null;
+  }
+  return expanded;
 }
 
 /**

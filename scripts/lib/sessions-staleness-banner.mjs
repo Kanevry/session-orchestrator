@@ -146,7 +146,8 @@ import path from 'node:path';
 import { eventsFilePath } from './events.mjs';
 import { readLock, DEFAULT_TTL_HOURS } from './session-lock.mjs';
 import { isRealSession } from './session-schema/filters.mjs';
-import { readCanonicalSessions } from './sessions-canonical.mjs';
+import { isMeasuredSession, readCanonicalSessions } from './sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 /** Repo-relative path to the session ledger (one record per closed session). */
 const SESSIONS_PATH = '.orchestrator/metrics/sessions.jsonl';
@@ -238,11 +239,12 @@ function readJsonlLines(filePath) {
 }
 
 /**
- * True when a `sessions.jsonl` record is a backfill STUB — a reconstruction
- * whose `completed_at` is never an anchor candidate (module header,
+ * True when a `sessions.jsonl` record cannot supply a measured completion —
+ * unmeasured records retain only their `started_at` activity anchor (module header,
  * "Backfill-stub self-erasure fix").
  *
- * `isRealSession()` (`./session-schema/filters.mjs`) catches `status:
+ * `isMeasuredSession()` supplies the shared measured population. The legacy
+ * anchor rule also catches `status:
  * 'abandoned'`, the canonical phantom marker. A `_backfill_source` counts only
  * when the status is not `completed`: the `state-md-completed` supersede record
  * is the session's own completion claim. Same exclusion as
@@ -259,6 +261,7 @@ function readJsonlLines(filePath) {
  * @returns {boolean}
  */
 function isNonAnchorStub(record) {
+  if (!isMeasuredSession(record)) return true;
   if (!isRealSession(record)) return true;
   return typeof record._backfill_source === 'string' && record._backfill_source.length > 0
     && record.status !== 'completed';
@@ -515,7 +518,7 @@ export function checkSessionsStaleness({ repoRoot, now = Date.now() } = {}) {
 
     const nowMs = typeof now === 'number' && Number.isFinite(now) ? now : Date.now();
 
-    const sessionsPath = path.join(repoRoot, SESSIONS_PATH);
+    const sessionsPath = path.join(resolveEventsLedgerRoot(repoRoot), SESSIONS_PATH);
     const sessionLines = readJsonlLines(sessionsPath);
     if (sessionLines === null || sessionLines.length === 0) return null;
 

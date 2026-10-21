@@ -40,6 +40,7 @@
 import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
 import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
+import { readProcessLocalSessionIds } from '../scripts/lib/session-identity/own-session.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
 import { resolveHost, matchesBypass } from './_lib/vcs-create-matcher.mjs';
 
@@ -219,7 +220,8 @@ function resolvePolicyPath(projectDir) {
  *
  *   { "<session_id>": { "acknowledgedAt": "<ISO timestamp>" } }
  *
- * A future /templates-ack command writes this file; the hook only reads it.
+ * The `/templates-ack` command (commands/templates-ack.md, #1589/#1591) writes
+ * this file; the hook only reads it.
  *
  * @param {string} ackFilePath
  * @param {string|null} sessionId
@@ -239,29 +241,25 @@ async function isAcknowledged(ackFilePath, sessionId) {
 }
 
 /**
- * Pull the session_id from the hook stdin payload, with a single fallback
- * to the persisted file written by on-session-start.mjs. Returns null when
- * neither source yields a string.
+ * Require this invocation's ID for acknowledgement identity. Missing, malformed
+ * or conflicting IDs cannot fall back to env. Parent IDs and shared checkout
+ * state never establish an acknowledgement identity.
  *
  * @param {object|null} input
- * @param {string|null} projectDir
- * @returns {Promise<string|null>}
+ * @returns {string|null}
  */
-async function resolveSessionId(input, projectDir) {
-  const fromStdin = input?.session_id ?? input?.sessionId ?? null;
-  if (typeof fromStdin === 'string' && fromStdin.length > 0) return fromStdin;
-
-  if (!projectDir) return null;
-  const persisted = path.join(projectDir, '.orchestrator', 'current-session.json');
-  if (!existsSync(persisted)) return null;
-  try {
-    const data = await readJson(persisted);
-    if (data && typeof data === 'object') {
-      const sid = data.session_id ?? data.sessionId ?? null;
-      if (typeof sid === 'string' && sid.length > 0) return sid;
-    }
-  } catch {
-    // ignore — null below
+function resolveSessionId(input) {
+  const keys = ['session_id', 'sessionId'].filter((key) =>
+    Object.hasOwn(input ?? {}, key),
+  );
+  if (keys.length > 0) {
+    const ids = keys.map((key) => input[key]);
+    if (ids.some((id) => typeof id !== 'string' || !id.trim())) return null;
+    const trimmed = ids.map((id) => id.trim());
+    if (new Set(trimmed).size !== 1) return null;
+    // Pass only the invocation ID: the helper's parent/env union is not an
+    // acknowledgement identity and must not grant a peer's bypass.
+    return readProcessLocalSessionIds({ env: {}, hookInput: { session_id: trimmed[0] } })[0] ?? null;
   }
   return null;
 }
@@ -335,7 +333,7 @@ async function main() {
     : path.join(projectDir || process.cwd(), ackRel);
 
   // G6 — acknowledgement-file check.
-  const sessionId = await resolveSessionId(input, projectDir);
+  const sessionId = resolveSessionId(input);
   if (await isAcknowledged(ackFile, sessionId)) {
     return emitAllow();
   }
@@ -430,9 +428,9 @@ if (isMainModule(import.meta.url)) {
   // per session.
   if (!shouldRunHook('pre-bash-templates-first')) process.exit(0);
 
-  // Top-level error handler — never let exit 1 leak. Same posture as
-  // pre-bash-destructive-guard.mjs: fail-open on internal errors to avoid
-  // blocking legitimate work.
+  // Top-level error handler — never let exit 1 leak. This hook is advisory, so
+  // it fails open on internal errors to avoid blocking legitimate work (unlike
+  // pre-bash-destructive-guard.mjs, which denies on a main() error, #1671).
   main().catch((e) => {
     process.stderr.write(
       `⚠ pre-bash-templates-first: internal error — ${e?.message || e}\n`,

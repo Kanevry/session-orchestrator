@@ -15,7 +15,7 @@
  * Fixtures are INLINE deterministic strings reproducing the real STATE.md shapes.
  */
 
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from 'vitest';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -30,6 +30,27 @@ import {
   mirrorNarrative,
 } from '../../../scripts/lib/vault-status/narrative-mirror.mjs';
 import { parseFrontmatter } from '../../../scripts/lib/vault-mirror/utils.mjs';
+
+// #1636 Pkt 5: `scaffold()` writes `.claude/STATE.md`, so the platform must be
+// claude regardless of the ambient env. tests/setup/scrub-session-env.mjs
+// already drops SO_PLATFORM, so the measured trigger is CODEX_PLUGIN_ROOT
+// (31 of 73 failed with it set); an explicit SO_PLATFORM outranks it.
+// Plain assignment, not vi.stubEnv: tests call vi.unstubAllEnvs() mid-run, which
+// would drop a stub but restores any later stub of these keys to this value.
+const PINNED_ENV = { SO_PLATFORM: 'claude', SO_STATE_DIR: '' };
+const ambientEnv = {};
+beforeAll(() => {
+  for (const [key, value] of Object.entries(PINNED_ENV)) {
+    ambientEnv[key] = process.env[key];
+    process.env[key] = value;
+  }
+});
+afterAll(() => {
+  for (const [key, value] of Object.entries(ambientEnv)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 // ── Inline deterministic fixtures ──────────────────────────────────────────────
 
@@ -487,6 +508,22 @@ describe('mirrorNarrative', () => {
     expect(fm.repo).toBe('MyCoolRepo');
   });
 
+  // #1602: every run rendered `created` from `now`, so a narrative first written
+  // on 2026-08-07 claimed 2026-10-12 after the next run.
+  it('keeps `created` across runs, moves only `updated`, and a third unchanged run is a noop (#1602)', async () => {
+    const { repoRoot } = scaffold({ repoDirName: 'StableCreated' });
+    const first = await mirrorNarrative({ repoRoot, now: new Date('2026-08-07T09:00:00Z'), hostPaths: HERMETIC_HOST_PATHS });
+    expect(first.action).toBe('written');
+    fs.appendFileSync(path.join(repoRoot, '.claude', 'STATE.md'), '\n- did another thing.\n');
+    const second = await mirrorNarrative({ repoRoot, now: new Date('2026-10-12T09:00:00Z'), hostPaths: HERMETIC_HOST_PATHS });
+    expect(second.action).toBe('written');
+    const fm = parseFrontmatter(fs.readFileSync(second.path, 'utf8'));
+    expect(fm.created).toBe('2026-08-07');
+    expect(fm.updated).toBe('2026-10-12');
+    const third = await mirrorNarrative({ repoRoot, now: new Date('2026-10-13T09:00:00Z'), hostPaths: HERMETIC_HOST_PATHS });
+    expect(third.action).toBe('skipped-noop');
+  });
+
   it('returns skipped-vault-disabled when vault-integration is absent/disabled', async () => {
     const { repoRoot } = scaffold({ repoDirName: 'NoVault', vaultEnabled: false });
     const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
@@ -507,10 +544,11 @@ describe('mirrorNarrative', () => {
       ['Codex-only repo', false, '.codex', undefined],
       ['Codex alongside stale Claude state', true, '.codex', undefined],
       ['explicit state-directory override', true, '.session-state', '.session-state'],
-      ['legacy Claude fallback when Codex state is absent', false, '.claude', undefined],
+      ['Claude state this Codex process owns (session-id matches, #1622)', false, '.claude', undefined],
     ])('mirrors the selected session for %s', async (_name, withStateMd, selectedDir, override) => {
       const { repoRoot, vaultDir } = scaffold({ repoDirName: 'StateRouting', withStateMd });
       vi.stubEnv('SO_PLATFORM', 'codex');
+      vi.stubEnv('CODEX_THREAD_ID', 'main-x');
       vi.stubEnv('SO_STATE_DIR', override);
       vi.stubEnv('SO_VAULT_DIR', vaultDir);
       fs.mkdirSync(path.join(repoRoot, selectedDir), { recursive: true });
@@ -524,6 +562,36 @@ describe('mirrorNarrative', () => {
       expect(result.action).toBe('written');
       const written = fs.readFileSync(result.path, 'utf8');
       expect(extractNarrative(written).waveHistory).toBe('- Active session history.');
+    });
+
+    // #1622 — bug: the #890 legacy fallback mirrored ANOTHER platform's
+    // STATE.md (not this process's `session-id`) into the vault narrative.
+    // #1640 row — bug: a foreign COMPLETED record in the active dir is the
+    // blocked write target itself; it was read and mirrored anyway.
+    it.each([
+      ['another platform\'s STATE.md this process does not own (#1622)', '.codex', ''],
+      ['a foreign completed active-dir STATE.md (#1640)', '.claude', 'status: completed\n'],
+    ])('skips, with a WARN, %s', async (_name, stateDir, extraFrontmatter) => {
+      const { repoRoot, vaultDir } = scaffold({ repoDirName: 'StateRouting', withStateMd: false });
+      vi.stubEnv('SO_PLATFORM', 'claude');
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'claude-raw-own');
+      vi.stubEnv('CODEX_THREAD_ID', '');
+      vi.stubEnv('SO_STATE_DIR', '');
+      vi.stubEnv('SO_VAULT_DIR', vaultDir);
+      const codexState = path.join(repoRoot, stateDir, 'STATE.md');
+      fs.mkdirSync(path.dirname(codexState), { recursive: true });
+      fs.writeFileSync(codexState, `---\nsession-id: codex-raw-foreign\n${extraFrontmatter}---\n\n## Wave History\n\n- Foreign history.\n`);
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+      try {
+        const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
+
+        expect(result.action).toBe('skipped-no-statemd');
+        expect(fs.existsSync(result.path)).toBe(false);
+        expect(stderr.mock.calls.some(([line]) => String(line).includes(`ignoring ${codexState}`))).toBe(true);
+      } finally {
+        stderr.mockRestore();
+      }
     });
   });
 
@@ -1109,6 +1177,39 @@ describe('mirrorNarrative', () => {
       expect(after).not.toContain(NEEDLE);
       expect(after).toContain('- Pasted [REDACTED] into the run log by mistake.');
       expect(after).toContain('| m-1 | Rotate [REDACTED] before the next deploy | W1 | completed |');
+    });
+
+    // BUG CAUGHT (#1601 release-review HOCH 2 on MR !148, and #1602.2): the
+    // render now quotes the id (`id: "x"`), while every narrative written before
+    // carries `id: x`; and before #1602 `created` was re-stamped from `now`. Either
+    // difference broke the whole-document compare BEFORE the `[REDACTED]` wildcard
+    // could apply, so the next run (on another day, secret gone from env) rewrote
+    // the file with the raw value. The on-disk file is run 1's golden output with
+    // only its id line reset to an older form: unquoted (pre-#1601), or a
+    // different value altogether (an uncapped pre-`noteIdFor` id).
+    it.each([
+      ['a pre-#1601 unquoted id', (id) => `id: ${id}`],
+      ['a different, uncapped id', (id) => `id: ${id}-${'x'.repeat(140)}`],
+    ])('a later-day run WITHOUT the needle, over %s, is skipped-noop (#1601)', async (_label, legacyIdLine) => {
+      const { repoRoot } = scaffold({ repoDirName: 'secret-narrative-old-id-repo' });
+      fs.writeFileSync(
+        path.join(repoRoot, '.claude', 'STATE.md'),
+        ['---', 'session-id: main-secret-1601', '---', '', '## Deviations', '', `- Pasted ${NEEDLE} into the run log by mistake.`, ''].join('\n'),
+      );
+      vi.stubEnv(NEEDLE_KEY, NEEDLE);
+      const run1 = await mirrorNarrative({ repoRoot, now: new Date('2026-08-07T09:00:00Z'), hostPaths: HERMETIC_HOST_PATHS });
+      expect(run1.action).toBe('written');
+      const golden = fs.readFileSync(run1.path, 'utf8');
+      expect(golden).toMatch(/^id: "[a-z0-9-]+"$/m);
+      const legacy = golden.replace(/^id: "([a-z0-9-]+)"$/m, (_, id) => legacyIdLine(id));
+      expect(legacy).not.toBe(golden);
+      fs.writeFileSync(run1.path, legacy);
+
+      vi.unstubAllEnvs();
+      const run2 = await mirrorNarrative({ repoRoot, now: new Date('2026-10-14T09:00:00Z'), hostPaths: HERMETIC_HOST_PATHS });
+
+      expect(run2.action).toBe('skipped-noop');
+      expect(fs.readFileSync(run2.path, 'utf8')).toBe(legacy);
     });
 
     // The compensation must not swallow a REAL edit: with the env unchanged

@@ -17,10 +17,11 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { parseStateMd, parseRecommendations, resolveStateMdPath } from './state-md.mjs';
-import { normalizeSession, tailRealSessions } from './session-schema.mjs';
+import { normalizeSession } from './session-schema.mjs';
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
 import { scanBacklog, DEFAULT_BACKLOG_LIMIT } from './backlog-scan.mjs';
-import { readCanonicalSessions } from './sessions-canonical.mjs';
+import { isMeasuredSession, readCanonicalSessions } from './sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -65,7 +66,7 @@ export async function buildLiveSignals(opts = {}) {
     ? resolve(repoRoot, opts.statePath)
     : resolveStateMdPath(repoRoot);
   const sessionsPath = resolve(
-    repoRoot,
+    typeof opts.sessionsPath === 'string' ? repoRoot : resolveEventsLedgerRoot(repoRoot),
     typeof opts.sessionsPath === 'string'
       ? opts.sessionsPath
       : '.orchestrator/metrics/sessions.jsonl'
@@ -129,12 +130,15 @@ export async function buildLiveSignals(opts = {}) {
     // handling (ENOENT vs EACCES/EISDIR, #1188) is delegated to the shared
     // reader; both still degrade to `[]` here, matching Branch 3's contract.
     const canonical = readCanonicalSessions({ filePath: sessionsPath });
-    const parsed = canonical.map((obj) => normalizeSession(obj));
-    // #834: `status: 'abandoned'` phantom stubs must still be filtered out
-    // BEFORE the tail is taken, or sessionTailN silently means "last N LINES"
-    // instead of "last N REAL sessions". tailRealSessions() does the filter +
-    // tail.
-    recentSessions = tailRealSessions(parsed, sessionTailN);
+    // Audit E1: drop synthetic backfill stubs (incl. non-abandoned
+    // `state-md-completed` ones `isRealSession` lets through) BEFORE normalizing
+    // — they would otherwise count toward the mode-selector's session-type
+    // history. Filtered on the raw record so normalization cannot mask markers.
+    const parsed = canonical.filter(isMeasuredSession).map((obj) => normalizeSession(obj));
+    // Take the tail AFTER measured filtering, using the same population as
+    // site-numbers and dispatcher; a status-only filter would narrow it again.
+    recentSessions = Number.isFinite(sessionTailN) && sessionTailN > 0
+      ? parsed.slice(-Math.floor(sessionTailN)) : [];
   } catch {
     // Branch 3: file unreadable — recentSessions stays [] (readCanonicalSessions
     // itself never throws, but the graceful-null contract is kept as a backstop).

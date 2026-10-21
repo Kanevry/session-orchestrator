@@ -105,6 +105,7 @@ export function parseArgs(argv) {
     } else if (a === '--learnings') {
       const raw = argv[++i];
       if (typeof raw !== 'string' || raw.length === 0) usageError('--learnings requires a path');
+      if (path.isAbsolute(raw)) usageError('--learnings requires a repo-relative path');
       args.learnings = raw;
     } else if (a === '--help' || a === '-h') {
       printHelp();

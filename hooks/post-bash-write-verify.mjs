@@ -1093,9 +1093,10 @@ async function main() {
   // manifest a Bash call just corrupted. `'own'` and `'unknown'` (legacy,
   // unbound, or no resolvable own identity) fall through unchanged.
   //
-  // CEILING (BV-004): on a harness that supplies no session id at all (Codex
-  // CLI, Cursor today) the own-id set is empty, so this gate is permanently
-  // `'unknown'` = full pre-#1153 behaviour there.
+  // CEILING (BV-004): on a harness that supplies no session id at all (Cursor
+  // today) the own-id set is empty, so this gate is permanently `'unknown'` =
+  // full pre-#1153 behaviour there. Codex CLI sends `session_id` in the hook
+  // payload (measured 2026-10-20, codex-cli 0.160.1, #1691).
   {
     const { verdict, manifestIds } = classifyManifestSession(scope ?? {}, ownIds);
     if (verdict === 'foreign') {
@@ -1172,7 +1173,10 @@ async function main() {
   // `toContain('out-of-scope.mjs')` test to say otherwise.
   const missingSnapshotNotice = prevScopeState === null
     ? formatSnapshotMissingNotice({
-      sessionAge: sessionAgeMs(context.manifestRoot),
+      // #1634: the clock lives beside this session's own lock, which after
+      // ExitWorktree is its `session_root`, not the manifest root. Loaded lazily:
+      // this branch is rare and the module graph costs ~7 ms per Bash call.
+      sessionAge: sessionAgeMs((await import('./_lib/hook-root.mjs')).resolveOwnLockRoot(input, context.manifestRoot)),
       scopeAge: typeof scopeMtimeMs === 'number' ? Date.now() - scopeMtimeMs : null,
       reason: snapshot === null ? 'absent' : 'untrusted',
     })

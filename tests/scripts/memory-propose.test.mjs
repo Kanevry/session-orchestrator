@@ -1290,3 +1290,31 @@ describe('Section G — running-wave stamping (#1166)', () => {
     expect(stderr).toContain('session binding unprovable');
   });
 });
+
+// #1636 — bug: the STATE.md read took ANOTHER platform's STATE.md via the #890
+// legacy fallback, so an active Codex session's `.codex/STATE.md` (not this
+// process's raw `session-id`) let a Claude-side proposal pass the wrong-context
+// gate. A foreign file is the "STATE.md missing" branch: exit 3.
+describe('foreign platform STATE.md (#1636)', () => {
+  it('exits 3 rejected-wrong-context when only a foreign .codex/STATE.md exists', async () => {
+    const dir = setupTmpRepo();
+    mkdirSync(join(dir, '.codex'), { recursive: true });
+    writeFileSync(
+      join(dir, '.codex', 'STATE.md'),
+      ACTIVE_STATE_MD.replace('status: active', 'status: active\nsession-id: codex-raw-foreign'),
+      'utf8',
+    );
+    const { code, stdout, stderr } = await runCli(dir, VALID_ARGS, {
+      extraEnv: {
+        SO_WAVE_AGENT: '1',
+        SO_STATE_DIR: '',
+        SO_PLATFORM: 'claude',
+        CLAUDE_CODE_SESSION_ID: 'claude-raw-own',
+        CODEX_THREAD_ID: '',
+      },
+    });
+    expect(code).toBe(3);
+    expect(parseJSON(stdout).status).toBe('rejected-wrong-context');
+    expect(stderr).toMatch(/ignoring \S+\/\.codex\/STATE\.md/);
+  });
+});

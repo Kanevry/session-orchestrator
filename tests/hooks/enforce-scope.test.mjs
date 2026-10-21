@@ -1261,6 +1261,37 @@ describe('empty allowedPaths — classified deny reason (#1057)', { timeout: 150
     expect(reason).not.toContain(GENERIC_SENTENCE);
   });
 
+  it("T6 reads the session clock beside this session's own lock after ExitWorktree (#1636)", async () => {
+    // Bug caught: after /clear in a worktree + ExitWorktree the session's lock
+    // lives at its `session_root` (#1605), not at the manifest root. Reading the
+    // clock at the manifest root found none and degraded a crashed session's
+    // leftover manifest to the generic "restart the wave" sentence.
+    const now = Date.now();
+    const sid = '6b1c0e52-8a3d-4f7e-9c21-1636aa000001';
+    const dir = await mkProjectWithClock(
+      { wave: 2, role: 'Impl-Core', enforcement: 'strict', allowedPaths: [] },
+      { manifestMtimeMs: now - 48 * HOUR_MS },
+    );
+    const wt = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-1636-wt-'));
+    const registry = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-scope-1636-reg-'));
+    tmpDirs.push(wt, registry);
+    await fs.mkdir(path.join(wt, '.orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(wt, '.orchestrator', 'session.lock'), JSON.stringify({
+      session_id: sid, started_at: new Date(now - HOUR_MS).toISOString(), last_heartbeat: new Date(now).toISOString(),
+      mode: 'deep', pid: 999999, host: 'test-host', ttl_hours: 4,
+    }));
+    await fs.mkdir(path.join(registry, 'active'), { recursive: true });
+    await fs.writeFile(path.join(registry, 'active', `${sid}.json`),
+      JSON.stringify({ session_id: sid, session_root: wt, work_root: dir }));
+    const result = await runHook({
+      projectDir: dir,
+      stdin: editPayload(path.join(dir, 'README.md'), 'Edit', { session_id: sid, cwd: dir }),
+      env: { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: sid, CODEX_THREAD_ID: null, SO_SESSION_REGISTRY_DIR: registry },
+    });
+    const env = expectDeny(result, ['not in allowed paths', 'either a leftover from a crashed session']);
+    expect(env.hookSpecificOutput.permissionDecisionReason).not.toContain(GENERIC_SENTENCE);
+  });
+
   it.each([['discovery'], ['Discovery'], [' DISCOVERY ']])(
     'T7 matches the read-only role trim- and case-insensitively (%s)',
     async (role) => {

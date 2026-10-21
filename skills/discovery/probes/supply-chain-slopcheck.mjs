@@ -35,6 +35,7 @@
 
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -188,15 +189,16 @@ function extractCargoPackages(filePath) {
  * Attempt to dynamically import classifyPackages from slopcheck.mjs.
  * Returns null if the module is unavailable (Agent A not yet committed).
  *
- * @param {string} repoRoot
  * @returns {Promise<Function|null>}
  */
-async function loadClassifyPackages(repoRoot) {
-  const slopcheckPath = join(repoRoot, 'scripts', 'lib', 'slopcheck.mjs');
+async function loadClassifyPackages() {
+  // slopcheck.mjs ships with the PLUGIN: resolve it from this module, never
+  // from the scanned repoRoot (#1653 — absent in every consumer repo).
+  const slopcheckPath = fileURLToPath(new URL('../../../scripts/lib/slopcheck.mjs', import.meta.url));
   if (!existsSync(slopcheckPath)) return null;
 
   try {
-    const mod = await import(slopcheckPath);
+    const mod = await import(pathToFileURL(slopcheckPath).href);
     if (typeof mod.classifyPackages !== 'function') {
       return null;
     }
@@ -319,7 +321,7 @@ export default async function supplyChainSlopcheck({ repoRoot }) {
 
   // ── 4. Load classifyPackages (defensive) ──────────────────────────────────
 
-  const classifyPackages = await loadClassifyPackages(repoRoot);
+  const classifyPackages = await loadClassifyPackages();
 
   if (!classifyPackages) {
     return {
@@ -333,11 +335,11 @@ export default async function supplyChainSlopcheck({ repoRoot }) {
             registry: 'internal',
             classification: 'SKIPPED',
             evidence: null,
-            file: join(repoRoot, 'scripts', 'lib', 'slopcheck.mjs'),
+            file: 'scripts/lib/slopcheck.mjs',
           },
           recommendation:
-            'scripts/lib/slopcheck.mjs has not been committed yet. ' +
-            'Re-run /discovery after the slopcheck module is available.',
+            'scripts/lib/slopcheck.mjs is missing from the plugin install. ' +
+            'Reinstall or update the plugin.',
         },
       ],
       summary: {

@@ -20,6 +20,8 @@ import {
   readCanonicalSessions,
   canonicalizeSessions,
   canonicalizeSessionsDetailed,
+  countSessionsInJsonl,
+  isMeasuredSession,
 } from '@lib/sessions-canonical.mjs';
 import { repairRecord } from '@lib/session-record-repair.mjs';
 
@@ -329,6 +331,20 @@ describe('rule 3 — abandoned-tuple collapse', () => {
 // ---------------------------------------------------------------------------
 
 describe('readCanonicalSessions — read path', () => {
+  it('reads the main checkout ledger through linked-worktree metadata while an explicit file wins', () => {
+    writeLedger([rec({ session_id: 'main-ledger' })]);
+    const worktree = path.join(repoRoot, 'linked');
+    const gitDir = path.join(repoRoot, '.git', 'worktrees', 'linked');
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    fs.writeFileSync(path.join(gitDir, 'commondir'), '../..\n');
+    const explicit = path.join(worktree, '.orchestrator', 'metrics', 'sessions.jsonl');
+    fs.mkdirSync(path.dirname(explicit), { recursive: true });
+    fs.writeFileSync(explicit, `${JSON.stringify(rec({ session_id: 'explicit-ledger' }))}\n`);
+    expect(readCanonicalSessions({ repoRoot: worktree }).map((r) => r.session_id)).toEqual(['main-ledger']);
+    expect(readCanonicalSessions({ repoRoot: worktree, filePath: explicit }).map((r) => r.session_id)).toEqual(['explicit-ledger']);
+  });
   it('skips a malformed line instead of returning nothing', () => {
     // Bug: one truncated append (crash mid-write) must not blank the whole
     // ledger for every consumer.
@@ -563,5 +579,44 @@ describe('keepUnidentified option', () => {
 
     expect(out.map((r) => r.notes)).toEqual(['second', 'anon-1', 'anon-2']);
     expect(canonicalizeSessions([{ session_type: 'deep' }])).toEqual([]);
+  });
+});
+
+// Audit E1 (2026-10-12): 59.1 % of fleet records are synthetic backfill stubs.
+// Bug caught: a ledger of ONLY synthetic stubs counted as session history — the
+// cold-start nudge stayed silent and the stubs fed "sessions"/deep-share counts.
+describe('isMeasuredSession — synthetic backfill stubs are not measured sessions', () => {
+  // Shape copied from a real `.orchestrator/metrics/sessions.jsonl` stub line
+  // (hooks/on-session-end.mjs → synthesizeRecord), raw id anonymised.
+  const stub = {
+    session_id: 'main-2026-09-07-session-6', session_type: 'unknown',
+    started_at: '2026-09-07T05:56:31.981Z', completed_at: '2026-09-07T05:57:19.786Z',
+    total_waves: 0, waves: [], agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+    total_agents: 0, total_files_changed: 0, status: 'abandoned', effectiveness: { carryover: null },
+    _backfill_source: 'events-jsonl',
+    _backfill_incomplete_fields: ['total_waves', 'waves', 'agent_summary', 'total_agents', 'total_files_changed'],
+    branch: 'main', _session_type_inferred: true, _synthetic: true,
+    raw_session_id: '00000000-0000-4000-8000-000000000000', schema_version: 2,
+  };
+  // The variant `isRealSession` lets through: status 'completed'.
+  const completedStub = { ...stub, session_id: 'main-2026-09-06-deep-1', status: 'completed', _backfill_source: 'state-md-completed' };
+  const deep = {
+    session_id: 'main-2026-09-08-deep-2', session_type: 'deep', status: 'completed',
+    started_at: '2026-09-08T06:00:00.000Z', completed_at: '2026-09-08T09:00:00.000Z',
+    total_waves: 5, waves: [{ wave: 1 }], total_agents: 18, total_files_changed: 40,
+  };
+
+  it('rejects stubs, accepts a real deep record', () => {
+    expect(isMeasuredSession(stub)).toBe(false);
+    expect(isMeasuredSession(completedStub)).toBe(false);
+    expect(isMeasuredSession(deep)).toBe(true);
+    expect(isMeasuredSession({ ...deep, status: 'abandoned' })).toBe(true); // Legacy contract, no status-only filter.
+  });
+
+  it('cold-start count (measuredOnly) is 0 for a stub-only ledger, 1 once a real record lands', () => {
+    const stubOnly = `${JSON.stringify(stub)}\n${JSON.stringify(completedStub)}\n`;
+    expect(countSessionsInJsonl(stubOnly)).toBe(2); // default contract unchanged
+    expect(countSessionsInJsonl(stubOnly, { measuredOnly: true })).toBe(0);
+    expect(countSessionsInJsonl(`${stubOnly}${JSON.stringify(deep)}\n`, { measuredOnly: true })).toBe(1);
   });
 });

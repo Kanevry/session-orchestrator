@@ -13,6 +13,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
+import crypto from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -109,10 +110,26 @@ async function mkProject(scope) {
 const tmpDirs = [];
 
 afterEach(async () => {
-  for (const d of tmpDirs.splice(0)) {
+  const dirs = tmpDirs.splice(0);
+  for (const d of dirs) {
     await fs.rm(d, { recursive: true, force: true });
   }
+  // The guard's HEAD-fallback banner writes its throttle marker under
+  // os.tmpdir(), scoped by the project dir's digest; remove the ones these
+  // projects caused (#1648).
+  if (dirs.length === 0) return;
+  const scopes = dirs.map((d) => `-${markerScopeOf(d)}-`);
+  for (const name of await fs.readdir(os.tmpdir())) {
+    if (name.startsWith('session-orchestrator-guard-') && scopes.some((s) => name.includes(s))) {
+      await fs.rm(path.join(os.tmpdir(), name), { force: true });
+    }
+  }
 });
+
+/** Marker scope of a project dir — mirrors `markerScope` in hooks/_lib/guard-source-loader.mjs. */
+function markerScopeOf(projectDir) {
+  return crypto.createHash('sha256').update(projectDir).digest('hex').slice(0, 12);
+}
 
 async function mkProjectTracked(scope) {
   const dir = await mkProject(scope);

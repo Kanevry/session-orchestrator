@@ -74,6 +74,7 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import { getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
 import {
@@ -356,13 +357,16 @@ async function main() {
   };
 
   // Two roots, by writer (#1511 point a). `current-session.json` and
-  // `session.lock` stay at the LAUNCH dir: on-session-start.mjs writes both at
-  // `resolveProjectDir()`, and a reader elsewhere finds no record. Everything
+  // `session.lock` are read where on-session-start.mjs wrote them: the launch
+  // dir, or the entered worktree after a /clear, compact or resume there
+  // (#1605), found by the lock carrying this session's raw id
+  // (`resolveOwnLockRoot`); a reader elsewhere finds no record. Everything
   // about the WAVE — its manifest, its start sha, the files it changed — is read
   // at the SESSION root: after EnterWorktree the launch dir is a different
   // checkout, whose HEAD and working tree say nothing about this wave.
   const sessionRoot = resolveSessionRoot(input?.cwd);
-  const sessionFile = path.join(getProjectDir(), '.orchestrator', 'current-session.json');
+  const lockRoot = resolveOwnLockRoot(input, getProjectDir());
+  const sessionFile = path.join(lockRoot, '.orchestrator', 'current-session.json');
 
   const lastBatchResult = await atomicMutateJson(sessionFile, {}, (current) => ({
     ...current,
@@ -391,7 +395,7 @@ async function main() {
     const sessionId = await resolveSessionIdForHeartbeat(input, sessionFile);
     if (typeof sessionId === 'string' && sessionId.length > 0) {
       const { updateHeartbeat } = await import('../scripts/lib/session-lock.mjs');
-      updateHeartbeat({ repoRoot: getProjectDir(), sessionId });
+      updateHeartbeat({ repoRoot: lockRoot, sessionId });
     }
   } catch { /* best effort — hook must remain non-blocking */ }
 

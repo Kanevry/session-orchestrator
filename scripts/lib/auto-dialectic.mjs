@@ -36,7 +36,10 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { atomicWriteText, envelopeToError } from './io.mjs';
 
-import { filterRealSessions } from './session-schema.mjs';
+import { canonicalizeSessions, isMeasuredSession } from './sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
+import { withVisibleInboxText } from './learnings/surface.mjs';
+import { inboxPathFor } from './learnings/store-role.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -82,7 +85,7 @@ function consumedDirPath(repoRoot) {
 }
 
 function sessionsJsonlPath(repoRoot) {
-  return path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
+  return path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl');
 }
 
 function learningsJsonlPath(repoRoot) {
@@ -163,11 +166,10 @@ export async function readDialecticSignals({ repoRoot } = {}) {
           continue; // malformed line — skip silently
         }
       }
-      // Abandoned-session filter (#834): mirrors auto-dream.mjs
-      // readDreamSignals() — phantom `status: 'abandoned'` stubs are
-      // legitimate DATA but not legitimate SIGNAL, and must not fire the
-      // /evolve --dialectic cadence off zero real work.
-      const realEntries = filterRealSessions(entries);
+      // Canonical identities precede the shared measured-work predicate.
+      // Keep ID-less legacy rows: this cadence reader has always accepted them.
+      const realEntries = canonicalizeSessions(entries, { keepUnidentified: true })
+        .filter(isMeasuredSession);
       for (const entry of realEntries) {
         const startedAt = entry.started_at;
         if (typeof startedAt !== 'string' || startedAt.length === 0) continue;
@@ -181,10 +183,14 @@ export async function readDialecticSignals({ repoRoot } = {}) {
   }
 
   // Learnings
+  // The visible inbox records count too (#1516, #1685): shared visibility rule,
+  // also when the live store is absent (inbox host); an unreadable inbox never
+  // costs the live count (`withVisibleInboxText` swallows its own errors).
   const learningsPath = learningsJsonlPath(repoRoot);
-  if (existsSync(learningsPath)) {
+  if (existsSync(learningsPath) || existsSync(inboxPathFor(learningsPath))) {
     try {
-      const raw = await readFile(learningsPath, 'utf8');
+      const live = existsSync(learningsPath) ? await readFile(learningsPath, 'utf8') : '';
+      const raw = await withVisibleInboxText(learningsPath, live);
       const lines = raw.split('\n').filter((l) => l.length > 0);
       for (const line of lines) {
         let entry;

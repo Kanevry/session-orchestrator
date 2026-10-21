@@ -2,6 +2,8 @@
 
 > **Maintainer-internal.** This document describes the maintainer's private CI mirror setup. It is not required for using the plugin.
 
+GitHub's Linux/macOS test matrix is supplemented by two non-blocking Windows jobs on `windows-latest` (#1612): `test-windows-smoke` runs lint, typecheck and `scripts/ci/windows-smoke.mjs` (the product contract for Claude Code on Windows; it moves into `gate` after 10 green main runs), and `test-windows-suite` runs the full suite for information while the test-portability backlog is open. The fresh SessionStart smoke needs npm-registry access and reports unavailable network as unmeasurable.
+
 ## schema-drift-check job
 
 The `schema-drift-check` job compares the vendored `vault-frontmatter` schema
@@ -633,8 +635,42 @@ The router tries eligible aliases in configuration order, checking each with
 `offload doctor -H <alias> --brief --no-probe`. The alias selects a gate execution
 host; it is independent of the Git remote being pushed to. With no eligible
 host, no `offload` executable, or unavailable remote readiness/transport, the
-hook runs the same local full gate. A classified transport failure can first
-try the next configured host.
+hook falls back locally. A classified transport failure can first try the next
+configured host.
+
+The local fallback depends on the push target (#1642):
+
+- **A branch other than `main` on `origin`** (by remote name or its exact push
+  URL) takes the local **partial** gate, `scripts/lib/pre-push-local-partial.mjs`.
+  It computes the files changed since the merge-base with origin's default
+  branch and runs `node --check` and ESLint on the changed source files, plus
+  `vitest related --run` for all changed files. A red check blocks the push. The
+  full suite then runs in the MR pipeline on the pushed head SHA.
+- **Everything else** (any push that includes `main` or a tag — every pushed ref counts, not only the first — the GitHub mirror, a push
+  by URL to another host, a hand invocation without a remote) runs the full
+  gate locally. No MR pipeline stands between those pushes and their result.
+- The partial gate exits 10 and hands over to the full local gate when there is
+  no merge-base, when a source file was deleted or renamed, when `package.json`, `package-lock.json`, `vitest.config.*` or
+  `eslint.config.*` changed, or when `eslint`/`vitest` is missing from
+  `node_modules` (fail-closed). Its ledger event is
+  `orchestrator.quality_gate.{passed,failed}` with `variant: 'local-partial'`.
+- Ceiling: `vitest related` follows the import graph. A test that reaches a
+  changed file only by spawning it (hooks, `.husky/`, CLIs) or by reading it
+  from disk (policy JSON, Markdown, fixtures; edited or deleted) is not
+  selected locally, and the MR pipeline catches that class. Only a deleted or
+  renamed source file (`.mjs`/`.cjs`/`.js`) falls back to the full gate (#1643).
+
+`SO_GATE_HOSTS` overrides the host order for one push without a config commit:
+`SO_GATE_HOSTS=hostA,hostB git push` tries exactly those aliases, in that order,
+instead of the configured `remote-hosts` list (whitespace-only counts as unset).
+Every alias must have a regular file `<alias>.env` in offload's host registry
+(`${OFFLOAD_CONFIG_DIR:-$HOME/.config/remote-offload}/hosts/`, the same rule
+`offload -H` uses) and match `^[A-Za-z0-9._-]+$`. An unknown or invalid alias,
+or an override none of whose hosts can run the gate (not ready, transport
+failure, no `offload`), blocks the push with exit 2 and does **not** fall back
+to the local gate. The router logs the chosen host and its source (`config`,
+`override`, or `fallback` to local) on stderr, and the remote gate's ledger
+event carries `host` and `host_source`.
 
 On the remote checkout, the command checks out the pushed SHA again, verifies
 `HEAD` and a clean source tree, and runs `npm run --silent quality-gate`.

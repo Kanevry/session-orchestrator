@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   ValidationError,
   validateSession,
@@ -313,11 +314,20 @@ describe('validateSession — agent_summary', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateSession — optional fields', () => {
+  it.each(['missing', 'null'])('#1575 accepts golden-derived %s effectiveness without inventing metrics', (missing) => {
+    const entry = JSON.parse(readFileSync(new URL('../vault-mirror/fixtures/golden-sessions.jsonl', import.meta.url), 'utf8').split('\n')[0]);
+    if (missing === 'missing') delete entry.effectiveness;
+    else entry.effectiveness = null;
+    const result = validateSession(entry);
+    expect(result.effectiveness).toBe(missing === 'missing' ? undefined : null);
+    expect(entry.effectiveness).toBe(missing === 'missing' ? undefined : null);
+  });
+
   it.each([
     ['effectiveness', 'bad', /effectiveness must be an object or null/],
     ['duration_seconds', -5, /duration_seconds must be a non-negative number/],
     ['issues_closed', [1, 'x'], /issues_closed must be an array of numbers/],
-    ['issues_created', 42, /issues_created must be an array of numbers/],
+    ['issues_created', 42, /issues_created must be an array/],
     ['platform', 42, /platform must be a string or null/],
   ])('rejects invalid %s', (field, value, expectedMessage) => {
     expect(() => validateSession({ ...VALID(), [field]: value })).toThrow(expectedMessage);
@@ -327,6 +337,51 @@ describe('validateSession — optional fields', () => {
 // ---------------------------------------------------------------------------
 // ADR-364 optional additive fields
 // ---------------------------------------------------------------------------
+
+describe('issues_created cross-repo references (#1603)', () => {
+  it.each([
+    { issues: [] },
+    { issues: [4, 9] },
+    { issues: [0, -1, 1.5] },
+    { issues: ['products/apple-mail-kit#92'] },
+    { issues: [4, 'Group/sub_group/repo.name#1603', 'a/b#1', 9] },
+  ])('preserves accepted issue values $issues without mutating the record', ({ issues }) => {
+    const entry = { ...VALID(), issues_created: issues };
+    const expected = [...issues];
+    expect(validateSession(entry).issues_created).toEqual(expected);
+    expect(entry.issues_created).toEqual(expected);
+    expect(entry.schema_version).toBeUndefined();
+  });
+
+  it('keeps an omitted issues_created field absent', () => {
+    expect(validateSession(VALID())).not.toHaveProperty('issues_created');
+  });
+
+  it.each([null, 42, 'group/repo#1', {}].map((value) => [value]))('rejects a non-array container %j', (value) => {
+    expect(() => validateSession({ ...VALID(), issues_created: value })).toThrow(
+      /issues_created must be an array/
+    );
+  });
+
+  it.each([
+    '12', '#12', 'repo#12', '/repo#12', 'group/#12', 'group/repo#',
+    'group//repo#12', 'group/repo#0', 'group/repo#01', 'group/repo#-1',
+    'group/repo#1.2', 'group/repo#1#2', 'https://group/repo#1',
+    ' group/repo#1', 'group/repo#1 ', 'group/repo#1\n', 'group/repo#1\r\n',
+    'group/re po#1', 'group/\trepo#1', 'group/repö#1',
+    '-group/repo#1', 'group/repo-#1', './repo#1', 'group/..#1',
+    null, true, {}, [],
+  ].map((value) => [value]))('rejects invalid entry %j at its actual index', (value) => {
+    expect(() => validateSession({ ...VALID(), issues_created: [4, value] })).toThrow(
+      /issues_created\[1\].*number or qualified reference group\/repo#n/
+    );
+  });
+
+  it('continues to reject qualified references in issues_closed', () => {
+    expect(() => validateSession({ ...VALID(), issues_closed: ['products/apple-mail-kit#92'] }))
+      .toThrow(/issues_closed must be an array of numbers/);
+  });
+});
 
 describe('ADR-364 optional additive fields', () => {
   it('happy path: entry with all 6 ADR-364 fields populated with valid values passes', () => {

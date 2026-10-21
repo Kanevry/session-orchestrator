@@ -30,6 +30,10 @@
 //            `prepare: husky` script never ran because ignore-scripts=true,
 //            so commit-msg/pre-commit/pre-push are inactive. Warns locally
 //            and recommends `npx husky`; silent under CI.
+//        h2  core.hooksPath IS `.husky/_` but that directory is missing in
+//            this worktree (#1662) — a linked worktree inherits the value from
+//            the shared `.git/config`, yet `.husky/_` is never generated there
+//            because `prepare: husky` does not run. Same advisory treatment.
 //
 // SCOPE GUARD:
 //   This script only guards the REPOSITORY ROOT package.json. If invoked
@@ -275,21 +279,34 @@ export function parseCiEnv(value) {
 export const HUSKY_INACTIVE_WARNING =
   '⚠ check-package-manager: git core.hooksPath is not set to .husky/_ — Husky hooks (commit-msg, pre-commit, pre-push) are INACTIVE in this clone because .npmrc ignore-scripts=true skips the prepare script (#1458). Run: npx husky';
 
+/** One-line stderr WARN for a set-but-missing hooks directory (#1662, linked worktrees). */
+export const HUSKY_MISSING_DIR_WARNING =
+  '⚠ check-package-manager: git core.hooksPath is .husky/_ but that directory is MISSING in this worktree — Husky hooks (commit-msg, pre-commit, pre-push) are INACTIVE here; a linked worktree inherits core.hooksPath from the shared .git/config, but ignore-scripts=true skips the prepare script that generates .husky/_ (#1662). Run: npx husky';
+
 /**
  * Advisory check (#1458): `.npmrc` `ignore-scripts=true` (SEC-020) means the
  * `prepare: husky` script never runs on `npm ci`, so a fresh clone has no
  * `core.hooksPath` and every Husky hook is silently inactive. This only
  * REPORTS the state — it never runs `npx husky`, never writes git config and
  * never affects the guard's `ok`/exit code. Silent under CI.
+ *
+ * A matching value alone is not enough (#1662): a linked worktree inherits
+ * `core.hooksPath=.husky/_` from the shared `.git/config` while `.husky/_`
+ * itself was never generated there. The directory is therefore resolved —
+ * a relative hooksPath against `repoRoot` (the current worktree top-level),
+ * an absolute one as is — and a missing directory reports `active: false`
+ * with `missingDir: true`.
  * @param {string} repoRoot
  * @param {{ env?: NodeJS.ProcessEnv, ci?: boolean }} [opts] — `env` is also
  *   passed to the git subprocess (lets tests isolate from global git config).
- * @returns {{ hooksPath: string, active: boolean, skipped: 'ci'|'no-husky-dir'|null }}
+ * @returns {{ hooksPath: string, active: boolean, missingDir: boolean, skipped: 'ci'|'no-husky-dir'|null }}
  */
 export function checkHuskyHooksPath(repoRoot, { env = process.env, ci } = {}) {
-  if (ci ?? parseCiEnv(env.CI)) return { hooksPath: '', active: false, skipped: 'ci' };
+  if (ci ?? parseCiEnv(env.CI)) {
+    return { hooksPath: '', active: false, missingDir: false, skipped: 'ci' };
+  }
   if (!existsSync(join(repoRoot, '.husky'))) {
-    return { hooksPath: '', active: false, skipped: 'no-husky-dir' };
+    return { hooksPath: '', active: false, missingDir: false, skipped: 'no-husky-dir' };
   }
 
   let hooksPath;
@@ -305,11 +322,12 @@ export function checkHuskyHooksPath(repoRoot, { env = process.env, ci } = {}) {
   }
 
   const norm = hooksPath.replace(/\\/g, '/').replace(/\/+$/, '');
-  const active =
+  const matches =
     norm !== '' &&
     (isAbsolute(hooksPath) ? norm.endsWith('/.husky/_') : posix.normalize(norm) === '.husky/_');
+  const missingDir = matches && !existsSync(resolve(repoRoot, hooksPath));
 
-  return { hooksPath, active, skipped: null };
+  return { hooksPath, active: matches && !missingDir, missingDir, skipped: null };
 }
 
 /**
@@ -317,7 +335,7 @@ export function checkHuskyHooksPath(repoRoot, { env = process.env, ci } = {}) {
  * only side effects are read-only fs/git calls. Never throws or exits.
  * `hooks` carries the advisory Husky check (#1458); it never affects `ok`.
  * @param {{ cwd?: string, ci?: boolean, allowMissingNodeModules?: boolean, repoRoot?: string, env?: NodeJS.ProcessEnv }} [opts]
- * @returns {{ ok: boolean, ci: boolean, skipped: boolean, repoRoot: string, findings: Array<{code: string, severity: string, effectiveSeverity: string, message: string}>, hooks?: { hooksPath: string, active: boolean, skipped: 'ci'|'no-husky-dir'|null } }}
+ * @returns {{ ok: boolean, ci: boolean, skipped: boolean, repoRoot: string, findings: Array<{code: string, severity: string, effectiveSeverity: string, message: string}>, hooks?: { hooksPath: string, active: boolean, missingDir: boolean, skipped: 'ci'|'no-husky-dir'|null } }}
  */
 export function runPackageManagerGuard(opts = {}) {
   const cwd = opts.cwd ?? process.cwd();
@@ -464,9 +482,9 @@ if (isMain) {
 
   const result = runPackageManagerGuard({ allowMissingNodeModules: opts.allowMissingNodeModules });
 
-  // Advisory only (#1458) — never changes the exit code.
+  // Advisory only (#1458, #1662) — never changes the exit code.
   if (result.hooks && !result.hooks.active && result.hooks.skipped === null) {
-    console.error(HUSKY_INACTIVE_WARNING);
+    console.error(result.hooks.missingDir ? HUSKY_MISSING_DIR_WARNING : HUSKY_INACTIVE_WARNING);
   }
 
   if (opts.json) {

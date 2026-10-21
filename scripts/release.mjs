@@ -21,7 +21,9 @@
 //                         they are enforced by --check instead.
 //   --check               Preflight: surface parity, CHANGELOG entry present
 //                         + Unreleased folded, drift sweep, tag collision
-//                         (local, origin, github), github/main mirror parity,
+//                         (local, origin, github), github/main mirror parity
+//                         (under `mirror: curated`: github/main's Source-Commit
+//                         trailer == HEAD instead of the sha),
 //                         npm registry collision, npm token liveness, CI green
 //                         on HEAD, leakage gate over retained archive filenames and contents.
 //   --publish             Runs --check first, then token publish via temp
@@ -30,7 +32,10 @@
 //                         boundary: before it, failure aborts normally; after it,
 //                         never rerun --publish. The tail tags AFTER receipt
 //                         (never before — eliminates "tagged but unpublished"),
-//                         pushes main + tag to origin AND github, handles the
+//                         pushes main + tag to origin AND github (under
+//                         `mirror: curated`: the verified export snapshot to
+//                         github main and the tag on THAT snapshot — never HEAD
+//                         or main, #1645), handles the
 //                         GitHub release (`--verify-tag`), reconciles registry
 //                         propagation, and polls the live site. A tag/push
 //                         failure skips the tag-dependent GitHub-release and
@@ -102,6 +107,15 @@ import { fileURLToPath } from 'node:url';
 import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
 import { enumerateRepoFiles } from './lib/validate/enumerate-repo-files.mjs';
 import { writeJsonAtomicSync } from './lib/io.mjs';
+import {
+  buildGithubExport,
+  createGitRunner,
+  parseSourceCommitTrailer,
+  plainPushGuard,
+  pushUrlProblem,
+  readMirrorSetting,
+  verifyExportCommit,
+} from './lib/github-export.mjs';
 
 const PACKAGE_NAME = 'session-orchestrator';
 const SPAWN_OPTS = { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 };
@@ -959,6 +973,122 @@ export function evaluateRemoteHeadParity(remote, ls, head, branch = 'main') {
 }
 
 /**
+ * `head-pushed-github` under `mirror: curated` (#1645). The public main is a
+ * snapshot commit, never HEAD, so sha parity can never hold; what must hold is
+ * that github/main IS the snapshot of the commit being released — its
+ * `Source-Commit` trailer equals HEAD. Fail-closed on every gathering failure:
+ * an unreadable ls-remote, no sha, or a commit object that is not local.
+ *
+ * @param {{status: number, stdout?: string, stderr?: string}} ls — `git ls-remote github refs/heads/main`
+ * @param {string} head — the local HEAD sha
+ * @param {string|null} commitBody — `git cat-file commit <github main>` output, null when unreadable
+ * @returns {{ok: boolean, detail: string, sha: string|null}}
+ */
+export function evaluateCuratedMirrorParity(ls, head, commitBody) {
+  if (ls.status !== 0) {
+    return { ok: false, sha: null, detail: `ls-remote github failed (exit ${ls.status}): ${(ls.stderr || '').trim().slice(0, 200)}` };
+  }
+  const sha = (ls.stdout || '').trim().split(/\s+/)[0] || '';
+  if (!/^[0-9a-f]{40}$/i.test(sha)) {
+    return { ok: false, sha: null, detail: 'ls-remote github returned no sha for refs/heads/main — cannot compare' };
+  }
+  if (commitBody === null) {
+    return { ok: false, sha, detail: `github/main ${sha.slice(0, 8)} is not available locally (git fetch github failed) — snapshot source unknown` };
+  }
+  const source = parseSourceCommitTrailer(commitBody);
+  if (!source) {
+    return { ok: false, sha, detail: `github/main ${sha.slice(0, 8)} carries no Source-Commit trailer — publish the curated snapshot first (/close, mirror: curated)` };
+  }
+  return source === head
+    ? { ok: true, sha, detail: `curated: github/main ${sha.slice(0, 8)} is the snapshot of HEAD ${head.slice(0, 8)}` }
+    : { ok: false, sha, detail: `curated: github/main ${sha.slice(0, 8)} is the snapshot of ${source.slice(0, 8)}, HEAD at ${head.slice(0, 8)} — the mirror is behind (/close publishes it)` };
+}
+
+/**
+ * The two GitHub-mirror preflight rows plus the sha GitHub's CI must be asked
+ * about. Reads `mirror` exactly as session-end § 4.4 does (`readMirrorSetting`):
+ *  - `curated`: `head-pushed-github` is the trailer parity above, and the CI sha
+ *    is the snapshot (GitHub never sees HEAD itself).
+ *  - anything else: the plain sha parity, unchanged — but the plain push is only
+ *    allowed when `plainPushGuard` agrees (no export policy in HEAD or on
+ *    origin's main), so a checkout whose Session Config predates
+ *    `mirror: curated` fails `github-mirror-mode` instead of later pushing the
+ *    private history.
+ *  - `none`: GitHub is not a release target at all — `skip` is true and the
+ *    github rows are reported as skipped (release.mjs used to push anyway).
+ *
+ *  - every mode but `none`: `pushUrl` is the `github-push-url` row (#1693). The
+ *    publish tail refuses a push URL that differs from the fetch URL
+ *    (`pushUrlProblem`), but only AFTER the irreversible npm publish; the
+ *    preflight must see the same refusal first. A checkout with no `github`
+ *    remote has no push target, so the row is `skipped`. The detail is
+ *    `pushUrlProblem`'s own message, which names the remote but never a URL
+ *    (a URL may carry credentials).
+ *
+ * @param {string} repoRoot
+ * @param {string} head
+ * @returns {{ skip: boolean, mode: {ok: boolean, detail: string}, parity: {ok: boolean, detail: string}, pushUrl: {ok: boolean, detail: string}, ciSha: string }}
+ */
+export function evaluateGithubMirrorPreflight(repoRoot, head) {
+  const setting = readMirrorSetting(repoRoot);
+  if (setting.ok && setting.mirror === 'none') {
+    const skipped = { ok: true, detail: "skipped — 'mirror: none'" };
+    return { skip: true, mode: skipped, parity: skipped, pushUrl: skipped, ciSha: head };
+  }
+  const pushUrl = evaluateGithubPushUrl(repoRoot);
+  const ls = run('git', ['ls-remote', 'github', 'refs/heads/main'], { cwd: repoRoot });
+  if (setting.ok && setting.mirror === 'curated') {
+    const sha = ls.status === 0 ? (ls.stdout || '').trim().split(/\s+/)[0] : '';
+    let body = null;
+    if (/^[0-9a-f]{40}$/i.test(sha)) {
+      const readBody = () => run('git', ['cat-file', 'commit', sha], { cwd: repoRoot });
+      let cat = readBody();
+      if (cat.status !== 0) {
+        run('git', ['fetch', '--quiet', '--no-tags', 'github', 'refs/heads/main'], { cwd: repoRoot });
+        cat = readBody();
+      }
+      body = cat.status === 0 ? cat.stdout : null;
+    }
+    const parity = evaluateCuratedMirrorParity(ls, head, body);
+    return {
+      skip: false,
+      mode: { ok: true, detail: 'curated — GitHub receives the export snapshot, never HEAD' },
+      parity: { ok: parity.ok, detail: parity.detail },
+      pushUrl,
+      ciSha: parity.ok && parity.sha ? parity.sha : head,
+    };
+  }
+  const parity = evaluateRemoteHeadParity('github', ls, head);
+  if (!setting.ok) return { skip: false, mode: { ok: false, detail: setting.reason }, parity, pushUrl, ciSha: head };
+  const verdict = plainPushGuard({ git: createGitRunner(repoRoot), explicitGithub: setting.mirror === 'github' });
+  return {
+    skip: false,
+    mode: verdict.ok
+      ? { ok: true, detail: `plain (mirror: ${setting.mirror ?? 'unset'})` }
+      : { ok: false, detail: `plain push refused — ${verdict.reason}` },
+    parity,
+    pushUrl,
+    ciSha: head,
+  };
+}
+
+/**
+ * The `github-push-url` preflight row (#1693): red when a push to `github`
+ * would reach a different URL than the one every github read goes through.
+ * @param {string} repoRoot
+ * @returns {{ok: boolean, detail: string}}
+ */
+function evaluateGithubPushUrl(repoRoot) {
+  const remotes = run('git', ['remote'], { cwd: repoRoot });
+  if (remotes.status !== 0) return { ok: false, detail: `git remote failed (exit ${remotes.status}) — push URL unknown` };
+  if (!(remotes.stdout || '').split('\n').map((r) => r.trim()).includes('github')) {
+    return { ok: true, detail: "skipped — no 'github' remote" };
+  }
+  const problem = pushUrlProblem(createGitRunner(repoRoot), 'github');
+  return problem ? { ok: false, detail: problem } : { ok: true, detail: 'push URL equals fetch URL' };
+}
+
+/**
  * npm-auth verdict over `npm whoami --userconfig <tmp>`.
  *
  * A dead or revoked token used to surface only inside `publish()`, i.e. after
@@ -1149,6 +1279,8 @@ function readPackageVersion(repoRoot) {
  *   local HEAD `preflight()` already computed for the remote-parity rows).
  * @param {{
  *   skipCi?: boolean,
+ *   githubSha?: string,
+ *   skipGithub?: boolean,
  *   checkCiStatus?: Function,
  *   resolveRepoSpec?: (opts: { repoRoot: string, vcs: 'github' }) => string|undefined,
  * }} [deps]
@@ -1156,6 +1288,11 @@ function readPackageVersion(repoRoot) {
  */
 export async function evaluateCiPreflightRows(repoRoot, head, {
   skipCi = false,
+  // Under `mirror: curated` GitHub never sees `head`; its CI ran on the snapshot
+  // whose Source-Commit is `head` (#1645). Plain mirrors keep `head`.
+  githubSha = head,
+  // `mirror: none`: GitHub is no release target, so its CI is not consulted.
+  skipGithub = false,
   checkCiStatus: checkCiStatusDep,
   resolveRepoSpec: resolveRepoSpecDep = resolveRepoSpec,
 } = {}) {
@@ -1168,10 +1305,11 @@ export async function evaluateCiPreflightRows(repoRoot, head, {
   const ci = await checkCiStatusImpl({ repoRoot, timeoutMs: 15000, sha: head });
   const gitlab = evaluateCiRow(ci);
 
+  if (skipGithub) return { gitlab, github: { ok: true, detail: "skipped — 'mirror: none'" } };
   const githubSpec = resolveRepoSpecDep({ repoRoot, vcs: 'github' });
   let githubCi = null;
   if (githubSpec) {
-    githubCi = await checkCiStatusImpl({ repoRoot, vcs: 'github', timeoutMs: 15000, sha: head });
+    githubCi = await checkCiStatusImpl({ repoRoot, vcs: 'github', timeoutMs: 15000, sha: githubSha });
   }
   const github = evaluateGithubCiRow(githubSpec, githubCi);
 
@@ -1219,11 +1357,15 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
         : '',
   );
   const head = run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot }).stdout.trim();
-  for (const remote of ['origin', 'github']) {
-    const ls = run('git', ['ls-remote', remote, 'refs/heads/main'], { cwd: repoRoot });
-    const parity = evaluateRemoteHeadParity(remote, ls, head);
-    add(`head-pushed-${remote}`, parity.ok, parity.detail);
-  }
+  const originLs = run('git', ['ls-remote', 'origin', 'refs/heads/main'], { cwd: repoRoot });
+  const originParity = evaluateRemoteHeadParity('origin', originLs, head);
+  add('head-pushed-origin', originParity.ok, originParity.detail);
+  // github: sha parity for a plain mirror, Source-Commit parity under
+  // `mirror: curated` (#1645) — see evaluateGithubMirrorPreflight.
+  const mirror = evaluateGithubMirrorPreflight(repoRoot, head);
+  add('github-mirror-mode', mirror.mode.ok, mirror.mode.detail);
+  add('head-pushed-github', mirror.parity.ok, mirror.parity.detail);
+  add('github-push-url', mirror.pushUrl.ok, mirror.pushUrl.detail);
 
   // 2. Surface parity.
   const surfaceRows = scanSurfaces(repoRoot, target);
@@ -1277,7 +1419,7 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
       ? `git tag -l failed (exit ${localTagRes.status}) — local tag collision unknown`
       : localTag && `${tag} already exists locally`,
   );
-  for (const remote of ['origin', 'github']) {
+  for (const remote of mirror.skip ? ['origin'] : ['origin', 'github']) {
     const ls = run('git', ['ls-remote', '--tags', remote, `refs/tags/${tag}`], { cwd: repoRoot });
     const collision = ls.status === 0 && ls.stdout.trim() !== '';
     add(`tag-free-${remote}`, ls.status === 0 && !collision, collision ? `${tag} already on ${remote}` : ls.status !== 0 ? `ls-remote ${remote} failed` : '');
@@ -1321,11 +1463,13 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   // red, so `evaluateGithubCiRow` reports `skipped` rather than red — see its
   // own docblock. --skip-ci is refused under --publish upstream in
   // validateFlags(); it can only reach this branch from --check.
-  const ciRows = await evaluateCiPreflightRows(repoRoot, head, { skipCi });
+  if (mirror.skip) add('tag-free-github', true, "skipped — 'mirror: none'");
+  const ciRows = await evaluateCiPreflightRows(repoRoot, head, { skipCi, githubSha: mirror.ciSha, skipGithub: mirror.skip });
   add('ci-green-on-head', ciRows.gitlab.ok, ciRows.gitlab.detail);
   add('ci-green-on-head-github', ciRows.github.ok, ciRows.github.detail);
 
-  return checks;
+  // `head` is handed to the publish tail, which refuses to tag anything else.
+  return { checks, head };
 }
 
 function changelogExcerpt(repoRoot, target) {
@@ -1835,10 +1979,100 @@ export function settlePublishReceipt(repoRoot, target, res, deps = {}) {
   return { receipt, propagation, proof };
 }
 
-function tagAndPush(repoRoot, target) {
+/**
+ * Put the curated snapshot of `source` on github main and return its sha
+ * (`mirror: curated`, #1645). Mirrors session-end § 4.4: the export is built on
+ * the ls-remote-verified github main, re-verified BY SHA right before the push,
+ * and that sha — never a ref name, never HEAD — is pushed. When github main
+ * already is the snapshot of `source` (the normal case: `/close` published it
+ * and the preflight proved the trailer), nothing is pushed and that sha is
+ * returned; an unchanged tree whose trailer names another commit refuses,
+ * because the tag must point at the snapshot OF the release commit.
+ *
+ * @param {string} repoRoot
+ * @param {string} source — full sha of the release commit
+ * @param {{ snapshotCheck?: Function }} [deps]
+ * @returns {string}
+ */
+function publishCuratedSnapshot(repoRoot, source, deps = {}) {
+  // The export requires refs/remotes/github/main == the remote's main.
+  mustRun('git', ['fetch', '--quiet', '--no-tags', 'github', '+refs/heads/main:refs/remotes/github/main'], { cwd: repoRoot });
+  const git = createGitRunner(repoRoot);
+  const built = buildGithubExport({ git, source, ...(deps.snapshotCheck ? { snapshotCheck: deps.snapshotCheck } : {}) });
+  if (built.status === 'created') {
+    const verdict = verifyExportCommit({ git, sha: built.sha, source });
+    if (!verdict.ok) throw new Error(`curated snapshot ${built.sha} failed verification — ${verdict.reason}`);
+    mustRun('git', ['push', 'github', `${built.sha}:refs/heads/main`], { cwd: repoRoot });
+    return built.sha;
+  }
+  if (built.status === 'unchanged') {
+    const body = git(['cat-file', 'commit', built.sha]);
+    if (body.status !== 0 || parseSourceCommitTrailer(body.stdout) !== source) {
+      throw new Error(`github main ${built.sha} has the release tree but is not the snapshot of ${source} — refusing to tag it`);
+    }
+    const pushProblem = pushUrlProblem(git, 'github');
+    if (pushProblem) throw new Error(pushProblem);
+    return built.sha;
+  }
+  throw new Error(`curated export refused — ${built.reason}`);
+}
+
+/**
+ * Why the publish tail may still tag HEAD, or null when it may (#1645). The
+ * preflight checked one commit; minutes later (npm publish in between) HEAD can
+ * have moved — a parallel session switching branch is enough — and whatever
+ * HEAD is then gets tagged and, under `mirror: curated`, snapshotted onto
+ * GitHub main. So, right before `git tag`: HEAD must still be the preflight
+ * HEAD, on branch main, and equal origin's main read live (the same source
+ * anchor session-end § 4.4 uses for curated pushes).
+ *
+ * @param {string} repoRoot
+ * @param {string|undefined} expectedHead — the HEAD the preflight checked
+ * @returns {string|null}
+ */
+export function releaseAnchorProblem(repoRoot, expectedHead) {
+  if (typeof expectedHead !== 'string' || !/^[0-9a-f]{40}$/.test(expectedHead)) {
+    return 'no preflight HEAD handed in — the release commit is not anchored';
+  }
+  const head = run('git', ['rev-parse', 'HEAD'], { cwd: repoRoot });
+  const now = head.status === 0 ? head.stdout.trim() : '';
+  if (now !== expectedHead) return `HEAD moved since preflight (${expectedHead.slice(0, 8)} → ${now.slice(0, 8) || 'unreadable'})`;
+  const branch = run('git', ['branch', '--show-current'], { cwd: repoRoot });
+  const name = branch.status === 0 ? branch.stdout.trim() : '';
+  if (name !== 'main') return `HEAD is on '${name || 'detached'}', not main`;
+  const origin = evaluateRemoteHeadParity('origin', run('git', ['ls-remote', 'origin', 'refs/heads/main'], { cwd: repoRoot }), expectedHead);
+  return origin.ok ? null : `HEAD is not origin's main — ${origin.detail}`;
+}
+
+/**
+ * Tag the release commit and push main + tag to origin and the GitHub mirror.
+ *
+ * Under `mirror: curated` (read like session-end § 4.4) github never receives
+ * main or the release commit: it gets the export snapshot as main, and the tag
+ * `v<target>` is pushed onto THAT snapshot (#1645, decided: same tag name,
+ * different target sha — the GitLab tag is the annotated tag on the release
+ * commit, the GitHub tag a lightweight tag on its public snapshot). A plain
+ * mirror is unchanged, except that `plainPushGuard` must allow it. Under
+ * `mirror: none` GitHub is skipped entirely (`githubSkipped: true`). Nothing is
+ * tagged unless {@link releaseAnchorProblem} accepts HEAD.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{ expectedHead?: string, snapshotCheck?: Function }} [deps] — `expectedHead`: the
+ *   preflight HEAD (required); `snapshotCheck`: test seam (the default leakage scan needs a
+ *   host owner policy)
+ * @returns {{ tag: string, pushed: string[], githubSnapshot?: string, githubSkipped?: boolean }}
+ */
+export function tagAndPush(repoRoot, target, deps = {}) {
   const tag = `v${target}`;
   const progress = { tag, localTagCreated: false, pushed: [], remotes: [] };
   try {
+    const setting = readMirrorSetting(repoRoot);
+    if (!setting.ok) throw new Error(`GitHub mirror mode unknown — ${setting.reason}; nothing tagged or pushed`);
+    const curated = setting.mirror === 'curated';
+    const githubSkipped = setting.mirror === 'none';
+    const anchor = releaseAnchorProblem(repoRoot, deps.expectedHead);
+    if (anchor) throw new Error(`release anchor lost — ${anchor}; nothing tagged or pushed`);
     const excerpt = changelogExcerpt(repoRoot, target);
     const msgDir = mkdtempSync(join(tmpdir(), 'release-tagmsg-'));
     const msgFile = join(msgDir, 'msg');
@@ -1849,16 +2083,36 @@ function tagAndPush(repoRoot, target) {
     } finally {
       rmSync(msgDir, { recursive: true, force: true });
     }
-    for (const remote of ['origin', 'github']) {
+    for (const remote of githubSkipped ? ['origin'] : ['origin', 'github']) {
       const remoteProgress = { remote, mainPushed: false, tagPushed: false };
       progress.remotes.push(remoteProgress);
+      if (remote === 'github' && curated) {
+        const released = mustRun('git', ['rev-parse', `${tag}^{commit}`], { cwd: repoRoot }).stdout.trim();
+        if (released !== deps.expectedHead) throw new Error(`${tag} points at ${released}, not the preflight HEAD — refusing to publish it to github`);
+        const snapshot = publishCuratedSnapshot(repoRoot, released, deps);
+        remoteProgress.mainPushed = true;
+        progress.githubSnapshot = snapshot;
+        mustRun('git', ['push', 'github', `${snapshot}:refs/tags/${tag}`], { cwd: repoRoot });
+        remoteProgress.tagPushed = true;
+        progress.pushed.push(remote);
+        continue;
+      }
+      if (remote === 'github') {
+        const verdict = plainPushGuard({ git: createGitRunner(repoRoot), explicitGithub: setting.mirror === 'github' });
+        if (!verdict.ok) throw new Error(`plain push to github refused — ${verdict.reason}`);
+      }
       mustRun('git', ['push', remote, 'main'], { cwd: repoRoot });
       remoteProgress.mainPushed = true;
       mustRun('git', ['push', remote, tag], { cwd: repoRoot });
       remoteProgress.tagPushed = true;
       progress.pushed.push(remote);
     }
-    return { tag, pushed: progress.pushed };
+    return {
+      tag,
+      pushed: progress.pushed,
+      ...(progress.githubSnapshot ? { githubSnapshot: progress.githubSnapshot } : {}),
+      ...(githubSkipped ? { githubSkipped: true } : {}),
+    };
   } catch (err) {
     const failure = err instanceof Error ? err : new Error(String(err));
     failure.releaseProgress = progress;
@@ -1873,7 +2127,8 @@ function tagAndPush(repoRoot, target) {
  *
  * @param {string} repoRoot
  * @param {string} target
- * @param {{publishImpl?: Function, tagAndPushImpl?: Function, ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function}} [deps]
+ * @param {{publishImpl?: Function, tagAndPushImpl?: Function, ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function, expectedHead?: string}} [deps]
+ *   `expectedHead` — the HEAD the preflight checked; the tail refuses to tag any other commit.
  * @returns {Promise<{status: 'complete'|'post-publish-reconciliation', receipt: object, tag: string|null, pushed: string[], tagProgress?: object, release: object, live: object, propagation: object, reconciliation: Array<{phase: string, kind?: string, detail: string}>}>}
  */
 export async function runPublishRelease(repoRoot, target, deps = {}) {
@@ -1898,7 +2153,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
   const propagation = publication.propagation;
   let tagAndPushResult;
   try {
-    tagAndPushResult = tagAndPushImpl(repoRoot, target);
+    tagAndPushResult = tagAndPushImpl(repoRoot, target, { expectedHead: deps.expectedHead });
   } catch (err) {
     const rawProgress = err?.releaseProgress;
     const remotes = Array.isArray(rawProgress?.remotes)
@@ -1935,8 +2190,10 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
     };
   }
 
-  const { tag, pushed } = tagAndPushResult;
-  const release = ensureGithubReleaseImpl(repoRoot, target);
+  const { tag, pushed, githubSnapshot, githubSkipped } = tagAndPushResult;
+  const release = githubSkipped
+    ? { ok: true, skipped: true, state: 'skipped-mirror-none', detail: "GitHub release skipped — 'mirror: none'" }
+    : ensureGithubReleaseImpl(repoRoot, target);
   const live = await verifyLiveSiteImpl(target);
   const reconciliation = [];
   if (!propagation?.ok) {
@@ -1954,6 +2211,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
     receipt: publication.receipt,
     tag,
     pushed,
+    ...(githubSnapshot ? { githubSnapshot } : {}),
     release,
     live,
     propagation,
@@ -2030,6 +2288,9 @@ export function printPublishOutcome(outcome, target, io = {}) {
   }
   if (!tagAndPushFailed) {
     log(`  tagged ${outcome.tag} (AFTER publish) and pushed main+tag to: ${outcome.pushed.join(', ')}.`);
+    if (outcome.githubSnapshot) {
+      log(`  github (mirror: curated): main and ${outcome.tag} are the public snapshot ${outcome.githubSnapshot.slice(0, 12)}, not the release commit.`);
+    }
   } else {
     // The npm receipt is already irreversible at this point, so the ONLY thing
     // that helps the operator is the exact partial state tag-and-push reached.
@@ -2329,7 +2590,7 @@ async function main() {
 
   if (values.check || values.publish) {
     const target = readPackageVersion(repoRoot);
-    const checks = await preflight(repoRoot, target, { skipCi: values['skip-ci'] });
+    const { checks, head } = await preflight(repoRoot, target, { skipCi: values['skip-ci'] });
     const checked = await withCheckedPackage(repoRoot, async (artifact) => {
       checks.push({ name: 'leakage-gate', ok: true, detail: 'packed filenames and required owner-policy content scan verified' });
       const ok = printChecks(checks, values.json && !values.publish, target);
@@ -2339,6 +2600,7 @@ async function main() {
       console.log('  Publish and post-receipt reconciliation may take several minutes; do not kill it mid-run.');
       const outcome = await runPublishRelease(repoRoot, target, {
         publishImpl: (root, version) => publish(root, version, { artifact }),
+        expectedHead: head,
       });
       return printPublishOutcome(outcome, target);
     });

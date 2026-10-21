@@ -9,7 +9,9 @@
  * the DEPLOYING path is the SAME as the REVIEWING path. This repo's GitHub
  * mirror breaks that: `origin` (GitLab) is reviewed via MR, `github` is
  * pushed directly by `skills/session-end/SKILL.md`'s mirror-push block
- * (`git push github HEAD`, no MR, no review) — and since a Vercel Git
+ * (`git push github HEAD`, or with `mirror: curated` (#1631) one verified
+ * snapshot `git push github <sha>:refs/heads/main`, published only through
+ * /close; no MR, no review either way) — and since a Vercel Git
  * integration deploys on every push to that mirror's `main`, a compromised
  * mirror token or an admin bypass IS a deploy with zero review. See
  * `docs/github-mirror-protection.md` for the full runbook.

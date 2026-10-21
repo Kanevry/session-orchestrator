@@ -6,38 +6,19 @@ review-date: 2026-10-23
 # MVP Scope & Appetite Rules (Always-on)
 
 ## Appetite System (Shape Up)
-- Small Batch: 1 week max. Single feature, single deliverable.
-- Medium Batch: 2 weeks max. Feature set, clear boundary.
-- Big Batch: 6 weeks max. Never longer. If it takes more, re-scope.
-- Cooldown after each batch: Small 2 days, Medium 3 days, Big 2 weeks. For tech debt, bugs, exploration.
-- Circuit Breaker: Ship-or-kill after Hard Deadline. No extensions. Unfinished work goes to backlog for re-shaping.
+Small: ≤1 week, single feature, single deliverable; Medium: ≤2 weeks, bounded feature set; Big: ≤6 weeks, otherwise re-scope. Cooldown after each: 2 days / 3 days / 2 weeks for debt, bugs, exploration. Hard-deadline circuit breaker: ship-or-kill, no extensions; unfinished work returns to backlog for re-shaping.
 
 ## Scope Discipline
-- Every MVP must have a written MVP.md (from template) before coding starts.
-- "Nice to have" features go to backlog immediately. Never in current MVP scope.
-- Scope changes require explicit sign-off documented in MVP.md Scope Change Log.
-- Each PR/MR must reference an MVP Scope Item (from the IN list in MVP.md).
-- If a feature is not in MVP.md scope, it does not get built in this cycle.
+Before coding: template-based written MVP.md plus appetite/deadline. Nice-to-haves go immediately to backlog. Build only IN-scope features this cycle; changes need explicit sign-off in MVP.md Scope Change Log. Every PR/MR MUST reference an IN-list scope item (review-enforced).
 
 ## Definition of Done
-- All items in MVP Scope (IN) checked off with acceptance criteria met.
-- LAUNCH-GATE.md 5-gate checklist passed (Functionality, Security, Quality, Ops, Legal).
-- No P0/P1 bugs open.
-- Core user flow works end-to-end.
+All IN items checked with acceptance criteria met; LAUNCH-GATE.md five gates passed (Functionality, Security, Quality, Ops, Legal); no open P0/P1; core flow works end-to-end.
 
 ## Commit Message Traceability
-- During an active MVP cycle, commits SHOULD include an `MVP-XXX` reference for traceability.
-- Format: `feat(auth): add login flow — MVP-001` (appended after an em dash).
-- The `MVP-XXX` identifier maps to the scope item number in the MVP.md IN list.
-- This is a recommendation, not enforced by commitlint. Omitting it is acceptable for small fixes.
-- During cooldown periods, commits do not need MVP references. Use normal Conventional Commits.
-- MR/PR descriptions MUST still reference the MVP scope item (enforced by review).
+Active-cycle commits SHOULD append `— MVP-XXX` (IN-list item number), e.g. `feat(auth): add login flow — MVP-001`. Recommendation, not commitlint-enforced; small fixes may omit. Cooldown: normal Conventional Commits, no MVP reference needed. MR/PR scope-item reference remains MUST.
 
 ## Anti-Patterns
-- Scope creep: adding "just one more thing" after MVP.md is signed off.
-- Gold plating: polishing beyond acceptance criteria before all scope items are done.
-- Premature optimization: performance tuning before core flow works.
-- Missing time-box: starting work without appetite/deadline defined.
+No post-signoff scope creep, polishing beyond criteria before all items finish, performance tuning before core flow works, or work without appetite/deadline.
 
 ## See Also
 development.md · security.md · testing.md · cli-design.md · parallel-sessions.md

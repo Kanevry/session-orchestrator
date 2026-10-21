@@ -278,12 +278,19 @@ let stateMdReadOk = false;
 let stateDir = null;
 
 try {
-  // resolveStateMdPath from state-md.mjs: falls back to .claude/STATE.md
   const stateMdMod = await import('./lib/state-md.mjs');
-  const stateMdPath = stateMdMod.resolveStateMdPath(process.cwd());
+  const { resolveStateMdWriteTarget, warnForeignStateMd } = await import(
+    './lib/state-md/frontmatter-mutators.mjs'
+  );
+  // #1636: the write side's ownership rule — another platform's STATE.md not
+  // proven to be this process's takes the "missing" branch. On rejection
+  // `stateMdPath` is this platform's own target, so stateDir (also the wave
+  // manifest's dir) never points into the foreign platform's state dir.
+  const { path: stateMdPath, rejected } = resolveStateMdWriteTarget(process.cwd());
+  if (rejected) warnForeignStateMd('memory-propose', rejected, stateMdPath);
   stateDir = dirname(stateMdPath);
 
-  if (!existsSync(stateMdPath)) {
+  if (rejected || !existsSync(stateMdPath)) {
     if (!dryRun) {
       exit(
         { status: STATUS.REJECTED_WRONG_CONTEXT, detail: 'STATE.md missing or unparseable' },

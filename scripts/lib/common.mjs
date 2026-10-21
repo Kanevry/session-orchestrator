@@ -141,11 +141,12 @@ export async function writeJson(filePath, obj) {
  * PIPE_BUF (4 KiB).
  * @param {string} filePath
  * @param {unknown} obj
+ * @param {{ mode?: number }} [opts] — file mode on creation (e.g. 0o600 for host-private logs, #1632)
  * @returns {Promise<void>}
  */
-export async function appendJsonl(filePath, obj) {
+export async function appendJsonl(filePath, obj, { mode } = {}) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.appendFile(filePath, JSON.stringify(obj) + '\n', 'utf8');
+  await fs.appendFile(filePath, JSON.stringify(obj) + '\n', mode === undefined ? 'utf8' : { encoding: 'utf8', mode });
 }
 
 // ---------------------------------------------------------------------------

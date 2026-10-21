@@ -1,7 +1,7 @@
-import { describe, it, expect, beforeAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import path, { dirname, join, resolve } from 'node:path';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 
 import { inspectGuardRequiresParity } from '../../../scripts/lib/validate/check-guard-requires-parity.mjs';
@@ -69,10 +69,22 @@ beforeAll(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   while (fixtureRoots.length > 0) removeTree(fixtureRoots.pop());
 });
 
 describe('check-guard-requires-parity.mjs — current repository', () => {
+  it('accepts native Windows relative separators at the scripts/lib boundary', () => {
+    const relative = path.relative.bind(path);
+    vi.spyOn(path, 'relative').mockImplementation((from, to) => {
+      const rel = relative(from, to);
+      return rel.startsWith('scripts/lib/') ? rel.replaceAll('/', '\\') : rel;
+    });
+    const result = inspectGuardRequiresParity(REPO_ROOT);
+    expect(result.findings.filter((f) => f.message.includes('resolves outside'))).toEqual([]);
+    expect(result.ok).toBe(true);
+  });
+
   it('passes all headFallback contracts and reports the measured contract summary', () => {
     const result = inspectGuardRequiresParity(REPO_ROOT);
     expect(result.ok).toBe(true);

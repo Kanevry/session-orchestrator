@@ -18,6 +18,9 @@
  *   age_days > T * 2  → medium
  *   age_days > T      → low
  *
+ * Passive projects (`_passive.md` marker, #1690) are skipped entirely and
+ * counted in `metrics.passive_skipped` (also in the JSONL record).
+ *
  * Missing `updated` field → low / confidence 0.7.
  * Parse errors           → low / confidence 0.6 (errors counter incremented).
  */
@@ -31,6 +34,10 @@ import { expandTilde } from '../../../scripts/lib/common.mjs';
 // ---------------------------------------------------------------------------
 
 const NARRATIVE_FILES = ['context.md', 'decisions.md', 'people.md'];
+
+// Vault convention: `01-projects/<slug>/_passive.md` = no narrative duty.
+// Same marker the vault-staleness probe (#1238) and vault-lint honour.
+const PASSIVE_MARKER = '_passive.md';
 
 const TIER_THRESHOLDS = {
   top: 30,
@@ -131,7 +138,7 @@ export async function runProbe(projectRoot, config) {
     if (!vaultDir) {
       return {
         findings: [],
-        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 0 },
+        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 0, passive_skipped: 0 },
         duration_ms: Date.now() - startMs,
         skipped_reason: 'vault-dir not configured',
       };
@@ -141,7 +148,7 @@ export async function runProbe(projectRoot, config) {
     if (!existsSync(vaultDir)) {
       return {
         findings: [],
-        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 0 },
+        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 0, passive_skipped: 0 },
         duration_ms: Date.now() - startMs,
         skipped_reason: 'vault-dir not found on disk',
       };
@@ -153,7 +160,7 @@ export async function runProbe(projectRoot, config) {
     if (!existsSync(projectsDir)) {
       return {
         findings: [],
-        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 0 },
+        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 0, passive_skipped: 0 },
         duration_ms: Date.now() - startMs,
         skipped_reason: '01-projects not found in vault',
       };
@@ -166,6 +173,7 @@ export async function runProbe(projectRoot, config) {
     let scannedNarratives = 0;
     let staleNarratives = 0;
     let errors = 0;
+    let passiveSkipped = 0;
 
     let projectEntries;
     try {
@@ -173,7 +181,7 @@ export async function runProbe(projectRoot, config) {
     } catch (err) {
       return {
         findings: [],
-        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 1 },
+        metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 1, passive_skipped: 0 },
         duration_ms: Date.now() - startMs,
         skipped_reason: `cannot read 01-projects: ${err.message || err}`,
       };
@@ -183,6 +191,14 @@ export async function runProbe(projectRoot, config) {
       if (!entry.isDirectory()) continue;
       const slug = entry.name;
       const projectDir = join(projectsDir, slug);
+
+      // #1690 — a passive project carries no narrative duty, so its narratives
+      // are not findings. Skipped before any read, but COUNTED so the skip is
+      // visible rather than indistinguishable from a healthy project.
+      if (existsSync(join(projectDir, PASSIVE_MARKER))) {
+        passiveSkipped++;
+        continue;
+      }
 
       scannedProjects++;
 
@@ -310,6 +326,7 @@ export async function runProbe(projectRoot, config) {
       scanned_narratives: scannedNarratives,
       stale_narratives: staleNarratives,
       errors,
+      passive_skipped: passiveSkipped,
     };
 
     // ── JSONL append ──────────────────────────────────────────────────────────
@@ -325,6 +342,7 @@ export async function runProbe(projectRoot, config) {
         scanned_narratives: scannedNarratives,
         stale_narratives: staleNarratives,
         errors,
+        passive_skipped: passiveSkipped,
         duration_ms: durationMs,
         findings: findings.map((f) => ({
           slug: f.evidence.slug,
@@ -349,7 +367,7 @@ export async function runProbe(projectRoot, config) {
     // Top-level safety net — probe must never throw
     return {
       findings: [],
-      metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 1 },
+      metrics: { scanned_projects: 0, scanned_narratives: 0, stale_narratives: 0, errors: 1, passive_skipped: 0 },
       duration_ms: Date.now() - startMs,
       skipped_reason: `probe error: ${err.message || err}`,
     };

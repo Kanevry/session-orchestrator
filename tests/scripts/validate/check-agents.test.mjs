@@ -79,13 +79,25 @@ function yamlScalar(value) {
   return `'${s.replace(/'/g, "''")}'`;
 }
 
-/** Frontmatter body for a well-formed agent, parameterized by the fields under test. */
-function agentMd({ name, description = 'Some description inline here', model = 'inherit', color = 'blue', tools }) {
+/**
+ * Frontmatter body for a well-formed agent, parameterized by the fields under test.
+ * `effort` defaults to `medium` for any pinned model (it is required there, #1614);
+ * pass `effort: null` to omit the line.
+ */
+function agentMd({
+  name,
+  description = 'Some description inline here',
+  model = 'inherit',
+  effort = model === 'inherit' ? null : 'medium',
+  color = 'blue',
+  tools,
+}) {
   return [
     '---',
     `name: ${name}`,
     `description: ${yamlScalar(description)}`,
     `model: ${model}`,
+    ...(effort === null ? [] : [`effort: ${effort}`]),
     `color: ${color}`,
     ...(tools === undefined ? [] : [`tools: ${tools}`]),
     '---',
@@ -262,6 +274,44 @@ const RULE_CASES = [
     agents: { 'opus-4-8-id.md': agentMd({ name: 'opus-4-8-id', model: 'claude-opus-4-8' }) },
     expected: { status: 0, missing: [], echoed: [] },
   },
+  // --- effort: required once model is pinned, closed enum (#1614) ---
+  {
+    name: 'pinned model without effort FAILs (Sonnet would silently default to high)',
+    agents: { 'no-effort.md': agentMd({ name: 'no-effort', model: 'sonnet', effort: null }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['FAIL: no-effort.md: effort is required when model is not inherit (got model "sonnet")'],
+  },
+  {
+    name: 'effort outside the enum FAILs',
+    agents: { 'bad-effort.md': agentMd({ name: 'bad-effort', model: 'opus', effort: 'medum' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['FAIL: bad-effort.md: effort must be one of low|medium|high|xhigh|max (got "medum")'],
+  },
+  // --- getField/getScalarField edge cases (N5): quotes, trailing comment, empty value ---
+  {
+    name: 'quoted effort "medium" is accepted',
+    agents: { 'quoted-effort.md': agentMd({ name: 'quoted-effort', model: 'sonnet', effort: '"medium"' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'effort with a trailing YAML comment is accepted',
+    agents: { 'comment-effort.md': agentMd({ name: 'comment-effort', model: 'opus', effort: 'medium # Grund' }) },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'quoted model and model with a trailing comment are accepted',
+    agents: {
+      'quoted-model.md': agentMd({ name: 'quoted-model', model: "'sonnet'" }),
+      'comment-model.md': agentMd({ name: 'comment-model', model: 'opus # pinned' }),
+    },
+    expected: { status: 0, missing: [], echoed: [] },
+  },
+  {
+    name: 'empty effort does not read the next line as its value',
+    agents: { 'empty-effort.md': agentMd({ name: 'empty-effort', model: 'sonnet', effort: '' }) },
+    expected: { status: 1, missing: [], echoed: [] },
+    expectStdout: ['FAIL: empty-effort.md: effort is required when model is not inherit (got model "sonnet")'],
+  },
   {
     name: 'model claude-fable (no numeric group) FAILs',
     agents: { 'bad-fable.md': agentMd({ name: 'bad-fable', model: 'claude-fable' }) },
@@ -406,7 +456,9 @@ describe('check-agents.mjs — model-regex SSOT drift guard (#768)', () => {
   const SCRIPT_SOURCE = readFileSync(SCRIPT, 'utf8');
 
   it('imports ALLOWED_MODEL_ALIASES and MODEL_ID_RE from agent-frontmatter.mjs', () => {
-    expect(SCRIPT_SOURCE).toContain("import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs'");
+    expect(SCRIPT_SOURCE).toContain(
+      "import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE, checkAgentEffort } from '../agent-frontmatter.mjs'",
+    );
   });
 
   it('the actual check-agents.mjs source has no reintroduced inline model-family regex', () => {

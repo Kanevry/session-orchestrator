@@ -53,6 +53,7 @@ import {
   _setResolverForTest,
 } from './lib/vault-relocation-rules.mjs';
 import { buildBackfillIndex, parseSessionId } from './lib/vault-repo-backfill.mjs';
+import { noteIdMatches } from './lib/vault-mirror/utils.mjs';
 import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { atomicWriteText, envelopeToError } from './lib/io.mjs';
@@ -358,7 +359,7 @@ async function buildCrossRepoIndices(reposRoot) {
  * Only UNANIMOUS mappings are learned; an identity whose source-repo:/repo:
  * sessions disagree on the namespace is left unmapped (ambiguous → no remap).
  *
- * @param {{ sidIndex: Map<string, Set<string>>, parsedVaultSessions: Array<{id:string, frontmatter:object}> }} args
+ * @param {{ sidIndex: Map<string, Set<string>>, parsedVaultSessions: Array<{id:string, sid?:string, frontmatter:object}> }} args
  * @returns {Map<string, string>} identity → canonical namespace
  */
 function learnCanonicalMap({ sidIndex, parsedVaultSessions }) {
@@ -366,11 +367,11 @@ function learnCanonicalMap({ sidIndex, parsedVaultSessions }) {
   // 'AcmeWidgetV2' → 'acmewidgetv2' === 'acme-widget-v2' → 'acmewidgetv2'.
   const normalize = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, '');
   const votes = new Map(); // identity → Map<canonicalNs, count>
-  for (const { id, frontmatter } of parsedVaultSessions) {
+  for (const { id, sid = id, frontmatter } of parsedVaultSessions) {
     if (!id || !frontmatter || !hasSessionRepoSignal(frontmatter)) continue;
     const { namespace } = namespaceForSession(frontmatter); // source-repo:/repo: → canonical
     if (!isConfident(namespace)) continue; // skip _unsorted/redacted-repo/unknown-repo
-    const identities = sidIndex.get(id);
+    const identities = sidIndex.get(sid);
     if (!identities) continue;
     // Only an UNAMBIGUOUS source-repo:/repo: note teaches: if its id appears in >1 repo's jsonl,
     // it would mis-teach every other identity its own namespace (collision pollution).
@@ -478,11 +479,14 @@ async function collectParsedVaultSessions(sessionsDir) {
       continue;
     }
     const frontmatter = parseRelocationFrontmatter(content);
+    const stem = path.basename(filePath).replace(/\.md$/, '');
     // Prefer the frontmatter id; fall back to the basename (the session id by convention).
-    const id =
-      (typeof frontmatter.id === 'string' && frontmatter.id.trim()) ||
-      path.basename(filePath).replace(/\.md$/, '');
-    if (id) out.push({ id, frontmatter });
+    const id = (typeof frontmatter.id === 'string' && frontmatter.id.trim()) || stem;
+    // #1602: a namespaced id (`<source-repo>-<session id>`) is no session id; the
+    // cross-repo index joins on the file stem it names. `id` stays the backfill
+    // key, because namespaceForSession looks that index up by `frontmatter.id`.
+    const sid = noteIdMatches(id, stem, frontmatter['source-repo']) ? stem : id;
+    if (id) out.push({ id, sid, frontmatter });
   }
 
   return out;

@@ -48,8 +48,9 @@ Agent files live in `agents/` as Markdown with YAML frontmatter. Required fields
 ```yaml
 ---
 name: kebab-case-name                # 3-50 chars, lowercase + hyphens only
-description: Use this agent when [conditions]. <example>Context: ... user: "..." assistant: "..." <commentary>Why this agent is appropriate</commentary></example>
-model: inherit                        # inherit | sonnet | opus | haiku | fable — OR full ID like claude-opus-5-5, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-sonnet-5, claude-fable-5
+description: Use this agent when [conditions].   # single-line routing sentence; <example> blocks go in the body § Examples
+model: opus                           # inherit | sonnet | opus | haiku | fable — OR full ID like claude-opus-5-5, claude-sonnet-4-6, claude-haiku-4-5-20251001, claude-sonnet-5, claude-fable-5
+effort: medium                        # low | medium | high | xhigh | max — REQUIRED whenever model is not inherit (#1614)
 color: blue                           # blue | cyan | green | yellow | purple | orange | pink | red | magenta
 tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (both accepted; we prefer comma-string for consistency)
 ---
@@ -59,8 +60,9 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 
 **Required vs optional:**
 - Runtime canonical doc: only `name` + `description` are required.
-- Our validator (defensive for plugin-distribution): all four of `name + description + model + color` required; `tools` optional.
-- `description` MUST be a single-line inline string, NOT a YAML block scalar (`>` or `|`). Put `<example>` blocks inline.
+- Our validator (defensive for plugin-distribution): all four of `name + description + model + color` required; `effort` required as soon as `model` is not `inherit`; `tools` optional.
+- `omitClaudeMd: true|false` (optional, #1616) drops CLAUDE.md from the agent's start context. Set only on narrow judges that read nothing but the records they are handed (`eval-judge`, `skill-applied-judge`, `dialectic-deriver`); reviewers and implementers keep it because they check against the rules.
+- `description` MUST be a single-line inline string, NOT a YAML block scalar (`>` or `|`). It carries only the routing sentence(s) — the text the dispatcher matches on. `<example>…</example>` blocks (with `<commentary>`) do NOT go inline in the description: they live in a `## Examples` section at the end of the body, one block per paragraph (#887, #1157).
 - `tools` accepts BOTH comma-separated string (`Read, Edit, Write`) and JSON array (`["Read", "Edit", "Write"]`). Anthropic's own reference agents use array form; we use string form for consistency.
 
 **Body conventions** (from Anthropic's `plugins/plugin-dev/agents/*` reference set):
@@ -68,15 +70,25 @@ tools: Read, Grep, Glob, Bash         # comma-separated string OR JSON array (bo
 - Length: 500–3000 words is the recommended range. Below 500 reads as under-specified; above 3000 reads as bloated.
 - Read-only reviewer agents: tools `Read, Grep, Glob, Bash` (no Edit/Write). Implementer agents: `Read, Edit, Write, Glob, Grep, Bash`. Agents on the escalation allowlist append `SendMessage` to either baseline — see § Escalation Channel (#1051) for the six that do and why the rest do not.
 
-## Model Selection & Cost Routing (#768)
+## Model Selection & Cost Routing (#768, #1614)
 
-`model:` is not just a compatibility field — it is a cost/quality dial per agent. Pick deliberately, don't default to `sonnet` everywhere.
+Every agent pins `model:` AND `effort:` explicitly. `inherit` was the default until 2026-10-14 and cost the catalog its users: under a Fable lead, an inheriting agent ran on the most expensive model at the session's effort, and the fleet moved to private opus/medium agents (census in #1614: plugin share of dispatches fell from 61 % in the week of 15 September to 6 % in the week of 8 October).
 
-- **`haiku`** — cheap, fast, advisory/judge roles where the task is narrow classification or a single yes/no verdict, not open-ended reasoning. Precedent: `dialectic-deriver`, `skill-applied-judge`. Pin `haiku` when the agent's whole job is "read a short input, emit a structured verdict."
-- **`sonnet`** — an explicit cost cap, NOT a default. Pin it only when an agent must stay on the workhorse tier even in an Opus session, and state the reason inline. A bare `sonnet` on a working agent silently overrides the operator's session model — the failure mode that moved the implementation and review catalog to `inherit`.
-- **`inherit`** — **the default for the working catalog.** Lets the coordinator/session's active model tier flow through, so the agent runs at whatever tier the operator picked (an Opus session gives its implementers AND its reviewers Opus-quality judgment). Use it for implementation, test-writing, and review agents alike — `code-implementer`, `test-writer`, `security-reviewer`, `session-reviewer`, `db-specialist`, `ui-developer`, and the read-only analysis agents. Diverge only for a named cost/quality reason.
-- **`opus`** — reserve for agents whose task genuinely needs the strongest available reasoning (e.g. `ux-evaluator`) and where the cost is justified because the agent runs rarely (dispatched solo, not fanned out across a wave).
-- **Full model-ID pinning** (`claude-opus-5-5`, `claude-sonnet-5`, `claude-fable-5-20260101`, …) — only when the agent has a demonstrated dependency on a SPECIFIC model version, e.g. a reproducibility requirement that needs a dated snapshot, or a known behavioral regression on newer models for this agent's exact prompt. Pinning trades away automatic model-family upgrades — document the reason inline as a frontmatter comment when you do this.
+| Role | model | effort | Agents |
+|---|---|---|---|
+| Implementation and review | `opus` | `medium` | `code-implementer`, `db-specialist`, `ui-developer`, `session-reviewer`, `security-reviewer`, `architect-reviewer` |
+| Tests, docs, analysis | `sonnet` | `medium` | `test-writer`, `docs-writer`, `qa-strategist`, `analyst` |
+| Narrow judges | `haiku` | `medium` | `eval-judge`, `skill-applied-judge`, `dialectic-deriver` |
+| Rare solo evaluator | `opus` | `medium` | `ux-evaluator` (judges screenshots and AX trees against a rubric, dispatched alone, not fanned out) |
+
+- **`effort` is required whenever `model` is not `inherit`** (validated by `checkAgentEffort` in `scripts/lib/agent-frontmatter.mjs`). The per-model default differs: Sonnet 5.5 defaults to `high`, Opus 5.5 to `medium`, so a Sonnet agent without `effort` thinks longer than an Opus one. `medium` follows the owner's standing instruction (2026-09-30); raise it only for a named reason in the agent.
+- **`haiku`** — narrow classification or a single structured verdict over a short input. Whether read-only analysis roles move to Haiku is an open owner decision (#1614); do not switch them until it is made.
+- **`sonnet`** — work that needs judgment but not the strongest reasoning: test gaps, docs, PRD and coverage analysis.
+- **`opus`** — code changes and reviews, where a missed defect costs more than the tokens.
+- **`inherit`** — only with a reason written into the agent (e.g. the agent must follow whatever model the operator chose). It also inherits the session's effort.
+- **Full model-ID pinning** (`claude-opus-5-5`, `claude-sonnet-5`, `claude-fable-5-20260101`, …) — only for a demonstrated dependency on one model version (a reproducibility snapshot, a known regression on newer models). Document the reason inline as a frontmatter comment.
+
+Whether `effort` from a **plugin** agent's frontmatter takes effect is not stated in the upstream docs; the #1614 acceptance smoke checks it per role. If it does not, the dispatcher passes `effort` as a dispatch parameter (Claude Code v2.1.292+).
 
 **Resolution order** (highest precedence first): `CLAUDE_CODE_SUBAGENT_MODEL` environment variable → the invocation-time model parameter (if the dispatcher passes one explicitly) → the agent's own frontmatter `model:` value. An agent's `model:` is therefore a default, not a guarantee — a session or environment override can supersede it.
 
@@ -89,6 +101,13 @@ Every agent definition with `repo-write` sandbox-tier (i.e. `Edit`/`Write` prese
 > Do NOT run ANY git write operation (`git add`, `git commit`, `git stash`, `git mv`, `git rm`, `git push`, `git reset`) — the git index and stash are shared session resources (PSA-007); the coordinator handles ALL VCS operations.
 
 This is deliberately more explicit than a bare "Do NOT commit" — the git index and stash are SHARED resources across concurrently-dispatched sibling agents in the same wave, and `git stash`/`git add`/`git mv`/`git rm` are index-mutating even when scoped to the agent's own files. `docs-writer.md` had NO git-write restriction at all until #724 closed the gap (its `repo-write` siblings at least carried a bare "Do NOT commit" line) — when adding a new repo-write agent, copy the ban line verbatim rather than re-deriving a weaker phrasing so this gap does not recur. See `.claude/rules/parallel-sessions.md` § PSA-007 for the full rationale and fleet evidence.
+
+**Sole exception — worktree mode (#1614).** Only `code-implementer` may stage its own files one by one and commit, and only when its prompt carries a line `WORKTREE-MODE: <absolute path> <branch>` that matches `git rev-parse --show-toplevel` and `git branch --show-current`; otherwise the ban applies unchanged. Coordinator duty: never grant the coordinator's own worktree, never put two agents in one worktree. The wave-executor never sets the line. A linked worktree has its own index, so the index race this ban prevents does not exist there. The commit hook briefly adds an entry to the shared stash via lint-staged; the agent itself never runs `git stash`. Push, merge, `git reset`, `git stash` and `git clean` stay banned. The exception lives in the agent's own Rules section, next to the unchanged ban line, so Check 10 still finds the ban. The detector `psa007-git-write` (`scripts/lib/wave-transcript-tail.mjs`) still reports every commit inside a wave; that is correct, because wave prompts never carry `WORKTREE-MODE`.
+
+## Waiting, Forks and Start Cost (#1615, #1616)
+
+- **Waiting longer than 5 minutes does not belong in a subagent.** A subagent's prompt cache lives 5 minutes, so every longer wait (pipeline, remote run, rerun) rebuilds its whole context on the next turn (#1615 measured 250 M rewritten tokens in 14 days). The agent reports its intermediate state and ends; the coordinator waits with Monitor and then continues it with `SendMessage` (or dispatches a fresh one).
+- **Fork or subagent.** A short task that needs the current conversation goes to a fork: it inherits system prompt, tools and history and reads the parent session's cache, so it does not pay the 60–80k token start context again. A task with its own file scope, worktree or model goes to a subagent. The wave-executor stays on subagents, because it needs scope boundaries.
 
 ## Escalation Channel (#1051)
 

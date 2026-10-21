@@ -147,12 +147,12 @@ import { runTailPhases } from '${PLUGIN_ROOT}/scripts/lib/session-end/tail-runne
 
 const tail = await runTailPhases({ repoRoot: process.cwd(), plan });
 const sweep = tail['3.6.4'];
-// { ran: true, scanned, archived, archivePath } | { ran: false, reason: 'plan-skip' | 'no-plan' | 'error', error? }
+// { ran: true, scanned, archived, archivePath } | { ran: false, reason: 'plan-skip' | 'no-plan' | 'store-role-inbox' | 'error', error? }
 ```
 
 - `runTailPhases` delegates to `runExpiredSweep({ repoRoot, plan, now })` — the same module's single-phase entry point — and returns a KEYED shape so a caller keeps working when a second phase becomes mechanical. Today exactly one phase is: 3.6.3, 3.6.5–3.6.8 stay coordinator-executed because they are AUQ-gated or need a subagent dispatch a library function cannot make.
 - **Never throws, fails CLOSED.** Any error yields `{ ran: false, reason: 'error' }` and the close proceeds. Stale-past-grace entries move into `.orchestrator/metrics/learnings-archive.jsonl` (append-only, never deleted).
-- **Report** `sweep.ran`, `sweep.scanned` and `sweep.archived` in the Phase 6 Final Report, e.g. `expired-sweep: 12 archived of 640 scanned`. When `ran: false`, report the `reason` instead — a skipped sweep is a stated outcome, never silence.
+- **Report** `sweep.ran`, `sweep.scanned` and `sweep.archived` in the Phase 6 Final Report, e.g. `expired-sweep: 12 archived of 640 scanned`. When `ran: false`, report the `reason` instead — a skipped sweep is a stated outcome, never silence. `store-role-inbox` means this host only appends to `learnings-inbox.jsonl` (owner.yaml `learnings.store-role: inbox`, #1516); the writer host sweeps.
 - **The proof it ran is the event `orchestrator.learnings.sweep_applied`** in `.orchestrator/metrics/events.jsonl` (payload source `session-end-3.6.4`, which separates it from the standalone CLI). A close claiming a sweep with no such event did not sweep.
 
 The standalone `node scripts/sweep-expired-learnings.mjs --apply --json` CLI remains available for manual/out-of-session use; it is no longer the session-end path.
@@ -180,17 +180,19 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
 
 2. Determine the **judged set** — only THIS session's selected skills.
 
-   > **Join on the RAW UUID, never on the semantic session id.** The writer is the `PreToolUse` hook `hooks/skill-invocation-telemetry.mjs`, which stamps `session_id` straight from the hook payload (`:190`) — that is the harness UUID. Measured 2026-09-19 over `.orchestrator/metrics/skill-invocations.jsonl` (841 lines): **767 raw UUIDs, 55 semantic ids, 17 null**. Joining on `main-<date>-session-N` therefore matches ~0 rows for a current session, the judged set comes back empty, and the phase reports `empty-input` — a silent no-op indistinguishable from "this session used no skills". The raw id is `process.env.CLAUDE_CODE_SESSION_ID` (or `session_id` of a live `.orchestrator/session.lock`); it is also the id that names the transcript file in step 3.
+   > **Join on the RAW UUID, never on the semantic session id.** The writer is the `PreToolUse` hook `hooks/skill-invocation-telemetry.mjs`, which stamps `session_id` straight from the hook payload (`:190`) — that is the harness UUID. Measured 2026-09-19 over `.orchestrator/metrics/skill-invocations.jsonl` (841 lines): **767 raw UUIDs, 55 semantic ids, 17 null**. Joining on `main-<date>-session-N` therefore matches ~0 rows for a current session, the judged set comes back empty, and the phase reports `empty-input` — a silent no-op indistinguishable from "this session used no skills". The raw id is `process.env.CLAUDE_CODE_SESSION_ID`; it is also the id that names the transcript file in step 3. The repo-global `.orchestrator/session.lock` may name a PEER session (#1664, same class as #1663), so its `session_id` counts only via `resolveSessionIds()`, which returns it only when it is among this process's own ids (`readProcessLocalSessionIds()`) and `null` otherwise. No provable id → empty judged set → `empty-input`, never a judgment of the peer's transcript.
 
    ```javascript
    import { readFileSync } from 'node:fs';
-   import { readLock } from '${PLUGIN_ROOT}/scripts/lib/session-lock.mjs';
+   import { resolveSessionIds } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
 
+   // Lock id only when provably OWN — never a peer's (#1664).
    const rawSessionId =
      (process.env.CLAUDE_CODE_SESSION_ID || '').trim() ||
-     (readLock({ repoRoot: process.cwd() })?.session_id || '').trim();
+     resolveSessionIds({ repoRoot: process.cwd() }).session_id;
 
-   const selectedSkills = [...new Set(
+   // No id → no join: `null` would otherwise match the null-session rows.
+   const selectedSkills = !rawSessionId ? [] : [...new Set(
      readFileSync('.orchestrator/metrics/skill-invocations.jsonl', 'utf8')
        .split('\n').filter(Boolean)
        .flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } })

@@ -19,9 +19,10 @@
  * `{}`, `{"rules":[]}`, malformed JSON, and a missing file) — every overlay
  * failure mode fails TO THE FLOOR, not open.
  *
- * All exported functions are TOTAL: they never throw. The consuming hook keeps
- * its documented `main().catch → exit 0` fail-open for internal errors, so any
- * throw here would silently disarm the guard — totality is load-bearing.
+ * All exported functions are TOTAL: they never throw. The consuming hook now
+ * DENIES on an error inside main() (fail-closed, #1671); only a module-load
+ * failure stays fail-open (#992). A throw here would therefore block every Bash
+ * call instead of disarming the guard — totality is still load-bearing.
  */
 
 import { existsSync, promises as fsp } from 'node:fs';

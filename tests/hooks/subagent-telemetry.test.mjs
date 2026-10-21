@@ -27,8 +27,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readSubagents } from '@lib/subagents-schema.mjs';
 import { rollupSessionTokens } from '@lib/session-token-rollup.mjs';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/subagent-telemetry.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/subagent-telemetry.mjs', import.meta.url));
 const JSONL_REL = join('.orchestrator', 'metrics', 'subagents.jsonl');
 
 // Removed with #963: `tests/fixtures/metrics/subagent-transcript-dedup.jsonl`.
@@ -927,6 +928,18 @@ describe('subagent-telemetry hook', () => {
       expect(stop.start_record_found).toBe(true);
       // The flag is a STOP-record contract only — a start record has no join.
       expect(start.start_record_found).toBeUndefined();
+    });
+
+    it('#1617: a stop whose payload omits agent_type inherits it from its own start record; a payload type still wins', async () => {
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'typed-a', agent_type: 'code-implementer' }));
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStart', agent_id: 'typed-b', agent_type: 'code-implementer' }));
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'typed-a' }));
+      runHook(JSON.stringify({ hook_event_name: 'SubagentStop', agent_id: 'typed-b', agent_type: 'test-writer' }));
+
+      const records = await readSubagents(join(tmp, JSONL_REL));
+      const stopOf = (id) => records.find((r) => r.event === 'stop' && r.agent_id === id);
+      expect(stopOf('typed-a').agent_type).toBe('code-implementer');
+      expect(stopOf('typed-b').agent_type).toBe('test-writer');
     });
 
     // Consolidated away (TV-004): 'an orphan stop (no start record anywhere)

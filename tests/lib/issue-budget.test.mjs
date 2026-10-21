@@ -7,7 +7,7 @@
  * dropped.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -607,6 +607,25 @@ describe('readSessionTypeFromStateMd', () => {
     mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
     writeFileSync(path.join(repoRoot, '.claude', 'STATE.md'), 'no frontmatter here\n', 'utf8');
     expect(readSessionTypeFromStateMd(repoRoot)).toBeNull();
+  });
+
+  // #1636 — bug: the first existing STATE.md won, so a peer Claude session's
+  // `session-type` set a Codex session's issue cap.
+  it('ignores another platform\'s foreign STATE.md (#1636)', () => {
+    mkdirSync(path.join(repoRoot, '.claude'), { recursive: true });
+    writeFileSync(
+      path.join(repoRoot, '.claude', 'STATE.md'),
+      '---\nsession-type: feature\nsession-id: foreign-0000\nstatus: active\n---\n',
+      'utf8',
+    );
+    vi.stubEnv('SO_PLATFORM', 'codex');
+    vi.stubEnv('SO_STATE_DIR', '');
+    vi.stubEnv('CODEX_THREAD_ID', 'own-1111');
+    try {
+      expect(readSessionTypeFromStateMd(repoRoot)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });
 

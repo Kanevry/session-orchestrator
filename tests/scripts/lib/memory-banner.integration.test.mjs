@@ -175,10 +175,8 @@ describe('memory-banner integration (#505)', () => {
         },
       ]);
 
-      // 10 sessions; the most recent carries memory_cleanup_at so
-      // daysSinceCleanup is deterministic.
-      // now = 2026-05-23T12:00:00Z
-      // memory_cleanup_at = 2026-05-20T12:00:00Z  → delta = 3.0 days → floor = 3
+      // 10 unmeasured session identities still count as history. Their cleanup
+      // timestamp is excluded from the measured cleanup anchor (#1584).
       const sessionEntries = [];
       for (let i = 1; i <= 10; i += 1) {
         const entry = {
@@ -224,7 +222,7 @@ describe('memory-banner integration (#505)', () => {
           • third-workflow-tip (0.8, workflow)
           • fourth-tool-insight (0.7, tool)
           • fifth-process-note (0.5, process)
-        5 memory files · 10 sessions ever · last cleanup 3 days ago
+        5 memory files · 10 sessions ever · last cleanup: never
           USER.md — Preferences: prefers terse output
           AGENT.md — Habits: uses parallel agents"
       `);
@@ -419,6 +417,7 @@ describe('memory-banner integration (#505)', () => {
         { session_id: 's-2', started_at: '2026-05-02T00:00:00Z' },
         {
           session_id: 's-3',
+          session_type: 'deep',
           started_at: '2026-05-03T00:00:00Z',
           memory_cleanup_at: '2026-05-20T11:59:59Z',
         },
@@ -467,6 +466,7 @@ describe('memory-banner integration (#505)', () => {
       writeSessionsJsonl(tmpRepo, [
         {
           session_id: 's-1',
+          session_type: 'deep',
           started_at: '2026-05-01T00:00:00Z',
           memory_cleanup_at: '2026-05-21T18:00:00Z',
         },
@@ -633,6 +633,29 @@ describe('memory-banner "sessions ever" (#1167)', () => {
   afterEach(() => {
     rmSync(tmpRepo, { recursive: true, force: true });
     rmSync(tmpMemoryDir, { recursive: true, force: true });
+  });
+
+  it('counts sessions ever from the main ledger when the worktree has a shadow ledger', async () => {
+    const worktree = join(tmpRepo, 'linked');
+    const admin = join(tmpRepo, '.git', 'worktrees', 'fixture');
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(admin, { recursive: true });
+    writeFileSync(join(admin, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${admin}\n`);
+    writeSessionsJsonl(tmpRepo, [
+      { session_id: 'main-a', session_type: 'deep', memory_cleanup_at: '2026-09-01T12:00:00Z' },
+      { session_id: 'main-b', session_type: 'deep' },
+    ]);
+    writeSessionsJsonl(worktree, [
+      { session_id: 'shadow', session_type: 'deep', memory_cleanup_at: '2026-09-02T12:00:00Z' },
+    ]);
+    const inputs = await readBannerInputs({
+      repoRoot: worktree,
+      memoryDir: tmpMemoryDir,
+      now: new Date('2026-09-02T12:00:00Z'),
+    });
+    expect(inputs.stats.sessionsEver).toBe(2);
+    expect(inputs.stats.daysSinceCleanup).toBe(1);
   });
 
   /**

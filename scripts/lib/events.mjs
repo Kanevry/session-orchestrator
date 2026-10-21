@@ -2,7 +2,7 @@
  * events.mjs — JSONL event emission + optional webhook POST for session-orchestrator.
  *
  * Replaces scripts/lib/events.sh. Windows-safe (no hardcoded path separators).
- * Uses native fetch (Node 20+) and fs.promises — no external dependencies.
+ * Uses Stdlib HTTP and fs.promises — no external dependencies.
  *
  * Part of v3.0.0 migration (Epic #124, issue #133).
  * Issue #228: removed hardcoded personal-domain default URL. Clank Event Bus URL
@@ -39,6 +39,7 @@
  * 0.0961 ms/call.
  */
 
+import { httpRequest } from './http-request.mjs';
 import {
   promises as fs,
   closeSync,
@@ -54,7 +55,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { getProjectDir, resolveEventsLedgerRoot, SO_SHARED_DIR } from './platform.mjs';
 import { readLock } from './session-lock.mjs';
-import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
+import { resolveStateMdWriteTarget } from './state-md/frontmatter-mutators.mjs';
 import {
   classifyManifestSession,
   readProcessLocalSessionIds,
@@ -282,9 +283,12 @@ export function attributionForRecord(root = getProjectDir()) {
 /**
  * Absolute path of the active `wave-scope.json`, or `null` when none exists.
  *
- * The active platform's state dir is tried first (via `resolveStateMdPath()`,
- * the repo's existing resolver), then the remaining candidates — so a Codex or
- * Cursor run finds its own manifest rather than a stale `.claude/` one.
+ * This session's state dir is tried first (the dir of
+ * `resolveStateMdWriteTarget()`'s path), then the remaining candidates — so a
+ * Codex or Cursor run finds its own manifest rather than a stale `.claude/`
+ * one. #1636: the write target, not the first existing STATE.md, because a
+ * foreign STATE.md in another platform's dir would put that dir's (foreign)
+ * manifest first and hide this session's own wave.
  *
  * @param {string} root
  * @returns {string|null}
@@ -292,7 +296,7 @@ export function attributionForRecord(root = getProjectDir()) {
 function waveScopePath(root) {
   const dirs = [];
   try {
-    dirs.push(path.dirname(resolveStateMdPath(root)));
+    dirs.push(path.dirname(resolveStateMdWriteTarget(root).path));
   } catch {
     /* fall through to the fixed candidate list */
   }
@@ -364,8 +368,9 @@ function waveForRecord(root, attribution) {
  *
  * Writes `{timestamp, event, schema_version, ...payload}` as a single JSON line
  * to `.orchestrator/metrics/events.jsonl` (creates parent directory if needed).
- * If both `CLANK_EVENT_SECRET` and `CLANK_EVENT_URL` are set, fires an async
- * fire-and-forget POST to `CLANK_EVENT_URL` with a 3-second timeout. Network
+ * If both `CLANK_EVENT_SECRET` and `CLANK_EVENT_URL` are set, fires a
+ * fire-and-forget POST (not awaited, #1612 R1-03) to `CLANK_EVENT_URL` with a
+ * 3-second timeout over node:https (`scripts/lib/http-request.mjs`). Network
  * errors are swallowed. Write errors propagate to the caller. No personal-domain
  * default URL exists — both vars must be set explicitly (#228).
  *
@@ -476,7 +481,7 @@ export async function emitEvent(type, payload = {}, opts = {}) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.appendFile(filePath, line, 'utf8');
 
-  // Fire-and-forget webhook POST — only when secret AND URL are configured.
+  // R1-03: do not await: multiple events per hook × 3s exceed the 5s hook budget.
   // No personal-domain default: CLANK_EVENT_URL must be set explicitly (#228).
   if (process.env.CLANK_EVENT_SECRET && process.env.CLANK_EVENT_URL) {
     const url = process.env.CLANK_EVENT_URL;
@@ -486,14 +491,15 @@ export async function emitEvent(type, payload = {}, opts = {}) {
       payload,
     });
 
-    fetch(`${url}/api/webhooks/events`, {
+    void httpRequest(`${url}/api/webhooks/events`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.CLANK_EVENT_SECRET}`,
       },
       body,
-      signal: AbortSignal.timeout(3000),
+      timeoutMs: 3000,
+      maxBytes: 64 * 1024,
     }).catch(() => {});
   }
 }

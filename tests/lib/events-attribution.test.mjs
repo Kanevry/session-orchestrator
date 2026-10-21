@@ -230,6 +230,25 @@ describe('emitEvent — native Codex attribution (#1274)', () => {
   });
 });
 
+// #1636 — bug: the manifest lookup started in the dir of the first EXISTING
+// STATE.md, so a peer's `.claude/STATE.md` put its foreign `.claude/wave-scope.json`
+// ahead of this Codex session's own `.codex/` manifest and the wave was dropped.
+it("finds the own .codex manifest past a foreign .claude STATE.md and manifest (#1636)", async () => {
+  process.env.SO_PLATFORM = 'codex';
+  process.env.CODEX_THREAD_ID = OWN_UUID;
+  await writeLock(OWN_SEMANTIC, OWN_UUID);
+  await mkdir(path.join(root, '.claude'), { recursive: true });
+  await writeFile(
+    path.join(root, '.claude', 'STATE.md'),
+    `---\nsession: ${PEER_SEMANTIC}\nsession-id: ${PEER_UUID}\nstatus: active\n---\n`,
+    'utf8',
+  );
+  await writeWaveScope({ wave: 7, session_id: PEER_UUID, semantic_session_id: PEER_SEMANTIC });
+  await writeWaveScope({ wave: 3, session_id: OWN_UUID, semantic_session_id: OWN_SEMANTIC }, '.codex');
+  const record = await emitAndRead();
+  expect(record.wave).toBe(3);
+});
+
 // ---------------------------------------------------------------------------
 // wave
 // ---------------------------------------------------------------------------

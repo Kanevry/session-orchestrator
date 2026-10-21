@@ -67,6 +67,8 @@ if (r.skipped_reason) console.log('SKIPPED:', r.skipped_reason);
 
 **Tier thresholds (days):** top=30, active=60, archived=180. Tier sourced from `_overview.md` frontmatter; defaults to `active` if missing.
 
+**Passive skip (#1690):** same marker and form as vault-staleness — a `01-projects/<slug>/` carrying `_passive.md` is skipped BEFORE any narrative is read, excluded from `scanned_projects` and counted in `metrics.passive_skipped` (same key in the JSONL record), so the skip stays visible.
+
 ---
 
 **Session-end integration:** When `vault-staleness.enabled: true` in Session Config, these same probes are also invoked at session-end Phase 2.3 — see `skills/session-end/SKILL.md` for the gating logic and strict-mode override behavior. The `/discovery vault` invocation here is the on-demand discovery path; Phase 2.3 is the close-time gate.

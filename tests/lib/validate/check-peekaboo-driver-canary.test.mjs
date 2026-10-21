@@ -23,12 +23,13 @@
  * is the correct DI vector for this CLI.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
+import { removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -51,6 +52,7 @@ function runCanary(pluginRoot) {
 
 function makeTmpRoot(setupFn) {
   const tmpRoot = mkdtempSync(join(os.tmpdir(), 'canary-peekaboo-'));
+  onTestFinished(() => removeTree(tmpRoot));
   setupFn(tmpRoot);
   return tmpRoot;
 }

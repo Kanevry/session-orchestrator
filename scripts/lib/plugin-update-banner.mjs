@@ -39,6 +39,7 @@
  * @module scripts/lib/plugin-update-banner
  */
 
+import { httpRequest } from './http-request.mjs';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -207,7 +208,7 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
   // either returns or assigns, so a `= null` seed would be dead (no-useless-assignment).
   let version;
   try {
-    const res = await fetchImpl(REGISTRY_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) });
+    const res = await fetchImpl(REGISTRY_URL, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS), timeoutMs: FETCH_TIMEOUT_MS });
     if (!res || res.ok !== true) return null;
     const body = await res.json();
     if (typeof body?.version !== 'string' || body.version.length === 0) return null;
@@ -262,7 +263,7 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
 const PLATFORM_UPDATE_INSTRUCTIONS = {
   claude:
     '/plugin update session-orchestrator@kanevry, then restart Claude Code ' +
-    '(from a clone: `npm run update:local` also installs the deps Claude Code refuses — docs/install.md § Upgrade)',
+    '(also installed in Codex? run `npm run update:local` from a clone — the Codex copy stays old otherwise, and it installs the deps Claude Code refuses — docs/install.md § Upgrade)',
   codex:
     'run `codex plugin marketplace upgrade kanevry && codex plugin add session-orchestrator@kanevry` ' +
     '(docs/codex-setup.md), then restart Codex',
@@ -298,11 +299,14 @@ const GENERIC_UPDATE_INSTRUCTION = 'run `npm update -g session-orchestrator`';
  * tracks its closure — adding platform.mjs as a dependency here is a
  * wave-scope change, not a two-line addition, so the fallback stays local
  * exactly like `isTruthyFlag` above (same rationale, same precedent).
- * `detectPlatform()`'s third step — a filesystem walk from `cwd` for marker
- * directories — is left out on purpose: it needs `node:fs`/`node:path`
- * traversal this probe has no other reason to carry, and every non-Claude
- * harness already sets its own compat env var, so the walk would only ever
- * re-confirm the same `'claude'` default this function already falls back to.
+ * `detectPlatform()`'s step 3 (`CODEX_THREAD_ID`) and step 4 (a filesystem
+ * walk from `cwd` for marker directories) are left out on purpose. The walk
+ * needs `node:fs`/`node:path` traversal this probe has no other reason to
+ * carry, and every non-Claude harness already sets its own compat env var, so
+ * it would only re-confirm the `'claude'` default this function falls back to.
+ * Skipping step 3 is harmless: the only caller, `hooks/on-session-start.mjs`
+ * (`checkPluginUpdate` call ~:1232), passes the platform its own full
+ * `detectPlatform()` run resolved, so this fallback does not run there.
  *
  * @param {Record<string,string|undefined>} env
  * @returns {"claude"|"codex"|"cursor"|"pi"}
@@ -344,7 +348,7 @@ function resolvePlatformFromEnv(env) {
  *   without a cache this probe would issue one npm request per session start.
  * @param {Record<string,string|undefined>} [opts.env]  Defaults to `process.env`.
  * @param {number} [opts.now]  Injected clock (ms). Defaults to `Date.now()`.
- * @param {Function} [opts.fetchImpl]  Injected fetch. Defaults to `globalThis.fetch`.
+ * @param {Function} [opts.fetchImpl]  Injected fetch. Defaults to the Stdlib HTTP helper.
  * @param {"claude"|"codex"|"cursor"|"pi"} [opts.platform]  The harness driving
  *   this session, when the caller already knows it (the SessionStart hook
  *   computes this once and could pass it straight through). Falls back to
@@ -370,7 +374,7 @@ export async function checkPluginUpdate({
   const installedParts = parseSemver(installed);
   if (installedParts === null) return null;
 
-  const fetcher = typeof fetchImpl === 'function' ? fetchImpl : globalThis.fetch;
+  const fetcher = typeof fetchImpl === 'function' ? fetchImpl : httpRequest;
   if (typeof fetcher !== 'function') return null;
 
   const latest = await resolveLatestVersion({ cacheDir, now, fetchImpl: fetcher });

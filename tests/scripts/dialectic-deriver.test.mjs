@@ -673,6 +673,23 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     expect(prompt).toContain('AGENTS-marker-XYZ');
   });
 
+  it('readTopLearnings includes a visible inbox-only learning in the prompt (#1685)', async () => {
+    seedLearnings([{ id: 'LIVE-1', confidence: 0.5, text: 'live entry' }]);
+    writeFileSync(
+      join(repo, '.orchestrator', 'metrics', 'learnings-inbox.jsonl'),
+      JSON.stringify({ id: 'INBOX-ONLY-1', confidence: 0.9, text: 'inbox entry' }) + '\n',
+      'utf8',
+    );
+    const dispatchAgent = vi.fn().mockResolvedValue({
+      text: '```diff\n# target: user\nbody\n```',
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    await runDialecticDeriver({ dispatchAgent, repoRoot: repo });
+    const prompt = dispatchAgent.mock.calls[0][0].prompt;
+    expect(prompt).toContain('INBOX-ONLY-1');
+    expect(prompt).toContain('LIVE-1');
+  });
+
   it('readTopLearnings tie-breaker: equal confidence sorts by created_at DESC, newer first (#535 L-1)', async () => {
     // Two learnings with equal confidence but different created_at — newer should appear first in prompt.
     seedLearnings([
@@ -692,21 +709,21 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     expect(newerPos).toBeLessThan(olderPos);
   });
 
-  it('readLastSessions filters phantom abandoned stubs interleaved by completed_at before ranking (#834)', async () => {
+  it('readLastSessions filters synthetic completed and unknown abandoned stubs interleaved by completed_at before ranking (#834)', async () => {
     // Two RECENT abandoned stubs would win a naive completed_at-DESC top-1
     // window over the older REAL session — phantoms must be filtered out
     // before ranking, not merely deprioritized.
     seedLearnings([{ id: 'L1', confidence: 0.9, text: 'learning' }]);
     seedSessions([
       {
-        session_id: 'REAL-SESSION-MARKER',
+        session_type: 'deep', session_id: 'REAL-SESSION-MARKER',
         completed_at: '2026-01-01T00:00:00Z',
         agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
       },
       {
-        session_id: 'GHOST-MARKER-1',
+        session_id: 'GHOST-MARKER-1', session_type: 'deep', _synthetic: true,
         completed_at: '2026-06-01T00:00:00Z',
-        status: 'abandoned',
+        status: 'completed',
         agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
       },
       {
@@ -736,18 +753,18 @@ describe('runDialecticDeriver — integration with mock dispatchAgent', () => {
     seedLearnings([{ id: 'L1', confidence: 0.9, text: 'learning' }]);
     seedSessions([
       {
-        session_id: 'DUP-SESSION-MARKER',
+        session_type: 'deep', session_id: 'DUP-SESSION-MARKER',
         completed_at: '2026-01-03T00:00:00Z',
         agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
       },
       {
-        session_id: 'DUP-SESSION-MARKER',
+        session_type: 'deep', session_id: 'DUP-SESSION-MARKER',
         completed_at: '2026-01-03T00:00:00Z',
         agent_summary: { complete: 3, partial: 0, failed: 0, spiral: 0 },
         note: 'second ledger line for the same physical session',
       },
       {
-        session_id: 'OLDER-REAL-SESSION-MARKER',
+        total_waves: 1, session_id: 'OLDER-REAL-SESSION-MARKER',
         completed_at: '2026-01-01T00:00:00Z',
         agent_summary: { complete: 2, partial: 0, failed: 0, spiral: 0 },
       },

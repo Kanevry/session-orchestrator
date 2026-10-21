@@ -22,7 +22,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, symlinkSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -44,7 +44,9 @@ let repoRoot;
 let ledger;
 
 beforeEach(() => {
-  tmp = mkdtempSync(path.join(tmpdir(), 'repair-invalid-sessions-cli-'));
+  // realpath'd: on macOS tmpdir() sits under the symlinked /var, and an explicit
+  // --repo-root with a symlinked ancestor is refused (#1665).
+  tmp = realpathSync(mkdtempSync(path.join(tmpdir(), 'repair-invalid-sessions-cli-')));
   repoRoot = path.join(tmp, 'repo');
   ledger = path.join(repoRoot, LEDGER_REL);
   mkdirSync(path.dirname(ledger), { recursive: true });
@@ -201,6 +203,36 @@ describe('MED-3 — --file is bounded to .orchestrator/metrics/', () => {
     const summary = JSON.parse(res.stdout);
     expect(summary.mode).toBe('dry-run');
     expect(summary.repaired).toBe(FIXTURE_INVALID);
+  });
+
+  it('refuses an explicit --repo-root whose .orchestrator is a symlink (#1665, exit 1, nothing written)', () => {
+    // Bug: the ledger guard checks the path symlink-free BEFORE this process
+    // runs, but the CLI followed `.orchestrator -> elsewhere` via realpathSync
+    // and repaired the linked ledger — a swap in between redirected the write.
+    const linkedRoot = path.join(tmp, 'linked-repo');
+    mkdirSync(linkedRoot);
+    symlinkSync(path.join(repoRoot, '.orchestrator'), path.join(linkedRoot, '.orchestrator'));
+
+    const res = run(['--repo-root', linkedRoot, '--apply']);
+
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain(`${path.join(linkedRoot, '.orchestrator')} is a symlink`);
+    expect(readFileSync(ledger, 'utf8')).toBe(GOLDEN_RAW);
+    expect(metricsDirEntries()).toEqual(['sessions.jsonl']);
+  });
+
+  it('refuses an explicit --repo-root that is itself a symlink (#1665, exit 1, nothing written)', () => {
+    // Bug: only `.orchestrator` and `metrics` were lstat'ed, so a symlinked
+    // root (`link -> repo`) passed and the repair followed it to the real ledger.
+    const linkedRoot = path.join(tmp, 'root-link');
+    symlinkSync(repoRoot, linkedRoot);
+
+    const res = run(['--repo-root', linkedRoot, '--apply']);
+
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain(`${linkedRoot} is a symlink`);
+    expect(readFileSync(ledger, 'utf8')).toBe(GOLDEN_RAW);
+    expect(metricsDirEntries()).toEqual(['sessions.jsonl']);
   });
 });
 
@@ -393,5 +425,54 @@ describe('#1525 — synthetic UTC-offset ledger through the real CLI', () => {
     expect(again.code).toBe(0);
     expect(JSON.parse(again.stdout).repaired).toBe(0);
     expect(readFileSync(ledger, 'utf8')).toBe(after);
+  });
+});
+
+/**
+ * #1592 fixture: a real repo `<base>/main` (one empty commit) plus a linked
+ * worktree `<base>/wt`; `base` is realpath'd so path comparisons hold on macOS.
+ */
+async function makeLinkedWorktree1592(prefix) {
+  const nodeFs = await import('node:fs');
+  const nodePath = (await import('node:path')).default;
+  const { tmpdir: osTmpdir } = await import('node:os');
+  const { spawnSync: spawn } = await import('node:child_process');
+  const base = nodeFs.realpathSync(nodeFs.mkdtempSync(nodePath.join(osTmpdir(), prefix)));
+  const main = nodePath.join(base, 'main');
+  const wt = nodePath.join(base, 'wt');
+  nodeFs.mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawn('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  const mainMetrics = nodePath.join(main, '.orchestrator', 'metrics');
+  nodeFs.mkdirSync(mainMetrics, { recursive: true });
+  return { base, main, wt, mainMetrics, cleanup: () => nodeFs.rmSync(base, { recursive: true, force: true }) };
+}
+
+describe('repair-invalid-sessions CLI — default target from a linked worktree (#1592)', () => {
+  // Bug: with no --repo-root the CLI targeted `<worktree>/…/sessions.jsonl`
+  // (absent since #1584) and exited 2 instead of previewing the shared ledger.
+  it('defaults to the main checkout ledger; an explicit --repo-root stays literal', async () => {
+    const fx = await makeLinkedWorktree1592('repair-cli-wt-');
+    try {
+      const mainLedger = path.join(fx.mainMetrics, 'sessions.jsonl');
+      writeFileSync(mainLedger, GOLDEN_RAW, 'utf8');
+      const env = { ...process.env };
+      for (const k of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) delete env[k];
+      const dflt = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--json'], { cwd: fx.wt, env, encoding: 'utf8' });
+      expect(dflt.status, dflt.stderr).not.toBe(2);
+      expect(JSON.parse(dflt.stdout.trim().split('\n').pop()).file).toBe(mainLedger);
+      expect(readFileSync(mainLedger, 'utf8')).toBe(GOLDEN_RAW);
+      // The guard binds absolute --apply to --repo-root; it must never be remapped.
+      const literal = spawnSync(process.execPath, [SCRIPT, '--dry-run', '--json', '--repo-root', fx.wt], { cwd: fx.wt, env, encoding: 'utf8' });
+      expect(literal.status).toBe(2);
+      expect(literal.stderr).toContain(path.join(fx.wt, '.orchestrator', 'metrics', 'sessions.jsonl'));
+    } finally {
+      fx.cleanup();
+    }
   });
 });

@@ -15,7 +15,7 @@
  * classifies mandatory vs opt-in by exactly that order.
  */
 
-import { isSessionConfigHeading } from './section-extractor.mjs';
+import { isSessionConfigHeading, collectTopLevelKeyLines } from './section-extractor.mjs';
 
 /**
  * Extract the YAML block under a `## Session Config` heading from a Markdown
@@ -123,4 +123,31 @@ export function knownTemplateKeys(content) {
   const last = extractSessionConfigBlock(content, { occurrence: 'last' });
   if (!first || !last || first.headingLine === last.headingLine) return null;
   return new Set([...extractTopLevelKeys(first.body), ...extractTopLevelKeys(last.body)]);
+}
+
+/**
+ * The template's starter (mandatory) keys a local instruction file does NOT
+ * carry in its `## Session Config` block — the input of `/bootstrap
+ * --retroactive` step 6 (#1567).
+ *
+ * Why not the validator: `parseSessionConfig()` fills every mandatory field
+ * with its default, so `validate-config` never sees an ABSENT key; in a pnpm
+ * repo without `test-command` the run silently uses `npm test`. Presence is a
+ * property of the FILE, so it is read from the file: local keys come from
+ * `collectTopLevelKeyLines()` (the lines the runtime reads, all spellings),
+ * the mandatory population from the template's FIRST block — the same
+ * population drift-check Check 6 calls mandatory.
+ *
+ * @param {string} localContent - the repo's CLAUDE.md / AGENTS.md
+ * @param {string} templateContent - `docs/session-config-template.md`
+ * @returns {string[] | null} missing keys in template order; null when the
+ *   template has no `## Session Config` block ("not measurable", never "none
+ *   missing")
+ */
+export function missingStarterKeys(localContent, templateContent) {
+  if (typeof templateContent !== 'string') return null;
+  const starter = extractSessionConfigBlock(templateContent, { occurrence: 'first' });
+  if (!starter) return null;
+  const present = new Set(collectTopLevelKeyLines(localContent).map(({ key }) => key));
+  return [...new Set(extractTopLevelKeys(starter.body))].filter((key) => !present.has(key));
 }

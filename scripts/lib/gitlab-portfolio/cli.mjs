@@ -17,9 +17,11 @@
  *   -h, --help         Show usage and exit 0
  *
  * Exit codes (per cli-design.md):
- *   0  Success (or disabled / no-repos)
- *   1  User / input error (bad args, repo not found, config issue)
- *   2  System error (vault-dir not configured, strict-mode failures)
+ *   0  Success (or enabled: false / mode: off / no-repos)
+ *   1  User / input error (bad args, --repo names no discovered repo)
+ *   2  System error (Session Config unreadable, vault-dir not configured or
+ *      outside the home directory, repo discovery or write failed, repo fetch
+ *      failures under mode: strict)
  *
  * All dependencies are injectable via the second argument for testability.
  */
@@ -166,7 +168,7 @@ FLAGS
   -h, --help          Show this help text and exit.
 
 EXIT CODES
-  0  Success (or feature disabled / no repos configured)
+  0  Success (or enabled: false / mode: off / no repos configured)
   1  User / input error (bad args, repo filter matched nothing)
   2  System error (vault-dir not configured, strict-mode repo failures)
 `);
@@ -188,11 +190,20 @@ EXIT CODES
     return { exitCode: 2, action: 'error', reposScanned: 0, reposFailed: 0 };
   }
 
-  // ── Check enabled flag ─────────────────────────────────────────────────────
+  // ── Check enabled flag + mode gate ─────────────────────────────────────────
   const portfolioConfig = config['gitlab-portfolio'] ?? {};
   if (portfolioConfig.enabled === false) {
     if (!flagJson) {
       process.stdout.write(`gitlab-portfolio: disabled (set gitlab-portfolio.enabled: true in Session Config)\n`);
+    } else {
+      process.stdout.write(JSON.stringify({ action: 'disabled', reposScanned: 0, reposFailed: 0 }) + '\n');
+    }
+    return { exitCode: 0, action: 'disabled', reposScanned: 0, reposFailed: 0 };
+  }
+  if (portfolioConfig.mode === 'off') {
+    // #1619: mode: off is a no-op like enabled: false — before any vault/repo work.
+    if (!flagJson) {
+      process.stdout.write(`gitlab-portfolio: mode: off — skipped (set gitlab-portfolio.mode: warn|strict to run)\n`);
     } else {
       process.stdout.write(JSON.stringify({ action: 'disabled', reposScanned: 0, reposFailed: 0 }) + '\n');
     }

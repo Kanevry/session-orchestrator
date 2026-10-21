@@ -15,6 +15,13 @@ harness expose those exact tools. Use the current runtime's available tools.
 Measured in Codex Desktop 0.153.4 on 2026-09-19: `exec_command` runs shell
 commands (`cat`, `rg`, `rg --files` for Read/Grep/Glob); `apply_patch` performs
 file edits. These may be exposed through a `functions.exec` tools namespace.
+Hook boundary, measured 2026-10-20 on `codex-cli 0.160.1` (`codex exec`, #1669):
+a PreToolUse hook sees a shell call as `tool_name: "Bash"` with
+`tool_input.command` as a string, and `matcher: "Bash"` fires. Codex honours a
+PreToolUse `deny` (measured 2026-10-20 on `codex-cli 0.160.1`, #1691): the
+blocked command does not run. The Bash guards are wired on Codex except
+`pre-bash-templates-first` (it needs `transcript_path`, which Codex sends as
+`null`); see `docs/codex-setup.md`.
 Never call an unavailable `Read`, `Bash`, or `Skill` tool by name. An instruction
 to invoke `session-orchestrator:<name>` means read and follow the canonical
 `skills/<name>/SKILL.md` relative to the plugin root when no Skill tool exists.

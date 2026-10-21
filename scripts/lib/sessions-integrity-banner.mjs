@@ -22,39 +22,13 @@
  * entry point that is COMPLETELY try/catch-wrapped (never throws) and returns
  * either `null` (silent no-op) or `{severity:'warn'|'alert', message, ...extra}`.
  *
- * TWO VALIDATORS OVER ONE STORE — why this banner reports both populations.
- * The repo has two independent notions of "a valid session record", and
- * neither one contains the other:
- *
- *   - `validateSession()` (`scripts/lib/session-schema/validator.mjs`) — the
- *     canonical write-path schema, enforced by `scripts/emit-session.mjs`.
- *     It treats `effectiveness` as OPTIONAL/nullable — since #964 declared
- *     explicitly in `OPTIONAL_FIELDS` (`session-schema/constants.mjs`) rather
- *     than inferable only from an `if` — so a record vault-mirror refuses to
- *     render can pass it cleanly.
- *   - vault-mirror's render path — its own, differently-shaped requirement
- *     set (`RENDERABLE_SESSION_FIELDS_V1` / `_V2` / `_V3`, exported from
- *     `scripts/lib/vault-mirror/render-sessions.mjs` and consumed by the
- *     matching `generateSessionNote*` generator, routed by
- *     `detectSessionSchema`), which REQUIRES `effectiveness` to be present.
- *     A record can therefore be schema-valid and still get no vault note.
- *     Since #964 those lists are module-scope and pinned to the write-path
- *     schema by a mechanical superset test (v1 ⊇ `REQUIRED_FIELDS`, with
- *     measured carve-outs for the write-unreachable v2/v3) — so "renderable"
- *     is now a stated strengthening of "schema-valid" rather than an
- *     undeclared second opinion. That relationship is exactly why BOTH
- *     populations still have to be reported: a superset can still exclude.
- *
- * Reporting one population would hide the other, so the banner names both and
- * attributes each to its own consequence.
- *
- * Live ledger at HEAD 730ee9d (measured 2026-08-03; 205 parseable records,
- * 146 of them `status: 'abandoned'`, all 205 routing to the v1 generator):
- * `validateSession` fails 0, vault-mirror render fails 10 — and all 10 of
- * those are abandoned, i.e. discarded by the #909 filter BEFORE the render
- * path (see `mirrorSkipReason` below), so the banner is correctly silent
- * here. The counts move as the ledger grows; treat them as a dated
- * measurement, never as an invariant — re-run the probe before quoting them.
+ * TWO CONTRACTS OVER ONE STORE — the banner reports schema failures and
+ * actual mirror failures independently. Effectiveness is optional/nullable in
+ * both contracts (#1575); its absence now renders unknown metrics instead of
+ * losing a note. Legacy V2/V3 shapes remain outside the canonical writer's
+ * schema even when the mirror renders them. A renderer-only failure does not
+ * prove the record bypassed the writer, so the remedy must name the observed
+ * failure rather than infer its provenance.
  *
  * The vault-mirror population is measured by CALLING THE REAL RENDER PATH in
  * a try/catch — never by re-deriving its required-field list here. A third
@@ -92,6 +66,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
+import { resolveEventsLedgerRoot } from './platform.mjs';
 import { isRealSession } from './session-schema/filters.mjs';
 import { validateSession } from './session-schema/validator.mjs';
 import {
@@ -224,7 +199,9 @@ export function checkSessionsIntegrity({ repoRoot } = {}) {
   try {
     if (!repoRoot || typeof repoRoot !== 'string') return null;
 
-    const lines = readJsonlLines(path.join(repoRoot, SESSIONS_PATH));
+    // #1592: the repo's ONE ledger — the main checkout's for a linked worktree,
+    // where every writer appends. The worktree has none since #1584.
+    const lines = readJsonlLines(path.join(resolveEventsLedgerRoot(repoRoot), SESSIONS_PATH));
     if (lines === null || lines.length === 0) return null;
 
     /** @type {{line: number, sessionId: string, error: string}[]} */
@@ -284,11 +261,12 @@ export function checkSessionsIntegrity({ repoRoot } = {}) {
       );
     }
 
-    const base =
-      `sessions-integrity: ${parts.join('; ')} — records were appended without passing ` +
-      `scripts/emit-session.mjs (which validates and would have refused). ` +
-      `Inspect: node -e with validateSession from scripts/lib/session-schema/validator.mjs; ` +
-      `re-emit affected records via scripts/emit-session.mjs`;
+    const remedy = schemaInvalid.length > 0
+      ? 'Inspect schema-invalid records with validateSession; preview repairs with ' +
+        'node scripts/repair-invalid-sessions.mjs --dry-run; absolute --apply requires ' +
+        'an explicit --repo-root equal to the canonical current Git top-level (no trailing slash or ..)'
+      : 'Inspect the reported vault-mirror rendering errors; schema-valid records need no schema repair';
+    const base = `sessions-integrity: ${parts.join('; ')} — ${remedy}`;
 
     const message = severity === 'alert' ? `🚨 ${base}.` : `⚠ ${base}.`;
 

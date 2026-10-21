@@ -33,6 +33,11 @@
 //     through, so this guard is the only hard PSA-004 stop left for a
 //     lint-staged sweep — softening it would weaken detection for the very
 //     class it exists to catch.
+//   - A path outside allowedPaths that an EARLIER wave of this session
+//     declared (`filescopes/wave-<k>.scopes.json`, k < the manifest's wave,
+//     mtime not older than the session start) passes with an info line
+//     (#1680): the coordinator commits after the last wave, when the active
+//     manifest names only that wave's paths.
 //   - EMPTY allowedPaths is no longer a silent pass: a Discovery (read-only)
 //     manifest means no agent is committing, i.e. a coordinator commit between
 //     waves → allow with a note; a manifest older than the newest session
@@ -49,7 +54,7 @@
 
 import { execSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 
 // Re-use existing helpers from scripts/lib/hardening.mjs.
 // IMPORTANT: import is resolved relative to THIS file's location (the hook
@@ -59,12 +64,14 @@ import { isAbsolute, join, relative, sep } from 'node:path';
 import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 import { withStagingFenceLock } from '../scripts/lib/session-lock.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
-import { resolveSessionRoot } from '../scripts/lib/platform.mjs';
-import { classifyEmptyScope, findOwnScopeFile, sessionAgeMs } from '../scripts/lib/scope-gate.mjs';
+import { resolveEventsLedgerRoot, resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { classifyEmptyScope, findOwnScopeFile, sessionAgeMs, unionFileScopes } from '../scripts/lib/scope-gate.mjs';
+import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import {
   classifyManifestSession,
   readProcessLocalSessionIds,
 } from '../scripts/lib/session-identity/own-session.mjs';
+import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
 
 // Resolve the "current" agent id from SO_WAVE_AGENT_ID (when set by the
 // caller) or fall back to a PID-derived marker. The fence files themselves
@@ -157,7 +164,8 @@ function findOverlaps(fenceJsonPath, ourStaged) {
 /** Remediation for an allowedPaths violation, printed once per commit. */
 const ALLOWED_PATHS_HINT = [
   '',
-  'These files were likely added by lint-staged eslint --fix / prettier --write.',
+  'Each path is either from a previous session or wave that no wave scope of this',
+  'session declares, or a file lint-staged (eslint --fix / prettier --write) re-staged.',
   'To proceed:',
   '  1) git restore --staged <path>   # for each foreign path',
   '  2) git commit                    # retry',
@@ -186,6 +194,110 @@ function mtimeMsOf(file) {
   }
 }
 
+/** Emitted by `hooks/_lib/lock-bootstrap.mjs` on every session-lock acquire. */
+const LOCK_ACQUIRED_EVENT = 'orchestrator.session.lock.acquired';
+
+/**
+ * Tail window of events.jsonl searched for the genesis anchor (1 MiB, the same
+ * window `session-id.mjs` reads). CEILING (BV-004): a session whose first
+ * acquire scrolled out of it gets its re-acquires only, i.e. a later start —
+ * fewer earlier waves count, the guard blocks (safe direction). Revisit when a
+ * compacted session reports a block on its own earlier-wave path.
+ */
+const GENESIS_TAIL_BYTES = 1024 * 1024;
+
+/**
+ * Epoch ms of the FIRST `orchestrator.session.lock.acquired` event carrying one
+ * of this process's raw session ids, or `null` (#1681). A compact re-acquires
+ * the lock under the SAME raw id and rewrites both session clocks
+ * (`.claude/rules/identity-and-locks.md`); the first acquire is the start that
+ * survives it. Same anchor as `ownGenesisMs()` in
+ * `scripts/lib/sessions-staleness-banner.mjs`. Raw ids only, never the semantic
+ * label (two sessions can mint the same one, #1066). Never throws: a missing,
+ * unreadable or non-regular ledger yields `null`.
+ *
+ * @param {string} lockRoot root holding this session's lock
+ * @param {Set<string>} ownIds this process's raw session ids
+ * @returns {number|null}
+ */
+function ownGenesisMs(lockRoot, ownIds) {
+  if (ownIds.size === 0) return null;
+  let window;
+  try {
+    const ledger = join(resolveEventsLedgerRoot(lockRoot), '.orchestrator', 'metrics', 'events.jsonl');
+    window = readTailWindow(ledger, GENESIS_TAIL_BYTES, { noFollow: true });
+  } catch {
+    return null;
+  }
+  const lines = window.text.split('\n');
+  if (window.cut) lines.shift(); // the window began mid-record
+  let genesis = null;
+  for (const line of lines) {
+    if (!line.includes(LOCK_ACQUIRED_EVENT)) continue;
+    let record;
+    try {
+      record = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (record?.event !== LOCK_ACQUIRED_EVENT || !ownIds.has(record.session_id)) continue;
+    const ms = Date.parse(record.timestamp);
+    if (Number.isFinite(ms) && (genesis === null || ms < genesis)) genesis = ms;
+  }
+  return genesis;
+}
+
+/**
+ * The declared files of every EARLIER wave of this session, read from the
+ * per-wave aggregate sidecars `<manifest dir>/filescopes/wave-<k>.scopes.json`
+ * (`scripts/materialize-wave-scope.mjs`) for k < the manifest's `wave` (#1680).
+ * The coordinator commits after the LAST wave, when the active manifest names
+ * only that wave's paths; without this, a file an earlier wave of the same
+ * session changed blocked the commit.
+ *
+ * A sidecar counts only when its mtime is not older than this session's start
+ * (`now - sessionAge`); an unknown session clock reads none — fail closed, the
+ * pre-#1680 behaviour — so a stale `filescopes/` of an earlier session never
+ * widens the scope. Peer records are dropped by `unionFileScopes` (the same
+ * exclusion `--union` applies). An unreadable or malformed sidecar is skipped.
+ *
+ * CEILING (BV-004): consulted for every non-foreign manifest — own AND unknown
+ * (unbound, or a shell without a session id) — so a peer session sharing this
+ * working copy that materializes sidecars in the same state dir after our
+ * session start widens our coverage: the sidecars carry no session binding.
+ * Revisit when they gain one.
+ *
+ * #1681: `sessionAge` follows the NEWEST clock, and a compact rewrites both
+ * (`current-session.json.timestamp`, `session.lock.started_at`), so the start
+ * is pulled back to `genesisMs` — the first lock acquire of this session's raw
+ * id ({@link ownGenesisMs}). Only ever pulled back, never forward; without a
+ * genesis the clock alone decides, as before. A `/clear` mints a NEW raw id, so
+ * the waves before it stay outside (safe direction: the guard blocks).
+ *
+ * @param {string} scopePath absolute path of the active manifest
+ * @param {unknown} wave the manifest's `wave` field
+ * @param {number|null} sessionAge ms since the newest session clock
+ * @param {number|null} [genesisMs] epoch ms of this session's first lock acquire
+ * @returns {Array<{wave: number, files: string[]}>}
+ */
+function earlierWaveScopes(scopePath, wave, sessionAge, genesisMs = null, now = Date.now()) {
+  if (typeof sessionAge !== 'number' || !Number.isInteger(wave) || wave < 2) return [];
+  const sessionStartMs = typeof genesisMs === 'number' ? Math.min(now - sessionAge, genesisMs) : now - sessionAge;
+  const out = [];
+  for (let k = 1; k < wave; k++) {
+    const sidecar = join(dirname(scopePath), 'filescopes', `wave-${k}.scopes.json`);
+    const mtime = mtimeMsOf(sidecar);
+    if (mtime === null || mtime < sessionStartMs) continue;
+    try {
+      const files = unionFileScopes(JSON.parse(readFileSync(sidecar, 'utf8')));
+      if (files.length > 0) out.push({ wave: k, files });
+    } catch {
+      // unreadable / malformed: grants nothing
+    }
+  }
+  return out;
+}
+
 /**
  * Sub-mode B's decision, pure: which lines to print and whether to block.
  *
@@ -211,11 +323,14 @@ function mtimeMsOf(file) {
  * @param {Set<string>} p.ownIds this process's session ids
  * @param {number|null} p.scopeMtimeMs
  * @param {number|null} p.sessionAge ms since the newest session clock
+ * @param {Array<{wave: number, files: string[]}>} [p.earlierWaves] declared
+ *   files of this session's earlier waves (`earlierWaveScopes`, #1680); a
+ *   violating path one of them covers passes with an info line
  * @returns {{action: 'pass'|'report'|'block', lines: string[], hint?: string[]}}
  *   `hint` = the remediation block; `main()` prints it ONCE after every
  *   manifest was judged, so two blocking manifests do not repeat it (#1514.3).
  */
-function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeRel, ownIds, scopeMtimeMs, sessionAge }) {
+function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeRel, ownIds, scopeMtimeMs, sessionAge, earlierWaves = [] }) {
   if (stagedFiles.length === 0) return { action: 'pass', lines: [] };
 
   // Same classifier and same disposition as enforce-scope Gate 3b: only a
@@ -232,18 +347,25 @@ function scopeCommitVerdict({ scope, stagedFiles, scopePathOf = (f) => f, scopeR
 
   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
   if (allowedPaths.length > 0) {
-    const violations = stagedFiles.filter(
-      (f) => {
-        const scoped = scopePathOf(f);
-        return scoped === null || !allowedPaths.some((pattern) => pathMatchesPattern(scoped, pattern));
-      },
-    );
-    if (violations.length === 0) return { action: 'pass', lines: [] };
+    const violations = [];
+    const notes = [];
+    for (const f of stagedFiles) {
+      const scoped = scopePathOf(f);
+      if (scoped !== null && allowedPaths.some((pattern) => pathMatchesPattern(scoped, pattern))) continue;
+      // #1680: declared files only — no test-sibling expansion, no widening.
+      const earlier = scoped === null
+        ? undefined
+        : earlierWaves.find((w) => w.files.some((pattern) => pathMatchesPattern(scoped, pattern)));
+      if (earlier) notes.push(`wave-scope-commit-guard: ${f} belongs to wave ${earlier.wave} of this session — allowed.`);
+      else violations.push(f);
+    }
+    if (violations.length === 0) return { action: 'pass', lines: notes };
     // Blocks under `warn` too — see the header: in a warn-mode wave this is
     // the only hard stop a lint-staged sweep meets before the commit exists.
     return {
       action: 'block',
       lines: [
+        ...notes,
         `✗ wave-scope-commit-guard: staged paths outside wave-scope.allowedPaths (${scopeRel}):`,
         ...violations.map((v) => `  - ${v}`),
       ],
@@ -398,14 +520,21 @@ async function main() {
       process.exit(1);
     }
 
+    const manifest = scope !== null && typeof scope === 'object' ? scope : {};
+    // #1634: read the clock beside this session's own lock (its
+    // `session_root` after ExitWorktree), not at the commit's root.
+    const lockRoot = resolveOwnLockRoot({ session_id: [...ownIds][0] ?? null, cwd: root }, root);
+    const sessionAge = sessionAgeMs(lockRoot);
     const verdict = scopeCommitVerdict({
-      scope: scope !== null && typeof scope === 'object' ? scope : {},
+      scope: manifest,
       stagedFiles,
       scopePathOf,
       scopeRel,
       ownIds,
       scopeMtimeMs: mtimeMsOf(scopePath),
-      sessionAge: sessionAgeMs(root),
+      sessionAge,
+      // Consulted for any non-foreign (own or unknown) manifest: the verdict returns on a foreign one first.
+      earlierWaves: earlierWaveScopes(scopePath, manifest.wave, sessionAge, ownGenesisMs(lockRoot, ownIds)),
     });
     for (const line of verdict.lines) process.stderr.write(`${line}\n`);
     if (verdict.hint) hint = verdict.hint;

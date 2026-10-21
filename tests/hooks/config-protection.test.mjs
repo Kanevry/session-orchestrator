@@ -51,8 +51,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { expectDeny, expectAllow as expectNoDeny } from '../_helpers/hook-decision.mjs';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/config-protection.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/config-protection.mjs', import.meta.url));
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
 
 const CLAUDE_MD_DEFAULT = [

@@ -21,7 +21,7 @@
  * bare exit-code assertion is green in both directions.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
@@ -37,6 +37,7 @@ import {
   scopeVerifiedPayload,
   verifyWaveScope,
 } from '../../scripts/lib/scope-echo.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 import { decide } from '../../hooks/pre-task-scope-disjoint.mjs';
 
 const REPO_ROOT = process.cwd();
@@ -46,6 +47,7 @@ const EVENTS_REL = path.join('.orchestrator', 'metrics', 'events.jsonl');
 /** A disposable project dir carrying both the ledger and the state dir. */
 function makeProject() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'scope-e2e-'));
+  onTestFinished(() => removeTree(dir));
   mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
   mkdirSync(path.join(dir, '.claude'), { recursive: true });
   // Load-bearing: `waveKeyOf()` derives the wave NUMBER from this manifest, and

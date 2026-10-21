@@ -5,7 +5,7 @@
  *          sourceRecordValue, learningSourceRecord, sourceRecordLine (#1503)
  */
 
-import { toDate, truncateAtWord, yamlQuoteIfNeeded, legacySubjectToSlug, isValidSlug, buildTag, resolveSourceSessionLink } from './utils.mjs';
+import { toDate, truncateAtWord, yamlQuoteIfNeeded, legacySubjectToSlug, isValidSlug, buildTag, resolveSourceSessionLink, noteIdFor, yamlNoteId } from './utils.mjs';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 
@@ -186,7 +186,7 @@ export function generateLearningNote(entry, slug, opts = {}) {
   const sourceSessionBodyLink = _srcIsLink ? `[[${_srcTarget}]]` : _srcTarget;
 
   return `---
-id: ${slug}
+id: ${yamlNoteId(noteIdFor(opts.repoNs, slug))}
 type: learning
 title: ${title}
 status: ${status}
@@ -242,7 +242,7 @@ export function generateLearningNoteV2(entry, slug, opts = {}) {
   const recordLine = sourceRecordLine(learningSourceRecord(entry));
 
   return `---
-id: ${slug}
+id: ${yamlNoteId(noteIdFor(opts.repoNs, slug))}
 type: learning
 title: ${title}
 status: ${status}

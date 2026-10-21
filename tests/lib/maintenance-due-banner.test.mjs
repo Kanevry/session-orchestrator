@@ -33,6 +33,7 @@ import {
 } from '@lib/auto-dialectic.mjs';
 
 let tmpRepo;
+let tmpVault;
 let savedEnv;
 
 beforeEach(() => {
@@ -41,9 +42,9 @@ beforeEach(() => {
     SO_VAULT_DIR: process.env.SO_VAULT_DIR,
     CLAUDE_PROJECT_DIR: process.env.CLAUDE_PROJECT_DIR,
   };
-  const vault = fs.mkdtempSync(path.join(os.tmpdir(), 'maintenance-due-vault-'));
-  process.env.SO_VAULT_DIR = vault;
-  process.env.CLAUDE_PROJECT_DIR = vault;
+  tmpVault = fs.mkdtempSync(path.join(os.tmpdir(), 'maintenance-due-vault-'));
+  process.env.SO_VAULT_DIR = tmpVault;
+  process.env.CLAUDE_PROJECT_DIR = tmpVault;
 });
 
 afterEach(() => {
@@ -53,6 +54,7 @@ afterEach(() => {
   }
   try {
     fs.rmSync(tmpRepo, { recursive: true, force: true });
+    fs.rmSync(tmpVault, { recursive: true, force: true });
   } catch {
     /* best-effort */
   }
@@ -149,6 +151,17 @@ describe('checkMaintenanceDue', () => {
   // BUG: without a cooldown the banner keeps demanding /session housekeeping
   // right after one ran — the signals need a whole session to clear, so the
   // instrument would nag through every start of the following week.
+  it('does not suppress maintenance after a synthetic completed housekeeping row', async () => {
+    writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5, 3);
+    const recent = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    writeMetrics('sessions.jsonl', [JSON.stringify({
+      session_id: 'synthetic-housekeeping', session_type: 'housekeeping',
+      status: 'completed', _synthetic: true, completed_at: recent,
+    })]);
+    const result = await checkMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    expect(result.message).toContain('housekeeping');
+  });
+
   it('suppresses the banner after a recent housekeeping session, without suppressing the computation', async () => {
     writeLearnings(MAINTENANCE_MIN_LEARNINGS + 5, 3);
     const twoDaysAgo = new Date(Date.now() - 2 * 86_400_000).toISOString();
@@ -326,7 +339,7 @@ describe('checkMaintenanceDue', () => {
     writeMetrics(
       'sessions.jsonl',
       Array.from({ length: 6 }, (_, i) =>
-        JSON.stringify({ session_id: `s-${i}`, started_at: `2026-01-0${i + 1}T08:00:00.000Z` }),
+        JSON.stringify({ session_type: 'deep', session_id: `s-${i}`, started_at: `2026-01-0${i + 1}T08:00:00.000Z` }),
       ),
     );
     await writeDialecticPending({ repoRoot: tmpRepo, diff: '# target: user\n## A\n- x\n' });
@@ -429,6 +442,30 @@ describe('checkMaintenanceDue', () => {
 
     const result = await checkMaintenanceDue({ repoRoot: tmpRepo, config: {} });
     expect(result.message).toContain(`generated-rules-expiring: nearly-expired.md ${expiresAt}`);
+  });
+
+  // BUG: the sweep resolves each entry through the HOST-LOCAL learnings store;
+  // a host whose store lacks a file's ids was still told to run the sweep, which
+  // then kept the file whole every time (M5, 2026-10-19: 0 of 77 ids resolved).
+  it('names the sweep only for files it can act on and calls a file with no resolvable id not sweepable', async () => {
+    const days = GENERATED_RULE_EXPIRY_HORIZON_DAYS - 4;
+    const expiresAt = new Date(Date.now() + days * 86_400_000).toISOString().slice(0, 10);
+    writeMetrics('learnings.jsonl', [learning(0, { expiresAt })]);
+    const frontmatter = `auto-generated: true\nconsolidated: true\nexpires-at: ${expiresAt}`;
+    const body = (id) =>
+      `**\`expires-at\` ${expiresAt} = the EARLIEST of the 1 absorbed dates** — fixture.\n\n` +
+      `### Entry ${id}\n\nProse.\n\n## Provenance\n\n- learning-key: \`k-${id}\`\n- learning-id: \`${id}\`\n`;
+    writeRule('live.md', frontmatter, body('learn-0'));
+    writeRule('stuck.md', frontmatter, body('elsewhere-1'));
+
+    const computed = await computeMaintenanceDue({ repoRoot: tmpRepo, config: {} });
+    const segments = computed.due.find((d) => d.id === 'generated-rules-expiring')?.detail.split('; ') ?? [];
+    expect(segments).toHaveLength(2);
+    expect(segments[0]).toContain(`live.md ${expiresAt}`);
+    expect(segments[0]).toContain('scripts/sweep-expired-rules.mjs');
+    expect(segments[1]).toContain(`stuck.md ${expiresAt}`);
+    expect(segments[1]).toContain('not sweepable on this host');
+    expect(segments[1]).not.toContain('scripts/sweep-expired-rules.mjs');
   });
 
   // BUG (HR-101/HR-104): the reconcile engine stamps a ~30-day TTL on every rule

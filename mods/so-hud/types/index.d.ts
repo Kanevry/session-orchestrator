@@ -14,7 +14,13 @@ export interface SoSnapshot {
   lock: { session_id: string | null; live: boolean; last_heartbeat: string | null } | null
   session: { session_id: string; semantic_session_id: string | null } | null
   wave: { running: boolean | null; number: number | null; role: string | null; agents_total: number | null; source: string | null }
-  agents: { entries: { id: string; typ: string | null; modellfamilie: string | null; status: string | null; tokens: null; letzter_request_at: null; quelle: string }[]; source: string | null; at: string | null; degraded: unknown }
+  agents: { entries: { id: string; typ: string | null; modellfamilie: string | null; status: string | null; tokens: null; letzter_request_at: null; quelle: string }[]; source: string | null; at: string | null; degraded: unknown
+    /** Running agents of this session; null when unknown (see stale_reason). Absent from collectors before #1580. */
+    running?: number | null
+    /** Why `running` is null: 'no-session', 'cache-unverifiable', 'no-session-start' or 'older-than-session'; null when measured. */
+    stale_reason?: string | null
+    /** Agents still running without a Stop past 24 h, counted apart from `running`; absent from older collectors. */
+    decayed?: number | null }
   state: { status: string | null; session_type: string | null; current_wave: number | null; total_waves: number | null }
   gate: { last: { variant: string | null; passed: boolean | null; check_failed: boolean | null; exit_code: number | null; at: string | null } | null; last_green_sha: string | null }
   peers: { session_id: string; branch: string | null; status: string | null; current_wave: number | null; last_heartbeat: string | null; gleiches_working_copy: boolean; scope_paths: string[] | null }[]

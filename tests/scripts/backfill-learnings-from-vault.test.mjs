@@ -28,6 +28,7 @@ import {
   locateNote,
 } from '../../scripts/backfill-learnings-from-vault.mjs';
 import { kebab } from '../../scripts/lib/learnings/kebab.mjs';
+import { _resetStoreRoleCacheForTests } from '../../scripts/lib/learnings/store-role.mjs';
 import { renderRule } from '../../scripts/lib/reconcile/renderer.mjs';
 import { generateLearningNote } from '../../scripts/lib/vault-mirror/render-learnings.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
@@ -45,6 +46,8 @@ afterEach(() => {
     }
   }
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
+  _resetStoreRoleCacheForTests();
 });
 
 function mkTmp(prefix) {
@@ -432,6 +435,94 @@ describe('write discipline', () => {
     expect(second.report.summary.applied).toBe(0);
     expect(second.report.summary.orphans).toBe(0);
     expect(sha(storePath)).toBe(hashAfterFirst);
+  });
+
+  // Bug (#1685.1): on an inbox-role host appendLearning() lands the restore in
+  // learnings-inbox.jsonl, but orphans were classified against the live store
+  // and archive only — every later --apply re-appended the same record.
+  it('a second --apply on an inbox-role host appends nothing to the inbox', async () => {
+    vi.stubEnv('SO_LEARNINGS_STORE_ROLE', 'inbox');
+    _resetStoreRoleCacheForTests();
+    const l = learningOf({ id: '99999999-0000-4000-8000-000000000003' });
+    const { repoRoot, vaultDir, storePath } = makeFixture([{ learning: l }]);
+    const inboxPath = join(repoRoot, '.orchestrator', 'metrics', 'learnings-inbox.jsonl');
+
+    const first = await runMain(['--vault-dir', vaultDir, '--apply'], { repoRoot, now: NOW });
+    expect(first.report.summary.applied).toBe(1);
+    expect(readFileSync(storePath, 'utf8')).toBe('');
+    const inboxAfterFirst = readFileSync(inboxPath, 'utf8');
+    expect(inboxAfterFirst.trim().split('\n')).toHaveLength(1);
+
+    const second = await runMain(['--vault-dir', vaultDir, '--apply'], { repoRoot, now: NOW });
+    expect(second.report.summary.applied).toBe(0);
+    expect(second.report.summary.orphans).toBe(0);
+    expect(second.report.records[0].found_in).toEqual(['inbox']);
+    expect(readFileSync(inboxPath, 'utf8')).toBe(inboxAfterFirst);
+  });
+
+  // Bug (#1685 review): on a WRITER host every inbox id counted as present, but
+  // readers hide receipted inbox records — an id ingested, receipted and later
+  // lost from live was reported present-in-store and never restored.
+  it('a receipted inbox id lost from the live store stays an orphan on a writer host', async () => {
+    vi.stubEnv('SO_LEARNINGS_STORE_ROLE', 'writer');
+    _resetStoreRoleCacheForTests();
+    const l = learningOf({ id: '99999999-0000-4000-8000-000000000004' });
+    const { repoRoot, vaultDir, storePath } = makeFixture([{ learning: l }]);
+    const metrics = join(repoRoot, '.orchestrator', 'metrics');
+    writeFileSync(join(metrics, 'learnings-inbox.jsonl'), `${JSON.stringify(l)}\n`);
+    writeFileSync(
+      join(metrics, 'learnings-inbox-ingested.jsonl'),
+      `${JSON.stringify({ id: l.id, ingested_at: '2026-08-01T00:00:00.000Z' })}\n`
+    );
+
+    const res = await runMain(['--vault-dir', vaultDir, '--apply'], { repoRoot, now: NOW });
+    expect(res.report.records[0].status).toBe('orphan');
+    expect(res.report.summary.applied).toBe(1);
+    expect(JSON.parse(readFileSync(storePath, 'utf8').trim()).id).toBe(l.id);
+  });
+
+  // Bug (#1689 review !208): on a writer host a VISIBLE inbox id (not receipted,
+  // not archived) is part of the read view — if non-inbox roles ignored the
+  // inbox, the backfill would append a duplicate into the live store.
+  it('a visible inbox id on a writer host is present-in-store and nothing is appended', async () => {
+    vi.stubEnv('SO_LEARNINGS_STORE_ROLE', 'writer');
+    _resetStoreRoleCacheForTests();
+    const l = learningOf({ id: '99999999-0000-4000-8000-000000000005' });
+    const { repoRoot, vaultDir, storePath } = makeFixture([{ learning: l }]);
+    const inboxPath = join(repoRoot, '.orchestrator', 'metrics', 'learnings-inbox.jsonl');
+    writeFileSync(inboxPath, `${JSON.stringify(l)}\n`);
+
+    const res = await runMain(['--vault-dir', vaultDir, '--apply'], { repoRoot, now: NOW });
+    expect(res.report.records[0].status).toBe('present-in-store');
+    expect(res.report.records[0].found_in).toEqual(['inbox']);
+    expect(res.report.summary.applied).toBe(0);
+    expect(readFileSync(storePath, 'utf8')).toBe('');
+    expect(readFileSync(inboxPath, 'utf8')).toBe(`${JSON.stringify(l)}\n`);
+  });
+
+  // Bug (#1689 review !208): on an inbox host a receipted inbox id still counts
+  // as present (no re-append), but no reader sees it — the report claimed it
+  // present-in-store, hiding that it is not in the read view.
+  it('a receipted inbox id on an inbox host is reported present-in-inbox-hidden, not appended', async () => {
+    vi.stubEnv('SO_LEARNINGS_STORE_ROLE', 'inbox');
+    _resetStoreRoleCacheForTests();
+    const l = learningOf({ id: '99999999-0000-4000-8000-000000000006' });
+    const { repoRoot, vaultDir } = makeFixture([{ learning: l }]);
+    const metrics = join(repoRoot, '.orchestrator', 'metrics');
+    const inboxPath = join(metrics, 'learnings-inbox.jsonl');
+    writeFileSync(inboxPath, `${JSON.stringify(l)}\n`);
+    writeFileSync(
+      join(metrics, 'learnings-inbox-ingested.jsonl'),
+      `${JSON.stringify({ id: l.id, ingested_at: '2026-08-01T00:00:00.000Z' })}\n`
+    );
+
+    const res = await runMain(['--vault-dir', vaultDir, '--apply'], { repoRoot, now: NOW });
+    expect(res.report.records[0].status).toBe('present-in-inbox-hidden');
+    expect(res.report.summary.present_in_inbox_hidden).toBe(1);
+    expect(res.report.summary.present_in_store).toBe(0);
+    expect(res.report.summary.orphans).toBe(0);
+    expect(res.report.summary.applied).toBe(0);
+    expect(readFileSync(inboxPath, 'utf8')).toBe(`${JSON.stringify(l)}\n`);
   });
 
   // Bug (#1487 item 12): the "not already present" re-check and the append ran

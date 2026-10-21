@@ -22,6 +22,25 @@ function call(name, id = 0) {
 }
 
 describe('native MCP Windows transport', () => {
+  it('keeps synthetic completed records out of the measured last-five window', () => {
+    const measured = { session_id: 'measured', session_type: 'deep' };
+    const stub = { session_id: 'stub', status: 'completed', session_type: 'unknown', _synthetic: true };
+    ledger([measured, stub].map((record) => JSON.stringify(record)).join('\n'));
+    const output = readSessionMetrics(root);
+    expect(output).toContain(JSON.stringify(measured));
+    expect(output).not.toContain(JSON.stringify(stub));
+  });
+  it('reads the main ledger from a linked worktree and keeps nonsynthetic legacy sessions', () => {
+    const worktree = join(root, 'worktree');
+    const gitDir = join(root, '.git', 'worktrees', 'worktree');
+    mkdirSync(gitDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(gitDir, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    const legacy = { session_id: 'legacy', session_type: 'deep', status: 'abandoned' };
+    ledger(JSON.stringify(legacy));
+    expect(readSessionMetrics(worktree)).toContain(JSON.stringify(legacy));
+  });
   it('initializes and lists both tools without bash or jq on PATH; recovers after bad JSON and ignores notifications', { timeout: 40_000 }, () => {
     const child = spawnSync(process.execPath, [server], {
       cwd: root, encoding: 'utf8', timeout: 30_000,
@@ -43,7 +62,7 @@ describe('native MCP Windows transport', () => {
       { jsonrpc: '2.0', id: 0, result: { tools: [
         { name: 'session_config', description: 'Reads Session Config section from the project instruction file (CLAUDE.md or AGENTS.md alias)',
           inputSchema: { type: 'object', properties: {}, required: [] } },
-        { name: 'session_metrics', description: 'Reads the last 5 REAL session metrics entries from .orchestrator/metrics/sessions.jsonl (abandoned phantom stubs excluded)',
+        { name: 'session_metrics', description: 'Reads the last 5 MEASURED session metrics entries from .orchestrator/metrics/sessions.jsonl (unmeasured records excluded)',
           inputSchema: { type: 'object', properties: {}, required: [] } },
       ] } },
     ]);
@@ -69,26 +88,26 @@ describe('native MCP Windows transport', () => {
   });
 
   it('filters abandoned and malformed records before the last-five window and reports partial token coverage', () => {
-    ledger('{"session_id":"old"}\n{"session_id":"a","total_token_input":90}\n'
-      + '{broken\nnull\n42\n[]\n{"session_id":"b"}\n{"session_id":"c"}\n'
-      + '{"session_id":"d"}\n{"session_id":"e"}\n'
-      + '{"status":"abandoned"}\n{"status":"abandoned"}\n');
+    ledger('{"session_id":"old","session_type":"deep"}\n{"session_id":"a","session_type":"deep","total_token_input":90}\n'
+      + '{broken\nnull\n42\n[]\n{"session_id":"b","session_type":"deep"}\n{"session_id":"c","session_type":"deep"}\n'
+      + '{"session_id":"d","session_type":"deep"}\n{"session_id":"e","session_type":"deep"}\n'
+      + '{"session_id":"stub1","status":"abandoned","_synthetic":true}\n{"session_id":"stub2","status":"abandoned","_synthetic":true}\n');
     expect(call('session_metrics').result.content[0].text).toBe(
-      '{"session_id":"a","total_token_input":90}\n{"session_id":"b"}\n{"session_id":"c"}\n'
-      + '{"session_id":"d"}\n{"session_id":"e"}\n\nabandoned stubs excluded: 2\n\n--- token summary ---\n'
+      '{"session_id":"a","session_type":"deep","total_token_input":90}\n{"session_id":"b","session_type":"deep"}\n{"session_id":"c","session_type":"deep"}\n'
+      + '{"session_id":"d","session_type":"deep"}\n{"session_id":"e","session_type":"deep"}\n\nunmeasured records excluded: 2\n\n--- token summary ---\n'
       + 'tokens: 90 in / ? out (coverage: 0 subagents) ⚠ partial — subagent token data missing; total is not a reliable cost estimate [session: a]',
     );
   });
 
   it('reports stubs-only ledger distinctly from an empty file', () => {
-    ledger('{"status":"abandoned"}\n{bad');
-    expect(readSessionMetrics(root)).toBe('No real sessions (abandoned stubs excluded: 1)');
+    ledger('{"session_id":"stub","status":"abandoned","_synthetic":true}\n{bad');
+    expect(readSessionMetrics(root)).toBe('No measured sessions (unmeasured records excluded: 1)');
   });
 
   it('falls back to legacy metrics and uses the latest token-bearing session', () => {
-    ledger('{"total_token_input":99}\n{"session_id":"latest","total_token_output":20,"subagents_with_tokens":2}\n', '.claude');
-    expect(readSessionMetrics(root)).toBe('{"total_token_input":99}\n'
-      + '{"session_id":"latest","total_token_output":20,"subagents_with_tokens":2}\n\nabandoned stubs excluded: 0\n\n--- token summary ---\n'
+    ledger('{"total_waves":1,"total_token_input":99}\n{"session_id":"latest","session_type":"deep","total_token_output":20,"subagents_with_tokens":2}\n', '.claude');
+    expect(readSessionMetrics(root)).toBe('{"total_waves":1,"total_token_input":99}\n'
+      + '{"session_id":"latest","session_type":"deep","total_token_output":20,"subagents_with_tokens":2}\n\nunmeasured records excluded: 0\n\n--- token summary ---\n'
       + 'tokens: ? in / 20 out (coverage: 2 subagents) [session: latest]');
   });
 

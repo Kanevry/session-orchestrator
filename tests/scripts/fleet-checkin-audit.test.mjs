@@ -1,6 +1,6 @@
 /** CLI contract tests: exits/streams, confinement and read-only inputs. */
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { promises as fs, mkdtempSync, mkdirSync, realpathSync } from 'node:fs';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { promises as fs, mkdtempSync, mkdirSync, realpathSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -151,6 +151,7 @@ describe('fleet-checkin-audit CLI boundary', () => {
 // Every real child inherits isolated homes explicitly, including the probe.
 // No filesystem/process mocks: inability to spawn is an honest named skip.
 const childRoot = mkdtempSync(path.join(realpathSync(TEMP_BASE), 'so-63a-child-'));
+afterAll(() => { for (const dir of [root, childRoot]) if (dir) rmSync(dir, { recursive: true, force: true }); });
 const childEnv = { ...process.env, HOME: path.join(childRoot, 'home'), NAVIGATOR_CONFIG_DIR: path.join(childRoot, 'navigator'), SO_VAULT_DIR: path.join(childRoot, 'vault'), TMPDIR: path.join(childRoot, 'tmp') };
 for (const dir of [childEnv.HOME, childEnv.NAVIGATOR_CONFIG_DIR, childEnv.SO_VAULT_DIR, childEnv.TMPDIR]) mkdirSync(dir);
 const probe = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { env: childEnv, encoding: 'utf8', timeout: 5000 });

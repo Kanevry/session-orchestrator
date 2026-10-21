@@ -166,12 +166,13 @@ function makeTick(verdict, date = '2026-04-27') {
 // string assertions and parseActions(.split('\n')). No-op on LF.
 const norm = (s) => (s ?? '').replace(/\r\n/g, '\n');
 
-function runWatcher(args, { fixtureDir, callLog, cwd } = {}) {
+function runWatcher(args, { fixtureDir, callLog, cwd, extraEnv } = {}) {
   const env = {
     ...process.env,
     PATH: `${FIXTURES_DIR}${delimiter}${process.env.PATH}`,
     GLAB_FIXTURE_DIR: fixtureDir ?? '',
     ...(callLog ? { GLAB_CALL_LOG: callLog } : {}),
+    ...extraEnv,
   };
 
   const r = spawnSync(process.execPath, [SCRIPT, '--glab-bin', STUB_GLAB, ...args], {
@@ -285,10 +286,12 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     ]);
 
     // beforeEach already wrote CLAUDE.md with cross-repo.projects: [example-app]
+    // #1567 item 4: the flip snippet hardcoded ~/Projects/$d instead of following projects-root.
+    const projectsRoot = join(tmp, 'code-root');
 
     const result = runWatcher(
       ['--issue', '305', '--dep-issues', '303,304', '--dry-run'],
-      { fixtureDir: tmp, cwd: tmp }
+      { fixtureDir: tmp, cwd: tmp, extraEnv: { SO_PROJECTS_ROOT: projectsRoot } }
     );
 
     expect(result.status).toBe(0);
@@ -304,9 +307,61 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     expect(flipComment).toBeDefined();
     expect(flipComment.body).toContain('BEREIT ZUM FLIP');
     expect(flipComment.body).toContain('example-app');
+    expect(flipComment.body).toContain(`root='${projectsRoot}'`);
+    expect(flipComment.body).not.toContain('~/Projects');
   });
 
-  // ── Test 4: idempotence — flip-ready already present → early exit ──────────
+  // ── Test 3b: projects root under $HOME → "$HOME"/… in the public comment (#1490, #1622) ──
+
+  /**
+   * Run a streak-3 flip with a fake home dir and return the flip comment body.
+   * @param {string} home fake home directory (created on disk)
+   * @param {string} projectsRoot value for SO_PROJECTS_ROOT
+   */
+  function flipBodyWithHome(home, projectsRoot) {
+    writeIssueFixture(tmp, '303', 'closed');
+    writeIssueFixture(tmp, '304', 'closed');
+    writeIssueFixture(tmp, '305', 'opened');
+    writeCommentsFixture(tmp, '305', [
+      makeTick('umstellungs-bereit', '2026-04-26'),
+      makeTick('umstellungs-bereit', '2026-04-27'),
+    ]);
+    const result = runWatcher(['--issue', '305', '--dep-issues', '303,304', '--dry-run'], {
+      fixtureDir: tmp,
+      cwd: tmp,
+      extraEnv: { HOME: home, USERPROFILE: home, SO_PROJECTS_ROOT: projectsRoot },
+    });
+    expect(result.status).toBe(0);
+    const flip = parseActions(result.stdout).find(
+      (a) => a.action === 'comment-dry-run' && a.body?.includes(MARKER_FLIP)
+    );
+    expect(flip).toBeDefined();
+    return flip.body;
+  }
+
+  it('projects root under $HOME → snippet uses "$HOME"/\'Projects\', never the home path', () => {
+    const home = join(tmp, 'home');
+    mkdirSync(join(home, 'Projects'), { recursive: true });
+    const body = flipBodyWithHome(home, join(home, 'Projects'));
+    expect(body).toContain(`root="$HOME"/'Projects'`);
+    expect(body).not.toContain(home);
+  });
+
+  // #1622 item 2: on case-insensitive APFS a differently-cased spelling of the home
+  // dir is the same directory, but the exact startsWith() missed it and leaked the path.
+  it.runIf(process.platform === 'darwin')(
+    'projects root spelled with different case than $HOME (darwin) → still "$HOME"/…',
+    () => {
+      const home = join(tmp, 'home');
+      mkdirSync(join(home, 'Projects'), { recursive: true });
+      const variant = join(tmp, 'HOME', 'Projects');
+      const body = flipBodyWithHome(home, variant);
+      expect(body).toContain(`root="$HOME"/'Projects'`);
+      expect(body.toLowerCase()).not.toContain(home.toLowerCase());
+    }
+  );
+
+  // ── Test 4:idempotence — flip-ready already present → early exit ──────────
 
   it('flip-ready marker already on issue → early exit, no new comment', () => {
     writeIssueFixture(tmp, '303', 'closed');

@@ -791,3 +791,64 @@ describe('Group G — sources[] extension point (#956)', () => {
     expect(result).toBe('main-2026-05-27-deep-8');
   });
 });
+
+// ---------------------------------------------------------------------------
+// #1592 — the sessions.jsonl history source reads the MAIN checkout ledger
+// ---------------------------------------------------------------------------
+
+/**
+ * A real git repo `<base>/main` (one empty commit) plus a linked worktree
+ * `<base>/wt` — the layout #1514/#1584 map back to the main checkout.
+ */
+function makeLinkedWorktree(spawnGit, base) {
+  const main = join(base, 'main');
+  const wt = join(base, 'wt');
+  mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawnGit('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  return { main, wt };
+}
+
+describe('#1592 sessions.jsonl history source from a linked worktree', () => {
+  let base;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    if (base) rmSync(base, { recursive: true, force: true });
+  });
+
+  /**
+   * Bug this catches: since #1584 every session record lands in the MAIN
+   * checkout's sessions.jsonl, but this source read `<repoRoot>/…`. Minting
+   * from a linked worktree whose events do not cover the closed session
+   * (rotated ledger, no lock event), the source saw an empty ledger and
+   * re-minted an n the main ledger already holds.
+   */
+  it('counts a closed session recorded in the main checkout, not the empty worktree ledger', async () => {
+    const { spawnSync } = await import('node:child_process');
+    base = mkdtempSync(join(tmpdir(), 'session-id-1592-'));
+    const { main, wt } = makeLinkedWorktree(spawnSync, base);
+    mkdirSync(join(main, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(
+      join(main, '.orchestrator', 'metrics', 'sessions.jsonl'),
+      JSON.stringify({ session_id: 'main-2026-05-27-deep-2', session_type: 'deep', started_at: '2026-05-27T08:00:00Z' }) + '\n',
+    );
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-05-27T12:00:00Z'));
+
+    const id = await resolveSemanticSessionId({
+      branch: 'main',
+      mode: 'deep',
+      activeSessions: [],
+      repoRoot: wt,
+      sources: [DEFAULT_SESSION_ID_SOURCES[0]],
+    });
+
+    expect(id).toBe('main-2026-05-27-deep-3');
+  });
+});

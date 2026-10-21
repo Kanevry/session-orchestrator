@@ -21,9 +21,9 @@
 //   - scripts/lib/worktree/lifecycle.mjs (substrate: validateWorkspacePath)
 
 // NOTE: zx is imported LAZILY inside functions that need it (see lazyZx() helper).
-// Top-level `import { $ as realZx } from 'zx'` caused fork-pool fragility — when this
+// Top-level `import { $ as realZx } from '../zx.mjs'` caused fork-pool fragility — when this
 // module is loaded in a worker fork before tests like tests/lib/worktree/constants.test.mjs
-// run, vi.mock('zx', ...) factories in those test files cannot re-route the cached
+// run, vi.mock('@lib/zx.mjs', ...) factories in those test files cannot re-route the cached
 // import. Pipeline 3848 (commit 1347c7a) failed for this reason. Lazy import preserves
 // module-load order isolation. Pattern matches deep-2 #367 DI-seam migration.
 import path from 'node:path';
@@ -200,7 +200,7 @@ export async function setupWorktree(context, opts = {}) {
     worktreeRoot = WORKTREE_ROOT_DEFAULT,
   } = context;
 
-  const exec = opts.$ ?? (await import('zx')).$;
+  const exec = opts.$ ?? (await import('../zx.mjs')).$;
 
   // CWE-59 hardening (#375): resolve symlinks in worktreeRoot ONCE so that
   // validateWorkspacePath comparisons use a fully-resolved parent path.
@@ -748,7 +748,7 @@ function writePromotionMarker({ wtPath, sourceRoot, sessionId, branch }) {
  *   recorded verbatim in the `orchestrator.session.root_left` payload. Only used
  *   when `rawSessionId` is given.
  * @param {object} [opts]
- * @param {Function} [opts.$]       - zx-like template-tag executor (DI seam); falls back to lazy `await import('zx')`.
+ * @param {Function} [opts.$]       - zx-like template-tag executor (DI seam); falls back to lazy `await import('../zx.mjs')`.
  * Every freshly created worktree also gets a `.orchestrator/promoted-from.json`
  * marker (see {@link PROMOTION_MARKER_RELPATH}) so session-end Phase 4a can
  * still recognise it after the #1069 process boundary hands the worktree to a
@@ -817,7 +817,7 @@ export async function enterWorktree({
   // -------------------------------------------------------------------------
   // Step 2: Lazy zx DI (Pipeline 3848 commit 1347c7a — mandatory for vi.mock).
   // -------------------------------------------------------------------------
-  const exec = opts.$ ?? (await import('zx')).$;
+  const exec = opts.$ ?? (await import('../zx.mjs')).$;
 
   // -------------------------------------------------------------------------
   // Step 3: Path resolution + boundary check (mirrors setupWorktree lines 154-187).

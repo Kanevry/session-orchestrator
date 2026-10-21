@@ -26,6 +26,10 @@
  * `repo` field resolves to the reader's own git common dir ({@link readAuflagen},
  * #1520 / navigator#190).
  *
+ * There is no Rücklauf claim marker (removed in #1611): the owner inbox only lets
+ * a session rest when it reported in the turn of its last answer, so every
+ * waiting turn reports and nothing here suppresses a repeat.
+ *
  * Session ids become file names, so {@link isSafeSessionId} is the security
  * boundary between check-in input and the filesystem: every path builder that
  * takes a session id refuses an unsafe one with a TypeError.

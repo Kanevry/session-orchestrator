@@ -43,9 +43,9 @@ const HOOK = path.resolve(import.meta.dirname, '../../hooks/post-edit-validate.m
  * @param {string} opts.stdin        - raw stdin string
  * @param {Record<string,string>} [opts.extraEnv] - additional env vars
  */
-async function runHook({ projectDir, stdin, extraEnv = {} }) {
+async function runHook({ projectDir, stdin, extraEnv = {}, nodeArgs = [] }) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [HOOK], {
+    const child = spawn(process.execPath, [...nodeArgs, HOOK], {
       env: {
         ...process.env,
         CLAUDE_PROJECT_DIR: projectDir,
@@ -279,7 +279,7 @@ describe('typecheck passes → status:pass', { timeout: 15000 }, () => {
     const scriptPath = await mkTypecheckScript(dir, 0);
 
     // Configure Session Config to use our fake script
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${scriptPath}""\n`;
     await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
 
     const result = await runHook({
@@ -309,7 +309,7 @@ describe('typecheck fails → status:fail', { timeout: 15000 }, () => {
     const dir = await mkProjectTracked();
     const scriptPath = await mkTypecheckScript(dir, 1);
 
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${scriptPath}""\n`;
     await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
 
     const result = await runHook({
@@ -335,11 +335,11 @@ describe('typecheck fails → status:fail', { timeout: 15000 }, () => {
 // ---------------------------------------------------------------------------
 
 describe('typecheck timeout — never blocks', { timeout: 15000 }, () => {
-  it('exits 0 within a reasonable time even when typecheck hangs', async () => {
+  it('reports timeout rather than failure and stays within the 5s hook budget', async () => {
     const dir = await mkProjectTracked();
     const scriptPath = await mkSlowScript(dir);
 
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${scriptPath}""\n`;
     await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
 
     const start = Date.now();
@@ -350,15 +350,15 @@ describe('typecheck timeout — never blocks', { timeout: 15000 }, () => {
     const elapsed = Date.now() - start;
 
     expect(result.code).toBe(0);
-    // Should complete well within 10s (2s timeout + process overhead)
-    expect(elapsed).toBeLessThan(10000);
+    // Must finish before the outer 5s hook budget.
+    expect(elapsed).toBeLessThan(5000);
 
-    // Should still emit a JSONL line (pass or fail — timeout resolves to fail)
+    // Timeout has its own observable status.
     const lines = result.stderr.split('\n').filter(l => l.trim());
     expect(lines.length).toBeGreaterThanOrEqual(1);
     const parsed = JSON.parse(lines[0]);
     expect(parsed.check).toBe('typecheck');
-    expect(parsed.status).toBe('fail');
+    expect(parsed.status).toBe('timeout');
     expect(parsed.reason).toBe('typecheck timed out after 2s');
     expect(typeof parsed.duration_ms).toBe('number');
   });
@@ -373,7 +373,7 @@ describe('JSONL shape — relative file path', { timeout: 15000 }, () => {
     const dir = await mkProjectTracked();
     const scriptPath = await mkTypecheckScript(dir, 0);
 
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${scriptPath}""\n`;
     await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
 
     const absFile = path.join(dir, 'src', 'index.ts');
@@ -402,7 +402,7 @@ describe('edit-shaped tools trigger typecheck', { timeout: 15000 }, () => {
     const dir = await mkProjectTracked();
     const scriptPath = await mkTypecheckScript(dir, 0);
 
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${scriptPath}""\n`;
     await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
 
     const result = await runHook({
@@ -428,7 +428,7 @@ describe('.mjs extension triggers typecheck', { timeout: 15000 }, () => {
     const dir = await mkProjectTracked();
     const scriptPath = await mkTypecheckScript(dir, 0);
 
-    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ${process.execPath} ${scriptPath}\n`;
+    const claudeMd = `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${scriptPath}""\n`;
     await fs.writeFile(path.join(dir, 'CLAUDE.md'), claudeMd);
 
     const result = await runHook({
@@ -465,4 +465,112 @@ describe("gate toggle — a PEER's manifest cannot disable this session's gate (
     expect(lines.length).toBeGreaterThanOrEqual(1);
     expect(JSON.parse(lines[0]).status).toBe('skip');
   });
+});
+
+// Quoted executable/script paths must survive the real config-to-shell boundary.
+// Session Config removes one surrounding double-quote pair from the value.
+describe('configured command with spaces', () => {
+  it.each([0, 1])('executes a quoted script in a b and reports exit %s correctly', async (exitCode) => {
+    const dir = await mkProjectTracked();
+    const scriptDir = path.join(dir, 'a b');
+    await fs.mkdir(scriptDir);
+    const script = await mkTypecheckScript(scriptDir, exitCode);
+    await fs.writeFile(script, `process.stderr.write('script in a b executed\\n'); process.exit(${exitCode});`);
+    await fs.writeFile(path.join(dir, 'CLAUDE.md'),
+      `# Test\n\n## Session Config\ntypecheck-command: ""${process.execPath}" "${script}""\n`);
+    const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')) });
+    expect(result.code).toBe(0);
+    const parsed = JSON.parse(result.stderr.trim());
+    expect(parsed.status).toBe(exitCode === 0 ? 'pass' : 'fail');
+    if (exitCode !== 0) expect(parsed.reason).toBe('script in a b executed');
+  });
+});
+
+// #1612: simulate PATH with npx available, but no compiler. Intercept npx
+// before spawning so the regression can NEVER contact the registry.
+async function instrumentCompilerDiscovery(dir) {
+  const preload = path.join(dir, 'discovery.mjs');
+  const marker = path.join(dir, 'spawned.jsonl');
+  await fs.writeFile(preload, `
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { appendFileSync } from 'node:fs';
+    const originalSync = cp.spawnSync;
+    const originalSpawn = cp.spawn;
+    cp.spawnSync = (cmd, args, opts) => {
+      if (cmd === 'which' || cmd === 'where.exe') {
+        return { status: args[0] === 'npx' ? 0 : 1, stdout: args[0] === 'npx' ? 'npx' : '' };
+      }
+      return originalSync(cmd, args, opts);
+    };
+    cp.spawn = (cmd, ...args) => {
+      appendFileSync(${JSON.stringify(marker)}, JSON.stringify(cmd) + '\\n');
+      if (/\\bnpx\\b/.test(cmd)) throw new Error('npx spawn forbidden (#1612)');
+      return originalSpawn(cmd, ...args);
+    };
+    syncBuiltinESMExports();
+  `);
+  return { preload, marker };
+}
+
+it('without node_modules skips even when npx exists, and never spawns npx (#1612)', async () => {
+  const dir = await mkProjectTracked({ claudeMdConfig: 'typecheck-command: none' });
+  const { preload, marker } = await instrumentCompilerDiscovery(dir);
+  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', preload] });
+  expect(result.code).toBe(0);
+  expect(result.stderr).toContain('"status":"skip"');
+  await expect(fs.access(marker)).rejects.toThrow();
+});
+
+it('R1-07 runs the local Node compiler from a literal percent and space path', async () => {
+  const parent = await mkProjectTracked({ claudeMdConfig: 'typecheck-command: none' });
+  const dir = path.join(parent, '%USERNAME% with spaces');
+  await fs.mkdir(dir);
+  await fs.writeFile(path.join(dir, 'CLAUDE.md'), '# Project\n## Session Config\ntypecheck-command: none\n');
+  const { preload, marker } = await instrumentCompilerDiscovery(parent);
+  const bin = path.join(dir, 'node_modules', 'typescript', 'bin');
+  await fs.mkdir(bin, { recursive: true });
+  const compiler = path.join(bin, 'tsc');
+  await fs.writeFile(compiler, "if (process.argv[2] !== '--noEmit') process.exit(1);\n");
+  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', preload] });
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stderr).toContain('"status":"pass"');
+  expect(JSON.parse((await fs.readFile(marker, 'utf8')).trim())).toBe(process.execPath);
+});
+
+it.each([null, 0])('R1-04 post-edit Windows timeout avoids CIM for child exitCode %s', async exitCode => {
+  const dir = await mkProjectTracked({ claudeMdConfig: 'typecheck-command: fixture-typecheck' });
+  const preload = path.join(dir, 'windows-budget.mjs');
+  const marker = path.join(dir, 'native-calls.jsonl');
+  await fs.writeFile(preload, `
+    import cp from 'node:child_process';
+    import { syncBuiltinESMExports } from 'node:module';
+    import { EventEmitter } from 'node:events';
+    import { PassThrough } from 'node:stream';
+    import { appendFileSync } from 'node:fs';
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    cp.spawn = () => {
+      const child = new EventEmitter();
+      child.pid = 999999; child.exitCode = ${JSON.stringify(exitCode)}; child.signalCode = null;
+      child.stdout = new PassThrough(); child.stderr = new PassThrough();
+      setInterval(() => {}, 1000);
+      return child;
+    };
+    cp.spawnSync = (file, args) => {
+      appendFileSync(${JSON.stringify(marker)}, JSON.stringify({ file, args }) + '\\n');
+      if (/powershell/i.test(file)) throw Error('CIM violates hook budget');
+      return { status: 0 };
+    };
+    syncBuiltinESMExports();
+  `);
+  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', preload] });
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stderr).toContain('"status":"timeout"');
+  const calls = await fs.readFile(marker, 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  });
+  expect(calls).not.toMatch(/powershell/i);
+  expect(calls.trim().split('\n').filter(Boolean).map(line => JSON.parse(line).args))
+    .toEqual(exitCode === null ? [['/PID', '999999', '/T', '/F']] : []);
 });

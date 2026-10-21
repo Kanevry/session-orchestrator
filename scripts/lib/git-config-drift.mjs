@@ -101,7 +101,9 @@
  */
 
 import { spawnSync } from 'node:child_process';
-import { isAbsolute, relative } from 'node:path';
+import { accessSync, constants, existsSync } from 'node:fs';
+import { detectPackageManager } from './package-manager.mjs';
+import { isAbsolute, join, relative } from 'node:path';
 
 /** Default timeout in ms for each `git config` invocation. */
 export const DEFAULT_TIMEOUT_MS = 5000;
@@ -140,8 +142,17 @@ export const DEGRADED_REASONS = Object.freeze([
  *  - `hooks-path`       — a local `core.hooksPath` not pointing at `.husky/_`
  *    and not DECLARED by the repo — no tracked file directly under it is a
  *    real git hook name; see `hooksPathIsTracked` / `GIT_HOOK_NAMES`.
+ *  - `hooks-path-missing` — `core.hooksPath` points at `.husky/_`, but the
+ *    directory git resolves it to in THIS working tree lacks an executable
+ *    `pre-push` or the `h` helper (#1688).
+ *    `.husky/_` is gitignored and written by `husky`; under `ignore-scripts=true`
+ *    a fresh linked worktree never gets it, so commit and push run ungated and
+ *    silent. Repair with the canonical PM (SEC-020): `pnpm exec husky`
+ *    (pnpm), `npm exec --no -- husky` (npm); never fetch a missing package.
+ *  - `hooks-path-unset` — `core.hooksPath` is set in no scope although the repo
+ *    tracks `.husky/<hook>` files, so git never runs them (#1692). Same repair.
  *
- * @type {readonly ['ambient-git-env','local-identity','local-gpgsign','fixture-remote','hooks-path']}
+ * @type {readonly ['ambient-git-env','local-identity','local-gpgsign','fixture-remote','hooks-path','hooks-path-missing','hooks-path-unset']}
  */
 export const FINDING_KINDS = Object.freeze([
   'ambient-git-env',
@@ -149,6 +160,8 @@ export const FINDING_KINDS = Object.freeze([
   'local-gpgsign',
   'fixture-remote',
   'hooks-path',
+  'hooks-path-missing',
+  'hooks-path-unset',
 ]);
 
 /**
@@ -267,7 +280,8 @@ function filteredGitEnv(sourceEnv) {
  * Run one `git config` query.
  *
  * @param {string[]} args argv after the leading `git`
- * @param {{repoRoot: string, env: Record<string,string|undefined>, timeoutMs: number, spawn: Function}} ctx
+ * @param {{repoRoot: string, env: Record<string,string|undefined>, timeoutMs: number, spawn: Function, repoConfirmed?: boolean}} ctx
+ *   `repoConfirmed` is true once an earlier `--local` read of this probe succeeded
  * @returns {{ok: true, stdout: string} | {ok: false, reason: 'git-unavailable'|'not-a-git-repo'|'config-unreadable'|'timeout'|'git-error', status: number|null}}
  */
 function runGitConfig(args, ctx) {
@@ -297,7 +311,9 @@ function runGitConfig(args, ctx) {
     if (stderr.includes('bad config') || stderr.includes('bad numeric config')) {
       return { ok: false, reason: 'config-unreadable', status };
     }
-    return { ok: false, reason: 'not-a-git-repo', status };
+    // Once the `--local` read has succeeded the repo demonstrably exists, so a
+    // later 128 is a config git can no longer read, not a missing repo (#1694).
+    return { ok: false, reason: ctx.repoConfirmed ? 'config-unreadable' : 'not-a-git-repo', status };
   }
   return { ok: false, reason: 'git-error', status };
 }
@@ -438,6 +454,102 @@ function hooksPathIsTracked(value, ctx) {
 }
 
 /**
+ * @param {{repoRoot: string, env: Record<string,string|undefined>, timeoutMs: number, spawn: Function}} ctx
+ * @returns {string[]} each missing runtime requirement, empty when healthy.
+ *   Uses git's own per-worktree path resolution. A failed query is reported,
+ *   never read as present.
+ */
+function hooksDirMissingReasons(ctx) {
+  const res = runGitConfig(['rev-parse', '--path-format=absolute', '--git-path', 'hooks'], ctx);
+  if (!res.ok) return [`der Hook-Pfad ließ sich nicht auflösen (${res.reason})`];
+  const dir = res.stdout.trim();
+  if (dir === '') return ['der Hook-Pfad ließ sich nicht auflösen (leere Ausgabe)'];
+  const reasons = [];
+  const prePush = join(dir, 'pre-push');
+  if (!existsSync(prePush)) {
+    reasons.push(`${prePush} fehlt`);
+  } else {
+    try {
+      accessSync(prePush, constants.X_OK);
+    } catch {
+      reasons.push(`${prePush} ist nicht ausführbar`);
+    }
+  }
+  if (!existsSync(join(dir, 'h'))) reasons.push(`${dir}/h fehlt`);
+  return reasons;
+}
+
+/**
+ * `core.hooksPath` unset in EVERY scope (local, global, system, includes) while
+ * the repo tracks `.husky/<hook>` files: git then falls back to
+ * `<common-dir>/hooks`, which husky never writes, so commit and push run
+ * ungated and silent (#1692 — measured on a host clone with three ungated
+ * MR pushes).
+ *
+ * Ceiling: a `core.hooksPath` set ONLY globally/system-wide is not judged
+ * here — the local loop covers local values; revisit if a fleet host sets it
+ * globally. Likewise a value git finds only through config-location env vars
+ * (`GIT_CONFIG_GLOBAL`, `GIT_CONFIG_COUNT`, a non-default `XDG_CONFIG_HOME`)
+ * is invisible behind {@link GIT_ENV_ALLOWLIST} and reads as unset; revisit
+ * if a host relies on that.
+ *
+ * @param {{repoRoot: string, env: Record<string,string|undefined>, timeoutMs: number, spawn: Function}} ctx
+ * @returns {{kind:'hooks-path-unset', key:string, value:string, detail:string} | null}
+ *   null when a hooksPath is set somewhere or the repo tracks no husky hook.
+ *   A failed query is a finding ("unknown"), never read as healthy.
+ */
+function hooksPathUnsetFinding(ctx) {
+  const unknown = (what, reason) => ({
+    kind: /** @type {const} */ ('hooks-path-unset'),
+    key: 'core.hooksPath',
+    value: '',
+    detail: `${what} (${reason}) — ob die Husky-Hooks laufen, ist unbekannt.`,
+  });
+
+  // `git config --get` exits 1 for "key not set in any scope".
+  const effective = runGitConfig(['config', '--get', 'core.hooksPath'], ctx);
+  if (effective.ok) return null;
+  if (effective.status !== 1) return unknown('core.hooksPath ließ sich nicht abfragen', effective.reason);
+
+  // `ls-files` also exits 128 for a corrupt index, which is no config fault:
+  // the repo-confirmed 128 is named for what it is, a git error (#1694 review).
+  const tracked = runGitConfig(['ls-files', '--', '.husky'], { ...ctx, repoConfirmed: false });
+  if (!tracked.ok) {
+    const reason = tracked.reason === 'not-a-git-repo' ? 'git-error' : tracked.reason;
+    return unknown('die Husky-Hooks ließen sich nicht auflisten', reason);
+  }
+  const hooks = tracked.stdout
+    .split('\n')
+    .filter((line) => isDeclaredHookFile('.husky', line));
+  if (hooks.length === 0) return null;
+
+  return {
+    kind: 'hooks-path-unset',
+    key: 'core.hooksPath',
+    value: '',
+    detail:
+      `core.hooksPath ist nicht gesetzt, das Repo versioniert aber ${hooks.join(', ')} — ` +
+      `git führt diese Hooks nicht aus, Commits und Pushes laufen ungeprüft. ` +
+      huskyRepairHint(ctx.repoRoot),
+  };
+}
+
+/** @param {string} repoRoot */
+function huskyRepairHint(repoRoot) {
+  // SEC-020: respect the TARGET repo's canonical PM, not the plugin's npm.
+  const commands = {
+    pnpm: 'pnpm exec husky',
+    npm: 'npm exec --no -- husky',
+    yarn: 'yarn exec husky',
+    bun: 'bun run husky',
+  };
+  const pm = detectPackageManager(repoRoot);
+  return pm
+    ? `Reparatur: \`${commands[pm]}\`.`
+    : 'Reparatur: Husky mit dem canonical Package Manager des Repos ausführen (SEC-020).';
+}
+
+/**
  * Build the degraded result. Distinct from `null` on purpose — see the header.
  *
  * @param {string} reason
@@ -479,7 +591,7 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
 
     const activeEnv = env && typeof env === 'object' ? env : process.env;
     const spawn = deps?.spawn ?? spawnSync;
-    const ctx = { repoRoot, env: activeEnv, timeoutMs, spawn };
+    const ctx = { repoRoot, env: activeEnv, timeoutMs, spawn, repoConfirmed: false };
 
     /** @type {Array<{kind:string, key:string, value:string, detail:string}>} */
     const findings = [];
@@ -503,6 +615,7 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
 
     const local = runGitConfig(['config', '--local', '--list', '-z'], ctx);
     if (!local.ok) return degradedResult(local.reason);
+    ctx.repoConfirmed = true;
 
     // Best-effort global read, for the identity/gpgsign comparison only. Its
     // failure never degrades the result — the local query, which IS the
@@ -516,7 +629,8 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
       }
     }
 
-    for (const { key, value } of parseNulConfigList(local.stdout)) {
+    const localEntries = parseNulConfigList(local.stdout);
+    for (const { key, value } of localEntries) {
       const lower = key.toLowerCase();
 
       if (lower === 'user.email' || lower === 'user.name') {
@@ -566,7 +680,22 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
         continue;
       }
 
-      if (lower === 'core.hookspath' && !hooksPathIsExpected(value) && !hooksPathIsTracked(value, ctx)) {
+      if (lower === 'core.hookspath' && hooksPathIsExpected(value)) {
+        const missing = hooksDirMissingReasons(ctx);
+        for (const reason of missing) {
+          findings.push({
+            kind: 'hooks-path-missing',
+            key,
+            value,
+            detail:
+              `core.hooksPath=${value}, aber ${reason} — die Husky-Installation in diesem ` +
+              `Arbeitsbaum ist unvollständig. ${huskyRepairHint(repoRoot)}`,
+          });
+        }
+        continue;
+      }
+
+      if (lower === 'core.hookspath' && !hooksPathIsTracked(value, ctx)) {
         findings.push({
           kind: 'hooks-path',
           key,
@@ -576,6 +705,11 @@ export function checkGitConfigDrift(opts = {}, deps = {}) {
             `nicht als getrackter Pfad deklariert — Hooks laufen möglicherweise nicht.`,
         });
       }
+    }
+
+    if (!localEntries.some(({ key }) => key.toLowerCase() === 'core.hookspath')) {
+      const unset = hooksPathUnsetFinding(ctx);
+      if (unset) findings.push(unset);
     }
 
     if (findings.length === 0) return null;

@@ -30,7 +30,7 @@ You answer in the operator's language: `owner.language` in `~/.config/session-or
 ### Drive convergence
 - Each wave narrows the solution space. Start broad, end specific.
 - Wave 1 defines the problem. Wave 2 shapes the solution. Wave 3 locks the scope.
-- If alignment is reached early, stop early. Three waves is the max, not the target.
+- If alignment is reached early, stop early. The wave cap in SKILL.md § 3.3 is the max, not the target.
 - Progress means fewer open questions, not more.
 
 ## Output Levels

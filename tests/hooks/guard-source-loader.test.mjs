@@ -48,6 +48,9 @@ afterEach(async () => {
 async function makeGitRepoWithBrokenWorkingCopy({ rel, committed, working }) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'armguard-'));
   tmpDirs.push(dir);
+  // Every degraded armGuard on this repo writes a banner marker under
+  // os.tmpdir(); register its scope here so no caller can forget (#1648).
+  markerScopes.push(markerScopeOf(dir));
   const abs = path.join(dir, rel);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, committed);
@@ -286,7 +289,6 @@ async function makeRealAndForeignRepos(rel) {
     rel,
     committed: "export function origin() { return 'FOREIGN'; }\n",
   });
-  markerScopes.push(markerScopeOf(realDir));
   return { realDir, foreignDir };
 }
 
@@ -419,7 +421,6 @@ describe('#998.3 — banner key composes session id with the parent pid', () => 
       committed: "export function origin() { return 'REAL'; }\n",
       working: 'export const broken = ;',
     });
-    markerScopes.push(markerScopeOf(dir));
     return dir;
   }
 

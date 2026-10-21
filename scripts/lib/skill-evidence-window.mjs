@@ -53,6 +53,7 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import { readLock, isLockLive } from './session-lock.mjs';
+import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants (every ceiling named, per .claude/rules/build-value.md BV-004)
@@ -693,7 +694,10 @@ export function resolveRawSessionId({ repoRoot, env = process.env } = {}) {
   }
   if (!lock || !isLockLive(lock)) return null;
   const fromLock = typeof lock.session_id === 'string' ? lock.session_id.trim() : '';
-  return fromLock ? { sessionId: fromLock, source: 'session.lock' } : null;
+  // The repo-global lock may name a PEER (#1664, class #1663): count it only
+  // when it is among this process's own ids, never as a bare fallback.
+  if (!fromLock || !readProcessLocalSessionIds({ env }).includes(fromLock)) return null;
+  return { sessionId: fromLock, source: 'session.lock' };
 }
 
 /**

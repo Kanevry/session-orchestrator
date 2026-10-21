@@ -203,8 +203,8 @@ function unquoteYamlScalar(valuePart) {
  * its `paths:` alias (issue #795), and the scalar activation keys (issue #694).
  *
  * Returns:
- *   - `{ globs: string[] | null, meta: object }` on success
- *   - `{ globs: null, meta: {}, defect: 'frontmatter-not-at-top' }` when a
+ *   - `{ globs: string[] | null, paths: string[] | null, meta: object }` on success
+ *   - `{ globs: null, paths: null, meta: {}, defect: 'frontmatter-not-at-top' }` when a
  *     frontmatter block exists but does not start on line 1 (#1449)
  *   - throws `Error` on malformed frontmatter so the caller can fall back
  *
@@ -212,8 +212,11 @@ function unquoteYamlScalar(valuePart) {
  * present (always-on). `paths:` is parsed with the identical inline-array and
  * block-list forms as `globs:`; when BOTH keys are present on the same rule,
  * `globs:` wins silently and `paths:` is discarded (no merge, no warning —
- * see module doc). The returned shape is unchanged either way — callers never
- * see which key produced the value. `meta` carries only the recognised scalar
+ * see module doc). `globs` never tells callers which key produced the value;
+ * the additive `paths` field does carry the raw `paths:` list on its own
+ * (`null` when the key is absent), because Claude Code reads ONLY `paths:` and
+ * ignores `globs:` (#1638) — a caller asking "what does Claude Code scope?"
+ * needs that key alone, not the merged value. `meta` carries only the recognised scalar
  * keys that were present, with type coercion applied:
  *   - `alwaysApply`, `auto-generated` → boolean ('true'/'false')
  *   - `confidence` → number (undefined when NaN)
@@ -226,15 +229,15 @@ function unquoteYamlScalar(valuePart) {
  * the `defect` field names the misplacement (see {@link FRONTMATTER_NOT_AT_TOP}).
  *
  * @param {string} contents - raw file contents
- * @returns {{ globs: string[] | null, meta: Record<string, unknown>, defect?: 'frontmatter-not-at-top' }}
+ * @returns {{ globs: string[] | null, paths: string[] | null, meta: Record<string, unknown>, defect?: 'frontmatter-not-at-top' }}
  */
 export function parseGlobsFrontmatter(contents) {
   const match = FRONTMATTER_RE.exec(contents);
   if (match) return parseFrontmatterBlock(match[1]);
   if (hasDisplacedFrontmatter(contents)) {
-    return { globs: null, meta: {}, defect: FRONTMATTER_NOT_AT_TOP };
+    return { globs: null, paths: null, meta: {}, defect: FRONTMATTER_NOT_AT_TOP };
   }
-  return { globs: null, meta: {} };
+  return { globs: null, paths: null, meta: {} };
 }
 
 /**
@@ -274,7 +277,7 @@ function hasDisplacedFrontmatter(contents) {
  * Throws on a malformed top-level line — see {@link parseGlobsFrontmatter}.
  *
  * @param {string} fmText - frontmatter body without its fences
- * @returns {{ globs: string[] | null, meta: Record<string, unknown> }}
+ * @returns {{ globs: string[] | null, paths: string[] | null, meta: Record<string, unknown> }}
  */
 function parseFrontmatterBlock(fmText) {
   const lines = fmText.split(/\r?\n/);
@@ -370,7 +373,7 @@ function parseFrontmatterBlock(fmText) {
   // Precedence (issue #795): `globs:` wins silently when both keys are present.
   const globs = globsValue !== null ? globsValue : pathsValue;
 
-  return { globs, meta };
+  return { globs, paths: pathsValue, meta };
 }
 
 /**
@@ -565,6 +568,10 @@ function applyGates(meta, filePath, mode, hostClass, now, context = null) {
  * @param {string|null} [opts.context] - 'wave' | 'coordinator' | null; when non-null, applies
  *   tier gating: 'wave' excludes coordinator-only rules, 'coordinator' excludes wave-only rules.
  *   null (default) disables tier gating entirely — backward-compatible with all existing callers.
+ * @param {'merged'|'paths'} [opts.scopeKey] - which frontmatter key scopes a rule. 'merged'
+ *   (default) is this loader's own wave-injection semantics: `globs:`, else its `paths:` alias.
+ *   'paths' is Claude Code's native semantics (#1638): only `paths:` scopes, so a rule with
+ *   `globs:` but no `paths:` is always-on — Claude Code ignores `globs:` without an error.
  * @returns {RuleEntry[]}
  */
 export function loadApplicableRules({
@@ -574,6 +581,7 @@ export function loadApplicableRules({
   hostClass = null,
   now = Date.now(),
   context = null,
+  scopeKey = 'merged',
 }) {
   /** @type {string[]} */
   let entries;
@@ -622,7 +630,9 @@ export function loadApplicableRules({
     let parseError = false;
 
     try {
-      ({ globs, meta, defect } = parseGlobsFrontmatter(content));
+      const parsed = parseGlobsFrontmatter(content);
+      ({ meta, defect } = parsed);
+      globs = scopeKey === 'paths' ? parsed.paths : parsed.globs;
     } catch (err) {
       process.stderr.write(
         `[rule-loader] Frontmatter parse error in ${filePath}: ${err.message} — treating as always-on\n`,

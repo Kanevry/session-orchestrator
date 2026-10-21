@@ -72,6 +72,7 @@ import { atomicWriteWithBackup, envelopeToError } from './io.mjs';
 import { validateSession as defaultValidateSession } from './session-schema/validator.mjs';
 import { serializeSessionLineChecked as defaultSerialize } from './session-schema.mjs';
 import { checkSessionsIntegrity as defaultCheckIntegrity } from './sessions-integrity-banner.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -263,6 +264,34 @@ function preserveRaw(out, key, rawValue, rescued) {
   rescued.add(sidecar);
 }
 
+/**
+ * True when `flags` lists `completed_at` as incomplete although `rec.completed_at`
+ * IS a measured end: the record's own valid, monotonic `ended_at` (verbatim or
+ * its millisecond copy). Records repaired before #1699 item 12 carry exactly
+ * this stale flag (#1705).
+ *
+ * The ONE predicate behind both the heal in {@link repairRecord} and the
+ * routing of an otherwise schema-valid line in {@link repairLine} — two copies
+ * would drift, and a routing that is wider than the heal re-serializes a line
+ * for nothing, one that is narrower leaves the heal unreachable.
+ *
+ * @param {unknown} flags — the record's `_backfill_incomplete_fields`
+ * @param {object} rec — the record whose timestamps are judged
+ * @returns {boolean}
+ */
+function hasStaleCompletedAtFlag(flags, rec) {
+  if (!Array.isArray(flags) || !flags.includes('completed_at')) return false;
+  if (typeof rec.completed_at !== 'string' || typeof rec.ended_at !== 'string' ||
+      typeof rec.started_at !== 'string') return false;
+  const endedNorm = normalizeTimestamp(rec.ended_at);
+  const endedMs = Date.parse(rec.ended_at);
+  const startedMs = Date.parse(rec.started_at);
+  const endedValid = Number.isFinite(endedMs) && !(endedNorm !== null && 'invalid' in endedNorm);
+  const isCopy = rec.completed_at === rec.ended_at ||
+    (endedNorm !== null && rec.completed_at === endedNorm.value);
+  return endedValid && Number.isFinite(startedMs) && endedMs >= startedMs && isCopy;
+}
+
 /** Compact ISO stamp for backup filenames: `20260805T091500Z`. */
 export function backupStamp(date = new Date()) {
   return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
@@ -342,9 +371,17 @@ export function repairRecord(record) {
   // -- total_waves ----------------------------------------------------------
   if (!isCount(out.total_waves)) {
     preserveRaw(out, 'total_waves', record.total_waves, rescued);
-    out.total_waves = wavesNumber !== null ? wavesNumber : out.waves.length;
     defects.push('total_waves_missing');
-    incomplete.add('total_waves');
+    // A numeric `waves` IS the wave count (see above): measured, not
+    // defaulted, so NOT listed — the same rule as the `agents_total` /
+    // `files_changed` aliases below (#1699 item 12). Only the fallback to the
+    // (possibly just-defaulted) array length is an unverified default.
+    if (wavesNumber !== null) {
+      out.total_waves = wavesNumber;
+    } else {
+      out.total_waves = out.waves.length;
+      incomplete.add('total_waves');
+    }
   }
 
   // -- agent_summary --------------------------------------------------------
@@ -377,27 +414,58 @@ export function repairRecord(record) {
   // -- total_agents ---------------------------------------------------------
   if (!isCount(out.total_agents)) {
     preserveRaw(out, 'total_agents', record.total_agents, rescued);
-    // Prefer the record's own evidence: an agent_summary PRESENT in the
+    // Only the record's own evidence counts: an agent_summary PRESENT in the
     // original sums to the real agent count (live line 71 sums to 30 where
-    // waves.length is 5 — W2/A4 review finding). Fall back to waves.length
-    // only when the summary was absent or sums to 0 (no signal).
+    // waves.length is 5 — W2/A4 review finding); else the legacy alias
+    // `agents_total` carries the same fact under an older name (#1698). Never
+    // waves.length: a wave is not an agent (a record with `agents_total: 19`
+    // and five waves was repaired to 5). No evidence → transparently 0.
     const summarySum = isPlainObject(record.agent_summary)
       ? AGENT_SUMMARY_FIELDS.reduce(
           (n, f) => n + (isCount(record.agent_summary[f]) ? record.agent_summary[f] : 0),
           0
         )
       : 0;
-    out.total_agents = summarySum > 0 ? summarySum : out.waves.length;
     defects.push('total_agents_missing');
-    incomplete.add('total_agents');
+    if (summarySum > 0) {
+      // A sum over counters that may themselves be partial: an inference, so
+      // it stays listed as incomplete (unchanged since W2/A4).
+      out.total_agents = summarySum;
+      incomplete.add('total_agents');
+      // A measured `agents_total` that disagrees with the sum is a conflict
+      // between two of the record's own sources; the sum still wins, but the
+      // record must say so (#1699 item 10). Same forensics tag shape as
+      // `_completed_at_conflict` (session-schema/aliases.mjs); the alias key
+      // stays on the record, so both values remain readable.
+      if (isCount(record.agents_total) && record.agents_total !== summarySum) {
+        out._total_agents_conflict = true;
+        defects.push('total_agents_conflict');
+      }
+    } else if (isCount(record.agents_total)) {
+      // The same fact under its old name: measured, not defaulted — so NOT
+      // listed as incomplete (the list is the set of defaulted fields, see the
+      // module docblock). The alias key itself stays on the record untouched,
+      // like legacy `ended_at` below.
+      out.total_agents = record.agents_total;
+    } else {
+      out.total_agents = 0;
+      incomplete.add('total_agents');
+    }
   }
 
   // -- total_files_changed --------------------------------------------------
   if (!isCount(out.total_files_changed)) {
     preserveRaw(out, 'total_files_changed', record.total_files_changed, rescued);
-    out.total_files_changed = 0;
     defects.push('total_files_changed_missing');
-    incomplete.add('total_files_changed');
+    // Legacy alias `files_changed` is the same count under an older name
+    // (#1698: records with `files_changed: 44` were repaired to 0). A non-count
+    // alias (e.g. a path list) is no proof → 0, flagged as defaulted.
+    if (isCount(record.files_changed)) {
+      out.total_files_changed = record.files_changed;
+    } else {
+      out.total_files_changed = 0;
+      incomplete.add('total_files_changed');
+    }
   }
 
   // -- timestamp precision (#1442) -------------------------------------------
@@ -424,6 +492,7 @@ export function repairRecord(record) {
   // the ledger is not chronologically ordered (see the module docblock).
   if (typeof out.completed_at !== 'string' && typeof out.started_at === 'string') {
     preserveRaw(out, 'completed_at', record.completed_at, rescued);
+    let measuredEnd = false;
     const endedMs = typeof out.ended_at === 'string' ? Date.parse(out.ended_at) : NaN;
     const startedMs = Date.parse(out.started_at);
     const endedNorm = normalizeTimestamp(out.ended_at);
@@ -440,11 +509,36 @@ export function repairRecord(record) {
         offsetNormalized ||= endedNorm.offset;
       }
       out.completed_at = endedNorm?.value ?? out.ended_at;
+      // The same measurement under its legacy name (aliasLegacyEndedAt flags
+      // nothing either): NOT listed, or `sessions-staleness-banner.mjs` would
+      // discard a real end time as an anchor (#1699 item 12).
+      measuredEnd = true;
     } else {
       out.completed_at = out.started_at;
     }
     defects.push('completed_at_missing');
-    incomplete.add('completed_at');
+    if (!measuredEnd) incomplete.add('completed_at');
+  }
+
+  // -- stale completed_at flag (#1705) ----------------------------------------
+  // Records repaired before #1699 item 12 copied a valid, monotonic `ended_at`
+  // into `completed_at` AND listed it as incomplete. The branch above only runs
+  // when `completed_at` is missing, so those records never healed and the
+  // staleness banner kept discarding a real end time. Same predicate as the
+  // `measuredEnd` branch: `completed_at` IS that ended_at (verbatim or its
+  // millisecond copy), parseable, not before `started_at`.
+  // Measured 2026-10-21: 0 ledger records carry the sibling `total_waves`
+  // flag beside a numeric `waves`, so that path needs no heal.
+  const priorFlags = Array.isArray(record._backfill_incomplete_fields)
+    ? record._backfill_incomplete_fields
+    : [];
+  let healedFlags = null;
+  if (hasStaleCompletedAtFlag(priorFlags, out)) {
+    // The flag list is the record's own provenance; keep the prior list
+    // exactly once in its sidecar before rewriting it (process-contracts.md).
+    preserveRaw(out, 'backfill_incomplete_fields', record._backfill_incomplete_fields, rescued);
+    healedFlags = priorFlags.filter((f) => f !== 'completed_at');
+    defects.push('completed_at_flag_stale');
   }
   if (precisionCut) defects.push('timestamp_precision');
   if (offsetNormalized) defects.push('timestamp_offset');
@@ -454,9 +548,7 @@ export function repairRecord(record) {
   }
 
   // -- provenance (additive, already schema-accepted) ------------------------
-  const prior = Array.isArray(record._backfill_incomplete_fields)
-    ? record._backfill_incomplete_fields.filter((f) => typeof f === 'string')
-    : [];
+  const prior = (healedFlags ?? priorFlags).filter((f) => typeof f === 'string');
   const merged = orderIncompleteFields(incomplete);
   // The repair is recorded in its own field; `_backfill_source` keeps the
   // record's ORIGIN. Overwriting a synthesised origin ('state-md-completed',
@@ -483,17 +575,25 @@ export function repairRecord(record) {
  *  - `unparseable`  — `JSON.parse` threw; emitted unchanged. File corruption is
  *                     a different problem and the integrity banner skips these
  *                     too; silently "fixing" bytes we cannot read is worse.
- *  - `valid`        — passed `validateSession`; emitted BYTE-FOR-BYTE.
- *  - `repaired`     — defects fixed, gated, re-serialized.
+ *  - `valid`        — passed `validateSession`; emitted BYTE-FOR-BYTE. The ONE
+ *                     exception is below.
+ *  - `repaired`     — defects fixed, gated, re-serialized. `healedValid` is
+ *                     true when the line was ALREADY schema-valid and only
+ *                     carried a stale `completed_at` flag (#1705, see
+ *                     `hasStaleCompletedAtFlag`): such a line is routed through
+ *                     `repairRecord` too, otherwise that heal is unreachable from
+ *                     the ledger path. Callers counting INVALID lines must not
+ *                     count these. Should the healed record fail the gate, the
+ *                     line stays `valid` and byte-identical — it was valid before.
  *  - `error`        — still invalid after repair; ORIGINAL emitted unchanged.
  *
  * @param {string} line
  * @param {{validateSession?: Function, serialize?: Function}} [deps]
- * @returns {{line: string, status: string, sessionId: string|null, defects: string[], incompleteFields: string[], error: string|null, record: object|null}}
+ * @returns {{line: string, status: string, sessionId: string|null, defects: string[], incompleteFields: string[], error: string|null, record: object|null, healedValid: boolean}}
  */
 export function repairLine(line, deps = {}) {
   const { validateSession = defaultValidateSession, serialize = defaultSerialize } = deps;
-  const base = { line, status: 'valid', sessionId: null, defects: [], incompleteFields: [], error: null, record: null };
+  const base = { line, status: 'valid', sessionId: null, defects: [], incompleteFields: [], error: null, record: null, healedValid: false };
 
   if (line.trim().length === 0) return { ...base, status: 'blank' };
 
@@ -509,16 +609,22 @@ export function repairLine(line, deps = {}) {
 
   const sessionId = typeof record.session_id === 'string' ? record.session_id : null;
 
+  let validBefore = false;
   try {
     validateSession(record);
-    // Already valid — emit the ORIGINAL bytes. Re-serializing a passing record
-    // would rewrite key order for no benefit and bury the real repairs in noise.
-    return { ...base, status: 'valid', sessionId, record };
+    validBefore = true;
   } catch {
     /* fall through to repair */
   }
+  // Already valid — emit the ORIGINAL bytes. Re-serializing a passing record
+  // would rewrite key order for no benefit and bury the real repairs in noise.
+  // Sole exception: the stale completed_at flag no schema check sees (#1705).
+  if (validBefore && !hasStaleCompletedAtFlag(record._backfill_incomplete_fields, record)) {
+    return { ...base, status: 'valid', sessionId, record };
+  }
 
-  const { record: repaired, defects, incompleteFields } = repairRecord(record);
+  const { record: repaired, defects, incompleteFields, changed } = repairRecord(record);
+  if (validBefore && !changed) return { ...base, status: 'valid', sessionId, record };
   try {
     // GATE ONLY — the return value is deliberately discarded. `validateSession`
     // stamps `schema_version: 2` on its output, and live line 152 has no
@@ -534,8 +640,10 @@ export function repairLine(line, deps = {}) {
       incompleteFields,
       error: null,
       record: repaired,
+      healedValid: validBefore,
     };
   } catch (err) {
+    if (validBefore) return { ...base, status: 'valid', sessionId, record };
     return {
       ...base,
       status: 'error',
@@ -568,6 +676,9 @@ export function repairText(raw, deps = {}) {
   let unparseable = 0;
   let invalidBefore = 0;
   let repaired = 0;
+  // Schema-valid lines whose stale completed_at flag was healed (#1705). They
+  // count under `repaired` (the line IS rewritten) but never as invalid.
+  let healedValid = 0;
 
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
@@ -579,6 +690,12 @@ export function repairText(raw, deps = {}) {
       continue;
     }
     if (r.status === 'valid') continue;
+    if (r.healedValid) {
+      healedValid += 1;
+      repaired += 1;
+      for (const d of r.defects) defectsByClass[d] = (defectsByClass[d] ?? 0) + 1;
+      continue;
+    }
     invalidBefore += 1;
     for (const d of r.defects) defectsByClass[d] = (defectsByClass[d] ?? 0) + 1;
     if (r.status === 'repaired') {
@@ -601,8 +718,10 @@ export function repairText(raw, deps = {}) {
       unparseable,
       invalid_before: invalidBefore,
       repaired,
+      // Subset of `repaired`: lines that were already schema-valid (#1705).
+      healed_valid: healedValid,
       // Projected: every line that was invalid and did NOT get repaired.
-      invalid_after: invalidBefore - repaired,
+      invalid_after: invalidBefore - (repaired - healedValid),
       // Lines with no defensible repair (`repairLine` status `error`). They are
       // emitted byte-identically and are EXPECTED to stay invalid after a
       // write — `verifyWritten` tolerates exactly these line numbers (#1442).
@@ -623,8 +742,8 @@ export function repairText(raw, deps = {}) {
  * `checkSessionsIntegrity` additionally exercises the REAL vault-mirror render
  * path — a record can pass the first and still be dropped by the second.
  *
- * The integrity probe reads `<repoRoot>/.orchestrator/metrics/sessions.jsonl`
- * by construction, so it is only meaningful when `file` IS that path; against
+ * The integrity probe reads `<ledger root of repoRoot>/.orchestrator/metrics/sessions.jsonl`
+ * (the main checkout's for a linked worktree, #1592) by construction, so it is only meaningful when `file` IS that path; against
  * any other target it is reported as skipped rather than quietly measuring the
  * wrong file.
  *
@@ -706,10 +825,14 @@ export function verifyWritten({ file, repoRoot, deps = {}, expected = {} }) {
   };
 }
 
-/** True when `file` IS `<repoRoot>/.orchestrator/metrics/sessions.jsonl` — the only file `checkIntegrity` reads. */
+/**
+ * True when `file` IS the ledger `checkIntegrity` reads for `repoRoot` —
+ * resolved through the same main-checkout mapping (#1592), so a stale
+ * worktree-local ledger is never judged by the main ledger's integrity.
+ */
 function isCanonicalLedger(file, repoRoot) {
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) return false;
-  return path.resolve(file) === path.resolve(path.join(repoRoot, CANONICAL_LEDGER_REL));
+  return path.resolve(file) === path.resolve(path.join(resolveEventsLedgerRoot(repoRoot), CANONICAL_LEDGER_REL));
 }
 
 /**
@@ -736,14 +859,17 @@ function integrityWorsened(before, after) {
  * write. Apply copies the original to `<file>.bak-<stamp>` FIRST, writes
  * `<file>.tmp-<pid>` in the same directory and renames it over the target
  * (atomic within a filesystem), then re-verifies the written file. A failed
- * verification restores the backup byte-identically and reports `ok: false` —
+ * verification restores the backup byte-identically (plus any line appended
+ * after the rename, #1670) and reports `ok: false` —
  * the caller maps that to exit 3. Lines with no defensible repair are kept
  * byte-identical and counted in `summary.unrepairable`; they are NOT a
  * verification failure (see `verifyWritten` § WHAT "OK" MEANS) — the caller
  * maps an ok run with an unrepairable remainder to exit 4.
  *
  * Never throws for a defective RECORD (those land in `summary.errors`); a
- * genuine I/O failure DOES throw and is the caller's exit-2 case.
+ * genuine I/O failure DOES throw and is the caller's exit-2 case — as does a
+ * ledger that changed between read and rename (`err.code === 'ELEDGERCHANGED'`,
+ * #1665): the tmp is removed and the original, with its new line, stays as-is.
  *
  * @param {object} args
  * @param {string}  args.file                 ledger path
@@ -761,6 +887,7 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
     renameSync = fs.renameSync,
     copyFileSync = fs.copyFileSync,
     unlinkSync = fs.unlinkSync,
+    appendFileSync = fs.appendFileSync,
   } = deps;
 
   const { checkIntegrity = defaultCheckIntegrity } = deps;
@@ -798,9 +925,34 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
   // The helper unlinks its tmp on failure; the backup above keeps its own
   // `.bak-<compact stamp>` schema, so the helper takes none. The injected fs
   // seams (`deps`) are threaded through so a test fake still sees the write.
+  //
+  // Lost-update guard (#1665): appenders (`emit-session.mjs` → `appendJsonl`)
+  // take NO lock — they rely on O_APPEND — so a repair-side lock would exclude
+  // nobody. Instead the ledger is re-read right before the rename and the swap
+  // is refused when its bytes differ from what was repaired: an append between
+  // read and rename would otherwise be overwritten silently. Throwing inside the
+  // rename seam makes the helper unlink its tmp and leave the target untouched;
+  // the caller re-raises it (CLI exit 2) and a re-run picks up the new line.
+  // CEILING: the window between this check and the rename itself stays open
+  // (microseconds). Revisit trigger: if appenders ever take a shared lock,
+  // replace this check with that lock held across read→rename.
+  // The exact bytes renamed into place — the restore below carries over only
+  // what lies BEYOND them (#1670).
+  let renamedBytes = null;
+  const guardedRename = (from, to) => {
+    if (readFileSync(file, 'utf8') !== raw) {
+      const err = new Error(
+        `${file} changed during the repair (concurrent append?) — nothing was replaced; re-run the repair`
+      );
+      err.code = 'ELEDGERCHANGED';
+      throw err;
+    }
+    renamedBytes = readFileSync(from);
+    renameSync(from, to);
+  };
   const res = atomicWriteWithBackup(file, text, {
     tmpPrefix: `.${path.basename(file)}.tmp`,
-    fs: { writeFileSync, renameSync, unlinkSync },
+    fs: { writeFileSync, renameSync: guardedRename, unlinkSync },
   });
   if (!res.ok) throw envelopeToError(res);
 
@@ -825,15 +977,73 @@ export function repairLedger({ file, repoRoot = null, apply = false, backup = tr
     // emitted byte-identically and keep the ledger exactly as broken as it was.
     // The backup is preferred (it is the on-disk artefact an operator can
     // inspect); `raw` is the in-memory fallback for `--no-backup`, and both are
-    // the same bytes.
-    if (backupPath) {
-      copyFileSync(backupPath, file);
-    } else {
-      writeFileSync(file, raw, 'utf8');
-    }
+    // the same bytes. Lines appended AFTER the rename are carried over (#1670).
+    summary.restore_appended_bytes = restoreOriginal({
+      file, backupPath, raw, renamed: renamedBytes,
+      fs: { readFileSync, writeFileSync, renameSync, copyFileSync, unlinkSync, appendFileSync },
+    });
     summary.ok = false;
     summary.restored = true;
   }
 
   return summary;
+}
+
+/** How often the restore re-reads a ledger that keeps moving before it gives up. */
+const RESTORE_ATTEMPTS = 3;
+
+/**
+ * Put the original bytes back after a failed post-verification WITHOUT losing a
+ * line another process appended after the repair's rename (#1670).
+ *
+ * Appenders take no lock (O_APPEND, see the lost-update guard in
+ * {@link repairLedger}), so between the rename and this restore a session
+ * record can land at the end of the repaired file. A plain copy of the backup
+ * over the target dropped it. The restore therefore re-reads the target: the
+ * bytes beyond the renamed content are appended to the original, and the result
+ * is swapped in through a tmp file + rename that is refused when the target
+ * moved again since that read (bounded retry). When the target no longer starts
+ * with the renamed bytes, someone rewrote it — restoring would destroy that
+ * write, so nothing is touched and ELEDGERCHANGED is raised (the backup stays).
+ *
+ * CEILING: as in the repair swap, the window between the last re-read and the
+ * rename itself stays open (microseconds). Revisit trigger: appenders taking a
+ * shared lock — hold it across read→rename instead.
+ *
+ * @returns {number} bytes carried over from concurrent appends
+ */
+function restoreOriginal({ file, backupPath, raw, renamed, fs: io }) {
+  const tmp = path.join(path.dirname(file), `.${path.basename(file)}.restore-${process.pid}`);
+  for (let attempt = 0; attempt < RESTORE_ATTEMPTS; attempt++) {
+    const current = io.readFileSync(file);
+    if (current.length < renamed.length || !current.subarray(0, renamed.length).equals(renamed)) {
+      const err = new Error(
+        `${file} was rewritten after the repair's rename — post-verification failed, but restoring ` +
+          `would overwrite that write; nothing was restored. Original bytes: ${backupPath ?? '(no backup taken)'}`
+      );
+      err.code = 'ELEDGERCHANGED';
+      throw err;
+    }
+    const tail = current.subarray(renamed.length);
+    try {
+      if (backupPath) io.copyFileSync(backupPath, tmp);
+      else io.writeFileSync(tmp, raw, 'utf8');
+      if (tail.length > 0) io.appendFileSync(tmp, tail);
+      if (!io.readFileSync(file).equals(current)) {
+        io.unlinkSync(tmp);
+        continue;
+      }
+      io.renameSync(tmp, file);
+      return tail.length;
+    } catch (err) {
+      try { io.unlinkSync(tmp); } catch { /* already gone */ }
+      throw err;
+    }
+  }
+  const err = new Error(
+    `${file} kept changing during the restore (concurrent appends?) — post-verification failed and ` +
+      `nothing was restored. Original bytes: ${backupPath ?? '(no backup taken)'}`
+  );
+  err.code = 'ELEDGERCHANGED';
+  throw err;
 }

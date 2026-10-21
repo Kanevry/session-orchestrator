@@ -1,11 +1,11 @@
 {
   "name": "so-hud",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": { "name": "session-orchestrator contributors" },
-  "description": "See Session Orchestrator status, warnings and session beacons in Claude Code (read-only, $.so contract v1).",
+  "description": "See Session Orchestrator status, warnings and session beacons in Claude Code ($.so contract v1), with protection gates for secret-printing commands, rule traps, outward actions and scope collisions.",
   "types": "./types/index.d.ts",
   "userConfig": {
-    "strictness": { "title": "Strictness profile", "type": "string", "description": "Strictness profile shown in the status line and returned by $.so.profile(): locker (relaxed), ausgewogen (balanced) or streng (strict). It does not change the warnings yet.", "options": ["locker", "ausgewogen", "streng"], "default": "ausgewogen" },
+    "strictness": { "title": "Strictness profile", "type": "string", "description": "Strictness profile shown in the status line and returned by $.so.profile(). locker: rule traps and scope collisions only warn. ausgewogen (default): rule traps are refused and a scope collision asks first. streng: rule traps and scope collisions are refused. On every profile, secret-printing commands are refused and outward actions ask twice in an interactive session.", "options": ["locker", "ausgewogen", "streng"], "default": "ausgewogen" },
     "soRoot": { "title": "Session Orchestrator path", "type": "string", "description": "Optional absolute path to the Session Orchestrator installation", "required": false }
   }
 }

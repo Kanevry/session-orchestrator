@@ -27,6 +27,7 @@
 
 ### Current State
 {{How users currently solve this problem. Pain points.}}
+{{Measured: one line per premise, `command` → result (date / SHA). A premise nobody measured is labelled `hypothesis`.}}
 
 ## 3. Target Audience & Personas
 
@@ -66,11 +67,17 @@
 
 ## 5. Success Criteria
 
-| Metric | Target | Measurement Method | Deadline |
-|--------|--------|--------------------|----------|
-| {{metric-1}} | {{specific target}} | {{how to measure}} | {{date}} |
-| {{metric-2}} | {{specific target}} | {{how to measure}} | {{date}} |
-| {{metric-3}} | {{specific target}} | {{how to measure}} | {{date}} |
+| Metric | Baseline (measured) | Target | Measurement Method (the oracle, not the author) | Owner | Deadline |
+|--------|---------------------|--------|-------------------------------------------------|-------|----------|
+| {{metric-1}} | {{value + command, or "none yet"}} | {{specific target}} | {{how to measure}} | {{owner}} | {{date}} |
+| {{metric-2}} | {{value + command, or "none yet"}} | {{specific target}} | {{how to measure}} | {{owner}} | {{date}} |
+
+### External Acceptance
+> Criteria whose oracle cannot run inside the implementing session. Each row becomes its own `[Abnahme]` issue (SKILL.md § 6.1).
+
+| Criterion | Oracle | Owner | Not before | Pass condition | Fallback if it cannot run |
+|-----------|--------|-------|------------|----------------|---------------------------|
+| {{AC ref}} | {{command / observation}} | {{owner}} | {{YYYY-MM-DD}} | {{pass}} | {{fallback}} |
 
 ## 5.A Acceptance Criteria (EARS)
 

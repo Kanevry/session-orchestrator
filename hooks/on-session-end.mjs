@@ -52,6 +52,10 @@ import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
 import { flush } from '../scripts/lib/telemetry/sync.mjs';
 import { attemptLockReconciliation } from './_lib/lock-reconcile.mjs';
 import { atomicMutateJson } from './_lib/atomic-json.mjs';
+import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
+
+/** SessionEnd reasons after which the session continues or was cleared on purpose — never 'abandoned'. */
+const ABANDON_BACKFILL_SKIP_REASONS = new Set(['clear', 'resume']);
 
 // ---------------------------------------------------------------------------
 // stdin reading (inline — SessionEnd hooks exit 0 always, never deny)
@@ -580,11 +584,18 @@ async function emitFinalWaveCompleted(
 async function main() {
   const input = await readStdinJson();
   const projectRoot = getProjectDir();
+  // #1605 — this session's own `session.lock` and `current-session.json` sit
+  // where on-session-start.mjs wrote them: the launch dir, or the entered
+  // worktree after a /clear, compact or resume there — found by the lock that
+  // carries this session's raw id, never re-derived. Identity, the final wave,
+  // the abandoned-backfill and the lock release read there; the STATE.md
+  // self-heal (a2) and the telemetry flush keep the launch dir.
+  const lockRoot = resolveOwnLockRoot(input, projectRoot);
 
   const reason =
     typeof input?.reason === 'string' && input.reason.length > 0 ? input.reason : 'other';
   const { sessionId, semanticSessionId, durationMs, isRecordedSession, rawStdinId } =
-    await resolveSession(input, projectRoot);
+    await resolveSession(input, lockRoot);
 
   // Single emission path: emitEvent writes the canonical {timestamp, event, ...payload}
   // JSONL record AND fires the optional Clank webhook with the SAME event name.
@@ -610,7 +621,7 @@ async function main() {
   // both outcomes already persisted themselves (`orchestrator.wave.completed`
   // or the sibling `orchestrator.wave.final_refused`) before this call
   // resolves, so nothing downstream in this hook needs to react to it.
-  await emitFinalWaveCompleted(projectRoot, {
+  await emitFinalWaveCompleted(lockRoot, {
     sessionId,
     semanticSessionId,
     isRecordedSession,
@@ -653,14 +664,26 @@ async function main() {
   //     `current-session.json` identity (#863 defect (b)) must never make it.
   //     With the attestation false the core keeps its blanket own-live-lock
   //     skip, so the #863 behaviour is preserved exactly where #863 applied.
+  //
+  //     SKIPPED for `reason` `clear` / `resume` (E3, audit 2026-10-12): both end the
+  //     HARNESS session while the logical one continues (`/clear`, interactive
+  //     `/resume`) — it is not abandoned. Measured basis: this call ran on EVERY
+  //     SessionEnd and produced 2493 synthetic 'abandoned' records, 59.1 % of all
+  //     session records fleet-wide (D1, 2026-10-12). Both strings are documented
+  //     SessionEnd reasons (code.claude.com/docs/en/hooks, retrieved 2026-10-12).
+  //     One guard at the call site (BV-003); every other reason still backfills.
+  //     Revisit-Trigger: a later measurement shows clear/resume sessions that
+  //     never got a /close record -> drop or narrow this skip.
   try {
-    const res = await backfillAbandonedSession({
-      repoRoot: projectRoot,
-      sessionId,
-      semanticSessionId,
-      ownSessionIsEnding: isRecordedSession,
-    });
-    await emitBackfillOutcome('abandoned', res, { sessionId, semanticSessionId });
+    if (!ABANDON_BACKFILL_SKIP_REASONS.has(reason)) {
+      const res = await backfillAbandonedSession({
+        repoRoot: lockRoot,
+        sessionId,
+        semanticSessionId,
+        ownSessionIsEnding: isRecordedSession,
+      });
+      await emitBackfillOutcome('abandoned', res, { sessionId, semanticSessionId });
+    }
   } catch { /* best-effort — never block teardown */ }
 
   // (a2) #429 — STATE.md `status: completed` self-heal. Orthogonal to (a)
@@ -693,7 +716,7 @@ async function main() {
     // 'unreadable'/'corrupt' is an anomaly worth a breadcrumb, since a lock we
     // cannot even parse is neither released nor reconciled below, and used to
     // silently look identical to "no lock, all clear".
-    const lockDetail = readLockDetailed({ repoRoot: projectRoot });
+    const lockDetail = readLockDetailed({ repoRoot: lockRoot });
 
     if (lockDetail.status === 'unreadable' || lockDetail.status === 'corrupt') {
       try {
@@ -712,7 +735,7 @@ async function main() {
         // check. release() validates a supplied proof against its fresh on-disk
         // read, preserving it as a second defense for the raw-owned path without
         // allowing proof equality to establish ownership by itself.
-        const proof = loadOwnerProof({ repoRoot: projectRoot });
+        const proof = loadOwnerProof({ repoRoot: lockRoot });
 
         // Defense-in-depth (#987): when a persisted proof exists, hand it to
         // release() so the delete is double-gated (session_id match AND
@@ -725,7 +748,7 @@ async function main() {
         // breadcrumb below (releaseResult.reason surfaces verbatim).
         const releaseResult = release({
           sessionId,
-          repoRoot: projectRoot,
+          repoRoot: lockRoot,
           proof,
         });
         // release() has a no-throw contract (always returns a structured
@@ -795,8 +818,8 @@ async function main() {
           // during the awaited emit above owns a fresh proof we must not
           // remove. A narrow window between this read and the unlink remains.
           try {
-            if (isLockOwnedByProof(lock, loadOwnerProof({ repoRoot: projectRoot }))) {
-              await fs.unlink(path.join(projectRoot, OWNER_PROOF_RELPATH));
+            if (isLockOwnedByProof(lock, loadOwnerProof({ repoRoot: lockRoot }))) {
+              await fs.unlink(path.join(lockRoot, OWNER_PROOF_RELPATH));
             }
           } catch { /* best-effort — a leftover proof is self-invalidating */ }
         }
@@ -804,7 +827,7 @@ async function main() {
         // A raw-ID mismatch never grants release ownership. Reconciliation is
         // the only remaining cleanup path; it no-ops for a live lock and safely
         // reaps only eligible dead/stale locks.
-        await attemptLockReconciliation({ repoRoot: projectRoot, sessionId, lock });
+        await attemptLockReconciliation({ repoRoot: lockRoot, sessionId, lock });
       }
     }
     // 'absent' — no lock file at all; nothing to release or reconcile

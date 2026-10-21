@@ -17,9 +17,11 @@
  * consolidate (new file, new hook).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { resolve, join } from 'node:path';
+import { mkdtempSync, mkdirSync, rmSync, symlinkSync, realpathSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
   expectAllow,
   expectDeny,
@@ -27,6 +29,7 @@ import {
   expectGuardInactive,
 } from '../_helpers/hook-decision.mjs';
 import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const HOOK = resolve(import.meta.dirname, '../..', 'hooks/pre-bash-sessions-ledger-guard.mjs');
 const LEDGER = '.orchestrator/metrics/sessions.jsonl';
@@ -41,9 +44,10 @@ const LEDGER = '.orchestrator/metrics/sessions.jsonl';
  * a repo dependency at ESM LINK time — the exact failure `armGuard` must render
  * VISIBLE instead of a silent exit-1 / 0-byte disarm.
  */
-function runHook({ toolName = 'Bash', command = '', env = {}, execArgv = [] } = {}) {
+function runHook({ toolName = 'Bash', command = '', env = {}, execArgv = [], cwd, payloadCwd } = {}) {
   return spawnSync('node', [...execArgv, HOOK], {
-    input: JSON.stringify({ tool_name: toolName, tool_input: { command } }),
+    input: JSON.stringify({ tool_name: toolName, cwd: payloadCwd, tool_input: { command } }),
+    cwd,
     encoding: 'utf-8',
     maxBuffer: 8 * 1024 * 1024,
     env: { ...process.env, SO_DISABLED_HOOKS: '', SO_HOOK_PROFILE: '', ...env },
@@ -64,6 +68,7 @@ function childProcessBoot(spawnSource) {
   const bootstrap = [
     "import childProcess from 'node:child_process';",
     "import { syncBuiltinESMExports } from 'node:module';",
+    'const originalSpawnSync = childProcess.spawnSync;',
     `childProcess.spawnSync = ${spawnSource};`,
     'syncBuiltinESMExports();',
   ].join('\n');
@@ -188,6 +193,97 @@ describe('pre-bash-sessions-ledger-guard', () => {
       // … and what arrives is a COMPLETE, parseable deny — not a truncated
       // remnant, which the harness would read as no-decision and allow.
       expectDeny(res, 'emit-session.mjs');
+    });
+
+    it.each([
+      ['$( substitution', '$('.repeat(3000) + 'true' + ')'.repeat(3000) + `; echo x >> ${LEDGER}`],
+      ['( subshell', '( '.repeat(7000) + 'true' + ' )'.repeat(7000) + `; echo x >> ${LEDGER}`],
+      // Inside "…" an unparseable body falls back to a mark, not a deny — the
+      // depth cap must not take that softer exit.
+      ['quoted $( substitution', `echo "${'$('.repeat(3000)}echo x >> ${LEDGER}${')'.repeat(3000)}"`],
+    ])('denies a ledger write behind %s nesting too deep to scan (#1665)', (_label, command) => {
+      // Bug: the span scanner recursed without a bound, the stack overflowed, and
+      // main().catch turned the crash into an ALLOW — zsh and bash still run it.
+      const started = Date.now();
+      expectDeny(runHook({ command }));
+      expect(Date.now() - started).toBeLessThan(5000);
+    });
+
+    // #1670 — measured ALLOW at d4fcdf08 for every 'deny' row: readWord ended the
+    // target at the `(` of an unquoted `$(`, recorded the target `$`, and the
+    // scanner then took `(pwd)` for a subshell — the write was never judged.
+    it.each([
+      ['$(pwd) prefix', `echo x >> $(pwd)/${LEDGER}`],
+      ['$(git rev-parse) prefix with a space in the body', `echo x > $(git rev-parse --show-toplevel)/${LEDGER}`],
+      ['substitution supplying the basename', `echo x > $(echo ${LEDGER})`],
+    ])('denies a redirect target that starts with a substitution: %s', (_label, command) => {
+      expectDeny(runHook({ command }), 'emit-session.mjs');
+    });
+
+    it.each([
+      ['a backup file', `echo x >> $(pwd)/${LEDGER}.bak`],
+      ['another file beside a ledger read', `echo x >> $(pwd)/x.log; cat ${LEDGER}`],
+    ])('still allows a substitution-prefixed target naming %s', (_label, command) => {
+      // Bug: a fail-closed rule keyed on "the word mentions sessions.jsonl"
+      // instead of the unresolvable LAST component would deny these.
+      expectAllow(runHook({ command }));
+    });
+
+    // #1671 item 3 — measured ALLOW for every row: the pre-filter looked for the
+    // literal `sessions.jsonl` in the RAW command, so quoting or escaping inside
+    // the name skipped the whole scan, and a substitution supplying PART of the
+    // name never reached the #1670 rule (it keyed on the full basename).
+    const DIR = '.orchestrator/metrics';
+    const NAMES = [
+      ['$(…) whole stem', '$(echo sessions).jsonl'],
+      ['$(…) mid-name', 'sess$(echo ions).jsonl'],
+      ['backtick stem', '`echo sessions`.jsonl'],
+      ['double-quoted stem', '"sessions".jsonl'],
+      ['single-quoted stem', "'sessions'.jsonl"],
+      ['backslash-escaped dot', 'sessions\\.jsonl'],
+      // Measured ALLOW for `>>` only (tee/cp/dd denied): readWord's double-quote
+      // state copied `$(…)` literally, so the skeleton carried no placeholder.
+      ['a double-quoted $(…) stem', '"$(echo sessions)".jsonl'],
+      ['a double-quoted backtick mid-name', '"sess`echo ions`.jsonl"'],
+    ];
+    const WRITES = [
+      ['>>', (t) => `echo x >> ${t}`],
+      ['tee -a', (t) => `cat rec.json | tee -a ${t}`],
+      ['cp', (t) => `cp /tmp/backup.jsonl ${t}`],
+      ['dd of=', (t) => `dd if=/tmp/backup.jsonl of=${t}`],
+    ];
+    it.each(WRITES.flatMap(([verb, build]) => NAMES.map(([shape, name]) => [verb, shape, build(`${DIR}/${name}`)])))(
+      'denies a %s write whose ledger name is disguised by %s',
+      (_verb, _shape, command) => {
+        expectDeny(runHook({ command }));
+      },
+    );
+
+    // The same substitutions with the WHOLE target double-quoted: bash expands
+    // `$(…)` and backticks inside "…", so the name is still decided at run time.
+    const QUOTED_PATHS = [
+      ['$(…) whole stem', `"${DIR}/$(echo sessions).jsonl"`],
+      ['$(…) mid-name', `"${DIR}/sess$(echo ions).jsonl"`],
+    ];
+    it.each(WRITES.flatMap(([verb, build]) => QUOTED_PATHS.map(([shape, p]) => [verb, shape, build(p)])))(
+      'denies a %s write to a fully double-quoted target with a %s',
+      (_verb, _shape, command) => {
+        expectDeny(runHook({ command }));
+      },
+    );
+
+    it.each([
+      ['a substitution-named log beside the ledger', `echo x >> ${DIR}/$(date +%s).log`],
+      ['a quoted DIFFERENT jsonl', `cp /tmp/b.jsonl ${DIR}/"events".jsonl`],
+      ['a substitution-named file outside the metrics dir', 'echo x >> /tmp/$(echo sessions).jsonl'],
+      ['a fully quoted events path', `echo x >> "${DIR}/events.jsonl"`],
+      ['a double-quoted substitution-named log', `echo x >> "${DIR}/$(date +%s).log"`],
+      // Single quotes keep `$(…)` literal: the file is named `$(echo sessions).jsonl`.
+      ['a single-quoted substitution spelling', `echo x >> '${DIR}/$(echo sessions).jsonl'`],
+    ])('still allows %s (#1671 precision)', (_label, command) => {
+      // Bug: a rule keyed on "metrics dir + any substitution or quote" instead of
+      // "could this name be sessions.jsonl" would deny routine metric writes.
+      expectAllow(runHook({ command }));
     });
   });
 
@@ -401,8 +497,13 @@ describe('#1001 — DEGRADED surfaces on stdout, not stderr alone', { timeout: 3
     // `degraded`, so this spawn produced an EMPTY stdout — a silent allow.
     // Only the working-tree copy is broken here (no alsoBreakHeadFallback), so
     // the `git show HEAD:` recovery succeeds and the guard arms, degraded.
+    // The DEGRADED banner drops a throttle marker into the child's tmpdir;
+    // hand it one this test owns and removes (#1648).
+    const ownTmp = mkdtempSync(join(tmpdir(), 'ledger-guard-degraded-'));
+    onTestFinished(() => removeTree(ownTmp));
     const result = runHook({
       command: 'ls -la',
+      env: { TMPDIR: ownTmp },
       execArgv: brokenModuleBoot({ moduleBasename: 'command-blocker.mjs' }),
     });
     expectWarn(result, ['DEGRADED', 'pre-bash-sessions-ledger-guard']);
@@ -496,6 +597,13 @@ describe('#1005 — repair apply is ledger-guarded', () => {
       'repair-invalid-sessions.mjs --apply',
     ],
     ['env-wrapped node', 'env node scripts/repair-invalid-sessions.mjs --apply', 'deny', 'repair-invalid-sessions.mjs --apply'],
+    // #1665: Debian's binary name was not recognised as Node — measured ALLOW at a870ecde.
+    [
+      'nodejs verb with an explicit --repo-root',
+      'nodejs scripts/repair-invalid-sessions.mjs --apply --repo-root /tmp/x',
+      'deny',
+      'repair-invalid-sessions.mjs --apply',
+    ],
     [
       'alternate value-taking wrapper reading',
       'env -Q x node scripts/repair-invalid-sessions.mjs --apply',
@@ -670,6 +778,32 @@ describe('#1408 — interpreter eval payloads', () => {
     // shell TOKEN anywhere in the segment rather than on the resolved verb.
     ['an xargs sh -c redirect', `xargs -I{} sh -c "echo x >> ${LEDGER}"`, 'deny'],
 
+    // ---- #1665 — the shared tokenizer glued `(`, `$(`, `` ` `` and `{` onto the
+    // next word, so `(node` never resolved the verb `node`; each deny row below
+    // was measured ALLOW against the a870ecde hook.
+    ['a subshell that is not the first command', `true && (node -e "require('fs').appendFileSync('${LEDGER}','x')")`, 'deny'],
+    ['a $(…) command substitution', `echo $(node -e "require('fs').appendFileSync('${LEDGER}','x')")`, 'deny'],
+    ['a backtick command substitution', `echo \`node -e "require('fs').appendFileSync('${LEDGER}','x')"\``, 'deny'],
+    ['a $(…) inside double quotes', `echo "$(tee -a ${LEDGER} < rec.json)"`, 'deny'],
+    // Counter-probe: the same syntax around READS must not inherit a deny, and
+    // `{}` / `${…}` are not brace groups (a `{ …; }` group is one).
+    ['benign subshell, substitution and group around a read', `true && (echo hi) && echo $(date) "\${HOME}" && { wc -l ${LEDGER}; } && find . -exec cp {} /tmp/o \\;`, 'allow'],
+    // #1665 review cycle 2 — the first fix rewrote an unquoted `$(` / backtick
+    // to ` ; ` even MID-WORD, so the destination word lost its ledger tail.
+    // Each row denied at a870ecde and was measured ALLOW against that fix.
+    ['tee -a onto a $(pwd)-prefixed ledger', `tee -a $(pwd)/${LEDGER} < /tmp/rec`, 'deny'],
+    ['tee -a onto a backtick-prefixed ledger', `tee -a \`pwd\`/${LEDGER} < /tmp/rec`, 'deny'],
+    ['mv onto a $(pwd)-prefixed ledger', `mv /tmp/rec $(pwd)/${LEDGER}`, 'deny'],
+    ['dd of= a $(pwd)-prefixed ledger', `dd if=/tmp/rec of=$(pwd)/${LEDGER}`, 'deny'],
+    ['dd of= a backtick-prefixed ledger', `dd if=/tmp/rec of=\`pwd\`/${LEDGER}`, 'deny'],
+    // The first fix ended the outer `"…"` at the first inner `"`, so the
+    // extracted body stopped inside a '…' string and the recursive scan failed
+    // CLOSED. Real transcript shape (2 of 893): a glab description built by printf.
+    ['a double-quoted $(printf …) whose single-quoted text holds a "', `echo "$(printf 'see sessions.jsonl "x" here')"`, 'allow'],
+    // Same nesting, write direction: the nested double quotes no longer split
+    // the outer run, so the substitution body reaches the matcher whole.
+    ['a double-quoted $(node -e "…") with nested double quotes', `echo "$(node -e "require('fs').appendFileSync('${LEDGER}','x')")"`, 'deny'],
+
     // ---- the measured ALLOW shapes. 148 of the 438 ledger-naming commands are
     // plain jq reads; the 3 interpreter one-liners that contain a write verb at
     // all are ALL ledger reads that write somewhere else.
@@ -760,5 +894,470 @@ describe('#1005 — unavailable Node grammar denies repair apply', () => {
         'denied fail-closed',
       ],
     );
+  });
+});
+
+// #1577: the existing childProcessBoot seam substitutes only Git identity
+// measurement. Real paths, quoting, payload context and CLI resolution are
+// exercised by the real hook. This is deterministic contract coverage, not
+// native Git/process acceptance (which remains required at the Lead).
+describe('#1577 — absolute installed repair invocation', () => {
+  const script = resolve(import.meta.dirname, '../../scripts/repair-invalid-sessions.mjs');
+  function fixture(markerType = 'directory', rootName = 'consumer') {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'ledger-guard-1577-')));
+    onTestFinished(() => removeTree(dir));
+    const root = join(dir, rootName);
+    for (const name of ['home', 'config', 'vault', rootName]) mkdirSync(join(dir, name), {recursive: true});
+    mkdirSync(join(root, 'sub'));
+    mkdirSync(join(root, '.orchestrator', 'metrics'), {recursive: true});
+    writeFileSync(join(root, '.orchestrator', 'metrics', 'sessions.jsonl'), '');
+    if (markerType === 'file') writeFileSync(join(root, '.git'), `gitdir: ${join(dir, 'synthetic-worktree-gitdir')}\n`);
+    else mkdirSync(join(root, '.git'));
+    const env = {
+      HOME: join(dir, 'home'), NAVIGATOR_CONFIG_DIR: join(dir, 'config'), SO_CONFIG_HOME: join(dir, 'config'), SO_VAULT_DIR: join(dir, 'vault'),
+      CLAUDE_PROJECT_DIR: '', CODEX_PROJECT_DIR: '', CURSOR_PROJECT_DIR: '', PI_PROJECT_DIR: '',
+      ...Object.fromEntries(Object.keys(process.env).filter((name) => name.startsWith('GIT_')).map((name) => [name, undefined])),
+    };
+    const git = childProcessBoot(`(command, args, options) => {
+      if (command !== 'git') return originalSpawnSync(command, args, options);
+      if (args[0] !== '-C' || args[2] !== 'rev-parse' || args[3] !== '--show-toplevel') {
+        throw new Error('Unexpected identity probe');
+      }
+      return {status: 0, stdout: ${JSON.stringify(root + '\n')}};
+    }`);
+    const run = (command, overrides = {}) => {
+      const result = runHook({command, cwd: root, payloadCwd: root, env, execArgv: git, ...overrides});
+      expect(result.error).toBeUndefined();
+      return result;
+    };
+    return {dir, root, env, run, git};
+  }
+
+  // The observable contract is the real hook decision, with only Git identity
+  // stubbed as in #1577. These cases catch a missing or overbroad Vault guard;
+  // the existing absolute-root tests did not resolve any Vault path.
+  it.each(['vault', 'vault/consumer'])('denies a resolved Vault root or descendant (%s)', (rootName) => {
+    const {root, run} = fixture('directory', rootName);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`), '#1577');
+  });
+
+  it('canonicalizes a configured Vault symlink before excluding the target', () => {
+    const {dir, root, env, run} = fixture('directory', 'vault/consumer');
+    const linked = join(dir, 'vault-link');
+    symlinkSync(join(dir, 'vault'), linked);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {env: {...env, SO_VAULT_DIR: linked}}), '#1577');
+  });
+
+  // Bug: the exception admitted `--repo-root` without a sessions.jsonl there,
+  // so `--apply` ran against a repo that has no ledger to repair (#1577).
+  it.each([
+    ['absent', (ledger) => rmSync(ledger)],
+    ['a symlink', (ledger, dir) => { rmSync(ledger); writeFileSync(join(dir, 'elsewhere.jsonl'), ''); symlinkSync(join(dir, 'elsewhere.jsonl'), ledger); }],
+  ])('denies the absolute exception when the target ledger is %s', (_label, mutate) => {
+    const {dir, root, run} = fixture();
+    mutate(join(root, '.orchestrator', 'metrics', 'sessions.jsonl'), dir);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`), '#1577');
+  });
+
+  it('allows a configured Vault prefix sibling', () => {
+    const {root, run} = fixture('directory', 'vault-x');
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`));
+  });
+
+  it.each(['home/Projects/vault', 'home/Projects/vault/consumer'])('falls back to the canonical HOME Vault on resolver failure (%s)', (rootName) => {
+    const {root, run, git} = fixture('directory', rootName);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {
+      execArgv: [...git, ...brokenModuleBoot({moduleBasename: 'config.mjs'})],
+    }), '#1577');
+  });
+
+  it.each(['home/Projects/vault-x', 'home/Projects/other/vault'])('keeps fallback segment-exact and narrow (%s)', (rootName) => {
+    const {root, run, git} = fixture('directory', rootName);
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`, {
+      execArgv: [...git, ...brokenModuleBoot({moduleBasename: 'config.mjs'})],
+    }));
+  });
+
+  it('uses a measurable configured Vault instead of the HOME fallback', () => {
+    const {root, run} = fixture('directory', 'home/Projects/vault');
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`));
+  });
+
+  it.each(['environment tilde', 'owner match', 'owner paths', 'committed tilde'])('excludes the winning resolved tier (%s)', (tier) => {
+    const {dir, root, env, run} = fixture('directory', 'home/Projects/configured-vault/consumer');
+    const vault = join(dir, 'home/Projects/configured-vault');
+    const changedEnv = {...env, SO_VAULT_DIR: ''};
+    // The unrelated invalid config value proves the narrow Vault parser is
+    // used instead of parsing the entire Session Config.
+    writeFileSync(join(root, 'CLAUDE.md'), `## Session Config\n\nagents-per-wave: invalid\nvault-integration:\n  vault-dir: ~/Projects/configured-vault\n`);
+    if (tier === 'environment tilde') {
+      changedEnv.SO_VAULT_DIR = '~/Projects/configured-vault';
+      writeFileSync(join(dir, 'config/owner.yaml'), '[');
+    } else if (tier === 'owner match') {
+      writeFileSync(join(dir, 'config/owner.yaml'), `paths:\n  vault-dir: ${join(dir, 'vault')}\nvault-dirs:\n  - path: ${vault}\n    match:\n      path-prefix: ${root}\n`);
+      writeFileSync(join(root, 'CLAUDE.md'), '# No committed Vault\n');
+    } else if (tier === 'owner paths') {
+      writeFileSync(join(dir, 'config/owner.yaml'), `paths:\n  vault-dir: ${vault}\n`);
+      writeFileSync(join(root, 'CLAUDE.md'), '# No committed Vault\n');
+    }
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {env: changedEnv}), '#1577');
+  });
+
+  it.each(['missing committed value', 'unparseable owner', 'unresolvable configured path'])('uses fallback when resolution is unmeasurable (%s)', (kind) => {
+    const {dir, root, env, run} = fixture('directory', 'home/Projects/vault/consumer');
+    const changedEnv = {...env, SO_VAULT_DIR: ''};
+    writeFileSync(join(root, 'CLAUDE.md'), '# No committed Vault\n');
+    if (kind === 'unparseable owner') writeFileSync(join(dir, 'config/owner.yaml'), '[');
+    if (kind === 'unresolvable configured path') changedEnv.SO_VAULT_DIR = join(dir, 'does-not-exist');
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {env: changedEnv}), '#1577');
+  });
+
+  it.each(['invalid required section', 'invalid higher match tier'])('does not mistake owner defaults for measurable resolution (%s)', (kind) => {
+    const {dir, root, env, run} = fixture('directory', 'home/Projects/vault/consumer');
+    const owner = kind === 'invalid required section' ? 'tone:\n  style: invalid\n' : `vault-dirs: invalid\npaths:\n  vault-dir: ${join(dir, 'vault')}\n`;
+    writeFileSync(join(dir, 'config/owner.yaml'), owner);
+    writeFileSync(join(root, 'CLAUDE.md'), `vault-integration:\n  vault-dir: ${join(dir, 'vault')}\n`);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {env: {...env, SO_VAULT_DIR: ''}}), '#1577');
+  });
+
+  it('keeps a valid owner match authoritative despite an invalid lower paths tier', () => {
+    const {dir, root, env, run} = fixture('directory', 'vault/consumer');
+    writeFileSync(join(dir, 'config/owner.yaml'), `paths: invalid\nvault-dirs:\n  - path: ${join(dir, 'vault')}\n    match:\n      path-prefix: ${root}\n`);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {env: {...env, SO_VAULT_DIR: ''}}), '#1577');
+  });
+
+  it('canonicalizes a symlink HOME for the narrow fallback', () => {
+    const {dir, root, env, run, git} = fixture('directory', 'home/Projects/vault/consumer');
+    const homeLink = join(dir, 'home-link');
+    symlinkSync(env.HOME, homeLink);
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {
+      env: {...env, HOME: homeLink}, execArgv: [...git, ...brokenModuleBoot({moduleBasename: 'config.mjs'})],
+    }), '#1577');
+  });
+
+  it.each(['explicit', 'subdirectory', 'worktree'])('allows the bound installed command (%s)', (kind) => {
+    const {root, run} = fixture(kind === 'worktree' ? 'file' : 'directory');
+    const suffix = ` --repo-root '${root}'`;
+    expectAllow(run(`node '${script}' --apply${suffix}`, kind === 'subdirectory'
+      ? {cwd: join(root, 'sub'), payloadCwd: join(root, 'sub')} : {}));
+  });
+
+  it.each([false, true])('allows an exact explicit root (single quotes: %s)', (quoted) => {
+    const {root, run} = fixture('directory', 'consumer');
+    const operand = quoted ? `'${root}'` : root;
+    expectAllow(run(`node '${script}' --apply --repo-root ${operand}`));
+  });
+
+  it.each([
+    ['missing root', () => ''],
+    ['empty root', () => ' --repo-root='],
+    ['parent traversal', (root) => ` --repo-root '${root}/..'`],
+    ['trailing slash', (root) => ` --repo-root '${root}/'`],
+    ['file override', (root) => ` --repo-root '${root}' --file .orchestrator/metrics/sessions.jsonl`],
+  ])('denies %s', (_label, suffix) => {
+    const {root, run} = fixture();
+    expectDeny(run(`node '${script}' --apply${suffix(root)}`), 'repair-invalid-sessions.mjs --apply');
+  });
+
+  it.each([
+    ['semicolon before', (command) => `echo before; ${command}`],
+    ['semicolon after', (command) => `${command}; echo after`],
+    ['AND before', (command) => `echo before && ${command}`],
+    ['AND after', (command) => `${command} && echo after`],
+    ['NODE_OPTIONS prefix', (command) => `NODE_OPTIONS= ${command}`],
+  ])('denies %s around an explicit-root command', (_label, wrap) => {
+    const {root, run} = fixture();
+    expectDeny(run(wrap(`node '${script}' --apply --repo-root '${root}'`)), 'repair-invalid-sessions.mjs --apply');
+  });
+
+  it('denies a nested CLAUDE.md without explicit root despite the hook launcher root', () => {
+    const {root, env, run} = fixture();
+    const sub = join(root, 'sub');
+    writeFileSync(join(sub, 'CLAUDE.md'), '# Nested project\n');
+    const overrides = {cwd: sub, payloadCwd: sub, env: {...env, CLAUDE_PROJECT_DIR: root}};
+    expectDeny(run(`node '${script}' --apply`, overrides), '#1577');
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`, overrides));
+  });
+
+  // #1656: the explicit-root exception no longer consults getProjectDir(), so
+  // a broken platform.mjs cannot decide it — and still cannot disarm the guard.
+  it('judges an explicit root without platform.mjs and without disarming the relative contract', () => {
+    const {root, run, git} = fixture();
+    const execArgv = [...git, ...brokenModuleBoot({moduleBasename: 'platform.mjs'})];
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`, {execArgv}));
+    expectAllow(run('node scripts/repair-invalid-sessions.mjs --apply', {execArgv}));
+    // A static-import/bootstrap disarm would silently allow this ledger write.
+    expectDeny(run('echo x >> .orchestrator/metrics/sessions.jsonl', {execArgv}), 'Direct write');
+  });
+
+  it.each([
+    ['extra flag', ' --json'], ['shell suffix', '; echo done'], ['pipe', ' | cat'],
+    ['redirect', ' > /tmp/result'], ['trailing newline', '\n'], ['trailing CR', '\r'],
+  ])('denies %s beside the otherwise valid absolute command', (_label, suffix) => {
+    const {root, run} = fixture();
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'${suffix}`), '#1577');
+  });
+
+  // Bug #1577/#1656: from a consumer worktree the launcher project dir names
+  // the main checkout, so demanding agreement made the repair unreachable.
+  // An explicit --repo-root is the whole target identity.
+  it.each(['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR'])('ignores a disagreeing launcher context through %s when --repo-root is explicit', (name) => {
+    const {dir, root, env, run} = fixture();
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`, {env: {...env, [name]: dir}}));
+  });
+
+  it('allows a different payload context but denies an explicit subdirectory target', () => {
+    const {dir, root, run} = fixture();
+    const secondRoot = join(dir, 'second-root');
+    mkdirSync(secondRoot);
+    mkdirSync(join(secondRoot, '.git'));
+    const identityProbe = childProcessBoot(`(command, args, options) => {
+      if (command !== 'git') return originalSpawnSync(command, args, options);
+      return {status: 0, stdout: args[1] + '\\n'};
+    }`);
+    const command = `node '${script}' --apply --repo-root '${root}'`;
+    expectAllow(run(command, {execArgv: identityProbe}));
+    // A successful Git probe alone cannot authorize an explicit non-top-level.
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}/sub'`), '#1577');
+    // The payload cwd is not the repair target; --repo-root is (#1656).
+    expectAllow(run(command, {
+      payloadCwd: secondRoot,
+      execArgv: identityProbe,
+    }));
+  });
+
+  it('denies a --repo-root for which Git reports a different top-level (core.worktree redirect)', () => {
+    const {dir, root, run} = fixture();
+    const redirectedRoot = join(dir, 'redirected-root');
+    mkdirSync(redirectedRoot);
+    mkdirSync(join(redirectedRoot, '.git'));
+    mkdirSync(join(redirectedRoot, '.orchestrator', 'metrics'), {recursive: true});
+    writeFileSync(join(redirectedRoot, '.orchestrator', 'metrics', 'sessions.jsonl'), '');
+    // The fixture probe answers `root` for every -C path: Git at B reports A,
+    // so B is not its own top-level and must not become the repair target.
+    expectDeny(run(`node '${script}' --apply --repo-root '${redirectedRoot}'`), '#1577');
+    expectAllow(run(`node '${script}' --apply --repo-root '${root}'`));
+  });
+
+  it('denies script and target symlinks rather than authorizing their realpaths', () => {
+    const {dir, root, run} = fixture();
+    const linkedScript = join(dir, 'repair-invalid-sessions.mjs');
+    const linkedRoot = join(dir, 'linked-root');
+    symlinkSync(script, linkedScript);
+    symlinkSync(root, linkedRoot);
+    expectDeny(run(`node '${linkedScript}' --apply --repo-root '${root}'`), '#1577');
+    expectDeny(run(`node '${script}' --apply --repo-root '${linkedRoot}'`), '#1577');
+  });
+
+  it('denies a symlink Git marker even with a successful top-level probe', () => {
+    const {dir, env, root, run} = fixture();
+    const linked = join(dir, 'linked-marker-root');
+    mkdirSync(linked);
+    symlinkSync(join(root, '.git'), join(linked, '.git'));
+    expectDeny(run(`node '${script}' --apply --repo-root '${linked}'`, {
+      cwd: linked, payloadCwd: linked, env,
+      execArgv: childProcessBoot(`() => ({status: 0, stdout: ${JSON.stringify(linked + '\n')}})`),
+    }), '#1577');
+  });
+
+  it('keeps unrelated absolute script operands outside the new exception', () => {
+    const {run} = fixture();
+    expectAllow(run('node /tmp/other-script.mjs --note repair-invalid-sessions.mjs --apply'));
+  });
+
+  it('denies EPERM despite a successful status and otherwise valid Git identity', () => {
+    const {root, run} = fixture();
+    const command = `node '${script}' --apply --repo-root '${root}'`;
+    // Control: the same filesystem/context and healthy Git identity authorize.
+    expectAllow(run(command));
+    expectDeny(run(command, {
+      execArgv: childProcessBoot(`(command, args, options) => {
+        if (command !== 'git') return originalSpawnSync(command, args, options);
+        return {
+          error: Object.assign(new Error('Denied'), {code: 'EPERM'}),
+          status: 0, stdout: ${JSON.stringify(root + '\n')},
+        };
+      }`),
+    }), '#1577');
+  });
+
+  it.each([
+    ['not Git', `() => ({status: 128, stdout: ''})`],
+    ['empty successful output', `() => ({status: 0, stdout: ''})`],
+  ])('denies unmeasurable Git identity (%s)', (_label, source) => {
+    const {root, run} = fixture();
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {execArgv: childProcessBoot(source)}), '#1577');
+  });
+
+  it.each(['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_CONFIG_COUNT'])('denies ambient Git identity override %s', (name) => {
+    const {env, root, run} = fixture();
+    expectDeny(run(`node '${script}' --apply --repo-root '${root}'`, {env: {...env, [name]: root}}), '#1577');
+  });
+
+  it.each([
+    ['subshell', (command) => `$(${command})`],
+    ['backticks', (command) => '`' + command + '`'],
+    ['expansion in quoted path', () => `node "${script}" --apply --repo-root "$PWD"`],
+    ['different Node', (command) => command.replace(/^node/, '/usr/bin/node')],
+    ['Node option', (command) => command.replace(/^node/, 'node --no-warnings')],
+  ])('denies %s', (_label, transform) => {
+    const {root, run} = fixture();
+    expectDeny(run(transform(`node '${script}' --apply --repo-root '${root}'`)), 'repair-invalid-sessions.mjs --apply');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1656 (dup of #1577) — the guard denied `repair-invalid-sessions.mjs --apply
+// --repo-root <toplevel>` from a consumer session: the relative form allowed
+// only the bare exact string, and the absolute form demanded that the
+// launcher project dir (the consumer's main checkout) equal the target
+// worktree. These rows run REAL `git init` repos — no identity stub — from an
+// unrelated cwd with a disagreeing CLAUDE_PROJECT_DIR, i.e. the consumer shape.
+// ---------------------------------------------------------------------------
+describe('#1656 — explicit --repo-root against a real Git top-level', () => {
+  const script = resolve(import.meta.dirname, '../../scripts/repair-invalid-sessions.mjs');
+  const REASON = 'repair-invalid-sessions.mjs --apply';
+  const gitFree = Object.fromEntries(Object.keys(process.env).filter((name) => name.startsWith('GIT_')).map((name) => [name, undefined]));
+
+  function realRepos() {
+    const dir = realpathSync.native(mkdtempSync(join(tmpdir(), 'ledger-guard-1656-')));
+    onTestFinished(() => removeTree(dir));
+    const makeRepo = (name, {ledger = true} = {}) => {
+      const repo = join(dir, name);
+      mkdirSync(repo, {recursive: true});
+      const init = spawnSync('git', ['init', '-q', repo], {encoding: 'utf-8', env: {...process.env, ...gitFree}});
+      expect(init.status).toBe(0);
+      if (ledger) {
+        mkdirSync(join(repo, '.orchestrator', 'metrics'), {recursive: true});
+        writeFileSync(join(repo, LEDGER), '');
+      }
+      return repo;
+    };
+    for (const name of ['home', 'config', 'vault', 'elsewhere']) mkdirSync(join(dir, name));
+    const env = {
+      ...gitFree, HOME: join(dir, 'home'), SO_CONFIG_HOME: join(dir, 'config'), SO_VAULT_DIR: join(dir, 'vault'),
+      CLAUDE_PROJECT_DIR: join(dir, 'elsewhere'), CODEX_PROJECT_DIR: '', CURSOR_PROJECT_DIR: '', PI_PROJECT_DIR: '',
+    };
+    const run = (command) => {
+      const result = runHook({command, cwd: join(dir, 'elsewhere'), payloadCwd: join(dir, 'elsewhere'), env});
+      expect(result.error).toBeUndefined();
+      return result;
+    };
+    return {dir, makeRepo, run};
+  }
+
+  it.each([
+    ['relative script, --apply first', (repo) => `node scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['relative script, --repo-root first', (repo) => `node scripts/repair-invalid-sessions.mjs --repo-root ${repo} --apply`],
+    ['plugin absolute script, --apply first', (repo) => `node ${script} --apply --repo-root ${repo}`],
+    ['plugin absolute script, --repo-root first', (repo) => `node '${script}' --repo-root '${repo}' --apply`],
+  ])('allows %s', (_label, build) => {
+    const {makeRepo, run} = realRepos();
+    expectAllow(run(build(makeRepo('consumer-wt'))));
+  });
+
+  // #1670 — measured ALLOW at d4fcdf08 for every row: the guard knew only Node's
+  // verb names, so another runner of the repair CLI skipped the allowance AND its
+  // --repo-root checks. The contract: never broader than `node`; outside the node
+  // grammar the runner is denied, even against a root `node` may repair.
+  it.each([
+    ['bun', (repo) => `bun scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['bun run', (repo) => `bun run scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['deno run -A', (repo) => `deno run -A scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['npx node', (repo) => `npx node scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['npm exec -- node', (repo) => `npm exec -- node scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['$(which node)', (repo) => `$(which node) scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`],
+    ['`which node`', (repo) => `\`which node\` scripts/repair-invalid-sessions.mjs --repo-root ${repo} --apply`],
+  ])('denies the repair CLI run by %s where node itself is allowed', (_label, build) => {
+    const {makeRepo, run} = realRepos();
+    const repo = makeRepo('consumer-wt');
+    expectAllow(run(`node scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`));
+    expectDeny(run(build(repo)), REASON);
+  });
+
+  it('allows a non-node runner of the repair CLI in its dry-run default', () => {
+    // Bug: a runner rule keyed on the script operand alone would deny the
+    // read-only preview, which never writes the ledger.
+    const {makeRepo, run} = realRepos();
+    expectAllow(run(`bun scripts/repair-invalid-sessions.mjs --dry-run --repo-root ${makeRepo('consumer-wt')}`));
+  });
+
+  it.each([
+    ['echo', 'echo bun scripts/repair-invalid-sessions.mjs --apply'],
+    ['grep', 'grep -n x scripts/repair-invalid-sessions.mjs --apply'],
+  ])('allows %s that only names the repair CLI (never runs it)', (_verb, command) => {
+    // Bug: the non-node runner rule treated every verb as a runner and denied
+    // a print/search command that only mentions the script.
+    const {run} = realRepos();
+    expectAllow(run(command));
+  });
+
+  it.each([
+    ['whitespace in the path', (repos) => `'${repos.makeRepo('has space')}'`],
+    ['a character outside the charset', (repos) => repos.makeRepo('a,b')],
+    ['a relative path', (repos) => { repos.makeRepo('rel'); return 'rel'; }],
+    // Security review so-69: the Vault check judged the plain root while the
+    // script follows symlinks — a scratch repo linking into the Vault slipped by.
+    ['an .orchestrator/ symlinked into the Vault', (repos) => {
+      const repo = repos.makeRepo('evil-orch', {ledger: false});
+      mkdirSync(join(repos.dir, 'vault', '.orchestrator', 'metrics'), {recursive: true});
+      writeFileSync(join(repos.dir, 'vault', LEDGER), '');
+      symlinkSync(join(repos.dir, 'vault', '.orchestrator'), join(repo, '.orchestrator'));
+      return repo;
+    }],
+    ['a metrics/ symlinked into the Vault', (repos) => {
+      const repo = repos.makeRepo('evil-metrics', {ledger: false});
+      mkdirSync(join(repos.dir, 'vault', '.orchestrator', 'metrics'), {recursive: true});
+      writeFileSync(join(repos.dir, 'vault', LEDGER), '');
+      mkdirSync(join(repo, '.orchestrator'), {recursive: true});
+      symlinkSync(join(repos.dir, 'vault', '.orchestrator', 'metrics'), join(repo, '.orchestrator', 'metrics'));
+      return repo;
+    }],
+    ['a non-top-level subdirectory', (repos) => {
+      const sub = join(repos.makeRepo('outer'), 'sub');
+      mkdirSync(join(sub, '.orchestrator', 'metrics'), {recursive: true});
+      writeFileSync(join(sub, LEDGER), '');
+      return sub;
+    }],
+    ['a nonexistent path', (repos) => join(repos.dir, 'missing')],
+    ['a top-level without the ledger', (repos) => repos.makeRepo('no-ledger', {ledger: false})],
+    ['a directory that is no Git repo', (repos) => {
+      const plain = join(repos.dir, 'plain');
+      mkdirSync(join(plain, '.orchestrator', 'metrics'), {recursive: true});
+      writeFileSync(join(plain, LEDGER), '');
+      return plain;
+    }],
+  ])('denies a --repo-root with %s', (_label, rootFor) => {
+    const repos = realRepos();
+    const root = rootFor(repos);
+    expectDeny(repos.run(`node scripts/repair-invalid-sessions.mjs --apply --repo-root ${root}`), REASON);
+    expectDeny(repos.run(`node ${script} --apply --repo-root ${root}`), REASON);
+  });
+
+  it.each([
+    ['an extra argument', (c) => `${c} --json`],
+    ['a second --repo-root', (c, repo) => `${c} --repo-root ${repo}`],
+    ['the = spelling', (c, repo) => c.replace(` --repo-root ${repo}`, ` --repo-root=${repo}`)],
+    ['a chained command', (c) => `${c}; echo done`],
+    ['an AND chain', (c) => `${c} && true`],
+    ['a cd prefix', (c, repo) => `cd ${repo} && ${c}`],
+    ['a pipe', (c) => `${c} | cat`],
+    ['a subshell', (c) => `(${c})`],
+    ['command substitution', (c) => `$(${c})`],
+  ])('denies %s around a valid explicit-root command', (_label, wrap) => {
+    const {makeRepo, run} = realRepos();
+    const repo = makeRepo('consumer-wt');
+    for (const base of [`node scripts/repair-invalid-sessions.mjs --apply --repo-root ${repo}`, `node ${script} --apply --repo-root ${repo}`]) {
+      expectDeny(run(wrap(base, repo)), REASON);
+    }
+  });
+
+  it('denies a foreign absolute copy of the repair script and names the sanctioned forms', () => {
+    const {dir, makeRepo, run} = realRepos();
+    const repo = makeRepo('consumer-wt');
+    const foreign = join(dir, 'scripts', 'repair-invalid-sessions.mjs');
+    mkdirSync(join(dir, 'scripts'));
+    writeFileSync(foreign, '');
+    expectDeny(run(`node ${foreign} --apply --repo-root ${repo}`), [REASON, '--repo-root <absolute-git-toplevel>']);
   });
 });

@@ -796,6 +796,31 @@ export function checkEnvDocumentation(repoRoot) {
   };
 }
 
+/** The session ledger the orchestrator appends to on every close. */
+const SESSIONS_LEDGER_REL = '.orchestrator/metrics/sessions.jsonl';
+
+/**
+ * H6 — Tracked session ledger (#1666).
+ *
+ * A repo that TRACKS `.orchestrator/metrics/sessions.jsonl` gets one commit-worthy
+ * diff per session close, and every linked worktree checks out its own copy —
+ * where foreign records landed in #1660. The hint is text only; nothing here
+ * runs it. `fixable: false`: untracking changes what the repo shares with
+ * every clone, an owner decision, not batch work.
+ *
+ * @param {string} repoRoot
+ * @returns {object|null}
+ */
+export function checkTrackedSessionsLedger(repoRoot) {
+  // `--error-unmatch` exits non-zero (→ null) when the path is not tracked.
+  if (git(['ls-files', '--error-unmatch', '--', SESSIONS_LEDGER_REL], repoRoot) === null) return null;
+  return {
+    check: 'tracked-sessions-ledger',
+    fixable: false,
+    message: `${SESSIONS_LEDGER_REL} is tracked in git — every session close dirties the tree and each worktree carries its own copy; untrack it: \`git rm --cached ${SESSIONS_LEDGER_REL}\` and add it to .gitignore`,
+  };
+}
+
 /**
  * Aggregate the project-hygiene family into one banner result.
  *
@@ -831,6 +856,9 @@ export function checkProjectHygiene({ repoRoot, now = Date.now(), thresholds = {
 
     const env = checkEnvDocumentation(repoRoot);
     if (env) findings.push(env);
+
+    const ledger = checkTrackedSessionsLedger(repoRoot);
+    if (ledger) findings.push(ledger);
   } catch {
     // Probe family is advisory — a partial result beats a crashed session-start.
     if (findings.length === 0) return null;

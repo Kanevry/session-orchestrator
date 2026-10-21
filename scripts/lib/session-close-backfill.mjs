@@ -64,6 +64,7 @@ import { serializeSessionLineChecked as defaultSerialize } from './session-schem
 import { resolveStateMdPath as defaultResolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
 import { parseStateMd as defaultParseStateMd } from './state-md/yaml-parser.mjs';
 import { canonicalizeSessions } from './sessions-canonical.mjs';
+import { explainEventsLedgerRoot, resolveEventsLedgerRoot } from './platform.mjs';
 // Already in the hook import set (`emitEvent` lives there): the rotation-aware
 // reader adds no new file to the SessionStart/SessionEnd hook graph.
 import { eventsFilePath, scanEventsBackwards } from './events.mjs'; // eventsFilePath: #1514, the repo's one ledger
@@ -138,6 +139,25 @@ export function isLoggedBackfillAction(action) {
 // ---------------------------------------------------------------------------
 
 /**
+ * A skip outcome when `repoRoot` sits in a LINKED worktree with no main
+ * checkout to map the ledger to (`git init --separate-git-dir`, a bare repo's
+ * worktree, stale worktree metadata): the resolver falls back to the worktree
+ * itself, and this writer would append into ITS `sessions.jsonl` again — the
+ * #1660 incident class. Says so on stderr in one line (#1666). `undefined`
+ * otherwise: write as before. The skip is a `skipped-*` action, so the
+ * breadcrumb log stays out of the worktree too.
+ *
+ * @param {string} repoRoot
+ * @returns {{ action: string, reason: string } | undefined}
+ */
+function unresolvedLedgerSkip(repoRoot) {
+  const { resolved, reason } = explainEventsLedgerRoot(repoRoot);
+  if (resolved) return undefined;
+  process.stderr.write(`session-close-backfill: skipped, sessions ledger not written into the worktree: ${reason}\n`);
+  return { action: 'skipped-ledger-root-unresolved', reason };
+}
+
+/**
  * True when `s` is an RFC 9562 UUID session id (any version 1-8, variant `10xx`).
  *
  * Delegates to `parseSessionId()` so the repo has exactly ONE UUID contract
@@ -159,6 +179,19 @@ export function isUuid(s) {
 function markerName(id) {
   const cleaned = String(id).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
   return `.backfilled-${cleaned}.marker`;
+}
+
+/**
+ * Give a TOCTOU marker back after the ledger append failed (#1609): a marker
+ * without its record would keep the candidate from ever being backfilled.
+ * Best-effort — a failed unlink leaves the old behaviour, never throws.
+ */
+function releaseMarker(markerPath) {
+  try {
+    fs.unlinkSync(markerPath);
+  } catch {
+    /* best-effort */
+  }
 }
 
 /**
@@ -971,9 +1004,11 @@ export async function backfillAbandonedSession({
       if (!sessionId && !semanticSessionId) {
         return { action: 'skipped-no-identifier' };
       }
+      const unresolved = unresolvedLedgerSkip(repoRoot);
+      if (unresolved) return unresolved;
 
       const eventsPath = eventsFilePath(repoRoot);
-      const sessionsPath = path.join(repoRoot, ...SESSIONS_REL);
+      const sessionsPath = path.join(resolveEventsLedgerRoot(repoRoot), ...SESSIONS_REL);
 
       // -- Resolve the SEMANTIC record id (sessions.jsonl key) ----------------
       // Two-phase so the common SessionEnd path stays cheap: when the id is
@@ -1145,8 +1180,29 @@ export async function backfillAbandonedSession({
         };
       }
 
-      // -- TOCTOU marker — atomic create-or-fail keyed by the final id --------
-      const markerPath = path.join(repoRoot, '.orchestrator', 'metrics', markerName(recordId));
+      // -- TOCTOU marker — atomic create-or-fail keyed by the CANDIDATE -------
+      // #1592: the marker guards the ledger it sits beside — the MAIN
+      // checkout's, shared by every worktree. A linked worktree has no
+      // `.orchestrator/metrics/` since #1584, hence the mkdir.
+      // #1609: keyed by the raw UUID when known, never by `recordId`: which id a
+      // run records under (semantic, or the UUID when the semantic key is
+      // occupied) depends on the ledger it read, so two racing runs of one
+      // candidate claimed different markers and both appended. A legacy marker
+      // (keyed by the record id) still counts as a lost claim, but only without a
+      // key switch: once the semantic key is occupied and we record under our own
+      // UUID, the semantic marker belongs to the session occupying that key.
+      const markerDir = path.dirname(sessionsPath);
+      const markerKey = isUuid(sessionId) ? sessionId : semanticRecordId;
+      const markerPath = path.join(markerDir, markerName(markerKey));
+      try {
+        fs.mkdirSync(markerDir, { recursive: true });
+      } catch {
+        /* the openSync below reports the real failure */
+      }
+      if (recordId === semanticRecordId && recordId !== markerKey
+        && fs.existsSync(path.join(markerDir, markerName(recordId)))) {
+        return { action: 'skipped-marker-exists', sessionId: recordId };
+      }
       try {
         const fd = openSync(markerPath, 'wx');
         closeSync(fd);
@@ -1162,6 +1218,7 @@ export async function backfillAbandonedSession({
       try {
         await appendJsonl(sessionsPath, validated);
       } catch (err) {
+        releaseMarker(markerPath);
         return { action: 'error', error: `append: ${err?.message ?? String(err)}`, sessionId: recordId };
       }
       return {
@@ -1185,7 +1242,8 @@ export async function backfillAbandonedSession({
       }
       if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
       if (!isLoggedBackfillAction(res.action)) return;
-      const logPath = path.join(repoRoot, ...BACKFILL_LOG_REL);
+      // #1592: one breadcrumb log beside the one ledger, not one per worktree.
+      const logPath = path.join(resolveEventsLedgerRoot(repoRoot), ...BACKFILL_LOG_REL);
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.appendFileSync(
         logPath,
@@ -1298,6 +1356,8 @@ export async function backfillCompletedFromStateMd({
       if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
         return { action: 'error', error: 'repoRoot must be a non-empty string' };
       }
+      const unresolved = unresolvedLedgerSkip(repoRoot);
+      if (unresolved) return unresolved;
 
       // -- Read + parse STATE.md ------------------------------------------------
       const stateMdPath = resolveStateMdPath(repoRoot);
@@ -1334,7 +1394,7 @@ export async function backfillCompletedFromStateMd({
       // record (carrying `supersedes: <stub id>`) instead of skipping. An
       // authoritative record already on file still short-circuits exactly as
       // before.
-      const sessionsPath = path.join(repoRoot, ...SESSIONS_REL);
+      const sessionsPath = path.join(resolveEventsLedgerRoot(repoRoot), ...SESSIONS_REL);
       const existing = classifyExisting(readFileSync, sessionsPath, {
         recordId,
         sessionId: nativeId,
@@ -1407,7 +1467,13 @@ export async function backfillCompletedFromStateMd({
 
       // -- TOCTOU marker — atomic create-or-fail, own namespace so a concurrent
       // abandoned-path claim for the same id can never collide with this one. --
-      const markerPath = path.join(repoRoot, '.orchestrator', 'metrics', markerName(`completed-${recordId}`));
+      // #1592: beside the shared ledger it guards (see backfillAbandonedSession).
+      const markerPath = path.join(path.dirname(sessionsPath), markerName(`completed-${recordId}`));
+      try {
+        fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+      } catch {
+        /* the openSync below reports the real failure */
+      }
       try {
         const fd = openSync(markerPath, 'wx');
         closeSync(fd);
@@ -1422,6 +1488,7 @@ export async function backfillCompletedFromStateMd({
       try {
         await appendJsonl(sessionsPath, validated);
       } catch (err) {
+        releaseMarker(markerPath);
         return { action: 'error', error: `append: ${err?.message ?? String(err)}`, sessionId: recordId };
       }
       return {
@@ -1449,7 +1516,8 @@ export async function backfillCompletedFromStateMd({
       }
       if (typeof repoRoot !== 'string' || repoRoot.length === 0) return;
       if (!isLoggedBackfillAction(res.action)) return;
-      const logPath = path.join(repoRoot, ...BACKFILL_LOG_REL);
+      // #1592: one breadcrumb log beside the one ledger, not one per worktree.
+      const logPath = path.join(resolveEventsLedgerRoot(repoRoot), ...BACKFILL_LOG_REL);
       fs.mkdirSync(path.dirname(logPath), { recursive: true });
       fs.appendFileSync(
         logPath,

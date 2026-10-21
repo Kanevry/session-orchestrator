@@ -347,6 +347,7 @@ export function _parseResourceThresholds(kv) {
     // Unchanged at 5 — but now compared against LIVE PEER SESSIONS rather than
     // the Claude process count. Same number, different denominator: measured
     // firing rate drops from 93.6% to 4.2% (median processes:sessions = 6.0).
+    // That 4.2% did not hold: 67.4% M4 / 25.7% M5 re-measured 2026-10-17 (#1650).
     'concurrent-sessions-warn': _coerceInteger(kv, 'concurrent-sessions-warn', 5),
     'ssh-no-docker': _coerceBoolean(kv, 'ssh-no-docker', true),
   };

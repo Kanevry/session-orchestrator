@@ -9,7 +9,7 @@
  * tests hermetic (no network, no build tool dependency).
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -46,6 +46,7 @@ const REPO_ROOT = resolve(__dirname, '../../');
  * per-test dir and is unaffected (an explicit `extraEnv` value still wins).
  */
 const LEDGER_SANDBOX = mkdtempSync(join(tmpdir(), 'qg-ledger-sandbox-'));
+afterAll(() => rmSync(LEDGER_SANDBOX, { recursive: true, force: true }));
 
 /**
  * Same class, second ledger (2026-09-22). `CLAUDE_PROJECT_DIR` pins where the
@@ -385,6 +386,21 @@ describe('run-quality-gate.mjs — config handling', () => {
 
     expect(r.status).toBe(0);
     expect(r.stderr).toContain('Config is neither a valid file path nor valid JSON');
+    const parsed = JSON.parse(r.stdout);
+    expect(parsed.typecheck.status).toBe('skip');
+    expect(parsed.test.status).toBe('skip');
+  });
+
+  // #1612: Windows PowerShell 5.1 `Set-Content -Encoding utf8` writes a BOM; the
+  // file used to fail JSON.parse and the gate silently ran the npm defaults.
+  it('honours a --config file that starts with a UTF-8 BOM', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'qg-bom-config-'));
+    const file = join(tmp, 'cfg.json');
+    writeFileSync(file, String.fromCharCode(0xfeff) + JSON.stringify({ 'typecheck-command': 'skip', 'test-command': 'skip' }));
+    const r = run(['--variant', 'baseline', '--config', file]);
+    rmSync(tmp, { recursive: true, force: true });
+
+    expect(r.stderr).not.toContain('Could not parse config file');
     const parsed = JSON.parse(r.stdout);
     expect(parsed.typecheck.status).toBe('skip');
     expect(parsed.test.status).toBe('skip');
@@ -814,6 +830,38 @@ describe('run-quality-gate.mjs — gate commands are capped and their group is k
       expect(ev).toBeDefined();
       expect(ev.exit_code).toBe(2);
       expect(Object.keys(ev)).not.toContain('counts');
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Worker bound on the CLI gate path (#1675)
+// ---------------------------------------------------------------------------
+
+describe('run-quality-gate.mjs — the full gate bounds Vitest workers (#1675)', () => {
+  // THE BUG, measured at eab55229: `runGate()` (scripts/lib/quality-gate.mjs)
+  // set SO_BOUNDED_WORKERS=1, but the CLI path `.husky/pre-push` actually takes
+  // (run-quality-gate → gate-full → gate-helpers::runCheck) never did, so the
+  // pre-push gate ran Vitest unbounded and timed out under host load (#1673).
+  // This observes the REAL child environment of the gate's test command.
+  it('passes SO_BOUNDED_WORKERS=1 to the test command child', () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'qg-bounded-'));
+    try {
+      const probe = join(tmp, 'probe.mjs');
+      const out = join(tmp, 'env.txt');
+      writeFileSync(probe, "import { writeFileSync } from 'node:fs';\n"
+        + "writeFileSync(process.argv[2], `[${process.env.SO_BOUNDED_WORKERS ?? 'unset'}]`);\n");
+      const config = JSON.stringify({
+        'typecheck-command': 'skip',
+        'test-command': `node "${probe}" "${out}"`,
+        'lint-command': 'skip',
+      });
+      // Ambient value scrubbed to '' — when this suite itself runs inside a
+      // gate it inherits '1', which would make the assertion vacuous.
+      run(['--variant', 'full-gate', '--config', config], { SO_BOUNDED_WORKERS: '' });
+      expect(readFileSync(out, 'utf8')).toBe('[1]');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }

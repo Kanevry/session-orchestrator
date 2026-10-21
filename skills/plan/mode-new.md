@@ -97,10 +97,10 @@ Agent({ subagent_type: "Explore", description: "Research success benchmarks",
 **Questions:**
 
 1. **MVP scope** — Shape Up appetite: 1 week / 2 weeks / 6 weeks. Frame trade-offs for each.
-2. **Success criteria** — SMART format (Specific, Measurable, Achievable, Relevant, Time-bound). Claude proposes draft from research, user refines.
+2. **Success criteria** — SMART format (Specific, Measurable, Achievable, Relevant, Time-bound), each with a measured baseline (or "none yet") and an oracle other than the author. Claude proposes the draft from research, the user refines it.
 3. **Known risks and mitigations** — Present common risks from agent research. User confirms, removes, or adds.
 4. **Post-launch plan** — Monitoring strategy, rollback plan, feedback channels.
-5. **Ecosystem dependencies** — Other repos in the 17-repo ecosystem this project depends on or integrates with. Agent verifies compatibility.
+5. **Ecosystem dependencies** — Other repos in the ecosystem (count them, never assume a number) this project depends on or integrates with. Agent verifies compatibility.
 
 ---
 
@@ -118,7 +118,8 @@ Agent({ subagent_type: "Explore", description: "Research success benchmarks",
    - **Section 7 (Risks & Dependencies):** From Wave 3 Q3 + Q5. Table format: Risk | Probability | Impact | Mitigation.
    - **Section 8 (Post-Launch Plan):** From Wave 3 Q4. Monitoring, rollback, feedback channels.
 3. Save PRD to `{plan-prd-location}/YYYY-MM-DD-{project-name}.md`.
-4. Dispatch reviewer per `prd-reviewer-prompt.md`. Max 3 iterations. Surface unresolved issues to user.
+4. **Pre-Mortem Panel:** dispatch the Refute and Deepen briefs per `SKILL.md` § Phase 4.5 and `prd-premortem-panel.md`, then merge into Sections 5, 5.A (Oracle lines), External Acceptance and 7.
+5. Dispatch reviewer per `prd-reviewer-prompt.md`. Max 3 iterations. Surface unresolved issues to user.
 
 ---
 
@@ -213,7 +214,7 @@ Choose the project-instruction file appropriate to the platform that will operat
 
 ### Step 6: Commit PRD
 
-Commit the PRD document to the new repo. Use a descriptive commit message:
+Copy the approved PRD from the path saved in Phase 2 into the new repo's `docs/prd/`, then commit it there. This step meets the PRD Commit Gate for `/plan new` (`SKILL.md` § Phase 5.5); run its § 5.5.2 checks in the new repo before Phase 4. Use a descriptive commit message:
 
 ```bash
 git add docs/prd/YYYY-MM-DD-{project-name}.md
@@ -268,16 +269,7 @@ Source: PRD Section 4 (Solution & Scope).
 
 ### Step 2: Auto-prioritize
 
-Score each issue using three factors:
-
-1. **Technical dependencies (highest weight):**
-   - DB schema before API, API before frontend, shared libs before consumers.
-   - Issues that block others → `priority::critical` or `priority::high`.
-2. **Business value (medium weight):**
-   - Core MVP features → `priority::high`.
-   - Nice-to-haves → `priority::medium` or `priority::low`.
-3. **Risk (tiebreaker):**
-   - Issues with identified risks from PRD Section 7 → bump up one level.
+Score each issue per `SKILL.md` § 6.2 Auto-Prioritize (technical dependencies, business value, and the Impact × Risk 2×2 triage), with risks taken from PRD Section 7. Add one `[Abnahme]` issue per External Acceptance row (`SKILL.md` § 6.1).
 
 ### Step 3: Apply labels
 

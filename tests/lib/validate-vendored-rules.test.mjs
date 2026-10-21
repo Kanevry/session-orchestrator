@@ -625,6 +625,17 @@ describe('rules/_index.md census — every registered rule is vendorable', () =>
       expect(entries).toContain(`always-on/${name}.md`);
     }
   });
+
+  it('keeps the vendored loop-and-monitor rule at its short form (<= 4096 bytes, #1624)', () => {
+    // Every consumer repo loads this always-on rule; the 13 kB long form pushed
+    // consumers into Claude Code's "instruction files over 150k chars" warning.
+    // The long form lives un-vendored in docs/reference/loop-and-monitor-routing.md.
+    const bytes = readFileSync(join(RULES_LIBRARY_ROOT, 'always-on', 'loop-and-monitor.md')).byteLength;
+    expect(
+      bytes,
+      `rules/always-on/loop-and-monitor.md is ${bytes} bytes (> 4096): move detail to docs/reference/loop-and-monitor-routing.md (#1624)`,
+    ).toBeLessThanOrEqual(4096);
+  });
 });
 
 // ---------------------------------------------------------------------------

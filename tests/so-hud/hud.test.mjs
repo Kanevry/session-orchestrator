@@ -110,6 +110,15 @@ describe('collector boundaries', () => {
     expect(scopePaths([], { agents: [], scopeSignals: { 'marker-absent': 1 } })).toBeNull();
     expect(scopePaths([], { agents: [], scopeSignals: { unparseable: 1 } })).toBeNull();
   });
+  // Catches: a peer whose worktree path is a symlinked spelling of ours read as another working copy (no collision guard).
+  it('counts a symlinked spelling of the same worktree as the same working copy', async () => {
+    const root = await fixture();
+    const link = `${root}-link`;
+    roots.push(link);
+    await fs.symlink(root, link);
+    const s = await collectSnapshot(root, readers({ sessionId: 'own', discover: async () => ({ sessions: [{ sessionId: 'peer', worktreePath: link }] }) }));
+    expect(s.peers[0]).toMatchObject({ session_id: 'peer', gleiches_working_copy: true });
+  });
   it('surfaces discovery timeout and registry failure instead of a clean empty fleet', async () => {
     const root = await fixture();
     const d = await discover(root, { run: async () => { throw Object.assign(new Error(), { killed: true }); }, registry: async () => { throw new Error(); } });
@@ -128,6 +137,31 @@ describe('CLI and private beacon files', () => {
     let output = '';
     expect(await main(['--json', '--repo-root', root], { output: v => { output += v; }, measure: p => collectSnapshot(p, readers()) })).toBe(0);
     expect(JSON.parse(output).schema_version).toBe(1);
+  });
+  // Catches: a session started in a subdirectory measuring that subdirectory as its repo (no peer, wrong wave scope),
+  // or a symlinked session getting git's physical spelling, which its own file paths never start with (guard off).
+  it('measures the git toplevel in the caller\'s spelling when --repo-root names a subdirectory', async () => {
+    const root = await fixture({ 'scripts/x.mjs': '' });
+    expect(spawnSync('git', ['init', '-q', root]).status).toBe(0);
+    const link = `${root}-link`;
+    roots.push(link);
+    await fs.symlink(root, link);
+    for (const [given, expected] of [[root, root], [link, link]]) {
+      let output = '';
+      expect(await main(['--json', '--repo-root', path.join(given, 'scripts')], { output: v => { output += v; }, measure: p => collectSnapshot(p, readers()) })).toBe(0);
+      expect(JSON.parse(output).repo.root).toBe(expected);
+    }
+  });
+  // Catches: a symlinked LAST path part (<d>/elsewhere/scripts → <d>/repo/scripts) mapped to the non-repo <d>/elsewhere,
+  // which collect.mjs then compares physically against peers — collision guard silently off.
+  it('never maps --repo-root to a directory that is not the repository', async () => {
+    const d = await fixture({ 'repo/scripts/x.mjs': '' });
+    expect(spawnSync('git', ['init', '-q', path.join(d, 'repo')]).status).toBe(0);
+    await fs.mkdir(path.join(d, 'elsewhere'));
+    await fs.symlink(path.join(d, 'repo', 'scripts'), path.join(d, 'elsewhere', 'scripts'));
+    let output = '';
+    expect(await main(['--json', '--repo-root', path.join(d, 'elsewhere', 'scripts')], { output: v => { output += v; }, measure: p => collectSnapshot(p, readers()) })).toBe(0);
+    expect(await fs.realpath(JSON.parse(output).repo.root)).toBe(await fs.realpath(path.join(d, 'repo')));
   });
   it('registers the installation with 0700 directory and 0600 file in a fixture home', async () => {
     const home = await fixture();
@@ -148,6 +182,114 @@ describe('CLI and private beacon files', () => {
     await expect(beaconIO('write', '../peer', beacon(), { home })).rejects.toThrow();
     await beaconIO('remove', 'own', null, { home });
     expect(await fs.readdir(dir)).toEqual([]);
+  });
+  const receipt = () => ({ zeit: stamp, session_id: 'own', vorgang: 'pane-aktion', aktion: 'aussenwirkung', argv_sha256: 'a'.repeat(64), exit: 0, profil: 'ausgewogen', ergebnis: 'ausgefuehrt', art: 'push' });
+  const hudDir = home => path.join(home, '.config/session-orchestrator/hud');
+  it('appends one receipt line per action to a fresh 0600 file under a 0700 directory', async () => {
+    const home = await fixture();
+    await beaconIO('aktion', 'own', receipt(), { home });
+    await beaconIO('aktion', 'own', { ...receipt(), exit: null, ergebnis: 'abgelehnt' }, { home });
+    const file = path.join(hudDir(home), 'aktionen.jsonl');
+    expect((await fs.readFile(file, 'utf8')).trim().split('\n').map(l => JSON.parse(l).ergebnis)).toEqual(['ausgefuehrt', 'abgelehnt']);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    expect((await fs.stat(hudDir(home))).mode & 0o777).toBe(0o700);
+  });
+  it('keeps the shared file of other writers intact and narrows its mode to 0600', async () => {
+    const home = await fixture();
+    const file = path.join(hudDir(home), 'aktionen.jsonl');
+    await fs.mkdir(hudDir(home), { recursive: true });
+    const foreign = '{"zeit":"2026-10-10T15:00:00Z","vorgang":"inbox-aktion","ergebnis":"ok"}\n';
+    await fs.writeFile(file, foreign, { mode: 0o644 });
+    await beaconIO('aktion', 'own', receipt(), { home });
+    const text = await fs.readFile(file, 'utf8');
+    expect(text.startsWith(foreign)).toBe(true);
+    expect(text.trim().split('\n')).toHaveLength(2);
+    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+  });
+  it('refuses a symlink planted at the receipt path and leaves its target untouched', async () => {
+    const home = await fixture();
+    const elsewhere = path.join(home, 'elsewhere.txt');
+    await fs.writeFile(elsewhere, 'original', { mode: 0o644 });
+    await fs.mkdir(hudDir(home), { recursive: true });
+    await fs.symlink(elsewhere, path.join(hudDir(home), 'aktionen.jsonl'));
+    await expect(beaconIO('aktion', 'own', receipt(), { home })).rejects.toThrow();
+    expect(await fs.readFile(elsewhere, 'utf8')).toBe('original');
+    expect((await fs.stat(elsewhere)).mode & 0o777).toBe(0o644);
+  });
+  // Catches: a hard link planted at the receipt path receiving the receipt and narrowing its target's mode to 0600.
+  it.each([[undefined], [0]])('refuses a hard link at the receipt path and leaves its target untouched (noFollow %s)', async noFollow => {
+    const home = await fixture();
+    const victim = path.join(home, 'victim.txt');
+    await fs.writeFile(victim, 'original');
+    await fs.chmod(victim, 0o644);
+    await fs.mkdir(hudDir(home), { recursive: true });
+    await fs.link(victim, path.join(hudDir(home), 'aktionen.jsonl'));
+    await expect(beaconIO('aktion', 'own', receipt(), { home, noFollow })).rejects.toThrow();
+    expect(await fs.readFile(victim, 'utf8')).toBe('original');
+    expect((await fs.stat(victim)).mode & 0o777).toBe(0o644);
+  });
+  // noFollow 0 simulates native Windows, where node:fs has no O_NOFOLLOW and the helper falls back to lstat.
+  const homeWithLink = async linkAt => {
+    const home = await fixture();
+    const elsewhere = path.join(home, 'elsewhere');
+    await fs.mkdir(elsewhere);
+    await fs.chmod(elsewhere, 0o755);
+    await fs.mkdir(path.dirname(linkAt(home)), { recursive: true });
+    await fs.symlink(elsewhere, linkAt(home));
+    return { home, elsewhere };
+  };
+  // Catches: a symlink planted at hud/ redirecting the helper's chmod and its receipt/beacon writes into a foreign directory.
+  it.each([[undefined], [0]])('refuses a symlinked hud directory without chmod or write into its target (noFollow %s)', async noFollow => {
+    const { home, elsewhere } = await homeWithLink(hudDir);
+    await expect(beaconIO('aktion', 'own', receipt(), { home, noFollow })).rejects.toThrow();
+    await expect(beaconIO('write', 'own', beacon(), { home, noFollow })).rejects.toThrow();
+    expect(await fs.readdir(elsewhere)).toEqual([]);
+    expect((await fs.stat(elsewhere)).mode & 0o777).toBe(0o755);
+  });
+  // Catches: a symlink planted at hud/beacons/ receiving our beacon (write) or losing a same-named file (remove).
+  it.each([[undefined], [0]])('refuses a symlinked beacons directory for write and remove (noFollow %s)', async noFollow => {
+    const { home, elsewhere } = await homeWithLink(h => path.join(hudDir(h), 'beacons'));
+    await fs.writeFile(path.join(elsewhere, 'own.json'), 'foreign');
+    await expect(beaconIO('write', 'own', beacon(), { home, noFollow })).rejects.toThrow();
+    await expect(beaconIO('remove', 'own', null, { home, noFollow })).rejects.toThrow();
+    expect(await fs.readFile(path.join(elsewhere, 'own.json'), 'utf8')).toBe('foreign');
+    expect(await fs.readdir(elsewhere)).toEqual(['own.json']);
+    expect((await fs.stat(elsewhere)).mode & 0o777).toBe(0o755);
+  });
+  // Catches: a hud directory planted by another user accepted as ours. The uid is injected: creating a directory
+  // owned by another uid needs root, so the helper is told it runs as a different uid than the fixture's owner.
+  it.skipIf(!process.getuid)('refuses a hud directory owned by another uid', async () => {
+    const home = await fixture();
+    const uid = process.getuid() + 1;
+    await expect(beaconIO('aktion', 'own', receipt(), { home, uid })).rejects.toThrow();
+    await expect(beaconIO('write', 'own', beacon(), { home, uid })).rejects.toThrow();
+    await expect(fs.access(path.join(hudDir(home), 'aktionen.jsonl'))).rejects.toThrow();
+    await expect(fs.access(path.join(hudDir(home), 'beacons'))).rejects.toThrow();
+  });
+  // Catches: a host without O_NOFOLLOW losing every receipt (headless runs leave no trace), or its fallback following a link.
+  it('writes receipts without O_NOFOLLOW and still refuses a symlinked receipt file', async () => {
+    const home = await fixture();
+    const file = path.join(hudDir(home), 'aktionen.jsonl');
+    await beaconIO('aktion', 'own', receipt(), { home, noFollow: 0 });
+    expect(JSON.parse(await fs.readFile(file, 'utf8')).ergebnis).toBe('ausgefuehrt');
+    await fs.rm(file);
+    const elsewhere = path.join(home, 'elsewhere.txt');
+    await fs.writeFile(elsewhere, 'original');
+    await fs.symlink(elsewhere, file);
+    await expect(beaconIO('aktion', 'own', receipt(), { home, noFollow: 0 })).rejects.toThrow();
+    expect(await fs.readFile(elsewhere, 'utf8')).toBe('original');
+  });
+  it('rejects receipts outside the closed shape and writes nothing', async () => {
+    const home = await fixture();
+    for (const bad of [
+      { ...receipt(), befehl: 'git push origin main' },
+      { ...receipt(), toString: 'free text' },
+      { ...receipt(), session_id: 'peer' },
+      { ...receipt(), argv_sha256: 'A'.repeat(64) },
+      { ...receipt(), argv_sha256: ['a'.repeat(64)] },
+      { ...receipt(), art: 'push --force origin main' },
+    ]) await expect(beaconIO('aktion', 'own', bad, { home })).rejects.toThrow('invalid receipt');
+    await expect(fs.access(path.join(hudDir(home), 'aktionen.jsonl'))).rejects.toThrow();
   });
 });
 
@@ -184,11 +326,35 @@ describe('mod pure logic', () => {
     }
     expect(warnings.every(line => line.length <= 120)).toBe(true);
   });
+  // Catches (#1633): the HUD showing the dispatch list (wave.agents_total) as the agent count, an unknown count
+  // (a live map older than the session) as a number, a missing measurement as 0 Agents, or decayed agents dropped.
+  it.each([
+    [{ running: 2, stale_reason: null, total: 5 }, '2 Agents'],
+    [{ running: 0, stale_reason: null, total: 5 }, '0 Agents'],
+    [{ running: null, stale_reason: 'older-than-session', total: 5 }, '? Agents'],
+    [{ running: null, stale_reason: 'no-session', total: 5 }, null],
+    [{ total: 5 }, null],
+    // A parallel collector change counts agents without a Stop past 24 h apart: shown only when some decayed.
+    [{ running: 3, stale_reason: null, decayed: 1, total: 5 }, '3 Agents (+1 ?)'],
+    [{ running: 3, stale_reason: null, decayed: 0, total: 5 }, '3 Agents'],
+    [{ running: 3, stale_reason: null, decayed: null, total: 5 }, '3 Agents'],
+  ])('agents %j show %s', async ({ running, stale_reason, decayed, total }, shown) => {
+    const s = await collectSnapshot(await fixture(), readers());
+    s.wave = { number: 2, role: 'Impl-Core', agents_total: total };
+    delete s.agents.running;
+    delete s.agents.stale_reason;
+    if (running !== undefined) Object.assign(s.agents, { running, stale_reason });
+    if (decayed !== undefined) s.agents.decayed = decayed;
+    const fields = statusText(s, 'locker').split(' · ');
+    expect(fields.filter(f => / Agents\b/.test(f))).toEqual(shown === null ? [] : [shown]);
+  });
   it('orders status fields and only raises the specified band findings', async () => {
     const root = await fixture();
     const s = await collectSnapshot(root, readers());
     s.state = { session_type: 'deep', total_waves: 5 };
     s.wave = { number: 2, role: 'Impl-Core', agents_total: 3 };
+    s.agents.running = 3;
+    s.agents.stale_reason = null;
     s.gate.last = { passed: true, at: stamp };
     s.peers = [{ gleiches_working_copy: true, scope_paths: null }];
     s.vault.last_run = { at: stamp, failed: 0, aborted: null };
@@ -201,6 +367,25 @@ describe('mod pure logic', () => {
     expect(findings(s, { percent: 80, tokens: 100000 }, new Date(now - 3600000).toISOString(), now)).toEqual(['Peer ohne bekannten Scope im selben Working Copy', 'Kontext 80 %', 'Cache kalt']);
     s.vault.enabled = false;
     expect(statusText(s, 'locker')).toContain('Vault aus');
+    // Catches: a repo without a vault-integration block shown as an unknown "Vault ?" instead of not configured (#1552 F13);
+    // an unreadable config stays unknown.
+    s.vault.enabled = null;
+    expect(statusText(s, 'locker')).toContain('Vault nicht eingerichtet');
+    expect(statusText(s, 'locker', 'en')).toContain('Vault not configured');
+    s.degraded = ['config:unreadable'];
+    expect(statusText(s, 'locker')).toContain('Vault ? ·');
+    // Catches (F13): a vault enabled but never mirrored shown as an unknown "Vault ?"; a run whose time does not parse stays "?".
+    s.degraded = [];
+    s.vault = { ...s.vault, enabled: true, last_run: null };
+    expect(statusText(s, 'locker')).toContain('Vault noch kein Lauf ·');
+    expect(statusText(s, 'locker', 'en')).toContain('Vault no run yet ·');
+    s.vault.last_run = { at: 'gestern', failed: 0, aborted: null };
+    expect(statusText(s, 'locker')).toContain('Vault ? ·');
+    // Catches (F13): a fresh repo, where no session ever wrote events, marked "teilweise gemessen" although nothing is missing.
+    s.degraded = ['events:absent'];
+    expect(statusText(s, 'locker')).not.toContain('teilweise gemessen');
+    s.degraded = ['events:absent', 'events:tail-only'];
+    expect(statusText(s, 'locker')).toMatch(/ · teilweise gemessen$/);
   });
 });
 
@@ -223,7 +408,8 @@ it('real CLI produces JSON with a fixture registry; records 20-run p95 without r
   }
   const p95 = durations.sort((a, b) => a - b)[18];
   process.stdout.write(`so-hud fixture CLI: 20 runs, p95=${p95.toFixed(1)} ms\n`);
-  expect(p95).toBeLessThanOrEqual(1500);
+  // Report-only: wall-clock under shared-host load measures the host, not the code (#1625).
+  if (p95 > 1500) process.stderr.write(`WARN so-hud fixture CLI p95=${p95.toFixed(1)} ms exceeds 1500 ms (report-only, #1625)\n`);
 }, 30000);
 
 it('ships the HUD manifest with a contributor author rather than personal identity', async () => {

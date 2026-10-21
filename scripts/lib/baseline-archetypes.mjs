@@ -71,7 +71,11 @@ export function validateBaselineContract(value) {
     check(typeof item.id === 'string' && ID.test(item.id));
     check(Number.isSafeInteger(item.order) && item.order >= 1);
     relative(item.templatePath); check(item.templatePath === `templates/${item.id}`);
-    for (const key of ['runtimes', 'packageManagers']) array(item[key], (runtime) => { shape(runtime, ['name', 'version']); text(runtime.name); text(runtime.version); }, 1);
+    // projects-baseline docs/ARCHETYPE-CONTRACT.md: "`pkm-vault` is the only archetype
+    // allowed to have empty runtime and package-manager arrays" (#1607). Every other
+    // archetype still needs at least one entry.
+    const runtimeMinimum = item.id === 'pkm-vault' ? 0 : 1;
+    for (const key of ['runtimes', 'packageManagers']) array(item[key], (runtime) => { shape(runtime, ['name', 'version']); text(runtime.name); text(runtime.version); }, runtimeMinimum);
     shape(item.ui, ['mode', 'framework', 'tailwind']); text(item.ui.mode); text(item.ui.framework); check(typeof item.ui.tailwind === 'boolean');
     shape(item.api, ['mode', 'framework']); text(item.api.mode); text(item.api.framework);
     shape(item.deploy, ['default', 'alternatives']); text(item.deploy.default); strings(item.deploy.alternatives);

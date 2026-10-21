@@ -11,13 +11,14 @@
  *   getConfinementRoot — host-local projects-root precedence (#1562).
  */
 
-import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach, onTestFinished } from 'vitest';
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { _parseCrossRepo, getConfinementRoot, getCrossRepoProjects } from '@lib/config/cross-repo.mjs';
 import { parseSessionConfig } from '@lib/config.mjs';
 import { validatePathInsideProject } from '../../../scripts/lib/path-utils.mjs';
+import { removeTree } from '../../_helpers/tmp-fixture.mjs';
 
 // ---------------------------------------------------------------------------
 // _parseCrossRepo — PURE parser tests
@@ -123,6 +124,7 @@ describe('_parseCrossRepo — non-indented break', () => {
 describe('getCrossRepoProjects — with CLAUDE.md fixture', () => {
   it('returns the projects list from a valid CLAUDE.md with cross-repo.projects', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cross-repo-test-'));
+    onTestFinished(() => removeTree(dir));
     const content = [
       '## Session Config',
       '',
@@ -138,6 +140,7 @@ describe('getCrossRepoProjects — with CLAUDE.md fixture', () => {
 
   it('returns [] when CLAUDE.md has cross-repo: block with no projects', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cross-repo-test-'));
+    onTestFinished(() => removeTree(dir));
     const content = '## Session Config\n\ncross-repo:\n  projects: []\n';
     writeFileSync(join(dir, 'CLAUDE.md'), content, 'utf8');
 
@@ -147,6 +150,7 @@ describe('getCrossRepoProjects — with CLAUDE.md fixture', () => {
 
   it('returns [] when CLAUDE.md has no cross-repo: block', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cross-repo-test-'));
+    onTestFinished(() => removeTree(dir));
     writeFileSync(join(dir, 'CLAUDE.md'), '## Session Config\n\npersistence: true\n', 'utf8');
 
     const result = await getCrossRepoProjects(dir);
@@ -157,6 +161,7 @@ describe('getCrossRepoProjects — with CLAUDE.md fixture', () => {
 describe('getCrossRepoProjects — missing CLAUDE.md', () => {
   it('returns [] without throwing when CLAUDE.md is missing', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'cross-repo-test-empty-'));
+    onTestFinished(() => removeTree(dir));
     // No CLAUDE.md written — directory is empty
     const result = await getCrossRepoProjects(dir);
     expect(result).toEqual([]);
@@ -431,6 +436,18 @@ describe('getConfinementRoot — projects-root precedence (#1562)', () => {
   ])('%s', (_name, env, ownerConfig, expected, warn) => {
     expect(getConfinementRoot({ env, ownerConfig })).toBe(expected);
     expect(stderrCapture).toEqual(warn ? [warn] : []);
+  });
+
+  // #1567 item 5: a projects-root pointing at a FILE was accepted, so every sweep found nothing.
+  it('a projects-root that is a file is rejected with a WARN, next tier used', () => {
+    cfgDir = mkdtempSync(join(tmpdir(), 'so-projects-root-file-'));
+    const file = join(cfgDir, 'not-a-dir');
+    writeFileSync(file, 'x');
+
+    expect(getConfinementRoot({ env: { SO_PROJECTS_ROOT: file }, ownerConfig: owner('/owner-root') })).toBe('/owner-root');
+    expect(stderrCapture).toEqual([
+      `cross-repo: ignoring env SO_PROJECTS_ROOT=${JSON.stringify(file)} — exists but is not a directory; falling back\n`,
+    ]);
   });
 
   it('zero-arg call reads paths.projects-root from the real owner.yaml loader', () => {

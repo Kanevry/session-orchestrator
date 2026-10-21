@@ -13,7 +13,7 @@
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
-import { $ } from 'zx';
+import { $ } from './zx.mjs';
 import { listWorktrees } from './worktree.mjs';
 
 // Do not spam stdout/stderr with git command echoes.

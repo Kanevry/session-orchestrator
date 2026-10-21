@@ -30,14 +30,11 @@
  *                                     (real: line 74, main-2026-07-20-session-2)
  *   - `total_waves` missing         → invalid under BOTH
  *                                     (real: lines 199/200)
- *   - `effectiveness` missing       → validateSession-VALID, mirror DROPS it
- *                                     (real: lines 38-49, 10 records — all of
- *                                     which are ALSO abandoned, hence the
- *                                     regression guard at the end of the
- *                                     discrimination block)
+ *   - `effectiveness` missing/null → schema-valid and renders unknown metrics
+ *                                     since #1575; no repair or alarm needed.
  *
- * That third class is why the banner reports two populations: measurement
- * showed neither validator's failure set contains the other.
+ * Actual schema corruption and mirror drops remain independent populations.
+
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -130,20 +127,21 @@ describe('checkSessionsIntegrity — discrimination', () => {
     expect(checkSessionsIntegrity({ repoRoot })).toBeNull();
   });
 
-  it('separates the two populations: a schema-invalid record can still mirror, and a mirror-dropped record can be schema-valid', () => {
-    // Real class from ledger line 74: fails validateSession, vault-mirror renders it anyway.
+  it.each(['missing', 'null'])('does not blame optional %s metrics alongside a genuine schema defect', (missing) => {
     const schemaOnly = { ...validRecord('schema-only'), waves: [{ role: 'implementer' }] };
-    // Real class from ledger lines 38-49: passes validateSession, vault-mirror drops it.
-    const mirrorOnly = validRecord('mirror-only');
-    delete mirrorOnly.effectiveness;
-
-    writeLedger([schemaOnly, mirrorOnly]);
-
+    const optional = validRecord('optional-metrics');
+    if (missing === 'missing') delete optional.effectiveness;
+    else optional.effectiveness = null;
+    writeLedger([schemaOnly, optional]);
     const found = checkSessionsIntegrity({ repoRoot });
-
     expect(found.schemaInvalid.map((r) => r.sessionId)).toEqual(['schema-only']);
-    expect(found.mirrorSkipped.map((r) => r.sessionId)).toEqual(['mirror-only']);
-    expect(found.mirrorSkipped[0].error).toContain("missing required field 'effectiveness'");
+    expect(found.mirrorSkipped).toEqual([]);
+    expect(found.severity).toBe('warn');
+    expect(found.message).toContain('--dry-run');
+    expect(found.message).toContain('absolute --apply requires an explicit --repo-root');
+    expect(found.message).not.toContain('appended without passing');
+    writeLedger([optional]);
+    expect(checkSessionsIntegrity({ repoRoot })).toBeNull();
   });
 
   it('escalates to alert only when vault-mirror actually drops a record', () => {
@@ -159,7 +157,7 @@ describe('checkSessionsIntegrity — discrimination', () => {
     // must NOT escalate. Pinning it keeps a future golden re-harvest from
     // silently turning this back into an assertion of the #958 false alert.
     const dropped = { ...validRecord('dropped'), status: 'completed' };
-    delete dropped.effectiveness;
+    delete dropped.total_waves;
     writeLedger([validRecord('ok'), dropped]);
     const alerted = checkSessionsIntegrity({ repoRoot });
     expect(alerted.severity).toBe('alert');
@@ -175,15 +173,15 @@ describe('checkSessionsIntegrity — discrimination', () => {
     // `process.mjs:485` discards it before the generator is ever reached.
     // Measured at HEAD 1f7b449: 10 of 10 alerting records were exactly this.
     const abandoned = { ...validRecord('abandoned-renderfail'), status: 'abandoned' };
-    delete abandoned.effectiveness; // would throw in the generator if reached
+    abandoned.effectiveness = []; // malformed, but the abandoned filter runs first
 
     // Same defect, NOT abandoned — the control that proves the guard is scoped
     // to the abandoned status and has not silenced the real signal.
     const real = { ...validRecord('real-renderfail'), status: 'completed' };
-    delete real.effectiveness;
+    real.effectiveness = [];
 
     writeLedger([abandoned]);
-    expect(checkSessionsIntegrity({ repoRoot })).toBeNull();
+    expect(checkSessionsIntegrity({ repoRoot }).mirrorSkipped).toEqual([]);
 
     writeLedger([abandoned, real]);
     const found = checkSessionsIntegrity({ repoRoot });

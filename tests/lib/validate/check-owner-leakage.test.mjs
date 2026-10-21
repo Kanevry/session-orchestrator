@@ -24,9 +24,9 @@
  * (line-scoped semantics a table would flatten into unreadability).
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, cpSync, symlinkSync, realpathSync, unlinkSync, renameSync } from 'node:fs';
+import { mkdirSync, writeFileSync, cpSync, symlinkSync, realpathSync, unlinkSync, renameSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // #661: the scanner now exports its canonicalization helpers; the script is
@@ -41,10 +41,23 @@ import {
   inspectOwnerPatterns,
 } from '../../../scripts/lib/validate/check-owner-leakage.mjs';
 import { loadHostPaths } from '../../../scripts/lib/config/host-paths.mjs';
-import { fixtureGitSpawn, makeTmpDir } from '../../_helpers/tmp-fixture.mjs';
+import { fixtureGitSpawn, makeTmpDir as makeFixtureTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
+
+// #1646: every per-test dir made through this wrapper is removed after the test,
+// pass or fail. The module-scope policy dir below is removed in afterAll instead.
+const tmpDirs = [];
+function makeTmpDir(prefix) {
+  const dir = makeFixtureTmpDir(prefix);
+  tmpDirs.push(dir);
+  return dir;
+}
+afterEach(() => {
+  while (tmpDirs.length > 0) removeTree(tmpDirs.pop());
+});
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const inventedOwnerPolicyDir = makeTmpDir('invented-owner-policy-');
+const inventedOwnerPolicyDir = makeFixtureTmpDir('invented-owner-policy-');
+afterAll(() => removeTree(inventedOwnerPolicyDir));
 const inventedOwnerPolicyPath = join(inventedOwnerPolicyDir, 'owner-patterns.json');
 writeFileSync(inventedOwnerPolicyPath, JSON.stringify({
   version: 1, usernamePrefixes: ['sampleg'], privateHosts: ['gitlab.example.invalid'], eventsHosts: ['events.example.invalid'], privateDomains: ['example.invalid'], packageScopes: ['example'],
@@ -60,6 +73,13 @@ const REPO_ROOT = join(__dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-owner-leakage.mjs');
 
 const CP1_LABEL = 'CP1 (personal home path — canonicalized)';
+
+/**
+ * RFC1918 fixture addresses are assembled at runtime so this file's own source carries
+ * no literal private quad: it ships to the public mirror, whose export scan has no
+ * self-exclusions (#1631). The written fixture files still contain the real quad.
+ */
+const ip = (...octets) => octets.join('.');
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -318,6 +338,29 @@ const SCAN_CASES = [
     files: { 'image.png': '/Users/sampleg./secret\n' },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
+  // #1631: .toml and extensionless text files were outside the scan set (CI
+  // config, Dockerfile, LICENSE, .husky hooks shipped unscanned). Binary
+  // extensionless files stay out via the NUL sniff.
+  {
+    name: '#1631: home-path leak in a .toml file → CP1',
+    files: { 'config/netlify.toml': 'base = "/Users/sampleg./site"\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: '#1631: home-path leak in an extensionless text file → CP1',
+    files: { 'server/Dockerfile': 'COPY /Users/sampleg./app /app\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: '#1645 review: home-path leak in an unknown-extension text file (.tmpl) → CP1',
+    files: { 'templates/_minimal/config.tmpl': 'root: /Users/sampleg./app\n' },
+    expected: { status: 1, fails: 1, checkpoints: ['CP1'] },
+  },
+  {
+    name: 'CLEAN: #1631 leak string in an extensionless BINARY file (NUL sniff skips it)',
+    files: { 'tests/fixtures/bin/tool': '\0\x01ELF /Users/sampleg./secret\n' },
+    expected: { status: 0, fails: 0, checkpoints: [] },
+  },
   {
     name: 'CLEAN: .env.example without a leak (still scanned, no false positive)',
     files: { '.env.example': 'API_URL=https://api.example.com\n' },
@@ -374,12 +417,12 @@ const SCAN_CASES = [
   // --- CP8: RFC1918 private IPs ---
   {
     name: 'CP8: 10.x.x.x private IP',
-    files: { 'infra.md': '# Infra\nThe service runs at 10.1.2.3 internally.\n' },
+    files: { 'infra.md': `# Infra\nThe service runs at ${ip(10, 1, 2, 3)} internally.\n` },
     expected: { status: 1, fails: 1, checkpoints: ['CP8'] },
   },
   {
     name: 'CP8: 192.168.x.x and 172.16-31.x.x private IPs in two files',
-    files: { 'a.md': 'gateway 192.168.1.1\n', 'b.md': 'host 172.20.0.5\n' },
+    files: { 'a.md': `gateway ${ip(192, 168, 1, 1)}\n`, 'b.md': `host ${ip(172, 20, 0, 5)}\n` },
     expected: { status: 1, fails: 2, checkpoints: ['CP8'] },
   },
   {
@@ -396,7 +439,7 @@ const SCAN_CASES = [
   },
   {
     name: 'CLEAN: the IP-redaction fixture file is CP8-allowlisted',
-    files: { 'tests/scripts/export-hw-learnings.test.mjs': "const s = 'Server at 10.0.0.1 responded';\n" },
+    files: { 'tests/scripts/export-hw-learnings.test.mjs': `const s = 'Server at ${ip(10, 0, 0, 1)} responded';\n` },
     expected: { status: 0, fails: 0, checkpoints: [] },
   },
 
@@ -629,7 +672,7 @@ const SCAN_CASES = [
   },
   {
     name: '#1080 A: entity-encoded RFC1918 quad → CP8',
-    files: { 'site/guide/index.html': '<!-- runner 10&#46;11&#46;12&#46;13 -->\n' },
+    files: { 'site/guide/index.html': `<!-- runner ${[10, 11, 12, 13].join('&#46;')} -->\n` },
     expected: { status: 1, fails: 1, checkpoints: ['CP8'] },
   },
   {
@@ -732,7 +775,9 @@ describe('check-owner-leakage CLI — checkpoint scan verdicts', () => {
 describe('#1267: untracked scan opt-in', () => {
   it.each([
     { args: [], expected: { status: 0, fails: 0, checkpoints: [] }, scanned: 1 },
-    { args: ['--include-untracked'], expected: { status: 1, fails: 1, checkpoints: ['CP1'] }, scanned: 2 },
+    // 3 = tracked.md + the untracked draft + the untracked extensionless .gitignore (#1631);
+    // the two ignored files would make it 5.
+    { args: ['--include-untracked'], expected: { status: 1, fails: 1, checkpoints: ['CP1'] }, scanned: 3 },
   ])('args $args respect Git ignores and the tracked-only default', ({ args, expected, scanned }) => {
     const root = makeTmpRepo({ 'tracked.md': 'Clean tracked content\n' });
     writeFileSync(join(root, '.gitignore'), 'ignored.mdx\n');
@@ -984,7 +1029,7 @@ const CP11_CASES = [
   {
     name: 'CP11 Fix 1: a name riding in on a CP8 hit is scrubbed at the print choke-point',
     // Pre-fix RED: the CP8 FAIL line printed the confidential name verbatim.
-    files: { 'infra.md': 'zenithcorp server runs at 10.1.2.3 internally\n' },
+    files: { 'infra.md': `zenithcorp server runs at ${ip(10, 1, 2, 3)} internally\n` },
     names: ['zenithcorp'],
     forbidden: ['zenithcorp'],
     expected: { status: 1, fails: 2, checkpoints: ['CP8', 'CP11'], redacted: true, echoed: [] },
@@ -1048,7 +1093,7 @@ describe('VAULT_CLEAR_SLUGS carve-out — isOwnerLeakySegment (in-process guard)
   const SEGMENTS = [
     ['carved-out slug', 'project-ledger', null],
     ['carved-out slug, mixed case', 'Project-Ledger', null],
-    ['carved-out slug, upper case', 'MAIL-ASSISTANT', null],
+    ['carved-out slug, upper case', 'PROJECT-LEDGER', null],
     ['carved-out slug, camel case', 'Project-Quotes', null],
     // The carve-out did NOT blanket-disable CP6 — retained slugs still bite.
     ['retained slug', 'project-private-module', 'CP6'],
@@ -1683,6 +1728,36 @@ it.each(['missing', 'malformed', 'permissions', 'symlink', 'traversal', 'unreada
   expect(result.stdout + result.stderr).not.toContain(policyPath);
 });
 
+it('loads the owner policy on Windows, where every mode reads 0o666 (#1612)', () => {
+  // Node on Windows reports 0o666 for every file and directory; the POSIX
+  // group/other-write and 0600 checks refused EVERY policy there, so CP1 failed
+  // on any Windows host. Same file, two platforms: POSIX refuses, win32 loads.
+  const hostDir = realpathSync(makeTmpDir('host-policy-win32-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, JSON.stringify({version:1, privateDomains:['example.invalid']}), {mode:0o666});
+  chmodSync(policyPath, 0o666);
+  chmodSync(hostDir, 0o777);
+  expect(inspectOwnerPatterns({filePath:policyPath, refresh:true}).status).toBe('unsafe');
+  const real = Object.getOwnPropertyDescriptor(process, 'platform');
+  Object.defineProperty(process, 'platform', {...real, value:'win32'});
+  try {
+    expect(inspectOwnerPatterns({filePath:policyPath, refresh:true}).status).toBe('ok');
+  } finally {
+    Object.defineProperty(process, 'platform', real);
+    inspectOwnerPatterns({refresh:true});
+  }
+});
+
+it('loads an owner policy that starts with a UTF-8 BOM (Windows PowerShell 5.1 Set-Content -Encoding utf8, #1613)', () => {
+  // JSON.parse rejects a leading U+FEFF, so a PowerShell-written policy read as
+  // `invalid` and every segment failed closed as CP1.
+  const hostDir = realpathSync(makeTmpDir('host-bom-policy-'));
+  const policyPath = join(hostDir, 'owner-patterns.json');
+  writeFileSync(policyPath, String.fromCharCode(0xfeff) + JSON.stringify({version:1, privateDomains:['example.invalid']}), {mode:0o600});
+  expect(inspectOwnerPatterns({filePath:policyPath, refresh:true}).status).toBe('ok');
+  inspectOwnerPatterns({refresh:true});
+});
+
 it('rejects explicitly null owner-pattern arrays', () => {
   const hostDir = realpathSync(makeTmpDir('host-null-policy-'));
   const policyPath = join(hostDir, 'owner-patterns.json');
@@ -1740,7 +1815,7 @@ it('checks packed operational legacy filenames despite ordinary CP10 and CP8 exe
   const hostDir = realpathSync(makeTmpDir('packed-legacy-policy-'));
   const policyPath = join(hostDir, 'owner-patterns.json');
   writeFileSync(policyPath, JSON.stringify({version:1,personalNames:['FixtureOwner']}), {mode:0o600});
-  const root = makeTmpRepo({'scripts/migrate-vault-paths.mjs':'const oldPath = "~/Projects/FixtureOwner/work";\n', 'tests/scripts/export-hw-learnings.test.mjs':'const privateIp = "10.12.34.56";\n'}, {initGit:false});
+  const root = makeTmpRepo({'scripts/migrate-vault-paths.mjs':'const oldPath = "~/Projects/FixtureOwner/work";\n', 'tests/scripts/export-hw-learnings.test.mjs':`const privateIp = "${ip(10, 12, 34, 56)}";\n`}, {initGit:false});
   const inventory = join(hostDir, 'inventory.json');
   writeFileSync(inventory, JSON.stringify([{files:[{path:'scripts/migrate-vault-paths.mjs'},{path:'tests/scripts/export-hw-learnings.test.mjs'}]}]));
   const result = spawnSync(process.execPath, [SCRIPT,root,'--require-owner-patterns','--packed-files',inventory], {encoding:'utf8',timeout:20000,env:{...process.env,SO_OWNER_PATTERNS_FILE:policyPath}});
@@ -1748,4 +1823,38 @@ it('checks packed operational legacy filenames despite ordinary CP10 and CP8 exe
   expect(result.stdout).toContain('CP10');
   expect(result.stdout).toContain('CP8');
   expect(result.stdout).not.toContain('FixtureOwner');
+});
+
+// #1631: --public-export is PATH-based. A peer preference card carries no content
+// pattern any CP rule could match, so only the export policy can keep it out.
+// BUG CAUGHT: the curated GitHub snapshot shipping `.orchestrator/peers/<user>.md`
+// because the content scan alone stays green.
+it('--public-export fails on a tracked path the export policy excludes, and redacts the private segment', () => {
+  const policy = JSON.stringify({ version: 1, exclude: [{ path: '.orchestrator/peers/', reason: 'fixture', issue: '#1594' }] });
+  const root = makeTmpRepo({
+    '.orchestrator/policy/public-export.json': policy,
+    '.orchestrator/peers/sampleg.md': 'prefers short answers\n',
+    'README.md': 'public\n',
+  });
+  expect(runCheck(root, []).status).toBe(0);
+  const result = runCheck(root, [], ['--public-export']);
+  expect(result.status).toBe(1);
+  expect(failLines(result)).toEqual(['  FAIL: .orchestrator/peers/[REDACTED] — PX (path excluded from public export)']);
+  expect(result.stdout).not.toContain('sampleg');
+});
+
+// #1631 review H1: SELF_EXCLUSIONS exist for the private repo's own CI. A public
+// snapshot must not carry those files unscanned.
+// BUG CAUGHT: a self-excluded test file reaching the public mirror with a private
+// literal because --public-export inherited the self-exclusion list.
+it('--public-export scans a self-excluded file that plain mode skips', () => {
+  const policy = JSON.stringify({ version: 1, exclude: [{ path: 'docs/audits/', reason: 'fixture', issue: '#1631' }] });
+  const root = makeTmpRepo({
+    '.orchestrator/policy/public-export.json': policy,
+    'tests/lib/memory-paths.test.mjs': `const host = '${ip(10, 1, 2, 3)}';\n`,
+  });
+  expect(runCheck(root, []).status).toBe(0);
+  const result = runCheck(root, [], ['--public-export']);
+  expect(result.status).toBe(1);
+  expect(failLines(result)).toEqual(['  FAIL: tests/lib/memory-paths.test.mjs:1 — CP8 (RFC1918 private IP): [REDACTED]']);
 });

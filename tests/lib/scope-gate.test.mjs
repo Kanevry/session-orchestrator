@@ -276,6 +276,9 @@ describe('extractBashWriteTargets — wrapper-aware verb resolution (#996.2)', (
     ['leading subshell paren around tee', '(tee inner.ts)', ['inner.ts']],
     // form 3 — leading `>` redirect before sed -i: the in-place target was lost (z.ts).
     ['leading redirect before sed -i', '> a.txt sed -i s/x/y/ z.ts', ['a.txt', 'z.ts']],
+    // #1667 — a `$( … )` body is hoisted as its own command: `tee`'s file arg
+    // was the glued word `inner.ts)` under the verb `echo`, i.e. invisible.
+    ['tee inside a command substitution', 'echo $(tee inner.ts)', ['inner.ts']],
   ])('regression — leading redirect/paren no longer loses the write target: %s', (_n, command, expected) => {
     expect(extractBashWriteTargets(command)).toEqual(expected);
   });
@@ -536,6 +539,42 @@ describe('gradeScopeEntry — canonical spelling decides what Gate 5b reaches (#
   it('returns null for an ordinary relative entry', () => {
     expect(gradeScopeEntry('scripts/lib/scope-gate.mjs')).toBe(null);
     expect(gradeScopeEntry('tests/**')).toBe(null);
+  });
+});
+
+describe('gradeScopeEntry — Windows drive paths grade like their POSIX twins (#1612)', () => {
+  // Measured on Windows 11: `C:\\…` grants had no "/" prefix, so a clean grant
+  // read as non-canonical (validate-wave-scope refused it) and a home grant
+  // such as `C:\\Users\\<name>\\**` was never classified. realpath answers
+  // with forward slashes and an upper-case drive letter.
+  const resolve = (p) => p.replace(/\\/g, '/').replace(/^c:/, 'C:');
+  it.each([
+    ['C:\\Users\\x\\AppData\\Local\\Temp\\proj\\**', '/Users/x/AppData/Local/Temp/proj/**'],
+    ['C:\\Users\\x\\**', '/Users/x/**'],
+    ['C:\\Users\\x\\.ssh\\**', '/Users/x/.ssh/**'],
+    ['C:\\Users\\x\\proj/src/**', '/Users/x/proj/src/**'],
+    ['C:\\Users\\x\\AppData\\Roaming\\GitHub CLI\\**', '/Users/x/Library/Application Support/**'],
+  ])('%s grades like %s', (windows, posix) => {
+    const win = gradeScopeEntry(windows, { resolve });
+    const nix = gradeScopeEntry(posix, { resolve });
+    expect(win).not.toBeNull();
+    expect({ verdict: win.verdict, code: win.code }).toEqual({ verdict: nix.verdict, code: nix.code });
+  });
+  it.each(['C:\\ProgramData\\**', 'C:\\Program Files\\Git\\**', 'C:\\Program Files (x86)\\x\\**'])(
+    'refuses the machine-wide Windows root %s', (entry) => {
+      expect(gradeScopeEntry(entry, { resolve })).toMatchObject({ verdict: 'error', code: 'denied-system-dir' });
+    },
+  );
+  it('honours a named directory below the Windows temp root, but not the root itself', () => {
+    // os.tmpdir() on Windows is ~/AppData/Local/Temp; worktrees live there.
+    expect(gradeScopeEntry('C:\\Users\\x\\AppData\\Local\\Temp\\wt-1\\**', { resolve }))
+      .toMatchObject({ verdict: 'warn', code: 'home-grant' });
+    expect(gradeScopeEntry('C:\\Users\\x\\AppData\\Local\\Temp\\**', { resolve }))
+      .toMatchObject({ verdict: 'error', code: 'home-grant' });
+  });
+  it('accepts a lower-case drive letter that realpath reports upper-case', () => {
+    const r = gradeScopeEntry('c:\\data\\proj\\src\\**', { resolve });
+    expect(r).toMatchObject({ verdict: 'warn', code: 'absolute' });
   });
 });
 

@@ -33,7 +33,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, appendFileSync, readdirSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -126,16 +126,47 @@ describe('repairRecord — every defect class becomes schema-valid', () => {
       expect: (r) => expect(r.total_agents).toBe(3),
     },
     {
-      name: 'total_agents missing, no agent_summary → waves.length fallback',
+      // #1698: a wave is not an agent — waves.length (2 here) is no evidence.
+      name: 'total_agents missing, no agent_summary, no alias → 0, never waves.length',
       input: () => without(baseRecord(), 'total_agents', 'agent_summary'),
       defect: 'total_agents_missing',
-      expect: (r) => expect(r.total_agents).toBe(2),
+      expect: (r) => {
+        expect(r.total_agents).toBe(0);
+        expect(r._backfill_incomplete_fields).toContain('total_agents');
+      },
     },
     {
-      name: 'total_agents missing with no waves and no agent_summary → 0',
-      input: () => without(baseRecord({ waves: [] }), 'total_agents', 'agent_summary'),
+      // #1698: live shape — `agents_total: 19` beside five waves was repaired to 5.
+      name: 'total_agents missing, no agent_summary → legacy alias agents_total',
+      input: () => ({ ...without(baseRecord(), 'total_agents', 'agent_summary'), agents_total: 19 }),
       defect: 'total_agents_missing',
-      expect: (r) => expect(r.total_agents).toBe(0),
+      expect: (r) => {
+        expect(r.total_agents).toBe(19);
+        expect(r.agents_total).toBe(19);
+        expect(r._backfill_incomplete_fields).not.toContain('total_agents');
+      },
+    },
+    {
+      // #1699 item 10: a measured `agents_total` that disagrees with the
+      // agent_summary sum lost silently to the sum — no trace of the conflict.
+      name: 'total_agents missing, agent_summary sum disagrees with agents_total → conflict tagged',
+      input: () => ({ ...without(baseRecord(), 'total_agents'), agents_total: 19 }),
+      defect: 'total_agents_conflict',
+      expect: (r) => {
+        expect(r.total_agents).toBe(3);
+        expect(r.agents_total).toBe(19);
+        expect(r._total_agents_conflict).toBe(true);
+      },
+    },
+    {
+      // #1698: `files_changed: 44` was repaired to 0.
+      name: 'total_files_changed missing → legacy alias files_changed',
+      input: () => ({ ...without(baseRecord(), 'total_files_changed'), files_changed: 44 }),
+      defect: 'total_files_changed_missing',
+      expect: (r) => {
+        expect(r.total_files_changed).toBe(44);
+        expect(r._backfill_incomplete_fields).not.toContain('total_files_changed');
+      },
     },
     {
       name: 'total_waves missing → waves.length',
@@ -202,7 +233,12 @@ describe('repairRecord — every defect class becomes schema-valid', () => {
       input: () =>
         without(baseRecord({ ended_at: '2026-01-01T11:00:00.000Z' }), 'completed_at'),
       defect: 'completed_at_missing',
-      expect: (r) => expect(r.completed_at).toBe('2026-01-01T11:00:00.000Z'),
+      expect: (r) => {
+        expect(r.completed_at).toBe('2026-01-01T11:00:00.000Z');
+        // #1699 item 12: a measured end, not a default — listing it made the
+        // staleness banner discard a real end time.
+        expect(r._backfill_incomplete_fields).not.toContain('completed_at');
+      },
     },
     {
       name: 'completed_at missing with NON-monotonic ended_at → started_at',
@@ -399,6 +435,7 @@ describe('repairRecord — a numeric `waves` is a wave COUNT, not garbage', () =
 
     expect(record.waves).toEqual([]);
     expect(record.total_waves).toBe(7);
+    expect(record._backfill_incomplete_fields).toEqual(['waves']); // #1699 item 12: 7 is measured
     expect(defects).toContain('waves_number');
     expect(defects).toContain('total_waves_missing');
     expect(() => validateSession(record)).not.toThrow();
@@ -469,12 +506,13 @@ describe('repairText — duplicate session_ids are preserved, never deduped', ()
 // ---------------------------------------------------------------------------
 
 describe('repairRecord — _backfill_incomplete_fields is the exact defaulted set', () => {
-  it('lists all six defaulted fields for golden line 2 (live 85)', () => {
+  it('lists all five defaulted fields for golden line 2 (live 85)', () => {
     // Bug caught: a provenance list that reports the defect CLASS rather than
     // the fields, or that under-reports because only the first defect was seen.
+    // completed_at is repaired from the record's own monotonic ended_at — a
+    // measurement, so it is NOT listed (#1699 item 12).
     const { record } = repairRecord(goldenRecord(2));
     expect(record._backfill_incomplete_fields).toEqual([
-      'completed_at',
       'total_waves',
       'waves',
       'agent_summary',
@@ -497,6 +535,39 @@ describe('repairRecord — _backfill_incomplete_fields is the exact defaulted se
     const input = without(baseRecord({ _backfill_incomplete_fields: ['branch'] }), 'total_files_changed');
     const { record } = repairRecord(input);
     expect(record._backfill_incomplete_fields).toEqual(['branch', 'total_files_changed']);
+  });
+
+  it('heals a stale completed_at flag left by an older repair, once (#1705)', () => {
+    // Bug caught: records repaired before #1699 item 12 already carry
+    // completed_at === a valid monotonic ended_at but still list completed_at;
+    // repairRecord returned changed:false, so the staleness banner kept
+    // discarding a real end time. The prior list must survive in its sidecar.
+    const stale = ['completed_at', 'total_agents'];
+    const input = baseRecord({
+      ended_at: '2026-01-01T10:00:00.000Z',
+      _backfill_incomplete_fields: stale,
+      _backfill_source: 'repair-invalid-sessions/1004',
+    });
+    const first = repairRecord(input);
+    expect(first.changed).toBe(true);
+    expect(first.record._backfill_incomplete_fields).toEqual(['total_agents']);
+    expect(first.record._backfill_incomplete_fields_raw).toEqual(stale);
+    expect(first.record.completed_at).toBe('2026-01-01T10:00:00.000Z');
+    const second = repairRecord(first.record);
+    expect(second.changed).toBe(false);
+    expect(second.record._backfill_incomplete_fields_raw).toEqual(stale);
+
+    // The ledger path: the stale record is schema-VALID, so a repairLine that
+    // returns every valid line verbatim never reaches the heal above (review
+    // finding on 7bb577ea). It must be repaired, yet not counted as invalid.
+    const untouched = JSON.stringify(baseRecord({ session_id: 'main-2026-01-02-session-1' }));
+    const { text, summary } = repairText(`${JSON.stringify(input)}\n${untouched}\n`);
+    expect(summary).toMatchObject({ invalid_before: 0, repaired: 1, healed_valid: 1, invalid_after: 0 });
+    expect(summary.defects_by_class).toEqual({ completed_at_flag_stale: 1 });
+    const [healedLine, keptLine] = text.split('\n');
+    expect(JSON.parse(healedLine)._backfill_incomplete_fields).toEqual(['total_agents']);
+    expect(keptLine).toBe(untouched);
+    expect(repairText(text).summary).toMatchObject({ repaired: 0, healed_valid: 0 });
   });
 });
 
@@ -660,6 +731,67 @@ describe('repairLedger — post-verification is fail-safe', () => {
 // ---------------------------------------------------------------------------
 // 4. Idempotency (module level; the CLI suite repeats it through the process)
 // ---------------------------------------------------------------------------
+
+describe('repairLedger — concurrent append (#1665)', () => {
+  it('refuses the swap and keeps a line appended between read and rename', () => {
+    // Bug caught: lost update — appenders (`appendJsonl`) take no lock, so a
+    // session record appended while the repair runs was overwritten by the
+    // rename of the repaired copy. Seam: the tmp write doubles as the moment
+    // another process appends to the live ledger.
+    const { repoRoot, file } = makeRepo(GOLDEN_RAW);
+    const appended = `${golden(6)}\n`;
+
+    let thrown = null;
+    try {
+      repairLedger({
+        file,
+        repoRoot,
+        apply: true,
+        backup: false,
+        deps: {
+          writeFileSync: (p, content, enc) => {
+            writeFileSync(p, content, enc);
+            if (p !== file) appendFileSync(file, appended, 'utf8');
+          },
+        },
+      });
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown?.code).toBe('ELEDGERCHANGED');
+    expect(readFileSync(file, 'utf8')).toBe(GOLDEN_RAW + appended);
+    expect(readdirSync(path.dirname(file)).filter((n) => n.includes('.tmp'))).toEqual([]);
+  });
+
+  it('keeps a line appended after the rename when a failed post-verification restores (#1670)', () => {
+    // Bug caught: the restore copied the backup over the ledger, so a session
+    // record appended between the rename and the restore was silently dropped.
+    // Seams: a corrupting write forces the post-verification to fail, and the
+    // first rename (the repair swap) doubles as the moment another process appends.
+    const { repoRoot, file } = makeRepo(GOLDEN_RAW);
+    const appended = `${golden(6)}\n`;
+    let renames = 0;
+
+    const summary = repairLedger({
+      file,
+      repoRoot,
+      apply: true,
+      deps: {
+        writeFileSync: (p, _content, enc) => writeFileSync(p, '{"session_id":"corrupt","session_type":"feature"}\n', enc),
+        renameSync: (from, to) => {
+          renameSync(from, to);
+          if (++renames === 1) appendFileSync(file, appended, 'utf8');
+        },
+      },
+    });
+
+    expect(summary.ok).toBe(false);
+    expect(summary.restored).toBe(true);
+    expect(readFileSync(file, 'utf8')).toBe(GOLDEN_RAW + appended);
+    expect(readdirSync(path.dirname(file)).filter((n) => n.includes('.restore-'))).toEqual([]);
+  });
+});
 
 describe('repairLedger — idempotency', () => {
   it('is a no-op on a second apply: byte-identical file, repaired 0', () => {
@@ -958,7 +1090,7 @@ describe('#1525 — UTC sub-ms repair at the ledger boundary', () => {
     const record = JSON.parse(first.line);
     expect(record.completed_at).toBe('2026-06-14T12:00:00.999Z');
     expect(record.ended_at).toBe(raw);
-    expect(first.incompleteFields).toEqual(['completed_at']); // existing missing-field contract
+    expect(first.incompleteFields).toEqual([]); // a measured end is not a default (#1699 item 12)
     expect(repairLine(first.line).line).toBe(first.line);
     expect(repairRecord(record).changed).toBe(false);
   });
@@ -1039,4 +1171,56 @@ describe('#1525 — UTC sub-ms repair at the ledger boundary', () => {
       expect(repairLine(line).line).toBe(line);
     },
   );
+});
+
+/**
+ * #1592 fixture: a real repo `<base>/main` (one empty commit) plus a linked
+ * worktree `<base>/wt`; `base` is realpath'd so path comparisons hold on macOS.
+ */
+async function makeLinkedWorktree1592(prefix) {
+  const nodeFs = await import('node:fs');
+  const nodePath = (await import('node:path')).default;
+  const { tmpdir: osTmpdir } = await import('node:os');
+  const { spawnSync: spawn } = await import('node:child_process');
+  const base = nodeFs.realpathSync(nodeFs.mkdtempSync(nodePath.join(osTmpdir(), prefix)));
+  const main = nodePath.join(base, 'main');
+  const wt = nodePath.join(base, 'wt');
+  nodeFs.mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawn('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  const mainMetrics = nodePath.join(main, '.orchestrator', 'metrics');
+  nodeFs.mkdirSync(mainMetrics, { recursive: true });
+  return { base, main, wt, mainMetrics, cleanup: () => nodeFs.rmSync(base, { recursive: true, force: true }) };
+}
+
+describe('verifyWritten — ledger identity from a linked worktree (#1592)', () => {
+  // Bug: isCanonicalLedger compared against `<worktree>/…` while checkIntegrity
+  // reads the MAIN checkout's ledger, so a stale worktree-local ledger was
+  // judged by another file's integrity — and the shared one was not probed.
+  it('probes integrity only for the ledger checkIntegrity actually reads', async () => {
+    const nodeFs = await import('node:fs');
+    const nodePath = (await import('node:path')).default;
+    const { verifyWritten } = await import('../../scripts/lib/session-record-repair.mjs');
+    const fx = await makeLinkedWorktree1592('repair-lib-wt-');
+    try {
+      const mainLedger = nodePath.join(fx.mainMetrics, 'sessions.jsonl');
+      const wtLedger = nodePath.join(fx.wt, '.orchestrator', 'metrics', 'sessions.jsonl');
+      nodeFs.mkdirSync(nodePath.dirname(wtLedger), { recursive: true });
+      nodeFs.writeFileSync(mainLedger, '');
+      nodeFs.writeFileSync(wtLedger, '');
+      const calls = [];
+      const deps = { checkIntegrity: (args) => (calls.push(args), null) };
+      expect(verifyWritten({ file: wtLedger, repoRoot: fx.wt, deps }).integrity).toBe('skipped-not-canonical-path');
+      expect(calls).toHaveLength(0);
+      expect(verifyWritten({ file: mainLedger, repoRoot: fx.wt, deps }).integrity).toBe('clean');
+      expect(calls).toHaveLength(1);
+    } finally {
+      fx.cleanup();
+    }
+  });
 });

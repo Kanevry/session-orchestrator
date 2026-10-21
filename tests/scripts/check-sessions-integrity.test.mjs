@@ -205,3 +205,50 @@ describe('CLI surface', () => {
     expect(probe.stderr).toBe('');
   });
 });
+
+/**
+ * #1592 fixture: a real repo `<base>/main` (one empty commit) plus a linked
+ * worktree `<base>/wt`; `base` is realpath'd so path comparisons hold on macOS.
+ */
+async function makeLinkedWorktree1592(prefix) {
+  const nodeFs = await import('node:fs');
+  const nodePath = (await import('node:path')).default;
+  const { tmpdir: osTmpdir } = await import('node:os');
+  const { spawnSync: spawn } = await import('node:child_process');
+  const base = nodeFs.realpathSync(nodeFs.mkdtempSync(nodePath.join(osTmpdir(), prefix)));
+  const main = nodePath.join(base, 'main');
+  const wt = nodePath.join(base, 'wt');
+  nodeFs.mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawn('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  const mainMetrics = nodePath.join(main, '.orchestrator', 'metrics');
+  nodeFs.mkdirSync(mainMetrics, { recursive: true });
+  return { base, main, wt, mainMetrics, cleanup: () => nodeFs.rmSync(base, { recursive: true, force: true }) };
+}
+
+describe('runSessionsIntegrityCheck from a linked worktree (#1592)', () => {
+  // Bug: the checker read `<worktree>/…/sessions.jsonl` (absent since #1584)
+  // and reported FAIL "never written" for a record the close had appended to
+  // the MAIN checkout's ledger — the remedy it printed re-emits a duplicate.
+  it('judges the main checkout ledger, not the worktree', async () => {
+    const fx = await makeLinkedWorktree1592('integrity-wt-');
+    try {
+      writeFileSync(
+        join(fx.mainMetrics, 'sessions.jsonl'),
+        [validRecord('s-mine'), brokenRecord('s-old')].map((r) => JSON.stringify(r)).join('\n') + '\n',
+      );
+      const mine = runSessionsIntegrityCheck({ repoRoot: fx.wt, sessionId: 's-mine' });
+      expect(mine.matched).toBe(1);
+      expect(mine.ok).toBe(true);
+      const all = runSessionsIntegrityCheck({ repoRoot: fx.wt });
+      expect(all.findings.map((f) => f.sessionId)).toContain('s-old');
+    } finally {
+      fx.cleanup();
+    }
+  });
+});

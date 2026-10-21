@@ -114,7 +114,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Polish',
-      probeOverride: makeOverride({ ramFreeGb: 3.0, peerSessions: 6 }),
+      probeOverride: makeOverride({ ramFreeGb: 3.0, cpuLoadPct: 90 }), // memory + cpu
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3); // floor(6/2)
@@ -133,15 +133,19 @@ describe('evaluateWaveResourceGate', () => {
     expect(result.measurements.cpuLoadPct).toBe(90);
   });
 
-  test('cpuLoadPct above max PLUS live peer sessions → reduce', async () => {
+  test('cpuLoadPct above max PLUS live peer sessions → proceed (peer count reports, never the second signal, #1654)', async () => {
+    // Catches #1654: peer_count >= 5 held on 67.4% of M4 starts (#1650) — a
+    // standing condition. Counting it as the second soft signal halved waves
+    // on CPU load alone under a two-signal name (HR-104).
     const result = await evaluateWaveResourceGate({
       config: makeConfig(),
       plannedAgents: 4,
       waveRole: 'Quality',
       probeOverride: makeOverride({ cpuLoadPct: 90, peerSessions: 6 }),
     });
-    expect(result.decision).toBe('reduce');
-    expect(result.agents).toBe(2); // floor(4/2)
+    expect(result.decision).toBe('proceed');
+    expect(result.agents).toBe(4);
+    expect(result.reasons.some((r) => r.startsWith('info: 6 peer session(s)'))).toBe(true);
   });
 
   test('peerSessions above warn → proceed with a reason, agents unchanged', async () => {
@@ -198,7 +202,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 1,
       waveRole: 'Impl-Core',
-      probeOverride: makeOverride({ ramFreeGb: 3.0, peerSessions: 6 }), // two signals → reduce
+      probeOverride: makeOverride({ ramFreeGb: 3.0, cpuLoadPct: 90 }), // two signals → reduce
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(1); // Math.max(1, floor(1/2)) = Math.max(1, 0) = 1
@@ -278,7 +282,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Polish',
-      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 3.0, peerSessions: 6 }),
+      probeOverride: makeMacOverride({ ramFreeGb: 0.3, ramAvailableGb: 3.0, cpuLoadPct: 90 }),
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3); // floor(6/2)
@@ -332,7 +336,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 6,
       waveRole: 'Impl-Core',
-      probeOverride: makeOverride({ cpuLoadPct: 96, cpuLoad5mPct: 92, peerSessions: 6 }),
+      probeOverride: makeOverride({ cpuLoadPct: 96, cpuLoad5mPct: 92, ramFreeGb: 3.0 }),
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3);
@@ -360,7 +364,7 @@ describe('evaluateWaveResourceGate', () => {
       config: makeConfig(),
       plannedAgents: 4,
       waveRole: 'Quality',
-      probeOverride: makeOverride({ cpuLoadPct: 90, peerSessions: 6 }), // no cpuLoad5mPct key
+      probeOverride: makeOverride({ cpuLoadPct: 90, ramFreeGb: 3.0 }), // no cpuLoad5mPct key
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(2);
@@ -542,13 +546,13 @@ describe('evaluateWaveResourceGate — heavy-repo preflight cap (#60)', () => {
   });
 
   test('leaves an already-stricter resource-driven reduce unchanged when the heavy-repo cap is looser', async () => {
-    // CPU + peers → reduce to floor(6/2)=3; heavy-repo cap=8 is looser — no double-clamp.
+    // CPU + memory → reduce to floor(6/2)=3; heavy-repo cap=8 is looser — no double-clamp.
     const config = makeConfig({ 'heavy-repo': true, 'agents-per-wave': 8 });
     const result = await evaluateWaveResourceGate({
       config,
       plannedAgents: 6,
       waveRole: 'Impl-Core',
-      probeOverride: makeOverride({ cpuLoadPct: 90, peerSessions: 6 }),
+      probeOverride: makeOverride({ cpuLoadPct: 90, ramFreeGb: 3.0 }),
     });
     expect(result.decision).toBe('reduce');
     expect(result.agents).toBe(3);
@@ -591,8 +595,11 @@ describe('evaluateWaveResourceGate — heavy-repo preflight cap (#60)', () => {
 const M5 = { alias: 'm5', 'roles-allowed': ['test', 'ui', 'perf'], 'repo-path': null, 'claude-path': null };
 const PERF_ONLY = { alias: 'perfbox', 'roles-allowed': ['perf'], 'repo-path': null, 'claude-path': null };
 
-/** Two soft signals → warn → reduce, the pressure every offload test starts from. */
-const PRESSURE = { ramFreeGb: 3.0, peerSessions: 6 };
+/**
+ * Two soft signals (memory + cpu) → warn → reduce, the pressure every offload
+ * test starts from. Not peers: since #1654 the peer count only reports.
+ */
+const PRESSURE = { ramFreeGb: 3.0, cpuLoadPct: 90 };
 
 describe('evaluateWaveResourceGate — offload decision (#1160)', () => {
   test('routes a Quality wave to a ready host at FULL plannedAgents instead of reducing', async () => {

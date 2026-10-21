@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { readFileSync, readdirSync, statSync, existsSync, realpathSync, lstatSync, openSync, fstatSync, closeSync, constants } from 'node:fs';
+import { readFileSync, readdirSync, statSync, existsSync, realpathSync, lstatSync, openSync, fstatSync, closeSync, readSync, constants } from 'node:fs';
 import { join, extname, relative, basename, sep, resolve, dirname, isAbsolute } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { argv } from 'node:process';
@@ -21,18 +21,75 @@ const isMain =
 
 const pluginRoot = argv[2] ? canonicalPath(resolve(argv[2])) : argv[2];
 const includeUntracked = argv.slice(3).includes('--include-untracked');
-const requireOwnerPatterns = argv.slice(3).includes('--require-owner-patterns');
+// --public-export (#1631): the root is a curated public snapshot. Adds the path check against
+// the export policy and implies --require-owner-patterns (a public tree is never scanned blind).
+const publicExport = argv.slice(3).includes('--public-export');
+const requireOwnerPatterns = argv.slice(3).includes('--require-owner-patterns') || publicExport;
 const packedIndex = argv.indexOf('--packed-files');
 const packedInventoryPath = packedIndex >= 0 ? argv[packedIndex + 1] : null;
 if (isMain && packedIndex >= 0 && (!packedInventoryPath || packedInventoryPath.startsWith('--'))) {
   console.error('packed-files requires an inventory path'); process.exit(1);
 }
 if (isMain && !pluginRoot) {
-  console.error('Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked]');
+  console.error('Usage: check-owner-leakage.mjs <plugin-root> [--include-untracked] [--require-owner-patterns] [--public-export]');
   process.exit(1);
 }
 
 // Host policy stays outside source and package; this file remains standalone.
+
+// Public-export policy (#1631, #1594). Lives here, not in scripts/lib/github-export.mjs,
+// because vendored copies carry this file alone; the export CLI imports it from here.
+export const PUBLIC_EXPORT_POLICY_FILE = '.orchestrator/policy/public-export.json';
+
+/**
+ * Validate a public-export policy document.
+ * Each `exclude[].path` is an exact repo-relative file, or a directory prefix ending in
+ * `/` — no globs, no absolute paths, no `.`/`..` segments.
+ * @param {unknown} policy parsed JSON
+ * @returns {{ ok: true, excludes: string[] } | { ok: false, reason: string }}
+ */
+export function validatePublicExportPolicy(policy) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy) || policy.version !== 1) return { ok: false, reason: 'policy must be an object with version 1' };
+  if (!Array.isArray(policy.exclude) || policy.exclude.length === 0) return { ok: false, reason: 'exclude must be a non-empty array' };
+  const excludes = [];
+  for (const entry of policy.exclude) {
+    const p = entry?.path;
+    if (typeof p !== 'string' || !p || p.startsWith('/') || /[*?[\]{}\\]/.test(p) || [...p].some((c) => c.charCodeAt(0) < 32)
+      || p.replace(/\/$/, '').split('/').some((part) => !part || part === '.' || part === '..')) {
+      return { ok: false, reason: 'invalid exclude path (exact file or dir prefix ending in "/", no globs)' };
+    }
+    excludes.push(p);
+  }
+  return { ok: true, excludes };
+}
+
+/**
+ * Read and validate `<root>/.orchestrator/policy/public-export.json`.
+ * @param {string} root
+ * @returns {{ ok: true, excludes: string[] } | { ok: false, reason: string }}
+ */
+export function loadPublicExportPolicy(root) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(join(root, PUBLIC_EXPORT_POLICY_FILE), 'utf8'));
+  } catch (err) {
+    return { ok: false, reason: err?.code === 'ENOENT' ? `${PUBLIC_EXPORT_POLICY_FILE} missing` : `${PUBLIC_EXPORT_POLICY_FILE} unreadable or not JSON` };
+  }
+  return validatePublicExportPolicy(parsed);
+}
+
+/**
+ * True when a repo-relative path falls under a public-export exclude. A directory
+ * prefix matches only at a path boundary: `docs/audits/` excludes `docs/audits/x.md`
+ * but never the sibling `docs/auditsX.md`.
+ * @param {string} relPath forward-slash repo-relative path
+ * @param {string[]} excludes
+ * @returns {boolean}
+ */
+export function isPublicExportExcluded(relPath, excludes) {
+  const norm = relPath.replace(/\\/g, '/');
+  return excludes.some((p) => (p.endsWith('/') ? norm.startsWith(p) : norm === p));
+}
 export const VAULT_CLEAR_SLUGS = new Set();
 
 // Mirrors the zero-import private-config-dir resolver because vendored copies carry this file alone.
@@ -47,12 +104,24 @@ function policySource(env = process.env) {
   const dir = own || (xdg ? join(xdg, 'session-orchestrator') : join(homedir(), '.config', 'session-orchestrator'));
   return (env.SO_OWNER_PATTERNS_FILE || '').trim() || join(dir, 'owner-patterns.json');
 }
+// #1629: a refused DIRECTORY is a host-setup fault (umask 000 leaves the dir 0777), not a
+// leak — it carries the dir so the one-time warning can name it instead of a bare CP1.
+function unsafeDir(dir, st) {
+  return Object.assign(new Error('unsafe-dir'), { dir, why: st.isSymbolicLink() ? 'a symlink' : !st.isDirectory() ? 'not a directory' : `mode ${(st.mode & 0o777).toString(8)}, writable by group/others` });
+}
 function checkedHostFile(filename) {
   if (!isAbsolute(filename)) throw new Error('unsafe');
+  // Windows has no POSIX mode bits: Node reports 0o666 (0o444 read-only) for every
+  // file and directory, so the group/other-write and 0600 checks below would refuse
+  // EVERY policy file there (measured on Windows 11, #1612). They apply on POSIX only;
+  // the symlink, hard-link, repo-ancestor and size checks still apply everywhere.
+  // Ceiling (BV-004): Windows ACLs are not inspected — revisit if the policy file
+  // ever carries secrets rather than private names.
+  const posixModes = process.platform !== 'win32';
   // Canonical OS aliases (/tmp on macOS) are allowed above the private source parent.
   let cursor = dirname(filename);
   const parent = lstatSync(cursor);
-  if (!parent.isDirectory() || parent.isSymbolicLink() || (parent.mode & 0o022)) throw new Error('unsafe');
+  if (!parent.isDirectory() || parent.isSymbolicLink() || (posixModes && (parent.mode & 0o022))) throw unsafeDir(cursor, parent);
   const canonicalParent = realpathSync(cursor);
   // Reject repo-local data even if ignored; walk every ancestor for a .git marker.
   cursor = canonicalParent;
@@ -64,27 +133,50 @@ function checkedHostFile(filename) {
   cursor = dirname(filename);
   while (cursor !== dirname(cursor)) {
     const st = lstatSync(cursor);
-    if ((st.isSymbolicLink() && st.uid !== 0) || (st.uid !== 0 && (st.mode & 0o022))) throw new Error('unsafe');
+    if ((st.isSymbolicLink() && st.uid !== 0) || (posixModes && st.uid !== 0 && (st.mode & 0o022))) throw unsafeDir(cursor, st);
     cursor = dirname(cursor);
   }
   const st = lstatSync(filename);
-  if (!st.isFile() || st.isSymbolicLink() || (st.mode & 0o7777) !== 0o600 || st.nlink !== 1 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) throw new Error('unsafe');
+  if (!st.isFile() || st.isSymbolicLink() || (posixModes && (st.mode & 0o7777) !== 0o600) || st.nlink !== 1 || (typeof process.getuid === 'function' && st.uid !== process.getuid())) throw new Error('unsafe');
   if (st.size > POLICY_LIMIT_BYTES) throw new Error('invalid');
   const fd = openSync(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const opened = fstatSync(fd);
-    if (!opened.isFile() || opened.ino !== st.ino || opened.dev !== st.dev || (opened.mode & 0o7777) !== 0o600 || opened.size > POLICY_LIMIT_BYTES) throw new Error('unsafe');
+    if (!opened.isFile() || opened.ino !== st.ino || opened.dev !== st.dev || (posixModes && (opened.mode & 0o7777) !== 0o600) || opened.size > POLICY_LIMIT_BYTES) throw new Error('unsafe');
     const raw = readFileSync(fd, 'utf8');
     if (Buffer.byteLength(raw) > POLICY_LIMIT_BYTES) throw new Error('invalid');
     return raw;
   } finally { closeSync(fd); }
+}
+// Redacted label for a refused directory: env-var name or `~`-relative, never the raw path
+// (a custom SO_CONFIG_HOME may carry private names). Ancestors render as `<label>/..`.
+function configDirLabel(dir, filename, env) {
+  const patterns = (env.SO_OWNER_PATTERNS_FILE || '').trim(), own = (env.SO_CONFIG_HOME || '').trim(), xdg = (env.XDG_CONFIG_HOME || '').trim();
+  const [base, label] = patterns ? [dirname(filename), 'dirname($SO_OWNER_PATTERNS_FILE)'] : own ? [own, '$SO_CONFIG_HOME'] : xdg ? [join(xdg, 'session-orchestrator'), '$XDG_CONFIG_HOME/session-orchestrator'] : [homedir(), '~'];
+  const rel = relative(base, dir);
+  if (!rel) return label;
+  return rel.split(sep).every((part) => part === '..') || label === '~' && !rel.startsWith('..') ? `${label}/${rel.split(sep).join('/')}` : 'an ancestor directory of the owner policy';
+}
+const warnedUnsafeDirs = new Set();
+function warnUnsafeConfigDir(err, filename, env) {
+  if (warnedUnsafeDirs.has(err.dir)) return;
+  warnedUnsafeDirs.add(err.dir);
+  const label = configDirLabel(err.dir, filename, env);
+  // chmod cannot repair a symlink or a non-directory — name the fix that works.
+  const fix = err.why === 'a symlink' ? `replace the symlink ${label} with a real directory (mode 700)`
+    : err.why === 'not a directory' ? `replace ${label} with a real directory (mode 700)`
+    : err.dir === dirname(filename) ? `chmod 700 ${label}` : `chmod go-w ${label}`;
+  console.error(`WARN owner-patterns: unsafe config directory ${label} (${err.why}); owner policy not loaded, so every segment fails closed as CP1 — not a leak. Fix: ${fix}`);
 }
 export function inspectOwnerPatterns({ filePath, env = process.env, refresh = false } = {}) {
   const filename = filePath ?? policySource(env);
   if (!refresh && ownerCache?.filename === filename) return ownerCache.result;
   let result;
   try {
-    const policy = JSON.parse(checkedHostFile(filename));
+    // #1613: Windows PowerShell 5.1 (`Set-Content -Encoding utf8`) writes a UTF-8 BOM,
+    // which JSON.parse rejects — strip it so such a policy is not read as invalid.
+    const raw = checkedHostFile(filename);
+    const policy = JSON.parse(raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw);
     if (!policy || Array.isArray(policy) || policy.version !== 1 || Object.keys(policy).some((key) => key !== 'version' && !POLICY_KEYS.includes(key))) throw new Error('invalid');
     for (const key of POLICY_KEYS) {
       if (!Object.hasOwn(policy, key)) policy[key] = [];
@@ -94,7 +186,13 @@ export function inspectOwnerPatterns({ filePath, env = process.env, refresh = fa
     if (!POLICY_KEYS.slice(0, 6).concat('personalNames').some((key) => policy[key].length)) throw new Error('invalid');
     result = { status: 'ok', policy };
   } catch (err) {
-    result = { status: err.code === 'ENOENT' ? 'missing' : err.message === 'unsafe' || err.code === 'ELOOP' ? 'unsafe' : 'invalid', reason: err.code ?? (err.message === 'unsafe' ? 'unsafe-source' : 'invalid-source') };
+    if (err.message === 'unsafe-dir') {
+      // Fail-closed unchanged: an unsafe directory never supplies (or waives) a policy.
+      result = { status: 'unsafe', reason: 'unsafe-config-dir' };
+      warnUnsafeConfigDir(err, filename, env);
+    } else {
+      result = { status: err.code === 'ENOENT' ? 'missing' : err.message === 'unsafe' || err.code === 'ELOOP' ? 'unsafe' : 'invalid', reason: err.code ?? (err.message === 'unsafe' ? 'unsafe-source' : 'invalid-source') };
+    }
   }
   ownerCache = {filename, result};
   VAULT_CLEAR_SLUGS.clear();
@@ -394,9 +492,14 @@ export async function getConfidentialNamePatterns({ loadHostPaths } = {}) {
 const TEXT_EXTS = new Set([
   '.md',
   '.mdx',
+  '.mdc',
   '.mjs',
+  '.cjs',
   '.js',
   '.ts',
+  '.tsx',
+  '.py',
+  '.toml',
   '.json',
   '.jsonl',
   '.yml',
@@ -411,11 +514,41 @@ const TEXT_EXTS = new Set([
 
 const DOTFILE_ALLOWLIST = new Set(['.env.example', '.nvmrc', '.vault.yaml']);
 
+const BINARY_SNIFF_BYTES = 8192;
+
+/**
+ * Cheap binary sniff for extensionless files (LICENSE, Dockerfile, .husky hooks,
+ * fixture launchers): a NUL byte in the first 8 KB means binary, the same
+ * heuristic git uses. An unreadable file counts as text so the scan loop
+ * reports it as "file unreadable" instead of skipping it silently.
+ * @param {string} filePath
+ * @returns {boolean}
+ */
+function looksLikeText(filePath) {
+  let fd;
+  try {
+    fd = openSync(filePath, 'r');
+    const buf = Buffer.alloc(BINARY_SNIFF_BYTES);
+    const n = readSync(fd, buf, 0, BINARY_SNIFF_BYTES, 0);
+    return !buf.subarray(0, n).includes(0);
+  } catch {
+    return true;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+// Formats that are binary by definition: never scanned, whatever their first bytes look like.
+const BINARY_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.ico', '.icns', '.pdf', '.woff', '.woff2', '.ttf', '.otf', '.eot', '.zip', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.mp3', '.mp4', '.mov', '.webm', '.wav', '.ogg', '.wasm']);
+
 function isTextFile(filePath) {
   const base = basename(filePath);
   if (DOTFILE_ALLOWLIST.has(base)) return true;
   const ext = extname(filePath);
-  return ext ? TEXT_EXTS.has(ext) : false;
+  // A listed extension is text; any other file (no extension, or an unknown one such as .tmpl,
+  // .template, .lock) is scanned unless it looks binary, so a new text format is never skipped.
+  if (TEXT_EXTS.has(ext)) return true;
+  return !BINARY_EXTS.has(ext.toLowerCase()) && looksLikeText(filePath);
 }
 
 function getTrackedFiles() {
@@ -534,7 +667,9 @@ const SELF_EXCLUSIONS = new Set([
 const scanFiles = textFiles.filter((f) => {
   const rel = relative(pluginRoot, f).replace(/\\/g, '/');
   if (!packedInventoryPath && rel.startsWith('.orchestrator/audits/')) return false;
-  if (!packedInventoryPath && SELF_EXCLUSIONS.has(rel)) return false;
+  // --public-export scans everything that ships: these self-exclusions exist for the
+  // private repo's own CI, and a public snapshot must not carry their literals unscanned.
+  if (!packedInventoryPath && !publicExport && SELF_EXCLUSIONS.has(rel)) return false;
   return true;
 });
 
@@ -546,6 +681,19 @@ if (cp11.inertWarn) {
 if (cp11.disabledReason) {
   console.error(`CP11 DISABLED: ${cp11.disabledReason}`);
   fail(`<scan-wide> — CP11 (guard disabled): ${cp11.disabledReason}`);
+}
+
+// --public-export: path-based, because a content pattern cannot recognise e.g. a
+// preference card or an audit report. Runs over ALL tracked files, not only text files.
+if (publicExport) {
+  const exportPolicy = loadPublicExportPolicy(pluginRoot);
+  if (!exportPolicy.ok) {
+    fail(`<scan-wide> — PX (public-export policy unavailable): ${exportPolicy.reason}`);
+  } else {
+    const leakedPaths = allFiles.map((f) => relative(pluginRoot, f).replace(/\\/g, '/')).filter((rel) => isPublicExportExcluded(rel, exportPolicy.excludes));
+    for (const rel of leakedPaths) fail(`${safeDiagnosticPath(rel, cp11Patterns)} — PX (path excluded from public export)`);
+    if (leakedPaths.length === 0) pass(`no public-export excluded path among ${allFiles.length} files`);
+  }
 }
 
 const violations = [];

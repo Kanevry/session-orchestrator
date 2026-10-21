@@ -5,11 +5,15 @@
 // Required env: TYPECHECK_CMD, TEST_CMD, LINT_CMD (each may equal "skip")
 // Optional env: SESSION_START_REF
 
+import { mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   runCheck,
   extractCount,
   extractTestCounts,
   extractFailedTestFiles,
+  extractTimeoutOnlyFailedFiles,
   collectDebugArtifacts,
   commandKillFields,
 } from './gate-helpers.mjs';
@@ -109,6 +113,147 @@ const failedTestFiles = testResult.status === 'fail'
   ? extractFailedTestFiles(testResult.fullOutput ?? testResult.output ?? '')
   : [];
 
+// --- Serial re-run of timeout-only failures (#1673) ---
+// Under host load the parallel suite loses tests to their timeout while the
+// code is fine: four pre-push runs on m5 blocked with four different red sets,
+// none in the pushed diff, and the pushes then went out with the bypass. When
+// EVERY failure of the run is a timeout, exactly those files run once more,
+// one file at a time; only a clean re-run turns the test step green. An
+// assertion failure is never re-run (it may be a genuine flake), a killed
+// test command is never re-run (no complete error list), and the CI pipeline
+// keeps running without this re-run, so it stays the strict instance.
+// NAMED CEILING (BV-004): 10 files. More timeouts than that is not a few
+// load victims but a broken run, and a serial re-run would double the wait.
+// Revisit when a blocked push shows 11+ timeout-only files under load.
+const RERUN_MAX_FILES = 10;
+// The names go into a shell command line, so they must be plain paths.
+const RERUN_FILE_NAME = /^[\w.@+][\w./@+-]*$/;
+// Paths placed inside double quotes on that line: nothing the shell expands.
+// NAMED CEILING (BV-004): a backslash is refused, so on Windows (`C:\…`
+// temp paths) no re-run happens and the gate stays red as before. Revisit with
+// the Windows gate work (#1612); cmd.exe also expands `%VAR%` inside quotes.
+const QUOTABLE_PATH = /^[^"$`\\%\n\r]+$/;
+
+/**
+ * The re-run command: the gate's OWN test command with the file filters and
+ * reporters appended, so its config, project selection, environment prefix and
+ * binary are exactly those of the first run (Codex review round 2, H2). Only
+ * shapes whose trailing arguments demonstrably reach vitest are accepted;
+ * anything else returns null and nothing is re-run.
+ * NAMED CEILING (BV-004): `npm test` / `npm run test` and a direct
+ * `[VAR=… ][exec|npx ][path/]vitest run|--run` without shell operators. pnpm/yarn pass
+ * `--` differently by version and are not accepted until measured. Revisit
+ * when a consumer repo with another test command hits #1673.
+ */
+function rerunCommand(cmd, args) {
+  const trimmed = (cmd ?? '').trim();
+  if (/^npm (?:run )?test$/.test(trimmed)) return `${trimmed} -- ${args}`;
+  // `[VAR=value …] [exec|npx] [path/]vitest run` — vitest itself is the program,
+  // so the appended arguments are its own; no wrapper that might drop them.
+  const direct = /^(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;&|`$()<>]*\s+)*(?:(?:exec|npx)\s+)?(?:[^\s;&|`$()<>]*\/)?vitest (?:run|--run)$/;
+  if (direct.test(trimmed)) return `${trimmed} ${args}`;
+  return null;
+}
+
+const realOrSelf = (p) => {
+  try {
+    return realpathSync(p);
+  } catch {
+    return p;
+  }
+};
+
+/**
+ * Judge the re-run from vitest's JSON report, never from its exit code or its
+ * summary counts alone: the default reporter does not name passing files, so
+ * only the report proves that EXACTLY the requested files ran and passed (a
+ * filter matching another file, or a config excluding the file, would
+ * otherwise read as green). Returns `{ reason, passed, failed }`, `reason`
+ * null when clean.
+ */
+function judgeRerunReport(reportPath, files, cwd) {
+  let report;
+  try {
+    report = JSON.parse(readFileSync(reportPath, 'utf8'));
+  } catch {
+    return { reason: 'report-unreadable', passed: null, failed: null };
+  }
+  const counts = { passed: report?.numPassedTests ?? null, failed: report?.numFailedTests ?? null };
+  if (report?.success !== true || report.numFailedTests !== 0 || !Array.isArray(report.testResults)) {
+    return { reason: 'report-not-clean', ...counts };
+  }
+  const root = realOrSelf(cwd);
+  const ran = report.testResults.map((t) => [
+    path.relative(root, realOrSelf(String(t?.name ?? ''))).split(path.sep).join('/'),
+    t?.status,
+  ]);
+  const wanted = new Set(files);
+  const exact =
+    ran.length === files.length && ran.every(([file, status]) => status === 'passed' && wanted.delete(file));
+  return { reason: exact && wanted.size === 0 ? null : 'file-set-mismatch', ...counts };
+}
+
+let rerun = null;
+let rerunResult = null;
+// Only a run that ENDED with exit 1 — not by a signal (`exitSignal`, which
+// `exitCode` alone reports as 1), not by the gate's own kill — and printed
+// vitest's closing `Test Files` summary (`testCounts.files`). A signal that hits
+// vitest under `npm test` surfaces as npm exit 143 (measured, npm 11.19.1), so
+// both routes of an externally ended run stay out (Codex review rounds 2+3, M3).
+if (
+  testResult.status === 'fail' &&
+  testResult.timedOut !== true &&
+  testResult.exitCode === 1 &&
+  !testResult.exitSignal &&
+  (testResult.killSignals ?? []).length === 0 &&
+  testCounts.files
+) {
+  const timeouts = extractTimeoutOnlyFailedFiles(testResult.fullOutput ?? testResult.output ?? '');
+  if (
+    timeouts.eligible &&
+    timeouts.files.length <= RERUN_MAX_FILES &&
+    timeouts.files.every((f) => RERUN_FILE_NAME.test(f))
+  ) {
+    let reportDir = null;
+    try {
+      reportDir = mkdtempSync(path.join(tmpdir(), 'gate-rerun-'));
+      const reportPath = path.join(reportDir, 'report.json');
+      const command = QUOTABLE_PATH.test(reportPath)
+        ? rerunCommand(
+            testCmd,
+            // `default` keeps a readable failure on stderr; `json` is the proof.
+            `--no-file-parallelism --reporter=default --reporter=json --outputFile.json="${reportPath}" ${timeouts.files.join(' ')}`,
+          )
+        : null;
+      if (command !== null) {
+        rerunResult = await runCheck(command, CHECK_OPTS);
+        const judged = judgeRerunReport(reportPath, timeouts.files, process.cwd());
+        const verdict = rerunResult.status === 'pass' ? judged : { ...judged, reason: 'exit-non-zero' };
+        rerun = {
+          files: timeouts.files,
+          status: verdict.reason === null ? 'pass' : 'fail',
+          ...(verdict.reason ? { reason: verdict.reason } : {}),
+          passed: verdict.passed,
+          failed: verdict.failed,
+          ...commandKillFields(rerunResult),
+        };
+      }
+    } catch (err) {
+      // Any failure around the re-run keeps the step red and still names the files.
+      rerun = { files: timeouts.files, status: 'fail', reason: `rerun-error: ${err?.code ?? err?.message ?? 'unknown'}`, passed: null, failed: null };
+    } finally {
+      if (reportDir !== null) {
+        try {
+          rmSync(reportDir, { recursive: true, force: true });
+        } catch {
+          /* a leftover temp dir must not crash the gate or flip its verdict */
+        }
+      }
+    }
+  }
+}
+const testStatus = rerun?.status === 'pass' ? 'pass' : testResult.status;
+
 const fileFields = testCounts.files
   ? {
       files_total: testCounts.files.total,
@@ -119,7 +264,9 @@ const fileFields = testCounts.files
       // test-case `failed: 0` that a file-level failure explains. Greppable —
       // a consumer no longer has to recompute the contradiction by hand.
       suite_died:
-        testResult.status === 'fail' && testCounts.failed === 0 && testCounts.files.failed > 0,
+        // `testStatus`: a suite whose only failure was a hook timeout and that
+        // re-ran clean (#1673) did not die.
+        testStatus === 'fail' && testCounts.failed === 0 && testCounts.files.failed > 0,
     }
   : {};
 
@@ -154,8 +301,10 @@ const output = {
   // re-derived as `total - passed` downstream: the derivation and the parse can
   // disagree, and only an explicit third number lets a consumer check
   // `passed + failed === total` as a real producer/consumer drift guard.
+  // `status` is the step's verdict after a re-run; the counts below stay the
+  // first, parallel run's measurement, and `rerun` says what turned it green.
   test: {
-    status: testResult.status,
+    status: testStatus,
     total: testCounts.total,
     passed: testCounts.passed,
     failed: testCounts.failed,
@@ -166,6 +315,7 @@ const output = {
     // document and the test-case triple keeps `total === passed + failed`.
     ...fileFields,
     ...commandKillFields(testResult),
+    ...(rerun ? { rerun } : {}),
   },
   lint: { status: lintResult.status, warnings: lintWarnings, ...commandKillFields(lintResult) },
   debug_artifacts: debugArtifacts,
@@ -175,9 +325,18 @@ const output = {
 process.stdout.write(JSON.stringify(output) + '\n');
 
 // Exit 2 if any check failed; skipped counts as pass.
-const failed = [tcResult, testResult, lintResult].some(
-  (r) => r.status === 'fail',
+const failed = [tcResult.status, testStatus, lintResult.status].some(
+  (status) => status === 'fail',
 );
+
+// Every re-run is named, green or not, so a load-sensitive file stays visible
+// even when the push goes through.
+if (rerun) {
+  process.stderr.write(
+    `\n──── test re-run: ${rerun.files.length} file(s) failed only by timeout, re-ran serially → ${rerun.status} ────\n` +
+      rerun.files.map((f) => `  ${f}\n`).join(''),
+  );
+}
 
 // --- Failure disclosure ---
 // A gate that BLOCKS and says nothing is not concise, it is unusable. Measured
@@ -207,20 +366,22 @@ if (failed) {
   // Names FIRST, raw output after. Under the pre-push hook the raw block is
   // hundreds of lines; the operator reads the top of it, and the one fact he
   // needs to act (`npx vitest run <file>`) must not sit at the bottom.
-  if (failedTestFiles.length > 0) {
+  if (testStatus === 'fail' && failedTestFiles.length > 0) {
     process.stderr.write(
       `\n──── failing test files (${failedTestFiles.length}) ────\n` +
         failedTestFiles.map((f) => `  ${f}\n`).join('') +
         `  reproduce: npx vitest run ${failedTestFiles.join(' ')}\n`,
     );
   }
-  for (const [name, result] of [
-    ['typecheck', tcResult],
-    ['test', testResult],
-    ['lint', lintResult],
+  for (const [name, result, status] of [
+    ['typecheck', tcResult, tcResult.status],
+    ['test', testResult, testStatus],
+    ['test re-run', rerunResult, rerun?.status],
+    ['lint', lintResult, lintResult.status],
   ]) {
-    if (result.status !== 'fail') continue;
-    const raw = result.fullOutput ?? result.output ?? '';
+    if (status !== 'fail') continue;
+    // A re-run that never started (temp dir, spawn) has no result, only a reason.
+    const raw = result ? (result.fullOutput ?? result.output ?? '') : `(not run: ${rerun?.reason ?? 'unknown'})\n`;
     process.stderr.write(`\n──── ${name} FAILED — raw output ────\n`);
     process.stderr.write(raw.length > 0 ? raw : '(the gate captured no output)\n');
     process.stderr.write(`──── end ${name} ────\n`);

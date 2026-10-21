@@ -21,7 +21,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, existsSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -84,6 +84,66 @@ describe('emit-session.mjs CLI', () => {
 
   afterEach(() => {
     rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it.each(['default', 'relative override', 'absolute override'])('uses the main ledger only for the %s path in a linked worktree (#1584)', (variant) => {
+    const main = join(tmp, 'main');
+    const worktree = join(tmp, 'worktree');
+    const gitDir = join(main, '.git', 'worktrees', 'worktree');
+    mkdirSync(gitDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(gitDir, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    const defaultFile = join(main, '.orchestrator', 'metrics', 'sessions.jsonl');
+    const override = variant === 'relative override' ? 'custom/sessions.jsonl' : join(tmp, 'explicit.jsonl');
+    const file = variant === 'default' ? defaultFile : variant === 'relative override' ? join(worktree, override) : override;
+    const args = variant === 'default' ? [] : ['--file', override];
+    const r = runCli([...args, '--entry', JSON.stringify(validEntry())], null,
+      { cwd: worktree, env: { CLAUDE_PROJECT_DIR: worktree, CODEX_PROJECT_DIR: worktree } });
+    expect(r.status).toBe(0);
+    expect(JSON.parse(readFileSync(file, 'utf8').trim()).session_id).toBe(validEntry().session_id);
+    expect(JSON.parse(r.stdout.trim()).path).toBe(variant === 'default' ? defaultFile : override);
+    expect(existsSync(join(worktree, '.orchestrator', 'metrics', 'sessions.jsonl'))).toBe(false);
+    if (variant !== 'default') expect(existsSync(defaultFile)).toBe(false);
+  });
+
+  // #1659 — a linked worktree of a --separate-git-dir / bare repo has no main
+  // checkout; the default --file used to fall back to a per-WORKTREE ledger.
+  it('refuses the default --file in a worktree whose common dir is not .git, and writes nothing (#1659)', () => {
+    const commonDir = join(tmp, 'sep.git');
+    const worktree = join(tmp, 'worktree');
+    const gitDir = join(commonDir, 'worktrees', 'worktree');
+    mkdirSync(gitDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    writeFileSync(join(gitDir, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    const r = runCli(['--entry', JSON.stringify(validEntry())], null,
+      { cwd: worktree, env: { CLAUDE_PROJECT_DIR: worktree, CODEX_PROJECT_DIR: worktree } });
+    expect(r.status).toBe(2);
+    expect(r.stdout).toBe('');
+    expect(r.stderr).toContain('emit-session: refusing the default --file: linked worktree whose common git dir is not named .git');
+    expect(existsSync(join(worktree, '.orchestrator'))).toBe(false);
+  });
+
+  // #1659 review — the default --file root must come from the cwd, like every
+  // other sessions.jsonl reader (autopilot), not from a launch-dir env var.
+  it('resolves the default --file from the cwd even when CLAUDE_PROJECT_DIR points elsewhere (#1659)', () => {
+    const main = join(tmp, 'main');
+    const worktree = join(tmp, 'worktree');
+    const elsewhere = join(tmp, 'elsewhere');
+    const gitDir = join(main, '.git', 'worktrees', 'worktree');
+    mkdirSync(gitDir, { recursive: true });
+    mkdirSync(worktree, { recursive: true });
+    mkdirSync(elsewhere, { recursive: true });
+    writeFileSync(join(gitDir, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    const r = runCli(['--entry', JSON.stringify(validEntry())], null,
+      { cwd: worktree, env: { CLAUDE_PROJECT_DIR: elsewhere, CODEX_PROJECT_DIR: elsewhere } });
+    expect(r.status).toBe(0);
+    const defaultFile = join(main, '.orchestrator', 'metrics', 'sessions.jsonl');
+    expect(JSON.parse(r.stdout.trim()).path).toBe(defaultFile);
+    expect(JSON.parse(readFileSync(defaultFile, 'utf8').trim()).session_id).toBe(validEntry().session_id);
+    expect(existsSync(join(elsewhere, '.orchestrator'))).toBe(false);
   });
 
   it('appends a valid entry and exits 0', () => {
@@ -515,6 +575,35 @@ describe('emit-session.mjs CLI — #1247 session_profile derivation', () => {
     expect(r.stderr).toBe(expectStderr);
   });
 
+  // #1622 — bug: the read took ANOTHER platform's STATE.md via the #890 legacy
+  // fallback, so a finished Codex session's `.codex/STATE.md` (same semantic
+  // `session`, but not this process's raw `session-id`) stamped its profile and
+  // start ref onto this Claude session's record. Env pinned: the agent itself
+  // runs with CLAUDE_CODE_SESSION_ID set.
+  it.each([
+    ['foreign: omitted with a WARN', 'codex-raw-foreign', false],
+    ['own (session-id matches this process): adopted', 'claude-raw-own', true],
+  ])('a .codex/STATE.md under a Claude process is %s', (_label, rawId, adopted) => {
+    const repo = join(tmp, 'repo');
+    mkdirSync(join(repo, '.codex'), { recursive: true });
+    const sha = '8f6ac02277d889413bed283f9ab6c747f841ac03';
+    writeFileSync(
+      join(repo, '.codex', 'STATE.md'),
+      ['---', 'session: platform-pick', `session-id: ${rawId}`, 'session-profile: ultradeep',
+        `session-start-ref: ${sha}`, '---', ''].join('\n'),
+      'utf8'
+    );
+    const r = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry({ session_id: 'platform-pick' }))], null, {
+      cwd: repo,
+      env: { SO_STATE_DIR: '', SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'claude-raw-own', CODEX_THREAD_ID: '' },
+    });
+    expect(r.status).toBe(0);
+    const written = JSON.parse(readFileSync(targetFile, 'utf8').trim());
+    expect(written.session_profile).toBe(adopted ? 'ultradeep' : undefined);
+    expect(written.session_start_ref).toBe(adopted ? sha : undefined);
+    if (!adopted) expect(r.stderr).toContain(`ignoring ${join(realpathSync(repo), '.codex', 'STATE.md')}`);
+  });
+
   // Bug: the readFileSync was guarded by existsSync only, so any read error
   // (EISDIR when STATE.md is a directory, EACCES, EPERM) escaped to the
   // top-level handler — emit-session exited 2 having appended NOTHING. An
@@ -773,12 +862,67 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect(w.session_start_ref).toBe(expected);
   });
 
+  // Bug caught (#1652): the fallback adopted the start event's head_sha even
+  // when the session's registry entry shows it works in another tree than the
+  // SessionStart root the sha was measured in — a range over the wrong tree.
+  it.each([
+    ['work_root differs from session_root', '/wt/so-23c', undefined],
+    ['work_root equals session_root', '/repo', SHA],
+  ])('session_start_ref fallback when the own registry entry says %s (#1652)', (_label, workRoot, expected) => {
+    writeJsonlIn('events.jsonl', [{ event: 'orchestrator.session.started', session_id: U, head_sha: SHA }]);
+    const registryDir = join(tmp, 'registry');
+    mkdirSync(join(registryDir, 'active'), { recursive: true });
+    writeFileSync(join(registryDir, 'active', `${U}.json`), JSON.stringify({ session_id: U, session_root: '/repo', work_root: workRoot }));
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())], null, {
+      env: { SO_SESSION_REGISTRY_DIR: registryDir },
+    });
+    expect(r.status).toBe(0);
+    expect(readWritten().session_start_ref).toBe(expected);
+    if (expected === undefined) expect(r.stderr).toContain('not the work_root this session works in (#1652)');
+  });
+
+  // Bug caught (#1668): the fallback adopted head_sha even when the start
+  // event proves the checkout was behind its upstream — a pull during the
+  // session then makes `<ref>..HEAD` include foreign upstream commits. Three
+  // states: measured-behind drops, measured-not-behind and not-measured (every
+  // pre-#1668 event) keep the ref exactly as before.
+  it.each([
+    ['measured behind upstream → dropped', { upstream_sha: SHA_B, behind: 2 }, undefined],
+    ['measured not behind → kept', { upstream_sha: SHA, behind: 0 }, SHA],
+    ['not measured (no upstream fields) → kept', {}, SHA],
+  ])('session_start_ref fallback when the own session.started is %s (#1668)', (_label, upstream, expected) => {
+    writeJsonlIn('events.jsonl', [{ event: 'orchestrator.session.started', session_id: U, head_sha: SHA, ...upstream }]);
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())]);
+    expect(r.status).toBe(0);
+    expect(readWritten().session_start_ref).toBe(expected);
+    expect(r.stderr.includes('behind its upstream')).toBe(expected === undefined);
+  });
+
   it('drops an explicit short session_start_ref instead of writing an ambiguous ref (#1443)', () => {
     const entry = validEntry({ session_start_ref: 'ae452d33' });
     const r = runCli(['--file', targetFile, '--entry', JSON.stringify(entry)]);
     expect(r.status).toBe(0);
     expect('session_start_ref' in readWritten()).toBe(false);
     expect(r.stderr).toContain('session_start_ref=ae452d33 is not a full hex sha');
+  });
+
+  // Bug caught (#1659): commits the session made in another own work tree were
+  // invisible in the ledger record — only the own checkout's start ref was
+  // kept. Recorded only when it adds something beyond that ref.
+  const ownTree = (own) => ({ tree: own, start_ref: SHA });
+  const otherTree = { tree: '/wt/so-other', start_ref: SHA_B };
+  it.each([
+    ['own checkout plus another tree → both recorded',
+      (own) => [ownTree(own), otherTree], (own) => [ownTree(own), otherTree]],
+    ['only the own checkout → field absent', (own) => [ownTree(own)], () => undefined],
+  ])('session_work_trees: %s (#1659)', (_label, trees, expected) => {
+    const own = join(tmp, 'own'); // unresolved tmp path: realpath-compared to the toplevel
+    mkdirSync(own);
+    expect(spawnSync('git', ['init', '-q', own]).status).toBe(0);
+    writeJsonlIn('events.jsonl', trees(own).map((t) => ({ event: 'orchestrator.session.work_tree', session_id: U, ...t })));
+    const r = runCli(['--file', targetFile, '--session-uuid', U, '--entry', JSON.stringify(validEntry())], null, { cwd: own });
+    expect(r.status).toBe(0);
+    expect(readWritten().session_work_trees).toEqual(expected(own));
   });
 });
 

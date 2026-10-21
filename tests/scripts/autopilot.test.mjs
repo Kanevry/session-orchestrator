@@ -556,3 +556,58 @@ describe('scripts/autopilot.mjs integration', () => {
     expect(rec.max_tokens).toBe(10_000_000);
   });
 });
+
+
+/**
+ * A real git repo `<base>/main` (one empty commit) plus a linked worktree
+ * `<base>/wt` — the layout #1514/#1584 map back to the main checkout.
+ */
+function makeLinkedWorktree(spawnGit, base) {
+  const main = join(base, 'main');
+  const wt = join(base, 'wt');
+  mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawnGit('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  return { main, wt };
+}
+
+describe('autopilot.mjs from a linked worktree (#1592)', () => {
+  /**
+   * Bug this catches: SESSIONS_JSONL_PATH was cwd-relative, but the child's
+   * session-end writes its record into the MAIN checkout's ledger (#1584).
+   * Run from a linked worktree, readOwnSession found no record and a healthy
+   * iteration ended as kill_switch=failed-wave.
+   */
+  it('reads the child record from the main checkout ledger', () => {
+    const base = mkdtempSync(join(tmpdir(), 'autopilot-1592-'));
+    try {
+      const { main, wt } = makeLinkedWorktree(spawnSync, base);
+      createTmpLayout(main);
+      createTmpLayout(wt);
+      writeFileSync(join(wt, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
+
+      const result = runAutopilot(['--headless', '--max-sessions=1', '--confidence-threshold=0.4'], {
+        tmp: wt,
+        env: {
+          STUB_SESSIONS_JSONL: join(main, '.orchestrator', 'metrics', 'sessions.jsonl'),
+          STUB_AGENT_FAILED: '0',
+          STUB_AGENT_SPIRAL: '0',
+          STUB_PLANNED_ISSUES: '1',
+          STUB_CARRYOVER: '0',
+        },
+      });
+
+      const rec = readAutopilotJsonl(wt)[0];
+      expect(rec.kill_switch_detail ?? null).not.toMatch(/raw_session_id/);
+      expect(rec.iterations_completed).toBe(1);
+      expect(result.status).toBe(0);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+});

@@ -110,6 +110,14 @@ const FORBIDDEN_CODEX_EVENTS = new Set(
  *
  * The adapter this actually needs is a tool-name MAP (shell/exec_command/
  * unified_exec -> Bash, apply_patch -> Edit/Write), not a payload bridge.
+ *
+ * PARTLY REFUTED for the shell tool (#1669), measured 2026-10-20 on
+ * codex-cli 0.160.1 with a logging PreToolUse hook under `codex exec`: the
+ * hook payload of a shell call carries `"tool_name":"Bash"` and
+ * `"tool_input":{"command":"<string>"}` — Codex already maps its shell tool to
+ * the Claude name at the hook boundary. These names are the MODEL-facing tool
+ * vocabulary, not the hook `tool_name` values. Bash-gated handlers need no
+ * map; the apply_patch -> Edit/Write side was not re-measured.
  */
 export const CODEX_TOOL_NAMES = Object.freeze([
   'shell',

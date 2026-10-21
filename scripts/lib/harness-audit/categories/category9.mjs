@@ -21,7 +21,8 @@
  * status field is only 'pass' / 'fail' — partial tiers emit a reduced-points
  * pass() (there is no 'partial' constructor in helpers.mjs).
  *
- * Stdlib only: node:fs, node:path, node:child_process. The advisory tally in
+ * Stdlib (node:fs, node:path, node:child_process) plus the auditor's own
+ * ../../platform.mjs for the sessions-ledger root. The advisory tally in
  * c9.3 imports the AUDITOR's OWN (trusted) join/score modules in a short-lived
  * worker subprocess and runs them over the TARGET repo's telemetry DATA files —
  * it never imports code rooted at the audited repo (review N2b: RCE-on-audit).
@@ -34,6 +35,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 import { pass, fail } from './helpers.mjs';
+import { resolveEventsLedgerRoot } from '../../platform.mjs';
 
 const TELEMETRY_REL = '.orchestrator/metrics/skill-invocations.jsonl';
 const SESSIONS_REL = '.orchestrator/metrics/sessions.jsonl';
@@ -250,7 +252,10 @@ function buildAdvisoryCheck(root) {
 // for caller symmetry. The CODE imported here comes from the auditor's OWN modules
 // (derived from import.meta.url below), never from the audited target (review N2b).
 function computeAdvisoryTally(scorerPath, joinPath, telemetryPath, root) {
-  const sessionsPath = join(root, SESSIONS_REL);
+  // #1592: the repo's ONE sessions ledger (main checkout of a linked worktree),
+  // matching join.mjs's own default and c4.2 — telemetry stays at `root`, its
+  // hook writer is not mapped.
+  const sessionsPath = join(resolveEventsLedgerRoot(root), SESSIONS_REL);
   // Import the AUDITOR's OWN trusted modules — derived from THIS file's location,
   // NEVER from the audited `root`. The target's join.mjs/score.mjs are existence-
   // checked by the caller but never imported (would execute target code → N2b).

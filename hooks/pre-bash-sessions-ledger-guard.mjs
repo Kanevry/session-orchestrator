@@ -74,6 +74,12 @@
  * hook's protection scope is shell-redirect writes that BYPASS validation,
  * and this command never does that.
  *
+ * #1577/#1656 widen this by a CLOSED grammar, not a pattern: the same command
+ * with exactly one explicit `--repo-root <ABS>` (either side of `--apply`),
+ * and the same two shapes with this plugin's own absolute script path. The
+ * root is judged on its own (Git top-level, ledger present, not the Vault) —
+ * see `allowsRepairApply`. Every other deviation still falls through to DENY.
+ *
  * ## Path scope
  *
  * A write target counts as the ledger when its BASENAME is `sessions.jsonl`,
@@ -232,13 +238,15 @@
  *     denied (`"$PWD"/…/sessions.jsonl`, `$HOME/…/sessions.jsonl`,
  *     `"$(pwd)/…/sessions.jsonl"` and `exec 3> …/sessions.jsonl` all deny;
  *     verified, not assumed).
- *   - A redirect nested inside a DOUBLE-QUOTED command substitution or a
- *     backtick run: `echo "$(echo x >> …/sessions.jsonl)"` allows, while the
- *     unquoted `echo $(echo x >> …/sessions.jsonl)` denies. The scanner
- *     consumes a quoted run whole and does not recurse into it. Verified, and
- *     left uncaught deliberately: recursing costs lexer surface, and a redirect
- *     buried in a quoted substitution is not the accident shape this guard is
- *     for — it is the "determined circumvention" line below.
+ *   - Since #1665 a `$(…)` / backtick substitution — quoted or not, nested
+ *     double quotes included — is parsed as its own command line, so
+ *     `echo "$(echo x >> …/sessions.jsonl)"` and
+ *     `echo "$(node -e "…appendFileSync('…/sessions.jsonl',…)")"` deny. Three
+ *     substitution shapes stay out: a `case` pattern's `)` inside a body ends
+ *     it early; a body nested past MAX_PAYLOAD_DEPTH is marked, not judged;
+ *     and a double-quoted body this lexer cannot parse is allowed with an
+ *     `unparsed-substitution` notice instead of failing closed (a real
+ *     `printf '… "x" …'` description denied before that rule).
  *   - In-place editors: `sed -i`, `perl -i`, `ed`, an interactive editor.
  *   - A write performed by a SCRIPT FILE the command invokes
  *     (`node tools/append.mjs`) — the ledger name never appears in the command
@@ -272,10 +280,11 @@
  *     guarded by `hooks/pre-edit-sessions-ledger-guard.mjs` (#1443), not this
  *     hook's surface.
  *   - The #385 repair-apply subshell/backtick deny (`unwrapSubshellLayers`)
- *     only unwraps a command that IS, in its entirety, one wrapped run —
- *     `x=$(node scripts/repair-invalid-sessions.mjs --apply)` (the wrapper is
- *     part of a larger assignment, not the whole command) still allows. Same
- *     class as the line above: a determined rewrite, not the accident shape.
+ *     only unwraps a command that IS, in its entirety, one wrapped run. A
+ *     wrapper inside a larger command —
+ *     `x=$(node scripts/repair-invalid-sessions.mjs --apply)` — is no longer a
+ *     gap since #1665: the substitution body reaches the general matcher and
+ *     denies there.
  *
  * This is a guard against the accident that actually happened, not a
  * containment boundary. Determined circumvention is out of scope by design.
@@ -310,6 +319,7 @@
  */
 
 import { spawnSync } from 'node:child_process';
+import { lstatSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -451,6 +461,17 @@ async function bootstrap() {
 /** The ledger's filename. A write target matches on basename equality. */
 const LEDGER_BASENAME = 'sessions.jsonl';
 
+/**
+ * What a `$( … )` / backtick span becomes in `sanitized` (#1665) and in a
+ * redirect word's `skeleton` (#1671): a visible `_` plus an invisible U+2063,
+ * so a literal `_` in a file name is never mistaken for a substitution and
+ * {@link mayNameLedgerDynamically} can treat exactly the spans as wildcards.
+ */
+const SUBST_PLACEHOLDER = '_\u2063';
+
+/** The ledger's directory, repo-relative (#1671 dynamic-name rule). */
+const LEDGER_DIR = '.orchestrator/metrics';
+
 /** The repair CLI whose effective apply mode mutates the sessions ledger internally. */
 const REPAIR_SCRIPT_BASENAME = 'repair-invalid-sessions.mjs';
 const REPAIR_APPLY_MARKER = `${REPAIR_SCRIPT_BASENAME} --apply`;
@@ -479,6 +500,211 @@ const REPAIR_APPLY_MARKER = `${REPAIR_SCRIPT_BASENAME} --apply`;
 const REPAIR_APPLY_CANONICAL_COMMAND = `node scripts/${REPAIR_SCRIPT_BASENAME} --apply`;
 
 /**
+ * Every verb that IS the Node runtime (#1665). Debian/Ubuntu ship the binary as
+ * `nodejs`, and a guard that recognised only `node` let
+ * `nodejs scripts/repair-invalid-sessions.mjs --apply …` through. One set, read
+ * by every place that asks "is this verb Node?" — the eval-payload family table
+ * (`INTERPRETER_FAMILY`) carries the same two names.
+ */
+const NODE_VERBS = new Set(['node', 'nodejs']);
+// Verbs that only print or search their operands — they never execute a script
+// they name, so the non-node repair-runner rule (#1670) does not apply to them.
+const TEXT_ONLY_VERBS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'cat', 'head', 'tail', 'less', 'wc']);
+
+/** This plugin's own repair script — the only sanctioned absolute operand (#1577). */
+const REPAIR_ABSOLUTE_SCRIPT = path.join(PLUGIN_ROOT, 'scripts', REPAIR_SCRIPT_BASENAME);
+
+/** Deny-message hint: every form the closed allowlist accepts (#385, #1577, #1656). */
+const REPAIR_SANCTIONED_FORMS = [
+  `  ${REPAIR_APPLY_CANONICAL_COMMAND}`,
+  `  ${REPAIR_APPLY_CANONICAL_COMMAND} --repo-root <absolute-git-toplevel>`,
+  `  node ${REPAIR_ABSOLUTE_SCRIPT} --apply --repo-root <absolute-git-toplevel>`,
+  `  (--repo-root <path> may also precede --apply)`,
+].join('\n');
+
+/** A canonical, existing path with no symlink component (including parents). */
+function isSymlinkFreeAbsolute(candidate) {
+  if (typeof candidate !== 'string' || !path.isAbsolute(candidate) || path.resolve(candidate) !== candidate) return false;
+  try {
+    for (let current = candidate; ; current = path.dirname(current)) {
+      if (lstatSync(current).isSymbolicLink()) return false;
+      if (path.dirname(current) === current) break;
+    }
+    return realpathSync.native(candidate) === candidate;
+  } catch {
+    return false;
+  }
+}
+
+/** Measurement failure never authorizes the new repair exception. */
+function measuredGitRoot(cwd) {
+  if (!isSymlinkFreeAbsolute(cwd)) return null;
+  if (Object.keys(process.env).some((name) =>
+    /^(?:GIT_DIR|GIT_WORK_TREE|GIT_COMMON_DIR|GIT_CONFIG.*|GIT_CEILING_DIRECTORIES|GIT_DISCOVERY_ACROSS_FILESYSTEM|GIT_INDEX_FILE|GIT_OBJECT_DIRECTORY|GIT_ALTERNATE_OBJECT_DIRECTORIES)$/.test(name))) return null;
+  try {
+    const result = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], {
+      encoding: 'utf8', timeout: 2000, maxBuffer: 64 * 1024,
+    });
+    if (result.error || result.status !== 0) return null;
+    const root = result.stdout?.trim();
+    if (typeof root !== 'string' || !isSymlinkFreeAbsolute(root)) return null;
+    // Local core.worktree can redirect Git's reported top-level away from cwd.
+    // A measured root must physically contain this invocation, not merely be
+    // the same redirected answer for both process and payload probes (#1577).
+    const relative = path.relative(root, cwd);
+    if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) return null;
+    const marker = lstatSync(path.join(root, '.git'));
+    return !marker.isSymbolicLink() && (marker.isDirectory() || marker.isFile()) ? root : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Conservative charset for an explicit `--repo-root` path (#1577/#1656). */
+const REPAIR_ROOT_CHARSET = /^[A-Za-z0-9._/@+-]+$/;
+
+/**
+ * Parse the closed repair-apply grammar (#1577/#1656):
+ *
+ *   node <script> --apply
+ *   node <script> --apply --repo-root <ABS>
+ *   node <script> --repo-root <ABS> --apply
+ *
+ * Operands may be wrapped in one pair of simple quotes (a plugin root with a
+ * space needs it); shell evaluation characters anywhere in the command fail
+ * the parse, so double quotes cannot expand anything. Anything else — an
+ * extra argument, `--repo-root=X`, a second `--repo-root`, chaining, a
+ * wrapper, a trailing newline — is not this grammar.
+ *
+ * @param {string} command - the raw, untrimmed command
+ * @returns {{ script: string, rawScript: string, root: string|null }|null}
+ */
+function parseRepairApply(command) {
+  if (/[$`\\;|&<>()*?[\]{}~!#\r\n]/.test(command)) return null;
+  const op = `("[^"]+"|'[^']+'|[^\\s'"]+)`;
+  const sep = '[ \\t]+';
+  const unquote = (value) => /^["']/.test(value) ? value.slice(1, -1) : value;
+  const shapes = [
+    { re: new RegExp(`^node${sep}${op}${sep}--apply$`), root: null },
+    { re: new RegExp(`^node${sep}${op}${sep}--apply${sep}--repo-root${sep}${op}$`), root: 2 },
+    { re: new RegExp(`^node${sep}${op}${sep}--repo-root${sep}${op}${sep}--apply$`), root: 2 },
+  ];
+  for (const shape of shapes) {
+    const match = shape.re.exec(command);
+    if (match) {
+      return {
+        rawScript: match[1],
+        script: unquote(match[1]),
+        root: shape.root === null ? null : unquote(match[shape.root]),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Closed allowlist for the repair CLI beyond the bare #385 exact string
+ * (#1577/#1656). The script is either the literal relative
+ * `scripts/repair-invalid-sessions.mjs` or this hook's OWN plugin copy
+ * (`PLUGIN_ROOT` comes from `import.meta.dirname`, which Node has already
+ * realpath'd — env vars are never consulted for it); any other absolute path
+ * to a file of that name, including a symlink to the real one, is DENY.
+ *
+ * Exactly one explicit `--repo-root <ABS>` is required here, and it is the
+ * whole target identity: the CLI repairs that root and nothing else, so the
+ * hook judges the root itself instead of demanding that hook cwd, payload cwd
+ * and the CLI's default project dir agree. That agreement is what made the
+ * repair unreachable from a consumer repo or a worktree (`getProjectDir()`
+ * names the main checkout there, possibly on a foreign branch — #1656).
+ * ABS must be in the conservative charset, absolute, canonical (no `..`, no
+ * trailing slash, no symlink component), an existing directory that Git
+ * itself reports as its own top-level, hold a regular-file
+ * `.orchestrator/metrics/sessions.jsonl`, and lie outside the Vault.
+ *
+ * Repo modules load only inside this caught path: a broken optional resolver
+ * must DENY this exception, not disarm the rest of the ledger guard (#993).
+ *
+ * @param {string} command - the raw, untrimmed command
+ * @returns {Promise<boolean>}
+ */
+async function allowsRepairApply(command) {
+  try {
+    const parsed = parseRepairApply(command);
+    if (!parsed || parsed.root === null) return false;
+    const relative = parsed.rawScript === `scripts/${REPAIR_SCRIPT_BASENAME}`;
+    if (!relative) {
+      const script = parsed.script;
+      if (script !== REPAIR_ABSOLUTE_SCRIPT ||
+          !isSymlinkFreeAbsolute(script) || !lstatSync(script).isFile()) return false;
+    }
+    const root = parsed.root;
+    if (!REPAIR_ROOT_CHARSET.test(root) || root.split('/').includes('..')) return false;
+    if (!isSymlinkFreeAbsolute(root) || !lstatSync(root).isDirectory()) return false;
+    if (measuredGitRoot(root) !== root) return false;
+    // The target must already carry a regular-file ledger (#1577): a repo
+    // without one is no repair target. EVERY component of the ledger path must
+    // be symlink-free, not only the root: a scratch repo whose `.orchestrator/`
+    // or `metrics/` links into the Vault would otherwise pass the Vault check
+    // on the plain root while the script (realpathSync) repairs the Vault.
+    const ledger = path.join(root, '.orchestrator', 'metrics', LEDGER_BASENAME);
+    if (!isSymlinkFreeAbsolute(ledger) || !lstatSync(ledger).isFile()) return false;
+    return !(await isVaultRepairRoot(root));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Vault resolution failure has the Lead-authorized narrow fallback, rather
+ * than disabling all absolute repairs. Keep optional config imports here so
+ * they cannot disarm the ledger matcher or the relative exact exception.
+ */
+async function isVaultRepairRoot(root) {
+  let vault;
+  try {
+    const { resolveVaultDir, readConfigFile } = await import('../scripts/lib/config.mjs');
+    const { loadHostPaths } = await import('../scripts/lib/config/host-paths.mjs');
+    const { _parseVaultIntegration } = await import('../scripts/lib/config/vault-integration.mjs');
+    const { expandTilde } = await import('../scripts/lib/common.mjs');
+    let resolved;
+    // An authoritative environment override does not need owner/committed IO.
+    if (typeof process.env.SO_VAULT_DIR === 'string' && process.env.SO_VAULT_DIR.trim()) {
+      resolved = resolveVaultDir(null);
+    } else {
+      const { loadOwnerConfig, validateOwnerSections } = await import('../scripts/lib/owner-yaml.mjs');
+      const owner = loadOwnerConfig();
+      const host = loadHostPaths({ownerLoader: () => owner});
+      if (!host.source || host.reason || !validateOwnerSections(host.ownerConfig).sections['vault-dirs'].valid) {
+        throw new Error('Vault owner resolution unavailable');
+      }
+      resolved = resolveVaultDir(null, host);
+      if (resolved.source !== 'match' && host.droppedSections?.some(({ section }) => section === 'paths')) {
+        throw new Error('Vault owner paths unavailable');
+      }
+      if (resolved.source === 'committed') {
+        if (host.source === 'defaults' && owner.errors?.length) throw new Error('Vault owner defaults are not measurable');
+        const committed = _parseVaultIntegration(await readConfigFile(root))['vault-dir'];
+        resolved = resolveVaultDir(committed, host);
+      }
+    }
+    if (typeof resolved.value !== 'string' || !resolved.value.trim()) throw new Error('Vault path unavailable');
+    vault = realpathSync.native(expandTilde(resolved.value));
+  } catch {
+    try {
+      // Only HOME/Projects/vault is the fallback; similarly named or nested
+      // vault segments elsewhere under Projects are ordinary repair targets.
+      if (typeof process.env.HOME !== 'string' || !process.env.HOME.trim()) return false;
+      const home = realpathSync.native(process.env.HOME);
+      vault = realpathSync.native(path.join(home, 'Projects', 'vault'));
+    } catch {
+      return false;
+    }
+  }
+  const relative = path.relative(vault, root);
+  return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+}
+
+/**
  * How much of the offending target may appear in the deny reason.
  *
  * Load-bearing, not cosmetic. `emitDeny` clamps the whole reason to
@@ -501,6 +727,14 @@ const DEST_LAST_VERBS = new Set(['cp', 'mv']);
  * on its own terms.
  */
 const MAX_PAYLOAD_DEPTH = 2;
+
+/**
+ * How deep `scanCommand` follows nested `$(`, backticks and `(` subshells.
+ * Stack safety, fail-CLOSED (#1665): unbounded recursion overflowed the stack,
+ * and the fail-open crash handler turned that into an ALLOW. Past this cap the
+ * scan counts as unparseable, which denies a ledger-naming command.
+ */
+const MAX_SCAN_NESTING = 256;
 
 /** Unquoted characters that end a shell WORD. */
 const WORD_END = new Set([';', '|', '&', '<', '>', '(', ')', '\n']);
@@ -532,6 +766,58 @@ function refersToLedger(target) {
 }
 
 /**
+ * Could a write target whose basename a command substitution (partly) decides
+ * be the ledger (#1671)? `target` carries {@link SUBST_PLACEHOLDER} where each
+ * substitution stood. True when the target's directory is the ledger directory
+ * and the basename skeleton — each placeholder read as "any text" — can match
+ * `sessions.jsonl`: `$(echo sessions).jsonl`, `sess$(echo ions).jsonl`, a bare
+ * `$(…)`. `$(date).log` or `events-$(date).jsonl` cannot, and stay allowed.
+ *
+ * Ceiling: only the literal `.orchestrator/metrics/` spelling is known. A name
+ * decided by a VARIABLE (`$F`), or a dynamic name after `cd` into the metrics
+ * dir, is not judged. Measured still-ALLOW pre-existing forms (security review):
+ * - parameter expansion: `${x}.jsonl`, `$x.jsonl` (no substitution placeholder)
+ * - brace expansion: `{sessions,x}.jsonl`
+ * - globs: `session?.jsonl`, `sessions.json[l]`
+ * - ANSI-C hex escapes: `$'\x73essions'` (escape kept literal, not decoded)
+ * - the `install` / `rsync` verbs (no write-verb branch)
+ * - the prefilter needs the literal `.orchestrator/metrics/` spelling, so
+ *   `.orchestrator/x/../metrics/$(…)` is never normalized or judged
+ * Revisit trigger: a measured ledger write of any of these shapes, or a
+ * sessions.jsonl corruption whose writer used one.
+ *
+ * @param {string} target
+ * @returns {boolean}
+ */
+function mayNameLedgerDynamically(target) {
+  if (typeof target !== 'string' || !target.includes(SUBST_PLACEHOLDER)) return false;
+  const normalized = target.replace(/\\/g, '/');
+  const dir = path.posix.normalize(path.posix.dirname(normalized));
+  if (dir !== LEDGER_DIR && !dir.endsWith(`/${LEDGER_DIR}`)) return false;
+  const skeleton = path.posix.basename(normalized)
+    .split(SUBST_PLACEHOLDER)
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .join('.*');
+  return new RegExp(`^${skeleton}$`).test(LEDGER_BASENAME);
+}
+
+/**
+ * The write-target verdict every write-verb branch shares: the target itself
+ * when it names the ledger, a fail-closed label when only a substitution could
+ * decide that (#1671), else null.
+ *
+ * @param {string} target
+ * @returns {string|null}
+ */
+function ledgerWriteHit(target) {
+  if (refersToLedger(target)) return target;
+  if (mayNameLedgerDynamically(target)) {
+    return `${target.split(SUBST_PLACEHOLDER).join('$(…)')} (command substitution decides the target — not statically resolvable, denied fail-closed)`;
+  }
+  return null;
+}
+
+/**
  * Does this token name the repair CLI by its immediate script operand basename?
  *
  * @param {string} target
@@ -553,11 +839,13 @@ function refersToRepairScript(target) {
  * Deliberately narrow: this is NOT a general shell parser. It exists only to
  * answer "is this string exactly the canonical repair-apply command sitting
  * inside one layer of command-substitution/subshell syntax" (see
- * {@link unwrapSubshellLayers} and GitLab #385 test (c)) — the general
- * `blocker.tokenizeCommand` path glues a leading `$(`/`` ` ``/`(` onto the
- * next word (#385 measured: `$(node …)` tokenizes as a single `$(node`
- * token), which is why the existing verb-based matcher never resolves `node`
- * as the verb for a wrapped command and silently ALLOWS it today.
+ * {@link unwrapSubshellLayers} and GitLab #385 test (c)). History: the shared
+ * `blocker.tokenizeCommand` once glued a leading `$(`/`` ` ``/`(` onto the next
+ * word (#385 measured `$(node` as one token), so the verb matcher never saw
+ * `node` in a wrapped command. That is no longer true — `scanCommand` (#1665)
+ * and the shared tokenizer (#1667, e6adbcc7) both split those spans. The unwrapping stays
+ * because two checks in `main()` still need the wrapped command's interior as
+ * a STRING: the absolute-operand regex and the dedicated "wrapped" deny text.
  *
  * @param {string} s - already-trimmed candidate
  * @returns {string|null} the unwrapped, trimmed interior, or null
@@ -761,35 +1049,67 @@ function skipQuotedRun(command, open, escapes) {
  * `.orchestrator/metrics/"sessions.jsonl"`, `My\ Repo/…/sessions.jsonl` and
  * `"."/…/sessions.jsonl` all resolve to a value whose basename is the ledger.
  *
+ * #1670 — with `onSubstitution`, an unquoted OR double-quoted `$(…)` or backtick span is part of
+ * the word instead of ending it at its `(`: `>> $(pwd)/…/sessions.jsonl` used to
+ * read as the target `$`, after which the scanner took `(pwd)` for a subshell and
+ * never judged the write. The span's raw text stands in the value, so the
+ * basename is still the static last component (a span's `)` / backtick can never
+ * end in `sessions.jsonl`). `dynamic` reports whether a span sits in that LAST
+ * component, i.e. whether the basename is not statically known.
+ *
  * @param {string} command
  * @param {number} i
- * @returns {{ value: string, end: number, balanced: boolean }}
+ * @param {(bodyStart: number, stop: string) => number} [onSubstitution] - scans
+ *   the body and returns the index just past its closing character, or -1
+ * @returns {{ value: string, end: number, balanced: boolean, dynamic: boolean }}
  */
-function readWord(command, i) {
+function readWord(command, i, onSubstitution) {
   let value = '';
+  // `value` with every substitution replaced by SUBST_PLACEHOLDER (#1671).
+  let skeleton = '';
   let state = 'normal';
+  let dynamic = false;
+  const add = (text) => {
+    value += text;
+    skeleton += text;
+    if (text.includes('/')) dynamic = false;
+  };
   while (i < command.length) {
     const ch = command[i];
 
     if (state === 'single') {
       if (ch === "'") { state = 'normal'; i++; continue; }
-      value += ch; i++; continue;
+      add(ch); i++; continue;
     }
     if (state === 'double' || state === 'ansi') {
       if (ch === (state === 'double' ? '"' : "'")) { state = 'normal'; i++; continue; }
-      if (ch === '\\' && i + 1 < command.length) { value += command[i + 1]; i += 2; continue; }
-      value += ch; i++; continue;
+      if (ch === '\\' && i + 1 < command.length) { add(command[i + 1]); i += 2; continue; }
+      // Bash expands `$(…)` and backticks inside "…" (never inside '…' or $'…'),
+      // so a double-quoted span decides the name exactly like an unquoted one.
+      if (!(state === 'double' && onSubstitution && ((ch === '$' && command[i + 1] === '(') || ch === '`'))) {
+        add(ch); i++; continue;
+      }
     }
 
+    if (onSubstitution && ((ch === '$' && command[i + 1] === '(') || ch === '`')) {
+      const isDollarParen = ch === '$';
+      const end = onSubstitution(isDollarParen ? i + 2 : i + 1, isDollarParen ? ')' : '`');
+      if (end === -1) return { value, skeleton, end: i, balanced: false, dynamic: true };
+      value += command.slice(i, end);
+      skeleton += SUBST_PLACEHOLDER;
+      dynamic = true;
+      i = end;
+      continue;
+    }
     if (/\s/.test(ch) || WORD_END.has(ch)) break;
-    if (ch === '\\' && i + 1 < command.length) { value += command[i + 1]; i += 2; continue; }
+    if (ch === '\\' && i + 1 < command.length) { add(command[i + 1]); i += 2; continue; }
     if (ch === "'") { state = 'single'; i++; continue; }
     if (ch === '"') { state = 'double'; i++; continue; }
     if (ch === '$' && command[i + 1] === "'") { state = 'ansi'; i += 2; continue; }
     if (ch === '$' && command[i + 1] === '"') { state = 'double'; i += 2; continue; }
-    value += ch; i++;
+    add(ch); i++;
   }
-  return { value, end: i, balanced: state === 'normal' };
+  return { value, skeleton, end: i, balanced: state === 'normal', dynamic };
 }
 
 /**
@@ -821,107 +1141,268 @@ function skipHeredocBody(command, from, delim, stripTabs) {
  * Returns every RESOLVED redirect target, plus a sanitized command for the
  * write-verb matcher: comments and here-doc bodies removed, `$'…'` folded to a
  * plain single-quoted literal, redirect operators and their targets elided.
- * `balanced` is false when the scan ended inside an unterminated quote — a
- * command bash would reject, and the fail-closed trigger (see docblock).
+ * `balanced` is false when the scan ended inside an unterminated quote or
+ * substitution — a command bash would reject, and the fail-closed trigger
+ * (see docblock).
+ *
+ * #1665 — subshells, command substitutions and brace groups. The shared
+ * tokenizer treats `(`, `$(`, `` ` ``, `{` as ordinary word characters, so
+ * `true && (node -e …)` lexed `(node` as one word and every verb-keyed check
+ * went blind inside ANY wrapper. This pass therefore parses them as spans:
+ *
+ *   - `$(…)` and `` `…` `` — quoted or not — are scanned recursively to their
+ *     quote-aware closing `)` / backtick (a `"` inside the body opens a NEW
+ *     quoting context, as in bash, and no longer ends the outer `"…"`). The
+ *     body is returned in `substitutions` for the caller to judge as its own
+ *     command line, and the span becomes SUBST_PLACEHOLDER (a `_`) in `sanitized`, so
+ *     the surrounding WORD stays whole: `tee -a $(pwd)/…/sessions.jsonl` reads
+ *     as `tee -a _/…/sessions.jsonl`, not as three statements.
+ *   - a bare `( … )` subshell and a `{ … ; }` group (reserved words only —
+ *     never `{}` or `${…}`/`{a,b}`) become `;` separators, which puts the inner
+ *     command at the head of its own segment.
+ *   - redirect targets inside any span land in the one shared `targets` list.
+ *
+ * Only DIRECT substitution bodies are returned; a body nested in a body is
+ * found when the caller re-scans the outer one (bounded by MAX_PAYLOAD_DEPTH).
+ * When a substitution inside double quotes cannot be parsed, the run falls back
+ * to the plain quote skip and `unparsedSubstitution` is set: the body is NOT
+ * judged and the command is NOT failed closed — the top-level command was
+ * balanced, so bash may well run it (a mark, never a deny).
+ *
+ * NAMED CEILING (BV-004): a `case` pattern's `)` inside a substitution ends the
+ * body early (the bash 3.2 reading). Revisit if a measured transcript command
+ * carries a `case` inside `$(…)` next to the ledger.
  *
  * @param {string} command
- * @returns {{ targets: string[], sanitized: string, balanced: boolean }}
+ * @returns {{ targets: string[], unresolvedTargets: string[], sanitized: string,
+ *   balanced: boolean, substitutions: string[], unparsedSubstitution: boolean }}
  */
 function scanCommand(command) {
   const targets = [];
+  // #1670 — redirect targets whose basename a substitution supplies (see readWord).
+  const unresolvedTargets = [];
+  const substitutions = [];
   const heredocs = [];
-  let out = '';
-  let i = 0;
+  let unparsedSubstitution = false;
+  // MAX_SCAN_NESTING bookkeeping: current span depth, and whether any span hit
+  // the cap. `tooDeep` overrides the quoted-run fallback in scanDouble, which
+  // would otherwise downgrade the overflow to a mere `unparsed-substitution` mark.
+  let nesting = 0;
+  let tooDeep = false;
 
   const atWordStart = (idx) => idx === 0 || /[\s;|&()<>]/.test(command[idx - 1]);
 
-  while (i < command.length) {
-    const ch = command[i];
-
-    // A `#` in word position comments out the rest of the LINE. Without this,
-    // one apostrophe in English prose desynced the whole scan (MED-1).
-    if (ch === '#' && atWordStart(i)) {
-      while (i < command.length && command[i] !== '\n') i++;
-      continue;
-    }
-
-    if (ch === '\n') {
-      out += '\n';
-      i++;
-      while (heredocs.length) {
-        const { delim, stripTabs } = heredocs.shift();
-        i = skipHeredocBody(command, i, delim, stripTabs);
-      }
-      continue;
-    }
-
-    if (ch === '\\' && i + 1 < command.length) { out += ch + command[i + 1]; i += 2; continue; }
-
-    // ANSI-C `$'…'`: a backslash escapes the closing quote, which the old mask
-    // did not know (MED-1). Folded to a plain literal for the write-verb lexer.
-    if (ch === '$' && command[i + 1] === "'") {
-      const end = skipQuotedRun(command, i + 1, true);
-      if (end === -1) return { targets, sanitized: out, balanced: false };
-      const literal = command.slice(i + 2, end - 1).replace(/\\(.)/g, '$1').replace(/'/g, '');
-      out += `'${literal}'`;
-      i = end;
-      continue;
-    }
-    if (ch === '$' && command[i + 1] === '"') {
-      const end = skipQuotedRun(command, i + 1, true);
-      if (end === -1) return { targets, sanitized: out, balanced: false };
-      out += command.slice(i + 1, end);
-      i = end;
-      continue;
-    }
-    if (ch === "'" || ch === '"') {
-      const end = skipQuotedRun(command, i, ch === '"');
-      if (end === -1) return { targets, sanitized: out, balanced: false };
-      out += command.slice(i, end);
-      i = end;
-      continue;
-    }
-
-    // Here-doc: remember the delimiter now, skip the body at the next newline.
-    // `<<<` is a here-STRING, not a here-doc, and needs no body skipping.
-    if (ch === '<' && command[i + 1] === '<' && command[i + 2] !== '<') {
-      let j = i + 2;
-      let stripTabs = false;
-      if (command[j] === '-') { stripTabs = true; j++; }
-      while (command[j] === ' ' || command[j] === '\t') j++;
-      const w = readWord(command, j);
-      if (!w.balanced) return { targets, sanitized: out, balanced: false };
-      if (w.value) heredocs.push({ delim: w.value, stripTabs });
-      out += ' ';
-      i = Math.max(w.end, i + 2);
-      continue;
-    }
-
-    // Redirection: `>` `>>` `>|` `N>` `&>` `&>>`. The optional leading fd digits
-    // are ordinary characters we already copied; only the operator matters.
-    if (ch === '>' || (ch === '&' && command[i + 1] === '>')) {
-      let j = ch === '&' ? i + 2 : i + 1;
-      if (command[j] === '>') j++;
-      if (command[j] === '|') j++;
-      if (command[j] === '&') {
-        const dup = readWord(command, j + 1);
-        if (FD_DUP_RE.test(dup.value)) { out += ' '; i = Math.max(dup.end, j + 1); continue; }
-        j += 1;
-      }
-      while (command[j] === ' ' || command[j] === '\t') j++;
-      const w = readWord(command, j);
-      if (!w.balanced) return { targets, sanitized: out, balanced: false };
-      if (w.value) targets.push(w.value);
-      out += ' ';
-      i = Math.max(w.end, j, i + 1);
-      continue;
-    }
-
-    out += ch;
-    i++;
+  /**
+   * Scan a substitution body from `bodyStart` to its `stop` character and record
+   * the body in `subs`. Nested bodies go to a throwaway list (see above).
+   *
+   * @returns {number} index just past the closing character, or -1 when unbalanced
+   */
+  function substitution(bodyStart, stop, subs) {
+    const inner = scanSpan(bodyStart, stop, []);
+    if (!inner) return -1;
+    subs.push(command.slice(bodyStart, inner.end - 1));
+    return inner.end;
   }
 
-  return { targets, sanitized: out, balanced: true };
+  /**
+   * A double-quoted run opening at `open`. Text is copied verbatim except that
+   * each substitution becomes `_`.
+   *
+   * @returns {{ out: string, end: number } | null} null when never closed
+   */
+  function scanDouble(open, subs) {
+    const saved = {
+      targets: targets.length, unresolved: unresolvedTargets.length, heredocs: heredocs.slice(), subs: subs.length,
+    };
+    let out = '"';
+    let i = open + 1;
+    while (i < command.length) {
+      const ch = command[i];
+      if (ch === '"') return { out: out + '"', end: i + 1 };
+      if (ch === '\\' && i + 1 < command.length) { out += ch + command[i + 1]; i += 2; continue; }
+      const isDollarParen = ch === '$' && command[i + 1] === '(';
+      if (isDollarParen || ch === '`') {
+        const end = substitution(isDollarParen ? i + 2 : i + 1, isDollarParen ? ')' : '`', subs);
+        if (end === -1) {
+          // Unparseable body inside a quoted run: undo what the failed attempt
+          // recorded, skip the run the plain way, and mark it (#1665).
+          targets.length = saved.targets;
+          unresolvedTargets.length = saved.unresolved;
+          heredocs.splice(0, heredocs.length, ...saved.heredocs);
+          subs.length = saved.subs;
+          const plainEnd = skipQuotedRun(command, open, true);
+          if (plainEnd === -1) return null;
+          unparsedSubstitution = true;
+          return { out: command.slice(open, plainEnd), end: plainEnd };
+        }
+        out += SUBST_PLACEHOLDER;
+        i = end;
+        continue;
+      }
+      out += ch;
+      i++;
+    }
+    return null;
+  }
+
+  /**
+   * Scan from `i` up to `stop` (`)` or a backtick), or to the end of input when
+   * `stop` is null.
+   *
+   * @returns {{ out: string, end: number } | null} `end` is just past `stop`;
+   *   null when the input ends first (or inside an unterminated quote)
+   */
+  function scanSpan(i, stop, subs) {
+    if (nesting >= MAX_SCAN_NESTING) {
+      tooDeep = true;
+      return null;
+    }
+    nesting++;
+    try {
+      return scanSpanBody(i, stop, subs);
+    } finally {
+      nesting--;
+    }
+  }
+
+  function scanSpanBody(i, stop, subs) {
+    let out = '';
+    while (i < command.length) {
+      const ch = command[i];
+
+      if (stop !== null && ch === stop) return { out, end: i + 1 };
+
+      // A `#` in word position comments out the rest of the LINE. Without this,
+      // one apostrophe in English prose desynced the whole scan (MED-1).
+      if (ch === '#' && atWordStart(i)) {
+        while (i < command.length && command[i] !== '\n') i++;
+        continue;
+      }
+
+      if (ch === '\n') {
+        out += '\n';
+        i++;
+        while (heredocs.length) {
+          const { delim, stripTabs } = heredocs.shift();
+          i = skipHeredocBody(command, i, delim, stripTabs);
+        }
+        continue;
+      }
+
+      if (ch === '\\' && i + 1 < command.length) { out += ch + command[i + 1]; i += 2; continue; }
+
+      // ANSI-C `$'…'`: a backslash escapes the closing quote, which the old mask
+      // did not know (MED-1). Folded to a plain literal for the write-verb lexer.
+      if (ch === '$' && command[i + 1] === "'") {
+        const end = skipQuotedRun(command, i + 1, true);
+        if (end === -1) return null;
+        const literal = command.slice(i + 2, end - 1).replace(/\\(.)/g, '$1').replace(/'/g, '');
+        out += `'${literal}'`;
+        i = end;
+        continue;
+      }
+      // `$"…"` (locale string) is a double-quoted run without its `$`.
+      if (ch === '"' || (ch === '$' && command[i + 1] === '"')) {
+        const run = scanDouble(ch === '"' ? i : i + 1, subs);
+        if (!run) return null;
+        out += run.out;
+        i = run.end;
+        continue;
+      }
+      if (ch === "'") {
+        const end = skipQuotedRun(command, i, false);
+        if (end === -1) return null;
+        out += command.slice(i, end);
+        i = end;
+        continue;
+      }
+
+      // Here-doc: remember the delimiter now, skip the body at the next newline.
+      // `<<<` is a here-STRING, not a here-doc, and needs no body skipping.
+      if (ch === '<' && command[i + 1] === '<' && command[i + 2] !== '<') {
+        let j = i + 2;
+        let stripTabs = false;
+        if (command[j] === '-') { stripTabs = true; j++; }
+        while (command[j] === ' ' || command[j] === '\t') j++;
+        const w = readWord(command, j);
+        if (!w.balanced) return null;
+        if (w.value) heredocs.push({ delim: w.value, stripTabs });
+        out += ' ';
+        i = Math.max(w.end, i + 2);
+        continue;
+      }
+
+      // Redirection: `>` `>>` `>|` `N>` `&>` `&>>`. The optional leading fd digits
+      // are ordinary characters we already copied; only the operator matters.
+      if (ch === '>' || (ch === '&' && command[i + 1] === '>')) {
+        let j = ch === '&' ? i + 2 : i + 1;
+        if (command[j] === '>') j++;
+        if (command[j] === '|') j++;
+        if (command[j] === '&') {
+          const dup = readWord(command, j + 1);
+          if (FD_DUP_RE.test(dup.value)) { out += ' '; i = Math.max(dup.end, j + 1); continue; }
+          j += 1;
+        }
+        while (command[j] === ' ' || command[j] === '\t') j++;
+        // #1670 — a substitution inside the target belongs to the word; its body
+        // is still recorded and judged as its own command line.
+        const w = readWord(command, j, (bodyStart, stop) => substitution(bodyStart, stop, subs));
+        if (!w.balanced) return null;
+        if (w.value) targets.push(w.value);
+        // The basename comes from a substitution and the word mentions the
+        // ledger — or (#1671) the substitution could spell part of its name in
+        // the ledger directory: not statically resolvable, judged fail-closed.
+        if (w.dynamic && !refersToLedger(w.value) &&
+            (w.value.includes(LEDGER_BASENAME) || mayNameLedgerDynamically(w.skeleton))) {
+          unresolvedTargets.push(w.value);
+        }
+        out += ' ';
+        i = Math.max(w.end, j, i + 1);
+        continue;
+      }
+
+      // #1665 — substitutions keep their word whole (placeholder), subshells and
+      // brace groups open a new command position (separator). See the docblock.
+      const isDollarParen = ch === '$' && command[i + 1] === '(';
+      if (isDollarParen || ch === '`') {
+        const end = substitution(isDollarParen ? i + 2 : i + 1, isDollarParen ? ')' : '`', subs);
+        if (end === -1) return null;
+        out += SUBST_PLACEHOLDER;
+        i = end;
+        continue;
+      }
+      if (ch === '(') {
+        const inner = scanSpan(i + 1, ')', subs);
+        if (!inner) return null;
+        out += ` ; ${inner.out} ; `;
+        i = inner.end;
+        continue;
+      }
+      // A `)` nothing here is waiting for (a `case` pattern, a stray close).
+      if (ch === ')') { out += ' ; '; i++; continue; }
+      if (ch === '{' && atWordStart(i) && /\s/.test(command[i + 1] ?? '')) { out += ' ; '; i++; continue; }
+      if (ch === '}' && atWordStart(i) && (i + 1 === command.length || /[\s;|&)`]/.test(command[i + 1]))) {
+        out += ' ; ';
+        i++;
+        continue;
+      }
+
+      out += ch;
+      i++;
+    }
+    return stop === null ? { out, end: i } : null;
+  }
+
+  const top = scanSpan(0, null, substitutions);
+  return {
+    targets,
+    unresolvedTargets,
+    sanitized: top ? top.out : '',
+    balanced: top !== null && !tooDeep,
+    substitutions,
+    unparsedSubstitution,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1271,7 +1752,8 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
       // lives beside that table (command-blocker.mjs, the WRAPPER_UNWRAP docblock).
       for (const wa of wrapperArgs) {
         if (wa.writesFile !== true) continue;
-        if (typeof wa.value === 'string' && refersToLedger(wa.value)) return wa.value;
+        const hit = typeof wa.value === 'string' ? ledgerWriteHit(wa.value) : null;
+        if (hit) return hit;
       }
     }
 
@@ -1321,7 +1803,17 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
       // actual script operand after Node runtime options, a later exact
       // `--apply`, and no later exact `--dry-run`. The CLI remains the owner of
       // target semantics.
-      if (verb === 'node') {
+      //
+      // NAMED CEILING (BV-004, #1671 item 4): the rule keys on the LITERAL
+      // script basename in argv. Not recognised, and therefore allowed: a glob
+      // as the script name (`repair-invalid-session?.mjs` — the shell expands
+      // it), a symlink or copy under another name, the script run via `xargs`,
+      // loaded as a module (`bun -e 'import(…)'`, `node --import <script>`), or
+      // piped into node on stdin. Each needs either filesystem resolution or
+      // payload evaluation this lexical guard does not do; the CLI itself stays
+      // the owner of its apply semantics. REVISIT TRIGGER: a repair --apply
+      // reaching the ledger through one of these shapes is observed.
+      if (NODE_VERBS.has(verb)) {
         const script = resolveNodeScriptOperand(args);
         const hasRepairMention = args.some((arg) => refersToRepairScript(arg.text));
         const hasApply = args.some((arg) => arg.text === '--apply');
@@ -1346,12 +1838,31 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
             return REPAIR_APPLY_MARKER;
           }
         }
+      } else if (!TEXT_ONLY_VERBS.has(verb)) {
+        // #1670 — the allowance is for `node` only (the closed grammar in
+        // parseRepairApply). Any OTHER runtime or launcher that runs the repair
+        // CLI — `bun`, `bun run`, `deno run -A`, `npx node`, `npm exec -- node`,
+        // a node resolved via `$(which node)` (verb `_`) — mutates the ledger
+        // just the same, and used to ALLOW because this branch only knew Node's
+        // verb names: a broader bypass than `node` itself had. Rule: such a
+        // segment is judged like a node repair-apply WITHOUT the allowance, i.e.
+        // denied whenever the script operand is followed by `--apply` and no
+        // `--dry-run`. Keyed on the operand rather than a runner list, because a
+        // runner list cannot enumerate the next launcher. Verbs that only print
+        // or search text (TEXT_ONLY_VERBS: `echo …`, `grep … --apply`) never run
+        // the script and are exempt — they were false positives of this rule.
+        const at = args.findIndex((arg) => refersToRepairScript(arg.text));
+        const laterArgs = at === -1 ? [] : args.slice(at + 1);
+        if (laterArgs.some((arg) => arg.text === '--apply') && !laterArgs.some((arg) => arg.text === '--dry-run')) {
+          return `${REPAIR_APPLY_MARKER} (run by '${verb}', not node — only the node forms are sanctioned)`;
+        }
       }
 
       if (verb === 'tee') {
         for (const arg of args) {
           if (!arg.quoted && arg.text.startsWith('-')) continue;
-          if (refersToLedger(arg.text)) return arg.text;
+          const hit = ledgerWriteHit(arg.text);
+          if (hit) return hit;
         }
         continue;
       }
@@ -1359,7 +1870,8 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
       if (verb === 'dd') {
         for (const arg of args) {
           const m = /^of=(.*)$/.exec(arg.text);
-          if (m && refersToLedger(m[1])) return m[1];
+          const hit = m ? ledgerWriteHit(m[1]) : null;
+          if (hit) return hit;
         }
         continue;
       }
@@ -1368,7 +1880,8 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
         const operands = args.filter((a) => a.quoted || !a.text.startsWith('-'));
         // `cp a b` writes b; `cp ledger backup` READS the ledger and must pass.
         const dest = operands.length >= 2 ? operands[operands.length - 1] : null;
-        if (dest && refersToLedger(dest.text)) return dest.text;
+        const hit = dest ? ledgerWriteHit(dest.text) : null;
+        if (hit) return hit;
       }
     }
   }
@@ -1393,8 +1906,15 @@ function findWriteVerbTarget(command, depth = 0, marks = []) {
 function findLedgerWrite(command, depth = 0, marks = []) {
   if (typeof command !== 'string' || command.length === 0) return null;
   // Cheap pre-filter: commands naming neither the ledger nor the internal repair
-  // CLI cannot reach either deny path.
-  if (!command.includes(LEDGER_BASENAME) && !command.includes(REPAIR_SCRIPT_BASENAME)) return null;
+  // CLI cannot reach either deny path. #1671: judged with quotes and backslashes
+  // stripped (`"sessions".jsonl`, `sessions\.jsonl` name the ledger to bash),
+  // and a substitution in the ledger directory passes too — it may spell the name.
+  const unquoted = command.replace(/["'\\]/g, '');
+  if (
+    !unquoted.includes(LEDGER_BASENAME) &&
+    !unquoted.includes(REPAIR_SCRIPT_BASENAME) &&
+    !(unquoted.includes(`${LEDGER_DIR}/`) && /\$\(|`/.test(command))
+  ) return null;
 
   const scan = scanCommand(command);
   for (const target of scan.targets) {
@@ -1407,7 +1927,27 @@ function findLedgerWrite(command, depth = 0, marks = []) {
   if (!scan.balanced) {
     return `${LEDGER_BASENAME} (unbalanced quote — command not parseable, denied fail-closed)`;
   }
-  return findWriteVerbTarget(scan.sanitized, depth, marks);
+  // #1670 — same direction for a redirect target whose basename only a command
+  // substitution decides (`> $(echo …/sessions.jsonl)`): the guard cannot know
+  // what it names, and the word mentions the ledger.
+  if (scan.unresolvedTargets.length > 0) {
+    return `${scan.unresolvedTargets[0]} (command substitution decides the target — not statically resolvable, denied fail-closed)`;
+  }
+  if (scan.unparsedSubstitution) marks.push('unparsed-substitution');
+  const direct = findWriteVerbTarget(scan.sanitized, depth, marks);
+  if (direct) return direct;
+  // #1665 — every `$(…)` / backtick body, quoted or not, runs as its own
+  // command line; judged by the SAME matcher, bounded like every other payload
+  // recursion.
+  for (const body of scan.substitutions) {
+    if (depth >= MAX_PAYLOAD_DEPTH) {
+      if (body.includes(LEDGER_BASENAME) || body.includes(REPAIR_SCRIPT_BASENAME)) marks.push('depth-exceeded');
+      continue;
+    }
+    const hit = findLedgerWrite(body, depth + 1, marks);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 /**
@@ -1474,20 +2014,48 @@ async function main() {
   if (trimmedCommand === REPAIR_APPLY_CANONICAL_COMMAND) {
     return flushNotices(notices);
   }
+  // #1577/#1656 — the closed explicit-root grammar (relative script or this
+  // plugin's own absolute copy). Judged on the RAW command: trailing
+  // newlines/CR and every other addition fall outside it.
+  if (await allowsRepairApply(command)) return flushNotices(notices);
+  // Absolute repair candidates get an explicit DENY even when shell wrapping
+  // would hide `node` from the general matcher. Never trim the candidate here:
+  // newlines/CR and all trailing syntax are outside this closed exception.
+  const unwrapped = unwrapSubshellLayers(trimmedCommand);
+  const absoluteOperand = /^(?:node|nodejs)\s+("\/[^"]+"|'\/[^']+'|\/[^\s]+)/.exec(unwrapped)?.[1];
+  const absoluteScript = absoluteOperand?.replace(/^["']|["']$/g, '');
+  if (refersToRepairScript(absoluteScript) && /--apply(?:[\s;|&<>)]|$)/.test(unwrapped)) {
+    emitDeny(
+      `Direct write to the sessions ledger blocked: '${REPAIR_APPLY_MARKER}'\n` +
+      `Absolute repair requires this plugin's own script (${REPAIR_ABSOLUTE_SCRIPT}), --apply and ` +
+      `exactly one --repo-root <ABS>: an absolute Git top-level without symlinks, whitespace or ` +
+      `shell characters that holds .orchestrator/metrics/sessions.jsonl. ` +
+      `Vault roots and descendants are forbidden repair targets. ` +
+      `Extra syntax or an unmeasurable Git context is denied (#1577, #1656).\n` +
+      `Sanctioned forms:\n${REPAIR_SANCTIONED_FORMS}`
+    );
+    return;
+  }
   // The SAME canonical command wrapped in one layer of command substitution /
   // backticks / a bare subshell is a DIFFERENT command — bash still executes
   // the repair mutation for the substitution's side effect, but it no longer
-  // matches the exact sanctioned string, so `sonst weiter DENY` applies. This
-  // also closes a real gap the exact-match alone would not: `blocker`'s
-  // tokenizer glues a leading `$(`/`` ` ``/`(` onto `node`, so the EXISTING
-  // verb-based matcher below never resolves verb `node` for a wrapped command
-  // and silently allowed it before this hook had any opinion on the subject.
-  if (unwrapSubshellLayers(trimmedCommand) === REPAIR_APPLY_CANONICAL_COMMAND) {
+  // matches the exact sanctioned string, so `sonst weiter DENY` applies. When
+  // this was written (#385) it also closed a real gap: the tokenizer then glued
+  // a leading `$(`/`` ` ``/`(` onto `node`, so the verb matcher below missed a
+  // wrapped command. Since #1665/#1667 the scanner and the shared tokenizer
+  // split those spans; this branch keeps the wrapped form's own deny text.
+  // #1656: not only the canonical string — ANY repair-apply invocation the
+  // matcher recognizes once unwrapped (`(node scripts/… --apply --repo-root X)`,
+  // `$(… --apply --json)`) was a silent ALLOW at HEAD for the same reason.
+  if (
+    unwrapped === REPAIR_APPLY_CANONICAL_COMMAND ||
+    (unwrapped !== trimmedCommand && findLedgerWrite(unwrapped)?.startsWith(REPAIR_APPLY_MARKER))
+  ) {
     emitDeny(
       [
         `Direct write to the sessions ledger blocked: '${REPAIR_APPLY_MARKER} (wrapped in a subshell/backticks — denied)'`,
-        `The sanctioned repair invocation is allowed ONLY as the exact bare command:`,
-        `  ${REPAIR_APPLY_CANONICAL_COMMAND}`,
+        `The sanctioned repair invocation is allowed ONLY as one of these bare commands:`,
+        REPAIR_SANCTIONED_FORMS,
         `Wrapping it in $(...), backticks, or a subshell is denied even though the`,
         `command is otherwise identical — see hooks/pre-bash-sessions-ledger-guard.mjs #385.`,
         `Override (intentional maintenance only): run the session with`,
@@ -1532,9 +2100,9 @@ async function main() {
     emitDeny(
       [
         `Direct write to the sessions ledger blocked: '${shown}'`,
-        `The sanctioned repair invocation is allowed ONLY as the exact bare command:`,
-        `  ${REPAIR_APPLY_CANONICAL_COMMAND}`,
-        `Any variant — an extra flag, a wrapper, an env prefix — is denied.`,
+        `The sanctioned repair invocation is allowed ONLY as one of these bare commands:`,
+        REPAIR_SANCTIONED_FORMS,
+        `Any other variant — an extra flag, a wrapper, an env prefix — is denied.`,
         `A SO_DISABLED_HOOKS=… prefix INSIDE the command has no effect: this hook reads`,
         `it from the environment of the whole session, never from the command text.`,
         `Override (intentional maintenance only, operator-side — e.g. started with \`!\`):`,

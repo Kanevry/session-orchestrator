@@ -90,6 +90,18 @@ describe('inspectConfidentialNames — valid list', () => {
     });
   });
 
+  it('accepts a names file that starts with a UTF-8 BOM (Windows PowerShell 5.1) instead of switching CP11 off (#1613)', () => {
+    const path = '/tmp/names-bom.json';
+    const { deps, warn } = makeDeps({
+      [path]: String.fromCharCode(0xfeff) + JSON.stringify(['acme-corp']),
+    });
+    expect(inspectConfidentialNames({ namesPath: path, deps })).toEqual({
+      status: 'ok',
+      names: ['acme-corp'],
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+
   it('trims surrounding whitespace on each entry', () => {
     const path = '/tmp/names-trim.json';
     const { deps } = makeDeps({ [path]: JSON.stringify(['  acme-corp  ']) });

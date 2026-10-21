@@ -224,6 +224,42 @@ describe('parseConsolidatedRule', () => {
 });
 
 describe('planRuleExpirySweep + applyRuleExpirySweep', () => {
+  it.each([undefined, 'missing.jsonl'])('rejects a missing learnings store when rules exist (%s)', async (learningsPath) => {
+    writeRule('fixture.md', {
+      expiresAt: '2026-12-01',
+      entries: [{ key: 'anti-pattern/ghost', id: 'id-ghost', heading: 'Ghost' }],
+    });
+    await expect(planRuleExpirySweep({ repoRoot, now: NOW, learningsPath })).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not read the store when there are no generated rules', async () => {
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW, learningsPath: 'missing.jsonl' });
+    expect(plan.ok).toBe(true);
+    expect(plan.plans).toEqual([]);
+    expect(plan.malformedLines).toBe(0);
+  });
+
+  it('keeps genuine unresolved entries when the store is readable and empty', async () => {
+    writeRule('fixture.md', {
+      expiresAt: '2026-12-01',
+      entries: [{ key: 'anti-pattern/ghost', id: 'id-ghost', heading: 'Ghost' }],
+    });
+    writeLearnings([]);
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    expect(plan.malformedLines).toBe(0);
+    expect(plan.plans[0]).toMatchObject({ action: 'keep', unresolvedPairIds: ['id-ghost'] });
+  });
+
+  it('reads an explicit repo-relative store instead of the absent default', async () => {
+    writeRule('fixture.md', {
+      expiresAt: '2026-12-01',
+      entries: [{ key: 'anti-pattern/alpha', id: 'id-alpha', heading: 'Alpha' }],
+    });
+    writeFileSync(join(repoRoot, 'custom.jsonl'), JSON.stringify(learning('id-alpha', 'anti-pattern/alpha', FUTURE)) + '\n');
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW, learningsPath: 'custom.jsonl' });
+    expect(plan.plans[0]).toMatchObject({ action: 'keep', keptPairIds: ['id-alpha'], unresolvedPairIds: [] });
+  });
+
   it('T1 — one of three entries expired: rewrite drops that prose block and keeps ALL THREE id bullets, the expired one marked `markers only` (bug: removing the pair too silently re-proposes the learning on the next /reconcile run)', async () => {
     threePairFixture();
     const plan = await planRuleExpirySweep({ repoRoot, now: NOW });

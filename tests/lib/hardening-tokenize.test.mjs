@@ -489,3 +489,24 @@ describe('tokenizeCommand — multiple here-docs on one line, second unterminate
     ]);
   });
 });
+
+// #1667 benign forms: the nesting lexer must not invent a command out of
+// parameter expansion, brace expansion, `find -exec {}`, quoted parens,
+// arithmetic, `[[ ]]`, function definitions, here-doc bodies or case patterns.
+describe('tokenizeCommand nesting (#1667) — benign forms keep their segments', () => {
+  const heads = (command) => splitChainSegments(tokenizeCommand(command)).map((s) => s[0].text);
+  it.each([
+    ['parameter expansion', 'echo ${HOME}', ['echo']],
+    ['brace expansion', 'echo {a,b}', ['echo']],
+    ['find -exec placeholder', 'find . -exec rm {} \\;', ['find']],
+    ['quoted parens and quoted substitution', `echo "(x)" '$(x)'`, ['echo']],
+    ['arithmetic expansion', 'echo $(( (1+2)*3 ))', ['echo']],
+    ['[[ ]] test', '[[ -f x ]] && echo y', ['[[', 'echo']],
+    // The head `f()` is dropped, the body's real command heads the segment (#1679 point 1).
+    ['function definition', 'f() { echo a; }', ['echo']],
+    ['here-doc body is data', 'cat <<EOF\n$(rm x)\n(rm y)\nEOF', ['cat']],
+    ['case patterns, bare and leading-paren', 'case $x in a) echo a;; (b) echo b;; esac', ['case', 'echo', '(b)', 'echo']],
+  ])('%s', (_name, command, expected) => {
+    expect(heads(command)).toEqual(expected);
+  });
+});

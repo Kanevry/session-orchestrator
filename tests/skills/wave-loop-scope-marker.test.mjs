@@ -24,13 +24,14 @@
  * tell "correctly no scope" from "drifted marker".
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 import { SCOPE_MARKER } from '../../hooks/pre-task-scope-disjoint.mjs';
 
 const REPO_ROOT = process.cwd();
@@ -134,6 +135,7 @@ function dispatch(cwd, id, prompt) {
 /** Disposable project dir holding the hook's dispatch ledger. */
 function makeProjectDir() {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'wlsm-'));
+  onTestFinished(() => removeTree(dir));
   mkdirSync(path.join(dir, '.orchestrator'), { recursive: true });
   return dir;
 }

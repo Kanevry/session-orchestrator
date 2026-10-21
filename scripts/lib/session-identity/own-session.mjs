@@ -27,6 +27,8 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { isLockShape } from '../session-lock-shape.mjs';
 
@@ -226,6 +228,67 @@ export function readProcessLocalSessionIds({ env = process.env, hookInput = null
   }
 
   return ids;
+}
+
+/**
+ * Read only process parent/name metadata, never command arguments or env.
+ * @param {number} pid
+ * @returns {{ ppid: number, comm: string } | null}
+ */
+function readProcessParent(pid) {
+  const output = execFileSync('ps', ['-p', String(pid), '-o', 'ppid=,comm='], {
+    encoding: 'utf8', timeout: 1000, maxBuffer: 2048,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  const match = /^\s*(\d+)\s+(\S+)\s*$/.exec(output);
+  return match ? { ppid: Number(match[1]), comm: match[2] } : null;
+}
+
+/**
+ * Prove an acknowledgement's own invocation using the nearest Claude process.
+ * Unlike the general identity union, inherited env and shared repo files are
+ * never proof here. Stop at the nearest Claude even when its session is unreadable.
+ * Missing, contradictory or unmeasurable evidence returns null; never throws.
+ * Reader injection permits deterministic fixtures when native ps is unavailable.
+ *
+ * @param {{ env?: object, pid?: number, homeDir?: string,
+ *   readProcess?: (pid: number) => { ppid: number, comm: string } | null,
+ *   readSession?: (pid: number) => unknown }} [opts]
+ * @returns {string|null}
+ */
+export function readInvocationSessionId({
+  env = process.env, pid = process.pid, homeDir = homedir(),
+  readProcess = readProcessParent,
+  readSession = (ancestorPid) => JSON.parse(readFileSync(
+    path.join(homeDir, '.claude', 'sessions', `${ancestorPid}.json`), 'utf8',
+  )),
+} = {}) {
+  const seen = new Set();
+  try {
+    for (let depth = 0; depth < 64; depth++) {
+      if (!Number.isSafeInteger(pid) || pid <= 0 || seen.has(pid)) return null;
+      seen.add(pid);
+      const processInfo = readProcess(pid);
+      if (!processInfo || !Number.isSafeInteger(processInfo.ppid) || processInfo.ppid < 0 ||
+          seen.has(processInfo.ppid) || typeof processInfo.comm !== 'string' || !processInfo.comm.trim()) return null;
+      // macOS reports comm as argv[0]; a Claude started by absolute path must still count.
+      if (path.basename(processInfo.comm) === 'claude') {
+        const session = readSession(pid);
+        const sessionId = typeof session?.sessionId === 'string' ? session.sessionId.trim() : '';
+        if (!sessionId) return null;
+        // Every present native ID must agree; platform selection cannot hide
+        // a contradictory inherited ID from a nested harness.
+        for (const key of ['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID']) {
+          const value = env?.[key];
+          if (value !== undefined && value !== null &&
+              (typeof value !== 'string' || (value.trim() && value.trim() !== sessionId))) return null;
+        }
+        return sessionId;
+      }
+      pid = processInfo.ppid;
+    }
+  } catch { /* Missing process/session evidence must fail closed. */ }
+  return null;
 }
 
 /**

@@ -46,6 +46,9 @@ describe('scanLearningsShellWrites', () => {
     // A prohibition in an EARLIER sentence, or AFTER the operator, is not one.
     ['R1', 'Never skip review. Then run: cat new >> .orchestrator/metrics/learnings.jsonl'],
     ['R1', 'jq . next > learnings.jsonl # never run this twice'],
+    // #1516: the inbox and its receipts are the same protected append-only store.
+    ['R1', 'echo "$LINE" >> .orchestrator/metrics/learnings-inbox.jsonl'],
+    ['R3', 'jq -c . x | tee -a learnings-inbox-ingested.jsonl'],
   ])('flags %s: %s', (rule, line) => {
     const res = scanDoc(`# Demo\n\n${line}\n`);
     expect(res.ok).toBe(false);

@@ -29,13 +29,10 @@
  * @typedef {{ repoRoot: string, repoName: string, free: boolean, status: 'frei'|'in-progress'|'force-closed', heartbeat: string|null, sessionId: string|null }} Candidate
  */
 
-import path from 'node:path';
-
 import { scanBacklog } from '../backlog-scan.mjs';
 import { checkCiStatus as realCheckCiStatus } from '../ci-status-banner.mjs';
 import { probe as realProbe, evaluate as realEvaluate, DEFAULT_RESOURCE_THRESHOLDS as CANONICAL_RESOURCE_THRESHOLDS } from '../resource-probe.mjs';
-import { readCanonicalSessions } from '../sessions-canonical.mjs';
-import { isRealSession } from '../session-schema/filters.mjs';
+import { isMeasuredSession, readCanonicalSessions } from '../sessions-canonical.mjs';
 
 /** Staleness cap (days). Beyond this, additional age does not raise the score. */
 export const STALENESS_CAP_DAYS = 90;
@@ -184,13 +181,14 @@ async function defaultFetchPriority(repoRoot, nowMs) {
  */
 async function defaultStaleDaysFor(repoRoot, nowMs) {
   try {
-    const file = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
-    const records = readCanonicalSessions({ filePath: file });
+    const records = readCanonicalSessions({ repoRoot });
     if (records.length === 0) return STALENESS_CAP_DAYS;
 
     let latestMs = null;
     for (const rec of records) {
-      if (!isRealSession(rec)) continue;
+      // Audit E1: a synthetic backfill stub (even a `status: 'completed'` one)
+      // must not make a neglected repo look freshly touched.
+      if (!isMeasuredSession(rec)) continue;
       const iso = rec.completed_at || rec.started_at || null;
       if (!iso || typeof iso !== 'string') continue;
       const t = Date.parse(iso);

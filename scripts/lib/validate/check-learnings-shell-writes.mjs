@@ -61,10 +61,16 @@ export const SCAN_DIRS = Object.freeze(['skills', 'commands', 'agents', 'docs', 
 /** Lines on either side of an R2 operator searched for an anchor. */
 const WINDOW = 3;
 
-const MENTION_RE = /learnings\.jsonl/;
-const ANCHOR_RE = /learnings\.jsonl|\b(?:the|learnings) store\b|\bresult back\b|\batomic rewrite\b/i;
-const SHELL_REDIRECT_RE = /(?:^|[\s|;&(])(>{1,2})[ \t]*["'`]?[^\s"'`<>]*learnings\.jsonl\b/dg;
-const TEE_RE = /\btee\b(?:[ \t]+-{1,2}[\w-]+)*[ \t]+["'`]?[^\s"'`|]*learnings\.jsonl\b/g;
+/**
+ * The protected store filenames: the live store plus the #1516 inbox and its
+ * receipts — append-only stores written only through `learnings/io.mjs`.
+ */
+const STORE = String.raw`learnings(?:-inbox(?:-ingested)?)?\.jsonl`;
+
+const MENTION_RE = new RegExp(STORE);
+const ANCHOR_RE = new RegExp(String.raw`${STORE}|\b(?:the|learnings) store\b|\bresult back\b|\batomic rewrite\b`, 'i');
+const SHELL_REDIRECT_RE = new RegExp(String.raw`(?:^|[\s|;&(])(>{1,2})[ \t]*["'\`]?[^\s"'\`<>]*${STORE}\b`, 'dg');
+const TEE_RE = new RegExp(String.raw`\btee\b(?:[ \t]+-{1,2}[\w-]+)*[ \t]+["'\`]?[^\s"'\`|]*${STORE}\b`, 'g');
 const PROSE_OPERATOR_RE = /`>{1,2}`/g;
 const ANY_OPERATOR_RE = /`>{1,2}`|(?:^|[\s|;&(])>{1,2}|\btee\b/;
 const PROHIBITION_RE = /\b(NEVER|[Nn]ever|DO NOT|[Dd]o not|[Dd]on't|FORBIDDEN|forbidden|verboten)\b/;

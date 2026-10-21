@@ -205,8 +205,8 @@ describe('generateSessionNoteV2', () => {
     expect(() => generateSessionNoteV2(makeV2Entry({ waves: {} }))).toThrow("'waves' must be an array");
   });
 
-  it('throws when effectiveness is null', () => {
-    expect(() => generateSessionNoteV2(makeV2Entry({ effectiveness: null }))).toThrow("missing required field 'effectiveness'");
+  it('renders unknown metrics when effectiveness is null', () => {
+    expect(generateSessionNoteV2(makeV2Entry({ effectiveness: null }))).toContain('carryover=n/a, rate=n/a');
   });
 
   it('uses em-dash when issues_closed is empty array', () => {
@@ -314,8 +314,8 @@ describe('generateSessionNoteV3', () => {
     expect(() => generateSessionNoteV3(makeV3Entry({ waves: [{ wave: 1 }] }))).toThrow("'waves' must be a number");
   });
 
-  it('throws when effectiveness is null', () => {
-    expect(() => generateSessionNoteV3(makeV3Entry({ effectiveness: null }))).toThrow("missing required field 'effectiveness'");
+  it('renders unknown metrics when effectiveness is null', () => {
+    expect(generateSessionNoteV3(makeV3Entry({ effectiveness: null }))).toContain('completed=n/a, carryover=n/a, emergent=n/a, rate=n/a');
   });
 
   it('renders scalar waves and agents_dispatched in the summary line', () => {
@@ -682,18 +682,18 @@ describe('#964 generator required-field sets vs the write-path schema', () => {
    * plus three function-local generator lists plus the integrity banner — with
    * no mechanical relationship between any of them.
    *
-   * The invariant is NOT "all four lists are equal". Renderable is strictly
-   * stronger than schema-valid (see render-sessions.mjs header), so the correct
-   * assertion is SUPERSET, in one direction only.
+   * The invariant is NOT "all four lists are equal". V1 shares the canonical
+   * required-field set; legacy routes retain
+   * their own lists. Optional effectiveness must not strengthen any list.
    */
   it('v1 requires a superset of REQUIRED_FIELDS — every writable record is renderable', () => {
     const missing = REQUIRED_FIELDS.filter((f) => !RENDERABLE_SESSION_FIELDS_V1.includes(f));
     expect(missing).toEqual([]);
   });
 
-  it('v1 is stronger than the schema by exactly effectiveness', () => {
+  it('v1 does not require optional effectiveness', () => {
     const extra = RENDERABLE_SESSION_FIELDS_V1.filter((f) => !REQUIRED_FIELDS.includes(f));
-    expect(extra).toEqual(['effectiveness']);
+    expect(extra).toEqual([]);
   });
 
   /**
@@ -1096,5 +1096,46 @@ it('renders recorded host metadata without attributing legacy sessions to this m
     expect(parseFrontmatter(render(fixture({ host_id: ' Worker.LOCAL ', host: 'other.home', host_class: 'linux-x86_64' }))).host).toBe('worker');
     expect(parseFrontmatter(render(fixture({ host: 'SECOND.home' }))).host).toBe('second');
     expect(render(fixture())).not.toMatch(/^host:/m);
+  }
+});
+
+
+// #1575: Golden-derived records preserve the optional writer contract through
+// every renderer. Missing/null are unknown, while measured zero stays zero.
+describe('#1575 optional effectiveness across golden-derived routes', () => {
+  for (const route of ['v1', 'v2', 'v3']) {
+    function fixture() {
+      const entry = JSON.parse(JSON.stringify(golden('main-2026-04-07-1600')));
+      if (route === 'v2') {
+        delete entry.total_agents;
+        entry.files_changed = entry.total_files_changed;
+      }
+      if (route === 'v3') entry.waves = entry.total_waves;
+      return entry;
+    }
+    const render = { v1: generateSessionNote, v2: generateSessionNoteV2, v3: generateSessionNoteV3 }[route];
+    it.each(['missing', 'null'])(`${route} renders %s metrics as unknown without mutating the record`, (missing) => {
+      const entry = fixture();
+      if (missing === 'missing') delete entry.effectiveness;
+      else entry.effectiveness = null;
+      const before = JSON.parse(JSON.stringify(entry));
+      expect(detectSessionSchema(entry)).toBe(route);
+      const out = render(entry);
+      const metrics = out.split('\n').find((line) => line.startsWith('- **Effectiveness:**'));
+      expect(metrics).toContain('carryover=n/a');
+      expect(metrics).toContain('rate=n/a');
+      expect(metrics).not.toMatch(/(?:=0|undefined|NaN)/);
+      expect(entry).toEqual(before);
+    });
+    it(`${route} preserves measured zero`, () => {
+      const entry = fixture();
+      entry.effectiveness = { planned_issues: 0, completed: 0, completed_issues: 0, carryover: 0, emergent: 0, completion_rate: 0 };
+      const metrics = render(entry).split('\n').find((line) => line.startsWith('- **Effectiveness:**'));
+      expect(metrics).toContain('carryover=0');
+      expect(metrics).toContain('rate=0%');
+    });
+    it.each([['bad'], [0], [false], [[]]])(`${route} rejects malformed metrics %j`, (value) => {
+      expect(() => render({ ...fixture(), effectiveness: value })).toThrow("missing nested field 'effectiveness'");
+    });
   }
 });

@@ -53,6 +53,7 @@ import { probe, evaluate, DEFAULT_RESOURCE_THRESHOLDS } from './lib/resource-pro
 import { detectPeers } from './lib/session-registry.mjs';
 import { normalizeSession } from './lib/session-schema.mjs';
 import { isBackfillStub, readCanonicalSessions } from './lib/sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI-level flag extraction
@@ -182,7 +183,10 @@ const branch = detectBranch();
 // sessions.jsonl helpers for sessionRunner
 // ---------------------------------------------------------------------------
 
-const SESSIONS_JSONL_PATH = resolve('.orchestrator/metrics/sessions.jsonl');
+// #1592: the child runs with cwd = process.cwd() and its close writes the
+// ledger at resolveEventsLedgerRoot(process.cwd()) (emit-session.mjs) — read
+// the same file, or a run from a linked worktree finds no record.
+const SESSIONS_JSONL_PATH = resolve(resolveEventsLedgerRoot(process.cwd()), '.orchestrator/metrics/sessions.jsonl');
 
 /**
  * Read the child's canonical record by its raw harness UUID, independent of
@@ -253,9 +257,10 @@ async function modeSelector() {
   // in backlog-scan.mjs (`DEFAULT_BACKLOG_LIMIT`). The hand-written 50 that
   // stood here under-read this repo's own backlog and hid its critical issues.
   // `repoRoot` is passed EXPLICITLY (#1071) rather than left to the helper's
-  // cwd default: this driver already reads learnings.jsonl and sessions.jsonl
-  // relative to the invocation directory, and an implicit default is the seam
-  // where those two roots silently drift apart.
+  // cwd default: this driver already reads learnings.jsonl relative to the
+  // invocation directory (and sessions.jsonl from that directory's ledger root,
+  // `SESSIONS_JSONL_PATH`, #1592), and an implicit default is the seam where
+  // those roots silently drift apart.
   const signals = await buildLiveSignals({
     repoRoot: process.cwd(),
     learnings: surfacedLearnings,

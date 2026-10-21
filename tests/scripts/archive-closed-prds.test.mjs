@@ -1189,3 +1189,49 @@ describe('classifyOwnership (#1123 fail-closed contract)', () => {
     expect(classifyOwnership({ ...base, gitRunFn: justBefore })).toBe('mine');
   });
 });
+
+// #1636 — bug: both STATE.md reads (started_at fallback and `issues:`) took
+// ANOTHER platform's STATE.md via the #890 legacy fallback, so a Codex
+// session's `.codex/STATE.md` (not this process's raw `session-id`) lent its
+// session start and issue list to this Claude run — and `--apply` deleted a doc
+// on that borrowed identity. A foreign file must read as absent: no start →
+// every doc foreign; no issues → nothing owned. Either way nothing is removed.
+describe('main — a foreign platform\'s STATE.md is no session identity (#1636)', () => {
+  it.each([
+    ['started_at fallback', undefined, []],
+    ['issues: (--owned-issues-only)', SESSION_STARTED_AT, ['--owned-issues-only']],
+  ])('ignores .codex/STATE.md under a Claude process for the %s', (_label, sessionStartedAt, extra) => {
+    const rel = 'docs/prd/mine.md';
+    const { repo } = makeDocRepo({ [rel]: '# PRD — Mine\n\n**Epic:** #100\n\n## Problem\n\nbody\n' });
+    rmSync(join(repo, '.claude', 'STATE.md'));
+    writeFile(
+      repo,
+      '.codex/STATE.md',
+      ['---', 'session: fixture-session', 'session-id: codex-raw-foreign', `started_at: ${SESSION_STARTED_AT}`,
+        'issues: [100]', 'status: active', '---', ''].join('\n'),
+    );
+    vi.stubEnv('SO_STATE_DIR', '');
+    vi.stubEnv('SO_PLATFORM', 'claude');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'claude-raw-own');
+    vi.stubEnv('CODEX_THREAD_ID', '');
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const git = makeGit([rel]);
+    try {
+      const res = main({
+        argv: ['--apply', ...extra],
+        repoRoot: repo,
+        glabRunFn: () => ({ ok: true, stdout: JSON.stringify({ state: 'closed' }), stderr: '' }),
+        gitRunFn: git.fn,
+        now: FIXED_NOW,
+        sessionStartedAt,
+        hostPaths: HOST_PATHS,
+      });
+      expect(res.archived).toEqual([]);
+      expect(git.rmCalls).toEqual([]);
+      expect(stderr.mock.calls.some(([line]) => String(line).includes(`ignoring ${join(repo, '.codex', 'STATE.md')}`))).toBe(true);
+    } finally {
+      stderr.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+});

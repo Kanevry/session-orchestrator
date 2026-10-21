@@ -77,7 +77,12 @@ describe('SessionStart keeps .orchestrator/ runtime state out of git status (#15
 
     // Same-session bootstrap: every .orchestrator path a template stages with
     // `git add -- <file>` must not be refused as ignored.
-    const files = ['bootstrap.lock', 'metrics/learnings.jsonl', 'metrics/sessions.jsonl', 'metrics/README.md', 'policy/quality-gates.json'];
+    // The two #1516 inbox files: ignored, a consumer that versions learnings
+    // would silently leave the inbox host's records untracked.
+    const files = [
+      'bootstrap.lock', 'metrics/learnings.jsonl', 'metrics/sessions.jsonl', 'metrics/README.md',
+      'policy/quality-gates.json', 'metrics/learnings-inbox.jsonl', 'metrics/learnings-inbox-ingested.jsonl',
+    ];
     for (const f of files) {
       mkdirSync(path.dirname(path.join(repo, '.orchestrator', f)), { recursive: true });
       writeFileSync(path.join(repo, '.orchestrator', f), '');

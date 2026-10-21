@@ -7,7 +7,7 @@
  * Side effect: configures zx to suppress git command echoes on load.
  */
 
-import { $ } from 'zx';
+import { $ } from '../zx.mjs';
 
 // Do not spam stdout/stderr with git command echoes.
 $.verbose = false;

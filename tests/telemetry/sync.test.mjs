@@ -26,6 +26,7 @@ import {
   shouldDailyFlush,
   detectSandbox,
   deriveSessionFromEvents,
+  readSessionProfileForMetricsDir,
   TELEMETRY_ENDPOINT,
   POST_TIMEOUT_MS,
 } from '@lib/telemetry/sync.mjs';
@@ -488,6 +489,7 @@ describe('flush — anon-ID rotation', () => {
 describe('flush — endpoint override (default sender against a local server)', () => {
   it('POSTs the batch array to SO_TELEMETRY_ENDPOINT and clears on 2xx', async () => {
     grantedFixture();
+    const transport = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest');
 
     const received = [];
     const server = http.createServer((req, res) => {
@@ -500,7 +502,7 @@ describe('flush — endpoint override (default sender against a local server)', 
         res.end('{"ok":true}');
       });
     });
-    await new Promise((r) => server.listen(0, '127.0.0.1', r));
+    await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     const { port } = server.address();
 
     try {
@@ -513,6 +515,7 @@ describe('flush — endpoint override (default sender against a local server)', 
       });
 
       expect(result.sent).toBe(true);
+      expect(transport).toHaveBeenCalledOnce();
       expect(received).toHaveLength(1);
       expect(received[0].method).toBe('POST');
       expect(received[0].url).toBe('/v1/records');
@@ -1362,5 +1365,32 @@ describe('buildBatch marks the provenance of every ping', () => {
     const fromLedger = buildBatch({ ...common, metricsDir: ledgerDir, statePath: grantedStatePath() }).record;
     expect(fromLedger.session_record).toBe('ledger');
     expect('ledger_complete' in fromLedger).toBe(false);
+  });
+});
+
+// #1636 — bug: the profile read took ANOTHER platform's STATE.md via the #890
+// legacy fallback, so a Codex session's `.codex/STATE.md` (not this process's
+// raw `session-id`) stamped its `session-profile` onto this Claude session's
+// ping. Foreign → null (the ping omits the field); own → adopted.
+describe('readSessionProfileForMetricsDir — STATE.md ownership (#1636)', () => {
+  it.each([
+    ['foreign: omitted', 'codex-raw-foreign', null],
+    ['own (session-id matches this process): adopted', 'claude-raw-own', 'ultradeep'],
+  ])('a .codex/STATE.md under a Claude process is %s', (_label, rawId, expected) => {
+    const repoRoot = join(tmpDir, 'repo');
+    mkdirSync(join(repoRoot, '.codex'), { recursive: true });
+    writeFileSync(
+      join(repoRoot, '.codex', 'STATE.md'),
+      ['---', 'session: platform-pick', `session-id: ${rawId}`, 'session-profile: ultradeep', '---', ''].join('\n'),
+    );
+    vi.stubEnv('SO_STATE_DIR', '');
+    vi.stubEnv('SO_PLATFORM', 'claude');
+    vi.stubEnv('CLAUDE_CODE_SESSION_ID', 'claude-raw-own');
+    vi.stubEnv('CODEX_THREAD_ID', '');
+    try {
+      expect(readSessionProfileForMetricsDir(join(repoRoot, '.orchestrator', 'metrics'))).toBe(expected);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

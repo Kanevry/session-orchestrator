@@ -48,6 +48,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { fileURLToPath } from 'node:url';
 import {
   dedupeViolations,
   findViolations,
@@ -55,8 +56,9 @@ import {
   readTranscriptTail,
   TAIL_WINDOW_BYTES,
 } from '../../hooks/_lib/subagent-transcript.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
-const HOOK = new URL('../../hooks/post-subagent-discovery-validator.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/post-subagent-discovery-validator.mjs', import.meta.url));
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
 const TRANSCRIPT_REL = 'transcript.jsonl';
 // The harness keeps each subagent's own transcript beside the parent one:
@@ -82,13 +84,22 @@ const CLAUDE_MD_DISABLED = [
 ].join('\n');
 
 let tmp;
+// The hook writes its zero-byte dedup sentinels (`psa006-*.lock`) straight
+// into os.tmpdir() and never removes them — a named ceiling in the hook
+// (BV-004). Each test hands the child its own TMPDIR so the sentinels land in
+// a dir this file removes (#1648). Per test, not per file: every spawn within
+// one test still shares the dir, which is what the dedup tests rely on, while
+// no test can see a sentinel an earlier test left.
+let sentinelDir;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'discovery-validator-test-'));
+  sentinelDir = mkdtempSync(join(tmpdir(), 'discovery-validator-sentinels-'));
 });
 
 afterEach(() => {
   if (tmp && existsSync(tmp)) rmSync(tmp, { recursive: true, force: true });
+  if (sentinelDir) removeTree(sentinelDir);
 });
 
 /**
@@ -139,6 +150,7 @@ function runHook(payloadObj) {
     env: {
       ...process.env,
       CLAUDE_PROJECT_DIR: tmp,
+      TMPDIR: sentinelDir,
       SO_HOOK_PROFILE: 'full',
       SO_DISABLED_HOOKS: '',
     },
@@ -152,6 +164,7 @@ function runHookAsync(payloadObj) {
       env: {
         ...process.env,
         CLAUDE_PROJECT_DIR: tmp,
+        TMPDIR: sentinelDir,
         SO_HOOK_PROFILE: 'full',
         SO_DISABLED_HOOKS: '',
       },
@@ -329,7 +342,7 @@ describe('post-subagent-discovery-validator hook', () => {
   // -------------------------------------------------------------------------
   // #1218 — ATTRIBUTION PROVENANCE. `agent: "unknown"` on 3,026 of 3,360 fleet
   // records (90.1%, measured 2026-09-06 in
-  // extern/aiat-barrierefrei-engine/.orchestrator/metrics/events.jsonl) said
+  // a consumer repo's .orchestrator/metrics/events.jsonl) said
   // nothing about WHY: it is indistinguishable from a real agent type named
   // "unknown", and from a resolution that was never attempted. Every record now
   // carries `agent_source`, and the no-answer case carries the stdin keys the
@@ -811,7 +824,7 @@ describe('post-subagent-discovery-validator hook', () => {
     // the same session, wrote a second identical record every time a subagent
     // stopped. That is the mechanism behind the measured duplication factor of
     // 16.4 (3,360 records over 205 distinct claim_text values, 2026-09-06,
-    // extern/aiat-barrierefrei-engine). The ledger is a record of DISTINCT
+    // a consumer repo). The ledger is a record of DISTINCT
     // findings; the second write added no information and cost a record.
     writeClaudeMd(CLAUDE_MD_ENABLED);
     const transcript = writeTranscript(['4 of 4 callers opt-in to the helper. No grep was run.']);
@@ -1484,7 +1497,7 @@ describe('post-subagent-discovery-validator hook', () => {
 // measured there (2026-09-06):
 //
 //   jq -r 'select(.event=="discovery_validator_violation")|.claim_text' \
-//     ~/Projects/extern/aiat-barrierefrei-engine/.orchestrator/metrics/events.jsonl \
+//     <consumer-repo>/.orchestrator/metrics/events.jsonl \
 //     | sort -u | wc -l          # → 205 distinct over 3,360 records (×16.4)
 //
 // Of those 205, 201 still re-fire on the pre-#1218 matcher; 35 are markdown

@@ -1,7 +1,9 @@
 ---
 name: dialectic-deriver
-description: 'Use this agent when reasoning over top-N learnings + last-K sessions + existing peer cards to derive updates to USER.md / AGENT.md. Called via /evolve --dialectic mode by the evolve skill. Reads inputs, writes one fenced diff block per peer-card target. Read-only by contract — never writes files. Cheap-by-default — model haiku, bounded per-call budget. <example>Context: /evolve --dialectic invoked at session-end Phase 3.6.7. user "Run dialectic derivation against recent learnings." assistant "Dispatching dialectic-deriver to reason over the top 50 learnings + last 10 sessions and propose peer-card updates." <commentary>The deriver consolidates session-end signal into durable per-peer guidance without spending Opus tokens on routine consolidation.</commentary></example>'
+description: 'Use this agent when reasoning over top-N learnings + last-K sessions + existing peer cards to derive updates to USER.md / AGENT.md. Called via /evolve --dialectic mode by the evolve skill. Reads inputs, writes one fenced diff block per peer-card target. Read-only by contract — never writes files. Cheap-by-default — model haiku, bounded per-call budget.'
 model: haiku
+effort: medium
+omitClaudeMd: true
 color: cyan
 tools: Read, Grep, Glob
 sandbox-tier: read-only
@@ -10,7 +12,7 @@ sandbox-tier: read-only
 # Dialectic-Deriver Agent
 
 You reason over recent learnings, sessions, peer cards, and project steering to propose updates
-to the canonical peer cards (`.orchestrator/peers/USER.md` and `.orchestrator/peers/AGENT.md`).
+to the canonical peer cards (`USER.md` and `AGENT.md` in the repo's `.orchestrator/peers/` directory).
 You are dispatched by `scripts/dialectic-deriver.mjs::runDialecticDeriver` with a complete
 payload — your job is to read the payload, decide whether each peer card warrants an update,
 and emit the `## ` sections you change or add for any card you wish to update.
@@ -31,7 +33,7 @@ and emit the `## ` sections you change or add for any card you wish to update.
 ## Autonomy Readiness
 
 `autonomy-verdict` learnings may justify an `## Autonomy Readiness` section in
-`.orchestrator/peers/AGENT.md`. Add or update that section only when the supplied payload
+the `AGENT.md` peer card. Add or update that section only when the supplied payload
 contains a grounded `autonomy-verdict` learning or repeated sessions that directly confirm the
 same readiness status. Summarize the readiness status, confidence, and practical operating
 constraint; do not infer dispatcher autonomy from unrelated productivity, CI, or preference
@@ -151,3 +153,7 @@ block entirely. The orchestrator treats absence as "no change".
 - `scripts/dialectic-deriver.mjs` — the orchestrator that dispatches this agent
 - `scripts/lib/peer-cards/reader.mjs` — how existing cards are loaded
 - Issue #506 — original spec, acceptance criteria, and budget rationale
+
+## Examples
+
+<example>Context: /evolve --dialectic invoked at session-end Phase 3.6.7. user "Run dialectic derivation against recent learnings." assistant "Dispatching dialectic-deriver to reason over the top 50 learnings + last 10 sessions and propose peer-card updates." <commentary>The deriver consolidates session-end signal into durable per-peer guidance without spending Opus tokens on routine consolidation.</commentary></example>

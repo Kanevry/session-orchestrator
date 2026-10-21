@@ -26,8 +26,7 @@
 
 import { randomUUID } from 'node:crypto';
 
-import { filterRealSessions } from '../session-schema.mjs';
-import { canonicalizeSessions } from '../sessions-canonical.mjs';
+import { canonicalizeSessions, isMeasuredSession } from '../sessions-canonical.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -160,11 +159,9 @@ function mean(values) {
  * whose autopilot_run_id matches a known run). For the skeleton it is used
  * only as a non-emptiness signal.
  *
- * Abandoned-session filtering (#834): `sessions` is filtered to REAL (non-
- * phantom) records via `filterRealSessions()` before bucketing. Phantom
- * `status: 'abandoned'` stubs are legitimate DATA but not legitimate SIGNAL —
- * they must not inflate `n_manual`/`n_autopilot` or dilute the
- * completion/carryover averages. See `scripts/lib/session-schema/filters.mjs`.
+ * Measured-session filtering (#1584): canonical identities are counted only
+ * when the shared isMeasuredSession predicate sees real work. Synthetic rows
+ * cannot inflate counts or dilute averages, even with completed status.
  *
  * Mode resolution (#834): `mode` is a LEGACY alias for the canonical
  * `session_type` field (`session-schema/constants.mjs` `SESSION_KEY_ALIASES`).
@@ -182,23 +179,16 @@ export function groupByMode(autopilotRuns, sessions) {
   const out = new Map();
   if (!Array.isArray(sessions) || sessions.length === 0) return out;
 
-  // Canonicalize BEFORE filtering (#1167). `filterRealSessions` drops phantom
-  // `abandoned` stubs, but two records of ONE physical session that are both
-  // real survive it — a `supersedes` pair (the backfilled stub plus the
-  // authoritative `completed` record that refutes it) and an exact same-id
-  // duplicate line both do. Each of those inflates `n_manual` / `n_autopilot`
-  // and skews every mean computed from the bucket, so the identity collapse
-  // has to happen first; the two compose in exactly this order (see
-  // `sessions-canonical.mjs` § "What this module does not do").
+  // Canonicalize BEFORE the shared measured-work filter (#1167, #1584):
+  // duplicate identities and supersedes pairs must not inflate bucket counts.
   //
   // `keepUnidentified: true` because effectiveness analysis must not LOSE the
   // id-less rows `canonicalizeSessions` drops by default: legacy ledger rows
   // and every in-repo fixture of the pre-id era carry `session_type` and
   // metrics but no id, and dropping them would silently shrink `n_manual`
   // instead of de-duplicating it.
-  const realSessions = filterRealSessions(
-    canonicalizeSessions(sessions, { keepUnidentified: true }),
-  );
+  const realSessions = canonicalizeSessions(sessions, { keepUnidentified: true })
+    .filter(isMeasuredSession);
   if (realSessions.length === 0) return out;
 
   // Optional: known autopilot_run_id set for stricter pairing. Empty set means

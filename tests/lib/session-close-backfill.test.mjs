@@ -21,6 +21,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { execFileSync } from 'node:child_process';
 
 import { backfillAbandonedSession, backfillCompletedFromStateMd, findRecordedSession, isUuid } from '@lib/session-close-backfill.mjs';
 import { validateSession } from '@lib/session-schema/validator.mjs';
@@ -112,6 +113,140 @@ afterEach(() => {
   for (const d of tmpDirs.splice(0)) {
     fs.rmSync(d, { recursive: true, force: true });
   }
+});
+
+describe('backfill writers — shared main-checkout session ledger (#1584)', () => {
+  it.each([
+    ['abandoned', false], ['abandoned', true],
+    ['completed', false], ['completed', true],
+  ])('%s reads and appends in main from a linked worktree (existing=%s)', async (kind, existing) => {
+    const main = path.join(repoRoot, 'main');
+    const worktree = path.join(repoRoot, 'worktree');
+    const gitDir = path.join(main, '.git', 'worktrees', 'worktree');
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.mkdirSync(worktree, { recursive: true });
+    fs.mkdirSync(path.join(worktree, '.orchestrator', 'metrics'), { recursive: true });
+    fs.writeFileSync(path.join(gitDir, 'commondir'), '../..\n');
+    fs.writeFileSync(path.join(worktree, '.git'), `gitdir: ${gitDir}\n`);
+    const ledger = path.join(main, '.orchestrator', 'metrics', 'sessions.jsonl');
+    const semanticId = 'main-2026-05-27-session-1';
+    if (existing) writeJsonl(ledger, [{
+      session_id: semanticId, session_type: 'deep', status: 'completed',
+      started_at: STARTED_AT, completed_at: '2026-05-27T17:00:00.000Z',
+      total_waves: 1, waves: [], total_agents: 0, total_files_changed: 0,
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+    }]);
+    writeJsonl(path.join(main, '.orchestrator', 'metrics', 'events.jsonl'), [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+      { timestamp: STARTED_AT, event: 'orchestrator.session.lock.acquired', session_id: UUID, semantic_session_id: semanticId, mode: 'deep' },
+      { timestamp: '2026-05-27T17:00:00.000Z', event: 'orchestrator.session.ended', session_id: UUID },
+    ]);
+    const localState = path.join(worktree, 'STATE.md');
+    fs.writeFileSync(localState, serializeStateMd({ frontmatter: {
+      'schema-version': 1, 'session-type': 'deep', branch: 'main', issues: [],
+      started_at: STARTED_AT, status: 'completed', 'current-wave': 1,
+      'total-waves': 1, session: semanticId,
+    }, body: '\n# STATE\n' }));
+    const result = kind === 'abandoned'
+      ? await backfillAbandonedSession({ repoRoot: worktree, sessionId: UUID, semanticSessionId: semanticId, now: NOW_MS })
+      : await backfillCompletedFromStateMd({ repoRoot: worktree, now: NOW_MS, deps: { resolveStateMdPath: () => localState } });
+    expect(result.action).toBe(existing ? 'skipped-already-recorded' : 'backfilled');
+    const records = fs.readFileSync(ledger, 'utf8').trim().split('\n').map(JSON.parse);
+    expect(records).toHaveLength(1);
+    expect(records[0].session_id).toBe(semanticId);
+    expect(records[0].status).toBe(existing ? 'completed' : kind);
+    expect(fs.existsSync(path.join(worktree, '.orchestrator', 'metrics', 'sessions.jsonl'))).toBe(false);
+    expect(fs.readFileSync(localState, 'utf8')).toContain('status: completed');
+  });
+
+  // #1660 — a consumer repo that TRACKS sessions.jsonl, run from a REAL linked
+  // worktree (git worktree add, not a hand-written .git file) through the
+  // SessionStart entry Codex invokes plus the close-through completed path.
+  // Fails on the pre-#1592 code (markers + ledger at repoRoot = the worktree):
+  // the worktree then shows ` M .orchestrator/metrics/sessions.jsonl`.
+  it('leaves a real linked worktree with a tracked sessions.jsonl git-clean (#1660)', async () => {
+    const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
+    const main = path.join(repoRoot, 'main');
+    const worktree = path.join(repoRoot, 'wt');
+    fs.mkdirSync(main);
+    git(main, 'init', '-q', '-b', 'main');
+    const tracked = path.join(main, '.orchestrator', 'metrics', 'sessions.jsonl');
+    writeJsonl(tracked, [{ session_id: 'main-2026-05-01-session-1', session_type: 'deep', status: 'completed' }]);
+    git(main, 'add', '.orchestrator/metrics/sessions.jsonl');
+    git(main, 'commit', '-q', '-m', 'seed');
+    git(main, 'worktree', 'add', '-q', '-b', 'run', worktree);
+    const abandonedId = 'feat-x-2026-05-27-session-1';
+    const completedId = 'main-2026-05-27-session-2';
+    writeJsonl(path.join(main, '.orchestrator', 'metrics', 'events.jsonl'), [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'feat-x' },
+      { timestamp: STARTED_AT, event: 'orchestrator.session.lock.acquired', session_id: UUID, semantic_session_id: abandonedId, mode: 'deep' },
+      { timestamp: '2026-05-27T15:00:00.000Z', event: 'orchestrator.session.ended', session_id: UUID },
+    ]);
+    const stateMd = path.join(repoRoot, 'STATE.md'); // outside the worktree on purpose
+    fs.writeFileSync(stateMd, serializeStateMd({ frontmatter: {
+      'schema-version': 1, 'session-type': 'deep', branch: 'main', issues: [],
+      started_at: STARTED_AT, status: 'completed', 'current-wave': 1,
+      'total-waves': 1, session: completedId,
+    }, body: '\n# STATE\n' }));
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: worktree });
+    const completed = await backfillCompletedFromStateMd({ repoRoot: worktree, now: NOW_MS, deps: { resolveStateMdPath: () => stateMd } });
+
+    expect(summary?.backfilled).toBe(1);
+    expect(completed.action).toBe('backfilled');
+    expect(git(worktree, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+    expect(fs.readdirSync(path.join(worktree, '.orchestrator', 'metrics')).filter((f) => f.endsWith('.marker'))).toEqual([]);
+    const ids = fs.readFileSync(tracked, 'utf8').trim().split('\n').map((l) => JSON.parse(l).session_id);
+    expect(ids).toEqual(expect.arrayContaining([abandonedId, completedId]));
+  });
+
+  // #1666 — a linked worktree whose common git dir is NOT named `.git` has no
+  // main checkout the resolver can map to; it falls back to the worktree. The
+  // writers then appended into the worktree's TRACKED sessions.jsonl again
+  // (the #1660 class). They must skip and say why on stderr instead.
+  it.each(['separate-git-dir', 'bare'])('skips instead of writing into a %s linked worktree (#1666)', async (layout) => {
+    const git = (cwd, ...args) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false', ...args], { cwd, encoding: 'utf8' });
+    const main = path.join(repoRoot, 'main');
+    const worktree = path.join(repoRoot, 'wt');
+    fs.mkdirSync(main);
+    const init = layout === 'separate-git-dir' ? ['--separate-git-dir', path.join(repoRoot, 'meta')] : [];
+    git(main, 'init', '-q', '-b', 'main', ...init);
+    writeJsonl(path.join(main, '.orchestrator', 'metrics', 'sessions.jsonl'), [{ session_id: 'main-2026-05-01-session-1' }]);
+    git(main, 'add', '.orchestrator/metrics/sessions.jsonl');
+    git(main, 'commit', '-q', '-m', 'seed');
+    let owner = main;
+    if (layout === 'bare') {
+      git(repoRoot, 'clone', '-q', '--bare', main, 'repo.git');
+      owner = path.join(repoRoot, 'repo.git');
+    }
+    git(owner, 'worktree', 'add', '-q', '-b', 'run', worktree);
+    const semanticId = 'main-2026-05-27-session-2';
+    writeJsonl(path.join(worktree, '.orchestrator', 'metrics', 'events.jsonl'), [
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'run' },
+      { timestamp: STARTED_AT, event: 'orchestrator.session.lock.acquired', session_id: UUID, semantic_session_id: semanticId, mode: 'deep' },
+    ]);
+    const stateMd = path.join(repoRoot, 'STATE.md');
+    fs.writeFileSync(stateMd, serializeStateMd({ frontmatter: {
+      'schema-version': 1, 'session-type': 'deep', branch: 'run', issues: [],
+      started_at: STARTED_AT, status: 'completed', 'current-wave': 1,
+      'total-waves': 1, session: semanticId,
+    }, body: '\n# STATE\n' }));
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      const abandoned = await backfillAbandonedSession({ repoRoot: worktree, sessionId: UUID, semanticSessionId: semanticId, now: NOW_MS });
+      const completed = await backfillCompletedFromStateMd({ repoRoot: worktree, now: NOW_MS, deps: { resolveStateMdPath: () => stateMd } });
+      expect(abandoned.action).toBe('skipped-ledger-root-unresolved');
+      expect(completed.action).toBe('skipped-ledger-root-unresolved');
+      const lines = stderr.mock.calls.map(([chunk]) => String(chunk)).filter((l) => l.startsWith('session-close-backfill: skipped'));
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toContain('separate-git-dir or bare repo');
+    } finally {
+      stderr.mockRestore();
+    }
+    expect(git(worktree, 'status', '--porcelain', '--', '.orchestrator/metrics/sessions.jsonl')).toBe('');
+    expect(fs.readFileSync(path.join(worktree, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8')).not.toContain(semanticId);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1045,6 +1180,67 @@ describe('backfillAbandonedSession — TOCTOU marker', () => {
     expect(res.action).toBe('skipped-marker-exists');
     expect(res.sessionId).toBe('main-2026-05-27-session-9');
     expect(readSessions()).toHaveLength(0);
+  });
+
+  // #1609 review M1: the semantic key belongs to a different native session,
+  // so this candidate records under its own UUID. The legacy semantic marker
+  // is that other session's claim and must not block this one.
+  it('a legacy semantic marker does not block a candidate that switched to its own UUID', async () => {
+    const SEMANTIC = 'main-2026-05-27-session-9';
+    seedSessions([{ session_id: SEMANTIC, raw_session_id: OTHER_UUID, status: 'completed', started_at: '2026-05-26T14:00:00.000Z' }]);
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    fs.writeFileSync(path.join(metricsDir(), `.backfilled-${SEMANTIC}.marker`), '');
+
+    const res = await backfillAbandonedSession({ repoRoot, sessionId: UUID, semanticSessionId: SEMANTIC, now: NOW_MS });
+
+    expect(res.action).toBe('backfilled');
+    expect(res.record).toMatchObject({ session_id: UUID, semantic_session_id: SEMANTIC });
+    expect(readSessions()).toHaveLength(2);
+  });
+
+  // #1609: run B read the ledger before run A appended (dedupe passes), then
+  // saw A's record occupy the semantic key and switched to the raw UUID. With
+  // the marker keyed by the chosen record id, B claimed a second marker and
+  // wrote a second record for the same candidate.
+  it('a racing second run of the same candidate writes no second record', async () => {
+    const SEMANTIC = 'main-2026-05-27-session-9';
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    const args = { repoRoot, sessionId: UUID, semanticSessionId: SEMANTIC, now: NOW_MS };
+    expect((await backfillAbandonedSession(args)).action).toBe('backfilled');
+
+    const sessionsFile = path.join(metricsDir(), 'sessions.jsonl');
+    let staleReads = 1;
+    const readFileSync = (file, enc) => {
+      if (file === sessionsFile && staleReads > 0) {
+        staleReads -= 1;
+        return '';
+      }
+      return fs.readFileSync(file, enc);
+    };
+    const second = await backfillAbandonedSession({ ...args, deps: { readFileSync } });
+
+    expect(second.action).toBe('skipped-marker-exists');
+    expect(readSessions()).toHaveLength(1);
+  });
+
+  it('a failed ledger append releases the marker, so the next run backfills', async () => {
+    seedEvents([
+      { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main' },
+    ]);
+    const args = { repoRoot, sessionId: UUID, semanticSessionId: 'main-2026-05-27-session-9', now: NOW_MS };
+    const failed = await backfillAbandonedSession({
+      ...args,
+      deps: { appendJsonl: async () => { throw new Error('disk full'); } },
+    });
+    expect(failed.action).toBe('error');
+    expect(fs.readdirSync(metricsDir()).filter((f) => f.endsWith('.marker'))).toEqual([]);
+
+    expect((await backfillAbandonedSession(args)).action).toBe('backfilled');
+    expect(readSessions()).toHaveLength(1);
   });
 });
 

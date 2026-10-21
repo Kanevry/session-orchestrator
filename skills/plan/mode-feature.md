@@ -15,8 +15,11 @@ Before asking questions, dispatch 3 Explore agents in parallel:
 ```
 Agent({ subagent_type: "Explore", description: "Analyze codebase for related patterns",
   prompt: "Use Glob and Grep to find existing implementations related to [feature topic].
-  Search relevant directories for similar patterns, naming conventions, and architecture.
-  Report: affected files, current patterns, reuse opportunities." })
+  Start from raw material: census the callers of the code path the feature touches
+  (is it the path that runs in production?), and re-measure the stated problem with
+  one quoted command. Search for anything that already covers this need.
+  Report: affected files, live call path, premise reproduced yes/no with the command,
+  local equivalents, reuse opportunities." })
 
 Agent({ subagent_type: "Explore", description: "Check VCS for related issues",
   prompt: "Use Bash to run VCS CLI (glab/gh, auto-detect per gitlab-ops skill).
@@ -34,11 +37,11 @@ Synthesize agent findings into 2 AskUserQuestion calls (3+3 split):
 **Questions:**
 
 1. **What to build** — Open-ended. Analyze the answer and suggest structure (e.g., break into sub-features, identify components). Use codebase agent findings to ground suggestions.
-   - *Multiple candidate subfeatures surfaced?* Rank them by Opportunity Score (see `SKILL.md` § "Opportunity Score (Ranking Candidate Subfeatures)") and present the top-ranked candidate as the `(Recommended)` Option 1.
+   - *Multiple candidate subfeatures surfaced?* Rank them by measured signal (see `SKILL.md` § "Ranking Candidate Subfeatures") and present the top-ranked candidate as the `(Recommended)` Option 1.
 2. **Why now** — Business driver, user feedback, or technical necessity? Present agent-found context (related issues, recent changes) as options.
 3. **Who uses it** — Existing personas or new audience? Reference existing user research if available in the repo.
 4. **User-Story-Schicht** — "User-Story-Schicht für dieses Feature erzeugen?" Immer fragen (kein Audience-Heuristik-Gate). Drei Antwortoptionen: **Ja (Als/möchte/damit)** — klassische Persona-Story-Form; **Ja (job-story)** — job-story-Form ("When [situation], I want [motivation], so I can [outcome]"); **Nein** — byte-identisches Status-quo-Verhalten. Bei einer der beiden "Ja"-Optionen emittiert die PRD eine optionale ## User Stories Sektion (je Story ein ↳ AC-Pointer) in der gewählten Form; bei "Nein" wird die Sektion vollständig weggelassen.
-5. **Scope** — MVP appetite (Shape Up: 1w/2w/6w) + explicit exclusions. Push hard for "what is NOT in this feature." First option is always the recommended appetite based on complexity.
+5. **Scope and done** — explicit exclusions, plus what has to be shown, and by whom, for this to count as done. Push hard for "what is NOT in this feature." The options are the candidate oracles: the installed artifact read back, a run in the consumer repo, the platform's own output. Ask for the appetite (Shape Up: 1w/2w/6w) as part of the same question, derived from complexity, not as a deadline of its own. In measured runs, 5 of 7 appetite questions got a free-text answer, and 3 of those rejected time as the limit: "what counts is that everything is verified".
 6. **Dependencies** — On existing issues, features, or other repos. Pre-populate from VCS agent findings. Flag blockers.
 
 ### Wave 2 — Technical Deep Dive (conditional, 5 questions)
@@ -83,16 +86,17 @@ Agent({ subagent_type: "Explore", description: "Research technical approach",
 
 | Section | Source |
 |---------|--------|
-| 1. Problem & Motivation | Wave 1 Q1 (what) + Q2 (why). Concise, 2-3 paragraphs. |
-| 2. Solution & Scope | Wave 1 Q5 (scope). Explicit In-Scope and Out-of-Scope lists. |
+| 1. Problem & Motivation | Wave 1 Q1 (what) + Q2 (why). Concise, 2-3 paragraphs. **Evidence Baseline**: the premise measurement from the Wave 1 codebase agent (command, result, date/SHA); a premise that did not reproduce is labelled `hypothesis`. |
+| 2. Solution & Scope | Wave 1 Q5 (scope and done). Explicit In-Scope and Out-of-Scope lists, plus **First Real Use / Kill** (who triggers the first use outside tests, by when). |
 | ## User Stories (conditional) | Emit only when the User-Story-Schicht toggle ≠ "Nein"; one story per persona-goal, each linking ≥1 §3/§3.A acceptance criterion. Toggle = "Ja (Als/möchte/damit)" → emit the classic Als/möchte/damit form. Toggle = "Ja (job-story)" → emit the job-story form ("When [situation], I want [motivation], so I can [outcome]"). Omit the section entirely when toggle = "Nein" (byte-for-byte status quo). |
-| 3. Acceptance Criteria | Derive Given/When/Then scenarios from Wave 1 answers. Each sub-feature produces 1-3 Gherkin scenarios. |
+| 3. Acceptance Criteria | Derive Given/When/Then scenarios from Wave 1 answers. Each sub-feature produces 1-3 Gherkin scenarios, each with an `Oracle:` line. Criteria whose oracle cannot run in the implementing session go to **External Acceptance** (filled in Phase 4.5). |
 | 3.A Acceptance Criteria (EARS) | OPTIONAL — emit EARS clauses (Ubiquitous/State-driven/Event-driven/Optional feature/Unwanted behaviour) for the same Feature Areas. Used by `/write-executable-plan` for 1:1 vitest stub generation. Leave blank if Section 3 narrative suffices. |
 | 4. Technical Notes | Wave 2 findings if it ran (architecture, affected files, data model). If Wave 2 was skipped, populate from Wave 1 Explore agent findings. |
 | 5. Risks & Dependencies | Wave 1 Q6 (dependencies) + Wave 2 Q4-Q5 (edge cases, performance) if available. |
 
 3. Save to `{plan-prd-location}/YYYY-MM-DD-{feature-slug}.md`. Read `plan-prd-location` from Session Config in CLAUDE.md (or AGENTS.md on Codex CLI) (default: `docs/prd/`).
-4. Dispatch PRD reviewer subagent per `prd-reviewer-prompt.md`. Max 3 iterations. Surface unresolved issues to user.
+4. **Pre-Mortem Panel:** dispatch the Refute and Deepen briefs per `SKILL.md` § Phase 4.5 and `prd-premortem-panel.md`, then merge their reports into §3, External Acceptance and §5.
+4a. Dispatch PRD reviewer subagent per `prd-reviewer-prompt.md`. Max 3 iterations. Surface unresolved issues to user.
 5. **Package Legitimacy Audit (Slopcheck — #520):** if Session Config has `slopcheck.enabled: true` and `slopcheck.sources` includes `plan`, run the Phase 3.5 audit defined in `SKILL.md` against the generated PRD body (scan `## Affected Files`, `## Dependencies`, and code-fenced `pnpm add` / `npm install` / `pip install` / `cargo add` blocks for npm/pip/cargo package mentions, then call `classifyPackages()` from `scripts/lib/slopcheck.mjs`). Fail-soft on registry errors. See `SKILL.md` § "Phase 3.5: Package Legitimacy Audit" for the full handling matrix.
 6. **PRD Commit Gate:** before proceeding to Phase 3 (Issue Creation), satisfy the PRD Commit Gate — see `SKILL.md` § Phase 5.5 (HARD-GATE). Do not create issues referencing an uncommitted PRD.
 
@@ -106,6 +110,7 @@ Source: PRD Section 3 (Acceptance Criteria).
 
 - **Epic title:** feature name + one-line purpose.
 - **Sub-issues:** one per acceptance criterion group. Group related Given/When/Then scenarios — do not create one issue per individual scenario.
+- **Acceptance issues:** one `[Abnahme]` issue per External Acceptance row, linked from the implementing issue and not closed by it (`SKILL.md` § 6.1).
 
 ### Auto-Prioritize
 

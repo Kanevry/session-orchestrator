@@ -18,6 +18,8 @@
  *      (measured 6x unit error)
  *  D3  a single soft signal caps agents-per-wave outright
  *  D4  the real hazard (2026-04-19 freeze class) must STILL escalate
+ *  D5  the peer count (a standing condition on 67.4% of M4 starts, #1650)
+ *      pairs with ONE real soft signal into a cap (#1654, HR-104)
  *
  * Pure function — no mocks. Expected values are hardcoded literals.
  */
@@ -166,20 +168,22 @@ describe('evaluate() — concurrency is denominated in sessions (#1089 D2)', () 
     expect(result.reasons.some((r) => r.includes('peer session'))).toBe(false);
   });
 
-  it('fires when peer SESSIONS reach the threshold', () => {
+  it('REPORTS (info only) when peer SESSIONS reach the threshold (#1654)', () => {
     const snap = { ...HEALTHY_SNAPSHOT, peer_sessions_count: 5 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
-    expect(result.signals.soft).toEqual(['concurrency']);
-    expect(result.reasons.some((r) => r.includes('5 peer session(s) live in the registry'))).toBe(true);
+    expect(result.signals.soft).toEqual([]);
+    expect(result.reasons.some((r) => r.startsWith('info: 5 peer session(s) live in the registry'))).toBe(true);
   });
 
   it('falls back to the RESCALED process count when the registry is unavailable', () => {
     // 5 sessions x 6 processes/session = 30. 29 processes stays silent...
     const below = { ...HEALTHY_SNAPSHOT, peer_sessions_count: null, claude_processes_count: 29 };
     expect(evaluate(below, DEFAULT_THRESHOLDS).signals.soft).toEqual([]);
-    // ...30 fires.
+    // ...30 reports — info only, never a soft signal (#1654).
     const at = { ...HEALTHY_SNAPSHOT, peer_sessions_count: null, claude_processes_count: 30 };
-    expect(evaluate(at, DEFAULT_THRESHOLDS).signals.soft).toEqual(['concurrency']);
+    const atResult = evaluate(at, DEFAULT_THRESHOLDS);
+    expect(atResult.signals.soft).toEqual([]);
+    expect(atResult.reasons.some((r) => r.startsWith('info: 30 Claude processes running'))).toBe(true);
   });
 
   it('the rescale factor is the exported constant, not a magic number', () => {
@@ -216,12 +220,29 @@ describe('evaluate() — two-signal rule (#1089 D3)', () => {
       ...HEALTHY_SNAPSHOT,
       cpu_load_pct: 95,
       cpu_load_5m_pct: 95,
-      peer_sessions_count: 6,
+      memory_pressure_pct_free: 20,
     };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('warn');
     expect(result.recommended_agents_per_wave_cap).toBe(2);
-    expect(result.signals.soft).toEqual(['cpu', 'concurrency']);
+    expect(result.signals.soft).toEqual(['memory', 'cpu']);
+  });
+
+  it('a peer count at the threshold is NOT the second signal that caps a wave (#1654 D5)', () => {
+    // THE D5 regression. Before #1654: soft ["cpu","concurrency"] → warn, cap 2.
+    // peer_count >= 5 held on 67.4% of M4 starts (#1650) — a standing condition
+    // like zombies, so pairing it with real CPU load restored the one-signal cap.
+    const snap = {
+      ...HEALTHY_SNAPSHOT,
+      cpu_load_pct: 95,
+      cpu_load_5m_pct: 95,
+      peer_sessions_count: 6,
+    };
+    const result = evaluate(snap, DEFAULT_THRESHOLDS);
+    expect(result.verdict).toBe('green');
+    expect(result.recommended_agents_per_wave_cap).toBe(null);
+    expect(result.signals.soft).toEqual(['cpu']);
+    expect(result.reasons.some((r) => r.includes('6 peer session(s)') && r.includes('Not counted as a capacity signal'))).toBe(true);
   });
 
   it('a hard signal outranks any number of soft ones', () => {
@@ -248,7 +269,7 @@ describe('evaluate() — two-signal rule (#1089 D3)', () => {
     };
     const result = evaluate(snap, DEFAULT_THRESHOLDS);
     expect(result.verdict).toBe('green');
-    expect(result.signals.soft).toEqual(['concurrency']);
+    expect(result.signals.soft).toEqual([]);
     expect(result.reasons.some((r) => r.includes('decaying transient'))).toBe(true);
   });
 });
@@ -316,14 +337,14 @@ describe('evaluate() — heavy-repo preflight cap (#60)', () => {
   });
 
   it('more-restrictive-wins: keeps the tighter live cap when agentsPerWave is looser', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95, peer_sessions_count: 6 };
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95, memory_pressure_pct_free: 20 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 6 });
     expect(result.verdict).toBe('warn');
     expect(result.recommended_agents_per_wave_cap).toBe(2);
   });
 
   it('more-restrictive-wins: tightens to agentsPerWave when it is stricter', () => {
-    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95, peer_sessions_count: 6 };
+    const snap = { ...HEALTHY_SNAPSHOT, cpu_load_pct: 95, cpu_load_5m_pct: 95, memory_pressure_pct_free: 20 };
     const result = evaluate(snap, DEFAULT_THRESHOLDS, { heavyRepo: true, agentsPerWave: 1 });
     expect(result.verdict).toBe('warn');
     expect(result.recommended_agents_per_wave_cap).toBe(1);

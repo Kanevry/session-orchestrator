@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -175,7 +176,7 @@ describe('validateAgentFrontmatter', () => {
 
   it('accepts all valid model values', () => {
     for (const model of ['inherit', 'sonnet', 'opus', 'haiku', 'fable']) {
-      const fm = { name: 'my-agent', description: 'Desc.', model, color: 'blue' };
+      const fm = { name: 'my-agent', description: 'Desc.', model, effort: 'medium', color: 'blue' };
       expect(validateAgentFrontmatter(fm).ok, `model=${model}`).toBe(true);
     }
   });
@@ -195,7 +196,7 @@ describe('validateAgentFrontmatter', () => {
       'claude-opus-4-8-20260101',
     ];
     for (const model of validIds) {
-      const fm = { name: 'my-agent', description: 'Desc.', model, color: 'blue' };
+      const fm = { name: 'my-agent', description: 'Desc.', model, effort: 'medium', color: 'blue' };
       expect(validateAgentFrontmatter(fm).ok, `model=${model}`).toBe(true);
     }
   });
@@ -210,6 +211,21 @@ describe('validateAgentFrontmatter', () => {
         expect(v.errors.some((e) => e.path === 'model' && e.rule === 'enum'), `model=${model}`).toBe(true);
       }
     }
+  });
+
+  // --- effort (#1614): consumer agents only WARN when it is missing (the plugin's
+  // own check-agents.mjs fails on it); a set but invalid value is an error ---
+  it('warns but does not fail on a pinned model without effort, and stays silent on inherit', () => {
+    const missing = validateAgentFrontmatter({ name: 'my-agent', description: 'D', model: 'sonnet', color: 'blue' });
+    expect(missing.ok).toBe(true);
+    expect(missing.warnings).toContainEqual(expect.objectContaining({ path: 'effort', rule: 'required' }));
+    expect(validateAgentFrontmatter({ name: 'my-agent', description: 'D', model: 'inherit', color: 'blue' })).toEqual({ ok: true });
+  });
+
+  it('rejects an effort outside low|medium|high|xhigh|max', () => {
+    const v = validateAgentFrontmatter({ name: 'my-agent', description: 'D', model: 'opus', effort: 'medum', color: 'blue' });
+    expect(v.ok).toBe(false);
+    if (!v.ok) expect(v.errors).toContainEqual(expect.objectContaining({ path: 'effort', rule: 'enum' }));
   });
 
   // --- SSOT shape (#768): aliases are closed Set-membership, MODEL_ID_RE is a
@@ -455,10 +471,13 @@ describe('docs-writer agent frontmatter', () => {
     if (parsed.ok) expect(parsed.frontmatter['color']).toBe('cyan');
   });
 
-  it('has model === "inherit"', () => {
+  it('pins model sonnet with effort medium (#1614)', () => {
     const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
     expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.frontmatter['model']).toBe('inherit');
+    if (parsed.ok) {
+      expect(parsed.frontmatter['model']).toBe('sonnet');
+      expect(parsed.frontmatter['effort']).toBe('medium');
+    }
   });
 
   it('has tools as a comma-separated string (not array, not block scalar)', () => {
@@ -473,16 +492,21 @@ describe('docs-writer agent frontmatter', () => {
     }
   });
 
-  it('has description as a single-line string containing <example> and <commentary>', () => {
-    const parsed = parseAgentFrontmatter(readFileSync(DOCS_WRITER_PATH, 'utf8'));
+  it('has a single-line routing description and its <example> + <commentary> in a body ## Examples section', () => {
+    const content = readFileSync(DOCS_WRITER_PATH, 'utf8');
+    const parsed = parseAgentFrontmatter(content);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
       const desc = parsed.frontmatter['description'];
       expect(typeof desc).toBe('string');
       expect(desc).not.toBe('__BLOCK_SCALAR__');
-      expect(desc).toContain('<example>');
-      expect(desc).toContain('<commentary>');
+      expect(desc).not.toContain('<example>');
     }
+    // #887/#1157: examples moved out of the always-loaded description into the body.
+    const examples = content.match(/^## Examples\n([\s\S]*?)(?=^## |(?![\s\S]))/m);
+    expect(examples).not.toBeNull();
+    expect(examples[1]).toContain('<example>');
+    expect(examples[1]).toContain('<commentary>');
   });
 });
 
@@ -505,6 +529,19 @@ describe('validateAgentFile', () => {
     const result = validateAgentFile(filePath);
     expect(result.ok).toBe(true);
     expect(result.file).toBe(filePath);
+  });
+
+  it('passes the missing-effort warning through to the discovery probe (consumer agent stays ok)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agent-fm-'));
+    const filePath = join(dir, 'consumer.md');
+    writeFileSync(filePath, '---\nname: consumer\ndescription: D\nmodel: sonnet\ncolor: blue\n---\n');
+    try {
+      const result = validateAgentFile(filePath);
+      expect(result.ok).toBe(true);
+      expect(result.warnings).toContainEqual(expect.objectContaining({ path: 'effort', rule: 'required' }));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('never throws on garbage path', () => {

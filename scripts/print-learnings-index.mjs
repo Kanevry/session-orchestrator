@@ -154,6 +154,11 @@ Options:
   --max-chars <n>       Hard cap on the rendered index body (default: ${LEARNINGS_INDEX_MAX_CHARS}).
   --pool-size <n>       Active entries pulled before ranking (default: ${CANDIDATE_POOL_SIZE}).
   --learnings <path>    Learnings JSONL (default: .orchestrator/metrics/learnings.jsonl).
+  --evidence-candidates <path>  Opt into a bounded local candidate JSON artifact.
+                        Requires --source-repo and an exact non-empty --task-text.
+                        Invalid/unavailable artifacts keep the baseline output;
+                        provider status/counts go to stderr. No provider is run.
+  --source-repo <id>    Explicit opaque repo ID bound to the candidate artifact.
   --rules-dir <path>    Natively-delivered rule corpus (default: .claude/rules).
                         Learnings already delivered as a rule file there are
                         excluded from the index (#1019). A path that does not
@@ -208,6 +213,8 @@ try {
       'max-chars': { type: 'string' },
       'pool-size': { type: 'string' },
       learnings: { type: 'string' },
+      'evidence-candidates': { type: 'string' },
+      'source-repo': { type: 'string' },
       'rules-dir': { type: 'string' },
       'no-event': { type: 'boolean', default: false },
       json: { type: 'boolean', default: false },
@@ -219,6 +226,14 @@ try {
 }
 
 const opts = parsed.values;
+if (opts['evidence-candidates'] !== undefined &&
+    (!opts['evidence-candidates'] || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(opts['source-repo'] ?? '') ||
+     !opts['task-text']?.trim() || opts['task-text'].length > 4000)) {
+  fail('--evidence-candidates requires a path, --source-repo ID and non-empty --task-text (at most 4000 characters)', 1);
+}
+if (opts['source-repo'] !== undefined && opts['evidence-candidates'] === undefined) {
+  fail('--source-repo requires --evidence-candidates', 1);
+}
 
 /**
  * Parse a `--max-*` value: a non-negative integer. Anything else is a
@@ -338,7 +353,11 @@ try {
   selection = await selectLearningsFromFile(
     learningsPath,
     { file_paths: scopePaths, text: taskText },
-    { maxScoped, maxGlobal, maxChars, poolSize, rulesDir },
+    { maxScoped, maxGlobal, maxChars, poolSize, rulesDir,
+      ...(opts['evidence-candidates'] !== undefined ? {
+        evidenceCandidates: opts['evidence-candidates'], sourceRepo: opts['source-repo'],
+      } : {}),
+    },
   );
 } catch (err) {
   // `selectLearningsFromFile` is contractually total (contract point 1), so this
@@ -350,6 +369,9 @@ try {
 
 const selected = selection.entries;
 const scopeMatched = selection.scopeMatched;
+if (selection.evidence) {
+  process.stderr.write(`[evidence-candidates] ${JSON.stringify(selection.evidence)}\n`);
+}
 
 // ---------------------------------------------------------------------------
 // Render — the WRAPPER only; per-entry lines come from the selector

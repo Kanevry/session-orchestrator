@@ -35,8 +35,10 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
+import { readNavigatorLease } from '../../scripts/lib/fleet-protocol.mjs';
 
 /**
  * Native SessionStart `source` values that are a RE-ENTRY into the same logical
@@ -54,6 +56,108 @@ import { writeJsonAtomicSync } from '../../scripts/lib/io.mjs';
  * @type {ReadonlySet<string>}
  */
 export const SAME_LOGICAL_SESSION_SOURCES = new Set(['resume', 'clear', 'compact']);
+
+/**
+ * Native `source` values on which a fleet lead's lease keeps this session out
+ * of the MAIN checkout (#1635). A subset of SAME_LOGICAL_SESSION_SOURCES:
+ * `compact` keeps the lock it already holds, `startup` stays untouched.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const LEAD_YIELD_SOURCES = new Set(['clear', 'resume']);
+
+/**
+ * Native `source` values on which a lock this same raw session released on
+ * purpose stays released (#1651). A subset of SAME_LOGICAL_SESSION_SOURCES:
+ * `clear` starts new work and takes a lock as before, `startup` too.
+ *
+ * @type {ReadonlySet<string>}
+ */
+const RELEASED_LOCK_STAYS_RELEASED_SOURCES = new Set(['resume', 'compact']);
+
+/**
+ * #1651 — true when `sessionId` left a release marker in this repo. Never
+ * throws: a missing module or any error reads as "no marker" (the pre-#1651
+ * acquire path).
+ *
+ * @param {string} repoRoot
+ * @param {string} sessionId
+ * @returns {Promise<boolean>}
+ */
+async function hasOwnReleaseMarker(repoRoot, sessionId) {
+  try {
+    const { hasReleaseMarker } = await import('../../scripts/lib/session-lock.mjs');
+    return hasReleaseMarker({ repoRoot, sessionId }) === true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #1641 — the Claude Code process id this hook runs under, or null. The value
+ * comes from `CLAUDE_PID`, but it counts ONLY when that process is this hook's
+ * direct parent: the variable is inherited by everything a Claude session
+ * starts, so a Codex child launched from a session's Bash would otherwise carry
+ * the parent's pid into its own SessionStart (`hooks-codex.json` matches
+ * resume|clear|compact) and take over the parent's LIVE lock (REFUTE review,
+ * reproduced against the real acquire/forceAcquire).
+ *
+ * Measured 2026-10-15 (claude 2.1.300, macOS): a SessionStart hook launched as
+ * `sh run-node.sh <hook>` runs node with `process.ppid === CLAUDE_PID` and the
+ * parent's comm `claude` — both shells exec. A Codex hook's parent is Codex or
+ * its shell, never Claude, so it reads null here. Depth 1, deliberately: a
+ * depth-2 walk would admit a hook whose parent is a Codex process that bash
+ * exec'd straight under Claude. Spawn-free.
+ * Ceiling (BV-004): a platform whose hook launcher does not exec reads null and
+ * keeps the pre-#1641 behaviour (fail-closed). Revisit if `reclaimed:
+ * own-process` never appears on a host where /clear without SessionEnd does.
+ *
+ * The process survives `/clear` while the raw session id is minted anew, so
+ * this is the witness of "the same terminal session" that the label and the
+ * raw id cannot give.
+ *
+ * @param {NodeJS.ProcessEnv} [env]
+ * @param {number} [ppid] — this process' parent pid (DI for tests).
+ * @returns {number|null}
+ */
+export function readClaudePid(env = process.env, ppid = process.ppid) {
+  const raw = typeof env?.CLAUDE_PID === 'string' ? env.CLAUDE_PID.trim() : '';
+  if (!/^[1-9][0-9]{0,9}$/.test(raw)) return null;
+  const pid = Number(raw);
+  return Number.isSafeInteger(pid) && pid === ppid ? pid : null;
+}
+
+/**
+ * #1641 — true when `lock` was written under the Claude Code process this hook
+ * runs under, on this host. Only then may a lock with a DIFFERENT raw id count
+ * as our own predecessor (startup → /clear mints a new raw id in the same
+ * process).
+ *
+ * Why the pid alone is enough, without a start time: both sides come from
+ * readClaudePid(), which admits a pid only as the writer hook's DIRECT parent.
+ * So the lock's pid names the Claude process that wrote it, and equal to ours
+ * it names either this process or a dead one whose pid the OS recycled to us —
+ * not another live Claude process in the same pid namespace.
+ * The host check keeps a lock on a shared filesystem from another machine out.
+ * Ceilings (BV-004), named rather than claimed closed: (1) two pid namespaces
+ * that report the same hostname (WSL2 distros, a container and its host on one
+ * checkout) can hold equal pids; (2) an in-process agent team whose teammates
+ * each ran SessionStart under one Claude process (measured: subagents fire no
+ * SessionStart). Revisit when either shape works in a shared checkout.
+ *
+ * @param {object|null} lock
+ * @param {number|null} claudePid — from readClaudePid().
+ * @returns {Promise<boolean>}
+ */
+async function isSameClaudeProcess(lock, claudePid) {
+  if (typeof claudePid !== 'number' || !lock || lock.claude_pid !== claudePid) return false;
+  try {
+    const { hostnamesMatch, lockHostCandidate } = await import('../../scripts/lib/host-identity.mjs');
+    return hostnamesMatch(lockHostCandidate(lock), os.hostname());
+  } catch {
+    return false;
+  }
+}
 
 /** Re-reads of a just-acquired lock that answers ENOENT, and the pause between them (#1494). */
 const ENRICH_READ_RETRIES = 5;
@@ -86,9 +190,21 @@ const ENRICH_READ_RETRY_MS = 10;
  *   force-refresh below: without it a same-host semantic-label collision (#1066)
  *   lets one session take over a live peer's lock. Omitting it (the default)
  *   disables the re-entry force-refresh entirely — fail-closed.
+ * @param {number|null} [opts.claudePid=null] — the Claude Code process id from
+ *   readClaudePid() (#1641). Stamped on the lock as `claude_pid`; a lock that
+ *   carries this same pid on this host is our own predecessor after /clear, for
+ *   the re-entry force-refresh AND the #1635 lead-yield release. Null (Codex,
+ *   Cursor, tests that omit it) leaves both exactly as before.
  * @param {Function} [opts._acquireImpl] — DI for tests (defaults to importing acquire from session-lock.mjs).
  * @param {Function} [opts._forceAcquireImpl] — DI for tests (defaults to importing forceAcquire from session-lock.mjs).
  * @param {Function} [opts._emitEventImpl] — DI for tests (defaults to importing emitEvent from events.mjs).
+ * @param {(context: string, banner: string) => void} [opts.onNotice] — receives
+ *   the model notice and the operator banner line when the lock is deliberately
+ *   NOT taken because a fleet lead holds the main checkout (#1635), or because
+ *   this raw id released its lock on purpose and the source is `resume` /
+ *   `compact` (#1651).
+ * @param {Function} [opts._readLeaseImpl] — DI for tests (defaults to readNavigatorLease from fleet-protocol.mjs).
+ * @param {Function} [opts._releaseImpl] — DI for tests (defaults to release from session-lock.mjs).
  * @returns {Promise<object|null>} the enriched v2 lock body on success, null on any failure.
  */
 export async function bootstrapLock({
@@ -99,14 +215,72 @@ export async function bootstrapLock({
   ttlHours = 4,
   nativeSource = null,
   predecessorSessionId = null,
+  claudePid = null,
   _acquireImpl,
   _forceAcquireImpl,
   _emitEventImpl,
+  onNotice,
+  _readLeaseImpl = readNavigatorLease,
+  _releaseImpl,
 } = {}) {
   // Sanity-check required inputs. Anything missing → bail silently.
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
   if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
   if (typeof mode !== 'string' || mode.length === 0) return null;
+
+  // #1635: after /clear or resume in the MAIN checkout, a lead's active lease
+  // means the lead runs headless jobs here — our lock would make its slot check
+  // report the repo as occupied. Yield instead of acquiring, and give back a
+  // lock this same raw id already holds here.
+  const leadHolder = await leadHoldingMainCheckout({
+    repoRoot,
+    sessionId,
+    predecessorSessionId,
+    nativeSource,
+    readLease: _readLeaseImpl,
+  });
+  if (leadHolder !== null) {
+    // Released: a lock with our own raw id (a resume where the harness kept the
+    // id), or one written under our own Claude Code process (#1641 — startup →
+    // /clear mints a new raw id in the same process). Never a lock whose only
+    // "it was us" witness is current-session.json: every session start in this
+    // checkout rewrites that file, so a peer's /clear or resume would release a
+    // LIVE foreign lock. A predecessor from before #1641 carries no
+    // `claude_pid` and still stays until its TTL.
+    await releaseOwnLockForLead({ repoRoot, sessionId, claudePid, releaseImpl: _releaseImpl });
+    if (typeof onNotice === 'function') {
+      // The lease reader admits only [A-Za-z0-9._-] ids, so the id is banner-safe.
+      const sid8 = leadHolder.slice(0, 8);
+      try {
+        onNotice(
+          `Haupt-Checkout belegt durch Lead ${sid8}, arbeite im Worktree`,
+          `🧭 Haupt-Checkout belegt durch Lead ${sid8} — kein Session-Lock, arbeite im Worktree`,
+        );
+      } catch { /* the notice is informational */ }
+    }
+    return null;
+  }
+
+  // #1651: this raw session gave its lock back on purpose
+  // (scripts/release-session-lock.mjs), typically so a headless run can use
+  // the slot. A compaction or resume of that same session is not new work and
+  // must not take the lock again; startup and clear acquire as before. The
+  // marker is removed by the session's next deliberate acquire().
+  if (
+    typeof nativeSource === 'string' &&
+    RELEASED_LOCK_STAYS_RELEASED_SOURCES.has(nativeSource) &&
+    (await hasOwnReleaseMarker(repoRoot, sessionId))
+  ) {
+    if (typeof onNotice === 'function') {
+      try {
+        onNotice(
+          'Session-Lock wurde in dieser Session bewusst freigegeben und nach dem Neueinstieg nicht neu angelegt',
+          'ℹ Session-Lock bewusst freigegeben — nach dem Neueinstieg nicht neu angelegt',
+        );
+      } catch { /* the notice is informational */ }
+    }
+    return null;
+  }
 
   // Resolve DI shims at call time so test mocks can replace the imports.
   let acquireFn = _acquireImpl;
@@ -181,10 +355,23 @@ export async function bootstrapLock({
   // live lock, conjunct (c) holds for the wrong session. `current-session.json`
   // carries no session field of its own (see
   // `.claude/rules/identity-and-locks.md` § shared repo artefacts), which is
-  // exactly why this is a ceiling and not a proof. Revisit when the lock or
-  // current-session.json carries a durable logical-session id of its own.
+  // exactly why this is a ceiling and not a proof.
+  //
+  // #1641 — (b) never holds after /clear: resolveSessionId() mints the label
+  // anew as maxN+1, because the predecessor's own lock is counted (measured
+  // 2026-10-15: lock `…-session-1`, new label `…-session-2`). The process-bound
+  // alternative replaces (b)+(c) with ONE witness the lock itself carries:
+  // `claude_pid` equal to the Claude Code process this hook runs under, on this
+  // host (isSameClaudeProcess). It needs no repo-global artefact, so the
+  // ceiling above does not apply to it. (a) still gates it.
   const isSameLogicalReentry =
     typeof nativeSource === 'string' && SAME_LOGICAL_SESSION_SOURCES.has(nativeSource);
+  const ownProcessPredecessor =
+    acquireResult.ok !== true &&
+    acquireResult.reason === 'active' &&
+    isSameLogicalReentry &&
+    acquireResult.existingLock?.session_id !== sessionId &&
+    (await isSameClaudeProcess(acquireResult.existingLock, claudePid));
 
   const shouldForce =
     acquireResult.ok !== true && (
@@ -200,6 +387,7 @@ export async function bootstrapLock({
       // which this predicate could never force: one damaged file wedged every
       // new session in the repo.
       acquireResult.reason === 'corrupt' ||
+      ownProcessPredecessor ||
       (acquireResult.reason === 'active' &&
         acquireResult.existingLock &&
         (acquireResult.existingLock.session_id === sessionId ||
@@ -238,6 +426,9 @@ export async function bootstrapLock({
       (forcedFrom === 'corrupt' || (forcedFrom === 'stale-heartbeat' && priorOwner !== sessionId))
     ) {
       reclaimed = forcedFrom;
+    } else if (acquireResult?.ok === true && ownProcessPredecessor) {
+      // #1641: countable, so the rate of /clear takeovers can be measured.
+      reclaimed = 'own-process';
     }
     if (reclaimingCorrupt) {
       // The file's content is not echoed: it is unbounded and may be anything.
@@ -348,6 +539,10 @@ export async function bootstrapLock({
       typeof semanticSessionId === 'string' && semanticSessionId.length > 0
         ? semanticSessionId
         : (typeof baseLock.session_id === 'string' ? baseLock.session_id : sessionId),
+    // #1641: the process-bound witness a later /clear in this same process
+    // recognises its predecessor by (isSameClaudeProcess). Absent, not null,
+    // when the harness sets no CLAUDE_PID.
+    ...(typeof claudePid === 'number' ? { claude_pid: claudePid } : {}),
   };
 
   {
@@ -383,6 +578,15 @@ export async function bootstrapLock({
   } catch { /* best-effort — a missing proof never breaks session-start */ }
 
   // Step 3: best-effort observability breadcrumb.
+  // #1636 Pkt 2: a live peer that works here while its lock sits in another
+  // checkout is invisible to acquire(); record it (true/false/null) so its rate
+  // is measured before any conflict banner exists. Absent only if the reader
+  // itself cannot be loaded.
+  let foreignWorkRoot;
+  try {
+    const { foreignWorkRootIn } = await import('./hook-root.mjs');
+    foreignWorkRoot = foreignWorkRootIn(repoRoot, sessionId);
+  } catch { /* the measurement is best-effort */ }
   await emitBestEffort(_emitEventImpl, 'orchestrator.session.lock.acquired', {
     session_id: enriched.session_id,
     semantic_session_id: enriched.semantic_session_id,
@@ -391,9 +595,97 @@ export async function bootstrapLock({
     host: enriched.host,
     ttl_hours: enriched.ttl_hours,
     ...(reclaimed ? { reclaimed } : {}),
+    ...(foreignWorkRoot !== undefined ? { foreign_work_root: foreignWorkRoot } : {}),
   });
 
   return enriched;
+}
+
+/**
+ * #1635 — on a lead yield, release the main checkout's lock IFF it carries our
+ * own raw `session_id`, or was written under our own Claude Code process on this
+ * host (#1641, isSameClaudeProcess); any other lock is never touched. The delete
+ * goes through session-lock.mjs `release()` under the LOCK's raw id with the
+ * repo's persisted owner proof, so release() re-checks both the id and the proof
+ * itself. Never throws; a failed release is one stderr WARN and changes nothing
+ * else — the caller still skips the acquire.
+ *
+ * @param {{ repoRoot: string, sessionId: string, claudePid?: number|null, releaseImpl?: Function }} args
+ * @returns {Promise<void>}
+ */
+async function releaseOwnLockForLead({ repoRoot, sessionId, claudePid = null, releaseImpl }) {
+  let reason = null;
+  try {
+    const lockMod = await import('../../scripts/lib/session-lock.mjs');
+    const existing = lockMod.readLock({ repoRoot });
+    if (!existing || typeof existing.session_id !== 'string') return;
+    if (existing.session_id !== sessionId && !(await isSameClaudeProcess(existing, claudePid))) return;
+    const result = (releaseImpl ?? lockMod.release)({
+      sessionId: existing.session_id,
+      repoRoot,
+      proof: lockMod.loadOwnerProof({ repoRoot }),
+    });
+    if (!result || result.ok !== true) reason = result?.reason ?? 'unknown';
+    else if (result.deleted !== true) reason = result.reason ?? 'not-deleted';
+    else if (result.verified === false) reason = 'lock-still-present';
+  } catch (err) {
+    reason = err?.message ?? 'unknown';
+  }
+  if (reason !== null) {
+    process.stderr.write(
+      `⚠ lock-bootstrap: own session.lock could not be released for the fleet lead (${reason}) — it blocks the lead until its TTL\n`,
+    );
+  }
+}
+
+/**
+ * #1635 — the session id of a fleet lead whose ACTIVE lease keeps this session
+ * out of the main checkout, or null when the lock is taken as before.
+ *
+ * Non-null only when ALL hold: `nativeSource` is clear/resume; `repoRoot/.git`
+ * is a directory (the main worktree — a linked worktree or submodule has a
+ * `.git` FILE, no subprocess needed); `repoRoot/.orchestrator/runtime/fleet`
+ * is a directory (the lease is HOST-global, this marks the repos the fleet
+ * works in); the lease reads `active`; and its `session_id` is neither our
+ * raw id nor our predecessor's (the lead's own tab after /clear has a new raw
+ * id while the lease still carries the old one — it keeps the old behaviour).
+ *
+ * Fail direction: every other outcome — no lease (no fleet: silent), an
+ * expired lease, an unreadable one (one stderr WARN), any exception — returns
+ * null, i.e. the pre-#1635 acquire path. It never blocks the session.
+ *
+ * @param {{ repoRoot: string, sessionId: string, nativeSource: string|null, readLease: Function }} args
+ * @returns {Promise<string|null>}
+ */
+async function leadHoldingMainCheckout({ repoRoot, sessionId, predecessorSessionId, nativeSource, readLease }) {
+  try {
+    if (typeof nativeSource !== 'string' || !LEAD_YIELD_SOURCES.has(nativeSource)) return null;
+    if (!isDirectory(path.join(repoRoot, '.git'))) return null;
+    if (!isDirectory(path.join(repoRoot, '.orchestrator', 'runtime', 'fleet'))) return null;
+    const verdict = await readLease();
+    if (verdict?.state === 'unreadable') {
+      process.stderr.write(
+        `⚠ lock-bootstrap: navigator lease unreadable (${verdict.reason ?? 'unknown'}) — lead occupancy not measurable, taking the lock as before\n`,
+      );
+      return null;
+    }
+    if (verdict?.state !== 'active') return null;
+    const leadId = verdict.lease?.session_id;
+    if (typeof leadId !== 'string' || leadId.length === 0) return null;
+    if (leadId === sessionId || leadId === predecessorSessionId) return null;
+    return leadId;
+  } catch {
+    return null;
+  }
+}
+
+/** True when `p` is a directory itself (lstat: a symlink does not count). Never throws. */
+function isDirectory(p) {
+  try {
+    return fs.lstatSync(p).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 /**

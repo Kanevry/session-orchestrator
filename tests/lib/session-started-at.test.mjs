@@ -2,7 +2,7 @@
  * tests/lib/session-started-at.test.mjs
  *
  * Tests for the STATE.md frontmatter SOURCES in scripts/lib/state-md.mjs —
- * `resolveSessionStartedAt()` / `resolveSessionIds()` (#1368).
+ * `resolveSessionStartedAt()` / `resolveSessionIds()` (#1368, #1663).
  *
  * The bug they exist for: STATE.md's `started_at` was 100% prose-written, so
  * coordinators filled it from `new Date()` at WRITE time. Measured 2026-09-13,
@@ -91,17 +91,38 @@ describe('resolveSessionStartedAt (#1368)', () => {
   });
 });
 
-describe('resolveSessionIds (#1368)', () => {
-  it('yields the raw and semantic ids from the lock', () => {
+describe('resolveSessionIds (#1368, #1663)', () => {
+  // Identity is injected, never inherited: the vitest process itself may run
+  // with a real CLAUDE_CODE_SESSION_ID.
+  const OWN_ENV = { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: UUID };
+  const PEER_ENV = { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: '99999999-8888-4777-8666-555555555555' };
+
+  it('yields the raw and semantic ids from the lock when the lock is this process\'s own', () => {
     seedLock();
-    expect(resolveSessionIds({ repoRoot })).toEqual({
+    expect(resolveSessionIds({ repoRoot, env: OWN_ENV })).toEqual({
       session_id: UUID,
       semantic_session_id: SEMANTIC,
     });
   });
 
+  it('a lock naming a peer yields null ids — STATE.md is written without session-id, never with the foreign one (#1663)', () => {
+    seedLock();
+    expect(resolveSessionIds({ repoRoot, env: PEER_ENV })).toEqual({
+      session_id: null,
+      semantic_session_id: null,
+    });
+  });
+
+  it('a process that cannot name its own id keeps the lock label but no session-id (#1663 ceiling, #429 label join)', () => {
+    seedLock();
+    expect(resolveSessionIds({ repoRoot, env: {} })).toEqual({
+      session_id: null,
+      semantic_session_id: SEMANTIC,
+    });
+  });
+
   it('yields nulls (never placeholders) when no lock exists — the writer must OMIT the keys', () => {
-    expect(resolveSessionIds({ repoRoot })).toEqual({
+    expect(resolveSessionIds({ repoRoot, env: OWN_ENV })).toEqual({
       session_id: null,
       semantic_session_id: null,
     });
@@ -109,7 +130,7 @@ describe('resolveSessionIds (#1368)', () => {
 
   it('yields a null semantic id for the lock shape that carries no semantic_session_id field', () => {
     seedLock({ semantic_session_id: undefined });
-    expect(resolveSessionIds({ repoRoot })).toEqual({
+    expect(resolveSessionIds({ repoRoot, env: OWN_ENV })).toEqual({
       session_id: UUID,
       semantic_session_id: null,
     });

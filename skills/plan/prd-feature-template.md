@@ -25,6 +25,13 @@
 ### Who
 {{Target users — existing personas or new audience — from Wave 1 Q3}}
 
+### Evidence Baseline
+> The premise, measured. One row per claim the plan rests on. A claim that did not reproduce stays here, marked `hypothesis`.
+
+| Claim | Command | Result | Measured (date / SHA) |
+|-------|---------|--------|-----------------------|
+| {{premise}} | `{{command}}` | {{result}} | {{YYYY-MM-DD @ sha}} |
+
 ## 2. Solution & Scope
 
 ### In-Scope
@@ -35,6 +42,9 @@
 ### Out-of-Scope
 - {{excluded-1 — why}}
 - {{excluded-2 — why}}
+
+### First Real Use / Kill
+{{The first use outside tests, who triggers it and by when (e.g. "first committed manifest in a consumer repo by YYYY-MM-DD"). If it has not happened by then: re-shape or kill (mvp-scope Circuit Breaker), never silent carry-over.}}
 
 ## User Stories
 
@@ -76,6 +86,15 @@ Given {{error condition}}
 When {{action}}
 Then {{graceful handling}}
 ```
+
+> Under every scenario block, add one line `Oracle: {{who or what other than the author shows it holds — the installed artifact read back, the platform's own output, an independent process, a calibration fixture with known answers, a consumer-repo run}}`. Use `Oracle: n/a — {{reason}}` only when no such judge exists. The author's unit test against a fake is not an oracle.
+
+### External Acceptance
+> Criteria whose oracle cannot run inside the implementing session. Each row becomes its own `[Abnahme]` issue (SKILL.md § 6.1), which the implementing issue does not close.
+
+| Criterion | Oracle | Owner | Not before | Pass condition | Fallback if it cannot run |
+|-----------|--------|-------|------------|----------------|---------------------------|
+| {{AC ref}} | {{command / observation}} | {{owner}} | {{YYYY-MM-DD}} | {{pass}} | {{fallback}} |
 
 ## 3.A Acceptance Criteria (EARS)
 

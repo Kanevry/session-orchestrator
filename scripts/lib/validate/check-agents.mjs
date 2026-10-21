@@ -6,9 +6,9 @@
 
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
-import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE } from '../agent-frontmatter.mjs';
+import { ALLOWED_MODEL_ALIASES, MODEL_ID_RE, checkAgentEffort } from '../agent-frontmatter.mjs';
 import { extractInitialFrontmatter } from './frontmatter-block.mjs';
 import { parseFrontmatterDescription } from '../description-surface.mjs';
 
@@ -18,7 +18,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 let _tierModule = null;
 async function getTierModule() {
   if (!_tierModule) {
-    _tierModule = await import(join(__dirname, 'tier-inference.mjs'));
+    _tierModule = await import(pathToFileURL(join(__dirname, 'tier-inference.mjs')).href);
   }
   return _tierModule;
 }
@@ -103,11 +103,26 @@ function parseFrontmatterYaml(yamlText) {
 
 /**
  * Get a scalar field value from frontmatter text.
- * Returns null if field not present.
+ * Returns null if field not present or its value is empty. `[ \t]*` instead of
+ * `\s*`: an empty `key:` must not read the NEXT line as its value.
  */
 function getField(fm, name) {
-  const m = fm.match(new RegExp(`^${name}:\\s*(.+)$`, 'm'));
+  const m = fm.match(new RegExp(`^${name}:[ \t]*(.+)$`, 'm'));
   return m ? m[1].trim() : null;
+}
+
+/**
+ * Like getField, but for plain enum-like scalars (`model`, `effort`): strips one
+ * pair of surrounding quotes and a trailing YAML comment, so `effort: "medium"`
+ * and `effort: medium # reason` read as `medium`. Not for free text such as
+ * `description`, where ` #` may be content.
+ */
+function getScalarField(fm, name) {
+  const raw = getField(fm, name);
+  if (raw === null) return null;
+  const quoted = raw.match(/^(["'])(.*)\1(?:\s+#.*)?$/);
+  if (quoted) return quoted[2];
+  return raw.replace(/(^|\s+)#.*$/, '').trim();
 }
 
 /**
@@ -323,11 +338,27 @@ if (mdFiles.length === 0) {
     // do not re-declare the alias set or the model-ID regex here.
     // Per https://code.claude.com/docs/en/sub-agents — the canonical doc accepts both.
     if (hasField(frontmatter, 'model')) {
-      const modelVal = getField(frontmatter, 'model');
+      const modelVal = getScalarField(frontmatter, 'model');
       if (modelVal === null || (!ALLOWED_MODEL_ALIASES.has(modelVal) && !MODEL_ID_RE.test(modelVal))) {
         const got = modelVal ?? '';
         const aliasList = [...ALLOWED_MODEL_ALIASES].join('|');
         fail(`${agentName}: model must be ${aliasList} or a full model ID like 'claude-opus-5-5' or 'claude-sonnet-5' (got: '${got}')`);
+      }
+    }
+
+    // effort: required when model ≠ inherit, enum low|medium|high|xhigh|max (#1614).
+    // Rule lives in agent-frontmatter.mjs (checkAgentEffort) — do not re-declare it here.
+    const effortError = checkAgentEffort(
+      hasField(frontmatter, 'model') ? (getScalarField(frontmatter, 'model') ?? '') : undefined,
+      hasField(frontmatter, 'effort') ? (getScalarField(frontmatter, 'effort') ?? '') : undefined,
+    );
+    if (effortError) fail(`${agentName}: ${effortError.message}`);
+
+    // omitClaudeMd: optional boolean (#1616) — a typo such as `yes` would be ignored silently.
+    if (hasField(frontmatter, 'omitClaudeMd')) {
+      const omitVal = getField(frontmatter, 'omitClaudeMd');
+      if (omitVal !== 'true' && omitVal !== 'false') {
+        fail(`${agentName}: omitClaudeMd must be true or false (got: '${omitVal ?? ''}')`);
       }
     }
 

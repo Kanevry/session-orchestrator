@@ -45,6 +45,8 @@ export const SESSION_KEY_ALIASES = Object.freeze({
   issues_filed: 'issues_created',
   issues_planned: 'planned_issues',
   files_changed: 'total_files_changed',
+  // No `agents_total` alias (#1699): session-record-repair.mjs lets the agent_summary sum win over it
+  // and flags a disagreement; an alias here would make normalize/migrate prefer agents_total instead.
   snapshots: 'snapshots_created',
   learnings: 'learnings_added',
   waves_total: 'total_waves',
@@ -252,6 +254,13 @@ export const OPTIONAL_FIELDS = Object.freeze([
   // 2026-10-01), so the counters say which of the two it is.
   'cost_records_priced',
   'cost_records_total',
+  // #1659 — `[{ tree, start_ref }]`: the work trees this session committed in,
+  // from its own `orchestrator.session.work_tree` events. Written by
+  // scripts/emit-session.mjs only when it adds something beyond
+  // `session_start_ref` (≥2 trees, or one tree that is not the own checkout).
+  // Shape (absolute `tree`, full hex `start_ref`) is enforced at that writer —
+  // malformed entries are dropped with a WARN — not in validateSession().
+  'session_work_trees',
   // #1470 Pkt 4/6 — what `total_cost_usd` is and which price table produced
   // the cost fields. Merged by scripts/emit-session.mjs from
   // scripts/lib/telemetry/pricing.mjs (`COST_BASIS`, `PRICING_TABLE_DATE`):

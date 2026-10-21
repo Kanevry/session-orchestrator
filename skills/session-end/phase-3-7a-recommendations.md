@@ -24,6 +24,10 @@ try {
   // parallel-session CWD drift). Passing an undefined repoRoot here sends every close down
   // the fail-open catch below and silently omits all 5 fields (GitLab #1036).
   const repoRoot = execSync('git rev-parse --show-toplevel', {encoding: 'utf8'}).trim();
+  // SAME path Phase 3.4 writes `status: completed` into (#1640): the STATE.md
+  // this session's state-init wrote. Pass it explicitly — never let the
+  // resolver re-guess, or a foreign .claude/STATE.md can take the fields.
+  const statePath = '<state-dir>/STATE.md';
 
   // In-memory session metrics — pulled from the session's running state,
   // NOT re-read from sessions.jsonl (which was just-written in Phase 3.7).
@@ -41,8 +45,9 @@ try {
     'rationale': rec.rationale,
   };
 
-  await updateFrontmatterFieldsOnDisk(repoRoot, fields);
-  console.log('Recommendations written: ' + rec.mode + ' (' + rec.rationale + ')');
+  const res = await updateFrontmatterFieldsOnDisk(repoRoot, fields, {statePath});
+  if (res.reason) throw new Error('STATE.md not written (' + res.reason + '): ' + res.path);
+  console.log('Recommendations written to ' + res.path + ': ' + rec.mode + ' (' + rec.rationale + ')');
 } catch (err) {
   // AC3: defensive — exception must NOT block Phase 3.4 status: completed.
   mkdirSync('.orchestrator/metrics', {recursive: true});
@@ -62,6 +67,8 @@ try {
 ```
 
 **Repo-root contract (#1036 / Kanevry#65):** `updateFrontmatterFieldsOnDisk(repoRoot, fields)` takes the repo root as its FIRST argument and rejects a missing one via `requireRepoRoot()` — there is no implicit `process.cwd()` fallback, deliberately (parallel-session CWD drift, PSA rules). Run the snippet verbatim, including the `repoRoot` binding: an `undefined` first argument throws *before* STATE.md is touched, and the AC3 catch in the snippet turns that throw into a green close with all 5 fields missing. That failure is invisible in STATE.md — it looks exactly like "this session produced no recommendation".
+
+**Shared path source (#1640):** `statePath` is the one `<state-dir>/STATE.md` value this close uses for BOTH Phase 3.7a and Phase 3.4 — substitute the identical path in both snippets. The writer still refuses a target that is another session's COMPLETED record (`reason: 'foreign-state-md'`, stderr names the file); it never overwrites such a record and never redirects the write. Phase 3.4 re-stamps `session-id` to the closing process's own id, so a re-run of this phase after 3.4 still finds its own file.
 
 **Data source guarantee:** The three inputs (`completionRate`, `carryoverRatio`, `carryoverIssues`) MUST come from the in-memory session metrics object built in Phase 1.7, NOT from a re-read of `.orchestrator/metrics/sessions.jsonl`. Reading the just-written JSONL would introduce a circular dependency and risk reading a truncated line if Phase 3.7's `appendJsonl` was mid-flush.
 

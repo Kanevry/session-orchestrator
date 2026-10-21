@@ -47,7 +47,7 @@ import { parseArgs } from 'node:util';
 import path from 'node:path';
 
 import { repairLedger, CANONICAL_LEDGER_REL } from './lib/session-record-repair.mjs';
-import { getProjectDir } from './lib/platform.mjs';
+import { getProjectDir, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const USAGE =
@@ -60,7 +60,8 @@ const USAGE =
   CANONICAL_LEDGER_REL +
   ');\n' +
   '                must resolve inside <repo-root>/.orchestrator/metrics/\n' +
-  '  --repo-root   project root (default: resolved project dir)\n' +
+  '  --repo-root   project root (default: the resolved project dir\'s ledger root —\n' +
+  '                its main checkout when run from a linked worktree)\n' +
   'Exit codes: 0 completed, 1 arg error, 2 system error, 3 post-verification failed\n' +
   '            (backup restored), 4 unrepairable remain (N lines kept byte-identical;\n' +
   '            every repairable line fixed — dry-run: would remain)\n';
@@ -109,6 +110,44 @@ function resolveLedgerTarget(file, repoRoot) {
 }
 
 /**
+ * Refuse an explicit `--repo-root` whose ledger path follows a symlink (#1665).
+ * The ledger guard admits the absolute `--apply` form only after
+ * `isSymlinkFreeAbsolute` (hooks/pre-bash-sessions-ledger-guard.mjs) accepted
+ * the root and the ledger, but it checks BEFORE this process runs, and
+ * {@link resolveLedgerTarget} follows symlinks via `realpathSync` — a link
+ * swapped in between the two would redirect the repair (TOCTOU).
+ *
+ * Same rule as the hook: NO component of the path may be a symlink — the root,
+ * every ancestor (so a root under macOS `/tmp` → `/private/tmp` is refused,
+ * exactly as the hook refuses it), `.orchestrator/`, `metrics/` and the ledger
+ * file — and the root must equal its own `realpath`. `lstat` judges the link
+ * itself, never its target. One deliberate difference: a MISSING component is
+ * not a symlink here; the repair reports it as the I/O error it is.
+ *
+ * @param {string} repoRoot - the explicit `--repo-root` value
+ * @param {string} ledgerFile - the requested ledger path under that root
+ * @returns {string|null} the reason to refuse, or null
+ */
+function symlinkRefusal(repoRoot, ledgerFile) {
+  for (let current = path.resolve(ledgerFile); ; current = path.dirname(current)) {
+    try {
+      if (fs.lstatSync(current).isSymbolicLink()) return `${current} is a symlink`;
+    } catch {
+      /* absent — nothing to follow */
+    }
+    if (path.dirname(current) === current) break;
+  }
+  const root = path.resolve(repoRoot);
+  try {
+    const real = fs.realpathSync.native(root);
+    if (real !== root) return `${root} resolves to ${real}`;
+  } catch {
+    /* absent — the repair reports the missing ledger */
+  }
+  return null;
+}
+
+/**
  * Human-readable summary — mirrors `scripts/backfill-abandoned-sessions.mjs`
  * `renderHuman()` so the two migration CLIs read the same way.
  *
@@ -123,6 +162,9 @@ export function renderHuman(s) {
   lines.push(`  invalid before:  ${s.invalid_before}`);
   lines.push(`  ${s.mode === 'apply' ? 'repaired:       ' : 'would repair:   '} ${s.repaired}`);
   lines.push(`  invalid after:   ${s.invalid_after}${s.mode === 'apply' ? '' : ' (projected)'}`);
+  if (s.healed_valid > 0) {
+    lines.push(`  healed (valid):  ${s.healed_valid}`);
+  }
   if (s.unparseable > 0) {
     lines.push(`  unparseable:     ${s.unparseable} (passed through untouched)`);
   }
@@ -148,6 +190,10 @@ export function renderHuman(s) {
   }
   if (s.ok === false) {
     lines.push('  POST-VERIFICATION FAILED — backup restored, ledger unchanged.');
+    // #1670: lines appended after the rename are kept, not rolled back with the repair.
+    if (s.restore_appended_bytes > 0) {
+      lines.push(`  kept:            ${s.restore_appended_bytes} byte(s) appended concurrently after the rename`);
+    }
   } else if (s.errors.length > 0) {
     lines.push(
       s.mode === 'apply'
@@ -201,8 +247,26 @@ async function main() {
 
   // --apply is an explicit opt-in; absent it (or with --dry-run) we never write.
   const apply = values.apply === true && values['dry-run'] !== true;
-  const repoRoot = values['repo-root'] || getProjectDir();
+  // #1592: only the DEFAULT follows the ledger to the main checkout, where
+  // every writer appends. An explicit --repo-root stays the literal target: the
+  // ledger guard sanctions the absolute --apply form only for a --repo-root
+  // equal to the measured Git top-level and outside the resolved vault — mapping
+  // it would let a linked worktree of the vault write the vault's main ledger.
+  const repoRoot = values['repo-root'] || resolveEventsLedgerRoot(getProjectDir());
   const requestedFile = values.file || path.join(repoRoot, CANONICAL_LEDGER_REL);
+
+  // #1665: an explicit root is the whole target identity — never follow a
+  // symlink anywhere on the ledger path, checked BEFORE any I/O (dry-run too).
+  if (values['repo-root']) {
+    const refusal = symlinkRefusal(repoRoot, requestedFile);
+    if (refusal) {
+      process.stderr.write(
+        `repair-invalid-sessions: refusing --repo-root ${repoRoot}: ${refusal} ` +
+          `(the ledger path under an explicit --repo-root must not follow symlinks — #1665)\n`
+      );
+      process.exit(1);
+    }
+  }
 
   // MED-3: bound the target to <repoRoot>/.orchestrator/metrics/ BEFORE any I/O.
   const target = resolveLedgerTarget(requestedFile, repoRoot);

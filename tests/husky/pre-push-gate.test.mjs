@@ -38,6 +38,9 @@
  *      Proven red on the unmodified hook (quoted in the #C10 report): a push
  *      to `ssh://user@host/path` — not a configured remote — ran the gate and
  *      could block on it.
+ *  10. (#1623) a commit lands on the pushed ref WHILE the gate runs → the hook
+ *      exits 0 for a ref whose tip the gate never saw (incident: f98eeed5 gated,
+ *      remote ended at da651658).
  *   9. (#C10) a PUBLISH push — a configured remote NAME, or a URL-form push
  *      whose URL matches a configured remote (`git push https://github.com/...`)
  *      — is misread as scratch and skips the gate it needs.
@@ -81,6 +84,10 @@ afterEach(() => {
  */
 const GATE_PROBE_SRC = [
   "import { writeFileSync } from 'node:fs';",
+  "import { execFileSync } from 'node:child_process';",
+  // #1623: simulate a commit made in the pushed worktree while the gate runs.
+  "if (process.env.MOVE_REPO) execFileSync('git', ['-C', process.env.MOVE_REPO, '-c', 'core.hooksPath=/dev/null',",
+  "  'commit', '-q', '--allow-empty', '-m', 'made during the gate']);",
   // The sentinel records ARGV, not just the fact of the run: the hook hands the
   // gate the real repo root as `--ledger-root <root>` (it runs inside a
   // throwaway clone whose own .orchestrator/ dies with the EXIT trap), and
@@ -107,13 +114,18 @@ const GATE_PROBE_SRC = [
  * argv-less path is UNCHANGED — the bug class this locks in is a divergence
  * between the two.
  */
-function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args, remotes = {} } = {}) {
+function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args, remotes = {}, moveDuringGate = false } = {}) {
   if (args) {
     const dir = makeTmpDir('so-pre-push-remote-');
     tmpDirs.push(dir);
-    const gateRanFile = join(makeTmpDir('so-pre-push-sentinel-'), 'gate-ran');
+    const sentinelDir = makeTmpDir('so-pre-push-sentinel-');
+    tmpDirs.push(sentinelDir);
+    const gateRanFile = join(sentinelDir, 'gate-ran');
 
     fixtureGit(['init', '-q', dir]);
+    // The default stdin names refs/heads/feat/x — make it the real checked-out
+    // branch so the post-gate moved-ref re-check (#1623) sees an existing ref.
+    fixtureGit(['-C', dir, 'symbolic-ref', 'HEAD', 'refs/heads/feat/x']);
     fixtureGit(['-C', dir, 'config', 'user.email', 'test@example.com']);
     fixtureGit(['-C', dir, 'config', 'user.name', 'Test']);
     fixtureGit(['-C', dir, 'config', 'commit.gpgsign', 'false']);
@@ -139,6 +151,7 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
     const childEnv = { ...process.env };
     delete childEnv.SKIP_QUALITY_GATE;
     Object.assign(childEnv, { GATE_RAN_FILE: gateRanFile, GATE_EXIT: String(gateExit) }, env);
+    if (moveDuringGate) childEnv.MOVE_REPO = dir;
     const res = spawnSync('sh', ['-e', HOOK_PATH, ...args], {
       cwd: dir,
       input: stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
@@ -151,6 +164,7 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
       res,
       gateRan,
       dir,
+      sha,
       gateArgv: gateRan ? JSON.parse(readFileSync(gateRanFile, 'utf8')) : null,
     };
   }
@@ -308,6 +322,25 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
     // `git rev-parse --show-toplevel` returns the resolved path, so compare
     // against realpath (/var → /private/var on macOS).
     expect(gateArgv[idx + 1]).toBe(realpathSync(dir));
+  });
+
+  it('warns, but lets the gated sha through, when the pushed ref moves while the gate runs (#1623)', { timeout: 60_000 }, () => {
+    // bug_caught: #10 — without the post-gate re-check the operator is never told
+    // that refs/heads/feat/x moved on to a commit that is neither pushed nor
+    // gated. git sends the sha it resolved before the hook (measured local + SSH,
+    // 2026-10-14), so the push itself stays allowed.
+    const { res, gateRan, dir, sha } = runPrePush({
+      args: ['origin', ORIGIN_URL],
+      remotes: { origin: ORIGIN_URL },
+      moveDuringGate: true,
+    });
+    const now = fixtureGit(['-C', dir, 'rev-parse', 'refs/heads/feat/x'], undefined, { encoding: 'utf8' }).trim();
+
+    expect(gateRan).toBe(true);
+    expect(now).not.toBe(sha);
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain(`gated ${sha}, now ${now}`);
+    expect(res.stderr).toContain('neither pushed nor gated');
   });
 
   it.each([

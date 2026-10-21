@@ -36,7 +36,8 @@
  *   env: { ...process.env, ...telemetryIsolationEnv(), ...testSpecificEnv }
  */
 
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { afterAll } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +48,13 @@ import { join } from 'node:path';
  * @type {string|null}
  */
 let sharedHome = null;
+
+// Registered at import time (collection phase of the importing test file), where
+// afterAll is legal; isolatedHome() itself is usually first called inside a test.
+afterAll(() => {
+  if (sharedHome !== null) rmSync(sharedHome, { recursive: true, force: true });
+  sharedHome = null;
+});
 
 /** @returns {string} the process-wide throwaway HOME (created on first use). */
 export function isolatedHome() {

@@ -1,7 +1,9 @@
 ---
 name: skill-applied-judge
-description: 'Use this agent at session-end Phase 3.6.6 (#645 L3) to judge — from the session transcript evidence (excerpts) — whether each selected skill was actually APPLIED and whether its work COMPLETED. Dispatched read-only by scripts/lib/skill-judge.mjs::runSkillJudge as Haiku with a bounded per-call budget. RETURNS one fenced json block of advisory per-skill judgments; the coordinator writes them. Read-only by contract — never writes files. Advisory-only — output never gates any action. <example>Context: session-end Phase 3.6.6 with skill-evolution.judge: true. user "Judge whether the skills this session selected were actually applied." assistant "Dispatching skill-applied-judge to read the transcript evidence and emit advisory applied/completed judgments for each selected skill." <commentary>The judge produces a cheap advisory signal feeding the L3 skill-judgments sidecar — never an auto-action gate.</commentary></example>'
+description: 'Use this agent at session-end Phase 3.6.6 (#645 L3) to judge — from the session transcript evidence (excerpts) — whether each selected skill was actually APPLIED and whether its work COMPLETED. Dispatched read-only by scripts/lib/skill-judge.mjs::runSkillJudge as Haiku with a bounded per-call budget. RETURNS one fenced json block of advisory per-skill judgments; the coordinator writes them. Read-only by contract — never writes files. Advisory-only — output never gates any action.'
 model: haiku
+effort: medium
+omitClaudeMd: true
 color: cyan
 tools: Read, Grep, Glob
 sandbox-tier: read-only
@@ -135,3 +137,7 @@ Rules:
 - `scripts/lib/skill-judgments-schema.mjs` — the schema the coordinator validates against
 - `skills/session-end/SKILL.md` § Phase 3.6.6 — the dispatch + write site
 - Issue #645 (OpenSpace A, epic #643) — original spec and L3 acceptance criteria
+
+## Examples
+
+<example>Context: session-end Phase 3.6.6 with skill-evolution.judge: true. user "Judge whether the skills this session selected were actually applied." assistant "Dispatching skill-applied-judge to read the transcript evidence and emit advisory applied/completed judgments for each selected skill." <commentary>The judge produces a cheap advisory signal feeding the L3 skill-judgments sidecar — never an auto-action gate.</commentary></example>

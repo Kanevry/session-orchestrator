@@ -18,11 +18,25 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { rmSync } from 'node:fs';
 
 import { evaluateSession } from '@lib/eval/engine.mjs';
+import { resolveSession } from '@lib/eval/session-resolve.mjs';
 import { writeFixture, isoOffset } from '../fixtures/eval/metrics-tree/build.mjs';
 
 const FIXED_TS = '2026-07-16T12:00:00.000Z';
 
 const dirsToClean = [];
+
+describe('resolveSession — measured cascade (#1584)', () => {
+  it('skips a synthetic completed backfill in the cascade but preserves explicit retrieval', () => {
+    const measured = { session_id: 'measured', session_type: 'deep', status: 'completed' };
+    const synthetic = { session_id: 'stub', status: 'completed', session_type: 'unknown', _synthetic: true };
+    expect(resolveSession([measured, synthetic]).record).toBe(measured);
+    expect(resolveSession([measured, synthetic], 'stub')).toEqual({ record: synthetic, resolvedVia: 'explicit' });
+  });
+  it('keeps explicit retrieval of a nonsynthetic known-type abandoned legacy record', () => {
+    const legacy = { session_id: 'legacy', session_type: 'deep', status: 'abandoned' };
+    expect(resolveSession([legacy], 'legacy')).toEqual({ record: legacy, resolvedVia: 'explicit' });
+  });
+});
 afterEach(() => {
   while (dirsToClean.length) {
     const dir = dirsToClean.pop();

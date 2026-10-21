@@ -16,8 +16,9 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/post-tool-batch-wave-signal.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/post-tool-batch-wave-signal.mjs', import.meta.url));
 const MINE = '44444444-4444-4444-8444-444444444444';
 
 const dirs = [];

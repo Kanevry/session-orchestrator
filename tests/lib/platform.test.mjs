@@ -6,7 +6,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +27,7 @@ import {
   resolvePluginRoot,
   resolveProjectDir,
   resolveSessionRoot,
+  linkedWorktreeSpot,
   resolveStateDir,
   resolveConfigFile,
 } from '@lib/platform.mjs';
@@ -44,6 +46,12 @@ const ENV_KEYS = [
   'CODEX_PROJECT_DIR',
   'CURSOR_PROJECT_DIR',
   'PI_PROJECT_DIR',
+  // Harness shell markers (#1636) — the shell running these tests inherits its
+  // own harness's markers, which would otherwise decide every detectPlatform case.
+  'CLAUDECODE',
+  'CLAUDE_CODE_ENTRYPOINT',
+  'CLAUDE_CODE_SESSION_ID',
+  'CODEX_THREAD_ID',
 ];
 
 beforeEach(() => {
@@ -302,6 +310,30 @@ describe('detectPlatform', () => {
     // a .claude-plugin dir — which would also return "claude".
     const result = detectPlatform();
     expect(['claude', 'codex', 'cursor', 'pi']).toContain(result);
+  });
+
+  // #1636: the marker walk describes the REPO, not the harness — a Codex shell
+  // in a repo shipping .claude-plugin resolved 'claude'. Only CODEX_THREAD_ID
+  // may decide; Claude's markers are inherited by cursor-agent/pi shells that
+  // the foreign dispatch launches from a Claude Code shell.
+  it.each([
+    ['codex shell marker only', { CODEX_THREAD_ID: 't-1' }, '.claude-plugin', 'codex'],
+    ['codex shell with an inherited CLAUDE_CODE_SESSION_ID', { CODEX_THREAD_ID: 't-1', CLAUDE_CODE_SESSION_ID: 'uuid' }, '.claude-plugin', 'codex'],
+    ['codex nested under a Claude Code shell', { CODEX_THREAD_ID: 't-1', CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, '.claude-plugin', 'codex'],
+    ['inherited Claude markers do not override a cursor repo', { CLAUDECODE: '1', CLAUDE_CODE_ENTRYPOINT: 'cli' }, path.join('.cursor', 'rules'), 'cursor'],
+    ['CLAUDE_CODE_SESSION_ID alone → marker walk', { CLAUDE_CODE_SESSION_ID: 'uuid' }, '.codex-plugin', 'codex'],
+  ])('harness shell markers: %s', (_case, env, repoMarker, expected) => {
+    const repo = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-shell-marker-')));
+    try {
+      mkdirSync(path.join(repo, '.git'));
+      mkdirSync(path.join(repo, repoMarker), { recursive: true });
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      vi.spyOn(process, 'cwd').mockReturnValue(repo);
+      expect(detectPlatform()).toBe(expected);
+    } finally {
+      vi.restoreAllMocks();
+      rmSync(repo, { recursive: true, force: true });
+    }
   });
 });
 
@@ -785,5 +817,50 @@ describe('resolveSessionRoot — case-insensitive volume spelling (#1504 point 8
     // Control: the same spelling as the repo root clamps either way.
     vi.stubEnv('CLAUDE_PROJECT_DIR', pkg);
     expect(resolveSessionRoot(pkg)).toBe(pkg);
+  });
+});
+
+describe('linkedWorktreeSpot (#1605)', () => {
+  /** @type {string} */
+  let sandbox;
+
+  beforeEach(() => {
+    sandbox = realpathSync(mkdtempSync(path.join(tmpdir(), 'so-linked-spot-')));
+  });
+
+  afterEach(() => {
+    rmSync(sandbox, { recursive: true, force: true });
+  });
+
+  it.each([
+    // Review LOW 4: a folder holding a COPIED `.git` file of a real worktree
+    // (`gitdir: <main>/.git/worktrees/wt`) was accepted as that worktree.
+    ['a forged .git file pointing at a real worktree', 'fake', 'main', ''],
+    // Review HIGH 1 (b): the main checkout is never a relocation target.
+    ['the main checkout, from a launch in a linked worktree', 'main', 'wt', ''],
+    // Review LOW 5: a launch in `main/pkg` landed in the worktree ROOT.
+    ['a launch subdirectory, carried into the worktree', 'wt/pkg', 'main/pkg', 'wt/pkg'],
+  ])('%s', (_label, cwdRel, launchRel, expectedRel) => {
+    const main = path.join(sandbox, 'main');
+    mkdirSync(path.join(main, 'pkg'), { recursive: true });
+    writeFileSync(path.join(main, 'pkg', 'a.txt'), 'x');
+    const git = (...args) => {
+      const r = spawnSync('git', args, {
+        cwd: main,
+        encoding: 'utf8',
+        env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@example.com', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@example.com' },
+      });
+      expect(r.status, r.stderr).toBe(0);
+    };
+    git('init', '-q');
+    git('add', '.');
+    git('commit', '-qm', 'init');
+    git('worktree', 'add', '-q', '-b', 'wt-branch', path.join(sandbox, 'wt'));
+    mkdirSync(path.join(sandbox, 'fake'));
+    copyFileSync(path.join(sandbox, 'wt', '.git'), path.join(sandbox, 'fake', '.git'));
+
+    const spot = linkedWorktreeSpot(path.join(sandbox, cwdRel), path.join(sandbox, launchRel));
+
+    expect(spot).toBe(expectedRel === '' ? '' : path.join(sandbox, expectedRel));
   });
 });

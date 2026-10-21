@@ -64,6 +64,10 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
         // exactly the input several tests below claim to control. `undefined`
         // removes the key from the child env (node skips undefined entries).
         CLAUDE_CODE_SESSION_ID: undefined,
+        // #1641 — same hazard: the live harness exports CLAUDE_PID, and the hook
+        // stamps it on the lock as the predecessor witness. A test that wants
+        // one passes it explicitly.
+        CLAUDE_PID: undefined,
         // #1138 — the hook reads the host's telemetry consent record to decide
         // whether to inject the consent nudge. It never WRITES it, so there is
         // no data hazard here; the hazard is determinism, because stdout would
@@ -281,6 +285,57 @@ describe('normal run — event written to JSONL', { timeout: 15000 }, () => {
     const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' }).stdout.trim();
     expect(evt.head_sha).toMatch(/^[0-9a-f]{40}$/);
     expect(evt.head_sha).toBe(head);
+    // #1668 — no upstream configured: not measured, so both keys are absent.
+    expect(evt).not.toHaveProperty('upstream_sha');
+    expect(evt).not.toHaveProperty('behind');
+  });
+
+  // Bug caught (#1668): the start event carried only head_sha, so a checkout
+  // that was behind its upstream at start was indistinguishable from a current
+  // one — emit-session then adopted a ref whose range spans the upstream
+  // commits a later pull brings in. Real clone, behind by one fetched commit.
+  it('records upstream_sha and behind from local refs when the checkout trails its upstream (#1668)', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'hook-session-start-upstream-'));
+    tmpDirs.push(base);
+    const gitEnv = {
+      ...process.env,
+      GIT_AUTHOR_NAME: 'Test',
+      GIT_AUTHOR_EMAIL: 'test@example.com',
+      GIT_COMMITTER_NAME: 'Test',
+      GIT_COMMITTER_EMAIL: 'test@example.com',
+    };
+    const git = (cwd, ...args) => {
+      const r = spawnSync('git', ['-c', 'commit.gpgsign=false', ...args], { cwd, env: gitEnv, encoding: 'utf8' });
+      if (r.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+      return r.stdout.trim();
+    };
+    const seed = path.join(base, 'seed');
+    const work = path.join(base, 'work');
+    await fs.mkdir(seed);
+    git(seed, 'init', '-q', '-b', 'main');
+    git(seed, 'commit', '-q', '--allow-empty', '-m', 'one');
+    git(base, 'clone', '-q', '--bare', seed, 'up.git');
+    git(base, 'clone', '-q', 'up.git', 'work');
+    const startSha = git(work, 'rev-parse', 'HEAD');
+    git(seed, 'commit', '-q', '--allow-empty', '-m', 'two (foreign upstream commit)');
+    git(seed, 'push', '-q', path.join(base, 'up.git'), 'main');
+    git(work, 'fetch', '-q');
+    const upstreamSha = git(work, 'rev-parse', 'origin/main');
+
+    await runHook({ projectDir: work });
+    const [behindEvt] = await readEvents(work);
+    expect(behindEvt.head_sha).toBe(startSha);
+    expect(behindEvt.upstream_sha).toBe(upstreamSha);
+    expect(behindEvt.behind).toBe(1);
+
+    // Caught up: measured-not-behind is an explicit 0, not an absent key.
+    git(work, 'merge', '-q', '--ff-only', 'origin/main');
+    await fs.rm(path.join(work, EVENTS_RELPATH));
+    await runHook({ projectDir: work });
+    const [currentEvt] = await readEvents(work);
+    expect(currentEvt.head_sha).toBe(upstreamSha);
+    expect(currentEvt.upstream_sha).toBe(upstreamSha);
+    expect(currentEvt.behind).toBe(0);
   });
 });
 
@@ -572,37 +627,39 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
     expect(() => assertPeerContract(withoutLimitation)).toThrow();
   });
 
-  it('prepends a WARN icon when peer count meets concurrent-sessions-warn threshold', async () => {
-    // Pre-populate the registry with 2 live peers (threshold in test CLAUDE.md: 2).
+  // #1650 — the WARN icon used to fire on `peer_count >= concurrent-sessions-warn`,
+  // a permanent state measured on 67.4% of M4 starts (HR-101). Bug this catches:
+  // the icon tracking the standing peer count again instead of a start wave, or
+  // the start-wave count leaking a clock-skewed future stamp into a permanent wave.
+  it.each([
+    // 5 foreign starts in the last minute → start wave. A 6th peer stamped an
+    // hour in the future must not count.
+    { name: 'start wave', recentMin: 1, warn: true, recent: 5 },
+    // Same 5 peers + a lowered concurrent-sessions-warn, but started 10 min ago:
+    // many live peers alone are information, never a WARN.
+    { name: 'standing peers', recentMin: 10, warn: false, recent: 0 },
+  ])('re-aims the peer WARN icon to a start wave, not the peer count ($name)', async ({ recentMin, warn, recent }) => {
     const activeDir = path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active');
     await fs.mkdir(activeDir, { recursive: true });
-    const now = new Date().toISOString();
-    await fs.writeFile(
-      path.join(activeDir, 'peer-a.json'),
-      JSON.stringify({
-        session_id: 'peer-a',
-        pid: 99999,
-        repo_name: 'demo',
-        branch: 'main',
-        started_at: now,
-        last_heartbeat: now,
-        status: 'active',
-        current_wave: 0,
-      }),
-    );
-    await fs.writeFile(
-      path.join(activeDir, 'peer-b.json'),
-      JSON.stringify({
-        session_id: 'peer-b',
-        pid: 99999,
-        repo_name: 'demo',
-        branch: 'main',
-        started_at: now,
-        last_heartbeat: now,
-        status: 'active',
-        current_wave: 0,
-      }),
-    );
+    const startedAt = new Date(Date.now() - recentMin * 60_000).toISOString();
+    const heartbeat = new Date().toISOString();
+    const future = new Date(Date.now() + 60 * 60_000).toISOString();
+    const peerIds = ['peer-a', 'peer-b', 'peer-c', 'peer-d', 'peer-e', 'peer-future'];
+    for (const id of peerIds) {
+      await fs.writeFile(
+        path.join(activeDir, `${id}.json`),
+        JSON.stringify({
+          session_id: id,
+          pid: 99999,
+          repo_name: 'demo',
+          branch: 'main',
+          started_at: id === 'peer-future' ? future : startedAt,
+          last_heartbeat: heartbeat,
+          status: 'active',
+          current_wave: 0,
+        }),
+      );
+    }
     const dir = await mkProjectTracked();
     await fs.writeFile(
       path.join(dir, 'CLAUDE.md'),
@@ -610,19 +667,29 @@ describe('multi-session registry (#168)', { timeout: 15000 }, () => {
       'utf8',
     );
     const result = await runHook({ projectDir: dir });
+    expect(result.code).toBe(0);
     const banners = result.stdout
       .split('\n')
       .filter((l) => l.trim().startsWith('{'))
       .map((l) => { try { return JSON.parse(l); } catch { return null; } })
       .filter(Boolean)
       .filter((l) => l.systemMessage && l.systemMessage.includes('Peers:'));
-    // #1089: exactly ONE systemMessage object is written — that is the contract
-    // Claude Code reads. The WARN icon now sits on the peer LINE within it.
+    // #1089: exactly ONE systemMessage object is written.
     expect(banners).toHaveLength(1);
-    const peerLine = banners[0].systemMessage
-      .split('\n')
-      .find((l) => l.includes('Peers:'));
-    expect(peerLine).toMatch(/^⚠️/);
+    const lines = banners[0].systemMessage.split('\n');
+    const peerLine = lines.find((l) => l.includes('Peers:'));
+    const waveLine = lines.find((l) => l.includes('Start wave:'));
+    const evt = (await readEvents(dir)).at(-1);
+    expect(evt.recent_starts_count).toBe(recent);
+    expect(evt.recent_starts_window_min).toBe(5);
+    expect(evt.peer_count).toBe(peerIds.length);
+    if (warn) {
+      expect(peerLine).toBe('⚠️ 👥 Peers: 6 live on this host');
+      expect(waveLine).toBe('   ⚠️  Start wave: 5 sessions started or resumed in the last 5 min — stagger further starts');
+    } else {
+      expect(peerLine).toBe('👥 Peers: 6 live on this host');
+      expect(waveLine).toBeUndefined();
+    }
   });
 
   // -------------------------------------------------------------------------
@@ -1007,6 +1074,111 @@ describe('mechanical session.lock writer (#584 + #587)', { timeout: 15000 }, () 
     // happens not to equal the test runner. Capturing child.pid makes a stale
     // or parent PID fail this forensic-field regression directly.
     expect(lock.pid).toBe(result.pid);
+  });
+
+  it('#1641: startup → /clear in the same Claude Code process hands the lock to the new raw id', async () => {
+    // The production shape measured in #1641: one process, two SessionStarts,
+    // a new raw id and a re-minted label on /clear. Before the fix the lock
+    // stayed with the predecessor for its whole TTL and the new session ran
+    // without one.
+    // runHook spawns the hook straight from this worker, so the worker is its
+    // direct parent — the shape the harness produces (node.ppid === CLAUDE_PID).
+    const dir = await mkProjectTracked();
+    const env = { CLAUDE_PID: String(process.pid) };
+    await runHook({ projectDir: dir, env, stdin: JSON.stringify({ session_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', source: 'startup' }) });
+    expect((await readSessionLock(dir)).claude_pid).toBe(process.pid);
+
+    await runHook({ projectDir: dir, env, stdin: JSON.stringify({ session_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', source: 'clear' }) });
+    const lock = await readSessionLock(dir);
+    expect(lock.session_id).toBe('dddddddd-dddd-4ddd-8ddd-dddddddddddd');
+    expect(lock.claude_pid).toBe(process.pid);
+  });
+
+
+  it('#1605: after EnterWorktree + /clear the lock and current-session.json land in the worktree, not the launch checkout', async () => {
+    // The bug: `$CLAUDE_PROJECT_DIR` stays on the LAUNCH checkout after
+    // EnterWorktree, and the hook took it as its root — a /clear wrote the new
+    // session's lock into the main checkout and blocked it there for 4 h.
+    // Production shape: EnterWorktree puts the worktree under
+    // `<main>/.claude/worktrees/<name>`; the payload `cwd` names it.
+    const main = await mkProjectTracked();
+    const wt = path.join(main, '.claude', 'worktrees', 'wt-1605');
+    const add = spawnSync('git', ['worktree', 'add', '-q', '-b', 'wt-branch', wt], { cwd: main, encoding: 'utf8' });
+    expect(add.status, add.stderr).toBe(0);
+    const sessionId = '550e8400-e29b-41d4-a716-446655441605';
+
+    const result = await runHook({
+      projectDir: main,
+      useCwd: true,
+      stdin: JSON.stringify({ session_id: sessionId, source: 'clear', cwd: wt }),
+    });
+
+    expect(result.code).toBe(0);
+    const lock = await readSessionLock(wt);
+    expect(lock.session_id).toBe(sessionId);
+    expect(lock.semantic_session_id.startsWith('wt-branch-')).toBe(true);
+    const current = JSON.parse(await fs.readFile(path.join(wt, '.orchestrator', 'current-session.json'), 'utf8'));
+    expect(current.session_id).toBe(sessionId);
+    await expect(fs.access(path.join(main, '.orchestrator', 'session.lock'))).rejects.toThrow();
+    await expect(fs.access(path.join(main, '.orchestrator', 'current-session.json'))).rejects.toThrow();
+  });
+
+  it('#1605: a /clear payload without a raw session id keeps the lock at the launch root', async () => {
+    // The bug (review N1): without a UUID in the payload the hook mints a random
+    // id, and no reader (resolveOwnLockRoot) can ever find a relocated lock under
+    // it — the lock sat orphaned in the worktree for its whole TTL.
+    const main = await mkProjectTracked();
+    const wt = path.join(main, '.claude', 'worktrees', 'wt-noid');
+    const add = spawnSync('git', ['worktree', 'add', '-q', '-b', 'wt-noid-branch', wt], { cwd: main, encoding: 'utf8' });
+    expect(add.status, add.stderr).toBe(0);
+
+    const result = await runHook({ projectDir: main, useCwd: true, stdin: JSON.stringify({ source: 'clear', cwd: wt }) });
+
+    expect(result.code).toBe(0);
+    await expect(fs.access(path.join(wt, '.orchestrator', 'session.lock'))).rejects.toThrow();
+    expect(typeof (await readSessionLock(main)).session_id).toBe('string');
+  });
+
+  it.each([
+    ['E: launched in a sibling worktree, cwd in the main checkout of a live session', 'sib', 'main', 'other', 'compact'],
+    ['D2: cwd in a sibling worktree whose session holds a live lock', 'main', 'sib', 'other-unregistered', 'compact'],
+    ['D2: cwd in a sibling worktree whose session is live in the registry', 'main', 'sib', 'other-unlocked', 'compact'],
+    ['a compact of a session that holds its lock at the launch root', 'main', 'sib', 'own-at-launch', 'compact'],
+    ['a startup, whatever the cwd', 'main', 'sib', 'none', 'startup'],
+  ])('#1605 keeps the launch root — %s', async (_label, launchKey, cwdKey, setup, source) => {
+    // The bug (review HIGH 1 on the first #1605 fix): the payload `cwd` won
+    // whenever it sat in ANOTHER working copy of the repo, so a session that
+    // had only `cd`-ed into the checkout of a different running session took
+    // over its current-session.json there and ran without a lock. Each row pins
+    // one guard of the rule: the two D2 rows strip one liveness signal each.
+    const main = await mkProjectTracked();
+    const sib = `${main}-sib`;
+    tmpDirs.push(sib);
+    const add = spawnSync('git', ['worktree', 'add', '-q', '-b', 'sib-branch', sib], { cwd: main, encoding: 'utf8' });
+    expect(add.status, add.stderr).toBe(0);
+    const dirs = { main, sib };
+    const other = '550e8400-e29b-41d4-a716-44665544160a';
+    const own = '550e8400-e29b-41d4-a716-44665544160b';
+    if (setup.startsWith('other')) {
+      await runHook({ projectDir: dirs[cwdKey], useCwd: true, stdin: JSON.stringify({ session_id: other, source: 'startup', cwd: dirs[cwdKey] }) });
+    }
+    if (setup === 'own-at-launch') {
+      await runHook({ projectDir: dirs[launchKey], useCwd: true, stdin: JSON.stringify({ session_id: own, source: 'startup', cwd: dirs[launchKey] }) });
+    }
+    if (setup === 'other-unregistered') await fs.rm(path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active', `${other}.json`));
+    if (setup === 'other-unlocked') await fs.rm(path.join(dirs[cwdKey], '.orchestrator', 'session.lock'));
+    const currentFile = path.join(dirs[cwdKey], '.orchestrator', 'current-session.json');
+    const before = await fs.readFile(currentFile, 'utf8').catch(() => null);
+
+    const result = await runHook({
+      projectDir: dirs[launchKey],
+      useCwd: true,
+      stdin: JSON.stringify({ session_id: own, source, cwd: dirs[cwdKey] }),
+    });
+
+    expect(result.code).toBe(0);
+    expect(await fs.readFile(currentFile, 'utf8').catch(() => null)).toBe(before);
+    expect((await readSessionLock(dirs[launchKey])).session_id).toBe(own);
   });
 
   it('emits orchestrator.session.lock.acquired observability event', async () => {
@@ -2476,5 +2648,66 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     expect(lines).toHaveLength(1);
     expect(Buffer.byteLength(lines[0], 'utf8')).toBeLessThanOrEqual(MAX_BYTES);
     expect(lines[0]).toMatch(/^🧭 Navigator aktiv: n+…, Check-in nach ~\/\.config\/navigator\/checkin\/$/);
+  });
+
+  // #1635 — THE BUG THESE CATCH: after startup → /clear in a fleet repo's main
+  // checkout, the tab session kept (or took) .orchestrator/session.lock while a
+  // lead ran headless jobs there, so the lead's slot check saw the repo occupied
+  // (3x, 12.10./15.10.). Real hook, twice, with the inputs the harness sends.
+  const STARTUP_ID = 'cccccccc-1111-4222-8333-444444444444';
+  const CLEAR_ID = 'dddddddd-1111-4222-8333-444444444444';
+  const lockFile = (dir) => path.join(dir, '.orchestrator', 'session.lock');
+
+  async function startupThen({ leaseId, fleet = true, secondId = CLEAR_ID, secondSource = 'clear' }) {
+    const dir = await mkProjectTracked();
+    if (fleet) await fs.mkdir(path.join(dir, '.orchestrator', 'runtime', 'fleet'), { recursive: true });
+    const navDir = await mkNavDir(validLease(leaseId));
+    const env = { NAVIGATOR_CONFIG_DIR: navDir };
+    const first = await runHook({ projectDir: dir, env, useCwd: true, stdin: JSON.stringify({ session_id: STARTUP_ID, source: 'startup' }) });
+    expect(first.code).toBe(0);
+    const startupLock = await fs.readFile(lockFile(dir), 'utf8');
+    expect(JSON.parse(startupLock).session_id).toBe(STARTUP_ID);
+    const second = await runHook({ projectDir: dir, env, useCwd: true, stdin: JSON.stringify({ session_id: secondId, source: secondSource }) });
+    expect(second.code).toBe(0);
+    return { dir, startupLock, envelope: JSON.parse(second.stdout.trim()) };
+  }
+
+  const NOTICE = 'Haupt-Checkout belegt durch Lead lead-abc, arbeite im Worktree';
+  const BANNER = '🧭 Haupt-Checkout belegt durch Lead lead-abc — kein Session-Lock, arbeite im Worktree';
+
+  it('P startup, then a different tab Q resumes: P\'s live lock stays byte-identical (#1635)', async () => {
+    // 0fd9848a deleted P's lock here: Q read P's id from current-session.json as
+    // its "predecessor", and the lead's slot check then saw the checkout free.
+    const { dir, startupLock, envelope } = await startupThen({ leaseId: 'lead-abcdef123456', secondSource: 'resume' });
+    expect(await fs.readFile(lockFile(dir), 'utf8')).toBe(startupLock);
+    expect(envelope.hookSpecificOutput?.additionalContext).toContain(NOTICE);
+  });
+
+  it('resume with the SAME raw id releases its own lock and tells model and operator (#1635)', async () => {
+    const { dir, envelope } = await startupThen({ leaseId: 'lead-abcdef123456', secondId: STARTUP_ID, secondSource: 'resume' });
+    await expect(fs.access(lockFile(dir))).rejects.toThrow();
+    expect(envelope.hookSpecificOutput?.additionalContext).toContain(NOTICE);
+    expect(envelope.systemMessage.split('\n')).toContain(BANNER);
+  });
+
+  it('known #1641 gap: startup C → /clear D keeps C\'s lock until TTL, takes no new lock, still notifies', async () => {
+    // Pins the named BV-004 ceiling honestly: without a process-bound witness
+    // (#1641) the new raw id cannot prove C was itself, so C's lock is kept.
+    const { dir, startupLock, envelope } = await startupThen({ leaseId: 'lead-abcdef123456' });
+    expect(await fs.readFile(lockFile(dir), 'utf8')).toBe(startupLock);
+    expect(envelope.hookSpecificOutput?.additionalContext).toContain(NOTICE);
+    expect(envelope.systemMessage.split('\n')).toContain(BANNER);
+  });
+
+  it('the lead\'s own tab (lease = its startup raw id) does not yield after /clear (#1635)', async () => {
+    const { dir, envelope } = await startupThen({ leaseId: STARTUP_ID });
+    await expect(fs.access(lockFile(dir))).resolves.toBeUndefined();
+    expect(JSON.stringify(envelope)).not.toContain('Haupt-Checkout belegt');
+  });
+
+  it('a repo the fleet does not work in (no runtime/fleet dir) does not yield after /clear (#1635)', async () => {
+    const { dir, envelope } = await startupThen({ leaseId: 'lead-abcdef123456', fleet: false });
+    await expect(fs.access(lockFile(dir))).resolves.toBeUndefined();
+    expect(JSON.stringify(envelope)).not.toContain('Haupt-Checkout belegt');
   });
 });

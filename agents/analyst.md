@@ -1,7 +1,8 @@
 ---
 name: analyst
-description: 'Use this agent for read-only PRD-quality review. Checks acceptance-criteria specificity, scope drift detection, and completeness of /plan output. <example>Context: /plan feature produced a PRD. user: "Review the PRD before /go." assistant: "I''ll dispatch analyst to check acceptance-criteria specificity and scope drift before wave execution." <commentary>Analyst catches vague acceptance criteria before they cause carryover at session end.</commentary></example>'
-model: inherit
+description: 'Use this agent for read-only PRD-quality review. Checks acceptance-criteria specificity, scope drift detection, and completeness of /plan output.'
+model: sonnet
+effort: medium
 color: yellow
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
@@ -97,3 +98,7 @@ Verdict variants (concrete examples per scenario):
 - Vague verbs / minor specificity gaps → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "scope_drift_count": 0, "finding_counts": {"high": 0, "med": 4, "low": 2}}`
 - Scope-drift detected or vague critical AC → `{"verdict": "FIX_REQUIRED", "scope_drift_count": 2, "finding_counts": {"high": 2, "med": 3, "low": 1}}`
 - PRD/criteria unreviewable → `{"verdict": "BLOCKED", "blockers": ["PRD path missing"]}`
+
+## Examples
+
+<example>Context: /plan feature produced a PRD. user: "Review the PRD before /go." assistant: "I'll dispatch analyst to check acceptance-criteria specificity and scope drift before wave execution." <commentary>Analyst catches vague acceptance criteria before they cause carryover at session end.</commentary></example>

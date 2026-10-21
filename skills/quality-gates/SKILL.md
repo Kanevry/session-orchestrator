@@ -147,11 +147,9 @@ its review output.
 
 ## Graceful Degradation
 
-Handle missing tools without failing the session:
+Handle missing tools without aborting the session; a missing configured command is still reported as a failed check:
 
-- If `{typecheck-command}` fails with "command not found" → skip TypeScript checks, note "No TypeScript configured".
-- If `{test-command}` fails with "command not found" → skip tests, note "No test runner configured".
-- If `{lint-command}` fails with "command not found" → skip lint, note "No linter configured".
+- If a configured typecheck, test or lint command fails with "command not found", report `fail` (exit 127; on Windows `cmd.exe` exits 1, so it is a plain `fail`). Correct the command or explicitly set it to `skip` in Session Config.
 - Non-TypeScript projects should set `typecheck-command: skip` in Session Config.
 
 Always continue with the remaining checks — never abort a variant because one tool is missing.

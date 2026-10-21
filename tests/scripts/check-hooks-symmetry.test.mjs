@@ -623,11 +623,11 @@ describe('check-hooks-symmetry.mjs', () => {
           matcher: '*',
           hooks: [
             commandHook('CLAUDE_PLUGIN_ROOT', 'handler.mjs'),
-            commandHook('CLAUDE_PLUGIN_ROOT', 'post-bash-write-verify.mjs'),
+            commandHook('CLAUDE_PLUGIN_ROOT', 'post-edit-import-probe.mjs'),
           ],
         }],
       });
-      writeBaseFiles({ claude, handlers: ['post-bash-write-verify.mjs'] });
+      writeBaseFiles({ claude, handlers: ['post-edit-import-probe.mjs'] });
 
       const result = runValidator(fixtureRoot);
 

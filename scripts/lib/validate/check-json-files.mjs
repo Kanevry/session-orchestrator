@@ -85,7 +85,9 @@ if (hooksPath && hooksPath.endsWith('.json')) {
 console.log('');
 console.log('--- Check 5b: mcpServers JSON validity ---');
 
-const mcpPath = pluginData.mcpServers ?? '';
+// mcpServers may also be an inline object or an array (plugins-reference §
+// Component path forms); only a .json path string is a file to parse here.
+const mcpPath = typeof pluginData.mcpServers === 'string' ? pluginData.mcpServers : '';
 if (mcpPath && mcpPath.endsWith('.json')) {
   const mcpAbs = join(pluginRoot, mcpPath.replace(/^\.\//, ''));
   if (existsSync(mcpAbs)) {

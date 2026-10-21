@@ -1,7 +1,8 @@
 ---
 name: qa-strategist
-description: 'Use this agent for read-only test-coverage gap analysis between waves. Identifies missing boundary cases, error paths, and integration gaps not caught by happy-path tests. <example>Context: Impl-Core shipped a new auth flow with 6 unit tests. user: "Check the test coverage gaps." assistant: "I''ll dispatch qa-strategist to identify boundary cases and error-path coverage gaps before Quality wave." <commentary>QA-strategist surfaces test depth gaps the test-writer agent missed.</commentary></example>'
-model: inherit
+description: 'Use this agent for read-only test-coverage gap analysis between waves. Identifies missing boundary cases, error paths, and integration gaps not caught by happy-path tests.'
+model: sonnet
+effort: medium
 color: purple
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
@@ -125,3 +126,7 @@ Verdict variants (concrete examples per scenario):
 - **Pre-existing flaky test in scope**: A test in the file you're reviewing is intermittently failing on main. → Flag as flaky-prone (HIGH if it's blocking CI). Quote the suspect pattern (timer use without fake timers, race condition, hardcoded port).
 - **Test-quality regression in this wave**: New tests added by impl agents in the current wave use computed assertions (`expect(add(2,3)).toBe(2+3)`) or assert-nothing patterns. → HIGH severity, category `tautological-or-trivial`. Wave-output validation is a primary purpose of this agent.
 - **Test file does not exist for an exported function**: Public API has zero tests. → HIGH gap if the function has logic; LOW if it's a trivial pass-through (re-export, single property accessor). Calibrate based on logic complexity, not surface area.
+
+## Examples
+
+<example>Context: Impl-Core shipped a new auth flow with 6 unit tests. user: "Check the test coverage gaps." assistant: "I'll dispatch qa-strategist to identify boundary cases and error-path coverage gaps before Quality wave." <commentary>QA-strategist surfaces test depth gaps the test-writer agent missed.</commentary></example>

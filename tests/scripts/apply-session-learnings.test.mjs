@@ -213,6 +213,25 @@ describe('apply-session-learnings CLI', () => {
     expect(eventsIn(metrics)).toBe(false);
   });
 
+  // Bug (#1686): a store-role refusal exited 2 like an IO failure, so a caller
+  // could not tell "fix owner.yaml" from "retry later".
+  it('--apply with an invalid store role exits 4 and leaves the store untouched', () => {
+    const { repo, metrics, store, original } = makeRepo();
+    const result = spawnSync(process.execPath, [CLI, '--repo-root', repo, '--apply', '--json'], {
+      cwd: repo,
+      encoding: 'utf8',
+      timeout: 30_000,
+      input: JSON.stringify(FULL_INPUT),
+      env: { ...process.env, CLANK_EVENT_SECRET: '', CLANK_EVENT_URL: '', SO_LEARNINGS_STORE_ROLE: 'inbx' },
+    });
+
+    expect(result.status).toBe(4);
+    expect(result.stderr).toMatch(/learnings store role is invalid \(env: SO_LEARNINGS_STORE_ROLE="inbx"/);
+    expect(readFileSync(store, 'utf8')).toBe(original);
+    expect(backupsIn(metrics)).toEqual([]);
+    expect(eventsIn(metrics)).toBe(false);
+  });
+
   // TV-001 — the bug (#1489): --apply refused (exit 2) any store holding an
   // unparseable line. Since pruneLearnings() keeps such lines verbatim the
   // refusal guarded nothing, and as nothing on the sanctioned write path ever

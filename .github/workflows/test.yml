@@ -150,6 +150,99 @@ jobs:
           test -f coverage/cobertura-coverage.xml && echo "[ci] coverage artifact present"
           ! grep -q "Coverage for .* .* below" /tmp/cov.log
 
+  # #1612: native Windows evidence, split in two so a red dev suite cannot
+  # hide a red product check.
+  #  - test-windows-smoke: lint, typecheck and scripts/ci/windows-smoke.mjs
+  #    (gate processes, hooks through Git Bash, first SessionStart). This is
+  #    the product contract for "Claude Code on Windows". Non-blocking at
+  #    first; revisit: nach 10 gruenen main-Laeufen in gate aufnehmen.
+  #  - test-windows-suite: the full vitest suite, informational only. Native
+  #    measurement 2026-10-14 @ da365a5e: 19,651 passed / 881 failed, almost
+  #    all POSIX assumptions inside tests (sh, '/' separators, symlinks);
+  #    backlog #1613.
+  test-windows-smoke:
+    runs-on: windows-latest
+    needs: security
+    timeout-minutes: 20
+    continue-on-error: true
+    defaults:
+      run:
+        # PowerShell keeps runner.temp paths native; the smoke itself runs the
+        # hooks.json commands through Git Bash, the way Claude Code does.
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@test.com"
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Native Windows smoke
+        run: node scripts/ci/windows-smoke.mjs
+
+  test-windows-suite:
+    runs-on: windows-latest
+    needs: security
+    timeout-minutes: 30
+    continue-on-error: true
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd  # v5.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node 24
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444  # v5.0.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Configure git identity
+        run: |
+          git config --global user.name "CI"
+          git config --global user.email "ci@test.com"
+
+      # common.requireJq and validate-plugin tests require jq on PATH.
+      - name: Install jq
+        run: choco install jq -y --no-progress
+
+      - name: Verify jq
+        run: jq --version
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Vitest (Windows — fail-closed JSON verifier)
+        run: |
+          $result = Join-Path $env:RUNNER_TEMP 'vitest-result.json'
+          if (Test-Path -LiteralPath $result) { Remove-Item -LiteralPath $result -Force }
+          # Like Linux, the JSON verifier is the authority even when npm exits
+          # nonzero. Missing, partial or failed results cannot report green.
+          $PSNativeCommandUseErrorActionPreference = $false
+          npm test -- --reporter=default --reporter=json "--outputFile=$result"
+          node scripts/ci/assert-vitest-green.mjs "$result" --min-tests=6000
+          exit $LASTEXITCODE
+
   # Fan-in — mirror of the `pipeline-gate` job in .gitlab-ci.yml (#933 Loch 3).
   #
   # GitHub's counterpart to GitLab's "needs: on an absent job" trap is SKIPPING:

@@ -79,12 +79,12 @@ import { sweepExpiredLearnings } from './learnings/expiry-sweep.mjs';
 import { shouldDispatchAutoDialectic } from './auto-dialectic.mjs';
 import { shouldDispatchAutoDream } from './auto-dream.mjs';
 import { resolveMemoryDir } from './memory-paths.mjs';
-import { readCanonicalSessions } from './sessions-canonical.mjs';
-import { filterRealSessions } from './session-schema.mjs';
+import { readCanonicalSessions, isMeasuredSession } from './sessions-canonical.mjs';
 import {
   daysUntilGeneratedRuleExpiry,
   listMachineGeneratedRules,
 } from './instruction-budget-guard.mjs';
+import { planRuleExpirySweep } from './reconcile/rule-expiry-sweep.mjs';
 
 /**
  * How many signals this probe knows about. The banner denominator is this
@@ -233,7 +233,7 @@ function readLastEvolveRun(repoRoot) {
  */
 function readLastHousekeeping(repoRoot) {
   try {
-    const entries = filterRealSessions(readCanonicalSessions({ repoRoot }));
+    const entries = readCanonicalSessions({ repoRoot }).filter(isMeasuredSession);
     let max = null;
     for (const e of entries) {
       if (e?.session_type !== 'housekeeping') continue;
@@ -275,6 +275,40 @@ function isClaudePlatform(platform) {
  *   lastHousekeeping: string|null,
  * }>}
  */
+/**
+ * Generated rule files the expiry sweep can never act on from THIS host: the
+ * sweep's plan at the end of the warning horizon keeps the file whole because
+ * not one of its entries resolves to a learning in the local store. The
+ * learnings store is host-local and untracked, so a host whose store lacks the
+ * ids (measured 2026-10-19 on the M5: 6 records, 0 of 77 rule ids) was told to
+ * run a command that sweeps nothing. A failing plan (unreadable store) yields
+ * an empty set, i.e. the pre-existing recommendation.
+ *
+ * @param {string} repoRoot
+ * @param {number} now epoch ms
+ * @returns {Promise<Set<string>>} rule file names
+ */
+async function unsweepableRuleFiles(repoRoot, now) {
+  try {
+    const plan = await planRuleExpirySweep({
+      repoRoot,
+      now: new Date(now + GENERATED_RULE_EXPIRY_HORIZON_DAYS * 86_400_000).toISOString(),
+    });
+    return new Set(
+      plan.plans
+        .filter(
+          (p) =>
+            p.action === 'keep' &&
+            p.substantivePairs > 0 &&
+            p.unresolvedPairIds.length === p.substantivePairs,
+        )
+        .map((p) => p.file),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 export async function computeMaintenanceDue(opts = {}) {
   const repoRoot =
     typeof opts.repoRoot === 'string' && opts.repoRoot.length > 0 ? opts.repoRoot : process.cwd();
@@ -426,11 +460,27 @@ export async function computeMaintenanceDue(opts = {}) {
         // finding. The sweep (#1377) is the mechanical half — prose out, the
         // provenance pair kept as `markers only` — and an operator who is told
         // only which files expired has to rediscover that the command exists.
-        markDue(
-          'generated-rules-expiring',
-          `${expiring.map((r) => `${r.file} ${r.expiresAt}`).join(', ')} → ` +
-            'node scripts/sweep-expired-rules.mjs (dry-run first)',
-        );
+        const unsweepable = await unsweepableRuleFiles(repoRoot, now);
+        const sweepable = expiring.filter((r) => !unsweepable.has(r.file));
+        const stuck = expiring.filter((r) => unsweepable.has(r.file));
+        const parts = [];
+        if (sweepable.length > 0) {
+          parts.push(
+            `${sweepable.map((r) => `${r.file} ${r.expiresAt}`).join(', ')} → ` +
+              'node scripts/sweep-expired-rules.mjs (dry-run first)',
+          );
+        }
+        if (stuck.length > 0) {
+          // The sweep resolves every entry's date through its learning in the
+          // HOST-LOCAL learnings store; with none of a file's ids there it keeps
+          // the file whole, so recommending the command would be a no-op.
+          parts.push(
+            `${stuck.map((r) => `${r.file} ${r.expiresAt}`).join(', ')} → not sweepable on this host ` +
+              '(none of their learning ids are in .orchestrator/metrics/learnings.jsonl), ' +
+              'sweep on the host that holds them',
+          );
+        }
+        markDue('generated-rules-expiring', parts.join('; '));
       }
     }
   } catch {

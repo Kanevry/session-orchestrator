@@ -37,15 +37,17 @@ import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { ensureOrchestratorIgnore } from './_lib/orchestrator-ignore.mjs';
+import { resolveSessionStartRoot } from './_lib/hook-root.mjs';
 
 import { emitEvent, eventsFilePath } from '../scripts/lib/events.mjs';
 import { readNavigatorLease, fleetIntegrationEnabled } from '../scripts/lib/fleet-protocol.mjs';
 import { maybeRotate } from '../scripts/lib/events-rotation.mjs';
 import { readConfigFile, parseSessionConfig } from '../scripts/lib/config.mjs';
-import { getPlatform, resolveProjectDir } from '../scripts/lib/platform.mjs';
+import { getPlatform, resolveProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
 import {
   registerSelf,
   detectPeers,
+  countRecentStarts,
   sweepZombies,
   logSweepEvent,
   repoPathHash,
@@ -187,14 +189,20 @@ function supersessionMarker(peer) {
 }
 
 /**
- * Queue the ONE `additionalContext` string for the single end-of-hook flush.
- * Last writer wins; there is deliberately no accumulation, because every
- * character here costs context on every session start.
+ * Queue text for the ONE `additionalContext` string of the single end-of-hook
+ * flush. Two writers exist (the consent nudge, the #1635 lead notice) and both
+ * are needed by the model, so a second text is appended on its own line; an
+ * identical text is not repeated. Every character costs context on every
+ * session start, so writers stay terse and conditional.
  * @param {string|null|undefined} text
  */
 function setAdditionalContext(text) {
   if (typeof text !== 'string' || text.length === 0) return;
-  pendingAdditionalContext = text;
+  if (typeof pendingAdditionalContext !== 'string' || pendingAdditionalContext.length === 0) {
+    pendingAdditionalContext = text;
+  } else if (!pendingAdditionalContext.split('\n').includes(text)) {
+    pendingAdditionalContext = `${pendingAdditionalContext}\n${text}`;
+  }
 }
 
 /**
@@ -241,14 +249,16 @@ function flushBanner() {
 // ---------------------------------------------------------------------------
 
 /**
- * Run a git command in cwd; return trimmed stdout. Returns null on failure.
+ * Run a git command in cwd; return trimmed stdout. Returns null on failure
+ * (including a timeout, when `timeoutMs` is given).
  * @param {string[]} args
  * @param {string} cwd
+ * @param {number} [timeoutMs] — kill the git child after this many ms (0 = no limit)
  * @returns {Promise<string|null>}
  */
-async function gitOutput(args, cwd) {
+async function gitOutput(args, cwd, timeoutMs = 0) {
   try {
-    const { stdout } = await execFileAsync('git', args, { cwd });
+    const { stdout } = await execFileAsync('git', args, { cwd, timeout: timeoutMs });
     return stdout.trim();
   } catch {
     return null;
@@ -316,25 +326,27 @@ export async function readColdStartConfig(projectRoot) {
 }
 
 /**
- * Read `resource-thresholds.concurrent-sessions-warn` from Session Config.
- * Used to decide when the peer banner should show the WARN icon. Defaults to
- * 5 — matches the documented default in docs/session-config-reference.md.
+ * Start-wave rule (#1650): WARN when at least START_WAVE_MIN foreign registry
+ * entries started within the last START_WAVE_WINDOW_MIN minutes.
+ *
+ * Why not `peer_count >= concurrent-sessions-warn` (the previous WARN trigger):
+ * that is a permanent state, not an event. Measured 2026-10-17 08:08Z/08:09Z
+ * over `orchestrator.session.started` since 2026-08-24, dedup session_id +
+ * timestamp, per `host_class`: peer_count >= 5 fired on 880/1305 = 67.4% (M4)
+ * and 255/991 = 25.7% (M5) of starts — a broken instrument per HR-101.
+ * This rule, reconstructed from the start timestamps themselves, fires on
+ * 35/1305 = 2.7% (M4) and 52/991 = 5.2% (M5). Neighbouring candidates:
+ * >=3 in 2 min 4.0% / 7.1%, >=5 in 2 min 1.7% / 3.3%, >=3 in 5 min 6.3% / 10.7%.
+ * 5 min was chosen over 2 min so a wave spread over a few minutes still shows.
+ *
+ * Ceiling (BV-004): fixed constants, no config key; the reconstruction is an
+ * upper bound (sessions that ended inside the window leave the registry).
+ * Revisit when either host's firing rate on `recent_starts_count >= 5` in the
+ * event ledger exceeds 10%, or a start wave that hurt was not flagged.
+ * Report only — this single soft signal caps nothing (HR-104).
  */
-async function peerWarnThreshold(projectRoot) {
-  const DEFAULT = 5;
-  for (const name of ['CLAUDE.md', 'AGENTS.md']) {
-    try {
-      const raw = await readFile(path.join(projectRoot, name), 'utf8');
-      // Match `concurrent-sessions-warn: <int>` inside resource-thresholds or top-level.
-      const m = raw.match(/^\s*concurrent-sessions-warn:\s*(\d+)\b/im);
-      if (m) {
-        const n = parseInt(m[1], 10);
-        if (!Number.isNaN(n) && n > 0) return n;
-      }
-    } catch { /* file missing is fine */ }
-  }
-  return DEFAULT;
-}
+const START_WAVE_WINDOW_MIN = 5;
+const START_WAVE_MIN = 5;
 
 /**
  * Non-blocking stdin read for Claude Code hook payload. Returns parsed JSON or
@@ -477,9 +489,12 @@ async function resolveSessionId(input, projectRoot) {
     // (`resume` was ABSENT from hooks.json until #1091, so on Claude Code this
     // hook never ran on a native resume), `startup|reload|new|resume|fork` on
     // pi, and every source on Cursor (empty matcher). Several of those sources
-    // are re-entries into the SAME logical session. On clear/compact the UUID
-    // `session_id` changes while the `semantic_session_id`
-    // (branch+date+mode+n) stays stable; whether Claude Code PRESERVES the raw
+    // are re-entries into the SAME logical session. The `semantic_session_id`
+    // (branch+date+mode+n) is meant to stay stable across them. The raw UUID
+    // `session_id` does not behave alike per source: on Claude Code `compact`
+    // KEEPS it (12/12 compact events in events.jsonl carry
+    // `resume_linkage: raw-id`, measured 2026-10-14), while `clear` showed
+    // 6/6 `resume_linkage: none`. Whether Claude Code PRESERVES the raw
     // `session_id` across a native resume is what #1091 measures via
     // `native_source` + `resume_linkage` on `orchestrator.session.started` —
     // nothing here ASSUMES either answer, it only reacts to the raw id it can
@@ -780,18 +795,20 @@ function maybeQueueConsentNudge() {
 // ---------------------------------------------------------------------------
 
 async function main() {
-  const projectRoot = resolveProjectDir();
+  // #1605 — the root depends on the payload `source`/`cwd`/`session_id`, so the
+  // optional stdin payload is read BEFORE the first writer below. Best-effort:
+  // readStdinJson resolves null on a closed/empty/unparseable stdin and caps
+  // itself at 500 ms. The rule (entered worktree only for clear/compact/resume,
+  // only a verified linked worktree, never over another live session's state)
+  // lives in hooks/_lib/hook-root.mjs, beside the readers' own-lock lookup.
+  const input = await readStdinJson();
+  const projectRoot = await resolveSessionStartRoot(input, resolveProjectDir());
 
   // #1515 Pkt 5 — before this hook's own writers (host.json, session.lock,
   // events.jsonl) run: an un-bootstrapped repo gets `.orchestrator/.gitignore`
   // so the runtime state never shows up in `git status`. Bootstrapped repos
   // pay two existsSync and nothing else. Never throws.
   await ensureOrchestratorIgnore(projectRoot);
-
-  // Read optional stdin payload in parallel with git info so we don't stall
-  // the hook. Both are best-effort and the promise races against a 500 ms cap
-  // inside readStdinJson itself.
-  const stdinPromise = readStdinJson();
 
   // Resolve project name: basename of git toplevel, falling back to cwd basename.
   const topLevel = await gitOutput(['rev-parse', '--show-toplevel'], projectRoot);
@@ -808,6 +825,24 @@ async function main() {
   // git leaves it null and the payload key is OMITTED, never fabricated.
   const rawHeadSha = await gitOutput(['rev-parse', 'HEAD'], projectRoot);
   const headSha = rawHeadSha && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(rawHeadSha) ? rawHeadSha : null;
+
+  // #1668 — the upstream state at start, so emit-session can tell a stale
+  // head_sha (checkout behind its upstream: a later pull drags foreign commits
+  // into `<head_sha>..HEAD`) from a current one. Local refs only — no fetch, no
+  // network — and bounded at 1 s per call. No upstream configured, a timeout or
+  // a non-numeric count → BOTH keys omitted (not measured), never 0.
+  let upstreamSha = null;
+  let behind = null;
+  if (headSha) {
+    const [rawUpstream, rawBehind] = await Promise.all([
+      gitOutput(['rev-parse', '--verify', '--quiet', '@{u}^{commit}'], projectRoot, 1000),
+      gitOutput(['rev-list', '--count', 'HEAD..@{u}'], projectRoot, 1000),
+    ]);
+    if (rawUpstream && /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(rawUpstream) && rawBehind && /^\d+$/.test(rawBehind)) {
+      upstreamSha = rawUpstream;
+      behind = Number(rawBehind);
+    }
+  }
 
   // v3.1.0 env-aware banner (opt-out via enable-host-banner: false in Session Config).
   // The ask-via-tool nudge rides the same opt-out flag — both are coordinator
@@ -872,7 +907,6 @@ async function main() {
 
   // v3.1.0 multi-session registry (#168). All steps best-effort — failures
   // must never break the hook, which is informational-only.
-  const input = await stdinPromise;
   // #1091 — the native SessionStart `source` (Claude Code: startup|resume|
   // clear|compact), plus the linkage decision resolveSessionId() derived from
   // it (see SAME_LOGICAL_SESSION_SOURCES). Both are surfaced on the event so
@@ -897,7 +931,7 @@ async function main() {
   // best-effort, but this outer guard ensures the hook stays non-blocking
   // regardless of any future regression in the helper itself.
   try {
-    const { bootstrapLock } = await import('./_lib/lock-bootstrap.mjs');
+    const { bootstrapLock, readClaudePid } = await import('./_lib/lock-bootstrap.mjs');
     await bootstrapLock({
       repoRoot: projectRoot,
       sessionId,
@@ -911,6 +945,17 @@ async function main() {
       // live lock must ALSO carry our predecessor's raw id before we take it
       // over. `prev` is read above, before the semantic id is minted.
       predecessorSessionId,
+      // #1641: the Claude Code process survives /clear while the raw id and the
+      // semantic label are minted anew — its pid is the witness that the live
+      // lock is our own predecessor's. Admitted only as this hook's direct
+      // parent: a Codex child of a Claude session inherits the variable.
+      claudePid: readClaudePid(),
+      // #1635: a fleet lead holds this main checkout — no lock was taken; the
+      // model and the operator are told to work in a worktree instead.
+      onNotice: (context, banner) => {
+        setAdditionalContext(context);
+        pushBanner(banner);
+      },
     });
   } catch { /* hook must remain non-blocking */ }
 
@@ -973,6 +1018,12 @@ async function main() {
         platform,
         mode,
         hostClass: bannerData?.host?.host_class ?? null,
+        // #1605 — the pointer the readers (Stop, PostToolBatch, SessionEnd, the
+        // current-session.json side writers) follow to THIS session's lock,
+        // whatever their cwd; and the working copy, so a later relocation
+        // into it by another session sees this one (B4). Stop refreshes it.
+        sessionRoot: path.resolve(projectRoot),
+        workRoot: path.resolve(resolveSessionRoot(input?.cwd)),
       });
     } catch (err) {
       // Registration failed — emit an observability breadcrumb to sweep.log.
@@ -981,6 +1032,9 @@ async function main() {
     }
     peers = await detectPeers({ sessionId }).catch(() => []);
   } catch { /* swallow — hook must remain non-blocking */ }
+  // #1650 — foreign starts inside the window. detectPeers() already excludes
+  // self, and its 15-min freshness covers the 5-min window (see helper JSDoc).
+  const recentStarts = countRecentStarts(peers, { windowMin: START_WAVE_WINDOW_MIN });
 
   // Append a peer line to the host banner when a banner was already emitted
   // and at least one peer is live on this host.
@@ -1004,10 +1058,11 @@ async function main() {
       selfRepoHash && p.repo_path_hash ? p.repo_path_hash === selfRepoHash : false);
     const elsewhere = peers.filter((p) => !sameCopy.includes(p));
 
-    const threshold = await peerWarnThreshold(projectRoot);
     // WARN on any peer in THIS working copy — one is already enough to collide
-    // — or on host-wide count crossing the configured threshold.
-    const icon = sameCopy.length > 0 || peers.length >= threshold ? '⚠️ ' : '';
+    // — or on a start wave (#1650). The host-wide peer count stays on the line
+    // as information only: as a WARN trigger it fired on 67.4% of starts.
+    const startWave = recentStarts >= START_WAVE_MIN;
+    const icon = sameCopy.length > 0 || startWave ? '⚠️ ' : '';
 
     // Semantic ids are NOT unique — several live sessions routinely share e.g.
     // `main-2026-08-21-session-2`, which makes a bare semantic label unusable
@@ -1019,6 +1074,9 @@ async function main() {
       return `${label}${disc}:${p.branch ?? 'unknown'}:wave-${p.current_wave ?? 0}`;
     };
     pushBanner(`${icon}👥 Peers: ${peers.length} live on this host`);
+    if (startWave) {
+      pushBanner(`   ⚠️  Start wave: ${recentStarts} sessions started or resumed in the last ${START_WAVE_WINDOW_MIN} min — stagger further starts`);
+    }
     if (sameCopy.length > 0) {
       const list = sameCopy.slice(0, 3).map(fmt).join(', ');
       const more = sameCopy.length > 3 ? ` +${sameCopy.length - 3} more` : '';
@@ -1174,7 +1232,7 @@ async function main() {
     pluginUpdate = await checkPluginUpdate({
       cacheDir: path.join(projectRoot, '.orchestrator', 'runtime'),
       // The probe's own fallback is env-only (SO_PLATFORM, then each harness's
-      // compat var) and cannot run detectPlatform()'s third step, the marker-
+      // compat var) and cannot run detectPlatform()'s step 4, the marker-
       // directory walk from cwd. This hook already resolved the platform at the
       // top of run() through exactly that full precedence, so handing it over
       // makes the remedy instruction MEASURED rather than guessed — a Codex or
@@ -1195,8 +1253,16 @@ async function main() {
     // this root supersedes. `peer_count` is deliberately unchanged; this field
     // makes the supersession rate measurable instead of inferred (HR-105).
     peers_superseded: mechanicalPeersSuperseded,
+    // #1650 — start-wave signal (HR-105): foreign registry entries whose
+    // started_at lies within the last `recent_starts_window_min` minutes.
+    recent_starts_count: recentStarts,
+    recent_starts_window_min: START_WAVE_WINDOW_MIN,
   };
   if (headSha) payload.head_sha = headSha;
+  if (upstreamSha !== null) {
+    payload.upstream_sha = upstreamSha;
+    payload.behind = behind;
+  }
 
   // #1091 — record the native SessionStart source so "does the same raw
   // session_id repeat under source=resume?" becomes answerable from

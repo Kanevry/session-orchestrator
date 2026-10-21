@@ -10,7 +10,7 @@
 // Stdout: '  PASS: ...' / '  FAIL: ...' lines + 'Results: N passed, M failed'
 
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 // The pi and cursor projections are IMPORTED, not copied: the runtime bridges
 // rewrite `hook_event_name` for every native event, so they are the source of
@@ -83,16 +83,48 @@ const DOCUMENTED_ASYMMETRIES = {
       // shape ("PreToolUse hook returned permissionDecision:deny without a
       // non-empty permissionDecisionReason").
       //
-      // THE ACTUAL BLOCKER is the tool-name VOCABULARY, not the payload shape.
-      // Codex ships no `Bash`, `Edit`, `Write` or `MultiEdit` tool — it has
-      // `shell` / `exec_command` / `unified_exec` / `apply_patch`
-      // (`strings -a <codex> | grep -c '"Bash"'` -> 0). Every handler below
-      // opens with an equality gate on a Claude tool name and returns
-      // `emitAllow()` otherwise, so wiring one produces a hook that runs,
-      // matches nothing and allows everything: FALSE enforcement, which is
-      // strictly worse than the registered gap (#919-P2 class). The repair is
-      // a tool-name map (see CODEX_TOOL_NAMES in scripts/lib/codex/
-      // plugin-contract.mjs), not a manifest entry.
+      // 2026-09-06 (0.144.4) this block named the tool-name VOCABULARY as the
+      // blocker: Codex's model-facing tools are `shell` / `exec_command` /
+      // `unified_exec` / `apply_patch`, so a guard gating on
+      // `tool_name === 'Bash'` would run, match nothing and allow everything
+      // (#919-P2 class). For the SHELL tool that premise is refuted below; for
+      // the Edit/Write/MultiEdit gates (apply_patch) it is still unmeasured.
+      //
+      // REFUTED AGAIN for the shell tool (#1669), measured 2026-10-20 on
+      // codex-cli 0.160.1 with a logging PreToolUse hook under `codex exec`:
+      // a shell call arrives as `"tool_name":"Bash"` with
+      // `"tool_input":{"command":"<string>"}`, and `matcher: "Bash"` fires.
+      // The 2026-09-06 evidence (`strings -a <codex> | grep -c '"Bash"'` -> 0)
+      // counted a JSON-quoted literal Rust never stores.
+      //
+      // DENY IS HONOURED (#1691), measured 2026-10-20 on codex-cli 0.160.1:
+      // `codex exec` with pre-bash-destructive-guard as the only PreToolUse hook
+      // and the prompt `printf x > CLAUDE.md` logged `Command blocked by
+      // PreToolUse hook: Destructive command blocked: '> CLAUDE.md' (rule:
+      // redirect-truncate-protected)` and left the file unchanged (the rule
+      // protects CLAUDE.md and its Codex alias AGENTS.md alike); the control
+      // run with `hooks.PreToolUse=[]` executed it and the file became `x`.
+      // Measured payload: `session_id`, `turn_id`, `cwd` (= the session workdir,
+      // also the hook's process cwd), `hook_event_name`, `model`,
+      // `permission_mode`, `tool_name:"Bash"`, `tool_input.command`,
+      // `tool_use_id`, `transcript_path: null`; PostToolUse adds
+      // `tool_response: ""`. A real Codex session exports NO CLAUDE_* env.
+      //
+      // Every Bash hook was then fed that payload by hand under a clean env
+      // (PATH + HOME only, SO_PLATFORM=codex, mkdtemp git repo) and wired only
+      // where it enforces on it (2026-10-20): destructive-guard (deny on
+      // `> CLAUDE.md`), sessions-ledger-guard (deny on `>>
+      // .orchestrator/metrics/sessions.jsonl`), issue-budget (cap 1, second
+      // create denied and parked), enforce-commands (`.codex/wave-scope.json`
+      // `blockedCommands` → deny), memory-propose-audit (event appended,
+      // observe-only by design), post-bash-write-verify (warn on an out-of-scope
+      // write). They read `tool_input.command`, `cwd` and `session_id`; issue-budget also `tool_use_id`.
+      // Wiring contract: tests/hooks/codex-bash-guards-wiring.test.mjs.
+      //
+      // post-bash-issue-budget-refund is no gap on this list: it runs on
+      // PostToolUseFailure, an event hooks-codex.json does not carry, so a
+      // failed create on Codex keeps its slot (over-count, the fail-closed
+      // direction). Revisit when Codex gains a failure event.
       PreToolUse: [
         // pre-task-scope-disjoint (#1020): NOT ported by construction. The hook
         // matches the `Agent` dispatch tool, which this platform does not have —
@@ -118,27 +150,17 @@ const DOCUMENTED_ASYMMETRIES = {
         // `apply_patch`, a name this hook never matches. Wired, it would run and allow
         // everything: a silent no-op, not enforcement. Gap registered, not faked.
         'pre-edit-sessions-ledger-guard.mjs',
-        'pre-bash-destructive-guard.mjs',
-        'pre-bash-staging-fence.mjs',
-        'pre-bash-memory-propose-audit.mjs',
-        // pre-bash-sessions-ledger-guard (#958): same tool-name-vocabulary
-        // dependency as the guards above — it gates on tool_name === 'Bash',
-        // and Codex names its shell tools `shell` / `exec_command` /
-        // `unified_exec`. The fields it reads ARE delivered; the value it
-        // compares against never occurs. A manifest entry would be a silent
-        // no-op, not enforcement — #919-P2 class. Gap registered, not faked.
-        'pre-bash-sessions-ledger-guard.mjs',
+        // pre-bash-templates-first (#1691): runs on the Codex payload but can
+        // only DENY. Both allow routes are unreachable there: the template-Read
+        // evidence needs `transcript_path` (hooks/pre-bash-templates-first.mjs:
+        // 404-410), which Codex sends as `null` (codex-cli 0.160.1, 2026-10-20),
+        // and `/templates-ack` writes an acknowledgement only under a `claude`
+        // ancestor process (commands/templates-ack.md:18-23). Fed the Codex
+        // payload with `.gitlab/issue_templates/bug.md` present, `glab issue
+        // create` was denied with no way to satisfy it. A guard nobody can pass
+        // is a blocker, not enforcement; gap registered, not faked.
         'pre-bash-templates-first.mjs',
-        'pre-bash-issue-budget.mjs',
-        'enforce-commands.mjs',
       ],
-      // post-bash-write-verify (#942): gates on tool_name === 'Bash', a value
-      // Codex never emits (its shell tools are `shell` / `exec_command` /
-      // `unified_exec`). Documented exception until a tool-name map exists —
-      // a manifest entry today would be a silent no-op, not enforcement. Same
-      // #919-P2 class as the PreToolUse block. `post-tool-use.command.input`
-      // at 0.144.4 does require `tool_name`, `tool_input` AND `tool_response`,
-      // so the port is a rename map, not a payload bridge.
       PostToolUse: [
         'post-edit-validate.mjs',
         'post-tooluse-frontend-slop.mjs',
@@ -147,7 +169,6 @@ const DOCUMENTED_ASYMMETRIES = {
         // tool_input.file_path, neither of which any Codex bridge delivers.
         // A manifest entry would be a silent no-op, not enforcement.
         'post-edit-import-probe.mjs',
-        'post-bash-write-verify.mjs',
       ],
       SubagentStart: ['subagent-telemetry.mjs'],
       SubagentStop: ['subagent-telemetry.mjs', 'post-subagent-discovery-validator.mjs'],
@@ -247,7 +268,7 @@ function loadJson(filePath, required = true) {
   try {
     return JSON.parse(readFileSync(filePath, 'utf8'));
   } catch (e) {
-    fail(`${filePath.split('/').pop()}: ${e.message}`);
+    fail(`${basename(filePath)}: ${e.message}`);
     process.exit(1);
   }
 }

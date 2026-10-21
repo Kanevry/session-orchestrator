@@ -12,6 +12,8 @@ import {
   filterRealSessions,
   tailRealSessions,
   isCoordinatorDirectHousekeeping,
+  isCoordinatorDirectWave,
+  normalizeWaveRole,
 } from '@lib/session-schema/filters.mjs';
 import * as barrel from '@lib/session-schema.mjs';
 
@@ -125,6 +127,41 @@ describe('isCoordinatorDirectHousekeeping', () => {
     expect(isCoordinatorDirectHousekeeping(withWaves([]))).toBe(false);
     expect(isCoordinatorDirectHousekeeping({ session_type: 'housekeeping' })).toBe(false);
     expect(isCoordinatorDirectHousekeeping(null)).toBe(false);
+  });
+});
+
+describe('isCoordinatorDirectWave (#1652)', () => {
+  // Bug caught: effective-sizing excluded only `coordinator_direct: true`, so
+  // the ledger's 222 unflagged 0-agent waves dragged agents-per-wave down.
+  it.each([
+    ['flagged, no count', { role: 'Housekeeping', coordinator_direct: true }, true],
+    ['unflagged agent_count 0', { role: 'Finalization', agent_count: 0 }, true],
+    ['unflagged empty agents array', { role: 'Quality', agents: [] }, true],
+    ['unflagged agents_dispatched 0', { role: 'Quality', agents_dispatched: 0 }, true],
+    ['dispatched agents', { role: 'Impl-Core', agent_count: 4 }, false],
+    ['agent_count wins over agents', { role: 'Impl-Core', agent_count: 2, agents: 0 }, false],
+    ['agents_started is the only count (legacy spelling)', { role: 'Quality', agents_started: 0 }, true],
+    ['agent_count_started is the only count', { role: 'Impl-Core', agent_count_started: 3 }, false],
+    ['unmeasured count is not coordinator-direct', { role: 'Quality' }, false],
+    ['non-object', null, false],
+  ])('%s', (_label, wave, expected) => {
+    expect(isCoordinatorDirectWave(wave)).toBe(expected);
+  });
+});
+
+describe('normalizeWaveRole (#1652)', () => {
+  // Bug caught: per-role grouping split one role into several rows by spelling.
+  it.each([
+    ['Finalization', 'finalization'],
+    ['finalization', 'finalization'],
+    ['Express-Path', 'express-path'],
+    ['Express Path', 'express-path'],
+    ['  impl_core ', 'impl-core'],
+    ['Express', 'express'],
+    ['   ', null],
+    [undefined, null],
+  ])('%j -> %j', (role, expected) => {
+    expect(normalizeWaveRole(role)).toBe(expected);
   });
 });
 

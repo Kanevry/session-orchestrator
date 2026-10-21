@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -838,5 +838,67 @@ describe('backfill-abandoned-sessions CLI — unreadable vs absent ledger (#1188
     expect(summaryOf(r).total).toBe(0);
     expect(r.stderr).toMatch(/cannot read/);
     expect(r.stderr).toMatch(/EISDIR/);
+  });
+});
+
+
+/**
+ * A real git repo `<base>/main` (one empty commit) plus a linked worktree
+ * `<base>/wt` — the layout #1514/#1584 map back to the main checkout.
+ */
+function makeLinkedWorktree(spawnGit, base) {
+  const main = join(base, 'main');
+  const wt = join(base, 'wt');
+  mkdirSync(main, { recursive: true });
+  const git = (...args) => {
+    const r = spawnGit('git', args, { cwd: main, encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+  };
+  git('init', '-q');
+  git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+  git('worktree', 'add', '-q', '--detach', wt);
+  return { main, wt };
+}
+
+describe('backfillOnSessionStart from a linked worktree (#1592)', () => {
+  /**
+   * Bug this catches: the pre-filter read `<repoRoot>/…/sessions.jsonl` while
+   * the core dedupes and writes against the MAIN checkout's ledger. From a
+   * linked worktree the pre-filter saw nothing, so the newer, already-recorded
+   * candidate spent the SessionStart latency cap inside the core and the older
+   * abandoned one was never reached.
+   */
+  it('skips the main-recorded candidate cheaply and backfills the abandoned one within limit 1', async () => {
+    const { main, wt } = makeLinkedWorktree(spawnSync, tmp);
+    const mainMetrics = join(main, '.orchestrator', 'metrics');
+    mkdirSync(mainMetrics, { recursive: true });
+    writeFileSync(join(mainMetrics, 'events.jsonl'), TWO_ABANDONED_EVENTS.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    writeFileSync(
+      join(mainMetrics, 'sessions.jsonl'),
+      JSON.stringify({
+        session_id: SEM_2,
+        session_type: 'feature',
+        status: 'completed',
+        started_at: '2026-07-02T11:00:00.000Z',
+        completed_at: '2026-07-02T12:00:00.000Z',
+      }) + '\n',
+    );
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: wt, limit: 1 });
+
+    // SEM_2 is pre-filtered against the main ledger, so the cap of ONE core
+    // call reaches SEM_1 instead of truncating the run (pre-fix: truncated).
+    expect(summary.truncated).not.toBe(true);
+    expect(summary.skipped).toEqual({ 'skipped-already-recorded': 1 });
+    // The TOCTOU marker guards the MAIN ledger, so it lives beside it: a
+    // marker under `<wt>/.orchestrator/metrics/` (absent in a worktree since
+    // #1584) failed with ENOENT and turned this write into an error.
+    expect(summary.errors).toBe(0);
+    expect(summary.backfilled).toBe(1);
+    // …and a second worktree's run must see that claim: marker and breadcrumb
+    // log share the main checkout's metrics dir, nothing lands in the worktree.
+    expect(readdirSync(mainMetrics).filter((n) => n.startsWith('.backfilled-'))).toHaveLength(1);
+    expect(existsSync(join(wt, '.orchestrator'))).toBe(false);
   });
 });

@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import {
   readOwnSessionIds,
   readProcessLocalSessionIds,
+  readInvocationSessionId,
   classifyManifestSession,
   MANIFEST_SESSION_KEYS,
   manifestSessionBinding,
@@ -64,6 +65,72 @@ function writeLock(fields) {
     'utf8',
   );
 }
+
+describe('ack invocation ancestry (#1591)', () => {
+  const ancestry = (pid) => pid === 10
+    ? { ppid: 20, comm: 'bash' }
+    : { ppid: 1, comm: 'claude' };
+  const session = () => ({ sessionId: 'own' });
+
+  it.each([
+    [{}, 'own'],
+    [{ CLAUDE_CODE_SESSION_ID: ' own ' }, 'own'],
+    [{ CLAUDE_CODE_SESSION_ID: 'parent' }, null],
+    [{ SO_PLATFORM: 'codex', CODEX_THREAD_ID: 'own', CLAUDE_CODE_SESSION_ID: 'parent' }, null],
+  ])('compares measured identity with native env %j', (env, expected) => {
+    expect(readInvocationSessionId({ pid: 10, env, readProcess: ancestry, readSession: session })).toBe(expected);
+  });
+
+  it.each([
+    () => null,
+    () => { throw new Error('ps unavailable'); },
+    () => ({ ppid: 10, comm: 'bash' }),
+    (pid) => ({ ppid: pid === 10 ? 20 : 10, comm: 'bash' }),
+    () => ({ ppid: -1, comm: 'claude' }),
+    () => ({ ppid: 0, comm: 'claude-worker' }),
+  ])('refuses missing, cyclic or malformed process evidence', (readProcess) => {
+    expect(readInvocationSessionId({ pid: 10, env: {}, readProcess, readSession: session })).toBeNull();
+  });
+
+  it.each([
+    () => { throw new Error('session unreadable'); },
+    () => null,
+    () => ({ sessionId: ' ' }),
+    () => ({ sessionId: 42 }),
+  ])('does not fall back to outer Claude when nearest session is invalid', (readSession) => {
+    const visited = [];
+    const result = readInvocationSessionId({ pid: 10, env: {}, readProcess: (pid) => {
+      visited.push(pid);
+      return { ppid: pid + 1, comm: 'claude' };
+    }, readSession });
+    expect(result).toBeNull();
+    expect(visited).toEqual([10]);
+  });
+
+  it.each([64, 65])('bounds ancestry measurement to 64 nodes (Claude at %i)', (claudePid) => {
+    const visited = [];
+    expect(readInvocationSessionId({ pid: 1, env: {}, readProcess: (pid) => {
+      visited.push(pid);
+      return { ppid: pid + 1, comm: pid === claudePid ? 'claude' : 'bash' };
+    }, readSession: session })).toBe(claudePid === 64 ? 'own' : null);
+    expect(visited).toHaveLength(64);
+  });
+
+  it('recognises a Claude ancestor started by absolute path (macOS comm = argv[0]) and refuses an inherited parent id', () => {
+    const readProcess = (pid) => (pid === 1 ? { ppid: 0, comm: '/x/bin/claude' } : { ppid: 1, comm: 'bash' });
+    const readSession = () => ({ sessionId: 'own-child' });
+    expect(readInvocationSessionId({ env: { CLAUDE_CODE_SESSION_ID: 'parent-id' }, pid: 5, readProcess, readSession })).toBe(null);
+    expect(readInvocationSessionId({ env: {}, pid: 5, readProcess, readSession })).toBe('own-child');
+  });
+
+  it('reads the nearest process session file from the supplied home, not shared state', () => {
+    mkdirSync(join(tmp, '.claude', 'sessions'), { recursive: true });
+    writeFileSync(join(tmp, '.claude', 'sessions', '20.json'), JSON.stringify({ sessionId: 'own' }));
+    expect(readInvocationSessionId({ pid: 10, env: {}, homeDir: tmp, readProcess: ancestry })).toBe('own');
+    writeFileSync(join(tmp, '.claude', 'sessions', '20.json'), '{invalid');
+    expect(readInvocationSessionId({ pid: 10, env: {}, homeDir: tmp, readProcess: ancestry })).toBeNull();
+  });
+});
 
 describe('readOwnSessionIds (#1123)', () => {
   it('uses the same selected native identity as the process-local reader (#1274)', () => {

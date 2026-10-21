@@ -54,7 +54,7 @@ import {
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
-import { parseFrontmatter, subjectToSlug } from './utils.mjs';
+import { parseFrontmatter, subjectToSlug, noteIdMatches } from './utils.mjs';
 import {
   GENERATOR_MARKER,
   ROLLUP_PREFIX,
@@ -287,7 +287,10 @@ export function planPrune({ vaultDir, today, minNarrativeChars = 400, aliases = 
     const target = `${n.zone}/${n.effNs}/${n.name}`;
     if (claimed.has(target) || existingRel.has(target)) {
       const twin = notes.find((m) => m.rel === target);
-      if (twin && twin.fm.id === n.fm.id && !decided.has(twin.rel)) {
+      // #1601/#1602: the twin may already carry the namespaced id while the flat
+      // note keeps the bare pre-#1601 one — same note, either form.
+      const sameId = twin && (twin.fm.id === n.fm.id || noteIdMatches(twin.fm.id, n.fm.id, n.effNs) || noteIdMatches(n.fm.id, twin.fm.id, n.effNs));
+      if (sameId && !decided.has(twin.rel)) {
         actions.push({ path: n.rel, reason: 'duplicate', action: 'archive', target: archivePathFor(n.rel), keep: target });
       } else {
         actions.push({ path: n.rel, reason, action: 'keep', note: `relocation target taken: ${target}` });

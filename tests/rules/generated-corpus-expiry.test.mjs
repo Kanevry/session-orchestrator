@@ -40,7 +40,7 @@
  * a third clause (`expires-at`) happened to catch every consolidated file.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -53,6 +53,7 @@ import {
   isMachineGeneratedRule,
   listMachineGeneratedRules,
 } from '@lib/instruction-budget-guard.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
@@ -65,6 +66,7 @@ const generatedRules = live.rules.map((r) => ({
 /** A throwaway rules dir; `frontmatter` is inserted verbatim between the fences. */
 function fixtureRulesDir(files) {
   const dir = mkdtempSync(join(tmpdir(), 'generated-corpus-expiry-'));
+  onTestFinished(() => removeTree(dir));
   mkdirSync(dir, { recursive: true });
   for (const [name, frontmatter] of Object.entries(files)) {
     writeFileSync(join(dir, name), `---\n${frontmatter}\n---\n\n# ${name}\n\nbody\n`, 'utf8');

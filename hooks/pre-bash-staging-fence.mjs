@@ -43,7 +43,7 @@
  *   G1  tool filter — Bash only
  *   G2  command must be a non-empty string
  *   G3  cheap regex PRE-FILTER — skip the tokenizer for plainly unrelated
- *       commands (see GIT_ADD_REGEX; it does not decide the question)
+ *       commands (see mayStage; it does not decide the question)
  *   G4  context gate — isWaveAgentContext(); exit 0 immediately for
  *       coordinator/manual commits (AC5 safe-default no-op)
  *   G4b tokenize + extract path operands; exit 0 when no `git add` statement
@@ -67,7 +67,8 @@
 
 import { readStdin, emitAllow, writeJsonAtomicSync } from '../scripts/lib/io.mjs';
 import { isWaveAgentContext } from '../scripts/lib/wave-context.mjs';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
@@ -87,16 +88,38 @@ import { dotGitAncestor, launchDirFromEnv } from '../scripts/lib/platform.mjs';
  * command?" — since #1404 that verdict belongs to {@link extractStagedPaths},
  * which resolves the verb and subcommand properly.
  *
- * `git` and `add` must sit in the same statement (the negated class stops at
- * `;`, `&`, `|` and newline) within 120 characters of each other, so global
- * flags between them are tolerated: `git -C sub add x` reaches the extractor,
- * where `\bgit\s+add\b` used to drop it silently. `\badd\b` keeps
- * `git addremote` out.
+ * The words `git` and `add` must both occur — anywhere, in any order. Global
+ * flags between them are therefore tolerated at any length: `git -C sub add x`
+ * reaches the extractor, where `\bgit\s+add\b` used to drop it silently.
+ * `\badd\b` keeps `git addremote` out.
+ *
+ * Why not "same statement, within N characters" (#1670 item 6): the previous
+ * `\bgit\b[^;&|\n]{0,120}\badd\b` let `git -C <long path> -c k=v … add x`, a
+ * quoted `;`/`&`/`|` in a `-c` value, and a `\`-newline continuation pass
+ * UNFENCED — this pre-filter is the fence's only early exit, so every miss
+ * fails OPEN. Dropping the bound (`[^;&|\n]*`) is not an option either: it
+ * backtracks once per `git` occurrence, quadratic on attacker-influenced text
+ * (measured 2026-10-18: 200 kB of `git ` → 6220 ms, past the 5 s hook budget;
+ * two independent word tests → 0.16 ms). Two `\b` tests are linear.
  *
  * False positives are cheap AND inert: `git commit -m "add x"` matches here,
  * resolves to no `git add` statement, and writes nothing (G4b).
+ *
+ * `stage` is git's built-in synonym for `add` (#1671 item 5).
+ *
+ * NAMED CEILING (BV-004, #1671 item 5): a subcommand spelled with shell quoting
+ * or escaping — `git a\dd x`, `git a''dd x` — misses both this pre-filter and
+ * the extractor's unquoted-subcommand check, so that staging is not recorded.
+ * The fence only RECORDS (it never blocks), so the loss is a collision entry,
+ * not a bypassed denial. REVISIT TRIGGER: a wave agent observed staging with a
+ * quoted/escaped subcommand, or the fence starting to block.
+ *
+ * @param {string} command
+ * @returns {boolean}
  */
-const GIT_ADD_REGEX = /\bgit\b[^;&|\n]{0,120}\badd\b/;
+function mayStage(command) {
+  return /\b(?:add|stage)\b/.test(command) && /\bgit\b/.test(command);
+}
 
 /**
  * Recorded in place of a path list when the staging command names NO explicit
@@ -113,6 +136,9 @@ const ALL_PATHS_MARKER = '*';
 const GIT_GLOBAL_VALUE_FLAGS = new Set([
   '-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path', '--config-env',
 ]);
+
+/** `git add` and its built-in synonym `git stage` (#1671 item 5). */
+const GIT_ADD_SUBCOMMANDS = new Set(['add', 'stage']);
 
 /** `git add` flags that consume the NEXT token as their value. */
 const GIT_ADD_VALUE_FLAGS = new Set(['--chmod']);
@@ -211,7 +237,7 @@ function normalizeStagedPath(raw) {
  *    blocked commit, which the hook's fail-safe posture forbids. This is also
  *    why a blanket "pre-filter hit but nothing resolved → `paths: ['*']`"
  *    floor was REJECTED at the 2026-09-20 fix: `git commit -m "add x"` matches
- *    {@link GIT_ADD_REGEX}, and the marker overlaps EVERY staged path, so that
+ *    {@link mayStage}, and the marker overlaps EVERY staged path, so that
  *    floor manufactures a collision for a command that stages nothing.
  *  - A staging command a shell never executes locally is not recorded, and
  *    should not be: `ssh host 'git add x'` stages a REMOTE index, and
@@ -311,7 +337,7 @@ function scanForStagedPaths(command, lib, paths, state, depth) {
         // The G3 pre-filter again, on the payload: same cheap question, same
         // tolerated false positives, and it keeps an unrelated `-c` operand
         // from paying for a second tokenize.
-        if (typeof payload === 'string' && GIT_ADD_REGEX.test(payload)) {
+        if (typeof payload === 'string' && mayStage(payload)) {
           scanForStagedPaths(payload, lib, paths, state, depth + 1);
         }
       }
@@ -335,7 +361,7 @@ function scanForStagedPaths(command, lib, paths, state, depth) {
       i += 1; // boolean global flag, or attached `--git-dir=<p>`
     }
 
-    if (i >= segment.length || segment[i].quoted || segment[i].text !== 'add') continue;
+    if (i >= segment.length || segment[i].quoted || !GIT_ADD_SUBCOMMANDS.has(segment[i].text)) continue;
     state.recognised = true;
     i += 1;
 
@@ -486,6 +512,218 @@ function appendIntent({ fenceFile, agentId, command, paths }) {
 }
 
 // ---------------------------------------------------------------------------
+// Work-tree recorder (#1659)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cheap PRE-FILTER for the work-tree recorder — same shape and same role as
+ * {@link mayStage}, for the same reasons (#1670 item 6: a bounded lookahead
+ * silently skipped `git -C <long path> -c … commit`): only a hit pays for the
+ * tokenizer and a git spawn. False positives (`echo "git commit"`) resolve to
+ * no commit statement and record nothing.
+ *
+ * @param {string} command
+ * @returns {boolean}
+ */
+function mayCommit(command) {
+  return /\bcommit\b/.test(command) && /\bgit\b/.test(command);
+}
+
+/** Timeout for the one `git rev-parse` per commit tree (hook budget is 5 s). */
+const RECORDER_GIT_TIMEOUT_MS = 2000;
+
+/** Directory-changing verbs whose effect the walker does not model (#1659). */
+const DIR_UNKNOWN_VERBS = new Set(['pushd', 'popd', 'chdir']);
+/** Builtins that change the directory when invoked as `builtin <name>` (#1659). */
+const DIR_CHANGE_BUILTINS = new Set(['cd', 'pushd', 'popd', 'chdir']);
+
+/**
+ * Expand a `cd`/`-C` operand against the current directory. Returns null when
+ * the operand cannot be resolved without a shell (`$VAR`, `~user`, `-`), so
+ * the caller records nothing rather than a guessed tree.
+ *
+ * @param {string} base - absolute current directory
+ * @param {string} operand
+ * @returns {string|null}
+ */
+function resolveDirOperand(base, operand) {
+  if (operand === '~') return os.homedir();
+  if (operand.startsWith('~/')) return path.join(os.homedir(), operand.slice(2));
+  if (operand === '-' || operand.startsWith('~') || operand.includes('$') || operand.includes('`')) return null;
+  return path.resolve(base, operand);
+}
+
+/**
+ * Effective directories of every `git commit` statement in a command.
+ *
+ * Walks the chain segments in order, tracking the directory the shell would be
+ * in: a `cd <dir>` statement moves it (relative to the previous one), and each
+ * `-C <dir>` global flag of the commit statement composes on top, as git does.
+ * A `cd` whose operand is unresolvable (`cd "$WT"`) makes the directory
+ * UNKNOWN for the rest of the command — later commits are not recorded rather
+ * than misattributed to the launch tree. So does any directory change the
+ * walker does not model (`pushd`, `popd`, `chdir`, `builtin cd`).
+ *
+ * NAMED CEILINGS (BV-004): subshell scope is not modelled — `(cd x && git
+ * commit); git commit` attributes the second commit to `x` too; a commit nested
+ * in `bash -c "…"` is not recorded. REVISIT if a session's commits are found
+ * missing from `orchestrator.session.work_tree` for one of these shapes.
+ *
+ * @param {string} command
+ * @param {string} startDir - absolute directory the command starts in
+ * @param {{ tokenizeCommand: Function, splitChainSegments: Function,
+ *           resolveSegmentVerb: Function }} lib
+ * @returns {string[]} distinct absolute directories
+ */
+function commitDirs(command, startDir, lib) {
+  const out = new Set();
+  let cwd = startDir;
+  const tokens = lib.tokenizeCommand(command);
+  // No paren stripping here: since #1667 the shared tokenizer turns subshell
+  // parens into statement breaks and appends `$( )`/backtick bodies as their
+  // own statements. A hand strip on top only ever changed `((git commit))`
+  // — arithmetic, not a commit — into a recorded commit (#1670).
+  //
+  // Those hoisted bodies sit AFTER every outer statement, behind the first
+  // `operator: 'substitution'` separator, so walking them in stream order would
+  // judge `cd sub && echo $(git commit); cd ../other` against `other`. Walk the
+  // outer statements first; the bodies then run in the start directory only
+  // when no outer statement moved it, and in an UNKNOWN directory otherwise
+  // (not recorded rather than misattributed).
+  const cut = tokens.findIndex((t) => t.operator === 'substitution');
+  const outer = cut < 0 ? tokens : tokens.slice(0, cut);
+  const hoistedSegments = cut < 0 ? [] : lib.splitChainSegments(tokens.slice(cut));
+  const outerSegments = lib.splitChainSegments(outer);
+  let moved = false;
+  const segments = [...outerSegments, null, ...hoistedSegments];
+  for (const segment of segments) {
+    if (segment === null) {
+      // Boundary between the outer statements and the hoisted bodies.
+      cwd = moved ? null : startDir;
+      continue;
+    }
+    if (segment.length === 0) continue;
+    const { verb, index } = lib.resolveSegmentVerb(segment);
+    if (index < 0) continue;
+
+    // A directory change the walker does not model (`pushd`, `popd`, zsh's
+    // `chdir`, `builtin cd …`) makes the directory UNKNOWN, like an
+    // unresolvable `cd` operand — never misattributed to the old tree (#1659).
+    if (!segment[index].quoted && (DIR_UNKNOWN_VERBS.has(verb)
+      || (verb === 'builtin' && index + 1 < segment.length && DIR_CHANGE_BUILTINS.has(segment[index + 1].text)))) {
+      cwd = null;
+      moved = true;
+      continue;
+    }
+
+    if (verb === 'cd' && !segment[index].quoted) {
+      moved = true;
+      if (cwd === null) continue;
+      let operand = null;
+      for (let j = index + 1; j < segment.length; j++) {
+        const t = segment[j];
+        if (!t.quoted && t.text.startsWith('-') && t.text !== '-') continue; // -P / -L
+        operand = t.text;
+        break;
+      }
+      cwd = operand === null ? os.homedir() : resolveDirOperand(cwd, operand);
+      continue;
+    }
+
+    if (verb !== 'git' || cwd === null) continue;
+    let dir = cwd;
+    let i = index + 1;
+    while (i < segment.length) {
+      const tok = segment[i];
+      if (tok.quoted || !tok.text.startsWith('-') || tok.text === '-') break;
+      if (GIT_GLOBAL_VALUE_FLAGS.has(tok.text)) {
+        if (tok.text === '-C' && i + 1 < segment.length && dir !== null) {
+          dir = resolveDirOperand(dir, segment[i + 1].text);
+        }
+        i += 2;
+        continue;
+      }
+      i += 1;
+    }
+    if (i < segment.length && !segment[i].quoted && segment[i].text === 'commit' && dir !== null) {
+      out.add(dir);
+    }
+  }
+  return [...out];
+}
+
+/**
+ * Record `(tree, start_ref)` for every tree a `git commit` in this command
+ * targets, as an `orchestrator.session.work_tree` event (#1659).
+ *
+ * Runs for EVERY session context (coordinator and wave agents alike), before
+ * the fence gates. Best-effort and side-effect-only: it never throws, never
+ * blocks, and never touches the hook's decision — the caller emits the same
+ * allow either way. One record per commit; the READER dedupes (first record
+ * per tree wins), so no ledger read happens on this path.
+ *
+ * Cost on a command without a commit: one or two linear word tests.
+ *
+ * @param {object} input - the hook payload
+ * @param {string} command
+ * @returns {Promise<void>}
+ */
+async function recordWorkTrees(input, command) {
+  try {
+    if (!mayCommit(command)) return;
+    const sessionId = typeof input?.session_id === 'string' ? input.session_id.trim() : '';
+    if (sessionId === '') return;
+    const payloadCwd = typeof input?.cwd === 'string' ? input.cwd.trim() : '';
+    const startDir = path.isAbsolute(payloadCwd) ? payloadCwd : process.cwd();
+
+    const lib = await import('../scripts/lib/command-blocker.mjs');
+    const dirs = commitDirs(command, startDir, lib);
+    if (dirs.length === 0) return;
+
+    const pairs = new Map();
+    for (const dir of dirs) {
+      let lines;
+      try {
+        lines = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel', 'HEAD'], {
+          encoding: 'utf8',
+          timeout: RECORDER_GIT_TIMEOUT_MS,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }).split('\n');
+      } catch {
+        continue; // not a repo, dir gone, or unborn HEAD — nothing to anchor on
+      }
+      const top = (lines[0] || '').trim();
+      const head = (lines[1] || '').trim();
+      if (top === '' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(head)) continue;
+      let tree = top;
+      try { tree = realpathSync(top); } catch { /* keep git's spelling */ }
+      if (!pairs.has(tree)) pairs.set(tree, head);
+    }
+    if (pairs.size === 0) return;
+
+    const { emitEvent } = await import('../scripts/lib/events.mjs');
+    const { SESSION_WORK_TREE_EVENT } = await import('../scripts/lib/events-schema.mjs');
+    for (const [tree, startRef] of pairs) {
+      try {
+        await emitEvent(SESSION_WORK_TREE_EVENT, {
+          session_id: sessionId,
+          tree,
+          start_ref: startRef,
+        });
+      } catch (err) {
+        process.stderr.write(
+          `⚠ pre-bash-staging-fence: work-tree record not written — ${err?.message || err}\n`,
+        );
+      }
+    }
+  } catch (err) {
+    process.stderr.write(
+      `⚠ pre-bash-staging-fence: work-tree recorder failed — ${err?.message || err}\n`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -500,9 +738,13 @@ async function main() {
   const command = input?.tool_input?.command;
   if (typeof command !== 'string' || command.length === 0) return emitAllow();
 
+  // #1659 — record (tree, start_ref) before any `git commit`, in every session
+  // context. Side effect only: it cannot change the decision below.
+  await recordWorkTrees(input, command);
+
   // G3 — cheap regex PRE-FILTER. Commands that cannot possibly be a staging
   // command pass through without loading the tokenizer.
-  if (!GIT_ADD_REGEX.test(command)) return emitAllow();
+  if (!mayStage(command)) return emitAllow();
 
   // G4 — context gate. Coordinator/manual commits are not fenced.
   if (!isWaveAgentContext()) return emitAllow();
@@ -541,8 +783,10 @@ if (isMainModule(import.meta.url)) {
   if (!shouldRunHook('pre-bash-staging-fence')) process.exit(0);
 
   // Top-level error handler — never let exit 1 leak. Fail-open on internal
-  // errors to avoid blocking legitimate work (mirrors the destructive-guard
-  // posture).
+  // errors on purpose (#1679 point 3): this hook only LOGS staging intent and
+  // never blocks (G6); the commit guard reconciles. Unlike the destructive
+  // guard, which denies on an internal error since #1671, a deny here would turn
+  // the logger into a gate. Revisit if a fence record is missed because of one.
   main().catch((e) => {
     process.stderr.write(
       `⚠ pre-bash-staging-fence: internal error — ${e?.message || e}\n`,

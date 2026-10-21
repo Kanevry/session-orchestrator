@@ -12,7 +12,8 @@ Phase 1.5, Idle Reset rules 1-7): status idle, current-wave 0, Wave History
 demoted into Previous Session, Deviations emptied, scope-baseline-* keys
 deleted. The five recommendation keys stay in the frontmatter so the Phase 7.5
 Mode-Selector can read them. Any other status is a no-op; reasons:
-status-not-completed, unparseable, missing (no or empty STATE.md).
+status-not-completed, unparseable, missing (no or empty STATE.md),
+foreign-state-md (only another platform's foreign STATE.md exists, #1618).
 
   --repo-root <dir>  Repository root holding the state dir (default: cwd)
   --json             Emit {"changed", "reason", "path"} instead of one line

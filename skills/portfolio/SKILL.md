@@ -32,11 +32,11 @@ Then continue with the remaining valid arguments.
 
 ## Behavior
 
-1. **Config gate** — Read the `gitlab-portfolio:` block from Session Config. If `enabled: false` (or the block is absent), log `Portfolio: disabled (gitlab-portfolio.enabled is false) — set enabled: true to activate.` and return exit code 0.
+1. **Config gate** — The CLI reads the `gitlab-portfolio:` block from Session Config. Only `enabled: true` activates it: an absent block parses to the default `enabled: false` (`scripts/lib/config/gitlab-portfolio.mjs`), and in both cases the CLI prints `gitlab-portfolio: disabled (set gitlab-portfolio.enabled: true in Session Config)` and exits 0.
 
-2. **Mode gate** — If `mode: off`, the command is a silent no-op; log a single line and exit 0.
+2. **Mode gate** — If `mode: off`, the command is a no-op: the CLI checks it before vault resolution and any repo scan, prints `gitlab-portfolio: mode: off — skipped (set gitlab-portfolio.mode: warn|strict to run)` and exits 0 (#1619). Dispatch as usual; under `strict`, repo fetch failures exit 2.
 
-3. **Vault resolution** — Read `vault-integration.vault-dir` from Session Config. If `vault-integration.enabled: false` or `vault-dir` is absent, exit 1 with: `Portfolio: vault-integration must be enabled with vault-dir set.`
+3. **Vault resolution** — The CLI takes `--vault-dir`, else `vault-integration.vault-dir` from Session Config (resolved host-locally). If neither yields a path it prints `gitlab-portfolio: vault-integration.vault-dir not configured in Session Config` and exits 2. `vault-integration.enabled` is not checked: a configured `vault-dir` is used even when vault integration is disabled.
 
 4. **Dispatch** — Invoke `scripts/lib/gitlab-portfolio/cli.mjs` with the resolved arguments:
 
@@ -90,9 +90,8 @@ Behaviour is governed by the `mode` config field:
 | Code | Meaning |
 |---|---|
 | `0` | Success (or `mode: off` / `enabled: false` no-op) |
-| `1` | User/config error (bad args, missing vault config) |
-| `2` | System error (vault-dir not found, write failed) |
-| `3` | Repo fetch failures in `strict` mode |
+| `1` | User error (bad arguments, `--repo` names no discovered repo) |
+| `2` | System error (Session Config unreadable, no `vault-dir` configured, `vault-dir` outside the home directory, repo discovery or fetch crashed, write failed, repo fetch failures in `strict` mode) |
 
 Exit codes follow `.claude/rules/cli-design.md` conventions.
 

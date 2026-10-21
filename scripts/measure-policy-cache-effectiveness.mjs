@@ -37,7 +37,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // CLI flags
@@ -57,8 +57,8 @@ const _REPO_ROOT = resolve(flagValue('--repo-root', process.cwd()));
 const JSON_MODE = flagBool('--json');
 
 const SCRIPT_DIR = fileURLToPath(new URL('.', import.meta.url));
-const CACHE_MODULE = join(SCRIPT_DIR, 'lib', 'quality-gates-cache.mjs');
-const POLICY_MODULE = join(SCRIPT_DIR, 'lib', 'quality-gates-policy.mjs');
+const CACHE_MODULE = pathToFileURL(join(SCRIPT_DIR, 'lib', 'quality-gates-cache.mjs')).href;
+const POLICY_MODULE = pathToFileURL(join(SCRIPT_DIR, 'lib', 'quality-gates-policy.mjs')).href;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -340,11 +340,13 @@ async function main() {
     } else {
       printHumanReport(report);
     }
-
-    process.exit(0);
   } finally {
     teardownTmpRepo(tmpRepo);
   }
+  // Exit only AFTER the finally: process.exit() ends the process on the spot,
+  // so calling it inside the try skipped teardownTmpRepo and leaked one
+  // pce-repo-* dir under os.tmpdir() on every successful run (#1648).
+  process.exit(0);
 }
 
 function deriveRecommendation(cacheSubprocess, cacheInProcess, policySubprocess, _policyInProcess) {

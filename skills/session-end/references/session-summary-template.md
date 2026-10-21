@@ -11,6 +11,10 @@ Present to the user:
 - [x] Issue #N: [description] — [evidence: tests passing, files changed]
 - [x] Issue #M: [description]
 
+### Abnahme offen (implemented ≠ accepted — never counted as Completed) [#1678]
+- [ ] #<IID> [Abnahme] <Kriterium> — owner: <body | assignee | Owner> — not-before: <date | —>
+- scope: [linked to this session's plan/epic | all open — link not determinable]
+
 ### Carried Over
 - [ ] Issue #P: [what's left] — new issue #Q created
 - [ ] [description] — blocked by [reason]

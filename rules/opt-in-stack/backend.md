@@ -393,4 +393,4 @@ export async function askAI(prompt: string, options?: { model?: string; maxToken
 - Checking budget after the LLM call (check before, enforce before spending)
 
 ## See Also
-security-web.md · frontend.md · backend-data.md · swift.md · parallel-sessions.md
+parallel-sessions.md · vendored only for some archetypes, so possibly absent in this repo: security-web.md [nextjs-saas, nextjs-minimal, express-service] · frontend.md [nextjs-saas, nextjs-minimal] · backend-data.md [nextjs-saas]

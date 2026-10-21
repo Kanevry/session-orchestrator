@@ -2,7 +2,7 @@
 
 > Status: Accepted · 2026-10-03 · issue #1053 (B3, B4 vocabulary) · Epic #1048
 > Authoritative rule: [`.claude/rules/cross-session-messaging.md`](../../.claude/rules/cross-session-messaging.md) (CSM-001..005)
-> Source PRD: [`docs/prd/2026-08-16-cross-session-messaging.md`](../prd/2026-08-16-cross-session-messaging.md) — evidence is its § Anhang A (measurements M-1..M-23, 2026-08-16, Claude Code 2.1.233, macOS arm64)
+> Source PRD: the internal cross-session-messaging PRD (2026-08-16, not in the public mirror) — evidence is its § Anhang A (measurements M-1..M-23, 2026-08-16, Claude Code 2.1.233, macOS arm64)
 > Project-instruction file resolution: this repo's root context file is `CLAUDE.md` on Claude Code / Cursor IDE and `AGENTS.md` on Codex CLI — transparent aliases per [skills/_shared/instruction-file-resolution.md](../../skills/_shared/instruction-file-resolution.md).
 
 ## Context

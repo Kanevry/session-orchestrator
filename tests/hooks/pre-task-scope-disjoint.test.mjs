@@ -1619,6 +1619,22 @@ describe('stale worktree base (#1485)', () => {
       .filter((rec) => rec.event === 'orchestrator.wave_dispatch.worktree_base_checked');
   }
 
+  /**
+   * Call BEFORE `expectDeny` on every stale-base deny (#1636 Pkt 7). The hook
+   * runs all git work of one fire under ONE shared 1500 ms budget
+   * (`GIT_BUDGET_MS`, a constant — no env override). On a loaded host (offload
+   * gate, load5 ~44) the up-to-7 git spawns alone can exhaust it; the check then
+   * records `skipped: 'git-budget'` and ALLOWs by design (matrix row 15), and
+   * `expectDeny` failed with a bare "0 non-blank stdout lines". It must still
+   * FAIL — a degraded run never measured the deny — but naming its cause.
+   */
+  function expectBaseMeasured(dir) {
+    expect(
+      baseEvents(dir).map((ev) => ev.skipped),
+      "stale-base check cut by the hook's shared git budget (GIT_BUDGET_MS 1500 ms): host load, not a deny regression — the deny was never measured",
+    ).not.toContain('git-budget');
+  }
+
   it('DENIES a worktree dispatch whose fresh base (origin/HEAD) is missing commits of HEAD', () => {
     // Bug caught: #1485. Before, the check only WARNED — and only when HEAD had
     // moved past STATE.md's session-start-ref, a proxy that is silent on any
@@ -1628,6 +1644,7 @@ describe('stale worktree base (#1485)', () => {
 
     const res = runWorktree(dir, worktreePayload(dir));
 
+    expectBaseMeasured(dir);
     expectDeny(res, [
       'STALE WORKTREE BASE (#1485)',
       first.slice(0, 12),
@@ -1738,7 +1755,9 @@ describe('stale worktree base (#1485)', () => {
     writeBaseRef(dir, 'settings.local.json', 'fresh');
     writeBaseRef(dir, 'settings.json', 'head');
 
-    expectDeny(runWorktree(dir, worktreePayload(dir)), ['STALE WORKTREE BASE (#1485)', 'settings.local.json']);
+    const res = runWorktree(dir, worktreePayload(dir));
+    expectBaseMeasured(dir);
+    expectDeny(res, ['STALE WORKTREE BASE (#1485)', 'settings.local.json']);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ stale: true, decision: 'deny', base_ref: 'fresh', base_ref_source: 'local', base: first });
@@ -1767,7 +1786,9 @@ describe('stale worktree base (#1485)', () => {
     const userDir = makeTempDir('ptsd-wt-user-');
     writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
 
-    expectDeny(runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir }), ['STALE WORKTREE BASE (#1485)', '.claude/settings.json']);
+    const res = runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir });
+    expectBaseMeasured(dir);
+    expectDeny(res, ['STALE WORKTREE BASE (#1485)', '.claude/settings.json']);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ stale: true, decision: 'deny', base_ref: 'fresh', base_ref_source: 'project', base: first });
@@ -1812,10 +1833,9 @@ describe('stale worktree base (#1485)', () => {
     // phantom claim for up to the in-flight TTL.
     const { dir } = makeGitRepo();
 
-    expectDeny(
-      runWorktree(dir, worktreePayload(dir, { files: ['a.txt'], toolUseId: 'toolu_wt_1' })),
-      'STALE WORKTREE BASE (#1485)',
-    );
+    const denied = runWorktree(dir, worktreePayload(dir, { files: ['a.txt'], toolUseId: 'toolu_wt_1' }));
+    expectBaseMeasured(dir);
+    expectDeny(denied, 'STALE WORKTREE BASE (#1485)');
     expectAllow(runWorktree(dir, worktreePayload(dir, { isolation: null, files: ['a.txt'], toolUseId: 'toolu_wt_2' })));
 
     // The ledger holds the dispatch that HAPPENED, and only that one.

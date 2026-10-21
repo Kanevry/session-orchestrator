@@ -25,9 +25,12 @@
  *                2026-10-03). The step refuses, naming the remove + add
  *                commands, while ANY directory marketplace reads this clone;
  *                GitHub/npm sources update as before, with a one-line hint.
- *   3. codex   — only if the plugin is already installed in Codex: re-run
- *                scripts/codex-install.mjs, which installs from the same
- *                packed STAGE_DIR (#1518), never from this clone.
+ *   3. codex   — only if the plugin is already installed in Codex (under any
+ *                marketplace): re-run scripts/codex-install.mjs, which
+ *                installs from the same packed STAGE_DIR (#1518), never from
+ *                this clone. Any personal-marketplace `@local` install fails
+ *                read-only with the cleanup steps, wherever its source points
+ *                (#1608): codex-install would remove it.
  *
  * Never deletes an old plugin cache directory: the running session still
  * loads it until the harness restarts.
@@ -316,15 +319,61 @@ export function updateClaude({ run, log }, opts, ctx = {}) {
   };
 }
 
-function updateCodex({ run, log }, opts) {
-  if (!commandOnPath('codex')) return { step: 'codex', status: 'skipped', detail: 'codex not on PATH' };
+/**
+ * Installed session-orchestrator rows of the human `codex plugin list` table
+ * (`PLUGIN  STATUS  VERSION  SOURCE`, columns padded with 2+ spaces). The id
+ * carries whatever marketplace installed it — `session-orchestrator@local`
+ * from the personal marketplace (#1608) — so the name must end at `@` or the
+ * column gap: `session-orchestrator-foo@x` is a different plugin.
+ * @param {string | undefined} listText
+ * @returns {Array<{id: string, marketplace: string | undefined, source: string | undefined}>}
+ */
+function findCodexInstalls(listText) {
+  const row = new RegExp(`^${PLUGIN_NAME}(?:@(\\S+))?\\s+installed\\b`);
+  return (listText ?? '').split(/\r?\n/).flatMap((raw) => {
+    const line = raw.trim();
+    const m = row.exec(line);
+    if (!m) return [];
+    const cols = line.split(/\s{2,}/);
+    return [{ id: cols[0], marketplace: m[1], source: cols.length > 2 ? cols.at(-1) : undefined }];
+  });
+}
+
+/**
+ * The Codex step. `ctx` exists for tests (tmp clone, no PATH lookup);
+ * production passes nothing.
+ */
+export function updateCodex({ run, log }, opts, ctx = {}) {
+  const { soRoot = SO_ROOT, hasCodex = () => commandOnPath('codex') } = ctx;
+  if (!hasCodex()) return { step: 'codex', status: 'skipped', detail: 'codex not on PATH' };
   const list = run('codex', ['plugin', 'list'], { mutates: false });
   if (!list.ok) return { step: 'codex', status: 'failed', detail: list.detail };
-  if (!new RegExp(`^${PLUGIN_ID}\\s+installed`, 'm').test(list.stdout)) {
+  const installs = findCodexInstalls(list.stdout);
+  if (installs.length === 0) {
     return { step: 'codex', status: 'skipped', detail: 'plugin not installed in Codex (install: node scripts/codex-install.mjs)' };
   }
+  // `@local` comes from the personal marketplace
+  // (~/.agents/plugins/marketplace.json), whose directory source Codex caches
+  // whole, a checkout's .env.local included (#1518). codex-install would remove
+  // `@local` — a re-registration the operator owns — so this step only names
+  // the cleanup (same steps as codex-install's personal-marketplace hint),
+  // wherever the source points: run from a worktree it is the main checkout,
+  // not soRoot, and a source match would let codex-install remove it (#1608).
+  const local = installs.find((i) => i.marketplace === 'local');
+  if (local) {
+    const link = local.source ? `the link '${local.source}'` : 'its source link';
+    return {
+      step: 'codex',
+      status: 'failed',
+      detail: `${local.id} is installed from the personal marketplace${local.source ? ` via '${local.source}'` : ''} `
+        + `— its Codex cache copies the whole directory, a checkout's .env.local included (#1518). Clean up once: `
+        + `(1) node scripts/codex-install.mjs (installs ${PLUGIN_ID} from the packed copy, then removes ${local.id}); `
+        + `(2) remove that entry from ~/.agents/plugins/marketplace.json; (3) delete ${link} if it is a symlink; `
+        + `(4) after restarting Codex, delete the old cache folders under ~/.codex/plugins/cache/local/.`,
+    };
+  }
   log('codex: re-running codex-install');
-  const r = run(process.execPath, [path.join(SO_ROOT, 'scripts', 'codex-install.mjs'), '--json']);
+  const r = run(process.execPath, [path.join(soRoot, 'scripts', 'codex-install.mjs'), '--json']);
   if (!r.ok) return { step: 'codex', status: 'failed', detail: r.detail };
   if (opts.dryRun) return { step: 'codex', status: 'ok', detail: 'dry-run' };
   try {

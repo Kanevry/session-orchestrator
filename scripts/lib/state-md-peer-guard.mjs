@@ -55,6 +55,8 @@ function orderedStateMdCandidates() {
  * @returns {string}  Absolute path (may not exist on disk).
  */
 function _resolveStateMdPath(repoRoot) {
+  // #1636 decision: no ownership filter here — this guard exists to SEE another
+  // session's STATE.md, so a foreign file is its input, not noise to drop.
   const candidates = orderedStateMdCandidates();
   for (const candidate of candidates) {
     const abs = join(repoRoot, candidate);

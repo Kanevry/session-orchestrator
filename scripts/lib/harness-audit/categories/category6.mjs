@@ -14,6 +14,8 @@ import { execFileSync } from 'node:child_process';
 import { safeRead, lineCount, pass, fail } from './helpers.mjs';
 import { resolveInstructionFile } from '../../common.mjs';
 import { listRemotes } from '../../vcs-repo-spec.mjs';
+import { _extractConfigSection, _parseKV } from '../../config/section-extractor.mjs';
+import { parseSourceCommitTrailer } from '../../github-export.mjs';
 
 export function runCategory6(root) {
   const checks = [];
@@ -231,14 +233,32 @@ export function runCategory6(root) {
         // git not honouring its own contract — equally unmeasurable, and
         // splitting it off would leave the identical fail-open standing behind a
         // smaller trigger. `aheadCountQuery` records which of the two occurred.
-        const revListOut = runGit(['rev-list', '--count', `github/${mirrorBranch}..HEAD`]);
+        // `mirror: curated` (#1631): the published commit is a snapshot, not an
+        // ancestor of HEAD, so `github/<branch>..HEAD` would count the whole private
+        // history. Count from the snapshot's `Source-Commit` trailer instead; a
+        // mirror that carries no trailer yet is still a plain ancestor (pre-export).
+        const instrText = instr ? safeRead(instrPath) : null;
+        const curated = instrText !== null && _parseKV(_extractConfigSection(instrText)).get('mirror') === 'curated';
+        let aheadBase = `github/${mirrorBranch}`;
+        let revListOut;
+        if (curated) {
+          const mirrorCommit = runGit(['cat-file', 'commit', `github/${mirrorBranch}`]);
+          aheadBase = (mirrorCommit !== null && parseSourceCommitTrailer(mirrorCommit)) || aheadBase;
+          revListOut = mirrorCommit === null ? null : runGit(['rev-list', '--count', `${aheadBase}..HEAD`]);
+        } else {
+          revListOut = runGit(['rev-list', '--count', `${aheadBase}..HEAD`]);
+        }
         const aheadCount = revListOut !== null ? Number.parseInt(revListOut, 10) : NaN;
+        const curatedEvidence = curated ? { mirrorMode: 'curated', aheadBase } : {};
+        const pushHint = curated
+          ? 'Run /close on main — session-end § 4.4 publishes the curated snapshot with its checks (never push the export by hand)'
+          : 'Run: git push github HEAD';
 
         if (Number.isNaN(aheadCount)) {
           const aheadCountQuery = revListOut === null ? 'git-error' : 'unparseable-output';
           checks.push(fail({
             checkId, maxPoints: 2, path: relPath,
-            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount: null, aheadCountQuery },
+            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount: null, aheadCountQuery, ...curatedEvidence },
             message:
               `unable to determine ahead-count vs github/${mirrorBranch} (${aheadCountQuery}) — ` +
               'mirror drift not measurable',
@@ -246,14 +266,14 @@ export function runCategory6(root) {
         } else if (aheadCount === 0) {
           checks.push(pass({
             checkId, points: 2, maxPoints: 2, path: relPath,
-            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount },
+            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount, ...curatedEvidence },
             message: `HEAD is fully mirrored to github/${mirrorBranch}`,
           }));
         } else {
           checks.push(pass({
             checkId, points: 1, maxPoints: 2, path: relPath,
-            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount },
-            message: `${aheadCount} local commit(s) not pushed to github mirror (github/${mirrorBranch}). Run: git push github HEAD`,
+            evidence: { hasGithubRemote: true, mirrorBranch, resolvedVia, aheadCount, ...curatedEvidence },
+            message: `${aheadCount} local commit(s) not pushed to github mirror (github/${mirrorBranch}). ${pushHint}`,
           }));
         }
       }

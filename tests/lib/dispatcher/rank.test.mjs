@@ -521,15 +521,17 @@ describe('defaultDeps().staleDaysFor — abandoned-stub tail skip (#834)', () =>
    * one phantom stub is enough to zero out staleness and defeat the
    * dispatcher's whole purpose.
    */
-  function seedPhantomTailFixture(nowMs) {
+  function seedPhantomTailFixture(nowMs, synthetic = true) {
     const dir = join(tmpRoot, '.orchestrator', 'metrics');
     mkdirSync(dir, { recursive: true });
     const realCompletedAt = new Date(nowMs - 60 * MS_PER_DAY).toISOString();
     const abandonedCompletedAt = new Date(nowMs).toISOString();
     const lines = [
-      JSON.stringify({ session_id: 'real-1', completed_at: realCompletedAt, agent_summary: { complete: 3 } }),
+      JSON.stringify({ session_id: 'real-1', session_type: 'feature', completed_at: realCompletedAt, agent_summary: { complete: 3 } }),
       JSON.stringify({
         session_id: 'ghost-1',
+        session_type: 'feature',
+        _synthetic: synthetic,
         completed_at: abandonedCompletedAt,
         agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
         status: 'abandoned',
@@ -538,14 +540,16 @@ describe('defaultDeps().staleDaysFor — abandoned-stub tail skip (#834)', () =>
     writeFileSync(join(dir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
   }
 
-  it('computes stale-days from the last REAL session (~60), not the trailing abandoned stub (~0)', async () => {
+  it.each([
+    [true, 60],
+    [false, 0], // Legacy known-type abandoned without synthetic markers is measured.
+  ])('uses the measured population with synthetic=%s (expected stale days %s)', async (synthetic, expectedDays) => {
     const nowMs = Date.parse('2026-07-19T12:00:00.000Z');
-    seedPhantomTailFixture(nowMs);
+    seedPhantomTailFixture(nowMs, synthetic);
 
     const staleDays = await defaultDeps().staleDaysFor(tmpRoot, nowMs);
 
-    expect(staleDays).toBeGreaterThan(59);
-    expect(staleDays).toBeLessThan(61);
+    expect(staleDays).toBe(expectedDays);
   });
 });
 
@@ -581,12 +585,13 @@ describe('defaultDeps().staleDaysFor — #1209: late re-append of an OLD session
     const newCompletedAt = new Date(nowMs - 5 * MS_PER_DAY).toISOString();
     const oldRecord = JSON.stringify({
       session_id: 'old-session',
+      session_type: 'feature',
       status: 'completed',
       completed_at: oldCompletedAt,
     });
     const lines = [
       oldRecord,
-      JSON.stringify({ session_id: 'new-session', status: 'completed', completed_at: newCompletedAt }),
+      JSON.stringify({ session_id: 'new-session', session_type: 'feature', status: 'completed', completed_at: newCompletedAt }),
       // Late re-append of the SAME old session_id, positioned LAST.
       oldRecord,
     ];

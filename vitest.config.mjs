@@ -16,7 +16,9 @@ export default defineConfig({
     include: ['tests/**/*.test.mjs'],
     // #1278: validate the repository once before workers, then share that run's
     // result with the CLI/wiring assertions instead of four concurrent scans.
-    globalSetup: ['./tests/setup/validate-plugin.mjs'],
+    // #1646: run-tmpdir comes first — it gives the whole run its own TMPDIR,
+    // reports test leftovers on stderr and removes only that directory.
+    globalSetup: ['./tests/setup/run-tmpdir.mjs', './tests/setup/validate-plugin.mjs'],
     // Strips git's repo-pointing environment once per worker. Those variables
     // outrank BOTH `cwd:` and `-C <path>`, so without this a fixture git call
     // writes into the INVOKING repository — measured on 2026-08-19, when it
@@ -45,13 +47,19 @@ export default defineConfig({
     // .orchestrator/metrics/events.jsonl with the live session id (#1397 item
     // 11; measured 2026-09-19: 10 lines from two test files). Only defaults that
     // would leave the temp root are redirected; tmp fixture roots are untouched.
+    // owner-config-guard pins SO_CONFIG_HOME (the highest tier of the private
+    // config dir) at a per-run tmp dir and drops SO_PROJECTS_ROOT. Without it a
+    // test reads the host's real ~/.config/session-orchestrator/owner.yaml —
+    // e.g. getConfinementRoot() follows its paths.projects-root (#1567).
     setupFiles: [
+      './tests/setup/zx.mjs',
       './tests/setup/scrub-git-env.mjs',
       './tests/setup/scrub-session-env.mjs',
       './tests/setup/vault-guard.mjs',
       './tests/setup/host-alias-guard.mjs',
       './tests/setup/events-ledger-guard.mjs',
       './tests/setup/navigator-dir-guard.mjs',
+      './tests/setup/owner-config-guard.mjs',
     ],
     // skills/vault-sync/tests/schema-drift.test.mjs intentionally excluded:
     // it requires a sibling projects-baseline checkout (HAS_CANONICAL) and
@@ -83,11 +91,14 @@ export default defineConfig({
     // `npm test` to insure against a contention failure that only appears under
     // load is the wrong trade; scoping it to the gate keeps both properties.
     //
-    // `runGate()` in scripts/lib/quality-gate.mjs sets SO_BOUNDED_WORKERS=1 for
-    // every gate subprocess, so the pre-push and release gates — the runs where
-    // #1360's timeouts were actually observed — get the bound, and a bare
-    // `npm test` keeps Vitest's own default. Same conditional idiom as
-    // `testTimeout` two lines up.
+    // Both gate entrypoints set SO_BOUNDED_WORKERS=1 for every gate subprocess:
+    // `runGate()` in scripts/lib/quality-gate.mjs (in-process gate API) and
+    // `runCheck()` in scripts/lib/gates/gate-helpers.mjs (the CLI path:
+    // `.husky/pre-push` → `npm run quality-gate` → scripts/run-quality-gate.mjs
+    // → gate-full; it lacked the flag until #1675). So the pre-push and release
+    // gates — the runs where #1360's and #1673's timeouts were observed — get
+    // the bound, and a bare `npm test` keeps Vitest's own default. Same
+    // conditional idiom as `testTimeout` two lines up.
     //
     // NAMED CEILING (BV-004): 4 is the value #1360 measured, not a derived
     // optimum. Revisit when a gate run times out WITH the bound applied, or

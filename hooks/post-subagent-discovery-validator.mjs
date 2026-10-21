@@ -226,7 +226,7 @@ const AGENT_DESCRIPTION_MAX = 120;
  * Resolve WHO made the claim, and say where the answer came from (#1218).
  *
  * Measured 2026-09-06 over the fleet's worst-affected repo
- * (`extern/aiat-barrierefrei-engine`, 3,360 `discovery_validator_violation`
+ * (a consumer repo, 3,360 `discovery_validator_violation`
  * records): `agent` was the literal string `"unknown"` on 3,026 of them
  * (90.1%), and NOT ONE record carried an `agent_id`. Both the sidecar-meta
  * fallback and the `agent_id` field landed in the same commit (936dae8a,
@@ -364,7 +364,7 @@ function dedupSentinelPath({ projectRoot, sessionId, agentId, claimText }) {
  *     same sentence re-asserted by a second agent of the same session is the
  *     same finding, and writing it twice is what produced a duplication factor
  *     of 16.4 (3,360 records over 205 distinct `claim_text` values, measured
- *     2026-09-06 in `extern/aiat-barrierefrei-engine`).
+ *     2026-09-06 in a consumer repo).
  *
  * Returns null without a session id — a claim that cannot be bound to a session
  * must not collide with an unrelated one under a global "unknown" key, so it is

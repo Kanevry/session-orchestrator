@@ -46,6 +46,16 @@ const PAGES = [
 
 const read = (rel) => readFileSync(join(REPO_ROOT, rel), 'utf8');
 const all = (re, s) => [...s.matchAll(re)].map((m) => m[1]);
+// Every <link> tag outside HTML comments as an attribute map. Attribute order and
+// a commented-out tag can then neither hide a match nor fake one (#1514).
+const linkTags = (html) =>
+  all(/(<link\b[^>]*>)/gi, html.replace(/<!--[\s\S]*?-->/g, '')).map((tag) =>
+    Object.fromEntries(
+      [...tag.slice('<link'.length).matchAll(/([a-zA-Z:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?/g)].map(
+        (m) => [m[1].toLowerCase(), m[2] ?? m[3] ?? m[4] ?? ''],
+      ),
+    ),
+  );
 
 const sectionIds = (s) => all(/<section\b[^>]*\sid="([^"]+)"/g, s);
 const metrics = (s) =>
@@ -176,6 +186,40 @@ describe('site: per-page document shape', () => {
     expect(/<script src="\/assets\/ui\.js(?:\?[^"\s]+)?" defer><\/script>/.test(html), `${file} ui.js`).toBe(
       true,
     );
+  });
+
+  it.each(PAGES)('$file preloads only fonts that site.css declares', ({ file }) => {
+    // A preload for a face no @font-face uses is a wasted request plus a
+    // "preloaded but not used" console warning; the legal pages kept preloading
+    // Bricolage Grotesque after site.css switched to Space Grotesk (#1514).
+    const declared = new Set(all(/url\(['"]?\/fonts\/([^'")]+)['"]?\)/g, read('site/assets/site.css')));
+    // Parsed per tag, so a reordered tag (as= before rel=) is checked too instead of
+    // slipping past a fixed attribute order while the other preloads keep the list non-empty.
+    const preloaded = linkTags(read(file))
+      .filter((a) => /(?:^|\s)preload(?:\s|$)/i.test(a.rel ?? '') && (a.as ?? '').toLowerCase() === 'font')
+      .map((a) => a.href ?? '');
+    // Vacuum guard: no parsed preload at all would let the filter below pass on an empty list.
+    expect(preloaded.length, `${file}: font preloads found`).toBeGreaterThan(0);
+    expect(
+      preloaded.filter((href) => !(href.startsWith('/fonts/') && declared.has(href.slice('/fonts/'.length)))),
+      `${file}: preloaded fonts site.css never declares`,
+    ).toEqual([]);
+  });
+
+  it.each(PAGES)('$file links site.css with the same cache key as site/index.html', ({ file }) => {
+    // A page left on an older (or no) ?v= serves returning visitors a stale
+    // stylesheet after a CSS change. The expected key comes from the home page,
+    // so the next bump edits HTML only, never this test.
+    // Live tags only: a commented-out versioned link must not stand in for an
+    // unversioned live one, and a second live link must not go unnoticed.
+    const cacheKeys = (rel) =>
+      linkTags(read(rel))
+        .filter((a) => (a.rel ?? '').toLowerCase() === 'stylesheet' && /^\/assets\/site\.css(?:\?|$)/.test(a.href ?? ''))
+        .map((a) => a.href.slice('/assets/site.css'.length));
+    const expected = cacheKeys(EN);
+    expect(expected, `${EN} site.css links`).toHaveLength(1);
+    expect(expected[0], `${EN} site.css ?v= key`).toMatch(/^\?v=\S+$/);
+    expect(cacheKeys(file), `${file} site.css cache key`).toEqual(expected);
   });
 
   it.each(PAGES)('$file keeps its CSS in site.css — no inline <style>', ({ file }) => {

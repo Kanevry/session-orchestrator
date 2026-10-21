@@ -45,7 +45,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 
-import { readLockDetailed, loadOwnerProof, release } from './lib/session-lock.mjs';
+import { readLockDetailed, loadOwnerProof, release, writeReleaseMarker } from './lib/session-lock.mjs';
 import { LOCK_RELEASED_EVENT } from './lib/session-transition.mjs';
 import { emitEvent } from './lib/events.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
@@ -69,6 +69,9 @@ WHAT IT DOES
   3. Emits orchestrator.session.lock.released with the ids read BEFORE the
      delete, plus caller="${PHASE_CALLER}".
   4. RE-READS the lock path and exits 0 only when our lock is provably gone.
+  5. Leaves .orchestrator/runtime/lock-released/<raw-id>.json, so a compaction
+     or resume of this session does not re-create the lock (#1651); the
+     session's next deliberate acquire() removes it.
 
 FLAGS
   --session-id <id>   REQUIRED. The RAW (physical) session id that owns the lock
@@ -188,8 +191,14 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
   if (lockDetail.status === 'absent') {
     // Nothing was released, so nothing terminal happened: NO event. Writing one
     // here would put a fictional lifecycle end into the stream — the idempotent
-    // re-run case is not a release.
-    const result = { ok: true, outcome: 'absent', verified: true, session_id: sessionId, event_emitted: false };
+    // re-run case is not a release. The #1651 marker IS written: a session that
+    // closes without a lock (bootstrap fs-error, or an earlier release) must not
+    // get one re-created by a later compaction either.
+    const marker = writeReleaseMarker({ repoRoot, sessionId });
+    const result = {
+      ok: true, outcome: 'absent', verified: true, session_id: sessionId, event_emitted: false,
+      release_marker: marker.ok === true,
+    };
     await emitResult(result);
     return 0;
   }
@@ -249,6 +258,21 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
   const verified = ourLockIsGone(repoRoot, sessionId);
   const outcome = alreadyGone ? 'already-gone' : 'deleted';
 
+  // #1651: leave "released on purpose" behind, so the SessionStart bootstrap
+  // does not re-create this lock after a compaction or resume of the same raw
+  // session (a headless run may hold the slot by then). Best-effort: a failed
+  // marker write is reported, but the release itself stands.
+  let markerWritten = false;
+  if (verified) {
+    const marker = writeReleaseMarker({ repoRoot, sessionId });
+    markerWritten = marker.ok === true;
+    if (!markerWritten) {
+      process.stderr.write(
+        `release-session-lock: release marker not written (${marker.reason}) — a compaction may re-create the lock\n`,
+      );
+    }
+  }
+
   // -- Step 4: the terminal breadcrumb --------------------------------------
   // The ids are passed EXPLICITLY: the lock is gone by now, so emitEvent's
   // lock-derived correlation would find nothing to attribute this record to.
@@ -275,6 +299,7 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
     ...(semanticSessionId !== null ? { semantic_session_id: semanticSessionId } : {}),
     event_emitted: eventEmitted,
     ...(emitError !== null ? { event_error: emitError } : {}),
+    release_marker: markerWritten,
   };
   await emitResult(result);
 

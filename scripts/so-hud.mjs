@@ -36,8 +36,26 @@ export async function main(argv, deps = {}) {
   }
   let root;
   try {
-    root = values['repo-root'] ? path.resolve(values['repo-root']) : (await (deps.exec ?? exec)('git', ['rev-parse', '--show-toplevel'], { timeout: 700 })).stdout.trim();
-    if (!root || !(await fs.stat(root)).isDirectory()) throw new Error('missing');
+    // A session started in a subdirectory measures its working copy: the git toplevel. Not a repo → the given
+    // directory itself (never fail the measurement).
+    const given = values['repo-root'] ? path.resolve(values['repo-root']) : null;
+    const top = await (deps.exec ?? exec)('git', [...(given ? ['-C', given] : []), 'rev-parse', '--show-toplevel'], { timeout: 700 })
+      .then(r => r.stdout.trim(), () => '');
+    if (!top && !given) throw new Error('missing');
+    root = await fs.realpath(top || given);
+    // git answers in physical spelling, but the session writes file paths in the spelling it was given, and the
+    // collision guard compares those as strings: keep the caller's spelling of the toplevel where it is derivable.
+    // Peers are compared physically in collect.mjs. The caller's spelling is used only when it resolves to the
+    // physical toplevel: a symlinked last path part (<d>/elsewhere/scripts → <d>/repo/scripts) would otherwise
+    // map to <d>/elsewhere, which is not the repository.
+    if (given) {
+      const sub = path.relative(root, await fs.realpath(given));
+      let candidate = null;
+      if (sub === '') candidate = given;
+      else if (sub !== '..' && !sub.startsWith(`..${path.sep}`) && given.endsWith(`${path.sep}${sub}`)) candidate = given.slice(0, -sub.length - 1);
+      if (candidate !== null && await fs.realpath(candidate).catch(() => null) === root) root = candidate;
+    }
+    if (!(await fs.stat(root)).isDirectory()) throw new Error('missing');
   } catch { error('so-hud: Repo nicht ermittelbar\n'); return 6; }
   try { output(`${JSON.stringify(await (deps.measure ?? measure)(root))}\n`); return 0; }
   catch { error('so-hud: Messung fehlgeschlagen\n'); return 6; }

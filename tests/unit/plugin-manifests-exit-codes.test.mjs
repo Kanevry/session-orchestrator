@@ -35,13 +35,14 @@
  *   omitted the errors field on schema violations, the assertion would fail. ✓
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { realpathSync } from 'node:fs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const PLUGIN_ROOT = join(__dirname, '..', '..');
@@ -81,6 +82,7 @@ function isNetworkFailure(result) {
  */
 function makeTmpRoot(setup) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'pm-exit-test-')));
+  onTestFinished(() => removeTree(root));
   setup(root);
   return root;
 }
@@ -126,14 +128,17 @@ describe('exit-code contract — locally-provable scenarios (no network)', () =>
     const root = makeTmpRoot((r) => {
       mkdirSync(join(r, '.claude-plugin'), { recursive: true });
       writeFileSync(join(r, '.claude-plugin', 'plugin.json'), '{broken json');
-      writeFileSync(join(r, '.claude-plugin', 'marketplace.json'), VALID_MARKETPLACE_JSON);
+      // #1676: keep parse-error fixtures local; assert the plugin error below.
     });
 
-    const result = runScript({ root });
+    const result = runScript({ flags: ['--json'], root });
 
     // Exit 1 (validation failure), NOT 2 (system error).
     // If the script incorrectly used process.exit(2) for parse errors, this fails.
     expect(result.status).toBe(1);
+    const pluginResult = JSON.parse(result.stdout).results.find((r) => r.label === 'plugin-manifest');
+    expect(pluginResult.ok).toBe(false);
+    expect(pluginResult.error).toContain('Manifest parse error:');
   });
 
   // Exit-code 2 is only reachable via network error or AJV compile error.
@@ -196,11 +201,12 @@ describe('--json flag — failure shape for locally-provable failures', () => {
     const root = makeTmpRoot((r) => {
       mkdirSync(join(r, '.claude-plugin'), { recursive: true });
       writeFileSync(join(r, '.claude-plugin', 'plugin.json'), '{broken json');
-      writeFileSync(join(r, '.claude-plugin', 'marketplace.json'), VALID_MARKETPLACE_JSON);
+      // #1676: keep parse-error fixtures local; assert the plugin error below.
     });
 
     const result = runScript({ flags: ['--json'], root });
 
+    expect(result.status).toBe(1);
     const parsed = JSON.parse(result.stdout);
     const pluginResult = parsed.results.find((r) => r.label === 'plugin-manifest');
 

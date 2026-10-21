@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { isSessionConfigHeading } from './lib/config/section-extractor.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { canonicalizeSessions, isMeasuredSession } from './lib/sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 const SERVER_INFO = { name: 'session-orchestrator', version: '2.0.0' };
 const TOOLS = [
@@ -16,7 +18,7 @@ const TOOLS = [
   },
   {
     name: 'session_metrics',
-    description: 'Reads the last 5 REAL session metrics entries from .orchestrator/metrics/sessions.jsonl (abandoned phantom stubs excluded)',
+    description: 'Reads the last 5 MEASURED session metrics entries from .orchestrator/metrics/sessions.jsonl (unmeasured records excluded)',
     inputSchema: { type: 'object', properties: {}, required: [] },
   },
 ];
@@ -65,24 +67,31 @@ export function readSessionConfig(root) {
   return body.join('\n').replace(/\n+$/, '') || `No '## Session Config' section found in ${file}`;
 }
 
-/** Read the last five real records, with whole-ledger stub count and token coverage. */
+/** Read the last five canonical measured records, with exclusions and token coverage. */
 export function readSessionMetrics(root) {
-  const file = ['.orchestrator', '.claude'].map((dir) => join(root, dir, 'metrics', 'sessions.jsonl'))
+  const file = ['.orchestrator', '.claude'].map((dir) => join(resolveEventsLedgerRoot(root), dir, 'metrics', 'sessions.jsonl'))
     .find((path) => isFile(path));
   if (!file) return 'No metrics found (checked .orchestrator/metrics/ and .claude/metrics/)';
   const entries = [];
   let stubCount = 0;
+  const parsed = [];
   for (const line of readFileSync(file, 'utf8').split(/\r?\n/)) {
     let record;
     try { record = JSON.parse(line); } catch { continue; }
-    // Torn writes and non-record JSON must not hide subsequent valid sessions.
+    // Preserve torn-write/non-record guards and actionable read errors.
     if (!record || typeof record !== 'object' || Array.isArray(record)) continue;
-    if (record.status === 'abandoned') { stubCount++; continue; }
+    parsed.push(record);
+  }
+  // Keep ID-less legacy measurements and original append order for the window.
+  const canonical = new Set(canonicalizeSessions(parsed, { keepUnidentified: true }));
+  for (const record of parsed) {
+    if (!canonical.has(record)) continue;
+    if (!isMeasuredSession(record)) { stubCount++; continue; }
     entries.push(record);
     if (entries.length > 5) entries.shift();
   }
   if (!entries.length) {
-    return stubCount ? `No real sessions (abandoned stubs excluded: ${stubCount})`
+    return stubCount ? `No measured sessions (unmeasured records excluded: ${stubCount})`
       : 'No metrics found (file is empty)';
   }
   const record = entries.findLast((entry) => (entry.total_token_input !== null && entry.total_token_input !== undefined)
@@ -95,7 +104,7 @@ export function readSessionMetrics(root) {
       + ` [session: ${record.session_id ?? 'unknown'}]`
     : 'tokens: no token data in last 5 sessions (subagent telemetry not yet captured)';
   return entries.map((entry) => JSON.stringify(entry)).join('\n')
-    + `\n\nabandoned stubs excluded: ${stubCount}\n\n--- token summary ---\n${summary}`;
+    + `\n\nunmeasured records excluded: ${stubCount}\n\n--- token summary ---\n${summary}`;
 }
 
 /** Handle one JSON-RPC line. null means a notification or blank line, not a reply. */

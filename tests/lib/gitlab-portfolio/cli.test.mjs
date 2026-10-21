@@ -112,6 +112,27 @@ describe('main — gitlab-portfolio.enabled: false', () => {
     expect(result.reposScanned).toBe(0);
     expect(result.reposFailed).toBe(0);
   });
+
+  // #1619: `mode: off` with `enabled: true` scanned every repo — only `enabled === false` gated.
+  it('mode: off ends like enabled: false — exit 0, one line, no repo scan', async () => {
+    const deps = makeSuccessfulDeps({
+      parseConfig: vi.fn().mockReturnValue(
+        makeMinimalConfig({ 'gitlab-portfolio': { enabled: true, mode: 'off', 'stale-days': 30, 'critical-labels': [] } }),
+      ),
+    });
+    const lines = [];
+    const spy = vi.spyOn(process.stdout, 'write').mockImplementation((s) => { lines.push(String(s)); return true; });
+    let result;
+    try {
+      result = await main([], deps);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(result).toEqual({ exitCode: 0, action: 'disabled', reposScanned: 0, reposFailed: 0 });
+    expect(deps.discoverRepos).not.toHaveBeenCalled();
+    expect(lines).toHaveLength(1);
+  });
 });
 
 // ── Missing vault-dir ──────────────────────────────────────────────────────────

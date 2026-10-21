@@ -830,7 +830,12 @@ describe('relocate-vault-corpus — --with-backfill canonical-learning (#700)', 
     expect(barePlan.source).toBe('backfill');
   });
 
-  it('backfills a repo:-less session into the canonical slug learned from a source-repo: note', { timeout: 20_000 }, () => {
+  // #1602: the generator now writes the namespaced id `<source-repo>-<session id>`;
+  // the note must still teach its canonical slug through the session-id join.
+  for (const [label, idLine, repoLine] of [
+    ['bare id', (sid) => `id: ${sid}`, 'source-repo: org/foo-bar'],
+    ['namespaced id (#1602)', (sid) => `id: "foo-bar-${sid}"`, 'source-repo: foo-bar'],
+  ]) it(`backfills a repo:-less session into the canonical slug learned from a source-repo: note (${label})`, { timeout: 20_000 }, () => {
     const root = mkTmp('rvt-canon-source-');
     const vault = join(root, 'vault');
     const repos = join(root, 'repos');
@@ -838,7 +843,7 @@ describe('relocate-vault-corpus — --with-backfill canonical-learning (#700)', 
     const bareSid = 'canon-source-bare-2026-04-19-1616';
 
     writeFile(vault, `50-sessions/${srcSid}.md`,
-      `---\ntype: session\nid: ${srcSid}\nsource-repo: org/foo-bar\n---\n# canon source\n`);
+      `---\ntype: session\n${idLine(srcSid)}\n${repoLine}\n---\n# canon source\n`);
     writeFile(vault, `50-sessions/${bareSid}.md`,
       `---\ntype: session\nid: ${bareSid}\n---\n# canon bare\n`);
 

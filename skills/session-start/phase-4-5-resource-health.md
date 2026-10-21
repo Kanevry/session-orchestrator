@@ -51,8 +51,8 @@ on it there fired the *critical* threshold on 84.0% of starts.
 | Signal | Threshold | Class |
 |---|---|---|
 | CPU, judged on **min(1m, 5m)** (#943) | above `cpu-load-max-pct` (default 90) | soft |
-| Live peer **sessions** from the registry | ≥ `concurrent-sessions-warn` (default 5) | soft |
-| Claude **processes** (fallback only, registry unreadable) | ≥ threshold × 6 | soft |
+| Live peer **sessions** from the registry | ≥ `concurrent-sessions-warn` (default 5) | **info** (reported, never counted — standing condition, #1654) |
+| Claude **processes** (fallback only, registry unreadable) | ≥ threshold × 6 | **info** (same state, same rule — #1654) |
 | Swap, **only while memory is unhealthy** | `> 3072 MB` hard / `> 1024 MB` soft | both |
 | Zombie processes with a live peer/process context | ≥ 1 | **info** (reported, never counted — see HR-104) |
 | SSH detected AND `ssh-no-docker: true` | — | info note |
@@ -70,10 +70,16 @@ caller can log which axes fired rather than re-deriving them from prose.
 **Unit note (#1089):** `concurrent-sessions-warn` is denominated in SESSIONS. It
 was compared against `claude_processes_count` until this rebuild — a measured 6x
 unit error (median processes:sessions = 6.0 over 1461 paired samples) that made
-the threshold fire on 93.6% of starts instead of 4.2%. `probe()` now supplies
+the threshold fire on 93.6% of starts instead of 4.2%. The 4.2% did not hold
+(re-measured 2026-10-17, #1650: 67.4% M4 / 25.7% M5 since 2026-08-24). `probe()` now supplies
 `peer_sessions_count` from the session registry (`detectPeers()`, self excluded,
 heartbeat-fresh); the rescaled process count is a fallback for hosts where the
-registry is unreadable.
+registry is unreadable. **Report-only since #1654:** a state present on two thirds
+of M4 starts is a standing condition, and HR-104 forbids counting one as a second
+opinion — so the peer count (and its process fallback) appears as an `info:`
+reason but never enters `signals.soft`, neither here nor in the inter-wave gate
+(`evaluateWaveResourceGate()` delegates to `evaluate()`). The rare concurrency
+signal is the session-start banner's start wave (`recent_starts_count`, #1650).
 
 **CPU methodology (#943):** the gate/probe runs right after the coordinator's own
 CPU-saturating quality-gate run by construction, so the 1-minute load average
@@ -90,7 +96,7 @@ to `cpu_load_pct` alone.
 Print a one-line Resource Health verdict immediately after Phase 4's output:
 
 ```
-Resource Health: ⚠ warn — two signals agree (cpu + concurrency); capping agents-per-wave at 2.
+Resource Health: ⚠ warn — two signals agree (memory + cpu); capping agents-per-wave at 2.
 ```
 
 On `green` with a reported signal, print the line but say plainly that nothing

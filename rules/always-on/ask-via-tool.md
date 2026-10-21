@@ -30,7 +30,7 @@ AskUserQuestion({ questions: [{
   ], multiSelect: false }]})
 ```
 
-Option 1 is the recommendation, labelled `(Recommended)`. 2–4 options, 1–4 questions per call. A description that only restates its label is a rule break.
+Weigh every realistic option, not just two: 2–4 options, 1–4 questions per call. Option 1 is the recommendation, labelled `(Recommended)`. Each description gives reason, cost and consequence; one that only restates its label is a rule break. One plain-words (eli5) sentence in the question or a description carries the core and drops no fact (AUQ-006).
 
 - ✓ "Blocker for the next wave; ~20 min; freezes plan scope until it lands."
 - ✗ "Fix the bug now."

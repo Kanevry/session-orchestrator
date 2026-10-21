@@ -501,5 +501,39 @@ describe('runCategory6', () => {
         '3 local commit(s) not pushed to github mirror (github/main). Run: git push github HEAD',
       );
     });
+
+    // `mirror: curated` (#1631): github/main is a snapshot commit, never an
+    // ancestor of HEAD. BUG CAUGHT: counting `github/main..HEAD` there reports
+    // the entire private history as "not pushed" forever and points at
+    // `git push github HEAD` — the one command that would publish that history.
+    it('mirror: curated counts ahead from the snapshot Source-Commit trailer and hints the export script', () => {
+      const source = 'a'.repeat(40);
+      writeFileSync(join(root, 'CLAUDE.md'), minimalClaudeMd(['mirror: curated']));
+      execFileSyncMock.mockImplementation((cmd, args) => {
+        if (isRemoteListCall(args)) {
+          return remoteVOutput([
+            ['origin', 'git@gitlab.example.com:acme/widget.git'],
+            ['github', 'https://github.com/acme/widget.git'],
+          ]);
+        }
+        if (args[0] === 'rev-parse' && args[1] === '--abbrev-ref') return 'github/main\n';
+        if (args[0] === 'rev-parse' && args[1] === '--verify') return '';
+        if (args[0] === 'cat-file' && args[2] === 'github/main') {
+          return `tree ${'b'.repeat(40)}\nparent ${'c'.repeat(40)}\n\nPublic snapshot of aaaaaaaaaaaa\n\nSource-Commit: ${source}\n`;
+        }
+        if (args[0] === 'rev-list' && args[2] === `${source}..HEAD`) return '2\n';
+        throw new Error('unexpected git invocation in this test');
+      });
+
+      const checks = runCategory6(root);
+      const mirrorCheck = checks.find((c) => c.check_id === 'github-mirror-sync');
+
+      expect(mirrorCheck.points).toBe(1);
+      expect(mirrorCheck.evidence).toMatchObject({ aheadCount: 2, mirrorMode: 'curated', aheadBase: source });
+      expect(mirrorCheck.message).toBe(
+        '2 local commit(s) not pushed to github mirror (github/main). ' +
+          'Run /close on main — session-end § 4.4 publishes the curated snapshot with its checks (never push the export by hand)',
+      );
+    });
   });
 });

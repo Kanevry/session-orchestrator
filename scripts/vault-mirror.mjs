@@ -798,6 +798,15 @@ async function main() {
   // into `total` like any other line, so the run partition still holds. A
   // malformed archive line is reported and skipped — the archive is secondary
   // input and must not abort a mirror run that already wrote the live store.
+  //
+  // Boundary (BV-004, #1685): the sibling `learnings-inbox.jsonl` (#1516) is
+  // deliberately NOT a mirror source: the mirror reads only the live store (it
+  // checks no store role, and session-end runs it on every host). An inbox
+  // record gets its note on the first mirror run after it is ingested into the
+  // live store, on whichever host that run happens. Ceiling: an inbox host
+  // never mirrors its inbox-only learnings, and every note for an inbox record
+  // lags one ingest. Revisit when a real inbox host needs vault notes before
+  // ingest.
   if (kind === 'learning' && basename(resolve(source)) === 'learnings.jsonl') {
     const archivePath = join(dirname(resolve(source)), 'learnings-archive.jsonl');
     if (existsSync(archivePath)) {

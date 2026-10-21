@@ -216,7 +216,9 @@ const HOST_ALIASES_MAX = 16;
  * @param {number} mode
  */
 function _writeJsonAtomicSync(filePath, data, mode) {
-  mkdirSync(path.dirname(filePath), { recursive: true });
+  // 0o700: the ledger lives in the private config dir, which must not come out
+  // 0777 under umask 000 (#1629).
+  mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
   try {
     // `flag: 'wx'` + `mode` on the CREATE, never a chmod after the rename.
@@ -486,10 +488,11 @@ async function _readJsonSafe(p) {
   }
 }
 
-async function _writeJsonAtomic(filePath, data, { mode } = {}) {
-  await mkdir(path.dirname(filePath), { recursive: true });
+async function _writeJsonAtomic(filePath, data, { mode, dirMode } = {}) {
+  await mkdir(path.dirname(filePath), dirMode === undefined ? { recursive: true } : { recursive: true, mode: dirMode });
   const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
-  await writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  // mode at creation closes the 0666 window before the chmod below (#1632).
+  await writeFile(tmp, JSON.stringify(data, null, 2) + '\n', mode === undefined ? 'utf8' : { encoding: 'utf8', mode });
   const { rename } = await import('node:fs/promises');
   await rename(tmp, filePath);
   if (mode !== undefined) {
@@ -541,6 +544,7 @@ export async function getPrivateHostInfo(projectRoot) {
     return cached;
   }
   const fresh = collectPrivateInfo(projectRoot);
-  await _writeJsonAtomic(f, fresh, { mode: 0o600 });
+  // dirMode only here: the public twin goes to the repo's .orchestrator/ (#1629).
+  await _writeJsonAtomic(f, fresh, { mode: 0o600, dirMode: 0o700 });
   return fresh;
 }

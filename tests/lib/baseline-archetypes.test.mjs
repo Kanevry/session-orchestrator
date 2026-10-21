@@ -110,6 +110,21 @@ describe('configured baseline bootstrap contract', () => {
     ] });
   });
 
+  // #1607: projects-baseline ARCHETYPE-CONTRACT.md allows empty runtime and
+  // package-manager arrays for pkm-vault only; one such entry voided the whole catalog.
+  it('accepts pkm-vault with empty runtimes and still selects a Node archetype', () => {
+    const repo = temp();
+    const baseline = fixture((m) => { m.archetypes.push({ ...entry('pkm-vault', 100, [{ kind: 'path', value: '.baseline-pkm-vault' }]), runtimes: [], packageManagers: [] }); });
+    put(baseline, 'templates/pkm-vault/README.md', '# Synthetic vault');
+    put(repo, 'package.json', JSON.stringify({ dependencies: { 'sample-engine': '*' } }));
+    put(repo, 'service/main.mjs', '');
+    const result = run(repo, baseline);
+    expect(result.status, result.stderr).toBe(0);
+    const output = JSON.parse(result.stdout);
+    expect(output).toMatchObject({ status: 'private', selected: { id: 'sample-specific' } });
+    expect(output.archetypes.map((item) => item.id)).toContain('pkm-vault');
+  });
+
   it('reports unknown evidence without substituting a public archetype', () => {
     const result = run(temp(), fixture());
     expect(result.status, result.stderr).toBe(0);
@@ -126,6 +141,7 @@ describe('configured baseline bootstrap contract', () => {
     ['unknown signal', (m) => { m.archetypes[0].detection.signals[0].kind = 'script'; }],
     ['duplicate id', (m) => { m.archetypes[1].id = m.archetypes[0].id; }],
     ['absolute host command', (m) => { m.archetypes[0].commands[0].command = '/private/local/tool'; }],
+    ['empty runtimes outside pkm-vault', (m) => { m.archetypes[0].runtimes = []; }],
   ])('fails closed for %s without disclosing rejected data', (_label, mutate) => {
     const baseline = fixture(mutate); const result = run(temp(), baseline);
     expect(result.status).toBe(2);

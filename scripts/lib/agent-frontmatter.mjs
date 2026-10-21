@@ -31,6 +31,35 @@ const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/;
 export const ALLOWED_MODEL_ALIASES = new Set(['inherit', 'sonnet', 'opus', 'haiku', 'fable']);
 export const MODEL_ID_RE = /^claude-(opus|sonnet|haiku|fable)-\d+(-\d+)?(-\d{8})?$/;
 
+// Reasoning effort per https://code.claude.com/docs/en/sub-agents (#1614).
+// REQUIRED whenever `model` is not `inherit`: the per-model default differs
+// (Sonnet 5.5 defaults to `high`, Opus 5.5 to `medium`), so a pinned model
+// without an explicit effort silently thinks longer than the role needs.
+// With `model: inherit` the agent follows the session, effort included.
+export const ALLOWED_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
+
+/**
+ * The effort rule shared by this validator and check-agents.mjs (#1614).
+ *
+ * @param {unknown} model - the frontmatter `model` value
+ * @param {unknown} effort - the frontmatter `effort` value (undefined when absent)
+ * @returns {{ rule: 'required'|'enum', message: string } | null} null when valid
+ */
+export function checkAgentEffort(model, effort) {
+  const effortList = [...ALLOWED_EFFORTS].join('|');
+  if (effort === undefined || effort === null || effort === '') {
+    if (model === undefined || model === '' || model === 'inherit') return null;
+    return {
+      rule: 'required',
+      message: `effort is required when model is not inherit (got model ${JSON.stringify(model)}); set effort: ${effortList}`,
+    };
+  }
+  if (!ALLOWED_EFFORTS.has(/** @type {string} */ (effort))) {
+    return { rule: 'enum', message: `effort must be one of ${effortList} (got ${JSON.stringify(effort)})` };
+  }
+  return null;
+}
+
 // Canonical Anthropic palette (red|blue|green|yellow|purple|orange|pink|cyan)
 // plus magenta from plugin-dev SKILL.md for backward-compat.
 const ALLOWED_COLORS = new Set(['blue', 'cyan', 'green', 'yellow', 'magenta', 'red', 'purple', 'orange', 'pink']);
@@ -129,8 +158,14 @@ export function parseAgentFrontmatter(contents) {
 /**
  * Validates a parsed frontmatter object against CLAUDE.md Agent Authoring Rules.
  *
+ * `warnings` is present only when non-empty and never flips `ok`. A missing
+ * `effort` on a pinned model is a warning here, because this validator also
+ * reads consumer `.claude/agents` (discovery probe); the plugin's own agents
+ * fail on it in check-agents.mjs. A set but invalid `effort` stays an error.
+ *
  * @param {Record<string,string>|null|undefined} frontmatter
- * @returns {{ ok: true }|{ ok: false, errors: Array<{path: string, rule: string, message: string}> }}
+ * @returns {{ ok: true, warnings?: Array<{path: string, rule: string, message: string}> }
+ *          |{ ok: false, errors: Array<{path: string, rule: string, message: string}>, warnings?: Array<{path: string, rule: string, message: string}> }}
  */
 export function validateAgentFrontmatter(frontmatter) {
   if (frontmatter === null || frontmatter === undefined || typeof frontmatter !== 'object') {
@@ -141,6 +176,7 @@ export function validateAgentFrontmatter(frontmatter) {
   }
 
   const errors = /** @type {Array<{path: string, rule: string, message: string}>} */ ([]);
+  const warnings = /** @type {Array<{path: string, rule: string, message: string}>} */ ([]);
 
   // --- name ---
   const name = frontmatter['name'];
@@ -171,7 +207,7 @@ export function validateAgentFrontmatter(frontmatter) {
       path: 'description',
       rule: 'no-block-scalar',
       message:
-        'description must be an inline single-line string, not a YAML block scalar (> or |). Put <example> blocks inline.',
+        'description must be an inline single-line string, not a YAML block scalar (> or |). Keep it to the routing sentence; put <example> blocks in a body `## Examples` section.',
     });
   }
 
@@ -188,6 +224,20 @@ export function validateAgentFrontmatter(frontmatter) {
       path: 'model',
       rule: 'enum',
       message: `model must be one of ${[...ALLOWED_MODEL_ALIASES].map((m) => JSON.stringify(m)).join('|')} or a full model ID like "claude-opus-5-5" or "claude-sonnet-5" (got ${JSON.stringify(model)})`,
+    });
+  }
+
+  // --- effort (#1614): missing on a pinned model = warning, invalid value = error ---
+  const effortError = checkAgentEffort(model, frontmatter['effort']);
+  if (effortError) (effortError.rule === 'required' ? warnings : errors).push({ path: 'effort', ...effortError });
+
+  // --- omitClaudeMd (optional boolean, #1616) ---
+  const omit = frontmatter['omitClaudeMd'];
+  if (omit !== undefined && omit !== 'true' && omit !== 'false' && omit !== true && omit !== false) {
+    errors.push({
+      path: 'omitClaudeMd',
+      rule: 'boolean',
+      message: `omitClaudeMd must be true or false (got ${JSON.stringify(omit)})`,
     });
   }
 
@@ -244,7 +294,8 @@ export function validateAgentFrontmatter(frontmatter) {
     }
   }
 
-  return errors.length > 0 ? { ok: false, errors } : { ok: true };
+  const warn = warnings.length > 0 ? { warnings } : {};
+  return errors.length > 0 ? { ok: false, errors, ...warn } : { ok: true, ...warn };
 }
 
 /**
@@ -253,8 +304,8 @@ export function validateAgentFrontmatter(frontmatter) {
  * Never throws. Returns a result object with the file path attached.
  *
  * @param {string} filePath - absolute or relative path to the agent .md file
- * @returns {{ ok: true, file: string }
- *          |{ ok: false, file: string, errors: Array<{path: string, rule: string, message: string}> }}
+ * @returns {{ ok: true, file: string, warnings?: Array<{path: string, rule: string, message: string}> }
+ *          |{ ok: false, file: string, errors: Array<{path: string, rule: string, message: string}>, warnings?: Array<{path: string, rule: string, message: string}> }}
  */
 export function validateAgentFile(filePath) {
   let contents;
@@ -280,9 +331,5 @@ export function validateAgentFile(filePath) {
   }
 
   const validation = validateAgentFrontmatter(parsed.frontmatter);
-  if (!validation.ok) {
-    return { ok: false, file: filePath, errors: validation.errors };
-  }
-
-  return { ok: true, file: filePath };
+  return { ...validation, file: filePath };
 }

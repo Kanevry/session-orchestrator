@@ -589,3 +589,26 @@ describe('run-migrate-v2-cross-repo — I/O errors exit 2 (#1487.15)', () => {
     expect(result.stderr).toMatch(/I\/O error in 1 repo/);
   });
 });
+
+describe('run-migrate-v2-cross-repo — invalid store role refuses --apply (#1516)', () => {
+  // Bug: an invalid SO_LEARNINGS_STORE_ROLE resolved to writer, so --apply
+  // rewrote every repo's store on a host whose operator meant `inbox`.
+  it('11. writes nothing, reports refused-store-role-invalid per repo, and exits 4', () => {
+    const base = makeTmpBase();
+    const repo = makeFakeRepo(base, 'repo-a', [legacyDescriptionLine('id-a')]);
+    const store = join(repo, '.orchestrator', 'metrics', 'learnings.jsonl');
+    const before = readFileSync(store, 'utf8');
+
+    const result = spawnSync(process.execPath, [SCRIPT, '--repos', repo, '--apply', '--json'], {
+      encoding: 'utf8',
+      timeout: 30_000,
+      env: { ...process.env, SO_LEARNINGS_STORE_ROLE: 'inbx' },
+    });
+
+    expect(result.status).toBe(4);
+    expect(readFileSync(store, 'utf8')).toBe(before);
+    expect(listBackups(repo)).toHaveLength(0);
+    expect(JSON.parse(result.stdout).repos[0]).toMatchObject({ repo, status: 'refused-store-role-invalid' });
+    expect(result.stderr).toContain('store role is invalid');
+  }, 30_000);
+});

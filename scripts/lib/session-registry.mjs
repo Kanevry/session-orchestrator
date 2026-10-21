@@ -19,8 +19,17 @@
  *     started_at, last_heartbeat, status ('active'|'wave'|'idle'),
  *     current_wave, host_class, mode (Epic #583 W2-I3),
  *     role ('navigator'|null, optional, #1462 — display only, never ownership;
- *           set by heartbeat(patch.role), NOT by registerSelf)
+ *           set by heartbeat(patch.role), NOT by registerSelf),
+ *     session_root (absolute realpath|null, optional, #1605 — where THIS
+ *           session's `.orchestrator/session.lock` and `current-session.json`
+ *           live; set by registerSelf),
+ *     work_root (absolute realpath|null, optional, #1605 — the working copy the
+ *           session works in; set by registerSelf, refreshed by
+ *           heartbeat(patch.workRoot) at every turn end)
  *   }
+ *
+ * `session_root` / `work_root` are additive: readers that predate #1605 ignore
+ * them, and `_validEntry` does not require them.
  *
  * Schema v2 (Epic #583, W2-I3): `mode` field added so the exclusivity-matrix
  * can classify cross-repo registry entries correctly. Without it, every
@@ -38,7 +47,7 @@ import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { digestSha256 } from './crypto-digest-utils.mjs';
 
-import { appendFileSync, mkdirSync, realpathSync } from 'node:fs';
+import { appendFileSync, chmodSync, mkdirSync, realpathSync } from 'node:fs';
 
 import { utcTimestamp, appendJsonl } from './common.mjs';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
@@ -109,6 +118,23 @@ function resolveRepoPath(repoPath) {
   }
 }
 
+/**
+ * Canonical spelling of an optional absolute root for `session_root` /
+ * `work_root` (#1605): `null` when absent, the realpath otherwise.
+ *
+ * @param {unknown} value
+ * @param {string} name  option name for the error message
+ * @returns {string|null}
+ * @throws {TypeError} when `value` is neither nullish nor an absolute path string
+ */
+function _optionalRoot(value, name) {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string' || !path.isAbsolute(value)) {
+    throw new TypeError(`${name} must be an absolute path when provided`);
+  }
+  return resolveRepoPath(value);
+}
+
 function _assertSessionId(sessionId) {
   if (typeof sessionId !== 'string' || sessionId.length === 0) {
     throw new TypeError('session_id must be a non-empty string');
@@ -120,9 +146,11 @@ function _assertSessionId(sessionId) {
 }
 
 async function _writeJsonAtomic(filePath, data, { mode = 0o600 } = {}) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  // 0o700: the registry sits in the private config dir; a bare mkdir leaves it
+  // 0777 under umask 000 and breaks the owner-policy check beside it (#1629).
+  await fs.mkdir(path.dirname(filePath), { recursive: true, mode: 0o700 });
   const tmp = `${filePath}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
-  await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', 'utf8');
+  await fs.writeFile(tmp, JSON.stringify(data, null, 2) + '\n', { encoding: 'utf8', mode }); // no 0666 window (#1632)
   await fs.rename(tmp, filePath);
   try { await fs.chmod(filePath, mode); } catch { /* best effort */ }
 }
@@ -218,8 +246,10 @@ export function logSweepEvent({ event, session_id, error }) {
   }) + '\n';
   try {
     const logPath = sweepLogPath();
-    try { mkdirSync(path.dirname(logPath), { recursive: true }); } catch { /* best effort */ }
-    appendFileSync(logPath, line, 'utf8');
+    try { mkdirSync(path.dirname(logPath), { recursive: true, mode: 0o700 }); } catch { /* best effort */ } // #1629
+    appendFileSync(logPath, line, { encoding: 'utf8', mode: 0o600 }); // #1632
+    // `mode` applies on creation only: tighten a loose pre-existing log too (#1636).
+    try { chmodSync(logPath, 0o600); } catch { /* best effort */ }
   } catch { /* last-resort silent no-op — never let log-write cascade */ }
 }
 
@@ -235,6 +265,10 @@ export function logSweepEvent({ event, session_id, error }) {
  * @param {number} [opts.pid] — defaults to process.pid
  * @param {string} [opts.status] — 'active' | 'wave' | 'idle' (default 'active')
  * @param {number} [opts.currentWave] — default 0
+ * @param {string} [opts.sessionRoot] — absolute root holding this session's
+ *   `session.lock` / `current-session.json` (#1605); stored as `session_root`.
+ * @param {string} [opts.workRoot] — absolute working copy the session works in
+ *   (#1605); stored as `work_root`.
  * @param {string} [opts.mode] — session mode (e.g., 'deep', 'feature', 'housekeeping').
  *   Schema v2 (Epic #583, W2-I3): when present, propagated into the entry so
  *   discovery + exclusivity-matrix classification work for cross-repo peers.
@@ -258,6 +292,8 @@ export async function registerSelf(opts) {
   if (opts.semanticSessionId !== undefined && opts.semanticSessionId !== null && typeof opts.semanticSessionId !== 'string') {
     throw new TypeError('registerSelf: semanticSessionId must be a string when provided');
   }
+  const sessionRoot = _optionalRoot(opts.sessionRoot, 'registerSelf: sessionRoot');
+  const workRoot = _optionalRoot(opts.workRoot, 'registerSelf: workRoot');
   const now = utcTimestamp();
   const entry = {
     session_id: sessionId,
@@ -273,6 +309,8 @@ export async function registerSelf(opts) {
     current_wave: opts.currentWave ?? 0,
     host_class: opts.hostClass ?? null,
     mode: opts.mode ?? null,
+    session_root: sessionRoot,
+    work_root: workRoot,
   };
   await _writeJsonAtomic(entryPath(sessionId), entry);
   return entry;
@@ -287,16 +325,20 @@ export const REGISTRY_ROLES = Object.freeze(['navigator']);
  *
  * `patch.role`: `undefined` keeps the stored role, `null` clears it, a member
  * of `REGISTRY_ROLES` sets it. Anything else throws before the file is touched.
+ * `patch.workRoot` (#1605): `undefined` keeps the stored `work_root`, an
+ * absolute path replaces it (stored as its realpath).
  *
  * @param {string} sessionId
- * @param {{ status?: string, currentWave?: number, role?: string|null }} [patch]
+ * @param {{ status?: string, currentWave?: number, role?: string|null, workRoot?: string }} [patch]
  * @returns {Promise<object|null>} the updated entry, or null if none exists.
- * @throws {TypeError} when `patch.role` is neither undefined, null, nor a REGISTRY_ROLES member.
+ * @throws {TypeError} when `patch.role` is neither undefined, null, nor a REGISTRY_ROLES
+ *   member, or `patch.workRoot` is neither undefined nor an absolute path.
  */
 export async function heartbeat(sessionId, patch = {}) {
   if (patch.role !== undefined && patch.role !== null && !REGISTRY_ROLES.includes(patch.role)) {
     throw new TypeError('heartbeat: role must be "navigator" or null');
   }
+  const workRoot = patch.workRoot === undefined ? undefined : _optionalRoot(patch.workRoot, 'heartbeat: workRoot');
   const file = entryPath(sessionId);
   const existing = await _readJsonSafe(file);
   if (!_validEntry(existing)) return null;
@@ -306,6 +348,7 @@ export async function heartbeat(sessionId, patch = {}) {
     ...(patch.status !== undefined ? { status: patch.status } : {}),
     ...(patch.currentWave !== undefined ? { current_wave: patch.currentWave } : {}),
     ...(patch.role !== undefined ? { role: patch.role } : {}),
+    ...(workRoot !== undefined && workRoot !== null ? { work_root: workRoot } : {}),
   };
   await _writeJsonAtomic(file, updated);
   return updated;
@@ -364,6 +407,26 @@ export async function detectPeers({ sessionId, freshnessMin = 15 } = {}) {
 }
 
 /**
+ * Count registry entries whose `started_at` lies within the last `windowMin`
+ * minutes — the start-wave signal (#1650). Pure: pass the entries you already
+ * hold. Passing detectPeers() output is complete as long as `windowMin` is at
+ * most detectPeers' `freshnessMin` (15): registerSelf() writes `started_at`
+ * and `last_heartbeat` with the same stamp, so every entry started inside the
+ * window is still heartbeat-fresh. Self must already be excluded by the caller.
+ * Unparseable or future `started_at` never counts (`_ageMinutes` → Infinity).
+ *
+ * @param {object[]} entries  Registry entries (e.g. detectPeers() result)
+ * @param {object} [opts]
+ * @param {number} [opts.windowMin=5]
+ * @param {number} [opts.now]  ms-since-epoch (test seam)
+ * @returns {number}
+ */
+export function countRecentStarts(entries, { windowMin = 5, now = Date.now() } = {}) {
+  if (!Array.isArray(entries)) return 0;
+  return entries.filter((e) => e && _ageMinutes(e.started_at, now) <= windowMin).length;
+}
+
+/**
  * Remove heartbeat entries older than `thresholdMin` minutes. Appends one
  * JSONL line per removal to sweepLogPath() for observability.
  *
@@ -412,7 +475,7 @@ export async function sweepZombies({ thresholdMin = 60, now = Date.now() } = {})
             file: name,
             age_minutes: Number.isFinite(age) ? Math.round(age) : null,
             reason: valid ? 'stale-heartbeat' : 'malformed-entry',
-          });
+          }, { mode: 0o600 }); // #1632
           logged += 1;
         } catch { /* log best-effort */ }
       } catch { /* file might have been removed by another sweep */ }

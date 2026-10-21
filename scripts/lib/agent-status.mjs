@@ -339,7 +339,8 @@ async function pushRecord(record, opts) {
   if (!acquired.ok) return acquired;
 
   try {
-    const map = readCurrentMap(currentFile);
+    // Retention trim (#1633) — the reader drops the same entries, see LIFECYCLE_RETENTION_MS.
+    const map = withoutExpired(readCurrentMap(currentFile), typeof opts?.now === 'number' ? opts.now : Date.now());
     map[record.agentId] = record;
     const written = writeJsonAtomicSync(currentFile, map, { tmpPrefix: '.agent-status-current' });
     if (!written.ok) return { ok: false, reason: 'fs-error', error: written.error };
@@ -411,6 +412,113 @@ export async function setProgress(agentId, progress = {}, opts = {}) {
   if (typeof label === 'string' && label.length > 0) {
     record.label = truncate(label);
   }
+
+  return pushRecord(record, opts);
+}
+
+// Lifecycle entries (#1580) carry a fresh harness agent_id per subagent, so —
+// unlike the wave-executor's reused ids — the cache grew by one ~200-byte entry
+// per subagent, and the lock wait of a write grew with it (#1633: 18 parallel
+// writers, 10,000 entries → p50 468 ms / max 910 ms against a 1 s timeout).
+// Pruning the cache ALONE is wrong: readCurrentStatus() folds cache ∪ ledger
+// tail, and an id present only in the ledger tail flips the whole read to
+// `rebuilt-log` (cache-behind-ledger). So the retention bound below is applied
+// on BOTH sides with one predicate: every write drops expired lifecycle entries
+// from the cache, and every read drops them from the cache view AND the ledger
+// view before the fold. Expiry is monotone in time (expired at write time ⇒
+// expired at any later read), so a trimmed cache reads exactly like the
+// untrimmed one. The ledger itself is never rewritten.
+// CEILING: 14 days of subagents stay in the cache (#1633 measured 725 starts in
+// 31 days here ≈ 330 entries per 14 days); a repo with no subagent for 14 days
+// reads as "no lifecycle record" (HUD "?") until the next start.
+// REVISIT-TRIGGER: a session that legitimately lives longer than 14 days, or a
+// repo starting more than ~5,000 subagents per 14 days (the cache is back in the
+// measured slow range) — then shorten the window or trim per session.
+const LIFECYCLE_STATES = new Set(['running', 'done']);
+export const LIFECYCLE_RETENTION_MS = 14 * 24 * 60 * 60 * 1000;
+
+// A `running` lifecycle entry without a SubagentStop (#1633: 2 of 725 agents
+// since 2026-09-15, 0.28 %) would otherwise count as running forever. Bound
+// measured 2026-10-16 on this repo's `.orchestrator/metrics/subagents.jsonl`
+// (start→stop wall clock per agent_id): since 2026-09-15 n=810, p50 5.7 min,
+// p99 47 min, max 715.5 min; all time n=3017, p99 55.1 min, max 1042.9 min
+// (17.4 h — a batch of agents stopped together at a session resume; the hook's
+// own duration_ms max is 132 min). 24 h sits above every observed pair.
+// CEILING: a subagent genuinely running longer than 24 h is reported as decayed,
+// not running. REVISIT-TRIGGER: any start→stop pair above ~20 h in subagents.jsonl.
+export const LIFECYCLE_DECAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether a record is a lifecycle entry older than the retention window
+ * (`LIFECYCLE_RETENTION_MS`). Records without a parsable `ts` never expire.
+ * @param {object} rec
+ * @param {number} now  Epoch millis.
+ * @returns {boolean}
+ */
+function isLifecycleExpired(rec, now) {
+  const ms = rec?.kind === 'lifecycle' ? recordTsMs(rec) : null;
+  return ms !== null && now - ms > LIFECYCLE_RETENTION_MS;
+}
+
+/**
+ * Whether a lifecycle entry still says `running` but is older than
+ * `LIFECYCLE_DECAY_MS` — its SubagentStop most likely never arrived (#1633).
+ * Such an agent is neither running nor done: report it as decayed.
+ * @param {object} rec
+ * @param {number} now  Epoch millis.
+ * @returns {boolean}
+ */
+export function isLifecycleDecayed(rec, now) {
+  if (rec?.kind !== 'lifecycle' || rec.status !== 'running') return false;
+  const ms = recordTsMs(rec);
+  return ms !== null && now - ms > LIFECYCLE_DECAY_MS;
+}
+
+/**
+ * Copy of a map without its expired lifecycle entries (null-prototype).
+ * @param {Record<string, object>} entries
+ * @param {number} now
+ * @returns {Record<string, object>}
+ */
+function withoutExpired(entries, now) {
+  const out = Object.create(null);
+  for (const [id, rec] of Object.entries(entries)) {
+    if (!isLifecycleExpired(rec, now)) out[id] = rec;
+  }
+  return out;
+}
+
+/**
+ * Record a subagent lifecycle transition from the SubagentStart/SubagentStop
+ * hooks (#1580): `running` on start, `done` on stop, bound to the parent
+ * session so the HUD counts only its own session's agents. No-throw,
+ * best-effort — same result contract as `setStatus`.
+ *
+ * @param {string} agentId  Harness agent id (LWW map key).
+ * @param {{ status: 'running'|'done', sessionId: string, agentType?: string|null }} lifecycle
+ * @param {{ repoRoot?: string, timeoutMs?: number, now?: number }} [opts]
+ * @returns {Promise<{ ok: true } | { ok: false, reason: 'invalid-input'|'timeout'|'fs-error', error?: string }>}
+ */
+export async function setLifecycle(agentId, lifecycle = {}, opts = {}) {
+  if (typeof agentId !== 'string' || agentId.trim().length === 0 || UNSAFE_MAP_KEYS.has(agentId)) {
+    return { ok: false, reason: 'invalid-input', error: 'agentId must be a non-empty, safe string' };
+  }
+  const { status, sessionId, agentType } = lifecycle ?? {};
+  if (!LIFECYCLE_STATES.has(status)) {
+    return { ok: false, reason: 'invalid-input', error: 'status must be running or done' };
+  }
+  if (typeof sessionId !== 'string' || sessionId.trim().length === 0) {
+    return { ok: false, reason: 'invalid-input', error: 'sessionId must be a non-empty string' };
+  }
+  const now = typeof opts?.now === 'number' ? opts.now : Date.now();
+  const record = {
+    agentId,
+    kind: 'lifecycle',
+    status,
+    session_id: sessionId,
+    ts: new Date(now).toISOString(),
+  };
+  if (typeof agentType === 'string' && agentType.trim().length > 0) record.agent_type = truncate(agentType);
 
   return pushRecord(record, opts);
 }
@@ -599,14 +707,24 @@ export function rebuildCurrentFromLedger(opts = {}) {
  * per-agentId, a `rebuilt-log` view can hold BOTH kinds. A consumer must treat
  * `binding` as optional — its ABSENCE means "from the cache", never "bound".
  *
- * @param {{ repoRoot?: string, maxBytes?: number }} [opts]
+ * Retention (#1633): lifecycle entries older than `LIFECYCLE_RETENTION_MS`
+ * (relative to `opts.now`, default `Date.now()`) are absent from the view.
+ *
+ * @param {{ repoRoot?: string, maxBytes?: number, now?: number }} [opts]
  * @returns {{ entries: Record<string, object>, source: 'live-map'|'rebuilt-log'|'stale-cache'|'absent', at: string|null, degraded?: object }}
  */
 export function readCurrentStatus(opts = {}) {
-  const cache = readCurrentMapDetailed(currentPathFor(opts?.repoRoot));
+  const now = typeof opts?.now === 'number' ? opts.now : Date.now();
+  const cacheRead = readCurrentMapDetailed(currentPathFor(opts?.repoRoot));
   const rebuilt = rebuildCurrentFromLedger(opts);
+  // Both views lose their expired lifecycle entries BEFORE the fold (#1633), so a
+  // cache trimmed at write time reads exactly like the untrimmed one.
+  const cache = { ...cacheRead, entries: withoutExpired(cacheRead.entries, now) };
+  const ledgerEntries = withoutExpired(rebuilt.entries, now);
 
   const cacheNewest = newestTsMs(cache.entries);
+  // Provenance checks read the UNTRIMMED ledger: trimming can only lower the
+  // cache's newest stamp, so comparing against the full ledger stays exact.
   const ledgerNewest = rebuilt.at === null ? null : Date.parse(rebuilt.at);
   const ledgerUnusable =
     rebuilt.degraded !== null &&
@@ -626,7 +744,7 @@ export function readCurrentStatus(opts = {}) {
   let at;
 
   const cacheIds = Object.keys(cache.entries);
-  const ledgerIds = Object.keys(rebuilt.entries);
+  const ledgerIds = Object.keys(ledgerEntries);
 
   if (ledgerUnusable && cacheIds.length === 0) {
     // Nothing on disk at all — no ledger to verify against AND no cached entry
@@ -648,8 +766,8 @@ export function readCurrentStatus(opts = {}) {
       const cached = Object.prototype.hasOwnProperty.call(cache.entries, id)
         ? cache.entries[id]
         : undefined;
-      const logged = Object.prototype.hasOwnProperty.call(rebuilt.entries, id)
-        ? rebuilt.entries[id]
+      const logged = Object.prototype.hasOwnProperty.call(ledgerEntries, id)
+        ? ledgerEntries[id]
         : undefined;
 
       if (cached === undefined) {
@@ -682,7 +800,7 @@ export function readCurrentStatus(opts = {}) {
     }
 
     at = newestTsMs(entries);
-    if (tookFromLedger || (!cache.ok && ledgerIds.length > 0)) {
+    if (tookFromLedger || (!cache.ok && Object.keys(rebuilt.entries).length > 0)) {
       source = 'rebuilt-log';
       if (cache.reason !== 'ok') reasons.unshift(cache.reason);
       else reasons.unshift('cache-behind-ledger');

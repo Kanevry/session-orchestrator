@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir, utimes, symlink } from 'node:fs/promises';
+import { mkdtemp, rm, readFile, writeFile, readdir, stat, mkdir, utimes, symlink, chmod } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
@@ -421,6 +421,16 @@ describe('session-registry', () => {
         if (origEnvVal === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
         else process.env.SO_SESSION_REGISTRY_DIR = origEnvVal;
       }
+    });
+
+    it.skipIf(process.platform === 'win32')('tightens a pre-existing world-readable sweep.log to 0600 (#1636)', async () => {
+      // Bug caught: appendFileSync's `mode` applies only on creation, so a
+      // sweep.log written before #1632 kept its 0666 mode forever.
+      await mkdir(path.dirname(sweepLogPath()), { recursive: true });
+      await writeFile(sweepLogPath(), '');
+      await chmod(sweepLogPath(), 0o666);
+      logSweepEvent({ event: 'register-failed', session_id: 'm', error: 'mode' });
+      expect((await stat(sweepLogPath())).mode & 0o777).toBe(0o600);
     });
 
     it('accumulates multiple entries in order', async () => {

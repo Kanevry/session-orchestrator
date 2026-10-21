@@ -1,5 +1,6 @@
 /**
  * sh-quote.mjs — the one POSIX shell-quoting helper (#1438).
+ * POSIX-only: this helper does not quote cmd.exe commands.
  *
  * Four byte-identical private copies (cursor-install, tmux-layout/layouts,
  * tmux-layout/tmux-shell, run-quality-gate) and one inline copy

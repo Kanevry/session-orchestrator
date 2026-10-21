@@ -135,27 +135,13 @@ $ false | true; echo "PIPESTATUS[0]='${PIPESTATUS[0]}'  pipestatus[1]='${pipesta
 PIPESTATUS[0]=''  pipestatus[1]='1'
 ```
 
-Evidence, 2026-08-23: **two wave agents hit this independently in one session**,
-both while reporting verification exit codes, and both caught it because the
-empty string looked wrong rather than because anything failed. One wrote it up
-as "`${PIPESTATUS[0]}` printed EXIT= (empty) for every gate — that is a bash-ism,
-and this shell is zsh". Measured the same day: this repo's own tracked code uses
-`PIPESTATUS` **zero** times (`grep -rn PIPESTATUS scripts/ hooks/ skills/ .husky/
-.gitlab-ci.yml` → no matches), so this is not a defect in the codebase — it is a
-trap for anyone writing shell **into** it, which is what agents do all day.
+Evidence: 2026-08-23: two wave agents hit it independently; repo code uses PIPESTATUS 0× (`grep -rn PIPESTATUS scripts/ hooks/ skills/ .husky/ .gitlab-ci.yml`).
 
 Related but distinct from § 3: there the danger is trusting a live capture over
 an artifact; here it is trusting a variable that does not exist in this shell.
 
 ## Anti-Patterns
 
-- Piping a possibly-empty `grep -c` result straight into an `[[ -eq ]]` test without `|| true`.
-- Any `echo`/`printf` inside a bash function that is ALSO consumed via `$(...)` elsewhere, without redirecting it to `>&2`.
-- Trusting a live stdout capture as the sole verdict source for a test harness's PASS/FAIL summary.
-- Reaching for `perl -pi`/`sed -i` on multi-line or special-character replacements in `.sh`/`.bash` files instead of an exact-string `Edit`.
-- Trusting `bash -n` alone as proof a script edit didn't corrupt content — it only checks syntax, not semantic correctness.
-- Validating a `.husky/`/`sh` script with `bash -n` only when it contains a `case` inside `$( )` — bash 5 passes the bash-3.2-broken form; add `sh -n` (§5).
-- Reporting a verification exit code through `${PIPESTATUS[0]}` — it is empty in zsh, and an empty `EXIT=` beside a green-looking log reads as a pass nobody measured (§6).
 - Timing an OLD version of a module by copying it to `/tmp` and running it there: its relative imports do not resolve, so it dies instantly and the stopwatch reports "fast". Measured 2026-08-23: 0.06 s for a crash vs 2.4 s for the real run, which turned a 2x cost into a claimed 40x regression.
 
 ## See Also

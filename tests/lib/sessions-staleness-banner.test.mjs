@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   checkSessionsStaleness,
   WARN_THRESHOLD_HOURS,
@@ -51,10 +52,10 @@ function eventLine(timestamp) {
  * combines them with OR, not AND — unlike isSupersedableStub() in
  * session-close-backfill.mjs, which demands BOTH).
  */
-function stubLine({ sessionId = 'main-stub', startedAt, completedAt, statusAbandoned = true, backfillSource = 'events-jsonl' }) {
+function stubLine({ sessionId = 'main-stub', startedAt, completedAt, statusAbandoned = true, backfillSource = 'events-jsonl', synthetic = false, sessionType = 'housekeeping', status }) {
   const record = {
     session_id: sessionId,
-    session_type: 'housekeeping',
+    session_type: sessionType,
     started_at: startedAt,
     completed_at: completedAt,
     total_waves: 0,
@@ -65,7 +66,9 @@ function stubLine({ sessionId = 'main-stub', startedAt, completedAt, statusAband
     effectiveness: { carryover: null },
   };
   if (statusAbandoned) record.status = 'abandoned';
+  if (status !== undefined) record.status = status;
   if (backfillSource) record._backfill_source = backfillSource;
+  if (synthetic) record._synthetic = true;
   return JSON.stringify(record);
 }
 
@@ -424,6 +427,8 @@ describe('checkSessionsStaleness — backfill-stub self-erasure fix (isNonAnchor
   it.each([
     ['status:abandoned alone (no _backfill_source)', { statusAbandoned: true, backfillSource: null }],
     ['_backfill_source alone (status not abandoned)', { statusAbandoned: false, backfillSource: 'events-jsonl' }],
+    ['_synthetic alone', { statusAbandoned: false, backfillSource: null, synthetic: true }],
+    ['unknown type without measured work', { statusAbandoned: false, backfillSource: null, sessionType: 'unknown' }],
   ])('recognises a stub carrying only "%s" and still refuses its completed_at as the anchor', (_label, markerOpts) => {
     writeSessions(tmpRepo, [
       sessionLine('2026-01-01T00:00:00.000Z'),
@@ -451,6 +456,7 @@ describe('checkSessionsStaleness — backfill-stub self-erasure fix (isNonAnchor
       backfillSource: 'state-md-completed',
     }));
     supersede.status = 'completed';
+    supersede.total_waves = 1; // Authoritative close has measured work, unlike a 0-work stub.
     supersede.supersedes = 'main-x';
     writeSessions(tmpRepo, [
       sessionLine('2026-01-01T12:00:00.000Z'),
@@ -462,11 +468,14 @@ describe('checkSessionsStaleness — backfill-stub self-erasure fix (isNonAnchor
     expect(checkSessionsStaleness({ repoRoot: tmpRepo, now })).toBe(null);
   });
 
-  it('falls back to the newest stub\'s started_at (not completed_at) and flags stubFallback:true when EVERY record is a stub', () => {
+  it.each([
+    ['abandoned events stub', {}],
+    ['completed zero-work state-md stub', { statusAbandoned: false, status: 'completed', backfillSource: 'state-md-completed' }],
+  ])('falls back to the newest %s started_at and flags stubFallback:true', (_label, markerOpts) => {
     writeSessions(tmpRepo, [
       stubLine({ sessionId: 'main-stub-1', startedAt: '2026-01-01T00:00:00.000Z', completedAt: '2026-01-01T00:05:00.000Z' }),
       // Newest-by-position (EOF-nearer) stub — its started_at is the expected anchor.
-      stubLine({ sessionId: 'main-stub-2', startedAt: '2026-01-02T00:00:00.000Z', completedAt: '2026-01-02T00:05:00.000Z' }),
+      stubLine({ sessionId: 'main-stub-2', startedAt: '2026-01-02T00:00:00.000Z', completedAt: '2026-01-02T00:05:00.000Z', ...markerOpts }),
     ]);
     writeEvents(tmpRepo, [eventLine('2026-01-02T20:00:00.000Z')]); // 20h after the newest stub's started_at
     const now = Date.parse('2026-01-02T22:00:00.000Z');
@@ -589,7 +598,7 @@ describe('checkSessionsStaleness — #1209b canonical collapse (duplicate sessio
 describe('session-start Phase 4 reference wiring (#724)', () => {
   it('references checkSessionsStaleness and sessions-staleness-banner.mjs in Phase 4', () => {
     const skillPath = path.resolve(
-      path.dirname(new URL(import.meta.url).pathname),
+      path.dirname(fileURLToPath(new URL(import.meta.url))),
       '..',
       '..',
       'skills',

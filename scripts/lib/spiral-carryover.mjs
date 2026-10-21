@@ -44,6 +44,7 @@ import {
   resolveIssueBudgetSessionId,
 } from './issue-budget.mjs';
 import { resolveProjectDir } from './platform.mjs';
+import { resolveOwnLockRoot } from '../../hooks/_lib/hook-root.mjs';
 import { resolveRepoSpec } from './vcs-repo-spec.mjs';
 
 /**
@@ -167,8 +168,14 @@ function runCli(cmd, args, repoRoot) {
       let currentSession = null;
       if (typeof nativeRawId === 'string' && nativeRawId.length > 0) {
         try {
+          // #1605: after /clear in an entered worktree the session's lock and
+          // current-session.json live in that worktree, not at the launch root.
+          // Read the record beside the own lock — the same lookup
+          // `hooks/pre-bash-issue-budget.mjs` uses — so both producers charge
+          // the ledger (which stays at `budgetRoot`) under the same session key.
+          const ownRoot = resolveOwnLockRoot({ session_id: nativeRawId, cwd: process.cwd() }, budgetRoot);
           const parsed = JSON.parse(
-            readFileSync(path.join(budgetRoot, '.orchestrator', 'current-session.json'), 'utf8'),
+            readFileSync(path.join(ownRoot, '.orchestrator', 'current-session.json'), 'utf8'),
           );
           // SESSION BINDING (#1058). `current-session.json` is repo-global —
           // every session sharing this working copy writes the same path — so

@@ -5,9 +5,9 @@
  * Spawns the script via node, injects env vars, and asserts on JSON stdout + exit code.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -17,6 +17,7 @@ const SCRIPT = path.resolve(
   '../../../scripts/lib/gates/gate-baseline.mjs',
 );
 const TEST_LEDGER_ROOT = mkdtempSync(path.join(tmpdir(), 'gate-test-ledger-'));
+afterAll(() => rmSync(TEST_LEDGER_ROOT, { recursive: true, force: true }));
 
 /**
  * Spawn gate-baseline.mjs with the given extra env vars.

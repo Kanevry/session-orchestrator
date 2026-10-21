@@ -46,7 +46,6 @@ function walkMjs(dir, acc = []) {
 
 async function importEventsWithDir(dir) {
   process.env.CLAUDE_PROJECT_DIR = dir;
-  vi.resetModules();
   return import('@lib/events.mjs');
 }
 
@@ -115,14 +114,15 @@ describe('hooks/on-stop.mjs migration (#228)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 4. emitEvent: CLANK_EVENT_SECRET alone (no URL) must NOT call fetch
+// 4. emitEvent: CLANK_EVENT_SECRET alone (no URL) must NOT call httpRequest
 // ---------------------------------------------------------------------------
 
-describe('emitEvent — no fetch when only CLANK_EVENT_SECRET is set (no URL)', () => {
+describe('emitEvent — no HTTP when only CLANK_EVENT_SECRET is set (no URL)', () => {
   let tmpDir;
   const origClaudeProjectDir = process.env.CLAUDE_PROJECT_DIR;
 
   beforeEach(async () => {
+    vi.resetModules();
     tmpDir = await mkdtemp(path.join(tmpdir(), 'so-events-nourltest-'));
     delete process.env.CLANK_EVENT_SECRET;
     delete process.env.CLANK_EVENT_URL;
@@ -141,15 +141,15 @@ describe('emitEvent — no fetch when only CLANK_EVENT_SECRET is set (no URL)', 
     await rm(tmpDir, { recursive: true, force: true });
   });
 
-  it('does not call fetch when CLANK_EVENT_SECRET is set but CLANK_EVENT_URL is absent', async () => {
+  it('does not call httpRequest when CLANK_EVENT_SECRET is set but CLANK_EVENT_URL is absent', async () => {
     process.env.CLANK_EVENT_SECRET = 'test-secret-token';
     // CLANK_EVENT_URL intentionally not set — no personal-domain default fallback
-    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(
+    const requestSpy = vi.spyOn(await import('@lib/http-request.mjs'), 'httpRequest').mockImplementation(
       async () => new Response('{}', { status: 200 }),
     );
     const { emitEvent } = await importEventsWithDir(tmpDir);
     await emitEvent('no.url.event', { x: 1 });
     await new Promise((r) => setImmediate(r));
-    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(requestSpy).not.toHaveBeenCalled();
   });
 });

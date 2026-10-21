@@ -83,23 +83,23 @@
       "mainEntityOfPage": "https://session-orchestrator.com/guide",
       "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
       "about": { "@id": "https://session-orchestrator.com/#software" },
-      "dateModified": "2026-09-08"
+      "dateModified": "2026-10-16"
     }
   ]
 }
 </script>
 
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
-<link rel="preload" as="font" type="font/woff2" href="/fonts/inter-latin.woff2" crossorigin>
+<link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261003">
+<link rel="stylesheet" href="/assets/site.css?v=20261019">
 </head>
 <body class="guide-page">
 <a class="skip" href="#main">Skip to content</a>
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.12.0</span></span></a>
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.13.0</span></span></a>
     <nav class="nav" aria-label="Guide sections">
       <a href="#install">Install</a>
       <a href="#first-session">First session</a>
@@ -125,7 +125,7 @@
       <p class="eyebrow">Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Install. Run a session.<br>Check the result.</h1>
       <p class="lede">Choose your coding tool, install the plugin and its dependencies, then bootstrap your project. This guide explains the first session and which guards your tool can enforce. On Codex, destructive-command and file-scope rules are instructions only.</p>
-      <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-09-08</p>
+      <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-10-16</p>
       <p class="small muted">Historical installation E2E record: v3.20.0 on 2026-08-19. The source review date records a documentation check, not a new installation test.</p><!-- site-numbers:historical: the version in that sentence is a DATED RECORD of the release the commands were actually run against, not a claim about the current one. A release must never bump it; only an actual re-run of the commands may. Deliberately NOT a data-metric cell: --write would move the number while the date stayed put, fabricating a verification nobody ran. -->
 
       <nav class="toc" aria-labelledby="toc-h">
@@ -277,7 +277,7 @@ $session-orchestrator:close</pre>
         </li>
         <li>
           <h3><code>/go</code>: execute the plan in checked waves</h3>
-          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow runs your tests and typecheck after each implementation wave and requires the full configured test, typecheck and lint gate after the Quality wave and before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave; deep uses five and the ultradeep profile uses seven.</p>
+          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow runs your tests and typecheck after each implementation wave and requires the full configured test, typecheck and lint gate after the Quality wave and before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave and feature three, with Impl-Polish and Quality in one wave. Deep uses five, or four when the scope is already known and Discovery is dropped; the ultradeep profile uses seven.</p>
         </li>
         <li>
           <h3><code>/close</code>: verify, commit, and file what is left</h3>

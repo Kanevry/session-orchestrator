@@ -162,7 +162,7 @@ describe('rule-scoping — paths-presence probe', () => {
     expect(errs[0].message).toContain('did not recognise it');
   });
 
-  it('stays silent when the rule uses globs: instead of paths:', () => {
+  it('globs: without paths: is no error, only a globs-without-paths WARN — exit 0 under strict (#1638)', () => {
     const rulesDir = makeRulesDir();
     writeFileSync(join(rulesDir, 'good.md'), '---\nglobs:\n  - src/**\n---\n\n# Good Rule\n');
     mkdirSync(join(vault, 'src'), { recursive: true });
@@ -173,6 +173,41 @@ describe('rule-scoping — paths-presence probe', () => {
     expect(r.code).toBe(0);
     const j = parseJson(r.stdout);
     expect(j.errors.filter((e) => e.check === 'rule-scoping')).toHaveLength(0);
+    const warns = j.warnings.filter((w) => w.probe === 'globs-without-paths');
+    expect(warns).toEqual([
+      expect.objectContaining({ check: 'rule-scoping', file: '.claude/rules/good.md', line: 2, extracted: 'globs:' }),
+    ]);
+    expect(warns[0].message).toContain('ALWAYS-ON for Claude Code');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Probe 7 — globs-without-paths (#1638): Claude Code reads only `paths:`
+// ---------------------------------------------------------------------------
+
+describe('rule-scoping — globs-without-paths probe (#1638)', () => {
+  it.each([
+    ['paths only', '---\npaths:\n  - src/**\n---\n\n# R\n'],
+    ['both keys', '---\nglobs:\n  - src/**\npaths:\n  - src/**\n---\n\n# R\n'],
+    ['no scope key (intentionally always-on)', '---\ndescription: x\n---\n\n# R\n'],
+    ['globs: only in the body', '# R\n\nglobs:\n  - src/**\n'],
+    ['displaced frontmatter (owned by probe 1)', '<!-- x -->\n---\nglobs:\n  - src/**\n---\n\n# R\n'],
+  ])('stays silent for %s', (_label, content) => {
+    writeFileSync(join(makeRulesDir(), 'r.md'), content);
+
+    const j = parseJson(runChecker(vault).stdout);
+
+    expect(j.warnings.filter((w) => w.probe === 'globs-without-paths')).toHaveLength(0);
+  });
+
+  it('reads the full frontmatter: a flow-style globs : after many keys warns at its own line, never at a body line, with no tracked file needed', () => {
+    const keys = Array.from({ length: 30 }, (_, i) => `k${i}: v`).join('\n');
+    writeFileSync(join(makeRulesDir(), 'long.md'), `---\n${keys}\nglobs : ["nowhere/**"]\n---\n\n# R\n\nglobs:\n  - example\n`);
+
+    const j = parseJson(runChecker(vault).stdout);
+
+    const warns = j.warnings.filter((w) => w.probe === 'globs-without-paths');
+    expect(warns.map((w) => [w.file, w.line])).toEqual([['.claude/rules/long.md', 32]]);
   });
 });
 
@@ -319,6 +354,27 @@ describe('rule-scoping — foreign-glob probe (warning)', () => {
     expect(warns[0].extracted).toBe('src/FooBarTests/**');
   });
 
+  it("stays silent on the repo's OWN PascalCase directory when it is git-tracked, and still warns on one with no tracked file (#1657: 17 false alarms for `WalkAITalkie/**` in WalkAITalkie)", () => {
+    const rulesDir = makeRulesDir();
+    writeFileSync(
+      join(rulesDir, 'scoped.md'),
+      '---\nglobs:\n  - WalkAITalkie/**\n  - OtherProduct/**\n---\n\n# Scoped Rule\n',
+    );
+    mkdirSync(join(vault, 'WalkAITalkie'));
+    writeFileSync(join(vault, 'WalkAITalkie', 'App.swift'), '// x\n');
+    const git = (...args) => spawnSync('git', args, { cwd: vault, encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    expect(git('add', 'WalkAITalkie/App.swift').status).toBe(0);
+
+    const r = runChecker(vault);
+
+    expect(r.code).toBe(0);
+    const pascal = parseJson(r.stdout).warnings
+      .filter((w) => w.check === 'rule-scoping' && w.message.includes('PascalCase'))
+      .map((w) => w.extracted);
+    expect(pascal).toEqual(['OtherProduct/**']);
+  });
+
   it('stays silent on a generic lowercase glob', () => {
     const rulesDir = makeRulesDir();
     writeFileSync(join(rulesDir, 'scoped.md'), '---\nglobs:\n  - src/**\n---\n\n# Scoped Rule\n');
@@ -415,6 +471,10 @@ describe('rule-scoping — unreadable-file probe (warning)', () => {
 //      carries no information, so `notes[]` must name the pattern.
 // ---------------------------------------------------------------------------
 
+// The per-pattern glob probes (3/4) — not probe 7, which these fixtures'
+// globs-only frontmatter also trips by design (#1638).
+const isGlobProbe = (w) => w.check === 'rule-scoping' && w.probe !== 'globs-without-paths';
+
 describe('rule-scoping — fleet-intent-glob probe (note, not warning)', () => {
   it('reports a declared zero-match glob in notes[] instead of warnings[]', () => {
     const rulesDir = makeRulesDir();
@@ -451,7 +511,7 @@ describe('rule-scoping — fleet-intent-glob probe (note, not warning)', () => {
 
     expect(r.code).toBe(0);
     const j = parseJson(r.stdout);
-    const warns = j.warnings.filter((w) => w.check === 'rule-scoping');
+    const warns = j.warnings.filter((w) => isGlobProbe(w));
     expect(warns).toHaveLength(1);
     expect(warns[0].extracted).toBe('src/nonexistent/**');
     expect(warns[0].message).toContain('0 tracked files');
@@ -467,7 +527,7 @@ describe('rule-scoping — fleet-intent-glob probe (note, not warning)', () => {
     const r = runChecker(vault);
 
     const j = parseJson(r.stdout);
-    expect(j.warnings.filter((w) => w.check === 'rule-scoping')).toHaveLength(0);
+    expect(j.warnings.filter((w) => isGlobProbe(w))).toHaveLength(0);
     expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(1);
   });
 
@@ -487,7 +547,7 @@ describe('rule-scoping — fleet-intent-glob probe (note, not warning)', () => {
     expect(r.code).toBe(0);
     const j = parseJson(r.stdout);
     expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(0);
-    const warns = j.warnings.filter((w) => w.check === 'rule-scoping');
+    const warns = j.warnings.filter((w) => isGlobProbe(w));
     expect(warns.map((w) => w.extracted).sort()).toEqual(['**/*.test.*', '**/*Tests*']);
   });
 
@@ -499,7 +559,7 @@ describe('rule-scoping — fleet-intent-glob probe (note, not warning)', () => {
 
     const j = parseJson(r.stdout);
     expect(j.notes.filter((n) => n.probe === 'fleet-intent-glob')).toHaveLength(0);
-    const warns = j.warnings.filter((w) => w.check === 'rule-scoping');
+    const warns = j.warnings.filter((w) => isGlobProbe(w));
     expect(warns).toHaveLength(1);
     expect(warns[0].extracted).toBe('**/*Tests*');
   });

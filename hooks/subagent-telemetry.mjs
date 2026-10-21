@@ -114,6 +114,8 @@ import { getProjectDir } from '../scripts/lib/platform.mjs';
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { COST_BASIS } from '../scripts/lib/telemetry/pricing.mjs';
+import { setLifecycle } from '../scripts/lib/agent-status.mjs';
+import { rawPayloadSessionId, resolveOwnLockRoot } from './_lib/hook-root.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -650,7 +652,9 @@ function resolveSubagentTranscriptPath(parentTranscriptPath, agentId) {
 
 /**
  * Scan the tail of the ledger backwards for the most recent 'start' record with
- * the given agent_id and return its timestamp in epoch-ms (#917).
+ * the given agent_id and return its timestamp in epoch-ms (#917) plus its
+ * `agent_type` (#1617), so a stop whose payload carries no type can inherit it
+ * from the same single tail read — no second scan on the hot path.
  *
  * Reads only the last START_JOIN_TAIL_BYTES rather than the whole file — see that
  * constant for the measured sizing rationale. Scanning backwards means the FIRST
@@ -658,20 +662,22 @@ function resolveSubagentTranscriptPath(parentTranscriptPath, agentId) {
  * reused across sessions (measured 2026-07-30: 22 of 1420 distinct start ids
  * appeared more than once).
  *
- * NEVER throws. Any failure (missing file, unreadable, no match, unparseable
- * timestamp) yields null so the caller falls back to an honest "unknown".
+ * NEVER throws. Any failure (missing file, unreadable, no match) yields
+ * `{ startedAtMs: null, agentType: null }` so the caller falls back to an honest
+ * "unknown". An unparseable start timestamp nulls only `startedAtMs`.
  *
  * @param {string} filePath — ledger path
  * @param {string} agentId — the stopping agent's id
- * @returns {number|null} epoch-ms of the matching start, or null
+ * @returns {{ startedAtMs: number|null, agentType: string|null }}
  */
-function findStartTimestampMs(filePath, agentId) {
+function findStartRecord(filePath, agentId) {
+  const none = { startedAtMs: null, agentType: null };
   try {
-    if (typeof agentId !== 'string' || !agentId.trim()) return null;
-    if (!fs.existsSync(filePath)) return null;
+    if (typeof agentId !== 'string' || !agentId.trim()) return none;
+    if (!fs.existsSync(filePath)) return none;
 
     const window = readTailWindow(filePath, START_JOIN_TAIL_BYTES);
-    if (window.size === 0) return null;
+    if (window.size === 0) return none;
 
     const lines = window.text.split('\n');
     // When the window does not cover the whole file, the first element is a
@@ -692,11 +698,13 @@ function findStartTimestampMs(filePath, agentId) {
       }
       if (!obj || obj.event !== 'start' || obj.agent_id !== agentId) continue;
       const ms = Date.parse(obj.timestamp);
-      return Number.isFinite(ms) ? ms : null;
+      const agentType =
+        typeof obj.agent_type === 'string' && obj.agent_type.trim() ? obj.agent_type : null;
+      return { startedAtMs: Number.isFinite(ms) ? ms : null, agentType };
     }
-    return null;
+    return none;
   } catch {
-    return null;
+    return none;
   }
 }
 
@@ -798,7 +806,23 @@ async function main() {
     // duration measurement and the explicit orphan discriminator below.
     // 'unknown' is the agent-id fallback for a payload with no usable id —
     // joining on it would collide across unrelated agents, so never scan for it.
-    const startedAtMs = agentId === 'unknown' ? null : findStartTimestampMs(jsonlPath(), agentId);
+    const startJoin = agentId === 'unknown'
+      ? { startedAtMs: null, agentType: null }
+      : findStartRecord(jsonlPath(), agentId);
+    const { startedAtMs } = startJoin;
+
+    // agent_type inheritance (#1617): the stop payload does not always carry the
+    // type, while the start record for the same agent_id does. Payload wins when
+    // present; otherwise take it from the start record found by the join above.
+    // CEILING: this cannot type the phantom class (#939/#949) — those stops have
+    // no start record at all. Almost all type-less stop records are phantom
+    // stops (subagent_transcript_found: false), which this join cannot type;
+    // records from before #949 carry no flag at all. It closes the class for
+    // real agents whose stop payload omits the type.
+    // Readers counting by type must still filter on subagent_transcript_found.
+    if (agentType === null && startJoin.agentType !== null) {
+      record.agent_type = startJoin.agentType;
+    }
 
     // duration_ms (#917): prefer the harness value, else join backwards to this
     // agent's own start record, else null. Never 0 — see resolveDurationMs().
@@ -884,6 +908,43 @@ async function main() {
   }
 
   await appendSubagent(jsonlPath(), record);
+  await writeLiveMap(input, record);
+}
+
+/**
+ * Keep the HUD's agent live-map current from the lifecycle hooks (#1580).
+ * Before this, only wave-executor self-reports reached
+ * `.orchestrator/runtime/agent-status-current.json`, and those carry no session
+ * binding, so so-hud showed 0 agents while subagents ran.
+ *
+ * Writes into the root that holds THIS session's lock (#1605), so a session
+ * working in a worktree feeds the map the HUD reads beside that lock. A stop is
+ * written only when its start record was found: the phantom-stop class
+ * (#939/#949) has no start and a fresh agent_id per firing, and would otherwise
+ * add one `done` entry per firing. Best-effort: a short lock timeout and every
+ * failure swallowed, so agent dispatch is never delayed beyond it.
+ *
+ * @param {object} input   Hook payload.
+ * @param {object} record  The ledger record just written.
+ * @returns {Promise<void>}
+ */
+async function writeLiveMap(input, record) {
+  try {
+    if (record.agent_id === 'unknown') return;
+    if (record.event === 'stop' && record.start_record_found !== true) return;
+    const sessionId = rawPayloadSessionId({ session_id: record.parent_session_id });
+    if (sessionId === null) return;
+    const repoRoot = resolveOwnLockRoot({ session_id: sessionId, cwd: input?.cwd }, getProjectDir());
+    await setLifecycle(
+      record.agent_id,
+      { status: record.event === 'start' ? 'running' : 'done', sessionId, agentType: record.agent_type ?? null },
+      // The event's own time, not the time after transcript parsing: a stop stamped late can overtake a
+      // quickly resumed agent's next start and show it as done.
+      { repoRoot, timeoutMs: 1000, now: Number.isFinite(Date.parse(record.timestamp)) ? Date.parse(record.timestamp) : Date.now() },
+    );
+  } catch {
+    /* best-effort: the live-map never blocks or fails the hook */
+  }
 }
 
 // Entry guard (#1393): run only as the node script the harness execs — a bare

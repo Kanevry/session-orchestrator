@@ -46,10 +46,10 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { readPeerCards } from './lib/peer-cards/reader.mjs';
-import { filterRealSessions } from './lib/session-schema/filters.mjs';
-import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
+import { readCanonicalSessions, isMeasuredSession } from './lib/sessions-canonical.mjs';
 import { recordDialecticRun } from './lib/learnings/evolve-telemetry.mjs';
 import { DEFAULT_BUDGET_TOKENS } from './lib/config/dialectic.mjs';
+import { withVisibleInboxText } from './lib/learnings/surface.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -400,17 +400,24 @@ function parseTargetFromInfo(info) {
  * Best-effort read of a JSONL file: line-by-line JSON.parse with malformed-
  * line skip. Returns [] when the file is missing or empty.
  *
+ * For the canonical `learnings.jsonl` the visible records of a sibling
+ * `learnings-inbox.jsonl` are appended (#1516, #1685) via the shared
+ * visibility rule in `withVisibleInboxText` — also when the live file is
+ * absent (inbox host). An unreadable inbox never costs the live read.
+ *
  * @param {string} absPath
  * @returns {Promise<Array<object>>}
  */
 async function readJsonlBestEffort(absPath) {
-  if (!existsSync(absPath)) return [];
-  let raw;
-  try {
-    raw = await readFile(absPath, 'utf8');
-  } catch {
-    return [];
+  let raw = '';
+  if (existsSync(absPath)) {
+    try {
+      raw = await readFile(absPath, 'utf8');
+    } catch {
+      return [];
+    }
   }
+  raw = await withVisibleInboxText(absPath, raw);
   /** @type {Array<object>} */
   const out = [];
   for (const line of raw.split('\n')) {
@@ -451,8 +458,8 @@ async function readTopLearnings(repoRoot, topN) {
 /**
  * Read and rank sessions: collapse ledger duplicates (#1209 — the ledger is
  * append-only and can carry more than one raw line per physical session, see
- * `scripts/lib/sessions-canonical.mjs` header), filter out phantom
- * `status: 'abandoned'` stubs (#834, session-close-backfill), sort by
+ * `scripts/lib/sessions-canonical.mjs` header), retain measured work
+ * via isMeasuredSession (#1584), excluding synthetic completed stubs, sort by
  * `completed_at` DESC, take last K.
  *
  * Without the dedup, a duplicate ledger line for the SAME session can occupy
@@ -467,7 +474,7 @@ async function readTopLearnings(repoRoot, topN) {
  * @returns {Array<object>}
  */
 function readLastSessions(repoRoot, lastK) {
-  const entries = filterRealSessions(readCanonicalSessions({ repoRoot }));
+  const entries = readCanonicalSessions({ repoRoot }).filter(isMeasuredSession);
   entries.sort((a, b) => {
     const ta = typeof a?.completed_at === 'string' ? a.completed_at : '';
     const tb = typeof b?.completed_at === 'string' ? b.completed_at : '';

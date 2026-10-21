@@ -31,12 +31,15 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import { emitEvent, sessionAttribution } from '../events.mjs';
-import { parseStateMd, parseMissionStatus, resolveStateMdPath } from '../state-md.mjs';
+import { parseStateMd, parseMissionStatus } from '../state-md.mjs';
+import { resolveStateMdWriteTarget, warnForeignStateMd } from '../state-md/frontmatter-mutators.mjs';
 import {
   parseFrontmatter,
   toDate,
   yamlQuoteIfNeeded,
   subjectToSlug,
+  noteIdFor,
+  yamlNoteId,
 } from '../vault-mirror/utils.mjs';
 import { matchesModuloRedaction } from '../vault-mirror/process.mjs';
 import { readConfigFile, parseSessionConfig } from '../config.mjs';
@@ -317,7 +320,7 @@ export function renderNarrative(opts) {
 
   // Frontmatter — `_generator` LAST (markdown-writer / render-sessions convention).
   lines.push('---');
-  lines.push(`id: ${noteId}`);
+  lines.push(`id: ${yamlNoteId(noteIdFor(null, noteId))}`);
   lines.push('type: session');
   lines.push(`title: ${title}`);
   lines.push(`created: ${createdValue}`);
@@ -380,6 +383,31 @@ export function resolveNarrativePath(vaultDir, repoSlug) {
   return path.join(vaultDir, '01-projects', repoSlug, '_session-narrative.md');
 }
 
+/**
+ * The `created` date of the narrative already at `outputPath` when THIS generator
+ * wrote it (#1602; same rule as board-writer.mjs). A hand-authored or foreign
+ * file, a missing one, or a malformed date yields `undefined` — the render then
+ * stamps today, exactly as on a first write. A read failure is not fatal here:
+ * `writeNarrative` reads the file again and owns that error contract.
+ *
+ * @param {string} outputPath
+ * @param {{ readFileSync?: Function, existsSync?: Function }} [injectedFs]
+ * @returns {string|undefined} `YYYY-MM-DD`
+ */
+function existingNarrativeCreated(outputPath, injectedFs) {
+  const fsExists = injectedFs?.existsSync ?? existsSync;
+  const fsReadFile = injectedFs?.readFileSync ?? readFileSync;
+  try {
+    if (!fsExists(outputPath)) return undefined;
+    const fm = parseFrontmatter(fsReadFile(outputPath, 'utf8'));
+    if (fm?.['_generator'] !== GENERATOR_MARKER) return undefined;
+    const created = fm['created'];
+    return typeof created === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(created) ? created : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ── Idempotent write ─────────────────────────────────────────────────────────────
 
 /**
@@ -391,6 +419,26 @@ export function resolveNarrativePath(vaultDir, repoSlug) {
  */
 function normalizeUpdated(content) {
   return content.replace(/^(updated:\s*)(.+)$/m, `$1${UPDATED_PLACEHOLDER}`);
+}
+
+/**
+ * The comparison form of a narrative for the noop check: {@link normalizeUpdated}
+ * plus the `id:` line dropped to a bare `id:` (#1601, release-review HOCH 2).
+ * The id differs between generations of the renderer in more than one way: the
+ * render now quotes it (`id: "x"`) where older files carry `id: x`, and
+ * `noteIdFor` caps it, so a pre-cap file can carry a longer value. Any such
+ * difference made the whole document "changed", which skipped the `[REDACTED]`
+ * comparison below and rewrote the file — with the raw secret whenever it was
+ * missing from the current env (#1025). The id is derived from the note's
+ * path, not from its content, so no id difference may ever trigger a rewrite;
+ * a schema-breaking id on disk is the job of `vault-mirror/migrate-ids.mjs`,
+ * which changes that one line and nothing else.
+ *
+ * @param {string} content
+ * @returns {string}
+ */
+function normalizeForNoopCompare(content) {
+  return normalizeUpdated(content).replace(/^id:.*$/m, 'id:');
 }
 
 /**
@@ -501,8 +549,9 @@ export function writeNarrative(opts) {
       // #1025 — identical once every `[REDACTED]` span already on disk is read
       // as a wildcard. See the guard-order note above for why the second arm is
       // load-bearing rather than a nicety.
-      const existingNormalized = normalizeUpdated(existingContent);
-      const candidateNormalized = normalizeUpdated(content);
+      // #1601: the id line is left out of the compare — see normalizeForNoopCompare.
+      const existingNormalized = normalizeForNoopCompare(existingContent);
+      const candidateNormalized = normalizeForNoopCompare(content);
       if (
         existingNormalized === candidateNormalized ||
         matchesModuloRedaction(existingNormalized, candidateNormalized)
@@ -963,8 +1012,15 @@ async function runNarrativeMirror(opts) {
     return { result: { action: 'skipped-invalid-path', path: outputPath }, needleCount: masker.needleCount, hits: 0, dryRun };
   }
 
-  // Read STATE.md (best-effort; absent STATE.md → nothing to mirror).
-  const stateMdPath = resolveStateMdPath(repoRoot);
+  // Read STATE.md (best-effort; absent STATE.md → nothing to mirror). #1622:
+  // another platform's STATE.md not proven to be this process's counts as absent.
+  // #1640: `rejected` is also set when the target ITSELF is foreign
+  // (`blocked`) — never read and mirror that file either.
+  const { path: stateMdPath, rejected } = resolveStateMdWriteTarget(repoRoot);
+  if (rejected) {
+    warnForeignStateMd('mirrorNarrative', rejected, stateMdPath);
+    return { result: { action: 'skipped-no-statemd', path: outputPath }, needleCount: masker.needleCount, hits: 0, dryRun };
+  }
   let stateContents;
   try {
     stateContents = await readFile(stateMdPath, 'utf8');
@@ -976,7 +1032,10 @@ async function runNarrativeMirror(opts) {
   // parse (so `[REDACTED]` can never break it) and before the render, the
   // idempotency comparison and the write. See maskNarrative above.
   const { narrative, hits } = maskNarrative(extractNarrative(stateContents), masker);
-  const content = renderNarrative({ repo: repoName, narrative, now });
+  // #1602: `created` is the day the narrative was FIRST written — carried over
+  // from the file on disk, so only `updated` moves between runs.
+  const createdIso = existingNarrativeCreated(outputPath, injectedFs);
+  const content = renderNarrative({ repo: repoName, narrative, now, createdIso });
 
   // `chars` measures the document THIS call rendered — so it is present on
   // `skipped-noop` and `dry-run` too, where the render happened but nothing

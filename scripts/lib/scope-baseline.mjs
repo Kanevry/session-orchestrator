@@ -85,7 +85,7 @@
  * a size-ceiling check and a frontmatter-round-trip-safety check (both
  * documented at frontmatter-mutators.mjs:307-328) — a breach of either
  * REFUSES the write (leaves STATE.md untouched) and surfaces as
- * `{ written: false, reason: 'size-ceiling' | 'frontmatter-unsafe' }`
+ * `{ written: false, reason: 'size-ceiling' | 'frontmatter-unsafe' | 'foreign-state-md' }`
  * instead of silently bypassing the guard the way the old private
  * `writeStateMdAtomic()` helper did.
  *
@@ -119,12 +119,16 @@
  * No I/O at import time. Node 20+ stdlib only.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import path from 'node:path';
 
-import { parseStateMd, serializeStateMd, resolveStateMdPath, writeStateMd } from './state-md.mjs';
+import { parseStateMd, serializeStateMd, writeStateMd } from './state-md.mjs';
+import { resolveStateMdWriteTarget } from './state-md/frontmatter-mutators.mjs';
 import { pathMatchesPattern } from './scope-gate.mjs';
 import { resolveBaselineRange, isQueryFailure } from './vcs-repo-spec.mjs';
+import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
+import { readSessionWorkTrees, sessionCommitFiles } from './session-work-trees.mjs';
 
 // ---------------------------------------------------------------------------
 // DRIFT_EXCLUDE_PATTERNS — the SINGLE filter source for both the denominator
@@ -271,6 +275,78 @@ function outputPaths(stdout) {
 // throws like any other failure and lands in the same skip.
 const DRIFT_GIT_TIMEOUT_MS = 10_000;
 
+/** realpath, or the resolved spelling when the path cannot be resolved. */
+function realOrResolved(p) {
+  try { return realpathSync(p); } catch { return path.resolve(p); }
+}
+
+/**
+ * Committed files from the session's OTHER own work trees (#1659).
+ *
+ * `session-start-ref` names one sha in the coordinator's own checkout; commits
+ * the same session made in its other worktrees are recorded as
+ * `orchestrator.session.work_tree` events (hooks/pre-bash-staging-fence.mjs).
+ * This reads them for the PROCESS-LOCAL raw session id
+ * (`readProcessLocalSessionIds`, never a repo-global file) and diffs each tree
+ * inside itself (`sessionCommitFiles`) — never across trees.
+ *
+ * Excluded before diffing: the own tree (realpath-equal to `ownTop`; the
+ * STATE.md ref stays authoritative there) and trees of a DIFFERENT repository
+ * (other `--git-common-dir`; their paths live in another path space). A tree
+ * whose common dir cannot be queried is passed through, so
+ * `sessionCommitFiles` names why it is unusable (`tree-missing`, …).
+ *
+ * Never throws: any failure yields `null` (no other-tree data), so the
+ * existing own-tree measurement is never turned into a skip by this source.
+ * That includes the own-tree identity queries (`--show-toplevel`,
+ * `--path-format=absolute` needs git >= 2.31): they run HERE, only once a
+ * session id exists, never inside computeDrift()'s numerator `try`.
+ *
+ * @param {{ repoRoot: string|undefined, gitOpts: object, env: object,
+ *           eventsFile?: string }} args
+ * @returns {{ files: string[], counted: number, skipped: number, otherRepo: number,
+ *             malformed: number, invalid: number } | null}
+ *   `null` when no other own tree is recorded. `malformed` / `invalid` carry
+ *   the reader's unreadable lines and own events without a usable tree/ref.
+ */
+function otherWorkTreeFiles({ repoRoot, gitOpts, env, eventsFile }) {
+  try {
+    const [sessionId] = readProcessLocalSessionIds({ env });
+    if (!sessionId) return null;
+    const read = readSessionWorkTrees({ sessionId, repoRoot, eventsFile });
+    if (read.trees.length === 0) return null;
+    const ownTop = realOrResolved(execFileSync('git', ['rev-parse', '--show-toplevel'], gitOpts).trim());
+    const ownCommonDir = realOrResolved(
+      execFileSync('git', ['rev-parse', '--path-format=absolute', '--git-common-dir'], gitOpts).trim(),
+    );
+    const others = read.trees.filter((t) => realOrResolved(t.tree) !== ownTop);
+    if (others.length === 0) return null;
+    const sameRepo = [];
+    let otherRepo = 0;
+    for (const t of others) {
+      let common = null;
+      try {
+        common = execFileSync('git', ['-C', t.tree, 'rev-parse', '--path-format=absolute', '--git-common-dir'], {
+          encoding: 'utf8', timeout: DRIFT_GIT_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'],
+        }).trim();
+      } catch { /* unusable tree: sessionCommitFiles reports the reason */ }
+      if (common !== null && realOrResolved(common) !== ownCommonDir) { otherRepo += 1; continue; }
+      sameRepo.push(t);
+    }
+    const res = sessionCommitFiles({ trees: sameRepo });
+    return {
+      files: res.union,
+      counted: res.perTree.length,
+      skipped: res.skipped.length,
+      otherRepo,
+      malformed: read.malformed,
+      invalid: read.invalid,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Internal: read + parse STATE.md's frontmatter exactly once. Shared by
  * `readBaseline()` and `computeDrift()` so a single `computeDrift()` call
@@ -280,7 +356,12 @@ const DRIFT_GIT_TIMEOUT_MS = 10_000;
  * @returns {{ ok: true, fm: object } | { ok: false, reason: 'no-state-md'|'unreadable-state-md' }}
  */
 function readFrontmatterOrReason(repoRoot) {
-  const statePath = resolveStateMdPath(repoRoot);
+  // #1636: the write side's ownership rule — another platform's STATE.md not
+  // proven to be this process's would lend its baseline and session-start-ref
+  // to THIS session's drift tripwire. It counts as absent (`no-state-md`,
+  // silent like every skip here; writeBaseline() already refuses it).
+  const { path: statePath, rejected } = resolveStateMdWriteTarget(repoRoot);
+  if (rejected) return { ok: false, reason: 'no-state-md' };
   let raw;
   try {
     raw = readFileSync(statePath, 'utf8');
@@ -418,7 +499,7 @@ export function readBaseline(repoRoot) {
  *   `filterExcluded()` pass at all). Anything that is not an array is
  *   rejected UP FRONT — before STATE.md is read or the lock is taken —
  *   as `{ written: false, reason: 'invalid-planned-files' }`.
- * @returns {Promise<{ written: boolean, reason?: 'invalid-planned-files'|'already-frozen'|'no-state-md'|'unreadable-state-md'|'lock-timeout'|'lock-fs-error'|'unexpected-error'|'size-ceiling'|'frontmatter-unsafe' }>}
+ * @returns {Promise<{ written: boolean, reason?: 'invalid-planned-files'|'already-frozen'|'no-state-md'|'unreadable-state-md'|'lock-timeout'|'lock-fs-error'|'unexpected-error'|'size-ceiling'|'frontmatter-unsafe'|'foreign-state-md' }>}
  */
 export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFiles } = {}) {
   if (!Array.isArray(plannedFiles)) {
@@ -488,7 +569,8 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
     // frontmatter-unsafe breach) — surface that reason rather than falling
     // back to the transformer's closure-captured reason, which was never
     // set on this path.
-    if (result.reason === 'size-ceiling' || result.reason === 'frontmatter-unsafe') {
+    // `foreign-state-md` (#1640): the target belongs to another session.
+    if (result.reason === 'size-ceiling' || result.reason === 'frontmatter-unsafe' || result.reason === 'foreign-state-md') {
       return { written: false, reason: result.reason };
     }
     return { written: false, reason: skipReason ?? 'unreadable-state-md' };
@@ -600,14 +682,29 @@ export async function writeBaseline({ repoRoot, intent, ownerBoundary, plannedFi
  * @param {string|undefined} args.repoRoot
  * @param {number} [args.threshold] — breach threshold, `>=` counts as
  *   breached (default `2.0`).
+ * @param {object} [args.env=process.env] — source of the PROCESS-LOCAL raw
+ *   session id whose other work trees are added (#1659); injectable for tests.
+ * @param {string} [args.eventsFile] — explicit events ledger for the
+ *   work-tree records (default: the repoRoot's ledger).
  * @returns {{ ok: true, skipped: true, reason: 'no-state-md'|'unreadable-state-md'|'no-baseline'|'stale-baseline'|'no-baseline-ref'|'unresolvable-ref' }
  *   | { ok: true, skipped: false, filesRatio: number, plannedFiles: number,
- *       actualFiles: number, breached: boolean, threshold: number, refUsed: string }}
+ *       actualFiles: number, breached: boolean, threshold: number, refUsed: string,
+ *       otherWorkTrees?: { counted: number, skipped: number, otherRepo: number,
+ *                          malformed: number, invalid: number } }}
  *   Additive since #1039: `no-baseline-ref` is a NEW member of the skip-reason
  *   union. No existing member was renamed or removed, and the measured-result
  *   shape (all eight keys) is byte-identical to the pre-#1039 contract.
+ *   Additive since #1659: the committed source also unions the files the
+ *   session (process-local raw id) committed in its OTHER own work trees of
+ *   the same repository, each diffed inside itself against its own recorded
+ *   start ref (`orchestrator.session.work_tree`). `otherWorkTrees` appears
+ *   only when such a tree is recorded: `counted` trees measured, `skipped`
+ *   trees unusable (gone, ref unresolvable — they never fail the drift),
+ *   `otherRepo` trees of a different repository (not comparable, ignored),
+ *   `malformed` unreadable ledger lines and `invalid` own events without a
+ *   usable tree/start_ref (a partial read, never a clean verdict).
  */
-export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
+export function computeDrift({ repoRoot, threshold = 2.0, env = process.env, eventsFile } = {}) {
   const parsedFm = readFrontmatterOrReason(repoRoot);
   if (!parsedFm.ok) {
     return { ok: true, skipped: true, reason: parsedFm.reason };
@@ -683,6 +780,11 @@ export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
     return { ok: true, skipped: true, reason: 'unresolvable-ref' };
   }
 
+  // #1659: add what the session committed in its OTHER own work trees. The
+  // own tree is excluded inside (its STATE.md ref above stays authoritative).
+  const otherTrees = otherWorkTreeFiles({ repoRoot, gitOpts, env, eventsFile });
+  if (otherTrees !== null) for (const file of otherTrees.files) changedFiles.add(file);
+
   // Same `filterExcluded()` primitive `writeBaseline()`'s denominator
   // (`countPlannedFiles()`) calls (#894 review finding F1), so the pattern
   // filter on both sides of the ratio is one function. The untracked
@@ -710,5 +812,18 @@ export function computeDrift({ repoRoot, threshold = 2.0 } = {}) {
     breached,
     threshold,
     refUsed,
+    // Additive (#1659), present ONLY when another own work tree is recorded,
+    // so the eight-key shape above is unchanged for single-tree sessions.
+    ...(otherTrees !== null
+      ? {
+        otherWorkTrees: {
+          counted: otherTrees.counted,
+          skipped: otherTrees.skipped,
+          otherRepo: otherTrees.otherRepo,
+          malformed: otherTrees.malformed,
+          invalid: otherTrees.invalid,
+        },
+      }
+      : {}),
   };
 }

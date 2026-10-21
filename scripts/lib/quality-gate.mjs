@@ -69,7 +69,7 @@ import { fileURLToPath } from 'node:url';
 import { emitEvent, sessionAttribution } from './events.mjs';
 import { resolveWaveNumber } from './quality-gate-wave.mjs';
 import { parsePorcelainZ } from './git-porcelain.mjs';
-import { admitSuiteCounts, extractTestCounts } from './gates/gate-helpers.mjs';
+import { admitSuiteCounts, extractTestCounts, leftoverGroupLine } from './gates/gate-helpers.mjs';
 import {
   DEFAULT_GATE_TIMEOUT_MS,
   buildCommandSignature,
@@ -78,6 +78,7 @@ import {
 import { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 import { atomicWriteWithBackup, writeJsonAtomicSync } from './io.mjs';
 import { readProcessLocalSessionIds } from './session-identity/own-session.mjs';
+import { resolveOwnLockRoot } from '../../hooks/_lib/hook-root.mjs';
 
 export { redactDiagnosticsBundle } from './quality-gate/diagnostics.mjs';
 
@@ -319,7 +320,8 @@ function resolveCommands(override, repoRoot) {
  *   (`spawnFn`, `killFn`, `isAliveFn`, `sleepFn`, `killGraceMs`, `verifyWaitMs`).
  *   Test seam only; production passes nothing and gets the module defaults.
  * @returns {Promise<{ exitCode: number, output: string, timedOut: boolean,
- *   overflow: boolean, killSignals: string[], survivors: number[], pgid: number }>}
+ *   overflow: boolean, killSignals: string[], survivors: number[]|null, error?: string, pgid: number,
+ *   leftoverGroup?: {pgid: number, signals: string[], survivors: number[]} }>}
  */
 async function runGate(cmd, cwd, opts = {}) {
   try {
@@ -349,9 +351,16 @@ async function runGate(cmd, cwd, opts = {}) {
     // A process that outlived SIGKILL (one that `setsid`-ed out of the group) is
     // SAID OUT LOUD on the channel the operator and the diagnostics bundle both
     // read. Silence here would be the exact failure the ladder exists to expose.
-    const output = result.survivors.length > 0
+    const survivorOutput = result.survivors === null
+      ? `${result.output}\nÜberlebende nicht messbar: ${result.error}`.trim()
+      : result.survivors.length > 0
       ? `${result.output}\ngate: ${result.survivors.length} process(es) survived SIGKILL: ${result.survivors.join(', ')}`.trim()
       : result.output;
+    // #1704: a group still alive after a NORMAL exit was reaped by the ladder.
+    // Named here, never a status change (pass/fail stays the exit code's).
+    const output = result.leftoverGroup
+      ? `${survivorOutput}\n${leftoverGroupLine(result.leftoverGroup)}`.trim()
+      : survivorOutput;
 
     return {
       exitCode: result.exitCode,
@@ -360,6 +369,8 @@ async function runGate(cmd, cwd, opts = {}) {
       overflow: result.overflow,
       killSignals: result.killSignals,
       survivors: result.survivors,
+      ...(result.survivors === null ? { error: result.error, ok: false } : {}),
+      ...(result.leftoverGroup ? { leftoverGroup: result.leftoverGroup } : {}),
       pgid: result.pgid,
     };
   } catch (err) {
@@ -607,16 +618,25 @@ function classifyCurrentSessionOwnership(parsed, ownIds) {
  * WARN is not de-duplicated; this function runs at most once per fixer dispatch
  * plus once at abort, and each line marks a distinct decision point.
  *
+ * The file is read beside THIS session's own lock (#1630): after /clear in an
+ * entered worktree the lock and `current-session.json` live there (#1605), and
+ * after ExitWorktree the gate runs with `repoRoot` on the main checkout, where
+ * the file belongs to another session. `resolveOwnLockRoot` follows the host
+ * registry's `session_root` pointer — the lookup the hook writer
+ * (`post-tool-failure-corrective-context.mjs`) uses — and answers `repoRoot`
+ * unchanged when no own lock is found elsewhere.
+ *
  * @param {string} repoRoot
  * @returns {Array<object>}
  */
 function readCorrectiveContext(repoRoot) {
   try {
-    const p = join(repoRoot, '.orchestrator', 'current-session.json');
+    const ownIds = readOwnSessionIds();
+    const ownRoot = resolveOwnLockRoot({ session_id: [...ownIds][0] ?? null, cwd: repoRoot }, repoRoot);
+    const p = join(ownRoot, '.orchestrator', 'current-session.json');
     if (!existsSync(p)) return [];
     const raw = readFileSync(p, 'utf8');
     const parsed = JSON.parse(raw);
-    const ownIds = readOwnSessionIds();
     const { verdict, fileIds } = classifyCurrentSessionOwnership(parsed, ownIds);
     if (verdict === 'foreign') {
       process.stderr.write(
@@ -791,13 +811,15 @@ function coerceMaxRetries(n) {
  * - `kill_signals` — the signals actually sent, in order (`SIGTERM`, `SIGKILL`).
  *   Copied, because `spawnInGroup` records them at send time into a live array.
  *
- * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]}|null|undefined} run
- * @returns {{timed_out: boolean, survivors: number, kill_signals: string[]}}
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]|null, error?: string}|null|undefined} run
+ * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}}
  */
+// Explicit null is an unmeasurable cleanup, never a measured zero.
 export function gateKillFields(run) {
   return {
     timed_out: run?.timedOut === true,
-    survivors: Array.isArray(run?.survivors) ? run.survivors.length : 0,
+    survivors: run?.survivors === null ? null : (Array.isArray(run?.survivors) ? run.survivors.length : 0),
+    ...(run?.survivors === null ? { error: run.error, ok: false } : {}),
     kill_signals: Array.isArray(run?.killSignals) ? [...run.killSignals] : [],
   };
 }
@@ -887,7 +909,7 @@ export function gateKillFields(run) {
  * @param {number} attempts
  * @param {string|null} gate
  * @param {{passed: number, failed: number, total: number}|null} [counts]
- * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]}|null} [killRun]
+ * @param {{timedOut?: boolean, killSignals?: string[], survivors?: number[]|null, error?: string}|null} [killRun]
  *   the run that decided the verdict — the last attempt's failing gate; `null`
  *   on the passing path, where every gate exited 0 and so none was killed
  *   (`spawnInGroup` only starts its kill ladder on timeout or overflow, and
@@ -1036,6 +1058,8 @@ export async function runQualityGateWithRetry(opts) {
         timedOut: result.timedOut,
         killSignals: result.killSignals,
         survivors: result.survivors,
+        ...(result.survivors === null ? { error: result.error, ok: false } : {}),
+        ...(result.leftoverGroup ? { leftoverGroup: result.leftoverGroup } : {}),
         command: cmd,
         attempt,
       };

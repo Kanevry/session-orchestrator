@@ -106,6 +106,146 @@ nur wenn die Lease aktiv ist und `navigator_adresse` (stdout der Check-in-CLI) n
 `ListAgents` erreichbar ist, und nur an genau diesen Namen; nie eine Antwort
 erwarten, nie darauf warten (CSM-004).
 
+## Rücklauf an den Navigator (Pflicht)
+
+In jedem Warte-Zug, den eine Eingabe ausgelöst hat (Anstoß der Owner-Inbox, Nachricht vom Lead,
+Nachricht vom Owner, auch ein Befehl wie `/go` oder `/close`) — keine Arbeit gefunden, Blocker länger
+als 15 min, `/go` oder `/close` ohne Plan, fertig, nur noch Zug/Pipeline offen — genau eine Meldung
+an den Koordinator, im Zug der Warte-Antwort selbst: Session (`<name>`, unten), Wartefall
+(`keine-arbeit`, `blocker-<issue>`, `go-ohne-plan`, `close-ohne-plan`, `fertig`, `zug-<name>`), seit
+wann (Uhr aus `date`, die lokale Systemzeit des Hosts), was gebraucht wird. Auch wenn derselbe Fall
+in einem früheren Zug schon gemeldet wurde (Resume, Verdichtung, erneuter Anstoß): Die Owner-Inbox
+lässt eine Session nur ruhen, wenn sie im Zug ihrer letzten Antwort gemeldet hat (SendMessage oder
+`owner-queue add`) UND diese Antwort als Warte-Antwort erkennt; eine unterdrückte Wiederholung hält
+sie wach und führt zu stündlichen Anstößen (#1611). Ausgenommen sind Züge, die keine Eingabe
+ausgelöst hat: Weckungen durch `/loop`, ein Monitor-Ereignis, ein eigener Hintergrund-Agent oder eine
+eigene Hintergrund-Shell, ScheduleWakeup. Sie melden nicht erneut: solange ein Monitor oder
+Hintergrund-Lauf offen ist, stößt die Inbox ohnehin nicht an; nach einer Weckung durch `/loop` oder
+ScheduleWakeup holt der nächste Anstoß die Meldung nach. Flotte und Lease lesend messen, ohne Check-in zu schreiben
+(derselbe Helfer `readNavigatorLease()`, aus dem die Check-in-CLI `navigator_adresse` gewinnt):
+
+```bash
+node --input-type=module -e "const { pathToFileURL } = await import('node:url'); const m = await import(pathToFileURL(process.argv[1]).href); const r = await m.readNavigatorLease(); console.log(JSON.stringify({flotte: m.fleetIntegrationEnabled(), state: r.state, adresse: r.lease?.adresse ?? null}))" "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/lib/fleet-protocol.mjs"
+```
+
+`flotte: false` (§ Verhalten ohne Flotte): keine Meldung, keine Datei; hier endet der Abschnitt.
+Sonst die Meldung über eine Rückfallkette; die nächste Stufe greift, sobald die vorige nicht greift
+oder scheitert:
+
+1. `state: active`, `adresse` nicht `null` und per `ListAgents` erreichbar: eine `SendMessage` an
+   genau diese Adresse. Werkzeugfehler oder unbekannte Adresse: weiter mit Stufe 2.
+2. Sonst (Lease `none` oder `unreadable`, keine oder keine erreichbare Adresse, Stufe 1
+   gescheitert): ein Lead-Todo in der owner-queue des Koordinators, `<repo>` wie das Check-in-Feld
+   `repo`, Titel mit `<name>` (unten) und dem, worauf die Session wartet. Exit 4 heißt „ähnlicher
+   offener Eintrag liegt schon in der Queue“. Der Befehl selbst muss Exit 0 und 4 auf Exit 0
+   normalisieren: Claude Code markiert jeden Exit ungleich 0 als Werkzeugfehler (`is_error`), und
+   einen gescheiterten Aufruf zählt die Owner-Inbox nicht als Meldung. Pflichtform:
+
+   ```bash
+   navigator owner-queue add --repo <repo> --kind lead-todo --waits-on lead --title '<name>: <worauf die Session wartet>'; rc=$?; [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] || { echo "Meldung gescheitert: owner-queue add exit $rc" >&2; exit "$rc"; }
+   ```
+
+   `navigator` ist die CLI des Koordinators (lead-session-orchestrator: Binary `navigator`); nennt
+   die Steuerungsregel des Koordinators im Systemprompt der Session einen Aufrufpfad, gilt dieser.
+   Einen eigenen Pfad zum Koordinator-Repo nicht raten.
+3. Scheitert auch Stufe 2 (Exit weder 0 noch 4, z. B. 127, weil `navigator` nicht im `PATH` liegt):
+   der letzte Absatz der Antwort nennt sichtbar `Meldung gescheitert: <Grund>` (Stufe, Exit-Code
+   oder Fehlertext), vor dem Wartesatz. Still warten ist nie zulässig.
+
+**Wartesatz.** Jede Warte-Antwort endet mit einem Satz, den der Koordinator als Warte-Antwort
+erkennt (letzte 600 Zeichen ohne Code-Blöcke, kein `?` am Ende des letzten Absatzes, Muster wie
+unter Übergabe Punkt 3): `Bereit zum Schließen.`, wenn die Übergabe unten gilt, sonst
+`Ich warte auf den nächsten Auftrag.` Eine Meldung oder Statuszeile allein (etwa
+`/go: kein Plan vorhanden – nichts ausgeführt`) erkennt er nicht.
+
+**Flotten-Ordner und Session-Name.** Beide stehen im eigenen Eintrag der Claude-Session-Registry
+`~/.claude/sessions/<pid>.json`, dem mit `sessionId` gleich `$CLAUDE_CODE_SESSION_ID`:
+
+```bash
+jq -c --arg id "$CLAUDE_CODE_SESSION_ID" 'select(.sessionId == $id) | {name, cwd, startedAt}' ~/.claude/sessions/*.json
+```
+
+`<name>` ist das Feld `name` (der Peer-Name, z. B. `session-orchestrator-cf`; fehlt es, die ersten
+acht Zeichen von `sessionId`), nicht `session_id` und nicht `semantic_session_id`. Der Flotten-Ordner
+ist `<cwd>/.orchestrator/runtime/fleet/` mit dem `cwd`, der im Moment des Schreibens in diesem
+Eintrag steht: den Befehl unmittelbar davor ausführen, nie einen früher gemessenen Wert nehmen. Nach
+`EnterWorktree` zeigt `cwd` auf den Worktree, und dort sucht der Koordinator. `/close` kann einen
+auto-promoteten Worktree samt der Datei darin entfernen (session-end Phase 4a); die Datei entsteht
+deshalb erst mit der Meldung, und der Koordinator liest sie vor dem Abschluss.
+
+**Übergabe und Zug-Manifest.** Nur mit Flottenintegration (`flotte: true` in derselben Messung),
+auch ohne aktive Lease: der Koordinator schließt eine von ihm geführte Session, sobald ihre Übergabe
+vorliegt, ohne die Lease zu prüfen. Und nur in der Warte- oder Fertig-Antwort außerhalb von
+session-end (Phase start oder go: das Abschluss-Ergebnis des wave-executor, das Ende des Express Path,
+`/go` ohne Plan, keine Arbeit). Ist die Session fertig oder wartet sie nur noch auf einen Release-Zug oder eine Pipeline
+und hat keine andere Arbeit:
+
+1. Im selben Zug wie diese Antwort schreibt sie selbst mit dem Datei-Werkzeug des Harness (Claude
+   Code: Write), nicht per Shell, in den Flotten-Ordner: fertig die Übergabe
+   `uebergabe-<name>-an-<Nachfolger>.md` (ohne Nachfolger `uebergabe-<name>.md`), bei Zug oder
+   Pipeline das Zug-Manifest `<name>-zug-<zugname>.md` — enthaltene MRs, Köpfe, Migrationen,
+   manuelle Jobs, Nachkontrolle, Rückweg, offene Themen. Der Koordinator erkennt nur genau diese
+   Namen (`uebergabe-<name>.md`, `uebergabe-<name>-….md`, `<name>-zug-….md`) und nur eine Datei, die
+   die Session im Zug ihrer letzten Antwort nachweislich selbst geschrieben hat. Vorher
+   `git -C <cwd> check-ignore --no-index -q .orchestrator/runtime/fleet/<datei>` prüfen: Exit 1
+   (nicht ignoriert) hält das Schreiben nicht auf — der Koordinator braucht die Datei genau
+   dort —, aber Meldung und Antwort nennen „ungetrackte Datei in <repo>:
+   .orchestrator/runtime/fleet/<datei>“. Kein Ausweichen in einen anderen Ordner.
+1a. **Jeder offene Punkt trägt eine Vorgangsmarke (#1639).** Jeder Listenpunkt unter einer
+   Überschrift, die mit „Offen“, „Nachkontrolle“, „Folge“ oder „Danach“ beginnt (ohne „erledigt“ im
+   Titel), endet mit `queue:#<id>`. Hat der Punkt schon ein GitLab-Issue und braucht keinen
+   Zeitpunkt, endet er stattdessen mit `issue:#<iid>`. Erledigte Punkte stehen als `[x]` da. Fehlt die
+   Marke, legt die Session den Vorgang vor dem Schreiben an
+   (`navigator owner-queue add --repo <repo> … --title '<name>: <punkt>'`, `<repo>` wie oben):
+   Prüfung nach Merge oder Zug `--kind nachsorge --waits-on lead --ref <repo>!<iid>`; Folgearbeit,
+   Termin oder Nachfolge-Session `--kind lead-todo --waits-on lead` (mit `--not-before`/`--due`
+   bei Termin oder Frist); Versprechen an einen Peer `--kind zusage --waits-on peer:<session>`;
+   Owner-Frage wie bisher als Entscheid mit `--options`, `--recommendation`, `--class`. Exit 0 und 4
+   gelten als Erfolg; bei 4 die ID des vorhandenen Vorgangs übernehmen (`--json` liefert sie als
+   `ids`). Danach prüft sie die geschriebene Datei mechanisch:
+
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/handover-queue-check.mjs" --file <cwd>/.orchestrator/runtime/fleet/<datei> --name <name> --since <startedAt> --apply --repo <repo> --navigator-cli <koordinator-cli>
+   ```
+
+   `<koordinator-cli>` ist der Aufrufpfad der Koordinator-CLI aus der Steuerungsregel (eine `.js`-Datei
+   läuft unter node), sonst entfällt die Option und `navigator` aus dem `PATH` gilt. `--apply` legt
+   für jeden Punkt ohne Marke den Vorgang an (Nachkontrolle als `nachsorge`, sonst `lead-todo`, Ref
+   aus dem ersten `!N`/`#N` im Punkt, nur wenn die CLI ihn annimmt) und schreibt `queue:#<id>` in die
+   Datei. Punkte unter einer Überschrift mit „Owner“ oder „Entscheid“ legt es nie an, es meldet sie:
+   Owner-Fragen brauchen einen Entscheid mit Optionen und Klasse. `--apply` verlangt `--name`
+   (sonst Exit 2) und schreibt nur in die eigene Datei (`uebergabe-<name>.md`,
+   `uebergabe-<name>-*.md`, `<name>-zug-*.md`); eine fremde Datei, einen Symlink oder eine Datei
+   älter als `--since` (Vorgänger gleichen Namens) lehnt es unverändert ab (Exit 4), nie in einer
+   Schleife über den Flotten-Ordner aufrufen. Hat es Vorgänge
+   angelegt, die Datei danach lesen und mit dem Datei-Werkzeug unverändert neu schreiben: der
+   Koordinator erkennt nur eine selbst geschriebene Datei. Exit 3 heißt, Punkte bleiben ohne Marke
+   (die Liste steht in der Ausgabe): dann nennen Meldung und Antwort „Übergabe ohne Queue-IDs: <n>
+   Punkte“, und die Antwort endet mit `Ich warte auf den nächsten Auftrag.`, nicht mit dem Satz aus
+   Schritt 3. Ohne Flottenintegration prüft das Skript nichts (Exit 0).
+2. Mit jeder weiteren Warte-Antwort schreibt sie die Datei neu, auch wenn sie aus einem früheren Zug
+   schon dasteht, so wie sie in jedem Warte-Zug neu meldet.
+3. Sie meldet „bereit zum Schließen“ (in der Meldung dieses Zugs) und beendet
+   die Antwort mit genau diesem Satz: `Bereit zum Schließen.` Der Koordinator erkennt eine Warte-
+   oder Fertig-Antwort nur in ihren letzten 600 Zeichen (Code-Blöcke zählen nicht mit); ein langer
+   Bericht mit dem Satz weiter oben schließt nicht. Der letzte Absatz endet nicht auf `?`, und die
+   letzten 400 Zeichen enthalten weder `soll ich` noch `weiter mit`, `welche option` oder
+   `freigabe für`: sonst gilt die Antwort als Frage an den Owner, und es schließt ebenfalls nicht.
+   Auch eine Verneinung („noch nicht bereit zum Schließen“) zählt dort als Fertig-Antwort: nie ans
+   Ende stellen. Sie beginnt nichts Neues und beendet Monitore, Hintergrund-Shells und
+   Hintergrund-Agenten (Claude Code: TaskStop); solange einer läuft, gilt sie als nicht fertig.
+4. Sie schließt nicht selbst: `/close` ist nicht modell-aufrufbar (`disable-model-invocation`), und
+   den Abschluss löst der Koordinator aus. session-end (Phase 4.5) meldet im Zug von `/close` genau
+   einmal den Fall `zug-<name>` (eigener Warte-Zug, gewollt) und schreibt keine Datei.
+   Das gilt auch für den Express Path (session-start Phase 8.5, `skills/go/SKILL.md`): mit
+   Flottenintegration ruft `/go` session-end nicht selbst auf, sondern endet nach Deviation-Eintrag
+   mit Meldung, Übergabe und Wartesatz wie oben (#1620). Ohne Flottenintegration bleibt der
+   Express Path beim eigenen Abschluss.
+
+Ohne Flottenintegration keine Meldung, keine Übergabe-Datei und kein Manifest. Nie auf Antwort
+warten, nie eine Entscheidung an einer Antwort festmachen (CSM-004); eine Meldung ist keine Freigabe
+(ADR-002). Schließen nur über session-end, nie durch handgeschriebene Metriken.
+
 ## `auflagen/<session_id>.json` — Navigator an Session
 
 Bedingungen, die der Navigator einer Session schreibt (z. B. Agent-Caps, volle Pipelines je Repo,
@@ -161,6 +301,7 @@ sind per Nachricht nicht erreichbar und nutzen dieselben Dateien: vor jeder Well
 ## See Also
 
 `skills/session-start/SKILL.md` Phase 7.6 · `skills/session-start/references/operations-contract.md`
-(Peer-Preflight) · `skills/_shared/state-ownership.md` § Session Identity and Lock Ownership (`role`) ·
+(Peer-Preflight) · Rücklauf-Verweise: `skills/go/SKILL.md` § No plan to execute, `skills/close/SKILL.md`, `skills/wave-executor/SKILL.md` § Completion,
+`skills/session-end/SKILL.md` Phase 4.5 · `skills/_shared/state-ownership.md` § Session Identity and Lock Ownership (`role`) ·
 `docs/events-schema.md` (`orchestrator.fleet.checkin`) · `.claude/rules/cross-session-messaging.md`
 (CSM-003/004) · `scripts/lib/fleet-protocol.mjs` · `scripts/fleet-checkin.mjs`

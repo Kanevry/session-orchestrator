@@ -161,7 +161,7 @@ With the lease held, routing splits on whether the chosen entry is model-invocab
 ## Phase 5: Edge cases
 
 - **No free candidate** (`recommended === null` / `free` empty) → report "all repos busy", and offer `resume` (an in-progress session) or `wait` via AUQ. **Never force a selection** of a busy repo.
-- **vault off / glab missing** → degrade per the `warnings` array: rank on staleness × readiness only, surface the warning, continue. A missing CLI is never fatal.
+- **glab/gh missing or timed out** → the PRIORITY signal (open critical/high backlog counts via `scanBacklog`, `scripts/lib/dispatcher/rank.mjs`) falls back to a neutral 1 and a `warnings` entry says so: the repo is ranked on staleness × readiness only, surface the warning, continue. A missing CLI is never fatal. Ranking does not read the vault, so `vault-integration` off changes nothing here.
 - **Host resource probe failed** → readiness is scored without resource dampening (a warning says so); ranking still completes.
 - **Bad `--start-dir`** → CLI exits 1 (user/input error); fix the path and re-run.
 

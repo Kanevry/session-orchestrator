@@ -40,7 +40,10 @@
  * Slice: `.slice(0, n)` after sort.
  */
 
+import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { readLearnings } from './io.mjs';
+import { inboxPathFor, isCanonicalStore } from './store-role.mjs';
 
 const MS_PER_DAY = 86_400_000;
 
@@ -147,6 +150,49 @@ export function effectiveScore(entry, nowMs, decay) {
  *   then sliced to `n`. Returns [] on missing/unreadable file or all-empty input.
  */
 export async function surfaceTopN(filePath, n = 5, opts = {}) {
+  // Preserve the pre-read clock used by the existing file reader.
+  const now = opts.now instanceof Date ? opts.now.getTime()
+    : typeof opts.now === 'number' ? opts.now : Date.now();
+  let raw;
+  try {
+    raw = await readFile(filePath, 'utf8');
+  } catch {
+    return [];
+  }
+  return surfaceLearningsText(await withVisibleInboxText(filePath, raw), n, { ...opts, now });
+}
+
+/**
+ * `raw` (the live store's text) plus the visible inbox records of the
+ * canonical store, one JSON line each (#1516) — the same visibility rule
+ * `readLearnings()` applies. Without an inbox file beside a canonical store
+ * `raw` comes back unchanged, so every pre-#1516 output stays byte-identical.
+ *
+ * Ceiling (BV-004): the live file is read twice when an inbox exists (once
+ * raw here, once by `readLearnings`); revisit if the inbox grows past the
+ * 1 MiB trigger named in io.mjs.
+ *
+ * @param {string} filePath — the store `raw` was read from
+ * @param {string} raw
+ * @returns {Promise<string>}
+ */
+export async function withVisibleInboxText(filePath, raw) {
+  if (!isCanonicalStore(filePath) || !existsSync(inboxPathFor(filePath))) return raw;
+  let read;
+  try {
+    read = await readLearnings(filePath);
+  } catch {
+    return raw; // an unreadable inbox never costs the live surface
+  }
+  const { entries, inbox } = read;
+  const visible = inbox ? entries.slice(entries.length - inbox.visible) : [];
+  if (visible.length === 0) return raw;
+  const sep = raw.length === 0 || raw.endsWith('\n') ? '' : '\n';
+  return `${raw}${sep}${visible.map((e) => JSON.stringify(e)).join('\n')}\n`;
+}
+
+/** Same surface policy over one already-read JSONL snapshot; no I/O. */
+export function surfaceLearningsText(raw, n = 5, opts = {}) {
   const { now: nowOpt, confidenceFloor = 0.3, decay: decayOpt } = opts;
   const nowMs =
     nowOpt instanceof Date
@@ -162,13 +208,6 @@ export async function surfaceTopN(filePath, n = 5, opts = {}) {
     halfLifeDays: decayOpt?.halfLifeDays ?? DECAY_DEFAULTS.halfLifeDays,
     floorFactor: decayOpt?.floorFactor ?? DECAY_DEFAULTS.floorFactor,
   };
-
-  let raw;
-  try {
-    raw = await readFile(filePath, 'utf8');
-  } catch {
-    return [];
-  }
 
   const lines = raw
     .split('\n')

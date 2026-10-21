@@ -99,6 +99,16 @@ export const ARCHIVE_NAME_RE =
 /** Upper bound of the legacy `.1`..`.N` ring (`max-backups` is capped at 20). */
 export const LEGACY_RING_MAX = 20;
 
+/**
+ * Per-session work-tree record (#1659): written by hooks/pre-bash-staging-fence.mjs
+ * BEFORE a `git commit` runs, payload `{ session_id, tree, start_ref }` — the raw
+ * session id, the realpath of the committing tree's toplevel, and that tree's
+ * full `HEAD` sha before the commit. Read by scripts/lib/session-work-trees.mjs
+ * (first record per tree wins). Lives in this zero-import module so the hook
+ * and the reader share the name without either importing the other.
+ */
+export const SESSION_WORK_TREE_EVENT = 'orchestrator.session.work_tree';
+
 /** Prefix marking an orchestrator-owned event. */
 export const ORCHESTRATOR_PREFIX = 'orchestrator.';
 

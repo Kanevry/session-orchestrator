@@ -23,7 +23,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import {
@@ -159,9 +159,157 @@ describe('checkGitConfigDrift — detection', () => {
     // The live repo stores the absolute form; a literal equality check against
     // '.husky/_' would warn on every session in the repo that owns this file.
     const dir = makeRepo();
+    mkdirSync(join(dir, '.husky', '_'), { recursive: true });
+    writeFileSync(join(dir, '.husky', '_', 'pre-push'), '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(join(dir, '.husky', '_', 'h'), '# helper\n', 'utf8');
     setLocal(dir, 'core.hooksPath', join(dir, '.husky', '_'));
 
     expect(checkGitConfigDrift({ repoRoot: dir, env: NO_ENV })).toBeNull();
+  });
+
+  it.skipIf(!GIT_AVAILABLE)('flags .husky/_ in a linked worktree that lacks the directory (#1688)', () => {
+    // The bug this catches: `.husky/_` is gitignored, so `git worktree add`
+    // never copies it. The relative hooksPath then resolves into the new
+    // worktree, git finds no hooks there and commit and push run ungated and
+    // silent, while the old probe judged only the config value and said null.
+    const dir = makeRepo();
+    execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '--allow-empty', '-m', 'i']);
+    mkdirSync(join(dir, '.husky', '_'), { recursive: true });
+    writeFileSync(join(dir, '.husky', '_', 'pre-push'), '#!/bin/sh\n', { mode: 0o755 });
+    writeFileSync(join(dir, '.husky', '_', 'h'), '# helper\n', 'utf8');
+    setLocal(dir, 'core.hooksPath', '.husky/_');
+    const wt = `${dir}-wt`;
+    tmpDirs.push(wt);
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '--detach', wt]);
+
+    expect(checkGitConfigDrift({ repoRoot: dir, env: NO_ENV })).toBeNull();
+    const result = checkGitConfigDrift({ repoRoot: wt, env: NO_ENV });
+    expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path-missing', 'hooks-path-missing']);
+    expect(result?.message).toContain('Husky mit dem canonical Package Manager');
+  });
+
+  it.skipIf(!GIT_AVAILABLE).each([
+    ['package-lock.json', 'npm exec --no -- husky'],
+    ['pnpm-lock.yaml', 'pnpm exec husky'],
+  ])('uses the canonical PM from %s in remediation (SEC-020)', (lockfile, command) => {
+    const dir = makeRepo();
+    writeFileSync(join(dir, lockfile), '');
+    setLocal(dir, 'core.hooksPath', '.husky/_');
+
+    const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
+    expect(result?.findings[0].detail).toContain(`Reparatur: \`${command}\``);
+  });
+
+  it.skipIf(!GIT_AVAILABLE).each([
+    [0o644, 'h', ['pre-push ist nicht ausführbar']],
+    [0o755, 'unrelated', ['h fehlt']],
+    [0o644, 'unrelated', ['pre-push ist nicht ausführbar', 'h fehlt']],
+    [0o755, 'h', []],
+  ])('checks launcher mode %s and helper presence %s independently', (mode, helper, expected) => {
+    const dir = makeRepo();
+    const hooks = join(dir, '.husky', '_');
+    mkdirSync(hooks, { recursive: true });
+    writeFileSync(join(hooks, 'pre-push'), '#!/bin/sh\n');
+    chmodSync(join(hooks, 'pre-push'), mode);
+    writeFileSync(join(hooks, helper), '# helper\n');
+    setLocal(dir, 'core.hooksPath', '.husky/_');
+
+    const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
+    expect(result?.findings.map((f) => f.detail.split(`${hooks}/`)[1].split(' — ')[0]) ?? []).toEqual(expected);
+  });
+
+  it('flags .husky/_ when the hooks path cannot be resolved — never read as present (#1688)', () => {
+    const spawn = (_cmd, args) => {
+      if (args.includes('rev-parse')) return { status: 0, stdout: '' };
+      if (args.includes('--local')) return { status: 0, stdout: 'core.hooksPath\n.husky/_\0' };
+      return { status: 0, stdout: '' };
+    };
+
+    const result = checkGitConfigDrift({ repoRoot: '/anywhere', env: NO_ENV }, { spawn });
+    expect(result?.findings.map((f) => f.kind)).toEqual(['hooks-path-missing']);
+  });
+
+  /** A committed repo tracking `.husky/pre-commit`, with no core.hooksPath anywhere. */
+  function makeHuskyRepoWithoutHooksPath() {
+    const dir = makeRepo();
+    mkdirSync(join(dir, '.husky'), { recursive: true });
+    writeFileSync(join(dir, '.husky', 'pre-commit'), '#!/bin/sh\n', 'utf8');
+    writeFileSync(join(dir, 'package-lock.json'), '');
+    execFileSync('git', ['-C', dir, 'add', '.husky/pre-commit', 'package-lock.json']);
+    execFileSync('git', ['-C', dir, '-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'commit', '-q', '-m', 'i']);
+    return dir;
+  }
+
+  it.skipIf(!GIT_AVAILABLE)('flags an unset core.hooksPath in a repo that tracks .husky hooks, also in a linked worktree (#1692)', () => {
+    // The bug this catches: with core.hooksPath set nowhere, git runs
+    // <common-dir>/hooks, which husky never writes — commit and push ran
+    // ungated on a host clone while the probe, judging only SET values, said null.
+    const dir = makeHuskyRepoWithoutHooksPath();
+    const wt = `${dir}-wt`;
+    tmpDirs.push(wt);
+    execFileSync('git', ['-C', dir, 'worktree', 'add', '-q', '--detach', wt]);
+
+    const expected = expect.objectContaining({
+      findings: [
+        {
+          kind: 'hooks-path-unset',
+          key: 'core.hooksPath',
+          value: '',
+          detail: expect.stringContaining('versioniert aber .husky/pre-commit'),
+        },
+      ],
+      message: expect.stringContaining('Reparatur: `npm exec --no -- husky`'),
+    });
+    expect([dir, wt].map((root) => checkGitConfigDrift({ repoRoot: root, env: NO_ENV }))).toEqual([expected, expected]);
+  });
+
+  it.skipIf(!GIT_AVAILABLE)('does NOT flag an unset core.hooksPath when .husky/pre-commit is only on disk, not tracked', () => {
+    const dir = makeRepo();
+    mkdirSync(join(dir, '.husky'), { recursive: true });
+    writeFileSync(join(dir, '.husky', 'pre-commit'), '#!/bin/sh\n', 'utf8');
+
+    expect(checkGitConfigDrift({ repoRoot: dir, env: NO_ENV })).toBeNull();
+  });
+
+  it.skipIf(!GIT_AVAILABLE)('does NOT flag a husky repo whose core.hooksPath is set globally', () => {
+    // git uses the global value, so "unset" would be false; judging that
+    // value is out of scope (ceiling noted at hooksPathUnsetFinding).
+    const dir = makeHuskyRepoWithoutHooksPath();
+    const home = mkdtempSync(join(tmpdir(), 'so-git-config-drift-home-'));
+    tmpDirs.push(home);
+    writeFileSync(join(home, '.gitconfig'), '[core]\n\thooksPath = .husky/_\n', 'utf8');
+
+    const env = { PATH: process.env.PATH ?? '', HOME: home };
+    expect(checkGitConfigDrift({ repoRoot: dir, env })).toBeNull();
+  });
+
+  it('reports an unanswerable core.hooksPath query as a finding — never read as healthy (#1692)', () => {
+    // The `--local` read already succeeded, so this 128 cannot mean "not a git
+    // repo"; labelling it that sent the operator to the wrong place (#1694).
+    const spawn = (_cmd, args) => {
+      if (args.includes('--get')) return { status: 128, stdout: '', stderr: 'fatal: boom' };
+      return { status: 0, stdout: '' };
+    };
+
+    const result = checkGitConfigDrift({ repoRoot: '/anywhere', env: NO_ENV }, { spawn });
+    expect(result?.findings.map((f) => `${f.kind}: ${f.detail}`)).toEqual([
+      'hooks-path-unset: core.hooksPath ließ sich nicht abfragen (config-unreadable) — ob die Husky-Hooks laufen, ist unbekannt.',
+    ]);
+  });
+
+  it('reports a failed .husky listing as a finding — never read as "no husky hooks" (#1694)', () => {
+    // The bug this catches: with core.hooksPath unset, a failing `git ls-files`
+    // must not fold into null ("nothing tracked, all fine").
+    const spawn = (_cmd, args) => {
+      if (args.includes('--get')) return { status: 1, stdout: '', stderr: '' };
+      if (args.includes('ls-files')) return { status: 128, stdout: '', stderr: 'fatal: boom' };
+      return { status: 0, stdout: '' };
+    };
+
+    const result = checkGitConfigDrift({ repoRoot: '/anywhere', env: NO_ENV }, { spawn });
+    expect(result?.findings.map((f) => `${f.kind}: ${f.detail}`)).toEqual([
+      'hooks-path-unset: die Husky-Hooks ließen sich nicht auflisten (git-error) — ob die Husky-Hooks laufen, ist unbekannt.',
+    ]);
   });
 
   it.skipIf(!GIT_AVAILABLE)('accepts a tracked .githooks/ declared via core.hooksPath (#1158)', () => {
@@ -397,8 +545,14 @@ describe('checkGitConfigDrift — against the repository that owns this file', (
     // A live-tree assertion, deliberately: this probe's whole purpose is to be
     // true of THIS checkout. A failure here is a real finding, not a test bug —
     // read the message and inspect `git config --local --list`.
+    // Hook installation is per-checkout host state, not repo config: CI and
+    // the pre-push gate's throwaway clone never run `husky`, so
+    // `hooks-path-unset` is expected there (#1692) — but only where git itself
+    // finds no hooksPath, so a false finding in an installed checkout stays red.
+    const unset = spawnSync('git', ['config', '--get', 'core.hooksPath'], { stdio: 'ignore' }).status === 1;
     const result = checkGitConfigDrift({ repoRoot: process.cwd() });
-    expect(result).toBeNull();
+    expect(result?.degraded).toBeUndefined();
+    expect(result?.findings.filter((f) => !(unset && f.kind === 'hooks-path-unset')) ?? []).toEqual([]);
   });
 });
 

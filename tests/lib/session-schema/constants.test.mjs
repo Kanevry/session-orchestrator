@@ -225,6 +225,7 @@ describe('OPTIONAL_FIELDS', () => {
       '_repair_source',
       'raw_session_id',
       'session_start_ref',
+      'session_work_trees',
     ]);
   });
 

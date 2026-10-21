@@ -8,8 +8,8 @@ set -euo pipefail
 #   - session_config  — reads Session Config from the project instruction file
 #                       (CLAUDE.md, or AGENTS.md alias on Codex CLI — see
 #                       skills/_shared/instruction-file-resolution.md)
-#   - session_metrics — reads last 5 REAL session metrics entries (#834:
-#                       abandoned phantom stubs are filtered out first)
+#   - session_metrics — reads last 5 canonical MEASURED session metrics entries
+#                       via the shared native reader (#1584)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -85,7 +85,7 @@ handle_tools_list() {
       },
       {
         "name": "session_metrics",
-        "description": "Reads the last 5 REAL session metrics entries from .orchestrator/metrics/sessions.jsonl (abandoned phantom stubs excluded)",
+        "description": "Reads the last 5 MEASURED session metrics entries from .orchestrator/metrics/sessions.jsonl (unmeasured records excluded)",
         "inputSchema": {"type": "object", "properties": {}, "required": []}
       }
     ]
@@ -171,88 +171,18 @@ tool_session_metrics() {
     return
   }
 
-  local metrics_file="$project_root/.orchestrator/metrics/sessions.jsonl"
-  if [[ ! -f "$metrics_file" ]]; then
-    metrics_file="$project_root/.claude/metrics/sessions.jsonl"
-  fi
-  if [[ ! -f "$metrics_file" ]]; then
-    respond "$id" "$(text_content "No metrics found (checked .orchestrator/metrics/ and .claude/metrics/)")"
+  # Delegate to the same reader as the native transport: canonical identity,
+  # measured-session definition, main-checkout ledger and token summary.
+  local server_dir output
+  server_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  if ! output=$(node --input-type=module -e '
+    import { pathToFileURL } from "node:url";
+    const { readSessionMetrics } = await import(pathToFileURL(process.argv[2]).href);
+    process.stdout.write(readSessionMetrics(process.argv[3]));
+  ' session-metrics-reader "$server_dir/mcp-server.mjs" "$project_root" </dev/null); then
+    respond_error "$id" -32603 "Unable to read session data"
     return
   fi
-
-  # Filter out phantom `status: 'abandoned'` stubs (#834, session-close-backfill
-  # — 0 waves, seconds of runtime) BEFORE taking the tail, so a recent phantom
-  # cannot displace real session records out of the last-5 window.
-  #
-  # `-R` (raw-input) + `fromjson?` parses each line individually and SKIPS
-  # unparseable ones instead of aborting the whole stream — plain
-  # `jq -c 'select(...)'` aborts at the FIRST malformed line (jq: parse error,
-  # exit 5), which is fatal here because sessions.jsonl is append-only from
-  # multiple writers and a torn write is exactly the case that matters. This
-  # mirrors the per-line try/catch behaviour of the .mjs path
-  # (scripts/lib/session-schema/filters.mjs).
-  local entries
-  entries=$(jq -R -c 'fromjson? | select(.status != "abandoned")' "$metrics_file" 2>/dev/null | tail -n 5) || true
-
-  # Report the stubs the filter above dropped (#1296) — counted over the WHOLE
-  # file, not the tail, with the same torn-line tolerance (`fromjson?`, plus
-  # `.status?` so a non-object line cannot abort the count either). Computed
-  # BEFORE the empty check: a stubs-only ledger is not an empty file.
-  local stub_count
-  stub_count=$(jq -R -n '[inputs | fromjson? | select(.status? == "abandoned")] | length' "$metrics_file" 2>/dev/null) || stub_count=0
-  [[ -z "$stub_count" ]] && stub_count=0
-
-  if [[ -z "$entries" ]]; then
-    if [[ "$stub_count" -gt 0 ]]; then
-      respond "$id" "$(text_content "No real sessions (abandoned stubs excluded: ${stub_count})")"
-    else
-      respond "$id" "$(text_content "No metrics found (file is empty)")"
-    fi
-    return
-  fi
-
-  # Derive a token summary from the most-recent record that carries token totals.
-  # Fields total_token_input / total_token_output / subagents_with_tokens are
-  # optional (null when no subagent token data was captured for that session).
-  # Low coverage (subagents_with_tokens == 0 while matched_records > 0) means
-  # the total is PARTIAL — do not read it as "free / zero cost".
-  local token_summary
-  # Use -Rrs (raw-input + slurp + raw-output) so jq receives the multi-line
-  # JSONL block as a single string, can split + parse each line independently,
-  # and outputs plain text (no surrounding JSON quotes on the result string).
-  # The plain -r flag alone does not work for multi-record JSONL piped as one
-  # string — it treats the entire input as a single JSON value.
-  token_summary=$(printf '%s' "$entries" | \
-    jq -Rrs '
-      # Parse each non-empty line as JSON; skip malformed lines.
-      [ split("\n")[] | select(length > 0) | (try fromjson catch null) | select(. != null) ]
-      | reverse
-      | ( map(select( (.total_token_input != null) or (.total_token_output != null) )) | first ) as $rec
-      | if $rec then
-          "tokens: \($rec.total_token_input // "?") in / \($rec.total_token_output // "?") out" +
-          " (coverage: \($rec.subagents_with_tokens // 0) subagents)" +
-          ( if ($rec.subagents_with_tokens // 0) == 0 then
-              " ⚠ partial — subagent token data missing; total is not a reliable cost estimate"
-            else "" end ) +
-          " [session: \($rec.session_id // "unknown")]"
-        else
-          "tokens: no token data in last 5 sessions (subagent telemetry not yet captured)"
-        end
-    ' 2>/dev/null) || token_summary=""
-
-  local output
-  entries="${entries}
-
-abandoned stubs excluded: ${stub_count}"
-  if [[ -n "$token_summary" ]]; then
-    output="${entries}
-
---- token summary ---
-${token_summary}"
-  else
-    output="$entries"
-  fi
-
   respond "$id" "$(text_content "$output")"
 }
 

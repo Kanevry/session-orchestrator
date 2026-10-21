@@ -11,7 +11,7 @@
  * Issue: #557
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { expectAllow } from '../_helpers/hook-decision.mjs';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
@@ -121,6 +121,14 @@ describe('pre-bash-staging-fence — gate ladder G1-G6', { timeout: 15000 }, () 
     'bash -c "git add foo.ts"',
     "sh -c 'git add foo.ts'",
     'xargs -I{} sh -c "git add foo.ts"',
+    // #1667: the shared lexer glued `(` onto the verb, so `(git` never resolved.
+    'true && (git add foo.ts)',
+    // #1670 item 6: the pre-filter looked only 120 characters past `git` and
+    // stopped at any `;`/`&`/`|`/newline, even quoted — each shape below went
+    // through UNFENCED (fail-open), though the tokenizer resolves it.
+    `git -C /${'a'.repeat(130)} -c user.name=x add foo.ts`,
+    "git -c 'alias.x=!a;b' add foo.ts",
+    'git \\\n  add foo.ts',
   ])('G3 match: %s writes a fence file', (command) => {
     const result = runHook({
       command,
@@ -265,6 +273,19 @@ describe('pre-bash-staging-fence — #1404 path operands instead of raw command'
     expect(entry.command_hash).toBe('9f7aa35a3c0dfc04');
   });
 
+  // #1671 item 5 — `git stage` is git's built-in synonym for `git add`; the
+  // pre-filter (`\badd\b`) and the subcommand check both missed it, so the
+  // staging went unrecorded and a sibling's collision check saw nothing.
+  it('git stage <path> is fenced like git add', () => {
+    const result = runHook({
+      command: 'git stage src/staged-via-synonym.mjs',
+      env: { SO_WAVE_AGENT: '1' },
+      projectDir,
+    });
+    expectAllow(result);
+    expect(onlyEntry().entry.paths).toEqual(['src/staged-via-synonym.mjs']);
+  });
+
   // Bug: a quoted operand containing a space was one blob of command text; a
   // regex reader split it on whitespace and matched neither half.
   it('a quoted operand with a space is recorded as one path', () => {
@@ -323,5 +344,149 @@ describe('fence root — written where the commit guard reads it (#1504 point 4)
     } finally {
       rmSync(repo, { recursive: true, force: true });
     }
+  });
+});
+
+// #1659 — the work-tree recorder rides on this hook. Named bug: the recorder
+// changing the hook's decision (or blocking) for a commit command. Same command,
+// recorder active (session id + real repo) vs inactive (no session id): the
+// stdout must be byte-identical, and only the active run writes a record.
+describe('pre-bash-staging-fence — work-tree recorder (#1659)', { timeout: 15000 }, () => {
+  it('leaves the decision byte-identical and records one work_tree event for a commit', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'staging-fence-wt-'));
+    try {
+      const git = (...args) => spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      git('init', '-q');
+      git('-c', 'user.name=T', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false',
+        'commit', '-q', '--allow-empty', '-m', 'base');
+      const spawnWith = (extra) => spawnSync('node', [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', cwd: repo, tool_input: { command: 'git commit -m x' }, ...extra }),
+        encoding: 'utf-8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir, SO_DISABLED_HOOKS: '', SO_HOOK_PROFILE: '', SO_WAVE_AGENT: '' },
+      });
+      const ledger = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+
+      const without = spawnWith({});
+      expect(existsSync(ledger)).toBe(false);
+      const withRec = spawnWith({ session_id: 'sess-1659' });
+
+      expectAllow(withRec);
+      expect(withRec.stdout).toBe(without.stdout);
+      const records = readFileSync(ledger, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(records.map((r) => [r.event, r.session_id])).toEqual([['orchestrator.session.work_tree', 'sess-1659']]);
+      expect(records[0].start_ref).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // #1669 — named bug: Codex sessions recorded no work tree. The payload below
+  // is the golden record a logging PreToolUse hook captured from codex-cli
+  // 0.160.1 on 2026-10-20 (only cwd and command swapped): `tool_name` is
+  // "Bash", `transcript_path` is null, and the hook runs under the Codex env —
+  // SO_PLATFORM=codex, no CLAUDE_PROJECT_DIR, ledger root from the process cwd.
+  it('records a work_tree event from a real Codex PreToolUse shell payload', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'staging-fence-wt-codex-'));
+    try {
+      const git = (...args) => spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      git('init', '-q');
+      git('-c', 'user.name=T', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false',
+        'commit', '-q', '--allow-empty', '-m', 'base');
+      const payload = {
+        session_id: '01a15812-1881-7722-b715-b5705009c4aa',
+        turn_id: '01a15812-18df-7cd2-88c8-54219a7d26f0',
+        transcript_path: null,
+        cwd: repo,
+        hook_event_name: 'PreToolUse',
+        model: 'gpt-6.1-sol',
+        permission_mode: 'bypassPermissions',
+        tool_name: 'Bash',
+        tool_input: { command: 'git commit -m x' },
+        tool_use_id: 'exec-49d9fef3-4baf-472f-bdaf-305ac6878d15',
+      };
+      const env = { ...process.env, SO_PLATFORM: 'codex', SO_DISABLED_HOOKS: '', SO_HOOK_PROFILE: '', SO_WAVE_AGENT: '' };
+      for (const key of ['CLAUDE_PROJECT_DIR', 'CODEX_PROJECT_DIR', 'CURSOR_PROJECT_DIR', 'PI_PROJECT_DIR']) delete env[key];
+      const r = spawnSync('node', [HOOK], { input: JSON.stringify(payload), encoding: 'utf-8', cwd: repo, env });
+
+      expectAllow(r);
+      const ledger = join(repo, '.orchestrator', 'metrics', 'events.jsonl');
+      const records = readFileSync(ledger, 'utf-8').trim().split('\n').map((l) => JSON.parse(l));
+      expect(records.map((rec) => [rec.event, rec.session_id])).toEqual([
+        ['orchestrator.session.work_tree', '01a15812-1881-7722-b715-b5705009c4aa'],
+      ]);
+      expect(records[0].start_ref).toMatch(/^[0-9a-f]{40}$/);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // Named bug: `pushd <other> && git commit` was attributed to the START tree,
+  // because only `cd` moved the tracked directory. A directory change the
+  // walker does not model must make the directory unknown → nothing recorded.
+  it('records nothing for a commit after pushd/builtin cd (directory unknown)', () => {
+    const repo = mkdtempSync(join(tmpdir(), 'staging-fence-wt-pushd-'));
+    try {
+      const git = (...args) => spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      git('init', '-q');
+      git('-c', 'user.name=T', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false',
+        'commit', '-q', '--allow-empty', '-m', 'base');
+      const ledger = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+      for (const command of ['pushd /nonexistent-1659 && git commit -m x', 'builtin cd /nonexistent-1659 && git commit -m x']) {
+        const r = spawnSync('node', [HOOK], {
+          input: JSON.stringify({ tool_name: 'Bash', cwd: repo, session_id: 'sess-1659', tool_input: { command } }),
+          encoding: 'utf-8',
+          env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir, SO_DISABLED_HOOKS: '', SO_HOOK_PROFILE: '', SO_WAVE_AGENT: '' },
+        });
+        expectAllow(r);
+      }
+      expect(existsSync(ledger)).toBe(false);
+    } finally {
+      rmSync(repo, { recursive: true, force: true });
+    }
+  });
+
+  // Named bugs (#1670): (a) item 6 — the pre-filter looked only 120 characters
+  // past `git`, so a long `git -C <repo> -c … commit` recorded nothing; (b) the
+  // hand paren strip turned `((git … commit))` — arithmetic, never a commit —
+  // into a recorded commit. The subshell/substitution rows pin that dropping
+  // that strip changed nothing for real commits: the shared tokenizer splits them.
+  describe('#1670 shapes (start dir holds the repo as ./sub)', () => {
+    let base;
+    beforeAll(() => {
+      base = mkdtempSync(join(tmpdir(), 'staging-fence-wt-1670-'));
+      const repo = join(base, 'sub');
+      mkdirSync(repo);
+      const git = (...args) => spawnSync('git', args, { cwd: repo, encoding: 'utf-8' });
+      git('init', '-q');
+      git('-c', 'user.name=T', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false',
+        'commit', '-q', '--allow-empty', '-m', 'base');
+    });
+    afterAll(() => rmSync(base, { recursive: true, force: true }));
+
+    // No `commit` word inside the flags: `commit.gpgsign` alone satisfied the
+    // old bounded regex and masked the bug this row exists for.
+    const flags = '-c user.name=T -c user.email=t@example.org -c gc.auto=0 -c core.quotepath=off'
+      + ' -c core.autocrlf=false -c core.fsync=none -c a.b=c';
+
+    it.each([
+      [`git -C sub ${flags} commit -m y`, 1],
+      ['(cd sub && git commit -m y)', 1],
+      ['true && (git -C sub commit -m y)', 1],
+      ['echo $(git -C sub commit -m y)', 1],
+      ['((git -C sub commit -m y))', 0],
+      // The hoisted body runs where the substitution stands (base, no repo),
+      // not after the trailing `cd sub` — recording `sub` would misattribute.
+      ['echo $(git commit -m y) && cd sub', 0],
+    ])('%s → %i work_tree record(s)', (command, expected) => {
+      const ledger = join(projectDir, '.orchestrator', 'metrics', 'events.jsonl');
+      const r = spawnSync('node', [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', cwd: base, session_id: 'sess-1670', tool_input: { command } }),
+        encoding: 'utf-8',
+        env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir, SO_DISABLED_HOOKS: '', SO_HOOK_PROFILE: '', SO_WAVE_AGENT: '' },
+      });
+      expectAllow(r);
+      const lines = existsSync(ledger) ? readFileSync(ledger, 'utf-8').trim().split('\n') : [];
+      expect(lines).toHaveLength(expected);
+    });
   });
 });

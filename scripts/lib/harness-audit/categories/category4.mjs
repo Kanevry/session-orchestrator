@@ -5,7 +5,7 @@
  *         vault-sync-validator, orphaned-session-lock
  *
  * Stdlib + intra-repo helpers only (node:fs, node:path, ./helpers.mjs,
- * ../../session-schema/filters.mjs, ../../sessions-canonical.mjs,
+ * ../../platform.mjs, ../../sessions-canonical.mjs,
  * ../../config/section-extractor.mjs).
  */
 
@@ -13,8 +13,8 @@ import { existsSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
-import { isRealSession } from '../../session-schema/filters.mjs';
-import { canonicalizeSessions } from '../../sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from '../../platform.mjs';
+import { canonicalizeSessions, isMeasuredSession } from '../../sessions-canonical.mjs';
 import { findSessionConfigBlock } from '../../config/section-extractor.mjs';
 
 // Default session-lock TTL in hours — mirrors DEFAULT_TTL_HOURS in
@@ -86,7 +86,7 @@ export function runCategory4(root) {
 
   // c4.2 sessions-jsonl-recent
   {
-    const p = join(root, '.orchestrator/metrics/sessions.jsonl');
+    const p = join(resolveEventsLedgerRoot(root), '.orchestrator/metrics/sessions.jsonl');
     const text = safeRead(p);
     const relPath = '.orchestrator/metrics/sessions.jsonl';
     if (!text) {
@@ -100,13 +100,13 @@ export function runCategory4(root) {
           { latestCompletedAt: null, ageInDays: null },
           'sessions.jsonl is empty'));
       } else {
-        // Most-recent REAL session by completed_at, over the CANONICAL record
+        // Most-recent MEASURED session by completed_at, over the CANONICAL record
         // set (#1209b) — canonicalizeSessions() already collapses duplicate
         // `session_id` lines to the newest occurrence, drops the systemic
         // double-stub twin, and removes any record a surviving one
         // `supersedes`. A raw backward-scan-to-last-real-LINE (the pre-#1209b
         // approach) cannot see this: a duplicate id whose LAST occurrence was
-        // retroactively corrected to `status: 'abandoned'` still let an
+        // retroactively corrected to a synthetic stub still let an
         // EARLIER, now-superseded raw line for the same identity count as
         // "recent". Max, not backward-scan, because canonical order is
         // first-appearance order per id, not completed_at order.
@@ -123,7 +123,7 @@ export function runCategory4(root) {
         let lastObj = null;
         let lastMs = -Infinity;
         for (const rec of records) {
-          if (!isRealSession(rec)) continue;
+          if (!isMeasuredSession(rec)) continue;
           const ms = Date.parse(rec?.completed_at);
           if (Number.isFinite(ms) && ms > lastMs) {
             lastMs = ms;

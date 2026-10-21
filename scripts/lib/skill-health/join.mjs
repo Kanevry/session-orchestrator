@@ -34,17 +34,17 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isRealSession } from '../session-schema/filters.mjs';
-import { readCanonicalSessions } from '../sessions-canonical.mjs';
+import { isMeasuredSession, readCanonicalSessions } from '../sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from '../platform.mjs';
 
 const DEFAULT_INVOCATIONS_PATH = path.resolve(
   fileURLToPath(import.meta.url),
   '../../../../.orchestrator/metrics/skill-invocations.jsonl',
 );
 
-const DEFAULT_SESSIONS_PATH = path.resolve(
-  fileURLToPath(import.meta.url),
-  '../../../../.orchestrator/metrics/sessions.jsonl',
+const DEFAULT_SESSIONS_PATH = path.join(
+  resolveEventsLedgerRoot(fileURLToPath(new URL('../../../', import.meta.url))),
+  '.orchestrator', 'metrics', 'sessions.jsonl',
 );
 
 /**
@@ -78,8 +78,8 @@ async function readJsonl(filePath) {
 /**
  * Builds a Map<session_id, { agentSummary, real }> from sessions.jsonl records.
  * Records without a session_id or with a non-object agent_summary are skipped.
- * `real` is false for phantom `status: 'abandoned'` stubs (#834) — callers use
- * it to route the join to the `abandoned` outcome bucket instead of counting
+ * `real` uses the shared measured-session definition (#1584) — callers use
+ * it to route unmeasured joins to the legacy `abandoned` outcome bucket instead of counting
  * a zero-signal join as `sessionsJoined`.
  *
  * Callers pass `sessionRecords` from `readCanonicalSessions()` (#1209b) — one
@@ -99,7 +99,7 @@ function buildSessionMap(sessionRecords) {
   for (const rec of sessionRecords) {
     if (typeof rec.session_id !== 'string' || !rec.session_id) continue;
     if (rec.agent_summary && typeof rec.agent_summary === 'object') {
-      map.set(rec.session_id, { agentSummary: rec.agent_summary, real: isRealSession(rec) });
+      map.set(rec.session_id, { agentSummary: rec.agent_summary, real: isMeasuredSession(rec) });
     }
   }
   return map;
@@ -186,9 +186,10 @@ export async function joinSkillOutcomes({
           record.outcomes.spiral += typeof summary.spiral === 'number' ? summary.spiral : 0;
           sessionsJoined += 1;
         } else if (entry && !entry.real) {
-          // Found in sessions.jsonl but a phantom abandoned stub (#834) — a
+          // Found in sessions.jsonl but unmeasured (#1584) — a
           // zero-signal join. Route to a distinct bucket instead of inflating
           // sessionsJoined or conflating with "not found at all" (unknown).
+          // Keep the legacy output keys; this bucket includes completed synthetic stubs.
           record.outcomes.abandoned += 1;
           sessionsAbandoned += 1;
         } else {

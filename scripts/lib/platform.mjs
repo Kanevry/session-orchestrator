@@ -148,10 +148,47 @@ function walkUpFor(startDir, marker, kind) {
  * 1. Trimmed allowlisted SO_PLATFORM explicit override
  * 2. Compatibility env vars: CLAUDE_PLUGIN_ROOT → "claude", CODEX_PLUGIN_ROOT → "codex",
  *    CURSOR_RULES_DIR → "cursor", PI_PLUGIN_ROOT → "pi"
- * 3. Filesystem walk from CWD looking for marker dirs:
+ * 3. Harness shell marker: CODEX_THREAD_ID → "codex", even when Claude Code
+ *    markers are present too
+ * 4. Filesystem walk from CWD looking for marker dirs:
  *    .claude-plugin → "claude", .codex-plugin → "codex", .cursor/rules → "cursor",
  *    .pi → "pi"
- * 4. Default: "claude"
+ * 5. Default: "claude"
+ *
+ * Step 3 exists because step 4 describes the REPO, not the harness: an agent
+ * Bash shell usually lacks the step-2 plugin-root vars, and a repo that ships
+ * both .claude-plugin and .codex-plugin resolved a Codex shell as "claude"
+ * (#1636). CODEX_THREAD_ID is set by Codex CLI for its exec_command shells
+ * (0.160.0 binary strings; ~/.codex/sessions transcripts of 2026-10 read it as
+ * their own thread id).
+ *
+ * Only Codex's marker decides, by design:
+ * - Claude Code's shell markers (CLAUDECODE, CLAUDE_CODE_ENTRYPOINT) do NOT:
+ *   a harness started by hand from a Claude Code shell (e.g. cursor-agent or pi)
+ *   inherits them and has no evidenced marker of its own, so it would read
+ *   "claude" where the walk answers "cursor"/"pi". Foreign dispatch is immune:
+ *   it passes only FOREIGN_ENV_ALLOWLIST (wave-executor/foreign-dispatch.mjs:119).
+ *   Claude hooks still decide at step 2 via CLAUDE_PLUGIN_ROOT.
+ * - CLAUDE_CODE_SESSION_ID never decides: every nested harness inherits it (the
+ *   #1636 trigger).
+ * - Cursor and pi have no evidenced shell marker (CURSOR_PLUGIN_ROOT is set by
+ *   our own hook bridge, not by Cursor) and stay on steps 2/4.
+ *
+ * Named ceiling (BV-004): the dominant nesting here is Codex launched FROM a
+ * Claude Code shell (lead/headless runs), so CODEX_THREAD_ID wins over Claude
+ * markers. The reverse nesting — Claude, Cursor or pi launched from a Codex
+ * shell — inherits CODEX_THREAD_ID and reads "codex". For Claude that means
+ * agent-shell scripts cannot close its .claude/STATE.md via
+ * markStateMdCompletedOnDisk (WARN "session-id is not this process's",
+ * state-md/frontmatter-mutators.mjs:249), the /close pre-check
+ * (scripts/close-precheck.mjs run without --state-dir, resolving via
+ * resolveStateDir in scripts/lib/session-end/close-precheck.mjs) reads
+ * .codex/STATE.md, answers `no-state` and stops with "No active session
+ * found" instead of running session-end, and scripts/tmux-layout.mjs watches
+ * the wrong state dir. Its hooks are
+ * unaffected (step 2, CLAUDE_PLUGIN_ROOT). Revisit on a measured
+ * mis-detection of that kind, or when a harness exports a marker naming itself
+ * as the innermost one.
  *
  * @returns {"claude"|"codex"|"cursor"|"pi"}
  */
@@ -163,6 +200,10 @@ export function detectPlatform() {
   if (_hasEnvValue('CODEX_PLUGIN_ROOT')) return 'codex';
   if (_hasEnvValue('CURSOR_RULES_DIR')) return 'cursor';
   if (_hasEnvValue('PI_PLUGIN_ROOT')) return 'pi';
+
+  // Step 3 — the one harness shell marker that may decide. See the JSDoc above
+  // for why Claude's own markers deliberately do not.
+  if (_hasEnvValue('CODEX_THREAD_ID')) return 'codex';
 
   const cwd = process.cwd();
 
@@ -421,14 +462,14 @@ function _isStrictlyInside(child, parent) {
  * would let any directory that lacks one become the deciding root.
  *
  * Ceilings (BV-004):
- *  - An agent of a session that ENTERED a worktree is still unenforced, as before
- *    #1492: its worktree sits under the launch checkout (measured: session
+ *  - An agent of a session that ENTERED a worktree lands, via this lift, on the
+ *    launch root, where that session has no manifest (measured: session
  *    0d5e4fc3, 2026-09-25 — cwd `<main>/.claude/worktrees/landing-produktschau`,
- *    agent worktreePath `<main>/.claude/worktrees/agent-acd5bfd0aa590e2e8`), so
- *    the lift lands on the launch root, where that session has no manifest.
- *    Fixing it needs a design (e.g. find the manifest bound to the payload
- *    `session_id` among the repo's worktrees). Revisit when an entered-worktree
- *    session dispatches `isolation: "worktree"` agents under a manifest.
+ *    agent worktreePath `<main>/.claude/worktrees/agent-acd5bfd0aa590e2e8`).
+ *    This function alone does not close that; `resolveScopeContext()` in
+ *    `scope-gate.mjs` does (#1504, d99e6be1): for an isolated agent without a
+ *    local manifest it searches the repo's registered worktrees
+ *    (`registeredWorktreeRoots`) for the manifest bound to the own session id.
  *  - Rung 2 is `cd`-relocatable: a session whose `cwd` sits in ANOTHER repo (a
  *    submodule, a nested or sibling checkout) is checked against that repo's
  *    manifest — usually none, so its gates allow — where the launch dir's
@@ -527,6 +568,51 @@ export function registeredWorktreeRoots(commonDir) {
   finally { if (dir) dir.closeSync(); }
 }
 
+/**
+ * The spot in ANOTHER working copy of the launch root's repository that matches
+ * the launch root — `<cwd's linked worktree>/<launchRoot relative to its own
+ * checkout>` — or `''` (#1605). The one candidate a lifecycle hook may move a
+ * session's own state (`session.lock`, `current-session.json`) to after
+ * `EnterWorktree`, where `$CLAUDE_PROJECT_DIR` still names the launch checkout.
+ *
+ * Non-empty ONLY when ALL hold:
+ *  - `cwd` is absolute and sits in a LINKED worktree whose `.git` pointer is
+ *    confirmed by git's back-pointer (`worktreeBinding`), so a copied or forged
+ *    `.git` file (`gitdir: <main>/.git/worktrees/<name>`) lends no authority;
+ *  - that worktree is not a harness subagent worktree (`agent-<hex>`, the shape
+ *    `resolveSessionRoot` lifts) and not the launch root's own checkout;
+ *  - its common dir is the launch checkout's (its own `.git` directory for a
+ *    main checkout, the verified binding for a linked one) — same repository;
+ *  - the mapped spot exists as a directory.
+ * A main checkout is never an answer: its `.git` is a directory, which
+ * `worktreeBinding` rejects. Spawn-free; never throws.
+ *
+ * Ceiling (BV-004): a launch in a subdirectory the worktree lacks (untracked in
+ * the launch checkout) answers `''`, so that session keeps the launch root.
+ * Revisit when a session launched in such a subdirectory reports #1605.
+ *
+ * @param {string|undefined} cwd       the hook payload's `cwd`
+ * @param {string} launchRoot          the launch root (`resolveProjectDir()`)
+ * @returns {string}  Absolute path, or `''`
+ */
+export function linkedWorktreeSpot(cwd, launchRoot) {
+  if (typeof cwd !== 'string' || cwd.trim() === '' || !path.isAbsolute(cwd)) return '';
+  if (typeof launchRoot !== 'string' || launchRoot === '') return '';
+  const cwdCopy = dotGitAncestor(cwd);
+  const launchCopy = dotGitAncestor(launchRoot);
+  if (!cwdCopy || !launchCopy || _liftHarnessAgentWorktree(cwdCopy) !== cwdCopy) return '';
+  try {
+    const target = worktreeBinding(cwdCopy);
+    if (_canonical(cwdCopy) === _canonical(launchCopy)) return '';
+    const launchDotGit = path.join(launchCopy, '.git');
+    const launchCommon = lstatSync(launchDotGit).isDirectory()
+      ? _canonical(launchDotGit) : worktreeBinding(launchCopy).commonDir;
+    if (target.commonDir !== launchCommon) return '';
+    const spot = path.join(cwdCopy, path.relative(launchCopy, launchRoot));
+    return statSync(spot).isDirectory() ? spot : '';
+  } catch { return ''; }
+}
+
 // ---------------------------------------------------------------------------
 // resolveEventsLedgerRoot (#1514 point 1)
 // ---------------------------------------------------------------------------
@@ -611,6 +697,18 @@ function _inMainCheckout(dir) {
  * `repoRoot` given: the same mapping applied to that root — for a caller that
  * holds a repo root and wants THE ledger of that repo.
  *
+ * Fallback to the unmapped root (decided on #1592, behaviour unchanged): it is
+ * the right answer for a plain checkout (it IS the main one), a non-git
+ * directory, a submodule and a bare repo's worktree (no main checkout exists).
+ * The one lossy case is a linked worktree whose git metadata is unreadable or
+ * stale (main checkout moved/deleted before `git worktree repair`): its ledger
+ * then stays local. Not fail-closed on purpose: this runs on every hook event,
+ * and every writer and reader resolves through this same function, so both
+ * sides still agree on one file — no split. Ceiling: such a worktree's records
+ * stay out of the main ledger until merged by hand. Revisit when a
+ * `.orchestrator/metrics/sessions.jsonl` inside a linked worktree is found
+ * growing after #1584.
+ *
  * @param {string} [repoRoot]  an explicit root to map (skips the env/cwd rungs)
  * @param {string} [cwd=process.cwd()]
  * @returns {string}  Absolute path
@@ -628,6 +726,60 @@ export function resolveEventsLedgerRoot(repoRoot, cwd = process.cwd()) {
   const ancestor = dotGitAncestor(path.resolve(cwd));
   const main = ancestor ? _mainCheckoutOfLinkedWorktree(ancestor) : '';
   return main || getProjectDir();
+}
+
+/**
+ * Why the linked worktree rooted at `root` has NO main checkout to map to, or
+ * `''` when it is no linked worktree or maps fine (#1666). A linked worktree
+ * is recognised by its `.git` FILE pointing at a gitdir that carries a
+ * `commondir` file — a submodule's gitdir has none, so a submodule stays `''`
+ * (it is its own repo, its root IS the right ledger root). Spawn-free, never
+ * throws.
+ *
+ * @param {string} root  a directory holding a `.git` entry
+ * @returns {string}
+ */
+function _unmappedLinkedWorktreeReason(root) {
+  if (_mainCheckoutOfLinkedWorktree(root)) return '';
+  try {
+    const dotGit = path.join(root, '.git');
+    if (!statSync(dotGit).isFile()) return '';
+    const match = /^gitdir:\s*(.+?)\s*$/m.exec(readFileSync(dotGit, 'utf8'));
+    if (!match) return '';
+    const gitDir = path.resolve(root, match[1]);
+    if (!existsSync(gitDir)) return `linked worktree git metadata unreadable (${gitDir} missing)`;
+    if (!existsSync(path.join(gitDir, 'commondir'))) return ''; // a submodule
+    return 'linked worktree whose common git dir is not named .git (separate-git-dir or bare repo): no main checkout';
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * {@link resolveEventsLedgerRoot} plus whether it reached a MAIN checkout (#1666).
+ *
+ * `resolved: false` only when the directory the resolver mapped sits in a
+ * LINKED git worktree that has no main checkout to map to (`git init
+ * --separate-git-dir`, a bare repo's worktree, stale worktree metadata) — the
+ * resolver then falls back to the worktree itself. A plain checkout, a
+ * submodule and a non-git directory report `resolved: true`: their root is the
+ * right ledger root. Readers keep using {@link resolveEventsLedgerRoot}; a
+ * WRITER of a tracked-by-accident ledger (the session-close backfill, #1660)
+ * consults this and refuses to write into the worktree.
+ *
+ * @param {string} [repoRoot]  same as {@link resolveEventsLedgerRoot}
+ * @param {string} [cwd=process.cwd()]
+ * @returns {{ root: string, resolved: boolean, reason: string }}
+ */
+export function explainEventsLedgerRoot(repoRoot, cwd = process.cwd()) {
+  const root = resolveEventsLedgerRoot(repoRoot, cwd);
+  let mapped;
+  if (typeof repoRoot === 'string' && repoRoot.trim() !== '') mapped = path.resolve(repoRoot);
+  else if (launchDirFromEnv() !== '') mapped = path.resolve(launchDirFromEnv());
+  else mapped = path.resolve(cwd);
+  const ancestor = dotGitAncestor(mapped);
+  const reason = ancestor ? _unmappedLinkedWorktreeReason(ancestor) : '';
+  return { root, resolved: reason === '', reason };
 }
 
 // ---------------------------------------------------------------------------

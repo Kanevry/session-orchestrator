@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
-  findClaudeEntry, makeRunner, missingRuntimeDeps, resolveClaudeConfigDir, updateClaude,
+  findClaudeEntry, makeRunner, missingRuntimeDeps, resolveClaudeConfigDir, updateClaude, updateCodex,
 } from '../../scripts/self-update.mjs';
 import { packedFilename } from '../../scripts/lib/plugin-package-stage.mjs';
 
@@ -149,6 +149,54 @@ describe('updateClaude source guard', () => {
     expect(calls).toContain('claude plugin marketplace update kanevry');
     expect(calls).toContain('claude plugin update session-orchestrator@kanevry');
     expect(calls.some((c) => c.startsWith('npm pack'))).toBe(false);
+  });
+});
+
+/**
+ * #1608: `codex plugin list` prints the id WITH its marketplace suffix, and the
+ * old `^session-orchestrator@kanevry\s+installed` check skipped the
+ * personal-marketplace `@local` install silently. Table shape copied from a
+ * real `codex plugin list` (2026-10-13); every path is tmp, `codex` is mocked.
+ */
+describe('updateCodex', () => {
+  let tmp;
+  beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'so-self-update-codex-')); });
+  afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+  // A run from a worktree has soRoot = the worktree while `@local` reads the
+  // main checkout; codex-install would still remove `@local` (#1608 review).
+  it.each([
+    ['this clone', 'clone'],
+    ['another checkout while running from a worktree', 'worktree'],
+  ])('reports the @local install reading %s instead of reinstalling, and ignores a longer name (#1608)', (_label, runFrom) => {
+    const clone = join(tmp, 'clone');
+    const link = join(tmp, 'plugins', 'session-orchestrator');
+    mkdirSync(clone);
+    mkdirSync(join(tmp, runFrom), { recursive: true });
+    mkdirSync(join(tmp, 'plugins'));
+    symlinkSync(clone, link, 'junction');
+    const calls = [];
+    const io = (row) => ({
+      run: (cmd, args) => {
+        calls.push(`${cmd} ${args.join(' ')}`);
+        return { ok: true, stdout: cmd === 'codex' ? [
+          'Marketplace `local`', join(tmp, '.agents', 'plugins', 'marketplace.json'), '',
+          'PLUGIN                      STATUS              VERSION                      SOURCE', row,
+        ].join('\n') : '{}' };
+      },
+      log: () => {},
+    });
+    const ctx = { soRoot: join(tmp, runFrom), hasCodex: () => true };
+
+    const r = updateCodex(io(`session-orchestrator@local  installed, enabled  5.12.0+codex.20261011193338  ${link}`),
+      { dryRun: false }, ctx);
+    expect(r.status).toBe('failed');
+    expect(r.detail).toContain('#1518');
+    expect(r.detail).toContain('node scripts/codex-install.mjs');
+    expect(calls.some((c) => c.includes('codex-install.mjs'))).toBe(false);
+
+    const decoy = updateCodex(io(`session-orchestrator-foo@x  installed, enabled  1.0.0  ${link}`), { dryRun: false }, ctx);
+    expect(decoy.status).toBe('skipped');
   });
 });
 

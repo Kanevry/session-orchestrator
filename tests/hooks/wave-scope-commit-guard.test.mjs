@@ -15,6 +15,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import { performance } from 'node:perf_hooks';
 import path from 'node:path';
@@ -615,5 +616,104 @@ describe('wave-scope-commit-guard — #553 G-L2 performance bound', { timeout: 3
     expect(result.code).toBe(1);
     // Performance bound: 500-file scan must complete in under 2 seconds.
     expect(elapsedMs).toBeLessThan(2000);
+  });
+});
+
+describe('wave-scope-commit-guard — #1634 session clock at the own lock root', { timeout: 15000 }, () => {
+  it("reads the session age beside this session's own lock after ExitWorktree, not at the main checkout", async () => {
+    // Bug caught: after /clear in wt1 + ExitWorktree the session commits in the
+    // main checkout while its lock lives in wt1 (`session_root`, #1605).
+    // `sessionAgeMs(root)` read the main checkout, found no clock and blocked an
+    // empty manifest older than the session as a `--union` defect instead of
+    // reporting it as a leftover.
+    const dir = await mkRepoTracked();
+    const wt1 = makeTmpDir('wave-commit-guard-wt1-');
+    const registryDir = makeTmpDir('wave-commit-guard-registry-');
+    tmpDirs.push(wt1, registryDir);
+    const sid = randomUUID();
+    await fs.mkdir(path.join(wt1, '.orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(wt1, '.orchestrator', 'session.lock'), JSON.stringify({
+      session_id: sid,
+      started_at: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
+      last_heartbeat: new Date().toISOString(),
+      mode: 'deep', pid: 999999, host: os.hostname(), ttl_hours: 4,
+    }));
+    await fs.mkdir(path.join(registryDir, 'active'), { recursive: true });
+    await fs.writeFile(
+      path.join(registryDir, 'active', `${sid}.json`),
+      JSON.stringify({ session_id: sid, session_root: wt1, work_root: dir }),
+    );
+    await writeScope(dir, JSON.stringify({ session_id: sid, wave: 2, role: 'Impl-Core', allowedPaths: [] }));
+    const past = new Date(Date.now() - 60 * 60 * 1000);
+    await fs.utimes(path.join(dir, '.claude', 'wave-scope.json'), past, past);
+    await stageFile(dir, 'README.md');
+    const result = await runHook(dir, {
+      SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: sid, SO_SESSION_REGISTRY_DIR: registryDir,
+    });
+    expect(result.stderr).toMatch(/predates the newest session start/);
+    expect(result.code).toBe(0);
+  });
+});
+
+describe('wave-scope-commit-guard — #1680 earlier waves of this session', { timeout: 15000 }, () => {
+  /**
+   * The coordinator commits after the LAST wave, when the active manifest names
+   * only that wave's paths. Sets up wave 2's own manifest, a wave-1 aggregate
+   * sidecar declaring `scripts/a.mjs`, and a session clock 10 minutes old.
+   */
+  async function setupWave2Commit(sidecarMtime) {
+    const dir = await mkRepoTracked();
+    await writeScope(dir, JSON.stringify({ wave: 2, role: 'Impl-Core', allowedPaths: ['src/b.mjs'] }));
+    const sidecar = path.join(dir, '.claude', 'filescopes', 'wave-1.scopes.json');
+    await fs.mkdir(path.dirname(sidecar), { recursive: true });
+    await fs.writeFile(sidecar, JSON.stringify([{ id: 'w1-1', files: ['scripts/a.mjs'] }]));
+    if (sidecarMtime) await fs.utimes(sidecar, sidecarMtime, sidecarMtime);
+    await fs.mkdir(path.join(dir, '.orchestrator'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'current-session.json'),
+      JSON.stringify({ timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString() }),
+    );
+    await stageFile(dir, 'src/b.mjs');
+    await stageFile(dir, 'scripts/a.mjs');
+    return dir;
+  }
+
+  it("lets the coordinator commit a file wave 1 of this session declared while wave 2's manifest is active", async () => {
+    // Bug caught: only the ACTIVE manifest counted, so every session-owned file
+    // of an earlier wave blocked the end-of-session commit.
+    const dir = await setupWave2Commit(null);
+    const result = await runHook(dir);
+    expect(result.stderr).toContain('wave-scope-commit-guard: scripts/a.mjs belongs to wave 1 of this session — allowed.');
+    expect(result.code).toBe(0);
+  });
+
+  it('still blocks when the wave-1 sidecar predates the session start — a leftover grants nothing', async () => {
+    // Bug caught: reading sidecars without the session-clock bound lets a stale
+    // filescopes/ from an earlier session silently widen this commit's scope.
+    const dir = await setupWave2Commit(new Date(Date.now() - 60 * 60 * 1000));
+    const result = await runHook(dir);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/outside wave-scope\.allowedPaths[\s\S]*- scripts\/a\.mjs/);
+  });
+
+  it.each([
+    ['sess-1681', 0],
+    ['sess-other', 1],
+  ])('after a compact, anchors the start on the first lock acquire of the own raw id (acquire by %s → exit %i)', async (acquiredBy, code) => {
+    // Bug caught (#1681): a compact rewrites the session clock, so the wave-1
+    // sidecar written before it predated the "start" and blocked again; and the
+    // anchor must be the OWN id's acquire, never any session's.
+    const dir = await setupWave2Commit(new Date(Date.now() - 30 * 60 * 1000));
+    await fs.mkdir(path.join(dir, '.orchestrator', 'metrics'), { recursive: true });
+    await fs.writeFile(
+      path.join(dir, '.orchestrator', 'metrics', 'events.jsonl'),
+      `${JSON.stringify({
+        timestamp: new Date(Date.now() - 45 * 60 * 1000).toISOString(),
+        event: 'orchestrator.session.lock.acquired',
+        session_id: acquiredBy,
+      })}\n`,
+    );
+    const result = await runHook(dir, { SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: 'sess-1681' });
+    expect(result.code).toBe(code);
   });
 });

@@ -141,10 +141,11 @@
  */
 
 import { lstatSync, readFileSync, unlinkSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 
 import { atomicWriteWithBackup } from '../io.mjs';
-import { readLearnings } from '../learnings/io.mjs';
+import { parseLearningsText } from '../learnings/io.mjs';
 import { listMachineGeneratedRules } from '../instruction-budget-guard.mjs';
 import { parseGlobsFrontmatter, ruleExpiryInstantMs } from '../rule-loader.mjs';
 import { markCandidateProcessed } from './idempotency.mjs';
@@ -377,12 +378,23 @@ export function parseConsolidatedRule(content) {
  * JSONL parser turns a partial read into a clean verdict, and this sweep
  * DELETES prose on the strength of that verdict.
  *
+ * Boundary (BV-004, #1685): the index reads ONLY the live store, never the
+ * sibling `learnings-inbox.jsonl` (#1516). An inbox-only id resolves as absent:
+ * consolidated pairs stay unresolved/kept, a single-entry file falls back to
+ * its own `expires-at`. Including the inbox would not be purely conservative —
+ * a resolvable past `expires_at` would let `rewriteContent` remove a pair that
+ * is kept today. Ceiling: an inbox record's later `expires_at` cannot delay a
+ * single-entry delete. Revisit trigger: the first real inbox host, or a
+ * generated rule citing an inbox-only learning-id.
+ *
  * @param {string} absPath
  * @returns {Promise<{expiryById: Map<string, string>, malformedLines: number}>}
  */
 async function loadExpiryIndex(absPath) {
   const expiryById = new Map();
-  const { entries, malformed } = await readLearnings(absPath);
+  // Unlike the shared tolerant reader, a sweep needs evidence that the store
+  // was actually read: an absent store must not become an empty expiry index.
+  const { entries, malformed } = parseLearningsText(await readFile(absPath, 'utf8'));
   for (const entry of entries) {
     const id = entry?.id;
     const expiresAt = entry?.expires_at;
@@ -582,11 +594,14 @@ export async function planRuleExpirySweep(opts = {}) {
 
   const nowMs = toEpochMs(now);
   const cutoffMs = nowMs - graceDays * MS_PER_DAY;
-  const { expiryById, malformedLines } = await loadExpiryIndex(
-    join(repoRoot, learningsPath ?? DEFAULT_LEARNINGS_PATH),
-  );
-
   const listed = listMachineGeneratedRules({ repoRoot });
+  // Ohne generierte Regeln gibt es nichts zu pruefen: der Bestand wird dann
+  // nicht gelesen, damit ein Repo ohne learnings.jsonl nicht mit ENOENT endet
+  // (Housekeeping Schritt 3 ruft die CLI repo-unabhaengig auf).
+  const { expiryById, malformedLines } =
+    listed.rules.length === 0
+      ? { expiryById: new Map(), malformedLines: 0 }
+      : await loadExpiryIndex(join(repoRoot, learningsPath ?? DEFAULT_LEARNINGS_PATH));
   const rulesDir = join(repoRoot, '.claude', 'rules');
   /** @type {Array<object>} */
   const plans = [];

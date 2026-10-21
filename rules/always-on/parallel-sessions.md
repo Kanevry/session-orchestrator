@@ -157,6 +157,8 @@ The git index and stash are **shared resources of the working copy**, not a priv
 
 **The only write channel a subagent has is editing files inside its own declared file scope.** All VCS operations — staging, committing, pushing — belong to the coordinator. This makes the PSA-004 guarantee structural rather than behavioural at the subagent layer: an agent that never touches the index cannot violate PSA-004 by construction.
 
+**Sole exception — worktree mode (`code-implementer` only).** It may stage its own files one by one (`git add <file>`) and `git commit` only when its prompt carries a line `WORKTREE-MODE: <absolute path> <branch>` AND `git rev-parse --show-toplevel` and `git branch --show-current` match that path and branch; otherwise the ban applies unchanged. A linked worktree has its own index, so the index race above does not exist there. The commit hook briefly adds an entry to the shared stash via lint-staged; the agent itself never runs `git stash`. Coordinator duty: never grant the coordinator's own worktree, never put two agents in one worktree. The wave-executor never sets the line. `git push`, merge, `git reset`, `git stash` and `git clean` stay banned in every mode, and the coordinator still publishes.
+
 **Anti-patterns:**
 - A subagent running `git add <its own files>` "to be helpful" before reporting done — even scoped to its own files, it races the coordinator's staging pass and any sibling's concurrent index write.
 - A subagent running `git stash` to "save progress" before switching tasks — report `blocked` and let the coordinator decide, never stash.
@@ -170,4 +172,4 @@ The git index and stash are **shared resources of the working copy**, not a priv
 - Using `git add .` in a shared workspace — you will commit another session's partial work.
 - Reverting "broken" commits without asking — another session may have intentionally pushed incremental progress.
 - Pausing at PSA-001 signals when your scope is unaffected — unnecessary interruptions slow the session.
-- A subagent staging or committing its own work (PSA-007).
+- A subagent staging or committing without a matching `WORKTREE-MODE` line, or as any agent other than `code-implementer` (PSA-007).

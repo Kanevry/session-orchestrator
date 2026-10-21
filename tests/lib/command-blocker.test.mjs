@@ -18,6 +18,7 @@ import {
   redirectSpanEnd,
   resolveSegmentVerb,
   splitChainSegments,
+  extractDeleteTargets,
 } from '@lib/command-blocker.mjs';
 
 describe('command-blocker.mjs (direct import)', () => {
@@ -1092,5 +1093,104 @@ describe('extractRedirectTargets — payload lanes that named no redirect (#1366
     expect(resolveSegmentVerb(tokenizeCommand('env -S foo'))).toEqual({
       verb: null, index: -1, payloads: ['foo'], wrapperArgs: [],
     });
+  });
+});
+
+// #1667 — the shared lexer treated `(`, `$(`, `)` and backticks as word
+// characters, so `true && (rm -rf X)` resolved the verb `(rm` and
+// extractDeleteTargets returned [] — the path-delete denylist never saw X.
+describe('tokenizeCommand nesting (#1667): verbs inside subshells and substitutions', () => {
+  it.each([
+    ['subshell after a chain operator', 'true && (rm -rf CLAUDE.md)'],
+    ['$( … ) command substitution', 'echo $(rm -rf CLAUDE.md)'],
+    ['backtick substitution', 'echo `rm -rf CLAUDE.md`'],
+    ['$( … ) inside double quotes', 'echo "$(rm -rf CLAUDE.md)"'],
+    ['brace group', '{ rm -rf CLAUDE.md; }'],
+    ['unterminated substitution is still hoisted', 'echo $(rm -rf CLAUDE.md'],
+  ])('extractDeleteTargets sees the target: %s', (_name, command) => {
+    expect(extractDeleteTargets(command)).toEqual([{ target: 'CLAUDE.md', verb: 'rm' }]);
+  });
+
+  it('keeps the outer operand whole: `rm -rf $(pwd)/x` stays ONE operand, the body is hoisted', () => {
+    expect(tokenizeCommand('rm -rf $(pwd)/x').map((t) => t.text)).toEqual(['rm', '-rf', '$(pwd)/x', ';', 'pwd']);
+  });
+
+  // A spread of the hoisted body (`push(...sink)`) threw RangeError above ~125k
+  // tokens, and the destructive guard's catch turned that into ALLOW.
+  it('tokenizes a substitution body of 200k tokens without throwing', () => {
+    const tokens = tokenizeCommand(`rm -rf CLAUDE.md; echo $(${'a '.repeat(200_000)})`);
+    expect(tokens.length).toBeGreaterThan(200_000);
+    expect(extractDeleteTargets(`rm -rf CLAUDE.md; echo $(${'a '.repeat(200_000)})`))
+      .toEqual([{ target: 'CLAUDE.md', verb: 'rm' }]);
+  });
+
+  // #1671 item 2 — `case`/`esac` were counted by position-blind rules: an
+  // ARGUMENT `esac` closed the case early and a `case` behind `then`/`do`/
+  // `else`/`{`/`!` was never opened. Either way the next pattern `)` closed the
+  // `$( … )`, so the rm operand became `CLAUDE.md)` (denylist glob miss) or
+  // left the rm statement entirely. Measured on the pre-fix lexer: every row
+  // below returned a wrong target set.
+  it.each([
+    ['argument `esac` inside an open case', 'x=$(case a in a) echo esac;; b) echo;; esac; rm -f CLAUDE.md)'],
+    ['argument `$(:) esac` is no clause end', 'x=$(case a in a) echo $(:) esac;; b) echo;; esac; rm -f CLAUDE.md)'],
+    ['`case` after `then`', 'x=$(if true; then case a in a) echo;; esac; fi; rm -f CLAUDE.md)'],
+    ['`case` after `do`', 'x=$(while true; do case a in a) echo;; esac; done; rm -f CLAUDE.md)'],
+    ['`case` after `else`', 'x=$(if false; then :; else case a in a) echo;; esac; fi; rm -f CLAUDE.md)'],
+    ['`case` after `{`', 'x=$({ case a in a) echo;; esac; }; rm -f CLAUDE.md)'],
+    ['`case` after `!`', 'x=$(! case a in a) echo;; esac; rm -f CLAUDE.md)'],
+  ])('case/esac in $( … ) keeps the rm operand whole (#1671): %s', (_name, command) => {
+    expect(extractDeleteTargets(command)).toEqual([{ target: 'CLAUDE.md', verb: 'rm' }]);
+  });
+
+  it.each([
+    ['argument `esac`', 'rm -f $(case a in a) echo esac;; b) echo;; esac) CLAUDE.md'],
+    ['`case` after `then`', 'rm -f $(if :; then case a in b) echo;; esac; fi) CLAUDE.md'],
+    // F2 (2026-10-19 review): a `case` directly after a pattern, and `coproc` /
+    // `time -p` / a function head `name()` as openers, were not seen, so the
+    // inner pattern `)` closed the `$( … )` and the operand was lost.
+    ['nested `case` after a pattern', 'rm -f $(case d in a) case b in b) :;; esac;; d) :;; esac) CLAUDE.md'],
+    ['`case` after `coproc`', 'rm -f $(coproc case a in a) :;; esac) CLAUDE.md'],
+    ['`case` after `time -p`', 'rm -f $(time -p case a in a) :;; esac) CLAUDE.md'],
+    ['`case` as a function body', 'rm -f $(g() case a in a) :;; esac) CLAUDE.md'],
+    ['`()` of a function head is no close', 'rm -f $(f() { :; }) CLAUDE.md'],
+  ])('case/esac in an rm operand substitution keeps the NEXT operand on rm (#1671): %s', (_name, command) => {
+    expect(extractDeleteTargets(command)).toEqual([
+      { target: null, verb: 'rm', unresolved: true, reason: 'variable/substitution' },
+      { target: 'CLAUDE.md', verb: 'rm' },
+    ]);
+  });
+
+  // F1 (2026-10-19 review): the first command of a case ARM, right after the
+  // pattern `)`, was not in command position — the segment head stayed `case`
+  // and the path-delete rule never saw the verb.
+  it.each([
+    ['bare pattern', 'case a in a) rm -f .orchestrator/metrics/events.jsonl;; esac', 'rm'],
+    ['leading-paren pattern', 'case a in (a) rm -f .orchestrator/metrics/events.jsonl;; esac', 'rm'],
+    ['second clause after `;;`', 'case a in b) :;; a) rm -f .orchestrator/metrics/events.jsonl;; esac', 'rm'],
+    ['inside $( … )', 'echo $(case a in a) rm -f .orchestrator/metrics/events.jsonl;; esac)', 'rm'],
+    ['no space after the pattern', 'case a in a)rm -f .orchestrator/metrics/events.jsonl;; esac', 'rm'],
+    ['quoted pattern', 'case a in "a") rm -f .orchestrator/metrics/events.jsonl;; esac', 'rm'],
+    ['subshell in the arm', 'case a in a) (rm -f .orchestrator/metrics/events.jsonl);; esac', 'rm'],
+    ['`unlink` verb', 'case a in a) unlink .orchestrator/metrics/events.jsonl;; esac', 'unlink'],
+  ])('a delete verb heading a case arm is seen: %s', (_name, command, verb) => {
+    expect(extractDeleteTargets(command)).toEqual([{ target: '.orchestrator/metrics/events.jsonl', verb }]);
+  });
+
+  // Refute review of 8f323ad8 (HIGH): the mid-word `()` rule read an ESCAPED
+  // `\(` as a function head, so `$(echo \()` never closed and every following
+  // command vanished into the substitution — a full destructive-guard bypass.
+  it.each([
+    ['escaped paren alone', 'echo "$(echo \\()"; rm -f CLAUDE.md'],
+    ['escaped paren mid-word', 'x="$(echo a\\()" && rm -f CLAUDE.md'],
+    ['unquoted substitution', 'echo $(echo \\(); rm -f CLAUDE.md'],
+  ])('an escaped `(` does not keep $( … ) open: %s', (_name, command) => {
+    expect(extractDeleteTargets(command)).toEqual([{ target: 'CLAUDE.md', verb: 'rm' }]);
+  });
+
+  it('a `mv` heading a case arm reports both operands', () => {
+    expect(extractDeleteTargets('case a in a) mv .orchestrator/metrics/events.jsonl /tmp/x;; esac')).toEqual([
+      { target: '.orchestrator/metrics/events.jsonl', verb: 'mv' },
+      { target: '/tmp/x', verb: 'mv' },
+    ]);
   });
 });

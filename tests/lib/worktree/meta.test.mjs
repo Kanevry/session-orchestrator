@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join, basename } from 'node:path';
 
 // zx side-effect mock — constants.mjs sets $.verbose/$.quiet at import time.
-vi.mock('zx', () => ({
+vi.mock('@lib/zx.mjs', () => ({
   $: Object.assign(
     vi.fn().mockImplementation(() => Promise.resolve({ stdout: '' })),
     { verbose: false, quiet: true }

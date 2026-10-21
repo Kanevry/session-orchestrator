@@ -88,11 +88,11 @@
  * ## Named ceilings (BV-004)
  *
  *   - A create call reached only through a command substitution
- *     (`x=$(glab issue create …)`) is NOT matched: the substitution body never
- *     becomes a segment of its own. Unchanged since before #1106. Likewise a
- *     create carried as an interpreter PAYLOAD (`bash -c 'glab issue create'`)
- *     — `resolveSegmentVerb` reports the payload string, but this matcher does
- *     not recurse into it. Revisit either if the shape shows up in the overflow
+ *     (`x=$(glab issue create …)`) IS matched since #1667: the shared lexer
+ *     hoists the substitution body into a segment of its own. A create carried
+ *     as an interpreter PAYLOAD (`bash -c 'glab issue create'`) is still NOT
+ *     matched — `resolveSegmentVerb` reports the payload string, but this
+ *     matcher does not recurse into it. Revisit if the shape shows up in the overflow
  *     triage of a per-session counter file
  *     (`.orchestrator/runtime/issue-budget/<hash>.json`, #1141) or in a
  *     transcript census of real create calls.
@@ -115,11 +115,10 @@
  *     `hooks/pre-bash-issue-budget.mjs` treats it exactly like a loop body —
  *     deny in `strict`, report the undercount in `warn`. The remaining ceiling
  *     is the option grammar, named at {@link xargsDrivenRemainder}.
- *   - A paren glued to the verb (`(glab issue create …)`) is not reached: it
- *     lexes as the single word `(glab`. This is `command-blocker.mjs`'s own
- *     named ceiling on `COMMAND_POSITION_KEYWORDS` (#1145), inherited here
- *     rather than re-patched — peeling the paren belongs in the lexer, whose
- *     tokens five consumers read positionally.
+ *   - A subshell paren before the verb (`(glab issue create …)`) IS reached
+ *     since #1667: the lexer turns an unquoted word-initial `(` and its `)`
+ *     into statement breaks — the fix landed in the lexer, as this ceiling
+ *     asked, not as a re-patch here.
  *   - {@link matchesBypass} still compares from token index 0, NOT from the
  *     resolved verb index. So a wrapped create (`nohup gh pr create --dry-run`)
  *     is gated even when `gh pr create --dry-run` is a bypass entry. That is
@@ -514,9 +513,10 @@ const CAT_SUBST_RE = /^\$\(cat\s+(\S+)\)$/;
 /**
  * Read the value of a flag in `names` (`--x v`, `--x=v`, `-x v`). When the flag
  * repeats, the LAST value wins — the pflag semantics `gh`/`glab` apply.
- * An UNQUOTED `$(cat p)` is split by the lexer into `$(cat` + `p)`; that pair is
- * rejoined so the substitution survives, in both the `--x $(cat p)` and the
- * `--x=$(cat p)` spelling.
+ * An UNQUOTED `$(cat p)` reaches this function as ONE token: since #1667 the
+ * lexer keeps a substitution's raw text in the outer word (and hoists its body
+ * as a statement of its own), so `--x $(cat p)` and `--x=$(cat p)` need no
+ * rejoining.
  *
  * @param {Array<{ text: string, quoted: boolean }>} tokens
  * @param {string[]} names
@@ -536,10 +536,6 @@ function flagValue(tokens, names) {
         value = text.slice(name.length + 1);
       } else {
         continue;
-      }
-      if (value === '$(cat' && typeof tokens[i + 1]?.text === 'string') {
-        value = `$(cat ${tokens[i + 1].text}`;
-        i += 1;
       }
       found = value;
       break;

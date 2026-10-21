@@ -35,6 +35,8 @@ import {
   readCurrentStatus,
   readCurrentStatusEntries,
   rebuildCurrentFromLedger,
+  setLifecycle,
+  LIFECYCLE_RETENTION_MS,
 } from '@lib/agent-status.mjs';
 
 // Absolute path to the REAL production module — the cross-process race test
@@ -677,5 +679,61 @@ describe('agent-status — per-agent fold and four sources (#1342 fix-pass)', ()
     expect(rebuilt.degraded.unboundRecords).toBe(1);
     expect(rebuilt.degraded.partialLines).toBe(0);
     expect(rebuilt.entries.E.text).toBe('last');
+  });
+});
+
+describe('agent-status — lifecycle retention trim (#1633)', () => {
+  it('trims expired lifecycle entries from the map without changing what the reader returns', async () => {
+    // Bug: the map was never trimmed (lock wait grows with its size), and trimming the map
+    // alone flips every trimmed id that is still in the ledger tail to `rebuilt-log`.
+    const now = Date.parse('2026-10-16T12:00:00.000Z');
+    const at = (ageMs) => new Date(now - ageMs).toISOString();
+    const rec = (agentId, status, ageMs) => ({ agentId, kind: 'lifecycle', status, session_id: 's1', ts: at(ageMs) });
+    const old = LIFECYCLE_RETENTION_MS + 60_000;
+    const records = [
+      rec('expired-done', 'done', old),
+      rec('expired-running', 'running', old + 1),
+      rec('fresh-done', 'done', 60_000),
+      rec('fresh-running', 'running', 30_000),
+      { agentId: 'w1', kind: 'status', text: 'old wave status', ts: at(old) },
+    ];
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    writeFileSync(join(repoRoot, JSONL), records.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    writeFileSync(join(repoRoot, CURRENT), JSON.stringify(Object.fromEntries(records.map((r) => [r.agentId, r]))));
+    const before = readCurrentStatus({ repoRoot, now });
+
+    const pushed = await setLifecycle('new', { status: 'running', sessionId: 's1' }, { repoRoot, now });
+    expect(pushed).toEqual({ ok: true });
+
+    const map = JSON.parse(readFileSync(join(repoRoot, CURRENT), 'utf8'));
+    expect(Object.keys(map).sort()).toEqual(['fresh-done', 'fresh-running', 'new', 'w1']);
+    const after = readCurrentStatus({ repoRoot, now });
+    const { new: added, ...rest } = after.entries;
+    expect(added).toMatchObject({ status: 'running' });
+    expect({ ...rest }).toEqual({ ...before.entries });
+    expect(after.source).toBe(before.source);
+    expect(after.source).toBe('live-map');
+    expect(after.degraded).toEqual(before.degraded);
+  });
+
+  // Bug (review of 378f622b): the provenance checks read the TRIMMED ledger, so after 14 idle
+  // days a corrupt cache read as a checked live map, and a ledger behind the cache went unflagged.
+  it.each([
+    ['a corrupt cache with an expired-only ledger', 'corrupt', 'cache-unreadable', 'rebuilt-log'],
+    ['a ledger behind the cache whose records are all expired', 'behind', 'ledger-behind-cache', 'live-map'],
+  ])('keeps flagging %s', (_name, shape, reason, source) => {
+    const now = Date.parse('2026-10-16T12:00:00.000Z');
+    const oldRec = { agentId: 'a1', kind: 'lifecycle', status: 'done', session_id: 's1', ts: new Date(now - LIFECYCLE_RETENTION_MS - 60_000).toISOString() };
+    mkdirSync(join(repoRoot, RUNTIME), { recursive: true });
+    writeFileSync(join(repoRoot, JSONL), JSON.stringify(oldRec) + '\n');
+    if (shape === 'corrupt') {
+      writeFileSync(join(repoRoot, CURRENT), '{not json');
+    } else {
+      const fresh = { agentId: 'w1', kind: 'status', text: 'wave 1', ts: new Date(now - 60_000).toISOString() };
+      writeFileSync(join(repoRoot, CURRENT), JSON.stringify({ a1: oldRec, w1: fresh }));
+    }
+    const read = readCurrentStatus({ repoRoot, now });
+    expect(read.source).toBe(source);
+    expect(JSON.stringify(read.degraded)).toContain(reason);
   });
 });

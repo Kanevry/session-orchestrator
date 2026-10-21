@@ -38,6 +38,7 @@ function makeSession({
 } = {}) {
   const s = {
     mode,
+    total_waves: 1, // Legacy records prove real work without the renamed session_type.
     completion_rate: completion,
     carryover_ratio: carryover,
   };

@@ -103,8 +103,6 @@ CI runs on the Hetzner Linux Docker autoscaler (since 2026-05-20) — an ephemer
 
 What this is **NOT**: a test-quality bug. Do not retry, mark `.skip`, or widen the global timeout to "stabilise" — that masks real perf regressions where they should be loudest. (The `.skipIf(isRoot)` guard above is the opposite case — a documented, root-specific carve-out, not a stabilise-the-flake hack.)
 
-Historical note: the original cautionary tale (pipeline #3940, 2026-05-14 — 7 `testTimeout` fails under 14 co-resident Claude processes on the old **shared** Mac runner) is **superseded**: `pgrep claude` has no meaning on an ephemeral single-tenant container. What survives the migration is the mitigation ladder above, not the process count.
-
 ## Async & Timeout Patterns
 - **WARNING:** Fake timers leak between tests if not restored. A leaked fake timer can cause unrelated tests to hang or timeout. Always restore in `afterEach`.
 - Use `vi.useFakeTimers()` for time-dependent tests. Always call `vi.useRealTimers()` in `afterEach`.
@@ -152,13 +150,6 @@ Historical note: the original cautionary tale (pipeline #3940, 2026-05-14 — 7 
   ```
 - For streaming: mock `streamText` to return an async iterable with predetermined chunks.
 - Never call real LLM APIs in unit or integration tests — cost, latency, and non-determinism.
-
-### Agent Test Patterns
-- **Action tests**: Call `action.validate()` and `action.handler()` directly with mock context. Assert return shape and side effects.
-- **Provider tests**: Call `provider.get()` with known state. Assert returned context matches expectations.
-- **Evaluator tests**: Feed `evaluator.evaluate()` a canned response. Assert memory/state updates.
-- **Plugin integration**: Register plugin, trigger a full agent loop with mocked model. Assert action selection and execution order.
-- Isolate each component — never test actions through the full agent runtime in unit tests.
 
 ### Deterministic Testing
 - Never set `temperature` / `top_p` / `top_k` — removed on current Claude models (HTTP 400). Determinism comes from a mocked client in unit tests, and from fixed prompts, `strict: true` tools and structured outputs (`output_config.format`) where a real call is unavoidable.
@@ -373,19 +364,10 @@ A security test that asserts a permissive/success outcome for clearly-malicious 
 The "don't pin counts to catalog data" guidance above applies to **static reference data** (product IDs, enum display names, fixed category lists). **Dynamic artifact counts** — generated files, indexed schemas, exported skills, registered handlers — require a different pattern.
 
 #### The Problem
-Tests that assert exact counts of growing artifacts drift predictably. S55 (commit `0a95cc6`) bumped a BATS skill count 28→29. S68 (issue #185, commit `6d9d6d2`) bumped the same test 29→30 then refactored to floor/ceiling. S73 hit the pattern again in zod-schemas (`exports.test.ts` 8→9, `index.test.ts` +3/+3). Each occurrence cost a session-cycle to diagnose and patch.
+Exact counts drifted 3× (S55 `0a95cc6`, S68 #185 `6d9d6d2`, S73).
 
 #### The Rule
 For tests asserting the count of a dynamically-grown artifact set, use floor/ceiling range assertions instead of exact equality.
-
-```bash
-# BAD — pinned count, drifts on every catalog growth
-assert_equal "$count" 29
-
-# GOOD — floor/ceiling, allows growth, still catches accidental loops
-assert_greater_or_equal "$count" 20
-assert_less_or_equal    "$count" 100
-```
 
 ```typescript
 // BAD
@@ -406,12 +388,6 @@ expect(exportCount).toBeLessThanOrEqual(500);
 #### Floor/Ceiling Selection
 - **Floor:** ~60-80% of current value if stable, or current value if growth is volatile
 - **Ceiling:** 2-5× the current value depending on growth velocity
-
-#### Carve-Out See Also
-- S55 commit `0a95cc6` (1st occurrence — generate-tool-registry skill count drift)
-- S68 #185 commit `6d9d6d2` (2nd — same test, refactored to floor/ceiling)
-- S73 (3rd — zod-schemas exports.test.ts + index.test.ts)
-- A `count-drift-recurrence` learning in `.orchestrator/metrics/learnings.jsonl` was cited here until 2026-08-14, when `grep -c` on the store returned 0 — the record was gone. The pointer was removed rather than left reading as live provenance; the three occurrences above carry the evidence on their own. (`check-learning-provenance.mjs` audits structured `## Provenance` blocks only, so it never saw this one.)
 
 ### Lint-Enforceable Test Bans (recommendation)
 

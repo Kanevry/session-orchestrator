@@ -441,7 +441,9 @@ async function runSweep(args) {
   } else {
     process.stdout.write(
       `sweep-expired-learnings: scanned=${summary.scanned} kept=${summary.kept} ` +
-        `archived=${summary.archived} dry_run=${summary.dryRun} archive=${summary.archivePath}\n`
+        `archived=${summary.archived} dry_run=${summary.dryRun} archive=${summary.archivePath}` +
+        // An inbox-role apply (#1516) wrote nothing; say so, as --json does.
+        `${summary.skipped ? ` skipped=${summary.skipped}` : ''}\n`
     );
   }
 }
@@ -820,7 +822,9 @@ async function runPrune(args) {
   // hand-assembled `--entries` sidecar) never wrote anything, so it must not
   // report a completed run either. Best-effort — never changes this
   // command's exit code or stdout contract.
-  if (!args.dryRun) {
+  // An inbox-role apply (#1516) returns `skipped`: it archived nothing and did
+  // not rewrite the store, so there is no completed store write to report.
+  if (!args.dryRun && !result.skipped) {
     await emitEvolveCompleted({
       repoRoot: args.repoRoot,
       appended: args.appended,
@@ -841,7 +845,7 @@ async function runPrune(args) {
     process.stdout.write(
       `sweep-expired-learnings: prune scanned=${summary.scanned} kept=${summary.kept} ` +
         `archived=${summary.archived} by_reason=${byReason} dry_run=${summary.dryRun} ` +
-        `archive=${summary.archivePath}\n`
+        `archive=${summary.archivePath}${summary.skipped ? ` skipped=${summary.skipped}` : ''}\n`
     );
   }
 }
@@ -916,7 +920,9 @@ async function runDropMalformed(args) {
     process.exit(2);
   }
 
-  if (!args.dryRun) await emitMalformedDropped(args, result);
+  // An inbox-role host (#1516) returns the dry-run probe with `skipped` set:
+  // nothing was dropped, so no event may claim it was.
+  if (!args.dryRun && !result.skipped) await emitMalformedDropped(args, result);
 
   const summary = {
     file: args.file,

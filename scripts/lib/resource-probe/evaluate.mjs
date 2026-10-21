@@ -26,8 +26,16 @@
  *      number"), one noting "five consecutive sessions wrongly capped at 2".
  *   2. `concurrent-sessions-warn` is named for SESSIONS but was compared against
  *      `claude_processes_count`. Measured ratio processes:sessions = 6.0. That
- *      threshold fired on 93.6% of starts; against the real peer count it fires
- *      on 4.2%.
+ *      threshold fired on 93.6% of starts; against the real peer count it fired
+ *      on 4.2% (2026-08-21). That rate did not hold: re-measured 2026-10-17 over
+ *      starts since 2026-08-24, `peer_count >= 5` fires on 880/1305 = 67.4%
+ *      (M4) and 255/991 = 25.7% (M5) — #1650. The session-start banner's WARN
+ *      icon was re-aimed to a start wave (`hooks/on-session-start.mjs`,
+ *      START_WAVE_*). #1654 finished the re-aim here: a state present on two
+ *      thirds of M4 starts is a standing condition, and HR-104 forbids letting
+ *      one count as a second opinion. concurrencySignal() below therefore still
+ *      REPORTS the peer count (an `info:` reason) but no longer contributes a
+ *      soft signal — neither the registry branch nor the process fallback.
  *   3. Any ONE soft signal capped agents-per-wave at 2 outright, so the union of
  *      three noisy axes decided wave size on its noisiest member.
  *
@@ -51,6 +59,8 @@
  *     when present. `claude_processes_count` survives only as a fallback, scaled
  *     by the measured PROCESSES_PER_SESSION factor so the configured threshold
  *     keeps meaning "sessions" on hosts where the registry is unavailable.
+ *     Since #1654 the concurrency axis is REPORT-ONLY: it never enters
+ *     `signals.soft`, so it can neither cap alone nor pair into a cap.
  *   - TWO-SIGNAL RULE: a single soft signal is informational — reported in
  *     `reasons`, capping nothing. A cap needs two INDEPENDENT soft signals
  *     agreeing, or one hard signal. Simulated on the same 1477-sample corpus:
@@ -219,12 +229,24 @@ function memorySignal(snapshot, ramMin, ramCrit) {
 }
 
 /**
- * Resolve the concurrency signal, preferring the live session registry count
+ * Resolve the concurrency report, preferring the live session registry count
  * over the raw process count. Returns `null` when neither is available.
+ *
+ * REPORT-ONLY since #1654: `soft` is always `false`. The peer count is a
+ * standing condition, not live load — `peer_count >= 5` held on 880/1305 =
+ * 67.4% of M4 and 255/991 = 25.7% of M5 starts since 2026-08-24 (#1650,
+ * re-measured 2026-10-17: 78/115 = 67.8% M4). HR-104: a usually-present signal
+ * reports and NEVER counts as a second opinion, so letting it pair with one
+ * real soft signal would restore the one-signal cap under a two-signal name
+ * (the same defect zombies had). The rare, decision-changing concurrency signal
+ * is the start wave in `hooks/on-session-start.mjs` (START_WAVE_*), which is
+ * not a snapshot field. The process-count fallback measures the same standing
+ * state and is report-only for the same reason.
  *
  * @param {object} snapshot
  * @param {number} concWarn — configured threshold, denominated in SESSIONS
- * @returns {{soft: boolean, reason: string|null}|null}
+ * @returns {{soft: false, reason: string|null}|null} — `reason` set when the
+ *   threshold is reached (caller reports it as `info:`); never a soft signal.
  */
 function concurrencySignal(snapshot, concWarn) {
   const { peer_sessions_count, claude_processes_count } = snapshot;
@@ -234,7 +256,7 @@ function concurrencySignal(snapshot, concWarn) {
   if (hasPeers) {
     if (peer_sessions_count >= concWarn) {
       return {
-        soft: true,
+        soft: false,
         reason: `${peer_sessions_count} peer session(s) live in the registry (threshold: ${concWarn}) — consider sequencing this session after others finish.`,
       };
     }
@@ -252,7 +274,7 @@ function concurrencySignal(snapshot, concWarn) {
   const procThreshold = concWarn * PROCESSES_PER_SESSION;
   if (claude_processes_count >= procThreshold) {
     return {
-      soft: true,
+      soft: false,
       reason: `${claude_processes_count} Claude processes running (fallback threshold ${procThreshold} = ${concWarn} sessions × ${PROCESSES_PER_SESSION} processes/session; the live session registry was unavailable).`,
     };
   }
@@ -339,10 +361,11 @@ export function evaluate(snapshot, thresholds, options = {}) {
   }
 
   // --- Concurrency axis: registry sessions, not raw process count -----------
+  // REPORT-ONLY (#1654): a standing condition on 67.4% of M4 starts must not
+  // become the second signal that caps a wave (HR-104, see concurrencySignal).
   const conc = concurrencySignal(snapshot, concWarn);
-  if (conc && conc.soft) {
-    softSignals.push('concurrency');
-    reasons.push(conc.reason);
+  if (conc && conc.reason) {
+    reasons.push(`info: ${conc.reason} Not counted as a capacity signal (standing condition, #1654).`);
   }
 
   // --- Swap: only meaningful when the memory signal is NOT healthy ----------

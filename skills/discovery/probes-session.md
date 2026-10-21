@@ -485,6 +485,9 @@ const files = readdirSync(dir).filter(f => f.endsWith('.md'));
 let hasErrors = false;
 for (const f of files) {
   const result = validateAgentFile(join(dir, f));
+  for (const w of result.warnings ?? []) {
+    console.log('WARN: ' + f + ' - ' + w.path + ' (' + w.rule + '): ' + w.message);
+  }
   if (!result.ok) {
     hasErrors = true;
     console.log('INVALID: ' + f);

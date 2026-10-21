@@ -8,7 +8,8 @@
  *   1. WHICH session? — resolveSession() implements the operator-approved
  *      cascade (Decision #2, revised #822): explicit id > newest record (source
  *      order) that is either status:'completed' or non-abandoned with completed
- *      work. Abandoned records are ALWAYS skipped.
+ *      work. The cascade uses only measured records and requires completion
+ *      evidence; abandoned records remain ineligible for a completed-session eval.
  *
  *   2. WHOSE events? — quality_gate events in events.jsonl do not RELIABLY
  *      carry a session_id (measured 2026-10-05, this repo's events.jsonl:
@@ -25,6 +26,8 @@
  * Pure module: no clock reads, no I/O — it operates on already-parsed record
  * arrays. Determinism is load-bearing for the CLI `--verify` re-evaluation path.
  */
+
+import { isMeasuredSession } from '../sessions-canonical.mjs';
 
 /** Thrown by resolveSession when no eligible session can be selected. */
 export class SessionResolutionError extends Error {
@@ -81,6 +84,7 @@ export function resolveSession(records, sessionId) {
   for (let i = records.length - 1; i >= 0; i--) {
     const r = records[i];
     if (!isPlainObject(r)) continue;
+    if (!isMeasuredSession(r)) continue;
     if (r.status === 'abandoned') continue;
     if (r.status === 'completed') {
       return { record: r, resolvedVia: 'cascade-completed' };
@@ -96,7 +100,7 @@ export function resolveSession(records, sessionId) {
   }
 
   throw new SessionResolutionError(
-    'no completed session found (all records abandoned or without evidence of completed work)',
+    'no completed session found (all records unmeasured or without evidence of completed work)',
   );
 }
 

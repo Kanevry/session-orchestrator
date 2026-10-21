@@ -77,8 +77,9 @@ Read and parse Session Config per `skills/_shared/config-reading.md`. Store resu
 
 ```javascript
 try {
+  const { pathToFileURL } = await import('node:url');
   const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
-    await import('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs');
+    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
   const nodePath = await import('node:path');
   await appendSkillInvocation(nodePath.join(process.cwd(), DEFAULT_SKILL_INVOCATIONS_PATH), {
     timestamp: new Date().toISOString(),
@@ -349,6 +350,8 @@ Run immediately before Phase 8 so the Mode-Selector recommendation can influence
 Invokes `buildLiveSignals` (single SSOT for the signals shape) then `selectMode(signals)` (pure function, never throws). Renders a `📊` banner when confidence ≥ 0.5, an informational banner when < 0.5, and no banner when confidence = 0.0. High-confidence output pre-selects an AUQ option in Phase 8 — see Step 4 AUQ Option Ordering Protocol. After Phase 8 collects the user's mode choice, writes a `mode-selector-accuracy` learning to `learnings.jsonl` (Step 6, Phase B-4). All failure paths are graceful no-ops logged to `sweep.log`. See `phase-7-5-mode-selector.md` § Context-Pressure Annotation (#332) for context-pressure handling.
 
 **See `phase-7-5-mode-selector.md` for full details.**
+
+If session-start aborts without work scope (no candidates, nothing to do), send the one report required by `skills/_shared/fleet-protocol.md` § Rücklauf an den Navigator (Pflicht) in this turn (wait case `keine-arbeit`) before returning, instead of waiting silently, and end the answer with its wait sentence.
 
 ## Phase 7.6: Fleet Check-in (#1462)
 

@@ -32,8 +32,13 @@ afterEach(() => {
 });
 
 function makeStateDir() {
-  const stateDir = mkdtempSync(join(tmpdir(), 'materialize-wave-scope-'));
-  tempDirs.push(stateDir);
+  // #1648: the CLI writes its scope_materialized event under the state dir's
+  // PARENT (`<parent>/.orchestrator/...`). A state dir directly in $TMPDIR made
+  // that parent the tmpdir root itself, so nest it in a root this test owns.
+  const root = mkdtempSync(join(tmpdir(), 'materialize-wave-scope-'));
+  tempDirs.push(root);
+  const stateDir = join(root, 'state');
+  mkdirSync(stateDir);
   return stateDir;
 }
 

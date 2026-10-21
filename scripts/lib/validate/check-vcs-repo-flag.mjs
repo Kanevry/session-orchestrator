@@ -120,32 +120,11 @@
  * executing the binary shows the constraint — same lesson as the `glab repo`
  * asymmetry above, in the opposite direction.
  *
- * ## Blind spot — a `-R` the CLI will REJECT
+ * ## Rejected flags (issue #1024)
  *
- * Every entry in the gap list below is an OMISSION: a call site the census does
- * not see. This one is not, so it is named apart from them.
- * `repoFlagBlockedByMissingPositional()` is consulted only AFTER the
- * `--repo`-present branch (see its own docstring for why), so the
- * conditional-positional rule can only ever describe calls that LACK the flag —
- * the harmless half of that table. The harmful half is invisible:
- * `gh pr checks -R o/r --watch` carries `-R` with no positional, which gh 2.86.0
- * rejects at parse time (`argument required when using the --repo flag`, exit 1,
- * probed 2026-08-14). This census counts it as `withFlag` — as already hardened.
- *
- * Measured 2026-08-14 against this tree: **0 such call sites**. A probe copy of
- * this file, patched to skip the repo flag's own value before scanning the
- * remaining tokens for a positional, ran `inspectVcsRepoFlag(repoRoot)` and
- * reported an empty list — so the blind spot is inert here today, and detecting
- * it is ~8 lines.
- *
- * It is nonetheless NOT reported, for a contract reason rather than a detection
- * one. A finding here means "add `--repo`"; that call's fix is the opposite
- * ("name the PR, or drop the flag"), and the `kind` enum, the WARN message text
- * and the PASS line's "N bare" all speak only the first language. Folding a
- * loud, exit-1 failure into a census built for SILENT wrong-repo failures would
- * hand the sweep a worklist whose entries prescribe opposite edits, and would
- * buy nothing the command's own first run does not already say. That class wants
- * its own check; it is routed as a follow-up rather than patched in here.
+ * `check-vcs-repo-flag-positional.mjs` uses the same scan engine in rejected
+ * mode, with its own finding kind and advice: name the PR or drop the flag.
+ * The default census still reports only missing repo flags.
  *
  * ## Named coverage gaps (v1) — read these before quoting the count
  *
@@ -195,6 +174,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { SHELL_LANGS, forEachLine } from './markdown-fences.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { tokenizeCommand, redirectSpanEnd } from '../command-blocker.mjs';
 
 /** Directories whose content is scanned. Root-level `*.md` is added separately. */
 const SCAN_DIRS = Object.freeze([
@@ -309,12 +289,8 @@ function looksPositional(token) {
  * silence, because a wrongly-suppressed call site is invisible forever while a
  * wrongly-reported one is one sweep read away:
  *
- *  1. Only consulted AFTER the `--repo`-present branch. A call that already
- *     carries the flag is never this function's business, and asking here would
- *     mean parsing which flags consume a value — `gh pr merge -R o/r 123` puts
- *     its positional at index 4, behind `-R`'s argument. What that ordering
- *     costs is named in § Blind spot at the top of this file: the `-R`-present,
- *     positional-absent call — the one the CLI actually rejects — is invisible.
+ *  1. The bare census consults this AFTER the repo-flag branch. The separate
+ *     rejected-flag check first removes option values from the token stream.
  *  2. ANY positional-looking token past the subcommand disarms the rule. A flag
  *     VALUE (`--json state` → `state`) can be mistaken for a positional; that
  *     mistake yields a finding, never a suppression.
@@ -329,6 +305,55 @@ function repoFlagBlockedByMissingPositional(cli, group, sub, rest) {
   const subs = REPO_FLAG_NEEDS_POSITIONAL[cli][group];
   if (!subs || !sub || !subs.has(sub)) return false;
   return !rest.some(looksPositional);
+}
+
+/**
+ * Known value-taking options of the six conditional gh pr subcommands.
+ * Unknown options retain the census's conservative positional heuristic;
+ * revisit this list when gh adds a value-taking option to these commands.
+ */
+const PR_VALUE_FLAGS = new Set([
+  '-R', '--repo', '--json', '-q', '--jq', '-t', '--template', '-i', '--interval',
+  '--color', '-A', '--author-email', '-b', '--body', '-F', '--body-file',
+  '--subject', '--match-head-commit',
+]);
+
+/** @param {string[]} args @returns {boolean} a repo option, not another option's value */
+function repoFlagPresent(args) {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') break;
+    if (arg === '-R' || arg === '--repo' || arg.startsWith('--repo=') || /^-R.+/.test(arg)) return true;
+    if (PR_VALUE_FLAGS.has(arg)) index += 1;
+  }
+  return false;
+}
+
+/** @param {string[]} args @returns {string[]} args without option values */
+function withoutOptionValues(args) {
+  const rest = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '--') return rest.concat(args.slice(index + 1));
+    if (PR_VALUE_FLAGS.has(arg)) index += 1;
+    else if (!arg.startsWith('-')) rest.push(arg);
+  }
+  return rest;
+}
+
+/** Strip shell comments at word boundaries, retaining quoted/escaped hashes.
+ * @param {string} text @returns {string}
+ */
+function stripShellComment(text) {
+  let quote = '';
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\\' && quote !== "'") { index += 1; continue; }
+    if (quote) { if (char === quote) quote = ''; continue; }
+    if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
+    if (char === '#' && (index === 0 || /[\s;|&()]/.test(text[index - 1]))) return text.slice(0, index);
+  }
+  return text;
 }
 
 /**
@@ -366,44 +391,60 @@ const COMMAND_RE = /(?:^|[|;&(]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(gh|gl
  *     outer command's own, substitution-valued or not: `-R $(cat repo.txt)`
  *     counts.
  *
- * The outer projection replaces each substitution with a single space rather
- * than deleting it, so that closing the gap in `-$(x)R` cannot weld a `-R` into
- * existence.
- *
- * Two named ceilings, both landing on today's verdict so neither is a
- * regression; revisit if a call site in this corpus ever takes either shape.
- * `$((` arithmetic expansion reads as a substitution plus a plain paren, so a
- * segment containing one is cut at its second `)` — exactly where the previous
- * `)`-stop cut it. Quote state is not tracked: `'$(x)'` is a literal string to a
- * real shell and a substitution to this walk, which reaches the same verdict
- * (the `-R` inside is not this command's flag) by a more generous route.
+ * The outer projection replaces each substitution with an opaque argument
+ * placeholder. Only placeholders in possible PR positions suppress a finding;
+ * option values and redirect operands are removed first. Quote and
+ * escape state are evaluated before command separators can end the segment.
  *
  * @param {string} rest text following the matched CLI token
- * @returns {{segment: string, outer: string}} full segment, and its depth-0 projection
+ * @returns {{segment: string, outer: string, unresolved: boolean}} full segment, and its depth-0 projection
  */
 function sliceInvocation(rest) {
   let segment = '';
   let outer = '';
   let depth = 0;
   let inBacktick = false;
+  let quote = '';
+  let unresolved = false;
 
   for (let index = 0; index < rest.length; index += 1) {
     const char = rest[index];
     const pair = rest.slice(index, index + 2);
 
     if (depth === 0 && !inBacktick) {
-      if (pair === '||' || pair === '&&' || char === '|' || char === ';' || char === ')') break;
-      if (pair === '$(') {
-        depth = 1;
-        segment += pair;
-        outer += ' ';
+      if (char === '\\' && quote !== "'") {
+        segment += rest.slice(index, index + 2);
+        outer += rest.slice(index, index + 2);
         index += 1;
         continue;
       }
-      if (char === '`') {
+      if (char === quote) {
+        quote = '';
+        segment += char;
+        outer += char;
+        continue;
+      }
+      if (!quote && (char === '"' || char === "'")) {
+        quote = char;
+        segment += char;
+        outer += char;
+        continue;
+      }
+      if (!quote && (pair === '||' || pair === '&&' ||
+        (char === '|' && rest[index - 1] !== '>') || char === ';' || char === ')')) break;
+      if (quote !== "'" && pair === '$(') {
+        unresolved = true;
+        depth = 1;
+        segment += pair;
+        outer += '__SO_UNRESOLVED__';
+        index += 1;
+        continue;
+      }
+      if (quote !== "'" && char === '`') {
+        unresolved = true;
         inBacktick = true;
         segment += char;
-        outer += ' ';
+        outer += '__SO_UNRESOLVED__';
         continue;
       }
       segment += char;
@@ -425,7 +466,7 @@ function sliceInvocation(rest) {
     if (char === ')') depth -= 1;
   }
 
-  return { segment, outer };
+  return { segment, outer, unresolved };
 }
 
 /** Snippet budget — see § stdout budget at the CLI guard. */
@@ -433,7 +474,7 @@ const SNIPPET_MAX = 200;
 
 /**
  * @typedef {{
- *   kind: 'missing-repo-flag-doc' | 'missing-repo-flag-code' | 'tool-error',
+ *   kind: 'missing-repo-flag-doc' | 'missing-repo-flag-code' | 'repo-flag-missing-positional' | 'tool-error',
  *   file: string,
  *   line: number,
  *   cli: 'gh' | 'glab' | '-',
@@ -490,9 +531,11 @@ function clampSnippet(text) {
  *
  * @param {string} text the logical command line
  * @param {Tally} tally mutated in place
+ * @param {boolean} [rejected] collect rejected flags instead of missing flags
  * @returns {{cli: 'gh'|'glab', command: string, segment: string}[]} findings-worthy invocations
  */
-export function extractBareInvocations(text, tally) {
+export function extractBareInvocations(text, tally, rejected = false) {
+  text = stripShellComment(text);
   /** @type {{cli: 'gh'|'glab', command: string, segment: string}[]} */
   const bare = [];
   COMMAND_RE.lastIndex = 0;
@@ -521,10 +564,20 @@ export function extractBareInvocations(text, tally) {
     tally.applicable += 1;
     // `outer`, never `segment`: a `-R` inside a command substitution belongs to
     // the inner command — see `sliceInvocation` job 2.
-    if (REPO_FLAG_RE.test(outer)) {
+    const argv = rejected ? tokenizeCommand(outer) : [];
+    const args = [];
+    for (let index = 0; index < argv.length; index += 1) {
+      if (argv[index].redirect) index = redirectSpanEnd(argv, index);
+      else args.push(argv[index].text);
+    }
+    if (rejected ? repoFlagPresent(args.slice(2)) : REPO_FLAG_RE.test(outer)) {
       tally.withFlag += 1;
+      if (rejected && repoFlagBlockedByMissingPositional(cli, head, tokens[1], withoutOptionValues(args.slice(2)))) {
+        bare.push({ cli, command: `${cli} ${head} ${tokens[1]}`, segment });
+      }
       continue;
     }
+    if (rejected) continue;
     if (repoFlagBlockedByMissingPositional(cli, head, tokens[1], tokens.slice(2))) {
       tally.positionalRequired += 1;
       continue;
@@ -561,36 +614,123 @@ function joinContinuations(entries) {
 }
 
 /**
+ * Read the heredoc delimiter word starting at `start` and apply shell quote
+ * removal: `\EOF`, `'EOF'`, `"EOF"` and `E"O"F` all name the terminator `EOF`.
+ * @param {string} text @param {number} start
+ * @returns {{word: string, end: number}} `end` = index after the word
+ */
+function readDelimiterWord(text, start) {
+  let word = '';
+  let index = start;
+  for (; index < text.length; index += 1) {
+    const char = text[index];
+    if (/[\s;|&<>()]/.test(char)) break;
+    if (char === '\\') { index += 1; word += text[index] ?? ''; continue; }
+    if (char === "'" || char === '"') {
+      const close = text.indexOf(char, index + 1);
+      const stop = close === -1 ? text.length : close;
+      const quoted = text.slice(index + 1, stop);
+      word += char === '"' ? quoted.replace(/\\([\\"$`])/g, '$1') : quoted;
+      index = stop;
+      continue;
+    }
+    word += char;
+  }
+  return { word, end: index };
+}
+
+/**
+ * Index just past the `))` closing the arithmetic `((` at `start`, so a shift
+ * operator inside `$(( ))` / `(( ))` is never read as a heredoc.
+ * @param {string} text @param {number} start @returns {number}
+ */
+function arithmeticEnd(text, start) {
+  let depth = 0;
+  for (let index = start; index < text.length; index += 1) {
+    if (text[index] === '(') depth += 1;
+    else if (text[index] === ')' && --depth === 0) return index + 1;
+  }
+  return text.length;
+}
+
+/**
+ * Find heredoc delimiters outside quoted/escaped shell text and arithmetic.
+ * Their bodies are unresolved data for the positional check, including an
+ * unterminated body.
+ * @param {string} text
+ * @returns {{word: string, stripTabs: boolean}[]}
+ */
+function heredocDelimiters(text) {
+  const delimiters = [];
+  let quote = '';
+  text = stripShellComment(text);
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '\\' && quote !== "'") { index += 1; continue; }
+    if (quote) { if (char === quote) quote = ''; continue; }
+    if (char === '"' || char === "'" || char === '`') { quote = char; continue; }
+    if (text.startsWith('((', index)) { index = arithmeticEnd(text, index) - 1; continue; }
+    if (text.startsWith('<<<', index)) { index += 2; continue; }
+    if (!text.startsWith('<<', index)) continue;
+    const head = /^<<(-?)[ \t]*/.exec(text.slice(index));
+    const { word, end } = readDelimiterWord(text, index + head[0].length);
+    if (word) delimiters.push({ word, stripTabs: head[1] === '-' });
+    index = Math.max(index + 1, end - 1);
+  }
+  return delimiters;
+}
+
+/**
  * Scan a markdown file: fence state machine → shell fences only → drop shell
  * comments → join continuations → classify.
  *
  * @param {string} relative repo-relative path
  * @param {string} body file content
  * @param {Tally} tally mutated in place
+ * @param {boolean} [rejected] collect rejected flags instead of missing flags
  * @returns {Finding[]}
  */
-export function scanMarkdown(relative, body, tally) {
+export function scanMarkdown(relative, body, tally, rejected = false) {
   /** @type {Finding[]} */
   const findings = [];
   /** @type {{line: number, text: string}[]} */
   const shellLines = [];
+  /** @type {{word: string, stripTabs: boolean}[]} */
+  let pendingHeredocs = [];
+  // Delimiters of the logical line still being continued: a body starts only
+  // after the line that ends the `\`-continued command (same test as joinContinuations).
+  /** @type {{word: string, stripTabs: boolean}[]} */
+  let lineHeredocs = [];
+  let previousLine = 0;
 
   forEachLine(body, (raw, { lineNumber, inFence, lang }) => {
     if (!inFence || !SHELL_LANGS.has(lang)) return;
+    // Fence markers are omitted by forEachLine; a gap resets shell context.
+    if (lineNumber !== previousLine + 1) { pendingHeredocs = []; lineHeredocs = []; }
+    previousLine = lineNumber;
+    if (rejected && pendingHeredocs.length) {
+      const pending = pendingHeredocs[0];
+      if ((pending.stripTabs ? raw.replace(/^\t+/, '') : raw) === pending.word) pendingHeredocs.shift();
+      return;
+    }
     const stripped = raw.replace(/^\s*[$❯>]\s+/, '');
     if (/^\s*#/.test(stripped)) return;
+    if (rejected) {
+      lineHeredocs.push(...heredocDelimiters(stripped));
+      if (!/\\\s*$/.test(stripped)) { pendingHeredocs = lineHeredocs; lineHeredocs = []; }
+    }
     shellLines.push({ line: lineNumber, text: stripped });
   });
 
   for (const entry of joinContinuations(shellLines)) {
-    for (const hit of extractBareInvocations(entry.text, tally)) {
+    for (const hit of extractBareInvocations(entry.text, tally, rejected)) {
       findings.push({
-        kind: 'missing-repo-flag-doc',
+        kind: rejected ? 'repo-flag-missing-positional' : 'missing-repo-flag-doc',
         file: relative,
         line: entry.line,
         cli: hit.cli,
         command: hit.command,
-        message:
+        message: rejected ? rejectedFlagMessage(hit.command) :
           `\`${hit.command}\` runs without --repo/-R — the target project comes from the ambient ` +
           `cwd remote: ${clampSnippet(`${hit.cli}${hit.segment}`)}`,
       });
@@ -628,8 +768,32 @@ export function scanArgvCalls(body) {
     }
     let depth = 0;
     let end = -1;
+    let quote = '';
+    let uncommented = '';
     for (let index = 0; index < after.length; index += 1) {
       const char = after[index];
+      if (quote) {
+        uncommented += char;
+        if (char === '\\') { uncommented += after[index + 1] ?? ''; index += 1; }
+        else if (char === quote) quote = '';
+        continue;
+      }
+      if (after.startsWith('//', index)) {
+        const newline = after.indexOf('\n', index + 2);
+        if (newline === -1) break;
+        uncommented += ' ';
+        index = newline;
+        continue;
+      }
+      if (after.startsWith('/*', index)) {
+        const close = after.indexOf('*/', index + 2);
+        if (close === -1) break;
+        uncommented += ' ';
+        index = close + 1;
+        continue;
+      }
+      uncommented += char;
+      if (char === "'" || char === '"' || char === '`') { quote = char; continue; }
       if (char === '[') depth += 1;
       else if (char === ']') {
         depth -= 1;
@@ -643,12 +807,25 @@ export function scanArgvCalls(body) {
       unresolved += 1;
       continue;
     }
-    const inner = after.slice(1, end);
+    const inner = uncommented.slice(1, -1);
     if (inner.includes('...') || /\$\{/.test(inner)) {
       unresolved += 1;
       continue;
     }
-    const args = [...inner.matchAll(/['"]([^'"]*)['"]/g)].map((entry) => entry[1]);
+    // Consume the entire array, never just its quoted fragments. Escaped or
+    // computed strings are deliberately unresolved rather than partly decoded.
+    const literal = /\s*(?:'([^'\\]*)'|"([^"\\]*)")\s*(?:,|$)/gy;
+    const args = [];
+    let consumed = 0;
+    let item;
+    while ((item = literal.exec(inner)) !== null) {
+      args.push(item[1] ?? item[2]);
+      consumed = literal.lastIndex;
+    }
+    if (inner.slice(consumed).trim()) {
+      unresolved += 1;
+      continue;
+    }
     literals.push({ index: matched.index, cli: /** @type {'gh'|'glab'} */ (matched[1]), args });
   }
   return { literals, unresolved };
@@ -662,9 +839,10 @@ export function scanArgvCalls(body) {
  * @param {string} relative repo-relative path
  * @param {string} body file content
  * @param {Tally} tally mutated in place
+ * @param {boolean} [rejected] collect rejected flags instead of missing flags
  * @returns {{findings: Finding[], unresolvedArgv: number}}
  */
-export function scanCode(relative, body, tally) {
+export function scanCode(relative, body, tally, rejected = false) {
   /** @type {Finding[]} */
   const findings = [];
   const lines = body.split('\n');
@@ -681,14 +859,14 @@ export function scanCode(relative, body, tally) {
       const closeAt = raw.indexOf(quote, contentStart);
       const literal = closeAt === -1 ? raw.slice(contentStart) : raw.slice(contentStart, closeAt);
       if (literal.includes('${')) continue;
-      for (const hit of extractBareInvocations(literal.trim(), tally)) {
+      for (const hit of extractBareInvocations(literal.trim(), tally, rejected)) {
         findings.push({
-          kind: 'missing-repo-flag-code',
+          kind: rejected ? 'repo-flag-missing-positional' : 'missing-repo-flag-code',
           file: relative,
           line: index + 1,
           cli: hit.cli,
           command: hit.command,
-          message:
+          message: rejected ? rejectedFlagMessage(hit.command) :
             `\`${hit.command}\` in a shell-command string runs without --repo/-R — the target project ` +
             `comes from the ambient cwd remote: ${clampSnippet(`${hit.cli}${hit.segment}`)}`,
         });
@@ -712,11 +890,13 @@ export function scanCode(relative, body, tally) {
       continue;
     }
     tally.applicable += 1;
-    if (call.args.some((arg) => arg === '--repo' || arg === '-R' || arg.startsWith('--repo='))) {
-      tally.withFlag += 1;
-      continue;
-    }
-    if (repoFlagBlockedByMissingPositional(call.cli, head, call.args[1], call.args.slice(2))) {
+    const hasRepoFlag = rejected ? repoFlagPresent(call.args.slice(2)) :
+      call.args.some((arg) => arg === '--repo' || arg === '-R' || arg.startsWith('--repo='));
+    if (hasRepoFlag) tally.withFlag += 1;
+    if (rejected) {
+      if (!hasRepoFlag || !repoFlagBlockedByMissingPositional(call.cli, head, call.args[1], withoutOptionValues(call.args.slice(2)))) continue;
+    } else if (hasRepoFlag) continue;
+    if (!rejected && repoFlagBlockedByMissingPositional(call.cli, head, call.args[1], call.args.slice(2))) {
       tally.positionalRequired += 1;
       continue;
     }
@@ -727,12 +907,12 @@ export function scanCode(relative, body, tally) {
     const line = body.slice(0, call.index).split('\n').length;
     const second = call.args[1] && !call.args[1].startsWith('-') ? ` ${call.args[1]}` : '';
     findings.push({
-      kind: 'missing-repo-flag-code',
+      kind: rejected ? 'repo-flag-missing-positional' : 'missing-repo-flag-code',
       file: relative,
       line,
       cli: call.cli,
       command: `${call.cli} ${head}${second}`,
-      message:
+      message: rejected ? rejectedFlagMessage(`${call.cli} ${head}${second}`) :
         `\`${call.cli} ${head}${second}\` argv array carries no --repo/-R — the target project comes ` +
         `from the ambient cwd remote: ${clampSnippet(call.args.join(' '))}`,
     });
@@ -741,10 +921,16 @@ export function scanCode(relative, body, tally) {
   return { findings, unresolvedArgv: unresolved };
 }
 
+/** @param {string} command @returns {string} */
+function rejectedFlagMessage(command) {
+  return `\`${command}\`: --repo/-R breaks this call — name the PR positional or drop the flag`;
+}
+
 /**
  * Run the full census.
  *
  * @param {string} pluginRoot absolute plugin root
+ * @param {{rejected?: boolean}} [options] separate rejected-flag classification
  * @returns {{
  *   ok: boolean,
  *   summary: {
@@ -758,7 +944,7 @@ export function scanCode(relative, body, tally) {
  *   toolError: boolean,
  * }}
  */
-export function inspectVcsRepoFlag(pluginRoot) {
+export function inspectVcsRepoFlag(pluginRoot, { rejected = false } = {}) {
   /** @type {Finding[]} */
   const findings = [];
   /** @type {Tally} */
@@ -839,10 +1025,10 @@ export function inspectVcsRepoFlag(pluginRoot) {
     }
     if (DOC_EXTENSIONS.includes(path.extname(absolute))) {
       docFiles += 1;
-      findings.push(...scanMarkdown(relative, body, tally));
+      findings.push(...scanMarkdown(relative, body, tally, rejected));
     } else {
       codeFiles += 1;
-      const scanned = scanCode(relative, body, tally);
+      const scanned = scanCode(relative, body, tally, rejected);
       findings.push(...scanned.findings);
       unresolvedArgv += scanned.unresolvedArgv;
     }

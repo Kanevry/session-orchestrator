@@ -41,7 +41,7 @@ interactive setup script, package installation, Git, or a remote service.
 export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE REPO_NAME
 SCAFFOLD_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
-const { scaffoldBaselineArchetype } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const { scaffoldBaselineArchetype } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
 const result = await scaffoldBaselineArchetype({
   repoRoot: process.env.REPO_ROOT,
   archetype: process.env.CONFIRMED_ARCHETYPE,

@@ -231,7 +231,7 @@ It prints one JSON line carrying:
 - `wavesConfigHonored` — whether the Session Config `waves` value was used
 - `notes` — human-readable reasons for any of the above
 
-**By default, the plan's wave list IS that output.** The coordinator fills tasks into the returned waves without adding, removing, or renumbering them. Exceptions are the empty-role rule below (and its coordinator-direct carve-out) and the user-authorized housekeeping execution deviation above. `--known-scope true` is what drops the Discovery wave on a deep session; `--profile ultradeep` is what selects the ultradeep shape, and it applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else, and it ignores the Session Config `waves` value (the shape says so in `wavesConfigHonored` / `notes`). Spec: `docs/prd/2026-09-06-ultradeep-session-profile.md` § 5.
+**By default, the plan's wave list IS that output.** The coordinator fills tasks into the returned waves without adding, removing, or renumbering them. Exceptions are the empty-role rule below (and its coordinator-direct carve-out) and the user-authorized housekeeping execution deviation above. `--known-scope true` is what drops the Discovery wave on a deep session; `--profile ultradeep` is what selects the ultradeep shape, and it applies ONLY when STATE.md frontmatter carries `session-profile: ultradeep` (written by the `/session ultradeep` argument alias — see `commands/session.md`). `session-type` stays `deep`; the profile changes the wave SHAPE, nothing else, and it ignores the Session Config `waves` value (the shape says so in `wavesConfigHonored` / `notes`). Spec: the internal ultradeep session-profile PRD (2026-09-06, not in the public mirror) § 5.
 
 **Ultradeep agent counts per wave:** take each wave's cap from that wave's `agentCap` in the shape — there is no second table here to disagree with it. The caps are ceilings, not targets, and the Quality wave's cap is still EARNED per the Step 3 rule (the shape marks it `qualityEarned: true`); Research and Code-Discovery share wave 1's cap across their two separately-scoped groups; the Synthesis-Gate wave carries `agentCap: 0` with `coordinatorDirect: true` and writes only the coordinator's own artifacts (audit report, STATE.md, plan).
 
@@ -268,7 +268,7 @@ When `docs-orchestrator.enabled: true`, apply the following concrete dispatch ru
 
 - `agents: 0` on such an item is a DECLARATION, never a defect — do not "fix" it upward, and do not let the Step 3.5 constraint check or the Step 3 tier table raise it.
 - The wave still counts toward `total-waves` and still occupies its wave number; the renumbering above skips over it, it does not absorb it.
-- The ultradeep Synthesis-Gate (wave 2) is the only such wave today. Without this exception the empty-role rule deletes it — and it is the one wave whose entire job is to stop and ask before any code is written (`docs/prd/2026-09-06-ultradeep-session-profile.md` AC-4).
+- The ultradeep Synthesis-Gate (wave 2) is the only such wave today. Without this exception the empty-role rule deletes it — and it is the one wave whose entire job is to stop and ask before any code is written (the internal ultradeep session-profile PRD (2026-09-06, not in the public mirror) AC-4).
 - The exception is scoped to the MARKER, not to the profile: any future coordinator-direct wave inherits it without another edit here.
 
 ### Role Details

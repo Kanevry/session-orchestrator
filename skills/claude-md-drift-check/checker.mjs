@@ -551,7 +551,8 @@ function lookupIssueState(iid, repo, cache, vaultDir) {
 //      legitimately carry dead stack rules.
 //   4. foreign-glob     → warnings[]: a glob pattern containing a PascalCase
 //      product-like token (e.g. `WalkAITalkieTests`) — a likely copy-paste
-//      leftover from another project's rule.
+//      leftover from another project's rule. Skipped when the glob matches a
+//      `git ls-files` entry of the checked repo — its own directory (#1657).
 //   5. unreadable-file  → warnings[]: a rule file that could not be read
 //      (permissions, race with a concurrent delete, etc.) — surfaced instead
 //      of being silently skipped, since a completeness audit that silently
@@ -561,16 +562,22 @@ function lookupIssueState(iid, repo, cache, vaultDir) {
 //      rule's own `fleet-intent-globs:` frontmatter key — reported with its
 //      local match count, never warned, and it settles probes 3+4 for that
 //      pattern. See FLEET_INTENT_FM_KEY below.
+//   7. globs-without-paths → warnings[]: a line-1 frontmatter with a `globs:`
+//      key and no `paths:` key (#1638). Claude Code reads `paths:` only and
+//      ignores `globs:` without an error, so the rule loads ALWAYS-ON there
+//      even though rule-loader.mjs scopes it for wave injection. WARN, not
+//      error, also under strict — the fix is a judgement (which patterns),
+//      and the repo's own hard gate is check-rules.mjs, not this check.
 //
 // This list is numeric, not a call sequence — the code below does NOT run
-// 1→2→3→4→5→6 in order. Per rule file: probe 5's read-failure guard runs
+// 1→2→3→4→5→6→7 in order. Per rule file: probe 5's read-failure guard runs
 // FIRST (it gates every other probe via `continue` on an unreadable file,
-// before probe 1 ever sees the content), then probe 1, then probes 3/4 with
+// before probe 1 ever sees the content), then probe 1, then probe 7, then probes 3/4 with
 // probe 6 interleaved INSIDE the same per-pattern loop (it must intercept a
 // declared fleet-intent pattern before 3/4 evaluate it), then probe 2b: once
 // every rule file has been visited, probe 2a runs last over CLAUDE.md/
 // AGENTS.md. `grep -n "Probe [0-9]" checker.mjs` therefore surfaces markers
-// in code order (5, 1, 6, 2b, 2a), not numeric order — that is intentional,
+// in code order (5, 1, 7, 6, 2b, 2a), not numeric order — that is intentional,
 // not drift; do not "fix" it by moving probe 6's marker next to probe 5's.
 // ───────────────────────────────────────────────────────────────────────────
 
@@ -637,6 +644,10 @@ function globMatchesAny(pattern, trackedFiles) {
  * 64 MiB buffer exists because the 1 MiB default threw ENOBUFS on a vault
  * listing of 1,199,500 bytes (measured 2026-10-04), which the old bare catch
  * turned into exactly those false warnings, silently.
+ *
+ * Returns `{ files, fromGit }`: `fromGit` is false when the listing came from
+ * the walk fallback. The foreign-glob probe only trusts a git listing to
+ * exempt a glob (#1657) — without it, it keeps warning.
  */
 function listTrackedFiles(vaultDir) {
   try {
@@ -646,7 +657,7 @@ function listTrackedFiles(vaultDir) {
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 64 * 1024 * 1024,
     });
-    return out.split('\n').filter(Boolean);
+    return { files: out.split('\n').filter(Boolean), fromGit: true };
   } catch (err) {
     const notARepo = err?.status === 128 && /not a git repository/i.test(String(err?.stderr ?? ''));
     if (err?.code !== 'ENOENT' && !notARepo) {
@@ -656,7 +667,7 @@ function listTrackedFiles(vaultDir) {
     }
     const files = [];
     walkDir(vaultDir, (f) => files.push(relative(vaultDir, f).replace(/\\/g, '/')));
-    return files;
+    return { files, fromGit: false };
   }
 }
 
@@ -1302,7 +1313,7 @@ function main() {
 
   // Check 9: rule-scoping — validates .claude/rules/*.md frontmatter against
   // the rule-loader.mjs contract (see the doc-comment above the helper
-  // functions for the six probes, incl. unreadable-file and fleet-intent-glob). Silently skipped (no id pushed, no
+  // functions for the seven probes, incl. unreadable-file and fleet-intent-glob). Silently skipped (no id pushed, no
   // checksSkipped entry) when .claude/rules/ is absent — mirrors Check 8's
   // silent-skip semantics. `--skip-rule-scoping` disables the whole check.
   if (!args.skipRuleScoping) {
@@ -1319,6 +1330,7 @@ function main() {
 
       // Lazily computed — only needed once any rule declares ≥1 glob pattern.
       let trackedFiles = null;
+      let trackedFromGit = false;
 
       for (const fname of ruleFileNames) {
         const absPath = join(rulesDir, fname);
@@ -1377,10 +1389,30 @@ function main() {
           });
         }
 
+        // --- Probe 7: globs-without-paths → warnings[] (#1638) ---
+        // Keyed on the parser's raw `paths` field, never on the merged `globs`
+        // value or on body text: `parsed.globs !== null` with `parsed.paths ===
+        // null` means the frontmatter carries `globs:` and no `paths:`. A
+        // displaced or unparseable block yields `globs: null` and stays silent
+        // here (probe 1 owns the displaced case).
+        if (parsed.globs !== null && parsed.paths === null) {
+          // Search the frontmatter only (line 2 up to the closing ---), with the
+          // parser's own key tolerance (`globs :`), so a body line never wins.
+          const fmLines = content.split(/\r?\n/);
+          const fmEnd = fmLines.indexOf('---', 1);
+          const globsLine = fmLines.slice(0, fmEnd === -1 ? fmLines.length : fmEnd)
+            .findIndex((l, i) => i > 0 && /^globs\s*:/.test(l)) + 1;
+          warnings.push({
+            check: 'rule-scoping', probe: 'globs-without-paths', file: relPath, line: globsLine || 1,
+            message: `${relPath}: frontmatter has 'globs:' but no 'paths:' — Claude Code reads only 'paths:', so this rule loads ALWAYS-ON for Claude Code. Add 'paths:' with the matching patterns (the same list as 'globs:').`,
+            extracted: 'globs:',
+          });
+        }
+
         // --- Probes 3 & 4: zero-match-globs / foreign-glob → warnings[] ---
         const globs = parsed.globs;
         if (Array.isArray(globs) && globs.length > 0) {
-          if (trackedFiles === null) trackedFiles = listTrackedFiles(vaultDir);
+          if (trackedFiles === null) ({ files: trackedFiles, fromGit: trackedFromGit } = listTrackedFiles(vaultDir));
           const declaredFleetIntent = new Set(parseFleetIntentGlobs(fmBody));
           for (const pattern of globs) {
             // --- Probe 6: fleet-intent-glob → notes[] ---
@@ -1400,14 +1432,19 @@ function main() {
               });
               continue;
             }
-            if (!globMatchesAny(pattern, trackedFiles)) {
+            const matchesTracked = globMatchesAny(pattern, trackedFiles);
+            if (!matchesTracked) {
               warnings.push({
                 check: 'rule-scoping', file: relPath, line: 1,
                 message: `glob '${pattern}' matches 0 tracked files (library/exemplar repos may legitimately carry dead stack rules)`,
                 extracted: pattern,
               });
             }
-            if (FOREIGN_GLOB_TOKEN_RE.test(pattern)) {
+            // #1657: a glob that matches a git-tracked file of THIS repo names
+            // the repo's own directory (`WalkAITalkie/**` in WalkAITalkie), not
+            // a copy-paste leftover. Only a git listing exempts — the walk
+            // fallback keeps warning (fail toward reporting).
+            if (FOREIGN_GLOB_TOKEN_RE.test(pattern) && !(trackedFromGit && matchesTracked)) {
               warnings.push({
                 check: 'rule-scoping', file: relPath, line: 1,
                 message: `glob '${pattern}' contains a PascalCase product-like token — verify this rule was not copy-pasted from another project`,

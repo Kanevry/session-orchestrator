@@ -92,7 +92,7 @@ Hand off to Phase 9 as usual. The coordinator then executes the 1-wave plan sess
 1. Proceed to Phase 9 (session-plan handoff) carrying the banner. session-plan short-circuits to the 1-wave `coordinator-direct` plan — the same shape `scripts/session-shape.mjs` resolves for `housekeeping`; `/go` detects it and does NOT invoke wave-executor.
 2. **Run the maintenance loop FIRST** (`skills/session-start/SKILL.md` Phase 7, "For housekeeping sessions"): drift-check work-list, expired sweep, `/evolve analyze`, `/reconcile`, `/evolve dialectic` (dry-run then apply), `/memory-cleanup` — each AUQ-gated. `coordinator-direct` means no wave-executor, NOT zero subagents: the dialectic step dispatches the read-only `dialectic-deriver`. The operator-selected tasks run after the loop, because the loop's outputs (new learnings, new rules) are inputs the task work should already see.
 3. For each agreed task (in dependency order): execute as a direct coordinator action — read files, make changes, run quality checks inline. No subagents, no inter-wave checkpoints.
-4. Log the express-path activation in STATE.md `## Deviations` section: `Express path: N tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: N issues)` — written BEFORE session-end is invoked. Then invoke `skills/session-end/SKILL.md` directly.
+4. Log the express-path activation in STATE.md `## Deviations` section: `Express path: N tasks executed coord-direct (express-path.enabled: true, session-type: housekeeping, scope: N issues)` — written BEFORE session-end is invoked. Then invoke `skills/session-end/SKILL.md` directly — **unless the session is lead-guided** (fleet integration, `flotte: true` per `skills/_shared/fleet-protocol.md` § Rücklauf an den Navigator): then it ends with summary, report, hand-over and `Bereit zum Schließen.` as the last sentence instead, and the coordinator triggers `/close` (fleet-protocol § Übergabe Punkt 4, #1620). Step 5 does not run on this path: the regular session-end flow of that `/close` finalizes STATE.md.
 5. After session-end completes successfully: verify STATE.md `status` is `completed` and `## Deviations` contains the express-path entry from step 4. If either is missing, warn the user with a one-line note and instructions to re-run `/close` manually. Then return the final session summary to the user.
 
 **Persistence contract:**
@@ -101,6 +101,7 @@ Step 1 is the Phase 9 handoff and ends the session-start turn — the operator t
 
 - Step 2 (maintenance loop) and step 3 (execute tasks) happen first in that turn's main flow, in that order.
 - Step 4a (deviations log) is written BEFORE session-end is invoked. The coordinator calls `appendDeviation()` from `scripts/lib/state-md.mjs` to append the `Express path:` bullet to the `## Deviations` section while STATE.md is still `status: active`.
+- Lead-guided exception (#1620): with fleet integration, steps 4b and 5 do not run — the turn ends with the hand-over after step 4a, and session-end runs when the coordinator triggers `/close`.
 - Step 4b (invoke session-end) flips `status` to `completed`, writes the metrics record to `.orchestrator/metrics/sessions.jsonl`, and runs the standard close flow. Session-end has no Express Path-specific logic — it treats this run identically to any other completed session.
 - Step 5 (verification) is the coordinator's final action before returning control. The verification check uses `parseStateMd()` from `scripts/lib/state-md.mjs` to read the file and check `frontmatter.status === 'completed'` and that the body contains the literal string `Express path:`.
 
@@ -125,5 +126,5 @@ Proceed normally to Phase 9 (session-plan handoff). The express-path evaluation 
 - `scripts/express-path.mjs` — the CLI this phase runs; `scripts/lib/express-path.mjs` holds the decision + its `orchestrator.express_path.evaluated` record
 - `skills/session-plan/SKILL.md` § "Express Path Short-Circuit (#214)" — the 1-wave plan Phase 9 emits when the banner is present
 - `skills/go/SKILL.md` — Express Path detection and auto-invocation of session-end after coord-direct tasks
-- `skills/session-end/SKILL.md` — Phase 1 pre-check (Rule 2) blocks `/close` when STATE.md `status: completed`; auto-invocation from express-path bypasses this
-- `skills/close/SKILL.md` — Rule 2 wording the user sees if express-path persistence breaks
+- `skills/session-end/SKILL.md` — the session-end workflow express-path auto-invokes directly, bypassing the `/close` pre-check
+- `skills/close/SKILL.md` — its pre-check (`scripts/close-precheck.mjs`) stops `/close` with verdict `already-finalized` when STATE.md is `completed` and recorded; that wording is what the user sees if express-path persistence breaks

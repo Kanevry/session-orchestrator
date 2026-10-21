@@ -110,7 +110,7 @@ import { join, resolve, relative, sep } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import { writeStdoutLineSync, writeJsonAtomicSync } from './lib/io.mjs';
-import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
+import { isMeasuredSession, readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { slashCommandNames } from './lib/user-invocable-skills.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
@@ -495,7 +495,7 @@ export const METRIC_DEFS = Object.freeze([
     // Measured on THIS repo's own ledger @ 2ccea0f2: raw line count 289 vs
     // canonical (deduped) count 278 — an over-count of 11 records, which is the
     // bug's magnitude this migration removes.
-    source: 'grep -c . .orchestrator/metrics/sessions.jsonl   (then deduped per session_id — see readCanonicalSessions, #1186)',
+    source: 'grep -c . .orchestrator/metrics/sessions.jsonl   (then deduped per session_id — see readCanonicalSessions, #1186; synthetic backfill stubs excluded — isMeasuredSession, audit E1)',
     compute: (root) => {
       const file = ledgerFile(root, 'sessions.jsonl');
       // Same absent/non-file guard as countJsonlEntries, kept explicit here
@@ -510,7 +510,9 @@ export const METRIC_DEFS = Object.freeze([
       // identified for dedup. Measured @ 2ccea0f2 on this repo's own ledger:
       // 0 such rows (raw 289 lines == 289 identified), so the drop is inert
       // here; it only matters for a future malformed/legacy row.
-      return fmtCount(readCanonicalSessions({ filePath: file }).length);
+      // Audit E1: count MEASURED sessions only — synthetic backfill stubs are
+      // records of a start, not sessions (`isMeasuredSession`).
+      return fmtCount(readCanonicalSessions({ filePath: file }).filter(isMeasuredSession).length);
     },
   },
   {

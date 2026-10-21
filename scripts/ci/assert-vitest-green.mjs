@@ -96,6 +96,9 @@ export function verifyVitestResult(result, opts = {}) {
   if (success !== true) {
     return { ok: false, reason: `success is ${JSON.stringify(success)} (expected true)`, summary };
   }
+  if (numPassedTests <= 0 || result.numPendingTests >= numTotalTests) {
+    return { ok: false, reason: 'no executed passing tests (all tests pending/skipped)', summary };
+  }
   // Floor guard: a suspiciously small run signals a truncated/partial/empty
   // execution masquerading as green. The real suite is ~12.1k tests (2026-07-17).
   if (numTotalTests < minTests) {

@@ -20,7 +20,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 
-import { $, nothrow } from 'zx';
+import { $, nothrow } from './zx.mjs';
 
 // Do not spam stdout/stderr with git command echoes.
 $.verbose = false;

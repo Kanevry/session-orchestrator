@@ -15,32 +15,17 @@ let repoRoot;
 
 beforeAll(() => {
   repoRoot = mkdtempSync(join(tmpdir(), 'frontend-slop-'));
-
-  // The detector lives in the real repo, not the temp dir. The probe imports it
-  // from `${repoRoot}/scripts/lib/frontend-detect/detect.mjs`, so symlinking the
-  // real scripts dir would couple the test to layout. Instead we copy the two
-  // detector modules into the temp repo so the defensive import resolves.
-  mkdirSync(join(repoRoot, 'scripts', 'lib', 'frontend-detect'), { recursive: true });
 });
 
 afterAll(() => {
   if (repoRoot) rmSync(repoRoot, { recursive: true, force: true });
 });
 
-// We re-point the probe at the REAL detector by writing tiny re-export shims in
-// the temp repo that import from the actual source via absolute path.
-function installDetectorShim(root) {
-  const realDetect = join(process.cwd(), 'scripts', 'lib', 'frontend-detect', 'detect.mjs');
-  writeFileSync(
-    join(root, 'scripts', 'lib', 'frontend-detect', 'detect.mjs'),
-    `export * from ${JSON.stringify(realDetect)};\n`,
-  );
-}
-
 describe('frontend-slop probe', () => {
+  // BUG #1653: the detector was resolved from repoRoot, so in a consumer repo
+  // (no scripts/lib/) the probe skipped with detector-unavailable. The temp
+  // repo here has no scripts/ dir at all.
   it('flags planted slop and skips clean files', async () => {
-    installDetectorShim(repoRoot);
-
     // Planted slop
     mkdirSync(join(repoRoot, 'src'), { recursive: true });
     writeFileSync(
@@ -76,8 +61,6 @@ describe('frontend-slop probe', () => {
 
   it('returns an empty result for a repo with no frontend files', async () => {
     const empty = mkdtempSync(join(tmpdir(), 'frontend-slop-empty-'));
-    mkdirSync(join(empty, 'scripts', 'lib', 'frontend-detect'), { recursive: true });
-    installDetectorShim(empty);
     writeFileSync(join(empty, 'README.md'), '# nothing to scan here');
 
     const result = await frontendSlop({ repoRoot: empty });
@@ -87,11 +70,4 @@ describe('frontend-slop probe', () => {
     rmSync(empty, { recursive: true, force: true });
   });
 
-  it('emits a defensive finding when the detector module is absent', async () => {
-    const noDetector = mkdtempSync(join(tmpdir(), 'frontend-slop-nodet-'));
-    const result = await frontendSlop({ repoRoot: noDetector });
-    expect(result.findings).toHaveLength(1);
-    expect(result.summary.skipped_reason).toBe('detector-unavailable');
-    rmSync(noDetector, { recursive: true, force: true });
-  });
 });

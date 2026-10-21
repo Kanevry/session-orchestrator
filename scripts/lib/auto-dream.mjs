@@ -26,8 +26,8 @@ import { existsSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { atomicWriteText, envelopeToError } from './io.mjs';
 
-import { readCanonicalSessions } from './sessions-canonical.mjs';
-import { filterRealSessions } from './session-schema.mjs';
+import { readCanonicalSessions, isMeasuredSession } from './sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 // ---------------------------------------------------------------------------
 // Signal reader — MEMORY.md size + sessions-since-last-cleanup
@@ -53,7 +53,7 @@ import { filterRealSessions } from './session-schema.mjs';
  */
 export async function readDreamSignals({ repoRoot, memoryDir }) {
   const memoryPath = path.join(memoryDir, 'MEMORY.md');
-  const sessionsFilePath = path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl');
+  const sessionsFilePath = path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl');
 
   // 1. Line count of MEMORY.md (missing → 0)
   let memoryLines = 0;
@@ -80,13 +80,10 @@ export async function readDreamSignals({ repoRoot, memoryDir }) {
 
   const entries = readCanonicalSessions({ filePath: sessionsFilePath });
 
-  // Abandoned-session filter (#834): sessions.jsonl carries phantom
-  // `status: 'abandoned'` stubs (session-close-backfill records for
-  // sessions that ended without a real close). They are legitimate DATA
-  // but not legitimate SIGNAL — a burst of abandoned stubs must not fire
-  // /memory-cleanup off zero real work. filterRealSessions() is the
-  // shared, tested implementation (scripts/lib/session-schema/filters.mjs).
-  const realEntries = filterRealSessions(entries);
+  // Count only canonical measured work (#1584), including legacy waves and
+  // known non-synthetic abandoned sessions; synthetic completed stubs do not
+  // advance maintenance cadence or supply a cleanup anchor.
+  const realEntries = entries.filter(isMeasuredSession);
 
   // Find the most recent memory_cleanup_at timestamp across all REAL entries.
   for (const entry of realEntries) {

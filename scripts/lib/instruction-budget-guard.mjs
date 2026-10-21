@@ -3,10 +3,12 @@
  *
  * Lightweight directive-budget guard for always-on `.claude/rules/*.md`.
  *
- * Sums the always-on directive count across the rule files that the
- * rule-loader classifies as always-on (no `globs:` frontmatter, and no
- * `paths:` alias either — issue #795: `paths:`-scoped rules are NOT
- * always-on and must not inflate this count) and warns when the total
+ * Sums the always-on directive count across the rule files that Claude Code
+ * loads always-on: every rule WITHOUT a `paths:` frontmatter key (#1638).
+ * Claude Code reads `paths:` only and ignores `globs:` without an error, so a
+ * `globs:`-only rule is always-on there and counts here, even though the
+ * rule-loader's own wave injection scopes it. Measured through
+ * `loadApplicableRules({ scopeKey: 'paths' })`. It warns when the total
  * exceeds a ceiling. "Mechanism over discipline" — the #668 instruction-
  * budget audit recommends this as a silent-now growth ratchet that only
  * fires when NEW always-on directives are added.
@@ -66,11 +68,13 @@
  * - SISTER GUARD / KNOWN DIVERGENCE (#906.3): the projects-baseline repo
  *   (resolved via `plan-baseline-path` / owner.yaml `baseline-path`) ships
  *   `scripts/check-instruction-budget.sh` under rule CCU-009c. It measures the
- *   SAME `.claude/rules/*.md` corpus and its total is NOT comparable to ours —
- *   it diverges on BOTH axes, in OPPOSITE directions:
+ *   SAME `.claude/rules/*.md` corpus and its total is NOT comparable to ours.
+ *   As of 2026-07-30 it diverged on BOTH axes, in OPPOSITE directions:
  *     (a) MEMBERSHIP — it classifies a file as path-scoped only on a `paths:`
- *         frontmatter key, so this repo's `globs:`-scoped rules stay inside ITS
- *         always-on set: 26 files where `loadApplicableRules` yields 12 here.
+ *         frontmatter key, so this repo's then `globs:`-scoped rules stayed
+ *         inside ITS always-on set: 26 files where we counted 12. That was
+ *         Claude Code's semantics and ours was wrong; since #1638 this guard
+ *         also scopes on `paths:` only, so the membership axis is aligned.
  *     (b) HEURISTIC — it counts only rule-ID anchors and imperative-keyword
  *         BULLET lines outside code fences, where `countDirectives` below
  *         counts every bullet, ordered-list item and `##`-or-deeper heading.
@@ -957,15 +961,16 @@ export function listMachineGeneratedRules(opts = {}) {
  *     ({@link isMachineGeneratedRule}). This is the population
  *     {@link DEFAULT_GENERATED_BYTE_CEILING} is a ceiling FOR: the thing that
  *     grows on its own, without anyone deciding to add a rule.
- *   - `pathScoped` — every rule with `globs:` (or its `paths:` alias, #795),
- *     i.e. the complement of the always-on set the three tier surfaces measure.
+ *   - `pathScoped` — every rule with a `paths:` key (#1638: Claude Code's only
+ *     scope key; a `globs:`-only rule is always-on there), i.e. the complement
+ *     of the always-on set the three tier surfaces measure.
  *     A real quantity, and the one this axis USED to report under the name
  *     `generated` — see the ceiling's docblock for what that cost.
  *
  * The two overlap but neither contains the other by construction: a
  * hand-written rule can be path-scoped (3 of them are here), and a generated
  * rule could in principle carry a `host-class` activation axis instead of
- * `globs:`.
+ * `paths:`.
  *
  * Neither can reuse `loadApplicableRules`: that loader takes a `scopePaths`
  * list and returns the rules APPLICABLE to it, so with `scopePaths: []` it
@@ -1005,10 +1010,10 @@ function measureRuleCorpora(rulesDir) {
     } catch {
       continue; // unreadable file — skip, never throw
     }
-    let globs;
+    let paths;
     let meta;
     try {
-      ({ globs, meta } = parseGlobsFrontmatter(content));
+      ({ paths, meta } = parseGlobsFrontmatter(content));
     } catch {
       continue;
     }
@@ -1017,8 +1022,9 @@ function measureRuleCorpora(rulesDir) {
       generated.files += 1;
       generated.bytes += bytes;
     }
-    // `globs === null` → always-on, already counted by the tier surfaces.
-    if (globs !== null) {
+    // `paths === null` → always-on for Claude Code, already counted by the
+    // tier surfaces (which load with `scopeKey: 'paths'` — same split).
+    if (paths !== null) {
       pathScoped.files += 1;
       pathScoped.bytes += bytes;
     }
@@ -1130,8 +1136,8 @@ function measureRuleCorpora(rulesDir) {
  *       reconciliation PROVENANCE marker (`auto-generated: true` /
  *       `learning-key` / `expires-at`) — the corpus
  *       {@link DEFAULT_GENERATED_BYTE_CEILING} judges (#1297).
- *     bySurface.pathScoped === {bytes, files} of every rule with `globs:`
- *       (or its `paths:` alias) — the complement of the always-on set, and
+ *     bySurface.pathScoped === {bytes, files} of every rule with a `paths:`
+ *       key (#1638) — the complement of the always-on set, and
  *       the number an operator reproduces from `ls .claude/rules/` (HR-106).
  *       Judged against {@link DEFAULT_PATH_SCOPED_BYTE_CEILING} into
  *       `overPathScopedBudget`, an `overBudget` term since #1316 (see that
@@ -1207,10 +1213,12 @@ export function computeInstructionBudget(opts = {}) {
     // — reused, not reimplemented. All three lists are loaded unconditionally
     // (not just the one matching `opts.context`) because `bySurface` reports
     // all three surfaces regardless of which `context` was requested for the
-    // PRIMARY totals (see doc above).
-    allEntries = loadApplicableRules({ rulesDir, scopePaths: [] });
-    waveEntries = loadApplicableRules({ rulesDir, scopePaths: [], context: 'wave' });
-    coordinatorEntries = loadApplicableRules({ rulesDir, scopePaths: [], context: 'coordinator' });
+    // PRIMARY totals (see doc above). `scopeKey: 'paths'` (#1638): the budget
+    // measures what Claude Code loads, and Claude Code scopes on `paths:` only.
+    const scopeKey = 'paths';
+    allEntries = loadApplicableRules({ rulesDir, scopePaths: [], scopeKey });
+    waveEntries = loadApplicableRules({ rulesDir, scopePaths: [], context: 'wave', scopeKey });
+    coordinatorEntries = loadApplicableRules({ rulesDir, scopePaths: [], context: 'coordinator', scopeKey });
   } catch {
     return empty;
   }
@@ -1242,7 +1250,7 @@ export function computeInstructionBudget(opts = {}) {
     // `pathScoped` keeps the old measurement under its honest name. Both are
     // disjoint from `totalBytes`, which counts always-on rules exclusively —
     // except that a generated rule activated by `host-class` rather than
-    // `globs:` would be always-on and therefore counted in both.
+    // `paths:` would be always-on and therefore counted in both.
     ...measureRuleCorpora(rulesDir),
   };
 

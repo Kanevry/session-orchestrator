@@ -100,6 +100,8 @@ Route based on mode:
 
 Extracts learnings from session history: pattern extraction across the 9 built-in analyzer types plus `evolve.extra-sources`, deduplication, relation judgment (#1016), the AskUserQuestion confirmation gate, and the archive-safe write pipeline (through the C2 auto-repair feeder). See [references/evolve-analyze-mode.md](references/evolve-analyze-mode.md). **Read WHEN:** Phase 2's Mode Dispatch routes to `analyze` (the default mode).
 
+**Agent-usage census (#1617).** Before extraction, run `node "${CLAUDE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-$PLUGIN_ROOT}}/scripts/agent-usage-census.mjs" --days 14` (read-only over `~/.claude/projects` subagent transcripts, ~20 s for 14 days). Report the model shares and the top agent types (runs, turns/run, output/run, cache rebuilds, start context) in the analyze summary, and quote `malformed_lines`. It is an observation, not a learning source: nothing is written from it, and a shift (a type moving model, a new dominant type) goes to the operator as a finding. Housekeeping step 4 runs `/evolve analyze`, so the weekly maintenance loop carries the census without a second entry.
+
 ---
 
 ## Phase 4: Review Mode

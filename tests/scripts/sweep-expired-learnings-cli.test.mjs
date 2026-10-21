@@ -87,10 +87,11 @@ function sha256(filePath) {
 /** Run the CLI. Returns { stdout, stderr, status } (never throws on non-zero exit). */
 // spawnSync, not execFileSync: a WARN on a SUCCESSFUL run (exit 0) must be
 // readable too — execFileSync hands back stdout only when the child succeeds.
-function runSweep(args) {
+function runSweep(args, env = process.env) {
   const r = spawnSync('node', [SCRIPT, ...args], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
+    env,
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: typeof r.status === 'number' ? r.status : 1 };
 }
@@ -820,6 +821,29 @@ describe('sweep-expired-learnings.mjs — --prune --json', () => {
       promoted: 0,
       duration_ms: 250,
     });
+  });
+});
+
+describe('sweep-expired-learnings.mjs — --prune --apply on an inbox-role host (#1516)', () => {
+  // The bug: the inbox-role prune archives nothing and leaves the store alone,
+  // yet the CLI emitted orchestrator.evolve.completed (a completed store write)
+  // and its human line carried no hint that the apply was skipped.
+  it('emits no orchestrator.evolve.completed and marks the human line skipped', () => {
+    writeJsonl(learningsPath, [
+      liveLearning({ id: 'alive' }),
+      learning({ id: 'dead', subject: 'stale', expires_at: new Date(Date.now() - DAY_MS).toISOString() }),
+    ]);
+    const before = sha256(learningsPath);
+
+    const result = runSweep(
+      ['--prune', '--apply', '--file', learningsPath, '--archive', archivePath, '--repo-root', workdir],
+      { ...process.env, SO_LEARNINGS_STORE_ROLE: 'inbox' },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toMatch(/ skipped=store-role-inbox\n$/);
+    expect(sha256(learningsPath)).toBe(before);
+    expect(existsSync(path.join(workdir, '.orchestrator', 'metrics', 'events.jsonl'))).toBe(false);
   });
 });
 

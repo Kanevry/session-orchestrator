@@ -60,6 +60,7 @@ import {
   CURRENT_ANONYMIZATION_VERSION,
 } from './lib/learnings.mjs';
 import { withLearningsLock } from './lib/learnings/io.mjs';
+import { assertStoreRoleUsable, isCanonicalStore, resolveStoreRole } from './lib/learnings/store-role.mjs';
 import { findProjectRoot, resolveInstructionFile, expandTilde, redactHomeDir } from './lib/common.mjs';
 import { parseSessionConfig } from './lib/config.mjs';
 import { createSecretValueMasker } from './lib/secret-masker.mjs';
@@ -598,7 +599,12 @@ function parseArgs(argv) {
         '                   (backup created first). Use with --dry-run to preview.\n' +
         '  --dry-run        Print markdown to stdout; do not write any files.\n' +
         '  --output FILE    Override the default write target. Default: resolved from\n' +
-        '                   vault-integration.vault-dir (see script header doc).\n'
+        '                   vault-integration.vault-dir (see script header doc).\n' +
+        '\n' +
+        'Exit codes: 0 success, 1 export failed (incl. --promote without --dry-run on a\n' +
+        '            host whose learnings-store role is inbox or invalid, #1516:\n' +
+        '            nothing written),\n' +
+        '            2 unknown argument.\n'
       );
       process.exit(0);
     } else {
@@ -650,6 +656,17 @@ export async function promoteHwLearnings(opts) {
   // nothing and takes no lock. A lock not acquired throws LearningsLockError
   // (nothing written), which the CLI reports as `export failed: …`, exit 1.
   if (opts.dryRun) return promoteHwLearningsUnlocked(opts);
+  // #1516 fail-closed: an invalid store role throws LearningsStoreRoleError
+  // (CLI: `export failed: …`, exit 1) before anything is read, locked or emitted.
+  assertStoreRoleUsable(opts.input);
+  // #1516: on an inbox-role host the live store is never rewritten, and a
+  // promoted twin keeps its private original's id, so the inbox rewrite would
+  // drop it silently. Refuse before anything is read, locked or emitted.
+  if (isCanonicalStore(opts.input) && resolveStoreRole().role === 'inbox') {
+    throw new Error(
+      'store-role inbox: --promote rewrites learnings.jsonl, which this host never does — run it on the writer host'
+    );
+  }
   return withLearningsLock(opts.input, () => promoteHwLearningsUnlocked(opts));
 }
 

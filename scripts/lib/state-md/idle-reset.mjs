@@ -18,7 +18,7 @@
 
 import { parseStateMd, serializeStateMd } from './yaml-parser.mjs';
 import { existsSync } from 'node:fs';
-import { resolveStateMdPath, updateFrontmatterFields, writeStateMd } from './frontmatter-mutators.mjs';
+import { resolveStateMdWriteTarget, updateFrontmatterFields, warnForeignStateMd, writeStateMd } from './frontmatter-mutators.mjs';
 import { parseRecommendations } from './recommendations.mjs';
 
 /** Rule 7: the drift-baseline keys that must not survive into session N+1. */
@@ -201,7 +201,9 @@ export function resetStateMdToIdle(contents) {
 
 /**
  * Applies `resetStateMdToIdle` to the repo's STATE.md under the STATE.md lock
- * (`writeStateMd`). A missing or empty STATE.md is a no-op with reason `missing`.
+ * (`writeStateMd`). A missing or empty STATE.md is a no-op with reason `missing`;
+ * when the only STATE.md belongs to another platform's foreign session it is
+ * `foreign-state-md` (#1618), with one stderr WARN naming that file.
  * A write the size-ceiling / frontmatter-safe guards refuse comes back as
  * `changed: false` with that guard's reason.
  *
@@ -216,8 +218,15 @@ export async function resetStateMdToIdleOnDisk(repoRoot, opts = {}) {
   }
   // No STATE.md: answer before the lock, which would otherwise create
   // <repoRoot>/.orchestrator/ in whatever directory a mistyped root names.
-  const statePath = resolveStateMdPath(repoRoot);
-  if (!existsSync(statePath)) return { changed: false, reason: 'missing', path: statePath };
+  // Probe the same path writeStateMd will target (#1618), never a foreign one.
+  // The reset is the hand-over that turns the PREVIOUS session's completed
+  // record into idle, so a preferred `status: completed` file qualifies (#1640).
+  const writeOpts = { ...opts, completedHandoff: true };
+  const { path: statePath, rejected } = resolveStateMdWriteTarget(repoRoot, writeOpts);
+  if (!existsSync(statePath)) {
+    if (rejected) warnForeignStateMd('resetStateMdToIdleOnDisk', rejected, statePath);
+    return { changed: false, reason: rejected ? 'foreign-state-md' : 'missing', path: statePath };
+  }
   let reason;
   const result = await writeStateMd(
     repoRoot,
@@ -230,7 +239,7 @@ export async function resetStateMdToIdleOnDisk(repoRoot, opts = {}) {
       reason = reset.reason;
       return reset.changed ? reset.contents : null;
     },
-    opts,
+    writeOpts,
   );
   const out = { changed: result.written, path: result.path };
   const why = result.reason ?? reason;

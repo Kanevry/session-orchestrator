@@ -543,7 +543,7 @@ describe('#1548 record identity is independent of transliterated note names', ()
     expect(raw).not.toHaveProperty('id');
     const note = generateLearningNote(entry, 'groesse-uebergabe', { repoNs: 'fixture-tool' });
     for (const fm of [parseFrontmatter(note), YAML.load(note.split('---')[1])]) {
-      expect(fm.id).toBe('groesse-uebergabe');
+      expect(fm.id).toBe('fixture-tool-groesse-uebergabe');
       expect(fm['source-record']).toBe('gre-bergabe');
     }
   });

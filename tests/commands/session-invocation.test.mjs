@@ -81,6 +81,10 @@ describe('session invocation resolution', () => {
       context: '',
       defaultReason: 'no-session-history',
     }],
+    ['completed synthetic row', '{"session_id":"s-1","session_type":"deep","status":"completed","_synthetic":true}\n', { sessionType: 'deep', context: '', defaultReason: 'no-session-history' }],
+    ['unknown zero-work row', '{"session_id":"s-1","session_type":"unknown"}\n', { sessionType: 'deep', context: '', defaultReason: 'no-session-history' }],
+    ['legacy measured work', '{"session_id":"s-1","total_waves":1}\n', { sessionType: 'deep', context: '' }],
+    ['known abandoned work', '{"session_id":"s-1","session_type":"deep","status":"abandoned"}\n', { sessionType: 'deep', context: '' }],
     ['one real session', '{"session_id":"s-1","session_type":"deep"}\n', { sessionType: 'deep', context: '' }],
   ])('names the bare default when the repo has %s', (_label, ledger, expected) => {
     const repo = mkdtempSync(join(tmpdir(), 'so-invocation-'));
@@ -124,6 +128,14 @@ describe('session invocation resolution', () => {
       mkdirSync(join(main, '.orchestrator', 'metrics'), { recursive: true });
       writeFileSync(ledger, '{"session_id":"s-1","session_type":"deep"}\n');
       expect(bare(join(base, 'wt'))).toEqual({ sessionType: 'deep', context: '' });
+      const shadow = join(base, 'wt', '.orchestrator', 'metrics', 'sessions.jsonl');
+      mkdirSync(join(base, 'wt', '.orchestrator', 'metrics'), { recursive: true });
+      writeFileSync(shadow, '{"session_id":"shadow","session_type":"deep"}\n');
+      writeFileSync(ledger, '{"session_id":"stub","session_type":"deep","_synthetic":true}\n');
+      expect(bare(join(base, 'wt'))).toEqual({
+        sessionType: 'deep', context: '', defaultReason: 'no-session-history',
+      });
+
       // A ledger path that is not a readable file (a directory here; mode 000
       // where permissions are enforced, i.e. not as root) is unmeasured.
       const odd = join(base, 'odd');

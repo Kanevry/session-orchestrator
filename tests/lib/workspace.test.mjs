@@ -17,7 +17,7 @@ import { join } from 'node:path';
 // Module-level mocks (must be hoisted before dynamic imports)
 // ---------------------------------------------------------------------------
 
-vi.mock('zx', () => ({
+vi.mock('@lib/zx.mjs', () => ({
   $: Object.assign(
     vi.fn().mockImplementation(() =>
       Promise.resolve({ stdout: '' })
@@ -56,7 +56,7 @@ describe('resolveWorkspaceRoot', () => {
     const gitDir = join(sandbox, '.git');
     mkdirSync(gitDir, { recursive: true });
 
-    const { $ } = await import('zx');
+    const { $ } = await import('@lib/zx.mjs');
     $.mockResolvedValueOnce({ stdout: gitDir + '\n' });
 
     // Change cwd so the module sees our sandbox
@@ -77,7 +77,7 @@ describe('resolveWorkspaceRoot', () => {
     const gitDir = join(sandbox, '.git');
     mkdirSync(gitDir, { recursive: true });
 
-    const { $ } = await import('zx');
+    const { $ } = await import('@lib/zx.mjs');
     $.mockRejectedValueOnce(new Error('not a git repository'));
 
     const origCwd = process.cwd();
@@ -94,7 +94,7 @@ describe('resolveWorkspaceRoot', () => {
   it('throws when neither git command nor .git entry can be found', async () => {
     // An empty tmpdir with no .git at all
     const empty = mkdtempSync(join(tmpdir(), 'workspace-empty-'));
-    const { $ } = await import('zx');
+    const { $ } = await import('@lib/zx.mjs');
     $.mockRejectedValueOnce(new Error('not a git repo'));
 
     const origCwd = process.cwd();
@@ -118,7 +118,7 @@ describe('restoreCoordinatorCwd', () => {
     const gitDir = join(sandbox, '.git');
     mkdirSync(gitDir, { recursive: true });
 
-    const { $ } = await import('zx');
+    const { $ } = await import('@lib/zx.mjs');
     $.mockResolvedValueOnce({ stdout: gitDir + '\n' });
 
     const origCwd = process.cwd();
@@ -138,7 +138,7 @@ describe('restoreCoordinatorCwd', () => {
     const gitDir = join(sandbox, '.git');
     mkdirSync(gitDir, { recursive: true });
 
-    const { $ } = await import('zx');
+    const { $ } = await import('@lib/zx.mjs');
     $.mockResolvedValueOnce({ stdout: gitDir + '\n' });
 
     const origCwd = process.cwd();

@@ -12,7 +12,18 @@
  * process inherits this env. Tests that exercise the switch pass it explicitly.
  * SO_VAULT_DIR is deliberately NOT cleared here: tests/setup/vault-guard.mjs
  * repoints it at a temp dir instead, which is the stronger guard for that key.
+ *
+ * SO_LEARNINGS_STORE_ROLE (SO#1516) is the host-local learnings store role. An
+ * operator host exporting `inbox` turns every fixture rewrite of a canonical
+ * `learnings.jsonl` into an inbox append — measured: 51 failures. Tests that
+ * exercise the role set it explicitly.
  */
-for (const key of ['CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'SO_PLATFORM', 'SO_VAULT_INTEGRATION']) {
+for (const key of [
+  'CLAUDE_CODE_SESSION_ID',
+  'CODEX_THREAD_ID',
+  'SO_PLATFORM',
+  'SO_VAULT_INTEGRATION',
+  'SO_LEARNINGS_STORE_ROLE',
+]) {
   delete process.env[key];
 }

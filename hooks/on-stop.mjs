@@ -47,6 +47,7 @@ import { AGENT_ID_RE, resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 
 import { emitEvent } from '../scripts/lib/events.mjs';
 import { detectPlatform, getProjectDir, resolveSessionRoot } from '../scripts/lib/platform.mjs';
+import { resolveOwnLockRoot } from './_lib/hook-root.mjs';
 import { findOwnScopeFile } from '../scripts/lib/scope-gate.mjs';
 import {
   classifyManifestSession,
@@ -119,7 +120,7 @@ function discriminate(input) {
 // dependency degradation (GH Kanevry/session-orchestrator#63)
 // ---------------------------------------------------------------------------
 //
-// zx is loaded LAZILY. A static `import { $ } from 'zx'` fails at MODULE LOAD
+// zx is loaded LAZILY. A static `import { $ } from '../scripts/lib/zx.mjs'` fails at MODULE LOAD
 // time when node_modules is absent (interrupted install, EPERM sandbox, half-
 // synced plugin cache), so the harness prints a 10-frame ERR_MODULE_NOT_FOUND
 // stack on EVERY turn end with no hint that `npm install` is the fix. This
@@ -175,7 +176,7 @@ function warnDependenciesMissingOnce() {
  */
 async function loadZx() {
   try {
-    return (await import('zx')).$;
+    return (await import('../scripts/lib/zx.mjs')).$;
   } catch (err) {
     if (err?.code !== 'ERR_MODULE_NOT_FOUND') throw err;
     warnDependenciesMissingOnce();
@@ -401,11 +402,13 @@ function reaperTriggerField(trigger) {
  */
 async function handleStop(input, reaperTrigger = null) {
   // Two roots, by writer (#1511 point b). `current-session.json` and
-  // `session.lock` (session id, lock heartbeat, duration) stay at the LAUNCH
-  // dir: on-session-start.mjs writes both at `resolveProjectDir()`. The wave
+  // `session.lock` (session id, lock heartbeat, duration) are read where
+  // on-session-start.mjs wrote them: the launch dir, or — after EnterWorktree
+  // and a /clear, compact or resume there (#1605) — the entered worktree, found
+  // by the lock carrying this session's raw id (`resolveOwnLockRoot`). The wave
   // and the commit/branch describe the tree the session WORKS in — after
   // EnterWorktree that is the session root, not the launch checkout.
-  const projectRoot = getProjectDir();
+  const projectRoot = resolveOwnLockRoot(input, getProjectDir());
   const sessionRoot = resolveSessionRoot(input?.cwd);
 
   const wave = await readWaveNumber(sessionRoot, input);
@@ -453,7 +456,9 @@ async function handleStop(input, reaperTrigger = null) {
       // is visible in sweep.log rather than invisible. One line per turn while
       // the entry is absent; that volume IS the signal, and the next
       // SessionStart's registerSelf() ends it.
-      const refreshed = await heartbeat(sessionId);
+      // #1605 B4 — `work_root` follows the session into an entered worktree,
+      // so a relocating SessionStart of another session sees it working there.
+      const refreshed = await heartbeat(sessionId, { workRoot: path.resolve(sessionRoot) });
       if (refreshed === null) {
         logSweepEvent({
           event: 'heartbeat-missing',

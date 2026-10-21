@@ -22,6 +22,7 @@ import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { inspectVcsRepoFlag, runCheckVcsRepoFlag } from '@lib/validate/check-vcs-repo-flag.mjs';
+import { inspectVcsRepoFlagPositional } from '@lib/validate/check-vcs-repo-flag-positional.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const REPO_ROOT = join(__dirname, '..', '..', '..');
@@ -62,6 +63,203 @@ function inspectFixture(files) {
     rmSync(root, { recursive: true, force: true });
   }
 }
+
+describe('#1024 — rejected repo flags have separate advice', () => {
+  it('reports missing PRs when substitutions occur only in option values or redirects', () => {
+    const root = makeRoot({ 'docs/a.md': bash([
+      'gh pr comment -R o/r --body "$(date)"',
+      'gh pr checks -R "$(printf o/r)"',
+      'gh pr checks -R o/r > "$(printf out.log)"',
+      'gh pr checks -R o/r "$(cat pr.txt)"',
+    ].join('\n')) });
+    try {
+      expect(inspectVcsRepoFlagPositional(root).findings.map((f) => f.line)).toEqual([2, 3, 4]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps commented literal argv static for both repo-flag checks', () => {
+    const root = makeRoot({ 'scripts/a.mjs': [
+      "spawnSync('gh', ['pr', /* command ] ... ${ */ 'checks', '-R', 'o/r']);",
+      "spawnSync('gh', ['pr', // command ] ... ${",
+      "'checks', '123' /* PR */]);",
+      "spawnSync('gh', ['pr', 'checks', '-R', 'o/r', '/* branch */']);",
+    ].join('\n') });
+    try {
+      const rejected = inspectVcsRepoFlagPositional(root);
+      expect(rejected.findings.map((f) => f.line)).toEqual([1]);
+      expect(rejected.summary.unresolvedArgv).toBe(0);
+      const missing = inspectVcsRepoFlag(root);
+      expect(missing.findings.map((f) => f.line)).toEqual([2]);
+      expect(missing.summary.unresolvedArgv).toBe(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['checks', 'view', 'diff', 'ready', 'merge', 'comment'])(
+    'reports gh pr %s without a PR across shell, string and argv call shapes', (sub) => {
+      const root = makeRoot({
+        'docs/a.md': bash(`gh pr ${sub} -R o/r --watch`),
+        'scripts/a.mjs': `const cmd = 'gh pr ${sub} --repo=o/r';\n` +
+          `spawnSync('gh', ['pr', '${sub}', '--repo', 'o/r']);`,
+      });
+      try {
+        const result = inspectVcsRepoFlagPositional(root);
+        expect(result.findings).toHaveLength(3);
+        expect(result.findings.every((f) => f.kind === 'repo-flag-missing-positional')).toBe(true);
+        expect(result.findings.every((f) => /name the PR.*drop the flag/.test(f.message))).toBe(true);
+        // The original worklist must never prescribe adding -R to these calls.
+        expect(inspectVcsRepoFlag(root).findings).toEqual([]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('does not mistake option values for a PR or reject valid flagged PRs', () => {
+    const root = makeRoot({ 'docs/a.md': bash([
+      'gh pr checks -R o/r --json state --jq .state --template "a b"',
+      'gh pr merge --repo=o/r --subject "a b" --body text --author-email example',
+      'gh pr comment -R o/r --body-file message.md --editor',
+      'gh pr diff -Ro/r',
+      'gh pr checks -R o/r 123',
+      'gh pr view topic --repo o/r --json state',
+      'gh pr diff -Ro/r 123',
+      'gh pr ready --repo=o/r -- 123',
+      'gh pr checks --watch',
+      'gh pr list -R o/r',
+      'glab mr view -R o/r',
+      'gh pr comment --body "-R"',
+      'gh pr checks -- 123 -R o/r',
+    ].join('\n')) });
+    try {
+      const result = inspectVcsRepoFlagPositional(root);
+      expect(result.findings.map((f) => f.line)).toEqual([2, 3, 4, 5]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    "['pr', 'checks', '-R', 'o/r', pr]",
+    "['pr', 'checks', '-R', repo, '123']",
+  ])('counts partially dynamic argv as unresolved: %s', (args) => {
+    const root = makeRoot({ 'scripts/a.mjs': `spawnSync('gh', ${args});` });
+    try {
+      const result = inspectVcsRepoFlagPositional(root);
+      expect(result.findings).toEqual([]);
+      expect(result.summary.unresolvedArgv).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    'gh pr checks -R o/r $(cat pr.txt)',
+    'gh pr checks -R $(cat repo.txt) 123',
+    'gh pr checks -R o/r `cat pr.txt`',
+  ])('leaves substitution-valued arguments unresolved: %s', (command) => {
+    const root = makeRoot({ 'docs/a.md': bash(command) });
+    try {
+      expect(inspectVcsRepoFlagPositional(root).findings).toEqual([]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['|', ';', ')'])('keeps quoted %s inside the command until its PR argument', (separator) => {
+    const root = makeRoot({ 'docs/a.md': bash([
+      `gh pr comment -R o/r --body "a ${separator} b" 123`,
+      `gh pr comment -R o/r --body "a ${separator} b"`,
+    ].join('\n')) });
+    try {
+      expect(inspectVcsRepoFlagPositional(root).findings.map((f) => f.line)).toEqual([3]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['> out.log', '>| out.log', '>> out.log', '< in.txt', '2> err.log', '2>&1', '&> out.log'])(
+    'excludes redirect syntax and its operand from PR arguments: %s', (redirect) => {
+      const root = makeRoot({ 'docs/a.md': bash([
+        `gh pr checks -R o/r ${redirect}`,
+        `gh pr checks -R o/r ${redirect} 123`,
+      ].join('\n')) });
+      try {
+        expect(inspectVcsRepoFlagPositional(root).findings.map((f) => f.line)).toEqual([2]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["<<'EOF'", '<<EOF', '<<-EOF'])(
+    'skips heredoc data and resumes after the terminator: %s', (redirect) => {
+      const root = makeRoot({ 'docs/a.md': bash([
+        `cat ${redirect}`, 'gh pr checks -R o/r', 'EOF', 'gh pr checks -R o/r',
+      ].join('\n')) });
+      try {
+        expect(inspectVcsRepoFlagPositional(root).findings.map((f) => f.line)).toEqual([5]);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // #1672: arithmetic `<<`, quote removal on the delimiter, body only after the logical line.
+  it.each([
+    ['arithmetic shift', ['echo $((1 << 2))', 'gh pr checks -R o/r'], 3],
+    ['backslash-quoted delimiter', ['cat <<\\EOF', 'data', 'EOF', 'gh pr checks -R o/r'], 5],
+    ['mixed-quoted delimiter', ['cat <<E"O"F', 'data', 'EOF', 'gh pr checks -R o/r'], 5],
+    ['continued heredoc line', ['cat <<EOF \\', '  && gh pr checks -R o/r', 'data', 'EOF'], 2],
+  ])('does not swallow a real call after a heredoc edge case: %s', (_name, lines, line) => {
+    const root = makeRoot({ 'docs/a.md': bash(lines.join('\n')) });
+    try {
+      expect(inspectVcsRepoFlagPositional(root).findings.map((f) => f.line)).toEqual([line]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores comment flags and commands while keeping quoted/escaped hashes and real flags', () => {
+    const result = inspectFixture({ 'docs/a.md': bash([
+      'glab issue list --output json # -R note; gh issue list',
+      'glab issue list --search "# tag" -R o/r',
+      'glab issue list --search \\#tag -R o/r',
+      'glab issue list --search tag#word -R o/r',
+    ].join('\n')) });
+    expect(result.findings.map((f) => f.line)).toEqual([2]);
+    expect(result.summary.withFlag).toBe(3);
+    expect(result.summary.applicable).toBe(4);
+  });
+
+  it.each([false, true])('keeps findings WARN-only and tool errors nonzero (json=%s)', (json) => {
+    const root = makeRoot({ 'docs/a.md': bash('gh pr checks -R o/r --watch') });
+    const script = join(REPO_ROOT, 'scripts/lib/validate/check-vcs-repo-flag-positional.mjs');
+    const invoke = (target) => spawnSync(process.execPath, [script, target, ...(json ? ['--json'] : [])], { encoding: 'utf8' });
+    try {
+      const warned = invoke(root);
+      expect(warned.status).toBe(0);
+      if (json) {
+        expect(JSON.parse(warned.stdout)).toMatchObject({
+          ok: false, toolError: false, summary: { findings: 1 },
+          findings: [{ kind: 'repo-flag-missing-positional', file: 'docs/a.md', line: 2 }],
+        });
+      } else {
+        expect(warned.stdout).toContain('WARN: [repo-flag-missing-positional]');
+        expect(warned.stdout).not.toMatch(/FAIL:|bare/);
+      }
+      const failed = invoke(join(root, 'missing'));
+      expect(failed.status).toBe(2);
+      if (json) expect(JSON.parse(failed.stdout)).toMatchObject({ ok: false, toolError: true });
+      else expect(failed.stdout).toContain('FAIL: [tool-error]');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 // ─── Positive detection ──────────────────────────────────────────────────────
 

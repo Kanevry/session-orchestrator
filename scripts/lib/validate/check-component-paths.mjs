@@ -72,7 +72,22 @@ function stripLeadingDotSlash(p) {
  * @param {boolean} optional    - If true, missing conventional path is a PASS
  */
 function checkComponentPath(field, conventional, optional = false) {
-  const relPath = json[field] || '';
+  const value = json[field];
+  // hooks/mcpServers also accept inline config objects (plugins-reference §
+  // Component path forms). An inline object carries no path to resolve; arrays
+  // may mix paths and objects, so each string entry is checked as a path.
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (typeof entry === 'string') checkExplicitPath(field, entry);
+      else pass(`${field} inline config entry (no path to resolve)`);
+    }
+    return;
+  }
+  if (value && typeof value === 'object') {
+    pass(`${field} is an inline config object (no path to resolve)`);
+    return;
+  }
+  const relPath = value || '';
 
   if (!relPath) {
     // No explicit value — try conventional auto-discovery
@@ -87,6 +102,15 @@ function checkComponentPath(field, conventional, optional = false) {
     return;
   }
 
+  checkExplicitPath(field, relPath);
+}
+
+/**
+ * Check one explicit component path: must start with "./" and exist.
+ * @param {string} field
+ * @param {string} relPath
+ */
+function checkExplicitPath(field, relPath) {
   // Explicit value — must start with "./"
   if (!relPath.startsWith('./')) {
     fail(`${field} path does not start with ./: ${relPath}`);

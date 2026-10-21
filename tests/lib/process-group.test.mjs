@@ -40,6 +40,14 @@ import { runOrphanScan } from '@lib/orphan-reaper/scan.mjs';
 const DEAD_PID = 999999;
 
 /**
+ * Injected platform for every case that checks the POSIX contract (kill ladder
+ * against `-pgid`, `ps`-based identity, the gate-process ledger). Without it the
+ * module reads `process.platform` and, on a Windows runner, takes the
+ * taskkill/CIM branch these assertions were never about (#1613).
+ */
+const POSIX = 'linux';
+
+/**
  * A fake child process. It never closes on its own: the shapes this module
  * exists for (a wedged gate, an over-talkative one) are exactly the children
  * that only go away when the GROUP is signalled.
@@ -47,6 +55,8 @@ const DEAD_PID = 999999;
 function fakeChild(pid) {
   const child = new EventEmitter();
   child.pid = pid;
+  child.exitCode = null;
+  child.signalCode = null;
   child.stdout = new PassThrough();
   child.stderr = new PassThrough();
   return child;
@@ -88,6 +98,7 @@ describe('spawnInGroup — kill ladder', () => {
     const killFn = fakeGroupKill(child, state);
 
     const promise = spawnInGroup('pretend-gate', {
+      platform: POSIX,
       spawnFn: () => child,
       killFn,
       isAliveFn: () => state.alive,
@@ -115,6 +126,7 @@ describe('spawnInGroup — kill ladder', () => {
     let seen = null;
 
     const promise = spawnInGroup('pretend-gate', {
+      platform: POSIX,
       spawnFn: (cmd, options) => {
         seen = { cmd, options };
         return child;
@@ -144,6 +156,7 @@ describe('spawnInGroup — kill ladder', () => {
     const killFn = fakeGroupKill(child, state);
 
     const promise = spawnInGroup('noisy-gate', {
+      platform: POSIX,
       spawnFn: () => child,
       killFn,
       isAliveFn: () => state.alive,
@@ -193,6 +206,7 @@ describe('spawnInGroup — kill ladder', () => {
     const killFn = vi.fn(() => true); // models a child that obeys SIGTERM itself
 
     const promise = spawnInGroup('cooperative-gate', {
+      platform: POSIX,
       spawnFn: () => child,
       killFn,
       isAliveFn: () => false,
@@ -213,6 +227,75 @@ describe('spawnInGroup — kill ladder', () => {
     await vi.advanceTimersByTimeAsync(10_000 + 500 + 2_000);
     expect(killFn.mock.calls.length).toBe(callsAtSettle);
     expect(killFn.mock.calls.some((c) => c[1] === 'SIGKILL')).toBe(false);
+  });
+
+  it('keeps a normal exit 0 when the command timeout elapses while the leftover group is being reaped (#1704)', async () => {
+    // Bug: the reap sleeps through killGraceMs after a clean close. If the reap
+    // does not take over the ladder/timeout bookkeeping (`ladderStarted = true`
+    // + clearing the timeout timer in `reapLeftoverGroup`), the still-pending
+    // command timeout fires inside that window, starts a SECOND ladder and
+    // turns an exit-0 run into exit 124 / timedOut.
+    const child = fakeChild(9191);
+    const state = { alive: true };
+    const killFn = vi.fn((target, signal) => {
+      if (signal === 'SIGKILL') state.alive = false;
+      return true;
+    });
+
+    const promise = spawnInGroup('backgrounds-a-stray', {
+      platform: POSIX,
+      spawnFn: () => child,
+      killFn,
+      groupAliveFn: () => state.alive,
+      timeoutMs: 1000,
+      killGraceMs: 5000,
+      verifyWaitMs: 50,
+    });
+
+    await vi.advanceTimersByTimeAsync(500);
+    child.emit('close', 0, null); // clean exit, group still alive -> reap starts
+    await vi.advanceTimersByTimeAsync(600); // t=1100: the command timeout has now elapsed
+    expect(killFn.mock.calls).toEqual([[-9191, 'SIGTERM']]);
+
+    await vi.advanceTimersByTimeAsync(5200); // grace over -> SIGKILL -> verified gone
+    const res = await promise;
+
+    expect(res.exitCode).toBe(0);
+    expect(res.timedOut).toBe(false);
+    expect(res.killSignals).toEqual([]);
+    expect(killFn.mock.calls).toEqual([[-9191, 'SIGTERM'], [-9191, 'SIGKILL']]);
+    expect(res.leftoverGroup).toEqual({ pgid: 9191, signals: ['SIGTERM', 'SIGKILL'], survivors: [] });
+  });
+
+  it('reports the leftover group as a survivor, still exit 0, when the reap hits EPERM (#1704)', async () => {
+    // Bug: a member the run may not signal (EPERM) must surface as a survivor in
+    // `leftoverGroup`; booking it as gone would hide the stray, and letting the
+    // error escape would turn a clean exit into a rejected/failed run.
+    const child = fakeChild(9292);
+    const killFn = vi.fn(() => {
+      const err = new Error('operation not permitted');
+      err.code = 'EPERM';
+      throw err;
+    });
+
+    const promise = spawnInGroup('backgrounds-a-foreign-stray', {
+      platform: POSIX,
+      spawnFn: () => child,
+      killFn,
+      groupAliveFn: () => true,
+      timeoutMs: null,
+      killGraceMs: 5000,
+      verifyWaitMs: 50,
+    });
+
+    child.emit('close', 0, null);
+    const res = await promise;
+
+    expect(res.exitCode).toBe(0);
+    expect(res.timedOut).toBe(false);
+    expect(res.killSignals).toEqual([]);
+    expect(res.survivors).toEqual([]);
+    expect(res.leftoverGroup).toEqual({ pgid: 9292, signals: ['SIGTERM'], survivors: [9292] });
   });
 
   it('returns exitCode 1 without throwing when the spawn itself fails', async () => {
@@ -269,6 +352,7 @@ describe('killProcessGroup', () => {
     // group as a survivor, which makes the reaper's success rate unreadable.
     const signals = [];
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn: (_t, sig) => {
         signals.push(sig);
         if (sig === 'SIGKILL') {
@@ -293,6 +377,7 @@ describe('killProcessGroup', () => {
     // shares the group — EPERM is a stop signal, not a transient error.
     const signals = [];
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn: (_t, sig) => {
         signals.push(sig);
         const err = new Error('kill EPERM');
@@ -310,6 +395,7 @@ describe('killProcessGroup', () => {
 
   it('reports ESRCH before the first signal as already-dead', async () => {
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn: () => {
         const err = new Error('kill ESRCH');
         err.code = 'ESRCH';
@@ -328,6 +414,7 @@ describe('killProcessGroup', () => {
     // setsid-ed out of the group survives SIGKILL and must be REPORTED.
     const waits = [];
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn: () => true,
       sleepFn: async (ms) => {
         waits.push(ms);
@@ -352,6 +439,7 @@ describe('killProcessGroup — beforeSignal gate', () => {
     // first signal would already have shot the bystander.
     const killFn = vi.fn(() => true);
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn,
       sleepFn: async () => {},
       isAliveFn: () => true,
@@ -369,6 +457,7 @@ describe('killProcessGroup — beforeSignal gate', () => {
     // own fresh verdict.
     const signals = [];
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn: (_t, sig) => {
         signals.push(sig);
         return true;
@@ -387,6 +476,7 @@ describe('killProcessGroup — beforeSignal gate', () => {
     // ABSENT measurement. Fail-open there would signal on no evidence at all.
     const killFn = vi.fn(() => true);
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn,
       sleepFn: async () => {},
       isAliveFn: () => true,
@@ -401,6 +491,7 @@ describe('killProcessGroup — beforeSignal gate', () => {
     // return value is not awaited is truthy ALWAYS (a pending Promise object).
     const killFn = vi.fn(() => true);
     const res = await killProcessGroup(DEAD_PID, {
+      platform: POSIX,
       killFn,
       sleepFn: async () => {},
       isAliveFn: () => true,
@@ -419,6 +510,7 @@ describe('verifyProcessIdentity', () => {
     const res = verifyProcessIdentity(4242, { startTime: NOW - 10_000, commandSignature: SIG }, {
       snapshotLine: { pid: 4242, ppid: 1, rssKb: 1024, etimeSeconds: 10, cpuPct: 3, args: 'npm test' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(res).toEqual({ match: true, reason: 'ok', observed: { etimeSeconds: 10, args: 'npm test' } });
   });
@@ -427,6 +519,7 @@ describe('verifyProcessIdentity', () => {
     const res = verifyProcessIdentity(4242, { startTime: NOW, commandSignature: SIG }, {
       snapshotLine: null,
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(res.match).toBe(false);
     expect(res.reason).toBe('gone');
@@ -438,6 +531,7 @@ describe('verifyProcessIdentity', () => {
     const res = verifyProcessIdentity(4242, { startTime: NOW - 600_000, commandSignature: SIG }, {
       snapshotLine: { pid: 4242, etimeSeconds: 2, args: 'npm test' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(res.match).toBe(false);
     expect(res.reason).toBe('start-time-mismatch');
@@ -451,12 +545,14 @@ describe('verifyProcessIdentity', () => {
     const atBoundary = verifyProcessIdentity(4242, { startTime: NOW - 10_000, commandSignature: SIG }, {
       snapshotLine: { pid: 4242, etimeSeconds: 12, args: 'npm test' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(atBoundary.match).toBe(true);
 
     const pastBoundary = verifyProcessIdentity(4242, { startTime: NOW - 10_000, commandSignature: SIG }, {
       snapshotLine: { pid: 4242, etimeSeconds: 12.001, args: 'npm test' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(pastBoundary.match).toBe(false);
     expect(pastBoundary.reason).toBe('start-time-mismatch');
@@ -466,6 +562,7 @@ describe('verifyProcessIdentity', () => {
     const res = verifyProcessIdentity(4242, { startTime: NOW - 10_000, commandSignature: SIG }, {
       snapshotLine: { pid: 4242, etimeSeconds: 10, args: 'tsgo --noEmit' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(res.match).toBe(false);
     expect(res.reason).toBe('signature-mismatch');
@@ -480,6 +577,7 @@ describe('verifyProcessIdentity', () => {
     const res = verifyProcessIdentity(4242, { startTime: NOW, commandSignature: SIG }, {
       snapshotLine: { pid: 4242, args: 'npm test' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(res.match).toBe(false);
     expect(res.reason).toBe('start-time-mismatch');
@@ -490,6 +588,7 @@ describe('verifyProcessIdentity', () => {
     const res = verifyProcessIdentity(4242, { startTime: NOW - 10_000, commandSignature: SIG }, {
       snapshotLine: { pid: 9999, etimeSeconds: 10, args: 'npm test' },
       nowMs: NOW,
+      platform: POSIX,
     });
     expect(res.match).toBe(false);
     expect(res.reason).toBe('gone');
@@ -520,11 +619,11 @@ describe('gate-process ledger', () => {
     // a partial read into a clean verdict — in the one instrument whose job is
     // finding silent failures.
     const now = Date.now();
-    recordGateProcess(repoRoot, rec(101, now - 1000));
-    recordGateProcess(repoRoot, rec(102, now - 2000));
+    recordGateProcess(repoRoot, rec(101, now - 1000), { platform: POSIX });
+    recordGateProcess(repoRoot, rec(102, now - 2000), { platform: POSIX });
     appendFileSync(path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH), '{"pid": 103, trunc\n', 'utf8');
 
-    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    const read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
     expect(read.records.map((r) => r.pid)).toEqual([101, 102]);
     expect(read.malformedLines).toBe(1);
     expect(read.expired).toBe(0);
@@ -534,10 +633,10 @@ describe('gate-process ledger', () => {
     // Bug: an old entry's pid is the most likely to have been recycled, so a
     // reaper acting on it targets a bystander.
     const now = Date.now();
-    recordGateProcess(repoRoot, rec(201, now - 1000));
-    recordGateProcess(repoRoot, rec(202, now - 48 * 3600 * 1000));
+    recordGateProcess(repoRoot, rec(201, now - 1000), { platform: POSIX });
+    recordGateProcess(repoRoot, rec(202, now - 48 * 3600 * 1000), { platform: POSIX });
 
-    const read = readGateProcessLedger(repoRoot, { nowMs: now, maxAgeMs: DEFAULT_LEDGER_MAX_AGE_MS });
+    const read = readGateProcessLedger(repoRoot, { nowMs: now, maxAgeMs: DEFAULT_LEDGER_MAX_AGE_MS, platform: POSIX });
     expect(read.records.map((r) => r.pid)).toEqual([201]);
     expect(read.expired).toBe(1);
   });
@@ -553,9 +652,9 @@ describe('gate-process ledger', () => {
     const now = Date.now();
     // Written through the real writer, so the case is a line the ledger CAN
     // contain — the reader is the only thing under test here.
-    recordGateProcess(repoRoot, { ...rec(4242, now - 1000), ...override });
+    recordGateProcess(repoRoot, { ...rec(4242, now - 1000), ...override }, { platform: POSIX });
 
-    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    const read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
     expect(read.records).toEqual([]);
     expect(read.malformedLines).toBe(1);
   });
@@ -566,25 +665,25 @@ describe('gate-process ledger', () => {
     const now = Date.now();
     const { commandSignature, ...withoutSignature } = rec(4242, now - 1000);
     expect(commandSignature).toBeTruthy();
-    recordGateProcess(repoRoot, withoutSignature);
+    recordGateProcess(repoRoot, withoutSignature, { platform: POSIX });
 
-    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    const read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
     expect(read.records).toEqual([]);
     expect(read.malformedLines).toBe(1);
   });
 
   it('prunes a line the READER rejects, not only an expired one — a line kept by the pruner but skipped by the reader sits in the ledger forever', () => {
     const now = Date.now();
-    recordGateProcess(repoRoot, rec(301, now - 1000));
-    recordGateProcess(repoRoot, { ...rec(302, now - 1000), pgid: 1 });
+    recordGateProcess(repoRoot, rec(301, now - 1000), { platform: POSIX });
+    recordGateProcess(repoRoot, { ...rec(302, now - 1000), pgid: 1 }, { platform: POSIX });
 
-    expect(pruneGateProcessLedger(repoRoot, { nowMs: now })).toBe(1);
-    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    expect(pruneGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX })).toBe(1);
+    const read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
     expect(read.records.map((r) => r.pid)).toEqual([301]);
   });
 
   it('returns an empty read for a repo with no ledger yet', () => {
-    const read = readGateProcessLedger(repoRoot, { nowMs: Date.now() });
+    const read = readGateProcessLedger(repoRoot, { nowMs: Date.now(), platform: POSIX });
     expect(read).toEqual({ records: [], malformedLines: 0, expired: 0, state: 'absent' });
   });
 
@@ -595,22 +694,22 @@ describe('gate-process ledger', () => {
     const ledger = path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH);
     mkdirSync(path.dirname(ledger), { recursive: true });
     symlinkSync(path.join(repoRoot, 'nowhere.jsonl'), ledger);
-    expect(readGateProcessLedger(repoRoot, { nowMs: Date.now() }).state).toBe('unreadable');
+    expect(readGateProcessLedger(repoRoot, { nowMs: Date.now(), platform: POSIX }).state).toBe('unreadable');
   });
 
   it('prunes expired and malformed lines in-process, keeping the fresh ones', () => {
     const now = Date.now();
-    recordGateProcess(repoRoot, rec(301, now - 1000));
-    recordGateProcess(repoRoot, rec(302, now - 48 * 3600 * 1000));
+    recordGateProcess(repoRoot, rec(301, now - 1000), { platform: POSIX });
+    recordGateProcess(repoRoot, rec(302, now - 48 * 3600 * 1000), { platform: POSIX });
     appendFileSync(path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH), 'not json at all\n', 'utf8');
-    recordGateProcess(repoRoot, rec(303, now - 2000));
+    recordGateProcess(repoRoot, rec(303, now - 2000), { platform: POSIX });
 
-    const removed = pruneGateProcessLedger(repoRoot, { nowMs: now });
+    const removed = pruneGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
     expect(removed).toBe(2);
 
     const body = readFileSync(path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH), 'utf8');
     expect(body.trim().split('\n')).toHaveLength(2);
-    const read = readGateProcessLedger(repoRoot, { nowMs: now });
+    const read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
     expect(read.records.map((r) => r.pid)).toEqual([301, 303]);
     expect(read.malformedLines).toBe(0);
   });
@@ -621,6 +720,7 @@ describe('gate-process ledger', () => {
     const written = [];
     recordGateProcess('/nonexistent-repo-root', rec(401, Date.now()), {
       appendFn: (file, line) => written.push({ file, line }),
+      platform: POSIX,
     });
     expect(written).toHaveLength(1);
     expect(written[0].file).toBe(path.join('/nonexistent-repo-root', GATE_PROCESS_LEDGER_RELPATH));
@@ -632,11 +732,12 @@ describe('gate-process ledger', () => {
     // 2026-09-22: `grep -rn pruneGateProcessLedger scripts/ hooks/ tests/` →
     // the definition and one test), so the file grew ~369 lines/day.
     const now = Date.now();
-    recordGateProcess(repoRoot, rec(901, now - 48 * 3600 * 1000));
-    recordGateProcess(repoRoot, rec(902, now - 1000));
+    recordGateProcess(repoRoot, rec(901, now - 48 * 3600 * 1000), { platform: POSIX });
+    recordGateProcess(repoRoot, rec(902, now - 1000), { platform: POSIX });
 
     const child = fakeChild(7272);
     const promise = spawnInGroup('npm test', {
+      platform: POSIX,
       spawnFn: () => child,
       killFn: () => true,
       timeoutMs: null,
@@ -645,7 +746,7 @@ describe('gate-process ledger', () => {
     });
     child.emit('close', 0, null);
     return promise.then(() => {
-      const read = readGateProcessLedger(repoRoot, { nowMs: now });
+      const read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
       expect(read.records.map((r) => r.pid)).toEqual([902, 7272]);
       const body = readFileSync(path.join(repoRoot, GATE_PROCESS_LEDGER_RELPATH), 'utf8');
       expect(body.trim().split('\n')).toHaveLength(2);
@@ -669,7 +770,7 @@ describe('gate-process ledger', () => {
       let removed;
       let warnings;
       try {
-        removed = pruneGateProcessLedger(repoRoot, { nowMs: Date.now() });
+        removed = pruneGateProcessLedger(repoRoot, { nowMs: Date.now(), platform: POSIX });
         warnings = warn.mock.calls.map((c) => String(c[0]));
       } finally {
         warn.mockRestore();
@@ -705,8 +806,8 @@ describe('gate-process ledger', () => {
       let read;
       let warnings;
       try {
-        recordGateProcess(repoRoot, rec(501, now));
-        read = readGateProcessLedger(repoRoot, { nowMs: now });
+        recordGateProcess(repoRoot, rec(501, now), { platform: POSIX });
+        read = readGateProcessLedger(repoRoot, { nowMs: now, platform: POSIX });
         warnings = warn.mock.calls.map((c) => String(c[0]));
       } finally {
         warn.mockRestore();
@@ -725,6 +826,7 @@ describe('gate-process ledger', () => {
         repoRoot,
         now,
         deps: {
+          readLedger: (root, opts) => readGateProcessLedger(root, { ...opts, platform: POSIX }),
           runPs: async () => '',
           readOwnSessionId: async () => null,
           detectPeers: async () => [],
@@ -740,7 +842,7 @@ describe('gate-process ledger', () => {
     }
   });
 
-  it.skipIf(process.platform === 'win32')('returns at once from a FIFO planted at the ledger path — the plain append open hung the gate in its own registration path', () => {
+  it.skipIf(process.platform === 'win32')('returns at once from a FIFO planted at the ledger path — the plain append open hung the gate in its own registration path (POSIX-only: mkfifo and a real child process using the host platform)', () => {
     // Bug (#1489): `appendFileSync(path)` opened a planted FIFO for writing and
     // waited for a reader that never came, and `readFileSync` blocked the same
     // way — both on `spawnInGroup`'s register path (record + prune), so the gate
@@ -772,6 +874,7 @@ process.stdout.write(JSON.stringify({ pruned, read }));`;
   it('registers the spawned group in the ledger under repoRoot', () => {
     const child = fakeChild(7171);
     const promise = spawnInGroup('npm test', {
+      platform: POSIX,
       spawnFn: () => child,
       killFn: () => true,
       timeoutMs: null,
@@ -780,7 +883,7 @@ process.stdout.write(JSON.stringify({ pruned, read }));`;
     });
     child.emit('close', 0, null);
     return promise.then(() => {
-      const read = readGateProcessLedger(repoRoot, { nowMs: Date.now() });
+      const read = readGateProcessLedger(repoRoot, { nowMs: Date.now(), platform: POSIX });
       expect(read.records).toHaveLength(1);
       expect(read.records[0]).toMatchObject({
         pid: 7171,
@@ -825,7 +928,7 @@ describe('integration (real processes)', () => {
   });
 
   it.skipIf(process.platform === 'win32')(
-    'really terminates its own sleeping group and proves it with a liveness probe',
+    'really terminates its own sleeping group and proves it with a liveness probe (POSIX-only: real process group, signal to -pgid)',
     async () => {
       // Bug: everything above runs on fakes. This is the one case that proves
       // the REAL contract — `detached: true` yields a group whose leader pid is
@@ -857,6 +960,57 @@ describe('integration (real processes)', () => {
       // ESRCH = the pid is gone from the process table. 'no-throw' would mean it
       // is still there (alive or unreaped), which is the failure this proves.
       expect(probeCode).toBe('ESRCH');
+    },
+    15_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'reaps and reports a group member left behind by a command that exited 0, without turning the run red (#1704)',
+    async () => {
+      // Bug: the ladder only ran on timeout/overflow. A gate command that
+      // backgrounds a child holding no pipe and exits 0 closed at once, the
+      // pgid was deregistered, and the child lived on unreported — every gate
+      // returned `pass` with `survivors: []` and a stray `sleep` behind it.
+      const pidFile = path.join(repoRoot, 'stray.pid');
+      let strayPid = null;
+      try {
+        const res = await spawnInGroup(`sleep 30 >/dev/null 2>&1 & echo $! > '${pidFile}'; exit 0`, {
+          cwd: repoRoot,
+          timeoutMs: 10_000,
+          killGraceMs: 200,
+          verifyWaitMs: 200,
+        });
+        strayPid = Number(readFileSync(pidFile, 'utf8').trim());
+
+        expect(res.exitCode).toBe(0);
+        expect(res.timedOut).toBe(false);
+        // The existing fields keep their meaning: nothing survived SIGKILL and
+        // the run's own ladder never fired, so pre-push `cleanRerun` stays clean.
+        expect(res.survivors).toEqual([]);
+        expect(res.killSignals).toEqual([]);
+        // `survivors` is deliberately not pinned: on Linux the reparented sleep can
+        // linger as a zombie under a slow init, so kill(-pgid, 0) may still succeed
+        // after SIGKILL and report [pgid]. The bug here is the reap not happening;
+        // the stray's eventual death is proven by the poll below.
+        expect(res.leftoverGroup).toMatchObject({ pgid: res.pgid, signals: ['SIGTERM', 'SIGKILL'] });
+
+        // Read the state back with polling, never a fixed sleep: the stray is
+        // reparented and reaped by init, which takes a moment under load.
+        await vi.waitFor(() => {
+          let code = 'no-throw';
+          try {
+            process.kill(strayPid, 0);
+          } catch (err) {
+            code = err?.code ?? 'unknown';
+          }
+          expect(code).toBe('ESRCH');
+        }, { timeout: 5_000, interval: 100 });
+      } finally {
+        // Only this test's own recorded child, and only if it is still there.
+        if (Number.isInteger(strayPid) && strayPid > 1) {
+          try { process.kill(strayPid, 'SIGKILL'); } catch { /* already gone */ }
+        }
+      }
     },
     15_000,
   );
@@ -989,7 +1143,7 @@ describe('exit-time group cleanup (#1425 A1 — installExitHandler)', () => {
   }
 
   it.skipIf(process.platform === 'win32')(
-    'kills a still-registered group when the owning process calls process.exit',
+    'kills a still-registered group when the owning process calls process.exit (POSIX-only: real detached group, sleep and kill(-pgid))',
     async () => {
       // Bug: without `installExitHandler()` running at exit time, the detached
       // `sleep 30` survives its parent on PPID 1 — exactly the 2026-09-20
@@ -1006,7 +1160,7 @@ describe('exit-time group cleanup (#1425 A1 — installExitHandler)', () => {
   );
 
   it.skipIf(process.platform === 'win32')(
-    'kills a still-registered group when the owning process is SIGTERMed',
+    'kills a still-registered group when the owning process is SIGTERMed (POSIX-only: real detached group and SIGTERM delivery)',
     async () => {
       // Bug: the `exit` listener does NOT fire on a terminating signal, so the
       // SIGINT/SIGTERM/SIGHUP listeners are a SEPARATE defence — a coordinator
@@ -1026,4 +1180,160 @@ describe('exit-time group cleanup (#1425 A1 — installExitHandler)', () => {
     },
     20_000,
   );
+});
+
+describe('Windows and stream regressions (#1612)', () => {
+  it('does not detach Windows gates or open consoles, while preserving configured shell strings', async () => {
+    const child = fakeChild(DEAD_PID);
+    const spawnFn = vi.fn(() => child);
+    const pending = spawnInGroup('npm test', { platform: 'win32', spawnFn, timeoutMs: null });
+    child.emit('close', 0);
+    await pending;
+    expect(spawnFn.mock.calls[0][1]).toMatchObject({ shell: true, windowsHide: true });
+    expect(spawnFn.mock.calls[0][1].detached).not.toBe(true);
+  });
+
+  it('passes paths containing spaces and apostrophes literally without a shell', async () => {
+    const arg = "folder with spaces/owner's gate.mjs";
+    const result = await spawnInGroup([process.execPath, '-e', 'console.log(JSON.stringify(process.argv.slice(1)))', arg]);
+    expect(result.exitCode).toBe(0);
+    expect(JSON.parse(result.fullOutput)).toEqual([arg]);
+  });
+
+  it('does not corrupt UTF-8 split across chunks or mix decoder state between streams', async () => {
+    const child = fakeChild(DEAD_PID);
+    const pending = spawnInGroup('fake', { spawnFn: () => child, timeoutMs: null });
+    const bytes = Buffer.from('€');
+    child.stdout.write(bytes.subarray(0, 1));
+    child.stderr.write(Buffer.from('ä'));
+    child.stdout.write(bytes.subarray(1));
+    child.emit('close', 0);
+    expect((await pending).fullOutput).toBe('ä€');
+  });
+
+  it.each([{ after: [] }, { after: [{ ProcessId: 999998, ParentProcessId: DEAD_PID, CreationDate: '/Date(11000)/' }] }])(
+    'verifies Windows descendants after taskkill instead of trusting its exit code (%j)', async ({ after }) => {
+      const before = [
+        { ProcessId: DEAD_PID, ParentProcessId: 1, CreationDate: '/Date(10000)/' },
+        { ProcessId: 999998, ParentProcessId: DEAD_PID, CreationDate: '/Date(11000)/' },
+      ];
+      const snapshotFn = vi.fn().mockReturnValueOnce(before).mockReturnValueOnce([
+        ...after, { ProcessId: DEAD_PID, ParentProcessId: 1, CreationDate: '/Date(12000)/' },
+      ]);
+      const spawnSyncFn = vi.fn(() => ({ status: 0 }));
+      const result = await killProcessGroup(DEAD_PID, {
+        platform: 'win32', child: { exitCode: null, signalCode: null }, spawnedAtMs: 10000, snapshotFn, spawnSyncFn, killFn: vi.fn(), sleepFn: async () => {},
+      });
+      expect(spawnSyncFn).toHaveBeenCalledWith(
+        path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe'),
+        ['/PID', String(DEAD_PID), '/T', '/F'],
+        expect.objectContaining({ shell: false, windowsHide: true, timeout: expect.any(Number) }),
+      );
+      expect(result).toMatchObject({ signalsSent: ['taskkill'], survivors: after.map(p => p.ProcessId), ok: after.length === 0 });
+    },
+  );
+
+  it('reports an unmeasurable Windows snapshot instead of zero survivors', async () => {
+    const result = await killProcessGroup(DEAD_PID, {
+      platform: 'win32', snapshotFn: () => { throw new Error('CIM denied'); },
+      spawnSyncFn: () => ({ status: 0 }), killFn: vi.fn(), sleepFn: async () => {},
+    });
+    expect(result.ok).toBe(false);
+    expect(result.survivors).toBeNull();
+    expect(result.error).toContain('nicht messbar');
+  });
+
+
+  it('does not resolve Windows timeout on close before descendant readback', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = fakeChild(DEAD_PID);
+      const row = { ProcessId: DEAD_PID, ParentProcessId: 1, CreationDate: '/Date(10000)/' };
+      const snapshotFn = vi.fn().mockReturnValueOnce([row]).mockReturnValueOnce([row]);
+      const pending = spawnInGroup('fake', {
+        platform: 'win32', timeoutMs: 10, spawnFn: () => child, snapshotFn,
+        killFn: () => { throw new Error('negative PID on Windows'); },
+        spawnSyncFn: () => { child.emit('close', 1); return { status: 0 }; },
+      });
+      await vi.advanceTimersByTimeAsync(10);
+      expect(await pending).toMatchObject({ exitCode: 124, killSignals: ['taskkill'], survivors: [DEAD_PID], ok: false });
+      expect(snapshotFn).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('uses tree cleanup on Windows parent exit instead of a negative-PID signal', () => {
+    const moduleUrl = pathToFileURL(path.resolve('scripts/lib/process-group.mjs')).href;
+    const probe = `
+      import { EventEmitter } from 'node:events';
+      import { spawnInGroup } from ${JSON.stringify(moduleUrl)};
+      const child = new EventEmitter(); child.pid = ${DEAD_PID}; child.exitCode = null; child.signalCode = null;
+      spawnInGroup('fake', {
+        platform: 'win32', timeoutMs: null, spawnFn: () => child,
+        snapshotFn: () => [{ ProcessId: ${DEAD_PID}, ParentProcessId: 1, CreationDate: '/Date(10000)/' }],
+        spawnSyncFn: (file, args) => { console.log(JSON.stringify(args)); return { status: 0 }; },
+        killFn: () => { console.log('WRONG POSIX KILL'); },
+      });
+      process.exit(0);
+    `;
+    const result = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toEqual(['/PID', String(DEAD_PID), '/T', '/F']);
+    expect(result.stderr).toContain(`survivors ${DEAD_PID}`);
+  });
+  it('refuses POSIX identity and no-follow ledger guarantees on Windows', () => {
+    expect(verifyProcessIdentity(DEAD_PID, { startTime: 0, commandSignature: 'node:x' }, { platform: 'win32' }))
+      .toMatchObject({ match: false, reason: 'nicht messbar auf win32' });
+    expect(readGateProcessLedger('/unused', { platform: 'win32', readFn: () => '' }))
+      .toMatchObject({ state: 'unreadable', error: 'nicht messbar auf win32' });
+    const appendFn = vi.fn();
+    const warn = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    try {
+      recordGateProcess('/unused', {}, { platform: 'win32', appendFn });
+      expect(pruneGateProcessLedger('/unused', { platform: 'win32' })).toBe(0);
+      expect(appendFn).not.toHaveBeenCalled();
+      // No per-run warning: it fired on every Windows gate run (#1612).
+      expect(warn).not.toHaveBeenCalled();
+    } finally { warn.mockRestore(); }
+  });
+});
+
+it.each([null, 0])('R1-04 spawnInGroup forwards no-CIM budget and current child state (%s)', async exitCode => {
+  vi.useFakeTimers();
+  try {
+    const child = fakeChild(DEAD_PID);
+    const snapshotFn = vi.fn(() => { throw Error('CIM forbidden'); });
+    const spawnSyncFn = vi.fn(() => ({ status: 0 }));
+    const pending = spawnInGroup('fake', { platform: 'win32', spawnFn: () => child,
+      timeoutMs: 10, verifyTree: false, snapshotFn, spawnSyncFn });
+    child.exitCode = exitCode;
+    if (exitCode !== null) child.emit('exit', exitCode);
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await pending).toMatchObject({ survivors: null, error: expect.stringContaining('verifyTree: false') });
+    expect(snapshotFn).not.toHaveBeenCalled();
+    expect(spawnSyncFn).toHaveBeenCalledTimes(exitCode === null ? 1 : 0);
+  } finally { vi.useRealTimers(); }
+});
+
+it('R1-02 exit cleanup avoids recycled root and uses the registered spawn timestamp', () => {
+  const moduleUrl = pathToFileURL(path.resolve('scripts/lib/process-group.mjs')).href;
+  const probe = `
+    import { EventEmitter } from 'node:events';
+    import { spawnInGroup } from ${JSON.stringify(moduleUrl)};
+    const child = new EventEmitter(); child.pid = ${DEAD_PID}; child.exitCode = null; child.signalCode = null;
+    const date = '/Date(' + Date.now() + ')/';
+    spawnInGroup('fake', {
+      platform: 'win32', timeoutMs: null, spawnFn: () => child,
+      snapshotFn: () => [
+        { ProcessId: ${DEAD_PID}, ParentProcessId: 1, CreationDate: date },
+        { ProcessId: 999998, ParentProcessId: ${DEAD_PID}, CreationDate: date },
+        { ProcessId: 999997, ParentProcessId: ${DEAD_PID}, CreationDate: '/Date(1)/' },
+      ],
+      spawnSyncFn: (file, args) => { console.log(JSON.stringify(args)); return { status: 0 }; },
+    });
+    child.exitCode = 0; child.emit('exit', 0);
+    process.exit(0);
+  `;
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', probe], { encoding: 'utf8' });
+  expect(result.status).toBe(0);
+  expect(JSON.parse(result.stdout)).toEqual(['/PID', '999998', '/T', '/F']);
 });

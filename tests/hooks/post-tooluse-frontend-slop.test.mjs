@@ -38,8 +38,9 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/post-tooluse-frontend-slop.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/post-tooluse-frontend-slop.mjs', import.meta.url));
 const EVENTS_REL = join('.orchestrator', 'metrics', 'events.jsonl');
 
 // A .css fixture that trips the high-severity `gradient-text` rule:

@@ -3,7 +3,7 @@
 > Reference material for the `architecture` skill — **not a skill of its own.**
 > Merged here in v4.0.0 from the former `skills/domain-model/` (retired: zero
 > telemetry, zero fleet invocations, reference-only usage — see
-> `docs/audits/2026-09-06-360-audit.md` § 5A). Invoke it by reading this file
+> § 5A of the 2026-09-06 360° audit, an internal report not in the public mirror). Invoke it by reading this file
 > from `/architecture`, not via a slash command.
 >
 > Adapted from [`mattpocock/skills@90ea8ee`](https://github.com/mattpocock/skills/tree/main/domain-model), MIT — Copyright (c) 2026 Matt Pocock. See the repo-root `NOTICE`.

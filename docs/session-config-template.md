@@ -86,7 +86,7 @@ Read by: `skills/session-start/SKILL.md` (Phase 4.5), `skills/session-plan/SKILL
 ```yaml
 vcs: gitlab                            # github | gitlab — auto-detected from remote when unset
 gitlab-host: gitlab.example.com        # only if remote URL doesn't expose it
-mirror: github                         # session-end pushes to the `github` remote (none | github; absent = push if remote exists)
+mirror: github                         # session-end pushes to the `github` remote (none | github | curated; absent = push if remote exists; curated = public snapshot via scripts/github-export.mjs)
 cross-repos: [related-repo-1]          # repos under ~/Projects/ to snapshot at session-start
 pencil: path/to/design.pen             # design-code alignment input
 ecosystem-health: true                 # toggle health-endpoint probes
@@ -190,7 +190,7 @@ resource-thresholds:
   ram-free-min-gb: 4                   # below: cap agents-per-wave at 2
   ram-free-critical-gb: 2              # below: recommend coordinator-direct
   cpu-load-max-pct: 80                 # sustained above: cap agents-per-wave at 2
-  concurrent-sessions-warn: 5          # warn at this many peer Claude sessions
+  concurrent-sessions-warn: 5          # report-only: names peer sessions, never caps (#1654)
   ssh-no-docker: true                  # SSH session: avoid Docker-based tests
   zombie-threshold-min: 30             # min idle time before stale-process flag (#178)
 ```

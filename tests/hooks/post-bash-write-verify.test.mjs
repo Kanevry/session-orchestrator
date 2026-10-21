@@ -41,13 +41,15 @@
  * a fail-loud regression turns this whole file red.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { rmSync, existsSync, writeFileSync, mkdirSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { rmSync, existsSync, writeFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, utimesSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { fileURLToPath } from 'node:url';
 import {
   parsePorcelainZ,
   isIgnoredPath,
@@ -62,7 +64,28 @@ import {
   MAX_REPORTED_PATHS,
 } from '../../hooks/post-bash-write-verify.mjs';
 
-const HOOK = new URL('../../hooks/post-bash-write-verify.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/post-bash-write-verify.mjs', import.meta.url));
+
+// The hook keeps its snapshot sidecars in `<os.tmpdir()>/so-bash-write-verify/`
+// on purpose (see `snapshotPathFor`) and never removes that directory. The
+// tests below delete their own sidecar files, but the directory itself was
+// left behind every run (#1648). Point TMPDIR at a dir owned by this file for
+// its whole run: the spawned hooks inherit it and the in-process
+// `snapshotPathFor` resolves to the same place, so the sidecar paths the tests
+// compute still match the ones the hook writes. A plain rmdir of the shared
+// directory instead would race with sibling files that spawn the same hook.
+let previousTmpdir;
+let fileTmpdir;
+beforeAll(() => {
+  previousTmpdir = process.env.TMPDIR;
+  fileTmpdir = mkdtempSync(join(tmpdir(), 'bash-write-verify-test-'));
+  process.env.TMPDIR = fileTmpdir;
+});
+afterAll(() => {
+  if (previousTmpdir === undefined) delete process.env.TMPDIR;
+  else process.env.TMPDIR = previousTmpdir;
+  if (fileTmpdir) removeTree(fileTmpdir);
+});
 
 // ---------------------------------------------------------------------------
 // parsePorcelainZ
@@ -793,6 +816,43 @@ describe('post-bash-write-verify E2E', () => {
     expect(runHook().stderr).toBe('');
   });
 
+  it("reads the session age beside this session's own lock after ExitWorktree (#1634)", () => {
+    // Bug caught: after /clear in wt1 + ExitWorktree the session works in the
+    // main checkout while its lock and current-session.json live in wt1
+    // (`session_root`, #1605). `sessionAgeMs(context.manifestRoot)` read the
+    // main checkout, found no clock, and the lost-sidecar notice stayed silent.
+    writeScope(['hooks/**']);
+    const wt1 = makeTmpDir('pbwv-wt1-');
+    const registryDir = makeTmpDir('pbwv-registry-');
+    const sid = randomUUID();
+    const threeHoursAgo = new Date(Date.now() - 3 * 3_600_000).toISOString();
+    try {
+      mkdirSync(join(wt1, '.orchestrator'), { recursive: true });
+      writeFileSync(join(wt1, '.orchestrator', 'session.lock'), JSON.stringify({
+        session_id: sid, started_at: threeHoursAgo, last_heartbeat: new Date().toISOString(),
+        mode: 'deep', pid: 999999, host: 'test-host', ttl_hours: 4,
+      }));
+      writeFileSync(join(wt1, '.orchestrator', 'current-session.json'), JSON.stringify({ session_id: sid, timestamp: threeHoursAgo }));
+      mkdirSync(join(registryDir, 'active'), { recursive: true });
+      writeFileSync(join(registryDir, 'active', `${sid}.json`), JSON.stringify({ session_id: sid, session_root: wt1, work_root: tmp }));
+      rmSync(snapshotPathFor(realpathSync(tmp)), { force: true });
+      const res = spawnSync(process.execPath, [HOOK], {
+        input: JSON.stringify({ tool_name: 'Bash', session_id: sid, cwd: tmp, tool_input: { command: 'true' } }),
+        encoding: 'utf8',
+        env: {
+          ...process.env, SO_PLATFORM: 'claude', CLAUDE_PROJECT_DIR: tmp, CLAUDE_CODE_SESSION_ID: sid,
+          SO_SESSION_REGISTRY_DIR: registryDir, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '',
+        },
+        timeout: 20_000,
+      });
+      expect(res.status).toBe(0);
+      expect(res.stderr).toContain('the session started 180 min ago');
+    } finally {
+      removeTree(wt1);
+      removeTree(registryDir);
+    }
+  });
+
   it('a wave rollover reports dirt written AFTER the new scope file, never pre-wave dirt (#938 V3)', () => {
     // Bug caught: the first Bash call after every scope change was blind, so an
     // out-of-scope write timed into that call vanished into the re-baseline.
@@ -860,7 +920,7 @@ describe('post-bash-write-verify E2E', () => {
     const union = spawnSync(
       process.execPath,
       [
-        new URL('../../scripts/validate-wave-scope.mjs', import.meta.url).pathname,
+        fileURLToPath(new URL('../../scripts/validate-wave-scope.mjs', import.meta.url)),
         '--union',
         join(tmp, '.claude', 'filescopes', 'wave-4.scopes.json'),
       ],

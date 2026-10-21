@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, onTestFinished } from 'vitest';
 import { writeFileSync, mkdirSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
@@ -86,7 +86,12 @@ function runMirror(args, opts = {}) {
   // its newest foreign event against the sessions ledger, and `/evolve` mines it).
   // A test that silently writes into the substrate it is not testing is the same
   // class as tests/lib/worktree.test.mjs self-poisoning (#984).
-  const projectDir = opts.projectDir ?? makeFixtureTmpDir('vault-mirror-events-');
+  let projectDir = opts.projectDir;
+  if (!projectDir) {
+    projectDir = makeFixtureTmpDir('vault-mirror-events-');
+    const throwawayDir = projectDir;
+    onTestFinished(() => removeTree(throwawayDir));
+  }
   return spawnSync('node', [MIRROR, ...narrativeGateOff(args)], {
     encoding: 'utf8',
     env: {
@@ -150,13 +155,13 @@ describe('vault-mirror CLI', () => {
     const historicalVault = tmp();
     mkdirSync(join(historicalVault, '40-learnings'), { recursive: true });
     const flat = join(historicalVault, '40-learnings', 'gre.md');
-    writeFileSync(flat, first.replace('id: groesse\n', 'id: gre\n'));
+    writeFileSync(flat, first.replace('id: "fixture-tool-groesse"\n', 'id: gre\n'));
     writeFileSync(sourceFile, JSON.stringify({ ...entry, insight: 'Changed historical insight', created_at: '2026-10-02T10:00:00Z' }) + '\n');
     const oldArgs = ['--vault-dir', historicalVault, '--source', sourceFile, '--kind', 'learning', '--repo-root', repoRoot];
     for (const extra of [[], ['--force'], []]) {
       const result = runMirror([...oldArgs, ...extra], { env: { SO_VAULT_DIR: historicalVault } });
       expect(result.status).toBe(0);
-      expect(readFileSync(flat, 'utf8')).toContain('id: gre\n');
+      expect(readFileSync(flat, 'utf8')).toContain('id: "fixture-tool-gre"\n');
       expect(readFileSync(flat, 'utf8')).toContain('Changed historical insight');
       expect(existsSync(join(historicalVault, '40-learnings', 'fixture-tool', 'groesse.md'))).toBe(false);
       expect(existsSync(join(historicalVault, '40-learnings', 'fixture-tool', 'gre.md'))).toBe(false);
@@ -211,6 +216,89 @@ describe('vault-mirror CLI', () => {
     const second = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'learning']);
     expect(second.status).toBe(0);
     expect(JSON.parse(second.stdout.trim()).action).toBe('skipped-noop');
+  });
+
+  // #1601 + release-review HOCH 1 (MR !148). A note written before #1601 can
+  // carry an id that breaks the vault-sync schema (bare slug > 128 chars, or an
+  // unquoted all-digit `id: 433`, which YAML reads as a number). The first fix
+  // re-rendered such a note from the ledger record; a `[REDACTED]` span an
+  // earlier run had masked then came back as PLAINTEXT whenever the secret was
+  // missing from the current env (#1025). Pinned here, per shape:
+  //   1. the mirror never rewrites a note because of its id (bytes unchanged,
+  //      needle absent) even with the secret gone from env;
+  //   2. migrate-ids replaces exactly the id line (every other byte kept, the
+  //      `[REDACTED]` span included) with the id the generator renders today;
+  //   3. the mirror after the migration is still a noop.
+  const longSubject = `cross-repo-deep-session-${'x'.repeat(116)}`;
+  const longSid = `session-2026-04-13-${'a'.repeat(121)}`;
+  const flatLegacy = (c) => c.replace(/^source-record: .*\n/m, '').replace(/^source-repo: .*\n/m, '');
+  const SCHEMA_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+  it.each([
+    ['learning, 140-char bare id', 'learning', { ...JSON.parse(VALID_LEARNING), subject: longSubject }, `40-learnings/test-vault/${longSubject}.md`, null, longSubject],
+    ['learning, unquoted all-digit id', 'learning', { ...JSON.parse(VALID_LEARNING), subject: '433' }, '40-learnings/test-vault/433.md', null, '433'],
+    ['flat learning without provenance', 'learning', { ...JSON.parse(VALID_LEARNING), subject: longSubject }, `40-learnings/test-vault/${longSubject}.md`, `40-learnings/${longSubject}.md`, longSubject],
+    ['session, 140-char bare id', 'session', { ...JSON.parse(VALID_SESSION), session_id: longSid }, `50-sessions/test-vault/${longSid}.md`, null, longSid],
+    ['flat session', 'session', { ...JSON.parse(VALID_SESSION), session_id: longSid }, `50-sessions/test-vault/${longSid}.md`, `50-sessions/${longSid}.md`, longSid],
+  ])('#1601: a schema-violating old id (%s) never re-renders the note; migrate-ids fixes only the id line', async (_label, kind, base, rel, flatRel, bareId) => {
+    const { planIdMigration, applyIdMigration } = await import('../../scripts/lib/vault-mirror/migrate-ids.mjs');
+    const { noteIdFor } = await import('../../scripts/lib/vault-mirror/utils.mjs');
+    const YAML = (await import('js-yaml')).default;
+    const needle = `so-test-needle-${createHash('sha256').update(rel).digest('hex').slice(0, 16)}`;
+    const leak = `The hook printed TOKEN ${needle} into the log`;
+    const entry = kind === 'learning' ? { ...base, insight: leak } : { ...base, notes: leak };
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(tmp(), JSON.stringify(entry));
+    const args = ['--vault-dir', vaultDir, '--source', sourceFile, '--kind', kind, '--vault-name', 'test-vault'];
+    const run = (env) => {
+      const r = runMirror(args, env ? { env } : {});
+      expect(r.status).toBe(0);
+      return JSON.parse(r.stdout.trim());
+    };
+
+    // Run 1, secret in env: the note is written masked.
+    expect(run({ SO_TEST_MASK_TOKEN: needle }).action).toBe('created');
+    const created = readFileSync(join(vaultDir, rel), 'utf8');
+    expect(created).toContain('[REDACTED]');
+    expect(created).not.toContain(needle);
+    const generatorIdLine = created.match(/^id: .*$/m)[0];
+
+    // Reset the note to its pre-#1601 id (and, for the flat shapes, its old place).
+    let path = join(vaultDir, rel);
+    let old = created.replace(/^id: .*$/m, `id: ${bareId}`);
+    if (flatRel !== null) {
+      removeTree(join(vaultDir, rel));
+      path = join(vaultDir, flatRel);
+      old = kind === 'learning' ? flatLegacy(old) : old;
+    }
+    writeFileSync(path, old, 'utf8');
+
+    // Run 2, secret NOT in env: the old id is no reason to touch the note.
+    expect(run().action).toBe('skipped-noop');
+    expect(readFileSync(path, 'utf8')).toBe(old);
+
+    // Migration: dry plan → cap refusal → real run.
+    const plan = planIdMigration({ vaultDir });
+    expect(plan.changes.map((c) => c.path)).toEqual([flatRel ?? rel]);
+    expect(applyIdMigration(plan, { vaultDir, maxChanges: 0 }).refused).toBe('over-limit');
+    expect(readFileSync(path, 'utf8')).toBe(old);
+    expect(applyIdMigration(plan, { vaultDir, maxChanges: 1 }).written).toEqual([flatRel ?? rel]);
+
+    // A flat note without `source-repo` has no namespace to add; every other
+    // shape ends with exactly the id the generator renders today.
+    const expectedLine = flatRel !== null && kind === 'learning' ? `id: "${noteIdFor(null, bareId)}"` : generatorIdLine;
+    const migrated = readFileSync(path, 'utf8');
+    expect(migrated).toBe(old.replace(/^id: .*$/m, expectedLine));
+    expect(migrated).toContain('[REDACTED]');
+    expect(migrated).not.toContain(needle);
+    const id = YAML.load(migrated.split('---')[1]).id;
+    expect(typeof id).toBe('string');
+    expect(id).toMatch(SCHEMA_SLUG);
+    expect(id.length).toBeLessThanOrEqual(128);
+
+    // Run 3, secret still not in env: still a noop, still masked.
+    expect(run().action).toBe('skipped-noop');
+    expect(readFileSync(path, 'utf8')).toBe(migrated);
+    expect(planIdMigration({ vaultDir }).changes).toEqual([]);
   });
 
   // ── source_session wikilink emission (Obsidian graph-edge fix) ────────────
@@ -1636,6 +1724,27 @@ describe('vault-mirror CLI', () => {
     expect(content).toContain('| 1 | Discovery | 4 | parallel');
     expect(content).toContain('Issues closed:** 44');
     expect(content).toContain('## Notes');
+  });
+
+  it('v3 session: qualified cross-repo issues_created render without an extra # (#1603)', () => {
+    const entry = JSON.stringify({
+      session_id: 'main-2026-05-28-deep-1',
+      session_type: 'deep',
+      started_at: '2026-05-28T10:25:00.000Z',
+      completed_at: '2026-05-28T11:51:31.000Z',
+      waves: 5,
+      issues_closed: [357],
+      issues_created: [4, 'products/apple-mail-kit#92'],
+    });
+    const vaultDir = tmp();
+    const sourceFile = writeJsonl(vaultDir, entry);
+    const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session', '--vault-name', 'test-vault']);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout.trim()).action).toBe('created');
+    const content = readFileSync(join(vaultDir, '50-sessions', 'test-vault', 'main-2026-05-28-deep-1.md'), 'utf8');
+    expect(content).toContain('**Issues created:** #4, products/apple-mail-kit#92');
+    expect(content).toContain('**Issues closed:** #357');
   });
 
   it('session_id with slashes: sanitised via subjectToSlug, no slash leaks into basename', () => {

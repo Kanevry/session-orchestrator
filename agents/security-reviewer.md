@@ -1,7 +1,8 @@
 ---
 name: security-reviewer
-description: 'Use this agent for security analysis — OWASP checks, authentication flows, input validation, authorization, and vulnerability assessment. Read-only analysis with actionable findings. Prioritizes high-confidence exploitable issues over theoretical ones. <example>Context: Quality wave includes security review of new endpoints. user: "Review the new API endpoints for security vulnerabilities" assistant: "I''ll dispatch the security-reviewer agent to audit the new endpoints." <commentary>Security review after implementation catches auth gaps, injection risks, and missing validation.</commentary></example> <example>Context: Pre-deployment security check. user: "Run a security audit on the authentication changes" assistant: "I''ll use the security-reviewer to verify the auth changes are secure." <commentary>Auth changes are high-risk — dedicated security review prevents vulnerabilities in production.</commentary></example>'
-model: inherit
+description: 'Use this agent for security analysis — OWASP checks, authentication flows, input validation, authorization, and vulnerability assessment. Read-only analysis with actionable findings. Prioritizes high-confidence exploitable issues over theoretical ones.'
+model: opus
+effort: medium
 color: red
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
@@ -234,3 +235,9 @@ Verdict variants (concrete examples per scenario):
 - LOW/MED-only findings, no exploitable HIGH → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "finding_counts": {"high": 0, "med": 2, "low": 4}}`
 - HIGH-confidence exploitable finding present → `{"verdict": "FIX_REQUIRED", "finding_counts": {"high": 1, "med": 3, "low": 2}}`
 - Cannot complete audit (missing access, malformed targets) → `{"verdict": "BLOCKED", "phases": {"context": false}}`
+
+## Examples
+
+<example>Context: Quality wave includes security review of new endpoints. user: "Review the new API endpoints for security vulnerabilities" assistant: "I'll dispatch the security-reviewer agent to audit the new endpoints." <commentary>Security review after implementation catches auth gaps, injection risks, and missing validation.</commentary></example>
+
+<example>Context: Pre-deployment security check. user: "Run a security audit on the authentication changes" assistant: "I'll use the security-reviewer to verify the auth changes are secure." <commentary>Auth changes are high-risk — dedicated security review prevents vulnerabilities in production.</commentary></example>

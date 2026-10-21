@@ -3,7 +3,8 @@
  * migrate-vault-paths.mjs — one-shot cross-repo migration for username-drift in vault/project paths.
  *
  * Rewrites a literal "from" username path-segment to a "to" segment across markdown
- * files under ~/Projects/. Only the username path segment changes; the trailing
+ * files under the projects root (getConfinementRoot(): SO_PROJECTS_ROOT >
+ * owner.yaml paths.projects-root > ~/Projects). Only the username path segment changes; the trailing
  * path is preserved.
  *
  * Typical use: a host username change (`/Users/oldname/` → `/Users/newname/`) leaves
@@ -23,7 +24,7 @@
  * Target repo resolution (in priority order):
  *   1. --repos <comma,list>             (explicit CLI override)
  *   2. audited-repos: [...] in the same vault-migration-rules.yaml
- *   3. <none, no --repos> → scan only the auto-discover sweep under ~/Projects/**.
+ *   3. <none, no --repos> → scan only the auto-discover sweep under <projects-root>/**.
  *
  * Flags:
  *   --from SEG       Literal source segment (e.g. '/Users/oldname/'). Required if no config entry.
@@ -61,13 +62,13 @@ import { parseColumnFlags, CliFlagError } from './lib/cli-flags.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { atomicWriteText, envelopeToError } from './lib/io.mjs';
 import { loadHostPaths, resolveHostPath } from './lib/config/host-paths.mjs';
+import { getConfinementRoot } from './lib/config/cross-repo.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
 const HOME = os.homedir();
-const PROJECTS_ROOT = path.join(HOME, 'Projects');
 
 // Set at startup from CLI args or config. Helpers read these; main() resolves them.
 let OLD_SEGMENT = null;
@@ -221,7 +222,8 @@ function printHelp() {
     `Usage: migrate-vault-paths.mjs --from <old/> --to <new/> [--dry-run|--apply] [--repos <comma,list>] [--json] [--help]
 
 Rewrites a literal "from" path segment to a "to" segment across markdown files
-under ~/Projects/, skipping tests/, fixtures/, .git/, vault-backups, and
+under the projects root (SO_PROJECTS_ROOT / owner.yaml paths.projects-root,
+default ~/Projects), skipping tests/, fixtures/, .git/, vault-backups, and
 historical contexts (decisions.md, history/, archive*).
 
 Both --from and --to are required unless username-rewrites[0] is set in
@@ -236,7 +238,7 @@ Options:
   --apply              Write fixes in-place (atomic: tmp + rename)
   --repos LIST         Comma-separated repo names or paths to scan; falls back
                        to audited-repos: [...] in vault-migration-rules.yaml,
-                       then to ~/Projects/** auto-discovery sweep
+                       then to <projects-root>/** auto-discovery sweep
   --json               Emit JSONL records on stdout (one per hit)
   --help, -h           Show this help
 
@@ -249,8 +251,21 @@ Exit codes:  0 success  1 input error  2 I/O error
 // Repo discovery
 // ---------------------------------------------------------------------------
 
+let _projectsRoot;
+
 /**
- * Resolve a repo name to an absolute path by searching ~/Projects/**.
+ * Projects root for this run, resolved once (#1622): getConfinementRoot() reads
+ * owner.yaml and WARNs on an invalid SO_PROJECTS_ROOT, so per-repo calls repeated both.
+ * @returns {string}
+ */
+function projectsRoot() {
+  _projectsRoot ??= getConfinementRoot();
+  return _projectsRoot;
+}
+
+/**
+ * Resolve a repo name to an absolute path by searching <projects-root>/**
+ * (getConfinementRoot(), #1567).
  * If the input is already an absolute path that exists, returns it as-is.
  * Returns null when no match is found.
  */
@@ -258,10 +273,10 @@ function resolveRepoPath(nameOrPath) {
   if (path.isAbsolute(nameOrPath)) {
     return existsSync(nameOrPath) ? nameOrPath : null;
   }
-  // Search up to 4 levels deep under ~/Projects/
+  // Search up to 4 levels deep under the projects root
   const result = spawnSync(
     'find',
-    [PROJECTS_ROOT, '-maxdepth', '4', '-type', 'd', '-name', nameOrPath],
+    [projectsRoot(), '-maxdepth', '4', '-type', 'd', '-name', nameOrPath],
     { encoding: 'utf8' },
   );
   if (result.status !== 0) return null;
@@ -358,14 +373,15 @@ function findMissingSegmentFiles(roots) {
 }
 
 /**
- * Auto-discover ALL repos under ~/Projects/** that contain the OLD_SEGMENT
+ * Auto-discover ALL repos under <projects-root>/** that contain the OLD_SEGMENT
  * literal OR a missing-segment `vault-dir:` drift. Used in tandem with the
  * default-target list to find drift we don't already know about.
  */
 function discoverAdditionalFiles() {
-  if (!existsSync(PROJECTS_ROOT)) return [];
-  const set = new Set(findCandidateFiles([PROJECTS_ROOT]));
-  for (const f of findMissingSegmentFiles([PROJECTS_ROOT])) set.add(f);
+  const root = projectsRoot();
+  if (!existsSync(root)) return [];
+  const set = new Set(findCandidateFiles([root]));
+  for (const f of findMissingSegmentFiles([root])) set.add(f);
   return [...set];
 }
 
@@ -599,7 +615,7 @@ async function main() {
   let candidateFiles = [...candidateSet];
 
   // If NO explicit repo list was given (neither --repos nor config.audited-repos),
-  // expand scan to discover anything else under ~/Projects/**.
+  // expand scan to discover anything else under <projects-root>/**.
   if (!explicitRepos) {
     const additional = discoverAdditionalFiles();
     const set = new Set(candidateFiles);

@@ -931,8 +931,9 @@ export function evaluateSession(opts = {}) {
     throw new Error('evaluateSession: model.id is required');
   }
 
-  const sessionsPath = path.join(metricsDir, 'sessions.jsonl');
-  // #1514 point 1 — the repo's ONE ledger (main checkout for a linked worktree).
+  // #1514 point 1 / #1592 — the repo's ONE ledger pair (main checkout for a
+  // linked worktree); resolving only events left the session unresolvable.
+  const sessionsPath = path.join(resolveEventsLedgerRoot(metricsDir), 'sessions.jsonl');
   const eventsPath = path.join(resolveEventsLedgerRoot(metricsDir), 'events.jsonl');
   // #1209: sessions.jsonl is APPEND-ONLY (the same physical session can carry
   // more than one line — crash-recovery re-appends, #1068 stub/supersede

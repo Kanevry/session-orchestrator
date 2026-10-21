@@ -103,14 +103,17 @@ describe('ux-evaluator description', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Test 7: description contains required inline <example> block
+  // Test 7: description is the routing sentence only; the <example> block lives
+  // in the body `## Examples` section (#887, #1157)
   // ---------------------------------------------------------------------------
 
-  it('description contains an inline <example> block with <commentary>', () => {
-    const desc = frontmatter['description'];
-    expect(desc).toContain('<example>');
-    expect(desc).toContain('</example>');
-    expect(desc).toContain('<commentary>');
+  it('keeps <example> out of the description and in a body ## Examples section with <commentary>', () => {
+    expect(frontmatter['description']).not.toContain('<example>');
+    const examples = fileContents.match(/^## Examples\n([\s\S]*?)(?=^## |(?![\s\S]))/m);
+    expect(examples).not.toBeNull();
+    expect(examples[1]).toContain('<example>');
+    expect(examples[1]).toContain('</example>');
+    expect(examples[1]).toContain('<commentary>');
   });
 });
 

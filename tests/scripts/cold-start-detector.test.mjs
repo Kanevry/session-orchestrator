@@ -91,6 +91,29 @@ afterEach(() => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe('detectColdStart — skip decisions', () => {
+  it.each([false, true])('uses the main checkout measured count with synthetic=%s while bootstrap and marker stay local', async (synthetic) => {
+    writeSessions(`${JSON.stringify({ session_id: 'main-history', session_type: 'deep', _synthetic: synthetic })}\n`);
+    const worktree = join(repo, 'linked');
+    const admin = join(repo, '.git', 'worktrees', 'linked');
+    mkdirSync(admin, { recursive: true });
+    mkdirSync(join(worktree, '.orchestrator', 'metrics'), { recursive: true });
+    writeFileSync(join(worktree, '.git'), `gitdir: ${admin}\n`);
+    writeFileSync(join(admin, 'commondir'), '../..\n');
+    writeFileSync(join(worktree, '.orchestrator', 'bootstrap.lock'), `bootstrapped-at: ${HOURS_AGO(48)}\n`);
+    const marker = join(worktree, WELCOME_MARKER_REL);
+    writeFileSync(marker, '');
+    writeFileSync(join(worktree, '.orchestrator', 'metrics', 'sessions.jsonl'),
+      `${JSON.stringify({ session_id: 'local-shadow', session_type: 'deep', _synthetic: !synthetic })}\n`);
+    const result = await detectColdStart({ repoRoot: worktree, now: NOW_MS });
+    if (synthetic) {
+      expect(result.shouldEmit).toBe(true);
+      expect(result.reason).toBe('migration-marker-present');
+      expect(result.markerPath).toBe(marker);
+    } else {
+      expect(result).toEqual({ shouldEmit: false, reason: 'sessions-floor-met (1 >= 1)' });
+    }
+  });
+
   it('returns no-bootstrap-lock when bootstrap.lock is missing', async () => {
     // No .orchestrator/bootstrap.lock written → bootstrap-gate path.
     const result = await detectColdStart({ repoRoot: repo, now: NOW_MS });
@@ -99,7 +122,7 @@ describe('detectColdStart — skip decisions', () => {
 
   it('returns sessions-floor-met when sessions.jsonl line count >= silenceAfterSessions', async () => {
     writeLock({ bootstrappedAt: HOURS_AGO(48) });
-    writeSessions('{"session":"a"}\n{"session":"b"}\n');
+    writeSessions('{"session":"a","session_type":"feature"}\n{"session":"b","session_type":"feature"}\n');
     const result = await detectColdStart({
       repoRoot: repo,
       silenceAfterSessions: 1,
@@ -241,7 +264,7 @@ describe('detectColdStart — sessions line counting', () => {
     writeLock({ bootstrappedAt: HOURS_AGO(48) });
     // Exactly ONE session, with a trailing newline. silence floor = 2 →
     // 1 < 2 → emit. If trailing \n inflated to 2, we'd skip.
-    writeSessions('{"session":"a"}\n');
+    writeSessions('{"session":"a","session_type":"feature"}\n');
     const result = await detectColdStart({
       repoRoot: repo,
       nudgeAfterHours: 1,
@@ -254,7 +277,7 @@ describe('detectColdStart — sessions line counting', () => {
   it('one session at floor=1 silences the banner', async () => {
     // Boundary: count === floor → reason should be sessions-floor-met.
     writeLock({ bootstrappedAt: HOURS_AGO(48) });
-    writeSessions('{"session":"a"}\n');
+    writeSessions('{"session":"a","session_type":"feature"}\n');
     const result = await detectColdStart({
       repoRoot: repo,
       silenceAfterSessions: 1,
@@ -318,6 +341,7 @@ describe('detectColdStart — duplicate ledger records (#1167)', () => {
   const DUP_PAIR_PLUS_ONE = [
     JSON.stringify({
       session_id: 'main-2026-09-01-session-23',
+      session_type: 'feature',
       status: 'abandoned',
       started_at: STARTED,
       completed_at: COMPLETED,
@@ -331,6 +355,7 @@ describe('detectColdStart — duplicate ledger records (#1167)', () => {
     }),
     JSON.stringify({
       session_id: 'main-2026-09-02-session-1',
+      session_type: 'feature',
       status: 'completed',
       started_at: '2026-09-02T08:00:00.000Z',
       completed_at: '2026-09-02T09:00:00.000Z',

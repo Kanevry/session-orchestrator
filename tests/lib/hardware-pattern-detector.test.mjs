@@ -40,13 +40,19 @@ function oomTurn(timestamp, host_class) {
   return oom(timestamp, host_class, 'orchestrator.turn.stopped');
 }
 
-function startedWithPeers(timestamp, host_class, peer_count) {
-  return {
+/**
+ * Session-start event. `recent_starts_count` is the start-wave field emitted
+ * since #1650; pass `undefined` to model a pre-#1650 record that lacks it.
+ */
+function startedWithPeers(timestamp, host_class, peer_count, recent_starts_count) {
+  const e = {
     event: 'orchestrator.session.started',
     timestamp,
     host_class,
     peer_count,
   };
+  if (recent_starts_count !== undefined) e.recent_starts_count = recent_starts_count;
+  return e;
 }
 
 function diskFullEvent(timestamp, host_class, error = 'ENOSPC: no space left on device') {
@@ -219,25 +225,62 @@ describe('signal: heartbeat-gap', () => {
   });
 });
 
-describe('signal: concurrent-session-pressure', () => {
-  it('triggers at or above threshold', () => {
+describe('signal: concurrent-session-pressure (start wave, #1654)', () => {
+  it('triggers when recent_starts_count is at or above startWaveMin', () => {
     const events = [
-      startedWithPeers('2026-04-19T10:00:00Z', HOST_M3, 5),
-      startedWithPeers('2026-04-19T11:00:00Z', HOST_M3, 8),
+      startedWithPeers('2026-04-19T10:00:00Z', HOST_M3, 1, 5),
+      startedWithPeers('2026-04-19T11:00:00Z', HOST_M3, 2, 8),
     ];
     const c = detectHardwarePatterns({ events });
     expect(c.length).toBe(1);
     expect(c[0].signal).toBe('concurrent-session-pressure');
+    expect(c[0].samples[0]).toEqual({ recent_starts_count: 5 });
   });
 
-  it('ignores events below threshold', () => {
+  it('a high peer_count is NOT pressure — a standing condition, not a start wave (#1654)', () => {
+    // THE #1654 regression: peer_count >= 5 held on 67.4% of M4 starts, so the
+    // old detector derived concurrent-session-pressure learnings from noise.
+    // Pre-#1650 records carry no recent_starts_count: no value, never a hit.
     const events = [
-      startedWithPeers('2026-04-19T10:00:00Z', HOST_M3, 2),
-      startedWithPeers('2026-04-19T11:00:00Z', HOST_M3, 3),
-      startedWithPeers('2026-04-19T12:00:00Z', HOST_M3, 4),
+      startedWithPeers('2026-04-19T10:00:00Z', HOST_M3, 9),
+      startedWithPeers('2026-04-19T11:00:00Z', HOST_M3, 12),
+      startedWithPeers('2026-04-19T12:00:00Z', HOST_M3, 7, 4),
+    ];
+    expect(detectHardwarePatterns({ events })).toEqual([]);
+  });
+
+  it('one start wave is ONE occurrence, however many of its starts qualify (#1664)', () => {
+    // THE #1664 bug: 7 starts in one wave → the 6th and 7th each see >= 5
+    // foreign starts → two qualifying events → minOccurrences: 2 met by a
+    // single wave. Falsification: count events instead of waves and this
+    // returns a candidate.
+    const events = [
+      startedWithPeers('2026-04-19T10:00:00Z', HOST_M3, 5, 5),
+      startedWithPeers('2026-04-19T10:00:30Z', HOST_M3, 6, 6),
+    ];
+    expect(detectHardwarePatterns({ events })).toEqual([]);
+  });
+
+  it('two waves on the same host more than the window apart are two occurrences', () => {
+    const events = [
+      startedWithPeers('2026-04-19T10:00:00Z', HOST_M3, 5, 5),
+      startedWithPeers('2026-04-19T10:00:30Z', HOST_M3, 6, 6),
+      startedWithPeers('2026-04-19T10:06:00Z', HOST_M3, 5, 5),
     ];
     const c = detectHardwarePatterns({ events });
-    expect(c).toEqual([]);
+    expect(c.length).toBe(1);
+    expect(c[0].occurrences).toBe(2);
+    expect(c[0].samples).toEqual([{ recent_starts_count: 6 }, { recent_starts_count: 5 }]);
+  });
+
+  it('starts without a usable timestamp are dropped, not counted as a wave each', () => {
+    // Bug: two untimed qualifying starts formed two one-event waves and met
+    // minOccurrences: 2 — the per-event over-count again.
+    const events = [
+      startedWithPeers('not-a-time', HOST_M3, 5, 5),
+      startedWithPeers('', HOST_M3, 6, 6),
+    ];
+    expect(detectHardwarePatterns({ events })).toEqual([]);
   });
 });
 
@@ -379,7 +422,7 @@ describe('constants', () => {
 
   it('DEFAULT_THRESHOLDS has all expected keys', () => {
     expect(DEFAULT_THRESHOLDS.minOccurrences).toBeGreaterThan(0);
-    expect(DEFAULT_THRESHOLDS.concurrentSessionsWarn).toBeGreaterThan(0);
+    expect(DEFAULT_THRESHOLDS.startWaveMin).toBeGreaterThan(0);
     expect(DEFAULT_THRESHOLDS.thermalCpuLoadPct).toBeGreaterThan(0);
     expect(DEFAULT_THRESHOLDS.heartbeatGapMinutes).toBeGreaterThan(0);
   });

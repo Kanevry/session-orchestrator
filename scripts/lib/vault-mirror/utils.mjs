@@ -144,6 +144,85 @@ export function slugifyIdSafe(input) {
   return slug.length >= 2 ? slug : `${slug}-x`;
 }
 
+/** The vault-sync schema's `id` cap (`skills/vault-sync/validator.mjs`, `.max(128)`). */
+export const NOTE_ID_MAX_LENGTH = 128;
+
+/**
+ * The frontmatter `id` of a generated note (#1601, #1602). The FILENAME slug
+ * stays the note's identity on disk (paths never change); the `id` adds the
+ * repo namespace so it is unique across the vault's per-repo folders — a
+ * session id or learning subject recurs across repos — and is capped at
+ * {@link NOTE_ID_MAX_LENGTH}. An over-long id keeps a 119-char prefix plus an
+ * 8-hex SHA-256 suffix of the FULL id, so two long subjects sharing a prefix
+ * stay distinct. Deterministic: the same `(repoNs, slug)` always yields the
+ * same id. Without a namespace (vault-less callers, unit tests) the slug is
+ * only capped.
+ *
+ * BV-004 ceiling: the separator is a single `-` (the schema slug forbids
+ * `--`), so namespace `a` + slug `b-c` and namespace `a-b` + slug `c` render
+ * the same id. Revisit-Trigger: the vault validator reports a duplicate id
+ * whose two notes sit in different namespace folders.
+ *
+ * @param {string|null|undefined} repoNs - the resolved repo namespace folder.
+ * @param {string} slug - the note's filename slug (or rendered session slug).
+ * @returns {string}
+ */
+export function noteIdFor(repoNs, slug) {
+  const base = String(slug ?? '');
+  const ns = typeof repoNs === 'string' && repoNs.length > 0 ? (isValidSlug(repoNs) ? repoNs : legacySubjectToSlug(repoNs)) : '';
+  const full = ns ? `${ns}-${base}` : base;
+  if (full.length <= NOTE_ID_MAX_LENGTH) return full;
+  const suffix = digestSha256Short(full);
+  return `${full.slice(0, NOTE_ID_MAX_LENGTH - suffix.length - 1).replace(/-+$/, '')}-${suffix}`;
+}
+
+/**
+ * Does a note's frontmatter `id` name the note `slug`? Accepts both the
+ * pre-#1601 id (the bare slug — a numeric one parses as the same string here,
+ * `parseFrontmatter` keeps scalars verbatim) and the current {@link noteIdFor}
+ * form, so notes written before the id change keep their ownership evidence.
+ *
+ * @param {unknown} fmId
+ * @param {string} slug
+ * @param {string|null|undefined} repoNs
+ * @returns {boolean}
+ */
+export function noteIdMatches(fmId, slug, repoNs) {
+  return typeof fmId === 'string' && (fmId === slug || fmId === noteIdFor(repoNs, slug));
+}
+
+/**
+ * The `id:` frontmatter value, always a double-quoted YAML string (#1601): an
+ * unquoted all-digit id (`id: 433`) parses as a NUMBER under a real YAML parser
+ * and fails the schema's `z.string()`.
+ *
+ * @param {string} id
+ * @returns {string}
+ */
+export function yamlNoteId(id) {
+  return JSON.stringify(String(id));
+}
+
+/**
+ * Replace the frontmatter `id:` line of a note — used when a displaced note
+ * moves to its disambiguated name (#1506.2), whose `id` must match the file,
+ * and by the id migration (#1601, `migrate-ids.mjs`). Only the `id:` line
+ * INSIDE the leading frontmatter block changes; every other byte — body,
+ * other fields, `[REDACTED]` spans (#1025) — is kept verbatim. A note without
+ * a frontmatter `id:` line is returned unchanged.
+ * @param {string} content
+ * @param {string} id
+ * @returns {string}
+ */
+export function withNoteId(content, id) {
+  if (!content.startsWith('---')) return content;
+  const end = content.indexOf('\n---', 3);
+  if (end === -1) return content;
+  const head = content.slice(0, end);
+  const nextHead = head.replace(/^id:.*$/m, `id: ${yamlNoteId(id)}`);
+  return nextHead === head ? content : nextHead + content.slice(end);
+}
+
 /** Derive the first 8 chars of a UUID (strip hyphens, take first 8 hex chars). */
 export function uuidPrefix8(id) {
   return id.replace(/-/g, '').slice(0, 8);

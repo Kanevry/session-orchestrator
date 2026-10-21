@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-11T21:13:27.286Z",
-  "head": "f9d7186fd1d4bbfec510817c34e6626683a92f0a",
+  "generated_at": "2026-10-17T20:21:37.708Z",
+  "head": "a870ecde7340c8dfd8fe0e31b596287046e518d7",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -20,6 +20,21 @@
         "pre-bash-destructive-guard.mjs",
         "pre-bash-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "hooks/_lib/hook-root.mjs",
+      "reachable_from": [
+        "cwd-change-restore.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "pre-bash-issue-budget.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -282,7 +297,14 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "skill-invocation-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/agent-status.mjs",
+      "reachable_from": [
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -329,14 +351,31 @@
     {
       "file": "scripts/lib/common.mjs",
       "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
         "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
-        "pre-bash-templates-first.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -344,7 +383,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -352,13 +392,15 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/config/block-header.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -371,18 +413,23 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/config/block-preprocess.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -395,12 +442,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -408,7 +459,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -418,7 +470,8 @@
         "on-session-start.mjs",
         "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
-        "pre-bash-issue-budget.mjs"
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -426,7 +479,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -440,7 +494,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -448,7 +503,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -456,7 +512,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -464,7 +521,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -473,7 +531,8 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs",
-        "post-subagent-discovery-validator.mjs"
+        "post-subagent-discovery-validator.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -481,7 +540,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -489,7 +549,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -497,7 +558,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -505,7 +567,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -513,7 +576,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -521,7 +585,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -529,7 +594,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -543,7 +609,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -551,7 +618,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -559,7 +627,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -567,7 +636,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -575,7 +645,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -583,7 +654,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -593,7 +665,8 @@
         "on-session-start.mjs",
         "post-bash-issue-budget-refund.mjs",
         "post-edit-validate.mjs",
-        "pre-bash-issue-budget.mjs"
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -607,7 +680,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -615,7 +689,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -623,13 +698,15 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/config/private-config-dir.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -642,13 +719,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -658,7 +738,8 @@
         "on-session-start.mjs",
         "on-stop.mjs",
         "post-edit-validate.mjs",
-        "post-tool-batch-wave-signal.mjs"
+        "post-tool-batch-wave-signal.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -666,7 +747,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -674,13 +756,15 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/config/section-extractor.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -693,12 +777,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -706,7 +794,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -714,13 +803,15 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/config/state-md-lock.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -733,12 +824,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -746,7 +841,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -754,7 +850,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -762,7 +859,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -770,7 +868,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -778,7 +877,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -786,7 +886,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -794,7 +895,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -802,7 +904,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -810,13 +913,15 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/crypto-digest-utils.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -829,13 +934,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -862,6 +970,7 @@
       "file": "scripts/lib/events-schema.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -874,17 +983,23 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/events.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -897,17 +1012,23 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/exclusivity-matrix.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -920,12 +1041,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -933,13 +1058,15 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/file-lock.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -952,18 +1079,45 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/fleet-protocol.mjs",
       "reachable_from": [
-        "on-session-start.mjs"
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -989,6 +1143,7 @@
       "file": "scripts/lib/host-identity.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1001,19 +1156,52 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/http-request.mjs",
+      "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/io.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1026,6 +1214,7 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-destructive-guard.mjs",
@@ -1036,7 +1225,8 @@
         "pre-bash-templates-first.mjs",
         "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1088,6 +1278,7 @@
       "file": "scripts/lib/locks/lock-body.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1100,18 +1291,23 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/locks/staging-fence-lock.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1124,18 +1320,23 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/locks/state-md-lock.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1148,12 +1349,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1161,20 +1366,38 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
       "file": "scripts/lib/native-command.mjs",
       "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
         "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
-        "pre-bash-templates-first.mjs"
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1182,6 +1405,12 @@
       "reachable_from": [
         "on-stop.mjs",
         "post-tool-batch-wave-signal.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/orphan-reaper/no-follow-append.mjs",
+      "reachable_from": [
+        "post-edit-validate.mjs"
       ]
     },
     {
@@ -1204,6 +1433,7 @@
         "on-session-end.mjs",
         "on-session-start.mjs",
         "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "skill-invocation-telemetry.mjs"
       ]
     },
@@ -1212,7 +1442,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -1220,7 +1451,8 @@
       "reachable_from": [
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "post-edit-validate.mjs"
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -1246,6 +1478,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
@@ -1276,6 +1509,7 @@
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
@@ -1295,6 +1529,12 @@
       "file": "scripts/lib/plugin-update-banner.mjs",
       "reachable_from": [
         "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/process-group.mjs",
+      "reachable_from": [
+        "post-edit-validate.mjs"
       ]
     },
     {
@@ -1354,15 +1594,23 @@
     {
       "file": "scripts/lib/session-id.mjs",
       "reachable_from": [
+        "cwd-change-restore.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "on-stop.mjs"
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "pre-bash-issue-budget.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/session-identity/own-session.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1375,17 +1623,24 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/session-lock-shape.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1398,18 +1653,24 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/session-lock.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1422,20 +1683,45 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
       "file": "scripts/lib/session-registry.mjs",
       "reachable_from": [
+        "config-protection.mjs",
+        "cwd-change-restore.mjs",
+        "enforce-commands.mjs",
+        "enforce-scope.mjs",
+        "loop-guard.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
-        "on-stop.mjs"
+        "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-import-probe.mjs",
+        "post-edit-validate.mjs",
+        "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "post-tooluse-frontend-slop.mjs",
+        "pre-auq-clarity.mjs",
+        "pre-bash-issue-budget.mjs",
+        "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
+        "pre-task-scope-disjoint.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1510,10 +1796,17 @@
     {
       "file": "scripts/lib/sessions-canonical.mjs",
       "reachable_from": [
+        "cwd-change-restore.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
-        "skill-invocation-telemetry.mjs"
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "pre-bash-issue-budget.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1552,6 +1845,7 @@
       "file": "scripts/lib/state-md/frontmatter-mutators.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1564,12 +1858,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1584,6 +1882,7 @@
       "file": "scripts/lib/state-md/yaml-parser.mjs",
       "reachable_from": [
         "config-protection.mjs",
+        "cwd-change-restore.mjs",
         "enforce-commands.mjs",
         "enforce-scope.mjs",
         "loop-guard.mjs",
@@ -1596,12 +1895,16 @@
         "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
         "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
         "post-tooluse-frontend-slop.mjs",
         "pre-auq-clarity.mjs",
         "pre-bash-issue-budget.mjs",
         "pre-bash-memory-propose-audit.mjs",
+        "pre-bash-sessions-ledger-guard.mjs",
+        "pre-bash-staging-fence.mjs",
         "pre-task-scope-disjoint.mjs",
-        "skill-invocation-telemetry.mjs"
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {
@@ -1621,10 +1924,17 @@
     {
       "file": "scripts/lib/tail-window.mjs",
       "reachable_from": [
+        "cwd-change-restore.mjs",
         "on-session-end.mjs",
         "on-session-start.mjs",
         "on-stop.mjs",
+        "post-bash-issue-budget-refund.mjs",
+        "post-bash-write-verify.mjs",
+        "post-edit-validate.mjs",
         "post-subagent-discovery-validator.mjs",
+        "post-tool-batch-wave-signal.mjs",
+        "post-tool-failure-corrective-context.mjs",
+        "pre-bash-issue-budget.mjs",
         "subagent-telemetry.mjs"
       ]
     },
@@ -1709,9 +2019,23 @@
       ]
     },
     {
+      "file": "scripts/lib/win-process-tree.mjs",
+      "reachable_from": [
+        "post-edit-validate.mjs"
+      ]
+    },
+    {
       "file": "scripts/lib/worktree/listing.mjs",
       "reachable_from": [
         "on-session-start.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/zx.mjs",
+      "reachable_from": [
+        "on-session-start.mjs",
+        "on-stop.mjs",
+        "pre-bash-destructive-guard.mjs"
       ]
     }
   ]

@@ -27,17 +27,20 @@
  *   {"action":"appended","path":"<file>","session_id":"<id>","schema_version":2}
  */
 
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { resolveEventsLedgerRoot } from './lib/platform.mjs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
+import { explainEventsLedgerRoot, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { appendJsonl } from './lib/common.mjs';
 import {
   MEMORY_CLEANUP_EVENT,
   deriveMemoryCleanupSignal,
   stampMemoryCleanup,
 } from './lib/memory-cleanup-stamp.mjs';
-import { parseStateMd, readSessionProfile, resolveStateMdPath } from './lib/state-md.mjs';
+import { parseStateMd, readSessionProfile } from './lib/state-md.mjs';
+import { resolveStateMdWriteTarget, warnForeignStateMd } from './lib/state-md/frontmatter-mutators.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
+import { readSessionWorkTrees } from './lib/session-work-trees.mjs';
 import { rollupSessionTokens } from './lib/session-token-rollup.mjs';
 import { COST_BASIS, PRICING_TABLE_DATE } from './lib/telemetry/pricing.mjs';
 import { serializeSessionLineChecked } from './lib/session-schema/serializer.mjs';
@@ -50,6 +53,7 @@ import {
   normalizeWaveKeys,
 } from './lib/session-schema.mjs';
 import { stableHostname } from './lib/host-identity.mjs';
+import { activeDir } from './lib/session-registry.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 /**
@@ -181,18 +185,23 @@ function resolveOwnSessionUuid({ override, recordSessionId }) {
  * Whole-file read, like deriveMemoryCleanupSignal() on the same file — fine at
  * today's events.jsonl size; revisit if the file outgrows a single read.
  *
+ * `behind` (#1668) is that same event's count of upstream commits the checkout
+ * lacked at start: a non-negative integer when measured, null when the event
+ * carries none (no upstream, or a pre-#1668 writer) — never read as 0.
+ *
  * Never throws.
  *
  * @param {string} eventsFile
  * @param {string} uuid
- * @returns {string|null}
+ * @returns {{ headSha: string|null, behind: number|null }}
  */
 function readOwnStartHeadSha(eventsFile, uuid) {
+  const none = { headSha: null, behind: null };
   let raw;
   try {
     raw = readFileSync(eventsFile, 'utf8');
   } catch {
-    return null;
+    return none;
   }
   for (const line of raw.split('\n')) {
     if (!line.includes(uuid)) continue;
@@ -203,14 +212,113 @@ function readOwnStartHeadSha(eventsFile, uuid) {
       continue;
     }
     if (ev?.event !== 'orchestrator.session.started' || ev.session_id !== uuid) continue;
-    if (ev.native_source === 'compact' || ev.native_source === 'resume') return null;
-    return typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha) ? ev.head_sha : null;
+    if (ev.native_source === 'compact' || ev.native_source === 'resume') return none;
+    return {
+      headSha: typeof ev.head_sha === 'string' && FULL_SHA_RE.test(ev.head_sha) ? ev.head_sha : null,
+      behind: Number.isInteger(ev.behind) && ev.behind >= 0 ? ev.behind : null,
+    };
   }
-  return null;
+  return none;
+}
+
+/**
+ * True when THIS session's registry entry proves it works in a different tree
+ * than the one it started in (#1652): `work_root` (refreshed at every turn end,
+ * #1605) differs from `session_root` (the SessionStart project root, the tree
+ * `head_sha` was measured in). Then the start event's `head_sha` names the
+ * wrong tree — a `<head_sha>..HEAD` range would attribute that tree's history,
+ * not the session's commits — so the fallback must not adopt it.
+ *
+ * Absent entry, absent roots or an unreadable file → false (no proof of a
+ * divergence; the pre-#1652 behaviour). Ceiling: `work_root` follows the
+ * harness cwd, so a coordinator that commits in a worktree through absolute
+ * paths without changing its cwd is not detected — the primary source is the
+ * STATE.md `session-start-ref` (HEAD of the session's own checkout — repoRoot,
+ * the tree STATE.md lives in; commits in additional worktrees: #1659).
+ *
+ * Never throws.
+ *
+ * @param {string} uuid
+ * @returns {boolean}
+ */
+function startTreeDiverged(uuid) {
+  if (!/^[A-Za-z0-9._-]+$/.test(uuid) || uuid.startsWith('.')) return false;
+  try {
+    const entry = JSON.parse(readFileSync(join(activeDir(), `${uuid}.json`), 'utf8'));
+    const { session_root: sessionRoot, work_root: workRoot } = entry ?? {};
+    return typeof sessionRoot === 'string' && typeof workRoot === 'string' && sessionRoot !== workRoot;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Realpath, or the resolved path when it does not exist (any more).
+ *
+ * @param {string} p
+ * @returns {string}
+ */
+function realOrResolved(p) {
+  try {
+    return realpathSync(p);
+  } catch {
+    return resolve(p);
+  }
+}
+
+/**
+ * Keep only well-formed `session_work_trees` entries (#1659): an absolute
+ * `tree` and a FULL hex `start_ref` — the shape the work_tree reader accepts.
+ * Invalid entries are dropped, never the record.
+ *
+ * @param {unknown} value
+ * @returns {{ entries: Array<{ tree: string, start_ref: string }>, dropped: number } | null}
+ *   null when `value` is not an array at all.
+ */
+function sanitizeWorkTrees(value) {
+  if (!Array.isArray(value)) return null;
+  const entries = [];
+  for (const item of value) {
+    if (item && typeof item.tree === 'string' && isAbsolute(item.tree)
+      && typeof item.start_ref === 'string' && FULL_SHA_RE.test(item.start_ref)) {
+      entries.push({ tree: item.tree, start_ref: item.start_ref });
+    }
+  }
+  return { entries, dropped: value.length - entries.length };
+}
+
+/**
+ * The own checkout's top level — the tree emit-session runs in (process.cwd(),
+ * where it also reads STATE.md and current-session.json). null outside a git
+ * repo. Never throws.
+ *
+ * @returns {string|null}
+ */
+function ownCheckoutTop() {
+  try {
+    const top = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      timeout: 10_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return top ? realOrResolved(top) : null;
+  } catch {
+    return null;
+  }
 }
 
 function parseArgs(argv) {
-  const args = { file: '.orchestrator/metrics/sessions.jsonl', entry: null, sessionUuid: null };
+  // The default shares the events ledger's main-checkout root (#1584).
+  // Explicit --file paths below remain verbatim, including relative paths.
+  // #1659: a linked worktree whose common dir is not named `.git`
+  // (`--separate-git-dir`, bare repo) has no main checkout to map to, and the
+  // resolver falls back to the WORKTREE — a second, per-worktree ledger. The
+  // default is therefore resolved after parsing and refused when unmapped.
+  const args = {
+    file: null,
+    entry: null,
+    sessionUuid: null,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--file') args.file = argv[++i];
@@ -219,7 +327,7 @@ function parseArgs(argv) {
     else if (a === '--help' || a === '-h') {
       process.stdout.write(
         'Usage: node scripts/emit-session.mjs [--file PATH] [--entry JSON]\n' +
-          '  --file   target JSONL file (default: .orchestrator/metrics/sessions.jsonl)\n' +
+          '  --file   explicit target JSONL file (default: main-checkout/.orchestrator/metrics/sessions.jsonl)\n' +
           '  --entry  entry JSON (if omitted, read from stdin)\n' +
           '  --session-uuid  raw harness UUID (default: owned .orchestrator/current-session.json)\n' +
           'Exit codes: 0 append ok, 1 validation error, 2 I/O error\n'
@@ -229,6 +337,20 @@ function parseArgs(argv) {
       process.stderr.write(`emit-session: unknown argument: ${a}\n`);
       process.exit(2);
     }
+  }
+  if (args.file === null) {
+    // The cwd is the EXPLICIT root (like the former resolveEventsLedgerRoot
+    // call and every other sessions.jsonl reader), so a launch-dir env var
+    // never redirects the default --file; an unmapped worktree is still
+    // detected (#1659).
+    const ledger = explainEventsLedgerRoot(process.cwd());
+    if (!ledger.resolved) {
+      process.stderr.write(
+        `emit-session: refusing the default --file: ${ledger.reason}; pass an explicit --file\n`
+      );
+      process.exit(2);
+    }
+    args.file = join(ledger.root, '.orchestrator', 'metrics', 'sessions.jsonl');
   }
   return args;
 }
@@ -416,8 +538,15 @@ async function main() {
   if (needsProfile || needsStartRef) {
     let stateMdContents = '';
     try {
-      const stateMdPath = resolveStateMdPath(process.cwd());
-      if (existsSync(stateMdPath)) stateMdContents = readFileSync(stateMdPath, 'utf8');
+      // #1622: the write side's ownership rule — another platform's STATE.md
+      // not proven to be this process's counts as no STATE.md.
+      const { path: stateMdPath, rejected } = resolveStateMdWriteTarget(process.cwd());
+      if (rejected) {
+        warnForeignStateMd('emit-session', rejected, stateMdPath);
+        stateMdStartRefNote = "STATE.md foreign (another platform's, not this process's session-id)";
+      } else if (existsSync(stateMdPath)) {
+        stateMdContents = readFileSync(stateMdPath, 'utf8');
+      }
     } catch (err) {
       process.stderr.write(
         `emit-session: WARN could not read STATE.md for session_profile/session_start_ref ` +
@@ -483,10 +612,28 @@ async function main() {
   // with a WARN whether or not an own UUID was available (#1457 point 2) —
   // without one the fallback cannot run, which is exactly when silence hid it.
   if (!hasOwn('session_start_ref')) {
-    const headSha = ownUuid !== null
+    const { headSha, behind } = ownUuid !== null
       ? readOwnStartHeadSha(siblingEventsFile(args.file), ownUuid)
-      : null;
-    if (headSha !== null) {
+      : { headSha: null, behind: null };
+    if (headSha !== null && behind !== null && behind > 0) {
+      // #1668 — the checkout was provably behind its upstream at start. A pull
+      // during the session makes `<head_sha>..HEAD` span the upstream commits it
+      // pulled in; no sha known at start fixes that (merge-base(head_sha,
+      // upstream) IS head_sha when merely behind, and upstream_sha is wrong when
+      // nothing was pulled), so the ref is dropped rather than overstated.
+      // behind 0 or not measured (absent) keep the pre-#1668 adoption below.
+      process.stderr.write(
+        `emit-session: WARN no session_start_ref — ${stateMdStartRefNote}, and the own ` +
+          `session.started head_sha=${headSha} was ${behind} commit(s) behind its upstream; ` +
+          'a range from it can include pulled-in upstream commits (#1668)\n'
+      );
+    } else if (headSha !== null && startTreeDiverged(ownUuid)) {
+      process.stderr.write(
+        `emit-session: WARN no session_start_ref — ${stateMdStartRefNote}, and the own ` +
+          `session.started head_sha=${headSha} was measured in session_root, not the work_root ` +
+          'this session works in (#1652)\n'
+      );
+    } else if (headSha !== null) {
       repaired = { ...repaired, session_start_ref: headSha };
       process.stderr.write(
         `emit-session: derived session_start_ref=${headSha} from the own orchestrator.session.started event\n`
@@ -501,6 +648,61 @@ async function main() {
 
   if (ownUuid !== null && !hasOwn('raw_session_id')) {
     repaired = { ...repaired, raw_session_id: ownUuid };
+  }
+
+  // `session_work_trees` (#1659) — the (tree, start_ref) pairs the staging
+  // fence recorded before each of THIS session's commits
+  // (`orchestrator.session.work_tree`, joined on the own raw id — never on a
+  // repo-global file). `session_start_ref` names one sha in the own checkout,
+  // so the field is written ONLY when it adds something: ≥2 trees, or one tree
+  // that is not the own checkout. An explicit key on the record wins, but its
+  // malformed entries are dropped with a WARN (like session_start_ref above —
+  // enforced here, not in validateSession()). Best-effort: any failure omits
+  // the field with a WARN; it never fails the emit.
+  if (hasOwn('session_work_trees')) {
+    const clean = sanitizeWorkTrees(repaired.session_work_trees);
+    if (clean === null) {
+      process.stderr.write('emit-session: WARN session_work_trees is not an array; dropping it\n');
+      const { session_work_trees: _dropped, ...rest } = repaired;
+      repaired = rest;
+    } else if (clean.dropped > 0) {
+      process.stderr.write(
+        `emit-session: WARN session_work_trees: dropping ${clean.dropped} malformed entry/entries\n`
+      );
+      repaired = { ...repaired, session_work_trees: clean.entries };
+    }
+  } else if (ownUuid !== null) {
+    try {
+      const read = readSessionWorkTrees({ sessionId: ownUuid, eventsFile: siblingEventsFile(args.file) });
+      if (read.error) {
+        process.stderr.write(
+          `emit-session: WARN could not read work_tree events (${read.error}); omitting session_work_trees\n`
+        );
+      } else if (read.malformed > 0) {
+        // Unreadable lines may hide own work_tree events — warn even when no
+        // tree was read, since then the omission itself may be the gap (#1659).
+        process.stderr.write(
+          `emit-session: WARN ${read.malformed} unreadable events ledger line(s); session_work_trees may be incomplete\n`
+        );
+      }
+      if (!read.error && read.trees.length > 0) {
+        if (read.invalid > 0) {
+          process.stderr.write(
+            `emit-session: WARN ignored ${read.invalid} own work_tree event(s) without a valid tree/start_ref\n`
+          );
+        }
+        // A single tree is only worth recording when it provably differs from
+        // the own checkout; outside a git repo that is unprovable → omitted.
+        const ownTop = read.trees.length >= 2 ? null : ownCheckoutTop();
+        const addsInfo = read.trees.length >= 2
+          || (ownTop !== null && realOrResolved(read.trees[0].tree) !== ownTop);
+        if (addsInfo) repaired = { ...repaired, session_work_trees: read.trees };
+      }
+    } catch (err) {
+      process.stderr.write(
+        `emit-session: WARN session_work_trees derivation failed (${err?.message ?? err}); omitting it\n`
+      );
+    }
   }
 
   // Token rollup (#1436) — mechanical, replacing the session-metrics-write.md

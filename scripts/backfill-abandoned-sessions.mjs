@@ -44,7 +44,7 @@ import { parseArgs } from 'node:util';
 import { backfillAbandonedSession, isUuid } from './lib/session-close-backfill.mjs';
 import { SCAN_CHUNK_BYTES, emitEvent, eventsFilePath, listEventSourcesNewestFirst, tombstoneGap } from './lib/events.mjs';
 import { ARCHIVE_DIR_NAME } from './lib/events-schema.mjs';
-import { getProjectDir } from './lib/platform.mjs';
+import { getProjectDir, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { isLockLive, readLock } from './lib/session-lock.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
@@ -365,7 +365,10 @@ function readRunningSessionIds(repoRoot) {
  * @returns {Set<string>}
  */
 function readRecordedIds(repoRoot) {
-  const records = readJsonl(path.join(repoRoot, '.orchestrator', 'metrics', 'sessions.jsonl'));
+  // #1592: the SAME ledger the core dedupes and writes against (main checkout
+  // of a linked worktree) — a worktree-local read let already-recorded
+  // candidates through and spent the SessionStart latency cap on them.
+  const records = readJsonl(path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator', 'metrics', 'sessions.jsonl'));
   const ids = new Set();
   for (const r of records) {
     if (!r) continue;

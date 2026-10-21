@@ -36,6 +36,7 @@ import {
   sweepExpiredLearnings,
 } from '@lib/learnings/expiry-sweep.mjs';
 import { readLearningsSnapshot } from '@lib/learnings/io.mjs';
+import { _resetStoreRoleCacheForTests } from '@lib/learnings/store-role.mjs';
 import { tryAcquireFileLock, releaseFileLock } from '@lib/file-lock.mjs';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 
@@ -814,5 +815,53 @@ describe('dropMalformedLines — the generation and the line are judged under th
       JSON.stringify(peer),
     ]);
     expect(readdirSync(tmp).filter((n) => n.includes('pre-drop-malformed'))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbox store role (#1516) — an apply must never archive a still-live record
+// ---------------------------------------------------------------------------
+
+describe('inbox store role (#1516)', () => {
+  beforeEach(() => {
+    vi.stubEnv('SO_LEARNINGS_STORE_ROLE', 'inbox');
+    _resetStoreRoleCacheForTests();
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    _resetStoreRoleCacheForTests();
+  });
+
+  // Bug: the archive append ran before a rewrite that is a no-op on this role,
+  // so the archive gained records that are still live in the store.
+  it('sweepExpiredLearnings apply writes no archive and leaves the store byte-identical', async () => {
+    writeJsonl(filePath, [learning({ id: 'old', expires_at: new Date(Date.now() - 30 * DAY_MS).toISOString() })]);
+    const before = readFileSync(filePath, 'utf8');
+
+    const result = await sweepExpiredLearnings({ filePath, archivePath, dryRun: false });
+
+    expect(result).toEqual({
+      scanned: 0, kept: 0, archived: 0, dryRun: false, archivePath, skipped: 'store-role-inbox',
+    });
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readFileSync(filePath, 'utf8')).toBe(before);
+  });
+
+  // Bug: skipping the whole prune would lose the session's NEW learnings that
+  // apply-session-learnings hands over; archiving would duplicate live ones.
+  it('pruneLearnings apply archives nothing and appends only the new id to the inbox', async () => {
+    const live = learning({ id: 'live-expired' });
+    writeJsonl(filePath, [live]);
+    const before = readFileSync(filePath, 'utf8');
+    const fresh = learning({ id: 'fresh', expires_at: new Date(Date.now() + 30 * DAY_MS).toISOString() });
+
+    const result = await pruneLearnings({ filePath, archivePath, entries: [fresh], dryRun: false });
+
+    expect(result.archived).toBe(0);
+    expect(result.byReason).toEqual({});
+    expect(result.skipped).toBe('store-role-inbox');
+    expect(existsSync(archivePath)).toBe(false);
+    expect(readFileSync(filePath, 'utf8')).toBe(before);
+    expect(readJsonl(join(tmp, 'learnings-inbox.jsonl')).map((e) => e.id)).toEqual(['fresh']);
   });
 });

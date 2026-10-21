@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -478,7 +478,7 @@ describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 1500
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID, reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID, reason: 'other' }),
     });
 
 
@@ -490,6 +490,30 @@ describe('on-session-end.mjs — close-through backfill (#724)', { timeout: 1500
 
     // The own lock is released by the release-half after backfill.
     expect(await lockExists(dir)).toBe(false);
+  });
+
+  it('E3: reason clear/resume does NOT backfill an abandoned record; reason other does', async () => {
+    const run = async (reason) => {
+      const dir = await mkProject();
+      await seedEvents(dir, [
+        { timestamp: STARTED_AT, event: 'orchestrator.session.started', session_id: UUID, branch: 'main', project: 'demo' },
+        { timestamp: '2026-07-02T09:01:00.000Z', event: 'orchestrator.session.lock.acquired', session_id: UUID, semantic_session_id: SEMANTIC, mode: 'deep' },
+      ]);
+      await seedCurrentSession(dir, { sessionId: UUID, timestamp: new Date().toISOString(), semanticSessionId: SEMANTIC });
+      await seedLock(dir, {
+        sessionId: UUID,
+        semanticSessionId: SEMANTIC,
+        lastHeartbeat: new Date(Date.now() - 5 * 3600_000).toISOString(),
+      });
+      await runHook({
+        projectDir: dir,
+        stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: UUID, reason }),
+      });
+      return readSessions(dir);
+    };
+    expect(await run('clear')).toHaveLength(0);
+    expect(await run('resume')).toHaveLength(0);
+    expect(await run('other')).toHaveLength(1);
   });
 
   it('does NOT append a second record when the session is already recorded', async () => {
@@ -1604,7 +1628,7 @@ describe('on-session-end.mjs — backfill outcome events (#1068 AC2)', { timeout
 
     await runHook({
       projectDir: dir,
-      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: id, reason: 'clear' }),
+      stdin: JSON.stringify({ hook_event_name: 'SessionEnd', session_id: id, reason: 'other' }),
     });
 
     const outcomes = (await readAllEvents(dir))
@@ -1692,5 +1716,37 @@ describe('telemetry-flush breadcrumb → flush-health banner (wiring, #1392)', {
     expect(banner.severity).toBe('warn');
     expect(banner.reason).toBe('sandbox:config-home-split');
     expect(banner.message).toContain('refused by the sandbox guard');
+  });
+});
+
+describe('identity of a session whose lock SessionStart moved into the entered worktree (#1605)', { timeout: 15000 }, () => {
+  it('session.ended carries semantic_session_id and duration_ms from the worktree, not the launch dir', async () => {
+    // The bug (review MEDIUM 3 on the first #1605 fix): SessionEnd read
+    // current-session.json only at the launch dir, so once the lock had moved
+    // into the entered worktree the terminal event lost its identity and span.
+    const main = await mkProject();
+    const git = (...args) => {
+      const r = spawnSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.com', ...args], { cwd: main, encoding: 'utf8' });
+      expect(r.status, r.stderr).toBe(0);
+    };
+    git('init', '-q');
+    git('commit', '-q', '--allow-empty', '-m', 'init');
+    const wt = path.join(main, '.claude', 'worktrees', 'wt');
+    git('worktree', 'add', '-q', '-b', 'wt-branch', wt);
+    const sessionId = U('ose-1605');
+    const semanticSessionId = 'wt-branch-2026-10-13-session-1';
+    await seedCurrentSession(wt, { sessionId, timestamp: new Date(Date.now() - 60_000).toISOString(), semanticSessionId });
+    await seedLock(wt, { sessionId, semanticSessionId });
+
+    const result = await runHook({
+      projectDir: main,
+      stdin: JSON.stringify({ session_id: sessionId, reason: 'other', cwd: wt }),
+      env: { SO_SESSION_REGISTRY_DIR: await mkProject() },
+    });
+
+    expect(result.code).toBe(0);
+    const ended = await readLastEvent(main);
+    expect(ended.semantic_session_id).toBe(semanticSessionId);
+    expect(ended.duration_ms).toBeGreaterThan(0);
   });
 });

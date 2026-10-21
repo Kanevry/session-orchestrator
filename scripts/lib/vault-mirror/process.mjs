@@ -10,7 +10,7 @@ import { basename, join, resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { randomUUID } from 'node:crypto';
 import { createSecretValueMasker } from '../secret-masker.mjs';
-import { subjectToSlug, legacySubjectToSlug, isValidSlug, uuidPrefix8, recordKeySuffix8, toDate, parseFrontmatter } from './utils.mjs';
+import { subjectToSlug, legacySubjectToSlug, isValidSlug, uuidPrefix8, recordKeySuffix8, toDate, parseFrontmatter, slugifyIdSafe, noteIdFor, noteIdMatches, withNoteId } from './utils.mjs';
 import { isRealSession } from '../session-schema/filters.mjs';
 import { resolveRepoNamespace } from './namespace.mjs';
 import { detectLearningSchema, normalizeLearningEntry, generateLearningNote, generateLearningNoteV2, learningSourceRecord } from './render-learnings.mjs';
@@ -25,6 +25,7 @@ import {
   renderRollup,
   rollupRelPath,
   rollupRowFromNote,
+  section,
   sessionNarrativeChars,
 } from './retention.mjs';
 
@@ -269,6 +270,23 @@ export function matchesModuloRedaction(existingVal, renderedVal) {
 }
 
 /**
+ * Does a session note on disk carry LESS free text than the record (#1513
+ * review H2), so it must be re-rendered? Not when the only difference is a
+ * `[REDACTED]` span (#1025): `[REDACTED]` and the raw value differ in length,
+ * so the bare char-count compare reported "stale" whenever the secret was
+ * missing from the current env and re-rendered the note WITH the raw value.
+ * Found while pinning #1601 (release-review HOCH 1, MR !148).
+ *
+ * @param {string} existingContent
+ * @param {string} renderedBody
+ * @returns {boolean}
+ */
+function sessionNotesStale(existingContent, renderedBody) {
+  if (noteNarrativeChars(existingContent) === noteNarrativeChars(renderedBody)) return false;
+  return !matchesModuloRedaction(section(existingContent, 'Notes') ?? '', section(renderedBody, 'Notes') ?? '');
+}
+
+/**
  * Return true when the existing vault note content and the freshly-rendered
  * candidate share identical canonical fields (i.e. no meaningful update needed).
  *
@@ -447,17 +465,6 @@ function disambigSlugFor(dir, slug, { legacyId, recordKey }) {
     }
   }
   return { slug: hashed, exists: null };
-}
-
-/**
- * Replace the frontmatter `id:` line of a note — used when a displaced note
- * moves to its disambiguated name (#1506.2), whose `id` must match the file.
- * @param {string} content
- * @param {string} id
- * @returns {string}
- */
-function withNoteId(content, id) {
-  return content.replace(/^id: .*$/m, `id: ${id}`);
 }
 
 /**
@@ -974,10 +981,20 @@ function learningSlugVariants(entry, schema) {
   return [...names];
 }
 
+/**
+ * Does the note `fm` name `slug`? #1601/#1602: its `id` is the bare slug (a note
+ * written before the namespaced id) or the slug namespaced under the writer's
+ * folder or under the note's OWN `source-repo` — a moved or relabelled note keeps
+ * its old prefix, and the folder, not the label, decides ownership (#1503 F1).
+ */
+function fmNamesSlug(fm, slug, repoNs) {
+  return Boolean(fm) && (noteIdMatches(fm['id'], slug, repoNs) || noteIdMatches(fm['id'], slug, fm['source-repo']));
+}
+
 /** Only explicit, exact provenance permits assigning an old name to a record. */
 function positiveLearningOwner(fm, name, repoNs, recordKey) {
   return recordKey !== null && notOurGenerator(fm) === null &&
-    fm['id'] === name && fm['source-record'] === recordKey && fm['source-repo'] === repoNs;
+    fmNamesSlug(fm, name, repoNs) && fm['source-record'] === recordKey && fm['source-repo'] === repoNs;
 }
 
 
@@ -1181,7 +1198,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
         const legacyFm = parseFrontmatter(readFileSync(legacyPath, 'utf8'));
         if (
           notOurGenerator(legacyFm) === null &&
-          legacyFm['id'] === legacySlug &&
+          fmNamesSlug(legacyFm, legacySlug, repoNs) &&
           foreignOwnerReason(legacyFm, writer) === null
         ) {
           slug = legacySlug;
@@ -1220,7 +1237,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // neither a duplicate to skip on nor a file to rewrite with THIS record's
     // content; this entry proceeds to its own namespaced path (a different
     // file). A leak in it is masked in place, keeping its owner and content.
-    const legacyMarked = Boolean(legacyFm) && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === slug;
+    const legacyMarked = Boolean(legacyFm) && legacyFm['_generator'] === GENERATOR_MARKER && fmNamesSlug(legacyFm, slug, repoNs);
     const legacyForeign = legacyMarked && foreignOwnerReason(legacyFm, writer) !== null;
     if (legacyForeign && legacyStillLeaks) {
       healedForeignLeak = maskForeignNoteInPlace(legacyFlatPath, legacyContent, ctx);
@@ -1239,6 +1256,9 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
           // #1028 residue 1: the five-field compare cannot see a raw secret
           // sitting in a non-canonical field (e.g. `evidence`) — the
           // `legacyStillLeaks` probe above is what makes this match trustworthy.
+          // #1601: `id` is not a compared field, and a schema-violating old id
+          // is NOT a reason to rewrite here — re-rendering would bring back
+          // plaintext a past run masked (#1025). `migrate-ids.mjs` repairs it.
           return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: slug });
         }
         // Content differs, or the on-disk note still leaks under the current
@@ -1307,7 +1327,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     const entryDay = toDate(dateSource);
     if (
       routedByRecord &&
-      fm['id'] === slug &&
+      fmNamesSlug(fm, slug, repoNs) &&
       !expired &&
       /^\d{4}-\d{2}-\d{2}$/.test(entryDay) &&
       typeof fm['created'] === 'string' &&
@@ -1320,7 +1340,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       if (takenOver !== null) return takenOver;
     }
 
-    if (fm['id'] !== slug || routedByRecord) {
+    if (!fmNamesSlug(fm, slug, repoNs) || routedByRecord) {
       // Different id (or different record) → collision: disambiguate
       const picked = disambigSlugFor(targetDir, slug, {
         legacyId: String(entryId),
@@ -1401,7 +1421,7 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
     // #1506.2: the main note is this record's — a live disambiguation copy of
     // the same record (left by an interrupted takeover) is superseded.
     const stale = !slugTransition && fm['source-record'] === writer.recordKey
-      ? staleOwnDisambig(targetDir, slug, entryId, writer)
+      ? staleOwnDisambig(targetDir, slug, entryId, writer, repoNs)
       : null;
 
     // Same id: check if updated would advance (unless --force overrides).
@@ -1414,6 +1434,9 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
       if (learningContentMatches(existingContent, candidateContent)) {
         // #1028 residue 1: probe the on-disk content against the CURRENT masker
         // before trusting the five-field match — see maskerWouldChange above.
+        // #1601: `id` is deliberately NOT part of this decision — an id-only
+        // difference must never re-render the note (that would bring back
+        // plaintext a past run masked, #1025); `migrate-ids.mjs` repairs it.
         mainUnchanged = !maskerWouldChange(existingContent);
       }
       // Content differs, or the on-disk note still leaks under the current env —
@@ -1480,14 +1503,14 @@ export async function processLearning(rawEntry, _lineNum, ctx) {
  *
  * @returns {{ path: string, next: string }|null} the rewrite, or null.
  */
-function staleOwnDisambig(targetDir, slug, entryId, writer) {
+function staleOwnDisambig(targetDir, slug, entryId, writer, repoNs) {
   if (typeof writer.recordKey !== 'string') return null;
   const own = disambigSlugFor(targetDir, slug, { legacyId: String(entryId), recordKey: writer.recordKey });
   const path = join(targetDir, `${own.slug}.md`);
   if (!(own.exists ?? existsSync(path))) return null;
   const content = readFileSync(path, 'utf8');
   const fm = parseFrontmatter(content);
-  if (notOurGenerator(fm) !== null || fm['source-record'] !== writer.recordKey || fm['id'] !== own.slug) return null;
+  if (notOurGenerator(fm) !== null || fm['source-record'] !== writer.recordKey || !fmNamesSlug(fm, own.slug, repoNs)) return null;
   const next = markArchived(content, 'superseded');
   return next === content ? null : { path, next };
 }
@@ -1517,14 +1540,14 @@ function takeOverMainNote({
     if (notOurGenerator(dfm) !== null || dfm['source-record'] !== displacedKey) return null;
   }
 
-  const ownStale = staleOwnDisambig(targetDir, slug, entryId, writer);
+  const ownStale = staleOwnDisambig(targetDir, slug, entryId, writer, generatorOpts.repoNs);
 
   if (!dryRun) {
     // Re-read: an in-place leak heal above may have rewritten the note.
     const current = readFileSync(targetPath, 'utf8');
     // Rewritten even when it exists (and is ours, checked above): a stale copy
     // there may carry `status: archived` from an earlier archive pass.
-    writeFileSync(displacedPath, withNoteId(current, displaced.slug), 'utf8');
+    writeFileSync(displacedPath, withNoteId(current, noteIdFor(generatorOpts.repoNs, displaced.slug)), 'utf8');
     // Before the main note: a crash between the two writes must leave the
     // takeover re-runnable (the main note still foreign), never a main note of
     // ours beside a stale live disambiguation note of the same record.
@@ -1633,7 +1656,7 @@ export async function processArchivedLearning(rawEntry, _lineNum, ctx) {
       if (!existsSync(path)) continue;
       const content = readFileSync(path, 'utf8');
       const fm = parseFrontmatter(content);
-      if (notOurGenerator(fm) !== null || fm['id'] !== name) continue;
+      if (notOurGenerator(fm) !== null || !fmNamesSlug(fm, name, repoNs)) continue;
       if (foreignOwnerReason(fm, writer) !== null) continue;
       const next = markArchived(content, reason);
       if (next === content) {
@@ -1817,6 +1840,12 @@ export async function processSession(rawEntry, _lineNum, ctx) {
   // (`subjectToSlug`), caps at 240 chars, or falls back to a uuid slug. A note
   // carrying either id is this record's own note.
   const renderedId = parseFrontmatter(renderedBody)?.id;
+  // #1601/#1602: a note written before the namespaced id carries the bare slug
+  // (`session_id`, or the renderer's whitespace-hyphenated slug); either form,
+  // with or without the repo prefix, names this session.
+  const legacyRenderedId = slugifyIdSafe(rawSessionId) ?? session_id;
+  const isOwnSessionId = (fm) =>
+    fm['id'] === renderedId || fmNamesSlug(fm, session_id, repoNs) || fmNamesSlug(fm, legacyRenderedId, repoNs);
 
   // Canonical filename pattern (issue #343): `<session_id>.md` where session_id
   // follows `<branch>-<YYYY-MM-DD>-<HHmm>-<slug>` per the session-id schema.
@@ -1843,14 +1872,14 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     const legacyStillLeaks = legacyFm !== null && maskerWouldChange(legacyContent);
     // #1503: a flat note from a foreign record is not ours — see processLearning's
     // dual-probe. A leak in it is masked in place, keeping its owner and content.
-    const legacyMarked = Boolean(legacyFm) && legacyFm['_generator'] === GENERATOR_MARKER && legacyFm['id'] === session_id;
+    const legacyMarked = Boolean(legacyFm) && legacyFm['_generator'] === GENERATOR_MARKER && isOwnSessionId(legacyFm);
     const legacyForeign = legacyMarked && foreignOwnerReason(legacyFm, writer) !== null;
     if (legacyForeign && legacyStillLeaks) {
       healedForeignLeak = maskForeignNoteInPlace(legacyFlatPath, legacyContent, ctx);
     }
     if (legacyMarked && !legacyForeign) {
       const entryUpdated = toDate(entry.completed_at);
-      const legacyNarrativeStale = noteNarrativeChars(legacyContent) !== noteNarrativeChars(renderedBody);
+      const legacyNarrativeStale = sessionNotesStale(legacyContent, renderedBody);
       if (!force && !legacyStillLeaks && !legacyNarrativeStale && legacyFm['updated'] && legacyFm['updated'] >= entryUpdated) {
         return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: legacyFlatPath, id: session_id });
       }
@@ -1889,7 +1918,7 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     // no disambiguation scheme. Checked before the date comparison; `--force`
     // does not bypass it. A leak in a foreign note is masked in place, never
     // rewritten from this record.
-    const sameSession = fm['id'] === session_id || fm['id'] === renderedId;
+    const sameSession = isOwnSessionId(fm);
     const foreign = foreignOwnerReason(fm, writer) ?? (sameSession ? null : 'id mismatch');
     if (foreign !== null) {
       const healed = existingLeaks && maskForeignNoteInPlace(targetPath, existingContent, ctx);
@@ -1900,7 +1929,7 @@ export async function processSession(rawEntry, _lineNum, ctx) {
     // #1513 review H2: a note rendered before narrative/summary were printed
     // carries less free text than the record — heal it once, or the pruner
     // archives it as metrics-only and the mirror re-creates it every run.
-    const narrativeStale = noteNarrativeChars(existingContent) !== noteNarrativeChars(renderedBody);
+    const narrativeStale = sessionNotesStale(existingContent, renderedBody);
     if (!force && !existingLeaks && !narrativeStale && fm['updated'] && fm['updated'] >= entryUpdated) {
       return emitEntryAction(_lineNum, ctx, { action: 'skipped-noop', path: targetPath, id: session_id });
     }

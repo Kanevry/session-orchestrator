@@ -17,7 +17,7 @@
  *   lifecycle → config.mjs (readConfigFile, parseSessionConfig)
  */
 
-import { $, nothrow, ProcessOutput } from 'zx';
+import { $, nothrow, ProcessOutput } from '../zx.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';

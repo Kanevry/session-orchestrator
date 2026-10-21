@@ -34,7 +34,7 @@
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { subjectToSlug } from './utils.mjs';
+import { subjectToSlug, noteIdFor, yamlNoteId } from './utils.mjs';
 
 /** The generator marker every mirror-written note carries. */
 export const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
@@ -367,7 +367,7 @@ export function renderRollup(existing, rows, { ns, month }) {
     .map((r) => `| ${r.date} | \`${r.id}\` | ${r.type} | ${r.waves} | ${r.agents} | ${r.files} |`)
     .join('\n');
   return `---
-id: ${idSlug}
+id: ${yamlNoteId(noteIdFor(null, idSlug))}
 type: session
 title: "Sessions ${month} (${label}, metrics only)"
 status: verified

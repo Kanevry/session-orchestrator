@@ -126,6 +126,7 @@
  */
 
 import { readFileSync, readdirSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { affinity } from './affinity.mjs';
@@ -136,7 +137,13 @@ import {
 } from '../reconcile/sanitize.mjs';
 import { learningKeyOf } from './kebab.mjs';
 import { extractProvenance } from '../validate/check-learning-provenance.mjs';
-import { DECAY_DEFAULTS, effectiveScore, surfaceTopN } from './surface.mjs';
+import {
+  DECAY_DEFAULTS,
+  effectiveScore,
+  surfaceTopN,
+  surfaceLearningsText,
+  withVisibleInboxText,
+} from './surface.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants — exported so a later wave can wire Session Config keys onto them
@@ -674,6 +681,8 @@ export function selectLearnings(entries, scope, opts = {}) {
  *   the `delivered` filter). `rulesDir` is EXPLICIT rather than derived from
  *   `filePath`: guessing a repo root from a metrics path is the hand-maintained
  *   fact this repo keeps getting wrong. Omit it and nothing is filtered.
+ *   `evidenceCandidates` opts into one explicit candidate JSON artifact, bound
+ *   to `sourceRepo` and `scope.text`. No artifact discovery or I/O when absent.
  * @returns {Promise<Selection>} `emptySelection()` on a missing/unreadable file
  */
 export async function selectLearningsFromFile(filePath, scope, opts = {}) {
@@ -692,12 +701,52 @@ export async function selectLearningsFromFile(filePath, scope, opts = {}) {
         ? readDeliveredProvenance(o.rulesDir)
         : undefined;
 
-    const entries = await surfaceTopN(filePath, poolSize, {
+    const surfaceOpts = {
       now: nowMs,
       confidenceFloor,
       decay: o.decay,
-    });
-    return selectLearnings(entries, scope, { ...o, now: nowMs, confidenceFloor, delivered });
+    };
+    let entries;
+    let evidence;
+    if (o.evidenceCandidates === undefined) {
+      entries = await surfaceTopN(filePath, poolSize, surfaceOpts);
+    } else {
+      let sourceBytes;
+      try {
+        sourceBytes = await readFile(filePath);
+      } catch {
+        // Keep the existing empty-baseline behaviour, but do not describe a
+        // missing source as a successfully verified empty candidate store.
+      }
+      // Preserve baseline decoding; candidate additions separately require
+      // strict UTF-8 and the exact original bytes from this same read.
+      // The inbox records (#1516) join the surfaced text only; `sourceBytes`
+      // stays the live store's exact bytes for the candidate check below.
+      entries = surfaceLearningsText(
+        await withVisibleInboxText(filePath, sourceBytes?.toString('utf8') ?? ''),
+        poolSize,
+        surfaceOpts,
+      );
+      try {
+        const { readEvidenceCandidates } = await import('./evidence-candidates.mjs');
+        const resolved = await readEvidenceCandidates({
+          artifactPath: o.evidenceCandidates, sourceRepo: o.sourceRepo,
+          query: scope?.text, sourceBytes,
+        });
+        evidence = resolved.diagnostics;
+        const ids = new Set(entries.map((entry) => entry.id));
+        for (const entry of resolved.entries) {
+          if (!ids.has(entry.id)) {
+            entries.push(entry);
+            ids.add(entry.id);
+          }
+        }
+      } catch {
+        evidence = { status: 'error', reason: 'provider_failed', accepted: 0, dropped: 0 };
+      }
+    }
+    const selection = selectLearnings(entries, scope, { ...o, now: nowMs, confidenceFloor, delivered });
+    return evidence ? { ...selection, evidence } : selection;
   } catch {
     return emptySelection();
   }

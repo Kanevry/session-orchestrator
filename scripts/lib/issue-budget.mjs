@@ -36,7 +36,7 @@ import { writeJsonAtomicSync } from './io.mjs';
 import { resolveInstructionFile } from './common.mjs';
 import { _parseIssueBudget } from './config/issue-budget.mjs';
 import { parseStateMd } from './state-md/yaml-parser.mjs';
-import { resolveStateMdPath } from './state-md/frontmatter-mutators.mjs';
+import { resolveStateMdWriteTarget } from './state-md/frontmatter-mutators.mjs';
 
 /**
  * Legacy single-slot counter file, relative to the repo root.
@@ -192,8 +192,11 @@ export function resolveMaxPerSession(cfg, sessionType) {
  */
 export function readSessionTypeFromStateMd(repoRoot) {
   try {
-    const filePath = resolveStateMdPath(repoRoot);
-    if (!existsSync(filePath)) return null;
+    // #1636: the write side's ownership rule — another platform's STATE.md not
+    // proven to be this process's must not set THIS session's budget; it counts
+    // as absent (default budget). No warn line: this runs on every Bash call.
+    const { path: filePath, rejected } = resolveStateMdWriteTarget(repoRoot);
+    if (rejected || !existsSync(filePath)) return null;
     const parsed = parseStateMd(readFileSync(filePath, 'utf8'));
     const value = parsed?.frontmatter?.['session-type'];
     return typeof value === 'string' && value.trim() !== '' ? value.trim() : null;

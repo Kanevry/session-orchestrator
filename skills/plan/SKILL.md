@@ -46,6 +46,7 @@ Interactive sessions are unaffected — `/plan` works there as it always has.
 - `mode-feature.md` — Feature PRD: 2 Q&A waves, compact scope, acceptance criteria
 - `mode-retro.md` — Retrospective: metrics analysis, reflection waves, improvement actions
 - `soul.md` — Product Strategist identity and behavioral anchor
+- `prd-premortem-panel.md` — Phase 4.5 Refute + Deepen briefs (pre-mortem against the code)
 
 ## Soul Reference
 
@@ -125,6 +126,10 @@ Before each Q&A wave, dispatch 2-3 `Agent()` tool calls in a single message (par
 2. **Baseline analysis agent** — reads projects-baseline templates, rules, and scripts at `$BASELINE_PATH` to discover available options (archetypes, styles, configurations). Tools: Read, Glob, Grep.
 3. **Repo context agent** (skip for `/plan new` wave 1) — analyzes the current repository for existing patterns, file structure, dependencies, and conventions. Tools: Read, Glob, Grep.
 
+**Raw material before digest.** Brief the repo and baseline agents to start from the rawest reachable material, not from what has already been summarised: the code path that actually runs (caller census), the installed artifact or platform contract, live event or process data, a real run's output, the git history of the area. Issue text and docs come second. Two asks are mandatory in Wave 1:
+- **Reproduce the premise.** Re-measure the stated problem with a quoted command. If it does not reproduce, record it as a hypothesis in PRD § Evidence Baseline.
+- **Census local equivalents.** What already exists for this need (`build-value.md` BV-001 rung 2)? In 12 measured `/plan` runs the operator corrected 3 options with "that already exists".
+
 Example dispatch:
 
 ```
@@ -138,15 +143,9 @@ Agent({ subagent_type: "Explore", description: "Analyze repo context",
 
 Wait for ALL agents to complete before proceeding. Use `run_in_background: false` for all agents.
 
-### Opportunity Score (Ranking Candidate Subfeatures)
+### Ranking Candidate Subfeatures
 
-When a Wave 1 "what to build" question surfaces multiple candidate subfeatures (rather than one clear scope), rank the candidates before recommending one. Score each candidate:
-
-```
-Opportunity Score = Importance × (1 − Satisfaction)
-```
-
-Both `Importance` and `Satisfaction` are estimated on a 0..1 scale from the Wave 1 research/Explore agent findings (market signal, existing-issue signal, repo-pattern signal) — not asked of the user directly. Rank candidates descending by score; the top-ranked candidate becomes the `(Recommended)` Option 1 in the AskUserQuestion payload for that question. Apply this only when genuinely multiple candidates are surfaced — a single well-defined feature needs no ranking.
+When a Wave 1 "what to build" question surfaces several candidate subfeatures, rank them by measured signal: how often the problem shows up in events, issues or transcripts, and how much each one blocks. Cite the count and the command that produced it. With no measured signal, rank ordinally and say so. Never invent a score. The top candidate becomes the `(Recommended)` Option 1.
 
 ### 3.2 Question Presentation
 
@@ -157,6 +156,7 @@ Synthesize research results into 5 questions per wave. Split across 2 AskUserQue
 - Each option includes a `description` with Pros/Cons drawn from the research
 - Include an "Other" option when custom input makes sense
 - Use `multiSelect: false` unless the question genuinely requires multiple selections
+- If two options are not mutually exclusive (a default plus an opt-in, or both modes behind one switch), offer that combination as an option of its own. In 12 measured runs, 50 of 156 answers were free text, and 17 of those read "as recommended, but …".
 
 Example payload:
 
@@ -237,6 +237,12 @@ Use today's date. Derive the name slug from the project name (for new) or featur
 
 Ensure the target directory exists (create with `mkdir -p` if needed) before writing.
 
+## Phase 4.5: Pre-Mortem Panel (skip for retro mode)
+
+Dispatch the two read-only briefs in `prd-premortem-panel.md`, Refute and Deepen, as two `Agent()` calls in one message. Pass each the PRD path and its brief verbatim. Then merge their reports into the PRD per that file's § Coordinator merge: re-checked predictions go into § Risks, every acceptance criterion gets an `Oracle:` line, and criteria whose oracle cannot run in the implementing session go into § External Acceptance. A raw-material finding that contradicts the PRD's premise goes to the operator before Phase 5.
+
+Why this phase exists: replayed against their later history, three shipped PRDs anticipated 0 of 43 recorded surprises. The two briefs together hit 11 and found different classes (`prd-premortem-panel.md` § Why two briefs). The PRD reviewer below checks form; this panel checks the plan against the code.
+
 ## Phase 3.5: Package Legitimacy Audit (Slopcheck — #520)
 
 > Despite the name, this phase runs *after* Phase 4 (Document Generation) and *before* Phase 5 (PRD Review). The "3.5" identifier is historical, anchored to the PRD's Pattern-2 specification so cross-references stay searchable.
@@ -292,7 +298,7 @@ generation due to slopcheck failure — log + continue.
 
 Dispatch a reviewer subagent: read `prd-reviewer-prompt.md` in this skill directory for review instructions. Pass the full PRD content to the reviewer.
 
-The reviewer checks 7 criteria:
+The reviewer checks 8 criteria:
 1. **Completeness** — all sections filled, no TBD or placeholder content
 2. **Consistency** — no internal contradictions between sections
 3. **Clarity** — unambiguous enough that a developer could implement from this document alone
@@ -300,6 +306,7 @@ The reviewer checks 7 criteria:
 5. **YAGNI** — no unrequested features or gold-plating
 6. **SMART metrics** — success criteria are Specific, Measurable, Achievable, Relevant, Time-bound
 7. **User Stories** (gated — active only when a populated ## User Stories section is present) — section present, every story in one complete form (either the Als/möchte/damit persona form, or the job-story form: "When [situation], I want [motivation], so I can [outcome]"), each story links ≥1 acceptance criterion; SKIP when no User Stories section. No INVEST checks.
+8. **Verifiability**: every acceptance criterion names an `Oracle:` that is not the author's own unit test against a fake. Every External Acceptance row has an owner, a not-before date, a pass condition and a fallback. The Evidence Baseline quotes the command that measured the premise.
 
 ### 5.2 Revision Loop
 
@@ -353,6 +360,8 @@ Do NOT proceed to Phase 6 (Issue Creation) until the generated document (PRD or 
 
 Two prior `/plan` sessions filed issues referencing a PRD path that no downstream session could find, because the document was written to disk (Phase 4.3) but never committed (issue #784). This gate closes that gap mechanically, right after user approval (Phase 5) and before any issue is filed (Phase 6). It applies to every mode that reaches Phase 6 — including `/plan retro`, which skips Phase 5's review loop but still saves a document and (conditionally) files issues.
 
+**`/plan new`:** the target repo does not exist until `mode-new.md` Phase 3 creates it, and the directory the planning ran from may not be a repo at all. There, `mode-new.md` Phase 3 Step 6 meets this gate: it copies the PRD into the new repo and commits it, then § 5.5.2 runs against that repo. Phase 6 files issues only after that.
+
 ### 5.5.1 Commit the Document
 
 The Epic issue does not exist yet at this point in the flow — do NOT reference an issue number in the commit message. Use a session-dated message instead:
@@ -398,6 +407,8 @@ The Epic issue's number is not known during § 5.5.1. Once Phase 6 creates it, s
 - **`/plan new`** — derive from PRD Section 4 (Solution & Scope). Each major scope item becomes a sub-issue. Group under an Epic named after the project.
 - **`/plan feature`** — derive from PRD Section 3 (Acceptance Criteria). Each Given/When/Then block becomes a sub-issue. Group under an Epic named after the feature.
 - **`/plan retro`** — derive from the improvement actions in the reflection phase. Each action becomes an issue (no Epic wrapper unless 5+ actions).
+
+**External Acceptance (all PRD modes).** Each row of the PRD's § External Acceptance becomes its own issue, titled `[Abnahme] <criterion>`. Its body carries the owner, the not-before date, the pass condition, the fallback and the oracle command. The issue that implements the criterion links to it and must not close it, so "implemented" and "accepted" stay separate states. Measured basis: 68 of 85 closed `[Plan]` issues were closed the day they were filed, and the real-world acceptance stayed undone in all three back-tested PRDs.
 
 ### 6.2 Auto-Prioritize
 
@@ -504,6 +515,7 @@ Skip this step if issue creation was cancelled at § 6.3 ("Cancel") — there is
 - **ALWAYS research before asking** — dispatch Explore agents before every Q&A wave. Questions without research backing are guesses.
 - **ALWAYS mark Option 1 as recommended** — with `(Recommended)` in the label. Every question must have a clear recommendation.
 - **ALWAYS use AskUserQuestion** — never present options as plain text. The structured UI is mandatory.
+- **Autonomous runs**: headless, autopilot, or a session the operator has told to decide on its own. Do not stop at an AUQ there. Answer each question with Option 1 when its evidence holds, and record the decision, its reasons and the rejected options as a comment on the Epic. Decisions the operator reserves (external effect, money, accounts, deleting data, security exceptions, irreversible product calls) go to the operator's decision queue and are marked "waits on owner" on the Epic. The Q&A still runs: the research, the recap and the recorded answers are the audit trail.
 - **ALWAYS save documents before creating issues** — the PRD/retro document is the source of truth. Issues reference it.
 - **ALWAYS commit the PRD before creating issues** — see Phase 5.5 (HARD-GATE). A saved-but-uncommitted document is unverifiable by any downstream session; commit to HEAD is the trust boundary, not disk-write.
 - **Security** — never include internal paths, IPs, or infrastructure details in output documents. Read sensitive baseline areas for context but filter from outputs.
@@ -511,7 +523,7 @@ Skip this step if issue creation was cancelled at § 6.3 ("Cancel") — there is
 
 ## Sub-File Reference
 
-This skill uses 8 sub-files in the same directory:
+This skill uses 9 sub-files in the same directory:
 
 | File | Purpose |
 |------|---------|
@@ -523,3 +535,4 @@ This skill uses 8 sub-files in the same directory:
 | `prd-feature-template.md` | 5-section compact PRD template for `/plan feature` |
 | `retro-template.md` | Retrospective document template for `/plan retro` |
 | `prd-reviewer-prompt.md` | PRD quality review instructions for the reviewer subagent |
+| `prd-premortem-panel.md` | Phase 4.5: Refute + Deepen briefs and the coordinator merge rules |

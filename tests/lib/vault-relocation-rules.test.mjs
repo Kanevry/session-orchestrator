@@ -43,13 +43,14 @@ function identityResolver({ vaultName }) {
  * Resolver that maps known vault names to short slugs;
  * throws for unknowns so misfires are detected.
  * 'session-orchestrator' → 'session-orchestrator'
- * 'aiat-pmo-module' → 'redacted-repo' (a RETAINED CP6 slug post-#59 carve-out —
- *   the real resolveRepoNamespace still fires CP6 for it, so this mock is faithful)
+ * 'acme-private-repo' → 'redacted-repo' (stands in for a retained private CP6 slug —
+ *   the real resolveRepoNamespace fires CP6 for such a slug; synthetic here because
+ *   this file ships to the public mirror, #1631)
  */
 function mappingResolver({ vaultName }) {
   const table = {
     'session-orchestrator': 'session-orchestrator',
-    'aiat-pmo-module': 'redacted-repo',
+    'acme-private-repo': 'redacted-repo',
     'foo-repo': 'foo-repo',
     'my-slug': 'my-slug',
   };
@@ -182,11 +183,11 @@ describe('parseRelocationFrontmatter — basic scalars', () => {
   });
 
   it('extracts source and project fields', () => {
-    const content = '---\ntype: learning\nproject: "[[01-projects/foo]]"\nsource: intern/aiat-pmo-module extra\n---\nbody';
+    const content = '---\ntype: learning\nproject: "[[01-projects/foo]]"\nsource: intern/acme-private-repo extra\n---\nbody';
     const result = parseRelocationFrontmatter(content);
     expect(result.type).toBe('learning');
     expect(result.project).toBe('[[01-projects/foo]]');
-    expect(result.source).toBe('intern/aiat-pmo-module extra');
+    expect(result.source).toBe('intern/acme-private-repo extra');
   });
 
   it('extracts source_session wikilink', () => {
@@ -264,14 +265,13 @@ describe('namespaceForSession — repo: field', () => {
     expect(result.source).toBe('repo');
   });
 
-  it('repo with private CP6 slug (aiat-pmo-module) → resolver returns "redacted-repo"', () => {
-    // The REAL resolver (resolveRepoNamespace) would fire the CP6 guard for
-    // aiat-pmo-module — a RETAINED slug after the #59 VAULT_CLEAR_SLUGS carve-out
-    // (buchhaltgenie/etc. now resolve to their own namespace in-process, so a
-    // retained slug is required to keep this comment faithful).
-    // We simulate it here with the mapping resolver for unit isolation.
+  it('repo with private CP6 slug (acme-private-repo) → resolver returns "redacted-repo"', () => {
+    // The REAL resolver (resolveRepoNamespace) fires the CP6 guard for a private
+    // slug that is RETAINED after the #59 VAULT_CLEAR_SLUGS carve-out. The slug is
+    // synthetic (this file ships to the public mirror, #1631); the behaviour is
+    // simulated with the mapping resolver for unit isolation.
     _setResolverForTest(mappingResolver);
-    const result = namespaceForSession({ repo: 'products/aiat-pmo-module' });
+    const result = namespaceForSession({ repo: 'products/acme-private-repo' });
     expect(result.namespace).toBe('redacted-repo');
     expect(result.source).toBe('repo');
   });
@@ -484,12 +484,12 @@ describe('namespaceForLearning — source: free-text', () => {
   });
 
   it('CP6 private slug in source: first word fires leak-guard via resolver → "redacted-repo"', () => {
-    // Simulate what the real resolver would return for 'aiat-pmo-module'
+    // Simulate what the real resolver would return for 'acme-private-repo'
     _setResolverForTest(({ vaultName }) => {
-      if (vaultName === 'aiat-pmo-module') return 'redacted-repo';
+      if (vaultName === 'acme-private-repo') return 'redacted-repo';
       return vaultName ?? '_unsorted';
     });
-    const fm = { source: 'aiat-pmo-module extra context' };
+    const fm = { source: 'acme-private-repo extra context' };
     const result = namespaceForLearning(fm, new Map());
     expect(result.namespace).toBe('redacted-repo');
     expect(result.source).toBe('source');

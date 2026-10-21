@@ -43,6 +43,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 - **Verify with evidence**: read the changed files, check git diff, run relevant test
 - Confirm acceptance criteria are met
 - Mark as completed
+- An `[Abnahme]` issue is never a Done item, even when its implementation landed this session — it goes to 1.1b (#1678)
 
 ### 1.1a File-Level Grounding
 
@@ -51,7 +52,7 @@ Read back the session plan that was agreed at the start. For EACH planned item:
 Compare the files the plan said would be touched against the files actually changed in the session. Catches both **scope creep** (files changed that were not in any agent's prompt scope) and **incomplete coverage** (files in the plan that were never edited).
 
 1. **Planned files** = union of all file paths from agent prompt scopes across all waves. Source: STATE.md Wave History, falling back to the original session plan's per-agent "Files:" specs. Glob patterns are expanded against the working tree at session-start time.
-2. **Actual files** = `git diff --name-only "$SESSION_RANGE"` (accessor above: the pinned `session-start-ref`, else the resolved baseline range). Empty `$SESSION_RANGE` → skip 1.1a with the accessor's reason.
+2. **Actual files** = `git diff --name-only "$SESSION_RANGE"` (accessor above: the pinned `session-start-ref`, else the resolved baseline range). Empty `$SESSION_RANGE` → skip 1.1a with the accessor's reason. **Multi-tree (#1659):** also run `node scripts/session-commit-files.mjs` (session id defaults to `$CLAUDE_CODE_SESSION_ID`; `--json` prints `{ trees, perTree, skipped, union, malformed }`) and add its union — files committed in the session's OTHER worktrees, recorded by `hooks/pre-bash-staging-fence.mjs` as `orchestrator.session.work_tree` events — to Actual. The own-tree `session-start-ref` range stays authoritative for the own tree; the CLI diffs each recorded tree only inside itself, never across trees. Trees it lists as skipped (stderr) were not measured: report them, do not read them as "no changes".
 3. **Compute discrepancies:**
    - **Touched** = files in both Planned and Actual
    - **Unplanned (scope creep)** = files in Actual but not in Planned
@@ -82,6 +83,20 @@ Compare the files the plan said would be touched against the files actually chan
    }
    ```
    The metrics field is conditional on `grounding-check: true` — when the gate is off, omit the field entirely (do not write `null`).
+
+### 1.1b External Acceptance (`[Abnahme]` issues, #1678)
+
+`/plan` files every PRD § External Acceptance row as its own issue `[Abnahme] <Kriterium>` — real-world acceptance by the owner or an external oracle, which the implementation issue does not close. List the OPEN ones, separate from 1.1:
+
+```bash
+glab issue list --search "[Abnahme]" --in title --per-page 100     # GitLab (open is the default)
+gh issue list --search "[Abnahme] in:title" --state open --limit 100   # GitHub
+```
+
+- **Title filter:** keep only titles that START with `[Abnahme]` — GitHub search ignores punctuation and also matches e.g. "Abnahme-Checkliste".
+- **Scope:** keep only issues linked to this session's planned issues or their epic (issue links, `Epic`/`Parent` reference in the body, shared epic label). If the link is not determinable, list all open `[Abnahme]` issues and say so in the report (`scope: all open — link not determinable`).
+- **Per issue:** `#<IID> <Kriterium> — owner: <from the body, else assignee, else "Owner"> — not-before: <date from the body or a label, else —>`. `/plan` writes owner, not-before, pass condition, fallback and oracle command into the body (`skills/plan/SKILL.md` § 6.1), so read the body first.
+- **Closing rule:** an `[Abnahme]` issue is closed ONLY with oracle evidence in the closing comment — the command plus its result, or the owner's observation, quoted and dated. A green test alone is not enough. session-end never closes one on its own because the implementation landed, and files no carryover candidate for it (it stays open by design); it reports it in Phase 6 under **Abnahme offen**.
 
 ### 1.2 Partially Done Items
 - Document what was completed and what remains

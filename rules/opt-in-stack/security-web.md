@@ -1,12 +1,16 @@
 ---
 globs:
   - src/middleware*.ts
+  - proxy.ts
+  - src/proxy.ts
   - src/app/**
   - next.config.*
   - src/lib/csp*
   - src/lib/cors*
 paths:
   - src/middleware*.ts
+  - proxy.ts
+  - src/proxy.ts
   - src/app/**
   - next.config.*
   - src/lib/csp*
@@ -197,4 +201,4 @@ securityMiddleware(app);
 - **Template Literals**: Never use tagged template literals with user input for SQL, HTML, or shell commands. Use parameterized queries, DOMPurify, or `child_process.execFile()` respectively.
 
 ## See Also
-frontend.md · backend.md · backend-data.md · swift.md · parallel-sessions.md
+parallel-sessions.md · vendored only for some archetypes, so possibly absent in this repo: frontend.md [nextjs-saas, nextjs-minimal] · backend.md [nextjs-saas, express-service, docker-service] · backend-data.md [nextjs-saas]

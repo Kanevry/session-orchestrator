@@ -16,8 +16,9 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const HOOK = new URL('../../hooks/cwd-change-restore.mjs', import.meta.url).pathname;
+const HOOK = fileURLToPath(new URL('../../hooks/cwd-change-restore.mjs', import.meta.url));
 const SESSION_REL = join('.orchestrator', 'current-session.json');
 
 let tmp;

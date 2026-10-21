@@ -9,8 +9,8 @@ what happens to your state, and how to go back.
 
 The removals follow a two-signal rule measured over a 90-day window — **0 telemetry ∧ 0
 fleet invocation ∧ no runtime consumer** — not a judgement call. Evidence:
-[`docs/audits/2026-09-06-360-audit.md`](./audits/2026-09-06-360-audit.md), per-agent raw
-reports under [`audits/2026-09-06-360-audit/w1/`](./audits/2026-09-06-360-audit/w1/). Full
+the 2026-09-06 360° audit and its per-agent raw reports (audit reports stay in the
+private GitLab repository and are not part of the public mirror). Full
 change list: [CHANGELOG.md](../CHANGELOG.md).
 
 ## 1. What Changes

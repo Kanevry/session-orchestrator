@@ -160,9 +160,10 @@ $ strings -a "$(npm root -g)/@openai/codex/node_modules/@openai/codex-darwin-arm
 | Event | 0.144.4 | Wired here |
 |---|---|---|
 | `SessionStart` | yes | yes — banner + `on-session-start.mjs` |
-| `PostToolUse` | yes | yes — `loop-guard.mjs` |
+| `PostToolUse` | yes | yes — `loop-guard.mjs`; `Bash`: `post-bash-write-verify.mjs` (warn-only, #1691) |
 | `SubagentStop`, `Stop` | yes | yes — `on-stop.mjs` |
-| `PreToolUse`, `SubagentStart` | yes | declared, **empty** (see below) |
+| `PreToolUse` | yes | yes — `Bash`: destructive guard, staging fence, memory-propose audit, sessions-ledger guard, issue budget, `enforce-commands.mjs` (#1691); `pre-bash-templates-first.mjs` and the Edit/Write guards stay unwired (see below) |
+| `SubagentStart` | yes | declared, **empty** |
 | `UserPromptSubmit`, `PermissionRequest`, `PreCompact`, `PostCompact` | yes | no — this repo has no handler for them |
 | `SessionEnd`, `Interrupt` | **no — event does not exist** | n/a |
 | `PostToolUseFailure`, `PostToolBatch`, `CwdChanged` | no — Claude-only | n/a |
@@ -171,20 +172,35 @@ $ strings -a "$(npm root -g)/@openai/codex/node_modules/@openai/codex-darwin-arm
 
 For the day `SessionEnd` does land: upstream caps it (and `Interrupt`) at a **1 s default / 3 s maximum** timeout, where every other event gets 600 s. `hooks/on-session-end.mjs` measures ~221 ms median, so it fits — but only just, and only while it stays that fast.
 
-### Why our PreToolUse guards stay unwired — the reason, corrected
+### Which PreToolUse guards run on Codex — the reason, corrected
 
 Earlier revisions of this page said the handlers were unwired because "no Codex bridge delivers `tool_name`". **That was measuring the wrong thing** — it grepped our own adapter code rather than the Codex payload contract. There is no bridge because none is needed:
 
 - `pre-tool-use.command.input` REQUIRES `tool_name` and `tool_input`, alongside `cwd`, `hook_event_name`, `model`, `permission_mode`, `session_id`, `tool_use_id`, `transcript_path`, `turn_id`.
 - The deny envelope is `hookSpecificOutput.{hookEventName, permissionDecision, permissionDecisionReason}` — byte-identical to what `emitDeny()` already writes, and Codex enforces exactly that shape (its own error text: *"PreToolUse hook returned permissionDecision:deny without a non-empty permissionDecisionReason"*). Codex additionally rejects `permissionDecision: "allow"` and `"ask"`; our allow path is a bare `exit 0` with no stdout, so it is compatible.
 
-The real blocker is the **tool-name vocabulary**. Codex has no `Bash`, `Edit`, `Write` or `MultiEdit` tool — `strings -a <codex> | grep -c '"Bash"'` returns `0`; its tools are `shell`, `exec_command`, `unified_exec`, `apply_patch`, `update_plan`, `view_image`. Every PreToolUse guard in `hooks/` opens with an equality gate on a Claude tool name and returns `emitAllow()` otherwise, so wiring `pre-bash-destructive-guard.mjs` or `enforce-scope.mjs` today produces a hook that runs, matches nothing, and allows everything — **false enforcement, which is worse than a registered gap** (#919-P2 class).
+Until 2026-10-20 this page named the **tool-name vocabulary** as the real blocker: Codex's model-facing tools are `shell`, `exec_command`, `unified_exec`, `apply_patch`, `update_plan`, `view_image`, and `strings -a <codex> | grep -c '"Bash"'` returned `0` (codex-cli 0.144.4). **For the shell tool that is refuted** (#1669, measured 2026-10-20 on codex-cli 0.160.1 with a logging PreToolUse hook under `codex exec`): a shell call reaches the hook as `"tool_name":"Bash"` with `"tool_input":{"command":"<string>"}`, and `matcher: "Bash"` fires. Codex maps its shell tool to the Claude name at the hook boundary, so the Bash guards need no tool-name map. The allow-only `pre-bash-staging-fence.mjs` is wired on that basis. For the Edit/Write matchers (`apply_patch`) the vocabulary question is still unmeasured.
 
-Consequence to state plainly: **PSA-003 (destructive-command guard) and the file-scope guard are behavioural only on Codex today.** The repair is a tool-name map (`shell`/`exec_command`/`unified_exec` → `Bash`) for the Bash guards, plus an `apply_patch` payload adapter for the Edit/Write matchers specifically. Only the second half needs the adapter.
+**Codex honours a deny** (#1691, measured 2026-10-20 on codex-cli 0.160.1). `codex exec` with `pre-bash-destructive-guard.mjs` as the only PreToolUse hook and the prompt `printf x > CLAUDE.md` logged `Command blocked by PreToolUse hook: Destructive command blocked: '> CLAUDE.md' (rule: redirect-truncate-protected)`, and `CLAUDE.md` stayed unchanged. The control run with `hooks.PreToolUse=[]` ran the command and the file became `x`. The measured payload carries `session_id`, `turn_id`, `cwd` (the session workdir, which is also the hook's process cwd), `tool_name: "Bash"`, `tool_input.command` and `transcript_path: null`; PostToolUse adds `tool_response: ""`. A real Codex session exports no `CLAUDE_*` variables.
+
+Each Bash hook was then fed that payload and wired only where it enforces on it:
+
+| Hook | On Codex | Why |
+|---|---|---|
+| `pre-bash-destructive-guard.mjs` | wired | denies `> CLAUDE.md` |
+| `pre-bash-sessions-ledger-guard.mjs` | wired | denies a direct write to `.orchestrator/metrics/sessions.jsonl` |
+| `pre-bash-issue-budget.mjs` | wired | with a cap of 1 the second `glab issue create` is denied and parked |
+| `enforce-commands.mjs` | wired | applies `blockedCommands` from `.codex/wave-scope.json` |
+| `pre-bash-memory-propose-audit.mjs` | wired | appends its audit event (observe-only by design) |
+| `post-bash-write-verify.mjs` (PostToolUse) | wired | reports a write outside `allowedPaths` (warn-only by design) |
+| `pre-bash-templates-first.mjs` | **not wired** | it can only deny there: the template-Read proof needs `transcript_path`, which Codex sends as `null`, and `/templates-ack` needs a `claude` parent process |
+| `post-bash-issue-budget-refund.mjs` | n/a | runs on `PostToolUseFailure`, which Codex does not have; a failed create keeps its budget slot |
+
+What this still leaves open: **the file-scope guard is behavioural only on Codex today**, because the Edit/Write guards need an `apply_patch` payload adapter. `tests/hooks/codex-bash-guards-wiring.test.mjs` runs every registered Bash command on the measured payload.
 
 These per-event gaps are tracked as documented asymmetries in `scripts/lib/validate/check-hooks-symmetry.mjs` (Check 6, `handlerAsymmetries`) — an UNDOCUMENTED one-platform-only handler fails validation.
 
-An empty `PreToolUse` or `SubagentStart` array means the event belongs to the validated Codex surface but currently has no payload-compatible handler. It does not mean installation or hook trust failed.
+An empty `SubagentStart` array means the event belongs to the validated Codex surface but currently has no payload-compatible handler. It does not mean installation or hook trust failed.
 
 ## Usage
 

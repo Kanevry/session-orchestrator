@@ -195,7 +195,7 @@ mkdir -p "$REPO_ROOT/.claude"
 export PLUGIN_ROOT REPO_ROOT CONFIRMED_ARCHETYPE
 RULES_RESULT=$(node --input-type=module <<'NODE'
 import { pathToFileURL } from 'node:url';
-const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`));
+const { syncBootstrapRules } = await import(pathToFileURL(`${process.env.PLUGIN_ROOT}/scripts/lib/baseline-archetypes.mjs`).href);
 const result = await syncBootstrapRules({ repoRoot: process.env.REPO_ROOT,
   archetype: process.env.CONFIRMED_ARCHETYPE || undefined, minimal: !process.env.CONFIRMED_ARCHETYPE });
 process.stdout.write(`${JSON.stringify(result)}\n`);

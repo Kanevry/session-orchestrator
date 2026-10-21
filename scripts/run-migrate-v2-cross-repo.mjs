@@ -30,6 +30,13 @@
  *   2  I/O error — incl. a store lock not acquired under --apply: that repo
  *      is left unwritten and reported `status: 'error'`, the run continues
  *      with the next repo, and exits 2 at the end
+ *   3  --apply on a host whose learnings-store role is `inbox` (#1516): no
+ *      store is rewritten; every repo is still migrated in memory and reported
+ *      `status: 'refused-store-role'`. An I/O error (2) takes precedence.
+ *   4  --apply on a host whose learnings-store role is INVALID (#1516: set but
+ *      not writer|inbox, or owner.yaml unreadable/unparseable): no store is
+ *      rewritten; every repo is still migrated in memory and reported
+ *      `status: 'refused-store-role-invalid'`. An I/O error (2) takes precedence.
  */
 
 import { existsSync, readFileSync, writeFileSync, copyFileSync } from 'node:fs';
@@ -44,6 +51,7 @@ import { LearningsLockError, withLearningsLock } from './lib/learnings/io.mjs';
 import { getCrossRepoProjects, getConfinementRoot } from './lib/config/cross-repo.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { atomicWriteWithBackup, envelopeToError } from './lib/io.mjs';
+import { resolveStoreRole } from './lib/learnings/store-role.mjs';
 
 const LEARNINGS_REL = '.orchestrator/metrics/learnings.jsonl';
 
@@ -65,6 +73,11 @@ Options:
   --out <path>          Write output to file instead of stdout.
 
 Exit codes:  0 success  1 input error  2 I/O error
+             3 --apply refused: this host's learnings-store role is inbox (#1516),
+               nothing written (repos reported status refused-store-role)
+             4 --apply refused: this host's learnings-store role is invalid (#1516:
+               SO_LEARNINGS_STORE_ROLE or owner.yaml learnings.store-role set but
+               unusable), nothing written (status refused-store-role-invalid)
 `);
   process.exit(0);
 }
@@ -141,7 +154,10 @@ if (reposArg) {
 /**
  * @typedef {Object} RepoResult
  * @property {string} repo       - absolute repo path
- * @property {string} status     - 'skipped' | 'dry-run' | 'applied' | 'error'
+ * @property {string} status     - 'skipped' | 'dry-run' | 'applied' | 'error' |
+ *   'refused-store-role' (--apply on an inbox-role host, #1516: migrated in
+ *   memory, nothing written) | 'refused-store-role-invalid' (--apply while the
+ *   host's store role is invalid, #1516: likewise nothing written)
  * @property {number} total      - total records parsed
  * @property {number} invalidPre - invalid records before migration
  * @property {number} invalidPost - invalid records after migration
@@ -200,6 +216,14 @@ function emptyResult(repoPath, status, error) {
 /** Repos whose store lock was not acquired under --apply (nothing written there). */
 const lockFailedRepos = [];
 
+// #1516: an inbox-role host never rewrites a canonical learnings.jsonl. The role
+// is host-wide (env / owner.yaml), so it is resolved once for every repo.
+// Fail-closed: an INVALID role (set but unusable) refuses as well, with its
+// own status and exit code — only an unset role means writer.
+const storeRole = applyFlag ? resolveStoreRole() : null;
+const refuseStoreWrites = storeRole?.role === 'inbox';
+const refuseInvalidRole = storeRole?.role === 'invalid';
+
 /**
  * Process a single repo. Returns a RepoResult.
  *
@@ -216,6 +240,18 @@ async function processRepo(repoPath, apply) {
   const learningsPath = join(repoPath, LEARNINGS_REL);
 
   if (!existsSync(learningsPath)) return emptyResult(repoPath, 'skipped', null);
+  if (apply && refuseStoreWrites) {
+    const res = migrateStore(repoPath, learningsPath, false);
+    return res.status === 'error'
+      ? res
+      : { ...res, status: 'refused-store-role', error: 'store-role inbox: write skipped' };
+  }
+  if (apply && refuseInvalidRole) {
+    const res = migrateStore(repoPath, learningsPath, false);
+    return res.status === 'error'
+      ? res
+      : { ...res, status: 'refused-store-role-invalid', error: 'store-role invalid: write skipped' };
+  }
   if (!apply) return migrateStore(repoPath, learningsPath, false);
 
   try {
@@ -522,6 +558,25 @@ if (ioFailed.length > 0) {
       `${ioFailed.map((r) => `${r.repo} (${r.error})`).join(', ')}\n`
   );
   exitCode = 2;
+}
+
+const refusedRepos = results.filter((r) => r.status === 'refused-store-role');
+if (refusedRepos.length > 0) {
+  process.stderr.write(
+    `run-migrate-v2: learnings store role is inbox on this host (#1516) — --apply wrote nothing ` +
+      `in ${refusedRepos.length} repo(s); run it on the writer host\n`
+  );
+  if (exitCode === 0) exitCode = 3;
+}
+
+const invalidRoleRepos = results.filter((r) => r.status === 'refused-store-role-invalid');
+if (invalidRoleRepos.length > 0) {
+  process.stderr.write(
+    `run-migrate-v2: learnings store role is invalid on this host (#1516: ${storeRole?.reason}) — ` +
+      `--apply wrote nothing in ${invalidRoleRepos.length} repo(s); fix owner.yaml learnings.store-role ` +
+      `or SO_LEARNINGS_STORE_ROLE\n`
+  );
+  if (exitCode === 0) exitCode = 4;
 }
 
 process.exit(exitCode);

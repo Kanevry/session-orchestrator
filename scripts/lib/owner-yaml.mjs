@@ -46,6 +46,14 @@
  *     mode: 'off' | 'warn' | 'strict'  (applied only when weaker than the committed mode;
  *                            precedence env SO_VAULT_INTEGRATION > this > committed.
  *                            An invalid value drops ONLY this section, see loadOwnerConfig)
+ *   learnings:              (optional; host-local learnings-store role — #1516)
+ *     store-role: 'writer' | 'inbox'  (absent = writer; inbox = this host only appends
+ *                            to learnings-inbox.jsonl and never rewrites learnings.jsonl.
+ *                            precedence env SO_LEARNINGS_STORE_ROLE > this > writer.
+ *                            An empty `learnings:` is absent. An invalid value or any
+ *                            other key drops ONLY this section, see loadOwnerConfig;
+ *                            the store-role resolver then reads the role as invalid and
+ *                            canonical-store writes refuse — it never falls back to writer)
  *   drift-check:            (optional; host-local path exceptions — #937)
  *     foreign-host-prefixes: string[] (narrow absolute directory prefixes;
  *                            missing matching paths warn, unmatched paths error)
@@ -62,7 +70,7 @@
  *   validateOwnerSections(obj) — pure validation, no I/O; bucketed per section (#820)
  *   validateOwnerConfig(obj)   — pure validation, no I/O; thin wrapper over validateOwnerSections
  *   loadOwnerConfig({path?})   — reads file; per-section tolerance for OPTIONAL
- *                                sections (paths/dispatcher/vault-integration/drift-check/vaults/
+ *                                sections (paths/dispatcher/vault-integration/drift-check/learnings/vaults/
  *                                baselines/vault-dirs) — #820
  *   writeOwnerConfig(config, {path?}) — validates, writes YAML, creates dir
  *   getDefaults()              — returns sensible default config object
@@ -85,7 +93,7 @@
  * WARN naming `npm install` as the fix.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, chmodSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { resolvePrivateConfigDir } from './config/private-config-dir.mjs';
@@ -224,9 +232,10 @@ const REQUIRED_SECTIONS = /** @type {const} */ (['owner', 'tone', 'efficiency', 
  *
  * `vault-integration` has no `getDefaults()` entry: absent means "no host
  * override", so a dropped section simply leaves the committed gate in force.
+ * `learnings` (#1516) likewise has none: absent means the `writer` role.
  */
 export const OPTIONAL_OBJECT_SECTIONS = /** @type {const} */ (
-  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check'])
+  Object.freeze(['paths', 'dispatcher', 'vault-integration', 'drift-check', 'learnings'])
 );
 
 /**
@@ -239,6 +248,13 @@ const OPTIONAL_LIST_SECTIONS = /** @type {const} */ (['vaults', 'baselines', 'va
 
 /** Host-settable vault-integration modes (mirrors VAULT_MODE_VALUES in config-schema.mjs). */
 const VALID_VAULT_INTEGRATION_MODES = ['off', 'warn', 'strict'];
+
+/**
+ * Host-settable learnings-store roles (#1516). Mirrors STORE_ROLES in
+ * learnings/store-role.mjs — duplicated, not imported, because this module is
+ * on the hook import graph and must stay import-light.
+ */
+const VALID_LEARNINGS_STORE_ROLES = ['writer', 'inbox'];
 
 /** Canonical validation-order — MUST match the pre-#820 inline validation order. */
 const SECTION_ORDER = /** @type {const} */ ([
@@ -503,6 +519,41 @@ export function validateOwnerSections(obj) {
     sections['vault-integration'] = { valid: errors.length === 0, errors };
   }
 
+  // ── learnings (optional; host-local store role — #1516) ─────────────────────
+  // STRICT enum like vault-integration: an invalid `learnings` section (typo
+  // `store-role: inbx`) is dropped here like any optional section. The store-
+  // role resolver (learnings/store-role.mjs) sees the key in the raw file and
+  // treats present-but-dropped as `invalid`, so canonical-store writes refuse
+  // instead of the host silently staying a writer that rewrites a synced store.
+  {
+    const errors = [];
+    const lr = obj.learnings;
+    if (lr !== undefined && lr !== null) {
+      if (!isPlainObject(lr)) {
+        errors.push('learnings must be an object when present');
+      } else {
+        // A misspelt key (`store_role: inbox`) must not read as "store-role
+        // absent" and fall back to writer (#1686): any key but `store-role`
+        // invalidates the section, so the resolver reports the role invalid.
+        for (const key of Object.keys(lr)) {
+          if (key !== 'store-role') {
+            errors.push(`learnings has unknown key ${JSON.stringify(key)} (only store-role is allowed)`);
+          }
+        }
+        if (
+          lr['store-role'] !== undefined &&
+          lr['store-role'] !== null &&
+          !VALID_LEARNINGS_STORE_ROLES.includes(lr['store-role'])
+        ) {
+          errors.push(
+            `learnings.store-role must be one of ${VALID_LEARNINGS_STORE_ROLES.join(', ')}, got: ${JSON.stringify(lr['store-role'])}`,
+          );
+        }
+      }
+    }
+    sections.learnings = { valid: errors.length === 0, errors };
+  }
+
   // ── vaults (optional; N named vaults for walk-up resolution — #700) ──────────
   // Drop-and-WARN on malformed entries is handled by parseNamedVaults() in
   // named-vault-resolver.mjs. Here we only validate the container shape to
@@ -663,7 +714,7 @@ export function validateOwnerConfig(obj) {
  * Per-section tolerance (#820): an invalid REQUIRED section (owner, tone,
  * efficiency, hardware-sharing) still discards the whole file (legacy
  * behaviour, unchanged). An invalid OPTIONAL object section (paths,
- * dispatcher, vault-integration, drift-check) is instead replaced by its default value — the rest of the
+ * dispatcher, vault-integration, drift-check, learnings) is instead replaced by its default value — the rest of the
  * file survives, `source` becomes `'partial'`, and the drop is reported via
  * `droppedSections` + a stderr WARN. OPTIONAL list sections (vaults,
  * baselines, vault-dirs) are passed through UNTOUCHED even when strict-invalid — their
@@ -869,7 +920,10 @@ export function writeOwnerConfig(config, opts = {}) {
 
   const dir = dirname(filePath);
   try {
-    mkdirSync(dir, { recursive: true });
+    // 0o700 on every level this call creates: under umask 000 (WSL default) a
+    // bare mkdir left the private config dir 0777, and check-owner-leakage then
+    // refuses every owner policy beside it (#1629). An EXISTING dir keeps its mode.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch (err) {
     return {
       written: false,
@@ -897,7 +951,10 @@ export function writeOwnerConfig(config, opts = {}) {
   }
 
   try {
-    writeFileSync(filePath, yamlStr, 'utf8');
+    writeFileSync(filePath, yamlStr, { encoding: 'utf8', mode: 0o600 });
+    // mode only applies on creation; an owner.yaml left 0666 by an older
+    // writer would stay rewritable by other users (paths.*, salt) (#1632).
+    try { chmodSync(filePath, 0o600); } catch { /* best effort */ }
   } catch (err) {
     return { written: false, errors: [`failed to write owner.yaml: ${err.message}`] };
   }

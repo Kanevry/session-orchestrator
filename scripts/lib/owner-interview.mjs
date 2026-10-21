@@ -35,7 +35,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { existsSync, copyFileSync } from 'node:fs';
+import { existsSync, copyFileSync, chmodSync } from 'node:fs';
 import {
   resolveOwnerYamlPath,
   validateOwnerConfig,
@@ -274,6 +274,7 @@ export function runOwnerInterview(opts = {}) {
     const backupPath = `${filePath}.bak-${timestamp}`;
     try {
       copyFileSync(filePath, backupPath);
+      try { chmodSync(backupPath, 0o600); } catch { /* best effort */ } // copy keeps a loose source mode (#1632)
     } catch {
       // Non-fatal: continue even if backup fails (file might be unreadable)
     }

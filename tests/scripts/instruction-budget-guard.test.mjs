@@ -143,6 +143,8 @@ const DELTA_BYTES = 30;
 const GAMMA = `---
 globs:
   - "**/*.ts"
+paths:
+  - "**/*.ts"
 ---
 
 ## Gamma Heading
@@ -306,13 +308,36 @@ describe('#795 paths:-scoped rules excluded from always-on budget', () => {
   });
 });
 
+// #1638 — Claude Code reads `paths:` only; `globs:` is ignored without an
+// error. So the budget's always-on/path-scoped split keys on `paths:` alone:
+// a globs-only rule is always-on, and with both keys `paths:` decides even when
+// the two lists differ. The loader's own wave semantics (globs wins) stay.
+describe('#1638 only paths: scopes a rule for the Claude Code budget', () => {
+  it.each([
+    ['globs only', true, '---\nglobs:\n  - "**/*.ts"\n---\n\n'],
+    ['paths only', false, '---\npaths:\n  - "**/*.ts"\n---\n\n'],
+    ['both keys, divergent lists', false, '---\nglobs:\n  - "src/**"\npaths:\n  - "docs/**"\n---\n\n'],
+    ['flow-style paths after other keys', false, '---\ndescription: x\nglobs: ["src/**"]\npaths: ["src/**"]\n---\n\n'],
+    ['paths: in the body, not the frontmatter', true, '---\nglobs:\n  - "src/**"\n---\n\npaths:\n  - "src/**"\n\n'],
+  ])('%s (expect always-on: %s)', (_label, alwaysOn, frontmatter) => {
+    const dir = makeTmpRulesDir();
+    writeRule(dir, 'rule.md', `${frontmatter}${PATHS_SCOPED_BODY}`);
+
+    const result = computeInstructionBudget({ rulesDir: dir, ceiling: 1000 });
+
+    expect(result.perFile.map((f) => f.file)).toEqual(alwaysOn ? ['rule.md'] : []);
+    expect(result.bySurface.coordinator > 0).toBe(alwaysOn);
+    expect(result.bySurface.pathScoped.files).toBe(alwaysOn ? 0 : 1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // #1449 — frontmatter not on line 1: Claude Code ignores it, so the rule loads
 // always-on. Same globs, same body; only the provenance comment moves.
 // ---------------------------------------------------------------------------
 
 const PROVENANCE_LINE = '<!-- source: session-orchestrator plugin (canonical: rules/x.md) -->';
-const SCOPED_FM = '---\nglobs:\n  - "src/**"\n---\n';
+const SCOPED_FM = '---\nglobs:\n  - "src/**"\npaths:\n  - "src/**"\n---\n';
 /** New format: frontmatter on line 1, provenance comment after the closing fence. */
 const headerAfter = (heading) => `${SCOPED_FM}${PROVENANCE_LINE}\n\n## ${heading}\n\n- one\n`;
 /** Old format: provenance comment on line 1 pushes the frontmatter down. */
@@ -1371,6 +1396,8 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
           'auto-generated: true',
           'globs:',
           '  - "scripts/**"',
+          'paths:',
+          '  - "scripts/**"',
           `learning-key: anti-pattern/fixture-${i}`,
           'expires-at: 2099-01-01',
           '---',
@@ -1386,7 +1413,7 @@ describe('computeInstructionBudget — path-scoped surface (generated-rule growt
     for (let i = 0; i < (opts.handwritten ?? 0); i += 1) {
       writeFileSync(
         join(dir, `handwritten-${i}.md`),
-        ['---', 'globs:', '  - "tests/**"', '---', '', 'y'.repeat(opts.handwrittenBytes ?? bodyBytes), ''].join('\n'),
+        ['---', 'globs:', '  - "tests/**"', 'paths:', '  - "tests/**"', '---', '', 'y'.repeat(opts.handwrittenBytes ?? bodyBytes), ''].join('\n'),
       );
     }
     return dir;
@@ -1681,7 +1708,7 @@ describe('checkInstructionBudget — path-scoped near-threshold warning (#1419)'
     writeFileSync(join(dir, 'always-on.md'), '# Always\n\n- one directive\n');
     writeFileSync(
       join(dir, 'scoped.md'),
-      ['---', 'globs:', '  - "tests/**"', '---', '', 'y'.repeat(4000), ''].join('\n'),
+      ['---', 'globs:', '  - "tests/**"', 'paths:', '  - "tests/**"', '---', '', 'y'.repeat(4000), ''].join('\n'),
     );
     return dir;
   }

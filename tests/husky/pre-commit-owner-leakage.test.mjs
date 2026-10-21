@@ -15,7 +15,7 @@
  * We do NOT touch the real repo's commit history.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { readFileSync, writeFileSync, cpSync, mkdirSync, symlinkSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
@@ -31,6 +31,7 @@ writeFileSync(inventedOwnerPolicyPath, JSON.stringify({
   publicEmails: ['office@example.invalid','security@example.invalid'], publicUrls: ['https://example.invalid','http://example.invalid','https://www.example.invalid','http://www.example.invalid','www.example.invalid'],
 }), {mode: 0o600});
 beforeEach(() => { vi.stubEnv('SO_OWNER_PATTERNS_FILE', inventedOwnerPolicyPath); });
+afterAll(() => removeTree(inventedOwnerPolicyDir));
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');

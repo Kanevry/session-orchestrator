@@ -28,6 +28,8 @@ vi.mock('node:child_process', async () => {
 vi.mock('../../../scripts/lib/validate/check-owner-leakage.mjs', () => ({
   isOwnerLeakySegment: vi.fn((value) =>
     typeof value === 'string' && value.includes('fixture-private-module') ? 'CP6' : null),
+  // namespace.mjs asks for the policy state to word its redaction WARN (#1629).
+  inspectOwnerPatterns: vi.fn(() => ({ status: 'ok' })),
 }));
 
 // #1147: emitAction now also writes an `orchestrator.vault.mirror_completed`
@@ -2548,7 +2550,7 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
     for (const r of records.slice(0, 2)) {
       const rel = `40-learnings/alpha-tool/shared-subject-${hash8(r.id)}.md`;
       expect(read(rel)).toContain(r.insight);
-      expect(read(rel)).toMatch(new RegExp(`^id: shared-subject-${hash8(r.id)}$`, 'm'));
+      expect(read(rel)).toMatch(new RegExp(`^id: "alpha-tool-shared-subject-${hash8(r.id)}"$`, 'm'));
     }
 
     const snapshot = fs.readdirSync(join(vault, '40-learnings/alpha-tool')).sort().map((f) => [f, read(`40-learnings/alpha-tool/${f}`)]);
@@ -2625,6 +2627,55 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
 
     expect(lines[0].action).toBe('updated');
     expect(read(NOTE)).toContain('source-repo: alpha-tool');
+  });
+
+  // #1601, the two sites tests/unit/vault-mirror.test.mjs cannot reach (the
+  // disambiguation branch and the archive pass). A pre-#1601 note carries its
+  // bare slug as `id` (> 128 chars here). Release-review HOCH 1 (MR !148): the
+  // first fix re-rendered such notes from the record, which can bring back
+  // masked plaintext (#1025). Now the mirror never changes a note's id line;
+  // migrate-ids replaces exactly that line, and the mirror stays a noop after.
+  const LONG = `shared-subject-${'x'.repeat(125)}`;
+  const LONG_ALPHA = { ...ALPHA_LEARNING, subject: LONG };
+  const LONG_BETA = { ...BETA_LEARNING, subject: LONG };
+  it.each([
+    {
+      site: 'disambiguated learning (collision branch)',
+      rel: `40-learnings/alpha-tool/${LONG}-${hash8(BETA_LEARNING.id)}.md`,
+      rerun: (m) => m.processLearning(LONG_BETA, 1, ctxFor('learning', alphaRoot)),
+    },
+    {
+      site: 'archived learning',
+      rel: `40-learnings/alpha-tool/${LONG}.md`,
+      rerun: (m) => m.processArchivedLearning({ ...LONG_ALPHA, _archive_reason: 'expired' }, 1, ctxFor('learning', alphaRoot)),
+    },
+  ])('#1601: the mirror keeps a schema-violating old id on a $site; migrate-ids replaces only that line', async ({ rel, rerun }) => {
+    quietStderr();
+    const m = await load();
+    const { planIdMigration, applyIdMigration } = await import('../../../scripts/lib/vault-mirror/migrate-ids.mjs');
+    await captureStdout(() => m.processLearning(LONG_ALPHA, 1, ctxFor('learning', alphaRoot)));
+    await captureStdout(() => m.processLearning(LONG_BETA, 1, ctxFor('learning', alphaRoot)));
+    const idLine = read(rel).match(/^id: .*$/m)[0];
+    expect(idLine.length - 'id: ""'.length).toBeLessThanOrEqual(128);
+    const files = fs.readdirSync(join(vault, '40-learnings/alpha-tool')).sort();
+    const bareId = rel.slice('40-learnings/alpha-tool/'.length, -'.md'.length);
+    expect(bareId.length).toBeGreaterThan(128);
+    fs.writeFileSync(join(vault, rel), read(rel).replace(/^id: .*$/m, `id: ${bareId}`));
+
+    await captureStdout(() => rerun(m));
+    expect(read(rel).match(/^id: .*$/m)[0]).toBe(`id: ${bareId}`);
+    expect(fs.readdirSync(join(vault, '40-learnings/alpha-tool')).sort()).toEqual(files);
+
+    const before = read(rel);
+    const plan = planIdMigration({ vaultDir: vault });
+    expect(plan.changes).toEqual([{ path: rel, from: bareId, to: idLine.slice('id: "'.length, -1), reason: 'schema' }]);
+    expect(applyIdMigration(plan, { vaultDir: vault, maxChanges: 1 }).written).toEqual([rel]);
+    expect(read(rel)).toBe(before.replace(/^id: .*$/m, idLine));
+
+    const after = read(rel);
+    const again = await captureStdout(() => rerun(m));
+    expect(again.lines[0].action).toBe('skipped-noop');
+    expect(read(rel)).toBe(after);
   });
 
   const SESSION = {
@@ -2712,7 +2763,7 @@ describe('#1503 provenance guard: a note owned by another repo/record is never o
         fs.writeFileSync(join(vault, rel), read(rel).replace(/^source-record: .*\n/m, ''));
       },
       expectAction: { action: 'skipped-foreign-owner', reason: 'id mismatch', healed_leak: true },
-      ownMarker: 'id: release-prep',
+      ownMarker: 'id: "alpha-tool-release-prep"',
       ownKey: null,
     },
     {
@@ -2917,7 +2968,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
       expect(notes()).toEqual([path]);
       const content = fs.readFileSync(path, 'utf8');
       const fm = YAML.load(content.split('---')[1]);
-      expect(fm.id).toBe(name);
+      expect(fm.id).toBe(`fixture-tool-${name}`);
       expect(fm['source-record']).toBe(entry.id);
       expect(content).toContain(changed.insight);
     }
@@ -2996,7 +3047,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
     expect(second.lines[0].action).toBe('updated');
     expect(notes()).toEqual([path]);
     const fm = YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]);
-    expect(fm.id).toBe('grne-tests');
+    expect(fm.id).toBe('fixture-tool-grne-tests');
     expect(fm['source-record']).toBeUndefined();
     expect(fs.readFileSync(path, 'utf8')).toContain(changed.text);
   });
@@ -3070,7 +3121,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
     expect(result.lines[0].action).toBe('updated');
     expect(notes()).toEqual([path]);
     expect(fs.readFileSync(path, 'utf8')).toContain('Updated historical v2 insight');
-    expect(YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]).id).toBe('gre');
+    expect(YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]).id).toBe('fixture-tool-gre');
   });
   it('keeps positive flat dry-run bytes and guards live historical names from archive', async () => {
     const path = await seed('gre', true);
@@ -3084,7 +3135,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
     expect(fs.readFileSync(path, 'utf8')).toBe(before);
     await captureStdout(() => processArchivedLearning(entry, 1, ctx));
     const fm = YAML.load(fs.readFileSync(path, 'utf8').split('---')[1]);
-    expect(fm.id).toBe('gre');
+    expect(fm.id).toBe('fixture-tool-gre');
     expect(fm['source-record']).toBe(entry.id);
     expect(fm.status).toBe('archived');
     expect(notes()).toEqual([path]);
@@ -3104,7 +3155,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
     const content = fs.readFileSync(path, 'utf8');
     expect(content).toContain('Updated Unicode namespace');
     const fm = YAML.load(content.split('---')[1]);
-    expect(fm.id).toBe('gre');
+    expect(fm.id).toBe('gre-gre');
     expect(fm['source-repo']).toBe('gre');
   });
   it('does not guess missing provenance inside the historical Unicode namespace', async () => {
@@ -3194,7 +3245,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
     const content = fs.readFileSync(path, 'utf8');
     expect(content).not.toContain(needle);
     expect(content).toContain('[REDACTED]');
-    expect(YAML.load(content.split('---')[1]).id).toBe('gre');
+    expect(YAML.load(content.split('---')[1]).id).toBe('fixture-tool-gre');
   });
 
   it('does not migrate a Session filename or rendered id through the shared slug utility', async () => {
@@ -3217,7 +3268,7 @@ describe('#1548 Unicode slug transition preserves explicit provenance', () => {
       expect(fs.readdirSync(dir)).toEqual(['gre.md']);
       const content = fs.readFileSync(path, 'utf8');
       const fm = YAML.load(content.split('---')[1]);
-      expect(fm.id).toBe('gre');
+      expect(fm.id).toBe('fixture-tool-gre');
       expect(fm['source-record']).toBe(session.started_at);
       expect(content).toContain('Changed narrative');
     }

@@ -131,6 +131,9 @@ let canonicalizeGrantPrefix;
 // checkout and would classify a peer's manifest as ours.
 let readProcessLocalSessionIds;
 let classifyManifestSession;
+// #1636 point 1 — the root holding THIS session's own lock (its `session_root`
+// after ExitWorktree), where the #1057 session clock must be read (#1634 shape).
+let resolveOwnLockRoot;
 
 const PLUGIN_ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -191,6 +194,8 @@ async function bootstrap() {
       // a SyntaxError in the identity module banners GUARD INACTIVE instead of
       // link-crashing the hook into a silent fail-open (#993).
       sessionIdentity: { specifier: lib('session-identity/own-session.mjs') },
+      // #1636 point 1. Same loader, same banner-on-failure contract.
+      hookRoot: { specifier: pathToFileURL(path.join(PLUGIN_ROOT, 'hooks', '_lib', 'hook-root.mjs')).href },
     },
     {
       hookName: HOOK_NAME,
@@ -215,6 +220,7 @@ async function bootstrap() {
     resolveScopeContext,
   } = modules.scopeGate);
   ({ readProcessLocalSessionIds, classifyManifestSession } = modules.sessionIdentity);
+  ({ resolveOwnLockRoot } = modules.hookRoot);
 }
 
 async function main() {
@@ -376,7 +382,11 @@ async function main() {
           role: scope.role,
           parseOk,
           scopeMtimeMs: await mtimeMsOf(scopePath),
-          sessionStartMs: sessionStartedAtMs(manifestRoot),
+          // #1636: beside THIS session's own lock, not at the manifest root —
+          // identity is the process-local id set (G3b), never session.lock.
+          sessionStartMs: sessionStartedAtMs(
+            resolveOwnLockRoot({ session_id: [...ownIds][0] ?? null, cwd: input.cwd }, manifestRoot),
+          ),
         })
       : null;
   const scopeRelRaw = relativeFromRoot(manifestRoot, scopePath);

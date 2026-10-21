@@ -13,7 +13,7 @@
  *     implementation set in beforeEach.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -75,6 +75,7 @@ const {
 // name its own root (the budget-bridge test below does exactly that).
 // ---------------------------------------------------------------------------
 const SANDBOX_ROOT = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-sandbox-'));
+afterAll(() => rmSync(SANDBOX_ROOT, { recursive: true, force: true }));
 
 function findExistingCarryover(opts) {
   return findExistingCarryoverReal({
@@ -287,6 +288,71 @@ describe('createSpiralCarryoverIssue', () => {
     } finally {
       vi.unstubAllEnvs();
       rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('reads current-session.json beside the own relocated lock, not the launch root (#1605)', async () => {
+    // bug_caught: after /clear in an entered worktree the launch root still holds
+    // the PREVIOUS session's current-session.json. Reading it there made this
+    // producer charge the raw id while pre-bash-issue-budget charged the
+    // semantic id — two budget keys for one session.
+    const launchRoot = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-launch-'));
+    const lockRoot = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-wt-'));
+    const registryDir = mkdtempSync(path.join(tmpdir(), 'spiral-carryover-reg-'));
+    try {
+      mkdirSync(path.join(launchRoot, '.orchestrator'), { recursive: true });
+      writeFileSync(
+        path.join(launchRoot, '.orchestrator', 'current-session.json'),
+        JSON.stringify({ session_id: '0a1b2c3d-1605-4e5f-8a9b-0c1d2e3f4a5b', semantic_session_id: 'main-2026-10-14-session-1' }),
+        'utf8',
+      );
+      mkdirSync(path.join(lockRoot, '.orchestrator'), { recursive: true });
+      writeFileSync(
+        path.join(lockRoot, '.orchestrator', 'session.lock'),
+        JSON.stringify({
+          session_id: '7f1c2a90-1605-4c3e-9a1b-2b3c4d5e6f70',
+          started_at: new Date().toISOString(),
+          last_heartbeat: new Date().toISOString(),
+          mode: 'session',
+          pid: process.pid,
+          host: 'test-host',
+          ttl_hours: 4,
+        }),
+        'utf8',
+      );
+      writeFileSync(
+        path.join(lockRoot, '.orchestrator', 'current-session.json'),
+        JSON.stringify({ session_id: '7f1c2a90-1605-4c3e-9a1b-2b3c4d5e6f70', semantic_session_id: 'wt-2026-10-14-session-2' }),
+        'utf8',
+      );
+      mkdirSync(path.join(registryDir, 'active'), { recursive: true });
+      writeFileSync(
+        path.join(registryDir, 'active', '7f1c2a90-1605-4c3e-9a1b-2b3c4d5e6f70.json'),
+        JSON.stringify({ session_id: '7f1c2a90-1605-4c3e-9a1b-2b3c4d5e6f70', session_root: lockRoot }),
+        'utf8',
+      );
+      vi.stubEnv('SO_SESSION_REGISTRY_DIR', registryDir);
+      vi.stubEnv('CLAUDE_CODE_SESSION_ID', '7f1c2a90-1605-4c3e-9a1b-2b3c4d5e6f70');
+      setCliResponses([
+        { ok: true, stdout: '[]' },
+        { ok: true, stdout: 'https://gitlab.example.com/g/p/-/issues/43\n' },
+      ]);
+
+      await createSpiralCarryoverIssue({
+        taskDescription: 'relocated session budget key',
+        kind: 'SPIRAL',
+        context: 'ctx',
+        vcs: 'gitlab',
+        repoRoot: launchRoot,
+      });
+
+      expect(readBudgetState(launchRoot, 'wt-2026-10-14-session-2')).toMatchObject({
+        sessionId: 'wt-2026-10-14-session-2',
+        exempt: 1,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      for (const d of [launchRoot, lockRoot, registryDir]) rmSync(d, { recursive: true, force: true });
     }
   });
 

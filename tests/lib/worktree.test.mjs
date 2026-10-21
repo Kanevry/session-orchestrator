@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, writeFile, mkdir, access, realpath, readFile, stat } from 'node:fs/promises';
+import { rmdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -42,6 +43,13 @@ const RUN = randomBytes(4).toString('hex');
  * @returns {string}
  */
 const sfx = (name) => `${name}-${RUN}`;
+
+// #1648: createWorktree creates the shared base `<os.tmpdir()>/so-worktrees`
+// and never removes it. Drop it once this file is done, but only when empty —
+// the base is a host-shared namespace (#984) and may hold a peer's worktree.
+afterAll(() => {
+  try { rmdirSync(path.join(tmpdir(), 'so-worktrees')); } catch { /* not empty or already gone */ }
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

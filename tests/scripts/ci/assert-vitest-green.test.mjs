@@ -313,3 +313,12 @@ describe(`CLI --log diagnostic (exit-code contract unchanged, message enriched)`
     expect(r.stdout).toContain('suite verifiably green');
   });
 });
+
+it.each([{ numPassedTests: 0, numPendingTests: 6000 }, { numPassedTests: 1, numPendingTests: 6000 }])(
+  'R1-06 rejects all-pending reporters even with a collected floor (%j)', counts => {
+    expect(verifyVitestResult({ ...GREEN, numTotalTests: 6000, ...counts }, { minTests: 6000 }).ok).toBe(false);
+  },
+);
+it('R1-06 keeps the collected floor for partially skipped shards', () => {
+  expect(verifyVitestResult({ ...GREEN, numTotalTests: 2500, numPassedTests: 1, numPendingTests: 2499 }, { minTests: 2500 }).ok).toBe(true);
+});

@@ -49,17 +49,24 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
    plugin-version: <current plugin version from $PLUGIN_ROOT/package.json>
    ```
 
-6. **Patch Session Config (#182).** Run the validator against the current `## Session Config` block; append any missing mandatory fields with defaults. The 7 mandatory fields (per `scripts/lib/config-schema.mjs`) are: `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
+6. **Patch Session Config (#182, #1567).** Find the mandatory fields the `## Session Config` block does not carry and append them with defaults. The mandatory fields are the keys of the FIRST `## Session Config` block in `$PLUGIN_ROOT/docs/session-config-template.md` (today the 7 validated by `scripts/lib/config-schema.mjs`): `test-command`, `typecheck-command`, `lint-command`, `agents-per-wave`, `waves`, `persistence`, `enforcement`.
+
+   Presence is read from the FILE, not from the validator: `parseSessionConfig()` fills every mandatory field with its default, so `parse-config.mjs` / `validate-config.mjs` never report an ABSENT field (a pnpm repo without `test-command` would silently run `npm test`). `missingStarterKeys()` (`scripts/lib/config/template-keys.mjs`) compares the template's starter keys against `collectTopLevelKeyLines()` — the top-level keys the runtime reads, in every accepted spelling (`key:`, `- key:`, `- **key:**`).
 
    ```bash
-   CONFIG_OUT="$(node "$PLUGIN_ROOT/scripts/parse-config.mjs" 2>&1 >/dev/null)"
-   # parse-config.mjs emits validation warnings to stderr when enforcement=warn.
-   # Only 'must be' lines (issued by validate-config.mjs) name an INVALID mandatory field. Filter
-   # them first: stderr also carries the unknown-key report (#1562), whose key (e.g.
-   # `test-command-e2e`) would otherwise match a mandatory name. Ceiling: an ABSENT field is
-   # never reported here — parseSessionConfig() fills all 7 with defaults — so this step only
-   # catches invalid values; absent-key detection is a follow-up.
-   MISSING_FIELDS="$(echo "$CONFIG_OUT" | grep 'must be' | grep -oE '(test-command|typecheck-command|lint-command|agents-per-wave|waves|persistence|enforcement)' | sort -u || true)"
+   CONFIG_FILE="CLAUDE.md"
+   [[ -f "AGENTS.md" ]] && CONFIG_FILE="AGENTS.md"
+
+   MISSING_FIELDS="$(node --input-type=module -e "
+     import { readFileSync } from 'node:fs';
+     import { missingStarterKeys } from '$PLUGIN_ROOT/scripts/lib/config/template-keys.mjs';
+     const missing = missingStarterKeys(
+       readFileSync(process.argv[1], 'utf8'),
+       readFileSync('$PLUGIN_ROOT/docs/session-config-template.md', 'utf8'),
+     );
+     if (missing === null) { console.error('template has no Session Config block — mandatory-field check did not run'); process.exit(1); }
+     console.log(missing.join(' '));
+   " "$CONFIG_FILE")"
    if [[ -n "$MISSING_FIELDS" ]]; then
      # Detect package manager to pick sensible defaults for commands.
      PM_DEFAULTS="$(node --input-type=module -e "
@@ -70,9 +77,6 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
        console.log('typecheck-command: ' + cmds.typecheck.command);
        console.log('lint-command: ' + cmds.lint.command);
      " 2>/dev/null)"
-
-     CONFIG_FILE="CLAUDE.md"
-     [[ -f "AGENTS.md" ]] && CONFIG_FILE="AGENTS.md"
 
      # Append each missing field under the ## Session Config block.
      for field in $MISSING_FIELDS; do
@@ -93,7 +97,7 @@ Entered when `$ARGUMENTS` contains `--retroactive`. Writes the lock file and, pe
    fi
    ```
 
-   This patch is best-effort: existing fields are never overwritten. If no fields are missing, this step is a no-op.
+   This patch is best-effort: existing fields are never overwritten, and an INVALID value of a present field is left for `parse-config.mjs` to report. If no fields are missing, this step is a no-op; if the check did not run (exit 1), report that line instead of `No config changes.`.
 
 7. **Commit.** Stage the lock file (and the patched config file, if it changed) and commit:
    ```bash

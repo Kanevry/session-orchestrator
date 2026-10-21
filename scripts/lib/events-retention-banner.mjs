@@ -109,8 +109,8 @@ const HEAD_BYTES = 64 * 1024;
  * `rg -n "readEventsWithRotations\(|scanEventsBackwards\(|listEventSourcesNewestFirst\(" --glob '!tests/**' scripts hooks skills`
  * → 6 call sites beside the definitions in `events.mjs` (and its internal
  * `listEventSourcesNewestFirst` call); the seventh, `session-close-backfill`,
- * joined with #1498. A test re-runs that census, so an eighth reader cannot
- * join unlisted.
+ * joined with #1498, the eighth, `session-work-trees`, with #1659. A test
+ * re-runs that census, so a ninth reader cannot join unlisted.
  */
 export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'eval/engine', spec: './eval/engine.mjs' },
@@ -120,6 +120,7 @@ export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'instruction-budget-guard', spec: './instruction-budget-guard.mjs' },
   { label: 'backfill-abandoned-sessions', spec: '../backfill-abandoned-sessions.mjs' },
   { label: 'session-close-backfill', spec: './session-close-backfill.mjs' },
+  { label: 'session-work-trees', spec: './session-work-trees.mjs' },
 ]);
 
 /**

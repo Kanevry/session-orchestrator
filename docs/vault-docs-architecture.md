@@ -11,7 +11,7 @@ to recover when something breaks.
 re-measured against the code that writes it — `scripts/lib/vault-status/narrative-mirror.mjs`
 (`resolveNarrativePath`) and `scripts/lib/vault-status/board-writer.mjs` (`resolveBoardPath`) —
 after the pre-#673/#674/#675 layout in this file was found stale by the 2026-09-06
-360°-Audit (`docs/audits/2026-09-06-360-audit/w1/d6-docs-drift.md`). The `daily` skill
+360°-Audit (its docs-drift report; audit reports are not part of the public mirror). The `daily` skill
 rows are gone with the skill itself (§ 5A of that audit).
 
 ---

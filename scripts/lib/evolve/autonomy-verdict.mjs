@@ -223,15 +223,10 @@ function readinessConfidence(autopilotSummary, judgmentSummary, score) {
 /**
  * Summarize autopilot run history plus type-8 mode effectiveness rollups.
  *
- * Abandoned-session filtering (#834) AND duplicate-identity collapse (#1167):
- * `sessions` is passed straight through to `groupByMode()`, which canonicalizes
- * the array (one record per physical session) and then filters phantom
- * `status: 'abandoned'` stubs before bucketing — this function inherits BOTH
- * guarantees transitively and duplicates neither. The abandoned filter alone
- * was not enough: a `supersedes` pair and an exact same-id duplicate are two
- * records of one session that both survive it. See
- * `autopilot-effectiveness.mjs` `groupByMode()` (which canonicalizes via
- * `canonicalizeSessions(sessions, { keepUnidentified: true })` before filtering).
+ * Measured-work filtering (#1584) AND duplicate-identity collapse (#1167):
+ * sessions pass through groupByMode(), which canonicalizes physical identities
+ * (keeping ID-less legacy rows) and applies isMeasuredSession before bucketing.
+ * This function inherits both guarantees without a separate population filter.
  *
  * @param {Array} autopilotRuns
  * @param {Array} sessions

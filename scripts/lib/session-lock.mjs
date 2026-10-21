@@ -47,6 +47,7 @@ import { isLockShape } from './session-lock-shape.mjs';
 import { isPidAliveOnHost } from './file-lock.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { hostnamesMatch, lockHostCandidate, recordHostAlias, stableHostname } from './host-identity.mjs';
+import { isSafeSessionId } from './fleet-protocol.mjs';
 
 // isPidAliveOnHost moved into file-lock.mjs in #630 (the file-lock primitive
 // owns it so the dependency edge points file-lock → io, never the reverse).
@@ -132,6 +133,13 @@ export const LOCK_LEFTOVER_MIN_AGE_MS = 60 * 60 * 1000;
  * but never travel via VCS.
  */
 export const OWNER_PROOF_RELPATH = '.orchestrator/runtime/lock-owner-proof.json';
+
+/**
+ * Directory of the "released on purpose" markers (#1651), relative to the repo
+ * root — one `<raw session_id>.json` per session that gave its lock back via
+ * `scripts/release-session-lock.mjs`. Gitignored like the owner proof beside it.
+ */
+export const RELEASE_MARKER_RELDIR = '.orchestrator/runtime/lock-released';
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -875,6 +883,10 @@ export function acquire({ sessionId, mode, ttlHours = DEFAULT_TTL_HOURS, repoRoo
 function withOwnerProof(result, repoRoot) {
   const w = writeOwnerProof({ repoRoot, lock: result.lock });
   result.ownerProof = w.ok ? { ok: true } : { ok: false, reason: w.reason };
+  // #1651: the session holds a lock again, so its earlier "released on
+  // purpose" marker no longer describes it. This is the one junction every
+  // ok:true write of acquire()/forceAcquire() passes. Never throws.
+  clearReleaseMarker({ repoRoot, sessionId: result.lock?.session_id });
   return result;
 }
 
@@ -1251,6 +1263,79 @@ export function loadOwnerProof({ repoRoot } = {}) {
   } catch {
     return null;
   }
+}
+
+/**
+ * Absolute path of the release marker for `sessionId`, or null when the id is
+ * not a safe single file-name component (#1651). The id comes from a lock file
+ * or a CLI flag, so it is validated before it reaches a path: no separator, no
+ * `.`/`..`, at most 128 chars of `[A-Za-z0-9._-]`.
+ *
+ * @param {string|undefined} repoRoot
+ * @param {unknown} sessionId
+ * @returns {string|null}
+ */
+function releaseMarkerPath(repoRoot, sessionId) {
+  if (!isSafeSessionId(sessionId)) return null;
+  return path.join(repoRoot ?? process.cwd(), RELEASE_MARKER_RELDIR, `${sessionId}.json`);
+}
+
+/**
+ * Record that `sessionId` deliberately released its own lock (#1651), so the
+ * SessionStart bootstrap does not re-create it on a `compact` or `resume` of
+ * that same raw session — a headless run may be using the slot. Atomic
+ * (tmp+rename). Never throws.
+ *
+ * Ceiling (BV-004): markers are never pruned — one small file per released
+ * session id. Revisit if `.orchestrator/runtime/lock-released/` grows past a
+ * few hundred entries.
+ *
+ * @param {{ repoRoot?: string, sessionId: string }} args
+ * @returns {{ ok: true, path: string } | { ok: false, reason: string, error?: string }}
+ */
+export function writeReleaseMarker({ repoRoot, sessionId } = {}) {
+  try {
+    const file = releaseMarkerPath(repoRoot, sessionId);
+    if (file === null) return { ok: false, reason: 'unsafe-session-id' };
+    const w = writeJsonAtomicSync(
+      file,
+      { schema_version: 1, session_id: sessionId, released_at: nowIso(), host: stableHostname() },
+      { tmpPrefix: '.lock-released.tmp' },
+    );
+    if (!w.ok) return { ok: false, reason: 'fs-error', error: w.error };
+    return { ok: true, path: file };
+  } catch (err) {
+    return { ok: false, reason: 'fs-error', error: err?.message ?? String(err) };
+  }
+}
+
+/**
+ * True when a release marker for `sessionId` exists (#1651). Never throws; an
+ * unsafe id or any fs error reads as "no marker", i.e. the pre-#1651 behaviour.
+ *
+ * @param {{ repoRoot?: string, sessionId: string }} args
+ * @returns {boolean}
+ */
+export function hasReleaseMarker({ repoRoot, sessionId } = {}) {
+  try {
+    const file = releaseMarkerPath(repoRoot, sessionId);
+    return file !== null && fs.lstatSync(file).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Remove the release marker for `sessionId` (#1651). Best-effort, never throws.
+ *
+ * @param {{ repoRoot?: string, sessionId: string }} args
+ * @returns {void}
+ */
+export function clearReleaseMarker({ repoRoot, sessionId } = {}) {
+  try {
+    const file = releaseMarkerPath(repoRoot, sessionId);
+    if (file !== null) fs.rmSync(file, { force: true });
+  } catch { /* best-effort */ }
 }
 
 /**

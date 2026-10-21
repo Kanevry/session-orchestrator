@@ -1,7 +1,8 @@
 ---
 name: architect-reviewer
-description: 'Use this agent for read-only architectural audits between waves. Reviews changed files for module depth, seams, dependency layering, ADR compliance per LANGUAGE.md vocabulary. <example>Context: After Impl-Core wave shipped 8 files. user: "Audit the W2 architecture before proceeding." assistant: "I''ll dispatch architect-reviewer to check module depth, seams, and adapter quality before W3." <commentary>Architect-reviewer catches design smells (shallow modules, speculative seams) earlier than Quality-Lite, which only catches lint/typecheck.</commentary></example>'
-model: inherit
+description: 'Use this agent for read-only architectural audits between waves. Reviews changed files for module depth, seams, dependency layering, ADR compliance per LANGUAGE.md vocabulary.'
+model: opus
+effort: medium
 color: blue
 tools: Read, Grep, Glob, Bash
 sandbox-tier: read-only
@@ -91,3 +92,7 @@ Verdict variants (concrete examples per scenario):
 - Advisory findings only, no blockers → `{"verdict": "PROCEED_WITH_FOLLOWUPS", "finding_counts": {"high": 0, "med": 3, "low": 5}}`
 - ADR violation or HIGH-severity coupling/seam issue → `{"verdict": "FIX_REQUIRED", "finding_counts": {"high": 2, "med": 4, "low": 3}}`
 - Review could not complete (missing files, malformed inputs) → `{"verdict": "BLOCKED", "blockers": ["missing target file"]}`
+
+## Examples
+
+<example>Context: After Impl-Core wave shipped 8 files. user: "Audit the W2 architecture before proceeding." assistant: "I'll dispatch architect-reviewer to check module depth, seams, and adapter quality before W3." <commentary>Architect-reviewer catches design smells (shallow modules, speculative seams) earlier than Quality-Lite, which only catches lint/typecheck.</commentary></example>

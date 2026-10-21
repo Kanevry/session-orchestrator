@@ -41,7 +41,8 @@
  *
  * @typedef {Object} SweepResult
  * @property {boolean} ran            - true only when the store was actually rewritten.
- * @property {string}  [reason]       - why it did not run ('plan-skip' | 'no-plan' | 'error').
+ * @property {string}  [reason]       - why it did not run ('plan-skip' | 'no-plan' |
+ *                                      'store-role-inbox' | 'error').
  * @property {string}  [error]        - error message, `reason === 'error'` only.
  * @property {number}  [scanned]      - entries read from the active store (ran only).
  * @property {number}  [archived]     - entries moved to the archive sidecar (ran only).
@@ -50,7 +51,7 @@
  * @property {string}  [archivePath]  - the archive sidecar written to (ran only).
  */
 
-import { sweepExpiredLearnings } from '../learnings/expiry-sweep.mjs';
+import { SKIPPED_STORE_ROLE_INBOX, sweepExpiredLearnings } from '../learnings/expiry-sweep.mjs';
 import { resolveLearningsPaths } from './phase-skip.mjs';
 
 /** Event name — a plain string literal so the events-schema census can see it. */
@@ -150,6 +151,10 @@ export async function runExpiredSweep({ repoRoot, plan, now, graceDays, emit = t
       dryRun: false,
       ...(graceDays === undefined ? {} : { graceDays }),
     });
+
+    // Inbox role (#1516): the sweep wrote nothing, so this is not a run and
+    // emits no sweep_applied — that record's presence claims a rewrite.
+    if (res?.skipped === SKIPPED_STORE_ROLE_INBOX) return { ran: false, reason: SKIPPED_STORE_ROLE_INBOX };
 
     const scanned = res?.scanned ?? 0;
     const archived = res?.archived ?? 0;

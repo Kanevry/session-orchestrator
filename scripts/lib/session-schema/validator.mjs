@@ -37,6 +37,11 @@ const COST_BASES = Object.freeze(['api-list-equivalent']);
 /** `pricing_table_date` (#1470 Pkt 6): a calendar date, `YYYY-MM-DD`. */
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
+/** #1603: namespace/project#issue, allowing nested groups and ASCII path segments.
+ * The final assertion requires the actual end of input, including after newlines.
+ */
+const QUALIFIED_ISSUE_RE = /^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/)+[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?#[1-9][0-9]*(?![\s\S])/;
+
 /**
  * Valid values for the optional `status` field (Epic #724 C1).
  * `completed`  — record written by a normal /close flow.
@@ -329,12 +334,17 @@ function _validateOptionalFields(entry) {
     }
   }
   if (entry.issues_created !== undefined) {
-    if (
-      !Array.isArray(entry.issues_created) ||
-      entry.issues_created.some((n) => typeof n !== 'number')
-    ) {
-      throw new ValidationError('issues_created must be an array of numbers');
+    if (!Array.isArray(entry.issues_created)) {
+      throw new ValidationError('issues_created must be an array of numbers or qualified references group/repo#n');
     }
+    entry.issues_created.forEach((issue, index) => {
+      if (typeof issue !== 'number' &&
+          !(typeof issue === 'string' && QUALIFIED_ISSUE_RE.test(issue))) {
+        throw new ValidationError(
+          `issues_created[${index}] must be a number or qualified reference group/repo#n`
+        );
+      }
+    });
   }
 
   // ADR-364 optional additive fields — remote-agent substrate thin-slice.

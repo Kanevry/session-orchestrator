@@ -138,6 +138,28 @@ describe('migrate-vault-paths — default dry-run vs --apply', () => {
     expect(result.stderr).toContain('[applied]');
   });
 
+  // #1567 item 4: a bare repo name was searched only under $HOME/Projects, ignoring projects-root.
+  it('--repos <name> resolves under SO_PROJECTS_ROOT', () => {
+    const root = mkTmp('mvp-root-');
+    const filePath = writeFile(root, 'named-repo/CLAUDE.md', `vault-dir: ${OLD}Projects/vault\n`);
+
+    const result = runScript(['--repos', 'named-repo', '--apply'], { SO_PROJECTS_ROOT: root });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(filePath, 'utf8')).toBe(`vault-dir: ${NEW}Projects/vault\n`);
+  });
+
+  // #1622 item 3: the projects root was re-resolved per repo name, so an invalid
+  // SO_PROJECTS_ROOT printed its fallback WARN once per --repos entry.
+  it('invalid SO_PROJECTS_ROOT warns exactly once for several --repos names', () => {
+    const notADir = writeFile(mkTmp('mvp-root-'), 'not-a-dir', 'x');
+
+    const result = runScript(['--repos', 'repo-a,repo-b,repo-c'], { SO_PROJECTS_ROOT: notADir });
+
+    const warns = result.stderr.split('\n').filter((l) => l.includes('cross-repo: ignoring env SO_PROJECTS_ROOT'));
+    expect(warns).toHaveLength(1);
+  });
+
   // GitLab #509 — Mutex check: --dry-run and --apply share the same `apply`
   // field. Previously this silently last-wins. The mutex check (mirrors
   // scripts/migrate-cold-start-seed.mjs:113-116) makes the conflict explicit.

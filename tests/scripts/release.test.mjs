@@ -1596,7 +1596,8 @@ describe('required packed-content release gate (#1530)', () => {
   function fixture(content = 'export const clean = true;') {
     const repo = join(root, 'repo');
     const host = join(root, 'host');
-    mkdirSync(repo); mkdirSync(host);
+    // 0700 regardless of umask (#1628): a group/world-writable policy parent is 'unsafe' and fails closed.
+    mkdirSync(repo); mkdirSync(host, { mode: 0o700 });
     writeFileSync(join(repo, 'package.json'), JSON.stringify({ name: 'synthetic-release-fixture', version: '1.0.0', files: ['operational.mjs'] }));
     writeFileSync(join(repo, 'operational.mjs'), content);
     const policy = join(host, 'owner-patterns.json');

@@ -306,7 +306,9 @@ export async function ramAvailableGb() {
  * #1089 the threshold was compared against `claude_processes_count` instead —
  * a measured 6x unit error (median processes:sessions = 6.0 over 1461 paired
  * samples), which is why a threshold of 5 fired on 93.6% of session starts
- * while the same threshold against the real count fires on 4.2%.
+ * while the same threshold against the real count fired on 4.2% at the time.
+ * Re-measured 2026-10-17 (#1650) it fires on 67.4% (M4) / 25.7% (M5) — a
+ * standing signal (HR-101), so the banner icon follows a start wave instead.
  *
  * Semantics mirror `detectPeers()` exactly: EXCLUDES the calling session and
  * counts only entries whose `last_heartbeat` is within `freshnessMin` minutes.

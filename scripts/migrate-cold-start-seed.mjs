@@ -245,6 +245,12 @@ async function processRepo(repo, { apply }) {
 
   // Sessions.jsonl liveness check — even if marker is absent, an active repo
   // should not get a "welcome" banner.
+  // Deliberately THIS path's own ledger, not resolveEventsLedgerRoot(repo)
+  // (#1592): the inputs are main-checkout repo paths by construction
+  // (--repos / dormant-repos), and the marker above is seeded into this same
+  // path — liveness and seed stay one checkout. Ceiling: a linked worktree
+  // passed via --repos is judged by its own (absent) ledger; revisit if
+  // worktree paths ever enter dormant-repos.
   const sessionsPath = join(repo, SESSIONS_REL);
   try {
     if (await sessionsHasContent(sessionsPath)) {

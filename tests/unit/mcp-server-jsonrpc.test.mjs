@@ -126,6 +126,25 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     removeTree(tmpRepo);
   });
 
+  it('returns separate responses for session_metrics followed by tools/list', () => {
+    const requests = [
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'session_metrics', arguments: {} } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+    ];
+    const result = spawnSync('bash', [serverScriptAbs], {
+      input: requests.map((request) => JSON.stringify(request)).join('\n') + '\n',
+      encoding: 'utf8',
+      cwd: tmpRepo,
+      timeout: 5000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    const responses = result.stdout.trim().split('\n').map((line) => JSON.parse(line));
+    expect(responses.map((response) => response.id)).toEqual([1, 2]);
+    expect(responses[0].result.content[0].text).not.toContain('"jsonrpc"');
+    expect(responses[1].result.tools.some((tool) => tool.name === 'session_metrics')).toBe(true);
+  });
+
   it('returns both real sessions when a malformed line sits between them, excluding and counting the abandoned stubs', () => {
     const metricsDir = join(tmpRepo, '.orchestrator', 'metrics');
     mkdirSync(metricsDir, { recursive: true });
@@ -136,11 +155,11 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     // count that aborts at the first parse error reports 1, not 2 (#1296).
     // Neutral invented session ids only (no real names).
     const lines = [
-      JSON.stringify({ session_id: 'session-alpha-001', status: 'ok' }),
+      JSON.stringify({ session_id: 'session-alpha-001', session_type: 'deep', status: 'ok' }),
       JSON.stringify({ session_id: 'session-ghost-999', status: 'abandoned' }),
       'NOT JSON',
       JSON.stringify({ session_id: 'session-ghost-998', status: 'abandoned' }),
-      JSON.stringify({ session_id: 'session-beta-002', status: 'ok' }),
+      JSON.stringify({ session_id: 'session-beta-002', session_type: 'deep', status: 'ok' }),
     ];
     writeFileSync(join(metricsDir, 'sessions.jsonl'), lines.join('\n') + '\n', 'utf8');
 
@@ -165,7 +184,7 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     expect(text).not.toContain('session-ghost-998');
     expect(text).not.toBe('No metrics found (file is empty)');
     // The exclusion is reported, not silent — and counted across the torn line.
-    expect(text).toContain('abandoned stubs excluded: 2');
+    expect(text).toContain('unmeasured records excluded: 2');
   });
 
   it('reports the stub count instead of "file is empty" when every record is an abandoned stub', () => {
@@ -190,7 +209,7 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
     );
 
     const text = JSON.parse(firstLine).result.content[0].text;
-    expect(text).toBe('No real sessions (abandoned stubs excluded: 2)');
+    expect(text).toBe('No measured sessions (unmeasured records excluded: 2)');
   });
 });
 

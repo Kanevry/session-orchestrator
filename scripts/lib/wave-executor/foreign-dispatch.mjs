@@ -80,6 +80,25 @@ import {
  * ever observed writing outside its worktree despite this flag, the sandbox is
  * not the boundary it is assumed to be here and the `hookTampering` check below
  * becomes the only defence rather than the backstop.
+ *
+ * `--disable-codebase-ref` keeps the CLI from starting its codebase index
+ * (#1683). Without it every run leaves a `worker-server` and an
+ * `npx typescript-language-server --stdio` pair behind; they detach via setsid,
+ * so the timeout kill in `runChild` never reaches them. Measured 2026-10-19 on
+ * cursor-agent 2026.10.01-e373342: 3 orphans per run without the flag, 0 with
+ * it, same answer either way. The foreign agent loses semantic search and
+ * LSP-backed lints; read and grep stay, and the Claude diff review remains the
+ * quality anchor. Named ceiling (BV-004): the flag is registered in the CLI but
+ * missing from `--help`, so a release may drop it silently. Revisit trigger: a
+ * `worker-server` or `typescript-language-server` with PPID 1 after a dispatch.
+ *
+ * The hidden `--disable-indexing` flag is deliberately absent (#1687): it only
+ * gates the codebase sync inside that same `worker-server`, which this argv
+ * never starts. Measured 2026-10-20 on cursor-agent 2026.10.01-e373342 with
+ * per-process `nettop` against a 1.5 MB throwaway repo: 52–71 KB out per run
+ * with or without the flag, no worker-server, while a 1.5 MB loopback control
+ * read back as exactly 1,500,000 bytes. Revisit trigger: a dispatch whose
+ * outbound volume grows with the worktree size.
  * @type {readonly string[]}
  */
 export const FOREIGN_AGENT_BASE_ARGS = Object.freeze([
@@ -87,6 +106,7 @@ export const FOREIGN_AGENT_BASE_ARGS = Object.freeze([
   '--force',
   '--sandbox',
   'enabled',
+  '--disable-codebase-ref',
 ]);
 
 /**

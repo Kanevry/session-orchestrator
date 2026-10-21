@@ -36,6 +36,7 @@ import path from 'node:path';
 
 import { parseBootstrapLock } from './bootstrap-lock-freshness.mjs';
 import { countSessionsInJsonl } from './sessions-canonical.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 /** Milliseconds in one hour — exported for testability. */
 export const MS_PER_HOUR = 60 * 60 * 1000;
@@ -103,7 +104,9 @@ async function countSessions(filePath) {
   try {
     // Counting rule (blank/malformed lines, id-less records) lives in
     // `countSessionsInJsonl`; only the async read is local.
-    return countSessionsInJsonl(await readFile(filePath, 'utf8'));
+    // `measuredOnly` (audit E1): a ledger of synthetic backfill stubs is not
+    // session history — the operator never ran a real session yet.
+    return countSessionsInJsonl(await readFile(filePath, 'utf8'), { measuredOnly: true });
   } catch {
     return 0;
   }
@@ -164,7 +167,7 @@ export async function detectColdStart(opts = {}) {
   }
 
   const lockPath = path.join(repoRoot, BOOTSTRAP_LOCK_REL);
-  const sessionsPath = path.join(repoRoot, SESSIONS_JSONL_REL);
+  const sessionsPath = path.join(resolveEventsLedgerRoot(repoRoot), SESSIONS_JSONL_REL);
   const markerPath = path.join(repoRoot, WELCOME_MARKER_REL);
 
   // PRD §F1.3 Unwanted behaviour: if bootstrap.lock missing, do NOT emit.

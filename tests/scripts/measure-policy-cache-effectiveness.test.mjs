@@ -8,10 +8,14 @@
  * missing --headless guard does NOT apply (no required flags for this script).
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, onTestFinished } from 'vitest';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = resolve(REPO_ROOT, 'scripts', 'measure-policy-cache-effectiveness.mjs');
@@ -20,11 +24,11 @@ const SCRIPT = resolve(REPO_ROOT, 'scripts', 'measure-policy-cache-effectiveness
  * Run the measurement script with given extra args.
  * Use --subprocess-count 2 and --inprocess-count 2 to keep tests fast.
  */
-function run(extraArgs = []) {
+function run(extraArgs = [], env = process.env) {
   return spawnSync(
     process.execPath,
     [SCRIPT, '--subprocess-count', '2', '--inprocess-count', '2', ...extraArgs],
-    { encoding: 'utf8', timeout: 30_000 },
+    { encoding: 'utf8', timeout: 30_000, env },
   );
 }
 
@@ -64,6 +68,17 @@ describe('measure-policy-cache-effectiveness.mjs — smoke', () => {
     // recommendation must have a string verdict
     expect(typeof parsed.recommendation.verdict).toBe('string');
     expect(parsed.recommendation.verdict.length).toBeGreaterThan(0);
+  });
+
+  it('removes its pce-repo-* scratch repo on a successful run (#1648)', () => {
+    // Bug caught: process.exit(0) inside main()'s try ended the process before
+    // the finally ran, so teardownTmpRepo never fired and every successful
+    // measurement left a pce-repo-* dir under os.tmpdir().
+    const own = mkdtempSync(join(tmpdir(), 'pce-test-tmpdir-'));
+    onTestFinished(() => removeTree(own));
+    const result = run(['--json'], { ...process.env, TMPDIR: own });
+    expect(result.status).toBe(0);
+    expect(readdirSync(own).filter((name) => name.startsWith('pce-repo-'))).toEqual([]);
   });
 
   it('human output contains the Recommendation section header', () => {

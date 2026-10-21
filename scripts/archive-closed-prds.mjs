@@ -50,7 +50,7 @@ import { glabRun as defaultGlabRun } from './lib/vault-backfill/glab.mjs';
 import { archiveFileToVault, titleFromMarkdown } from './lib/vault-archive.mjs';
 import { defaultGlabRepo } from './lib/vcs-repo-spec.mjs';
 import { readLock } from './lib/session-lock.mjs';
-import { resolveStateMdPath } from './lib/state-md/frontmatter-mutators.mjs';
+import { resolveStateMdWriteTarget, warnForeignStateMd } from './lib/state-md/frontmatter-mutators.mjs';
 import { parseStateMd } from './lib/state-md/yaml-parser.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
@@ -225,6 +225,24 @@ export function classifyOwnership({ repoRoot, rel, sessionStartedAt, gitRunFn })
 }
 
 /**
+ * Read THIS session's STATE.md frontmatter, or null. #1636: the write side's
+ * ownership rule — another platform's STATE.md not proven to be this process's
+ * (#1618) counts as absent, so it never lends its `started_at` / `issues:` to
+ * this run's `--apply` (both callers fail closed on null).
+ *
+ * @param {string} repoRoot
+ * @returns {Record<string, unknown>|null}
+ */
+function readOwnStateFrontmatter(repoRoot) {
+  const { path: stateMdPath, rejected } = resolveStateMdWriteTarget(repoRoot);
+  if (rejected) {
+    warnForeignStateMd('archive-closed-prds', rejected, stateMdPath);
+    return null;
+  }
+  return parseStateMd(readFileSync(stateMdPath, 'utf8'))?.frontmatter ?? null;
+}
+
+/**
  * Resolve THIS session's `started_at` (ISO-8601): the session lock first, the
  * STATE.md frontmatter as fallback.
  *
@@ -239,8 +257,7 @@ export function readSessionStartedAt(repoRoot) {
     // fall through to STATE.md
   }
   try {
-    const parsed = parseStateMd(readFileSync(resolveStateMdPath(repoRoot), 'utf8'));
-    const startedAt = parsed?.frontmatter?.started_at;
+    const startedAt = readOwnStateFrontmatter(repoRoot)?.started_at;
     if (typeof startedAt === 'string' && !Number.isNaN(Date.parse(startedAt))) return startedAt;
   } catch {
     // no STATE.md, or unreadable → null (fail-closed at the call site)
@@ -255,8 +272,7 @@ export function readSessionStartedAt(repoRoot) {
  */
 function readSessionIssues(repoRoot) {
   try {
-    const parsed = parseStateMd(readFileSync(resolveStateMdPath(repoRoot), 'utf8'));
-    const issues = parsed?.frontmatter?.issues;
+    const issues = readOwnStateFrontmatter(repoRoot)?.issues;
     if (Array.isArray(issues)) return new Set(issues.map((n) => String(n)));
   } catch {
     // absent/unreadable → empty set

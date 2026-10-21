@@ -17,6 +17,7 @@ import {
   extractCount,
   extractTestCounts,
   extractFailedTestFiles,
+  extractTimeoutOnlyFailedFiles,
   extractErrorLinesJson,
   gateTimeoutEnvelope,
   joinGateKillFields,
@@ -463,10 +464,26 @@ describe('runCheck', () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it('returns status=skip for a command-not-found (exit 127)', async () => {
+  it('fails instead of silently skipping a missing configured command', async () => {
     const result = await runCheck('this_command_definitely_does_not_exist_xyz123', withTmpRepoRoot());
-    expect(result.status).toBe('skip');
-    expect(result.output).toBe('command not found');
+    expect(result.status).toBe('fail');
+    expect(result.output).toContain('command not found');
+    expect(result.output).toContain('Session Config');
+    expect(result.output).toContain('skip');
+  });
+});
+
+describe('missing command on cmd.exe', () => {
+  it('reports exit 9009 with the same remediation as POSIX exit 127', async () => {
+    const child = wedgedChild(0);
+    const result = await runCheck('missing-command', {
+      platform: 'win32', onRegister: () => {},
+      spawnFn: () => { globalThis.queueMicrotask(() => child.emit('close', 9009)); return child; },
+    });
+    expect(result.status).toBe('fail');
+    expect(result.output).toContain('command not found (exit 9009)');
+    expect(result.output).toContain('Session Config');
+    expect(result.output).toContain('skip');
   });
 });
 
@@ -682,6 +699,163 @@ describe('extractFailedTestFiles', () => {
   it('returns [] for empty or non-string input', () => {
     expect(extractFailedTestFiles('')).toEqual([]);
     expect(extractFailedTestFiles(null)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractTimeoutOnlyFailedFiles (#1673)
+// ---------------------------------------------------------------------------
+
+/**
+ * A real vitest 4.1.11 transcript, captured 2026-10-20 with stdout piped: one
+ * hook timeout, one assertion failure, one test timeout. Code-frame lines are
+ * trimmed; every line below appeared verbatim in that run.
+ */
+const TIMEOUT_BLOCKS = {
+  hook: [
+    ' FAIL  tests/hook.test.mjs [ tests/hook.test.mjs ]',
+    'Error: Hook timed out in 200ms.',
+    'If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".',
+    ' ❯ tests/hook.test.mjs:2:1',
+  ],
+  assertion: [
+    ' FAIL  tests/bad.test.mjs > bad',
+    'AssertionError: expected 1 to be 2 // Object.is equality',
+    ' ❯ tests/bad.test.mjs:2:25',
+  ],
+  test: [
+    ' FAIL  tests/slow.test.mjs > slow',
+    'Error: Test timed out in 200ms.',
+    'If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".',
+    ' ❯ tests/slow.test.mjs:2:1',
+  ],
+};
+const transcriptOf = (...blocks) =>
+  blocks
+    .flatMap((block, i) => ['', ...block, '', `⎯⎯⎯⎯[${i + 1}/${blocks.length}]⎯`])
+    .join('\n');
+
+describe('extractTimeoutOnlyFailedFiles', () => {
+  // The gate re-runs what this returns, so a false `eligible` is the safe error
+  // and a false `true` lets a red test through.
+  it('admits a run whose every failure is a test or hook timeout', () => {
+    expect(extractTimeoutOnlyFailedFiles(transcriptOf(TIMEOUT_BLOCKS.hook, TIMEOUT_BLOCKS.test), '/repo')).toEqual({
+      eligible: true,
+      files: ['tests/hook.test.mjs', 'tests/slow.test.mjs'],
+      reason: 'timeouts-only',
+    });
+  });
+
+  // Lead 32, 2026-10-20: an assertion failure stays red even if a re-run passes.
+  it('refuses the whole run when one failure is an assertion', () => {
+    const r = extractTimeoutOnlyFailedFiles(
+      transcriptOf(TIMEOUT_BLOCKS.hook, TIMEOUT_BLOCKS.assertion, TIMEOUT_BLOCKS.test),
+      '/repo',
+    );
+    expect(r).toEqual({ eligible: false, files: [], reason: 'non-timeout-failure' });
+  });
+
+  // vitest merges errors with the same stack, and a timeout's stack is where
+  // the test or hook was declared: one `beforeEach` timing out for two tests,
+  // or two `it.each` cases, print ONE block under two headers while N counts
+  // both (real vitest 4.1.11 capture, 2026-10-20, code frames trimmed). Counting
+  // blocks against N refused exactly these runs as `parsed-2-of-4`.
+  it('admits merged timeout blocks, counting headers against the error total', () => {
+    const out = [
+      ' FAIL  each.test.mjs > slow 1',
+      ' FAIL  each.test.mjs > slow 2',
+      'Error: Test timed out in 100ms.',
+      'If this is a long-running test, pass a timeout value as the last argument or configure it globally with "testTimeout".',
+      ' ❯ each.test.mjs:2:16',
+      '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯',
+      ' FAIL  hook.test.mjs > a',
+      ' FAIL  hook.test.mjs > b',
+      'Error: Hook timed out in 100ms.',
+      'If this is a long-running hook, pass a timeout value as the last argument or configure it globally with "hookTimeout".',
+      ' ❯ hook.test.mjs:2:1',
+      '⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯',
+    ].join('\n');
+    expect(extractTimeoutOnlyFailedFiles(out, '/repo')).toEqual({
+      eligible: true,
+      files: ['each.test.mjs', 'hook.test.mjs'],
+      reason: 'timeouts-only',
+    });
+  });
+
+  // An error block the parser cannot read (an unhandled error has no FAIL
+  // header) must not leave the rest looking like the complete list.
+  it('refuses when fewer error blocks were read than vitest counted', () => {
+    const lostBlock = [...TIMEOUT_BLOCKS.test, '⎯⎯⎯⎯[1/2]⎯'].join('\n');
+    expect(extractTimeoutOnlyFailedFiles(lostBlock, '/repo')).toEqual({
+      eligible: false,
+      files: [],
+      reason: 'parsed-1-of-2',
+    });
+  });
+
+  // Codex review of de97b46c, H1: vitest reports an unhandled error OUTSIDE the
+  // numbered blocks (real 4.1.11 shape below), and a `Caused by:` INSIDE a
+  // timeout block; both were invisible to the first parser and let a passing
+  // re-run of the timed-out file turn the gate green.
+  it.each([
+    ['an Unhandled Errors section', [
+      '⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯',
+      'Vitest caught 1 unhandled error during the test run.',
+      '⎯⎯⎯⎯ Unhandled Rejection ⎯⎯⎯⎯⎯',
+      'AssertionError: expected 1 to be 2',
+    ], 'uncounted-errors'],
+    ['an Errors summary line', ['     Errors  1 error'], 'uncounted-errors'],
+  ])('refuses a run with %s', (_label, tail, reason) => {
+    const out = `${transcriptOf(TIMEOUT_BLOCKS.test)}\n\n${tail.join('\n')}`;
+    expect(extractTimeoutOnlyFailedFiles(out, '/repo')).toEqual({ eligible: false, files: [], reason });
+  });
+
+  it('refuses a timeout block that carries a further cause', () => {
+    const caused = [...TIMEOUT_BLOCKS.test, 'Caused by: AssertionError: expected 1 to be 2'];
+    expect(extractTimeoutOnlyFailedFiles(transcriptOf(caused), '/repo')).toEqual({
+      eligible: false,
+      files: [],
+      reason: 'non-timeout-failure',
+    });
+  });
+
+  // Codex review round 2, H1: counterexamples the round-1 parser admitted.
+  it.each([
+    ['a counter-like text closing the block early', [...TIMEOUT_BLOCKS.test, 'Caused by: AssertionError: expected [1/1]', 'AssertionError: expected 1 to be 2'], [], 'non-timeout-failure'],
+    ['a bare `|` line posing as a code frame', [...TIMEOUT_BLOCKS.test, '| AssertionError: expected 1 to be 2'], [], 'non-timeout-failure'],
+    ['an error after the closed block', TIMEOUT_BLOCKS.test, ['Error: Failed to load url ./missing.mjs'], 'line-outside-blocks'],
+    // Opus review of !213, LOW 1: the error line was matched only up to `ms\b`.
+    ['trailing text on the timeout line', [TIMEOUT_BLOCKS.test[0], 'Error: Test timed out in 200ms. AssertionError: expected 1 to be 2', ...TIMEOUT_BLOCKS.test.slice(2)], [], 'non-timeout-failure'],
+  ])('refuses %s', (_label, block, after, reason) => {
+    const out = [transcriptOf(block), ...after, ' Test Files  1 failed (1)'].join('\n');
+    expect(extractTimeoutOnlyFailedFiles(out, '/repo')).toEqual({ eligible: false, files: [], reason });
+  });
+
+  // The real closing summary (vitest 4.1.11 under npm 11.19.1, 2026-10-20).
+  const SUMMARY = [' Test Files  1 failed | 1 passed (2)', '      Tests  1 failed | 2 passed (3)', '   Start at  12:16:00',
+    '   Duration  299ms (transform 13ms, setup 0ms, import 22ms, tests 208ms, environment 0ms)'];
+
+  it.each([
+    ['the exact closing summary', []],
+    // #1704: runCheck appends this line when the group outlived a normal exit.
+    ['the reaped-group line runCheck appends', ['gate: reaped process group 4242 left running after exit: SIGTERM→SIGKILL, survivors: [4243]']],
+  ])('admits %s after the blocks', (_label, tail) => {
+    const out = [transcriptOf(TIMEOUT_BLOCKS.test), '', ...SUMMARY, ...tail].join('\n');
+    expect(extractTimeoutOnlyFailedFiles(out, '/repo').eligible).toBe(true);
+  });
+
+  // Codex review round 3, H1: lines that only BEGIN like a summary or a rule.
+  it.each([
+    'npm error AssertionError: expected 1 to be 2',
+    'Tests failed: AssertionError: expected 1 to be 2',
+    '⎯⎯ AssertionError: expected 1 to be 2 ⎯⎯',
+  ])('refuses %j after the blocks', (line) => {
+    const out = [transcriptOf(TIMEOUT_BLOCKS.test), line, ...SUMMARY].join('\n');
+    expect(extractTimeoutOnlyFailedFiles(out, '/repo').reason).toBe('line-outside-blocks');
+  });
+
+  it('refuses output without the numbered error counter', () => {
+    expect(extractTimeoutOnlyFailedFiles(TIMEOUT_BLOCKS.test.join('\n'), '/repo').eligible).toBe(false);
   });
 });
 

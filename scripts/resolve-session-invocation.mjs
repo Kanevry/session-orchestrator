@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 /** Stdin-only boundary for commands/session.md; never executes task context. */
 import { accessSync, constants, readFileSync, statSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { resolveSessionInvocation } from './lib/session-invocation.mjs';
-import { readCanonicalSessions } from './lib/sessions-canonical.mjs';
-import { isRealSession } from './lib/session-schema/filters.mjs';
+import { readCanonicalSessions, isMeasuredSession } from './lib/sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 /**
  * One ledger: `false` when absent, `undefined` when present but not a readable
- * file, else whether it holds a real session.
+ * file, else whether it holds a measured session.
  *
  * @param {string} root
  * @returns {boolean|undefined}
@@ -23,28 +22,21 @@ function ledgerHasHistory(root) {
   } catch (error) {
     return error?.code === 'ENOENT' ? false : undefined;
   }
-  return readCanonicalSessions({ filePath: file }).some(isRealSession);
+  return readCanonicalSessions({ filePath: file }).some(isMeasuredSession);
 }
 
 /**
- * Whether the repo holds a real session of its own: `true`/`false`, or
+ * Whether the repo holds a measured session of its own: `true`/`false`, or
  * `undefined` when that cannot be measured. sessions.jsonl is gitignored, so a
- * linked worktree also reads its main checkout's ledger (`resolveEventsLedgerRoot`);
- * one with history in either place has history. A ledger that exists but
+ * linked worktree reads its main checkout's ledger (`resolveEventsLedgerRoot`),
+ * never a worktree-local shadow. A ledger that exists but
  * cannot be read is "not measured", never "no history".
  *
  * @param {string} repoRoot
  * @returns {boolean|undefined}
  */
 function measureHistory(repoRoot) {
-  const roots = [...new Set([resolve(repoRoot), resolveEventsLedgerRoot(repoRoot)])];
-  let unmeasured = false;
-  for (const root of roots) {
-    const has = ledgerHasHistory(root);
-    if (has === true) return true;
-    if (has === undefined) unmeasured = true;
-  }
-  return unmeasured ? undefined : false;
+  return ledgerHasHistory(resolveEventsLedgerRoot(repoRoot));
 }
 
 const HELP = `Usage: node scripts/resolve-session-invocation.mjs [--json] [--repo-root <dir>] < arguments.txt
@@ -54,7 +46,7 @@ Resolve the leading housekeeping, feature, deep or ultradeep token; preserve
 the rest as task context. Empty input defaults to deep. An invalid mode emits
 a warning and resolves to deep, as the session command has always specified.
 A bare /session in a repo whose .orchestrator/metrics/sessions.jsonl holds no
-real session adds defaultReason "no-session-history": ask for task and mode
+measured session adds defaultReason "no-session-history": ask for task and mode
 before starting. A linked git worktree reads its main checkout's ledger; an
 unreadable ledger counts as not measured and adds nothing.
 

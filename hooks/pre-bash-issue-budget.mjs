@@ -106,7 +106,12 @@ async function resolveSessionId(input, projectDir) {
 
   let currentSession = null;
   if (projectDir) {
-    const persisted = path.join(projectDir, '.orchestrator', 'current-session.json');
+    // #1605 — read THIS session's record where on-session-start.mjs wrote it
+    // (the entered worktree after a /clear there), found by the lock carrying
+    // the raw id. Lazy: only a matched issue command pays for the lookup.
+    const { resolveOwnLockRoot } = await import('./_lib/hook-root.mjs');
+    const ownRoot = resolveOwnLockRoot({ session_id: nativeRawId, cwd: input?.cwd }, projectDir);
+    const persisted = path.join(ownRoot, '.orchestrator', 'current-session.json');
     if (existsSync(persisted)) {
       try {
         currentSession = await readJson(persisted);

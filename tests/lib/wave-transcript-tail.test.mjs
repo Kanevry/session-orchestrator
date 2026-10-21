@@ -14,7 +14,7 @@
  * Every case below names the concrete bug it catches (TV-001).
  */
 
-import { describe, it, expect, vi, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach, onTestFinished } from 'vitest';
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, utimesSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { hostname, tmpdir } from 'node:os';
@@ -34,6 +34,7 @@ import {
   releaseSingleton,
   readAgentType,
 } from '../../scripts/lib/wave-transcript-tail.mjs';
+import { removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const REPO = '/repo';
 const AGENT = 'a94f0d0912a5e1995';
@@ -42,7 +43,9 @@ const UUID = '06461b1a-c668-4ee9-b759-793dfb2e5bec';
 const SEMANTIC = 'main-2026-08-24-session-2';
 
 function tmpRepo(prefix = 'wtt-') {
-  return mkdtempSync(join(tmpdir(), prefix));
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  onTestFinished(() => removeTree(dir));
+  return dir;
 }
 
 /**
@@ -545,6 +548,7 @@ describe('wave-transcript-tail — session + wave resolution', () => {
     // Hermetic: a synthetic session id means the subagents dir never exists, so
     // the child only polls — it can neither read nor write anything real.
     const repo = mkdtempSync(join(tmpdir(), 'wtt-live-'));
+    onTestFinished(() => removeTree(repo));
     const child = spawn(
       process.execPath,
       [join(import.meta.dirname, '../../scripts/lib/wave-transcript-tail.mjs'), '--tail', '--interval=1'],
@@ -758,6 +762,10 @@ describe('wave-transcript-tail — project root (#1517)', () => {
     // and the lock appears under the plugin dir instead.
     const project = mkdtempSync(join(tmpdir(), 'wtt-proj-'));
     const plugin = mkdtempSync(join(tmpdir(), 'wtt-plugin-'));
+    onTestFinished(() => {
+      removeTree(project);
+      removeTree(plugin);
+    });
     mkdirSync(join(project, '.orchestrator'), { recursive: true });
     mkdirSync(join(plugin, '.orchestrator'), { recursive: true });
     const child = spawn(

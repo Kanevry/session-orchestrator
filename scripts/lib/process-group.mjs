@@ -10,6 +10,8 @@
  * makes the shell a process-group LEADER (`child.pid === pgid`, setsid), so
  * `process.kill(-pgid, sig)` reaches every descendant that did not setsid away.
  *
+ * Windows uses a non-detached hidden child and taskkill /T with CIM readback.
+ *
  * Measured on this host (Darwin 25.6.0, 2026-09-21) and load-bearing here:
  *  - `process.kill(-pgid, 'SIGTERM')` does NOT terminate a grandchild that
  *    installs `trap "" TERM`; SIGKILL to the group does. Hence the ladder.
@@ -23,6 +25,7 @@
  */
 
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import {
   existsSync,
@@ -36,6 +39,7 @@ import path from 'node:path';
 
 import { NOT_A_REGULAR_FILE, appendNoFollow } from './orphan-reaper/no-follow-append.mjs';
 import { readTailWindow } from './tail-window.mjs';
+import { killWindowsProcessTree } from './win-process-tree.mjs';
 
 /**
  * Grace period between SIGTERM and SIGKILL, in ms — the repo's one definition,
@@ -106,7 +110,7 @@ const EXIT_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
  * one the caller passed, which is why the exit handler never reaches
  * `process.kill` for a group a test spawned through an injected seam.
  *
- * @type {Map<number, {killFn: (target: number, signal: string) => unknown}>}
+ * @type {Map<number, {killFn: (target: number, signal: string) => unknown, platform: string, spawnSyncFn?: Function, snapshotFn?: Function, child: object, spawnedAtMs: number, verifyTree: boolean}>}
  */
 const LIVE_GROUPS = new Map();
 
@@ -140,6 +144,28 @@ function defaultSleep(ms) {
 /** @param {number} target @param {string} signal @returns {unknown} */
 function defaultKill(target, signal) {
   return process.kill(target, signal);
+}
+
+/**
+ * Default GROUP liveness probe: signal 0 to `-pgid` asks whether ANY member of
+ * the group still exists — unlike {@link defaultIsAlive}, which probes the
+ * leader pid and so reads a group whose leader already exited as dead.
+ * `ESRCH` = no member left. `EPERM` = a member exists that we may not signal:
+ * reported as ALIVE, for the same reason as {@link defaultIsAlive} — the ladder
+ * that follows then stops at EPERM and reports the group as a survivor instead
+ * of the probe booking it as gone.
+ *
+ * @param {number} pgid
+ * @returns {boolean}
+ */
+function defaultGroupAlive(pgid) {
+  if (!isSignalablePgid(pgid)) return false;
+  try {
+    process.kill(-pgid, 0);
+    return true;
+  } catch (err) {
+    return err?.code === 'EPERM';
+  }
 }
 
 /**
@@ -197,12 +223,12 @@ function isValidLedgerRecord(parsed) {
  * same binary with different arguments without copying a command line — which
  * may carry paths or tokens — into a ledger.
  *
- * @param {string} cmd  Full command line.
+ * @param {string|string[]} cmd  Full command line or argv.
  * @returns {string} e.g. `npm:6f1c4e0a9b2d7e35`. Empty input yields `:<hash of "">`.
  */
 export function buildCommandSignature(cmd) {
-  const full = String(cmd ?? '');
-  const firstToken = full.trim().split(/\s+/)[0] ?? '';
+  const full = Array.isArray(cmd) ? JSON.stringify(cmd) : String(cmd ?? '');
+  const firstToken = Array.isArray(cmd) ? (cmd[0] ?? '') : (full.trim().split(/\s+/)[0] ?? '');
   const hash = createHash('sha256').update(full, 'utf8').digest('hex').slice(0, 16);
   return `${firstToken}:${hash}`;
 }
@@ -267,7 +293,10 @@ function killAllLiveGroupsSync() {
   for (const [pgid, entry] of LIVE_GROUPS) {
     if (!isSignalablePgid(pgid)) continue;
     try {
-      entry.killFn(-pgid, 'SIGKILL');
+      if (entry.platform === 'win32') {
+        const result = killWindowsProcessTree(pgid, entry);
+        if (!result.ok) process.stderr.write(`process-group: Windows exit cleanup: ${result.error ?? `survivors ${result.survivors}`}\n`);
+      } else entry.killFn(-pgid, 'SIGKILL');
     } catch {
       /* already gone, or not ours — nothing to do at exit time */
     }
@@ -316,14 +345,20 @@ function killAllLiveGroupsSync() {
  * @param {number} pgid  Process-group id (positive; the negation happens here).
  * @param {object} [opts]
  * @param {(target: number, signal: string) => unknown} [opts.killFn]  Signal seam. Tests ALWAYS inject.
+ * @param {string} [opts.platform]
+ * @param {Function} [opts.spawnSyncFn]
+ * @param {Function} [opts.snapshotFn]
+ * @param {boolean} [opts.verifyTree] - Skip Windows CIM measurement for short-budget hooks.
+ * @param {object} [opts.child] - Owned ChildProcess (Windows identity).
+ * @param {number} [opts.spawnedAtMs] - Wall-clock timestamp immediately before spawn.
  * @param {number} [opts.killGraceMs]
  * @param {number} [opts.verifyWaitMs]
  * @param {(pid: number) => boolean} [opts.isAliveFn]  Liveness probe on the group leader.
  * @param {(ms: number) => Promise<void>} [opts.sleepFn]
  * @param {((signal: string) => boolean|Promise<boolean>)|null} [opts.beforeSignal]  Consulted
  *   immediately before EVERY signal. Anything but `true` aborts the rest of the ladder.
- * @returns {Promise<{ok: boolean, signalsSent: string[], survivors: number[],
- *   error: 'ESRCH'|'EPERM'|'invalid-pgid'|null, aborted: string|null}>}
+ * @returns {Promise<{ok: boolean, signalsSent: string[], survivors: number[]|null,
+ *   error: string|null, aborted: string|null}>}
  *   `signalsSent` records ATTEMPTS in order, including one that threw.
  */
 export async function killProcessGroup(pgid, {
@@ -333,6 +368,12 @@ export async function killProcessGroup(pgid, {
   isAliveFn = defaultIsAlive,
   sleepFn = defaultSleep,
   beforeSignal = null,
+  platform = process.platform,
+  spawnSyncFn,
+  snapshotFn,
+  verifyTree = true,
+  child,
+  spawnedAtMs,
 } = {}) {
   /** @type {string[]} */
   const signalsSent = [];
@@ -358,6 +399,11 @@ export async function killProcessGroup(pgid, {
   const aborted = (signal) => ({
     ok: false, signalsSent, survivors: [], error: null, aborted: signal,
   });
+
+  if (platform === 'win32') {
+    if (!(await permitted('taskkill'))) return aborted('taskkill');
+    return killWindowsProcessTree(pgid, { spawnSyncFn, snapshotFn, child, spawnedAtMs, verifyTree });
+  }
 
   if (!(await permitted('SIGTERM'))) return aborted('SIGTERM');
 
@@ -438,14 +484,17 @@ export async function killProcessGroup(pgid, {
  * @param {object} [opts]
  * @param {{pid?: number, ppid?: number, rssKb?: number, etimeSeconds?: number|null, cpuPct?: number, args?: string|null}|null} [opts.snapshotLine]
  * @param {number} [opts.nowMs]
+ * @param {string} [opts.platform]
  * @param {number} [opts.toleranceMs=2000]
- * @returns {{match: boolean, reason: 'ok'|'gone'|'start-time-mismatch'|'signature-mismatch', observed: {etimeSeconds: number|null, args: string|null}}}
+ * @returns {{match: boolean, reason: string, observed: {etimeSeconds: number|null, args: string|null}}}
  */
 export function verifyProcessIdentity(pid, expected, {
   snapshotLine = null,
   nowMs = Date.now(),
   toleranceMs = 2000,
+  platform = process.platform,
 } = {}) {
+  if (platform === 'win32') return { match: false, reason: 'nicht messbar auf win32', observed: { etimeSeconds: null, args: null } };
   const gone = { match: false, reason: /** @type {const} */ ('gone'), observed: { etimeSeconds: null, args: null } };
   if (!snapshotLine || typeof snapshotLine !== 'object') return gone;
   // A row for a different PID describes a different process, not this one.
@@ -529,12 +578,20 @@ function readLedgerNoFollow(target) {
  * @param {string} repoRoot
  * @param {GateProcessRecord} record
  * @param {object} [opts]
+ * @param {string} [opts.platform]
  * @param {(filePath: string, line: string) => void} [opts.appendFn]  Sink seam. When
  *   supplied, the parent directory is NOT created — the caller owns its sink, and
  *   mkdir on a synthetic repoRoot would materialise a directory in a test.
  * @returns {void}
  */
-export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
+export function recordGateProcess(repoRoot, record, { appendFn, platform = process.platform } = {}) {
+  // win32: no ledger. Its only reader is the orphan reaper, which is POSIX-only
+  // (identity checks need `ps`), and the no-follow append has no Windows
+  // equivalent (O_NOFOLLOW is undefined there). A warning here fired on EVERY
+  // gate run on Windows (measured 2026-10-14, #1612) — noise, not a signal.
+  // Readers still report `state: 'unreadable'` on win32, so nothing reads this
+  // absence as an empty ledger. Revisit when a Windows reaper exists.
+  if (platform === 'win32') return;
   const target = ledgerPathFor(repoRoot);
   try {
     if (!appendFn) mkdirSync(path.dirname(target), { recursive: true });
@@ -572,9 +629,10 @@ export function recordGateProcess(repoRoot, record, { appendFn } = {}) {
  * @param {(filePath: string) => string} [opts.readFn]  Reader seam; must throw or
  *   return '' for a missing file.
  * @param {number} [opts.nowMs]
+ * @param {string} [opts.platform]
  * @param {number} [opts.maxAgeMs]
  * @returns {{records: GateProcessRecord[], malformedLines: number, expired: number,
- *   state: 'read'|'absent'|'unreadable'}}
+ *   state: 'read'|'absent'|'unreadable', error?: string}}
  *   `records` are the fresh, parseable entries in source order; empty unless
  *   `state` is `read`.
  */
@@ -582,7 +640,9 @@ export function readGateProcessLedger(repoRoot, {
   readFn,
   nowMs = Date.now(),
   maxAgeMs = DEFAULT_LEDGER_MAX_AGE_MS,
+  platform = process.platform,
 } = {}) {
+  if (platform === 'win32') return { records: [], malformedLines: 0, expired: 0, state: 'unreadable', error: 'nicht messbar auf win32' };
   const target = ledgerPathFor(repoRoot);
   let raw;
   try {
@@ -691,6 +751,7 @@ export function replaceRegularFile(target, body, io = { lstatSync, writeFileSync
  * @param {string} repoRoot
  * @param {object} [opts]
  * @param {number} [opts.nowMs]
+ * @param {string} [opts.platform]
  * @param {number} [opts.maxAgeMs]
  * @param {{existsSync: Function, readFileSync: Function, writeFileSync: Function,
  *   lstatSync: Function, renameSync: Function, unlinkSync: Function}} [opts.fs]  fs seam;
@@ -701,8 +762,11 @@ export function replaceRegularFile(target, body, io = { lstatSync, writeFileSync
 export function pruneGateProcessLedger(repoRoot, {
   nowMs = Date.now(),
   maxAgeMs = DEFAULT_LEDGER_MAX_AGE_MS,
+  platform = process.platform,
   fs: fsSeam,
 } = {}) {
+  // win32 keeps no ledger (see recordGateProcess), so there is nothing to prune.
+  if (platform === 'win32') return 0;
   const io = fsSeam ?? {
     existsSync,
     readFileSync: readLedgerNoFollow,
@@ -778,12 +842,28 @@ export function pruneGateProcessLedger(repoRoot, {
  * later, at a pgid `finish()` already deregistered — the exact late signal at a
  * possibly-recycled group id this module exists to prevent.
  *
- * @param {string} cmd  Full shell command. Executable configuration, not data —
+ * Normal-exit path (POSIX, #1704): `close` proves only that every member closed
+ * the PIPE — a member that redirected its stdio away (`sleep 30 >/dev/null 2>&1 &`)
+ * outlives a command that exited 0. On a normal close the GROUP is probed once
+ * (`kill(-pgid, 0)`); gone → resolve at once, no added latency. Still alive →
+ * the same ladder runs against it and the promise resolves only after it, so the
+ * report is accurate: added latency at most `killGraceMs + verifyWaitMs + 1000`
+ * (the same hard deadline). The finding goes into the additive `leftoverGroup`
+ * field — never into `survivors`/`killSignals`, whose consumers read them as
+ * "the run's own ladder fired / something outlived SIGKILL" (pre-push
+ * `cleanRerun`, the gate envelopes) — and pass/fail is NOT changed:
+ * measure first (HR-105), making it red is a later decision.
+ *
+ * @param {string|string[]} cmd  Shell command or [executable, ...args]. Executable configuration, not data —
  *   see `.claude/rules/security.md` § Session Config Command Trust.
  * @param {object} [opts]
  * @param {string} [opts.cwd]
  * @param {NodeJS.ProcessEnv} [opts.env]
  * @param {number|null} [opts.timeoutMs]  null disables the clock (the byte cap still applies).
+ * @param {string} [opts.platform]
+ * @param {Function} [opts.spawnSyncFn]
+ * @param {Function} [opts.snapshotFn]
+ * @param {boolean} [opts.verifyTree] - Skip Windows CIM measurement for short-budget hooks.
  * @param {number} [opts.killGraceMs]
  * @param {number} [opts.verifyWaitMs]
  * @param {number} [opts.maxOutputBytes]
@@ -791,6 +871,10 @@ export function pruneGateProcessLedger(repoRoot, {
  * @param {(target: number, signal: string) => unknown} [opts.killFn]  Tests ALWAYS inject.
  * @param {() => number} [opts.now]
  * @param {(pid: number) => boolean} [opts.isAliveFn]
+ * @param {((pgid: number) => boolean)|null} [opts.groupAliveFn]  Group probe for the
+ *   normal-exit path. Defaults to {@link defaultGroupAlive} ONLY while `killFn` is
+ *   the real one; with an injected `killFn` and no injected probe the normal-exit
+ *   probe is skipped, so a test's fake pid never reaches the real kernel.
  * @param {(ms: number) => Promise<void>} [opts.sleepFn]
  * @param {(record: GateProcessRecord) => void} [opts.onRegister]  Defaults to
  *   {@link recordGateProcess} when — and only when — `repoRoot` is given.
@@ -798,11 +882,14 @@ export function pruneGateProcessLedger(repoRoot, {
  * @param {string} [opts.commandSignature]  Defaults to {@link buildCommandSignature}.
  * @param {string|null} [opts.sessionId]
  * @returns {Promise<{exitCode: number, output: string, fullOutput: string, timedOut: boolean,
- *   overflow: boolean, killSignals: string[], survivors: number[], pid: number, pgid: number,
- *   durationMs: number}>}
+ *   overflow: boolean, killSignals: string[], survivors: number[]|null, pid: number, pgid: number,
+ *   durationMs: number, ok?: boolean, error?: string|null,
+ *   leftoverGroup: {pgid: number, signals: string[], survivors: number[]}|null}>}
  *   `exitCode` is 124 on timeout, 1 on overflow or spawn failure, else the child's own code.
  *   `output` is the last ~50 lines of `fullOutput`. `survivors` are PIDs still alive after
  *   SIGKILL + `verifyWaitMs` — a non-empty list is a REPORTED failure, never a silent one.
+ *   `leftoverGroup` is null unless the group was still alive after a NORMAL close; then it
+ *   carries the signals sent to it and what survived them.
  */
 export function spawnInGroup(cmd, {
   cwd,
@@ -815,13 +902,19 @@ export function spawnInGroup(cmd, {
   killFn = defaultKill,
   now = Date.now,
   isAliveFn = defaultIsAlive,
+  groupAliveFn,
   sleepFn = defaultSleep,
   onRegister,
   repoRoot,
   commandSignature,
   sessionId = null,
+  platform = process.platform,
+  spawnSyncFn,
+  snapshotFn,
+  verifyTree = true,
 } = {}) {
   installExitHandler();
+  const groupAlive = groupAliveFn ?? (killFn === defaultKill ? defaultGroupAlive : null);
 
   return new Promise((resolve) => {
     const startedAt = now();
@@ -832,13 +925,22 @@ export function spawnInGroup(cmd, {
     /** @type {string[]} */
     const killSignals = [];
     let fullOutput = '';
+    const stdoutDecoder = new StringDecoder('utf8');
+    const stderrDecoder = new StringDecoder('utf8');
+    let cleanupError = null;
     let capturedBytes = 0;
     let timedOut = false;
     let overflow = false;
     let settled = false;
     let ladderStarted = false;
-    /** @type {number[]} */
+    // The signal that ended the child, from `close` (#1673): `exitCode` maps a
+    // signal end to 1, so without this field it reads like a normal failure.
+    /** @type {string|null} */
+    let exitSignal = null;
+    /** @type {number[]|null} */
     let survivors = [];
+    /** @type {{pgid: number, signals: string[], survivors: number[]}|null} */
+    let leftoverGroup = null;
     /** @type {ReturnType<typeof setTimeout>|null} */
     let timeoutTimer = null;
     /** @type {ReturnType<typeof setTimeout>|null} */
@@ -847,6 +949,7 @@ export function spawnInGroup(cmd, {
     const finish = (childExitCode) => {
       if (settled) return;
       settled = true;
+      fullOutput += stdoutDecoder.end() + stderrDecoder.end();
       if (timeoutTimer) clearTimeout(timeoutTimer);
       if (deadlineTimer) clearTimeout(deadlineTimer);
       if (pgid !== null) LIVE_GROUPS.delete(pgid);
@@ -862,25 +965,28 @@ export function spawnInGroup(cmd, {
         timedOut,
         overflow,
         killSignals,
+        exitSignal,
         survivors,
+        leftoverGroup,
         pid: pid ?? -1,
         pgid: pgid ?? -1,
         durationMs: now() - startedAt,
+        ...(platform === 'win32' && ladderStarted ? { ok: cleanupError === null && survivors?.length === 0, error: cleanupError } : {}),
       });
     };
 
     let child;
+    let spawnedAtMs;
     try {
-      // The command is trusted configuration; `shell: true` is intentional.
-      // `detached: true` is what makes this a GROUP leader — the whole point.
-      // nosemgrep: unsafe-shell-spawn
-      child = spawnFn(cmd, {
-        cwd,
-        env,
-        shell: true,
-        detached: true,
+      // Configured strings keep shell semantics; internal argv bypasses quoting.
+      const options = {
+        cwd, env, shell: !Array.isArray(cmd),
+        ...(platform === 'win32' ? { windowsHide: true } : { detached: true }),
         stdio: ['ignore', 'pipe', 'pipe'],
-      });
+      };
+      spawnedAtMs = Date.now();
+      // nosemgrep: unsafe-shell-spawn
+      child = Array.isArray(cmd) ? spawnFn(cmd[0], cmd.slice(1), options) : spawnFn(cmd, options);
     } catch (err) {
       fullOutput = `process-group: failed to spawn "${cmd}": ${err?.message ?? String(err)}`;
       finish(1);
@@ -893,7 +999,7 @@ export function spawnInGroup(cmd, {
     pgid = pid;
 
     if (pgid !== null) {
-      LIVE_GROUPS.set(pgid, { killFn });
+      LIVE_GROUPS.set(pgid, { killFn, platform, spawnSyncFn, snapshotFn, child, spawnedAtMs, verifyTree });
       /** @type {GateProcessRecord} */
       const record = {
         pid,
@@ -903,7 +1009,7 @@ export function spawnInGroup(cmd, {
         sessionId: sessionId ?? null,
         recordedAt: new Date(startedAt).toISOString(),
       };
-      const register = onRegister ?? (repoRoot ? (r) => recordGateProcess(repoRoot, r) : null);
+      const register = onRegister ?? (repoRoot ? (r) => recordGateProcess(repoRoot, r, { platform }) : null);
       if (register) {
         try {
           register(record);
@@ -921,7 +1027,7 @@ export function spawnInGroup(cmd, {
       // for.
       if (!onRegister && repoRoot) {
         try {
-          pruneGateProcessLedger(repoRoot);
+          pruneGateProcessLedger(repoRoot, { platform });
         } catch {
           /* housekeeping, never a gate precondition */
         }
@@ -943,13 +1049,14 @@ export function spawnInGroup(cmd, {
       // Hard deadline: `close` waits for EVERY group member to close the shared
       // pipe, so one survivor would hang this promise forever.
       deadlineTimer = setTimeout(() => {
-        if (survivors.length === 0 && pgid !== null) survivors = [pgid];
+        if (survivors?.length === 0 && pgid !== null) survivors = [pgid];
         finish(null);
       }, killGraceMs + verifyWaitMs + 1000);
       deadlineTimer.unref?.();
 
       killProcessGroup(pgid, {
         killFn: trackingKill,
+        platform, spawnSyncFn, snapshotFn, child, spawnedAtMs, verifyTree,
         killGraceMs,
         verifyWaitMs,
         isAliveFn,
@@ -962,17 +1069,67 @@ export function spawnInGroup(cmd, {
       })
         .then((res) => {
           survivors = res.survivors;
+          if (platform === 'win32') {
+            killSignals.push(...res.signalsSent);
+            cleanupError = res.error ?? (res.aborted ? `aborted: ${res.aborted}` : null);
+            if (cleanupError) fullOutput += `\nprocess-group: ${cleanupError}\n`;
+            finish(null);
+          }
           if (!res.ok) finish(null);
         })
-        .catch(() => {
+        .catch((err) => {
+          if (platform === 'win32') {
+            survivors = null;
+            cleanupError = `nicht messbar auf win32: ${err}`;
+            fullOutput += `\nprocess-group: ${cleanupError}\n`;
+          }
           finish(null);
         });
     };
 
-    const onChunk = (chunk) => {
+    // Normal-exit leftover (#1704): the leader closed, but the group still has a
+    // member. Same ladder, same `beforeSignal` gate and hard deadline as
+    // `runLadder`, but its own record: the run itself stays a normal exit.
+    const reapLeftoverGroup = (childExitCode) => {
+      // Marks the group as being reaped, so a timeout firing during the grace
+      // window cannot start a second ladder (or flip the run to 124).
+      ladderStarted = true;
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      const record = { pgid, signals: [], survivors: [] };
+      leftoverGroup = record;
+      deadlineTimer = setTimeout(() => {
+        if (record.survivors.length === 0) record.survivors = [pgid];
+        finish(childExitCode);
+      }, killGraceMs + verifyWaitMs + 1000);
+      deadlineTimer.unref?.();
+
+      killProcessGroup(pgid, {
+        killFn: (target, signal) => {
+          record.signals.push(signal);
+          return killFn(target, signal);
+        },
+        platform, killGraceMs, verifyWaitMs, sleepFn,
+        // The leader is already reaped, so the leader-pid probe would read the
+        // group as dead; verify on the GROUP instead.
+        isAliveFn: groupAlive,
+        // Settled only via the hard deadline here; after that the pgid is
+        // deregistered and may be recycled, so no further signal (see runLadder).
+        beforeSignal: () => !settled,
+      })
+        .then((res) => {
+          if (!settled) record.survivors = Array.isArray(res.survivors) ? [...res.survivors] : [pgid];
+        })
+        .catch(() => {
+          if (!settled) record.survivors = [pgid];
+        })
+        .finally(() => finish(childExitCode));
+    };
+
+    const onChunk = (decoder, chunk) => {
       if (overflow) return;
-      const text = chunk.toString();
-      capturedBytes += Buffer.byteLength(text, 'utf8');
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const text = decoder.write(bytes);
+      capturedBytes += bytes.length;
       fullOutput += text;
       if (capturedBytes > maxOutputBytes) {
         overflow = true;
@@ -980,8 +1137,8 @@ export function spawnInGroup(cmd, {
         runLadder();
       }
     };
-    child.stdout?.on('data', onChunk);
-    child.stderr?.on('data', onChunk);
+    child.stdout?.on('data', (chunk) => onChunk(stdoutDecoder, chunk));
+    child.stderr?.on('data', (chunk) => onChunk(stderrDecoder, chunk));
 
     if (typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0) {
       timeoutTimer = setTimeout(() => {
@@ -995,7 +1152,25 @@ export function spawnInGroup(cmd, {
       fullOutput += `\nprocess-group: child error: ${err?.message ?? String(err)}`;
       finish(1);
     });
-    child.on('close', (code) => finish(typeof code === 'number' ? code : null));
+    child.on('close', (code, signal) => {
+      exitSignal = typeof signal === 'string' ? signal : null;
+      // Windows cleanup must finish readback even if taskkill already closed pipes.
+      if (platform === 'win32' && ladderStarted) return;
+      const childExitCode = typeof code === 'number' ? code : null;
+      // POSIX only: Windows has no process group to probe (its tree cleanup is
+      // a separate path) and keeps its behaviour. One synchronous probe — when
+      // the group is gone, the caller pays nothing extra.
+      // Named ceiling (BV-004): the probe runs right after the leader was
+      // reaped; a pgid recycled onto a foreign session leader inside that gap
+      // would be probed and laddered. Needs the pid space to wrap within
+      // milliseconds; revisit with an identity check (verifyProcessIdentity on
+      // a group member) if a leftover is ever reported for a foreign command.
+      if (!settled && !ladderStarted && platform !== 'win32' && pgid !== null && groupAlive?.(pgid) === true) {
+        reapLeftoverGroup(childExitCode);
+        return;
+      }
+      finish(childExitCode);
+    });
   });
 }
 

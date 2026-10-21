@@ -15,7 +15,7 @@
  * via `.passthrough()`, and it is NOT rewritten retroactively by this change.
  */
 
-import { toDate, buildTag, slugifyIdSafe } from './utils.mjs';
+import { toDate, buildTag, slugifyIdSafe, noteIdFor, yamlNoteId } from './utils.mjs';
 import { stableHostname } from '../host-identity.mjs';
 import { sourceRecordValue, sourceRecordLine } from './render-learnings.mjs';
 import { sessionNarrativeText } from './retention.mjs';
@@ -118,38 +118,17 @@ function waveCount(value) {
 }
 
 /**
- * ── RENDERABLE ⊋ SCHEMA-VALID (#964) ───────────────────────────────────────
+ * ── RENDERABLE AND SCHEMA-VALID (#1575) ───────────────────────────────────
  *
- * Each generator gates on its own required-field list. Before #964 all three
- * lists were function-local `const`s with no stated relationship to
- * `REQUIRED_FIELDS` (scripts/lib/session-schema/constants.mjs) — the write-path
- * schema — which made five independent notions of "a valid session record" in
- * one codebase, drifting silently. They are lifted here, exported, and pinned
- * against `REQUIRED_FIELDS` by a mechanical superset test in
- * tests/lib/vault-mirror/render-sessions.test.mjs.
- *
- * The relationship is deliberately asymmetric, not a duplicate:
- *
- *   `REQUIRED_FIELDS`  — "this record is well-formed". The writer
- *     (scripts/emit-session.mjs) REFUSES a record that fails it.
- *   these lists        — "this record renders into a note a human can read".
- *     vault-mirror SKIPS a record that fails them; the record stays valid.
- *
- * Collapsing the two would destroy that distinction. Hence `effectiveness`:
- * optional to the writer (a record lacking it is fine), required by the v1
- * renderer (a note reading `planned=n/a, completed=n/a, carryover=n/a,
- * rate=n/a` is worse than no note — indistinguishable from a real session whose
- * metrics happened to be absent).
- *
- * The predicate here is VALUE presence (`null`/`undefined` both fail); the
- * validator's is KEY presence. See `_validateRequiredFields` for why.
+ * The generators retain route-specific required-field lists. V1 requires the
+ * canonical REQUIRED_FIELDS; legacy V2/V3 derive aggregates from other shapes
+ * and cannot be emitted by the canonical writer. Effectiveness is optional
+ * and nullable in every route, matching the writer. Unknown metrics render
+ * n/a; a measured zero remains zero. Malformed non-object metrics still fail.
+ * Required fields use VALUE presence; the validator separately checks types.
  */
 
-/**
- * v1 — the only generator reachable from a write-path-valid record (measured:
- * 205/205 live ledger records at HEAD 730ee9d route v1). Its list is
- * `REQUIRED_FIELDS` plus `effectiveness`, i.e. a strict superset.
- */
+/** V1 uses the canonical required-field set without requiring optional metrics. */
 export const RENDERABLE_SESSION_FIELDS_V1 = Object.freeze([
   'session_id',
   'session_type',
@@ -160,7 +139,6 @@ export const RENDERABLE_SESSION_FIELDS_V1 = Object.freeze([
   'total_files_changed',
   'agent_summary',
   'waves',
-  'effectiveness',
 ]);
 
 /**
@@ -183,7 +161,6 @@ export const RENDERABLE_SESSION_FIELDS_V2 = Object.freeze([
   'completed_at',
   'waves',
   'files_changed',
-  'effectiveness',
 ]);
 
 /**
@@ -200,8 +177,17 @@ export const RENDERABLE_SESSION_FIELDS_V3 = Object.freeze([
   'started_at',
   'completed_at',
   'waves',
-  'effectiveness',
 ]);
+
+/** Optional metrics share the writer's object-or-null contract in all routes. */
+function sessionEffectiveness(entry) {
+  const value = entry.effectiveness;
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${entry.session_id})`);
+  }
+  return value;
+}
 
 /**
  * Session-ledger status → vault-frontmatter status mapping (#909).
@@ -422,12 +408,9 @@ export function generateSessionNote(entry, options = {}) {
     total_files_changed,
     agent_summary,
     waves,
-    effectiveness,
   } = entry;
 
-  if (typeof effectiveness !== 'object' || effectiveness === null) {
-    throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${session_id})`);
-  }
+  const effectiveness = sessionEffectiveness(entry);
   if (typeof agent_summary !== 'object' || agent_summary === null) {
     throw new Error(`vault-mirror: session entry missing nested field 'agent_summary' (session_id=${session_id})`);
   }
@@ -463,7 +446,7 @@ export function generateSessionNote(entry, options = {}) {
   // and cap the combined tag at 64 chars so the frontmatter passes the vault
   // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
   // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
-  const noteId = slugifyIdSafe(session_id) ?? session_id;
+  const noteId = noteIdFor(options.repoNs, slugifyIdSafe(session_id) ?? session_id);
   // #909: the real ledger status, mapped into the vault enum — never hard-coded.
   const vaultStatus = vaultStatusForSession(entry);
   const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
@@ -554,7 +537,7 @@ export function generateSessionNote(entry, options = {}) {
   const { repoNs } = options;
 
   return `---
-id: ${noteId}
+id: ${yamlNoteId(noteId)}
 type: session
 title: ${title}
 status: ${vaultStatus}
@@ -592,11 +575,9 @@ export function generateSessionNoteV2(entry, options = {}) {
   if (!Array.isArray(entry.waves)) {
     throw new Error(`vault-mirror: session entry 'waves' must be an array (session_id=${entry.session_id})`);
   }
-  if (typeof entry.effectiveness !== 'object' || entry.effectiveness === null) {
-    throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${entry.session_id})`);
-  }
+  const effectiveness = sessionEffectiveness(entry);
 
-  const { session_id, session_type, started_at, completed_at, duration_seconds, branch, planned_issues, waves, files_changed, issues_closed, issues_created, effectiveness } = entry;
+  const { session_id, session_type, started_at, completed_at, duration_seconds, branch, planned_issues, waves, files_changed, issues_closed, issues_created } = entry;
 
   const created = toDate(started_at);
   const updated = toDate(completed_at);
@@ -620,7 +601,7 @@ export function generateSessionNoteV2(entry, options = {}) {
   // and cap the combined tag at 64 chars so the frontmatter passes the vault
   // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
   // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
-  const noteId = slugifyIdSafe(session_id) ?? session_id;
+  const noteId = noteIdFor(options.repoNs, slugifyIdSafe(session_id) ?? session_id);
   // #909: the real ledger status, mapped into the vault enum — never hard-coded.
   const vaultStatus = vaultStatusForSession(entry);
   const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
@@ -641,7 +622,7 @@ export function generateSessionNoteV2(entry, options = {}) {
   const { repoNs } = options;
 
   return `---
-id: ${noteId}
+id: ${yamlNoteId(noteId)}
 type: session
 title: ${title}
 status: ${vaultStatus}
@@ -690,14 +671,12 @@ export function generateSessionNoteV3(entry, options = {}) {
   if (typeof entry.waves !== 'number') {
     throw new Error(`vault-mirror: session entry 'waves' must be a number (session_id=${entry.session_id})`);
   }
-  if (typeof entry.effectiveness !== 'object' || entry.effectiveness === null) {
-    throw new Error(`vault-mirror: session entry missing nested field 'effectiveness' (session_id=${entry.session_id})`);
-  }
+  const effectiveness = sessionEffectiveness(entry);
 
   const {
     session_id, session_type, platform, branch, started_at, completed_at,
     duration_minutes, duration_seconds, waves, agents_dispatched, agent_summary,
-    planned_issues, effectiveness, commits, issues_closed, issues_created,
+    planned_issues, commits, issues_closed, issues_created,
     follow_ups_filed, tests_total_pre, tests_total_post, tests_added,
   } = entry;
 
@@ -727,8 +706,12 @@ export function generateSessionNoteV3(entry, options = {}) {
   const failed = as.failed ?? MISSING_VALUE;
   const spiral = as.spiral ?? MISSING_VALUE;
 
+  // A qualified cross-repo reference (`group/repo#n`, #1603) already carries
+  // its own `#`; only a bare number gets the prefix.
   const fmtIssues = (list) =>
-    Array.isArray(list) && list.length ? list.map((i) => `#${i}`).join(', ') : '—';
+    Array.isArray(list) && list.length
+      ? list.map((i) => (typeof i === 'number' ? `#${i}` : String(i))).join(', ')
+      : '—';
   const closedList = fmtIssues(issues_closed);
   const createdList = fmtIssues(issues_created);
   const followList = fmtIssues(follow_ups_filed);
@@ -752,7 +735,7 @@ export function generateSessionNoteV3(entry, options = {}) {
   // and cap the combined tag at 64 chars so the frontmatter passes the vault
   // tagPathRegex. The `id` is likewise slugified to a kebab slug below —
   // entry.session_id may carry an ISO-timestamp uppercase `T`/`:`/`.`/`Z`.
-  const noteId = slugifyIdSafe(session_id) ?? session_id;
+  const noteId = noteIdFor(options.repoNs, slugifyIdSafe(session_id) ?? session_id);
   // #909: the real ledger status, mapped into the vault enum — never hard-coded.
   const vaultStatus = vaultStatusForSession(entry);
   const tags = `[${buildTag(['session', session_type])}, ${buildTag(['status', vaultStatus])}]`;
@@ -768,7 +751,7 @@ export function generateSessionNoteV3(entry, options = {}) {
   const { repoNs } = options;
 
   return `---
-id: ${noteId}
+id: ${yamlNoteId(noteId)}
 type: session
 title: ${title}
 status: ${vaultStatus}

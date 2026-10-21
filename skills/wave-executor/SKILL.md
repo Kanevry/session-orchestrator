@@ -113,13 +113,13 @@ Example: If user said `/go focus on API endpoints`, each agent prompt includes:
 
 ## Pre-Wave 1a: Capture Session Start Ref
 
-Before dispatching Wave 1, capture the current commit as the session baseline:
+Before dispatching Wave 1, capture the current commit of the session's own checkout as the session baseline — the tree this session's STATE.md lives in and its consumers diff (repoRoot); in a promoted or EnterWorktree session that is the worktree (#1652). Same value as STATE.md's `session-start-ref`:
 
 ```bash
-SESSION_START_REF=$(git rev-parse HEAD)
+SESSION_START_REF=$(git -C "<session checkout (repoRoot)>" rev-parse HEAD)
 ```
 
-Store this value for use throughout the session — it is needed by the simplification pass (Quality wave) and session-reviewer dispatch to determine which files changed during this session. Include it in the coordinator's context, NOT in individual agent prompts.
+Store this value for use throughout the session — it is needed by the simplification pass (Quality wave) and session-reviewer dispatch to determine which files changed during this session. Include it in the coordinator's context, NOT in individual agent prompts. This single ref covers the session's own checkout only: commits made in additional worktrees of the session are recorded by the staging fence as `orchestrator.session.work_tree` events and listed by `node scripts/session-commit-files.mjs` (#1659; remaining limits: `references/wave-executor-state-init.md`).
 
 ## Pre-Wave 1b: Initialize STATE.md
 
@@ -293,7 +293,7 @@ End with a single commit summarizing all housekeeping work.
 
 ### Ultradeep Profile (`session-profile: ultradeep`)
 
-Not a fourth session type — a PROFILE over `session-type: deep`, resolved from the `/session ultradeep` argument alias (`commands/session.md`). Everything below applies only when STATE.md frontmatter carries `session-profile: ultradeep`; every other behaviour in this skill is unchanged, because downstream still reads `deep`. Full spec — wave table, mandatory artefacts, cost model: `docs/prd/2026-09-06-ultradeep-session-profile.md`.
+Not a fourth session type — a PROFILE over `session-type: deep`, resolved from the `/session ultradeep` argument alias (`commands/session.md`). Everything below applies only when STATE.md frontmatter carries `session-profile: ultradeep`; every other behaviour in this skill is unchanged, because downstream still reads `deep`. Full spec — wave table, mandatory artefacts, cost model: the internal ultradeep session-profile PRD (2026-09-06, not in the public mirror).
 
 - **The wave count and the wave roles come from the shape**, not from this file: `node scripts/session-shape.mjs --repo-root "$PWD" --session-type deep --profile ultradeep --no-event` returns `totalWaves: 7` (Research+Code-Discovery → Synthesis-Gate → Impl-Core → Impl-Polish → Review-Panel → Quality → Release/Finalization) and reports `wavesConfigHonored: false` with the ignored Session Config `waves` value — the profile OWNS its wave count. Role narrative: `skills/session-plan/SKILL.md` § Role-to-Wave Mapping.
 - **Wave 2 is coordinator-direct and dispatches ZERO agents.** Make NO `Agent()` call in this wave. The coordinator consolidates wave 1 into `docs/audits/<YYYY-MM-DD>-<slug>.md`, updates STATE.md, and asks ONE **blocking** `AskUserQuestion` (confirm scope / narrow / abort) per `.claude/rules/ask-via-tool.md`. Wave 3 does not start until that question is answered — this is the one gate the profile exists for, so a silent "no tasks, skip it" is a defect, not an optimisation (`skills/session-plan/SKILL.md` § Empty roles, coordinator-direct exception).
@@ -352,6 +352,7 @@ After the Finalization wave completes successfully:
 1. Report final status to the user
 2. If `persistence: true`, suggest invoking `/close` to finalize the session. If `persistence: false`, note that the session is complete (no STATE.md to close — session-end would be a no-op).
 3. Do NOT auto-commit — `/close` handles that with proper verification
+4. With fleet integration this report is the session's finished or waiting answer: apply `skills/_shared/fleet-protocol.md` § Rücklauf an den Navigator (Pflicht) (wait case `fertig`, or `zug-<name>` when only a release train or pipeline is left) and, in this same turn, § Übergabe und Zug-Manifest — write the file, report „bereit zum Schließen“, stop monitors and background work, start nothing new, and leave `/close` to the coordinator. The report then ends with the sentence `Bereit zum Schließen.` instead of the `/close` suggestion of step 2: the coordinator reads only the last 600 characters, and no question may follow. Without fleet integration, nothing changes.
 
 ## Vault-Sync Diff Reporting (#327)
 

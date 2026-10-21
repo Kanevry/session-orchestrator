@@ -29,6 +29,178 @@ import {
   deriveExpiresAt,
   ValidationError,
 } from './schema.mjs';
+import {
+  assertStoreRoleUsable,
+  resolveStoreRole,
+  isCanonicalStore,
+  inboxPathFor,
+  receiptsPathFor,
+  archivePathFor,
+} from './store-role.mjs';
+
+// ---------------------------------------------------------------------------
+// Inbox store role (GitLab #1516)
+// ---------------------------------------------------------------------------
+//
+// Only the canonical `learnings.jsonl` takes part. A host on the `inbox` role
+// (see store-role.mjs) never rewrites it: appends and rewrite-new records go to
+// the sibling `learnings-inbox.jsonl`, which readers union in and which the
+// `writer` host ingests on its next rewrite, recording each ingested id in
+// `learnings-inbox-ingested.jsonl`.
+//
+// Ceiling (BV-004): the inbox host DROPS updates to existing learnings
+// (confidence boosts, decay, prune) — there is no operation-receipt contract,
+// only "new id" records travel. The inbox file is never truncated, because
+// deleting lines from a merge=union file resurrects them on the next merge;
+// receipts hide ingested records instead. Compaction is future work.
+// Revisit-trigger: the inbox file exceeds 1 MiB, or a resurrected record is
+// measured.
+
+/**
+ * Raw text of `filePath`, or `null` when the file does not exist.
+ * @param {string} filePath
+ * @returns {Promise<string|null>}
+ */
+async function readRawOrNull(filePath) {
+  try {
+    return await readFile(filePath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT') return null;
+    throw err;
+  }
+}
+
+/**
+ * Ids of every JSONL line in `raw` that parses to an object with a non-empty
+ * string `id`. Malformed lines are tolerated (skipped).
+ * @param {string|null} raw
+ * @returns {Set<string>}
+ */
+function idsOfJsonl(raw) {
+  const ids = new Set();
+  if (!raw) return ids;
+  for (const line of raw.split('\n')) {
+    if (line.trim().length === 0) continue;
+    try {
+      const rec = JSON.parse(line.charCodeAt(0) === 0xfeff ? line.slice(1) : line);
+      if (rec && typeof rec.id === 'string' && rec.id.length > 0) ids.add(rec.id);
+    } catch {
+      // another file's malformed line — not ours to report
+    }
+  }
+  return ids;
+}
+
+/**
+ * The inbox view of a canonical store: which inbox records are visible beside
+ * `liveEntries`. Returns `null` when `filePath` is not the canonical store or
+ * no inbox file exists — callers then behave exactly as before #1516.
+ *
+ * A record is visible iff it has a non-empty string `id` that is not in the
+ * live entries, the archive or the receipts, and it is the first inbox record
+ * with that id.
+ *
+ * @param {string} filePath
+ * @param {object[]} liveEntries
+ * @returns {Promise<null | {visible: object[], visibleIds: Set<string>,
+ *   unreceiptedArchivedIds: Set<string>, unreceiptedLiveIds: Set<string>,
+ *   counts: {visible: number, hidden: number, malformed: number}, tokenText: string}>}
+ */
+async function readInboxView(filePath, liveEntries) {
+  if (!isCanonicalStore(filePath)) return null;
+  const inboxRaw = await readRawOrNull(inboxPathFor(filePath));
+  if (inboxRaw === null) return null;
+  const receiptsRaw = (await readRawOrNull(receiptsPathFor(filePath))) ?? '';
+  const archiveRaw = (await readRawOrNull(archivePathFor(filePath))) ?? '';
+  const receiptedIds = idsOfJsonl(receiptsRaw);
+  const archivedIds = idsOfJsonl(archiveRaw);
+  const excluded = new Set([...receiptedIds, ...archivedIds]);
+  for (const e of liveEntries) {
+    if (typeof e?.id === 'string' && e.id.length > 0) excluded.add(e.id);
+  }
+  const parsed = parseLearningsText(inboxRaw);
+  const visible = [];
+  const visibleIds = new Set();
+  // Inbox ids the LOCAL archive hides but no receipt covers: a writer that
+  // died between its archive append and its receipt (expiry-sweep.mjs
+  // archiveThenRewrite) left them so. The archive is not synced, so the inbox
+  // host still shows them; the next writer rewrite receipts them.
+  const unreceiptedArchivedIds = new Set();
+  // Inbox ids already LIVE but not receipted: a writer that died between its
+  // rename and its receipt (rewriteLearnings) left them so. Without a receipt
+  // a later removal from live (no archive) would resurrect them from the inbox.
+  const liveIds = new Set(
+    liveEntries.map((e) => e?.id).filter((id) => typeof id === 'string' && id.length > 0)
+  );
+  const unreceiptedLiveIds = new Set();
+  for (const e of parsed.entries) {
+    const id = e?.id;
+    if (typeof id !== 'string' || id.length === 0) continue;
+    if (archivedIds.has(id) && !receiptedIds.has(id)) unreceiptedArchivedIds.add(id);
+    if (liveIds.has(id) && !receiptedIds.has(id)) unreceiptedLiveIds.add(id);
+    if (excluded.has(id) || visibleIds.has(id)) continue;
+    visibleIds.add(id);
+    visible.push(e);
+  }
+  return {
+    visible,
+    visibleIds,
+    unreceiptedArchivedIds,
+    unreceiptedLiveIds,
+    counts: {
+      visible: visible.length,
+      hidden: parsed.entries.length - visible.length,
+      malformed: parsed.malformed.length,
+    },
+    tokenText: `\u0000${inboxRaw}\u0000${receiptsRaw}\u0000${archiveRaw}`,
+  };
+}
+
+/**
+ * Write inbox receipts (#1516) for `ids` — the single receipt writer, used for
+ * ids the writer carries into the live store AND for ids it archives straight
+ * from the inbox. The archive is not synced between hosts, so without a
+ * receipt an archived inbox record turns visible again on the inbox host.
+ *
+ * No-op unless `storePath` is the canonical store and its inbox file exists.
+ * Only ids present in the inbox file and not yet receipted get a line, so a
+ * repeated call never duplicates a receipt. The caller MUST hold the store
+ * lock (`withLearningsLock(storePath, …)`): the read-filter-append below is
+ * not atomic on its own.
+ *
+ * @param {string} storePath — the canonical `learnings.jsonl`
+ * @param {Iterable<string>} ids
+ * @returns {Promise<number>} receipt lines appended
+ */
+export async function appendInboxReceipts(storePath, ids) {
+  if (!isCanonicalStore(storePath)) return 0;
+  const inboxRaw = await readRawOrNull(inboxPathFor(storePath));
+  if (inboxRaw === null) return 0;
+  const inInbox = idsOfJsonl(inboxRaw);
+  const receiptsPath = receiptsPathFor(storePath);
+  const receipted = idsOfJsonl((await readRawOrNull(receiptsPath)) ?? '');
+  const fresh = [...new Set(ids)].filter(
+    (id) => typeof id === 'string' && id.length > 0 && inInbox.has(id) && !receipted.has(id)
+  );
+  if (fresh.length === 0) return 0;
+  const ingestedAt = new Date().toISOString();
+  await appendWithTornTailGuard(
+    receiptsPath,
+    fresh.map((id) => `${JSON.stringify({ id, ingested_at: ingestedAt })}\n`).join('')
+  );
+  return fresh.length;
+}
+
+/**
+ * Append newline-terminated `text` to `filePath`, first closing a torn last
+ * line (#1489). Caller holds the lock guarding `filePath`.
+ * @param {string} filePath
+ * @param {string} text
+ */
+async function appendWithTornTailGuard(filePath, text) {
+  const lead = (await endsWithoutNewline(filePath)) ? '\n' : '';
+  await appendFile(filePath, lead + text, 'utf8');
+}
 
 // ---------------------------------------------------------------------------
 // Store lock (GitLab #1447 point 8)
@@ -224,12 +396,23 @@ function serializeLearningLineChecked(validated, { legacyTolerant = false } = {}
  * their raw text preserved in the result's `malformed` array, and their
  * 1-based line numbers in `malformedLineNumbers` (same order).
  *
+ * For the canonical `learnings.jsonl` with a sibling `learnings-inbox.jsonl`
+ * (#1516), visible inbox records are appended AFTER the live entries and an
+ * `inbox: {visible, hidden, malformed}` count object is added. Inbox malformed
+ * lines are never part of `malformed` — they belong to another file. Without
+ * an inbox file the result is unchanged (no `inbox` key).
+ *
  * @param {string} filePath — absolute or project-relative path to learnings.jsonl
- * @returns {Promise<{entries: object[], malformed: string[], malformedLineNumbers: number[]}>}
+ * @returns {Promise<{entries: object[], malformed: string[], malformedLineNumbers: number[],
+ *   inbox?: {visible: number, hidden: number, malformed: number}}>}
  */
 export async function readLearnings(filePath) {
-  if (!existsSync(filePath)) return { entries: [], malformed: [], malformedLineNumbers: [] };
-  return parseLearningsText(await readFile(filePath, 'utf8'));
+  const base = existsSync(filePath)
+    ? parseLearningsText(await readFile(filePath, 'utf8'))
+    : { entries: [], malformed: [], malformedLineNumbers: [] };
+  const view = await readInboxView(filePath, base.entries);
+  if (!view) return base;
+  return { ...base, entries: [...base.entries, ...view.visible], inbox: view.counts };
 }
 
 /**
@@ -240,13 +423,25 @@ export async function readLearnings(filePath) {
  * or sweep changes it. An absent store reads as empty text — zero records
  * either way, so the two states share a token.
  *
+ * With an inbox file beside the canonical store (#1516) the records are the
+ * same union {@link readLearnings} returns, and the token also covers the
+ * inbox, receipts and archive text, so it changes when any of them changes.
+ *
  * @param {string} filePath
  * @returns {Promise<{entries: object[], malformed: string[], malformedLineNumbers: number[],
- *   generation: string}>}
+ *   generation: string, inbox?: {visible: number, hidden: number, malformed: number}}>}
  */
 export async function readLearningsSnapshot(filePath) {
   const raw = existsSync(filePath) ? await readFile(filePath, 'utf8') : '';
-  return { ...parseLearningsText(raw), generation: `sha256:${digestSha256(raw)}` };
+  const base = parseLearningsText(raw);
+  const view = await readInboxView(filePath, base.entries);
+  if (!view) return { ...base, generation: `sha256:${digestSha256(raw)}` };
+  return {
+    ...base,
+    entries: [...base.entries, ...view.visible],
+    inbox: view.counts,
+    generation: `sha256:${digestSha256(raw + view.tokenText)}`,
+  };
 }
 
 /**
@@ -324,6 +519,8 @@ export function parseLearningsText(raw) {
  *   {@link LEARNINGS_LOCK_TIMEOUT_MS}
  * @returns {Promise<object>} validated entry
  * @throws {LearningsLockError} when the store lock is not acquired (nothing appended)
+ * @throws {LearningsStoreRoleError} canonical store while the host's store role
+ *   is invalid (#1516; nothing appended)
  */
 export async function appendLearning(filePath, entry, { lockTimeoutMs } = {}) {
   // Ensure created_at is set first — many writers omit it, and expires_at
@@ -351,16 +548,19 @@ export async function appendLearning(filePath, entry, { lockTimeoutMs } = {}) {
   // parses back AND re-validates before any append touches disk. Throws
   // ValidationError on a non-round-tripping record — file is left untouched.
   const line = serializeLearningLineChecked(validated);
+  // Fail-closed (#1516): an invalid store role refuses before any lock or write.
+  assertStoreRoleUsable(filePath);
+  // Inbox role (#1516): the canonical store is never written on this host —
+  // the record goes to the sibling inbox file under that file's own lock.
+  const target =
+    isCanonicalStore(filePath) && resolveStoreRole().role === 'inbox'
+      ? inboxPathFor(filePath)
+      : filePath;
   // The lock path resolution creates the parent directory. The torn-tail check
   // reads inside the lock, so no other writer can change the tail in between.
-  await withLearningsLock(
-    filePath,
-    async () => {
-      const lead = (await endsWithoutNewline(filePath)) ? '\n' : '';
-      await appendFile(filePath, lead + line, 'utf8');
-    },
-    { timeoutMs: lockTimeoutMs }
-  );
+  await withLearningsLock(target, () => appendWithTornTailGuard(target, line), {
+    timeoutMs: lockTimeoutMs,
+  });
   return validated;
 }
 
@@ -527,6 +727,8 @@ async function rotateBackups(dir, baseName, keep = BACKUP_KEEP) {
  * @param {object[]} entries
  * @param {{dryRun?: boolean, backup?: boolean, legacyTolerant?: boolean, malformedLines?: string[]}} [opts]
  * @returns {Promise<object[]>} validated entries (always returned, even dryRun)
+ * @throws {LearningsStoreRoleError} non-dry rewrite of the canonical store while
+ *   the host's store role is invalid (#1516; nothing written)
  */
 export async function rewriteLearnings(
   filePath,
@@ -560,15 +762,28 @@ export async function rewriteLearnings(
   // rewrite, no backup — and hand the validated entries back to the caller.
   if (dryRun) return validated;
 
+  // Fail-closed (#1516): an invalid store role refuses before any lock or write.
+  assertStoreRoleUsable(filePath);
+  const canonical = isCanonicalStore(filePath);
+  if (canonical && resolveStoreRole().role === 'inbox') {
+    await rewriteAsInbox(filePath, validated, lines);
+    return validated;
+  }
+
   // Under the store lock (#1447 point 8) so no append lands between the backup
   // and the rename. The CALLER's read must sit inside the same lock for a
   // read-modify-write to be safe — this call joins it reentrantly.
   await withLearningsLock(filePath, async () => {
+    const liveRaw = canonical || malformedLines === undefined ? await readRawOrNull(filePath) : null;
     // Default: the store's own malformed lines as they stand right now, read
     // under the lock that guards the rename below.
     const kept =
-      malformedLines ??
-      (existsSync(filePath) ? parseLearningsText(await readFile(filePath, 'utf8')).malformed : []);
+      malformedLines ?? (liveRaw !== null ? parseLearningsText(liveRaw).malformed : []);
+    // Inbox records visible BEFORE this rewrite (#1516); those the batch now
+    // carries into the live store get a receipt after the rename.
+    const inboxView = canonical
+      ? await readInboxView(filePath, liveRaw !== null ? parseLearningsText(liveRaw).entries : [])
+      : null;
     // Malformed lines last, each newline-terminated: a truncated final line
     // otherwise fuses with the next append into one more unparseable line.
     const body = lines.join('') + kept.map((l) => `${l}\n`).join('');
@@ -591,6 +806,65 @@ export async function rewriteLearnings(
     const tmp = `${filePath}.tmp-${process.pid}-${Date.now()}`;
     await writeFile(tmp, body, 'utf8');
     await rename(tmp, filePath);
+
+    // Receipts (#1516): an ingested inbox record stays hidden even if a later
+    // rewrite drops it from the live store without archiving it. Archived
+    // inbox ids a crashed sweep left without a receipt are healed here too,
+    // and so are ids a crashed rewrite left live without one (they were live
+    // at read time, i.e. ingested — receipting them is correct).
+    if (
+      inboxView &&
+      (inboxView.visibleIds.size > 0 ||
+        inboxView.unreceiptedArchivedIds.size > 0 ||
+        inboxView.unreceiptedLiveIds.size > 0)
+    ) {
+      await appendInboxReceipts(filePath, [
+        ...validated.map((e) => e.id).filter((id) => inboxView.visibleIds.has(id)),
+        ...inboxView.unreceiptedArchivedIds,
+        ...inboxView.unreceiptedLiveIds,
+      ]);
+    }
   });
   return validated;
+}
+
+/**
+ * The `inbox`-role half of {@link rewriteLearnings} (#1516): the live store is
+ * not touched (no backup, no rename). Every validated entry whose id is in
+ * neither the live store nor the inbox is appended to the inbox; updates to
+ * existing records are dropped (see the BV-004 ceiling at the top of this
+ * module) and one stderr notice per call says so.
+ *
+ * Lock order is store → inbox; `appendLearning` takes only the inbox lock, so
+ * the two never wait on each other in reverse.
+ *
+ * @param {string} filePath — the canonical store
+ * @param {object[]} validated
+ * @param {string[]} lines — the checked serialized lines, same order
+ */
+async function rewriteAsInbox(filePath, validated, lines) {
+  const inboxPath = inboxPathFor(filePath);
+  await withLearningsLock(filePath, () =>
+    withLearningsLock(inboxPath, async () => {
+      const liveRaw = await readRawOrNull(filePath);
+      const known = new Set([
+        ...(liveRaw !== null ? parseLearningsText(liveRaw).entries : [])
+          .map((e) => e?.id)
+          .filter((id) => typeof id === 'string' && id.length > 0),
+        ...idsOfJsonl(await readRawOrNull(inboxPath)),
+      ]);
+      const fresh = [];
+      validated.forEach((e, i) => {
+        if (typeof e?.id !== 'string' || e.id.length === 0 || known.has(e.id)) return;
+        known.add(e.id);
+        fresh.push(lines[i]);
+      });
+      if (fresh.length > 0) await appendWithTornTailGuard(inboxPath, fresh.join(''));
+      console.warn(
+        `[learnings] store-role inbox: rewrite of ${filePath} skipped ` +
+          `(${validated.length - fresh.length} existing records unchanged, ` +
+          `${fresh.length} new appended to learnings-inbox.jsonl)`
+      );
+    })
+  );
 }

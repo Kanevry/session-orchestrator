@@ -34,7 +34,8 @@
  * these helpers only where the window is meant to represent REAL WORK.
  *
  * Exports: isRealSession, filterRealSessions, tailRealSessions,
- *          isCoordinatorDirectHousekeeping
+ *          isCoordinatorDirectHousekeeping, waveAgentCount,
+ *          isCoordinatorDirectWave, normalizeWaveRole
  */
 
 // ---------------------------------------------------------------------------
@@ -110,4 +111,58 @@ export function isCoordinatorDirectHousekeeping(record) {
     waves.length > 0 &&
     waves.every((w) => w?.role === 'Housekeeping' && w?.coordinator_direct === true)
   );
+}
+
+/**
+ * A wave's dispatched-agent count, read defensively across the key spellings
+ * the ledger holds (`/evolve analyze` effective-sizing, #1652): `agent_count`,
+ * else `agents` when it is a number, else the length of `agents` when it is an
+ * array (of descriptions), else `agents_dispatched`, else `agent_count_started`
+ * / its legacy spelling `agents_started` (the only count some waves carry).
+ *
+ * @param {unknown} wave — one entry of a record's `waves`
+ * @returns {number|null} — null when no key carries a count (unmeasured, never 0)
+ */
+export function waveAgentCount(wave) {
+  if (wave === null || typeof wave !== 'object' || Array.isArray(wave)) return null;
+  if (typeof wave.agent_count === 'number') return wave.agent_count;
+  if (typeof wave.agents === 'number') return wave.agents;
+  if (Array.isArray(wave.agents)) return wave.agents.length;
+  if (typeof wave.agents_dispatched === 'number') return wave.agents_dispatched;
+  if (typeof wave.agent_count_started === 'number') return wave.agent_count_started;
+  if (typeof wave.agents_started === 'number') return wave.agents_started;
+  return null;
+}
+
+/**
+ * True when a wave dispatched no agents — flagged `coordinator_direct: true`,
+ * or a measured agent count of 0 without the flag (#1652). The ledger holds
+ * 222 unflagged 0-agent waves (2026-10-17, 249 real records); counting them in
+ * an agents-per-wave ratio drags the average down with waves no agent ran in.
+ * Read side on purpose: it covers the history without rewriting the ledger.
+ * An unmeasured count (`waveAgentCount` → null) is not coordinator-direct.
+ *
+ * @param {unknown} wave — one entry of a record's `waves`
+ * @returns {boolean}
+ */
+export function isCoordinatorDirectWave(wave) {
+  if (wave === null || typeof wave !== 'object' || Array.isArray(wave)) return false;
+  return wave.coordinator_direct === true || waveAgentCount(wave) === 0;
+}
+
+/**
+ * Grouping key for a wave role, case- and separator-insensitive (#1652): the
+ * ledger spells one role several ways (`Finalization`/`finalization`,
+ * `Express-Path`/`Express Path`). Lowercases and collapses runs of spaces,
+ * underscores and hyphens to one `-`. Ceiling: distinct words stay distinct —
+ * `Express` and `Express-Path` remain two keys; merging synonyms needs an
+ * alias table, revisit when a consumer has to report them as one role.
+ *
+ * @param {unknown} role
+ * @returns {string|null} — null for a non-string or blank role
+ */
+export function normalizeWaveRole(role) {
+  if (typeof role !== 'string') return null;
+  const key = role.trim().toLowerCase().replace(/[\s_-]+/g, '-').replace(/^-+|-+$/g, '');
+  return key.length > 0 ? key : null;
 }

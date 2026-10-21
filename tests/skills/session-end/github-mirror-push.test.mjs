@@ -29,15 +29,19 @@
  *   6. block rewritten with bash-5-only syntax → breaks under macOS /bin/sh 3.2
  *   7. `mirror: none` ignored                  → opted-out repo pushes anyway (#1034)
  *   8. absent `mirror` key treated as none     → every keyless repo silently stops mirroring
+ *   9. `mirror: curated` pushes HEAD           → private history lands on the public mirror (#1631)
+ *  10. keyless checkout, curated upstream      → a checkout predating `mirror: curated` pushes its full private history (#1645)
+ *  11. keyless repo without `origin`           → no upstream policy to consult, private history pushed anyway (#1645)
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { fixtureGit, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
+import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
+import { buildGithubExport, createGitRunner } from '../../../scripts/lib/github-export.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const SKILL_PATH = join(REPO_ROOT, 'skills', 'session-end', 'SKILL.md');
@@ -84,8 +88,10 @@ function git(cwd, args) {
  * Throwaway repo with one commit and a CLAUDE.md Session Config.
  * @param {string|null} githubRemote URL for the `github` remote, or null for none.
  * @param {string|null} [mirrorKey] value of the `mirror:` key, or null to omit the key.
+ *   Defaults to an explicit `github`: without an `origin` remote a keyless repo is refused (#1645).
+ * @param {{ origin?: boolean }} [opts] add a bare `origin` that has received HEAD's branch.
  */
-function makeRepo(githubRemote, mirrorKey = null) {
+function makeRepo(githubRemote, mirrorKey = 'github', { origin = false } = {}) {
   const root = makeTmpDir('so-mirror-');
   tmpDirs.push(root);
   const dir = join(root, 'work');
@@ -94,6 +100,12 @@ function makeRepo(githubRemote, mirrorKey = null) {
   if (githubRemote) git(dir, ['remote', 'add', 'github', githubRemote]);
   const mirrorLine = mirrorKey === null ? '' : `mirror: ${mirrorKey}\n`;
   writeFileSync(join(dir, 'CLAUDE.md'), `# fixture\n\n## Session Config\n\nvcs: gitlab\n${mirrorLine}`);
+  if (origin) {
+    const bare = join(root, 'origin.git');
+    fixtureGit(['init', '-q', '--bare', bare], undefined, { env: GIT_ENV });
+    git(dir, ['remote', 'add', 'origin', bare]);
+    git(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/main']);
+  }
   return { root, dir };
 }
 
@@ -105,8 +117,8 @@ const ROOT_VARS = ['PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT'];
  * @param {string} dir
  * @param {{ pluginRoot?: string|null }} [opts] `null` = no root variable at all (fresh shell).
  */
-function runBlock(dir, { pluginRoot = REPO_ROOT } = {}) {
-  const env = { ...GIT_ENV };
+function runBlock(dir, { pluginRoot = REPO_ROOT, extraEnv = {} } = {}) {
+  const env = { ...GIT_ENV, ...extraEnv };
   for (const k of ROOT_VARS) delete env[k];
   if (pluginRoot !== null) env.PLUGIN_ROOT = pluginRoot;
   const res = spawnSync('bash', ['-c', extractMirrorBlock()], {
@@ -252,12 +264,24 @@ describe('Session Config mirror key', () => {
 
   it('an absent mirror key keeps the remote-based push (no silent behaviour change)', () => {
     const bare = bareRemote();
-    const { dir } = makeRepo(bare, null);
+    const { dir } = makeRepo(bare, null, { origin: true });
     const head = git(dir, ['rev-parse', 'HEAD']).trim();
     const res = runBlock(dir);
 
     expect(res.code).toBe(0);
     expect(git(dir, ['ls-remote', 'github', 'HEAD']).trim()).toContain(head);
+  });
+
+  // #1645 (security review, LOW): BUG CAUGHT: with no `origin` remote the guard had
+  // no upstream policy to read and allowed the plain push of a keyless repo.
+  it('an absent mirror key without an origin remote is refused unless mirror: github is explicit', () => {
+    const bare = bareRemote();
+    const { dir } = makeRepo(bare, null);
+    const res = runBlock(dir);
+
+    expect(res.code).not.toBe(0);
+    expect(res.stderr).toContain("no 'origin' remote");
+    expect(git(dir, ['ls-remote', 'github']).trim()).toBe('');
   });
 
   it('an unknown mirror value fails loud and pushes nothing', () => {
@@ -289,11 +313,13 @@ describe('plugin root not exported in the shell', () => {
 
   it('falls back to the repo toplevel when it carries scripts/parse-config.mjs, and pushes', () => {
     const bare = bareRemote();
-    const { dir } = makeRepo(bare, null);
+    const { dir } = makeRepo(bare);
     // The session runs inside the plugin repo itself: toplevel holds parse-config.mjs.
     mkdirSync(join(dir, 'scripts'));
-    const real = pathToFileURL(join(REPO_ROOT, 'scripts', 'parse-config.mjs')).href;
-    writeFileSync(join(dir, 'scripts', 'parse-config.mjs'), `await import(${JSON.stringify(real)});\n`);
+    for (const script of ['parse-config.mjs', 'github-export.mjs']) {
+      const real = pathToFileURL(join(REPO_ROOT, 'scripts', script)).href;
+      writeFileSync(join(dir, 'scripts', script), `await import(${JSON.stringify(real)});\n`);
+    }
     const head = git(dir, ['rev-parse', 'HEAD']).trim();
 
     const res = runBlock(dir, { pluginRoot: null });
@@ -323,6 +349,231 @@ describe('plugin root not exported in the shell', () => {
     expect(res.code).not.toBe(0);
     expect(res.stderr).toContain('plugin root not resolvable');
     expect(res.stderr).not.toContain('Session Config unreadable');
+    expect(git(dir, ['ls-remote', 'github']).trim()).toBe('');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `mirror: curated` (#1631). GitLab keeps the private full repo; the public
+// mirror gets one snapshot commit per export, built by scripts/github-export.mjs
+// without the policy-excluded paths and without the private history.
+// BUG CAUGHT: the curated branch falling through to `git push github HEAD` —
+// HEAD's history carries every excluded blob, so one push publishes it all.
+// ---------------------------------------------------------------------------
+
+describe('mirror: curated', () => {
+  const ID_ENV = {
+    GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
+    GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid',
+  };
+
+  /** Host-local owner policy for the strict leakage scan the export runs (0600, outside any repo). */
+  function ownerPolicyEnv() {
+    const cfg = makeTmpDir('so-mirror-owner-');
+    tmpDirs.push(cfg);
+    chmodSync(cfg, 0o700);
+    const file = join(cfg, 'owner-patterns.json');
+    writeFileSync(file, JSON.stringify({ version: 1, usernamePrefixes: ['zzfixture'] }), { mode: 0o600 });
+    return { SO_CONFIG_HOME: cfg, SO_OWNER_PATTERNS_FILE: file, SO_CONFIDENTIAL_NAMES_FILE: '' };
+  }
+
+  /**
+   * Bare github seeded with a public root; work clone (remote `github`) with a private
+   * commit on `branch`, plus a bare `origin` that has received that commit (the 4.3
+   * push) unless `pushOrigin` is false.
+   */
+  function curatedFixture(branch = 'main', { pushOrigin = true } = {}) {
+    const root = makeTmpDir('so-mirror-curated-');
+    tmpDirs.push(root);
+    const bare = join(root, 'github.git');
+    const seed = join(root, 'seed');
+    fixtureGit(['init', '-q', '--bare', '-b', 'main', bare], undefined, { env: GIT_ENV });
+    fixtureGit(['init', '-q', '-b', 'main', seed], undefined, { env: GIT_ENV });
+    writeFileSync(join(seed, 'README.md'), 'public\n');
+    git(seed, ['add', '-A']);
+    fixtureGit(['-C', seed, 'commit', '-q', '-m', 'public root'], undefined, { env: { ...GIT_ENV, ...ID_ENV } });
+    git(seed, ['push', '-q', bare, 'main']);
+    const seeded = git(bare, ['rev-parse', 'main']).trim();
+
+    const dir = join(root, 'work');
+    fixtureGit(['clone', '-q', '-o', 'github', bare, dir], undefined, { env: GIT_ENV });
+    if (branch !== 'main') git(dir, ['checkout', '-q', '-b', branch]);
+    mkdirSync(join(dir, '.orchestrator', 'policy'), { recursive: true });
+    mkdirSync(join(dir, 'docs', 'audits'), { recursive: true });
+    writeFileSync(join(dir, '.orchestrator', 'policy', 'public-export.json'), JSON.stringify({
+      version: 1, exclude: [{ path: 'docs/audits/', reason: 'fixture', issue: '#1631' }],
+    }));
+    writeFileSync(join(dir, 'docs', 'audits', 'private.md'), 'private\n');
+    writeFileSync(join(dir, 'CLAUDE.md'), '# fixture\n\n## Session Config\n\nvcs: gitlab\nmirror: curated\n');
+    git(dir, ['add', '-A']);
+    fixtureGit(['-C', dir, 'commit', '-q', '-m', 'private work'], undefined, { env: { ...GIT_ENV, ...ID_ENV } });
+    const origin = join(root, 'origin.git');
+    fixtureGit(['init', '-q', '--bare', '-b', 'main', origin], undefined, { env: GIT_ENV });
+    git(dir, ['remote', 'add', 'origin', origin]);
+    git(dir, ['push', '-q', 'origin', 'HEAD:refs/heads/main']);
+    if (!pushOrigin) {
+      writeFileSync(join(dir, 'local.md'), 'unpushed\n');
+      git(dir, ['add', '-A']);
+      fixtureGit(['-C', dir, 'commit', '-q', '-m', 'local only'], undefined, { env: { ...GIT_ENV, ...ID_ENV } });
+    }
+    const head = git(dir, ['rev-parse', 'HEAD']).trim();
+    return { root, bare, dir, head, seeded };
+  }
+
+  it('pushes the export snapshot to github main, never HEAD', () => {
+    const { bare, dir, head } = curatedFixture();
+
+    const res = runBlock(dir, { extraEnv: { ...ID_ENV, ...ownerPolicyEnv() } });
+
+    // stderr carries the export's stats line (stdout is reserved for the sha).
+    expect(res.code).toBe(0);
+    expect(res.stderr).not.toContain('WARN');
+    const exported = git(dir, ['rev-parse', 'refs/heads/github-export']).trim();
+    const published = git(dir, ['ls-remote', 'github', 'refs/heads/main']).trim().split(/\s+/)[0];
+    expect(published).toBe(exported);
+    expect(published).not.toBe(head);
+    expect(res.stdout).toContain(exported);
+    // The private commit never reached the mirror, and neither did the excluded path.
+    expect(fixtureGitSpawn(['-C', bare, 'cat-file', '-e', head], undefined, { env: GIT_ENV }).status).not.toBe(0);
+    expect(git(bare, ['ls-tree', '-r', '--name-only', 'main']).split('\n')).not.toContain('docs/audits/private.md');
+  });
+
+  // Security review (MEDIUM): GitHub main deploys production. BUG CAUGHT: a /close
+  // on a feature branch exported HEAD and published unreviewed work to production.
+  it('on a feature branch: informational skip, exit 0, nothing pushed', () => {
+    const { bare, dir, seeded } = curatedFixture('feature/x');
+
+    const res = runBlock(dir, { extraEnv: { ...ID_ENV, ...ownerPolicyEnv() } });
+
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("publishes only a HEAD on main that equals origin's main");
+    expect(git(bare, ['rev-parse', 'main']).trim()).toBe(seeded);
+  });
+
+  // Security review 2 (MEDIUM): BUG CAUGHT: the branch gate alone accepted a local
+  // main AHEAD of origin's main — unpushed, unreviewed commits went to production.
+  it('local main ahead of origin main: informational skip, exit 0, nothing pushed', () => {
+    const { bare, dir, seeded } = curatedFixture('main', { pushOrigin: false });
+
+    const res = runBlock(dir, { extraEnv: { ...ID_ENV, ...ownerPolicyEnv() } });
+
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain("publishes only a HEAD on main that equals origin's main");
+    expect(git(bare, ['rev-parse', 'main']).trim()).toBe(seeded);
+  });
+
+  /**
+   * Plugin root whose github-export.mjs prints `printSha` (and moves the export ref to
+   * `swapRefTo`) instead of exporting, but forwards `--verify` to the REAL CLI — so the
+   * block's own sha binding and pre-push verification are what is under test.
+   */
+  function stubPluginRoot(root, { printSha, swapRefTo }) {
+    const stubRoot = join(root, 'stub-plugin');
+    mkdirSync(join(stubRoot, 'scripts'), { recursive: true });
+    const realConfig = pathToFileURL(join(REPO_ROOT, 'scripts', 'parse-config.mjs')).href;
+    const realExport = pathToFileURL(join(REPO_ROOT, 'scripts', 'github-export.mjs')).href;
+    writeFileSync(join(stubRoot, 'scripts', 'parse-config.mjs'), `await import(${JSON.stringify(realConfig)});\n`);
+    writeFileSync(join(stubRoot, 'scripts', 'github-export.mjs'), [
+      "import { execFileSync } from 'node:child_process';",
+      `if (process.argv.includes('--verify')) { await import(${JSON.stringify(realExport)}); }`,
+      'else {',
+      `  execFileSync('git', ['update-ref', 'refs/heads/github-export', ${JSON.stringify(swapRefTo)}]);`,
+      `  process.stdout.write(${JSON.stringify(printSha)} + '\\n');`,
+      '}',
+      '',
+    ].join('\n'));
+    return stubRoot;
+  }
+
+  /** A genuine snapshot of HEAD on github main, built by the real export library. */
+  function realSnapshot(dir, head) {
+    const base = createGitRunner(dir);
+    const runner = (args, o = {}) => base(args, { ...o, env: { ...GIT_ENV, ...ID_ENV, ...(o.env ?? {}) } });
+    const res = buildGithubExport({ git: runner, source: head, snapshotCheck: () => ({ ok: true }) });
+    expect(res.status).toBe('created');
+    return res.sha;
+  }
+
+  // Security review 3 (LOW, TOCTOU): BUG CAUGHT: the block pushed the export REF
+  // NAME, so a ref moved between the scan and the push published whatever it pointed
+  // at. The sha read from the export's stdout is what gets pushed.
+  it('pushes the scanned sha even when the export ref is swapped to a forged commit', () => {
+    const { root, bare, dir, head } = curatedFixture();
+    const scanned = realSnapshot(dir, head);
+    const stubRoot = stubPluginRoot(root, { printSha: scanned, swapRefTo: head });
+
+    const res = runBlock(dir, { pluginRoot: stubRoot, extraEnv: ID_ENV });
+
+    expect(res.code).toBe(0);
+    expect(git(bare, ['rev-parse', 'main']).trim()).toBe(scanned);
+    expect(fixtureGitSpawn(['-C', bare, 'cat-file', '-e', head], undefined, { env: GIT_ENV }).status).not.toBe(0);
+  });
+
+  // Security review (HIGH, defence in depth): BUG CAUGHT: a forged export (here a
+  // private commit sitting directly on github main) published because nothing re-checked
+  // it right before the push. `--verify` refuses it: no matching Source-Commit trailer.
+  it('refuses to push a sha that is not one clean snapshot of origin main', () => {
+    const { root, bare, dir, head, seeded } = curatedFixture();
+    const stubRoot = stubPluginRoot(root, { printSha: head, swapRefTo: head });
+
+    const res = runBlock(dir, { pluginRoot: stubRoot, extraEnv: ID_ENV });
+
+    expect(res.code).not.toBe(0);
+    expect(res.stderr).toContain('is not one clean snapshot of');
+    expect(git(bare, ['rev-parse', 'main']).trim()).toBe(seeded);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1645 (security review round 3 of #1631, MEDIUM): `mirror` is read from the
+// working tree's CLAUDE.md. A branch cut before the repo adopted `mirror: curated`
+// has no key and fell back to `git push github HEAD` — publishing the full private
+// history as a branch. BUG CAUGHT: that fallback; the export policy on origin's
+// main (fetched, since a stale checkout does not have it yet) now refuses it.
+// ---------------------------------------------------------------------------
+
+describe('keyless checkout of a repo whose origin main adopted the curated export', () => {
+  it('refuses the plain push: WARN, exit 1, nothing on github', () => {
+    const root = makeTmpDir('so-mirror-keyless-');
+    tmpDirs.push(root);
+    const ID = { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.invalid' };
+    const commit = (cwd, msg) => fixtureGit(['-C', cwd, 'commit', '-q', '-m', msg], undefined, { env: { ...GIT_ENV, ...ID } });
+    const origin = join(root, 'origin.git');
+    const github = join(root, 'github.git');
+    fixtureGit(['init', '-q', '--bare', '-b', 'main', origin], undefined, { env: GIT_ENV });
+    fixtureGit(['init', '-q', '--bare', '-b', 'main', github], undefined, { env: GIT_ENV });
+
+    // Upstream before the adoption: no `mirror` key, no policy.
+    const up = join(root, 'upstream');
+    fixtureGit(['init', '-q', '-b', 'main', up], undefined, { env: GIT_ENV });
+    writeFileSync(join(up, 'CLAUDE.md'), '# fixture\n\n## Session Config\n\nvcs: gitlab\n');
+    git(up, ['add', '-A']);
+    commit(up, 'pre-adoption');
+    git(up, ['push', '-q', origin, 'main']);
+
+    // The stale checkout branches off here, before origin adopts the policy.
+    const dir = join(root, 'work');
+    fixtureGit(['clone', '-q', origin, dir], undefined, { env: GIT_ENV });
+    git(dir, ['checkout', '-q', '-b', 'feature/old']);
+    writeFileSync(join(dir, 'private.md'), 'private\n');
+    git(dir, ['add', '-A']);
+    commit(dir, 'private work');
+    git(dir, ['remote', 'add', 'github', github]);
+
+    mkdirSync(join(up, '.orchestrator', 'policy'), { recursive: true });
+    writeFileSync(join(up, '.orchestrator', 'policy', 'public-export.json'), JSON.stringify({
+      version: 1, exclude: [{ path: 'docs/audits/', reason: 'fixture', issue: '#1645' }],
+    }));
+    writeFileSync(join(up, 'CLAUDE.md'), '# fixture\n\n## Session Config\n\nvcs: gitlab\nmirror: curated\n');
+    git(up, ['add', '-A']);
+    commit(up, 'adopt curated export');
+    git(up, ['push', '-q', origin, 'main']);
+
+    const res = runBlock(dir);
+
+    expect(res.code).not.toBe(0);
+    expect(res.stderr).toContain('plain push of HEAD REFUSED');
+    expect(res.stderr).toContain("origin's main carries .orchestrator/policy/public-export.json");
     expect(git(dir, ['ls-remote', 'github']).trim()).toBe('');
   });
 });

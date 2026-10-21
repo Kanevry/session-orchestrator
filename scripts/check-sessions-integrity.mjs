@@ -50,6 +50,7 @@ import { fileURLToPath } from 'node:url';
 
 import { checkSessionsIntegrity, SESSIONS_PATH } from './lib/sessions-integrity-banner.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -146,7 +147,9 @@ export function parseArgs(argv) {
  * @returns {number}
  */
 function countLedgerRecords(repoRoot, sessionId) {
-  const filePath = join(repoRoot, SESSIONS_PATH);
+  // #1592: the same file checkSessionsIntegrity reads — the main checkout's
+  // ledger from a linked worktree, or a record written there reads as missing.
+  const filePath = join(resolveEventsLedgerRoot(repoRoot), SESSIONS_PATH);
   if (!existsSync(filePath)) return 0;
   let matched = 0;
   for (const line of readFileSync(filePath, 'utf8').split('\n')) {

@@ -57,6 +57,7 @@ beforeEach(() => {
   // empty tmp dir so readRegistry() inside collectRows() returns [].
   prevRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
   const emptyReg = mkdtempSync(join(tmpdir(), 'board-writer-reg-'));
+  extraCleanupDirs.push(emptyReg);
   process.env.SO_SESSION_REGISTRY_DIR = emptyReg;
 });
 

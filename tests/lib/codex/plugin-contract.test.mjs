@@ -466,10 +466,10 @@ describe('validateCodexPluginContract', () => {
   });
 
   it('records a Codex tool vocabulary that contains none of the Claude tool names the PreToolUse guards gate on', () => {
-    // Not decoration: every guard in hooks/ opens with `tool_name !== 'Bash'`
-    // (or Edit/Write/MultiEdit) → emitAllow(). Wiring one into hooks-codex.json
-    // yields a hook that runs, matches nothing and allows everything. The day
-    // this assertion goes red is the day a tool-name map became possible.
+    // CODEX_TOOL_NAMES is the MODEL-facing vocabulary. The hook payload is a
+    // different surface: measured 2026-10-20 on codex-cli 0.160.1 (#1669), a
+    // shell call reaches PreToolUse as `tool_name: "Bash"`. This assertion
+    // keeps the two surfaces from being conflated in the constant.
     for (const claudeTool of ['Bash', 'Edit', 'Write', 'MultiEdit']) {
       expect(CODEX_TOOL_NAMES).not.toContain(claudeTool);
     }
