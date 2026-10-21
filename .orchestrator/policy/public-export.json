@@ -10,6 +10,21 @@
     { "path": "docs/proposals/", "reason": "Internal proposals; working documents, not documentation.", "issue": "#1594" },
     { "path": "docs/prd/", "reason": "Internal product requirement documents (plan-default-visibility: internal); they describe private repositories and fleet state.", "issue": "#1631" },
     { "path": "docs/sunset-review/", "reason": "Internal sunset reviews; working documents, not documentation.", "issue": "#1594" },
-    { "path": "marketing/", "reason": "Campaign working material; not part of the published plugin.", "issue": "#1594" }
+    { "path": "marketing/", "reason": "Campaign working material; not part of the published plugin.", "issue": "#1594" },
+    { "path": "CODEOWNERS", "reason": "GitLab code-owner file; the account it names is a different person on GitHub.", "issue": "#1594" },
+    { "path": ".semgrep.yml", "reason": "Semgrep rules for the private GitLab pipeline; nothing on GitHub reads them.", "issue": "#1594" },
+    { "path": "assets/marketing/", "reason": "Campaign working material; not part of the plugin and already excluded from the npm package.", "issue": "#1594" },
+    { "path": "site/brand/a-leitstand/", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/a2-agentenmodule/", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/b-offenes-s/", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/c-werkbank/", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/output/", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/index.html", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/initial-directions.html", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/a-refinement.html", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/render.html", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/README.md", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/geometry.json", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" },
+    { "path": "site/brand/preferred.json", "reason": "Logo design studies and their working files; the site and the README use only site/brand/a3-terminalmodule/ and FONT-LICENSE.txt.", "issue": "#1594" }
   ]
 }

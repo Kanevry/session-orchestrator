@@ -260,6 +260,58 @@ describe('planRuleExpirySweep + applyRuleExpirySweep', () => {
     expect(plan.plans[0]).toMatchObject({ action: 'keep', keptPairIds: ['id-alpha'], unresolvedPairIds: [] });
   });
 
+  it.each([
+    { metadata: { _archive_reason: 'expired' }, tombstone: false },
+    { metadata: { _archive_reason: 'pruned' }, tombstone: false },
+    { metadata: { _archive_reason: 'superseded', _superseded_by: 'id-winner' }, tombstone: true },
+    { metadata: { _archive_reason: 'merged', _merged_into: 'id-winner' }, tombstone: true },
+    { metadata: { _archive_reason: 'superseded' }, tombstone: true },
+    { metadata: { _archive_reason: 'merged' }, tombstone: true },
+    { metadata: { _superseded_by: 'id-winner' }, tombstone: true },
+    { metadata: { _merged_into: 'id-winner' }, tombstone: true },
+  ])('resolves archived expiry except tombstones, while the live store wins: $metadata (#1711)', async ({ metadata, tombstone }) => {
+    writeRule('fixture.md', {
+      expiresAt: '2026-12-01',
+      entries: [
+        { key: 'anti-pattern/archived', id: 'id-archived', heading: 'Archived expired' },
+        { key: 'anti-pattern/reactivated', id: 'id-reactivated', heading: 'Reactivated holds' },
+      ],
+    });
+    writeLearnings([learning('id-reactivated', 'anti-pattern/reactivated', FUTURE)], ['{broken live']);
+    const archive = [
+      { ...learning('id-archived', 'anti-pattern/archived', PAST), ...metadata },
+      learning('id-reactivated', 'anti-pattern/reactivated', PAST),
+    ].map((record) => JSON.stringify({
+      ...record,
+      _archived_at: '2026-02-01T00:00:00.000Z',
+    }));
+    writeFileSync(
+      join(repoRoot, '.orchestrator', 'metrics', 'learnings-archive.jsonl'),
+      [...archive, '{broken archive', '{another broken archive'].join('\n') + '\n',
+    );
+
+    const plan = await planRuleExpirySweep({ repoRoot, now: NOW });
+    expect(plan.plans[0]).toMatchObject({
+      action: tombstone ? 'keep' : 'rewrite',
+      expiredPairIds: tombstone ? [] : ['id-archived'],
+      keptPairIds: ['id-reactivated'],
+      unresolvedPairIds: tombstone ? ['id-archived'] : [],
+    });
+    if (tombstone) {
+      const before = readRule();
+      const applied = applyRuleExpirySweep(plan, { repoRoot, now: NOW });
+      expect(applied.errors).toEqual([]);
+      expect(applied.deleted).toEqual([]);
+      expect(applied.rewritten).toEqual([]);
+      expect(readRule()).toBe(before);
+    } else {
+      expect(plan.plans[0].nextContent).not.toContain('### Archived expired');
+      expect(plan.plans[0].nextContent).toContain('### Reactivated holds');
+    }
+    expect(plan.malformedLines).toBe(1);
+    expect(plan.archiveMalformedLines).toBe(2);
+  });
+
   it('T1 — one of three entries expired: rewrite drops that prose block and keeps ALL THREE id bullets, the expired one marked `markers only` (bug: removing the pair too silently re-proposes the learning on the next /reconcile run)', async () => {
     threePairFixture();
     const plan = await planRuleExpirySweep({ repoRoot, now: NOW });

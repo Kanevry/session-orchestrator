@@ -553,6 +553,8 @@ runCheck('check-test-git-config-target.mjs');
 process.stdout.write('\n');
 if (runCheck('check-hooks-emit-event-guard.mjs') !== 0) checkFailed = 1;
 
+process.stdout.write('\n'); if (runCheck('check-workflow-continue-on-error.mjs') !== 0) checkFailed = 1;
+
 // BLOCKING (#1184): every scripts/lib/validate/check-*.mjs must be referenced
 // by basename from this file, .husky/pre-commit, or .gitlab-ci.yml — or carry
 // a `// registration: standalone <reason>` header marker declaring itself

@@ -11,7 +11,7 @@ Guide for using Session Orchestrator with OpenAI Codex through Codex's public pl
 
 ## Installation
 
-**Recommended:** the short remote form (`codex plugin marketplace add <owner>/<repo>`) needs no local clone — see "Short-Form Marketplace Add" below. The steps below are the maintainer/local-clone path used by `scripts/codex-install.mjs`.
+Two paths. The clone below is the complete install: it puts the runtime dependencies next to the plugin. The short remote form (`codex plugin marketplace add <owner>/<repo>`) needs no clone and takes two commands, but the installed plugin has no `node_modules`, so part of the plugin falls back or stops until you run `npm install` there — see "Short-Form Marketplace Add" below.
 
 Clone the repository, install its runtime dependencies, and run the installer from the plugin root:
 
@@ -34,7 +34,7 @@ A marketplace on the working checkout copies all of it into the Codex plugin cac
 
 It operates only through public Codex plugin commands; hook trust remains untouched.
 
-### Short-Form Marketplace Add (Recommended — Verified 2026-09-04, codex-cli 0.144.4)
+### Short-Form Marketplace Add (Verified 2026-09-04, codex-cli 0.144.4; dependencies measured 2026-10-21, codex-cli 0.160.1)
 
 `codex plugin marketplace add --help` documents a short remote form:
 
@@ -42,7 +42,7 @@ It operates only through public Codex plugin commands; hook trust remains untouc
 codex plugin marketplace add owner/repo --ref main
 ```
 
-This is the recommended install path — no local clone needed. Confirmed end-to-end on codex-cli **0.144.4** (2026-09-04), against this repo's unchanged flat layout (`.codex-plugin/plugin.json` + `.claude-plugin/marketplace.json` at repo root, no `plugins/<name>/`):
+This is the shortest install path — no local clone needed. Confirmed end-to-end on codex-cli **0.144.4** (2026-09-04), against this repo's unchanged flat layout (`.codex-plugin/plugin.json` + `.claude-plugin/marketplace.json` at repo root, no `plugins/<name>/`):
 
 ```
 $ codex plugin add session-orchestrator@kanevry --json
@@ -52,6 +52,13 @@ $ echo $?
 ```
 
 `codex plugin list --available --json --marketplace kanevry` confirms `installed: true, enabled: true` for the same layout — no `plugins/<name>/` restructuring was needed.
+
+**No runtime dependencies on this path (measured 2026-10-21, codex-cli 0.160.1, isolated `CODEX_HOME`).** `marketplace add` and `plugin add` both exit 0, but the installed path (`~/.codex/plugins/cache/kanevry/session-orchestrator/<version>`) has no `node_modules`. The SessionStart hook, the Bash guards and `scripts/parse-config.mjs` still run (the destructive-command guard's `git stash` check falls back to a warning, because it needs `zx`). Everything else that needs a runtime dependency (`zx`, `zod`, `js-yaml`, `ajv`, `remark`, …) either falls back or stops:
+
+- `owner.yaml` loads `js-yaml` lazily: when the file exists, owner preferences fall back to defaults and the process prints `WARN owner-yaml: 'js-yaml' is not installed … Run 'npm install' in the plugin directory`.
+- Scripts that import a dependency at the top stop with `ERR_MODULE_NOT_FOUND` and no warning: the worktree helpers (`zx`), the learnings index (`zod`), the persona panel and the PRD archive (`js-yaml`), among others (18 files import `js-yaml` that way).
+
+To restore them, run `npm install --omit=dev --ignore-scripts` in the `installedPath` that `codex plugin add --json` prints, and again after every update, because each version gets a new cache directory. The clone path above avoids this.
 
 **Historical note:** on codex-cli 0.141.0 (2026-08-28), the identical `plugin add` command failed against this same layout with `Error: plugin session-orchestrator was not found in marketplace kanevry`; upgrading to 0.144.4+ resolves it.
 
@@ -207,6 +214,7 @@ An empty `SubagentStart` array means the event belongs to the validated Codex su
 After installation or refresh, start a fresh task. In the desktop composer, open the skill picker, search for `go` or `close`, and select the matching **Session Orchestrator** entry. In Codex CLI or the IDE extension, use `/skills` or mention the namespaced skill directly in your prompt. [OpenAI skill invocation](https://learn.chatgpt.com/docs/build-skills)
 
 ```text
+$session-orchestrator:bootstrap         # once per repository, before the first session
 $session-orchestrator:session           # start with the deep default
 $session-orchestrator:session housekeeping  # maintenance session
 $session-orchestrator:session deep      # explicit deep session

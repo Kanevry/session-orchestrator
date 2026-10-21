@@ -33,7 +33,7 @@
 | `.agents/skills/` | Portable GENERATED mirror of all 51 skills — spec-legal frontmatter + pointer body, never duplicated instructions |
 | `skills/*/references/` | Progressive-disclosure detail split out of oversized SKILL.md bodies: `skills/session-start/references`, `skills/wave-executor/references`, `skills/session-end/references`, `skills/architecture/references` |
 | `site/` | The public website (`index.html`, `llms.txt`, `llms-full.txt`, `_census.json`) |
-| `assets/` | Repo assets (`icon.svg`, `og-card.svg`, `wave-lifecycle.svg` — the README's rendered wave diagram) |
+| `assets/` | Repo assets (`icon.svg`, the Codex composer icon). Logo files live in `site/brand/a3-terminalmodule/`, the social image is `site/og.png` |
 
 ## Inventory (canonical)
 

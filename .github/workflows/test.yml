@@ -166,7 +166,8 @@ jobs:
     runs-on: windows-latest
     needs: security
     timeout-minutes: 20
-    continue-on-error: true
+    # #1712: step-level tolerance keeps this informational check run green;
+    # job-level continue-on-error only keeps the workflow green. Warn below.
     defaults:
       run:
         # PowerShell keeps runner.temp paths native; the smoke itself runs the
@@ -192,19 +193,28 @@ jobs:
         run: npm ci
 
       - name: Lint
+        id: lint
+        continue-on-error: true
         run: npm run lint
 
       - name: Typecheck
+        id: typecheck
+        continue-on-error: true
         run: npm run typecheck
 
       - name: Native Windows smoke
+        id: smoke
+        continue-on-error: true
         run: node scripts/ci/windows-smoke.mjs
+
+      - name: Report Windows smoke failures
+        if: always() && (steps.lint.outcome == 'failure' || steps.typecheck.outcome == 'failure' || steps.smoke.outcome == 'failure')
+        run: 'echo "::warning title=Windows smoke::Informational Windows checks failed: lint=${{ steps.lint.outcome }}, typecheck=${{ steps.typecheck.outcome }}, smoke=${{ steps.smoke.outcome }}. See step logs (#1712)."'
 
   test-windows-suite:
     runs-on: windows-latest
     needs: security
     timeout-minutes: 30
-    continue-on-error: true
     defaults:
       run:
         shell: pwsh

@@ -236,13 +236,13 @@ async function resolveLatestVersion({ cacheDir, now, fetchImpl }) {
  * The four platforms this probe has a SOURCED update recipe for. Each string
  * is quoted from the doc that actually documents it, never invented:
  *
- *   - claude: README.md §"Upgrade" (`/plugin update ...`).
+ *   - claude: docs/install.md §"Upgrade" (`/plugin update ...`).
  *   - codex:  docs/codex-setup.md §"Refresh and Explicit Cache Invalidation" —
  *             the short-form marketplace install path, labelled Recommended
  *             there (`codex plugin marketplace upgrade` + `codex plugin add`).
  *   - cursor: README.md's per-platform install row + docs/cursor-setup.md —
  *             re-running the same install script is the documented recipe
- *             (README §"Upgrade": "...followed by the same install
+ *             (docs/install.md §"Upgrade": "...followed by the same install
  *             script you originally ran").
  *   - pi:     the PRIMARY install path is `pi install npm:session-orchestrator`
  *             (docs/pi-setup.md §"Option 1", `docs/pi-setup.md:16`), not the

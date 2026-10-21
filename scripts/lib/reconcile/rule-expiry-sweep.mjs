@@ -146,6 +146,7 @@ import { join, resolve, sep } from 'node:path';
 
 import { atomicWriteWithBackup } from '../io.mjs';
 import { parseLearningsText } from '../learnings/io.mjs';
+import { archivePathFor } from '../learnings/store-role.mjs';
 import { listMachineGeneratedRules } from '../instruction-budget-guard.mjs';
 import { parseGlobsFrontmatter, ruleExpiryInstantMs } from '../rule-loader.mjs';
 import { markCandidateProcessed } from './idempotency.mjs';
@@ -372,13 +373,14 @@ export function parseConsolidatedRule(content) {
 }
 
 /**
- * Read `learnings.jsonl` into `id -> expires_at`, counting malformed lines.
+ * Read the archive and live `learnings.jsonl` into `id -> expires_at`,
+ * counting malformed lines separately for each source.
  *
  * Malformed lines are COUNTED, never silently dropped: a leniently-skipping
  * JSONL parser turns a partial read into a clean verdict, and this sweep
  * DELETES prose on the strength of that verdict.
  *
- * Boundary (BV-004, #1685): the index reads ONLY the live store, never the
+ * Boundary (BV-004, #1685): the index reads the live store and archive, never the
  * sibling `learnings-inbox.jsonl` (#1516). An inbox-only id resolves as absent:
  * consolidated pairs stay unresolved/kept, a single-entry file falls back to
  * its own `expires-at`. Including the inbox would not be purely conservative —
@@ -386,23 +388,42 @@ export function parseConsolidatedRule(content) {
  * is kept today. Ceiling: an inbox record's later `expires_at` cannot delay a
  * single-entry delete. Revisit trigger: the first real inbox host, or a
  * generated rule citing an inbox-only learning-id.
+ * The archive is admissible because each learning's own `expires_at` carries
+ * the expiry evidence; live records override archived records with the same id.
+ * Superseded/merged tombstones stay excluded because their content lives in a
+ * winner; revisit pointer resolution if a rule section stays permanently
+ * unresolved because it cites only a tombstone.
  *
  * @param {string} absPath
- * @returns {Promise<{expiryById: Map<string, string>, malformedLines: number}>}
+ * @returns {Promise<{expiryById: Map<string, string>, malformedLines: number, archiveMalformedLines: number}>}
  */
 async function loadExpiryIndex(absPath) {
   const expiryById = new Map();
   // Unlike the shared tolerant reader, a sweep needs evidence that the store
   // was actually read: an absent store must not become an empty expiry index.
   const { entries, malformed } = parseLearningsText(await readFile(absPath, 'utf8'));
-  for (const entry of entries) {
+  let archiveText = '';
+  try {
+    archiveText = await readFile(archivePathFor(absPath), 'utf8');
+  } catch (err) {
+    if (err?.code !== 'ENOENT') throw err;
+  }
+  const archive = parseLearningsText(archiveText);
+  const archivedLearnings = archive.entries.filter((entry) =>
+    !Object.hasOwn(entry, '_superseded_by') &&
+    !Object.hasOwn(entry, '_merged_into') &&
+    entry._archive_reason !== 'superseded' &&
+    entry._archive_reason !== 'merged',
+  );
+  // Overlay the live store last: a reactivated learning may have a later expiry.
+  for (const entry of [...archivedLearnings, ...entries]) {
     const id = entry?.id;
     const expiresAt = entry?.expires_at;
     if (typeof id === 'string' && id.length > 0 && typeof expiresAt === 'string') {
       expiryById.set(id, expiresAt);
     }
   }
-  return { expiryById, malformedLines: malformed.length };
+  return { expiryById, malformedLines: malformed.length, archiveMalformedLines: archive.malformed.length };
 }
 
 /** `now` as epoch-ms, accepting a Date, a number, an ISO string, or nothing. */
@@ -581,7 +602,7 @@ function keepOrRaisePlan(base, parsed, advisory, raiseTo) {
  *   swept. Default 0: unlike the learnings sweep, nothing re-stamps a rule
  *   file's `expires-at`, so there is no re-stamp window to protect.
  * @param {string} [opts.learningsPath]    override the learnings store
- * @returns {Promise<{plans: Array<object>, skipped: Array<{file: string, reason: string}>, malformedLines: number, ok: boolean}>}
+ * @returns {Promise<{plans: Array<object>, skipped: Array<{file: string, reason: string}>, malformedLines: number, archiveMalformedLines: number, ok: boolean}>}
  */
 export async function planRuleExpirySweep(opts = {}) {
   const { repoRoot, now, graceDays = 0, learningsPath } = opts;
@@ -598,9 +619,9 @@ export async function planRuleExpirySweep(opts = {}) {
   // Ohne generierte Regeln gibt es nichts zu pruefen: der Bestand wird dann
   // nicht gelesen, damit ein Repo ohne learnings.jsonl nicht mit ENOENT endet
   // (Housekeeping Schritt 3 ruft die CLI repo-unabhaengig auf).
-  const { expiryById, malformedLines } =
+  const { expiryById, malformedLines, archiveMalformedLines } =
     listed.rules.length === 0
-      ? { expiryById: new Map(), malformedLines: 0 }
+      ? { expiryById: new Map(), malformedLines: 0, archiveMalformedLines: 0 }
       : await loadExpiryIndex(join(repoRoot, learningsPath ?? DEFAULT_LEARNINGS_PATH));
   const rulesDir = join(repoRoot, '.claude', 'rules');
   /** @type {Array<object>} */
@@ -822,7 +843,7 @@ export async function planRuleExpirySweep(opts = {}) {
     });
   }
 
-  return { plans, skipped, malformedLines, ok: listed.ok };
+  return { plans, skipped, malformedLines, archiveMalformedLines, ok: listed.ok };
 }
 
 /**

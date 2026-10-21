@@ -23,8 +23,10 @@
 //                         + Unreleased folded, drift sweep, tag collision
 //                         (local, origin, github), github/main mirror parity
 //                         (under `mirror: curated`: github/main's Source-Commit
-//                         trailer == HEAD instead of the sha),
-//                         npm registry collision, npm token liveness, CI green
+//                         trailer == HEAD instead of the sha, plus a green
+//                         snapshot-probe receipt for HEAD's export tree),
+//                         npm registry collision, npm token liveness and
+//                         publish capability (Bypass-2FA), CI green
 //                         on HEAD, leakage gate over retained archive filenames and contents.
 //   --publish             Runs --check first, then token publish via temp
 //                         userconfig (NPM_TOKEN from .env.local). A
@@ -116,6 +118,7 @@ import {
   readMirrorSetting,
   verifyExportCommit,
 } from './lib/github-export.mjs';
+import { computeSnapshotTree, readSnapshotProbeReceipt } from './lib/snapshot-probe.mjs';
 
 const PACKAGE_NAME = 'session-orchestrator';
 const SPAWN_OPTS = { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 };
@@ -1027,7 +1030,7 @@ export function evaluateCuratedMirrorParity(ls, head, commitBody) {
  *
  * @param {string} repoRoot
  * @param {string} head
- * @returns {{ skip: boolean, mode: {ok: boolean, detail: string}, parity: {ok: boolean, detail: string}, pushUrl: {ok: boolean, detail: string}, ciSha: string }}
+ * @returns {{ skip: boolean, curated?: boolean, mode: {ok: boolean, detail: string}, parity: {ok: boolean, detail: string}, pushUrl: {ok: boolean, detail: string}, ciSha: string }}
  */
 export function evaluateGithubMirrorPreflight(repoRoot, head) {
   const setting = readMirrorSetting(repoRoot);
@@ -1052,6 +1055,7 @@ export function evaluateGithubMirrorPreflight(repoRoot, head) {
     const parity = evaluateCuratedMirrorParity(ls, head, body);
     return {
       skip: false,
+      curated: true,
       mode: { ok: true, detail: 'curated — GitHub receives the export snapshot, never HEAD' },
       parity: { ok: parity.ok, detail: parity.detail },
       pushUrl,
@@ -1070,6 +1074,55 @@ export function evaluateGithubMirrorPreflight(repoRoot, head) {
     pushUrl,
     ciSha: head,
   };
+}
+
+/** Steps that run the test suite; a receipt without one proves only validate-plugin. */
+const SNAPSHOT_SUITE_STEPS = ['test', 'remote-gate'];
+const SNAPSHOT_PROBE_REMEDY = 'run: node scripts/snapshot-probe.mjs --host <alias> (or --local)';
+
+/**
+ * Verdict of the `snapshot-probe` preflight row (#1712). Release 5.13.0 found
+ * three blockers only after the first curated GitHub push, because nobody had
+ * ever run the suite on the exported tree. Green only for a receipt of THIS
+ * snapshot tree with `ok: true`, every step `pass`, and at least one suite step
+ * (`test` or `remote-gate`) — a validate-plugin-only receipt never ran a test.
+ * Runs nothing itself. Every red detail ends with the remediation.
+ *
+ * @param {{ tree: {ok: boolean, snapshotTree?: string, reason?: string}, receiptResult?: {ok: boolean, receipt: any, reason?: string}|null }} input
+ * @returns {{ ok: boolean, detail: string }}
+ */
+export function evaluateSnapshotProbeRow({ tree, receiptResult }) {
+  const red = (why) => ({ ok: false, detail: `${why} — ${SNAPSHOT_PROBE_REMEDY}` });
+  if (!tree?.ok) return red(`snapshot tree not computable (${tree?.reason ?? 'unknown'})`);
+  const short = String(tree.snapshotTree).slice(0, 8);
+  if (!receiptResult?.ok) {
+    const reason = receiptResult?.reason ?? 'absent';
+    return red(reason === 'absent' ? `no probe receipt for snapshot tree ${short}` : `probe receipt for tree ${short} ${reason}`);
+  }
+  const receipt = receiptResult.receipt;
+  const steps = Array.isArray(receipt?.steps) ? receipt.steps : [];
+  const failed = steps.filter((s) => s?.status !== 'pass').map((s) => `${s?.name ?? '?'}=${s?.status ?? '?'}`);
+  if (failed.length > 0) return red(`probe of tree ${short} red: ${failed.join(', ')}`);
+  if (receipt.ok !== true) return red(`probe receipt for tree ${short} is not ok`);
+  const names = steps.map((s) => s.name);
+  if (!names.some((n) => SNAPSHOT_SUITE_STEPS.includes(n))) {
+    return red(`probe of tree ${short} ran no suite step (${names.join(', ') || 'no steps'})`);
+  }
+  return { ok: true, detail: `tree ${short} probed green (${names.join(', ')}; route ${receipt.route ?? 'unknown'})` };
+}
+
+/**
+ * Wiring of the `snapshot-probe` row: only under `mirror: curated` (read off the
+ * {@link evaluateGithubMirrorPreflight} verdict). Under any other mode GitHub
+ * never receives an exported tree, so the row is skipped.
+ * @param {string} repoRoot @param {string} head @param {{ curated?: boolean }} mirror
+ * @returns {{ ok: boolean, detail: string }}
+ */
+export function evaluateSnapshotProbePreflight(repoRoot, head, mirror) {
+  if (!mirror?.curated) return { ok: true, detail: 'skipped — not mirror: curated' };
+  const tree = computeSnapshotTree({ repoRoot, source: head });
+  const receiptResult = tree.ok ? readSnapshotProbeReceipt({ repoRoot, snapshotTree: tree.snapshotTree }) : null;
+  return evaluateSnapshotProbeRow({ tree, receiptResult });
 }
 
 /**
@@ -1112,6 +1165,78 @@ export function evaluateNpmAuth(whoami) {
 }
 
 /**
+ * Does `abbreviated` (an `npm token list --json` `token` field) denote
+ * `fullToken`? npm 11 prints the first 8 characters, a literal `...`, and the
+ * last 4 (measured 2026-10-21, npm 11.19.1). Any other shape is no match —
+ * guessing a looser form would let a different token answer for this one.
+ *
+ * @param {string} fullToken
+ * @param {unknown} abbreviated
+ * @returns {boolean}
+ */
+export function matchAbbreviatedNpmToken(fullToken, abbreviated) {
+  if (typeof fullToken !== 'string' || typeof abbreviated !== 'string') return false;
+  const m = abbreviated.match(/^(.{8})\.\.\.(.{4})$/);
+  if (!m) return false;
+  return fullToken.length > 12 && fullToken.startsWith(m[1]) && fullToken.endsWith(m[2]);
+}
+
+/**
+ * Judge whether the token in use can publish NON-INTERACTIVELY (#1712).
+ *
+ * `npm-token-live` (`npm whoami`) proves only that the token authenticates.
+ * Release 5.13.0 passed it and then failed `npm publish` with EOTP: the
+ * granular token lacked "Bypass 2FA". Without bypass, publish fails with EOTP
+ * (account with 2FA) or E403 (account without) — either way the release
+ * cannot finish, so `bypass_2fa !== true` is red, never a warning.
+ *
+ * The caller matches the token and strips `token`/`key`/`id` before calling;
+ * this function never sees a token value, and its details name only the
+ * token's NAME. Fail-closed: anything it cannot confirm is red.
+ *
+ * @param {{matches?: number, entry?: {name?: string, bypass_2fa?: unknown,
+ *   permissions?: Array<{name?: string, action?: string}>,
+ *   scopes?: Array<{name?: string|null, type?: string}>, revoked?: unknown,
+ *   expiry?: string|null} | null, now?: Date, packageName?: string, error?: string}} input
+ * @returns {{ok: boolean, detail: string}}
+ */
+export function evaluateNpmPublishCapability({ matches, entry, now = new Date(), packageName = PACKAGE_NAME, error } = {}) {
+  if (error) return { ok: false, detail: `npm token list failed: ${String(error).slice(0, 200)}` };
+  if (matches !== 1 || !entry) {
+    return { ok: false, detail: `cannot identify the token in use in npm token list (matches: ${matches})` };
+  }
+  const name = String(entry.name ?? '(unnamed)').slice(0, 80);
+  if (entry.revoked !== null && entry.revoked !== undefined) {
+    return { ok: false, detail: `token '${name}' is revoked` };
+  }
+  let expiry = null;
+  if (entry.expiry !== null && entry.expiry !== undefined) {
+    expiry = new Date(entry.expiry);
+    if (Number.isNaN(expiry.getTime())) return { ok: false, detail: `token '${name}' has an unreadable expiry` };
+    if (expiry.getTime() <= now.getTime()) {
+      return { ok: false, detail: `token '${name}' expired ${expiry.toISOString().slice(0, 10)}` };
+    }
+  }
+  const perms = Array.isArray(entry.permissions) ? entry.permissions : [];
+  if (!perms.some((p) => p?.name === 'package' && p?.action === 'write')) {
+    return { ok: false, detail: `token '${name}' has no package write permission` };
+  }
+  // A package scope with `name: null` covers all packages (measured shape).
+  const scopes = Array.isArray(entry.scopes) ? entry.scopes : [];
+  if (!scopes.some((sc) => sc?.type === 'package' && (sc.name === null || sc.name === packageName))) {
+    return { ok: false, detail: `token '${name}' is not scoped to ${packageName}` };
+  }
+  if (entry.bypass_2fa !== true) {
+    return {
+      ok: false,
+      detail: `token '${name}' lacks Bypass-2FA — npm publish will fail with EOTP/E403; create a granular token per skills/npm-publish § Token requirements`,
+    };
+  }
+  const expires = expiry ? `expires ${expiry.toISOString().slice(0, 10)}` : 'no expiry';
+  return { ok: true, detail: `token '${name}': bypass-2FA, write, ${expires}` };
+}
+
+/**
  * Turn a `checkCiStatus` result into the `ci-green-on-head` preflight row.
  *
  * Three input states since #1031, and the middle one is why this is a named
@@ -1136,8 +1261,8 @@ export function evaluateNpmAuth(whoami) {
  * those two. With neither present the text is byte-identical to
  * before, so a plain green or a named failing job reads exactly as it did.
  *
- * @param {null | {status?: string, failingJobName?: string, degraded?: string,
- *   detail?: string, details?: {reason?: string}}} ci
+ * @param {null | {status?: string, failingJobName?: string, failingJobNames?: string[],
+ *   degraded?: string, detail?: string, details?: {reason?: string}}} ci
  * @returns {{ok: boolean, detail: string}}
  */
 export function evaluateCiRow(ci) {
@@ -1148,7 +1273,11 @@ export function evaluateCiRow(ci) {
   }
   // A failing job NAMES the failure, so it wins over the generic reason;
   // `reason` is what fills the gap when there is no job to name (`unknown`).
-  const reason = ci.failingJobName || ci.details?.reason || '';
+  // Several red jobs are ALL named (#1712): 5.13.0 showed only the first, and
+  // a red informational Windows run sat beside the real cause. The names come
+  // from `failingJobNames`, sanitised at generation like `failingJobName`.
+  const names = Array.isArray(ci.failingJobNames) ? ci.failingJobNames : [];
+  const reason = (names.length > 1 ? names.join(', ') : ci.failingJobName) || ci.details?.reason || '';
   const why = reason ? ` (${reason})` : '';
   return { ok: ci.status === 'green', detail: `status: ${ci.status}${why}` };
 }
@@ -1366,6 +1495,9 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
   add('github-mirror-mode', mirror.mode.ok, mirror.mode.detail);
   add('head-pushed-github', mirror.parity.ok, mirror.parity.detail);
   add('github-push-url', mirror.pushUrl.ok, mirror.pushUrl.detail);
+  // Curated only: the exported tree must have been probed (#1712).
+  const probe = evaluateSnapshotProbePreflight(repoRoot, head, mirror);
+  add('snapshot-probe', probe.ok, probe.detail);
 
   // 2. Surface parity.
   const surfaceRows = scanSurfaces(repoRoot, target);
@@ -1447,6 +1579,35 @@ async function preflight(repoRoot, target, { skipCi = false } = {}) {
     // A missing/ungitignored .env.local is a legitimate red preflight, not a
     // crash: "cannot publish from here" is exactly what the operator needs.
     add('npm-token-live', false, err.message);
+  }
+
+  // 5c. npm token PUBLISH capability (#1712). `whoami` was green for 5.13.0,
+  // yet publish failed with EOTP: the token lacked Bypass-2FA. `npm token list`
+  // (works with a granular token; `npm profile get` does not) carries that
+  // flag. The token is matched INSIDE this block and only the stripped entry
+  // leaves it — no token value, prefix or key reaches a detail string.
+  try {
+    const token = loadNpmToken(repoRoot);
+    const listed = withTempUserconfig(token, (rc) => {
+      const res = run('npm', ['token', 'list', '--json', '--userconfig', rc], { cwd: repoRoot });
+      if (res.status !== 0) return { error: `exit ${res.status}: ${(res.stderr || '').trim().slice(0, 200)}` };
+      let list;
+      try {
+        list = JSON.parse(res.stdout || '');
+      } catch {
+        return { error: 'output is not JSON' };
+      }
+      if (!Array.isArray(list)) return { error: 'output is not a JSON array' };
+      const hits = list.filter((e) => matchAbbreviatedNpmToken(token, e?.token));
+      if (hits.length !== 1) return { matches: hits.length, entry: null };
+      // Destructured only to strip them: they never leave this closure.
+      const { token: _abbr, key: _key, id: _id, ...entry } = hits[0];
+      return { matches: 1, entry };
+    });
+    const verdict = evaluateNpmPublishCapability(listed);
+    add('npm-token-publish', verdict.ok, verdict.detail);
+  } catch (err) {
+    add('npm-token-publish', false, err.message);
   }
 
   // 6/6b. CI green on HEAD, both platforms — judged for the commit actually
@@ -1545,7 +1706,11 @@ export function evaluatePublishReceipt(result, target) {
     target,
     detail: confirmed
       ? `${PACKAGE_NAME}@${target} receipt confirmed`
-      : `npm publish did not emit a target-confirmed receipt for ${PACKAGE_NAME}@${target} (exit ${result.status})`,
+      : /\bEOTP\b/.test(output)
+        // #1712: npm asks for a one-time password BEFORE uploading, so nothing
+        // reached the registry and a re-run is safe.
+        ? `npm publish failed with EOTP (exit ${result.status}): the token lacks Bypass-2FA — nothing was published; re-running --publish with a Bypass-2FA granular token is safe (skills/npm-publish § Token requirements)`
+        : `npm publish did not emit a target-confirmed receipt for ${PACKAGE_NAME}@${target} (exit ${result.status})`,
   };
 }
 

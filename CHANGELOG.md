@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Snapshot probe for the curated GitHub export** (#1712): `node scripts/snapshot-probe.mjs --host <alias>` checks out the exact tree the curated export would publish, outside the repo, as a one-commit repo without `origin`. It runs `validate-plugin` locally and the full gate on the remote host, and writes a receipt keyed by the snapshot tree under `.orchestrator/tmp/snapshot-probe/`. Exit 3 means the snapshot is red. Exit 2 means the suite did not run or did not finish (unknown host, fallback, gate timeout); in that case no receipt is written. `writeSnapshotTree()` is extracted from `buildGithubExport`, so the probe tests the tree the export publishes. `runRemoteGate()` is extracted from the pre-push router; its defaults leave the hook unchanged.
+- **Release preflight rows `snapshot-probe` and `npm-token-publish`** (#1712):
+  - Under `mirror: curated`, `release.mjs --check` passes only with a green probe receipt for the release commit's snapshot tree that includes a suite run.
+  - `npm-token-publish` reads `npm token list` and goes red when the token in use lacks Bypass-2FA, write permission, a fitting scope or a valid expiry. This is the EOTP case of 5.13.0, where `whoami` was green.
+  - An EOTP publish failure now says that nothing was published.
+- **Workflow lint `check-workflow-continue-on-error`** (#1712): `validate-plugin` rejects job-level `continue-on-error` in `.github/workflows/`, because it keeps only the workflow green while the job's check run still concludes failure. The informational Windows smoke now tolerates its individual steps and reports a failure as a `::warning` annotation.
+
+### Fixed
+
+- **The release CI row names every red check run** (#1712): `checkCiStatus` adds `failingJobNames` next to `failingJobName`, and the GitHub check-runs request asks for 100 per page instead of 30.
+- **The rule expiry sweep resolves archived learnings** (#1711): ids that moved to `learnings-archive.jsonl` no longer stay unresolved forever. The live store wins on a duplicate id. Superseded and merged tombstones stay out of the index.
+
 ## [5.13.0] - 2026-10-21
 
 ### Added

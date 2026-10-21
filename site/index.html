@@ -132,7 +132,7 @@
           "name": "Which tools does it work with?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills, but its destructive-command and file-scope rules are instructions only; the plugin does not enforce either guard there. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially."
+            "text": "Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills and runs the destructive-command guard as a Bash hook that blocks; its file-scope rules are instructions only, because Codex edits files through apply_patch, which the scope guard does not read. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially."
           }
         },
         {
@@ -172,7 +172,7 @@
           "name": "Can it break my project?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "It can still make mistakes. On Claude Code, an active destructive-command hook applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce this guard or the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
+            "text": "It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
           }
         },
         {
@@ -180,7 +180,7 @@
           "name": "Who maintains it?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "One person, Bernhard Götzendorfer. Questions filed on GitHub are answered by him. It is shipped as-is, with best-effort maintenance and no service level agreement."
+            "text": "Me, Bernhard Götzendorfer. I answer questions on GitHub myself. It is shipped as-is, with best-effort maintenance and no service level agreement."
           }
         }
       ]
@@ -200,9 +200,9 @@
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.13.0</span></span></a>
-    <nav class="nav" aria-label="Main"><a href="#loop">Workflow</a><a href="#features">Features</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <nav class="nav" aria-label="Main"><a href="#loop">Workflow</a><a href="#features">Features</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/" aria-current="page" lang="en">EN</a><a href="/de"  lang="de">DE</a></p>
-    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#loop">Workflow</a><a href="#features">Features</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="/lead">Lead session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#loop">Workflow</a><a href="#features">Features</a><a href="#install">Install</a><a href="/guide">Guide</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
   </div>
 </header>
 <main id="main">
@@ -257,7 +257,7 @@
       <ul class="feature-grid">
         <li class="feature"><span class="feature-tag">Start right</span><h3>Know what to work on.</h3><p class="feature-value">Every session starts from the real state of your project, not from a prompt you write again each time.</p><p><code>/session</code> reads git, open issues, recent commits and the last session record, recommends one scope and waits for your correction. <code>/plan</code>, <code>/brainstorm</code> and <code>/grill</code> help while an idea is still vague.</p></li>
         <li class="feature"><span class="feature-tag">Catch mistakes early</span><h3>Errors stop at the next check.</h3><p class="feature-value">A broken test is found right after the work that caused it, not after more work is built on top of it.</p><p><code>/go</code> checks each wave with your tests and typecheck and turns failures into fix tasks; lint and the full suite run before the commit. <code>/close</code> checks every planned item against what happened. <code>/debug</code> finds the root cause before anyone patches.</p></li>
-        <li class="feature"><span class="feature-tag">Stay in scope</span><h3>Agents keep to their files.</h3><p class="feature-value">Parallel agents do not overwrite each other, and destructive commands do not slip through.</p><p>Each agent gets a declared list of files, and overlaps are rejected before work starts. A guard blocks 12 destructive command patterns, such as hard resets, <code>rm -rf</code>, force-push and <code>DROP TABLE</code>, and warns on 4 more. Real hooks on Claude Code, bridges on Cursor and Pi, instructions only on Codex.</p></li>
+        <li class="feature"><span class="feature-tag">Stay in scope</span><h3>Agents keep to their files.</h3><p class="feature-value">Parallel agents do not overwrite each other, and destructive commands do not slip through.</p><p>Each agent gets a declared list of files, and overlaps are rejected before work starts. A guard blocks 12 destructive command patterns, such as hard resets, <code>rm -rf</code>, force-push and <code>DROP TABLE</code>, and warns on 4 more. Real hooks on Claude Code, bridges on Cursor and Pi. On Codex the command guard runs as a hook; the file list stays an instruction.</p></li>
         <li class="feature"><span class="feature-tag">Keep the thread</span><h3>Pick up where you stopped.</h3><p class="feature-value">A crash, a closed laptop or a second session in the same folder does not cost you the work.</p><p><code>STATE.md</code> records every finished wave, so the next <code>/session</code> offers to resume. A heartbeat lock keeps two sessions from colliding in one checkout. <code>/close</code> files what is left as issues on GitLab or GitHub.</p></li>
         <li class="feature"><span class="feature-tag">Learn as you go</span><h3>It improves with your sessions.</h3><p class="feature-value">Patterns from your own sessions become rules your agents follow next time, once you approve them.</p><p>Every session appends a record. <code>/evolve</code> proposes learnings with a confidence score, and <code>/reconcile</code> drafts rules from them. You read each one and delete what you disagree with. Optional: mirror sessions and learnings into a Markdown notes vault.</p></li>
         <li class="feature"><span class="feature-tag">Look further</span><h3>Audit, test and review on demand.</h3><p class="feature-value">The same workflow can find problems you did not ask about, and show that the app works.</p><p>A discovery scan at <code>/close</code> turns findings you confirm into issues. <code>/test</code> drives web and macOS flows end to end, <code>/ux-grill</code> checks a running web app for accessibility and layout faults, and <code>/test-audit</code> removes tests that catch nothing. <code>/repo-audit</code> and <code>/harness-audit</code> score a repository against a checklist, and <code>/persona-panel</code> has several reviewer personas read the same output in parallel.</p></li>
@@ -278,23 +278,24 @@
   <section class="sec install-sec" id="install"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Install</p><h2>Your tool.<br>Your next session.</h2></div><p>Choose your installation path. You need Node.js 24 or later and a Git repository. The plugin is free; your coding tool has its own costs.</p></div><div class="install-list"><details class="install-option" name="install-tool" open><summary><span class="install-name">Claude Code</span><span class="meta">plugin marketplace</span></summary><div class="install-body">
           <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Copy</button></p>
           <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Copy</button></p>
+          <details class="install-deps"><summary>Only if a command fails: check the Node dependencies once</summary>
           <p class="small">Current Claude Code installs the Node dependencies with the plugin. To check once, or if yours did not, run the command below in a shell: it runs <code>npm install</code> only when the dependencies are missing. Restart Claude Code if it did.</p>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Copy</button></p>
           <p class="small">Find the enabled <code>session-orchestrator@kanevry</code> entry. Replace the placeholder below with its <code>installPath</code>. If the entry is missing or disabled, resolve that through <code>/plugin</code> first. If several entries match, check the active installation instead of guessing.</p>
-          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Copy</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">clone and installer</span></summary><div class="install-body">
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Copy</button></p></details></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">clone and installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
           <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Copy</button></p>
           <p class="small">Requires Codex CLI 0.144.4 or later. Config goes in <code>AGENTS.md</code>. After installation, open a fresh task and review the plugin hooks through <code>/hooks</code>.</p>
           <p class="small">Select the Session Orchestrator skills: <code>$session-orchestrator:bootstrap</code>, then <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code>, and <code>$session-orchestrator:close</code>. See the <a href="/guide#first-session">first-session guide</a>.</p>
-          <p class="small"><b>Both guards are instructions only on Codex.</b> The plugin does not enforce the destructive-command or file-scope guard here. The workflows and quality checks still run.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">clone and installer</span></summary><div class="install-body">
+          <p class="small"><b>On Codex the Bash guards block; the file-scope guard does not.</b> The destructive-command guard and the other Bash guards run as hooks, and Codex honours their deny. The file-scope guard stays an instruction, because Codex edits files through <code>apply_patch</code>, which the scope guard does not read. The workflows and quality checks still run.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">clone and installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
           <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Copy</button></p>
           <p class="small"><b>Target project.</b> Pass the target project explicitly. Without a path, the installer uses the current directory.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">package manager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Copy</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Copy</button></p>
-          <p class="small">This path installs its own dependencies; the Codex CLI and Cursor clones need <code>npm install</code> once.</p></div></details></div><p class="install-guide">Setting up for the first time? <a href="/guide">The guide covers installation and bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>Follow the rules.<br>Right down to the code.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
+          <p class="small">This path installs its own dependencies; the Codex CLI and Cursor clones need <code>npm install</code> once.</p></div></details></div><p class="install-guide">Setting up for the first time? <a href="/guide">The guide covers installation and bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Under the hood</p><h2>What is enforced,<br>and where it stops.</h2></div><p>See which checks run, what they cover and where their limits are. With the source files to inspect.</p></div><details class="technical-detail" id="enforced"><summary>Checks and their source files</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
           <p class="lede">Some protections run in code; others are instructions the agent must follow. Their strength depends on the tool and configuration.</p>
@@ -315,7 +316,7 @@
             <td data-label="Source"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Claim">With the destructive-command hook active, Claude Code applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges; Codex treats these rules as instructions.</td>
+            <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 12 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
             <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 16 rules</td>
           </tr>
           <tr>
@@ -346,7 +347,7 @@
           <tr><th scope="row">Claude Code</th><td>direct guard hooks; scope blocking requires strict mode</td></tr>
           <tr><th scope="row">Cursor IDE</th><td>bridge for supported tool and shell calls; scope blocking requires strict mode. Post-edit checks cannot prevent a write</td></tr>
           <tr><th scope="row">Pi</th><td>tool-call bridge for supported calls; scope blocking requires strict mode</td></tr>
-          <tr><th scope="row">Codex CLI</th><td>destructive-command and file-scope rules are instructions only; neither guard blocks operations</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>destructive-command guard runs as a Bash hook and blocks; file-scope rules are instructions only, because edits go through <code>apply_patch</code></td></tr>
         </tbody>
       </table>
     </div></details><details class="technical-detail" id="measured"><summary>Repository numbers and their receipt</summary><div class="detail-body">
@@ -364,7 +365,7 @@
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub stars</p></div>
       </div>
 
-      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-20</span> at commit <span class="num" data-metric="counted-sha">95136cb8</span>. Repository records describe development activity, not active users. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
+      <p class="small muted">Counted on <span class="num" data-metric="counted-at">2026-10-20</span> at commit <span class="num" data-metric="counted-sha">95136cb8</span>. Repository records describe development activity, not active users. The session count includes only sessions that actually ran, not every line in the session log, so it is lower than on older versions of this page. npm downloads include automated requests. <a href="/_census.json">See the count receipt</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">A few practical questions</p>
@@ -377,7 +378,7 @@
         </details>
         <details class="faq-item">
           <summary>Which tools does it work with?</summary>
-          <p>Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills, but its destructive-command and file-scope rules are instructions only; the plugin does not enforce either guard there. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially.</p>
+          <p>Claude Code runs the guard hooks directly. Cursor and Pi use bridges with documented limits. Codex CLI offers selectable workflow skills and runs the destructive-command guard as a Bash hook that blocks; its file-scope rules are instructions only, because Codex edits files through apply_patch, which the scope guard does not read. Parallel agents are available on Claude Code and Codex; Cursor and Pi run tasks sequentially.</p>
         </details>
         <details class="faq-item">
           <summary>What is different from just using Claude Code?</summary>
@@ -397,11 +398,11 @@
         </details>
         <details class="faq-item">
           <summary>Can it break my project?</summary>
-          <p>It can still make mistakes. On Claude Code, an active destructive-command hook applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce this guard or the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
+          <p>It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
         </details>
         <details class="faq-item">
           <summary>Who maintains it?</summary>
-          <p>One person, Bernhard G&#246;tzendorfer. Questions filed on GitHub are answered by him. It is shipped as-is, with best-effort maintenance and no service level agreement.</p>
+          <p>Me, Bernhard G&#246;tzendorfer. I answer questions <a href="https://github.com/Kanevry/session-orchestrator/issues">on GitHub</a> myself. It is shipped as-is, with best-effort maintenance and no service level agreement.</p>
         </details>
       </div>
     </div>

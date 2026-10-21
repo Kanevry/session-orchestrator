@@ -29,9 +29,9 @@ Working **in this repo** does not need the installer — those paths are committ
 
 ## Configuration
 
-**Where Cursor picks up project instructions — measured-or-unknown, 2026-09-06.** This page used to state flatly that "Cursor reads CLAUDE.md natively". That claim is **not substantiated**: the current Cursor rules documentation names `.cursor/rules` and `AGENTS.md` as the project-instruction surfaces and does not name `CLAUDE.md`, and nothing in this repo measures the behaviour. Treat native `CLAUDE.md` pickup as **unverified** rather than as fact.
+**Where Cursor picks up project instructions (documented, checked 2026-10-21).** Cursor reads a `CLAUDE.md` in the project root the same way it reads `AGENTS.md` and applies it to every conversation ([Cursor rules help](https://cursor.com/help/customization/rules), section "How does CLAUDE.md work in Cursor?"). Project rules in `.cursor/rules/` stay available for conditional rules. An earlier version of this page (2026-09-06) called native `CLAUDE.md` pickup unverified because the Cursor documentation of that time named only `.cursor/rules` and `AGENTS.md`.
 
-What follows from that, practically: put the `## Session Config` block where you can verify Cursor reads it. `scripts/cursor-install.mjs` and the orchestrator's own config parser (`scripts/parse-config.mjs`) read the block out of the repo's project-instruction file regardless of which client loaded it, so the block below is correct wherever you put it — but if Cursor is not surfacing your session settings, mirror the block into `AGENTS.md` (the Codex/Cursor-facing alias, see [`skills/_shared/instruction-file-resolution.md`](../skills/_shared/instruction-file-resolution.md)) before assuming a parser bug.
+Put the `## Session Config` block in `CLAUDE.md`, or in `AGENTS.md` if the project has no `CLAUDE.md`. `scripts/cursor-install.mjs` and the orchestrator's own config parser (`scripts/parse-config.mjs`) read the block from the project-instruction file regardless of which client loaded it ([`skills/_shared/instruction-file-resolution.md`](../skills/_shared/instruction-file-resolution.md) defines the precedence).
 
 Add a `## Session Config` section:
 
@@ -68,7 +68,7 @@ Cursor has no Skill tool. Commands tell the agent to **Read** `skills/<name>/SKI
 | Interactive choices | AskUserQuestion tool | Numbered Markdown lists |
 | Agent dispatch | Agent() tool (parallel) | Sequential execution (no subagents) |
 | State directory | .claude/ | .cursor/ |
-| Config file | CLAUDE.md | CLAUDE.md — native pickup **unverified**; Cursor's rules doc names `.cursor/rules` + `AGENTS.md` (see § Configuration) |
+| Config file | CLAUDE.md | CLAUDE.md, read like `AGENTS.md` (Cursor rules help, checked 2026-10-21; see § Configuration) |
 | Task tracking | TaskCreate/TaskUpdate | Text-based checklists |
 | Pre-edit enforcement | PreToolUse hook (blocks) | `preToolUse` via cursor-hook-bridge (blocks) |
 | Command enforcement | PreToolUse hook (blocks) | `beforeShellExecution` via cursor-hook-bridge (blocks) |

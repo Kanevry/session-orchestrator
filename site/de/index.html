@@ -138,7 +138,7 @@
           "name": "Mit welchen Werkzeugen läuft es?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills, behandelt die Regeln für zerstörerische Befehle und Schreibbereiche aber nur als Anweisungen; das Plugin setzt beide Guards dort nicht technisch durch. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
+            "text": "Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills und führt den Guard für zerstörerische Befehle als Bash-Hook aus, der blockiert; die Regeln für Schreibbereiche sind dort nur Anweisungen, weil Codex Dateien über apply_patch ändert und der Scope-Guard das nicht liest. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab."
           }
         },
         {
@@ -178,7 +178,7 @@
           "name": "Kann es mein Projekt kaputt machen?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 12 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
+            "text": "Fehler sind weiterhin möglich. Auf Claude Code und Codex wendet ein aktiver Hook für zerstörerische Befehle 12 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt den Guard für Schreibbereiche nicht technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
           }
         },
         {
@@ -186,7 +186,7 @@
           "name": "Wer pflegt das?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Eine Person, Bernhard Götzendorfer. Fragen und Fehlermeldungen auf GitHub beantwortet er selbst. Du kriegst es so, wie es ist. Er pflegt es, so gut es sich ausgeht, sagt aber keine Antwortzeit zu."
+            "text": "Ich, Bernhard Götzendorfer. Fragen und Fehlermeldungen auf GitHub beantworte ich selbst. Du kriegst es so, wie es ist. Ich pflege es, so gut es sich ausgeht, sage aber keine Antwortzeit zu."
           }
         }
       ]
@@ -206,9 +206,9 @@
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/de"><span class="brand-mark" aria-hidden="true"></span><span>session orchestrator</span><span class="brand-version">v<span class="num" data-metric="version">5.13.0</span></span></a>
-    <nav class="nav" aria-label="Hauptnavigation"><a href="#loop">Ablauf</a><a href="#features">Funktionen</a><a href="#install">Installation</a><a href="/guide">Guide</a><a href="/lead" hreflang="en">Lead-Session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
+    <nav class="nav" aria-label="Hauptnavigation"><a href="#loop">Ablauf</a><a href="#features">Funktionen</a><a href="#install">Installation</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav>
     <p class="lang"><a href="/"  lang="en">EN</a><a href="/de" aria-current="page" lang="de">DE</a></p>
-    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#loop">Ablauf</a><a href="#features">Funktionen</a><a href="#install">Installation</a><a href="/guide">Guide</a><a href="/lead" hreflang="en">Lead-Session</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
+    <details class="nav-menu"><summary>Menü</summary><nav class="nav" aria-label="Mobile Navigation"><a href="#loop">Ablauf</a><a href="#features">Funktionen</a><a href="#install">Installation</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a></nav></details>
   </div>
 </header>
 <main id="main">
@@ -253,7 +253,7 @@
         </video>
         <figcaption>Dieselbe Session als 34-Sekunden-Film, mit Ton · mit KI erstellt (Einblendungen auf Englisch)</figcaption>
       </figure>
-      <div class="workflow-note"><h3>Die Aufgabe bestimmt den Umfang.</h3><p>Housekeeping nutzt eine Welle, ein Feature drei, Deep fünf, das Ultradeep-Profil sieben. Die Wellen strukturieren die Arbeit; sie sind kein Grund, aus jeder kleinen Änderung ein großes Projekt zu machen.</p><a href="/guide#first-session">Die erste Session im Guide <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
+      <div class="workflow-note"><h3>Die Aufgabe bestimmt den Umfang.</h3><p>Housekeeping nutzt eine Welle, ein Feature drei, Deep fünf, das Ultradeep-Profil sieben. Die Wellen strukturieren die Arbeit; sie sind kein Grund, aus jeder kleinen Änderung ein großes Projekt zu machen.</p><a href="/guide#first-session" hreflang="en">Die erste Session in der Anleitung (Englisch) <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
     </div>
   </section>
 
@@ -263,7 +263,7 @@
       <ul class="feature-grid">
         <li class="feature"><span class="feature-tag">Richtig anfangen</span><h3>Wissen, woran du arbeitest.</h3><p class="feature-value">Jede Session beginnt beim echten Stand deines Projekts, nicht bei einem Prompt, den du jedes Mal neu schreibst.</p><p><code>/session</code> liest Git, offene Issues, die letzten Commits und den Bericht der letzten Session, empfiehlt einen Umfang und wartet auf deine Korrektur. <code>/plan</code>, <code>/brainstorm</code> und <code>/grill</code> helfen, solange eine Idee noch unscharf ist.</p></li>
         <li class="feature"><span class="feature-tag">Fehler früh finden</span><h3>Fehler stoppen bei der nächsten Prüfung.</h3><p class="feature-value">Ein kaputter Test fällt direkt nach der Arbeit auf, die ihn verursacht hat, nicht erst, wenn weitere Arbeit darauf aufbaut.</p><p><code>/go</code> prüft jede Welle mit deinen Tests und dem Typecheck und macht Fehler zu Korrekturaufgaben; Lint und die volle Suite laufen vor dem Commit. <code>/close</code> prüft jeden geplanten Punkt gegen das, was passiert ist. <code>/debug</code> sucht die Ursache, bevor jemand flickt.</p></li>
-        <li class="feature"><span class="feature-tag">Im Rahmen bleiben</span><h3>Agents bleiben bei ihren Dateien.</h3><p class="feature-value">Parallele Agents überschreiben sich nicht gegenseitig, und zerstörerische Befehle rutschen nicht durch.</p><p>Jeder Agent bekommt eine festgelegte Dateiliste, Überschneidungen werden vor dem Start abgelehnt. Ein Guard blockiert 12 Muster zerstörerischer Befehle, etwa harte Resets, <code>rm -rf</code>, Force-Push und <code>DROP TABLE</code>, und warnt bei 4 weiteren. Echte Hooks auf Claude Code, Brücken auf Cursor und Pi, auf Codex nur Anweisungen.</p></li>
+        <li class="feature"><span class="feature-tag">Im Rahmen bleiben</span><h3>Agents bleiben bei ihren Dateien.</h3><p class="feature-value">Parallele Agents überschreiben sich nicht gegenseitig, und zerstörerische Befehle rutschen nicht durch.</p><p>Jeder Agent bekommt eine festgelegte Dateiliste, Überschneidungen werden vor dem Start abgelehnt. Ein Guard blockiert 12 Muster zerstörerischer Befehle, etwa harte Resets, <code>rm -rf</code>, Force-Push und <code>DROP TABLE</code>, und warnt bei 4 weiteren. Echte Hooks auf Claude Code, Brücken auf Cursor und Pi. Auf Codex läuft der Befehls-Guard als Hook; die Dateiliste bleibt eine Anweisung.</p></li>
         <li class="feature"><span class="feature-tag">Den Faden halten</span><h3>Weitermachen, wo du aufgehört hast.</h3><p class="feature-value">Ein Absturz, ein zugeklappter Laptop oder eine zweite Session im selben Ordner kosten dich nicht die Arbeit.</p><p><code>STATE.md</code> hält jede fertige Welle fest, also bietet die nächste <code>/session</code> an, dort fortzusetzen. Ein Lock mit Lebenszeichen verhindert, dass zwei Sessions im selben Checkout kollidieren. <code>/close</code> legt Offenes als Issues auf GitLab oder GitHub an.</p></li>
         <li class="feature"><span class="feature-tag">Mitlernen</span><h3>Es wird mit deinen Sessions besser.</h3><p class="feature-value">Muster aus deinen eigenen Sessions werden zu Regeln, denen deine Agents beim nächsten Mal folgen, sobald du sie freigibst.</p><p>Jede Session hängt einen Bericht an. <code>/evolve</code> schlägt Learnings mit einer Konfidenz vor, <code>/reconcile</code> entwirft daraus Regeln. Du liest jede einzelne und löschst, was dir nicht passt. Optional: Sessions und Learnings in einen Markdown-Notiz-Vault spiegeln.</p></li>
         <li class="feature"><span class="feature-tag">Weiter schauen</span><h3>Prüfen, testen und reviewen auf Abruf.</h3><p class="feature-value">Derselbe Ablauf findet Probleme, nach denen du nicht gefragt hast, und zeigt, dass die App funktioniert.</p><p>Ein Discovery-Scan bei <code>/close</code> macht aus Befunden, die du bestätigst, Issues. <code>/test</code> steuert Web- und macOS-Abläufe von Anfang bis Ende, <code>/ux-grill</code> prüft eine laufende Web-App auf Barrierefreiheit und Layoutfehler, und <code>/test-audit</code> entfernt Tests, die nichts fangen. <code>/repo-audit</code> und <code>/harness-audit</code> bewerten ein Repository anhand einer Checkliste, <code>/persona-panel</code> lässt mehrere Reviewer-Personas dasselbe Ergebnis parallel lesen.</p></li>
@@ -284,23 +284,24 @@
   <section class="sec install-sec" id="install"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Installation</p><h2>Dein Tool.<br>Deine nächste Session.</h2></div><p>Wähle deinen Installationsweg. Du brauchst Node.js 24 oder neuer und ein Git-Repository. Das Plugin ist kostenlos; die Kosten deines Coding-Tools bleiben davon unabhängig.</p></div><div class="install-list"><details class="install-option" name="install-tool" open><summary><span class="install-name">Claude Code</span><span class="meta">Plugin-Marketplace</span></summary><div class="install-body">
           <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Kopieren</button></p>
           <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Kopieren</button></p>
+          <details class="install-deps"><summary>Nur wenn ein Befehl fehlschlägt: Node-Abhängigkeiten einmal prüfen</summary>
           <p class="small">Aktuelles Claude Code installiert die Node-Abhängigkeiten mit dem Plugin. Zum einmaligen Prüfen, oder falls das bei dir nicht passiert ist, den Befehl unten in einer Shell ausführen: er startet <code>npm install</code> nur, wenn die Abhängigkeiten fehlen. Danach Claude Code neu starten, falls er installiert hat.</p>
           <p class="cmd"><code>claude plugin list --json</code><button class="copy" type="button" data-copy="claude plugin list --json">Kopieren</button></p>
           <p class="small">Suche den aktivierten Eintrag <code>session-orchestrator@kanevry</code>. Ersetze den Platzhalter unten durch dessen <code>installPath</code>. Fehlt der Eintrag oder ist er deaktiviert, kläre das zuerst über <code>/plugin</code>. Bei mehreren Treffern die aktive Installation prüfen.</p>
-          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Kopieren</button></p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Kopieren</button></p></details></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Codex CLI</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Kopieren</button></p>
           <p class="small">Braucht Codex CLI ab 0.144.4. Die Konfiguration steht in <code>AGENTS.md</code>. Öffne nach der Installation eine neue Aufgabe und prüfe die Plugin-Hooks über <code>/hooks</code>.</p>
-          <p class="small">Wähle die Session-Orchestrator-Skills: <code>$session-orchestrator:bootstrap</code>, danach <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> und <code>$session-orchestrator:close</code>. Siehe den <a href="/guide#first-session">Guide zur ersten Session (EN)</a>.</p>
-          <p class="small"><b>Beide Guards sind auf Codex nur Anweisungen.</b> Das Plugin setzt weder die Regeln für zerstörerische Befehle noch die Schreibgrenze technisch durch. Die Workflows und Qualitätsprüfungen laufen weiterhin.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
+          <p class="small">Wähle die Session-Orchestrator-Skills: <code>$session-orchestrator:bootstrap</code>, danach <code>$session-orchestrator:session feature</code>, <code>$session-orchestrator:go</code> und <code>$session-orchestrator:close</code>. Siehe die <a href="/guide#first-session" hreflang="en">Anleitung zur ersten Session (Englisch)</a>.</p>
+          <p class="small"><b>Auf Codex blockieren die Bash-Guards, die Schreibgrenze nicht.</b> Der Guard für zerstörerische Befehle und die übrigen Bash-Guards laufen als Hooks, und Codex hält sich an ihre Ablehnung. Die Schreibgrenze bleibt eine Anweisung, weil Codex Dateien über <code>apply_patch</code> ändert und der Scope-Guard das nicht liest. Die Workflows und Qualitätsprüfungen laufen weiterhin.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Cursor IDE</span><span class="meta">Klonen und Installer</span></summary><div class="install-body">
           <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Kopieren</button></p>
           <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Kopieren</button></p>
           <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Kopieren</button></p>
           <p class="small"><b>Zielprojekt.</b> Gib den Projektpfad ausdrücklich an. Ohne Pfad verwendet der Installer das aktuelle Verzeichnis.</p></div></details><details class="install-option" name="install-tool" ><summary><span class="install-name">Pi</span><span class="meta">Paketmanager</span></summary><div class="install-body">
           <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Kopieren</button></p>
           <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Kopieren</button></p>
-          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die Klone für Codex CLI und Cursor brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide">Der Guide führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Nachvollziehbar.<br>Bis in den Code.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
+          <p class="small">Dieser Weg installiert seine Abhängigkeiten selbst; die Klone für Codex CLI und Cursor brauchen einmal <code>npm install</code>.</p></div></details></div><p class="install-guide">Noch nicht eingerichtet? <a href="/guide" hreflang="en">Die Anleitung (Englisch) führt dich durch Installation und Bootstrap.</a></p></div></section>  <section class="sec technical-sec"><div class="wrap"><div class="section-heading"><div><p class="eyebrow">Unter der Haube</p><h2>Was durchgesetzt wird<br>und wo es aufhört.</h2></div><p>Welche Prüfungen laufen, was sie absichern und wo ihre Grenzen liegen. Mit Quellen im Repository.</p></div><details class="technical-detail" id="enforced"><summary>Prüfungen und ihre Quellen</summary><div class="detail-body">
       <div class="grid-12">
         <div class="col-4">
           <p class="lede">Ein Teil des Schutzes läuft als Code, ein Teil besteht aus Anweisungen an den Agenten. Die Wirkung hängt vom Werkzeug und der Konfiguration ab.</p>
@@ -321,7 +322,7 @@
             <td data-label="Quelle"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wendet Claude Code 12 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken; auf Codex gelten diese Regeln nur als Anweisungen.</td>
+            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wenden Claude Code und Codex 12 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken.</td>
             <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 16 Regeln</td>
           </tr>
           <tr>
@@ -353,7 +354,7 @@
           <tr><th scope="row">Claude Code</th><td>direkte Guard-Hooks; blockierende Scope-Prüfung braucht strict</td></tr>
           <tr><th scope="row">Cursor IDE</th><td>Brücke für unterstützte Werkzeug- und Shell-Aufrufe; blockierende Scope-Prüfung braucht strict. Nachträgliche Prüfungen verhindern keine Änderung</td></tr>
           <tr><th scope="row">Pi</th><td>Brücke für unterstützte Werkzeugaufrufe; blockierende Scope-Prüfung braucht strict</td></tr>
-          <tr><th scope="row">Codex CLI</th><td>Regeln für zerstörerische Befehle und Schreibbereiche sind nur Anweisungen; beide Guards blockieren keine Vorgänge</td></tr>
+          <tr><th scope="row">Codex CLI</th><td>Guard für zerstörerische Befehle läuft als Bash-Hook und blockiert; Regeln für Schreibbereiche sind nur Anweisungen, weil Änderungen über <code>apply_patch</code> laufen</td></tr>
         </tbody>
       </table>
     </div></details><details class="technical-detail" id="measured"><summary>Repository-Zahlen mit Zählbeleg</summary><div class="detail-body">
@@ -371,7 +372,7 @@
         <div class="card"><p class="n"><span class="num" data-metric="github-stars">53</span></p><p class="l">GitHub-Sterne</p></div>
       </div>
 
-      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-10-20</span> bei Commit <span class="num" data-metric="counted-sha">95136cb8</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
+      <p class="small muted">Gezählt am <span class="num" data-metric="counted-at">2026-10-20</span> bei Commit <span class="num" data-metric="counted-sha">95136cb8</span>. Repository-Aufzeichnungen beschreiben Entwicklungsaktivität, keine aktiven Nutzer. Es zählen nur Sessions, die tatsächlich gelaufen sind, nicht jede Zeile im Session-Log; die Zahl ist deshalb kleiner als auf älteren Fassungen dieser Seite. npm-Downloads enthalten auch automatische Abrufe. <a href="/_census.json">Zählbeleg ansehen</a>.</p>
     </div></details></div></section>  <section class="sec" id="faq">
     <div class="wrap">
       <p class="eyebrow">Häufige Fragen</p>
@@ -384,7 +385,7 @@
         </details>
         <details class="faq-item">
           <summary>Mit welchen Werkzeugen läuft es?</summary>
-          <p>Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills, behandelt die Regeln für zerstörerische Befehle und Schreibbereiche aber nur als Anweisungen; das Plugin setzt beide Guards dort nicht technisch durch. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
+          <p>Claude Code führt die Guard-Hooks direkt aus. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex CLI bietet auswählbare Workflow-Skills und führt den Guard für zerstörerische Befehle als Bash-Hook aus, der blockiert; die Regeln für Schreibbereiche sind dort nur Anweisungen, weil Codex Dateien über apply_patch ändert und der Scope-Guard das nicht liest. Parallele Agenten gibt es auf Claude Code und Codex; Cursor und Pi arbeiten Aufgaben nacheinander ab.</p>
         </details>
         <details class="faq-item">
           <summary>Was ist der Unterschied zu Claude Code allein?</summary>
@@ -404,17 +405,17 @@
         </details>
         <details class="faq-item">
           <summary>Kann es mein Projekt kaputt machen?</summary>
-          <p>Fehler sind weiterhin möglich. Auf Claude Code wendet ein aktiver Hook für zerstörerische Befehle 12 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt weder diesen Guard noch den Guard für Schreibbereiche technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
+          <p>Fehler sind weiterhin möglich. Auf Claude Code und Codex wendet ein aktiver Hook für zerstörerische Befehle 12 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt den Guard für Schreibbereiche nicht technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
         </details>
         <details class="faq-item">
           <summary>Wer pflegt das?</summary>
-          <p>Eine Person, Bernhard G&#246;tzendorfer. Fragen und Fehlermeldungen auf GitHub beantwortet er selbst. Du kriegst es so, wie es ist. Er pflegt es, so gut es sich ausgeht, sagt aber keine Antwortzeit zu.</p>
+          <p>Ich, Bernhard G&#246;tzendorfer. Fragen und Fehlermeldungen <a href="https://github.com/Kanevry/session-orchestrator/issues">auf GitHub</a> beantworte ich selbst. Du kriegst es so, wie es ist. Ich pflege es, so gut es sich ausgeht, sage aber keine Antwortzeit zu.</p>
         </details>
       </div>
     </div>
   </section>  <section class="sec end" id="start"><div class="wrap end-grid"><div><p class="eyebrow">Für dein nächstes Projekt</p><h2>Fang mit einer<br>klaren Session an.</h2><p>Installiere das Plugin und lass dein Repository lesen. Entscheide dann, was als Nächstes dran ist.</p></div><a class="btn btn-primary" href="#install">Installationsweg wählen<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
 </main>
-<footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/de">session-orchestrator</a><p>Ein Open-Source-Projekt von <a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Bernhard Götzendorfer</a>.</p></div><div class="footer-links"><nav aria-label="Weitere Links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/lead" hreflang="en">Lead-Session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Hilft dir das? Ein Kaffee ist willkommen.</a></div></div></footer>
+<footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/de">session-orchestrator</a><p>Ein Open-Source-Projekt von <a href="https://www.gotzendorfer.at/?utm_source=session-orchestrator&amp;utm_medium=footer&amp;utm_campaign=cross-promo" rel="author">Bernhard Götzendorfer</a>.</p></div><div class="footer-links"><nav aria-label="Weitere Links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide" hreflang="en">Anleitung (Englisch)</a><a href="/lead" hreflang="en">Lead-Session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Impressum</a><a href="/datenschutz">Datenschutz</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Hilft dir das? Ein Kaffee ist willkommen.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>
 <script src="/assets/ui.js?v=20260910" defer></script>
 </body>

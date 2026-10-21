@@ -644,7 +644,7 @@ $ # hooks scope
 |---|---|---|
 | Claude Code | `CLAUDE.md` | plugin skills (`.claude-plugin/`) |
 | Codex CLI | `AGENTS.md` | `.codex-plugin` skills |
-| Cursor | `AGENTS.md` | `.agents/skills`, `.cursor/skills` |
+| Cursor | `AGENTS.md` **and** `CLAUDE.md` (superseded 2026-10-21: Cursor's rules help documents `CLAUDE.md`; the survey had `AGENTS.md` only) | `.agents/skills`, `.cursor/skills` |
 | Copilot CLI | `AGENTS.md` **and** `CLAUDE.md` | `.github/skills`, `.claude/skills`, `.agents/skills` |
 | OpenCode | `AGENTS.md` | `~/.claude/skills` |
 | Amp | `AGENTS.md` | `.agents/skills` |

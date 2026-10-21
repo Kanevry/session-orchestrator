@@ -415,7 +415,10 @@ under four contracts, all of them consequences of the four merge rules above:
 
 2. **Three fail-open cases, all reported rather than guessed.** An entry carries
    no date of its own; its date is recoverable only via `learning-id` →
-   `.orchestrator/metrics/learnings.jsonl` `expires_at` (measured 2026-09-17 @
+   `.orchestrator/metrics/learnings.jsonl` or its sibling
+   `learnings-archive.jsonl` `expires_at`, with the live store taking precedence
+   for duplicate ids; the archive supplies the learning's own expiry evidence
+   (measured 2026-09-17 @
    `9e8146b4`: 87 of 92 unique ids resolve, 5 do not). An **unresolvable id**
    keeps its entry and blocks the file delete. An **ambiguous file** — where the
    `###` headings do not map 1:1 onto the non-`markers only` pairs, because

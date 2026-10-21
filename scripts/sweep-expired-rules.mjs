@@ -141,6 +141,7 @@ export function summarize(plan, args, applied) {
     expired_entries: plan.plans.reduce((n, p) => n + p.expiredPairIds.length, 0),
     unresolved_pairs: plan.plans.reduce((n, p) => n + p.unresolvedPairIds.length, 0),
     malformed_lines: plan.malformedLines,
+    archive_malformed_lines: plan.archiveMalformedLines,
     rules_dir_readable: plan.ok,
     skipped: plan.skipped,
     plans: plan.plans.map(({ nextContent: _nextContent, ...rest }) => rest),
@@ -179,7 +180,8 @@ async function main(argv) {
         `(${summary.header_raises} header-raise(s)), ` +
         `${summary.deletes} delete(s), ${summary.expired_entries} expired entr(ies), ` +
         `${summary.unresolved_pairs} unresolved pair(s), ${summary.skipped.length} skipped, ` +
-        `${summary.malformed_lines} malformed learnings line(s)\n`,
+        `${summary.malformed_lines} malformed learnings line(s), ` +
+        `${summary.archive_malformed_lines} malformed archive line(s)\n`,
     );
     for (const s of plan.skipped) process.stdout.write(`  skipped ${s.file}: ${s.reason}\n`);
     for (const p of plan.plans) {

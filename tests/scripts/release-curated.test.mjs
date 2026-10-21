@@ -17,13 +17,15 @@
 //      tagged and snapshotted onto GitHub main — an unreviewed commit published.
 //   5. `mirror: none` was ignored: release pushed main and the tag to github.
 //   6. A diverging github push URL was refused only after npm publish (#1693).
+//   7. Preflight passed with an export tree no suite had ever run on (#1712).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { evaluateGithubMirrorPreflight, runPublishRelease, tagAndPush } from '../../scripts/release.mjs';
+import { evaluateGithubMirrorPreflight, evaluateSnapshotProbePreflight, runPublishRelease, tagAndPush } from '../../scripts/release.mjs';
 import { buildGithubExport, createGitRunner, parseSourceCommitTrailer } from '../../scripts/lib/github-export.mjs';
+import { RECEIPT_DIR_REL, computeSnapshotTree } from '../../scripts/lib/snapshot-probe.mjs';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 const ID_ENV = {
@@ -213,6 +215,32 @@ describe('github preflight rows under mirror: curated', () => {
     expect(rows.pushUrl.ok).toBe(false);
     expect(rows.pushUrl.detail).toContain('differs from its fetch URL');
     expect(rows.pushUrl.detail).not.toContain('no_push');
+  });
+});
+
+describe('snapshot-probe preflight row (#1712)', () => {
+  // BUG CAUGHT: 5.13.0 passed preflight with an export tree no suite had ever run on.
+  it('is required under curated and keyed by HEAD\'s snapshot tree', () => {
+    const { dir, head } = fixture();
+    const mirror = evaluateGithubMirrorPreflight(dir, head);
+
+    expect(evaluateSnapshotProbePreflight(dir, head, mirror)).toMatchObject({ ok: false, detail: expect.stringContaining('no probe receipt for snapshot tree') });
+
+    const tree = computeSnapshotTree({ repoRoot: dir, source: head, git: runner(dir) });
+    expect(tree.ok).toBe(true);
+    mkdirSync(join(dir, RECEIPT_DIR_REL), { recursive: true });
+    writeFileSync(join(dir, RECEIPT_DIR_REL, `${tree.snapshotTree}.json`), JSON.stringify({
+      schema: 1, sourceSha: head, snapshotTree: tree.snapshotTree, ok: true, route: 'local',
+      steps: [{ name: 'validate-plugin', status: 'pass', exitCode: 0, durationMs: 1 }, { name: 'test', status: 'pass', exitCode: 0, durationMs: 1 }],
+      finishedAt: '2026-10-21T10:00:00.000Z',
+    }));
+    expect(evaluateSnapshotProbePreflight(dir, head, mirror).ok).toBe(true);
+  });
+
+  it('is skipped under mirror: none', () => {
+    const { dir, head } = fixture({ mirrorLine: 'mirror: none' });
+    expect(evaluateSnapshotProbePreflight(dir, head, evaluateGithubMirrorPreflight(dir, head)))
+      .toEqual({ ok: true, detail: 'skipped — not mirror: curated' });
   });
 });
 

@@ -66,7 +66,7 @@ if [ -n "$expired" ]; then
     echo "session-orchestrator: 'node' not found on the hook PATH — plugin hooks are skipped."
     echo "  Fix: install Node.js 24+, expose it on the harness PATH, or set SO_NODE_BIN=/abs/path/to/node."
     echo "  (Hook shells do not source ~/.zshrc — Homebrew/nvm/volta installs can be invisible here."
-    echo "   Rate-limited to once per 6h. See README.md § Troubleshooting.)"
+    echo "   Rate-limited to once per 6h. See docs/USER-GUIDE.md § Node is missing from the hook PATH.)"
   } >&2
 fi
 exit 0

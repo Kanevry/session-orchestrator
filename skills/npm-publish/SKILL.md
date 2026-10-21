@@ -29,6 +29,8 @@ Create at https://www.npmjs.com/settings/<user>/tokens → Generate New Token �
 1. `NPM_TOKEN` in `.env.local` at the repo root (gitignored — verify with `git check-ignore .env.local` before writing; also confirm no `.env` pattern in the `files` whitelist of package.json). `scripts/release.mjs` refuses to read the token if that ignore check fails.
 2. Interactive fallback: operator runs `npm publish --access public` in a real terminal (only works when account 2FA is enrolled — OTP prompt appears).
 
+`release --check` verifies the token before any publish: `npm-token-live` (`npm whoami`) proves it authenticates, `npm-token-publish` reads `npm token list --json`, finds the token in use by its abbreviated `npm_xxxx...xxxx` form, and goes red when it lacks `bypass_2fa`, write `permissions`, a matching `scopes` entry, or has passed `expiry`/been `revoked` — the 5.13.0 EOTP case, where `whoami` was green. `npm token list` works with a granular token; `npm profile get` does not (npm 11.19.1, 2026-10-21).
+
 **Never** put the token in the tracked `.npmrc` (it holds `ignore-scripts=true` per SEC-020 and is committed), never persist it into `~/.npmrc`, never echo it into logs.
 
 ## The three judgement calls
@@ -47,6 +49,7 @@ The script gates mechanics. These three are yours, and it will not make them for
 |---|---|---|
 | `E403 ... Two-factor authentication or granular access token with bypass 2fa enabled is required` — no OTP prompt | Account has no 2FA enrolled AND token (if any) lacks Bypass-2FA | Create granular token with all four requirements above, or enroll 2FA |
 | Same E403 despite a fresh token | Token created without the Bypass-2FA checkbox, or Read-only, or package-scoped on a first publish | Re-create: RW + All packages + Bypass-2FA |
+| `EOTP` from `npm publish` while `npm whoami` is green | Granular token without Bypass-2FA (5.13.0) | Re-create with Bypass-2FA; `release --check` row `npm-token-publish` now catches it before the publish |
 | `npm whoami` silent or non-zero | Token expired, or `.env.local` missing | Re-create the token; do not proceed — the preflight fails this row on purpose |
 | `E404` on `npm view <pkg>@<target>` after a target-confirmed publish receipt (npm answered HTTP 202) | The upload is **accepted, not yet available**. npm scans every new publish before it becomes installable: "typically around five minutes", "up to 15 minutes or more" at peak or depending on content/size, no service guarantee; the outcome may be published, **held for manual review**, or **blocked** (GitHub changelog 2026-07-28, read 2026-10-08, npm CLI 11.19.0). 5.10.0 stayed 404 for more than 25 minutes. A 404 alone does **not** tell you which of these applies — the package token cannot see the scan state | Let the script finish its tag/push/GitHub/site tail, then run `node scripts/release.mjs --reconcile --target <target>` (read-only, resumable; exit 0 only once installable). While still `pending`, check the owner-visible side: npm says a blocked package's publisher "may receive a notification with the option to appeal" — look at the npm account notifications/e-mail of the publishing account and the package page on npmjs.com. Do **not** rerun `--publish` and do not declare it blocked from the 404 |
 | `ENEEDAUTH` | No login/token at all | Token flow above, or `npm login` |

@@ -196,7 +196,7 @@ function glabJobsResponse(pipelineId, jobs) {
 function ghCheckRunsResponse(checkRuns) {
   return {
     cmd: 'gh',
-    args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs'],
+    args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100'],
     stdout: JSON.stringify({ check_runs: checkRuns }),
   };
 }
@@ -309,6 +309,7 @@ describe('checkCiStatus — GitLab red with last-green', () => {
     const jobs = [
       { name: 'test', status: 'success' },
       { name: 'lint', status: 'failed' },
+      { name: 'build', status: 'failed' },
     ];
 
     const mockExecFile = makeExecFileMock([
@@ -333,6 +334,7 @@ describe('checkCiStatus — GitLab red with last-green', () => {
     expect(result.lastGreen.ageDays).toBe(3); // 2026-05-07 → 2026-05-10 = 3 days
     expect(result.lastGreen.ageCommits).toBe(3); // ageCommits === redCount (3 failed pipelines before last-green)
     expect(result.failingJobName).toBe('lint');
+    expect(result.failingJobNames).toEqual(['lint', 'build']);
     expect(result.details.cliUsed).toBe('glab');
     expect(result.details.currentPipelineId).toBe(104);
   });
@@ -799,8 +801,12 @@ describe('checkCiStatus — GitHub green', () => {
 
 describe('checkCiStatus — GitHub red', () => {
   it('returns status=red, failingJobName set when a check run has conclusion=failure', async () => {
+    // Two red runs (#1712): release 5.13.0 named only the first, hiding the
+    // second. `failingJobName` keeps the first; `failingJobNames` names all.
     const checkRuns = [
       { name: 'test', status: 'completed', conclusion: 'success' },
+      { name: 'security-scan', status: 'completed', conclusion: 'failure' },
+      { name: 'windows (informational)', status: 'completed', conclusion: 'failure' },
       { name: 'security-scan', status: 'completed', conclusion: 'failure' },
     ];
 
@@ -819,6 +825,7 @@ describe('checkCiStatus — GitHub red', () => {
     expect(result.status).toBe('red');
     expect(result.ok).toBe(false);
     expect(result.failingJobName).toBe('security-scan');
+    expect(result.failingJobNames).toEqual(['security-scan', 'windows (informational)']);
     expect(result.details.cliUsed).toBe('gh');
     expect(result.details.reason).toBe('lastGreen-not-implemented-for-github');
   });
@@ -994,7 +1001,7 @@ describe('checkCiStatus — #1332 explicit sha', () => {
       ghCheckRunsResponse([{ name: 'test', status: 'completed', conclusion: 'success' }]),
       {
         cmd: 'gh',
-        args: ['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs`],
+        args: ['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs?per_page=100`],
         stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', status: 'completed', conclusion: 'failure' }] }),
       },
     ]);
@@ -1008,7 +1015,7 @@ describe('checkCiStatus — #1332 explicit sha', () => {
     const [, checkRunsArgs] = mockExecFile.mock.calls.find(
       ([cmd, args]) => cmd === 'gh' && args[0] === 'api',
     );
-    expect(checkRunsArgs).toEqual(['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs`]);
+    expect(checkRunsArgs).toEqual(['api', `repos/Kanevry/session-orchestrator/commits/${PUSHED_SHA}/check-runs?per_page=100`]);
   });
 
   // The sha is interpolated into a `gh api` PATH: `../..` would re-route the
@@ -1094,7 +1101,7 @@ describe('checkCiStatus — forced vcs', () => {
       { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
       {
         cmd: 'gh',
-        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', 'github.com'],
+        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100', '--hostname', 'github.com'],
         stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', status: 'completed', conclusion: 'success' }] }),
       },
     ]);
@@ -1114,7 +1121,7 @@ describe('checkCiStatus — forced vcs', () => {
       { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
       {
         cmd: 'gh',
-        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', 'github.com'],
+        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100', '--hostname', 'github.com'],
         stdout: JSON.stringify({
           check_runs: [
             { name: 'test (ubuntu-latest)', status: 'completed', conclusion: 'success' },
@@ -1292,7 +1299,7 @@ describe('checkCiStatus — error containment', () => {
   //   `gh repo view` → `null`  reached `const { nameWithOwner } = …` and threw
   //     a bare `TypeError: Cannot destructure property 'nameWithOwner' of
   //     'null'` — an operator-facing line naming neither CLI nor request.
-  //   `gh api …/check-runs` → `null` reached `data.check_runs` and threw the
+  //   `gh api …/check-runs?per_page=100` → `null` reached `data.check_runs` and threw the
   //     same bare TypeError one frame later.
   //   `glab api …/pipelines` → any non-array was swallowed by
   //     `!Array.isArray(pipelines) → return null`: SILENT, indistinguishable
@@ -1524,7 +1531,7 @@ describe('checkCiStatus — #872/#1022 GitHub host-pinning', () => {
       { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
       {
         cmd: 'gh',
-        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs', '--hostname', host],
+        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100', '--hostname', host],
         stdout: JSON.stringify({ check_runs: checkRuns }),
       },
     ]);
@@ -1552,7 +1559,7 @@ describe('checkCiStatus — #872/#1022 GitHub host-pinning', () => {
     );
     expect(checkRunsArgs).toEqual([
       'api',
-      'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs',
+      'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100',
       '--hostname',
       host,
     ]);
@@ -1962,7 +1969,7 @@ describe('#856 — GitHub additive check-run diagnostics', () => {
   it('keeps a GitHub API failure degraded and never green', async () => {
     const mock = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse,
-      { cmd: 'gh', args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs'], error: new Error('synthetic API failure') },
+      { cmd: 'gh', args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100'], error: new Error('synthetic API failure') },
     ]);
     const result = await checkCiStatus({ repoRoot: '/fake/repo' }, { execFile: mock });
     expectDegraded(result, 'query-failed');

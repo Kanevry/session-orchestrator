@@ -124,9 +124,8 @@
     <div class="wrap">
       <p class="eyebrow">Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
       <h1 class="h-display">Install. Run a session.<br>Check the result.</h1>
-      <p class="lede">Choose your coding tool, install the plugin and its dependencies, then bootstrap your project. This guide explains the first session and which guards your tool can enforce. On Codex, destructive-command and file-scope rules are instructions only.</p>
+      <p class="lede">Choose your coding tool, install the plugin and its dependencies, then bootstrap your project. This guide explains the first session and which guards your tool can enforce. On Codex, the destructive-command guard blocks through a Bash hook; file-scope rules are instructions only.</p>
       <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-10-16</p>
-      <p class="small muted">Historical installation E2E record: v3.20.0 on 2026-08-19. The source review date records a documentation check, not a new installation test.</p><!-- site-numbers:historical: the version in that sentence is a DATED RECORD of the release the commands were actually run against, not a claim about the current one. A release must never bump it; only an actual re-run of the commands may. Deliberately NOT a data-metric cell: --write would move the number while the date stayed put, fabricating a verification nobody ran. -->
 
       <nav class="toc" aria-labelledby="toc-h">
         <h2 id="toc-h" class="small">On this page</h2>
@@ -175,11 +174,11 @@
       <table class="kv">
         <caption class="sr">Which instruction file each harness reads</caption>
         <tbody>
-          <tr><th scope="row">CLAUDE.md</th><td>Claude Code; also read by the orchestrator config parser on Cursor</td></tr>
+          <tr><th scope="row">CLAUDE.md</th><td>Claude Code and Cursor; Cursor reads it the same way as <code>AGENTS.md</code></td></tr>
           <tr><th scope="row">AGENTS.md</th><td>Codex CLI, Pi; supported by Cursor for project instructions</td></tr>
         </tbody>
       </table>
-      <p>On Cursor, native pickup of <code>CLAUDE.md</code> is unverified. If settings are not visible, mirror the block into <code>AGENTS.md</code>; see <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md#configuration">Cursor configuration</a>.</p>
+      <p>On Cursor, a <code>CLAUDE.md</code> in the project root is applied to every conversation, like <code>AGENTS.md</code> (<a href="https://cursor.com/help/customization/rules">Cursor rules help</a>). Details: <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md#configuration">Cursor configuration</a>.</p>
     </div>
   </section>
 
@@ -225,7 +224,7 @@ cd ~/Projects/session-orchestrator &amp;&amp; npm install
 node scripts/codex-install.mjs</pre>
         <button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator&#10;cd ~/Projects/session-orchestrator &amp;&amp; npm install&#10;node scripts/codex-install.mjs">Copy</button>
       </div>
-      <p class="small muted">Requires Codex CLI <strong>0.144.4 or later</strong>. Your project config goes in <code>AGENTS.md</code>. Start a fresh task after installation and review the plugin hooks through <code>/hooks</code>. The destructive-command and file-scope guards are instructions only on Codex; the plugin does not enforce them. The workflow and quality checks still run.</p>
+      <p class="small muted">Requires Codex CLI <strong>0.144.4 or later</strong>. Your project config goes in <code>AGENTS.md</code>. Start a fresh task after installation and review the plugin hooks through <code>/hooks</code>. On Codex the destructive-command guard runs as a Bash hook, and Codex honours its deny. The file-scope guard stays an instruction, because Codex edits files through <code>apply_patch</code>, which the scope guard does not read. The workflow and quality checks still run.</p>
 
       <p>For a Codex Git marketplace installation, refresh with <code>codex plugin marketplace upgrade kanevry</code>, then <code>codex plugin add session-orchestrator@kanevry</code>. For the local clone shown above, pull the clone, run <code>npm install</code> and rerun the installer. After either path, start a fresh task and reopen the skill picker. See <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md#refresh-and-explicit-cache-invalidation">Codex refresh instructions</a>.</p>
 
@@ -322,7 +321,7 @@ persistence: true
 enforcement: warn</pre>
         <button class="copy" type="button" data-copy="## Session Config&#10;&#10;test-command: npm test&#10;typecheck-command: npm run typecheck&#10;lint-command: npm run lint&#10;agents-per-wave: 6&#10;waves: 5&#10;persistence: true&#10;enforcement: warn">Copy</button>
       </div>
-      <p class="small muted">Use <code>CLAUDE.md</code> on Claude Code or <code>AGENTS.md</code> on Codex CLI and Pi. For Cursor, follow the <a href="#before">instruction-file note above</a>. The heading matters: the parser looks for <code>## Session Config</code> literally.</p>
+      <p class="small muted">Use <code>CLAUDE.md</code> on Claude Code and Cursor, or <code>AGENTS.md</code> on Codex CLI and Pi. The heading matters: the parser looks for <code>## Session Config</code> literally.</p>
 
       <p><code>enforcement</code> takes <code>strict</code>, <code>warn</code> or <code>off</code>. With an active compatible scope hook, <code>strict</code> denies supported out-of-scope edits, <code>warn</code> reports them without denying the edit, and <code>off</code> disables scope checking. Codex has no compatible scope handler, so changing this setting does not add enforcement there.</p>
 
@@ -338,10 +337,10 @@ enforcement: warn</pre>
     <div class="wrap">
       <p class="eyebrow"><span class="num">05</span> / Guards</p>
       <h2>What the guards can enforce</h2>
-      <p class="lede">Guard behaviour depends on your coding tool. Claude Code runs the guard hooks directly; Cursor and Pi use bridges with documented limits. On Codex, destructive-command and file-scope rules are instructions only. Scope edits are denied only when a compatible hook is active and enforcement is strict.</p>
+      <p class="lede">Guard behaviour depends on your coding tool. Claude Code runs the guard hooks directly; Cursor and Pi use bridges with documented limits. On Codex, the destructive-command guard runs as a Bash hook and file-scope rules are instructions only. Scope edits are denied only when a compatible hook is active and enforcement is strict.</p>
 
       <h3>The destructive-command guard</h3>
-      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>16 rules: 12 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. The plugin does not enforce this guard on Codex. The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, truncating protected files or the harness memory, and deleting the session ledgers. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
+      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>16 rules: 12 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. On Codex the same hook runs as a <code>PreToolUse</code> Bash hook, and Codex honours its deny (measured with codex-cli 0.160.1 on 2026-10-20). The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, truncating protected files or the harness memory, and deleting the session ledgers. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
       <p>The reason it is that broad: several sessions can share one working copy, and a stash or a reset takes work from a neighbour who has no way to find it again.</p>
 
       <div class="card">
@@ -350,7 +349,7 @@ enforcement: warn</pre>
       </div>
 
       <h3>Scope enforcement</h3>
-      <p>Agents receive declared paths, checked for overlaps before dispatch. With an active compatible handler, <code>hooks/enforce-scope.mjs</code> blocks supported out-of-scope edits in <code>strict</code> mode and reports them without denial in <code>warn</code> mode. Claude Code runs the hook directly; Cursor and Pi use bridges with documented limits. On Codex the rule is an instruction only, because no compatible file-scope handler is wired. A declared scope is not filesystem isolation.</p>
+      <p>Agents receive declared paths, checked for overlaps before dispatch. With an active compatible handler, <code>hooks/enforce-scope.mjs</code> blocks supported out-of-scope edits in <code>strict</code> mode and reports them without denial in <code>warn</code> mode. Claude Code runs the hook directly; Cursor and Pi use bridges with documented limits. On Codex the rule is an instruction only: Codex edits files through <code>apply_patch</code>, and no file-scope handler reads that payload yet. A declared scope is not filesystem isolation.</p>
       <p>When a legitimate edit is denied, review the plan and other agents' scopes before adding the missing path. Recheck overlaps before dispatching work against the wider scope.</p>
       <p><code>enforcement: off</code> disables scope checking. It does not disable the separate destructive-command guard on tools where that guard is active.</p>
     </div>
@@ -415,6 +414,9 @@ enforcement: warn</pre>
           <tr><td data-label="Resource"><a href="https://www.npmjs.com/package/session-orchestrator">npm</a></td><td data-label="Location">session-orchestrator</td></tr>
         </tbody>
       </table>
+
+      <h3>Test record</h3>
+      <p class="small muted">Last full installation run (E2E): v3.20.0 on 2026-08-19. The review date at the top of this page records a documentation check against the source, not a new installation test.</p><!-- site-numbers:historical: the version in that sentence is a DATED RECORD of the release the commands were actually run against, not a claim about the current one. A release must never bump it; only an actual re-run of the commands may. Deliberately NOT a data-metric cell: --write would move the number while the date stayed put, fabricating a verification nobody ran. -->
     </div>
   </section>
 </main>

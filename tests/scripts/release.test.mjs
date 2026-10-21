@@ -44,6 +44,9 @@ import {
   withCheckedPackage,
   evaluateRemoteHeadParity,
   evaluateNpmAuth,
+  evaluateNpmPublishCapability,
+  evaluateSnapshotProbeRow,
+  matchAbbreviatedNpmToken,
   evaluateCiRow,
   validateFlags,
   ensureGithubRelease,
@@ -910,6 +913,111 @@ describe('evaluateNpmAuth', () => {
   });
 });
 
+// #1712: 5.13.0 passed `npm whoami`, then publish failed with EOTP because the
+// granular token lacked Bypass-2FA. Fixtures mirror the MEASURED
+// `npm token list --json` entry (npm 11.19.1, 2026-10-21) with `token`, `key`
+// and `id` already stripped, as the preflight hands it over. Fake values only.
+describe('matchAbbreviatedNpmToken', () => {
+  const FULL = 'npm_TESTFAKE-not-a-real-token-FAKE';
+
+  it('matches the measured first-8 / ... / last-4 shape only', () => {
+    expect(matchAbbreviatedNpmToken(FULL, 'npm_TEST...FAKE')).toBe(true);
+    expect(matchAbbreviatedNpmToken(FULL, 'npm_TEST...NOPE')).toBe(false);
+    // Another shape (e.g. a masked `npm_TEST****FAKE`) must not be guessed at.
+    expect(matchAbbreviatedNpmToken(FULL, 'npm_TEST****FAKE')).toBe(false);
+  });
+});
+
+describe('evaluateNpmPublishCapability', () => {
+  const NOW = new Date('2026-10-21T12:00:00Z');
+  const measured = {
+    accessed: null,
+    bypass_2fa: false,
+    cidr: null,
+    created: '2026-10-20T17:38:58.036Z',
+    description: null,
+    expiry: '2027-01-18T17:38:58.036Z',
+    name: 'm4-macbook',
+    permissions: [{ name: 'package', action: 'write' }],
+    revoked: null,
+    scopes: [{ name: null, type: 'package' }],
+    updated: '2026-10-20T17:38:58.036Z',
+  };
+  const judge = (entry, matches = 1) =>
+    evaluateNpmPublishCapability({ matches, entry, now: NOW, packageName: 'session-orchestrator' });
+
+  it('fails the measured 5.13.0 token: no Bypass-2FA means publish dies with EOTP/E403', () => {
+    expect(judge(measured)).toEqual({
+      ok: false,
+      detail: "token 'm4-macbook' lacks Bypass-2FA — npm publish will fail with EOTP/E403; create a granular token per skills/npm-publish § Token requirements",
+    });
+  });
+
+  it('passes a bypass token with write on all packages that has not expired', () => {
+    expect(judge({ ...measured, bypass_2fa: true })).toEqual({
+      ok: true,
+      detail: "token 'm4-macbook': bypass-2FA, write, expires 2027-01-18",
+    });
+  });
+
+  it('fails when the token in use cannot be identified uniquely', () => {
+    expect(judge(null, 0)).toEqual({ ok: false, detail: 'cannot identify the token in use in npm token list (matches: 0)' });
+    expect(judge(null, 2).ok).toBe(false);
+  });
+
+  it('fails an expired token even with bypass', () => {
+    expect(judge({ ...measured, bypass_2fa: true, expiry: '2026-10-01T00:00:00.000Z' }))
+      .toEqual({ ok: false, detail: "token 'm4-macbook' expired 2026-10-01" });
+  });
+
+  it('fails a token scoped only to another package', () => {
+    expect(judge({ ...measured, bypass_2fa: true, scopes: [{ name: 'other-pkg', type: 'package' }] }))
+      .toEqual({ ok: false, detail: "token 'm4-macbook' is not scoped to session-orchestrator" });
+  });
+
+  it('fails when the list call itself failed', () => {
+    expect(evaluateNpmPublishCapability({ error: 'exit 1: E401' }))
+      .toEqual({ ok: false, detail: 'npm token list failed: exit 1: E401' });
+  });
+});
+
+describe('evaluateSnapshotProbeRow (#1712)', () => {
+  const TREE = { ok: true, sourceSha: 'a'.repeat(40), snapshotTree: '0123456789abcdef0123456789abcdef01234567' };
+  const REMEDY = ' — run: node scripts/snapshot-probe.mjs --host <alias> (or --local)';
+  const step = (name, status = 'pass') => ({ name, status, exitCode: status === 'pass' ? 0 : 1, durationMs: 10 });
+  const receipt = (steps, ok = true) => ({
+    ok: true,
+    receipt: { schema: 1, sourceSha: TREE.sourceSha, snapshotTree: TREE.snapshotTree, ok, route: 'remote:m5-remote', steps, finishedAt: '2026-10-21T10:00:00.000Z' },
+  });
+
+  it('passes a green receipt with a suite step', () => {
+    expect(evaluateSnapshotProbeRow({ tree: TREE, receiptResult: receipt([step('validate-plugin'), step('remote-gate')]) }))
+      .toEqual({ ok: true, detail: 'tree 01234567 probed green (validate-plugin, remote-gate; route remote:m5-remote)' });
+  });
+
+  // BUG: release 5.13.0 pushed a curated tree nobody had ever tested.
+  it('fails when no receipt exists for this snapshot tree', () => {
+    expect(evaluateSnapshotProbeRow({ tree: TREE, receiptResult: { ok: false, receipt: null, reason: 'absent' } }))
+      .toEqual({ ok: false, detail: `no probe receipt for snapshot tree 01234567${REMEDY}` });
+  });
+
+  // BUG: `--steps validate-plugin` writes a green receipt that never ran a test.
+  it('fails a validate-plugin-only receipt', () => {
+    expect(evaluateSnapshotProbeRow({ tree: TREE, receiptResult: receipt([step('validate-plugin')]) }))
+      .toEqual({ ok: false, detail: `probe of tree 01234567 ran no suite step (validate-plugin)${REMEDY}` });
+  });
+
+  it('fails and names the red step', () => {
+    expect(evaluateSnapshotProbeRow({ tree: TREE, receiptResult: receipt([step('validate-plugin'), step('test', 'fail')], false) }))
+      .toEqual({ ok: false, detail: `probe of tree 01234567 red: test=fail${REMEDY}` });
+  });
+
+  it('fails when the snapshot tree cannot be computed', () => {
+    expect(evaluateSnapshotProbeRow({ tree: { ok: false, reason: 'policy missing' }, receiptResult: null }))
+      .toEqual({ ok: false, detail: `snapshot tree not computable (policy missing)${REMEDY}` });
+  });
+});
+
 describe('validateFlags', () => {
   it('refuses --skip-ci under --publish', () => {
     // THE BUG: --skip-ci makes ci-green-on-head report `ok:true` with the
@@ -1087,6 +1195,19 @@ describe('evaluatePublishReceipt', () => {
 
     expect(receipt).toMatchObject({ confirmed: true, target: '3.21.0' });
     expect(evaluatePublishReceipt({ status: 0, stdout: '+ session-orchestrator@3.20.0\n', stderr: '' }, '3.21.0').confirmed).toBe(false);
+  });
+
+  it('names the Bypass-2FA cause on EOTP and says a re-run is safe (#1712)', () => {
+    const receipt = evaluatePublishReceipt({
+      status: 1,
+      stdout: '',
+      stderr: 'npm error code EOTP\nnpm error This operation requires a one-time password from your authenticator.\n',
+    }, '5.13.0');
+    expect(receipt).toEqual({
+      confirmed: false,
+      target: '5.13.0',
+      detail: 'npm publish failed with EOTP (exit 1): the token lacks Bypass-2FA — nothing was published; re-running --publish with a Bypass-2FA granular token is safe (skills/npm-publish § Token requirements)',
+    });
   });
 });
 
@@ -1367,6 +1488,13 @@ describe('evaluateCiRow', () => {
 
   it('fails a red reading and names the failing job', () => {
     expect(evaluateCiRow({ status: 'red', failingJobName: 'lint' }))
+      .toEqual({ ok: false, detail: 'status: red (lint)' });
+  });
+
+  it('names EVERY failing job when several are red (#1712), and one name stays byte-identical', () => {
+    expect(evaluateCiRow({ status: 'red', failingJobName: 'test (macos-latest)', failingJobNames: ['test (macos-latest)', 'windows'] }))
+      .toEqual({ ok: false, detail: 'status: red (test (macos-latest), windows)' });
+    expect(evaluateCiRow({ status: 'red', failingJobName: 'lint', failingJobNames: ['lint'] }))
       .toEqual({ ok: false, detail: 'status: red (lint)' });
   });
 

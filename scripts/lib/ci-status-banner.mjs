@@ -513,6 +513,28 @@ async function glabApi(apiPath, repoRoot, deps = {}, expect = undefined) {
   return parseCliJson(result.stdout, `glab api ${apiPath}`, expect);
 }
 
+/** Upper bound on `failingJobNames` — a row listing 40 jobs is unreadable. */
+const MAX_FAILING_JOB_NAMES = 10;
+
+/**
+ * Every failing job/check-run name, sanitised, deduplicated (a re-run job
+ * appears twice) and capped (#1712). Additive companion to `failingJobName`,
+ * which keeps naming only the first: release 5.13.0 had a red informational
+ * Windows run beside the real cause, and naming one of two hid the other.
+ *
+ * @param {Array<{name?: unknown}>} failed
+ * @returns {string[]}
+ */
+function collectFailingJobNames(failed) {
+  const names = [];
+  for (const item of failed) {
+    const name = sanitizeApiText(item?.name);
+    if (name && !names.includes(name)) names.push(name);
+    if (names.length >= MAX_FAILING_JOB_NAMES) break;
+  }
+  return names;
+}
+
 /**
  * Run `gh api <path>` and return parsed JSON.
  *
@@ -969,6 +991,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
 
     // Get the name of the first failing job on the current pipeline.
     let failingJobName;
+    let failingJobNames;
     try {
       const jobs = await glabApi(
         `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
@@ -977,8 +1000,9 @@ async function checkGitlab(repoRoot, now, deps = {}) {
         'array',
       );
       if (Array.isArray(jobs)) {
-        const failedJob = jobs.find((j) => j.status === 'failed');
-        failingJobName = failedJob ? sanitizeApiText(failedJob.name) : undefined;
+        const failedJobs = jobs.filter((j) => j?.status === 'failed');
+        failingJobName = failedJobs[0] ? sanitizeApiText(failedJobs[0].name) : undefined;
+        failingJobNames = failedJobs.length ? collectFailingJobNames(failedJobs) : undefined;
       }
     } catch {
       // Non-fatal — we still report red status without job name.
@@ -990,6 +1014,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
       ...(lastGreen ? { lastGreen } : {}),
       redCount,
       ...(failingJobName !== undefined ? { failingJobName } : {}),
+      ...(failingJobNames !== undefined ? { failingJobNames } : {}),
       details: {
         currentPipelineId: currentPipeline.id,
         cliUsed: 'glab',
@@ -1070,8 +1095,12 @@ async function checkGithub(repoRoot, deps = {}) {
     'object',
   );
 
+  // `per_page=100` (#1712): the API default page is 30, so a larger matrix
+  // silently dropped runs — a red one included. Ceiling: one page of 100; a
+  // commit with more check runs still truncates. Revisit trigger: a workflow
+  // set whose `total_count` exceeds 100 (then paginate via `--paginate`).
   const data = await ghApi(
-    `repos/${nameWithOwner}/commits/${deps.sha ?? 'HEAD'}/check-runs`,
+    `repos/${nameWithOwner}/commits/${deps.sha ?? 'HEAD'}/check-runs?per_page=100`,
     repoRoot,
     deps,
     'object',
@@ -1104,15 +1133,17 @@ async function checkGithub(repoRoot, deps = {}) {
     else if (run?.status === 'queued' && run?.conclusion === null) checkRunCounts.queued++;
     else checkRunCounts.other++;
   }
-  const failedRun = checkRuns.find(
+  const failedRuns = checkRuns.filter(
     (r) => r?.conclusion === 'failure' || r?.conclusion === 'action_required',
   );
+  const failedRun = failedRuns[0];
 
   if (failedRun) {
     return {
       status: 'red',
       ok: false,
       failingJobName: sanitizeApiText(failedRun.name),
+      failingJobNames: collectFailingJobNames(failedRuns),
       details: {
         cliUsed: 'gh',
         reason: 'lastGreen-not-implemented-for-github',

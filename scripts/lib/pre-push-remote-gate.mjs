@@ -117,57 +117,77 @@ function cleanRerun(test) {
     new Set(files).size === files.length && failedFiles.every((f) => files.includes(f));
 }
 
-async function main() {
-  const [tree, sha, ledgerRoot] = process.argv.slice(2);
+/**
+ * Run the full quality gate for `sha` on a remote host via offload (the body of the
+ * pre-push router, #1712). Exit-code contract of `code`: 0 verified, 1 blocked,
+ * 2 SO_GATE_HOSTS invalid or none of its hosts could run the gate, 10 fallback.
+ *
+ * @param {object} opts
+ * @param {string} opts.tree checkout offload syncs (its basename names the host repo)
+ * @param {string} opts.sha commit the remote gate must check out and verify
+ * @param {string} opts.ledgerRoot repo root for events and wave attribution
+ * @param {NodeJS.ProcessEnv} [opts.env] source of the SO_GATE_HOSTS override
+ * @param {boolean} [opts.emit=true] emit `orchestrator.quality_gate.*` — false for
+ *   callers whose `sha` is not a pushed commit (snapshot probe)
+ * @param {string} [opts.jobPrefix='pre-push'] offload job name prefix
+ * @param {(message: string) => void} [opts.log]
+ * @param {{ write: (chunk: string) => unknown }} [opts.stdout=process.stdout] sink for the remote
+ *   run's stdout — a caller that owns its own stdout (snapshot probe `--json`) routes it elsewhere
+ * @param {{ write: (chunk: string) => unknown }} [opts.stderr=process.stderr] sink for the remote run's stderr
+ * @returns {Promise<{ code: number, passed: boolean, alias: string | null, report: object | null, hostSource: string }>}
+ */
+export async function runRemoteGate({ tree, sha, ledgerRoot, env = process.env, emit = true, jobPrefix = 'pre-push', log: logFn = log,
+  stdout = process.stdout, stderr = process.stderr }) {
   let hosts;
   let hostSource = 'config';
-  const override = resolveGateHostOverride();
+  const done = (code) => ({ code, passed: false, alias: null, report: null, hostSource });
+  const override = resolveGateHostOverride(env);
   if (override?.error) {
-    log(override.error);
-    return 2;
+    logFn(override.error);
+    return done(2);
   }
   if (override) {
     hosts = override.hosts.map((alias) => ({ alias }));
     hostSource = 'override';
-    log(`gate host order from SO_GATE_HOSTS (host_source: override): ${override.hosts.join(', ')}.`);
+    logFn(`gate host order from SO_GATE_HOSTS (host_source: override): ${override.hosts.join(', ')}.`);
   } else {
     try {
       hosts = _parseRemoteHosts(await readConfigFile(tree)).filter((host) => host['roles-allowed'].includes('test'));
     } catch {
-      log('remote configuration unavailable — using local gate (host_source: fallback).');
-      return 10;
+      logFn('remote configuration unavailable — using local gate (host_source: fallback).');
+      return done(10);
     }
   }
   for (const { alias } of hosts) {
-    log(`checking remote readiness (${alias}).`);
+    logFn(`checking remote readiness (${alias}).`);
     const doctor = spawnSync('offload', ['doctor', '-H', alias, '--brief', '--no-probe'],
       { encoding: 'utf8', timeout: 30_000, maxBuffer: 1024 * 1024 });
     if (doctor.error?.code === 'ENOENT') break;
     if (!gateReady(doctor)) {
       const token = gateReadyToken(doctor);
-      log(`remote ${alias} not ready (exit ${doctor.status ?? doctor.error?.code}${token ? `, gate-ready=${token}` : ''}) — trying next route.`);
+      logFn(`remote ${alias} not ready (exit ${doctor.status ?? doctor.error?.code}${token ? `, gate-ready=${token}` : ''}) — trying next route.`);
       continue;
     }
     const nonce = randomUUID();
-    log(`running full quality gate remotely on ${alias} (host_source: ${hostSource}) against pushed SHA ${sha}.`);
+    logFn(`running full quality gate remotely on ${alias} (host_source: ${hostSource}) against pushed SHA ${sha}.`);
     // No --link-modules: offload snapshots a linked node_modules symlink into its commit (.gitignore's
     // `node_modules/` matches directories only), and the `git checkout <sha>` in remoteCommand then
     // deletes it, so vitest/eslint exit 127 and the gate reports them as "fail" (push blocked).
-    const run = spawnSync('offload', ['run', '-H', alias, tree, '--job', `pre-push-${nonce}`,
+    const run = spawnSync('offload', ['run', '-H', alias, tree, '--job', `${jobPrefix}-${nonce}`,
       '--klasse', 'gate', '--rm', '--timeout', '1800', '--', 'node', '-e', remoteCommand(sha, nonce)],
     { encoding: 'utf8', timeout: 1_860_000, maxBuffer: 64 * 1024 * 1024 });
-    process.stdout.write(run.stdout ?? '');
-    process.stderr.write(run.stderr ?? '');
+    stdout.write(run.stdout ?? '');
+    stderr.write(run.stderr ?? '');
     const receipts = (run.stdout ?? '').split(/\r?\n/).filter((line) => line.startsWith('SO_PRE_PUSH_RESULT='));
     let receipt;
     try { if (receipts.length === 1) receipt = JSON.parse(receipts[0].slice('SO_PRE_PUSH_RESULT='.length)); } catch { /* unknown blocks */ }
     if (receipts.length === 0 && !run.error && [2, 4, 8, 10, 255].includes(run.status)) {
-      log(`remote ${alias} transport/readiness failure (exit ${run.status}) — trying next route.`);
+      logFn(`remote ${alias} transport/readiness failure (exit ${run.status}) — trying next route.`);
       continue;
     }
     const report = receipt?.report;
     const stubbedChecks = Object.keys(report?.stubbed ?? {});
-    if (stubbedChecks.length > 0) log(`remote gate contains stubbed checks: ${stubbedChecks.join(', ')} — Push blocked.`);
+    if (stubbedChecks.length > 0) logFn(`remote gate contains stubbed checks: ${stubbedChecks.join(', ')} — Push blocked.`);
     const passed = !run.error && run.status === 0 && receipt?.nonce === nonce && receipt.sha === sha &&
       receipt.exit_code === 0 && report?.variant === 'full-gate' && report.test?.status === 'pass' &&
       // `failed` stays the first, parallel run's count; it is acceptable only when
@@ -176,7 +196,7 @@ async function main() {
       report.test.suite_died !== true &&
       ['pass', 'skip'].includes(report.typecheck?.status) && ['pass', 'skip'].includes(report.lint?.status) &&
       ![report.test, report.typecheck, report.lint].some((check) => check.timed_out === true);
-    try {
+    if (emit) try {
       const { emitEvent, sessionAttribution } = await import('./events.mjs');
       const counts = admitSuiteCounts(report?.test);
       const waveNumber = resolveWaveNumber(ledgerRoot);
@@ -191,17 +211,23 @@ async function main() {
           ? { rerun: { files: report.test.rerun.files, status: report.test.rerun.status } } : {}),
       }, { repoRoot: ledgerRoot });
     } catch { /* telemetry cannot change the blocking verdict */ }
-    log(`remote quality gate ${passed ? 'passed' : 'FAILED — Push blocked'} (${alias}).`);
-    return passed ? 0 : 1;
+    logFn(`remote quality gate ${passed ? 'passed' : 'FAILED — Push blocked'} (${alias}).`);
+    return { code: passed ? 0 : 1, passed, alias, report: report ?? null, hostSource };
   }
   if (hostSource === 'override') {
     // An explicit override names where the gate may run; silently falling back to the
     // local host is the case the override exists to prevent (#1626).
-    log(`no SO_GATE_HOSTS route could run the gate (${hosts.map((h) => h.alias).join(', ')}) — Push blocked (no local fallback).`);
-    return 2;
+    logFn(`no SO_GATE_HOSTS route could run the gate (${hosts.map((h) => h.alias).join(', ')}) — Push blocked (no local fallback).`);
+    return done(2);
   }
-  log('remote routes unavailable — local fallback (host: local, host_source: fallback; an origin MR branch takes the partial gate, #1642).');
-  return 10;
+  logFn('remote routes unavailable — local fallback (host: local, host_source: fallback; an origin MR branch takes the partial gate, #1642).');
+  return done(10);
+}
+
+async function main() {
+  const [tree, sha, ledgerRoot] = process.argv.slice(2);
+  const r = await runRemoteGate({ tree, sha, ledgerRoot });
+  return r.code;
 }
 
 if (isMainModule(import.meta.url)) process.exitCode = await main();

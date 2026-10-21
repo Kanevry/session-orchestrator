@@ -186,6 +186,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
 .install-option[open] .install-name { color: var(--accent); }
 .install-body { max-width: 920px; padding: 4px 0 32px; }
 .install-body p.small { font-size: .85rem; max-width: 84ch; }
+.install-deps > summary { cursor: pointer; padding-block: 12px; font-size: .85rem; color: var(--fg-2); }
 .install-guide { color: var(--fg-2); margin: 24px 0 0; font-size: .85rem; }
 .cmd { position: relative; padding: 15px 98px 15px 18px; border: 1px solid var(--line); border-radius: 7px; background: var(--code-bg); max-width: 100%; margin: 0 0 16px; }
 .cmd > code,.cmd > span { display: block; overflow-x: auto; white-space: nowrap; min-width: 0; padding-block: 2px; font-size: var(--text-code); }
@@ -281,6 +282,7 @@ hr { border: 0; border-top: 1px solid var(--line); margin: 2rem 0; }
   .grid-12 { display: block; }.grid-12 > * + * { margin-top: 22px; }
   .footer-links { flex-direction: column; align-items: flex-start; gap: 12px; }
   .guide-page #top { padding-top: 50px; }
+  .cmd > code,.cmd > pre.code,pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
 }
 @media (max-width: 600px) {
   .feature-grid { grid-template-columns: 1fr; }.feature { padding: 24px 20px; }.go-steps { grid-template-columns: 1fr; gap: 16px; }

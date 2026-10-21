@@ -176,7 +176,7 @@ function graphIntegrityProblem(git) {
  * @param {GitRunner} git @param {string} sourceSha
  * @returns {{ ok: true, excludes: string[] } | { ok: false, reason: string }}
  */
-function readSourcePolicy(git, sourceSha) {
+export function readSourcePolicy(git, sourceSha) {
   const res = git(['show', `${sourceSha}:${PUBLIC_EXPORT_POLICY_FILE}`]);
   if (res.status !== 0) return { ok: false, reason: `${PUBLIC_EXPORT_POLICY_FILE} missing in source commit` };
   try {
@@ -184,6 +184,47 @@ function readSourcePolicy(git, sourceSha) {
   } catch {
     return { ok: false, reason: `${PUBLIC_EXPORT_POLICY_FILE} is not JSON` };
   }
+}
+
+/**
+ * Write the curated snapshot TREE of a source commit: the source tree minus every path
+ * the policy excludes, via a temp index (`read-tree` → `update-index --force-remove` →
+ * `write-tree`). Writes loose tree objects only — no commit, no ref; the real index is
+ * untouched. The written tree is post-checked independently of the removal step.
+ * Shared by `buildGithubExport` and the snapshot probe (#1712), so the tree the probe
+ * tests is by construction the tree the export publishes.
+ * @param {{ git: GitRunner, sourceSha: string, excludes: string[] }} opts
+ * @returns {{ ok: true, tree: string, sourceFiles: number, removed: string[] } | { ok: false, reason: string }}
+ */
+export function writeSnapshotTree({ git, sourceSha, excludes }) {
+  const fail = (reason) => ({ ok: /** @type {const} */ (false), reason });
+  const tmp = mkdtempSync(join(tmpdir(), 'so-github-export-idx-'));
+  const env = { GIT_INDEX_FILE: join(tmp, 'index') };
+  let tree;
+  let sourceFiles;
+  let removed;
+  try {
+    if (git(['read-tree', `${sourceSha}^{tree}`], { env }).status !== 0) return fail('read-tree of the source failed');
+    const ls = git(['ls-files', '-z', '--cached'], { env });
+    if (ls.status !== 0) return fail('listing the temp index failed');
+    const all = ls.stdout.split('\0').filter(Boolean);
+    sourceFiles = all.length;
+    removed = all.filter((p) => isPublicExportExcluded(p, excludes));
+    if (removed.length > 0) {
+      const rm = git(['update-index', '--force-remove', '-z', '--stdin'], { env, input: removed.join('\0') + '\0' });
+      if (rm.status !== 0) return fail('removing excluded paths from the temp index failed');
+    }
+    const wt = git(['write-tree'], { env });
+    if (wt.status !== 0) return fail('write-tree failed');
+    tree = wt.stdout.trim();
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // Post-check on the written tree itself, independent of the removal step above.
+  const survivors = listTree(git, tree).filter((p) => isPublicExportExcluded(p, excludes));
+  if (survivors.length > 0) return fail(`${survivors.length} excluded path(s) survived in the snapshot tree`);
+  return { ok: true, tree, sourceFiles, removed };
 }
 
 /**
@@ -307,32 +348,11 @@ export function buildGithubExport({
     return refuse(`the parent's ${SOURCE_COMMIT_TRAILER} is not an ancestor of the source`);
   }
 
-  const tmp = mkdtempSync(join(tmpdir(), 'so-github-export-idx-'));
-  const env = { GIT_INDEX_FILE: join(tmp, 'index') };
-  let newTree;
-  let sourceCount;
-  let removed;
-  try {
-    if (git(['read-tree', `${sourceSha}^{tree}`], { env }).status !== 0) return refuse('read-tree of the source failed');
-    const ls = git(['ls-files', '-z', '--cached'], { env });
-    if (ls.status !== 0) return refuse('listing the temp index failed');
-    const all = ls.stdout.split('\0').filter(Boolean);
-    sourceCount = all.length;
-    removed = all.filter((p) => isPublicExportExcluded(p, excludes));
-    if (removed.length > 0) {
-      const rm = git(['update-index', '--force-remove', '-z', '--stdin'], { env, input: removed.join('\0') + '\0' });
-      if (rm.status !== 0) return refuse('removing excluded paths from the temp index failed');
-    }
-    const wt = git(['write-tree'], { env });
-    if (wt.status !== 0) return refuse('write-tree failed');
-    newTree = wt.stdout.trim();
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
-
-  // Post-check on the written tree itself, independent of the removal step above.
-  const survivors = listTree(git, newTree).filter((p) => isPublicExportExcluded(p, excludes));
-  if (survivors.length > 0) return refuse(`${survivors.length} excluded path(s) survived in the snapshot tree`);
+  // One selection path for export and snapshot probe (#1712); the helper post-checks
+  // the written tree for surviving excluded paths.
+  const snap = writeSnapshotTree({ git, sourceSha, excludes });
+  if (!snap.ok) return refuse(snap.reason);
+  const { tree: newTree, sourceFiles: sourceCount, removed } = snap;
 
   const parentTree = git(['rev-parse', `${parentSha}^{tree}`]).stdout.trim();
   const diff = git(['diff-tree', '-r', '--name-only', '-z', parentTree, newTree]);

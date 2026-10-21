@@ -806,6 +806,10 @@ describe('the built-in registry', () => {
   // probe that had ALREADY delivered its HEAD reading into `timeout` — the
   // reason and the hint vanished behind "1 timed out". Real registry
   // follow-up; only the pushed-SHA requery is slow.
+  // The requery NEVER settles (#1714): the budget counts work time (wall minus
+  // loop-blocked time) and re-arms while siblings block the loop, so a finite
+  // 4 s sleep fit inside a 1500 ms budget on a loaded gate host and the red
+  // follow-up won (2 of 3 pre-push gates on win-wsl, 2026-10-21).
   it('keeps the delivered HEAD reading when the pushed-SHA follow-up overruns the budget (#1332)', async () => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     const dir = await mkTmp();
@@ -816,7 +820,7 @@ describe('the built-in registry', () => {
       'ci-status',
       `export async function probe(opts) {
         if (opts.sha !== undefined) {
-          await new Promise((r) => setTimeout(r, 4000));
+          await new Promise(() => {});
           return { status: 'red', ok: false, details: { currentPipelineId: 1, cliUsed: 'glab' } };
         }
         return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
@@ -827,7 +831,7 @@ describe('the built-in registry', () => {
 
     const out = await runSessionStartProbes(
       // 1500 ms: the async `git rev-parse` now spends this budget too (#1396),
-      // so it must fit under host load while the 4 s requery cannot.
+      // so it must fit under host load; the requery never settles.
       { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' }, timeoutMs: 1500 },
       { probes: [fake], emit },
     );
