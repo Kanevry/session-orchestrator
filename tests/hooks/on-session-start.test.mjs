@@ -2697,6 +2697,34 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     expect(envelope.systemMessage.split('\n')).toContain(BANNER);
   });
 
+  it('a lock-less resume does not stamp its own running session "abandoned" in sessions.jsonl (#1748)', async () => {
+    // THE BUG: with no lock vouching for it, the backfill treated the session's
+    // own startup `session.started` as dead. Registry entry removed so ONLY the
+    // hook passing ownSessionIds can protect it. The dead control proves the
+    // backfill ran at all — a backfill that never ran would also stamp nothing.
+    const DEAD_ID = 'dddddddd-1111-4222-8333-444444444444';
+    const DEAD_SEMANTIC = 'main-2026-01-01-session-1';
+    const { dir } = await startupThen({
+      leaseId: 'lead-abcdef123456',
+      secondId: STARTUP_ID,
+      secondSource: 'resume',
+      afterStartup: async (d) => {
+        const ledger = path.join(d, '.orchestrator', 'metrics', 'events.jsonl');
+        const events = await fs.readFile(ledger, 'utf8');
+        expect(events).toContain('orchestrator.session.started');
+        expect(events).toContain(STARTUP_ID);
+        await fs.appendFile(ledger, [
+          { timestamp: '2026-01-01T09:00:00.000Z', event: 'orchestrator.session.started', session_id: DEAD_ID, branch: 'main' },
+          { timestamp: '2026-01-01T09:01:00.000Z', event: 'orchestrator.session.lock.acquired', session_id: DEAD_ID, semantic_session_id: DEAD_SEMANTIC, mode: 'deep' },
+        ].map((e) => JSON.stringify(e)).join('\n') + '\n');
+        await fs.rm(path.join(process.env.SO_SESSION_REGISTRY_DIR, 'active', `${STARTUP_ID}.json`), { force: true });
+      },
+    });
+    const sessions = (await fs.readFile(path.join(dir, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8'))
+      .split('\n').filter((l) => l.length > 0).map((l) => JSON.parse(l));
+    expect(sessions.filter((r) => r.status === 'abandoned').map((r) => r.session_id)).toEqual([DEAD_SEMANTIC]);
+  });
+
   it('known #1641 gap: startup C → /clear D keeps C\'s lock until TTL, takes no new lock, still notifies', async () => {
     // Pins the named BV-004 ceiling honestly: without a process-bound witness
     // (#1641) the new raw id cannot prove C was itself, so C's lock is kept.

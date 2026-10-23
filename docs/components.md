@@ -7,7 +7,7 @@ Detailed component inventory and architecture reference for Session Orchestrator
 ```mermaid
 flowchart LR
     USER([Operator]) -->|invokes /session| COORD[Coordinator]
-    COORD -->|reads| SK[Skills<br/>51 user-facing]
+    COORD -->|reads| SK["Skills<br/>28 you type · 23 background"]
     COORD -->|invokes| CMD[Commands<br/>30 slash-cmds]
     COORD -->|dispatches| AG[Agents<br/>14 typed sub-agents]
     AG -.->|parallel waves| W1[code-implementer]
@@ -18,7 +18,7 @@ flowchart LR
     COORD -->|writes| METRIC[.orchestrator/metrics/<br/>sessions · learnings · events]
 ```
 
-## Skills (51 user-facing)
+## Skills (51: 28 you type, 23 in the background)
 
 - **Lifecycle:** `session-start`, `session-plan`, `wave-executor`, `session-end`, `quality-gates`, `using-orchestrator`
 - **Authoring:** `mcp-builder`, `hook-development`, `frontmatter-guard`

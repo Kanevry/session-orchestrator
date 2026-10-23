@@ -174,14 +174,24 @@ export function setSessionProfile(contents, profile) {
  * source than the present moment. The fallback is deliberately silent: it is a
  * degradation of PRECISION, not a failure.
  *
+ * A lock that is PROVABLY a peer's falls back the same way (#1730 Pkt 8): the
+ * lock is repo-global, so the checkout a writer stands in can hold another
+ * session's lock — the Lead's in the main checkout, for one. Its `started_at`
+ * is that session's start, and stamping it would make this STATE.md claim the
+ * peer's start. Ownership is judged exactly as in `resolveSessionIds()` (#1663,
+ * shared `lockOwnership()`); a process that cannot name its own id keeps the
+ * lock's instant, as before.
+ *
  * Never throws.
  *
- * @param {{ repoRoot?: string }} [opts]
+ * @param {{ repoRoot?: string, env?: object }} [opts]  `env` defaults to
+ *   `process.env`; injectable for tests.
  * @returns {string} ISO-8601 UTC timestamp.
  */
-export function resolveSessionStartedAt({ repoRoot } = {}) {
+export function resolveSessionStartedAt({ repoRoot, env = process.env } = {}) {
   try {
     const lock = _readLock({ repoRoot });
+    if (lockOwnership(lock, env).provablyForeign) return new Date().toISOString();
     const raw = lock?.started_at;
     if (typeof raw === 'string' && raw.length > 0) {
       const ms = Date.parse(raw);
@@ -229,18 +239,37 @@ export function resolveSessionStartedAt({ repoRoot } = {}) {
  * @returns {{ session_id: string|null, semantic_session_id: string|null }}
  */
 export function resolveSessionIds({ repoRoot, env = process.env } = {}) {
-  const pick = (value) => (typeof value === 'string' && value.trim().length > 0 ? value.trim() : null);
   try {
     const lock = _readLock({ repoRoot });
-    const lockId = pick(lock?.session_id);
-    const ownIds = _readProcessLocalSessionIds({ env });
-    const own = lockId !== null && ownIds.includes(lockId);
-    const provablyForeign = lockId !== null && ownIds.length > 0 && !own;
+    const { lockId, own, provablyForeign } = lockOwnership(lock, env);
     return {
       session_id: own ? lockId : null,
-      semantic_session_id: provablyForeign ? null : pick(lock?.semantic_session_id),
+      semantic_session_id: provablyForeign ? null : pickId(lock?.semantic_session_id),
     };
   } catch {
     return { session_id: null, semantic_session_id: null };
   }
+}
+
+/** A trimmed non-empty string, else `null`. */
+function pickId(value) {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
+}
+
+/**
+ * Whose lock is this? The ONE ownership judgement both STATE.md sources use, so
+ * `started_at` and `session-id` can never disagree about the same lock (#1663,
+ * #1730 Pkt 8). `own`: the lock's raw id is one of this process's own ids.
+ * `provablyForeign`: this process names at least one id and the lock carries
+ * another. A process without an id is neither — unprovable is not foreign.
+ *
+ * @param {object|null} lock  `readLock()` result
+ * @param {object} env
+ * @returns {{ lockId: string|null, own: boolean, provablyForeign: boolean }}
+ */
+function lockOwnership(lock, env) {
+  const lockId = pickId(lock?.session_id);
+  const ownIds = _readProcessLocalSessionIds({ env });
+  const own = lockId !== null && ownIds.includes(lockId);
+  return { lockId, own, provablyForeign: lockId !== null && ownIds.length > 0 && !own };
 }

@@ -1,0 +1,14 @@
+{
+  "id": "MAL-2026-2144",
+  "summary": "Malicious code in litellm (PyPI)",
+  "modified": "2026-10-20T08:00:00Z",
+  "published": "2026-10-19T21:00:00Z",
+  "affected": [
+    {
+      "package": { "ecosystem": "PyPI", "name": "litellm" },
+      "ranges": [{ "type": "ECOSYSTEM", "events": [{ "introduced": "0" }] }],
+      "versions": ["1.107.0"]
+    }
+  ],
+  "database_specific": { "malicious-packages-origins": [{ "source": "example" }] }
+}

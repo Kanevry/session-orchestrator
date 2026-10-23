@@ -1,0 +1,13 @@
+{
+  "name": "example-app",
+  "version": "1.0.0",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": { "name": "example-app", "version": "1.0.0" },
+    "node_modules/lodash": { "version": "4.17.15", "resolved": "https://registry.npmjs.org/lodash/-/lodash-4.17.15.tgz" },
+    "node_modules/a": { "version": "1.0.0", "resolved": "https://registry.npmjs.org/a/-/a-1.0.0.tgz" },
+    "node_modules/a/node_modules/b": { "version": "1.0.0", "resolved": "https://registry.npmjs.org/b/-/b-1.0.0.tgz" },
+    "node_modules/local-pkg": { "resolved": "packages/local-pkg", "link": true }
+  }
+}

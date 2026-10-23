@@ -10,7 +10,7 @@ Three planning modes with a shared research-driven Q&A engine. Pattern across al
 
 ## Phase 0: Read Session Config
 
-Read Session Config from CLAUDE.md. Required field: `plan-baseline-path`. If missing or absent, stop with error:
+Read Session Config from CLAUDE.md. `plan-baseline-path` is required only by `/plan new`; `feature` and `retro` run without it. If `/plan new` finds it missing or absent, stop with error:
 
 > "Error: `plan-baseline-path` is not configured in Session Config. Add it to your CLAUDE.md under `## Session Config`. Example: `plan-baseline-path: ~/Projects/projects-baseline`"
 
@@ -43,7 +43,7 @@ Every question wave follows the same pattern. This is the core mechanic across a
 Before each Q&A wave, perform research **sequentially** — Cursor has no parallel agents:
 
 1. **Market/online context** — Search for relevant market data, best practices, competitor analysis, or technical patterns for the upcoming questions
-2. **Baseline analysis** — Read projects-baseline templates, rules, and scripts at `$BASELINE_PATH` (Glob, Grep, Read)
+2. **Baseline analysis** — Read projects-baseline templates, rules, and scripts at `$BASELINE_PATH` (Glob, Grep, Read). Skip it when `plan-baseline-path` is unset (only `/plan new` requires it).
 3. **Repo context** — Analyze current repository for patterns, file structure, dependencies, conventions (skip for `/plan new` wave 1)
 
 ### 2.2 Question Presentation

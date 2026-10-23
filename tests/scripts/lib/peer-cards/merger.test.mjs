@@ -143,6 +143,19 @@ describe('mergePeerCard — AC2 hand-edit preservation', () => {
     expect(result.body).toContain('<!-- END MANAGED: preferences -->');
   });
 
+  it('starts every appended section on its own line (no trailing newline, two appends)', () => {
+    const body = '# Card\n\n<!-- BEGIN MANAGED: a -->\nx\n<!-- END MANAGED: a -->';
+
+    const result = mergePeerCard(body, { b: 'y', c: 'z' });
+
+    expect(result.body).toBe(
+      '# Card\n\n<!-- BEGIN MANAGED: a -->\nx\n<!-- END MANAGED: a -->\n' +
+        '<!-- BEGIN MANAGED: b -->\ny\n<!-- END MANAGED: b -->\n' +
+        '<!-- BEGIN MANAGED: c -->\nz\n<!-- END MANAGED: c -->',
+    );
+    expect(mergePeerCard(result.body, {}).body).toBe(result.body);
+  });
+
   it('preserves managed sections when body has zero hand text between them', () => {
     const existingBody =
       '<!-- BEGIN MANAGED: section1 -->\n- a\n<!-- END MANAGED: section1 -->' +

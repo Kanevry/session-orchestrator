@@ -1555,7 +1555,8 @@ function main() {
         {
           noun: 'skills',
           actual: countSkills(vaultDir),
-          re: /^##\s+Skills\s+\((\d+)\s+user-facing\)/i,
+          // "(N user-facing)" or the split form "(N: 28 you type, 23 in the background)" (#1757).
+          re: /^##\s+Skills\s+\((\d+)(?:\s+user-facing|:[^)]*)\)/i,
         },
         {
           noun: 'commands',

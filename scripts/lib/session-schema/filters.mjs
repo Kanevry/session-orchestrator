@@ -45,17 +45,20 @@
 /**
  * True when a record represents REAL (non-phantom) work.
  *
- * Fail-open by design: anything that is not explicitly marked abandoned counts
- * as real. Most historical records carry no `status` field at all, and those
- * are genuine sessions — treating "absent" as "abandoned" would discard the
- * majority of the ledger.
+ * Fail-open by design: anything that is not explicitly marked `abandoned` or
+ * `closed-without-plan` counts as real. Most historical records carry no
+ * `status` field at all, and those are genuine sessions — treating "absent" as
+ * "abandoned" would discard the majority of the ledger. `closed-without-plan`
+ * (#1762) is the 0-wave placeholder `/close` writes when it stops without its
+ * own plan: no session ran, so no reader (vault-mirror above all) may render
+ * it as one.
  *
  * @param {unknown} record — a parsed sessions.jsonl entry
  * @returns {boolean}
  */
 export function isRealSession(record) {
   if (record === null || typeof record !== 'object' || Array.isArray(record)) return false;
-  return record.status !== 'abandoned';
+  return record.status !== 'abandoned' && record.status !== 'closed-without-plan';
 }
 
 /**

@@ -1,6 +1,6 @@
 # Session Orchestrator — User Guide
 
-Session Orchestrator is a Claude Code and Codex plugin that brings structured, wave-based development sessions to any project. It handles session planning, parallel agent execution, VCS integration, quality gates, and session close-out — so you can focus on deciding *what* to build while it orchestrates *how*.
+Session Orchestrator is a plugin for Claude Code, Codex CLI, Cursor IDE and Pi that brings structured, wave-based development sessions to any project. It handles session planning, parallel agent execution, VCS integration, quality gates, and session close-out — so you can focus on deciding *what* to build while it orchestrates *how*.
 
 ---
 
@@ -79,7 +79,7 @@ Rerun the installer after pulling changes. It performs `plugin add` on every run
 Open your project's Session Config host file and add a `## Session Config` section:
 
 - `CLAUDE.md` on Claude Code
-- `AGENTS.md` on Codex
+- `AGENTS.md` on Codex and Pi
 
 A minimal configuration looks like this:
 
@@ -110,13 +110,13 @@ The orchestrator researches your project state autonomously, presents findings w
 
 ## 2. Bootstrap Gate
 
-The Bootstrap Gate ensures every repository has a minimal structure before any orchestrator command runs. It exists because LLMs will rationalize their way past soft warnings in empty repos — Codex was observed bypassing the `/plan` Phase-0 abort entirely by falling back to "pragmatic paths", leaving repos unstructured. The gate replaces soft warnings with a state-file-backed, non-bypassable check that works identically on Claude Code, Codex, and Cursor.
+The Bootstrap Gate ensures every repository has a minimal structure before any orchestrator command runs. It exists because LLMs will rationalize their way past soft warnings in empty repos — Codex was observed bypassing the `/plan` Phase-0 abort entirely by falling back to "pragmatic paths", leaving repos unstructured. The gate replaces soft warnings with a state-file-backed, non-bypassable check that works identically on all four tools (Claude Code, Codex CLI, Cursor IDE and Pi).
 
 ### When the gate runs
 
 Phase 0 of every orchestrator skill — `/session`, `/go`, `/close`, `/plan`, `/discovery`, and `/evolve` — checks for three conditions before doing anything else:
 
-1. A `CLAUDE.md` (or `AGENTS.md` on Codex) exists in the project root
+1. A `CLAUDE.md` (or `AGENTS.md` on Codex and Pi) exists in the project root
 2. That file contains a `## Session Config` section
 3. `.orchestrator/bootstrap.lock` is committed to the repository
 
@@ -299,7 +299,7 @@ Structured requirement gathering, PRD generation, and issue creation. Accepts on
 
 `/plan` runs outside of sessions. Its output (PRD + issues) feeds into the next `/session`, which picks from those issues and executes them. You can skip `/plan` entirely and create issues manually — sessions work with any existing issues.
 
-**Optional:** `plan-baseline-path` in Session Config (for `/plan new` repo scaffolding from your own baseline). When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Not required for `/plan feature` or `/plan retro`.
+**For `/plan new` only:** `plan-baseline-path` in Session Config (or resolved host-locally, see below). `/plan new` stops without it; `/plan feature` and `/plan retro` run without it. When absent, `/bootstrap` falls back to plugin-bundled minimal templates.
 
 **Optional private capability context:** For new-project or session planning, you can
 supply a small catalog excerpt or authorize a particular offline, read-only local
@@ -384,7 +384,7 @@ Best for: sessions that outgrow 5 waves — large audits, work needing web resea
 Add a `## Session Config` section to your project's Session Config host file to configure how Session Orchestrator behaves in that repository:
 
 - `CLAUDE.md` on Claude Code
-- `AGENTS.md` on Codex
+- `AGENTS.md` on Codex and Pi
 
 ### Example
 
@@ -448,7 +448,7 @@ Add a `## Session Config` section to your project's Session Config host file to 
 | `issue-budget.mode` | string | `strict` | `strict` blocks over-cap creations and parks them; `warn` allows with a stderr notice; `off` disables the gate. |
 | `issue-budget.overflow` | string | `collect-issue` | Where parked creations are drained at session-end: `collect-issue` (one `[Backlog-Sammel]` issue) or `vault-note` (one file under `vault/00-inbox/`). |
 | `persistence` | boolean | `true` | Enable session resumption via STATE.md and session memory files. |
-| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Only required if you want to scaffold from your own baseline during `/plan new`. |
+| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Required by `/plan new`, which stops without it; `/plan feature` and `/plan retro` run without it. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
@@ -1482,7 +1482,7 @@ If you configured `pencil` but design reviews are not running:
 
 The orchestrator looks for a `## Session Config` section in your project's config host file. Ensure:
 
-- The file is named exactly `CLAUDE.md` on Claude Code or `AGENTS.md` on Codex, and is in the project root
+- The file is named exactly `CLAUDE.md` on Claude Code and Cursor or `AGENTS.md` on Codex and Pi, and is in the project root
 - The section heading is exactly `## Session Config`
 - Fields use the exact format: `- **field-name:** value`
 

@@ -57,7 +57,8 @@ AGENT_TYPE="${AGENT_TYPE:-}"
 # --- Build list of last 3 REAL session_ids from sessions.jsonl ---
 
 # Filter out phantom `status: 'abandoned'` stubs (#834, session-close-backfill
-# — 0 waves, seconds of runtime) BEFORE taking the tail. Otherwise a recent
+# — 0 waves, seconds of runtime) and `closed-without-plan` records (#1762, a
+# `/close` without an own plan — no wave data to ground on) BEFORE taking the tail. Otherwise a recent
 # phantom can evict the one real session carrying the stagnation evidence,
 # silently suppressing grounding injection for a genuinely stagnating file.
 #
@@ -71,7 +72,7 @@ AGENT_TYPE="${AGENT_TYPE:-}"
 # anywhere in the file no longer poisons the tail. Mirrors the per-line
 # try/catch behaviour of the .mjs path (scripts/lib/session-schema/filters.mjs).
 # Extract session_id values (skip entries without one, skip empty lines)
-LAST_SESSIONS=$(jq -R -c 'fromjson? | select(.status != "abandoned")' "$SESSIONS_JSONL" 2>/dev/null \
+LAST_SESSIONS=$(jq -R -c 'fromjson? | select(.status != "abandoned" and .status != "closed-without-plan")' "$SESSIONS_JSONL" 2>/dev/null \
   | tail -n 3 \
   | jq -r 'select(.session_id != null and .session_id != "") | .session_id' 2>/dev/null \
   | jq -R -s 'split("\n") | map(select(length > 0))' 2>/dev/null) || LAST_SESSIONS="[]"

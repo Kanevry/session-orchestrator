@@ -16,7 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -135,12 +135,25 @@ function summaryOf(r) {
   return JSON.parse(r.stdout.trim().split('\n').pop());
 }
 
+let registryDir;
+let origRegistryDir;
+
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'backfill-abandoned-cli-'));
+  // #1748: runMigration reads the host session registry as a liveness source.
+  // Pin it to an empty per-test dir so the operator's real registry (or an
+  // entry another test file registered) can never exclude a fixture candidate.
+  // The CLI subprocess inherits process.env, so this isolates runCli too.
+  origRegistryDir = process.env.SO_SESSION_REGISTRY_DIR;
+  registryDir = mkdtempSync(join(tmpdir(), 'backfill-abandoned-registry-'));
+  process.env.SO_SESSION_REGISTRY_DIR = registryDir;
 });
 
 afterEach(() => {
+  if (origRegistryDir === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
+  else process.env.SO_SESSION_REGISTRY_DIR = origRegistryDir;
   rmSync(tmp, { recursive: true, force: true });
+  rmSync(registryDir, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -350,6 +363,138 @@ describe('backfillOnSessionStart (#926) — liveness protection', () => {
     expect(summary.backfilled).toBe(0);
     expect(summary.skipped['skipped-foreign-live-lock']).toBe(1);
     expect(existsSync(metricsFile('sessions.jsonl'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// #1748 — sessions that run WITHOUT a lock by design (#1635 lead yield, #1651
+// released lock kept released, lost acquire). The lock-only liveness check
+// read them as dead; every fixture below has NO session.lock on purpose.
+// Each case seeds one dead sibling (UUID_OLD_1) as the control: the exclusion
+// must spare the live candidate, not switch the backfill off.
+// ---------------------------------------------------------------------------
+
+/** Write a host-registry entry `<registryDir>/active/<id>.json` (registerSelf shape). */
+function seedRegistryEntry({ sessionId, semanticSessionId = null, heartbeatIso }) {
+  mkdirSync(join(registryDir, 'active'), { recursive: true });
+  writeFileSync(
+    join(registryDir, 'active', `${sessionId}.json`),
+    JSON.stringify({
+      session_id: sessionId,
+      semantic_session_id: semanticSessionId,
+      repo_path: '/elsewhere',
+      mode: 'deep',
+      started_at: heartbeatIso,
+      last_heartbeat: heartbeatIso,
+      status: 'active',
+    }) + '\n',
+  );
+}
+
+/** A RECENT lockless candidate (UUID_1 → SEM_1) beside the dead control UUID_OLD_1 → SEM_OLD_1. */
+function seedLocklessCandidates({ uuid = UUID_1 } = {}) {
+  const nowIso = new Date().toISOString();
+  seedEvents([
+    ...TWO_OLD_ABANDONED_EVENTS.slice(0, 2),
+    { timestamp: nowIso, event: 'orchestrator.session.started', session_id: uuid, branch: 'main' },
+    { timestamp: nowIso, event: 'orchestrator.session.lock.acquired', session_id: uuid, semantic_session_id: SEM_1, mode: 'deep' },
+  ]);
+}
+
+describe('backfillOnSessionStart (#1748) — lockless running sessions are not stamped abandoned', () => {
+  it('skips the hook\'s OWN session on a lockless compact/resume re-entry', async () => {
+    // Bug: the SessionStart hook stamped its own still-running session abandoned because no lock vouched for it.
+    seedLocklessCandidates();
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp, ownSessionIds: [UUID_1, SEM_1] });
+
+    expect(summary.total).toBe(1);
+    expect(readSessions().map((r) => r.session_id)).toEqual([SEM_OLD_1]);
+  });
+
+  it('skips a candidate whose SEMANTIC id is the hook\'s own, even under a different raw id', async () => {
+    // Bug: a re-entry with a new raw UUID that reuses the semantic id got a stub on the very record id it later closes under.
+    seedLocklessCandidates({ uuid: UUID_2 });
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp, ownSessionIds: [UUID_1, SEM_1, null, ''] });
+
+    expect(summary.total).toBe(1);
+    expect(readSessions().map((r) => r.session_id)).toEqual([SEM_OLD_1]);
+  });
+
+  it('skips a lockless PEER whose host-registry heartbeat is fresh', async () => {
+    // Bug: a peer running lockless after a lead yield was stubbed by any later SessionStart in the checkout (live 2026-10-22).
+    seedLocklessCandidates();
+    seedRegistryEntry({ sessionId: UUID_1, semanticSessionId: SEM_1, heartbeatIso: new Date().toISOString() });
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp });
+
+    expect(summary.total).toBe(1);
+    expect(readSessions().map((r) => r.session_id)).toEqual([SEM_OLD_1]);
+  });
+
+  it('still backfills a peer whose registry heartbeat is older than the lock TTL', async () => {
+    // Bug guard: a stale registry entry must not keep a dead session alive forever (window = DEFAULT_TTL_HOURS).
+    seedLocklessCandidates();
+    const fiveHoursAgo = new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString();
+    seedRegistryEntry({ sessionId: UUID_1, semanticSessionId: SEM_1, heartbeatIso: fiveHoursAgo });
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    const summary = await backfillOnSessionStart({ repoRoot: tmp });
+
+    expect(summary.total).toBe(2);
+    expect(readSessions().map((r) => r.session_id).sort()).toEqual([SEM_OLD_1, SEM_1].sort());
+  });
+
+  it.skipIf(process.getuid?.() === 0 || process.platform === 'win32')('stamps nothing while the registry directory exists but cannot be listed, and retries on the next start', async () => {
+    // Bug: an unreadable registry read as "nobody registered", so a lockless live peer was stamped like before #1748.
+    seedLocklessCandidates();
+    const active = join(registryDir, 'active');
+    mkdirSync(active, { recursive: true });
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+
+    chmodSync(active, 0o000);
+    let blocked;
+    try {
+      blocked = await backfillOnSessionStart({ repoRoot: tmp });
+    } finally {
+      chmodSync(active, 0o700);
+    }
+
+    expect(blocked.registry_unreadable).toBe(true);
+    expect(blocked.skipped['skipped-registry-unreadable']).toBe(2);
+    expect(readSessions()).toEqual([]);
+    await backfillOnSessionStart({ repoRoot: tmp });
+    expect(readSessions().map((r) => r.session_id).sort()).toEqual([SEM_OLD_1, SEM_1].sort());
+  });
+
+  it.each([
+    { label: 'unparseable file, fresh', heartbeat: null, ageMs: 0, stamped: [SEM_OLD_1] },
+    { label: 'unparseable file, older than the lock TTL', heartbeat: null, ageMs: 5 * 60 * 60 * 1000, stamped: [SEM_OLD_1, SEM_1] },
+    { label: 'unparseable heartbeat, fresh', heartbeat: 'garbage', ageMs: 0, stamped: [SEM_OLD_1] },
+    { label: 'heartbeat an hour ahead after a clock step back, fresh', heartbeat: 60 * 60 * 1000, ageMs: 0, stamped: [SEM_OLD_1] },
+  ])('a registry entry without a readable heartbeat vouches by its file mtime ($label)', async ({ heartbeat, ageMs, stamped }) => {
+    // Bug: a corrupt entry file was skipped silently, so its lockless live session read as dead;
+    // a parseable entry whose heartbeat measures no age skipped the mtime fallback the same way.
+    seedLocklessCandidates();
+    const file = join(registryDir, 'active', `${UUID_1}.json`);
+    if (heartbeat === null) {
+      mkdirSync(join(registryDir, 'active'), { recursive: true });
+      writeFileSync(file, '{"session_id": "trunc');
+    } else {
+      const heartbeatIso = typeof heartbeat === 'number' ? new Date(Date.now() + heartbeat).toISOString() : heartbeat;
+      seedRegistryEntry({ sessionId: UUID_1, semanticSessionId: SEM_1, heartbeatIso });
+    }
+    const mtime = new Date(Date.now() - ageMs);
+    utimesSync(file, mtime, mtime);
+
+    const { backfillOnSessionStart } = await import('../../scripts/backfill-abandoned-sessions.mjs');
+    await backfillOnSessionStart({ repoRoot: tmp });
+
+    expect(readSessions().map((r) => r.session_id).sort()).toEqual([...stamped].sort());
   });
 });
 

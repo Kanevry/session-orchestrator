@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { performance } from 'node:perf_hooks';
 import { collectSnapshot, scopePaths } from '../../scripts/lib/so-hud/collect.mjs';
 import { readEventTail, discover } from '../../scripts/lib/so-hud/runtime.mjs';
@@ -24,6 +24,10 @@ async function fixture(files = {}) {
   return root;
 }
 afterEach(async () => { await Promise.all(roots.splice(0).map(r => fs.rm(r, { recursive: true, force: true }))); });
+// Awaited, not spawnSync with its own timeout (#1673): a slow run on a loaded host read as `status: null`, an assertion
+// the full gate never re-runs. Now the test's own timeout decides and `signal` kills the child when it fires.
+const runCli = (args, opts, signal) => new Promise(resolve => execFile(process.execPath, args, { ...opts, encoding: 'utf8', signal },
+  (error, stdout, stderr) => resolve({ status: error ? (typeof error.code === 'number' ? error.code : null) : 0, stdout, stderr })));
 const readers = (extra = {}) => ({
   now: () => now, readText: p => fs.readFile(p, 'utf8'), lock: async () => ({ status: 'absent' }), isLockLive: () => true,
   agents: async () => ({ entries: {}, source: null, at: null, degraded: null }),
@@ -392,16 +396,16 @@ describe('mod pure logic', () => {
   });
 });
 
-it('real CLI produces JSON with a fixture registry; records 20-run p95 without reading the host fleet', async () => {
+it('real CLI produces JSON with a fixture registry; records 20-run p95 without reading the host fleet', async ({ signal }) => {
   const root = await fixture({ 'CLAUDE.md': '# Project instructions\n', 'AGENTS.md': '## Session Config\n\nvault-integration:\n  enabled: false\n  mode: warn\n' });
   const cli = path.resolve('scripts/so-hud.mjs');
   const durations = [];
   for (let i = 0; i < 20; i++) {
     const start = performance.now();
-    const result = spawnSync(process.execPath, [cli, '--json', '--repo-root', root], {
-      cwd: root, encoding: 'utf8', timeout: 3000,
+    const result = await runCli([cli, '--json', '--repo-root', root], {
+      cwd: root,
       env: { ...process.env, HOME: root, SO_SESSION_REGISTRY_DIR: path.join(root, 'registry'), SO_CONFIG_DIR: root },
-    });
+    }, signal);
     durations.push(performance.now() - start);
     expect(result.status, result.stderr).toBe(0);
     const s = JSON.parse(result.stdout);

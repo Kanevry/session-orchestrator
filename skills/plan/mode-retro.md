@@ -278,7 +278,7 @@ Before writing, check existing entries for matching `type` + `subject`. A match 
 
 ### 3.4 Optional Baseline Update
 
-If Wave 2 Q4 identified baseline changes:
+If Wave 2 Q4 identified baseline changes and `plan-baseline-path` is not configured, print "No `plan-baseline-path` configured — baseline update step skipped." and continue with the next step. Otherwise:
 1. Propose specific modifications (file path, before/after content)
 2. Present via AskUserQuestion — user MUST confirm before any baseline modification
 3. Apply to `$BASELINE_PATH` (from Session Config `plan-baseline-path`)

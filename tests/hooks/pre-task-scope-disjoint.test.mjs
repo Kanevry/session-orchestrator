@@ -17,7 +17,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync, spawn, execFileSync } from 'node:child_process';
 import {
-  mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, utimesSync, rmSync,
+  mkdtempSync, mkdirSync, writeFileSync, readFileSync, symlinkSync, existsSync, utimesSync, rmSync, cpSync,
 } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -1563,16 +1563,50 @@ describe('stale worktree base (#1485)', () => {
   }
 
   /**
+   * Fires per dispatch while the hook keeps recording `skipped: 'git-budget'`
+   * (#1673). NAMED CEILING (BV-004): three. Under sustained load all three can
+   * be cut; the test then fails through `expectBaseMeasured`, naming the load —
+   * or, with two dispatches per test and the local 10 s `testTimeout`, as a
+   * plain timeout, which the full gate's serial re-run picks up. The price: a
+   * regression that cuts only SOME fires is masked up to twice per dispatch;
+   * its one trace is the stderr line below. Revisit when a gate run shows a
+   * test of this block red after three cut fires, or that stderr line in a
+   * run on an idle host.
+   */
+  const GIT_BUDGET_ATTEMPTS = 3;
+
+  /**
    * Run the hook with the USER settings dir pointed at an empty temp dir: the
    * hook reads `$CLAUDE_CONFIG_DIR/settings.json`, and the operator's real one
    * may well carry `worktree.baseRef: "head"` — which would turn every deny
    * case here green-for-the-wrong-reason red on one machine only. For the same
    * reason `CLAUDE_PROJECT_DIR` (the launch dir a live session exports to its
    * hooks, where the project settings are read) is blanked unless a test sets it.
+   *
+   * A fire the hook itself recorded as `skipped: 'git-budget'` is run again on
+   * the `.orchestrator/` state from before it (#1673). The shared 1500 ms git
+   * budget (`GIT_BUDGET_MS`) is wall-clock: in a loaded full gate (m5, load5
+   * 10–13, 2026-10-23) the up-to-7 git spawns ran past it and an ALLOW test read
+   * `base_ref_source: undefined`. Only that record re-runs a fire — the hook's
+   * own statement that it judged nothing. A measured verdict, right or wrong,
+   * returns on the first attempt, so a regression stays red the first time.
+   * The state is restored because a cut fire ALLOWS and may claim scope in the
+   * ledger, which a measured re-run would then collide with.
    */
   function runWorktree(dir, payload, env = {}) {
     const userDir = makeTempDir('ptsd-wt-user-');
-    return runHook(payload, { cwd: dir, env: { CLAUDE_CONFIG_DIR: userDir, CLAUDE_PROJECT_DIR: '', ...env } });
+    const state = path.join(dir, '.orchestrator');
+    const before = existsSync(state) ? makeTempDir('ptsd-wt-state-') : null;
+    if (before !== null) cpSync(state, before, { recursive: true });
+    const seen = baseEvents(dir).length;
+    for (let attempt = 1; ; attempt += 1) {
+      const res = runHook(payload, { cwd: dir, env: { CLAUDE_CONFIG_DIR: userDir, CLAUDE_PROJECT_DIR: '', ...env } });
+      const cut = baseEvents(dir).slice(seen).some((ev) => ev.skipped === 'git-budget');
+      if (!cut || attempt === GIT_BUDGET_ATTEMPTS) return res;
+      process.stderr.write(`runWorktree: hook recorded skipped 'git-budget' (attempt ${attempt}/${GIT_BUDGET_ATTEMPTS}), re-running on the restored state (#1673)\n`);
+      rmSync(state, { recursive: true, force: true });
+      if (before !== null) cpSync(before, state, { recursive: true });
+    }
   }
 
   /** Write `<dir>/.claude/<name>` with `worktree.baseRef` set to `baseRef`. */
@@ -1621,18 +1655,19 @@ describe('stale worktree base (#1485)', () => {
   }
 
   /**
-   * Call BEFORE `expectDeny` on every stale-base deny (#1636 Pkt 7). The hook
-   * runs all git work of one fire under ONE shared 1500 ms budget
-   * (`GIT_BUDGET_MS`, a constant — no env override). On a loaded host (offload
-   * gate, load5 ~44) the up-to-7 git spawns alone can exhaust it; the check then
-   * records `skipped: 'git-budget'` and ALLOWs by design (matrix row 15), and
-   * `expectDeny` failed with a bare "0 non-blank stdout lines". It must still
-   * FAIL — a degraded run never measured the deny — but naming its cause.
+   * Call BEFORE asserting on a base record (#1636 Pkt 7). The hook runs all git
+   * work of one fire under ONE shared 1500 ms budget (`GIT_BUDGET_MS`, a
+   * constant — no env override). On a loaded host (offload gate, load5 ~44) the
+   * up-to-7 git spawns alone can exhaust it; the check then records
+   * `skipped: 'git-budget'` and ALLOWs by design (matrix row 15), and
+   * `expectDeny` failed with a bare "0 non-blank stdout lines". `runWorktree`
+   * already re-ran such a fire; one still cut after `GIT_BUDGET_ATTEMPTS` must
+   * still FAIL — a degraded run never measured anything — but naming its cause.
    */
   function expectBaseMeasured(dir) {
     expect(
       baseEvents(dir).map((ev) => ev.skipped),
-      "stale-base check cut by the hook's shared git budget (GIT_BUDGET_MS 1500 ms): host load, not a deny regression — the deny was never measured",
+      `stale-base check cut by the hook's shared git budget (GIT_BUDGET_MS 1500 ms) in all ${GIT_BUDGET_ATTEMPTS} attempts: host load, not a regression — the check was never measured`,
     ).not.toContain('git-budget');
   }
 
@@ -1677,6 +1712,7 @@ describe('stale worktree base (#1485)', () => {
 
     const res = runWorktree(dir, worktreePayload(dir));
 
+    expectBaseMeasured(dir);
     expectAllow(res);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
@@ -1692,6 +1728,7 @@ describe('stale worktree base (#1485)', () => {
 
     const res = runWorktree(dir, worktreePayload(dir));
 
+    expectBaseMeasured(dir);
     expectAllow(res);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
@@ -1740,6 +1777,7 @@ describe('stale worktree base (#1485)', () => {
     // the repo the session works in — and nothing under `sub` (#1489 Pkt 6) or
     // at the launch dir the session left (the be6a2e3e review HIGH).
     expect(existsSync(path.join(launchRoot, '.orchestrator'))).toBe(false);
+    expectBaseMeasured(dir);
     const events = baseEvents(dir);
     expect(events.map((ev) => ev.base_ref_source)).toEqual(['local', 'project']);
     for (const ev of events) {
@@ -1773,6 +1811,7 @@ describe('stale worktree base (#1485)', () => {
     writeFileSync(path.join(userDir, 'settings.json'), JSON.stringify({ worktree: { baseRef: 'head' } }));
 
     expectAllow(runWorktree(dir, worktreePayload(dir), { CLAUDE_CONFIG_DIR: userDir }));
+    expectBaseMeasured(dir);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ stale: false, decision: 'allow', base_ref: 'head', base_ref_source: 'user', base: head });
@@ -1802,6 +1841,7 @@ describe('stale worktree base (#1485)', () => {
     const { dir } = makeShallowClone();
 
     expectAllow(runWorktree(dir, worktreePayload(dir)));
+    expectBaseMeasured(dir);
     const events = baseEvents(dir);
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ stale: null, skipped: 'shallow', decision: 'allow' });
@@ -1821,6 +1861,7 @@ describe('stale worktree base (#1485)', () => {
     rmSync(path.join(dir, '.git', 'FETCH_HEAD'));
     expectAllow(runWorktree(dir, worktreePayload(dir)));
 
+    expectBaseMeasured(dir);
     const events = baseEvents(dir);
     expect(events.map((ev) => ev.skipped)).toEqual(['stale-remote-ref', 'stale-remote-ref']);
     expect(events[0]).toMatchObject({ stale: null, decision: 'allow' });

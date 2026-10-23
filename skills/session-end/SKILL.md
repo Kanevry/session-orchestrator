@@ -73,6 +73,10 @@ try {
 
 > Always runs and is BLOCKING — do NOT commit broken code. Runs every check in `verification-checklist.md`, then Phase 2.0a Echo-Stub Detection (GH #42 — a `stubbed: {}` entry from `gate-full.mjs` is a FAILED gate, never a pass), 2.1 Vault Validation, 2.2 CLAUDE.md (or AGENTS.md) Drift Check and 2.3 Vault Staleness Check — each gated by its own Session Config key. Full procedure incl. the per-mode routing matrices: [`references/phase-2-quality-gate.md`](references/phase-2-quality-gate.md).
 
+## Phase 2.4: Security-Delta (#1769)
+
+> Opt-in via `security-delta.mode` (`off | warn | strict`, default `off`); skip silently when off or absent. Runs `scripts/security-delta.mjs` on `$SESSION_RANGE` and routes its JSON: `pass` → one Session Summary line, `warn` → findings listed + offered as carryover candidates, `block` (strict, exit 3) → AUQ like Phase 2.5 `hard`. Unreadable output counts as `degraded`, never clean. Full procedure: [`references/phase-2-quality-gate.md`](references/phase-2-quality-gate.md) § 2.4.
+
 ## Phase 2.5: Custom Phases (#637)
 
 > Opt-in. Skip this phase entirely if `custom-phases` in `$CONFIG` is absent or `[]` (the default).
@@ -126,7 +130,7 @@ Assemble the in-memory "knowingly-broken shipment" list from THIS session's
 already-computed results — no new detection logic, only aggregation:
 
 1. Phase 2.0a stub findings (`result.stubbed`) that shipped anyway under `enforcement: warn`.
-2. Phase 2.3 / 2.5 "Override and close" choices (reuse each entry's Deviation-log payload verbatim).
+2. Phase 2.3 / 2.4 / 2.5 "Override and close" choices (reuse each entry's Deviation-log payload verbatim).
 3. Phase 1.8 MED/LOW findings routed to "Unresolved Review Findings" (#617).
 4. Wave-level reviewer findings overridden without a fix task (`## Deviations` entries matching `reviewer finding overridden` — written by wave-executor §5/5a).
 
@@ -383,7 +387,7 @@ Present to the user the **Session Summary**: Completed / Abnahme offen (open `[A
 |------|---------|
 | `plan-verification.md` | Phase 1 FULL procedural body (1.1 … 1.10) — SESSION_START_REF accessor, 1.1a File-Level Grounding, the #769 Candidate Record Format, 1.5 Discovery Scan, 1.6 Safety Review + 1.6.6 "What Not To Retry", **1.65 Handover Alignment Gate** (routing, AUQ shapes, fail-open, telemetry), 1.7 Metrics, 1.8 Session Review, 1.9/1.10 Mission-Status |
 | `verification-checklist.md` | Phase 2 quality gate checklist and checks |
-| `references/phase-2-quality-gate.md` | Phase 2 full procedural body — Phase 2.0a Echo-Stub Detection (GH #42), 2.1 Vault Validation, 2.2 CLAUDE.md/AGENTS.md Drift Check, 2.3 Vault Staleness Check (mode resolution, probe invocation, aggregation + routing, closing-report surface) |
+| `references/phase-2-quality-gate.md` | Phase 2 full procedural body — Phase 2.0a Echo-Stub Detection (GH #42), 2.1 Vault Validation, 2.2 CLAUDE.md/AGENTS.md Drift Check, 2.3 Vault Staleness Check (mode resolution, probe invocation, aggregation + routing, closing-report surface), 2.4 Security-Delta (range, CLI call, verdict routing, strict-block AUQ) |
 | `discovery-scan.md` | Phase 1.5 embedded discovery dispatch and findings triage |
 | `metrics-collection.md` | Phase 1.7 JSONL schema and conditional field rules |
 | `vault-operations.md` | Phase 2.1 validator bash contract and reporting matrix |

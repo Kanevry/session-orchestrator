@@ -20,7 +20,7 @@ branch: <current branch>
 issues: [<issue numbers from plan>]
 session: <semantic session label, e.g. main-2026-01-01-deep-1>
 session-id: <raw session_id from .orchestrator/session.lock — OMIT the key when no lock exists>
-started_at: <resolveSessionStartedAt({ repoRoot }) — the lock's own started_at, NEVER new Date() at write time (#1368)>
+started_at: <resolveSessionStartedAt({ repoRoot }) — the lock's own started_at; the writer's clock only where the command itself falls back (see below), NEVER a new Date() you type yourself (#1368)>
 session-start-ref: <full sha from git -C <session checkout (repoRoot)> rev-parse HEAD at init (#1652)>
 status: active
 current-wave: 0
@@ -45,10 +45,19 @@ Wave 0 — Initializing
 **`started_at` and `session-id` are SOURCED, not typed (#1368).** Read both from the live session-lock before writing — never from the clock, and never from memory:
 
 ```bash
-node -e "import('./scripts/lib/state-md.mjs').then(m => console.log(JSON.stringify({ started_at: m.resolveSessionStartedAt({ repoRoot: process.cwd() }), ...m.resolveSessionIds({ repoRoot: process.cwd() }) })))"
+node --input-type=module -e "
+import { resolveSessionStartedAt, resolveSessionIds } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+import { resolveOwnLockRootFor } from '${PLUGIN_ROOT}/scripts/lib/own-lock-root.mjs';
+import { readProcessLocalSessionIds } from '${PLUGIN_ROOT}/scripts/lib/session-identity/own-session.mjs';
+const [sessionId = null] = readProcessLocalSessionIds();
+const repoRoot = resolveOwnLockRootFor({ sessionId }).root;
+console.log(JSON.stringify({ started_at: resolveSessionStartedAt({ repoRoot }), ...resolveSessionIds({ repoRoot }) }));
+"
 ```
 
-`resolveSessionStartedAt()` returns `.orchestrator/session.lock`'s own `started_at`, which the `orchestrator.session.lock.acquired` and `orchestrator.session.started` events agree with to the millisecond; it falls back to the current time only when no lock exists (`persistence: false`, or the acquire failed). Writing `new Date()` here instead put STATE.md 48 minutes ahead of the lock (measured 2026-09-13) and made `/close`'s #429 pre-check unable to join STATE.md to its own ledger record.
+The modules load from `${PLUGIN_ROOT}`, never relative to the shell's cwd: a cwd-relative import resolved against whatever checkout the shell stood in — a consumer repo has no `scripts/lib/`, and a main checkout behind the plugin ran an older resolver.
+
+`resolveSessionStartedAt()` returns `.orchestrator/session.lock`'s own `started_at`, which the `orchestrator.session.lock.acquired` and `orchestrator.session.started` events agree with to the millisecond; it falls back to the current time only when no lock exists (`persistence: false`, or the acquire failed) or when the lock is provably a PEER's (#1730 Pkt 8). Writing `new Date()` here instead put STATE.md 48 minutes ahead of the lock (measured 2026-09-13) and made `/close`'s #429 pre-check unable to join STATE.md to its own ledger record. The lock is read at the root `resolveOwnLockRootFor()` (`scripts/lib/own-lock-root.mjs`) finds for this process's own raw id, not at the cwd: a worktree session keeps its lock in the worktree while its shell may stand in the main checkout, where another session's lock — the Lead's — can sit (#1730). Without an own id the resolver answers the `.git` ancestor of the cwd, the checkout the cwd stands in.
 
 `session-id` is the raw/native harness id (`resolveSessionIds().session_id`), `session` the semantic label (`.semantic_session_id`). Both are OPTIONAL (`schema-version` stays `1`): when the command yields `null`, OMIT the key entirely — never write a placeholder. **The guard is in the command, not in you (#1663):** the lock is repo-global and can name a PEER (a lost acquire race, or a pre-#1641 lock without `claude_pid` that stays until its TTL), so `resolveSessionIds()` returns `session_id` only when the lock's raw id is one of `readProcessLocalSessionIds()` (this process's own native id) and `null` otherwise; a provably foreign lock also nulls `semantic_session_id`. A foreign lock id therefore means the key is OMITTED — never copy it from the lock by hand, because `/close` compares STATE.md `session-id` against the own native id (#1661) and a peer's id would make this session's own STATE.md read `foreign`. Neither field grants lock or registry ownership; see `skills/_shared/state-ownership.md`.
 

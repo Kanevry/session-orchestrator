@@ -30,6 +30,7 @@ const SITE = join(REPO_ROOT, 'site');
 const EN = 'site/index.html';
 const DE = 'site/de/index.html';
 const GUIDE = 'site/guide/index.html';
+const COMMANDS = 'site/commands/index.html';
 const LEAD = 'site/lead/index.html';
 const IMPRESSUM = 'site/impressum/index.html';
 const DATENSCHUTZ = 'site/datenschutz/index.html';
@@ -39,6 +40,7 @@ const PAGES = [
   { file: EN, lang: 'en', route: 'https://session-orchestrator.com/' },
   { file: DE, lang: 'de', route: 'https://session-orchestrator.com/de' },
   { file: GUIDE, lang: 'en', route: 'https://session-orchestrator.com/guide' },
+  { file: COMMANDS, lang: 'en', route: 'https://session-orchestrator.com/commands' },
   { file: LEAD, lang: 'en', route: 'https://session-orchestrator.com/lead' },
   { file: IMPRESSUM, lang: 'de', route: 'https://session-orchestrator.com/impressum' },
   { file: DATENSCHUTZ, lang: 'de', route: 'https://session-orchestrator.com/datenschutz' },
@@ -147,7 +149,7 @@ describe('site: hreflang and canonical', () => {
     expect(alternates(read(file)), `${file} rel=alternate hreflang links`).toEqual(TRIPLE);
   });
 
-  it.each([GUIDE, LEAD, IMPRESSUM, DATENSCHUTZ])('%s carries no hreflang at all', (file) => {
+  it.each([GUIDE, COMMANDS, LEAD, IMPRESSUM, DATENSCHUTZ])('%s carries no hreflang at all', (file) => {
     expect(alternates(read(file)), `${file} must not advertise a translation`).toEqual([]);
   });
 
@@ -164,6 +166,15 @@ describe('site: hreflang and canonical', () => {
 describe('site: per-page document shape', () => {
   it.each(PAGES)('$file has exactly one <h1>', ({ file }) => {
     expect(countOf('<h1', read(file)), `${file} <h1> count`).toBe(1);
+  });
+
+  // #1760: the legal pages shipped `<summary aria-label="Menu"></summary>`, an
+  // 18 px wide outline on a phone with nothing to read. An aria-label is not a
+  // visible label, so the summary itself must carry text on every page.
+  it.each(PAGES)('$file shows a visible label on its mobile menu', ({ file }) => {
+    const summary = read(file).match(/<details class="nav-menu">\s*<summary\b[^>]*>([\s\S]*?)<\/summary>/)?.[1];
+    expect(summary, `${file} has no nav-menu summary`).toBeDefined();
+    expect(summary.replace(/<[^>]*>/g, '').trim(), `${file} nav-menu summary text`).not.toBe('');
   });
 
   it.each(PAGES)('$file declares <html lang="$lang">', ({ file, lang }) => {
@@ -310,12 +321,16 @@ describe('site: every referenced asset exists on disk', () => {
 });
 
 describe('site: AI-image disclosure', () => {
-  // The current landing-page figures are generated illustrations. Their
-  // provenance must remain visible beside the image, regardless of layout
-  // class or image-model version. Do not require an unverified model name.
+  // Every raster illustration under /img/ and every film on the landing pages
+  // is AI-generated. Their provenance must remain visible beside the image,
+  // regardless of layout class or image-model version. Hand-drawn inline SVG
+  // schematics (the session model, the "how it fits" diagram) are not
+  // generated and carry no such label. Do not require an unverified model name.
   it.each([EN, DE])('%s labels its generated illustrations', (file) => {
     const html = read(file);
-    const figures = [...html.matchAll(/<figure\b[^>]*>[\s\S]*?<\/figure>/g)].map((m) => m[0]);
+    const figures = [...html.matchAll(/<figure\b[^>]*>[\s\S]*?<\/figure>/g)]
+      .map((m) => m[0])
+      .filter((f) => /<img\b[^>]*\ssrc="\/img\//.test(f) || /<video\b/.test(f));
     expect(figures.length, `${file} figure count`).toBeGreaterThanOrEqual(1);
 
     const undisclosed = figures.filter((f) => {

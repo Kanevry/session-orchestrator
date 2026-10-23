@@ -38,7 +38,7 @@
     "@id": "https://session-orchestrator.com/lead#software",
     "name": "lead-session-orchestrator",
     "applicationCategory": "DeveloperApplication",
-    "operatingSystem": "macOS/Linux",
+    "operatingSystem": "macOS",
     "offers": {
       "@type": "Offer",
       "price": 0,
@@ -57,16 +57,16 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261019">
-<link rel="stylesheet" href="/assets/lead.css?v=20261005">
+<link rel="stylesheet" href="/assets/site.css?v=20261023b">
+<link rel="stylesheet" href="/assets/lead.css?v=20261023">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/lead" aria-current="page"><span class="brand-mark" aria-hidden="true"></span><span>lead session orchestrator</span></a>
-    <nav class="nav" aria-label="Main"><a href="#how">How it works</a><a href="#features">What you get</a><a href="#limits">Limits</a><a href="#start">Get started</a><a href="/">session-orchestrator</a></nav>
-    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#how">How it works</a><a href="#features">What you get</a><a href="#limits">Limits</a><a href="#start">Get started</a><a href="/">session-orchestrator</a></nav></details>
+    <nav class="nav" aria-label="Main"><a href="#inbox">What you see</a><a href="#how">How it works</a><a href="#limits">Limits</a><a href="#start">Get started</a><a href="/">session-orchestrator</a></nav>
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation"><a href="#inbox">What you see</a><a href="#codex">Using Codex?</a><a href="#how">How it works</a><a href="#limits">Limits</a><a href="#start">Get started</a><a href="/">session-orchestrator</a></nav></details>
   </div>
 </header>
 <main id="main">
@@ -74,12 +74,11 @@
   <section class="sec hero-sec" id="top">
     <div class="wrap hero-grid">
       <div class="hero-copy">
-        <p class="eyebrow">lead-session-orchestrator · MIT licensed</p>
-        <h1 class="h-display">Several sessions.<br>One lead.<br>You decide.</h1>
-        <p class="hero-lede">One lead session keeps the overview above your AI coding sessions, so you don&#8217;t have to.</p>
-        <p class="hero-context">Claude Code in one terminal, Codex in another, three repositories, maybe a headless run in the background. It works, until it doesn&#8217;t. Two sessions edit the same checkout. Each one asks you the same question. One merges while the pipeline is still red. And your evening goes to babysitting terminals instead of deciding the things only you can decide.</p>
-        <div class="cta"><a class="btn btn-primary" href="#how">See how it works<span aria-hidden="true">↓</span></a><a class="btn btn-secondary" href="#together">Works with session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
-        <p class="hero-note">MIT licensed · <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a></p>
+        <p class="eyebrow">Optional add-on · MIT licensed</p>
+        <h1 class="h-display">Many sessions.<br>One lead.<br>One Inbox for you.</h1>
+        <p class="hero-lede">When several coding sessions run at once, one lead session watches them for you. It collects every question that needs you in one Inbox. You answer once, the sessions keep working.</p>
+        <p class="lead-rule"><b>Optional add-on.</b> session-orchestrator works without it. Do you run three or more sessions side by side? Then add the lead.</p>
+        <div class="cta"><a class="btn btn-primary" href="#inbox">See the Inbox<span aria-hidden="true">↓</span></a><a class="btn btn-secondary" href="/">session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
       </div>
       <figure class="hero-art">
         <img src="/img/lead-control-room-800.webp" srcset="/img/lead-control-room-480.webp 480w, /img/lead-control-room-800.webp 800w, /img/lead-control-room-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="One person in an elevated control room oversees four separate workshops where small agents work, with one indicator light per workshop and a stop lever on the desk.">
@@ -88,18 +87,68 @@
     </div>
   </section>
 
+  <section class="sec" id="inbox">
+    <div class="wrap">
+      <div class="section-heading"><div><p class="eyebrow">What you see</p><h2>One pane<br>for every session.</h2></div><p>What needs you comes first, then every session.</p></div>
+      <div class="inbox-grid">
+        <figure class="inbox-fig">
+          <div class="inbox-pane">
+            <div class="ib-top"><span class="ib-need"><span aria-hidden="true">◆ </span>17 need you</span><span>07:00</span></div>
+            <div class="ib-sub">16 decisions · 1 task</div>
+            <div class="ib-tabs"><span class="ib-tab is-on">» Sessions</span><span class="ib-tab">Queue 17</span><span class="ib-tab">Repos</span></div>
+            <div class="ib-row ib-lead"><span class="ib-m">Lead <span aria-hidden="true">►</span></span><span class="ib-n">lead-k7</span><span class="ib-s">no SO run</span><span class="ib-t">T12</span></div>
+            <div class="ib-h">Running 9</div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">shop-api-ac</span><span class="ib-s">phase unknown (state 2 h old)</span><span class="ib-t">T2</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">docs-site-74</span><span class="ib-s">no SO run</span><span class="ib-t">T3</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">billing-app-7a</span><span class="ib-s">phase unknown (state 5 h old)</span><span class="ib-t">T4</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">mobile-app-3d</span><span class="ib-s">wave 4/4 05:15</span><span class="ib-t">T5</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">analytics-ea</span><span class="ib-s">phase unknown (state 3 h old)</span><span class="ib-t">T6</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">landing-page-40</span><span class="ib-s">no SO run</span><span class="ib-t">T8</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">photo-tool-67</span><span class="ib-s">phase unknown (state 5 h old)</span><span class="ib-t">T13</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">reports-d9</span><span class="ib-s">starting 06:58</span><span class="ib-t">T14</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">►</span><span class="ib-n">api-gateway-87</span><span class="ib-s">no SO run</span><span class="ib-t">T15</span></div>
+            <div class="ib-h">Idle 1</div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">○</span><span class="ib-n">feed-worker-2f</span><span class="ib-s">phase unknown (state 3 h old)</span><span class="ib-t">T9</span></div>
+            <div class="ib-h">Ready to close 3</div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">○</span><span class="ib-n">lead-m3</span><span class="ib-s">no SO run</span><span class="ib-t">T1</span></div>
+            <div class="ib-note">2 min · background work running</div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">○</span><span class="ib-n">lead-r5</span><span class="ib-s">no SO run → idle prompt 07:01</span><span class="ib-t">T7</span></div>
+            <div class="ib-note"><span class="ib-need" aria-hidden="true">◆ </span>3 min · handoff: queue coverage not measured</div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">○</span><span class="ib-n">shared-config-5b</span><span class="ib-s">phase unknown (state 2 h old)</span><span class="ib-t">T10</span></div>
+            <div class="ib-note">1 min · background work running</div>
+            <div class="ib-h">Done 3</div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">✓</span><span class="ib-n">lead-w2</span><span class="ib-s">done 06:55 → /clear 07:00</span><span class="ib-t">T11</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">✓</span><span class="ib-n">plugin-48 (here)</span><span class="ib-s">done 01:44 → /clear 07:04</span><span class="ib-t">T16</span></div>
+            <div class="ib-row"><span class="ib-m" aria-hidden="true">✓</span><span class="ib-n">events-d1</span><span class="ib-s">done 06:58 → /clear 07:03</span><span class="ib-t">T18</span></div>
+            <div class="ib-foot">Claude mac 4/10 · Codex mac 1/3 (94 %) · Mod 0.23.0 7/17 · 10 old</div>
+          </div>
+          <figcaption>Recreated from a real Inbox screen, 23 October 2026. Repository, host and lead names changed, and the mod version set to the one on npm (0.23.0). SO is session-orchestrator, T12 is terminal tab 12, "phase unknown" means the session showed no sign of activity for more than 2 hours. The Repos view and the Claude and Codex account counts appear only with the fleet option on.</figcaption>
+        </figure>
+        <dl class="inbox-keys">
+          <div><dt>Need you</dt><dd>Decisions and tasks only you can answer.</dd></div>
+          <div><dt>Sessions</dt><dd>Who runs, who waits, who is ready to close.</dd></div>
+          <div><dt>Queue</dt><dd>Each decision comes with options and a recommendation; you click once.</dd></div>
+          <div><dt>Repos</dt><dd>Which repository is busy.</dd></div>
+          <div><dt>Install</dt><dd>A Claude Code mod in the npm package of the lead. <a href="#start">Two commands, below.</a></dd></div>
+        </dl>
+      </div>
+      <aside class="card lead-codex" id="codex" aria-labelledby="codex-title">
+        <h3 id="codex-title">Using Codex?</h3>
+        <p>Codex sessions can be led like any other: they check in and get constraints. The Inbox pane is a Claude Code mod, so it runs in Claude Code and lists the Claude Code sessions.</p>
+        <p><b>Run the lead and its Inbox in Claude Code; your working sessions can be Claude Code or Codex.</b></p>
+      </aside>
+    </div>
+  </section>
+
   <section class="sec workflow-sec" id="how">
     <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">How it works</p><h2>You, one lead,<br>and the sessions.</h2></div><p>The lead decides which session runs next and what it may do. Inside each session, session-orchestrator does the actual work. They talk only through files in a shared directory, never by waiting on each other&#8217;s messages.</p></div>
-      <div class="session-board">
-        <div class="session-heading"><span class="example-label">Four pieces</span><p>What carries the lead.</p><span class="example-note">GitLab only for now</span></div>
-        <ol class="session-phases">
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">01</span><h3>Lead</h3></div><div class="phase-body"><h4>One lead above, session-orchestrator inside.</h4><p>The lead decides which session runs next and what it may do. Inside each session the session-orchestrator plugin plans, runs waves, checks and closes. A lease makes sure only one lead acts at a time.</p><div class="discovery-tasks"><span>Lease</span><span>Constraints per session</span><span>Check-in at session start</span></div><p class="phase-result"><b>Never waiting:</b> A session never blocks on the lead. Without constraints it falls back to conservative defaults after 10 minutes.</p></div></li>
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">02</span><h3>Rules</h3></div><div class="phase-body"><h4>Your rules, signed and committed.</h4><p>One YAML file per repository, the authority artifact, says which actions are free, which need your approval each time, and which never happen. It counts only when it is committed and SSH-signed by a key you trust.</p><div class="discovery-tasks"><span><code>frei</code> free</span><span><code>einzeln</code> ask each time</span><span><code>nie</code> never</span></div><p class="phase-result"><b>Without a signature:</b> Every action asks. The trust anchor starts empty, so nothing is free until you add a signer.</p></div></li>
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">03</span><h3>Gates</h3></div><div class="phase-body"><h4>Measured before a run, and before a merge.</h4><p>Before a run starts, and before a merge, the lead checks what it can measure.</p><div class="discovery-tasks"><span>Repository busy?</span><span>Remote on a blocked host?</span><span>Disk and memory</span><span>Stop set?</span><span>Pipeline green on this exact commit</span></div><p class="phase-result"><b>If it cannot measure, it refuses:</b> Anything that cannot be measured ends with exit 6, never with 0.</p></div></li>
-          <li class="session-phase"><div class="phase-heading"><span class="phase-number">04</span><h3>Ledger</h3></div><div class="phase-body"><h4>A record that shows when it was changed.</h4><p>Decisions and merges go into an append-only, hash-chained log per host.</p><p class="phase-result"><b>Edited later?</b> <code>ledger verify</code> names the first broken line.</p></div></li>
-        </ol>
-      </div>
+      <div class="section-heading"><div><p class="eyebrow">How it works</p><h2>You, one lead,<br>and the sessions.</h2></div><p>The lead measures and sets the order. It starts headless runs itself, after its checks, and never opens an interactive session on its own. Inside each session, session-orchestrator does the work. A session never waits for the lead.</p></div>
+      <ul class="cards lead-cards">
+        <li class="card"><span class="feature-tag">Lead</span><p>Only one lead can act at a time: it holds a lease, like a key that only one person can have.</p></li>
+        <li class="card"><span class="feature-tag">Rules</span><p>Each repository gets an authority file, signed and committed in a folder of yours. It says what the lead may do freely, what needs your yes each time, and what never happens.</p></li>
+        <li class="card"><span class="feature-tag">Gates</span><p>Before a run and before a merge the lead measures; if it cannot measure something, it stops instead of guessing.</p></li>
+        <li class="card"><span class="feature-tag">Ledger</span><p>Decisions and merges go into a log that can only grow. <code>ledger verify</code> names the first line that was changed.</p></li>
+      </ul>
       <figure class="fig lead-diagram-fig">
         <svg class="lead-diagram" viewBox="0 0 600 400" role="img" aria-labelledby="lead-diagram-title lead-diagram-desc">
           <title id="lead-diagram-title">You, one lead session, three sessions</title>
@@ -129,125 +178,41 @@
         </svg>
         <figcaption>Diagram: one lead above several sessions</figcaption>
       </figure>
-      <h3 class="go-steps-title">From check-in to merge</h3>
-      <ol class="go-steps">
-        <li><b>Check in</b>At start, a session writes what it plans: repository, mode, issues, write scope. It never waits for a reply.</li>
-        <li><b>Constraints</b>The lead answers with constraints for that session, such as a merge protocol and a pipeline budget. No constraint is an approval.</li>
-        <li><b>Gates</b>Before a run starts, the lead checks busy signals, blocked hosts, disk, memory and the stop.</li>
-        <li><b>Your round</b>Questions only you can answer collect in one queue. You answer them together, not one terminal at a time.</li>
-        <li><b>Record</b>A merge waits for a green pipeline on its exact commit. Decisions and merges land in the ledger.</li>
-      </ol>
-    </div>
-  </section>
-
-  <section class="sec features-sec" id="features">
-    <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">What you get</p><h2>Fewer terminals to watch.<br>More decisions you make.</h2></div><p>Each part takes one job off your evening. First what it does for you, then how it works. State lives in plain files on your machine.</p></div>
-      <ul class="feature-grid">
-        <li class="feature"><span class="feature-tag">Decide in one round</span><h3>You decide, it prepares.</h3><p class="feature-value">Open questions from all sessions end up in one queue. You answer them in one round, not in five terminals.</p><p><code>owner-queue add</code> collects decisions only you can make, and <code>owner-queue render</code> shows them as one round of structured questions. Headless sessions ask through <code>ask</code>: it answers from the authority file or parks the question for you.</p></li>
-        <li class="feature"><span class="feature-tag">Signed, not assumed</span><h3>Nothing ships without your yes.</h3><p class="feature-value">What a session may do on its own is written in a file you signed and committed. Anything else needs your yes, every time.</p><p>Each action is <code>frei</code> (free), <code>einzeln</code> (ask each time) or <code>nie</code> (never). <code>authority check</code> checks the schema, the signature by a trusted key and that the file is unchanged against HEAD. <code>authority query</code> answers <code>einzeln</code> as long as no valid file exists.</p></li>
-        <li class="feature"><span class="feature-tag">No collisions</span><h3>Sessions stay out of each other&#8217;s way.</h3><p class="feature-value">A new run does not start in a checkout another session is already working in.</p><p><code>slot check</code> looks for a fresh session-orchestrator lock, a fresh Codex session in that repository and a remote on a blocked host. The starters for Claude Code and Codex add disk, memory, the stop and a claim. Given a worktree path, each run works in its own worktree.</p></li>
-        <li class="feature"><span class="feature-tag">Proof before merge</span><h3>Merges wait for green.</h3><p class="feature-value">Nothing merges on a red or missing pipeline, and nothing merges because a message said so.</p><p><code>merge-window</code> checks the pipeline on the exact head commit, with all required jobs. Without <code>--execute</code> it only reports. It merges only if the signed file says <code>frei</code> for <code>merge_auf_main</code>. GitLab only for now.</p></li>
-        <li class="feature"><span class="feature-tag">Hard stop</span><h3>One command stops everything.</h3><p class="feature-value">When something looks wrong, no new run starts until you say so.</p><p><code>navigator stop set --reason "maintenance"</code> and every starter refuses with exit 8. <code>navigator stop clear --reason "&lt;why&gt;" --source &lt;you&gt;</code> lifts it. The stop keeps a history log.</p></li>
-        <li class="feature"><span class="feature-tag">Clean handover</span><h3>The next lead picks up.</h3><p class="feature-value">A lead session can end without the fleet losing its thread.</p><p>The lease runs for 30 minutes at a time and passes only to the successor it names. <code>handover</code> drafts the state for the next lead. <code>resume-draft</code> drafts the next phase of a headless run that hit its time limit.</p></li>
-      </ul>
-      <p class="feature-more">Also included: <code>situation</code> shows the current picture on one screen, <code>status</code> and <code>watch</code> list all Claude sessions on this host with open questions first, and <code>costs</code> keeps cost pots for what the lead itself triggered. The CLI is called <code>lead-session-orchestrator</code>, with the short alias <code>navigator</code>.</p>
-    </div>
-  </section>
-
-  <section class="sec" id="together">
-    <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">Better together</p><h2>Each works alone.<br>Together they cover the fleet.</h2></div><p>session-orchestrator runs one session well. lead-session-orchestrator coordinates several of them. Neither calls the other. On the same host they coordinate through files, so a session never waits for a message from the lead.</p></div>
-      <div class="cards lead-pair">
-        <div class="card"><span class="feature-tag">Inside one session</span><h3>session-orchestrator</h3><p>Plan, waves, quality gates, close. It holds a session lock in its repository and writes a check-in at session start. Available today for Claude Code, Codex, Cursor and Pi.</p><a href="/">Visit session-orchestrator <svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div>
-        <div class="card"><span class="feature-tag">Across sessions</span><h3>lead-session-orchestrator</h3><p>Lease, gates, ledger and the owner queue. It writes constraints for each session, decides which one runs next and hands over between lead sessions.</p><p>Without session-orchestrator, authority, ledger, stop, owner queue, GitLab gates and handover still work. Busy detection is weaker then: an interactive Claude Code session leaves no lock, so <code>slot check</code> cannot see it.</p></div>
-      </div>
-      <table class="kv lead-who">
-        <caption>Who decides what</caption>
-        <tbody>
-          <tr><th scope="row">Which issues a session works on, in which waves</th><td>session-orchestrator</td></tr>
-          <tr><th scope="row">Whether a session starts now, and where</th><td>the lead: gates, lease, stop</td></tr>
-          <tr><th scope="row">Whether an action is allowed without asking</th><td>your signed authority file, read by the lead</td></tr>
-          <tr><th scope="row">Whether a merge request may merge now</th><td>the lead, through <code>merge-window</code>; the merge itself only if the authority file allows it</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  <section class="sec" id="origin">
-    <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">Where it comes from</p><h2>Every rule exists<br>because something broke.</h2></div><p>This tool grew out of a real setup: one person, many repositories, several AI sessions working in parallel, day and night.</p></div>
-      <ol class="go-steps">
-        <li><b>An approval through the back door</b>A coordinator tried to hand out an approval through a peer message. The sessions had to refuse it on their own. Now a message carries an instruction, never an approval.</li>
-        <li><b>Zero that meant &#8220;could not look&#8221;</b>A counter showed zero because it could not read its source, and everyone read it as &#8220;nothing there&#8221;. Now anything that cannot be measured ends with exit 6.</li>
-        <li><b>Two sessions, one checkout</b>Two sessions shared a working tree and staged each other&#8217;s files. Now the lead checks whether a repository is busy, and every headless run gets its own worktree.</li>
-      </ol>
-      <p class="muted">The goal is not more automation. The goal is that you can step away from the terminals and still know that nothing ships without your yes.</p>
-    </div>
-  </section>
-
-  <section class="sec story-sec" id="principles">
-    <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">Principles</p><h2>It prepares.<br>It never approves.</h2></div><p>Five rules shape every command. When in doubt, it asks or refuses.</p></div>
-      <ol class="go-steps">
-        <li><b>Never grants approvals</b>It reads your signed authority file or refuses. A message from another session carries an instruction, never an approval.</li>
-        <li><b>Fail-closed</b>What is not explicitly allowed is not allowed. An action missing from the authority file needs your yes. It is never treated as free.</li>
-        <li><b>Not found is not absent</b>An empty counter, a silent job or a green gate can all mean &#8220;could not look&#8221;. Anything that cannot be measured ends with exit 6.</li>
-        <li><b>Numbers carry their population</b>Every number says what was counted and when.</li>
-        <li><b>Reads, never types</b>No daemon, no listening port, no keystrokes into other sessions. Watching commands only read.</li>
-      </ol>
     </div>
   </section>
 
   <section class="sec technical-sec" id="limits">
     <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">Limits</p><h2>What it does not do.<br>Yet, or by design.</h2></div><p>Version 0.x. Read this before you plan around it.</p></div>
-      <ul class="stack">
-        <li>GitLab only. There are no GitHub gates yet.</li>
-        <li>Tested on macOS. Linux works in parts; the second stage of the boundary gate runs on macOS only.</li>
-        <li>One host. Merging ledgers across hosts is planned.</li>
-        <li>It does not start sessions on its own, by design.</li>
-        <li>The trust anchor starts empty. Until you add a signer, every action asks for approval.</li>
-        <li>Commands, file formats and exit codes may still change. Some JSON keys and protocol fields are German for now.</li>
-        <li>Without session-orchestrator, an interactive Claude Code session leaves no lock. Exit 0 from <code>slot check</code> then means &#8220;no foreign signal found&#8221;, which is weaker than &#8220;nobody works here&#8221;.</li>
-      </ul>
-      <details class="technical-detail" id="exit-codes"><summary>Exit codes most commands share</summary><div class="detail-body">
-        <table class="kv">
-          <caption class="sr">Shared exit codes and their meaning</caption>
-          <tbody>
-            <tr><th scope="row">0</th><td>done, or nothing found; never an approval</td></tr>
-            <tr><th scope="row">1</th><td>check failed (fail-closed) or write error</td></tr>
-            <tr><th scope="row">2</th><td>usage error</td></tr>
-            <tr><th scope="row">4</th><td>refused</td></tr>
-            <tr><th scope="row">5</th><td>busy</td></tr>
-            <tr><th scope="row">6</th><td>not measurable</td></tr>
-            <tr><th scope="row">7</th><td>boundary hit: remote on a blocked host</td></tr>
-            <tr><th scope="row">8</th><td>stop is set (starters)</td></tr>
-          </tbody>
-        </table>
-        <p class="small muted">Each command&#8217;s <code>--help</code> lists its own set.</p>
-      </div></details>
+      <div class="section-heading"><div><p class="eyebrow">Limits</p><h2>What works,<br>what does not.</h2></div><p>Version 0.x. Commands and file formats may still change.</p></div>
+      <div class="cards lead-pair">
+        <div class="card"><h3>Works</h3><p>GitLab, macOS, one host. Also without session-orchestrator, but then it sees less clearly when a session is busy.</p></div>
+        <div class="card"><h3>Does not work</h3><p>GitHub gates, not yet. Ledgers across hosts, planned. It never opens an interactive session on its own, by design. Pushes and merges without asking: only after you add a trusted signer. Until then each one asks you.</p></div>
+      </div>
     </div>
   </section>
 
   <section class="sec install-sec" id="start">
     <div class="wrap">
-      <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Install<br>from npm.</h2></div><p>Requires Node.js 24 or newer and git. Current version: <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p></div>
+      <div class="section-heading"><div><p class="eyebrow">Get started</p><h2>Install<br>from npm.</h2></div><p>Needs Node.js 24 or newer, git, and glab signed in to GitLab. Current version and changelog: <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p></div>
+      <p class="install-guide"><b>1. The command line tool.</b> The command is called <code>navigator</code>.</p>
       <p class="cmd"><code>npm i -g lead-session-orchestrator</code></p>
-      <pre class="code">navigator situation                                 # the current picture on one screen
-navigator status                                    # all Claude sessions on this host, open questions first
-navigator authority query acme-api merge_auf_main   # frei | einzeln | nie; without a trusted signer: einzeln
-navigator slot check acme-api                       # busy gate: 0 no foreign signal, 5 busy, 6 not measurable
-navigator stop set --reason "maintenance"           # nothing new starts until navigator stop clear --reason ... --source ...</pre>
-      <p class="install-guide">Optional, Claude Code only: three mods. Install steps follow here once they ship in the npm package.</p>
-      <p class="install-guide"><b>owner-inbox</b> collects the open owner questions in one place.</p>
-      <p class="install-guide"><b>lead</b> shows peer cards and fleet actions that run only after the owner confirms them.</p>
-      <p class="install-guide"><b>freigabe</b> blocks actions with an effect outside, such as pushes, merges and deploys, and grants no approvals.</p>
-      <p class="install-guide">Releases and changelog: <a href="https://www.npmjs.com/package/lead-session-orchestrator">npmjs.com/package/lead-session-orchestrator</a></p>
+      <pre class="code">navigator situation                         # the current picture on one screen
+navigator status                            # all Claude sessions on this host, open questions first
+navigator stop set --reason "maintenance"   # nothing new starts until you clear it</pre>
+      <p class="install-guide"><b>2. The Inbox.</b> The Inbox pane is a Claude Code mod in the same npm package and needs Claude Code 2.1.296 or newer. Mods are early access in Claude Code and are not sandboxed; a Claude Code release can change them. Add it once from a shell:</p>
+      <pre class="code">claude plugin marketplace add "$(npm root -g)/lead-session-orchestrator"
+claude plugin install owner-inbox@navigator-mods</pre>
+      <p class="install-guide">Then start a new Claude Code session and type <code>/inbox</code>. The other mods and their options are on <a href="https://www.npmjs.com/package/lead-session-orchestrator">npm</a>.</p>
+      <p class="install-guide"><b>3. The lead.</b> The lead is a Claude Code skill in the same package. Copy it once:</p>
+      <pre class="code">mkdir -p ~/.claude/skills
+cp -R "$(npm root -g)/lead-session-orchestrator/skills/lead" ~/.claude/skills/lead</pre>
+      <p class="install-guide">Start a new Claude Code session and type <code>/lead</code>. That session takes the lease, so it is the only lead on this computer. The skill names commands, not your setup: before the first run, write down which repositories it leads and your load limits for headless runs, as <code>skills/README.md</code> in the package describes. Headless runs also need the settings in <code>docs/configuration.md</code>.</p>
+      <p class="install-guide"><b>4. Your sessions.</b> Sessions that run session-orchestrator check in by themselves when they start. They need nothing extra: the lead creates the folder <code>~/.config/navigator</code> when it takes the lease, and that is where they write. Sessions you start after that check in; one that was already running does not.</p>
+      <p class="install-guide"><b>5. Rules, when you want them.</b> Until you add a trusted signer, every push, merge and other action in the authority file asks you. To let the lead do some of them without asking, write one authority file per repository in a git repository of yours, commit it with your SSH signature, set <code>authority.dir</code> to that folder in <code>~/.config/navigator/estate.yaml</code>, and add your key as a trusted signer. The steps are in the package, in <code>docs/configuration.md</code>.</p>
     </div>
   </section>
 
-  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Start small</p><h2>Start with<br>one good session.</h2><p>The lead works best with session-orchestrator. Start with one good session, then add the lead when you run several.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
+  <section class="sec end" id="next"><div class="wrap end-grid"><div><p class="eyebrow">Start small</p><h2>Start with<br>one good session.</h2><p>Add the lead when you run several.</p></div><a class="btn btn-primary" href="/#install">Install session-orchestrator<svg class="icon-link" aria-hidden="true" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M5 15 15 5M5 5h10v10"/></svg></a></div></section>
 </main>
 <footer class="foot"><div class="wrap"><div class="footer-main"><a class="brand" href="/">session-orchestrator</a><p>An open-source project by Bernhard Götzendorfer.</p></div><div class="footer-links"><nav aria-label="More links"><a href="https://github.com/Kanevry/session-orchestrator">GitHub</a><a href="https://www.npmjs.com/package/session-orchestrator">npm</a><a href="/guide">Guide</a><a href="/lead" aria-current="page">Lead session</a><a href="/llms.txt">llms.txt</a><a href="/impressum">Imprint</a><a href="/datenschutz">Privacy</a></nav><a class="support-link" href="https://paypal.me/Kanevry">Buy me a coffee, if this helped.</a></div></div></footer>
 <script src="/_vercel/insights/script.js" defer></script>

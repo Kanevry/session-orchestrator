@@ -1,0 +1,93 @@
+/* /commands: the command reference. Uses only the custom properties of
+   site.css; lime stays on links, focus and the "Start here" mark. */
+
+.commands-page .h-display { font-size: clamp(2.25rem, 5vw, 3.5rem); }
+
+/* "I want to ..." tiles */
+.tiles { list-style: none; margin: 0 0 var(--gap); padding: 0; display: grid; gap: 10px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 190px), 1fr)); }
+.tile { display: flex; flex-direction: column; gap: 2px; min-height: 44px; height: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); color: var(--fg); text-decoration: none; }
+.tile:hover { border-color: var(--fg-2); }
+.tile-title { font-family: var(--font-display); font-weight: 500; }
+.tile-hint { font-family: var(--font-mono); font-size: .75rem; color: var(--fg-2); overflow-wrap: anywhere; }
+
+/* Rule of thumb */
+.rule-box { margin: 0 0 var(--gap); padding: 18px 20px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); max-width: 760px; }
+.rule-box h2 { margin-bottom: .5em; }
+.rule-table { width: 100%; border-collapse: collapse; }
+.rule-table th, .rule-table td { padding: 8px 0; border-top: 1px solid var(--line); text-align: left; vertical-align: top; }
+.rule-table tr:first-child th, .rule-table tr:first-child td { border-top: 0; }
+.rule-table th { font-weight: 400; color: var(--fg-2); padding-right: 16px; }
+.rule-table td { white-space: nowrap; }
+.typing { max-width: 960px; }
+
+/* Filter */
+.cmd-ref { padding-bottom: var(--sec-pad); }
+.cmd-filter { position: sticky; top: 0; z-index: 5; margin: 0 0 var(--gap); padding: 12px 0; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.cmd-filter label { font-family: var(--font-display); font-weight: 500; }
+.cmd-filter input { flex: 1 1 220px; min-width: 0; min-height: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--code-bg); color: var(--fg); font: inherit; }
+.cmd-filter input:focus-visible { border-color: var(--accent); }
+.cmd-count, .cmd-empty { margin: 0; color: var(--fg-2); font-size: var(--text-meta); }
+.cmd-empty { flex-basis: 100%; }
+.cmd-filter[hidden], .cmd-card[hidden], .cmd-group[hidden], .cmd-empty[hidden] { display: none; }
+
+/* Groups and cards */
+.cmd-group { padding-top: 28px; }
+.cmd-group > h2 { font-size: clamp(1.6rem, 3vw, 2.25rem); margin-bottom: .3em; }
+.group-lede { color: var(--fg-2); margin-bottom: .4em; }
+.group-also { font-size: var(--text-meta); color: var(--fg-2); }
+.cmd-grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); margin-top: 16px; }
+.cmd-card { min-width: 0; padding: 18px 18px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); scroll-margin-top: 110px; }
+.cmd-card:target { border-color: var(--accent); }
+.cmd-card h3 { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: .6em; font-size: 1.25rem; }
+.cmd-name { color: var(--fg); text-decoration: none; }
+.cmd-name:hover { text-decoration: underline; }
+.cmd-name code { font-size: 1em; }
+.start-badge { font-family: var(--font-body); font-size: .75rem; font-weight: 600; letter-spacing: 0; padding: 2px 8px; border-radius: 999px; background: var(--accent); color: var(--accent-fg); }
+
+.cmd-facts { display: grid; grid-template-columns: 6.5em minmax(0, 1fr); gap: 6px 12px; margin: 0; font-size: .9375rem; line-height: 1.55; }
+.cmd-facts > dt { color: var(--fg-2); font-size: var(--text-meta); padding-top: 2px; }
+.cmd-facts > dd { margin: 0; min-width: 0; }
+.forms { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 10px; margin: 0; }
+.forms dt { color: var(--fg-2); font-size: .75rem; padding-top: 3px; white-space: nowrap; }
+.forms dd { margin: 0; min-width: 0; }
+.forms code, .modes code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; }
+.modes { list-style: none; margin: 0; padding: 0; }
+.modes li + li { margin-top: 2px; }
+
+.touch, .asks { display: inline-block; font-size: .75rem; font-weight: 600; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); white-space: nowrap; }
+.touch-read { color: var(--fg-2); }
+.touch-files { color: var(--fg); }
+.touch-commits, .touch-issues { color: var(--fg); border-color: var(--fg-2); }
+.touch-publishes { color: var(--fg); border-color: var(--fg); }
+.asks { color: var(--fg-2); border-style: dashed; }
+.touch-note { display: block; margin-top: 2px; color: var(--fg-2); font-size: var(--text-meta); }
+.cmd-src { margin: 12px 0 0; font-size: .75rem; }
+.cmd-src a { color: var(--fg-2); overflow-wrap: anywhere; }
+.cmd-src a:hover { color: var(--accent); }
+
+/* Background */
+.bg-group { margin-top: 24px; }
+.bg-detail { border-top: 1px solid var(--line); padding: 4px 0; }
+.bg-detail:last-child { border-bottom: 1px solid var(--line); }
+.bg-detail > summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-family: var(--font-display); font-weight: 500; }
+.chips { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.chips code { display: inline-block; background: var(--code-bg); padding: 2px 8px; border-radius: 4px; }
+.mcp { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 14px; margin: 0 0 14px; }
+.mcp dd { margin: 0; }
+
+@media (max-width: 600px) {
+  .cmd-grid { grid-template-columns: 1fr; }
+  .cmd-facts { grid-template-columns: 1fr; gap: 2px; }
+  .cmd-facts > dd { margin-bottom: 8px; }
+  .forms, .mcp { grid-template-columns: 1fr; }
+  .forms dd { margin-bottom: 4px; }
+  .rule-table th, .rule-table td { display: block; padding: 4px 0; border: 0; }
+  .rule-table tr { display: block; padding: 6px 0; border-top: 1px solid var(--line); }
+  .rule-table tr:first-child { border-top: 0; }
+  .rule-table td { white-space: normal; }
+  .cmd-filter { position: static; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .commands-page { scroll-behavior: auto; }
+}

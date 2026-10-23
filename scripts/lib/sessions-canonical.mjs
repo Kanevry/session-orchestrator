@@ -200,7 +200,8 @@ const REPAIR_PROVENANCE_PREFIX = 'repair-invalid-sessions/';
  * Exported for `scripts/autopilot.mjs`, which must not read a stub as a
  * healthy 0-token iteration (#1457 F2). Not shared with
  * `session-close-backfill.mjs::isSupersedableStub()` on purpose: that asks a
- * narrower WRITER question ("may this be overwritten?" — `abandoned` only), and
+ * narrower WRITER question ("may this be overwritten?" — `abandoned` and, since
+ * #1762, `closed-without-plan`), and
  * that module imports this one, so reusing it here would be a cycle.
  *
  * @param {object} rec

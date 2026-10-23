@@ -1,0 +1,22 @@
+version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "anyio"
+version = "4.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/anyio-4.4.0.tar.gz", hash = "sha256:00" }
+dependencies = [
+    { name = "idna" },
+]
+
+[[package]]
+name = "example-private-app"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anyio" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "anyio", specifier = ">=4" }]

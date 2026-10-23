@@ -6,6 +6,14 @@
 
 ---
 
+## Phase 0: Baseline Gate
+
+`/plan new` is the only mode that needs the baseline. Verify that `plan-baseline-path` is not null: `echo "$CONFIG" | jq -e '."plan-baseline-path"'`. If null, stop with: "Error: `plan-baseline-path` is not configured in Session Config. Add it to your CLAUDE.md (or AGENTS.md on Codex CLI) under `## Session Config`. Example: `plan-baseline-path: ~/Projects/projects-baseline`"
+
+Use the expanded value from SKILL.md Phase 1 as `$BASELINE_PATH` in every step below.
+
+---
+
 ## Phase 1: Requirement Gathering (3 waves, 16 questions)
 
 Wave 1 has 6 questions (incl. the User-Story toggle); Waves 2-3 have 5 each. Before each wave, dispatch 2-3 Explore agents in parallel to pre-research options. Synthesize agent results into AskUserQuestion calls (max 4 questions per call, so split 4+1 or 3+2 per wave). Wave 1 carries the 6th User-Story toggle question, so split it 3+3.

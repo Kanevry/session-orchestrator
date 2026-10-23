@@ -175,8 +175,12 @@ export function isUuid(s) {
   return parseSessionId(s)?.format === 'uuid';
 }
 
-/** Filesystem-safe marker filename for an arbitrary session id. */
-function markerName(id) {
+/**
+ * Filesystem-safe marker filename for an arbitrary session id. Exported for the
+ * `/close`-without-plan writer (#1762), which claims the SAME marker so the two
+ * writers can never record one session twice.
+ */
+export function markerName(id) {
   const cleaned = String(id).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
   return `.backfilled-${cleaned}.marker`;
 }
@@ -755,15 +759,21 @@ function synthesizeRecord({ recordId, synthetic, gathered, nowMs, status = 'aban
  * Terminal statuses that mark a ledger record as a BACKFILLED STUB rather than
  * an authoritative close (#1068 AC3).
  *
- * `abandoned` is the only member today: it is what `backfillAbandonedSession`
- * writes when a session never reached `/close`, i.e. a reconstruction, never a
- * self-reported outcome. `completed` is deliberately NOT a member — including
+ * `abandoned` is what `backfillAbandonedSession` writes when a session never
+ * reached `/close`, i.e. a reconstruction, never a self-reported outcome.
+ * `closed-without-plan` is what `session-end/close-without-plan.mjs` writes when
+ * `/close` stops without its own plan (#1762): a 0-wave placeholder for raw id
+ * X that a later completed session of the same X must be able to supersede —
+ * as a canonical member it made this backfill answer `skipped-already-recorded`
+ * and the completed session was never written. The abandoned path's HARD
+ * dedupe (`checkAlreadyRecorded`) still treats both as recorded, so neither
+ * writer stacks a second placeholder. `completed` is deliberately NOT a member — including
  * the `state-md-completed` backfill, whose status IS the session's own truth
  * claim. That exclusion is also what makes supersede idempotent: the record
  * appended by a supersede is `completed`, so a second run classifies it as
  * canonical and skips instead of superseding its own predecessor forever.
  */
-const BACKFILL_STUB_STATUSES = new Set(['abandoned']);
+const BACKFILL_STUB_STATUSES = new Set(['abandoned', 'closed-without-plan']);
 
 /**
  * True when a sessions.jsonl record is a backfilled stub this module may

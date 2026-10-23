@@ -71,6 +71,7 @@ import { _parseTemplatesFirst } from './config/templates-first.mjs';
 import { _parseVerificationAutoFix } from './config/verification-auto-fix.mjs';
 import { _parseDialectic } from './config/dialectic.mjs';
 import { _parseEval } from './config/eval.mjs';
+import { _parseSecurityDelta } from './config/security-delta.mjs';
 import { _parseMemory } from './config/memory.mjs';
 import { _parseReconcile } from './config/reconcile.mjs';
 import { _parseCustomPhases } from './config/custom-phases.mjs';
@@ -509,6 +510,9 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
   // eval: parsed from full content (Standard v1 eval harness, #809 / Epic #803)
   const evalConfig = _parseEval(mdContent);
 
+  // security-delta: parsed from full content (close-time delta checks, #1769)
+  const securityDelta = _parseSecurityDelta(mdContent);
+
   // memory: parsed from full content (issue #505 — banner opt-out)
   const memory = _parseMemory(mdContent);
 
@@ -642,6 +646,7 @@ export function parseSessionConfig(mdContent, { hostPaths } = {}) {
     'verification-auto-fix': verificationAutoFix,
     'dialectic': dialectic,
     'eval': evalConfig,
+    'security-delta': securityDelta,
     'memory': memory,
     'reconcile': reconcile,
     'vault-sync': vaultSync,

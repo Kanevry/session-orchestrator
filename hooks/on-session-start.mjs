@@ -1013,16 +1013,17 @@ async function main() {
   // this session's structural self-exclusion: our own started-event is not in
   // events.jsonl yet, so we are not a backfill candidate at all. (On a
   // clear/compact/resume re-fire an earlier started-event IS present; that case
-  // is caught by the core's own `skipped-own-live-lock` guard against the lock
-  // bootstrapped above.) A live FOREIGN session is likewise protected: the core
-  // evaluates lock ownership against the CANDIDATE, so a candidate holding a
-  // live lock is skipped before the dead-by-age relaxation is consulted.
+  // is excluded by our own in-memory ids below — lock or no lock, since a lead
+  // yield (#1635) or a kept-released lock (#1651) runs lockless (#1748). Never
+  // re-read current-session.json for them: it is repo-global (#1746).) A live
+  // FOREIGN session is protected by its live lock or, when lockless, by a fresh
+  // host-registry entry, both checked against the CANDIDATE.
   //
   // Best-effort like every other probe here: any failure is swallowed so a
   // backfill problem can never block a session start.
   try {
     const { backfillOnSessionStart } = await import('../scripts/backfill-abandoned-sessions.mjs');
-    await backfillOnSessionStart({ repoRoot: projectRoot });
+    await backfillOnSessionStart({ repoRoot: projectRoot, ownSessionIds: [sessionId, semanticSessionId] });
   } catch { /* hook must remain non-blocking */ }
 
   let peers = [];

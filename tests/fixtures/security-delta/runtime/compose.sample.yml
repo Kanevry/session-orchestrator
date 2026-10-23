@@ -1,0 +1,7 @@
+services:
+  web:
+    image: "node:lts-alpine"
+  db:
+    image: postgres:17
+  cache:
+    image: registry.example.org:5000/team/redis   # no tag

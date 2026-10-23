@@ -1793,6 +1793,41 @@ describe('backfillCompletedFromStateMd — supersedes a backfill stub (#1068 AC3
     expect(second.sessionId).toBe(SEMANTIC);
     expect(readSessions()).toHaveLength(2);
   });
+
+  // TV-001 (#1762 review) — the bug: a plan-less `/close` record for raw id X
+  // counted as canonical, so when X later ran its own session, completed it,
+  // and session-end died before Phase 3.7, this backfill answered
+  // `skipped-already-recorded` and the completed session was never written.
+  it('supersedes a closed-without-plan record when the same raw id later completes its own session', async () => {
+    const cwp = {
+      session_id: SEMANTIC,
+      session_type: 'unknown',
+      started_at: STARTED_AT,
+      completed_at: '2026-05-27T14:05:00.000Z',
+      total_waves: 0,
+      waves: [],
+      agent_summary: { complete: 0, partial: 0, failed: 0, spiral: 0 },
+      total_agents: 0,
+      total_files_changed: 0,
+      status: 'closed-without-plan',
+      close_reason: 'no-own-plan',
+      raw_session_id: UUID,
+      _backfill_source: 'close-without-plan',
+    };
+    writeStateMd({ ...COMPLETED_FRONTMATTER, 'session-id': UUID });
+    seedSessions([cwp]);
+    seedEvents([]);
+
+    const res = await backfillCompletedFromStateMd({ repoRoot, now: NOW_MS, deps: stateMdDeps() });
+
+    expect(res.action).toBe('superseded');
+    const recorded = readSessions();
+    expect(recorded).toHaveLength(2);
+    expect(recorded[0]).toEqual(cwp);
+    const canonical = canonicalizeSessions(recorded);
+    expect(canonical).toHaveLength(1);
+    expect(canonical[0].status).toBe('completed');
+  });
 });
 
 // ---------------------------------------------------------------------------

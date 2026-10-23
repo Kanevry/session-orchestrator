@@ -659,7 +659,7 @@ The heavy-repo cap applies only on the resource-aware path: it runs inside `appl
 |-------|------|---------|-------------|
 | `baseline-ref` | string (git ref) or null | null | Git ref (branch, tag, or SHA) on the baseline GitLab project from which to fetch canonical `.claude/rules/*.md` and `.claude/agents/*.md` during `/bootstrap`. When null, rules arrive via Clank's weekly baseline sync MRs (legacy path). See [baseline-ref](#baseline-ref) below. |
 | `baseline-project-id` | string or number | `"52"` | GitLab project ID of the baseline repository. Defaults to `"52"` (`infrastructure/projects-baseline`). Has no effect when `baseline-ref` is unset. See [baseline-project-id](#baseline-project-id) below. |
-| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Optional. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Previously required for `/plan new` repo scaffolding; now only required if you want to scaffold from your own baseline. Host-locally resolved through an extended precedence chain — a host can additionally declare per-context `baselines:` entries in `owner.yaml`, matched by directory prefix against the current repo's path (#819); see the Vault Integration § host-local override callout below for the full chain. |
+| `plan-baseline-path` | string | none | Path to projects-baseline directory (e.g., `~/Projects/projects-baseline`). Required by `/plan new`, which stops without it (`skills/plan/mode-new.md` Phase 0); `/plan feature` and `/plan retro` run without it. When absent, `/bootstrap` falls back to plugin-bundled minimal templates. Host-locally resolved through an extended precedence chain — a host can additionally declare per-context `baselines:` entries in `owner.yaml`, matched by directory prefix against the current repo's path (#819); see the Vault Integration § host-local override callout below for the full chain. |
 | `plan-default-visibility` | string | `internal` | Default repo visibility for `/plan new`: `internal`, `private`, or `public`. |
 | `plan-prd-location` | string | `docs/prd/` | Directory where PRD documents are saved (relative to project root). |
 | `plan-retro-location` | string | `docs/retro/` | Directory where retrospective documents are saved (relative to project root). |
@@ -1121,6 +1121,41 @@ eval:
 Neither `eval.enabled` nor `eval.judge` changed in v2 — the harness runs exactly where it ran before.
 
 **Used by:** `scripts/lib/config/eval.mjs` (`_parseEval`), `scripts/lib/config.mjs`. Skill consumer (`skills/eval/SKILL.md`) is a follow-up wave of Epic #803 — not yet implemented as of this parser.
+
+## Security-Delta (#1769)
+
+Close-time security check over what THIS session changed — session-end Phase 2.4 (`skills/session-end/references/phase-2-quality-gate.md` § 2.4), CLI `scripts/security-delta.mjs`. Default `off`; rollout is opt-in per repo (#1769, stage 1).
+
+```yaml
+security-delta:
+  mode: off                # off | warn | strict
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `security-delta.mode` | string | `off` | `off` skips Phase 2.4 silently. `warn` reports findings in the Session Summary and offers them as carryover candidates, never blocks. `strict` blocks the close (CLI exit `3`) — but ONLY on an introduced malicious package or an introduced critical vulnerability that has a known fix; everything else stays a warning. **Fail-fast**: an unknown value throws `security-delta.mode must be off|warn|strict, got '<value>'` at parse time. Stage 1 has no other keys. |
+
+**What it checks** (range = `$SESSION_RANGE` from the `plan-verification.md` accessor; only the delta, never the whole tree; the accessor's three-dot fallback `<base>...HEAD` is resolved to `<git merge-base base HEAD>..HEAD`, and a failing merge-base is a usage error, exit `1`):
+
+- **Lockfile delta vs OSV** — packages added or bumped in the range are queried against OSV. Private scopes are never sent to OSV. Also excluded: packages behind a non-npmjs bare `registry=` (root or lockfile-adjacent `.npmrc`), every pin of a requirements file with a non-PyPI `--index-url` / `--extra-index-url` / `-f` / `--find-links`, and non-registry pnpm/uv sources (file, link, git, directory); unparsed or unpinned entries make the check `degraded` with `unchecked`. Ceiling: `-r` includes, `PIP_INDEX_URL` and `pip.conf` are not read, so a private index set only there is not seen (follow-up).
+- **Node security floors** — a pinned runtime version below the current security-release floor. A version RANGE (`>=24.0.0`, `^22.1.0`, `~22.1`, `20.x`, `20 || 22`, `22.1.0 - 22.9.0`) is not a pin and is never compared — it is reported as `not-measurable` (`reason: range`).
+- **Floating image tags** — container images referenced by a moving tag (`latest`, `lts`, `lts-*`, `current`, or no tag) instead of a concrete tag or digest.
+- **gitleaks** — one finding per leak, carrying only the file and the gitleaks `RuleID`; gitleaks runs with `--redact=100` and every other field is dropped, so secret values never enter the result.
+- **Age-gate setting** — whether the package manager's minimum-release-age gate is configured for a lockfile changed in the range. The finding is `introduced` only when the range removed the gate or added the lockfile; a gate that was already missing at the base is listed with `introduced: false` and passes.
+
+Files under a test-fixture directory (`fixtures`, `__fixtures__`, `testdata`, `test-fixtures` as any directory segment) are skipped by the two image checks (runtime floor and floating tags) — they are sample input, not deployments.
+
+**Only introduced findings change the verdict.** A finding the range did not introduce (`introduced: false`) is still listed in `checks[].findings` and counted in `totals`, but on its own the verdict stays `pass`.
+
+**Budget and failure direction:** 3000 ms total, 2000 ms of that for network. A check that times out or cannot reach its source fails OPEN as `status: degraded` — reported with its unchecked denominator, never shown as clean and never blocking. Missing or unparseable CLI output is treated as `degraded` by Phase 2.4.
+
+**Output:** one JSON line `{ schema, mode, range, status, verdict, checks[], totals, ms }`; `status ∈ clean|findings|degraded|skipped`, `verdict ∈ pass|warn|block`. Exit `0` = pass/warn/degraded/skipped, `3` = strict block, `1` = usage error.
+
+**Event:** `orchestrator.security.delta` carries counts only — no package names, paths or secret material.
+
+**Strict block routing:** an AskUserQuestion (fix and retry / warn + carryover / override with Deviation entry and `orchestrator.finding.overridden` / abort). Headless, embedded and Lead-led runs cannot ask: they report the block and stop the close.
+
+**Used by:** `scripts/lib/config/security-delta.mjs` (`_parseSecurityDelta`), `scripts/lib/config.mjs` (key `security-delta`), `scripts/security-delta.mjs`.
 
 ## Vault Staleness
 

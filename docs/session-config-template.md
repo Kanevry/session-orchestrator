@@ -529,6 +529,19 @@ eval:
 
 Read by: `scripts/lib/config/eval.mjs`. Skill consumer: `skills/eval/SKILL.md` (not yet shipped as of this parser).
 
+## Security-Delta (#1769)
+
+Opt-in close-time check of what THIS session changed (lockfiles vs OSV, Node security floors, floating image tags, gitleaks count, age-gate setting). Runs at session-end Phase 2.4. Default `off`.
+
+```yaml
+security-delta:
+  mode: off                # off | warn | strict
+```
+
+`warn` reports findings and offers them as carryover; `strict` blocks the close only on an introduced malicious package or an introduced critical vulnerability with a known fix. Same key-line gotcha as `eval:` — no inline comment on the `security-delta:` line itself.
+
+Read by: `scripts/lib/config/security-delta.mjs`, `scripts/security-delta.mjs`, `skills/session-end/references/phase-2-quality-gate.md` § 2.4. Details: `docs/session-config-reference.md` § Security-Delta.
+
 ## Vault Staleness
 
 Vault-drift discovery probes. Used by `/discovery vault` and (when `enabled`) session-end Phase 2.3.
@@ -938,6 +951,10 @@ eval:
   judge: off               # off | haiku | sonnet — fail-fast on unknown value
   report: html             # html | none — fail-fast on unknown value
   handle:                  # optional string — null/absent → null
+
+# Security-Delta — close-time delta checks (#1769, session-end Phase 2.4)
+security-delta:
+  mode: off                # off | warn | strict — fail-fast on unknown value
 
 # Vault staleness
 vault-staleness:

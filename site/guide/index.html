@@ -78,12 +78,12 @@
     {
       "@type": "TechArticle",
       "@id": "https://session-orchestrator.com/guide#article",
-      "headline": "Install. Run a session. Check the result.",
+      "headline": "Install once, set up once, then run your first session.",
       "inLanguage": "en",
       "mainEntityOfPage": "https://session-orchestrator.com/guide",
       "isPartOf": { "@id": "https://session-orchestrator.com/#website" },
       "about": { "@id": "https://session-orchestrator.com/#software" },
-      "dateModified": "2026-10-16"
+      "dateModified": "2026-10-23"
     }
   ]
 }
@@ -92,7 +92,8 @@
 <link rel="preload" as="font" type="font/woff2" href="/fonts/space-grotesk-latin.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/source-sans-3-var.woff2" crossorigin>
 <link rel="preload" as="font" type="font/woff2" href="/fonts/ibm-plex-mono-400.woff2" crossorigin>
-<link rel="stylesheet" href="/assets/site.css?v=20261019">
+<link rel="stylesheet" href="/assets/site.css?v=20261023b">
+<link rel="stylesheet" href="/assets/guide.css?v=20261023">
 </head>
 <body class="guide-page">
 <a class="skip" href="#main">Skip to content</a>
@@ -100,18 +101,20 @@
 <header class="top">
   <div class="wrap">
     <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"></span>session orchestrator <span class="muted">v<span class="num" data-metric="version">5.13.0</span></span></a>
-    <nav class="nav" aria-label="Guide sections">
-      <a href="#install">Install</a>
-      <a href="#first-session">First session</a>
-      <a href="#when-it-blocks">Guards</a>
-      <a href="#when-wrong">When it is wrong</a>
+    <nav class="nav" aria-label="Main">
+      <a href="/#how">How it works</a>
+      <a href="/commands">Commands</a>
+      <a href="/#install">Install</a>
+      <a href="/guide" aria-current="page">Guide</a>
+      <a href="/lead">Lead</a>
       <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav>
-    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Main">
-      <a href="#install">Install</a>
-      <a href="#first-session">First session</a>
-      <a href="#when-it-blocks">Guards</a>
-      <a href="#when-wrong">When it is wrong</a>
+    <details class="nav-menu"><summary>Menu</summary><nav class="nav" aria-label="Mobile navigation">
+      <a href="/#how">How it works</a>
+      <a href="/commands">Commands</a>
+      <a href="/#install">Install</a>
+      <a href="/guide" aria-current="page">Guide</a>
+      <a href="/lead">Lead</a>
       <a href="https://github.com/Kanevry/session-orchestrator">GitHub</a>
     </nav></details>
   </div>
@@ -122,195 +125,210 @@
 
   <section class="sec" id="top">
     <div class="wrap">
-      <p class="eyebrow">Claude Code &middot; Codex CLI &middot; Cursor IDE &middot; Pi</p>
-      <h1 class="h-display">Install. Run a session.<br>Check the result.</h1>
-      <p class="lede">Choose your coding tool, install the plugin and its dependencies, then bootstrap your project. This guide explains the first session and which guards your tool can enforce. On Codex, the destructive-command guard blocks through a Bash hook; file-scope rules are instructions only.</p>
-      <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-10-16</p>
+      <p class="eyebrow">Guide</p>
+      <h1 class="h-display">Install once, set up once, then run your first session.</h1>
+      <p class="lede">From your task to checked work. Pick your coding tool and follow its five steps.</p>
+      <p class="meta">Node.js 24 or later &middot; MIT &middot; guidance reviewed against source on 2026-10-23</p>
 
-      <nav class="toc" aria-labelledby="toc-h">
-        <h2 id="toc-h" class="small">On this page</h2>
-        <ol>
-          <li><a href="#before">Before you start</a></li>
-          <li><a href="#install">Install</a></li>
-          <li><a href="#first-session">Your first session</a></li>
-          <li><a href="#config">The minimal config</a></li>
-          <li><a href="#when-it-blocks">What the guards can enforce</a></li>
-          <li><a href="#when-wrong">When something is wrong</a></li>
-          <li><a href="#deeper">Where to go deeper</a></li>
-        </ol>
+      <nav id="install" aria-labelledby="pick-h">
+        <h2 id="pick-h" class="small">Pick your tool</h2>
+        <ul class="tool-pick">
+          <li><a href="#claude-code"><span class="tool-name">Claude Code</span><span class="tool-verdict">Everything, guards block.</span></a></li>
+          <li><a href="#codex"><span class="tool-name">Codex CLI</span><span class="tool-verdict">Everything works; the file list is only an instruction.</span></a></li>
+          <li><a href="#cursor"><span class="tool-name">Cursor IDE</span><span class="tool-verdict">One agent after another.</span></a></li>
+          <li><a href="#pi"><span class="tool-name">Pi</span><span class="tool-verdict">One agent after another.</span></a></li>
+        </ul>
       </nav>
     </div>
   </section>
 
-  <section class="sec" id="before">
+  <section class="sec tool-sec" id="claude-code" aria-labelledby="claude-code-h">
     <div class="wrap">
-      <p class="eyebrow"><span class="num">01</span> / Prerequisites</p>
-      <h2>Before you start</h2>
-      <p class="lede">Start with Node.js, Git and a supported coding tool. Some optional workflows also need a shell utility.</p>
-
-      <table class="kv">
-        <caption class="sr">Prerequisites</caption>
-        <tbody>
-          <tr>
-            <th scope="row">Node.js</th>
-            <td><strong>Version 24 or later.</strong> Check with <code>node --version</code>. The repository pins <code>24</code> in <code>.nvmrc</code> and <code>package.json</code> declares <code>engines.node: "&gt;=24.0.0"</code>. The runtime uses ES modules and requires a supported Node version.</td>
-          </tr>
-          <tr>
-            <th scope="row">git</th>
-            <td>Any recent version. The session loop reads your history on every start: commits, branch, dirty files, recent issues, and that reading is most of what makes the first pass useful.</td>
-          </tr>
-          <tr>
-            <th scope="row">jq</th>
-            <td>The enforcement hooks do not need <code>jq</code>. The plugin validator, some wave-scope shell snippets, and the optional MCP server do. Install it when using those workflows; see the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/USER-GUIDE.md">user guide</a>.</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <p><strong>Operating systems:</strong> macOS and Linux are covered by CI. Native Windows use is untested; the shell hooks and optional MCP server need WSL or Git Bash.</p>
-
-      <h3>Which file your harness reads</h3>
-      <p>The configuration lives in your project&rsquo;s instruction file. Which file that is depends on the tool, and the contents are identical either way.</p>
-
-      <table class="kv">
-        <caption class="sr">Which instruction file each harness reads</caption>
-        <tbody>
-          <tr><th scope="row">CLAUDE.md</th><td>Claude Code and Cursor; Cursor reads it the same way as <code>AGENTS.md</code></td></tr>
-          <tr><th scope="row">AGENTS.md</th><td>Codex CLI, Pi; supported by Cursor for project instructions</td></tr>
-        </tbody>
-      </table>
-      <p>On Cursor, a <code>CLAUDE.md</code> in the project root is applied to every conversation, like <code>AGENTS.md</code> (<a href="https://cursor.com/help/customization/rules">Cursor rules help</a>). Details: <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md#configuration">Cursor configuration</a>.</p>
-    </div>
-  </section>
-
-  <section class="sec" id="install">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">02</span> / Install</p>
-      <h2>Install</h2>
-      <p class="lede">Same plugin, four paths. Pick your tool and complete the dependency and restart steps for it.</p>
-
-      <h3>Claude Code</h3>
-      <p class="meta">Marketplace, then one manual step</p>
-      <div class="cmd">
-        <pre class="code">/plugin marketplace add Kanevry/session-orchestrator
-/plugin install session-orchestrator@kanevry</pre>
-        <button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator&#10;/plugin install session-orchestrator@kanevry">Copy</button>
-      </div>
-      <p class="small muted">Both lines run inside Claude Code, not in a shell.</p>
-
-      <p>Current Claude Code installs the Node dependencies with the plugin. To check once, in a shell:</p>
-      <div class="cmd">
-        <pre class="code">claude plugin list --json</pre>
-        <button class="copy" type="button" data-copy="claude plugin list --json">Copy</button>
-      </div>
-      <p>Find the enabled <code>session-orchestrator@kanevry</code> entry. Replace the placeholder below with its <code>installPath</code>. If the entry is missing or disabled, resolve that through <code>/plugin</code> first. If several entries match, check the active installation instead of guessing.</p>
-      <div class="cmd">
-        <pre class="code">cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present, nothing to do" || npm install; }</pre>
-        <button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present, nothing to do&quot; || npm install; }">Copy</button>
-      </div>
-
-      <div class="card">
-        <p><strong>Install the runtime dependencies</strong></p>
-        <p>The plugin runtime imports npm packages. Current Claude Code installs them with the plugin; the command above runs <code>npm install</code> in the installed plugin directory only when they are missing. If it did, restart Claude Code before starting a session.</p>
-        <p>Older instructions used <code>claude plugin dir</code>, which is not a supported subcommand. Use the public plugin list to find the active installation.</p>
-      </div>
-
-      <hr class="hr">
-
-      <h3>Codex CLI</h3>
-      <p class="meta">Clone, install, run the installer</p>
-      <div class="cmd">
-        <pre class="code">git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
-cd ~/Projects/session-orchestrator &amp;&amp; npm install
-node scripts/codex-install.mjs</pre>
-        <button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator&#10;cd ~/Projects/session-orchestrator &amp;&amp; npm install&#10;node scripts/codex-install.mjs">Copy</button>
-      </div>
-      <p class="small muted">Requires Codex CLI <strong>0.144.4 or later</strong>. Your project config goes in <code>AGENTS.md</code>. Start a fresh task after installation and review the plugin hooks through <code>/hooks</code>. On Codex the destructive-command guard runs as a Bash hook, and Codex honours its deny. The file-scope guard stays an instruction, because Codex edits files through <code>apply_patch</code>, which the scope guard does not read. The workflow and quality checks still run.</p>
-
-      <p>For a Codex Git marketplace installation, refresh with <code>codex plugin marketplace upgrade kanevry</code>, then <code>codex plugin add session-orchestrator@kanevry</code>. For the local clone shown above, pull the clone, run <code>npm install</code> and rerun the installer. After either path, start a fresh task and reopen the skill picker. See <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md#refresh-and-explicit-cache-invalidation">Codex refresh instructions</a>.</p>
-
-      <hr class="hr">
-
-      <h3>Cursor IDE</h3>
-      <p class="meta">Clone, install, point at your project</p>
-      <div class="cmd">
-        <pre class="code">git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator
-cd ~/Projects/session-orchestrator &amp;&amp; npm install
-node scripts/cursor-install.mjs /absolute/path/to/your/project</pre>
-        <button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator&#10;cd ~/Projects/session-orchestrator &amp;&amp; npm install&#10;node scripts/cursor-install.mjs /absolute/path/to/your/project">Copy</button>
-      </div>
-      <p class="small muted">Cursor bridges <code>preToolUse</code> for scope checks and <code>beforeShellExecution</code> for command checks. <code>afterFileEdit</code> runs additional checks after a write; it cannot undo that write. Tasks execute sequentially.</p>
-      <div class="card">
-        <p><strong>Pass the target project explicitly</strong></p>
-        <p>Without an argument, the installer uses the current working directory. Use an absolute target path and verify that the project contains <code>.cursor/commands</code>, <code>.cursor/skills</code>, and <code>.cursor/hooks.json</code>.</p>
-      </div>
-
-      <hr class="hr">
-
-      <h3>Pi</h3>
-      <p class="meta">The only path that resolves dependencies for you</p>
-      <div class="cmd">
-        <pre class="code">npm install -g --ignore-scripts @earendil-works/pi-coding-agent
-pi install npm:session-orchestrator</pre>
-        <button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent&#10;pi install npm:session-orchestrator">Copy</button>
-      </div>
-      <p class="small muted">No separate <code>npm install</code> step afterwards. Config goes in <code>AGENTS.md</code>.</p>
-    </div>
-  </section>
-
-  <section class="sec" id="first-session">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">03</span> / First run</p>
-      <h2>Your first session</h2>
-      <p class="lede">Bootstrap the project once, then use the three session commands. On Claude Code, Cursor and Pi, start with <code>/bootstrap</code>. Codex exposes these workflows as selectable skills:</p>
-
-      <pre class="code">$session-orchestrator:bootstrap
-$session-orchestrator:session feature
-$session-orchestrator:go
-$session-orchestrator:close</pre>
-      <p class="small muted">Select these skills in the Codex picker or invoke them in a message. They are not shell commands. The slash commands below describe the same workflows on the other tools.</p>
-
-      <ol class="stack">
+      <h2 id="claude-code-h">Claude Code</h2>
+      <p class="lede">Everything works here: agents run in parallel, and the guards block.</p>
+      <ol class="steps">
         <li>
-          <h3><code>/session feature</code>: research and agree the scope</h3>
-          <p>It reads the repository before it asks you anything: git state, open issues, CI status on the current commit, what the last session left behind. Then it reports what it found and proposes a plan: how many waves, how many agents, and how confident it is. You can correct the proposed scope before implementation. Session-start also records local session state.</p>
+          <h3>You need <span class="where">Terminal</span></h3>
+          <p>Node.js 24 or later (check with <code>node --version</code>), a Git repository and Claude Code.</p>
         </li>
         <li>
-          <h3><code>/go</code>: execute the plan in checked waves</h3>
-          <p>For a deep session, Discovery reads and Impl-Core writes the feature. Impl-Polish fixes the edges. Quality simplifies, tests and reviews. Finalization tidies up. The workflow runs your tests and typecheck after each implementation wave and requires the full configured test, typecheck and lint gate after the Quality wave and before completion. Claude Code and Codex can dispatch parallel agents; Cursor and Pi run the tasks sequentially. Housekeeping uses one wave and feature three, with Impl-Polish and Quality in one wave. Deep uses five, or four when the scope is already known and Discovery is dropped; the ultradeep profile uses seven.</p>
+          <h3>Install <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/plugin marketplace add Kanevry/session-orchestrator</code><button class="copy" type="button" data-copy="/plugin marketplace add Kanevry/session-orchestrator">Copy</button></p>
+          <p class="cmd"><code>/plugin install session-orchestrator@kanevry</code><button class="copy" type="button" data-copy="/plugin install session-orchestrator@kanevry">Copy</button></p>
+          <p>Current Claude Code installs the Node dependencies itself. Only if a command fails, use <a href="#when-wrong">the dependency check</a>.</p>
         </li>
         <li>
-          <h3><code>/close</code>: verify, commit, and file what is left</h3>
-          <p>It walks the plan item by item and checks each one against the actual working tree, commits, and turns anything unfinished into a carryover issue instead of quietly dropping it.</p>
+          <h3>Set up once <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/bootstrap --fast --no-interview</code><button class="copy" type="button" data-copy="/bootstrap --fast --no-interview">Copy</button></p>
+          <p>No questions, sensible defaults. If you want to choose the settings yourself, run <code>/bootstrap</code> and answer the interview.</p>
+        </li>
+        <li id="first-session">
+          <h3>Your first session <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/session feature add a CSV export</code><button class="copy" type="button" data-copy="/session feature add a CSV export">Copy</button></p>
+          <p>Then <code>/go</code>, then <code>/close</code>.</p>
+          <table class="kv">
+            <caption class="sr">What the three commands do</caption>
+            <tbody>
+              <tr><th scope="row"><code>/session</code></th><td>reads your repository and proposes what to work on; nothing changes until you agree</td></tr>
+              <tr><th scope="row"><code>/go</code></th><td>does the agreed work in rounds (waves) and checks each round with your tests</td></tr>
+              <tr><th scope="row"><code>/close</code></th><td>runs the full check, commits, and writes down what is left as issues</td></tr>
+            </tbody>
+          </table>
+        </li>
+        <li>
+          <h3>What success looks like</h3>
+          <p>You see a short report and a proposed plan. Nothing in your code has changed yet. You answer with <code>/go</code> or correct the plan.</p>
+          <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
         </li>
       </ol>
-
-      <div class="card">
-        <p><strong>First-time setup records your preferences</strong></p>
-        <p>Before a session can run, bootstrap must create the instruction file, Session Config and <code>.orchestrator/bootstrap.lock</code>. The questions depend on what already exists in the repository and on this machine.</p>
-        <p>Use <code>/bootstrap</code>, or select <code>$session-orchestrator:bootstrap</code> in Codex, before starting your first session.</p>
-      </div>
-
-      <p>Setup can ask about:</p>
-      <ul class="stack">
-        <li><strong>Tier:</strong> fast, standard or deep. It decides how much structure gets scaffolded. Fast is right for a spike.</li>
-        <li><strong>Stack archetype:</strong> only asked for standard or deep, and only when the repository is genuinely ambiguous.</li>
-        <li><strong>Owner persona:</strong> language, tone, how much output you want, how much preamble before an action. Stored once per machine in <code>~/.config/session-orchestrator/owner.yaml</code>, outside every repository, never committed.</li>
-        <li><strong>Telemetry consent:</strong> whether anonymized hardware patterns may be shared to improve resource defaults. Declining is a normal answer and changes nothing else.</li>
-        <li><strong>Dispatcher autonomy:</strong> a one-time, per-repository capture. The recommended answer is <code>off</code>, which is also the fail-closed default.</li>
-        <li><strong>Your actual scope:</strong> the question you came for.</li>
-      </ul>
-      <p>Saved preferences and the bootstrap marker let later sessions reuse the setup. Each session still checks the repository and confirms any scope that has not already been authorized.</p>
+      <p class="run-record">Last documented install run: 2026-09-13 with plugin 5.0.0. No run of the current version is documented yet.</p>
     </div>
   </section>
 
-  <section class="sec" id="config">
+  <section class="sec tool-sec" id="codex" aria-labelledby="codex-h">
     <div class="wrap">
-      <p class="eyebrow"><span class="num">04</span> / Configuration</p>
-      <h2>The minimal config</h2>
-      <p class="lede">These seven fields define the minimal Session Config. See the <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/session-config-reference.md">configuration reference</a> for additional features and their defaults.</p>
+      <h2 id="codex-h">Codex CLI</h2>
+      <p class="lede">Everything works here, with one difference: the file list is an instruction. Codex edits files through <code>apply_patch</code>, which the file-scope guard does not read. The guard for dangerous commands blocks.</p>
+      <ol class="steps">
+        <li>
+          <h3>You need <span class="where">Terminal</span></h3>
+          <p>Node.js 24 or later, a Git repository and Codex CLI 0.144.4 or later.</p>
+        </li>
+        <li>
+          <h3>Install <span class="where">Terminal</span></h3>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
+          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
+          <p class="cmd"><code>node scripts/codex-install.mjs</code><button class="copy" type="button" data-copy="node scripts/codex-install.mjs">Copy</button></p>
+          <p>Then start a fresh Codex task and review the plugin hooks once with <code>/hooks</code>.</p>
+        </li>
+        <li>
+          <h3>Set up once <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>$session-orchestrator:bootstrap</code><button class="copy" type="button" data-copy="$session-orchestrator:bootstrap">Copy</button></p>
+        </li>
+        <li>
+          <h3>Your first session <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>$session-orchestrator:session feature add a CSV export</code><button class="copy" type="button" data-copy="$session-orchestrator:session feature add a CSV export">Copy</button></p>
+          <p>Then <code>$session-orchestrator:go</code>, then <code>$session-orchestrator:close</code>. These are skill picks in the Codex chat. Plain <code>/go</code> and <code>/close</code> do not work in Codex.</p>
+        </li>
+        <li>
+          <h3>What success looks like</h3>
+          <p>You see a short report and a proposed plan. Nothing in your code has changed yet. You answer with <code>$session-orchestrator:go</code> or correct the plan.</p>
+          <p>After <code>$session-orchestrator:close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
+        </li>
+      </ol>
+      <p class="run-record">Last documented install run: the short marketplace form on Codex CLI 0.144.4, 2026-09-04. No run of the clone installer above or of the current version is documented yet.</p>
+    </div>
+  </section>
 
-      <div class="cmd">
-        <pre class="code">## Session Config
+  <section class="sec tool-sec" id="cursor" aria-labelledby="cursor-h">
+    <div class="wrap">
+      <h2 id="cursor-h">Cursor IDE</h2>
+      <p class="lede">The same workflow, but agents run one after another. The guards run through a bridge.</p>
+      <ol class="steps">
+        <li>
+          <h3>You need <span class="where">Terminal</span></h3>
+          <p>Node.js 24 or later, a Git repository and Cursor IDE.</p>
+        </li>
+        <li>
+          <h3>Install <span class="where">Terminal</span></h3>
+          <p class="cmd"><code>git clone https://github.com/Kanevry/session-orchestrator.git</code><button class="copy" type="button" data-copy="git clone https://github.com/Kanevry/session-orchestrator.git">Copy</button></p>
+          <p class="cmd"><code>cd session-orchestrator &amp;&amp; npm install</code><button class="copy" type="button" data-copy="cd session-orchestrator &amp;&amp; npm install">Copy</button></p>
+          <p class="cmd"><code>node scripts/cursor-install.mjs /absolute/path/to/your/project</code><button class="copy" type="button" data-copy="node scripts/cursor-install.mjs /absolute/path/to/your/project">Copy</button></p>
+          <p>Give the absolute path of your project. Without it, the installer uses the current directory.</p>
+        </li>
+        <li>
+          <h3>Set up once <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/bootstrap</code><button class="copy" type="button" data-copy="/bootstrap">Copy</button></p>
+        </li>
+        <li>
+          <h3>Your first session <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/session feature add a CSV export</code><button class="copy" type="button" data-copy="/session feature add a CSV export">Copy</button></p>
+          <p>Then <code>/go</code>, then <code>/close</code>.</p>
+        </li>
+        <li>
+          <h3>What success looks like</h3>
+          <p>You see a short report and a proposed plan. Nothing in your code has changed yet. You answer with <code>/go</code> or correct the plan.</p>
+          <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
+        </li>
+      </ol>
+      <p class="run-record">No documented install run for this version yet.</p>
+    </div>
+  </section>
+
+  <section class="sec tool-sec" id="pi" aria-labelledby="pi-h">
+    <div class="wrap">
+      <h2 id="pi-h">Pi</h2>
+      <p class="lede">The same slash commands, as prompt templates. Agents run one after another. The guards run through a bridge.</p>
+      <ol class="steps">
+        <li>
+          <h3>You need <span class="where">Terminal</span></h3>
+          <p>Node.js 24 or later and a Git repository.</p>
+        </li>
+        <li>
+          <h3>Install <span class="where">Terminal</span></h3>
+          <p class="cmd"><code>npm install -g --ignore-scripts @earendil-works/pi-coding-agent</code><button class="copy" type="button" data-copy="npm install -g --ignore-scripts @earendil-works/pi-coding-agent">Copy</button></p>
+          <p class="cmd"><code>pi install npm:session-orchestrator</code><button class="copy" type="button" data-copy="pi install npm:session-orchestrator">Copy</button></p>
+        </li>
+        <li>
+          <h3>Set up once <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/bootstrap</code><button class="copy" type="button" data-copy="/bootstrap">Copy</button></p>
+        </li>
+        <li>
+          <h3>Your first session <span class="where">Chat in your coding tool</span></h3>
+          <p class="cmd"><code>/session feature add a CSV export</code><button class="copy" type="button" data-copy="/session feature add a CSV export">Copy</button></p>
+          <p>Then <code>/go</code>, then <code>/close</code>.</p>
+        </li>
+        <li>
+          <h3>What success looks like</h3>
+          <p>You see a short report and a proposed plan. Nothing in your code has changed yet. You answer with <code>/go</code> or correct the plan.</p>
+          <p>After <code>/close</code> you see what was done, what was checked and which issues were opened for the rest.</p>
+        </li>
+      </ol>
+      <p class="run-record">No documented install run for this version yet.</p>
+    </div>
+  </section>
+
+  <section class="sec" id="which-command" aria-labelledby="which-command-h">
+    <div class="wrap">
+      <h2 id="which-command-h">Which command when?</h2>
+      <p class="lede">Pick the row that matches your situation.</p>
+      <table class="table">
+        <caption class="sr">Which command fits which situation</caption>
+        <thead>
+          <tr><th scope="col">Your situation</th><th scope="col">Type</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>A new project idea</td><td><code>/plan new</code></td></tr>
+          <tr><td>A feature that is not clear yet</td><td><code>/plan feature</code></td></tr>
+          <tr><td>A feature that is clear</td><td><code>/session feature</code></td></tr>
+          <tr><td>A big or unclear change: look first, then build</td><td><code>/session deep</code></td></tr>
+          <tr><td>Tidy up and maintain</td><td><code>/session housekeeping</code></td></tr>
+        </tbody>
+      </table>
+      <p class="small"><code>/plan new</code> needs <code>plan-baseline-path</code> in your Session Config before it runs. On Codex, put <code>$session-orchestrator:</code> in front of the command name. Every command, by situation: <a href="/commands">/commands</a>.</p>
+    </div>
+  </section>
+
+  <section class="sec more" id="more" aria-labelledby="more-h">
+    <div class="wrap">
+      <h2 id="more-h">When you need more</h2>
+      <p class="lede">Open only what you need.</p>
+
+      <details class="technical-detail" id="before">
+        <summary><h3>Before you start: requirements and the instruction file</h3></summary>
+        <div>
+          <p>macOS and Linux are covered by CI. Native Windows is untested; the shell hooks and the optional MCP server need WSL or Git Bash. Some optional workflows (the plugin validator, some wave-scope snippets, the MCP server) also need <code>jq</code>.</p>
+          <p>Your settings live in the project&rsquo;s instruction file: <code>CLAUDE.md</code> on Claude Code and Cursor, <code>AGENTS.md</code> on Codex CLI and Pi. The contents are the same.</p>
+          <p>Each tool keeps its own session notes (<code>STATE.md</code> in <code>.claude/</code>, <code>.codex/</code>, <code>.cursor/</code> or <code>.pi/</code>). Session records and lessons in <code>.orchestrator/metrics/</code> are shared, and so are the issues. Switching tools keeps your history.</p>
+        </div>
+      </details>
+
+      <details class="technical-detail" id="config">
+        <summary><h3>Configuration: the Session Config</h3></summary>
+        <div>
+          <p>Bootstrap writes this block for you. These seven fields are the minimum:</p>
+          <div class="cmd">
+            <pre class="code">## Session Config
 
 test-command: npm test
 typecheck-command: npm run typecheck
@@ -319,104 +337,74 @@ agents-per-wave: 6
 waves: 5
 persistence: true
 enforcement: warn</pre>
-        <button class="copy" type="button" data-copy="## Session Config&#10;&#10;test-command: npm test&#10;typecheck-command: npm run typecheck&#10;lint-command: npm run lint&#10;agents-per-wave: 6&#10;waves: 5&#10;persistence: true&#10;enforcement: warn">Copy</button>
-      </div>
-      <p class="small muted">Use <code>CLAUDE.md</code> on Claude Code and Cursor, or <code>AGENTS.md</code> on Codex CLI and Pi. The heading matters: the parser looks for <code>## Session Config</code> literally.</p>
+            <button class="copy" type="button" data-copy="## Session Config&#10;&#10;test-command: npm test&#10;typecheck-command: npm run typecheck&#10;lint-command: npm run lint&#10;agents-per-wave: 6&#10;waves: 5&#10;persistence: true&#10;enforcement: warn">Copy</button>
+          </div>
+          <p>The heading must read <code>## Session Config</code> exactly. Pasting the block alone does not finish setup: bootstrap also writes <code>.orchestrator/bootstrap.lock</code>, so run bootstrap once.</p>
+          <p><code>enforcement</code> takes <code>strict</code> (edits outside the file list are blocked), <code>warn</code> (they are reported) or <code>off</code>. Every key: <a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/session-config-reference.md">configuration reference</a>.</p>
+        </div>
+      </details>
 
-      <p><code>enforcement</code> takes <code>strict</code>, <code>warn</code> or <code>off</code>. With an active compatible scope hook, <code>strict</code> denies supported out-of-scope edits, <code>warn</code> reports them without denying the edit, and <code>off</code> disables scope checking. Codex has no compatible scope handler, so changing this setting does not add enforcement there.</p>
+      <details class="technical-detail" id="guards">
+        <summary><h3>What the guards block, and where they stop</h3></summary>
+        <div>
+          <p>The guard for dangerous commands follows <code>.orchestrator/policy/blocked-commands.json</code>: 13 blocking and 4 warning rules. It blocks hard resets, discarding checkouts, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code> and deleting the session records. It warns on soft resets, stash and <code>git push --force-with-lease</code>.</p>
+          <table class="table">
+            <caption class="sr">Guard behaviour per coding tool</caption>
+            <thead>
+              <tr><th scope="col">Tool</th><th scope="col">Dangerous commands</th><th scope="col">Edits outside the file list</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Claude Code</td><td>blocked by a hook</td><td>blocked in <code>strict</code></td></tr>
+              <tr><td>Codex CLI</td><td>blocked by a hook (Codex honours the deny)</td><td>an instruction only</td></tr>
+              <tr><td>Cursor IDE</td><td>through a bridge</td><td>blocked in <code>strict</code></td></tr>
+              <tr><td>Pi</td><td>through a bridge</td><td>blocked in <code>strict</code></td></tr>
+            </tbody>
+          </table>
+          <p>A file list is not filesystem isolation. Several sessions can share one working copy, which is why a stash or a reset is guarded: it can take a neighbour&rsquo;s work.</p>
+        </div>
+      </details>
 
-      <div class="card">
-        <p><strong>The config block alone does not complete bootstrap</strong></p>
-        <p>The bootstrap gate checks for three things, not one: the instruction file, this Session Config block, and <code>.orchestrator/bootstrap.lock</code>. Pasting the block does not create the bootstrap marker. Run bootstrap to finish setup before starting a session.</p>
-        <p>Run <code>/bootstrap</code>, or <code>$session-orchestrator:bootstrap</code> in Codex, to create the required files.</p>
-      </div>
-    </div>
-  </section>
+      <details class="technical-detail" id="when-it-blocks">
+        <summary><h3>What to do when a command is blocked</h3></summary>
+        <div>
+          <p>Read the reason in the message first. Most blocks protect work you did not create.</p>
+          <p>If you really mean it, set <code>allow-destructive-ops: true</code> in the Session Config for that maintenance and remove it afterwards. Left in place, it turns the guard off for every later session.</p>
+          <p>If a legitimate edit is blocked by the file list, check the plan and the other agents&rsquo; files before you add the path. <code>enforcement: off</code> turns off the file-list check only, not the guard for dangerous commands.</p>
+        </div>
+      </details>
 
-  <section class="sec" id="when-it-blocks">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">05</span> / Guards</p>
-      <h2>What the guards can enforce</h2>
-      <p class="lede">Guard behaviour depends on your coding tool. Claude Code runs the guard hooks directly; Cursor and Pi use bridges with documented limits. On Codex, the destructive-command guard runs as a Bash hook and file-scope rules are instructions only. Scope edits are denied only when a compatible hook is active and enforcement is strict.</p>
+      <details class="technical-detail" id="when-wrong">
+        <summary><h3>When something goes wrong</h3></summary>
+        <div>
+          <p><strong>A command fails right after installing on Claude Code.</strong> Check the dependencies once. In a terminal, run <code>claude plugin list --json</code>, take the <code>installPath</code> of the enabled <code>session-orchestrator@kanevry</code> entry, then:</p>
+          <p class="cmd"><code>cd "/absolute/installPath/from/the/list" &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo "dependencies present" || npm install; }</code><button class="copy" type="button" data-copy="cd &quot;/absolute/installPath/from/the/list&quot; &amp;&amp; { [ -d node_modules/js-yaml ] &amp;&amp; echo &quot;dependencies present&quot; || npm install; }">Copy</button></p>
+          <p>If it installed anything, restart Claude Code.</p>
+          <p><strong>Hooks cannot find Node.</strong> Hooks run in your coding tool&rsquo;s environment, not your login shell. Set <code>SO_NODE_BIN</code> to the absolute path of your Node binary, or start the tool from a shell where <code>node</code> works.</p>
+          <p><strong>Cursor files landed in the wrong project.</strong> Rerun the installer with the absolute project path.</p>
+          <p><strong>The summary does not match what you saw.</strong> Compare it with the latest session record:</p>
+          <p class="cmd"><code>tail -1 .orchestrator/metrics/sessions.jsonl | jq '{session_id, total_waves, total_agents, total_files_changed}'</code><button class="copy" type="button" data-copy="tail -1 .orchestrator/metrics/sessions.jsonl | jq '{session_id, total_waves, total_agents, total_files_changed}'">Copy</button></p>
+          <p>Look closer at <code>total_agents: 0</code> after agents plainly worked, <code>undefined</code> anywhere, or <code>-abandoned-</code> in the id after a clean <code>/close</code>. Then check what actually changed on disk before you build on it. Still stuck: <a href="https://github.com/Kanevry/session-orchestrator/issues">open an issue</a>.</p>
+        </div>
+      </details>
 
-      <h3>The destructive-command guard</h3>
-      <p>The policy in <code>.orchestrator/policy/blocked-commands.json</code> defines <strong>17 rules: 13 blocking and 4 warning</strong>. An active hook applies them on Claude Code and through compatible Cursor or Pi bridges. On Codex the same hook runs as a <code>PreToolUse</code> Bash hook, and Codex honours its deny (measured with codex-cli 0.160.1 on 2026-10-20). The blocking rules cover hard resets, checkout discards, forced cleaning, destructive removal, force-push, SQL <code>DROP TABLE</code>, truncating protected files or the harness memory, and deleting the session ledgers. The warning rules cover mixed and soft resets, stash, and <code>git push --force-with-lease</code>.</p>
-      <p>The reason it is that broad: several sessions can share one working copy, and a stash or a reset takes work from a neighbour who has no way to find it again.</p>
-
-      <div class="card">
-        <p><strong>Releasing it deliberately</strong></p>
-        <p>Where the destructive-command hook is active, <code>allow-destructive-ops: true</code> in Session Config disables it for intentional maintenance. Remove the setting afterwards. It is a per-session switch by design: leaving it in permanently removes the guard for every future session, including the ones you did not plan.</p>
-      </div>
-
-      <h3>Scope enforcement</h3>
-      <p>Agents receive declared paths, checked for overlaps before dispatch. With an active compatible handler, <code>hooks/enforce-scope.mjs</code> blocks supported out-of-scope edits in <code>strict</code> mode and reports them without denial in <code>warn</code> mode. Claude Code runs the hook directly; Cursor and Pi use bridges with documented limits. On Codex the rule is an instruction only: Codex edits files through <code>apply_patch</code>, and no file-scope handler reads that payload yet. A declared scope is not filesystem isolation.</p>
-      <p>When a legitimate edit is denied, review the plan and other agents' scopes before adding the missing path. Recheck overlaps before dispatching work against the wider scope.</p>
-      <p><code>enforcement: off</code> disables scope checking. It does not disable the separate destructive-command guard on tools where that guard is active.</p>
-    </div>
-  </section>
-
-  <section class="sec" id="when-wrong">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">06</span> / Diagnosis</p>
-      <h2>When something is wrong, and how you would even notice</h2>
-      <p class="lede">A session summary can miss a failed dispatch or an incomplete record. Compare the recorded work with the changes and checks you actually observed.</p>
-      <p>The session record is one source of evidence. To inspect its latest entry:</p>
-
-      <div class="cmd">
-        <pre class="code">tail -1 .orchestrator/metrics/sessions.jsonl | jq '{session_id, total_waves, total_agents, total_files_changed}'</pre>
-        <button class="copy" type="button" data-copy="tail -1 .orchestrator/metrics/sessions.jsonl | jq '{session_id, total_waves, total_agents, total_files_changed}'">Copy</button>
-      </div>
-      <p class="small muted">This diagnostic command needs <code>jq</code>. You can also open the JSONL file in a text editor.</p>
-
-      <div class="card">
-        <p><strong>What healthy looks like</strong></p>
-        <p>Numbers that match what you just watched happen. If you ran three waves with six agents each and files changed on screen, the record says so. That is the whole test: there is no green checkmark to trust instead.</p>
-      </div>
-
-      <p>Signs that the record needs investigation:</p>
-      <ul class="stack">
-        <li><code>total_agents: 0</code> after a wave in which you plainly watched agents work.</li>
-        <li>A duration of <code>0m</code> for a session that took you half an hour.</li>
-        <li><code>undefined</code> anywhere in the record: a field that was never written, not a field that is empty.</li>
-        <li><code>-abandoned-</code> inside the session id although you closed cleanly with <code>/close</code>. That name is reconstructed after the fact for sessions that never closed themselves.</li>
-      </ul>
-      <p>None of these mean your code is broken. They mean the run did not do what the summary implies, and the honest response is to look at what actually changed on disk before you build on it.</p>
-
-      <h3>Installation and environment checks</h3>
-      <p>Check these common failure points and the <a href="https://github.com/Kanevry/session-orchestrator/issues?q=is%3Aissue">issue tracker</a> when installation seems incomplete.</p>
-      <ul class="stack">
-        <li><strong>Node is not on the hook&rsquo;s PATH.</strong> Hooks run in the harness&rsquo;s environment, not your login shell. A version manager that only initialises in your interactive shell profile is not there when a hook runs, so the hook cannot find <code>node</code>. The hook launcher tries known Node locations and warns when Node cannot be found. Set <code>SO_NODE_BIN</code> to an absolute Node executable path, or launch the coding tool from a shell where Node resolves.</li>
-        <li><strong>Missing <code>node_modules</code>.</strong> Use <code>claude plugin list --json</code> to find the active installation and run <code>npm install</code> there. Missing runtime packages can prevent hooks from loading.</li>
-        <li><strong>Wrong target directory.</strong> Cursor uses the current directory when no project path is given. Verify the generated Cursor files in the intended project.</li>
-      </ul>
-    </div>
-  </section>
-
-  <section class="sec" id="deeper">
-    <div class="wrap">
-      <p class="eyebrow"><span class="num">07</span> / Further</p>
-      <h2>Where to go deeper</h2>
-      <p class="lede">This page is the short path. Everything below is the long one, and all of it lives in the repository.</p>
-
-      <table class="table">
-        <caption class="sr">Further reading</caption>
-        <thead>
-          <tr><th scope="col">Resource</th><th scope="col">Location</th></tr>
-        </thead>
-        <tbody>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator#readme">README</a></td><td data-label="Location">Install, architecture, component inventory</td></tr>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/CHANGELOG.md">CHANGELOG</a></td><td data-label="Location">What changed, per release</td></tr>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md">Codex CLI setup</a></td><td data-label="Location"><code>docs/codex-setup.md</code></td></tr>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md">Cursor IDE setup</a></td><td data-label="Location"><code>docs/cursor-setup.md</code></td></tr>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/pi-setup.md">Pi setup</a></td><td data-label="Location"><code>docs/pi-setup.md</code></td></tr>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/session-config-reference.md">Session Config reference</a></td><td data-label="Location">Every key, type and default</td></tr>
-          <tr><td data-label="Resource"><a href="https://github.com/Kanevry/session-orchestrator/issues">Issues</a></td><td data-label="Location">Ask, or report what broke</td></tr>
-          <tr><td data-label="Resource"><a href="https://www.npmjs.com/package/session-orchestrator">npm</a></td><td data-label="Location">session-orchestrator</td></tr>
-        </tbody>
-      </table>
-
-      <h3>Test record</h3>
-      <p class="small muted">Last full installation run (E2E): v3.20.0 on 2026-08-19. The review date at the top of this page records a documentation check against the source, not a new installation test.</p><!-- site-numbers:historical: the version in that sentence is a DATED RECORD of the release the commands were actually run against, not a claim about the current one. A release must never bump it; only an actual re-run of the commands may. Deliberately NOT a data-metric cell: --write would move the number while the date stayed put, fabricating a verification nobody ran. -->
+      <details class="technical-detail" id="deeper">
+        <summary><h3>Deeper reading</h3></summary>
+        <div>
+          <table class="table">
+            <caption class="sr">Further reading</caption>
+            <thead>
+              <tr><th scope="col">Resource</th><th scope="col">What it covers</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><a href="https://github.com/Kanevry/session-orchestrator#readme">README</a></td><td>Install, architecture, components</td></tr>
+              <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/codex-setup.md">Codex CLI setup</a></td><td>Refresh, limits, hooks</td></tr>
+              <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/cursor-setup.md">Cursor IDE setup</a></td><td>Bridge and limits</td></tr>
+              <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/docs/pi-setup.md">Pi setup</a></td><td>Install forms and limits</td></tr>
+              <tr><td><a href="https://github.com/Kanevry/session-orchestrator/blob/main/CHANGELOG.md">CHANGELOG</a></td><td>What changed, per release</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </details>
     </div>
   </section>
 </main>
@@ -446,34 +434,6 @@ enforcement: warn</pre>
   </div>
 </footer>
 
-<script>
-/* Progressive enhancement only. This adds UI that does not exist without JS,
-   so nothing on the page can be dead or unreachable. Copy buttons are wired by
-   the shared ui script from their data-copy attribute: one implementation for
-   both pages, so this file carries only the table-of-contents highlight. */
-(function () {
-  'use strict';
-
-  /* 2: mark the section you are reading in the table of contents */
-  if ('IntersectionObserver' in window) {
-    var links = {};
-    document.querySelectorAll('.toc a[href^="#"]').forEach(function (a) {
-      links[a.getAttribute('href').slice(1)] = a;
-    });
-    var io = new IntersectionObserver(function (entries) {
-      entries.forEach(function (e) {
-        var a = links[e.target.id];
-        if (!a) return;
-        if (e.isIntersecting) {
-          Object.keys(links).forEach(function (k) { links[k].removeAttribute('aria-current'); });
-          a.setAttribute('aria-current', 'true');
-        }
-      });
-    }, { rootMargin: '-10% 0px -70% 0px' });
-    document.querySelectorAll('.sec[id]').forEach(function (s) { io.observe(s); });
-  }
-})();
-</script>
 <!-- Vercel Web Analytics. Beides same-origin: das Skript liegt unter
      /_vercel/insights/script.js auf DIESER Domain, der Beacon geht an
      /_vercel/insights/view, deshalb traegt die CSP in vercel.json

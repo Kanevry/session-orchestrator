@@ -166,7 +166,9 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
   // stagnation evidence must not be evicted from the last-3 window by 3
   // trailing phantom abandoned stubs.
   // -------------------------------------------------------------------------
-  it.skipIf(!HAS_JQ)('still emits when 3 trailing abandoned stubs would otherwise evict the real session from the last-3 window', () => {
+  // #1762: a `closed-without-plan` record carries no wave data either; without
+  // the filter three of them evict the real session the same way.
+  it.skipIf(!HAS_JQ).each(['abandoned', 'closed-without-plan'])('still emits when 3 trailing %s records would otherwise evict the real session from the last-3 window', (ghostStatus) => {
     const sessionId = 'main-2026-07-19-session-1';
 
     // sessions.jsonl: the REAL session first, then 3 abandoned phantom stubs
@@ -175,9 +177,9 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
     const sessionsPath = join(tmpDir, 'sessions.jsonl');
     const sessionLines = [
       { session_id: sessionId },
-      { session_id: 'ghost-1', status: 'abandoned' },
-      { session_id: 'ghost-2', status: 'abandoned' },
-      { session_id: 'ghost-3', status: 'abandoned' },
+      { session_id: 'ghost-1', status: ghostStatus },
+      { session_id: 'ghost-2', status: ghostStatus },
+      { session_id: 'ghost-3', status: ghostStatus },
     ];
     writeFileSync(sessionsPath, sessionLines.map((r) => JSON.stringify(r)).join('\n') + '\n', 'utf8');
 

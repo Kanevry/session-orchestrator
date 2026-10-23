@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-21T23:46:24.851Z",
-  "head": "2b14409c7dbf6df90080028e48e6a3dfdca57188",
+  "generated_at": "2026-10-23T10:05:29.051Z",
+  "head": "ee6ea6ec8b5438ee43cb7789fb6b7101b55dc8c9",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -787,6 +787,15 @@
         "pre-task-scope-disjoint.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/config/security-delta.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {
@@ -1585,6 +1594,15 @@
         "post-tool-batch-wave-signal.mjs",
         "pre-bash-memory-propose-audit.mjs",
         "pre-task-scope-disjoint.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/security-delta/contract.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "post-edit-validate.mjs",
+        "pre-bash-sessions-ledger-guard.mjs"
       ]
     },
     {

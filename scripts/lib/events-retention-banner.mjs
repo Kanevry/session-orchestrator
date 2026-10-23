@@ -109,8 +109,10 @@ const HEAD_BYTES = 64 * 1024;
  * `rg -n "readEventsWithRotations\(|scanEventsBackwards\(|listEventSourcesNewestFirst\(" --glob '!tests/**' scripts hooks skills`
  * → 6 call sites beside the definitions in `events.mjs` (and its internal
  * `listEventSourcesNewestFirst` call); the seventh, `session-close-backfill`,
- * joined with #1498, the eighth, `session-work-trees`, with #1659. A test
- * re-runs that census, so a ninth reader cannot join unlisted.
+ * joined with #1498, the eighth, `session-work-trees`, with #1659. Re-run
+ * 2026-10-23 @ `925df3f3` (same command): 9 call sites — the ninth,
+ * `session-end/close-without-plan`, joined with #1762. A test re-runs that
+ * census, so a tenth reader cannot join unlisted.
  */
 export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'eval/engine', spec: './eval/engine.mjs' },
@@ -121,6 +123,7 @@ export const EVENTS_WINDOW_READERS = Object.freeze([
   { label: 'backfill-abandoned-sessions', spec: '../backfill-abandoned-sessions.mjs' },
   { label: 'session-close-backfill', spec: './session-close-backfill.mjs' },
   { label: 'session-work-trees', spec: './session-work-trees.mjs' },
+  { label: 'session-end/close-without-plan', spec: './session-end/close-without-plan.mjs' },
 ]);
 
 /**

@@ -1,0 +1,32 @@
+version = 1
+requires-python = ">=3.11"
+
+[[package]]
+name = "anyio"
+version = "4.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/anyio-4.4.0.tar.gz", hash = "sha256:00" }
+dependencies = [
+    { name = "idna" },
+]
+
+[[package]]
+name = "example-private-app"
+version = "0.2.0"
+source = { editable = "." }
+dependencies = [
+    { name = "anyio" },
+    { name = "litellm" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "litellm", specifier = ">=1.0" }]
+
+[[package]]
+name = "litellm"
+version = "1.106.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/litellm-1.106.2.tar.gz", hash = "sha256:00" }
+dependencies = [
+    { name = "httpx" },
+]

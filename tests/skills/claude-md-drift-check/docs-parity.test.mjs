@@ -182,6 +182,21 @@ describe('sub-check (a): count-claims', () => {
     expect(errorsFor(j, 'docs-parity')).toHaveLength(0);
   });
 
+  // #1757: the heading now splits the total into commands and background skills.
+  // A heading the regex does not match is skipped silently, so the count must be
+  // read from the split form too, or the drift goes unreported.
+  it('flags a drifted skill count in the split heading form', () => {
+    makeSkills(42);
+    mkdirSync(join(vault, 'docs'), { recursive: true });
+    writeFileSync(
+      join(vault, 'docs', 'components.md'),
+      '# Components & Reference\n\n## Skills (40: 28 you type, 12 in the background)\n',
+    );
+    const errs = errorsFor(parseJson(runChecker(vault).stdout), 'docs-parity');
+    expect(errs).toHaveLength(1);
+    expect(errs[0].message).toBe('docs/components.md claims 40 skills but actual on-disk count is 42');
+  });
+
   it('flags a drifted command count', () => {
     makeCommands(22);
     writeComponentsMd({ commands: 20 });

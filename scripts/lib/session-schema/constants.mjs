@@ -197,6 +197,9 @@ export const OPTIONAL_FIELDS = Object.freeze([
   '_backfill_incomplete_fields',
   '_session_type_inferred',
   '_synthetic_session_id',
+  // #1762 — the `/close` pre-check verdict (`foreign`, `no-state`, …) on a
+  // `status: 'closed-without-plan'` record (session-end/close-without-plan.mjs).
+  'close_reason',
   // #773 — Handover-Alignment-Gate telemetry (additive, v1-compatible).
   // Non-negative integers; absent = gate did not run / not measured.
   'open_questions_asked',

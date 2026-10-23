@@ -46,7 +46,8 @@ import { SCAN_CHUNK_BYTES, emitEvent, eventsFilePath, listEventSourcesNewestFirs
 import { ARCHIVE_DIR_NAME } from './lib/events-schema.mjs';
 import { getProjectDir, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
-import { isLockLive, readLock } from './lib/session-lock.mjs';
+import { DEFAULT_TTL_HOURS, FUTURE_HEARTBEAT_TOLERANCE_MS, isLockLive, readLock } from './lib/session-lock.mjs';
+import { activeDir, isRegistryEntryFresh, readRegistry } from './lib/session-registry.mjs';
 import { readProcessLocalSessionIds } from './lib/session-identity/own-session.mjs';
 
 const LOCK_ACQUIRED = 'orchestrator.session.lock.acquired';
@@ -148,14 +149,17 @@ function readJsonl(filePath) {
  *      what distinguishes THIS process from a PEER's running session in the
  *      same working copy. Without it the repo-global lock would vouch for
  *      itself and a peer's live session would read as "me".
- * A peer's live session is NOT excluded here and does not need to be: the core
- * still rejects it through the untouched own/foreign live-lock guards.
+ * A peer's live session that HOLDS the lock is still rejected by the core's
+ * own/foreign live-lock guards. The lock is not the only liveness signal any
+ * more (#1748): `runningIds` adds sessions that run lockless by design — the
+ * caller's own ids and fresh host-registry entries (see `runMigration`).
  *
- * @param {{ repoRoot: string }} args
+ * @param {{ repoRoot: string, runningIds?: Iterable<string> }} args
+ *   `runningIds` — extra ids known to be running, excluded by raw OR semantic id.
  * @returns {Array<{ sessionId: string, semanticSessionId: string|null }>}
  */
-export function planSessions({ repoRoot }) {
-  return planWithGaps({ repoRoot }).plan;
+export function planSessions({ repoRoot, runningIds = [] }) {
+  return planWithGaps({ repoRoot, runningIds }).plan;
 }
 
 /**
@@ -169,10 +173,10 @@ export function planSessions({ repoRoot }) {
  * file that exists but is not a source (renamed out of `ARCHIVE_NAME_RE`)
  * counts as a gap too — existence is not reading (#1423).
  *
- * @param {{ repoRoot: string }} args
+ * @param {{ repoRoot: string, runningIds?: Iterable<string> }} args
  * @returns {{ plan: Array<{ sessionId: string, semanticSessionId: string|null }>, historyGaps: number }}
  */
-function planWithGaps({ repoRoot }) {
+function planWithGaps({ repoRoot, runningIds: extraRunningIds = [] }) {
   const eventsPath = eventsFilePath(repoRoot); // #1514: the repo's one ledger
 
   // Two independent UUID -> semantic bridges (#1167). `lock.acquired` is the
@@ -224,7 +228,15 @@ function planWithGaps({ repoRoot }) {
   // id for a session whose semantic id was two lines further on.
   const semanticByUuid = new Map([...semanticFromEnded, ...semanticFromLock]);
 
-  const runningIds = readRunningSessionIds(repoRoot);
+  // #1748: the lock alone misses sessions that run WITHOUT one by design (#1635
+  // lead yield, #1651 released lock kept released, a lost acquire), so the
+  // caller's own ids and fresh registry entries join the lock-based set.
+  // Ceilings: (a) sweepZombies() drops a registry entry after 60 min without a
+  // heartbeat (refreshed every turn end), so a lockless session idle longer
+  // reads as dead again; (b) semantic labels are minted host-wide, so a label
+  // shared with a live session in ANOTHER repo only DELAYS a dead candidate's
+  // stub to a later start — late, never wrong.
+  const runningIds = new Set([...readRunningSessionIds(repoRoot), ...extraRunningIds]);
 
   const plan = [];
   for (const sessionId of startedIds) {
@@ -322,7 +334,9 @@ function forEachJsonlRecord(filePath, onRecord) {
 
 /**
  * The id(s) naming the session THIS process is, when that session holds the
- * live lock — else the empty set (#1376). Never throws: an unreadable lock,
+ * live lock — else the empty set (#1376). Lock-based only; lockless running
+ * sessions come from {@link readRegistryRunningIds} and the caller's own ids
+ * (#1748). Never throws: an unreadable lock,
  * an absent one, or an env without any process-local id all degrade to "no
  * exclusion", which is the pre-#1376 behaviour.
  *
@@ -345,6 +359,67 @@ function readRunningSessionIds(repoRoot) {
     for (const id of lockIds) ids.add(id);
   } catch {
     /* readLock is no-throw by contract; the contract is not ours to trust */
+  }
+  return ids;
+}
+
+/**
+ * Ids of sessions the HOST registry shows as running (#1748) — the
+ * lock-independent liveness source for peers that run lockless by design.
+ * Fresh = heartbeat within the lock TTL, so a lockless session counts as
+ * running exactly as long as a lock would have. Never throws.
+ *
+ * Fail-closed, because a doubt must never become a stub: `null` when the
+ * registry directory exists but cannot be listed — the caller then stamps
+ * nothing, since a lockless live peer is indistinguishable from a dead one. An
+ * ABSENT directory (ENOENT) means nobody registered and yields the empty set.
+ * An entry file that is unreadable or invalid has no readable heartbeat: its
+ * mtime stands in, and its name (`<session_id>.json`) is the id it protects.
+ * So does a valid entry whose heartbeat measures no age (unparseable, or
+ * beyond the future tolerance after a clock stepped back), as in
+ * `sweepZombies()` (#1505.1).
+ * Ceiling: a peer registered under a different `SO_SESSION_REGISTRY_DIR` /
+ * config home is invisible here; revisit when session-close-backfill.log shows
+ * a lockless live session stamped that way.
+ *
+ * @returns {Promise<Set<string>|null>}
+ */
+async function readRegistryRunningIds() {
+  const dir = activeDir();
+  let names;
+  try {
+    names = await fs.promises.readdir(dir);
+  } catch (err) {
+    return err?.code === 'ENOENT' ? new Set() : null;
+  }
+  const ids = new Set();
+  const now = Date.now();
+  const freshnessMin = DEFAULT_TTL_HOURS * 60;
+  try {
+    const readable = new Set();
+    for (const entry of await readRegistry()) {
+      const beat = Date.parse(entry.last_heartbeat);
+      if (Number.isNaN(beat) || beat > now + FUTURE_HEARTBEAT_TOLERANCE_MS) continue;
+      readable.add(entry.session_id);
+      if (!isRegistryEntryFresh(entry, { freshnessMin, now })) continue;
+      for (const id of [entry.session_id, entry.semantic_session_id]) {
+        if (typeof id === 'string' && id.length > 0) ids.add(id);
+      }
+    }
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const id = name.slice(0, -'.json'.length);
+      if (readable.has(id)) continue;
+      try {
+        const { mtimeMs } = await fs.promises.stat(path.join(dir, name));
+        if (now - mtimeMs <= freshnessMin * 60_000) ids.add(id);
+      } catch (err) {
+        // Gone since the listing = deregistered; any other failure = unknown, keep it.
+        if (err?.code !== 'ENOENT') ids.add(id);
+      }
+    }
+  } catch {
+    return null;
   }
   return ids;
 }
@@ -430,6 +505,9 @@ function cheapRecordId({ sessionId, semanticSessionId }) {
  *   #1498 — total budget for rotated-ledger scans across the whole run, turned
  *   into ONE deadline before the first candidate. Candidates it leaves unread
  *   count as `skipped.skipped-history-unread`. `null` (CLI default) = unbounded.
+ * @param {Array<string|null|undefined>} [args.ownSessionIds=[]]
+ *   #1748 — the caller's OWN in-memory session ids (SessionStart hook). Excluded
+ *   from the plan even without a lock; null/empty values are ignored.
  * @returns {Promise<object>} aggregate summary
  */
 export async function runMigration({
@@ -439,8 +517,14 @@ export async function runMigration({
   limit = null,
   newestFirst = false,
   archiveScanBudgetMs = null,
+  ownSessionIds = [],
 }) {
-  const { plan: planned, historyGaps } = planWithGaps({ repoRoot });
+  const registryIds = await readRegistryRunningIds();
+  const runningIds = new Set(registryIds ?? []);
+  for (const id of Array.isArray(ownSessionIds) ? ownSessionIds : []) {
+    if (typeof id === 'string' && id.length > 0) runningIds.add(id);
+  }
+  const { plan: planned, historyGaps } = planWithGaps({ repoRoot, runningIds });
   const plan = newestFirst ? [...planned].reverse() : planned;
   const summary = {
     repoRoot,
@@ -455,6 +539,8 @@ export async function runMigration({
     errors: 0,
     skipped: {},
   };
+
+  if (registryIds === null) summary.registry_unreadable = true;
 
   // Pre-filter pass — costs ONE sessions.jsonl read for the whole run.
   const recordedIds = readRecordedIds(repoRoot);
@@ -479,6 +565,16 @@ export async function runMigration({
     ) {
       summary.skipped['skipped-already-recorded'] =
         (summary.skipped['skipped-already-recorded'] ?? 0) + 1;
+      continue;
+    }
+
+    // -- #1748: without the registry a lockless live peer reads as dead, so no
+    // unrecorded candidate is stamped — in dry-run too, which must project
+    // what --apply writes. The next start retries. Ceiling: a registry that
+    // stays unreadable keeps this off with no signal beyond the summary.
+    if (summary.registry_unreadable) {
+      summary.skipped['skipped-registry-unreadable'] =
+        (summary.skipped['skipped-registry-unreadable'] ?? 0) + 1;
       continue;
     }
 
@@ -581,22 +677,27 @@ async function emitBackfillCompleted(repoRoot, item, res) {
  *           events.jsonl and therefore not a candidate at all (`planSessions`
  *           enumerates started-events only).
  *        b. GUARD — on a clear/compact/resume re-fire, an EARLIER
- *           `session.started` for the same logical session IS present. It
- *           resolves to our own semantic id, whose lock is live, so the core's
- *           `skipped-own-live-lock` branch (#863) rejects it.
+ *           `session.started` for the same logical session IS present. The
+ *           caller's `ownSessionIds` exclude it from the plan by raw or
+ *           semantic id, lock or no lock (#1748); a live own lock is still
+ *           rejected by the core's `skipped-own-live-lock` branch (#863).
  *  (2) NEVER record a RUNNING FOREIGN session as abandoned. The core evaluates
  *      lock ownership against the CANDIDATE (not the running process): a
  *      candidate that holds a live lock returns `skipped-own-live-lock` BEFORE
  *      the dead-by-age relaxation is ever consulted. Verified against a fixture
  *      where the live lock holder is >4 h stale and thus relaxation-eligible.
  *
- * Residual risk, stated explicitly: a session that is live but does NOT hold
- * the lock (it lost the acquire race — `bootstrapLock` leaves the foreign lock
- * in place and bails) AND has emitted no event for longer than the lock TTL
- * (`DEFAULT_TTL_HOURS` = 4 h) could still be relaxed past. That candidate is
- * one the system's OWN liveness model already considers dead, since its lock
- * would have expired; we deliberately reuse that same TTL rather than inventing
- * a second notion of liveness.
+ *  (3) NEVER record a running LOCKLESS session (#1748: lead yield #1635,
+ *      released lock #1651, lost acquire). The host registry is read as a
+ *      second liveness source: an entry whose heartbeat is within the lock TTL
+ *      (`DEFAULT_TTL_HOURS`) excludes its session from the plan. A registry
+ *      that exists but cannot be listed stamps nothing
+ *      (`summary.registry_unreadable`).
+ *
+ * Residual risk, stated explicitly: a lockless session whose registry entry is
+ * gone (`sweepZombies` removes it after 60 min without a heartbeat) or older
+ * than the lock TTL reads as dead — the same TTL the lock model uses, rather
+ * than a second notion of liveness.
  *
  * Never throws — a backfill failure must NEVER block a session start.
  *
@@ -604,12 +705,16 @@ async function emitBackfillCompleted(repoRoot, item, res) {
  * @param {string} args.repoRoot
  * @param {number|null} [args.limit=SESSION_START_LIMIT]
  * @param {number|null} [args.archiveScanBudgetMs=SESSION_START_ARCHIVE_SCAN_BUDGET_MS]
+ * @param {Array<string|null|undefined>} [args.ownSessionIds=[]] the hook's own
+ *   in-memory ids (raw + semantic) — never re-read from current-session.json,
+ *   which is repo-global and peer-writable (#1746).
  * @returns {Promise<object|null>} the summary, or null when disabled/failed
  */
 export async function backfillOnSessionStart({
   repoRoot,
   limit = SESSION_START_LIMIT,
   archiveScanBudgetMs = SESSION_START_ARCHIVE_SCAN_BUDGET_MS,
+  ownSessionIds = [],
 } = {}) {
   try {
     // Escape hatch for operators who never want ledger writes at session start.
@@ -617,7 +722,9 @@ export async function backfillOnSessionStart({
     if (typeof repoRoot !== 'string' || repoRoot.length === 0) return null;
     // newestFirst is mandatory here — see runMigration's param docs for the
     // measured failure (budget burned on ancient already-recorded candidates).
-    const summary = await runMigration({ repoRoot, apply: true, limit, newestFirst: true, archiveScanBudgetMs });
+    const summary = await runMigration({
+      repoRoot, apply: true, limit, newestFirst: true, archiveScanBudgetMs, ownSessionIds,
+    });
     // The telemetry flush rides the SAME start-time trigger, for the same reason
     // the backfill does — see flushTelemetryOnSessionStart.
     await flushTelemetryOnSessionStart(repoRoot);

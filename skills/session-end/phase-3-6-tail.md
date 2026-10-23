@@ -185,11 +185,15 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
    ```javascript
    import { readFileSync } from 'node:fs';
    import { resolveSessionIds } from '${PLUGIN_ROOT}/scripts/lib/state-md.mjs';
+   import { resolveOwnLockRootFor } from '${PLUGIN_ROOT}/scripts/lib/own-lock-root.mjs';
+   import { readProcessLocalSessionIds } from '${PLUGIN_ROOT}/scripts/lib/session-identity/own-session.mjs';
 
-   // Lock id only when provably OWN — never a peer's (#1664).
+   // Lock id only when provably OWN — never a peer's (#1664), read at the root
+   // holding this process's own lock, not at the cwd (#1730 Pkt 8).
+   const [ownId = null] = readProcessLocalSessionIds();
    const rawSessionId =
      (process.env.CLAUDE_CODE_SESSION_ID || '').trim() ||
-     resolveSessionIds({ repoRoot: process.cwd() }).session_id;
+     resolveSessionIds({ repoRoot: resolveOwnLockRootFor({ sessionId: ownId }).root }).session_id;
 
    // No id → no join: `null` would otherwise match the null-session rows.
    const selectedSkills = !rawSessionId ? [] : [...new Set(

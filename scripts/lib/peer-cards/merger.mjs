@@ -265,10 +265,17 @@ export function mergePeerCard(existingBody, managedUpdates) {
     return s;
   });
 
-  // Append new managed sections from updates that didn't exist in original
+  // Append new managed sections from updates that didn't exist in original.
+  // Each one starts on its own line: a managed section ends on its END sentinel
+  // and a body may end without a newline, so a separator goes in unless the
+  // text before already ends with one (an empty body needs none).
   for (const name of Object.keys(managedUpdates)) {
     if (!parsedManagedNames.has(name)) {
       stats.appended++;
+      const last = updatedSections[updatedSections.length - 1];
+      if (last && !(last.type === 'hand' && last.content.endsWith('\n'))) {
+        updatedSections.push({ type: 'hand', content: '\n', startIdx: -1, endIdx: -1 });
+      }
       updatedSections.push({
         type: 'managed',
         name,

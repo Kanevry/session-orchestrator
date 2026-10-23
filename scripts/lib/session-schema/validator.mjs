@@ -51,6 +51,13 @@ const QUALIFIED_ISSUE_RE = /^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/)+[A
  *                observed, but "abandoned" is an interpretation of it (a session
  *                may have finished its work and merely skipped /close, or been
  *                killed). GitLab #1234, added 2026-09-06.
+ * `closed-without-plan` — the session ran `/close`, but the pre-check found no
+ *                own plan to close (`close_reason` names the verdict: `foreign`,
+ *                `no-state`, …), so session-end never ran. Written only for the
+ *                closing session itself by
+ *                `scripts/lib/session-end/close-without-plan.mjs` (#1762). It
+ *                carries no wave data; it is not `completed`, so a later own
+ *                plan under the same id is not read as `already-finalized`.
  *
  * CEILING (BV-004) — `unresolved` currently has NO writer, and the emitter must
  * not adopt it yet. Six EXECUTABLE phantom-stub filters key on the literal
@@ -65,12 +72,17 @@ const QUALIFIED_ISSUE_RE = /^(?:[A-Za-z0-9](?:[A-Za-z0-9_.-]*[A-Za-z0-9])?\/)+[A
  *   scripts/lib/eval/session-resolve.mjs:79
  *   scripts/mcp-server.sh:195
  *   scripts/compute-grounding-injection.sh:74
- * REVISIT TRIGGER: once those six route through one predicate that accepts both
+ * Re-measured 2026-10-23 @ 311d3840 with the same `rg` (widened to
+ * `abandoned|closed-without-plan`): five sites — session-schema/filters.mjs:61,
+ * sessions-canonical.mjs:162,304, eval/session-resolve.mjs:88,
+ * compute-grounding-injection.sh:75 (`rg -c "abandoned|status"
+ * scripts/mcp-server.sh` → no match; that script no longer filters on status).
+ * REVISIT TRIGGER: once those sites route through one predicate that accepts both
  * `abandoned` and `unresolved`, switch `synthesizeRecord()` in
  * `scripts/lib/session-close-backfill.mjs` to emit `unresolved` for inferred
  * records — a one-line change, which is exactly why this value lands now.
  */
-const SESSION_STATUS = Object.freeze(['completed', 'abandoned', 'unresolved']);
+const SESSION_STATUS = Object.freeze(['completed', 'abandoned', 'unresolved', 'closed-without-plan']);
 
 /**
  * Canonical ISO-8601 UTC timestamp regex — accepts `YYYY-MM-DDTHH:MM:SSZ`
@@ -507,6 +519,12 @@ function _validateOptionalFields(entry) {
       throw new ValidationError(
         `status must be one of ${SESSION_STATUS.join('|')} or null, got: ${entry.status}`
       );
+    }
+  }
+  // #1762 — the `/close` pre-check verdict beside `status: closed-without-plan`.
+  if (entry.close_reason !== undefined && entry.close_reason !== null) {
+    if (typeof entry.close_reason !== 'string' || entry.close_reason.length === 0) {
+      throw new ValidationError('close_reason must be a non-empty string or null');
     }
   }
   if (entry._backfill_source !== undefined && entry._backfill_source !== null) {

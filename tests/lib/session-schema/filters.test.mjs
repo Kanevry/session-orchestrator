@@ -30,8 +30,8 @@ describe('isRealSession', () => {
     expect(isRealSession(completed('s-1'))).toBe(true);
   });
 
-  it('returns false for status abandoned', () => {
-    expect(isRealSession(abandoned('s-1'))).toBe(false);
+  it.each(['abandoned', 'closed-without-plan'])('returns false for status %s', (status) => {
+    expect(isRealSession({ session_id: 's-1', session_type: 'unknown', status })).toBe(false);
   });
 
   it('returns false for null, undefined, arrays and primitives', () => {

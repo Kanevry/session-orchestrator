@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -182,6 +182,29 @@ describe('close-precheck — own completed STATE.md (#429)', () => {
     writeState({ status: 'completed', sessionId: OWN });
     writeLedger('{"session_id": broken\n');
     expect(run().out).toMatchObject({ verdict: 'inconclusive', runsSessionEnd: false });
+  });
+});
+
+describe('close-precheck --record-without-plan (#1762)', () => {
+  it('without the flag a foreign stop writes no record and prints no record key; with it, one closed-without-plan record', () => {
+    writeState({ status: 'active', sessionId: OTHER });
+    const plain = run();
+    expect(plain.out.record).toBeUndefined();
+    expect(existsSync(join(dir, '.orchestrator', 'metrics', 'sessions.jsonl'))).toBe(false);
+
+    const flagged = run(OWN, ['--record-without-plan']);
+    expect(flagged.code).toBe(0);
+    expect(flagged.out).toMatchObject({ verdict: 'foreign', record: { written: true, verified: true, raw_session_id: OWN } });
+    const lines = readFileSync(join(dir, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8').split('\n').filter(Boolean);
+    expect(lines).toHaveLength(1);
+    expect(JSON.parse(lines[0])).toMatchObject({ status: 'closed-without-plan', close_reason: 'foreign', raw_session_id: OWN });
+  });
+
+  it('never records when the verdict hands off to session-end', () => {
+    writeState({ status: 'active', sessionId: OWN });
+    const { out } = run(OWN, ['--record-without-plan']);
+    expect(out).toMatchObject({ verdict: 'run-session-end' });
+    expect(out.record).toBeUndefined();
   });
 });
 
