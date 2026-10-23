@@ -33,7 +33,7 @@ const TOOL = 'AskUserQuestion';
 
 /** Exact invocation form every Claude-side hook in this manifest uses. */
 const EXPECTED_COMMAND =
-  'sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$CLAUDE_PLUGIN_ROOT/hooks/pre-auq-clarity.mjs"';
+  'exec sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$CLAUDE_PLUGIN_ROOT/hooks/pre-auq-clarity.mjs"';
 
 function readManifest(file) {
   return JSON.parse(readFileSync(path.join(HOOKS_DIR, file), 'utf8'));

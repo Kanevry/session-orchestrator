@@ -56,6 +56,11 @@ function runHook({ sessionId, cwd, command }) {
   return r;
 }
 
+// A native win32 path holds backslashes, which a POSIX shell word (and the
+// hook's parser of it) consumes as escapes unless the word is quoted — so the
+// command quotes it there. Elsewhere the unquoted form stays under test.
+const shPath = (p) => (process.platform === 'win32' ? `'${p}'` : p);
+
 const eventsFile = () => join(ledgerDir, '.orchestrator', 'metrics', 'events.jsonl');
 
 beforeEach(() => {
@@ -87,12 +92,12 @@ describe('work-tree recorder + reader (#1659, real git)', () => {
 
     // Own session, launched in the main checkout: `cd <wt> &&` form.
     const startA = git(wtA, 'rev-parse', 'HEAD');
-    runHook({ sessionId: OWN, cwd: repo, command: `cd ${wtA} && git commit -m one` });
+    runHook({ sessionId: OWN, cwd: repo, command: `cd ${shPath(wtA)} && git commit -m one` });
     commitFile(wtA, 'a1.txt');
 
     // `git -C <wt>` form, from the main checkout.
     const startB = git(wtB, 'rev-parse', 'HEAD');
-    runHook({ sessionId: OWN, cwd: repo, command: `git -C ${wtB} commit -m two` });
+    runHook({ sessionId: OWN, cwd: repo, command: `git -C ${shPath(wtB)} commit -m two` });
     commitFile(wtB, 'b1.txt');
 
     // A second commit in wt-a records a LATER ref — the reader must keep the first.

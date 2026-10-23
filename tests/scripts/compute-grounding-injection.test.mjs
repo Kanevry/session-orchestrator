@@ -22,6 +22,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, '..', '..', 'scripts', 'compute-grounding-injection.sh');
@@ -68,7 +69,7 @@ function runWithFixture() {
   };
   writeFileSync(eventsPath, JSON.stringify(seed) + '\n', 'utf8');
 
-  const res = execFileSync('bash', [SCRIPT], {
+  const res = execFileSync(posixShell('bash'), [SCRIPT], {
     encoding: 'utf8',
     env: {
       ...process.env,
@@ -135,7 +136,7 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
       'utf8',
     );
 
-    execFileSync('bash', [SCRIPT], {
+    execFileSync(posixShell('bash'), [SCRIPT], {
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -193,7 +194,7 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
     };
     writeFileSync(eventsPath, JSON.stringify(seed) + '\n', 'utf8');
 
-    const stdout = execFileSync('bash', [SCRIPT], {
+    const stdout = execFileSync(posixShell('bash'), [SCRIPT], {
       encoding: 'utf8',
       env: {
         ...process.env,
@@ -271,7 +272,7 @@ describe('compute-grounding-injection.sh — event emission (#611)', () => {
     };
     writeFileSync(eventsPath, JSON.stringify(seed) + '\n', 'utf8');
 
-    const stdout = execFileSync('bash', [SCRIPT], {
+    const stdout = execFileSync(posixShell('bash'), [SCRIPT], {
       encoding: 'utf8',
       env: {
         ...process.env,

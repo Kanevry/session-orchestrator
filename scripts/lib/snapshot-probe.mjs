@@ -23,7 +23,7 @@ import { createGitRunner, readSourcePolicy, writeSnapshotTree } from './github-e
 import { isPublicExportExcluded } from './validate/check-owner-leakage.mjs';
 import { writeJsonAtomicSync } from './io.mjs';
 import { runRemoteGate } from './pre-push-remote-gate.mjs';
-import { spawnInGroup } from './process-group.mjs';
+import { registerExitCleanup, spawnInGroup } from './process-group.mjs';
 
 export const RECEIPT_SCHEMA = 1;
 export const RECEIPT_DIR_REL = '.orchestrator/tmp/snapshot-probe';
@@ -263,6 +263,33 @@ async function runRemoteStep({ remoteGate, root, commit, repoRoot, host }) {
   return step;
 }
 
+/** Errors a killed child can still cause while its tree is removed (#1723). */
+const RM_RETRY_CODES = new Set(['ENOTEMPTY', 'EBUSY', 'EPERM']);
+
+/**
+ * Remove `dir` on the exit path, retrying up to 3 times with a real synchronous pause of
+ * 50, 100 and 150 ms. The exit handler sends SIGKILL to the gate's group without awaiting
+ * it, so a vitest worker can still write here for a few milliseconds (#1723). `rmSync`'s
+ * own `retryDelay` does not help: Node 24 truncates it to whole seconds (measured on
+ * v24.22.0: 3 retries at 50 ms waited 0 ms, at 400 ms 2004 ms over two failing operations).
+ * Ceiling: a child still writing after ~300 ms leaves its rest in TMPDIR; the last error
+ * reaches the exit path, which swallows it.
+ *
+ * @param {string} dir
+ * @returns {void}
+ */
+function removeTreeOnExit(dir) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (attempt > 3 || !RM_RETRY_CODES.has(err?.code)) throw err;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * attempt);
+    }
+  }
+}
+
 /**
  * Build the curated snapshot of `source`, materialize it outside the repo and run the
  * requested steps there.
@@ -312,6 +339,8 @@ export async function runSnapshotProbe({
   } catch (err) {
     throw new SnapshotProbeSystemError(`mkdtemp in ${tmpRoot} failed: ${err.message}`);
   }
+  // The finally below never runs on SIGINT/SIGTERM/SIGHUP (#1715): register exactly this dir.
+  const unregisterCleanup = keep ? () => {} : registerExitCleanup(() => removeTreeOnExit(dir));
   const env = buildProbeEnv();
   try {
     const { root, commit, exported } = materialize({ git, tree: snap.tree, dir, nodeModules, env });
@@ -380,5 +409,6 @@ export async function runSnapshotProbe({
     return result;
   } finally {
     if (!keep) rmSync(dir, { recursive: true, force: true });
+    unregisterCleanup();
   }
 }

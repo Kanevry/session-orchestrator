@@ -21,6 +21,7 @@ import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 import { flush } from '../../scripts/lib/telemetry/sync.mjs';
 import { emitEvent } from '../../scripts/lib/events.mjs';
 import { checkTelemetryFlushHealth } from '../../scripts/lib/telemetry-flush-health-banner.mjs';
+import { homeEnv } from '../_helpers/home-env.mjs';
 
 /**
  * Deterministic, RFC-9562-shaped UUID for a readable fixture label.
@@ -1218,7 +1219,7 @@ async function seedTelemetryState(fakeHome, record) {
 /** Env block shared by every flush test: fake HOME + cleared kill-switches. */
 function telemetryEnv(fakeHome, endpoint) {
   return {
-    HOME: fakeHome,
+    ...homeEnv(fakeHome),
     // See tests/_helpers/telemetry-isolation.mjs: XDG_CONFIG_HOME outranks HOME
     // in the identity resolver, so leaving it inherited both defeats this fake
     // home AND trips detectSandbox's config-home-split branch, which then

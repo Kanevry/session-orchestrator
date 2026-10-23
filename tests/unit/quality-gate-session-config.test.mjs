@@ -36,7 +36,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
@@ -122,7 +122,7 @@ function initGitRepo(dir, file = 'A.txt', content = 'initial') {
 function addCommit(dir, file, content, msg = 'add file') {
   const filePath = join(dir, file);
   // Ensure parent dirs exist for nested paths.
-  const parentDir = filePath.substring(0, filePath.lastIndexOf('/'));
+  const parentDir = dirname(filePath);
   if (parentDir !== dir) mkdirSync(parentDir, { recursive: true });
   writeFileSync(filePath, content, 'utf8');
   fixtureGit(['add', '.'], dir);

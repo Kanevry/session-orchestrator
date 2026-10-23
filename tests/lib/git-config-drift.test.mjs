@@ -205,7 +205,7 @@ describe('checkGitConfigDrift — detection', () => {
     [0o755, 'unrelated', ['h fehlt']],
     [0o644, 'unrelated', ['pre-push ist nicht ausführbar', 'h fehlt']],
     [0o755, 'h', []],
-  ])('checks launcher mode %s and helper presence %s independently', (mode, helper, expected) => {
+  ])('checks launcher mode %s and helper presence %s independently (exec bit asserted on POSIX only)', (mode, helper, expected) => {
     const dir = makeRepo();
     const hooks = join(dir, '.husky', '_');
     mkdirSync(hooks, { recursive: true });
@@ -215,7 +215,11 @@ describe('checkGitConfigDrift — detection', () => {
     setLocal(dir, 'core.hooksPath', '.husky/_');
 
     const result = checkGitConfigDrift({ repoRoot: dir, env: NO_ENV });
-    expect(result?.findings.map((f) => f.detail.split(`${hooks}/`)[1].split(' — ')[0]) ?? []).toEqual(expected);
+    // git reports the hooks dir with forward slashes on Windows; compare in that one spelling. Windows has no
+    // exec bit (X_OK passes for every existing file), so the not-executable reason is a POSIX-only expectation.
+    const slash = (p) => p.replaceAll('\\', '/');
+    const want = process.platform === 'win32' ? expected.filter((r) => !r.endsWith('nicht ausführbar')) : expected;
+    expect(result?.findings.map((f) => slash(f.detail).split(`${slash(hooks)}/`)[1].split(' — ')[0]) ?? []).toEqual(want);
   });
 
   it('flags .husky/_ when the hooks path cannot be resolved — never read as present (#1688)', () => {

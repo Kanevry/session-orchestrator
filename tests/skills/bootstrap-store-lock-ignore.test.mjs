@@ -37,8 +37,9 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const TEMPLATE = resolve(import.meta.dirname, '..', '..', 'skills', 'bootstrap', '_shared-template.md');
 const REPO_GITIGNORE = resolve(import.meta.dirname, '..', '..', '.gitignore');
@@ -126,7 +127,7 @@ const SNIPPET = loadSnippet();
 function blockPatterns() {
   const array = SNIPPET.match(/^_GI_PATTERNS=\([\s\S]*?^\)$/m)?.[0];
   if (!array) throw new Error(`no _GI_PATTERNS=( … ) array in the store-lock-ignore block of ${TEMPLATE}`);
-  const r = spawnSync('/bin/bash', ['-c', `${array}\nprintf '%s\\n' "\${_GI_PATTERNS[@]}"`], { encoding: 'utf8' });
+  const r = spawnSync(posixShell('/bin/bash'), ['-c', `${array}\nprintf '%s\\n' "\${_GI_PATTERNS[@]}"`], { encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`bash could not expand _GI_PATTERNS: ${r.stderr}`);
   return r.stdout.split('\n').filter(Boolean);
 }
@@ -153,13 +154,22 @@ function tmpRoot() {
 }
 
 /**
+ * The tool PATH the block and git get: the system bin dirs off Windows; on
+ * win32 only Git for Windows' own bin dirs (git.exe beside sh.exe, coreutils in
+ * usr\\bin), since '/usr/bin:/bin' resolves nothing for a native spawn (SO#1613).
+ */
+const MINIMAL_PATH = process.platform === 'win32'
+  ? [dirname(posixShell('bash')), join(dirname(posixShell('bash')), '..', 'usr', 'bin')].join(delimiter)
+  : '/usr/bin:/bin';
+
+/**
  * Explicit minimal environment: never the caller's REPO_ROOT, PATH or git config.
  * @param {string} root temp root (HOME, and the ceiling git never searches above)
  * @param {Record<string, string>} [extra]
  */
 function minimalEnv(root, extra = {}) {
   return {
-    PATH: '/usr/bin:/bin',
+    PATH: MINIMAL_PATH,
     HOME: root,
     LC_ALL: 'C',
     GIT_CONFIG_NOSYSTEM: '1',
@@ -183,7 +193,7 @@ function repoWith(gitignore) {
 /** Run the template's block once, the way the Upgrade / Refresh-Lock flows do. */
 function runSnippet({ root, cwd, repoRoot }) {
   const env = minimalEnv(root, repoRoot === undefined ? {} : { REPO_ROOT: repoRoot });
-  return spawnSync('/bin/bash', ['-c', SNIPPET], { cwd, env, encoding: 'utf8', timeout: 10_000 });
+  return spawnSync(posixShell('/bin/bash'), ['-c', SNIPPET], { cwd, env, encoding: 'utf8', timeout: 10_000 });
 }
 
 /** `git check-ignore --no-index` exit code per path: 0 ignored, 1 not ignored. */
@@ -343,7 +353,9 @@ describe('bootstrap template § store-lock-ignore — the shell block as agents 
     expect(readFileSync(target, 'utf8')).toBe('node_modules/\n');
   });
 
-  it.skipIf(isRoot)('does not touch a write-only .gitignore it cannot read (mode 0200)', () => {
+  // win32: chmod only toggles the read-only bit, so no file is write-only and the
+  // precondition cannot be built there (SO#1613).
+  it.skipIf(isRoot || process.platform === 'win32')('does not touch a write-only .gitignore it cannot read (mode 0200; POSIX-only — win32 has no write-only mode)', () => {
     const { root, repo, gi } = repoWith('node_modules/\n.env');
     chmodSync(gi, 0o200);
 

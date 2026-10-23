@@ -90,6 +90,8 @@ import {
 } from './lib/learnings/schema.mjs';
 import { parseSessionConfig, readConfigFile } from './lib/config.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/learnings.jsonl';
 const ARCHIVE_BASENAME = 'learnings-archive.jsonl';
@@ -337,15 +339,22 @@ async function emitSessionWriteApplied({ repoRoot, filePath, payload }) {
   // inside the repo but living outside it is refused, and a root spelled
   // through a symlink (macOS /var → /private/var) still accepts the store
   // inside it. Runs after the write, so the store exists and resolves.
+  //
+  // #1722: the default store of a linked worktree that gitignores it lives in
+  // the main checkout, so the ledger root (resolveEventsLedgerRoot) is accepted
+  // too; a store outside BOTH roots is still refused.
   const file = canonicalPath(filePath);
-  const rel = path.relative(canonicalPath(repoRoot), file);
-  if (!validatePathInsideProject(file, repoRoot, { canonicalizeRoot: true }).ok) {
+  const root = [repoRoot, resolveEventsLedgerRoot(repoRoot)].find(
+    (r) => validatePathInsideProject(file, r, { canonicalizeRoot: true }).ok,
+  );
+  if (root === undefined) {
     process.stderr.write(
       `apply-session-learnings: skipped ${SESSION_WRITE_EVENT} — ${filePath} lies outside ` +
         `--repo-root ${repoRoot}\n`,
     );
     return;
   }
+  const rel = path.relative(canonicalPath(root), file);
   try {
     const { emitEvent, sessionAttribution } = await import('./lib/events.mjs');
     await emitEvent(
@@ -388,7 +397,9 @@ async function main(argv) {
   }
 
   const repoRoot = path.resolve(opts.repoRoot ?? process.cwd());
-  const filePath = path.resolve(repoRoot, opts.file ?? DEFAULT_FILE);
+  // #1722: only the DEFAULT store routes through the ledger resolver; an
+  // explicit --file stays exactly what the caller asked for.
+  const filePath = opts.file !== null ? path.resolve(repoRoot, opts.file) : resolveLedgerPath(DEFAULT_FILE, repoRoot);
   const archivePath = path.join(path.dirname(filePath), ARCHIVE_BASENAME);
   const decayRate = opts.decayRate ?? (await resolveDecayRate(repoRoot));
   const now = new Date();

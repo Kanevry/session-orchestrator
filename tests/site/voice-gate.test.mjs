@@ -44,7 +44,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // Resolve the repo root from this module's own location, never process.cwd():
@@ -59,7 +59,7 @@ function collectHtmlFiles(dir) {
     if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
     const full = join(dir, entry.name);
     if (entry.isDirectory()) out.push(...collectHtmlFiles(full));
-    else if (entry.name.endsWith('.html')) out.push(relative(repoRoot, full));
+    else if (entry.name.endsWith('.html')) out.push(relative(repoRoot, full).split(sep).join('/'));
   }
   return out.sort();
 }

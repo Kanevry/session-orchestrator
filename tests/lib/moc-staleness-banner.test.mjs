@@ -34,6 +34,7 @@ vi.mock('node:fs', async () => {
 });
 
 import { checkMocStaleness } from '@lib/moc-staleness-banner.mjs';
+import { stubHome } from '../_helpers/home-env.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixed clock + helpers
@@ -319,7 +320,7 @@ describe('checkMocStaleness — vault-dir resolution', () => {
     // the committed Session Config default (`~/Projects/vault`) is literal.
     const tmpRepo = makeTmpDir('moc-staleness-repo-');
     const tmpHome = makeTmpDir('moc-staleness-home-');
-    vi.stubEnv('HOME', tmpHome);
+    stubHome(tmpHome);
 
     const topicsDir = path.join(tmpHome, '08-topics');
     fs.mkdirSync(topicsDir, { recursive: true });

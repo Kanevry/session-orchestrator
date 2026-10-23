@@ -61,11 +61,11 @@
  */
 
 import { existsSync } from 'node:fs';
-import path from 'node:path';
 
 import { collectProposals } from '../memory-proposals/collector.mjs';
 import { sweepExpiredLearnings } from '../learnings/expiry-sweep.mjs';
-import { readSkillInvocations } from '../skill-invocations-schema.mjs';
+import { readSkillInvocations, defaultSkillInvocationsPath } from '../skill-invocations-schema.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { runReconcileFromPhaseSkip, resolveEffectiveTargets } from '../reconcile/engine.mjs';
 
 // NOTE (2026-09-09): `shouldDispatchAutoDream` / `shouldDispatchAutoDialectic`
@@ -91,10 +91,11 @@ import { runReconcileFromPhaseSkip, resolveEffectiveTargets } from '../reconcile
  * @returns {{filePath: string, archivePath: string}}
  */
 export function resolveLearningsPaths(repoRoot) {
-  const dir = path.join(repoRoot, '.orchestrator', 'metrics');
+  // #1722: each store resolves on its own — a linked worktree of a repo that
+  // ignores them maps to the main checkout, a versioned one stays local.
   return {
-    filePath: path.join(dir, 'learnings.jsonl'),
-    archivePath: path.join(dir, 'learnings-archive.jsonl'),
+    filePath: resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot),
+    archivePath: resolveLedgerPath('.orchestrator/metrics/learnings-archive.jsonl', repoRoot),
   };
 }
 
@@ -232,7 +233,7 @@ async function decideSkillJudge({ repoRoot, cfg, sessionId }) {
       return mkSkip(phase, 'disabled (skill-evolution.judge=false)', 'config-gate');
     }
     if (isPersistenceOff(cfg)) return mkSkip(phase, 'persistence=false', 'config-gate');
-    const invPath = path.join(repoRoot, '.orchestrator', 'metrics', 'skill-invocations.jsonl');
+    const invPath = defaultSkillInvocationsPath(repoRoot);
     const entries = await readSkillInvocations(invPath);
     const noSessionFilter = sessionId === null || sessionId === undefined;
     const judged = new Set(
@@ -272,7 +273,7 @@ async function decideReconcile({ repoRoot, cfg }) {
     if (cfg?.reconcile?.enabled !== true) {
       return mkSkip(phase, 'disabled (reconcile.enabled=false)', 'config-gate');
     }
-    const learningsPath = path.join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+    const learningsPath = resolveLearningsPaths(repoRoot).filePath;
     if (!existsSync(learningsPath)) {
       return mkSkip(phase, 'learnings.jsonl absent', 'learnings.jsonl');
     }

@@ -15,7 +15,7 @@
  */
 
 import { existsSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 import {
@@ -29,6 +29,7 @@ import {
   runCategory8,
   runCategory9,
 } from './lib/harness-audit/categories.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 const RUBRIC_VERSION = '2026-06';
 
@@ -193,11 +194,12 @@ function writeSummary(categories, summary) {
 // ---------------------------------------------------------------------------
 
 function appendAuditRecord(root, record) {
-  const metricsDir = join(root, '.orchestrator/metrics');
+  // #1722: main checkout's copy when root is a linked worktree that gitignores it.
+  const ledger = resolveLedgerPath('.orchestrator/metrics/audit.jsonl', root);
   try {
-    mkdirSync(metricsDir, { recursive: true });
+    mkdirSync(dirname(ledger), { recursive: true });
     const line = JSON.stringify(record) + '\n';
-    appendFileSync(join(metricsDir, 'audit.jsonl'), line, 'utf8');
+    appendFileSync(ledger, line, 'utf8');
   } catch (err) {
     process.stderr.write(`harness-audit: Failed to append audit.jsonl: ${err.message}\n`);
   }

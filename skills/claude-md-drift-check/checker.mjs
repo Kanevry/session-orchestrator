@@ -44,6 +44,7 @@ import { resolveRepoSpec } from '../../scripts/lib/vcs-repo-spec.mjs';
 import { userInvocableSkills } from '../../scripts/lib/user-invocable-skills.mjs';
 import { loadOwnerConfig } from '../../scripts/lib/owner-yaml.mjs';
 import { learningKeyOf } from '../../scripts/lib/learnings/kebab.mjs';
+import { resolveLedgerPath } from '../../scripts/lib/ledger-path.mjs';
 
 const FORWARD_HEADING_RE =
   /(?:^|\b)(what'?s?\s+next|backlog|open\s+issues?|offene\s+(?:issues?|themen)|todo|next\s+steps?|roadmap)(?:$|\b)/i;
@@ -1228,7 +1229,7 @@ function main() {
     // Build the set of known learning keys from learnings.jsonl.
     // key → expires_at (ISO string or null)
     const knownKeys = new Map();
-    const learningsPath = join(vaultDir, '.orchestrator', 'metrics', 'learnings.jsonl');
+    const learningsPath = resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', vaultDir);
     const learningsPresent = existsSync(learningsPath) && statSync(learningsPath).isFile();
 
     if (learningsPresent) {
@@ -1272,6 +1273,7 @@ function main() {
           check: 'generated-rule-staleness',
           file: relPath,
           line: 1,
+          // ledger-root: message text naming the ledger, not a path read
           message: `Auto-generated rule references learning-key '${learningKey}' which is absent from .orchestrator/metrics/learnings.jsonl, and the rule carries no valid evidence-digest to verify it offline`,
           extracted: learningKey,
         });
@@ -1644,6 +1646,7 @@ function main() {
           if (metricsLines[i].includes('.claude/metrics/')) {
             errors.push({
               check: 'docs-parity', file: rel, line: i + 1,
+              // ledger-root: message text naming the canonical dir, not a path read
               message: `Stale metrics path '.claude/metrics/' referenced — canonical path is '.orchestrator/metrics/'`,
               extracted: '.claude/metrics/',
             });

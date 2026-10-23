@@ -11,7 +11,11 @@ import {
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installScriptCli } from '../_helpers/executable-fixture.mjs';
+import { installScriptCli, NO_SCRIPT_CLI_REASON, SCRIPT_CLI_SUPPORTED } from '../_helpers/executable-fixture.mjs';
+
+// win32: the fake CLI here gets option-first argv (installScriptCli), which has
+// no Windows mechanism — see SCRIPT_CLI_SUPPORTED in executable-fixture.mjs.
+const scriptCliTitle = (title) => (SCRIPT_CLI_SUPPORTED ? title : `${title} [${NO_SCRIPT_CLI_REASON}]`);
 
 const REPO_ROOT = join(fileURLToPath(new URL('../../', import.meta.url)), '.');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'codex-install.mjs');
@@ -259,7 +263,7 @@ describe('scripts/codex-install.mjs', () => {
       .map((line) => JSON.parse(line));
   }
 
-  it('uses the exact public lifecycle ordering and prints operator next steps', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('uses the exact public lifecycle ordering and prints operator next steps'), () => {
     const result = runInstaller();
 
     expect(result.status).toBe(0);
@@ -279,7 +283,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(result.stderr).toBe('');
   });
 
-  it('treats an already-added same-source marketplace as idempotent success', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('treats an already-added same-source marketplace as idempotent success'), () => {
     const scenario = makeScenario({
       alreadyAdded: true,
       marketplaceList: {
@@ -298,7 +302,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls()).toContainEqual(['plugin', 'marketplace', 'add', STAGE, '--json']);
   });
 
-  it('refreshes the installed bundle state through plugin add on every rerun', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('refreshes the installed bundle state through plugin add on every rerun'), () => {
     const scenario = makeScenario({ alreadyAdded: true });
 
     const first = runInstaller({ scenario });
@@ -329,7 +333,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(() => readFileSync(logPath, 'utf8')).toThrow();
   });
 
-  it('rejects an old Codex version before any mutation', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('rejects an old Codex version before any mutation'), () => {
     const result = runInstaller({ scenario: makeScenario({ version: 'codex-cli 0.144.3\n' }) });
 
     expect(result.status).toBe(1);
@@ -337,7 +341,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls()).toEqual([['--version']]);
   });
 
-  it('rejects an unstable plugins feature before any mutation', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('rejects an unstable plugins feature before any mutation'), () => {
     const result = runInstaller({
       scenario: makeScenario({ features: 'plugins under development true\nhooks stable true\n' }),
     });
@@ -347,7 +351,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls()).toEqual([['--version'], ['features', 'list']]);
   });
 
-  it('rejects a disabled hooks feature before any mutation', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('rejects a disabled hooks feature before any mutation'), () => {
     const result = runInstaller({
       scenario: makeScenario({ features: 'plugins stable true\nhooks stable false\n' }),
     });
@@ -357,7 +361,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls()).toEqual([['--version'], ['features', 'list']]);
   });
 
-  it('invokes the canonical contract before the first mutating command', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('invokes the canonical contract before the first mutating command'), () => {
     const source = readFileSync(SCRIPT, 'utf8');
     const contractCall = source.indexOf('expectedVersion = validateLocalContract(dir);');
     const marketplaceMutation = source.indexOf("['plugin', 'marketplace', 'add', STAGE_DIR, '--json']");
@@ -370,7 +374,7 @@ describe('scripts/codex-install.mjs', () => {
     );
   });
 
-  it('fails on a conflicting kanevry source without removing or replacing it', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('fails on a conflicting kanevry source without removing or replacing it'), () => {
     const scenario = makeScenario({
       marketplaceList: {
         marketplaces: [{
@@ -393,7 +397,7 @@ describe('scripts/codex-install.mjs', () => {
     ]);
   });
 
-  it('installs from the packed stage with runtime deps, never from the clone (#1518)', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('installs from the packed stage with runtime deps, never from the clone (#1518)'), () => {
     const result = runInstaller();
     const npmCalls = readNpmCalls();
 
@@ -407,7 +411,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().flat()).not.toContain(REPO_ROOT);
   });
 
-  it('refuses a marketplace on the clone before staging, naming the remove command (#1518)', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('refuses a marketplace on the clone before staging, naming the remove command (#1518)'), () => {
     const scenario = makeScenario({
       marketplaceList: {
         marketplaces: [{
@@ -427,7 +431,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(existsSync(STAGE)).toBe(false);
   });
 
-  it('returns exit 2 and makes no Codex mutation when staging fails', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 and makes no Codex mutation when staging fails'), () => {
     const result = runInstaller({ extraEnv: { FAKE_NPM_FAIL: 'ci' } });
 
     expect(result.status).toBe(2);
@@ -435,7 +439,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().some((args) => args[2] === 'add' || args[1] === 'add')).toBe(false);
   });
 
-  it('keeps the previous stage when the new copy fails the contract (#1518 review)', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('keeps the previous stage when the new copy fails the contract (#1518 review)'), () => {
     mkdirSync(STAGE, { recursive: true });
     writeFileSync(join(STAGE, 'marker'), 'previous');
 
@@ -447,7 +451,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().some((args) => args[2] === 'add' || args[1] === 'add')).toBe(false);
   });
 
-  it('returns exit 2 when the installed target is disabled', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 when the installed target is disabled'), () => {
     const scenario = makeScenario({
       pluginLists: [pluginList({ installed: [targetEntry({ enabled: false })] })],
     });
@@ -459,7 +463,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().at(-1)).toEqual(['plugin', 'list', '--available', '--json']);
   });
 
-  it('returns exit 2 when the target plugin is missing from the postcondition', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 when the target plugin is missing from the postcondition'), () => {
     const scenario = makeScenario({
       pluginLists: [pluginList({ installed: [], available: [] })],
     });
@@ -470,7 +474,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(result.stderr).toContain(`expected exactly one '${PLUGIN_ID}' entry, found 0`);
   });
 
-  it('returns exit 2 when the installed target version differs from the manifest', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 when the installed target version differs from the manifest'), () => {
     const scenario = makeScenario({
       pluginLists: [pluginList({ installed: [targetEntry({ version: '0.0.0+codex.20000101000000' })] })],
     });
@@ -481,7 +485,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(result.stderr).toContain(`does not match manifest '${MANIFEST.version}'`);
   });
 
-  it('removes only allowlisted legacy IDs after health and preserves unknown plugins', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('removes only allowlisted legacy IDs after health and preserves unknown plugins'), () => {
     const unknown = {
       pluginId: UNKNOWN_PLUGIN,
       name: 'unrelated-plugin',
@@ -512,7 +516,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(calls.some((args) => args[0] === 'plugin' && args[1] === 'marketplace' && args[2] === 'remove')).toBe(false);
   });
 
-  it('returns exit 2 if a legacy plugin remains installed after removal', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 if a legacy plugin remains installed after removal'), () => {
     const legacyOpenai = targetEntry({ pluginId: LEGACY_OPENAI, marketplaceName: 'openai-curated' });
     const scenario = makeScenario({
       pluginLists: [
@@ -527,7 +531,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(result.stderr).toContain(`legacy plugins remain installed: ${LEGACY_OPENAI}`);
   });
 
-  it('returns exit 2 for Codex command errors while preserving diagnostics', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 for Codex command errors while preserving diagnostics'), () => {
     const scenario = makeScenario();
     scenario.responses[commandKey(['plugin', 'add', PLUGIN_ID, '--json'])] = [
       jsonResponse('', { status: 9, stderr: 'simulated install failure\n' }),
@@ -541,7 +545,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().at(-1)).toEqual(['plugin', 'add', PLUGIN_ID, '--json']);
   });
 
-  it('returns exit 2 when a Codex command exceeds the 30-second timeout', { timeout: 40_000 }, () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 when a Codex command exceeds the 30-second timeout'), { timeout: 40_000 }, () => {
     const scenario = makeScenario();
     scenario.responses[commandKey(['--version'])] = [
       jsonResponse('codex-cli 0.144.4\n', { delayMs: 30_500 }),
@@ -564,7 +568,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(() => readFileSync(logPath, 'utf8')).toThrow();
   });
 
-  it('returns exit 2 on malformed marketplace JSON before mutation', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 on malformed marketplace JSON before mutation'), () => {
     const scenario = makeScenario();
     scenario.responses[commandKey(['plugin', 'marketplace', 'list', '--json'])] = [
       jsonResponse('{not-json\n'),
@@ -577,7 +581,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().at(-1)).toEqual(['plugin', 'marketplace', 'list', '--json']);
   });
 
-  it('returns exit 2 when marketplace JSON has the wrong array shape before mutation', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 when marketplace JSON has the wrong array shape before mutation'), () => {
     const scenario = makeScenario({ marketplaceList: { marketplaces: {} } });
 
     const result = runInstaller({ scenario });
@@ -591,7 +595,7 @@ describe('scripts/codex-install.mjs', () => {
     ]);
   });
 
-  it('returns exit 2 when plugin-add JSON reports a different version', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 when plugin-add JSON reports a different version'), () => {
     const scenario = makeScenario({
       pluginAdd: {
         pluginId: PLUGIN_ID,
@@ -611,7 +615,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(readCalls().at(-1)).toEqual(['plugin', 'add', PLUGIN_ID, '--json']);
   });
 
-  it('returns exit 2 on malformed plugin-list JSON after add', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('returns exit 2 on malformed plugin-list JSON after add'), () => {
     const scenario = makeScenario();
     scenario.responses[commandKey(['plugin', 'list', '--available', '--json'])] = [
       jsonResponse('not-json\n'),
@@ -623,7 +627,7 @@ describe('scripts/codex-install.mjs', () => {
     expect(result.stderr).toContain('Plugin list returned malformed JSON');
   });
 
-  it('prints the exact structured JSON result without mixing progress text into stdout', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('prints the exact structured JSON result without mixing progress text into stdout'), () => {
     const result = runInstaller({ args: ['--json'] });
     const payload = JSON.parse(result.stdout);
 

@@ -22,6 +22,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 // Per-spawn watchdog ceiling: above the real runtime (5×30ms serialised
 // increments + spawn overhead), below the per-test vitest timeout of 30000ms.
@@ -105,7 +106,7 @@ const SESSION_LOCK_PATH = join(PROJECT_ROOT, 'scripts', 'lib', 'session-lock.mjs
  */
 function buildWorkerScript({ repoRoot, counterPath }) {
   return `
-import { withStateMdLock } from '${SESSION_LOCK_PATH}';
+import { withStateMdLock } from ${JSON.stringify(pathToFileURL(SESSION_LOCK_PATH).href)};
 import { readFileSync, writeFileSync } from 'node:fs';
 
 const repoRoot = ${JSON.stringify(repoRoot)};
@@ -131,7 +132,7 @@ await withStateMdLock(
  */
 function buildTakeoverRaceWorker({ repoRoot, counterPath }) {
   return `
-import { withStateMdLock } from '${SESSION_LOCK_PATH}';
+import { withStateMdLock } from ${JSON.stringify(pathToFileURL(SESSION_LOCK_PATH).href)};
 import fs from 'node:fs';
 import path from 'node:path';
 const root = ${JSON.stringify(repoRoot)};

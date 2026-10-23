@@ -45,8 +45,9 @@
  */
 
 import { existsSync, readdirSync, readFileSync, mkdirSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { slashCommandNames } from '../../../scripts/lib/user-invocable-skills.mjs';
+import { resolveLedgerPath } from '../../../scripts/lib/ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Doc source sets (deliberately small and hand-curated)
@@ -277,7 +278,8 @@ export async function runProbe(projectRoot, config) {
 
     // ── JSONL append ──────────────────────────────────────────────────────
     try {
-      const metricsDir = join(projectRoot, '.orchestrator', 'metrics');
+      const ledgerPath = resolveLedgerPath('.orchestrator/metrics/ssot-code-diff.jsonl', projectRoot);
+      const metricsDir = dirname(ledgerPath);
       if (!existsSync(metricsDir)) mkdirSync(metricsDir, { recursive: true });
       const record = {
         timestamp: new Date().toISOString(),
@@ -296,7 +298,7 @@ export async function runProbe(projectRoot, config) {
           registry_id: f.evidence.registry_id,
         })),
       };
-      appendFileSync(join(metricsDir, 'ssot-code-diff.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+      appendFileSync(ledgerPath, JSON.stringify(record) + '\n', 'utf8');
     } catch {
       // JSONL write failure is non-fatal — probe result is still returned
     }

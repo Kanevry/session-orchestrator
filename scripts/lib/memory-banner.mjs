@@ -29,6 +29,7 @@ import { readPeerCards } from './peer-cards/reader.mjs';
 import { surfaceTopN, decayOptsFromConfig } from './learnings/surface.mjs';
 import { countSessionsInJsonl } from './sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './platform.mjs';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -347,7 +348,7 @@ export async function readBannerInputs({ repoRoot, memoryDir, learningsPath, now
     : resolveMemoryDir(repoRoot);
   const learningsFile = typeof learningsPath === 'string' && learningsPath.length > 0
     ? learningsPath
-    : path.join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+    : resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot);
   const clock = now instanceof Date ? now : new Date();
 
   // --- Top learnings ---------------------------------------------------------

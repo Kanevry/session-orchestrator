@@ -110,6 +110,18 @@ const ledgerRecord = ({
 // parsePsSnapshot
 // ---------------------------------------------------------------------------
 
+// decideReapCandidates and runOrphanScan verify identity and read the ledger through process-group.mjs,
+// which reports itself "nicht messbar auf win32" and offers no platform seam on this path. These suites prove
+// the POSIX reap logic with fakes, so a win32 host runs them as 'linux' (precedent: process-group.test.mjs
+// pins platform: 'linux' for its fake-based ladder tests). macOS/Linux hosts run unchanged.
+const REAL_PLATFORM = Object.getOwnPropertyDescriptor(process, 'platform');
+const runAsPosixOnWin32 = () => {
+  beforeEach(() => {
+    if (REAL_PLATFORM.value === 'win32') Object.defineProperty(process, 'platform', { ...REAL_PLATFORM, value: 'linux' });
+  });
+  afterEach(() => { Object.defineProperty(process, 'platform', REAL_PLATFORM); });
+};
+
 describe('parsePsSnapshot', () => {
   it('keeps args containing spaces intact — catches the whitespace-split bug that mangles the 68/784 processes whose command line has a space', () => {
     const rows = parsePsSnapshot(makeOutput(...REAL_ROWS));
@@ -166,6 +178,8 @@ describe('parsePsSnapshot', () => {
 // ---------------------------------------------------------------------------
 
 describe('decideReapCandidates', () => {
+  runAsPosixOnWin32();
+
   it('returns the ledger-known, PPID-1, 7-minute-old read-only process as a candidate WITH its threshold and actual values, and sends no signal', () => {
     const snapshot = parsePsSnapshot(makeOutput(...REAL_ROWS, gateRow()));
     const killSpy = vi.fn();
@@ -520,6 +534,8 @@ const ladderKill = (state) => {
 };
 
 describe('runOrphanScan', () => {
+  runAsPosixOnWin32();
+
   it('sends no signal in dryRun and books the candidate as dry-run in the audit — the module ships inert; Wave 3 arms the kill path', async () => {
     const { audited, killSpy, deps } = scanDeps({ psOutputs: [makeOutput(...REAL_ROWS, gateRow())] });
 
@@ -862,6 +878,8 @@ describe('runOrphanScan', () => {
 // ---------------------------------------------------------------------------
 
 describe('runOrphanScan — telemetry', () => {
+  runAsPosixOnWin32();
+
   it('emits exactly ONE scan event when the scan found something', async () => {
     const { deps } = scanDeps({ psOutputs: [makeOutput(...REAL_ROWS, gateRow())] });
 
@@ -1031,8 +1049,8 @@ describe('shouldScanNow', () => {
     const writes = [];
     expect(touchScanMarker('/repo/x', { writeFn: (p, data) => writes.push([p, data]) })).toBe(true);
     expect(writes[0][0]).toBe('/repo/x');
-    expect(scanMarkerPath('/repo')).toBe('/repo/.orchestrator/tmp/reaper-last-scan');
-    expect(auditPath('/repo')).toBe('/repo/.orchestrator/metrics/reaper-audit.jsonl');
+    expect(scanMarkerPath('/repo')).toBe(join('/repo', '.orchestrator', 'tmp', 'reaper-last-scan'));
+    expect(auditPath('/repo')).toBe(join('/repo', '.orchestrator', 'metrics', 'reaper-audit.jsonl'));
   });
 
   it('heals a symlinked marker into a regular one without writing through it — refusing the link switched the throttle off for good', () => {
@@ -1207,7 +1225,12 @@ describe('orphan-reaper CLI as a child process', () => {
   beforeEach(() => { ctmp = mkdtempSync(join(tmpdir(), 'reaper-cli-')); });
   afterEach(() => { rmSync(ctmp, { recursive: true, force: true }); });
 
-  it('runs a report scan against a repo root and prints a JSON result (exit 0)', () => {
+  // win32: there is no ps snapshot (ps-snapshot.mjs resolves null), so the scan
+  // measures nothing and reports `skipped: 'ps-failed'`, which the CLI exits 2
+  // on by contract (mainCli). Measured natively 2026-10-22: exit 2, that JSON
+  // on stdout. The entry-guard proof (JSON on stdout) still runs there.
+  const degradedOnWin32 = process.platform === 'win32';
+  it('runs a report scan against a repo root and prints a JSON result (exit 0; win32: degraded scan, exit 2)', () => {
     // Bug: the entry guard silently not firing. `isMainModule` compares
     // realpaths precisely because a symlinked invocation path (macOS /tmp ->
     // /private/tmp is one) makes the naive comparison false — main() then never
@@ -1218,12 +1241,13 @@ describe('orphan-reaper CLI as a child process', () => {
       [REAPER_CLI, '--repo-root', ctmp, '--mode', 'report', '--json'],
       { encoding: 'utf8', timeout: 30_000 },
     );
-    expect(res.status).toBe(0);
+    expect(res.status).toBe(degradedOnWin32 ? 2 : 0);
     const result = JSON.parse(res.stdout);
     expect(result.repoRoot).toBe(ctmp);
     expect(result.mode).toBe('report');
     expect(typeof result.scanned).toBe('number');
-    expect(result.scanned).toBeGreaterThan(0);
+    if (degradedOnWin32) expect(result.skipped).toBe('ps-failed');
+    else expect(result.scanned).toBeGreaterThan(0);
     // A report-mode run signals nothing, whatever it found.
     expect(result.killed).toEqual([]);
   });

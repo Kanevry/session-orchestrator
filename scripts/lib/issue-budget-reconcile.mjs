@@ -261,8 +261,9 @@ export function reconcileIssueBudget({
  * Emit the reconciliation record to the repo's event ledger.
  *
  * Follows `_emitEvaluated` in `scripts/lib/express-path.mjs`: `events.mjs` is
- * imported LAZILY (a static import would pull `platform.mjs`, which walks the
- * filesystem at module load, into every consumer of this module), `repoRoot` is
+ * imported LAZILY (it is not needed by the verdict path; `platform.mjs` is
+ * already reached statically through `issue-budget.mjs`, which maps the
+ * counter-file root through it since #1729), `repoRoot` is
  * passed EXPLICITLY and a missing one SKIPS the emit rather than falling
  * through to the ambient `SO_PROJECT_DIR` — writing a synthetic record into the
  * operator's real fleet ledger is unrecoverable, a skipped record is not — and

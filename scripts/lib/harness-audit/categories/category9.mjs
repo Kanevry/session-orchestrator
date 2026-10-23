@@ -36,6 +36,7 @@ import { spawnSync } from 'node:child_process';
 
 import { pass, fail } from './helpers.mjs';
 import { resolveEventsLedgerRoot } from '../../platform.mjs';
+import { resolveLedgerPath } from '../../ledger-path.mjs';
 
 const TELEMETRY_REL = '.orchestrator/metrics/skill-invocations.jsonl';
 const SESSIONS_REL = '.orchestrator/metrics/sessions.jsonl';
@@ -82,7 +83,7 @@ export function runCategory9(root) {
   // points (with a quoted malformed-line count) when some lines are malformed.
   {
     const checkId = 'skill-telemetry-hygiene';
-    const telemetryPath = join(root, TELEMETRY_REL);
+    const telemetryPath = resolveLedgerPath(TELEMETRY_REL, root);
     if (!existsSync(telemetryPath)) {
       checks.push(pass({
         checkId, points: 4, maxPoints: 4, path: TELEMETRY_REL,
@@ -188,7 +189,7 @@ function buildAdvisoryCheck(root) {
 
   const scorerPath = join(root, SCORER_REL);
   const joinPath = join(root, JOIN_REL);
-  const telemetryPath = join(root, TELEMETRY_REL);
+  const telemetryPath = resolveLedgerPath(TELEMETRY_REL, root);
 
   // No module(s) or no telemetry → advisory surface has nothing to say, but
   // that is a healthy "insufficient signal" state. Pass full points.

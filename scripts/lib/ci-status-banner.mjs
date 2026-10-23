@@ -513,6 +513,23 @@ async function glabApi(apiPath, repoRoot, deps = {}, expect = undefined) {
   return parseCliJson(result.stdout, `glab api ${apiPath}`, expect);
 }
 
+/**
+ * Jobs endpoint of one GitLab pipeline, shared by the green (allow-failure)
+ * and red (failing-job) branches of `checkCiStatus()`.
+ *
+ * `per_page=100` (#1716): the API default page is 20, so a failed job at
+ * position 21+ was never named. Ceiling: one page of 100; a pipeline with
+ * more jobs still truncates. Revisit trigger: a pipeline with > 100 jobs
+ * (then paginate via `glab api --paginate`).
+ *
+ * @param {string} projectPath - `projects/<url-encoded path>`
+ * @param {number|string} pipelineId
+ * @returns {string}
+ */
+function pipelineJobsPath(projectPath, pipelineId) {
+  return `${projectPath}/pipelines/${pipelineId}/jobs?per_page=100`;
+}
+
 /** Upper bound on `failingJobNames` — a row listing 40 jobs is unreadable. */
 const MAX_FAILING_JOB_NAMES = 10;
 
@@ -556,6 +573,181 @@ async function ghApi(apiPath, repoRoot, deps = {}, expect = undefined) {
     { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
   );
   return parseCliJson(result.stdout, `gh api ${apiPath}`, expect);
+}
+
+/**
+ * Run `gh api graphql` with string variables and return the parsed object.
+ *
+ * Variables go through `-f` (raw string), NEVER `-F`: `-F` type-converts
+ * values ("true", numbers) and reads `@file` operands, so a value starting
+ * with `@` would make gh read a local file into the request. The argv order
+ * is fixed (query, then the variables in the caller's insertion order, then
+ * `--hostname`) so the exact-argv test mock can pin it. Host-pinning mirrors
+ * {@link ghApi} (#872).
+ *
+ * @param {string} query
+ * @param {Record<string, string>} vars
+ * @param {string} repoRoot
+ * @param {{ execFile?: Function, timeoutMs?: number, repoHost?: string }} deps
+ * @returns {Promise<unknown>}
+ */
+async function ghGraphql(query, vars, repoRoot, deps = {}) {
+  const args = ['api', 'graphql', '-f', `query=${query}`];
+  for (const [key, value] of Object.entries(vars)) args.push('-f', `${key}=${value}`);
+  if (deps.repoHost) args.push('--hostname', deps.repoHost);
+  const result = await execWithTimeout(
+    'gh',
+    args,
+    { cwd: repoRoot, timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, execFile: deps.execFile },
+  );
+  return parseCliJson(result.stdout, 'gh api graphql', 'object');
+}
+
+/**
+ * Commits the GitHub red branch reads back from HEAD to find the last green
+ * (#856): HEAD itself plus 15 ancestors. Ceiling: a red run longer than the
+ * window reports `redCount` without `lastGreen` although a green commit
+ * exists further back. Revisit trigger: a GitHub red reading with
+ * `lastGreen` absent while an older green commit is known (then page via
+ * `history(after:)`).
+ */
+const GITHUB_HISTORY_WINDOW = 16;
+
+/**
+ * One GraphQL round trip: the commit history from `expr` with each commit's
+ * CI rollup. A commit with no CI at all has `statusCheckRollup: null`.
+ */
+const GITHUB_HISTORY_QUERY =
+  'query($owner: String!, $name: String!, $expr: String!) { repository(owner: $owner, name: $name) { ' +
+  'object(expression: $expr) { ... on Commit { ' +
+  `history(first: ${GITHUB_HISTORY_WINDOW}) { nodes { oid committedDate statusCheckRollup { state } } } ` +
+  '} } } }';
+
+/**
+ * Walk the GitHub history from HEAD and derive `redCount` / `lastGreen` (#856).
+ *
+ * Returns `null` on ANY failure (spawn error, timeout, parse error,
+ * unexpected shape, unusable `nameWithOwner`) — the caller then reports the
+ * red reading without both fields. Never throws: like the GitLab job-list
+ * query, one failed side query must not degrade a red reading.
+ *
+ * Rules: every node whose `oid` equals `headSha` is skipped (HEAD already is
+ * the first member of the red run; its index is not relied on). A node
+ * without `statusCheckRollup` carried no CI — neither green nor red, like a
+ * GitLab commit without a pipeline row — and is skipped. `SUCCESS` is the
+ * last green; every other state (FAILURE, ERROR, PENDING, EXPECTED, …)
+ * extends the red run.
+ *
+ * Ceiling: `statusCheckRollup` also counts legacy commit statuses, while the
+ * HEAD verdict counts check runs only — a commit can read green in the rollup
+ * and still have a red check run elsewhere, and vice versa. `history`
+ * follows all parents in date order, so commits of merged branches
+ * interleave with the mainline. Revisit trigger: a reported `lastGreen` whose
+ * check runs are red, or a `redCount` someone reads as mainline-only.
+ *
+ * @param {string} nameWithOwner
+ * @param {string} headSha
+ * @param {number} now  Unix epoch ms
+ * @param {string} repoRoot
+ * @param {{ execFile?: Function, timeoutMs?: number, repoHost?: string }} deps
+ * @returns {Promise<{ redCount: number, lastGreen?: { sha: string, ageCommits: number, ageDays: number|null } }|null>}
+ */
+async function readGithubLastGreen(nameWithOwner, headSha, now, repoRoot, deps) {
+  const slash = typeof nameWithOwner === 'string' ? nameWithOwner.indexOf('/') : -1;
+  const owner = slash > 0 ? nameWithOwner.slice(0, slash) : '';
+  const name = slash > 0 ? nameWithOwner.slice(slash + 1) : '';
+  if (!owner || !name) return null;
+  try {
+    const data = await ghGraphql(
+      GITHUB_HISTORY_QUERY,
+      { owner, name, expr: headSha },
+      repoRoot,
+      deps,
+    );
+    const nodes = data?.data?.repository?.object?.history?.nodes;
+    if (!Array.isArray(nodes)) return null;
+    let redCount = 1; // HEAD itself — its check runs just read red.
+    for (const node of nodes) {
+      if (!node || typeof node !== 'object' || typeof node.oid !== 'string') return null;
+      if (node.oid === headSha) continue;
+      const rollup = node.statusCheckRollup;
+      if (rollup === null || rollup === undefined) continue;
+      if (rollup.state === 'SUCCESS') {
+        return {
+          redCount,
+          lastGreen: {
+            sha: node.oid,
+            ageCommits: redCount,
+            ageDays: ageDaysFrom(node.committedDate, now),
+          },
+        };
+      }
+      redCount++;
+    }
+    return { redCount };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fold a {@link readGithubLastGreen} answer into a GitHub red reading — the
+ * one shape the inline (#856) and the deferred (#1728) history paths share.
+ * `history: null` (the query failed) keeps the red verdict and adds
+ * `details.reason: 'last-green-query-failed'`; any earlier `reason` and the
+ * `deferredHistory` marker are dropped.
+ *
+ * @param {{ status: 'red', ok: false, failingJobName: string, failingJobNames: string[], details: { cliUsed: 'gh', checkRunCounts: object } }} red
+ * @param {{ redCount: number, lastGreen?: object }|null} history
+ * @returns {object}
+ */
+function withGithubHistory(red, history) {
+  return {
+    status: red.status,
+    ok: red.ok,
+    failingJobName: red.failingJobName,
+    failingJobNames: red.failingJobNames,
+    ...(history ? { redCount: history.redCount } : {}),
+    ...(history?.lastGreen ? { lastGreen: history.lastGreen } : {}),
+    details: {
+      cliUsed: red.details.cliUsed,
+      ...(history ? {} : { reason: 'last-green-query-failed' }),
+      checkRunCounts: red.details.checkRunCounts,
+    },
+  };
+}
+
+/**
+ * Run ONLY the #856 history query for a red reading that
+ * `checkCiStatus({ deferHistory: true })` returned with
+ * `details.reason: 'last-green-deferred'` (#1728), and return the enriched
+ * reading — the same `redCount` / `lastGreen` / `last-green-query-failed`
+ * fields the inline path produces. It repeats neither `gh repo view` nor the
+ * check-runs query: the reading carries `deferredHistory` (`nameWithOwner`,
+ * `headSha`, `repoHost`), which is everything the query needs.
+ *
+ * Never throws (the history query is non-fatal, as inline). A reading without
+ * `deferredHistory` — green, GitLab, explicit-sha, or not deferred — comes
+ * back unchanged.
+ *
+ * @param {*} result  A `checkCiStatus` result
+ * @param {{ repoRoot?: string, timeoutMs?: number, now?: number }} [opts]
+ * @param {{ execFile?: Function }} [deps]  Same callback-style seam as `checkCiStatus`
+ * @returns {Promise<*>}
+ */
+export async function readDeferredGithubHistory(result, opts = {}, deps = {}) {
+  const pending = result?.deferredHistory;
+  if (!pending || typeof pending !== 'object') return result;
+  const { repoRoot = process.cwd(), timeoutMs = DEFAULT_TIMEOUT_MS, now = Date.now() } = opts;
+  const execFile = deps.execFile ? promisify(deps.execFile) : execFileAsync;
+  const history = await readGithubLastGreen(
+    pending.nameWithOwner,
+    pending.headSha,
+    now,
+    repoRoot,
+    { execFile, timeoutMs, repoHost: pending.repoHost },
+  );
+  return withGithubHistory(result, history);
 }
 
 /**
@@ -907,7 +1099,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     let allowFailureJobs;
     try {
       const jobs = await glabApi(
-        `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
+        pipelineJobsPath(projectPath, currentPipeline.id),
         repoRoot,
         apiDeps,
         'array',
@@ -994,7 +1186,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
     let failingJobNames;
     try {
       const jobs = await glabApi(
-        `${projectPath}/pipelines/${currentPipeline.id}/jobs`,
+        pipelineJobsPath(projectPath, currentPipeline.id),
         repoRoot,
         apiDeps,
         'array',
@@ -1045,7 +1237,7 @@ async function checkGitlab(repoRoot, now, deps = {}) {
 }
 
 /**
- * GitHub CI status check (v1 — red/green only; lastGreen not implemented).
+ * GitHub CI status check.
  *
  * #872/#1022: pins the `gh repo view` lookup to `deps.repoSpec` when resolved
  * (host-pinning — `gh repo view` otherwise falls back to the ambient
@@ -1067,14 +1259,31 @@ async function checkGitlab(repoRoot, now, deps = {}) {
  * (cross-family guard, unsafe-argv guard), and `normalizeGithubSpec` falls
  * back to the raw URL on an unrecognised remote shape.
  *
- * `deps.sha` (#1332): when set, the check-runs query names THAT commit
- * instead of the literal `HEAD` ref.
+ * LOCAL HEAD (#1727): the check-runs query names the commit `git rev-parse
+ * HEAD` returns, never the literal `HEAD` ref — on the GitHub API `HEAD`
+ * resolves to the tip of the REMOTE DEFAULT BRANCH, so a feature branch or an
+ * unpushed commit used to read main's verdict, green included. `deps.sha`
+ * (#1332), when set, names THAT commit instead. A commit the remote does not
+ * know (HTTP 422 "No commit found for SHA") is `unknown` with reason
+ * `head-sha-not-on-remote` — a measured answer, not a query failure.
+ *
+ * Red (#856): for the LOCAL-HEAD reading only (no `deps.sha`), one GraphQL
+ * history query adds `redCount` and, when a green commit lies inside the
+ * window, `lastGreen` (`sha`, `ageCommits`, `ageDays`; no
+ * `pipelineId`/`agePipelines` — GitHub has no pipelines). The query is
+ * non-fatal: on failure the red reading stays and carries
+ * `details.reason: 'last-green-query-failed'`. An explicit-sha red reading
+ * skips the query and carries none of the three. See {@link readGithubLastGreen}.
+ * `deps.deferHistory` (#1728) also skips it, but marks the red reading
+ * `details.reason: 'last-green-deferred'` with a `deferredHistory` field for
+ * {@link readDeferredGithubHistory}.
  *
  * @param {string} repoRoot
- * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string, sha?: string }} deps
+ * @param {number} now  Unix epoch ms, for `lastGreen.ageDays`
+ * @param {{ execFile?: Function, timeoutMs?: number, repoSpec?: string, repoHost?: string, sha?: string, deferHistory?: boolean }} deps
  * @returns {Promise<object|null>}
  */
-async function checkGithub(repoRoot, deps = {}) {
+async function checkGithub(repoRoot, now, deps = {}) {
   // Resolve owner/repo from gh to keep the API path generic.
   const repoViewArgs = ['repo', 'view'];
   if (deps.repoSpec) repoViewArgs.push(deps.repoSpec);
@@ -1099,12 +1308,32 @@ async function checkGithub(repoRoot, deps = {}) {
   // silently dropped runs — a red one included. Ceiling: one page of 100; a
   // commit with more check runs still truncates. Revisit trigger: a workflow
   // set whose `total_count` exceeds 100 (then paginate via `--paginate`).
-  const data = await ghApi(
-    `repos/${nameWithOwner}/commits/${deps.sha ?? 'HEAD'}/check-runs?per_page=100`,
-    repoRoot,
-    deps,
-    'object',
-  );
+  // A failing `git rev-parse` throws into checkCiStatus's outer catch — the
+  // same degraded semantics the GitLab path has.
+  const headSha = deps.sha ?? (await getHeadSha(repoRoot, deps));
+  let data;
+  try {
+    data = await ghApi(
+      `repos/${nameWithOwner}/commits/${headSha}/check-runs?per_page=100`,
+      repoRoot,
+      deps,
+      'object',
+    );
+  } catch (err) {
+    // Only the remote's "this commit does not exist here" answer is caught:
+    // the commit is unpushed (or was never on this remote), so there is no CI
+    // verdict for it — unknown, not degraded. Every other error, timeout and
+    // ENOENT included, keeps the outer catch's handling.
+    const text = `${String(err?.stderr ?? '')} ${String(err?.message ?? '')}`;
+    if (/No commit found for SHA/i.test(text)) {
+      return {
+        status: 'unknown',
+        ok: false,
+        details: { cliUsed: 'gh', reason: 'head-sha-not-on-remote' },
+      };
+    }
+    throw err;
+  }
 
   const checkRuns = data.check_runs;
   if (!Array.isArray(checkRuns) || checkRuns.length === 0) {
@@ -1139,17 +1368,42 @@ async function checkGithub(repoRoot, deps = {}) {
   const failedRun = failedRuns[0];
 
   if (failedRun) {
-    return {
+    const red = {
       status: 'red',
       ok: false,
       failingJobName: sanitizeApiText(failedRun.name),
       failingJobNames: collectFailingJobNames(failedRuns),
-      details: {
-        cliUsed: 'gh',
-        reason: 'lastGreen-not-implemented-for-github',
-        checkRunCounts,
-      },
+      details: { cliUsed: 'gh', checkRunCounts },
     };
+    // #856: the history query runs only for the LOCAL-HEAD reading. Explicit-sha
+    // readings (session-start pushed-commit follow-up, release preflight) read
+    // none of `redCount`/`lastGreen`, and the extra ~0.5–0.7 s pushed the
+    // follow-up past its shared PROBE_BUDGET_MS, degrading a red pushed commit
+    // to "pipeline not checked". Not attempted means no
+    // `last-green-query-failed` reason either. Ceiling: a `{ sha }` caller gets
+    // no `lastGreen`; revisit trigger: a consumer that reads `lastGreen` from a
+    // `{ sha }` reading (then add an explicit opt-in).
+    if (deps.sha) return red;
+    // #1728: `deferHistory` returns the red verdict NOW and leaves the history
+    // to {@link readDeferredGithubHistory}, so a caller with a hard budget (the
+    // session-start probe) holds the red reading before the ~0.5 s query runs.
+    if (deps.deferHistory) {
+      return {
+        ...red,
+        details: { cliUsed: 'gh', reason: 'last-green-deferred', checkRunCounts },
+        deferredHistory: {
+          nameWithOwner,
+          headSha,
+          ...(deps.repoHost ? { repoHost: deps.repoHost } : {}),
+        },
+      };
+    }
+    // Ceiling (#1728): every other local-HEAD caller still pays the query on
+    // red, even one that discards the fields — today `dispatcher/rank.mjs`
+    // (`normalizeCiSignal` keeps status only). Revisit trigger: rank latency on
+    // red GitHub repos (then pass `deferHistory: true` there too).
+    const history = await readGithubLastGreen(nameWithOwner, headSha, now, repoRoot, deps);
+    return withGithubHistory(red, history);
   }
 
   const allSuccess = checkRunCounts.success === checkRuns.length;
@@ -1211,11 +1465,19 @@ async function checkGithub(repoRoot, deps = {}) {
  *   timeoutMs?: number,
  *   now?: number,
  *   sha?: string,
+ *   deferHistory?: boolean,
  * }} opts  `sha` (#1332): query the verdict for THIS commit instead of the
  *   local HEAD. Must be a full hex object id (40 or 64 chars) — it is matched
  *   against GitLab's full pipeline SHAs and interpolated into a `gh api` path,
  *   so anything else is refused as `query-failed` before any spawn. Absent →
  *   behaviour identical to before the option existed.
+ *   `deferHistory` (#1728, opt-in, only `true` counts): a GitHub LOCAL-HEAD red
+ *   reading returns WITHOUT the #856 history query, marked
+ *   `details.reason: 'last-green-deferred'` and carrying `deferredHistory`;
+ *   {@link readDeferredGithubHistory} runs the query later. Only the
+ *   session-start probe opts in — its budget would otherwise drop the red
+ *   verdict with the query. No effect on GitLab, on `sha` readings, or on
+ *   non-red readings.
  * @param {{
  *   execFile?: Function,
  *   resolveRepoSpec?: (opts: { repoRoot: string, vcs: 'gitlab'|'github' }) => string|undefined,
@@ -1235,7 +1497,7 @@ async function checkGithub(repoRoot, deps = {}) {
  *   ok: boolean,
  *   lastGreen?: {
  *     sha: string,
- *     pipelineId: number,
+ *     pipelineId?: number,
  *     ageCommits: number,
  *     agePipelines?: number,
  *     ageDays: number|null,
@@ -1269,6 +1531,16 @@ async function checkGithub(repoRoot, deps = {}) {
  * check-runs-unrecognised, or check-runs-mixed (multiple non-success kinds),
  * never as a new status value — consumers fail open on an unknown status string
  * and the session-start renderer prints nothing for one.
+ *
+ * GitHub-specific (#1727/#856): `lastGreen.pipelineId` and
+ * `lastGreen.agePipelines` are GitLab-only — GitHub has no pipelines, so its
+ * `lastGreen` carries `sha`, `ageCommits` and `ageDays` only, and
+ * `details.currentPipelineId` stays absent. Reasons: `head-sha-not-on-remote`
+ * (unknown — the local HEAD is not on the remote, e.g. unpushed) and
+ * `last-green-query-failed` (red — the history query failed, so `redCount`
+ * and `lastGreen` are absent) and `last-green-deferred` (red under
+ * `deferHistory` — the history was not queried yet; `deferredHistory`
+ * carries what {@link readDeferredGithubHistory} needs).
  */
 export async function checkCiStatus(opts = {}, deps = {}) {
   const {
@@ -1277,7 +1549,9 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     timeoutMs = DEFAULT_TIMEOUT_MS,
     now = Date.now(),
     sha: rawSha,
+    deferHistory: rawDeferHistory,
   } = opts;
+  const deferHistory = rawDeferHistory === true;
 
   // Validate at the boundary (#1332): the value reaches an API path and an
   // equality match against full SHAs. A short or non-hex SHA would silently
@@ -1367,7 +1641,7 @@ export async function checkCiStatus(opts = {}, deps = {}) {
     if (vcs === 'github') {
       const repoSpec = resolveRepoSpecDep({ repoRoot, vcs });
       const repoHost = resolveRepoHostDep({ repoRoot, vcs });
-      return await checkGithub(repoRoot, { ...depsWithExec, repoSpec, repoHost, sha });
+      return await checkGithub(repoRoot, now, { ...depsWithExec, repoSpec, repoHost, sha, deferHistory });
     }
 
     // Unknown VCS value — silent no-op.

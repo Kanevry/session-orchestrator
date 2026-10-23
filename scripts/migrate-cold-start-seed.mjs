@@ -251,6 +251,7 @@ async function processRepo(repo, { apply }) {
   // path — liveness and seed stay one checkout. Ceiling: a linked worktree
   // passed via --repos is judged by its own (absent) ledger; revisit if
   // worktree paths ever enter dormant-repos.
+  // ledger-root: deliberate own-path ledger (#1592), see the comment above
   const sessionsPath = join(repo, SESSIONS_REL);
   try {
     if (await sessionsHasContent(sessionsPath)) {

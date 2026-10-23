@@ -1392,6 +1392,9 @@ describe('W2-2 Group J — gate timeout kills the process GROUP (#1427 A1/A2)', 
       commands: { lint: 'sleep 999', typecheck: PASS, test: PASS },
       gateTimeoutMs: 5,
       _processSeams: {
+        // The fakes model the POSIX group ladder (negated pgid, SIGTERM→SIGKILL); pin it so a win32
+        // host proves the same ladder instead of taking the taskkill branch (seams reach spawnInGroup verbatim).
+        platform: 'linux',
         spawnFn: () => child,
         killFn: (target, signal) => {
           killCalls.push({ target, signal });
@@ -1447,6 +1450,9 @@ describe('W2-2 Group J — gate timeout kills the process GROUP (#1427 A1/A2)', 
       commands: { lint: 'sleep 999', typecheck: PASS, test: PASS },
       gateTimeoutMs: 5,
       _processSeams: {
+        // The fakes model the POSIX group ladder (negated pgid, SIGTERM→SIGKILL); pin it so a win32
+        // host proves the same ladder instead of taking the taskkill branch (seams reach spawnInGroup verbatim).
+        platform: 'linux',
         spawnFn: () => child,
         killFn: () => true,        // every signal "succeeds" …
         isAliveFn: () => true,     // … and the process is still there afterwards

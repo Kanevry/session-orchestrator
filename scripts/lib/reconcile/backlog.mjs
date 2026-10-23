@@ -41,11 +41,13 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { learningKeyOf } from '../learnings/kebab.mjs';
 import { migrateLegacyLearning, normalizeLearning } from '../learnings/schema.mjs';
 import { isRuleExpired, parseGlobsFrontmatter } from '../rule-loader.mjs';
 import { filterEligible } from './eligibility.mjs';
 import { isProcessed, loadCandidates as realLoadCandidates } from './idempotency.mjs';
+import { loadVerdictLedger } from './verdict-ledger.mjs';
 
 /** Default repo-relative location of the learnings corpus. */
 export const DEFAULT_LEARNINGS_PATH = '.orchestrator/metrics/learnings.jsonl';
@@ -65,7 +67,7 @@ export function defaultLoadLearnings(repoRoot) {
   const root = typeof repoRoot === 'string' && repoRoot.length > 0 ? repoRoot : process.cwd();
   const absPath = isAbsolute(DEFAULT_LEARNINGS_PATH)
     ? DEFAULT_LEARNINGS_PATH
-    : join(root, DEFAULT_LEARNINGS_PATH);
+    : resolveLedgerPath(DEFAULT_LEARNINGS_PATH, root);
 
   let raw;
   try {
@@ -198,12 +200,15 @@ const BODY_LEARNING_ID_RE = /-\s*learning-id:\s*`([^`]+)`/g;
  * unparseable `expires-at` is NOT expired; fail-closed would un-materialize the
  * whole corpus on one typo).
  *
- * KNOWN LIMIT (measured 2026-09-18): this covers only the on-disk half of
- * {@link partitionMaterialized} (`sidecarTerminal || onDisk`). 79 of this
- * repo's 92 provenance keys are ALSO terminal in the idempotency sidecar, so
- * only 13 actually become re-proposable; the sidecar half is left untouched on
- * purpose because it carries operator DECLINES. See `docs/rule-authoring.md`
- * § Consolidated rules.
+ * KNOWN LIMIT (measured 2026-09-18): this covers only the on-disk third of
+ * {@link partitionMaterialized} (`sidecarTerminal || ledgerTerminal || onDisk`).
+ * 79 of this repo's 92 provenance keys are ALSO terminal in the idempotency
+ * sidecar, so only 13 actually become re-proposable; the sidecar and the
+ * verdict ledger (#1710) are left untouched on purpose because they carry
+ * operator DECLINES — the ledger holds DECISIONS only (`rejected`,
+ * `expired-swept`; never the branch-scoped `written` / `already-on-disk`), so
+ * an expiring rule's own `written` verdict never pins it there. See
+ * `docs/rule-authoring.md` § Consolidated rules.
  *
  * Gated the same way as {@link defaultLoadCandidatesForDedupe}: an absent
  * `repoRoot` yields empty sets rather than falling back to `process.cwd()`.
@@ -267,20 +272,22 @@ export function defaultReadMaterializedProvenance(repoRoot) {
  * Split rule-eligible learnings into the ones still awaiting a rule and the ones
  * already materialized (#484/#1242 dedupe contract). A learning is materialized
  * when the idempotency sidecar carries a terminal verdict for its `learning_key`
- * (CACHE) OR a `.claude/rules/*.md` provenance marker names its key/id
- * (AUTHORITATIVE).
+ * (CACHE) OR the append-only verdict ledger does (`./verdict-ledger.mjs`, #1710 —
+ * survives worktrees and hosts the sidecar does not) OR a `.claude/rules/*.md`
+ * provenance marker names its key/id (AUTHORITATIVE).
  *
  * Pure: reads nothing, writes nothing, emits nothing — the engine and the
  * session-start reconcile nudge share it so both judge the same backlog (#1380).
  *
  * @param {Array<Record<string, unknown>>} eligible - output of `filterEligible().eligible`.
- * @param {{ existingCandidates: import('./idempotency.mjs').ReconcileCandidate[], materialized: { keys: Set<string>, ids: Set<string> } }} sources
+ * @param {{ existingCandidates: import('./idempotency.mjs').ReconcileCandidate[], materialized: { keys: Set<string>, ids: Set<string> }, ledgerKeys?: { has(key: string): boolean } }} sources
+ *        `ledgerKeys` — terminal learning keys of the verdict ledger; absent ⇒ none.
  * @returns {{
  *   stillEligible: Array<Record<string, unknown>>,
- *   materializedItems: Array<{ learning: Record<string, unknown>, learningKey: string|null, sidecarTerminal: boolean, onDisk: boolean }>,
+ *   materializedItems: Array<{ learning: Record<string, unknown>, learningKey: string|null, sidecarTerminal: boolean, ledgerTerminal: boolean, onDisk: boolean }>,
  * }}
  */
-export function partitionMaterialized(eligible, { existingCandidates, materialized }) {
+export function partitionMaterialized(eligible, { existingCandidates, materialized, ledgerKeys }) {
   /** @type {Array<Record<string, unknown>>} */
   const stillEligible = [];
   const materializedItems = [];
@@ -296,14 +303,16 @@ export function partitionMaterialized(eligible, { existingCandidates, materializ
 
     const sidecarTerminal =
       learningKey !== null && isProcessed({ learning_key: learningKey }, existingCandidates);
+    const ledgerTerminal =
+      learningKey !== null && !!ledgerKeys && typeof ledgerKeys.has === 'function' && ledgerKeys.has(learningKey);
     const onDisk =
       (learningKey !== null && materialized.keys.has(learningKey)) ||
       (learningId !== null && materialized.ids.has(learningId));
 
-    if (!sidecarTerminal && !onDisk) {
+    if (!sidecarTerminal && !ledgerTerminal && !onDisk) {
       stillEligible.push(learning);
     } else {
-      materializedItems.push({ learning, learningKey, sidecarTerminal, onDisk });
+      materializedItems.push({ learning, learningKey, sidecarTerminal, ledgerTerminal, onDisk });
     }
   }
   return { stillEligible, materializedItems };
@@ -312,7 +321,8 @@ export function partitionMaterialized(eligible, { existingCandidates, materializ
 /**
  * Count the reconcile BACKLOG the way a real `/reconcile` run would see it:
  * rule-eligible learnings (expiry-gated by `now`) minus those already
- * materialized in the sidecar or under `.claude/rules/`. This is the quantity
+ * materialized in the sidecar, the verdict ledger (#1710) or under
+ * `.claude/rules/`. This is the quantity
  * `/reconcile` can actually drive to zero — the session-start nudge judges on it
  * (#1380; HR-101: a probe that counts already-materialized learnings can never
  * go green).
@@ -332,6 +342,8 @@ export function partitionMaterialized(eligible, { existingCandidates, materializ
  *        already-loaded sidecar records (DI seam for a caller that read the store
  *        itself — the session-start nudge does, for the last-run timestamp). Absent
  *        ⇒ this function reads the store via {@link defaultLoadCandidatesForDedupe}.
+ * @param {{ has(key: string): boolean }} [params.ledgerKeys] - terminal keys of the verdict
+ *        ledger (DI seam). Absent ⇒ read via `loadVerdictLedger(repoRoot)` (repoRoot-gated).
  * @param {Date|number} [params.now] - clock for the expiry gate (defaults to `Date.now()`).
  * @param {number} [params.minInsightChars] - forwarded to `filterEligible`.
  * @returns {{ eligible: number, alreadyMaterialized: number, backlog: number }}
@@ -340,6 +352,7 @@ export function countReconcileBacklog({
   repoRoot,
   learnings,
   existingCandidates,
+  ledgerKeys,
   now,
   minInsightChars,
 } = {}) {
@@ -356,6 +369,7 @@ export function countReconcileBacklog({
         ? existingCandidates
         : defaultLoadCandidatesForDedupe(repoRoot).records,
       materialized: defaultReadMaterializedProvenance(repoRoot),
+      ledgerKeys: ledgerKeys ?? loadVerdictLedger(repoRoot).terminalKeys,
     });
     return {
       eligible: eligible.length,

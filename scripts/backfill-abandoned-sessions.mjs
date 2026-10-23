@@ -277,7 +277,13 @@ function forEachJsonlRecord(filePath, onRecord) {
     return;
   }
   try {
-    const size = fs.fstatSync(fd).size;
+    const stats = fs.fstatSync(fd);
+    // Windows opens a directory "as a file" with size 0; surface it through the
+    // same warning POSIX reaches via EISDIR on the first read.
+    if (!stats.isFile()) {
+      throw Object.assign(new Error('EISDIR: illegal operation on a directory, read'), { code: 'EISDIR' });
+    }
+    const size = stats.size;
     const buf = Buffer.alloc(SCAN_CHUNK_BYTES);
     let pos = 0;
     let carry = Buffer.alloc(0);
@@ -658,6 +664,7 @@ async function flushTelemetryOnSessionStart(repoRoot) {
   try {
     const { flush } = await import('./lib/telemetry/sync.mjs');
     await flush({
+      // ledger-root: metricsDir for the telemetry flush; buildBatch resolves each ledger in it
       metricsDir: path.join(repoRoot, '.orchestrator', 'metrics'),
       timeoutMs: STARTUP_FLUSH_TIMEOUT_MS,
     });

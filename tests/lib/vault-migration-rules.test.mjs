@@ -12,7 +12,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import {
@@ -50,12 +50,12 @@ describe('VAULT_MIGRATION_RULES_PATH', () => {
     expect(VAULT_MIGRATION_RULES_PATH).toMatch(
       /vault-migration-rules\.yaml$/,
     );
-    expect(VAULT_MIGRATION_RULES_PATH.startsWith('/')).toBe(true);
+    expect(isAbsolute(VAULT_MIGRATION_RULES_PATH)).toBe(true);
   });
 
   it('sits under the .config/session-orchestrator directory', () => {
     expect(VAULT_MIGRATION_RULES_PATH).toContain(
-      '.config/session-orchestrator/vault-migration-rules.yaml',
+      join('.config', 'session-orchestrator', 'vault-migration-rules.yaml'),
     );
   });
 });

@@ -46,6 +46,10 @@ const HUSKY_SCRIPT = `d="$1"; stub="$2"; prefix="$3"; shift 3; h=$(cat -- "$d/h"
 // What husky 9.1 writes (node_modules/husky/index.js and its `husky` file, measured 9.1.7); another version asks.
 const HUSKY_STUB = '#!/usr/bin/env sh\n. "$(dirname "$0")/h"'
 const HUSKY_H_PREFIX = '#!/usr/bin/env sh\n[ "$HUSKY" = "2" ] && set -x\nn=$(basename "$0")\ns=$(dirname "$(dirname "$0")")/$n\n\n[ ! -f "$s" ] && exit 0\n'
+// The raw session id the collector accepts for --session-id (#1730): the same form as UUID_RE in
+// scripts/lib/session-id.mjs (version 1-8, RFC variant). Any other id is not passed on, so it cannot read as an
+// older collector and switch the flag off.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 // The mod's lib has no DOM types; Web Crypto and TextEncoder are globals in the mod engine (as in rules.ts).
 type WebGlobals = {
@@ -64,6 +68,7 @@ export const register: Register = (on, options) => {
   let own: SoBeacon | null = null
   let interactive = false
   let refreshing = false
+  let sessionIdFlag = true
   let ending = false
   let cancel: (() => void) | undefined
   let beaconWrites: Promise<unknown> = Promise.resolve()
@@ -150,7 +155,16 @@ export const register: Register = (on, options) => {
     try {
       const soRoot = await root(io)
       if (!soRoot) throw new Error('not-configured')
-      const result = await io.run(['node', `${soRoot}/scripts/so-hud.mjs`, '--json', '--repo-root', await io.cwd()], { timeoutMs: 3000 })
+      // #1730: the session's agents are read beside its own lock, which need not be the cwd's checkout. A collector
+      // older than #1730 refuses the unknown flag with the usage exit 2: then it is dropped for the rest of the session.
+      const argv = ['node', `${soRoot}/scripts/so-hud.mjs`, '--json', '--repo-root', await io.cwd()]
+      const sid = await io.sessionId()
+      const withId = sessionIdFlag && UUID_RE.test(sid)
+      let result = await io.run(withId ? [...argv, '--session-id', sid] : argv, { timeoutMs: 3000 })
+      if (withId && result.exitCode === 2) {
+        sessionIdFlag = false
+        result = await io.run(argv, { timeoutMs: 3000 })
+      }
       if (result.exitCode !== 0) throw new Error('collector-failed')
       const value = JSON.parse(result.stdout) as SoSnapshot
       if (value.schema_version !== 1 || !Number.isFinite(Date.parse(value.measured_at)) || !value.wave || !value.state || !value.gate || !value.vault || !Array.isArray(value.peers) || !Array.isArray(value.degraded)) throw new Error('invalid-snapshot')

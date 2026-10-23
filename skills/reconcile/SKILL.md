@@ -55,6 +55,25 @@ any file is written. Advisory-only — rules are NEVER auto-applied.
   their findings to `docs/reconcile/<date>-<topic>.md`, never into the store. (Since
   2026-07-31 a read-side shape guard drops records lacking `learning_key`/`created_at` and
   `mergeCandidates` reports the count as `skipped` — that guard is a backstop, not a licence.)
+- **Verdicts outlive the checkout in an append-only ledger** (#1710).
+  `.orchestrator/metrics/reconcile-verdicts.jsonl` resolves against the MAIN checkout
+  (`resolveEventsLedgerRoot`) and sits beside `learnings.jsonl`, so it shares that file's
+  tracking (vault: tracked, needs `merge=union`; this repo: host-local). Verdict lines come
+  from `mergeCandidates`, once per terminal DECISION (`rejected`, `expired-swept`), and from
+  `markCandidateProcessed` when a decision is stamped over a kept `written` /
+  `already-on-disk` record (the merge keeps that record, so it cannot mirror the decision); the
+  branch-scoped `written` / `already-on-disk` / outcome-less records stay out, because the
+  tracked rule file's provenance marker already witnesses them across trees. After a non-dry
+  merge the engine appends one run line with the learnings count it loaded; run recency comes
+  from run lines only. A learning is terminal when the sidecar OR the ledger OR a
+  `.claude/rules/` provenance marker says so. Code never rewrites the ledger; the only
+  sanctioned hand edit is a deliberate re-open of a declined learning, and it must cover
+  EVERY checkout: remove the learning's verdict lines from the ledger in the main checkout
+  AND its record from the sidecar of the main checkout and of every linked worktree —
+  otherwise the next merge in a worktree whose sidecar still holds the terminal `rejected`
+  record appends it to the ledger again (backfill). Ceiling: a `/reconcile` in a linked
+  worktree of the vault appends to the main checkout's tracked ledger — an uncommitted
+  change there, committed by the vault's replica sync.
 - **Same pipeline as session-end Phase 3.6.8.** This skill uses the identical engine and
   writer seams as the automatic session-end reconciliation phase — operator experience is
   consistent, and any fixes to the engine benefit both paths.
@@ -396,9 +415,11 @@ consolidation survives the next `/reconcile`:
   latest: it must not outlive its shortest-lived content.
 - **An EXPIRED file no longer dedupes** (#1387): the provenance reader skips it
   whole, so its learnings become re-proposable — fail-open on an unparseable
-  date. Two known limits, measured 2026-09-18: this is the on-disk half only
-  (79 of this repo's 92 provenance keys are ALSO sidecar-terminal, so just 13
-  return), and a file the sweep cannot split or cannot read
+  date. Two known limits, measured 2026-09-18: this covers only the on-disk
+  source, not the sidecar or the verdict ledger (79 of this repo's 92
+  provenance keys are ALSO sidecar-terminal, so just 13 return; the ledger
+  carries decisions only, never a rule's own `written` verdict), and a file the
+  sweep cannot split or cannot read
   (`no-1to1-mapping`, `no-provenance-block`, `unreadable`, and since GH#70
   `no-counter-sentence` — the fail-closed branch that touches such a file not
   at all, deletion included; none in the live tree today, `skipped: []` over 7
@@ -412,7 +433,9 @@ consolidation survives the next `/reconcile`:
   repoRoot })` from `scripts/lib/reconcile/idempotency.mjs` — the ONLY
   sanctioned writer of `.orchestrator/runtime/reconcile-candidates.jsonl`
   (never append to that file by hand; the read-side shape guard drops foreign
-  records and `mergeCandidates` rewrites the store in full).
+  records and `mergeCandidates` rewrites the store in full). A `rejected` stamp
+  also reaches the verdict ledger, so the drop holds in fresh worktrees (and on
+  other hosts only where `.orchestrator/metrics/` is tracked).
 
 **Verify a consolidation with a dry run**, not by eye: `alreadyMaterialized`
 must equal absorbed + dropped. If it equals only the absorbed count, the drops

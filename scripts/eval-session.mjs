@@ -74,6 +74,7 @@ import { appendEvalRecord, readEvalRecords } from './lib/eval/sink.mjs';
 import { writeStdoutLineSync } from './lib/io.mjs';
 import { VALID_MODEL_SOURCES } from './lib/eval/schema.mjs';
 import { SessionResolutionError } from './lib/eval/session-resolve.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -103,7 +104,8 @@ OPTIONS
   --session <id>          session_id to evaluate (default: last completed session)
   --json                  emit the record (or verify result) as JSON on stdout
   --no-write              evaluate without appending to the eval journal
-  --metrics-dir <path>    metrics directory (default: .orchestrator/metrics)
+  --metrics-dir <path>    metrics directory (default: .orchestrator/metrics of this repo;
+                          in a linked worktree the main checkout's when it is gitignored)
   --rubric <path>         rubric file to hash for provenance (default: ${DEFAULT_RUBRIC_PATH})
   --model-id <id>         evaluated model id (default: $ANTHROPIC_MODEL or "unknown")
   --model-source <src>    ${VALID_MODEL_SOURCES.join(' | ')} (default: self-report)
@@ -159,8 +161,20 @@ function renderHuman(record, summary, writeResult) {
   return lines.join('\n');
 }
 
+/**
+ * The metrics directory: `--metrics-dir` as given, else this repo's
+ * `.orchestrator/metrics` — from a linked worktree the main checkout's when
+ * `eval.jsonl` is gitignored there, so the record survives the worktree (#1722).
+ * The engine reads `sessions.jsonl` beside it through the same main-checkout
+ * mapping (engine.mjs, #1592).
+ */
+function resolveMetricsDir(flag) {
+  if (flag) return path.resolve(flag);
+  return path.dirname(resolveLedgerPath('.orchestrator/metrics/eval.jsonl', process.cwd()));
+}
+
 function runEvaluate(values) {
-  const metricsDir = values['metrics-dir'] || '.orchestrator/metrics';
+  const metricsDir = resolveMetricsDir(values['metrics-dir']);
   const rubricPath = values.rubric || DEFAULT_RUBRIC_PATH;
   const modelSource = values['model-source'] || 'self-report';
   if (!VALID_MODEL_SOURCES.includes(modelSource)) {
@@ -219,7 +233,7 @@ function runEvaluate(values) {
 }
 
 function runVerify(runId, values) {
-  const metricsDir = values['metrics-dir'] || '.orchestrator/metrics';
+  const metricsDir = resolveMetricsDir(values['metrics-dir']);
   const rubricPath = values.rubric || DEFAULT_RUBRIC_PATH;
 
   const records = readEvalRecords(path.join(metricsDir, 'eval.jsonl'));

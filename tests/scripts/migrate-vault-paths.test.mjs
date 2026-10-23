@@ -35,7 +35,7 @@ import {
   realpathSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
@@ -87,7 +87,7 @@ function runScript(extraArgs = [], envOverrides = {}) {
  */
 function writeFile(dir, relPath, content) {
   const full = join(dir, relPath);
-  const parent = full.substring(0, full.lastIndexOf('/'));
+  const parent = dirname(full);
   if (parent && parent !== dir) mkdirSync(parent, { recursive: true });
   writeFileSync(full, content, 'utf8');
   return full;

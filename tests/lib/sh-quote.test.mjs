@@ -10,6 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { describe, it, expect } from 'vitest';
 
 import { shellQuote } from '../../scripts/lib/sh-quote.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 describe('shellQuote', () => {
   it.each([
@@ -20,7 +21,7 @@ describe('shellQuote', () => {
     ['newline', 'a\nb'],
     ['combined', "it's $HOME\n`id` \"q\" \\ *"],
   ])('%s survives sh -c byte-identical', (_name, input) => {
-    const out = execFileSync('sh', ['-c', `printf %s ${shellQuote(input)}`]);
+    const out = execFileSync(posixShell('sh'), ['-c', `printf %s ${shellQuote(input)}`]);
     expect(out.toString('utf8')).toBe(input);
   });
 });

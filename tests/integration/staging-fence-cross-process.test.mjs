@@ -42,7 +42,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { spawn, spawnSync } from 'node:child_process';
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
@@ -138,7 +138,7 @@ function writeFence(agentId, paths) {
  */
 function stageFile(relPath, content = 'x\n') {
   const abs = join(repoRoot, relPath);
-  const dir = abs.substring(0, abs.lastIndexOf('/'));
+  const dir = dirname(abs);
   if (dir && !existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }

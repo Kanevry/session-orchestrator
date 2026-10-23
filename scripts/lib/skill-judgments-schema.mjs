@@ -29,6 +29,7 @@
 import { readFile, appendFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -215,7 +216,10 @@ export function normalizeSkillJudgment(entry) {
  * @returns {Promise<object>} the validated + normalized entry that was written
  * @throws {ValidationError} when the entry fails schema validation
  */
-export async function appendSkillJudgment(record, { path: filePath = DEFAULT_SKILL_JUDGMENTS_PATH } = {}) {
+export async function appendSkillJudgment(
+  record,
+  { path: filePath = resolveLedgerPath(DEFAULT_SKILL_JUDGMENTS_PATH, process.cwd()) } = {},
+) {
   const stamped = {
     ...record,
     schema_version: record?.schema_version ?? CURRENT_SCHEMA_VERSION,
@@ -241,7 +245,7 @@ export async function appendSkillJudgment(record, { path: filePath = DEFAULT_SKI
  * @param {string} [filePath] — absolute path to target .jsonl file
  * @returns {Promise<object[]>} array of normalized skill-judgment records
  */
-export async function readSkillJudgments(filePath = DEFAULT_SKILL_JUDGMENTS_PATH) {
+export async function readSkillJudgments(filePath = resolveLedgerPath(DEFAULT_SKILL_JUDGMENTS_PATH, process.cwd())) {
   if (!existsSync(filePath)) return [];
   let raw;
   try {

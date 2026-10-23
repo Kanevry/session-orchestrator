@@ -25,6 +25,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const repoRoot = path.resolve(path.dirname(__filename), '..', '..');
@@ -206,7 +207,7 @@ describe('bootstrap baseline-fetch bridge (#629 spawn-near behavior)', () => {
     const script = `set -euo pipefail
 ${bashBlock}
 `;
-    const result = spawnSync('bash', ['-c', script], {
+    const result = spawnSync(posixShell('bash'), ['-c', script], {
       cwd: repoFixture,
       encoding: 'utf8',
       timeout: 15_000,

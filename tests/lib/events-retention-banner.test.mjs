@@ -255,11 +255,11 @@ describe('EVENTS_WINDOW_READERS census', () => {
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
         if (!e.name.endsWith('.mjs')) continue;
-        const code = readFileSync(p, 'utf8').split('\n')
+        const code = readFileSync(p, 'utf8').split(/\r?\n/)
           .filter((l) => !/^\s*(\*|\/\/|\/\*)/.test(l))
           .filter((l) => p !== definingModule || !IMPLEMENTATION_LINE.test(l) || ((excluded += 1), false));
         if (code.some((l) => READER_CALL.test(l))) {
-          callers.push(path.relative(path.join(REPO_ROOT, 'scripts', 'lib'), p));
+          callers.push(path.relative(path.join(REPO_ROOT, 'scripts', 'lib'), p).split(path.sep).join('/'));
         }
       }
     };

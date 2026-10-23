@@ -84,7 +84,7 @@ Edit `hooks/hooks.json`. Each entry maps an event matcher to the Node command, r
 {
   "hooks": {
     "PreToolUse": [
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/example.mjs\"" } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/example.mjs\"" } ] }
     ]
   }
 }

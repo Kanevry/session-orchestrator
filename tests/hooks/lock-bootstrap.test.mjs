@@ -17,7 +17,7 @@ import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 
 import { bootstrapLock, readClaudePid, SAME_LOGICAL_SESSION_SOURCES } from '../../hooks/_lib/lock-bootstrap.mjs';
-import { forceAcquire as realForceAcquire, writeReleaseMarker, hasReleaseMarker } from '../../scripts/lib/session-lock.mjs';
+import { forceAcquire as realForceAcquire, writeReleaseMarker, hasReleaseMarker, readReleaseMarker, release } from '../../scripts/lib/session-lock.mjs';
 
 // ── sandbox helpers ──────────────────────────────────────────────────────────
 
@@ -1220,12 +1220,14 @@ describe('bootstrapLock — lead lease holds the main checkout (#1635)', () => {
     writeFileSync(join(sandbox, '.git'), 'gitdir: /elsewhere/.git/worktrees/wt\n');
   }
 
-  async function run({ nativeSource, readLease, onNotice = vi.fn(), predecessorSessionId = null }) {
+  async function run({ nativeSource, readLease, onNotice = vi.fn(), predecessorSessionId = null, predecessorProcess = null, claudePid = null }) {
     const acquire = makeAcquireStub();
     const result = await bootstrapLock({
       repoRoot: sandbox,
       sessionId: 'tab-session-raw',
       predecessorSessionId,
+      predecessorProcess,
+      claudePid,
       mode: 'deep',
       nativeSource,
       _acquireImpl: acquire,
@@ -1295,15 +1297,44 @@ describe('bootstrapLock — lead lease holds the main checkout (#1635)', () => {
     expect(readLease).not.toHaveBeenCalled();
   });
 
-  it('the lead\'s own tab after /clear (lease = predecessor raw id, new raw id) does not yield', async () => {
+  it('the lead\'s own tab after /clear (lease = predecessor raw id, same Claude process) does not yield', async () => {
     asMainCheckout();
     const { result, onNotice } = await run({
       nativeSource: 'clear',
       predecessorSessionId: 'lead-previous-raw',
+      predecessorProcess: { claude_pid: 4242, host: hostname() },
+      claudePid: 4242,
       readLease: activeLease('lead-previous-raw'),
     });
     expect(result?.session_id).toBe('tab-session-raw');
     expect(onNotice).not.toHaveBeenCalled();
+  });
+
+  // #1746 — THE BUG THIS CATCHES: current-session.json is shared by every
+  // session in the checkout, so once the lead started there LAST its raw id is
+  // every other session's "predecessor"; a /clear in another tab then took the
+  // lock the lead's slot check reports as occupied (LSO #778, twice on 22.10.).
+  it.each([
+    ['another Claude process', { claude_pid: 5151, host: hostname() }, 4242],
+    ['no witness (written before #1746, or by Codex/Cursor)', null, 4242],
+    ['the same pid on another host', { claude_pid: 4242, host: 'some-other-machine' }, 4242],
+    ['no pid on either side (null must not equal null)', { claude_pid: null, host: hostname() }, null],
+  ])('lease = predecessor raw id, predecessor from %s → yield, no lock', async (_label, predecessorProcess, claudePid) => {
+    asMainCheckout();
+    const { result, acquire, onNotice } = await run({
+      nativeSource: 'clear',
+      predecessorSessionId: 'lead-previous-raw',
+      predecessorProcess,
+      claudePid,
+      readLease: activeLease('lead-previous-raw'),
+    });
+    expect(result).toBeNull();
+    expect(acquire).not.toHaveBeenCalled();
+    expect(readLock()).toBeNull();
+    expect(onNotice).toHaveBeenCalledWith(
+      'Haupt-Checkout belegt durch Lead lead-pre, arbeite im Worktree',
+      '🧭 Haupt-Checkout belegt durch Lead lead-pre — kein Session-Lock, arbeite im Worktree',
+    );
   });
 
   it('a throwing lease reader falls back to the old acquire path', async () => {
@@ -1501,5 +1532,89 @@ describe('bootstrapLock — a deliberately released lock stays released on re-en
   it('a path-traversing session id never reaches the filesystem as a marker', () => {
     expect(writeReleaseMarker({ repoRoot: sandbox, sessionId: '../escape' })).toEqual({ ok: false, reason: 'unsafe-session-id' });
     expect(existsSync(join(sandbox, '.orchestrator', 'runtime', 'escape.json'))).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #1747 — a lead yield is a release too. THE BUG THIS CATCHES: after a /clear
+// yielded the main checkout to the lead (#1635), the next compaction of that
+// same session took the free lock (compact is no yield source, and the yield
+// left no #1651 marker), so the lead's slot check ended with exit 5 again.
+// The second row pins the edge option (b) would break: a session that held its
+// lock from a startup before the lead keeps it across a compaction.
+// Real acquire()/release(), so the marker wiring is exercised end to end.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('bootstrapLock — a lead yield stays released across compaction (#1747)', () => {
+  let leaseVerdict;
+  beforeEach(() => {
+    vi.stubEnv('SO_HOST_ALIASES_FILE', join(sandbox, 'host-aliases.json'));
+    mkdirSync(join(sandbox, '.git'), { recursive: true });
+    mkdirSync(join(sandbox, '.orchestrator', 'runtime', 'fleet'), { recursive: true });
+    leaseVerdict = { state: 'active', lease: { session_id: 'lead-raw-id-1747' } };
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  const SID = 'tab-raw-1747';
+  const start = (nativeSource, onNotice = vi.fn()) => bootstrapLock({
+    repoRoot: sandbox,
+    sessionId: SID,
+    mode: 'deep',
+    nativeSource,
+    claudePid: 4242,
+    _emitEventImpl: noopEmit,
+    _readLeaseImpl: vi.fn(async () => leaseVerdict),
+    onNotice,
+  });
+
+  it.each([
+    { first: 'clear', lock: false },
+    { first: 'startup', lock: true },
+  ])('$first, then compact of the same session with the lease still active → lock=$lock', async ({ first, lock }) => {
+    await start(first);
+    expect(readLock()?.session_id ?? null).toBe(lock ? SID : null);
+
+    const onNotice = vi.fn();
+    await start('compact', onNotice);
+
+    expect(readLock()?.session_id ?? null).toBe(lock ? SID : null);
+    // A yielded session is told about the lead, not about a release it never made.
+    if (!lock) expect(onNotice.mock.calls[0]?.[1]).toBe('🧭 Haupt-Checkout belegt durch Lead lead-raw — kein Session-Lock, arbeite im Worktree');
+  });
+
+  // THE BUG THIS CATCHES (review of 37f28458): the yield marker outlived the
+  // lead — once the lease ended, every compact or resume of the session stayed
+  // lockless in the main checkout until its next startup or /clear.
+  it.each([['compact'], ['resume']])('a yield, then %s after the lease ended → the session takes its lock again', async (src) => {
+    await start('clear');
+    expect(hasReleaseMarker({ repoRoot: sandbox, sessionId: SID })).toBe(true);
+    leaseVerdict = { state: 'none' };
+
+    await start(src);
+
+    expect(readLock()?.session_id).toBe(SID);
+    expect(hasReleaseMarker({ repoRoot: sandbox, sessionId: SID })).toBe(false);
+  });
+
+  // THE BUG THIS CATCHES (integration review of !244, M1): the yield rewrote an
+  // explicit release (release-session-lock.mjs, marker without `reason`) as
+  // `lead-yield`, so once the lease ended the next compaction took the lock the
+  // session had given back on purpose. The explicit marker must outlive the lead.
+  it('an explicit release, then resume under the lease, then compact after it ended → still lockless', async () => {
+    await start('startup');
+    expect(readLock()?.session_id).toBe(SID);
+    release({ repoRoot: sandbox, sessionId: SID });
+    expect(writeReleaseMarker({ repoRoot: sandbox, sessionId: SID }).ok).toBe(true);
+
+    await start('resume');
+    expect(readReleaseMarker({ repoRoot: sandbox, sessionId: SID })?.reason).toBeUndefined();
+    leaseVerdict = { state: 'none' };
+
+    await start('compact');
+
+    expect(readLock()).toBeNull();
+    expect(readReleaseMarker({ repoRoot: sandbox, sessionId: SID })?.reason).toBeUndefined();
   });
 });

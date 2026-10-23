@@ -11,7 +11,7 @@
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-start.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-start.mjs\"",
             "timeout": 5,
             "async": true
           }
@@ -24,7 +24,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-end.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-session-end.mjs\"",
             "timeout": 10
           }
         ]
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/skill-invocation-telemetry.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/skill-invocation-telemetry.mjs\"",
             "timeout": 5
           }
         ]
@@ -46,17 +46,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-scope.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-scope.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/config-protection.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/config-protection.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-edit-sessions-ledger-guard.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-edit-sessions-ledger-guard.mjs\"",
             "timeout": 5
           }
         ]
@@ -66,37 +66,37 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-destructive-guard.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-staging-fence.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-staging-fence.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-memory-propose-audit.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-memory-propose-audit.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-sessions-ledger-guard.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-sessions-ledger-guard.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-templates-first.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-templates-first.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-issue-budget.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-bash-issue-budget.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/enforce-commands.mjs\"",
             "timeout": 5
           }
         ]
@@ -106,7 +106,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-task-scope-disjoint.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-task-scope-disjoint.mjs\"",
             "timeout": 5
           }
         ]
@@ -116,7 +116,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-auq-clarity.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/pre-auq-clarity.mjs\"",
             "timeout": 5
           }
         ]
@@ -128,7 +128,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-validate.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-validate.mjs\"",
             "timeout": 5
           }
         ]
@@ -138,12 +138,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tooluse-frontend-slop.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tooluse-frontend-slop.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-import-probe.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-edit-import-probe.mjs\"",
             "timeout": 5
           }
         ]
@@ -153,7 +153,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-write-verify.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-write-verify.mjs\"",
             "timeout": 5
           }
         ]
@@ -163,7 +163,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/loop-guard.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/loop-guard.mjs\"",
             "timeout": 5
           }
         ]
@@ -175,7 +175,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs\"",
             "timeout": 5
           }
         ]
@@ -187,17 +187,17 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/subagent-telemetry.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/subagent-telemetry.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-subagent-discovery-validator.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-subagent-discovery-validator.mjs\"",
             "timeout": 5
           }
         ]
@@ -209,12 +209,12 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tool-failure-corrective-context.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tool-failure-corrective-context.mjs\"",
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-issue-budget-refund.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-bash-issue-budget-refund.mjs\"",
             "timeout": 5
           }
         ]
@@ -226,7 +226,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tool-batch-wave-signal.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/post-tool-batch-wave-signal.mjs\"",
             "timeout": 5
           }
         ]
@@ -236,7 +236,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/operator-steer.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/operator-steer.mjs\"",
             "timeout": 5
           }
         ]
@@ -248,7 +248,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/subagent-telemetry.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/subagent-telemetry.mjs\"",
             "timeout": 5
           }
         ]
@@ -260,7 +260,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/cwd-change-restore.mjs\"",
+            "command": "exec sh \"$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh\" \"$CLAUDE_PLUGIN_ROOT/hooks/cwd-change-restore.mjs\"",
             "timeout": 5
           }
         ]

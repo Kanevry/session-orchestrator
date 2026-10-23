@@ -172,7 +172,7 @@
           "name": "Can it break my project?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
+            "text": "It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 13 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
           }
         },
         {
@@ -316,8 +316,8 @@
             <td data-label="Source"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 12 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
-            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 16 rules</td>
+            <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 13 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
+            <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 17 rules</td>
           </tr>
           <tr>
             <td data-label="Claim">Subagents are instructed to leave staging and commits to the coordinator. This is a workflow rule.</td>
@@ -398,7 +398,7 @@
         </details>
         <details class="faq-item">
           <summary>Can it break my project?</summary>
-          <p>It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 12 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
+          <p>It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 13 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
         </details>
         <details class="faq-item">
           <summary>Who maintains it?</summary>

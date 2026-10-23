@@ -29,6 +29,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 
 /**
@@ -328,7 +329,7 @@ describe('relocated lock lifecycle after EnterWorktree (#1605)', { timeout: 6000
     });
 
     const qg = path.resolve(import.meta.dirname, '../../scripts/lib/quality-gate.mjs');
-    const script = `const { runQualityGateWithRetry } = await import(${JSON.stringify(qg)});
+    const script = `const { runQualityGateWithRetry } = await import(${JSON.stringify(pathToFileURL(qg).href)});
 let seen = null;
 await runQualityGateWithRetry({ maxRetries: 1, repoRoot: process.cwd(),
   commands: { test: 'false', typecheck: 'true', lint: 'true' },

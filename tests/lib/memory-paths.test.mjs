@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import path from 'node:path';
 // os and path are not imported directly in the test body; the SUT imports them.
 // os.homedir() is intercepted via vi.mock below so the SUT sees /home/fixed.
 
@@ -71,7 +72,7 @@ describe('resolveMemoryDir', () => {
   it('returns a path ending in "/memory"', () => {
     vi.spyOn(process, 'cwd').mockReturnValue('/tmp/foo');
     const dir = resolveMemoryDir();
-    expect(dir.endsWith('/memory')).toBe(true);
+    expect(dir.endsWith(`${path.sep}memory`)).toBe(true);
   });
 
   it('returns the full expected path shape for a fixed cwd', () => {
@@ -80,14 +81,14 @@ describe('resolveMemoryDir', () => {
     // os.homedir(), or encodes the cwd incorrectly, or omits a path segment,
     // this exact-match fails. Never compute expected from os.homedir() here.
     vi.spyOn(process, 'cwd').mockReturnValue('/Users/x/project.git');
-    expect(resolveMemoryDir()).toBe('/home/fixed/.claude/projects/-Users-x-project-git/memory');
+    expect(resolveMemoryDir()).toBe(path.join('/home/fixed', '.claude', 'projects', '-Users-x-project-git', 'memory'));
   });
 
   it('places the encoded cwd segment under ~/.claude/projects', () => {
     // With homedir mocked to '/home/fixed', the projects dir is the hardcoded literal.
     vi.spyOn(process, 'cwd').mockReturnValue('/a/b');
     const dir = resolveMemoryDir();
-    expect(dir).toContain('/home/fixed/.claude/projects');
+    expect(dir).toContain(path.join('/home/fixed', '.claude', 'projects'));
     expect(dir).toContain('-a-b');
   });
 });
@@ -110,7 +111,7 @@ describe('resolveMemoryDir(repoRoot) — #1071', () => {
     // must not be confusable, or this assertion could pass by accident.
     vi.spyOn(process, 'cwd').mockReturnValue('/tmp/some-worktree');
     expect(resolveMemoryDir('/Users/x/project.git')).toBe(
-      '/home/fixed/.claude/projects/-Users-x-project-git/memory'
+      path.join('/home/fixed', '.claude', 'projects', '-Users-x-project-git', 'memory')
     );
   });
 });

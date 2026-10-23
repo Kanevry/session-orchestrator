@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { runProbe } from '../../skills/discovery/probes/vault-narrative-staleness.mjs';
+import { stubHome } from '../_helpers/home-env.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -342,7 +343,7 @@ describe('vault-narrative-staleness probe', () => {
         projectsDir, 'stale-proj', { slug: 'stale-proj', tier: 'active' },
         { 'context.md': narrativeWithUpdated(daysAgo(90)) },
       );
-      vi.stubEnv('HOME', home);
+      stubHome(home);
 
       const result = await runProbe(tmp(), { 'vault-integration': { 'vault-dir': '~/vault' } });
 

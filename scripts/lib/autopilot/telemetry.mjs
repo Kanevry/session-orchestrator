@@ -21,6 +21,7 @@ import { mkdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { atomicWriteWithBackup, envelopeToError } from '../io.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Schema version
@@ -183,7 +184,10 @@ const DEFAULT_AUTOPILOT_JSONL = '.orchestrator/metrics/autopilot.jsonl';
  * @param {string}   [jsonlPath]            - defaults to .orchestrator/metrics/autopilot.jsonl
  * @returns {void}
  */
-export function writeMultiStoryCoordinatorEntry(entry, jsonlPath = DEFAULT_AUTOPILOT_JSONL) {
+export function writeMultiStoryCoordinatorEntry(
+  entry,
+  jsonlPath = resolveLedgerPath(DEFAULT_AUTOPILOT_JSONL, process.cwd()),
+) {
   // Defensive: ensure metrics directory exists
   const dir = path.dirname(jsonlPath);
   try { mkdirSync(dir, { recursive: true }); } catch { /* idempotent — directory may already exist */ }

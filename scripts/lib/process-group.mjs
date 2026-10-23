@@ -117,6 +117,14 @@ const LIVE_GROUPS = new Map();
 let exitHandlerInstalled = false;
 
 /**
+ * Synchronous cleanup callbacks registered via `registerExitCleanup()`, run on
+ * the exit path after the live groups are killed.
+ *
+ * @type {Set<() => void>}
+ */
+const EXIT_CLEANUPS = new Set();
+
+/**
  * Default liveness probe: signal 0 tells us whether a PID exists without
  * touching it. `ESRCH` = gone. `EPERM` = alive but not ours — reported as ALIVE
  * on purpose, because "I may not signal it" is not "it is dead", and a survivor
@@ -268,18 +276,71 @@ export function installExitHandler() {
 
   process.once('exit', () => {
     killAllLiveGroupsSync();
+    runExitCleanupsSync();
   });
 
   for (const signal of EXIT_SIGNALS) {
     const handler = () => {
       killAllLiveGroupsSync();
       if (process.listenerCount(signal) === 0) {
+        // SIGKILL is sent, not awaited (#1723): a child can still write for a
+        // few milliseconds while the callbacks remove its files, so a callback
+        // that deletes a tree retries (snapshot-probe: removeTreeOnExit).
+        // Only on this branch: with a foreign listener the process may live on,
+        // and its own `exit` (if any) still runs the callbacks then.
+        runExitCleanupsSync();
         // We were the only listener: restore the default disposition so the
         // process still dies from the signal it was sent.
         process.kill(process.pid, signal);
       }
     };
     process.once(signal, handler);
+  }
+}
+
+/**
+ * Register a synchronous callback that runs once when the process leaves via
+ * `exit` or via a SIGINT/SIGTERM/SIGHUP this module handles — after SIGKILL was
+ * sent to every live group (sent, not awaited: a child may still be writing
+ * for a few milliseconds, #1723), before the signal is re-raised. Installs the exit handler
+ * itself, so a process that never spawned a group is covered too.
+ *
+ * Use it for resources the caller created and would otherwise remove only in a
+ * `finally` that a signal skips (e.g. its own `mkdtemp` directory, #1715).
+ * Errors a callback throws are swallowed: the exit path must not throw.
+ *
+ * Named ceiling (BV-004): SIGKILL or any other uncatchable death runs no
+ * callback, and an async callback's continuation never runs (the process is
+ * already exiting). Revisit if a caller needs async teardown.
+ *
+ * @param {() => void} fn synchronous cleanup
+ * @returns {() => void} unregister — call it once the caller cleaned up itself
+ */
+export function registerExitCleanup(fn) {
+  if (typeof fn !== 'function') throw new TypeError('registerExitCleanup: fn must be a function');
+  installExitHandler();
+  // A wrapper per registration: the same fn registered twice stays two entries.
+  const entry = () => fn();
+  EXIT_CLEANUPS.add(entry);
+  return () => {
+    EXIT_CLEANUPS.delete(entry);
+  };
+}
+
+/**
+ * Run and drop every registered cleanup, each at most once, swallowing errors.
+ *
+ * @returns {void}
+ */
+function runExitCleanupsSync() {
+  const entries = [...EXIT_CLEANUPS];
+  EXIT_CLEANUPS.clear();
+  for (const entry of entries) {
+    try {
+      entry();
+    } catch {
+      /* the exit path must never throw */
+    }
   }
 }
 

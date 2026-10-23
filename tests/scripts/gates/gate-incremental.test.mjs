@@ -12,6 +12,12 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+// A node one-liner instead of `sleep 30`: `sleep` is not on PATH on native Windows; the gate runs it
+// through the platform shell either way; the double quotes hold for sh and cmd alike.
+// The inner ladder opens with SIGTERM to the group on POSIX and with taskkill on win32 (spawnInGroup).
+const FIRST_KILL_SIGNAL = process.platform === 'win32' ? 'taskkill' : 'SIGTERM';
+const SLEEP_30 = `"${process.execPath}" -e "setTimeout(()=>{},30000)"`;
+
 const SCRIPT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../scripts/lib/gates/gate-incremental.mjs',
@@ -124,11 +130,11 @@ describe('gate-incremental — full suite fallback when no file scope given', ()
     // GATE_TIMEOUT_MS=300 kills `sleep 30` inside runCheck. The test result used
     // to be reduced to its status string, dropping `timed_out` before the
     // envelope was written.
-    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: 'sleep 30', GATE_TIMEOUT_MS: '300' });
+    const r = run({ TYPECHECK_CMD: 'skip', TEST_CMD: SLEEP_30, GATE_TIMEOUT_MS: '300' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
     expect(json.test.timed_out).toBe(true);
-    expect(json.test.kill_signals[0]).toBe('SIGTERM');
+    expect(json.test.kill_signals[0]).toBe(FIRST_KILL_SIGNAL);
   });
 });
 

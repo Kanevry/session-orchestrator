@@ -127,7 +127,7 @@ describe('reaper audit — bounded reader and prune', () => {
     }
   });
 
-  it('refuses to APPEND through a symlinked audit too — appendFileSync wrote every record into the link target', () => {
+  it.skipIf(process.platform === 'win32')('refuses to APPEND through a symlinked audit too — appendFileSync wrote every record into the link target (skipped on win32: no O_NOFOLLOW, a link is followed there — documented ceiling in no-follow-append.mjs/tail-window.mjs)', () => {
     // Bug (CWE-59, #1487 item 5): MR !70 closed the symlink-follow for the
     // prune, but the append kept following the link, so `ln -s events.jsonl
     // reaper-audit.jsonl` routed every kill record into events.jsonl.
@@ -227,7 +227,7 @@ appendAuditRecord(${JSON.stringify(root)}, ${JSON.stringify(killRecord(1))});`;
     expect(child.stderr).toMatch(/^orphan-reaper: could not append to \.orchestrator\/metrics\/reaper-audit\.jsonl: ENXIO/);
   });
 
-  it('does not read the rate through a symlinked audit — the link target was read as the audit', () => {
+  it.skipIf(process.platform === 'win32')('does not read the rate through a symlinked audit — the link target was read as the audit (skipped on win32: no O_NOFOLLOW, a link is followed there — documented ceiling in no-follow-append.mjs/tail-window.mjs)', () => {
     // Bug (#1487 review): the writers refuse a linked audit, the reader followed
     // it — a link to any file of decision-shaped lines set the HR-101 rate, and a
     // link to a 40 MB file was read whole on every scan (prune refuses links, so

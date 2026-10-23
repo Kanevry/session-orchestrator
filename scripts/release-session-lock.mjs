@@ -43,12 +43,15 @@
  */
 
 import { parseArgs } from 'node:util';
+import { existsSync, realpathSync } from 'node:fs';
 import path from 'node:path';
 
 import { readLockDetailed, loadOwnerProof, release, writeReleaseMarker } from './lib/session-lock.mjs';
 import { LOCK_RELEASED_EVENT } from './lib/session-transition.mjs';
 import { emitEvent } from './lib/events.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { registrySessionRoot, resolveOwnLockRootFor } from './lib/own-lock-root.mjs';
+import { dotGitAncestor } from './lib/platform.mjs';
 
 /**
  * `caller` value stamped into the breadcrumb, so this fourth release site stays
@@ -78,12 +81,22 @@ FLAGS
                       — .orchestrator/session.lock "session_id", never STATE.md
                       "session" and never the semantic id. A lock owned by a
                       different id is NEVER released.
-  --repo-root <path>  Repo whose lock is released (default: cwd).
+  --repo-root <path>  Repo whose lock is released. Default: the checkout whose
+                      lock carries --session-id — the host registry's
+                      session_root, the cwd's checkout, its main checkout, or a
+                      registered linked worktree, in that order; with none of
+                      them, the cwd's checkout (#1730). The JSON result names
+                      the root (repo_root) and how it was found (root_source:
+                      flag|registry|cwd|main-checkout|worktree|none).
   --json              Machine-readable result on stdout.
   -h, --help          Show this help and exit 0.
 
 OUTCOMES
   absent        no lock file — nothing released, NO event, exit 0.
+
+  Without --repo-root the #1651 marker (absent and released alike) goes to the
+  lock's root, the cwd's checkout and the registry's session_root, existing
+  checkouts only; release_marker_roots lists each root with its result.
   deleted       our lock was removed and re-read as gone.
   already-gone  ownership matched but the lock had already vanished; the event
                 is still written, because a lock removed by a third party while
@@ -140,6 +153,53 @@ function ourLockIsGone(repoRoot, sessionId) {
   return false;
 }
 
+/** @param {string} p */
+function canonical(p) {
+  try { return realpathSync.native(p); } catch { return path.resolve(p); }
+}
+
+/**
+ * Where the #1651 marker goes (#1730). A later compaction's SessionStart looks
+ * for it at `resolveSessionStartRoot`, which depends on THAT compaction's cwd —
+ * unknown here. So it goes to every root that reader can land on: the lock's
+ * root, the cwd's checkout and the registry's session_root. Only existing
+ * checkouts (a `.git` entry): a stale registry entry must not re-create the
+ * directory tree of a removed worktree. The marker is keyed on this session's
+ * own raw id, so an extra copy changes nothing for another session. With
+ * --repo-root the given root alone, as before.
+ *
+ * @param {{ root: string, source: string }} resolved
+ * @param {string} sessionId
+ * @returns {string[]}
+ */
+function markerRootsFor(resolved, sessionId) {
+  if (resolved.source === 'flag') return [resolved.root];
+  const cwdTop = dotGitAncestor(process.cwd()) || path.resolve(process.cwd());
+  const extra = [cwdTop, registrySessionRoot(sessionId)]
+    .filter((r) => typeof r === 'string' && existsSync(path.join(r, '.git')));
+  return [...new Set([resolved.root, ...extra].map(canonical))];
+}
+
+/**
+ * Write the marker at each root; a failed copy is named on stderr and in the
+ * result, never hidden behind one that was written.
+ *
+ * @param {string[]} roots
+ * @param {string} sessionId
+ * @returns {Array<{ root: string, ok: boolean }>}
+ */
+function writeMarkers(roots, sessionId) {
+  return roots.map((root) => {
+    const marker = writeReleaseMarker({ repoRoot: root, sessionId });
+    if (marker.ok !== true) {
+      process.stderr.write(
+        `release-session-lock: release marker not written at ${root} (${marker.reason}) — a compaction there may re-create the lock\n`,
+      );
+    }
+    return { root, ok: marker.ok === true };
+  });
+}
+
 /**
  * CLI entry point.
  *
@@ -178,11 +238,20 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
     return 1;
   }
 
-  const repoRoot = path.resolve(values['repo-root'] ?? process.cwd());
+  // #1730: `/close` runs this without --repo-root, and its cwd is often not the
+  // checkout holding the lock — a worktree session's lock sits in the main
+  // checkout, or the shell cwd reset to the main checkout while the lock is in
+  // a worktree. Reading at the cwd answered `absent` with exit 0 and the lock
+  // stayed. An explicit --repo-root is taken as given.
+  const resolved = values['repo-root'] !== undefined
+    ? { root: path.resolve(values['repo-root']), source: 'flag' }
+    : resolveOwnLockRootFor({ sessionId, cwd: process.cwd() });
+  const repoRoot = resolved.root;
 
   const emitResult = async (result) => {
-    if (values.json) process.stdout.write(JSON.stringify(result, null, 2) + '\n');
-    else printHuman(result);
+    const located = { ...result, repo_root: repoRoot, root_source: resolved.source };
+    if (values.json) process.stdout.write(JSON.stringify(located, null, 2) + '\n');
+    else printHuman(located);
   };
 
   // -- Step 1: read the lock, and capture the ids BEFORE anything is deleted --
@@ -193,11 +262,11 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
     // here would put a fictional lifecycle end into the stream — the idempotent
     // re-run case is not a release. The #1651 marker IS written: a session that
     // closes without a lock (bootstrap fs-error, or an earlier release) must not
-    // get one re-created by a later compaction either.
-    const marker = writeReleaseMarker({ repoRoot, sessionId });
+    // get one re-created by a later compaction either (roots: markerRootsFor).
+    const markers = writeMarkers(markerRootsFor(resolved, sessionId), sessionId);
     const result = {
       ok: true, outcome: 'absent', verified: true, session_id: sessionId, event_emitted: false,
-      release_marker: marker.ok === true,
+      release_marker: markers.every((m) => m.ok), release_marker_roots: markers,
     };
     await emitResult(result);
     return 0;
@@ -262,16 +331,8 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
   // does not re-create this lock after a compaction or resume of the same raw
   // session (a headless run may hold the slot by then). Best-effort: a failed
   // marker write is reported, but the release itself stands.
-  let markerWritten = false;
-  if (verified) {
-    const marker = writeReleaseMarker({ repoRoot, sessionId });
-    markerWritten = marker.ok === true;
-    if (!markerWritten) {
-      process.stderr.write(
-        `release-session-lock: release marker not written (${marker.reason}) — a compaction may re-create the lock\n`,
-      );
-    }
-  }
+  const markers = verified ? writeMarkers(markerRootsFor(resolved, sessionId), sessionId) : [];
+  const markerWritten = verified && markers.every((m) => m.ok);
 
   // -- Step 4: the terminal breadcrumb --------------------------------------
   // The ids are passed EXPLICITLY: the lock is gone by now, so emitEvent's
@@ -300,6 +361,7 @@ export async function main({ argv = process.argv.slice(2) } = {}) {
     event_emitted: eventEmitted,
     ...(emitError !== null ? { event_error: emitError } : {}),
     release_marker: markerWritten,
+    release_marker_roots: markers,
   };
   await emitResult(result);
 

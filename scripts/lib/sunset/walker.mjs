@@ -42,6 +42,7 @@ import path from 'node:path';
 import { normalizeSkillInvocation } from '../skill-invocations-schema.mjs';
 import { normalizeSkillJudgment } from '../skill-judgments-schema.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { userInvocableSkills } from '../user-invocable-skills.mjs';
 
 // ---------------------------------------------------------------------------
@@ -948,15 +949,15 @@ export function runSunsetWalk(repoRoot, opts = {}) {
 
   const subagentsPath =
     opts.subagentsPath ??
-    path.join(repoRoot, '.orchestrator', 'metrics', 'subagents.jsonl');
+    resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', repoRoot);
 
   const invocationsPath =
     opts.invocationsPath ??
-    path.join(repoRoot, '.orchestrator', 'metrics', 'skill-invocations.jsonl');
+    resolveLedgerPath('.orchestrator/metrics/skill-invocations.jsonl', repoRoot);
 
   const judgmentsPath =
     opts.judgmentsPath ??
-    path.join(repoRoot, '.orchestrator', 'metrics', 'skill-judgments.jsonl');
+    resolveLedgerPath('.orchestrator/metrics/skill-judgments.jsonl', repoRoot);
 
   const surface = enumerateSurface(repoRoot);
   const dispatch = readDispatchCounts(subagentsPath, { windowDays, now: nowMs });

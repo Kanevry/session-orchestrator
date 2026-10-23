@@ -21,7 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { parseArgs, runSessionsIntegrityCheck } from '../../scripts/check-sessions-integrity.mjs';
 
@@ -197,7 +197,7 @@ describe('CLI surface', () => {
   it('a bare import runs nothing and exits 0', () => {
     const probe = spawnSync(
       process.execPath,
-      ['--input-type=module', '-e', `await import(${JSON.stringify(SCRIPT)}); await new Promise((r) => setTimeout(r, 700));`],
+      ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(SCRIPT).href)}); await new Promise((r) => setTimeout(r, 700));`],
       { encoding: 'utf8', cwd: repoRoot },
     );
     expect(probe.status).toBe(0);

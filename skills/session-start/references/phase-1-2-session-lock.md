@@ -10,11 +10,13 @@
 
 Acquire a distributed session-lock to detect parallel sessions in the same repo before initializing STATE.md. This prevents two concurrent Claude/Codex sessions from stomping each other's wave state and metrics writes.
 
-**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: process.cwd() })`. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's raw `session_id` does not exactly match the current session's raw id (a rare divergence — surface via AUQ before overwriting). A matching `semantic_session_id`, STATE.md `session`, or owner proof cannot repair that mismatch. The decision flow below still applies to all five outcomes (active / stale / corrupt / unreadable / fs-error) when the prose path needs to acquire. Every `ok: true` from `acquire()` / `forceAcquire()` also rewrites `.orchestrator/runtime/lock-owner-proof.json` for the new lock (#1541), so the `/close` release stays proof-gated; a failed proof write is reported as `result.ownerProof: { ok: false, reason }`, never thrown.
+**Mechanical wiring (Epic #583, 2026-05-27):** The SessionStart hook (`hooks/on-session-start.mjs` → `hooks/_lib/lock-bootstrap.mjs`) now writes `.orchestrator/session.lock` mechanically BEFORE this skill's prose runs. The prose Phase 1.2 becomes confirmatory — it verifies the lock exists with the expected shape via `readLock({ repoRoot: lockRoot })`, where `lockRoot = resolveOwnLockRootFor({ sessionId }).root` (`scripts/lib/own-lock-root.mjs`, #1730): the checkout whose lock carries the raw id, so a Phase 1.2 run after `EnterWorktree` or a `cd` finds the lock it already holds instead of taking a second one beside the cwd; with no such lock it is the cwd's checkout, as before. Re-call `acquire()` only if `readLock()` returns `null` (mechanical hook failed) OR the existing lock's raw `session_id` does not exactly match the current session's raw id (a rare divergence — surface via AUQ before overwriting). A matching `semantic_session_id`, STATE.md `session`, or owner proof cannot repair that mismatch. The decision flow below still applies to all five outcomes (active / stale / corrupt / unreadable / fs-error) when the prose path needs to acquire. Every `ok: true` from `acquire()` / `forceAcquire()` also rewrites `.orchestrator/runtime/lock-owner-proof.json` for the new lock (#1541), so the `/close` release stays proof-gated; a failed proof write is reported as `result.ownerProof: { ok: false, reason }`, never thrown.
 
 ```javascript
 import { acquire, forceAcquire } from 'scripts/lib/session-lock.mjs';
-const result = acquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() });
+import { resolveOwnLockRootFor } from 'scripts/lib/own-lock-root.mjs';
+const lockRoot = resolveOwnLockRootFor({ sessionId }).root;
+const result = acquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: lockRoot });
 ```
 
 Where `sessionId` is the physical raw identity for this invocation: the native harness-provided raw id, or a generated UUID when no trustworthy raw id exists. It is the only value passed to `acquire()` and the only live lock/registry ownership key. `semanticSessionId` may be recorded separately as an attribution/history label and may populate STATE.md `session`; neither label is a substitute for `sessionId`. `sessionType` is the session mode (`housekeeping`, `feature`, or `deep`).
@@ -51,7 +53,7 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      Reply with the number of your choice.
      ```
    - On **Abort**: exit session-start cleanly with a brief stderr note (`session-lock: aborted — active lock held by session_id=<id>`). Do NOT initialize STATE.md.
-   - On **Force-take**: call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd() })`. After Phase 1.5 initializes STATE.md, append a deviation via `appendDeviation()`:
+   - On **Force-take**: call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: lockRoot })`. After Phase 1.5 initializes STATE.md, append a deviation via `appendDeviation()`:
      `Force-took session lock from session_id=<existingLock.session_id>, age=<ageHours>h, mode=<existingLock.mode>, pid=<existingLock.pid>`. Continue.
 
 3. **`result.ok === false`** with `reason === 'stale-heartbeat'`:
@@ -99,13 +101,13 @@ Where `sessionId` is the physical raw identity for this invocation: the native h
      2. Abort — stops here and writes nothing. The lock file `.orchestrator/session.lock` (it names the process that wrote it) tells you whether that session is still alive.
      Reply with the number of your choice.
      ```
-   - On **Reclaim**: call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd(), onlyIfNotLive: true })` — the single-winner takeover (#1494): if another session reclaimed the lock in the meantime, it returns that session's `active` result instead of overwriting it; follow the decision flow for the returned result. After Phase 1.5 initializes STATE.md, append a deviation:
+   - On **Reclaim**: call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: lockRoot, onlyIfNotLive: true })` — the single-winner takeover (#1494): if another session reclaimed the lock in the meantime, it returns that session's `active` result instead of overwriting it; follow the decision flow for the returned result. After Phase 1.5 initializes STATE.md, append a deviation:
      `Stale-lock reclaim: replaced lock from session_id=<existingLock.session_id>, age=<ageHours>h, pid=<existingLock.pid>`. Continue.
    - On **Abort**: exit cleanly.
 
 4. **`result.ok === false`** with `reason === 'corrupt'`:
    - `.orchestrator/session.lock` exists but is not a lock record (invalid JSON, or JSON without the lock shape). It can never be a live lock: every writer writes it atomically (tmp+link / tmp+rename), so no reader sees a half-written file. The SessionStart hook already reclaims this case mechanically and prints one stderr WARN; reaching it here means the hook did not run or its reclaim failed.
-   - No AUQ — the answer is derivable (AUQ-001.2). Log `⚠ session-lock: .orchestrator/session.lock was not a valid lock record — reclaiming.`, call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: process.cwd(), onlyIfNotLive: true })` (a non-ok result means another session got there first — follow the decision flow for it), and after Phase 1.5 append a deviation: `Corrupt-lock reclaim: replaced an unparseable .orchestrator/session.lock`. Continue.
+   - No AUQ — the answer is derivable (AUQ-001.2). Log `⚠ session-lock: .orchestrator/session.lock was not a valid lock record — reclaiming.`, call `forceAcquire({ sessionId, mode: sessionType, ttlHours: 4, repoRoot: lockRoot, onlyIfNotLive: true })` (a non-ok result means another session got there first — follow the decision flow for it), and after Phase 1.5 append a deviation: `Corrupt-lock reclaim: replaced an unparseable .orchestrator/session.lock`. Continue.
 
 5. **`result.ok === false`** with `reason === 'unreadable'`:
    - `.orchestrator/session.lock` exists but cannot be read (`result.error`, e.g. `EACCES`, or `EISDIR` for a directory at the path). Nothing was written, and it is never reclaimed: no lock writer produces such a path, and a directory may hold content nobody here created (PSA-003). The SessionStart hook already printed a stderr WARN and emitted `orchestrator.session.lock.read_anomaly` (`status: 'unreadable'`).

@@ -544,6 +544,13 @@ if (runCheck('check-learnings-shell-writes.mjs') !== 0) checkFailed = 1;
 process.stdout.write('\n');
 runCheck('check-test-git-config-target.mjs');
 
+// BLOCKING (#1613): a test that spawns `sh`/`bash` by bare name is red on native
+// Windows (no sh on PATH, bash is WSL) — 301 red tests at fd8d3673. It may block
+// because the backlog was drained in the same change: the live census leaves only
+// three files in open MRs, baselined inside the checker as WARN.
+process.stdout.write('\n');
+if (runCheck('check-test-posix-shell.mjs') !== 0) checkFailed = 1;
+
 // BLOCKING (#1183): every `emitEvent()` call site under hooks/**/*.mjs must be
 // try/catch-guarded (emitEvent() throws EventValidationError on a malformed
 // record — an unguarded call aborts the hook process). Five pre-existing
@@ -554,6 +561,14 @@ process.stdout.write('\n');
 if (runCheck('check-hooks-emit-event-guard.mjs') !== 0) checkFailed = 1;
 
 process.stdout.write('\n'); if (runCheck('check-workflow-continue-on-error.mjs') !== 0) checkFailed = 1;
+
+// BLOCKING (#1722): a module under scripts/ or hooks/ that builds a
+// `.orchestrator/metrics` path must route it through resolveLedgerPath()
+// (events/sessions: resolveEventsLedgerRoot()). The ledgers are gitignored, so
+// from a linked worktree an unrouted writer leaves a copy that is lost with the
+// worktree. Deliberately local sites sit on the checker's own ALLOWLIST.
+process.stdout.write('\n');
+if (runCheck('check-metrics-ledger-root.mjs') !== 0) checkFailed = 1;
 
 // BLOCKING (#1184): every scripts/lib/validate/check-*.mjs must be referenced
 // by basename from this file, .husky/pre-commit, or .gitlab-ci.yml — or carry

@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { expectAllow, expectDeny } from '../_helpers/hook-decision.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CODEX_MANIFEST = JSON.parse(readFileSync(path.join(REPO_ROOT, 'hooks/hooks-codex.json'), 'utf8'));
@@ -73,7 +74,7 @@ function runRegistered(command, dir, toolCommand, event = 'PreToolUse') {
     tool_use_id: 'exec-1',
     ...(event === 'PostToolUse' ? { tool_response: '' } : {}),
   };
-  return spawnSync('sh', ['-c', command], {
+  return spawnSync(posixShell('sh'), ['-c', command], {
     cwd: dir,
     input: JSON.stringify(payload),
     encoding: 'utf8',
@@ -168,6 +169,6 @@ describe('hooks-codex.json Bash guards on the measured Codex payload (#1691)', (
     expect(result.status).toBe(0);
     const envelope = JSON.parse(result.stdout.trim());
     expect(envelope.hookSpecificOutput.hookEventName).toBe('PostToolUse');
-    expect(envelope.hookSpecificOutput.additionalContext).toContain("OUTSIDE the wave's 1 allowedPaths — out.txt");
+    expect(envelope.hookSpecificOutput.additionalContext, envelope.hookSpecificOutput.additionalContext).toContain("OUTSIDE the wave's 1 allowedPaths — out.txt");
   });
 });

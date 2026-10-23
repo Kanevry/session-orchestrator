@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-17T20:21:37.708Z",
-  "head": "a870ecde7340c8dfd8fe0e31b596287046e518d7",
+  "generated_at": "2026-10-21T23:46:24.851Z",
+  "head": "2b14409c7dbf6df90080028e48e6a3dfdca57188",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -1265,6 +1265,15 @@
       "reachable_from": [
         "post-bash-issue-budget-refund.mjs",
         "pre-bash-issue-budget.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/ledger-path.mjs",
+      "reachable_from": [
+        "on-session-end.mjs",
+        "on-session-start.mjs",
+        "skill-invocation-telemetry.mjs",
+        "subagent-telemetry.mjs"
       ]
     },
     {

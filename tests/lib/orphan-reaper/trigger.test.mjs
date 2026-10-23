@@ -20,6 +20,7 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { maybeTriggerOrphanScan } from '../../../scripts/lib/orphan-reaper/trigger.mjs';
+import { posixShell } from '../../_helpers/posix-shell.mjs';
 
 describe('maybeTriggerOrphanScan', () => {
   let rtmp;
@@ -220,7 +221,7 @@ describe('maybeTriggerOrphanScan', () => {
     const probe = join(rtmp, 'probe.mjs');
     writeFileSync(probe, `const { maybeTriggerOrphanScan } = await import(${JSON.stringify(url)});\n`
       + 'process.stdout.write(JSON.stringify(await maybeTriggerOrphanScan()));\n');
-    const r = spawnSync('/bin/sh', ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3"',
+    const r = spawnSync(posixShell('/bin/sh'), ['-c', 'cd "$1" && rmdir "$1" && exec "$2" "$3"',
       'sh', gone, process.execPath, probe], { env, encoding: 'utf8', timeout: 30_000 });
     expect(r.status, JSON.stringify({ signal: r.signal, stderr: r.stderr, errorCode: r.error?.code })).toBe(0);
     expect(JSON.parse(r.stdout)).toEqual({ spawned: false, reason: 'disabled' });

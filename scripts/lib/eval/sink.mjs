@@ -19,6 +19,7 @@ import { mkdirSync, appendFileSync } from 'node:fs';
 import path from 'node:path';
 import { validateEvalRecord, normalizeEvalRecord } from './schema.mjs';
 import { readJsonlFile } from '../io.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 /** Default repo-relative path for the eval journal. */
 export const DEFAULT_EVAL_JSONL_PATH = '.orchestrator/metrics/eval.jsonl';
@@ -36,11 +37,11 @@ export const DEFAULT_EVAL_JSONL_PATH = '.orchestrator/metrics/eval.jsonl';
  *
  * @param {object} record — candidate session-eval record.
  * @param {{ path?: string }} [opts] — target path (absolute preferred); defaults
- *        to DEFAULT_EVAL_JSONL_PATH (repo-relative).
+ *        to `resolveLedgerPath(DEFAULT_EVAL_JSONL_PATH)` (#1722).
  * @returns {{ ok: true, record: object, path: string }
  *          | { ok: false, reason: 'validation'|'fs-error', error: string }}
  */
-export function appendEvalRecord(record, { path: filePath = DEFAULT_EVAL_JSONL_PATH } = {}) {
+export function appendEvalRecord(record, { path: filePath = resolveLedgerPath(DEFAULT_EVAL_JSONL_PATH) } = {}) {
   let validated;
   try {
     validated = validateEvalRecord(record);
@@ -71,7 +72,7 @@ export function appendEvalRecord(record, { path: filePath = DEFAULT_EVAL_JSONL_P
  * @param {string} [filePath] — absolute path to the eval journal.
  * @returns {object[]} normalized session-eval records, in source order.
  */
-export function readEvalRecords(filePath = DEFAULT_EVAL_JSONL_PATH) {
+export function readEvalRecords(filePath = resolveLedgerPath(DEFAULT_EVAL_JSONL_PATH)) {
   const rows = readJsonlFile(filePath, { skipInvalid: true });
   return rows.map((r) => normalizeEvalRecord(r));
 }

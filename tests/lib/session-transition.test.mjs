@@ -237,11 +237,12 @@ describe('leaveSourceRoot', () => {
     // would abort the promotion halfway — the two-live-roots state.
     const sessionId = '22222222-8888-4888-8888-222222222222';
     seedLock(repoRoot, sessionId);
-    // The registry BASE is a plain file, so `<base>/active/<id>.json` is ENOTDIR
-    // for every uid — root included (`testing.md` § Root-as-uid-0 hazards).
-    const registryFile = path.join(registryDir, 'not-a-directory');
-    await writeFile(registryFile, 'x', 'utf8');
-    process.env.SO_SESSION_REGISTRY_DIR = registryFile;
+    // The registry ENTRY is a directory, so unlinking `<base>/active/<id>.json` fails with a non-ENOENT
+    // error (EISDIR/EPERM) for every uid — root included (`testing.md` § Root-as-uid-0 hazards) — and on
+    // every platform. A plain-file BASE gave ENOTDIR on POSIX but ENOENT (= already gone) on Windows.
+    const registryBase = path.join(registryDir, 'entry-is-a-directory');
+    await mkdir(path.join(registryBase, 'active', `${sessionId}.json`), { recursive: true });
+    process.env.SO_SESSION_REGISTRY_DIR = registryBase;
 
     const result = await leaveSourceRoot({ repoRoot, sessionId, reason: 'worktree-promotion' });
 

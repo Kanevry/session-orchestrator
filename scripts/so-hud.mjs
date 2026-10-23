@@ -7,6 +7,7 @@ import { execFile } from 'node:child_process';
 import { promisify, parseArgs } from 'node:util';
 import { measure } from './lib/so-hud/runtime.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { parseSessionId } from './lib/session-id.mjs';
 const exec = promisify(execFile);
 const SO_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 
@@ -15,13 +16,17 @@ export async function main(argv, deps = {}) {
   const error = deps.error ?? (s => process.stderr.write(s));
   let values;
   try {
-    ({ values } = parseArgs({ args: argv, options: { json: { type: 'boolean' }, 'repo-root': { type: 'string' }, 'register-root': { type: 'boolean' }, help: { type: 'boolean' } }, allowPositionals: false }));
+    ({ values } = parseArgs({ args: argv, options: { json: { type: 'boolean' }, 'repo-root': { type: 'string' }, 'session-id': { type: 'string' }, 'register-root': { type: 'boolean' }, help: { type: 'boolean' } }, allowPositionals: false }));
     if (values.help) {
-      output('so-hud --json [--repo-root <path>] [--register-root]\nRead-only HUD JSON v1. --register-root registers this SO installation (0600).\nDefault repo: git toplevel of cwd. Exit 0: measured; 2: invocation/registration error; 6: repository unavailable.\n');
+      output('so-hud --json [--repo-root <path>] [--session-id <raw-uuid>] [--register-root]\nRead-only HUD JSON v1. --register-root registers this SO installation (0600).\nDefault repo: git toplevel of cwd. --session-id: the session whose agents are counted, read beside its own session.lock (#1730); without it the id comes from CLAUDE_SESSION_ID/SO_SESSION_ID and agents are read in the repo.\nExit 0: measured; 2: invocation/registration error; 6: repository unavailable.\n');
       return 0;
     }
     if (!values.json && !values['register-root']) throw new Error('--json required');
-  } catch { error('so-hud: --json erforderlich; siehe --help\n'); return 2; }
+    if (values['session-id'] !== undefined && parseSessionId(values['session-id'])?.format !== 'uuid') throw new Error('bad --session-id');
+  } catch (e) {
+    error(e?.message === 'bad --session-id' ? 'so-hud: --session-id braucht eine Roh-UUID; siehe --help\n' : 'so-hud: --json erforderlich; siehe --help\n');
+    return 2;
+  }
   if (values['register-root']) {
     try {
       const dir = path.join(deps.home ?? os.homedir(), '.config/session-orchestrator/hud');
@@ -57,7 +62,7 @@ export async function main(argv, deps = {}) {
     }
     if (!(await fs.stat(root)).isDirectory()) throw new Error('missing');
   } catch { error('so-hud: Repo nicht ermittelbar\n'); return 6; }
-  try { output(`${JSON.stringify(await (deps.measure ?? measure)(root))}\n`); return 0; }
+  try { output(`${JSON.stringify(await (deps.measure ?? measure)(root, { sessionId: values['session-id'] ?? null }))}\n`); return 0; }
   catch { error('so-hud: Messung fehlgeschlagen\n'); return 6; }
 }
 if (isMainModule(import.meta.url)) process.exitCode = await main(process.argv.slice(2));

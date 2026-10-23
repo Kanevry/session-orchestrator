@@ -140,10 +140,14 @@ export function baselineSourcePath(root, source, directory = false, { missingRea
   try { realRoot = realpathSync(root); } catch { fail('unsafe-source'); }
   let current = root;
   let stat;
-  for (const component of source.split('/')) {
+  const components = source.split('/');
+  for (const [index, component] of components.entries()) {
     current = path.join(current, component);
     try { stat = lstatSync(current); } catch (error) { fail(error?.code === 'ENOENT' ? missingReason : 'unsafe-source'); }
     if (stat.isSymbolicLink()) fail('unsafe-source');
+    // A path below a non-directory is unsafe on every platform: POSIX lstat
+    // throws ENOTDIR, Windows ENOENT (which would read as "missing").
+    if (index < components.length - 1 && !stat.isDirectory()) fail('unsafe-source');
   }
   if (directory ? !stat.isDirectory() : !stat.isFile()) fail('unsafe-source');
   let real;

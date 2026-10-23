@@ -11,16 +11,17 @@ const measured: Omit<SoSnapshot, 'age_ms'> = {
   gate: { last: { variant: 'full-gate', passed: true, check_failed: null, exit_code: 0, at }, last_green_sha: null },
   peers: [], vault: { enabled: false, mode: 'warn', last_run: null, board: null }, degraded: [],
 }
-function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' = 'ok') {
+const UUID = '3f1c2b9a-6d4e-4f7a-9b2c-1e5d8a7c6b40'
+function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' | 'pre-1730' = 'ok') {
   const writes: SoBeacon[] = []
   const statuses: string[] = []
-  const calls = { pluginList: 0 }
+  const calls = { pluginList: 0, collector: [] as string[][] }
   const clock = mock.clock(on, { now: Date.parse(at) })
   mock.env(on, { HOME: '/home/test' })
   mock.store(on)
   on('fs.read', () => ({ value: '' }))
   on('fs.list', () => ({ value: [] }))
-  on('session.id', () => ({ value: 'test-session' }))
+  on('session.id', () => ({ value: collector === 'pre-1730' ? UUID : 'test-session' }))
   on('session.cwd', () => ({ value: '/repo' }))
   on('session.model', () => ({ value: 'sonnet' }))
   on('session.usage', () => ({ value: { startedAt: Date.parse(at), context: { window: 200000, tokens: 40000, percent: 20 }, rateLimits: [] } }))
@@ -29,7 +30,10 @@ function world(on: On, collector: 'ok' | 'failed' | 'invalid' | 'missing' = 'ok'
     if (e.argv.includes('identity')) stdout = '{"pid":123}'
     else if (e.argv.includes('write')) writes.push(JSON.parse(e.init?.stdin ?? '{}') as SoBeacon)
     else if (e.argv.some(a => a.endsWith('/scripts/so-hud.mjs'))) {
+      calls.collector.push([...e.argv])
       if (collector === 'failed') return { value: { exitCode: 6, stdout: '', stderr: 'measurement failed', isStdoutTruncated: false, isStderrTruncated: false } }
+      // A collector from before #1730 knows no --session-id: strict parseArgs, usage exit 2.
+      if (collector === 'pre-1730' && e.argv.includes('--session-id')) return { value: { exitCode: 2, stdout: '', stderr: 'so-hud: --json erforderlich; siehe --help\n', isStdoutTruncated: false, isStderrTruncated: false } }
       stdout = collector === 'invalid' ? '{}' : JSON.stringify(measured)
     }
     else if (collector === 'missing' && e.argv.includes('list')) { calls.pluginList++; stdout = '[]' }
@@ -97,6 +101,17 @@ for (const failure of ['failed', 'invalid', 'missing'] as const) {
     }
   })
 }
+// Catches (#1730): this mod passing --session-id to a Session Orchestrator from before #1730 — its collector exits 2 on
+// the unknown flag and every measurement failed for good.
+test('a collector without --session-id is measured without the flag, asked once', { options: { soRoot: '/so' } }, async ($, on) => {
+  const { statuses, calls, clock } = world(on, 'pre-1730')
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(statuses.at(-1) ?? '').not.toContain('collector-failed')
+  expect(calls.collector.map(a => a.includes('--session-id'))).toEqual([true, false])
+  await clock.advance(16_000)
+  expect(calls.collector.length).toBeGreaterThan(2)
+  expect(calls.collector.slice(2).every(a => !a.includes('--session-id'))).toBe(true)
+})
 // Catches (F13): without a Session Orchestrator root, every 15-second refresh spawning `claude plugin list` (a miss was never cached).
 test('without a root, `claude plugin list` runs once per 5 minutes, not on every refresh', async ($, on) => {
   const w = world(on, 'missing')

@@ -30,6 +30,15 @@
  * - an unknown first word fails with node's MODULE_NOT_FOUND (non-zero exit).
  * A call site that hits any of these uses installScriptCli instead.
  *
+ * On win32 the fake is `<binDir>/<name>.exe` instead: libuv's PATH search (and
+ * a spawn of the bare `<binDir>/<name>` path) only appends `.com`/`.exe`, never
+ * runs an extensionless file. It is a HARD LINK to node.exe (no Developer Mode
+ * needed; a symlink only when the link crosses volumes). Measured natively
+ * 2026-10-22 (node 24.14, %TEMP%): linkSync 0.2 ms; `spawnSync('glab',
+ * ['issue', 'view', '7'], { cwd })` with the bin dir on PATH, and a spawn of the
+ * returned path, both ran `<cwd>/issue` with argv `['view', '7']` — the same
+ * contract as on POSIX, so callers only need `path.delimiter` in PATH.
+ *
  * ## installScriptCli — a fake CLI whose arguments may start with an option
  *
  * `<binDir>/<name>` is a symlink to the COMMITTED launcher
@@ -45,6 +54,12 @@
  * The launcher pays the first-launch check once per checkout, not once per
  * test. Costs one extra `sh` exec over installNodeCli.
  *
+ * Not available on win32 — see SCRIPT_CLI_SUPPORTED: Windows starts only
+ * `.exe`/`.com` without a shell, an `.exe` that is node answers a leading
+ * option (`--version`) itself, and node refuses to spawn `.cmd`/`.bat` without
+ * `shell: true` (CVE-2024-27980). Node 24's single-executable route needs the
+ * `postject` dependency. Tests built on it skip on win32 and say so in the title.
+ *
  * ## installGitHook — a hook git runs on `<event>`
  *
  * Where the git on PATH supports config-based hooks (`hook.<name>.command`, see
@@ -56,7 +71,7 @@
  * version number.
  */
 
-import { chmodSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, linkSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from './tmp-fixture.mjs';
@@ -75,13 +90,33 @@ const PRELUDE =
  * @returns {string} absolute path of the fake binary (for `--x-bin <path>` flags).
  */
 export function installNodeCli(binDir, name, cwd, scripts) {
-  const bin = join(binDir, name);
-  symlinkSync(process.execPath, bin);
+  const bin = join(binDir, process.platform === 'win32' ? `${name}.exe` : name);
+  if (process.platform === 'win32') {
+    try {
+      linkSync(process.execPath, bin);
+    } catch (err) {
+      if (err.code !== 'EXDEV') throw err;
+      symlinkSync(process.execPath, bin);
+    }
+  } else {
+    symlinkSync(process.execPath, bin);
+  }
   for (const [word, source] of Object.entries(scripts)) {
     writeFileSync(join(cwd, word), PRELUDE + source);
   }
   return bin;
 }
+
+/**
+ * Whether installScriptCli can work on this platform (false on win32, see the
+ * module doc). Tests built on it use `it.skipIf(!SCRIPT_CLI_SUPPORTED)` and
+ * name the reason in the title.
+ */
+export const SCRIPT_CLI_SUPPORTED = process.platform !== 'win32';
+
+/** Title suffix for a test skipped on win32 for want of an option-first fake CLI. */
+export const NO_SCRIPT_CLI_REASON =
+  'skipped on win32: fake CLI with option-first argv needs sh or an .exe launcher (installScriptCli)';
 
 const LAUNCHER = fileURLToPath(new URL('../fixtures/bin/node-script-launcher', import.meta.url));
 

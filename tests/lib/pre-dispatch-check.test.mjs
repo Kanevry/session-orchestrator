@@ -75,13 +75,14 @@ describe('listUntracked', () => {
     expect(untracked).toContain('skills/new-skill/helper.mjs');
   });
 
-  it('#1354 — returns the REAL name of a path carrying a TAB and a non-ASCII byte', () => {
+  it('#1354 — returns the REAL name of a path carrying a TAB and a non-ASCII byte (TAB on POSIX only — illegal in Windows file names)', () => {
     // Regression for GitLab #1354. Without `-z`, git C-quotes such paths
     // (`"scripts/a\tb-\303\244.mjs"`) and the old hand-unquoting here reversed
     // only `\"` and `\\` — so the returned string was a path that exists
     // nowhere on disk, matched no scope pattern, and silently dropped the
     // overlap. The literal below is the REAL on-disk name.
-    const realName = 'scripts/a\tb-ä.mjs';
+    // The non-ASCII byte alone already makes git C-quote the path (core.quotePath), so win32 still proves the fix.
+    const realName = process.platform === 'win32' ? 'scripts/ab-ä.mjs' : 'scripts/a\tb-ä.mjs';
     writeFile(realName);
     expect(listUntracked(repoDir)).toEqual([realName]);
   });

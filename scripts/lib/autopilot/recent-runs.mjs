@@ -43,11 +43,13 @@
  *   - Corrupt lines are SKIPPED (not fatal): one malformed JSON line does not
  *     discard the rest of the history.
  *
- * No imports beyond node builtins. ESM. eslint-clean (eqeqeq, no-throw).
+ * Imports node builtins plus the #1722 ledger resolver. ESM. eslint-clean (eqeqeq, no-throw).
  */
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 /** Canonical per-repo autopilot telemetry path (relative to repoRoot). */
 const AUTOPILOT_JSONL_RELPATH = path.join('.orchestrator', 'metrics', 'autopilot.jsonl');
@@ -80,7 +82,7 @@ export function readRecentAutopilotRuns({ repoRoot, limit = DEFAULT_LIMIT } = {}
 
   let raw;
   try {
-    raw = readFileSync(path.join(repoRoot, AUTOPILOT_JSONL_RELPATH), 'utf8');
+    raw = readFileSync(resolveLedgerPath(AUTOPILOT_JSONL_RELPATH, repoRoot), 'utf8');
   } catch {
     // Missing / unreadable file ⇒ no history ⇒ [] (G2 gate omitted with a warning).
     return [];

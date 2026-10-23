@@ -28,6 +28,7 @@ import {
   OVERFLOW_DESCRIPTION_MAX,
   buildOverflowRecord,
 } from '@lib/issue-budget.mjs';
+import { stubHome } from '../_helpers/home-env.mjs';
 
 let repoRoot;
 
@@ -667,9 +668,7 @@ describe('loadIssueBudgetConfig — per-session-type resolution', () => {
 // Fix pass f-1 (#1314 review): where a relative description file is resolved.
 describe('buildOverflowRecord — description-file resolution', () => {
   const base = { command: 'glab issue create', at: '2026-09-12T00:00:00Z' };
-  let savedHome;
-  beforeEach(() => { savedHome = process.env.HOME; });
-  afterEach(() => { process.env.HOME = savedHome; });
+  afterEach(() => { vi.unstubAllEnvs(); });
 
   it.each([
     ['~/ expands to the home directory', { descriptionFile: '~/home-body.md' }, 'home body'],
@@ -678,7 +677,7 @@ describe('buildOverflowRecord — description-file resolution', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'ib-home-'));
     const cwd = mkdtempSync(path.join(tmpdir(), 'ib-cwd-'));
     try {
-      process.env.HOME = home;
+      stubHome(home);
       writeFileSync(path.join(home, 'home-body.md'), 'home body', 'utf8');
       writeFileSync(path.join(cwd, 'cwd-body.md'), 'cwd body', 'utf8');
       writeFileSync(path.join(repoRoot, 'cwd-body.md'), 'WRONG root file', 'utf8');

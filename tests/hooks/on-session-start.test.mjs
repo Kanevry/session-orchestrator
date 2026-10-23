@@ -18,6 +18,7 @@ import { pathToFileURL } from 'node:url';
 import { isRoot } from '../_helpers/perms.mjs';
 import { telemetryIsolationEnv } from '../_helpers/telemetry-isolation.mjs';
 import { brokenModuleBoot } from '../_helpers/broken-module-boot.mjs';
+import { homeEnv } from '../_helpers/home-env.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +75,8 @@ async function runHook({ projectDir, env = {}, stdin = null, registryDir = null,
         // otherwise differ between a machine that has decided and one that has
         // not. The nudge block below overrides HOME deliberately.
         ...telemetryIsolationEnv(),
+        // #1613 — Windows os.homedir() reads USERPROFILE, not the HOME above.
+        USERPROFILE: telemetryIsolationEnv().HOME,
         ...env,
       },
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -1765,7 +1768,7 @@ describe('telemetry-consent nudge (#1138)', { timeout: 15000 }, () => {
   }
 
   const consentEnv = (home, extra = {}) => ({
-    HOME: home,
+    ...homeEnv(home),
     SO_TELEMETRY: '',
     SO_TELEMETRY_DISABLED: '',
     DO_NOT_TRACK: '',
@@ -2560,7 +2563,7 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
   it('a solo home without an override emits no Navigator line (#1559)', async () => {
     const dir = await mkProjectTracked();
     const home = await mkNavDir(undefined);
-    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: '', HOME: home } });
+    const result = await runHook({ projectDir: dir, env: { NAVIGATOR_CONFIG_DIR: '', ...homeEnv(home) } });
     expect(result.code).toBe(0);
     // The banner itself must still render — only the Navigator line goes.
     expect(JSON.parse(result.stdout.trim()).systemMessage).toContain('ℹ New here?');
@@ -2658,15 +2661,19 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
   const CLEAR_ID = 'dddddddd-1111-4222-8333-444444444444';
   const lockFile = (dir) => path.join(dir, '.orchestrator', 'session.lock');
 
-  async function startupThen({ leaseId, fleet = true, secondId = CLEAR_ID, secondSource = 'clear' }) {
+  // `claudeEnv` reaches both runs; `firstArgv` replaces the first run's argv
+  // (a wrapper that is its own Claude process, #1746); `afterStartup` runs
+  // between the two.
+  async function startupThen({ leaseId, fleet = true, secondId = CLEAR_ID, secondSource = 'clear', claudeEnv = {}, firstArgv = null, afterStartup = null }) {
     const dir = await mkProjectTracked();
     if (fleet) await fs.mkdir(path.join(dir, '.orchestrator', 'runtime', 'fleet'), { recursive: true });
     const navDir = await mkNavDir(validLease(leaseId));
-    const env = { NAVIGATOR_CONFIG_DIR: navDir };
-    const first = await runHook({ projectDir: dir, env, useCwd: true, stdin: JSON.stringify({ session_id: STARTUP_ID, source: 'startup' }) });
+    const env = { NAVIGATOR_CONFIG_DIR: navDir, ...claudeEnv };
+    const first = await runHook({ projectDir: dir, env, useCwd: true, argv: firstArgv, stdin: JSON.stringify({ session_id: STARTUP_ID, source: 'startup' }) });
     expect(first.code).toBe(0);
     const startupLock = await fs.readFile(lockFile(dir), 'utf8');
     expect(JSON.parse(startupLock).session_id).toBe(STARTUP_ID);
+    if (afterStartup) await afterStartup(dir);
     const second = await runHook({ projectDir: dir, env, useCwd: true, stdin: JSON.stringify({ session_id: secondId, source: secondSource }) });
     expect(second.code).toBe(0);
     return { dir, startupLock, envelope: JSON.parse(second.stdout.trim()) };
@@ -2699,10 +2706,42 @@ describe('navigator banner line (#1462, fleet protocol v1)', { timeout: 15000 },
     expect(envelope.systemMessage.split('\n')).toContain(BANNER);
   });
 
-  it('the lead\'s own tab (lease = its startup raw id) does not yield after /clear (#1635)', async () => {
-    const { dir, envelope } = await startupThen({ leaseId: STARTUP_ID });
+  it('the lead\'s own tab (lease = its startup raw id, same Claude process) does not yield after /clear (#1635)', async () => {
+    // runHook spawns from this worker, so the worker is the hook's direct parent.
+    const { dir, envelope } = await startupThen({ leaseId: STARTUP_ID, claudeEnv: { CLAUDE_PID: String(process.pid) } });
     await expect(fs.access(lockFile(dir))).resolves.toBeUndefined();
     expect(JSON.stringify(envelope)).not.toContain('Haupt-Checkout belegt');
+  });
+
+  it('#1746: the lead started last in its own Claude process — a /clear of another tab takes no lock', async () => {
+    // The path from LSO #778 (22.10., 12:28 → 12:45 and 14:59 → 15:08 UTC): the
+    // lead starts in the main checkout and writes current-session.json last;
+    // another tab's /clear reads the lead's raw id there as its own predecessor.
+    // The wrapper is the lead's Claude process: the hook's direct parent, with
+    // CLAUDE_PID naming itself, so the lead's pid differs from this worker's.
+    const wrapper = "const { spawnSync } = require('node:child_process');"
+      + "const r = spawnSync(process.execPath, [process.argv[1]], { stdio: 'inherit', env: { ...process.env, CLAUDE_PID: String(process.pid) } });"
+      + 'process.exit(r.status ?? 1);';
+    let leadPid;
+    let leadCurrent;
+    const { dir, envelope } = await startupThen({
+      leaseId: STARTUP_ID,
+      claudeEnv: { CLAUDE_PID: String(process.pid) },
+      firstArgv: ['-e', wrapper, HOOK],
+      // In both incidents the checkout was lock-free when the /clear came (each
+      // /clear TOOK a lock), so the lead's startup lock is given back here.
+      afterStartup: async (d) => {
+        leadPid = JSON.parse(await fs.readFile(lockFile(d), 'utf8')).claude_pid;
+        leadCurrent = JSON.parse(await fs.readFile(path.join(d, '.orchestrator', 'current-session.json'), 'utf8'));
+        await fs.rm(lockFile(d));
+      },
+    });
+    await expect(fs.access(lockFile(dir))).rejects.toThrow();
+    expect(envelope.hookSpecificOutput?.additionalContext).toContain('Haupt-Checkout belegt durch Lead cccccccc, arbeite im Worktree');
+    // The shape is the incident's: the lead's pid is real and not this tab's.
+    expect(typeof leadPid).toBe('number');
+    expect(leadPid).not.toBe(process.pid);
+    expect(leadCurrent).toMatchObject({ session_id: STARTUP_ID, claude_pid: leadPid });
   });
 
   it('a repo the fleet does not work in (no runtime/fleet dir) does not yield after /clear (#1635)', async () => {

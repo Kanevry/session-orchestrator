@@ -80,6 +80,7 @@ import {
   resolveStoreRole,
 } from './lib/learnings/store-role.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 const DEFAULT_RULES_DIR = '.claude/rules';
 const DEFAULT_STORE = '.orchestrator/metrics/learnings.jsonl';
@@ -797,6 +798,8 @@ export async function main(argv = [], deps = {}) {
   let rulesDir = DEFAULT_RULES_DIR;
   let storeArg = DEFAULT_STORE;
   let archiveArg = DEFAULT_ARCHIVE;
+  let storeExplicit = false;
+  let archiveExplicit = false;
 
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -807,8 +810,8 @@ export async function main(argv = [], deps = {}) {
     else if (a === '--vault-dir') vaultDirArg = argv[++i];
     else if (a === '--vault-subdir') vaultSubdir = argv[++i];
     else if (a === '--rules-dir') rulesDir = argv[++i];
-    else if (a === '--store') storeArg = argv[++i];
-    else if (a === '--archive') archiveArg = argv[++i];
+    else if (a === '--store') { storeArg = argv[++i]; storeExplicit = true; }
+    else if (a === '--archive') { archiveArg = argv[++i]; archiveExplicit = true; }
     else {
       process.stderr.write(`backfill-learnings-from-vault: unknown argument: ${a}\n`);
       return { code: 1 };
@@ -859,8 +862,10 @@ export async function main(argv = [], deps = {}) {
   // `resolve` (not `join`) so an ABSOLUTE --store/--archive/--rules-dir wins over
   // the repo root instead of being silently nested under it.
   const rulesAbs = resolve(root, rulesDir);
-  const storeAbs = resolve(root, storeArg);
-  const archiveAbs = resolve(root, archiveArg);
+  // #1722: the DEFAULT store/archive route through the ledger resolver (main
+  // checkout when root is a linked worktree that gitignores them).
+  const storeAbs = storeExplicit ? resolve(root, storeArg) : resolveLedgerPath(DEFAULT_STORE, root);
+  const archiveAbs = archiveExplicit ? resolve(root, archiveArg) : resolveLedgerPath(DEFAULT_ARCHIVE, root);
   const learningsAbs = resolve(vaultDir, vaultSubdir);
 
   if (!existsSync(rulesAbs)) {

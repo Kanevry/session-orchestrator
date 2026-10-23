@@ -145,6 +145,7 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve, sep } from 'node:path';
 
 import { atomicWriteWithBackup } from '../io.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { parseLearningsText } from '../learnings/io.mjs';
 import { archivePathFor } from '../learnings/store-role.mjs';
 import { listMachineGeneratedRules } from '../instruction-budget-guard.mjs';
@@ -622,7 +623,11 @@ export async function planRuleExpirySweep(opts = {}) {
   const { expiryById, malformedLines, archiveMalformedLines } =
     listed.rules.length === 0
       ? { expiryById: new Map(), malformedLines: 0, archiveMalformedLines: 0 }
-      : await loadExpiryIndex(join(repoRoot, learningsPath ?? DEFAULT_LEARNINGS_PATH));
+      : await loadExpiryIndex(
+          // #1722: the default store (and its archive beside it) follows the
+          // ledger root; an explicit learningsPath stays repo-relative as before.
+          learningsPath ? join(repoRoot, learningsPath) : resolveLedgerPath(DEFAULT_LEARNINGS_PATH, repoRoot),
+        );
   const rulesDir = join(repoRoot, '.claude', 'rules');
   /** @type {Array<object>} */
   const plans = [];

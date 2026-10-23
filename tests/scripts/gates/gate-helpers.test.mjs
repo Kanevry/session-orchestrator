@@ -1169,6 +1169,17 @@ describe('joinGateKillFields (#1457)', () => {
       quietOuter, truncated, {}],
     ['counts a stubbed command as measured, so the inner typecheck kill survives',
       quietOuter, stubbedEnvelope, { timed_out: true, survivors: 0, kill_signals: ['SIGTERM'] }],
+    ['carries a group reaped after a normal exit into leftover_groups (#1708)',
+      quietOuter,
+      JSON.stringify({
+        variant: 'full-gate',
+        typecheck: { status: 'pass', timed_out: false, kill_signals: [], survivors: [] },
+        test: { status: 'pass', timed_out: false, kill_signals: [], survivors: [],
+          leftover_group: { pgid: 777, signals: ['SIGTERM'], survivors: [] } },
+        lint: { status: 'skip' },
+      }),
+      { leftover_groups: [{ command: 'test', pgid: 777, signals: ['SIGTERM'], survivors: [] }],
+        timed_out: false, survivors: 0, kill_signals: [] }],
   ])('%s', (_name, outer, gateStdout, expected) => {
     expect(joinGateKillFields({ outer, gateStdout })).toEqual(expected);
   });

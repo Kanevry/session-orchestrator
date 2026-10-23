@@ -1,7 +1,9 @@
 /**
  * tests/scripts/close-precheck.test.mjs — #1661: `/close` decides on WHOSE
- * STATE.md it reads, not only on its status. Wiring tests through the CLI the
- * close skill calls, with the real STATE.md parser and ledger reader.
+ * STATE.md it reads, not only on its status. #1718: when ownership is
+ * unproven, a would-be session-end stops until confirmed with a token bound to
+ * the STATE.md path and bytes. Wiring tests through the CLI the close skill
+ * calls, with the real STATE.md parser and ledger reader.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -9,6 +11,8 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+
+import { computeConfirmToken } from '../../scripts/lib/session-end/close-precheck.mjs';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/close-precheck.mjs');
 const OWN = '11111111-2222-4333-8444-555555555555';
@@ -40,10 +44,10 @@ function writeLock(sessionId) {
   })}\n`);
 }
 
-function run(ownId = OWN) {
+function run(ownId = OWN, extraArgs = [], repoRoot = dir) {
   const env = { ...process.env, SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: ownId };
   delete env.CODEX_THREAD_ID;
-  const r = spawnSync(process.execPath, [SCRIPT, '--repo-root', dir, '--state-dir', '.claude'], { env, encoding: 'utf8', timeout: 15_000 });
+  const r = spawnSync(process.execPath, [SCRIPT, '--repo-root', repoRoot, '--state-dir', '.claude', ...extraArgs], { env, encoding: 'utf8', timeout: 15_000 });
   return { code: r.status, out: r.status === 0 ? JSON.parse(r.stdout) : null, stderr: r.stderr };
 }
 
@@ -66,14 +70,82 @@ describe('close-precheck — ownership (#1661)', () => {
     expect(run().out).toMatchObject({ verdict: 'run-session-end', ownership: 'own', runsSessionEnd: true });
   });
 
-  it('STATE.md without session-id (pre-#1368) keeps the status-only behaviour', () => {
+  it('STATE.md without session-id does not run session-end unconfirmed (#1718)', () => {
     writeState({ status: 'active' });
-    expect(run().out).toMatchObject({ verdict: 'run-session-end', ownership: 'legacy' });
+    expect(run().out).toMatchObject({
+      verdict: 'ownership-unproven', ownership: 'legacy', wouldRun: 'run-session-end', runsSessionEnd: false,
+    });
   });
 
-  it('a process without a native id (Cursor, Pi) is never blocked as foreign', () => {
+  it('a process without a native id (Cursor, Pi) is never blocked as foreign, but must confirm (#1718)', () => {
     writeState({ status: 'active', sessionId: OTHER });
-    expect(run('').out).toMatchObject({ verdict: 'run-session-end', ownership: 'unprovable', ownSessionIds: [] });
+    expect(run('').out).toMatchObject({
+      verdict: 'ownership-unproven', ownership: 'unprovable', ownSessionIds: [], runsSessionEnd: false,
+    });
+  });
+});
+
+describe('close-precheck — unproven ownership needs confirmation (#1718)', () => {
+  it('a foreign old STATE.md without session-id and without a record is not closed (field case)', () => {
+    writeState({ status: 'completed' });
+    const { code, out } = run();
+    expect(code).toBe(0);
+    expect(out).toMatchObject({
+      verdict: 'ownership-unproven', runsSessionEnd: false, ownership: 'legacy',
+      wouldRun: 'complete-missing-record',
+      session: 'main-2026-10-17-session-8', startedAt: '2026-10-17T07:07:32.409Z',
+    });
+    expect(out.confirmToken).toMatch(/^[0-9a-f]{16}$/);
+  });
+
+  it('the token from the pre-check confirms and runs session-end', () => {
+    writeState({ status: 'active' });
+    const token = run().out.confirmToken;
+    const statePath = join(dir, '.claude', 'STATE.md');
+    expect(token).toBe(computeConfirmToken(statePath, readFileSync(statePath)));
+    expect(run(OWN, ['--confirm-own', token]).out).toMatchObject({
+      verdict: 'run-session-end', ownership: 'confirmed', runsSessionEnd: true,
+    });
+  });
+
+  it('a token from before STATE.md changed does not confirm', () => {
+    writeState({ status: 'active' });
+    const token = run().out.confirmToken;
+    // Body-only change, status stays active: the token covers the whole file, not the frontmatter.
+    const statePath = join(dir, '.claude', 'STATE.md');
+    writeFileSync(statePath, `${readFileSync(statePath, 'utf8')}- wave 2 done\n`);
+    const { out } = run(OWN, ['--confirm-own', token]);
+    expect(out).toMatchObject({ verdict: 'ownership-unproven', runsSessionEnd: false });
+    expect(out.reason).toEqual(expect.any(String));
+  });
+
+  it('a token from another repo with a byte-identical STATE.md does not confirm', () => {
+    writeState({ status: 'active' });
+    const other = mkdtempSync(join(tmpdir(), 'close-precheck-other-'));
+    try {
+      mkdirSync(join(other, '.claude'), { recursive: true });
+      writeFileSync(join(other, '.claude', 'STATE.md'), readFileSync(join(dir, '.claude', 'STATE.md')));
+      const token = run(OWN, [], other).out.confirmToken;
+      expect(token).toMatch(/^[0-9a-f]{16}$/);
+      expect(run(OWN, ['--confirm-own', token]).out).toMatchObject({ verdict: 'ownership-unproven', runsSessionEnd: false });
+    } finally {
+      rmSync(other, { recursive: true, force: true });
+    }
+  });
+
+  it('a matching token never overrides foreign', () => {
+    writeState({ status: 'active', sessionId: OTHER });
+    const statePath = join(dir, '.claude', 'STATE.md');
+    const token = computeConfirmToken(statePath, readFileSync(statePath));
+    expect(run(OWN, ['--confirm-own', token]).out).toMatchObject({ verdict: 'foreign', runsSessionEnd: false });
+  });
+
+  it('a malformed --confirm-own is a usage error', () => {
+    writeState({ status: 'active' });
+    const { code, out, stderr } = run(OWN, ['--confirm-own', 'xyz']);
+    expect(code).toBe(2);
+    expect(out).toBeNull();
+    expect(stderr).toContain('--confirm-own needs a 16-hex token');
   });
 });
 

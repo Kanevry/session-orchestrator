@@ -7,6 +7,8 @@ import { spawnSync } from 'node:child_process';
 import { collectSnapshot } from '../../scripts/lib/so-hud/collect.mjs';
 import { LIFECYCLE_DECAY_MS, readCurrentStatus } from '../../scripts/lib/agent-status.mjs';
 import { readLockDetailed } from '../../scripts/lib/session-lock.mjs';
+import { main as soHudMain } from '../../scripts/so-hud.mjs';
+import { fixtureGit } from '../_helpers/tmp-fixture.mjs';
 
 const HOOK = path.join(process.cwd(), 'hooks/subagent-telemetry.mjs');
 const SID = '3f1c2b9a-6d4e-4f7a-9b2c-1e5d8a7c6b40';
@@ -137,5 +139,45 @@ describe('so-hud agents (#1580)', () => {
     const map = JSON.parse(await fs.readFile(path.join(worktree, '.orchestrator/runtime/agent-status-current.json'), 'utf8'));
     expect(map.w1).toMatchObject({ status: 'running', session_id: SID });
     await expect(fs.stat(path.join(launch, '.orchestrator/runtime/agent-status-current.json'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('counts the agents beside the own lock when the HUD measures another checkout (--session-id, #1730)', async () => {
+    // Bug: the lock sits in the main checkout, the session works in a worktree, and the mod measures the worktree.
+    // The writer put the agent beside the lock; the HUD read the worktree and showed no running agent.
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'so-hud-own-root-'));
+    roots.push(base);
+    const main = path.join(base, 'main');
+    const wt = path.join(base, 'wt');
+    fixtureGit(['init', '-b', 'main', main], undefined, { stdio: 'ignore' });
+    fixtureGit(['-c', 'user.email=test@example.invalid', '-c', 'user.name=Test', 'commit', '--allow-empty', '--no-verify', '-m', 'init'], main, { stdio: 'ignore' });
+    fixtureGit(['worktree', 'add', '-b', 'wt', wt], main, { stdio: 'ignore' });
+    const startedAt = new Date(Date.now() - 60_000).toISOString();
+    await fs.mkdir(path.join(main, '.orchestrator'), { recursive: true });
+    await fs.writeFile(path.join(main, '.orchestrator/session.lock'), JSON.stringify({
+      session_id: SID, started_at: startedAt, last_heartbeat: startedAt, pid: process.pid, host: os.hostname(), mode: 'deep', ttl_hours: 4, schema_version: 2,
+    }));
+    const registry = path.join(base, 'registry');
+    await fs.mkdir(path.join(registry, 'active'), { recursive: true });
+    await fs.writeFile(path.join(registry, 'active', `${SID}.json`), JSON.stringify({ session_id: SID, session_root: main, work_root: wt, last_heartbeat: new Date().toISOString() }));
+    const fired = spawnSync(process.execPath, [HOOK], {
+      input: JSON.stringify({ session_id: SID, cwd: wt, hook_event_name: 'SubagentStart', agent_id: 'w1', agent_type: 'code-implementer' }), encoding: 'utf8', timeout: 10_000,
+      env: { ...process.env, CLAUDE_PROJECT_DIR: main, SO_SESSION_REGISTRY_DIR: registry, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '' },
+    });
+    expect(fired.status).toBe(0);
+
+    const prev = process.env.SO_SESSION_REGISTRY_DIR;
+    process.env.SO_SESSION_REGISTRY_DIR = registry;
+    try {
+      const hud = async args => {
+        let out = '';
+        expect(await soHudMain(['--json', '--repo-root', wt, ...args], { output: v => { out += v; } })).toBe(0);
+        return JSON.parse(out).agents;
+      };
+      expect((await hud([])).running).not.toBe(1);
+      expect(await hud(['--session-id', SID])).toMatchObject({ running: 1, stale_reason: null });
+    } finally {
+      if (prev === undefined) delete process.env.SO_SESSION_REGISTRY_DIR;
+      else process.env.SO_SESSION_REGISTRY_DIR = prev;
+    }
   });
 });

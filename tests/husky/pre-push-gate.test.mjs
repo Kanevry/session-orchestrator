@@ -52,6 +52,7 @@ import { spawnSync } from 'node:child_process';
 
 import { join, resolve } from 'node:path';
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-push');
@@ -152,7 +153,7 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
     delete childEnv.SKIP_QUALITY_GATE;
     Object.assign(childEnv, { GATE_RAN_FILE: gateRanFile, GATE_EXIT: String(gateExit) }, env);
     if (moveDuringGate) childEnv.MOVE_REPO = dir;
-    const res = spawnSync('sh', ['-e', HOOK_PATH, ...args], {
+    const res = spawnSync(posixShell('sh'), ['-e', HOOK_PATH, ...args], {
       cwd: dir,
       input: stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
       encoding: 'utf8',
@@ -192,7 +193,7 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
   // `sh -e` as husky 9 runs it (.husky/_/h): under plain `sh` a red gate's
   // `( … ); status=$?` survived and printed "Push blocked"; under -e it aborted
   // silently before the message — the suite stayed green on that bug (#1540).
-  const res = spawnSync('sh', ['-e', HOOK_PATH], {
+  const res = spawnSync(posixShell('sh'), ['-e', HOOK_PATH], {
     cwd: dir,
     input: stdin,
     encoding: 'utf8',
@@ -321,7 +322,8 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
     expect(idx).toBeGreaterThanOrEqual(0);
     // `git rev-parse --show-toplevel` returns the resolved path, so compare
     // against realpath (/var → /private/var on macOS).
-    expect(gateArgv[idx + 1]).toBe(realpathSync(dir));
+    // resolve(): Git Bash hands over C:/… where realpath says C:\…; a no-op elsewhere.
+    expect(resolve(gateArgv[idx + 1])).toBe(realpathSync(dir));
   });
 
   it('warns, but lets the gated sha through, when the pushed ref moves while the gate runs (#1623)', { timeout: 60_000 }, () => {

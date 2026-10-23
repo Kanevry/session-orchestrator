@@ -67,6 +67,7 @@ import { createSecretValueMasker } from './lib/secret-masker.mjs';
 import { stableHostname, readHostAliases } from './lib/host-identity.mjs';
 import { emitEvent, sessionAttribution } from './lib/events.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 // Vault-relative default write target (Epic #774 — docs Public-Split removed
 // the prior in-repo generated telemetry doc in favor of the private Meta-Vault).
@@ -573,6 +574,7 @@ function parseArgs(argv) {
   const out = {
     dryRun: false,
     promote: false,
+    // ledger-root: parse default, routed after parsing unless --input is explicit
     input: '.orchestrator/metrics/learnings.jsonl',
     output: undefined, // resolved lazily below (default = vault-dir target)
     generatedAt: new Date().toISOString(),
@@ -582,11 +584,12 @@ function parseArgs(argv) {
     // themselves (see their opts.repoRoot doc for why).
     repoRoot: findProjectRoot(),
   };
+  let inputExplicit = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
     else if (a === '--promote') out.promote = true;
-    else if (a === '--input') out.input = argv[++i];
+    else if (a === '--input') { out.input = argv[++i]; inputExplicit = true; }
     else if (a === '--output') out.output = argv[++i];
     else if (a === '--generated-at') out.generatedAt = argv[++i];
     else if (a === '--help' || a === '-h') {
@@ -624,6 +627,13 @@ function parseArgs(argv) {
       process.exit(1);
     }
     out.output = resolved;
+  }
+  // #1722: the DEFAULT input routes through the ledger resolver (main checkout
+  // when cwd is a linked worktree that gitignores it); outside one the relative
+  // default is kept verbatim. An explicit --input stays as given.
+  if (!inputExplicit) {
+    const routed = resolveLedgerPath(out.input, process.cwd());
+    if (routed !== path.resolve(out.input)) out.input = routed;
   }
   return out;
 }

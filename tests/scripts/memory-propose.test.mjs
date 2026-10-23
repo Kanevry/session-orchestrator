@@ -1315,6 +1315,6 @@ describe('foreign platform STATE.md (#1636)', () => {
     });
     expect(code).toBe(3);
     expect(parseJSON(stdout).status).toBe('rejected-wrong-context');
-    expect(stderr).toMatch(/ignoring \S+\/\.codex\/STATE\.md/);
+    expect(stderr).toMatch(/ignoring \S+[\\/]\.codex[\\/]STATE\.md/);
   });
 });

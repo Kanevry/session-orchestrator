@@ -1,9 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 import {
   CONTEXT_OVERHEAD_HEADER,
   formatContextOverhead,
@@ -66,9 +67,9 @@ set -eu
 [[ "$#" -eq 4 && "$1" == '-p' && "$2" == 'Antworte nur mit dem Wort: OK' && "$3" == '--output-format' && "$4" == 'json' ]] || exit 90
 printf '%s\\n' '{"usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":2},"total_cost_usd":0,"cost_basis":"api-list-equivalent"}'
 `, { mode: 0o755 });
-    const result = spawnSync('bash', [script, ...dirs], {
+    const result = spawnSync(posixShell('bash'), [script, ...dirs], {
       cwd: fixture,
-      env: { ...process.env, HOME: home, NAVIGATOR_CONFIG_DIR: config, PATH: `${bin}:${process.env.PATH}` },
+      env: { ...process.env, HOME: home, NAVIGATOR_CONFIG_DIR: config, PATH: `${bin}${delimiter}${process.env.PATH}` },
       encoding: 'utf8', timeout: 5000,
     });
     // Sandbox EPERM may coexist with plausible output/status; never count that as green.

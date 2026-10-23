@@ -282,11 +282,17 @@ describe('detectSharedLibTouch — #1058 uncommitted working tree', () => {
     // but are left out on purpose — macOS/Linux disagree on NFC/NFD
     // normalisation, which would make the assertion flaky for a reason that has
     // nothing to do with this parser.
-    writeFileInRepo('scripts/lib/my dir/quo"te.mjs', 'export const x = 1;\n');
+    // Windows forbids `"` in file names. There a non-ASCII name takes its place:
+    // git C-quotes it as well (core.quotePath defaults to true), and NTFS does
+    // not normalise it, so the NFC/NFD concern above does not apply.
+    const quoted = process.platform === 'win32'
+      ? 'scripts/lib/my dir/quo\u00e9te.mjs'
+      : 'scripts/lib/my dir/quo"te.mjs';
+    writeFileInRepo(quoted, 'export const x = 1;\n');
 
     const result = detectSharedLibTouch({ repoRoot, sinceRef: baseSha });
 
-    expect(result).toEqual({ touched: true, paths: ['scripts/lib/my dir/quo"te.mjs'] });
+    expect(result).toEqual({ touched: true, paths: [quoted] });
   });
 
   it('returns BOTH sides of an uncommitted rename inside scripts/lib/', () => {

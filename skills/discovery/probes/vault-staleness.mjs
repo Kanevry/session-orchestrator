@@ -37,8 +37,9 @@
  */
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { expandTilde } from '../../../scripts/lib/common.mjs';
+import { resolveLedgerPath } from '../../../scripts/lib/ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Minimal YAML frontmatter parser — top-level scalar fields only (<30 lines).
@@ -302,9 +303,10 @@ export async function runProbe(projectRoot, config) {
       })),
     };
     try {
-      mkdirSync(join(projectRoot, '.orchestrator/metrics'), { recursive: true });
+      const ledgerPath = resolveLedgerPath('.orchestrator/metrics/vault-staleness.jsonl', projectRoot);
+      mkdirSync(dirname(ledgerPath), { recursive: true });
       appendFileSync(
-        join(projectRoot, '.orchestrator/metrics/vault-staleness.jsonl'),
+        ledgerPath,
         JSON.stringify(record) + '\n'
       );
     } catch {

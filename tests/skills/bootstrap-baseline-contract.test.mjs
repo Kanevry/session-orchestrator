@@ -6,9 +6,11 @@ import { spawnSync } from 'node:child_process';
 import { parseSessionConfig } from '../../scripts/lib/config.mjs';
 import { loadQualityGatesPolicy, resolveCommand } from '../../scripts/lib/quality-gates-policy.mjs';
 import { isPluginOwnedContent } from '../../scripts/lib/validate-vendored-rules.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const pluginRoot = path.resolve(import.meta.dirname, '../..');
 const roots = [];
+let scriptSeq = 0;
 const put = (root, name, content) => { mkdirSync(path.dirname(path.join(root, name)), { recursive: true }); writeFileSync(path.join(root, name), content); };
 function fixture() {
   const root = mkdtempSync(path.join(tmpdir(), 'private-bootstrap-')); roots.push(root);
@@ -50,7 +52,11 @@ function execute(script, { root, baseline, repo }) {
   // 60 s, not 15 s: each block spawns several node processes; on a loaded shared
   // runner 15 s produced status:null (SIGTERM by the timeout) on GitLab #9048 shard 3/3
   // twice while the same code passed on #9047 and locally (2026-09-09, #1298.10).
-  return spawnSync('bash', ['-euo', 'pipefail', '-c', script], { cwd: repo, timeout: 60000, encoding: 'utf8', env: {
+  // The script travels as a file, not a `-c` argument: Git for Windows'
+  // bin\\bash.exe launcher truncates a long argv (a 9 KiB block arrived as 8 KiB,
+  // measured 2026-10-22, SO#1613), and the composed blocks here are longer.
+  const file = path.join(root, `block-${++scriptSeq}.sh`); writeFileSync(file, script);
+  return spawnSync(posixShell('bash'), ['-euo', 'pipefail', file], { cwd: repo, timeout: 60000, encoding: 'utf8', env: {
     ...process.env, SO_CONFIG_HOME: path.join(root, 'owner-config'), SO_BASELINE_PATH: baseline, REPO_ROOT: repo,
     PLUGIN_ROOT: pluginRoot, CONFIRMED_ARCHETYPE: 'sample-web', REPO_NAME: 'sample-project', PATH_TYPE: 'private', CONFIG: '{}', GITLAB_TOKEN: '', GITLAB_HOST: '', DRY_RUN: '', RULES_CATEGORIES: '',
   } });

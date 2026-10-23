@@ -78,6 +78,7 @@ const USAGE =
  * @returns {{ok: true, file: string}|{ok: false, metricsDir: string, resolved: string}}
  */
 function resolveLedgerTarget(file, repoRoot) {
+  // ledger-root: explicit --repo-root by design; pre-bash-sessions-ledger-guard judges the same root
   const metricsDir = path.resolve(repoRoot, '.orchestrator', 'metrics');
   // `absFile` (normalized, `..` collapsed) is what the repair uses — NOT the
   // symlink-resolved form, so the canonical-path equality in `verifyWritten`

@@ -28,7 +28,7 @@ describe('.husky/pre-commit — wave-scope-commit-guard wiring (#821)', () => {
     expect(hookContent).toMatch(/node hooks\/wave-scope-commit-guard\.mjs \|\| exit 1/);
   });
 
-  it('is exec-bit set (husky requirement)', () => {
+  it.skipIf(process.platform === 'win32')('is exec-bit set (husky requirement) (skipped on win32: the working tree has no exec bit)', () => {
     const stat = execFileSync('ls', ['-l', HOOK_PATH], { encoding: 'utf8' });
     expect(stat).toMatch(/^-r[w-]x/);
   });

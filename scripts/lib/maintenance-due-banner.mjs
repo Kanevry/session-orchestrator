@@ -79,6 +79,7 @@ import { sweepExpiredLearnings } from './learnings/expiry-sweep.mjs';
 import { shouldDispatchAutoDialectic } from './auto-dialectic.mjs';
 import { shouldDispatchAutoDream } from './auto-dream.mjs';
 import { resolveMemoryDir } from './memory-paths.mjs';
+import { resolveLedgerPath } from './ledger-path.mjs';
 import { readCanonicalSessions, isMeasuredSession } from './sessions-canonical.mjs';
 import {
   daysUntilGeneratedRuleExpiry,
@@ -357,7 +358,8 @@ export async function computeMaintenanceDue(opts = {}) {
     if (nudge.nudge === true) {
       // HR-106: report what the rule JUDGED. `computeReconcileNudge` nudges on
       // a BACKLOG — rule-eligible learnings minus those already materialized
-      // in the sidecar or `.claude/rules/` (`countReconcileBacklog`, #1380;
+      // in the sidecar, the verdict ledger (#1710) or `.claude/rules/`
+      // (`countReconcileBacklog`, #1380;
       // before #1380 it counted all eligible ones) — never on a date — so
       // printing `lastRunAt` here put today's date next to the word "due" and
       // read as "last run today and already due again". Measured 2026-09-09
@@ -373,10 +375,9 @@ export async function computeMaintenanceDue(opts = {}) {
 
   // --- sweep (S2) ----------------------------------------------------------
   try {
-    const metrics = path.join(repoRoot, '.orchestrator', 'metrics');
     const res = await sweepExpiredLearnings({
-      filePath: path.join(metrics, 'learnings.jsonl'),
-      archivePath: path.join(metrics, 'learnings-archive.jsonl'),
+      filePath: resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot),
+      archivePath: resolveLedgerPath('.orchestrator/metrics/learnings-archive.jsonl', repoRoot),
       now: opts.now,
       dryRun: true,
     });

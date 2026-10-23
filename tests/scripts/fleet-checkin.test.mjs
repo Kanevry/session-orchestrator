@@ -13,13 +13,15 @@
  *     that is not active (#1501 item 8: the deadline lived only as prose).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { EVENTS_LEDGER_SANDBOX_ENV } from '../../scripts/lib/events.mjs';
 import { validateCheckin, utcSecondsTimestamp } from '../../scripts/lib/fleet-protocol.mjs';
+import { homeEnv } from '../_helpers/home-env.mjs';
+import { writeCheckinFile } from '../../scripts/fleet-checkin.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../../scripts/fleet-checkin.mjs');
 
@@ -34,6 +36,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   await fs.rm(tmp, { recursive: true, force: true });
 });
 
@@ -46,6 +50,10 @@ afterEach(async () => {
 function runCli(stdin, timeout, envOverrides = {}) {
   const env = {
     ...process.env,
+    // A home that is NOT an ancestor of tmp (#1613): the CLI abbreviates paths
+    // under the home to `~`, and on Windows the temp root lies under the real
+    // home (%TEMP%), so `path` would come back as `~\AppData\…`.
+    ...homeEnv(path.join(tmp, 'home')),
     NAVIGATOR_CONFIG_DIR: navDir,
     [EVENTS_LEDGER_SANDBOX_ENV]: ledger,
     CLAUDE_PROJECT_DIR: tmp,
@@ -92,7 +100,7 @@ async function exists(p) {
 
 describe('fleet-checkin CLI', () => {
   it('without fleet integration skips writing, directory creation and events (#1559)', async () => {
-    const r = await runCli(JSON.stringify(checkin({ plattform: 'claude' })), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    const r = await runCli(JSON.stringify(checkin({ plattform: 'claude' })), 2000, { NAVIGATOR_CONFIG_DIR: '', ...homeEnv(tmp) });
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout).toBe('{"ok":true,"skipped":"no-fleet","path":null,"navigator_state":"none","navigator_adresse":null,"fallback_due_at":null,"event":false}\n');
     expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);
@@ -104,7 +112,7 @@ describe('fleet-checkin CLI', () => {
   // directory turns every later solo session into a fleet session (#1559
   // second review, MED).
   it('a kopflos check-in without fleet integration creates no navigator directory (#1559)', async () => {
-    const r = await runCli(JSON.stringify(checkin()), 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    const r = await runCli(JSON.stringify(checkin()), 2000, { NAVIGATOR_CONFIG_DIR: '', ...homeEnv(tmp) });
     expect(r.code, r.stderr).toBe(0);
     expect(JSON.parse(r.stdout).skipped).toBe('no-fleet');
     expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);
@@ -126,8 +134,12 @@ describe('fleet-checkin CLI', () => {
       event: true,
     });
 
-    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(path.join(navDir, 'checkin'))).mode & 0o777).toBe(0o700);
+    // POSIX mode bits only: Windows has no group/other bits, fs.stat reports
+    // 0o666/0o777 for any writable entry, so there is nothing to assert (#1613).
+    if (process.platform !== 'win32') {
+      expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+      expect((await fs.stat(path.join(navDir, 'checkin'))).mode & 0o777).toBe(0o700);
+    }
 
     expect(content.zeit).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     expect(validateCheckin(content)).toEqual([]);
@@ -155,6 +167,32 @@ describe('fleet-checkin CLI', () => {
     expect(r.stderr).toContain('other/project');
     expect(r.stdout).toBe('');
     expect(await readEvents()).toEqual([]);
+  });
+
+  // #1744: on win32 `openNoFollow` reports a target swapped between lstat and
+  // open as ERR_FILE_CHANGED. Deleting or reordering the fail-closed branch in
+  // writeCheckinFile would then overwrite a foreign check-in on Windows; POSIX
+  // never takes that branch, so the opener is injected here.
+  it('a target swapped during the ownership read → false, foreign bytes kept, no tmp, one refusal line', async () => {
+    vi.stubEnv('NAVIGATOR_CONFIG_DIR', navDir);
+    const dir = path.join(navDir, 'checkin');
+    const file = path.join(dir, 'sess-1.json');
+    const foreign = JSON.stringify(checkin({ repo: 'other/project', zeit: '2026-10-11T14:00:00Z' })) + '\n';
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(file, foreign);
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+
+    const ok = await writeCheckinFile(file, checkin(), {
+      open: async () => { throw Object.assign(new Error('swapped'), { code: 'ERR_FILE_CHANGED' }); },
+    });
+
+    expect(ok).toBe(false);
+    expect(await fs.readFile(file)).toEqual(Buffer.from(foreign));
+    expect(await fs.readdir(dir)).toEqual(['sess-1.json']);
+    expect(stderr).toHaveBeenCalledTimes(1);
+    expect(String(stderr.mock.calls[0][0])).toBe(
+      'fleet-checkin: check-in target sess-1.json changed during the safety check; refusing to overwrite\n',
+    );
   });
 
   it('a foreign repo containing control characters produces one stderr line without terminal escapes', async () => {
@@ -240,7 +278,7 @@ describe('fleet-checkin CLI', () => {
     expect(withFleet.code).toBe(2);
     expect(await exists(navDir)).toBe(false);
 
-    const solo = await runCli('not json', 2000, { NAVIGATOR_CONFIG_DIR: '', HOME: tmp });
+    const solo = await runCli('not json', 2000, { NAVIGATOR_CONFIG_DIR: '', ...homeEnv(tmp) });
     expect(solo.code).toBe(2);
     expect(solo.stdout).toBe('');
     expect(await exists(path.join(tmp, '.config', 'navigator'))).toBe(false);

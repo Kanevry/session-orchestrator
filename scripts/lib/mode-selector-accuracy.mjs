@@ -33,6 +33,7 @@
 
 import { appendLearning } from './learnings.mjs';
 import { isValidMode } from './recommendations-v0.mjs';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 export const LEARNING_TYPE = 'mode-selector-accuracy';
 export const INITIAL_CONFIDENCE = 0.5;
@@ -66,7 +67,7 @@ export async function recordAccuracy(opts) {
   const recommended = opts?.recommended;
   const chosen = opts?.chosen;
   const sessionId = opts?.sessionId;
-  const filePath = opts?.filePath || '.orchestrator/metrics/learnings.jsonl';
+  const filePath = opts?.filePath || resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', process.cwd());
 
   // No-op when the selector did not render a recommendation (banner suppressed,
   // confidence 0.0, etc). Caller passes recommended=null in that case.

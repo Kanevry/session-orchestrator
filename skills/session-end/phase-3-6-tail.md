@@ -209,6 +209,7 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
    import { buildSkillEvidence } from '${PLUGIN_ROOT}/scripts/lib/skill-evidence-window.mjs';
    import { runSkillJudge, evidenceBudgetChars } from '${PLUGIN_ROOT}/scripts/lib/skill-judge.mjs';
    import { appendSkillJudgment } from '${PLUGIN_ROOT}/scripts/lib/skill-judgments-schema.mjs';
+   import { resolveLedgerPath } from '${PLUGIN_ROOT}/scripts/lib/ledger-path.mjs';
    import path from 'node:path';
 
    const budgetTokens = config['skill-evolution']['judge-budget-tokens'] ?? 8000;
@@ -255,7 +256,8 @@ After learnings are written (Phase 3.6), and when the judge is enabled, run a **
 4. On `result.status === 'ok'`: the **COORDINATOR** writes each returned judgment to the sidecar. Stamp the per-record metadata (`timestamp`, `event: 'judged'`, `session_id`, `advisory: true`, `model`, `schema_version: 1`) and append:
 
    ```javascript
-   const judgmentsPath = path.join(process.cwd(), '.orchestrator/metrics/skill-judgments.jsonl');
+   // In a linked worktree the main checkout's ledger when it is gitignored there (#1722).
+   const judgmentsPath = resolveLedgerPath('.orchestrator/metrics/skill-judgments.jsonl', process.cwd());
    const nowIso = new Date().toISOString();
    for (const j of result.judgments) {
      await appendSkillJudgment(

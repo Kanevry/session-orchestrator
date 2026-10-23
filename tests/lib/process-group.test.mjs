@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -687,7 +687,7 @@ describe('gate-process ledger', () => {
     expect(read).toEqual({ records: [], malformedLines: 0, expired: 0, state: 'absent' });
   });
 
-  it('reads a DANGLING symlinked ledger as unreadable, not absent (#1498 review)', () => {
+  it.skipIf(process.platform === 'win32')('reads a DANGLING symlinked ledger as unreadable, not absent (#1498 review) (skipped on win32: no O_NOFOLLOW, a link is followed there — documented ceiling in no-follow-append.mjs/tail-window.mjs)', () => {
     // Bug: an `existsSync` pre-check followed the link, so a link to nowhere
     // read as "no ledger yet" while `appendNoFollow` refused it on every
     // registration — a refused ledger that looked clean.
@@ -786,7 +786,7 @@ describe('gate-process ledger', () => {
     }
   });
 
-  it('refuses to APPEND or READ through a symlinked ledger — appendFileSync wrote every gate registration into the link target', async () => {
+  it.skipIf(process.platform === 'win32')('refuses to APPEND or READ through a symlinked ledger — appendFileSync wrote every gate registration into the link target (skipped on win32: no O_NOFOLLOW, a link is followed there — documented ceiling in no-follow-append.mjs/tail-window.mjs)', async () => {
     // Bug (#1489, CWE-59): `recordGateProcess` used `appendFileSync(path)`,
     // which follows a symlink, so `ln -s <victim> gate-processes.jsonl` routed
     // every gate registration into the victim — and `readFileSync` then handed
@@ -1177,6 +1177,36 @@ describe('exit-time group cleanup (#1425 A1 — installExitHandler)', () => {
       expect(signal).toBe('SIGTERM');
 
       expect(await settleAndProbe(pgid)).toBe('ESRCH');
+    },
+    20_000,
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'runs a registered exit cleanup on SIGTERM before re-raising it (#1715, POSIX-only: real self-SIGTERM)',
+    () => {
+      // Bug #1715: the signal handler re-raised SIGTERM before any cleanup, so a
+      // caller's `finally` (snapshot-probe's rmSync of its mkdtemp dir) never ran
+      // and ~2,400 materialized files stayed in TMPDIR.
+      const target = path.join(probeDir, 'owned');
+      mkdirSync(target);
+      writeFileSync(path.join(target, 'marker'), 'x');
+      const script = [
+        `import { rmSync } from 'node:fs';`,
+        `const { registerExitCleanup } = await import(${JSON.stringify(MODULE_URL)});`,
+        `registerExitCleanup(() => rmSync(process.argv[1], { recursive: true, force: true }));`,
+        `setInterval(() => {}, 1000);`,
+        `process.kill(process.pid, 'SIGTERM');`,
+      ].join('\n');
+      const res = spawnSync(process.execPath, ['--input-type=module', '-e', script, target], {
+        encoding: 'utf8',
+        timeout: 10_000,
+        // Not SIGTERM: a timeout kill must not pass the signal assertion below.
+        killSignal: 'SIGKILL',
+      });
+      expect(res.error).toBeUndefined();
+      // Died FROM the signal: the cleanup must not swallow the default disposition.
+      expect(res.signal).toBe('SIGTERM');
+      expect(existsSync(target)).toBe(false);
     },
     20_000,
   );

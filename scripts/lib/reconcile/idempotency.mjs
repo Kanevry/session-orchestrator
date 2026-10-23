@@ -61,6 +61,7 @@ import { readFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteWithBackup } from '../io.mjs';
+import { appendVerdicts, isDecisionOutcome, loadVerdictLedger } from './verdict-ledger.mjs';
 
 /** Default repo-relative location of the reconcile-candidate work-queue. */
 export const DEFAULT_STORE_PATH = '.orchestrator/runtime/reconcile-candidates.jsonl';
@@ -317,11 +318,22 @@ export function isProcessed(candidate, existing) {
  * (malformed JSON, or a record missing `learning_key`/`created_at`). Because the
  * store is rewritten in full, those lines are DROPPED from disk by this call —
  * the count is what makes that loss attributable instead of silent.
+ *
+ * Verdict ledger (#1710): after a successful store write, and ONLY when
+ * `repoRoot` was passed explicitly, every terminal DECISION of the merged store
+ * (`isDecisionOutcome` — not the branch-scoped `written` / `already-on-disk` /
+ * absent outcome, see `BRANCH_SCOPED_OUTCOMES`) whose `learning_key` the
+ * append-only ledger (`./verdict-ledger.mjs`) does not yet hold is appended
+ * there — new stamps AND older sidecar verdicts (a one-time backfill). The
+ * ledger outlives the gitignored, checkout-local sidecar, so a fresh worktree
+ * keeps an operator decline. A ledger failure never turns a successful store
+ * write into a failure; it is reported in the additive `ledger` field (absent
+ * when the ledger was not consulted) and as ONE stderr WARN.
  * @param {Object} [params]
  * @param {ReconcileCandidate[]} [params.candidates] - newly minted candidates to merge.
  * @param {string} [params.repoRoot]
  * @param {string} [params.storePath]
- * @returns {{ merged: ReconcileCandidate[], written: boolean, skipped: number }}
+ * @returns {{ merged: ReconcileCandidate[], written: boolean, skipped: number, ledger?: { ok: boolean, appended: number, error?: string } }}
  */
 export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
   const absPath = resolveStorePath(repoRoot, storePath);
@@ -353,7 +365,28 @@ export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
   );
 
   const result = writeStore(absPath, merged);
-  return { merged, written: result.ok === true, skipped };
+  const written = result.ok === true;
+  if (!written || typeof repoRoot !== 'string' || repoRoot.length === 0) {
+    return { merged, written, skipped };
+  }
+
+  const ledger = loadVerdictLedger(repoRoot);
+  if (ledger.readError) {
+    // Unreadable ledger: appending blind would duplicate every verdict.
+    process.stderr.write('⚠ mergeCandidates: verdict ledger unreadable — no verdicts mirrored this merge\n');
+    return { merged, written, skipped, ledger: { ok: false, appended: 0, error: 'ledger unreadable' } };
+  }
+  const missing = merged.filter(
+    (rec) => isTerminal(rec) && isDecisionOutcome(rec.outcome) && !ledger.terminalKeys.has(rec.learning_key),
+  );
+  const appended = appendVerdicts(repoRoot, missing);
+  if (appended.ok !== true) {
+    process.stderr.write(
+      `⚠ mergeCandidates: verdict ledger append failed (${appended.error ?? 'unknown error'}) — ` +
+        `${missing.length} verdict(s) not mirrored\n`,
+    );
+  }
+  return { merged, written, skipped, ledger: appended };
 }
 
 /**
@@ -376,7 +409,10 @@ export function mergeCandidates({ candidates, repoRoot, storePath } = {}) {
  * `mergeCandidates`'s own dedupe rule still applies underneath this call: if
  * the existing record is ALREADY terminal (a prior `processed_at`), the merge
  * keeps the existing verdict and this call is a no-op on disk — a terminal
- * verdict is never regressed, even by a second stamp attempt.
+ * verdict is never regressed, even by a second stamp attempt. One exception
+ * (#1710): a DECISION (`isDecisionOutcome`) stamped over a kept `written` /
+ * `already-on-disk` record is still appended to the verdict ledger (explicit
+ * `repoRoot` only), so a dropped or swept rule stays dropped in other checkouts.
  *
  * Never throws (delegates to the never-throwing `loadCandidates`/
  * `mergeCandidates`); on write failure returns `{ written: false, ... }`.
@@ -460,6 +496,32 @@ export function markCandidateProcessed({
   // the caller a verdict that is nowhere on disk. `merged` IS the array that was
   // just written, so reading the record back out of it is the honest answer.
   const persisted = result.merged.find((rec) => rec && rec.learning_key === learningKey);
+
+  // A DECISION stamped over a kept branch-scoped terminal record (`written` /
+  // `already-on-disk`) never reaches the ledger through `mergeCandidates`: the
+  // store keeps the old outcome, and only decisions are mirrored. That is the
+  // rule-drop recipe and the expiry sweep's delete stamp — append it here so the
+  // drop holds in other checkouts too (#1710).
+  if (
+    result.written === true &&
+    typeof repoRoot === 'string' &&
+    repoRoot.length > 0 &&
+    isDecisionOutcome(outcome) &&
+    persisted &&
+    !isDecisionOutcome(persisted.outcome)
+  ) {
+    const ledger = loadVerdictLedger(repoRoot);
+    if (!ledger.readError && !ledger.terminalKeys.has(learningKey)) {
+      const appended = appendVerdicts(repoRoot, [{ learning_key: learningKey, outcome, processed_at: stampAt }]);
+      if (appended.ok !== true) {
+        process.stderr.write(
+          `⚠ markCandidateProcessed: verdict ledger append failed (${appended.error ?? 'unknown error'}) — ` +
+            `${outcome} for ${learningKey} not mirrored\n`,
+        );
+      }
+    }
+  }
+
   return {
     written: result.written === true,
     stamped: persisted ?? stamped,

@@ -30,6 +30,7 @@ import { stableHostname } from '../../scripts/lib/host-identity.mjs';
 import { generateSessionNoteV2 } from '../../scripts/lib/vault-mirror/render-sessions.mjs';
 import { validateSession, ValidationError } from '../../scripts/lib/session-schema.mjs';
 import { COST_BASIS, PRICING_TABLE_DATE } from '../../scripts/lib/telemetry/pricing.mjs';
+import { makeLinkedWorktree } from '../_helpers/linked-worktree.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'emit-session.mjs');
@@ -667,6 +668,26 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
   // Blank the harness ids this suite may itself run under, so the
   // process-local witness is decided by the test, not by the host.
   const NO_NATIVE_ID = { CLAUDE_CODE_SESSION_ID: '', CODEX_THREAD_ID: '', SO_PLATFORM: '' };
+
+  // #1722 review: the hook writes subagents.jsonl resolved from the LAUNCH dir.
+  // A session launched in the main checkout that entered a worktree later, in a
+  // repo that VERSIONS the ledger, wrote main's copy; the cwd-resolved copy is
+  // the worktree's own and holds nothing of this session.
+  it('falls back to the ledger root copy when the cwd-resolved subagents ledger has no record (#1722)', () => {
+    const fx = makeLinkedWorktree('emit-sub-', {
+      files: { '.gitignore': '.orchestrator/metrics/sessions.jsonl\n', '.orchestrator/metrics/subagents.jsonl': '' },
+    });
+    try {
+      writeFileSync(join(fx.mainMetrics, 'subagents.jsonl'), `${JSON.stringify(stop('a1', 100, 200))}\n`, 'utf8');
+      const r = runCli(['--session-uuid', U, '--entry', JSON.stringify(validEntry())], null, { cwd: fx.wt, env: NO_NATIVE_ID });
+      expect(r.stderr).not.toContain('token rollup found no');
+      expect(r.status).toBe(0);
+      const w = JSON.parse(readFileSync(join(fx.mainMetrics, 'sessions.jsonl'), 'utf8').trim());
+      expect(w.total_tokens).toBe(300);
+    } finally {
+      fx.cleanup();
+    }
+  });
 
   it('merges the own-UUID rollup (other sessions excluded) and stamps raw_session_id', () => {
     writeJsonlIn('subagents.jsonl', [stop('a1', 100, 200), stop('a2', 50, 60), stop('x', 9, 9, 'other-uuid')]);

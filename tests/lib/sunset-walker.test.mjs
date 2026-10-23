@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { permsEnforced } from '../_helpers/perms.mjs';
 import {
   readDispatchCounts,
   readSkillJudgmentCounts,
@@ -693,11 +694,9 @@ describe('commandSkillLinkage — unreadable command file', () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  // Skip under root, where the 000 mode is bypassed and the read succeeds.
-  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
-
-  it.skipIf(isRoot)(
-    'records null linkage for an unreadable command file and does not throw',
+  // Skip where the 000 mode is not enforced: root bypasses it, native Windows has no read bit.
+  it.skipIf(!permsEnforced())(
+    'records null linkage for an unreadable command file and does not throw (skipped where chmod is not enforced: root, win32)',
     () => {
       let result;
       expect(() => {

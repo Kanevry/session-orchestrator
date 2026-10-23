@@ -60,7 +60,9 @@ export const SAME_LOGICAL_SESSION_SOURCES = new Set(['resume', 'clear', 'compact
 /**
  * Native `source` values on which a fleet lead's lease keeps this session out
  * of the MAIN checkout (#1635). A subset of SAME_LOGICAL_SESSION_SOURCES:
- * `compact` keeps the lock it already holds, `startup` stays untouched.
+ * `compact` keeps the lock it already holds, `startup` stays untouched. A
+ * session that yielded holds none: the yield leaves a #1651 release marker, so
+ * its later `compact` stays lockless too (#1747).
  *
  * @type {ReadonlySet<string>}
  */
@@ -93,6 +95,64 @@ async function hasOwnReleaseMarker(repoRoot, sessionId) {
   }
 }
 
+/** #1747 — `reason` of a release marker the lead yield writes. */
+const LEAD_YIELD_REASON = 'lead-yield';
+
+/**
+ * #1747 — the #1651 marker body for `sessionId`, or null. Never throws.
+ *
+ * @param {string} repoRoot
+ * @param {string} sessionId
+ * @returns {Promise<object|null>}
+ */
+async function readOwnReleaseMarker(repoRoot, sessionId) {
+  try {
+    const { readReleaseMarker } = await import('../../scripts/lib/session-lock.mjs');
+    return readReleaseMarker({ repoRoot, sessionId });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1747 — a lead yield is a release too: leave the #1651 marker for `sessionId`,
+ * tagged `reason: 'lead-yield'`, so a later `compact` or `resume` of this same
+ * session stays lockless while the lead's lease is active (compact is no yield
+ * source, and without the marker it took the free lock). Once the lease is
+ * gone, re-entry acquires and acquire() removes the marker as before. Never
+ * throws; a failed write is one stderr WARN and leaves the pre-#1747 behaviour.
+ *
+ * A marker that is already there and was not written by a yield stays as it is:
+ * without `reason` it is an explicit release (release-session-lock.mjs), which
+ * keeps its #1651 behaviour after the lease ends. Rewriting it as `lead-yield`
+ * made the next compaction after the lease take the lock back (review of !244,
+ * M1). An unreadable marker is kept for the same reason: the branch below
+ * already reads it as explicit.
+ *
+ * @param {string} repoRoot
+ * @param {string} sessionId
+ * @returns {Promise<void>}
+ */
+async function writeOwnReleaseMarker(repoRoot, sessionId) {
+  if (await hasOwnReleaseMarker(repoRoot, sessionId)) {
+    const existing = await readOwnReleaseMarker(repoRoot, sessionId);
+    if (existing?.reason !== LEAD_YIELD_REASON) return;
+  }
+  let reason;
+  try {
+    const { writeReleaseMarker } = await import('../../scripts/lib/session-lock.mjs');
+    const result = writeReleaseMarker({ repoRoot, sessionId, reason: LEAD_YIELD_REASON });
+    if (result?.ok !== true) reason = result?.reason ?? 'unknown';
+  } catch (err) {
+    reason = err?.message ?? 'unknown';
+  }
+  if (reason !== undefined) {
+    process.stderr.write(
+      `⚠ lock-bootstrap: no release marker after the lead yield (${reason}) — a compaction may take the lock again\n`,
+    );
+  }
+}
+
 /**
  * #1641 — the Claude Code process id this hook runs under, or null. The value
  * comes from `CLAUDE_PID`, but it counts ONLY when that process is this hook's
@@ -108,9 +168,24 @@ async function hasOwnReleaseMarker(repoRoot, sessionId) {
  * its shell, never Claude, so it reads null here. Depth 1, deliberately: a
  * depth-2 walk would admit a hook whose parent is a Codex process that bash
  * exec'd straight under Claude. Spawn-free.
- * Ceiling (BV-004): a platform whose hook launcher does not exec reads null and
- * keeps the pre-#1641 behaviour (fail-closed). Revisit if `reclaimed:
- * own-process` never appears on a host where /clear without SessionEnd does.
+ *
+ * #1717: Claude runs each hook as `/bin/sh -c "<command>"`. On Linux/WSL
+ * /bin/sh is dash, and the WSL dash 0.5.12 FORKS a single `-c` command
+ * instead of exec'ing it, so node's parent was that intermediate sh and this
+ * read null on every hook (measured 2026-10-21 on win-wsl, 3/3 runs; with an
+ * `exec ` prefix the ppid matched). Every run-node.sh command in
+ * `hooks/hooks.json` therefore starts with `exec sh …`; run-node.sh itself
+ * execs node on every branch, so both hops are exec and depth 1 holds.
+ * The other manifests (hooks-codex/-cursor/-pi.json) deliberately keep the
+ * plain form: only a Claude hook can match its own CLAUDE_PID, so the prefix
+ * would buy nothing there (their parent is that harness either way).
+ * Measured 2026-10-21 on macOS: /bin/sh (bash 3.2) and /bin/dash (dash-16)
+ * both match ppid with AND without `exec`, and exit status 2, stderr and stdin
+ * pass through unchanged in both forms — the prefix costs nothing there.
+ * Ceiling (BV-004): a harness whose launcher is not `/bin/sh -c` (or that
+ * wraps the command in a further shell) still reads null and keeps the
+ * pre-#1641 behaviour (fail-closed). Revisit if `reclaimed: own-process`
+ * never appears on a host where /clear without SessionEnd does.
  *
  * The process survives `/clear` while the raw session id is minted anew, so
  * this is the witness of "the same terminal session" that the label and the
@@ -131,7 +206,8 @@ export function readClaudePid(env = process.env, ppid = process.ppid) {
  * #1641 — true when `lock` was written under the Claude Code process this hook
  * runs under, on this host. Only then may a lock with a DIFFERENT raw id count
  * as our own predecessor (startup → /clear mints a new raw id in the same
- * process).
+ * process). #1746 judges the `claude_pid`/`host` pair current-session.json
+ * carries with this same predicate, so both witnesses mean the same thing.
  *
  * Why the pid alone is enough, without a start time: both sides come from
  * readClaudePid(), which admits a pid only as the writer hook's DIRECT parent.
@@ -185,11 +261,19 @@ const ENRICH_READ_RETRY_MS = 10;
  *   Only consulted for the same-logical-session force-refresh below; every
  *   existing caller that omits it keeps its pre-#1091 behaviour exactly.
  * @param {string|null} [opts.predecessorSessionId=null] — the raw `session_id`
- *   recorded in `.orchestrator/current-session.json` by our OWN previous run of
- *   this hook. It is the third, load-bearing conjunct of the re-entry
+ *   the last session start in this checkout recorded in
+ *   `.orchestrator/current-session.json` — our own previous run of this hook
+ *   unless a peer started here since (every start rewrites the file, #1746).
+ *   It is the third, load-bearing conjunct of the re-entry
  *   force-refresh below: without it a same-host semantic-label collision (#1066)
  *   lets one session take over a live peer's lock. Omitting it (the default)
  *   disables the re-entry force-refresh entirely — fail-closed.
+ * @param {{ claude_pid?: unknown, host?: unknown }|null} [opts.predecessorProcess=null]
+ *   — the `claude_pid`/`host` pair the writer of that `current-session.json`
+ *   recorded (#1746), unvalidated. The #1635 lead yield takes
+ *   `predecessorSessionId` for our own predecessor only when this pair names
+ *   our own Claude Code process (isSameClaudeProcess); null or any mismatch
+ *   yields.
  * @param {number|null} [opts.claudePid=null] — the Claude Code process id from
  *   readClaudePid() (#1641). Stamped on the lock as `claude_pid`; a lock that
  *   carries this same pid on this host is our own predecessor after /clear, for
@@ -215,6 +299,7 @@ export async function bootstrapLock({
   ttlHours = 4,
   nativeSource = null,
   predecessorSessionId = null,
+  predecessorProcess = null,
   claudePid = null,
   _acquireImpl,
   _forceAcquireImpl,
@@ -236,6 +321,8 @@ export async function bootstrapLock({
     repoRoot,
     sessionId,
     predecessorSessionId,
+    predecessorProcess,
+    claudePid,
     nativeSource,
     readLease: _readLeaseImpl,
   });
@@ -248,6 +335,7 @@ export async function bootstrapLock({
     // LIVE foreign lock. A predecessor from before #1641 carries no
     // `claude_pid` and still stays until its TTL.
     await releaseOwnLockForLead({ repoRoot, sessionId, claudePid, releaseImpl: _releaseImpl });
+    await writeOwnReleaseMarker(repoRoot, sessionId);
     if (typeof onNotice === 'function') {
       // The lease reader admits only [A-Za-z0-9._-] ids, so the id is banner-safe.
       const sid8 = leadHolder.slice(0, 8);
@@ -266,20 +354,35 @@ export async function bootstrapLock({
   // the slot. A compaction or resume of that same session is not new work and
   // must not take the lock again; startup and clear acquire as before. The
   // marker is removed by the session's next deliberate acquire().
+  // #1747: a marker the lead yield above wrote counts only while a lead lease
+  // is still active; once the lead is gone the session acquires again.
   if (
     typeof nativeSource === 'string' &&
     RELEASED_LOCK_STAYS_RELEASED_SOURCES.has(nativeSource) &&
     (await hasOwnReleaseMarker(repoRoot, sessionId))
   ) {
-    if (typeof onNotice === 'function') {
-      try {
-        onNotice(
-          'Session-Lock wurde in dieser Session bewusst freigegeben und nach dem Neueinstieg nicht neu angelegt',
-          'ℹ Session-Lock bewusst freigegeben — nach dem Neueinstieg nicht neu angelegt',
-        );
-      } catch { /* the notice is informational */ }
+    const marker = await readOwnReleaseMarker(repoRoot, sessionId);
+    const yielded = marker?.reason === LEAD_YIELD_REASON;
+    const leadId = yielded ? await activeLeadSessionId(_readLeaseImpl) : null;
+    if (!yielded || leadId !== null) {
+      if (typeof onNotice === 'function') {
+        try {
+          if (yielded) {
+            const sid8 = leadId.slice(0, 8);
+            onNotice(
+              `Haupt-Checkout belegt durch Lead ${sid8}, arbeite im Worktree`,
+              `🧭 Haupt-Checkout belegt durch Lead ${sid8} — kein Session-Lock, arbeite im Worktree`,
+            );
+          } else {
+            onNotice(
+              'Session-Lock wurde in dieser Session bewusst freigegeben und nach dem Neueinstieg nicht neu angelegt',
+              'ℹ Session-Lock bewusst freigegeben — nach dem Neueinstieg nicht neu angelegt',
+            );
+          }
+        } catch { /* the notice is informational */ }
+      }
+      return null;
     }
-    return null;
   }
 
   // Resolve DI shims at call time so test mocks can replace the imports.
@@ -650,14 +753,29 @@ async function releaseOwnLockForLead({ repoRoot, sessionId, claudePid = null, re
  * raw id nor our predecessor's (the lead's own tab after /clear has a new raw
  * id while the lease still carries the old one — it keeps the old behaviour).
  *
+ * #1746 — "our predecessor's" needs a process witness. `predecessorSessionId`
+ * comes from current-session.json, which every session start in this checkout
+ * rewrites: once the lead started here LAST, its raw id was every other tab's
+ * "predecessor", and their /clear took the lock (LSO #778, twice on
+ * 2026-10-22). The id counts only when `predecessorProcess` names our own
+ * Claude Code process on this host (isSameClaudeProcess, the #1641 witness).
+ * Cost, accepted: the lead's own tab now also yields when the entry carries no
+ * witness — no readable CLAUDE_PID (Codex, Cursor) or a file written before
+ * #1746. Harmless: the lead works through its lease, not this lock. (When
+ * another session started in between, the tab yielded before #1746 already:
+ * the file then names that session.)
+ * Ceiling (BV-004): a dead lead process whose pid the OS recycled to our
+ * Claude process still reads as "ours" (the same residual isSameClaudeProcess
+ * names) and takes the lock as before #1746.
+ *
  * Fail direction: every other outcome — no lease (no fleet: silent), an
  * expired lease, an unreadable one (one stderr WARN), any exception — returns
  * null, i.e. the pre-#1635 acquire path. It never blocks the session.
  *
- * @param {{ repoRoot: string, sessionId: string, nativeSource: string|null, readLease: Function }} args
+ * @param {{ repoRoot: string, sessionId: string, predecessorSessionId: string|null, predecessorProcess: object|null, claudePid: number|null, nativeSource: string|null, readLease: Function }} args
  * @returns {Promise<string|null>}
  */
-async function leadHoldingMainCheckout({ repoRoot, sessionId, predecessorSessionId, nativeSource, readLease }) {
+async function leadHoldingMainCheckout({ repoRoot, sessionId, predecessorSessionId, predecessorProcess, claudePid, nativeSource, readLease }) {
   try {
     if (typeof nativeSource !== 'string' || !LEAD_YIELD_SOURCES.has(nativeSource)) return null;
     if (!isDirectory(path.join(repoRoot, '.git'))) return null;
@@ -672,8 +790,28 @@ async function leadHoldingMainCheckout({ repoRoot, sessionId, predecessorSession
     if (verdict?.state !== 'active') return null;
     const leadId = verdict.lease?.session_id;
     if (typeof leadId !== 'string' || leadId.length === 0) return null;
-    if (leadId === sessionId || leadId === predecessorSessionId) return null;
+    if (leadId === sessionId) return null;
+    if (leadId === predecessorSessionId && (await isSameClaudeProcess(predecessorProcess, claudePid))) return null;
     return leadId;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * #1747 — the session id of an ACTIVE fleet-lead lease, or null for every
+ * other outcome (none, expired, unreadable, a throwing reader). The marker
+ * was written only in the main checkout under a foreign lead, so the lease
+ * alone decides here. Never throws.
+ *
+ * @param {Function} readLease
+ * @returns {Promise<string|null>}
+ */
+async function activeLeadSessionId(readLease) {
+  try {
+    const verdict = await readLease();
+    const leadId = verdict?.state === 'active' ? verdict.lease?.session_id : null;
+    return typeof leadId === 'string' && leadId.length > 0 ? leadId : null;
   } catch {
     return null;
   }

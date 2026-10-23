@@ -177,6 +177,7 @@ coordinator thread using the read-only agent `session-orchestrator:eval-judge`
 ```javascript
 import { runEvalJudge, mergeJudgeDimensions } from '$PLUGIN_ROOT/scripts/lib/eval/judge.mjs';
 import { appendEvalRecord } from '$PLUGIN_ROOT/scripts/lib/eval/sink.mjs';
+import { resolveLedgerPath } from '$PLUGIN_ROOT/scripts/lib/ledger-path.mjs';
 
 // dispatchAgent = the coordinator's Agent-tool dispatch closure targeting
 // subagent_type 'session-orchestrator:eval-judge'.
@@ -191,7 +192,8 @@ const { status, dimensions } = await runEvalJudge({
 const merged = mergeJudgeDimensions(record, dimensions);
 
 // The COORDINATOR appends the enriched record (subagents never write the journal).
-appendEvalRecord(merged, { path: '.orchestrator/metrics/eval.jsonl' });
+// In a linked worktree the main checkout's journal when it is gitignored there (#1722).
+appendEvalRecord(merged, { path: resolveLedgerPath('.orchestrator/metrics/eval.jsonl', process.cwd()) });
 ```
 
 - The judge dimension arrives `advisory: true` + `calibration_status:

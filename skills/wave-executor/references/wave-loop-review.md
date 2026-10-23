@@ -497,7 +497,10 @@ After each wave completes and before the progress update, update `<state-dir>/ST
    //   and stored in .orchestrator/session.lock (session_id field); matches the
    //   STATE.md frontmatter `session:` field written during Pre-Wave 1b initialization.
    import { updateHeartbeat } from '../../scripts/lib/session-lock.mjs';
-   updateHeartbeat({ sessionId, repoRoot: process.cwd() });
+   import { resolveOwnLockRootFor } from '../../scripts/lib/own-lock-root.mjs';
+   // The lock is not always in the cwd's checkout (#1730): a worktree session keeps it in the main checkout,
+   // or the other way round. At the wrong root updateHeartbeat writes nothing and the 4h TTL lapses.
+   updateHeartbeat({ sessionId, repoRoot: resolveOwnLockRootFor({ sessionId }).root });
    ```
 
    Skip silently if `persistence: false` in Session Config (no session.lock exists in that mode).
@@ -525,11 +528,16 @@ The helper is `scripts/lib/agent-status.mjs`. The writers (`setStatus`, `setProg
 
    ```js
    import { setStatus, setProgress } from '../../scripts/lib/agent-status.mjs';
+   import { resolveOwnLockRootFor } from '../../scripts/lib/own-lock-root.mjs';
+
+   // Once per wave: the root beside this session's own lock. The SubagentStart/Stop hooks write there too, and
+   // the HUD and the tmux pane read there (#1730); without it the writers default to process.cwd().
+   const statusOpts = { repoRoot: resolveOwnLockRootFor({ sessionId }).root };
 
    // For each agent dispatched in this wave (i = 0-based position, total = wave agent count):
-   await setStatus(agentId, `dispatched — ${subagentType}`);              // free-text variant
+   await setStatus(agentId, `dispatched — ${subagentType}`, statusOpts);              // free-text variant
    // — or —
-   await setProgress(agentId, { step: i + 1, total, label: subagentType }); // progress variant
+   await setProgress(agentId, { step: i + 1, total, label: subagentType }, statusOpts); // progress variant
    ```
 
    `agentId` is a stable per-agent key (e.g. `wave${waveN}-${i}-${subagentType}`). There is **no separate "agent-start" hook distinct from dispatch** — wave agents are in-process `Agent()` calls with no PID/TTY (see `skills/tmux-layout/SKILL.md § When NOT to Use`), so dispatch IS the start signal. Do not invent one.
@@ -538,14 +546,14 @@ The helper is `scripts/lib/agent-status.mjs`. The writers (`setStatus`, `setProg
 
    ```js
    // status ∈ {'done','partial','failed'} from the agent's STATUS: line
-   await setStatus(agentId, status);
+   await setStatus(agentId, status, statusOpts);
    ```
 
 3. **wave-end rollup** — in `### 3a. Post-Wave: Update STATE.md`, beside the `updateHeartbeat` call (step 5), push one wave-level rollup using a wave-scoped key:
 
    ```js
    // e.g. agentId = `wave${waveN}` ; counts from the wave's per-agent results
-   await setStatus(`wave${waveN}`, `wave ${waveN} complete — ${done} done, ${partial} partial, ${failed} failed`);
+   await setStatus(`wave${waveN}`, `wave ${waveN} complete — ${done} done, ${partial} partial, ${failed} failed`, statusOpts);
    ```
 
 A push failure (timeout, fs-error, invalid-input) is logged to the wave progress update at most as a one-line WARN — never block, never retry, never surface to the user. If `agent-status.mjs` is absent (older plugin checkout), wrap the import defensively and no-op, exactly as `layouts.mjs` does for its telemetry import.

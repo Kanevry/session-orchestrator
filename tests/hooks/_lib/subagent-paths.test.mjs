@@ -76,10 +76,12 @@ describe('resolveSubagentSidecar', () => {
       transcriptPath: '/home/user/.claude/projects/repo/session-1.jsonl',
       agentId: 'abc123',
     });
+    // The resolver returns a filesystem path built with path.join: native separators.
+    const sub = path.join('/home/user/.claude/projects/repo/session-1', 'subagents');
     expect(result).toEqual({
-      base: '/home/user/.claude/projects/repo/session-1/subagents/agent-abc123',
-      transcript: '/home/user/.claude/projects/repo/session-1/subagents/agent-abc123.jsonl',
-      meta: '/home/user/.claude/projects/repo/session-1/subagents/agent-abc123.meta.json',
+      base: path.join(sub, 'agent-abc123'),
+      transcript: path.join(sub, 'agent-abc123.jsonl'),
+      meta: path.join(sub, 'agent-abc123.meta.json'),
     });
   });
 });

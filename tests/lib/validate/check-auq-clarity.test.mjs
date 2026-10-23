@@ -91,7 +91,10 @@ function fixture(name, source, rel, mutate) {
   const abs = join(root, rel);
   mkdirSync(dirname(abs), { recursive: true });
   cpSync(join(REPO_ROOT, source), abs);
-  const original = readFileSync(abs, 'utf8');
+  // A core.autocrlf=true checkout (Windows) holds CRLF; the mutations are written against the LF the
+  // repository stores, so the fixture is normalised back to it.
+  const original = readFileSync(abs, 'utf8').replace(/\r\n/g, '\n');
+  writeFileSync(abs, original, 'utf8');
   if (mutate) {
     const mutated = mutate(original);
     // A mutation that did not apply leaves a case that verifies nothing.

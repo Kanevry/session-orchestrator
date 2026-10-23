@@ -15,7 +15,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, isAbsolute } from 'node:path';
 
@@ -25,7 +26,12 @@ import {
   emitIssueBudgetReconciled,
   ISSUE_BUDGET_RECONCILED_EVENT,
 } from '@lib/issue-budget-reconcile.mjs';
-import { budgetStatePath, budgetStateRel } from '@lib/issue-budget.mjs';
+import {
+  budgetStatePath,
+  budgetStateRel,
+  chargeIssueBudget,
+  reapStaleBudgetFiles,
+} from '@lib/issue-budget.mjs';
 
 const SEM = 'deep-1';
 const RAW = '11111111-2222-3333-4444-555555555555';
@@ -234,5 +240,55 @@ describe('emitIssueBudgetReconciled', () => {
       process.stderr.write = orig;
     }
     expect(errs.join('')).toContain(`skipped ${ISSUE_BUDGET_RECONCILED_EVENT}`);
+  });
+});
+
+describe('issue-budget state root across a linked git worktree (#1729)', () => {
+  // THE BUG (TV-001): the PreToolUse hook charges at CLAUDE_PROJECT_DIR (the
+  // main checkout), session-end reconciles and reaps with the linked worktree
+  // root. With the state path joined on the raw root, the two sides open two
+  // different files and close reports a false `no-ledger`.
+  it('charge, reconcile and reap agree on one counter file from either root', () => {
+    const git = (cwd, ...args) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false', ...args], {
+        cwd,
+        stdio: 'pipe',
+      });
+    const main = join(repo, 'main');
+    const wt = join(repo, 'wt');
+    mkdirSync(main);
+    git(main, 'init', '-q');
+    writeFileSync(join(main, 'README.md'), 'x\n');
+    git(main, 'add', 'README.md');
+    git(main, 'commit', '-q', '-m', 'init');
+    git(main, 'worktree', 'add', '-q', wt);
+
+    const config = { 'max-per-session': 5, mode: 'strict', overflow: 'collect-issue' };
+    const charge = (root, sessionId) =>
+      chargeIssueBudget({ repoRoot: root, sessionId, command: 'glab issue create --title "x"', config });
+
+    // (a) launched in the main checkout, closed from the worktree.
+    charge(main, 'sess-a');
+    const a = reconcileIssueBudget({ repoRoot: wt, record: record(1), sessionId: 'sess-a', config });
+    expect(a.verdict).toBe('match');
+    expect(a.charged).toBe(1);
+
+    // (b) launched inside the worktree, reconciled from the main checkout.
+    charge(wt, 'sess-b');
+    const b = reconcileIssueBudget({ repoRoot: main, record: record(1), sessionId: 'sess-b', config });
+    expect(b.verdict).toBe('match');
+    expect(b.charged).toBe(1);
+
+    // (c) the reaper run from the worktree sees and keeps the session's own
+    // file even when everything else is stale.
+    const own = realpathSync(budgetStatePath(main, 'sess-a'));
+    const reaped = reapStaleBudgetFiles({
+      repoRoot: wt,
+      sessionId: 'sess-a',
+      maxAgeDays: 1,
+      now: Date.now() + 10 * 24 * 60 * 60 * 1000,
+    });
+    expect(reaped.kept.map((f) => realpathSync(f))).toEqual([own]);
+    expect(reaped.removed).toHaveLength(1);
   });
 });

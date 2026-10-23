@@ -24,12 +24,13 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { readFileSync, writeFileSync, mkdirSync, cpSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, rmSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 
 import { join, resolve } from 'node:path';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir } from '../_helpers/tmp-fixture.mjs';
 import { installGitHook } from '../_helpers/executable-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -84,7 +85,7 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
     });
 
     it('is valid under POSIX sh, not only bash (bash-harness-pitfalls §5)', () => {
-      const r = spawnSync('sh', ['-n', HOOK_PATH], { encoding: 'utf8' });
+      const r = spawnSync(posixShell('sh'), ['-n', HOOK_PATH], { encoding: 'utf8' });
       expect(r.status).toBe(0);
     });
   });
@@ -128,7 +129,7 @@ describe('.husky/pre-commit — hook-import-set drift stage (#1224)', () => {
     });
 
     afterEach(() => {
-      if (tmpDir) execFileSync('find', [tmpDir, '-delete']);
+      if (tmpDir) rmSync(tmpDir, { recursive: true, force: true });
     });
 
     /** Regenerate the allowlist inside the fixture so it is in sync. */

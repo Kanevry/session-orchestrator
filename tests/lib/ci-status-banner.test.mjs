@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { checkCiStatus as checkCiStatusReal, DEGRADED_REASONS } from '@lib/ci-status-banner.mjs';
+import { checkCiStatus as checkCiStatusReal, DEGRADED_REASONS, readDeferredGithubHistory } from '@lib/ci-status-banner.mjs';
 
 // ── stderr WARN capture (#1022 follow-up) ────────────────────────────────────
 //
@@ -185,7 +185,7 @@ function glabJobsResponse(pipelineId, jobs) {
     cmd: 'glab',
     args: [
       'api',
-      `projects/org%2Fsession-orchestrator/pipelines/${pipelineId}/jobs`,
+      `projects/org%2Fsession-orchestrator/pipelines/${pipelineId}/jobs?per_page=100`,
       '--hostname',
       'gitlab.example.com',
     ],
@@ -193,12 +193,23 @@ function glabJobsResponse(pipelineId, jobs) {
   };
 }
 
-function ghCheckRunsResponse(checkRuns) {
+// #1727: keyed on the LOCAL HEAD sha (`git rev-parse HEAD`), never the
+// literal `HEAD` ref — on the GitHub API that is the remote default branch's
+// tip. Every GitHub test without `opts.sha` therefore also stubs
+// `gitRevParseResponse(HEAD_SHA)`.
+function ghCheckRunsResponse(checkRuns, sha = HEAD_SHA) {
   return {
     cmd: 'gh',
-    args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100'],
+    args: ['api', `repos/Kanevry/session-orchestrator/commits/${sha}/check-runs?per_page=100`],
     stdout: JSON.stringify({ check_runs: checkRuns }),
   };
+}
+
+// #856: the recorded `gh api graphql` (history query) calls of an execFile
+// mock. Asserted on the CALLS, not the result: the query is non-fatal, so an
+// unexpected one is swallowed and leaves the result unchanged.
+function graphqlCalls(mock) {
+  return mock.mock.calls.filter(([cmd, args]) => cmd === 'gh' && args[1] === 'graphql');
 }
 
 // ── Test 1: GitLab green ──────────────────────────────────────────────────────
@@ -781,6 +792,7 @@ describe('checkCiStatus — GitHub green', () => {
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
       ghRepoViewResponse,
       ghCheckRunsResponse(checkRuns),
     ]);
@@ -794,6 +806,9 @@ describe('checkCiStatus — GitHub green', () => {
     expect(result.status).toBe('green');
     expect(result.ok).toBe(true);
     expect(result.details.cliUsed).toBe('gh');
+    // #856 qa M1: a green reading spawns no history query (see the it.each in
+    // '#856 — GitHub additive check-run diagnostics' for the unknown rows).
+    expect(graphqlCalls(mockExecFile)).toEqual([]);
   });
 });
 
@@ -812,6 +827,7 @@ describe('checkCiStatus — GitHub red', () => {
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
       ghRepoViewResponse,
       ghCheckRunsResponse(checkRuns),
     ]);
@@ -827,7 +843,12 @@ describe('checkCiStatus — GitHub red', () => {
     expect(result.failingJobName).toBe('security-scan');
     expect(result.failingJobNames).toEqual(['security-scan', 'windows (informational)']);
     expect(result.details.cliUsed).toBe('gh');
-    expect(result.details.reason).toBe('lastGreen-not-implemented-for-github');
+    // #856: the history (last-green) query is unstubbed here, so the mock
+    // rejects it. Bug this catches: one failed SIDE query degrading — or
+    // inventing a history for — a red reading the check runs already proved.
+    expect(result.details.reason).toBe('last-green-query-failed');
+    expect(result).not.toHaveProperty('lastGreen');
+    expect(result).not.toHaveProperty('redCount');
   });
 });
 
@@ -989,7 +1010,7 @@ describe('checkCiStatus — #1332 explicit sha', () => {
       ],
       [
         'glab',
-        ['api', 'projects/org%2Fsession-orchestrator/pipelines/299/jobs', '--hostname', 'gitlab.example.com'],
+        ['api', 'projects/org%2Fsession-orchestrator/pipelines/299/jobs?per_page=100', '--hostname', 'gitlab.example.com'],
       ],
     ]);
   });
@@ -1099,9 +1120,10 @@ describe('checkCiStatus — forced vcs', () => {
     const spec = 'github.com/Kanevry/session-orchestrator';
     const mockExecFile = makeExecFileMock([
       { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
+      gitRevParseResponse(HEAD_SHA),
       {
         cmd: 'gh',
-        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100', '--hostname', 'github.com'],
+        args: ['api', `repos/Kanevry/session-orchestrator/commits/${HEAD_SHA}/check-runs?per_page=100`, '--hostname', 'github.com'],
         stdout: JSON.stringify({ check_runs: [{ name: 'test (macos-latest)', status: 'completed', conclusion: 'success' }] }),
       },
     ]);
@@ -1112,16 +1134,19 @@ describe('checkCiStatus — forced vcs', () => {
     );
 
     expect(result).toMatchObject({ status: 'green', ok: true, details: { cliUsed: 'gh' } });
-    expect(mockExecFile.mock.calls.some(([cmd]) => cmd === 'git')).toBe(false);
+    // #1727: `git rev-parse HEAD` (the local HEAD) is expected; detection
+    // (`git remote -v`) is not.
+    expect(mockExecFile.mock.calls.some(([cmd, args]) => cmd === 'git' && args[0] === 'remote')).toBe(false);
   });
 
   it('reports the mirror red when only the macOS leg failed', async () => {
     const spec = 'github.com/Kanevry/session-orchestrator';
     const mockExecFile = makeExecFileMock([
       { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
+      gitRevParseResponse(HEAD_SHA),
       {
         cmd: 'gh',
-        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100', '--hostname', 'github.com'],
+        args: ['api', `repos/Kanevry/session-orchestrator/commits/${HEAD_SHA}/check-runs?per_page=100`, '--hostname', 'github.com'],
         stdout: JSON.stringify({
           check_runs: [
             { name: 'test (ubuntu-latest)', status: 'completed', conclusion: 'success' },
@@ -1183,6 +1208,7 @@ describe('checkCiStatus — GitHub action_required → red', () => {
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
       ghRepoViewResponse,
       ghCheckRunsResponse(checkRuns),
     ]);
@@ -1375,6 +1401,7 @@ function runWithStdout(site, stdout) {
   return checkCiStatus(opts, {
     execFile: makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
+      gitRevParseResponse(HEAD_SHA),
       ghRepoViewResponse,
       { ...ghCheckRunsResponse([]), stdout },
     ]),
@@ -1412,7 +1439,7 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
         cmd: 'glab',
         args: [
           'api',
-          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines/101/jobs',
+          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines/101/jobs?per_page=100',
           '--hostname',
           'gitlab.example.com',
         ],
@@ -1449,7 +1476,7 @@ describe('checkCiStatus — #1065 GitLab API target', () => {
         'glab',
         [
           'api',
-          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines/101/jobs',
+          'projects/example-group%2Fsubgroup%2Fexample-project/pipelines/101/jobs?per_page=100',
           '--hostname',
           'gitlab.example.com',
         ],
@@ -1529,9 +1556,10 @@ describe('checkCiStatus — #872/#1022 GitHub host-pinning', () => {
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(GITHUB_ORIGIN),
       { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
+      gitRevParseResponse(HEAD_SHA),
       {
         cmd: 'gh',
-        args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100', '--hostname', host],
+        args: ['api', `repos/Kanevry/session-orchestrator/commits/${HEAD_SHA}/check-runs?per_page=100`, '--hostname', host],
         stdout: JSON.stringify({ check_runs: checkRuns }),
       },
     ]);
@@ -1557,12 +1585,44 @@ describe('checkCiStatus — #872/#1022 GitHub host-pinning', () => {
     const [, checkRunsArgs] = mockExecFile.mock.calls.find(
       ([cmd, args]) => cmd === 'gh' && args.includes('api'),
     );
+    // #1727: the LOCAL HEAD sha, never the literal `HEAD` ref — on the GitHub
+    // API `HEAD` is the remote default branch's tip, so a feature branch read
+    // main's verdict.
     expect(checkRunsArgs).toEqual([
       'api',
-      'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100',
+      `repos/Kanevry/session-orchestrator/commits/${HEAD_SHA}/check-runs?per_page=100`,
       '--hostname',
       host,
     ]);
+  });
+
+  // #856 qa M2. Bug this catches: on GitHub Enterprise or an ambient-host
+  // mismatch, a history query without `--hostname` hits a different host than
+  // the check-runs query — a silent `last-green-query-failed`, or another
+  // repo's history named as this one's last green.
+  it('pins the red reading\'s history query to the same --hostname as check-runs', async () => {
+    const spec = 'github.example.com/owner/repo';
+    const host = 'github.example.com';
+    const mockExecFile = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN),
+      { cmd: 'gh', args: ['repo', 'view', spec, '--json', 'nameWithOwner'], stdout: GH_REPO_VIEW },
+      gitRevParseResponse(HEAD_SHA),
+      {
+        cmd: 'gh',
+        args: ['api', `repos/Kanevry/session-orchestrator/commits/${HEAD_SHA}/check-runs?per_page=100`, '--hostname', host],
+        stdout: JSON.stringify({ check_runs: [{ name: 'test', status: 'completed', conclusion: 'failure' }] }),
+      },
+    ]);
+
+    const result = await checkCiStatusReal(
+      { repoRoot: '/fake/repo', now: NOW },
+      { execFile: mockExecFile, resolveRepoSpec: () => spec, resolveRepoHost: () => host },
+    );
+
+    expect(result.status).toBe('red');
+    const calls = graphqlCalls(mockExecFile);
+    expect(calls).toHaveLength(1);
+    expect(calls[0][1].slice(-4)).toEqual(['-f', `expr=${HEAD_SHA}`, '--hostname', host]);
   });
 });
 
@@ -1717,6 +1777,7 @@ describe('checkCiStatus — #1039 remote selection', () => {
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse(['origin', GITHUB_ORIGIN], ['gitlab', GITLAB_ORIGIN]),
+      gitRevParseResponse(HEAD_SHA),
       ghRepoViewResponse,
       ghCheckRunsResponse(checkRuns),
     ]);
@@ -1745,6 +1806,7 @@ describe('checkCiStatus — #1039 GitHub Enterprise host classification', () => 
 
     const mockExecFile = makeExecFileMock([
       gitRemoteResponse('git@github.example.com:Kanevry/session-orchestrator.git'),
+      gitRevParseResponse(HEAD_SHA),
       ghRepoViewResponse,
       ghCheckRunsResponse(checkRuns),
     ]);
@@ -1920,7 +1982,9 @@ describe('ci-status-banner — DEGRADED_REASONS enum integrity', () => {
   });
 });
 
-// #856: realistic Check Runs payloads; every command is handled by the stub.
+// #856: realistic Check Runs payloads; every command is handled by the stub
+// except the red rows' history query, whose (non-fatal) failure is what
+// `last-green-query-failed` reports.
 describe('#856 — GitHub additive check-run diagnostics', () => {
   const running = { name: 'test', status: 'in_progress', conclusion: null };
   const queued = { name: 'lint', status: 'queued', conclusion: null };
@@ -1929,36 +1993,41 @@ describe('#856 — GitHub additive check-run diagnostics', () => {
   const counts = (overrides) => ({ success: 0, failure: 0, inProgress: 0, queued: 0, cancelled: 0, skipped: 0, neutral: 0, waiting: 0, other: 0, ...overrides });
 
   it.each([
-    ['skipped', [{ name: 'test', status: 'completed', conclusion: 'skipped' }], 'unknown', 'check-runs-skipped', counts({ skipped: 1 })],
-    ['neutral with success', [success, { name: 'lint', status: 'completed', conclusion: 'neutral' }], 'unknown', 'check-runs-neutral', counts({ success: 1, neutral: 1 })],
-    ...['waiting', 'pending', 'requested'].map((status) => [status, [{ name: 'test', status, conclusion: null }], 'unknown', 'check-runs-waiting', counts({ waiting: 1 })]),
-    ['waiting with stale success', [{ name: 'odd', status: 'waiting', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
-    ['failure with skipped', [{ name: 'failed', status: 'completed', conclusion: 'failure' }, { name: 'test', status: 'completed', conclusion: 'skipped' }], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, skipped: 1 })],
-    ['action_required with neutral', [{ name: 'approval', status: 'completed', conclusion: 'action_required' }, { name: 'test', status: 'completed', conclusion: 'neutral' }], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, neutral: 1 })],
-    ['running', [running], 'unknown', 'check-runs-in-progress', counts({ inProgress: 1 })],
-    ['queued', [queued], 'unknown', 'check-runs-queued', counts({ queued: 1 })],
-    ['cancelled', [cancelled], 'unknown', 'check-runs-cancelled', counts({ cancelled: 1 })],
-    ['mixed', [success, running, queued, cancelled], 'unknown', 'check-runs-mixed', counts({ success: 1, inProgress: 1, queued: 1, cancelled: 1 })],
-    ['failed and running', [{ name: 'failed', status: 'completed', conclusion: 'failure' }, running], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, inProgress: 1 })],
-    ['action_required and queued', [{ name: 'approval', status: 'completed', conclusion: 'action_required' }, queued], 'red', 'lastGreen-not-implemented-for-github', counts({ failure: 1, queued: 1 })],
-    ['unknown status with success conclusion', [{ name: 'odd', status: 'future', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
-    ['missing status', [{ name: 'odd', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
-    ['unknown conclusion', [{ name: 'odd', status: 'completed', conclusion: 'future' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
-    ['completed null conclusion', [{ name: 'odd', status: 'completed', conclusion: null }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
-    ['malformed row among successes', [success, null, 'bad', {}], 'unknown', 'check-runs-unrecognised', counts({ success: 1, other: 3 })],
-    ['running with stale success', [{ name: 'odd', status: 'in_progress', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 })],
-  ])('diagnoses %s without granting pass authority', async (_name, runs, status, reason, expectedCounts) => {
-    const mock = makeExecFileMock([gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse, ghCheckRunsResponse(runs)]);
+    ['skipped', [{ name: 'test', status: 'completed', conclusion: 'skipped' }], 'unknown', 'check-runs-skipped', counts({ skipped: 1 }), 0],
+    ['neutral with success', [success, { name: 'lint', status: 'completed', conclusion: 'neutral' }], 'unknown', 'check-runs-neutral', counts({ success: 1, neutral: 1 }), 0],
+    ...['waiting', 'pending', 'requested'].map((status) => [status, [{ name: 'test', status, conclusion: null }], 'unknown', 'check-runs-waiting', counts({ waiting: 1 }), 0]),
+    ['waiting with stale success', [{ name: 'odd', status: 'waiting', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 }), 0],
+    ['failure with skipped', [{ name: 'failed', status: 'completed', conclusion: 'failure' }, { name: 'test', status: 'completed', conclusion: 'skipped' }], 'red', 'last-green-query-failed', counts({ failure: 1, skipped: 1 }), 1],
+    ['action_required with neutral', [{ name: 'approval', status: 'completed', conclusion: 'action_required' }, { name: 'test', status: 'completed', conclusion: 'neutral' }], 'red', 'last-green-query-failed', counts({ failure: 1, neutral: 1 }), 1],
+    ['running', [running], 'unknown', 'check-runs-in-progress', counts({ inProgress: 1 }), 0],
+    ['queued', [queued], 'unknown', 'check-runs-queued', counts({ queued: 1 }), 0],
+    ['cancelled', [cancelled], 'unknown', 'check-runs-cancelled', counts({ cancelled: 1 }), 0],
+    ['mixed', [success, running, queued, cancelled], 'unknown', 'check-runs-mixed', counts({ success: 1, inProgress: 1, queued: 1, cancelled: 1 }), 0],
+    ['failed and running', [{ name: 'failed', status: 'completed', conclusion: 'failure' }, running], 'red', 'last-green-query-failed', counts({ failure: 1, inProgress: 1 }), 1],
+    ['action_required and queued', [{ name: 'approval', status: 'completed', conclusion: 'action_required' }, queued], 'red', 'last-green-query-failed', counts({ failure: 1, queued: 1 }), 1],
+    ['unknown status with success conclusion', [{ name: 'odd', status: 'future', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 }), 0],
+    ['missing status', [{ name: 'odd', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 }), 0],
+    ['unknown conclusion', [{ name: 'odd', status: 'completed', conclusion: 'future' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 }), 0],
+    ['completed null conclusion', [{ name: 'odd', status: 'completed', conclusion: null }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 }), 0],
+    ['malformed row among successes', [success, null, 'bad', {}], 'unknown', 'check-runs-unrecognised', counts({ success: 1, other: 3 }), 0],
+    ['running with stale success', [{ name: 'odd', status: 'in_progress', conclusion: 'success' }], 'unknown', 'check-runs-unrecognised', counts({ other: 1 }), 0],
+  ])('diagnoses %s without granting pass authority', async (_name, runs, status, reason, expectedCounts, historyQueries) => {
+    const mock = makeExecFileMock([gitRemoteResponse(GITHUB_ORIGIN), gitRevParseResponse(HEAD_SHA), ghRepoViewResponse, ghCheckRunsResponse(runs)]);
     const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW }, { execFile: mock });
     expect(result.status).toBe(status);
     expect(result.ok).toBe(false);
     expect(result.details.reason).toBe(reason);
     expect(result.details.checkRunCounts).toEqual(expectedCounts);
+    // #856 qa M1: only the red branch may spawn the history query. Bug this
+    // catches: hoisting it above the branch adds a network call to every
+    // non-red session start — invisible otherwise, because the non-fatal catch
+    // swallows the mock's rejection of the unstubbed call.
+    expect(graphqlCalls(mock)).toHaveLength(historyQueries);
   });
 
   it.each([[], undefined, null, 'malformed'])(
     'keeps missing or unusable check_runs=%s unknown', async (runs) => {
-      const mock = makeExecFileMock([gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse, ghCheckRunsResponse(runs)]);
+      const mock = makeExecFileMock([gitRemoteResponse(GITHUB_ORIGIN), gitRevParseResponse(HEAD_SHA), ghRepoViewResponse, ghCheckRunsResponse(runs)]);
       const result = await checkCiStatus({ repoRoot: '/fake/repo' }, { execFile: mock });
       expect(result.status).toBe('unknown');
       expect(result.ok).toBe(false);
@@ -1968,10 +2037,163 @@ describe('#856 — GitHub additive check-run diagnostics', () => {
 
   it('keeps a GitHub API failure degraded and never green', async () => {
     const mock = makeExecFileMock([
-      gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse,
-      { cmd: 'gh', args: ['api', 'repos/Kanevry/session-orchestrator/commits/HEAD/check-runs?per_page=100'], error: new Error('synthetic API failure') },
+      gitRemoteResponse(GITHUB_ORIGIN), gitRevParseResponse(HEAD_SHA), ghRepoViewResponse,
+      { ...ghCheckRunsResponse([]), stdout: undefined, error: new Error('synthetic API failure') },
     ]);
     const result = await checkCiStatus({ repoRoot: '/fake/repo' }, { execFile: mock });
     expectDegraded(result, 'query-failed');
+  });
+});
+
+// #1727/#856: the GitHub path reads the LOCAL HEAD and, on red, one GraphQL
+// history query for redCount/lastGreen.
+describe('#1727/#856 — GitHub local HEAD and last green', () => {
+  // The real `gh` puts this on stderr (exit 1) when the remote does not know
+  // the commit — measured 2026-10-22 against the mirror for an unpushed sha.
+  function noCommitError() {
+    const err = new Error('Command failed: gh api');
+    err.stderr = `gh: No commit found for SHA: ${HEAD_SHA} (HTTP 422)\n`;
+    return err;
+  }
+
+  // Bug this catches: an unpushed HEAD read as a query failure (degraded) —
+  // or, before #1727, as the default branch's verdict. The remote's answer
+  // "no such commit" is a measured fact: there is no CI for it.
+  it('reads an unpushed HEAD (HTTP 422 "No commit found for SHA") as unknown, not degraded', async () => {
+    const mock = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN), gitRevParseResponse(HEAD_SHA), ghRepoViewResponse,
+      { ...ghCheckRunsResponse([]), stdout: undefined, error: noCommitError() },
+    ]);
+    const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW }, { execFile: mock });
+    expect(result).toEqual({
+      status: 'unknown',
+      ok: false,
+      details: { cliUsed: 'gh', reason: 'head-sha-not-on-remote' },
+    });
+  });
+
+  // Bugs this catches: counting commits WITHOUT CI (rollup null) into the red
+  // run, and naming HEAD as its own last green — HEAD's rollup can read
+  // SUCCESS (legacy statuses) while its check runs are red. Also pins `-f`
+  // (raw string): `-F` type-converts values and reads `@file` operands.
+  it('derives redCount and lastGreen from the history, skipping HEAD and CI-less commits', async () => {
+    const shaOf = (c) => c.repeat(40);
+    const nodes = [
+      { oid: HEAD_SHA, committedDate: '2026-05-10T10:00:00Z', statusCheckRollup: { state: 'SUCCESS' } },
+      { oid: shaOf('1'), committedDate: '2026-05-09T12:00:00Z', statusCheckRollup: null },
+      { oid: shaOf('2'), committedDate: '2026-05-09T10:00:00Z', statusCheckRollup: { state: 'FAILURE' } },
+      { oid: shaOf('3'), committedDate: '2026-05-08T12:00:00Z', statusCheckRollup: { state: 'PENDING' } },
+      { oid: shaOf('4'), committedDate: '2026-05-08T10:00:00Z' },
+      { oid: shaOf('5'), committedDate: '2026-05-07T12:00:00Z', statusCheckRollup: { state: 'SUCCESS' } },
+      { oid: shaOf('6'), committedDate: '2026-05-06T12:00:00Z', statusCheckRollup: { state: 'SUCCESS' } },
+    ];
+    const base = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN), gitRevParseResponse(HEAD_SHA), ghRepoViewResponse,
+      ghCheckRunsResponse([{ name: 'test', status: 'completed', conclusion: 'failure' }]),
+    ]);
+    // GraphQL argv carries the whole query text; it is answered here and its
+    // argv asserted below, while every other call keeps exact-argv matching.
+    const mock = vi.fn(function (cmd, args, opts, callback) {
+      if (cmd === 'gh' && args[1] === 'graphql') {
+        callback(null, {
+          stdout: JSON.stringify({ data: { repository: { object: { history: { nodes } } } } }),
+          stderr: '',
+        });
+        return;
+      }
+      base(cmd, args, opts, callback);
+    });
+
+    const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW }, { execFile: mock });
+
+    expect(result).toMatchObject({
+      status: 'red',
+      ok: false,
+      failingJobName: 'test',
+      redCount: 3,
+      lastGreen: { sha: shaOf('5'), ageCommits: 3, ageDays: 3 },
+    });
+    expect(result.lastGreen).not.toHaveProperty('pipelineId');
+    expect(result.details).not.toHaveProperty('reason');
+    const [, gqlArgs] = mock.mock.calls.find(([cmd, args]) => cmd === 'gh' && args[1] === 'graphql');
+    expect(gqlArgs[3]).toMatch(/^query=.*history\(first: 16\)/);
+    expect([...gqlArgs.slice(0, 3), ...gqlArgs.slice(4)]).toEqual([
+      'api', 'graphql', '-f',
+      '-f', 'owner=Kanevry',
+      '-f', 'name=session-orchestrator',
+      '-f', `expr=${HEAD_SHA}`,
+    ]);
+  });
+
+  // #856 F1. Bug this catches: the explicit-sha readings (session-start
+  // pushed-commit follow-up, release preflight) paying ~0.5–0.7 s for a
+  // history query whose fields none of them reads — enough to blow the
+  // follow-up's shared PROBE_BUDGET_MS and turn a red pushed commit into the
+  // "pipeline not checked" hint. Not attempted also means no
+  // `last-green-query-failed` reason: claiming a failure would be false.
+  it('skips the history query on an explicit-sha red reading and returns the red shape without history fields or reason', async () => {
+    const pushedSha = 'f'.repeat(40);
+    const mock = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN), ghRepoViewResponse,
+      ghCheckRunsResponse([{ name: 'test', status: 'completed', conclusion: 'failure' }], pushedSha),
+    ]);
+
+    const result = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW, sha: pushedSha }, { execFile: mock });
+
+    expect(result).toEqual({
+      status: 'red',
+      ok: false,
+      failingJobName: 'test',
+      failingJobNames: ['test'],
+      details: {
+        cliUsed: 'gh',
+        checkRunCounts: { success: 0, failure: 1, inProgress: 0, queued: 0, cancelled: 0, skipped: 0, neutral: 0, waiting: 0, other: 0 },
+      },
+    });
+    expect(graphqlCalls(mock)).toEqual([]);
+    expect(mock.mock.calls.filter(([cmd, args]) => cmd === 'git' && args[0] === 'rev-parse')).toEqual([]);
+    expect(mock.mock.calls.filter(([cmd, args]) => cmd === 'gh' && args[1]?.includes('/check-runs')).map(([, args]) => args[1]))
+      .toEqual([`repos/Kanevry/session-orchestrator/commits/${pushedSha}/check-runs?per_page=100`]);
+  });
+
+  // #1728. Bugs this catches: `deferHistory` still running the history query
+  // inside checkCiStatus (the session-start probe then loses the red verdict
+  // to its budget again), and the deferred reader repeating `gh repo view` /
+  // check-runs or producing a different shape than the inline path. The
+  // default path (graphql called inline) is pinned by the test above.
+  it('defers the history query under deferHistory and reads ONLY it later, yielding the inline fields', async () => {
+    const base = makeExecFileMock([
+      gitRemoteResponse(GITHUB_ORIGIN), gitRevParseResponse(HEAD_SHA), ghRepoViewResponse,
+      ghCheckRunsResponse([{ name: 'test', status: 'completed', conclusion: 'failure' }]),
+    ]);
+    const deferred = await checkCiStatus({ repoRoot: '/fake/repo', now: NOW, deferHistory: true }, { execFile: base });
+
+    const checkRunCounts = { success: 0, failure: 1, inProgress: 0, queued: 0, cancelled: 0, skipped: 0, neutral: 0, waiting: 0, other: 0 };
+    expect(deferred).toEqual({
+      status: 'red',
+      ok: false,
+      failingJobName: 'test',
+      failingJobNames: ['test'],
+      details: { cliUsed: 'gh', reason: 'last-green-deferred', checkRunCounts },
+      deferredHistory: { nameWithOwner: 'Kanevry/session-orchestrator', headSha: HEAD_SHA },
+    });
+    expect(graphqlCalls(base)).toEqual([]);
+
+    const nodes = [{ oid: 'b'.repeat(40), committedDate: '2026-05-09T12:00:00Z', statusCheckRollup: { state: 'SUCCESS' } }];
+    const historyOnly = vi.fn(function (cmd, args, opts, callback) {
+      callback(null, { stdout: JSON.stringify({ data: { repository: { object: { history: { nodes } } } } }), stderr: '' });
+    });
+    const enriched = await readDeferredGithubHistory(deferred, { repoRoot: '/fake/repo', now: NOW }, { execFile: historyOnly });
+
+    expect(enriched).toEqual({
+      status: 'red',
+      ok: false,
+      failingJobName: 'test',
+      failingJobNames: ['test'],
+      redCount: 1,
+      lastGreen: { sha: 'b'.repeat(40), ageCommits: 1, ageDays: 1 },
+      details: { cliUsed: 'gh', checkRunCounts },
+    });
+    expect(historyOnly.mock.calls.map(([cmd, args]) => `${cmd} ${args[1]}`)).toEqual(['gh graphql']);
   });
 });

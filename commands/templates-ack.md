@@ -5,7 +5,7 @@ argument-hint: "[optional-reason]"
 
 # Templates Acknowledgement
 
-Write a session-scoped acknowledgement entry to `.orchestrator/runtime/templates-acknowledged.json`. Once written, the `pre-bash-templates-first` hook (G6) will allow `gh`/`glab` create operations for the rest of the current session without requiring a prior template Read.
+Write a session-scoped acknowledgement entry to `.orchestrator/runtime/templates-acknowledged.json` (inside a linked git worktree: the main checkout's `.orchestrator/runtime/`, where the hook reads it). Once written, the `pre-bash-templates-first` hook (G6) will allow `gh`/`glab` create operations for the rest of the current session without requiring a prior template Read.
 
 **Use this only when:**
 - You have already reviewed the relevant template externally (e.g. copy-paste workflow), OR
@@ -39,7 +39,6 @@ import { randomBytes } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 const cwd = process.cwd();
-const ackFile = join(cwd, '.orchestrator', 'runtime', 'templates-acknowledged.json');
 const reason = process.argv[1] ?? '';
 const userId = process.env.USER ?? process.env.USERNAME ?? '';
 
@@ -64,6 +63,16 @@ if (!pluginRoot) {
 }
 if (!pluginRoot) {
   process.stderr.write('⚠ templates-ack: plugin root unavailable — ack not written\n');
+  process.exit(1);
+}
+// The ack file is runtime state: in a linked worktree it lives in the MAIN
+// checkout, the same root the pre-bash-templates-first hook reads (#1729).
+let ackFile = null;
+try {
+  const { resolveEventsLedgerRoot } = await import(pathToFileURL(join(pluginRoot, 'scripts/lib/platform.mjs')).href);
+  ackFile = join(resolveEventsLedgerRoot(cwd), '.orchestrator', 'runtime', 'templates-acknowledged.json');
+} catch {
+  process.stderr.write('⚠ templates-ack: root resolver unavailable — ack not written\n');
   process.exit(1);
 }
 let sessionId = null;
@@ -106,15 +115,38 @@ if (reason) process.stdout.write('  Reason: ' + reason + '\n');
 
 ## Verification
 
-After writing, confirm the entry exists:
+After writing, confirm the entry exists. The check resolves the same root as
+the writer (main checkout for a linked worktree); the `Written:` line above
+names the same file.
 
 ```bash
-node -e "
-const f = require('fs');
-const p = '.orchestrator/runtime/templates-acknowledged.json';
-if (!f.existsSync(p)) { console.log('NOT FOUND'); process.exit(1); }
-const d = JSON.parse(f.readFileSync(p, 'utf8'));
-console.log(JSON.stringify(d, null, 2));
+node --input-type=module -e "
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const cwd = process.cwd();
+// Same plugin-root lookup as the writer: an env root first, the cwd only
+// when it IS the plugin repository, never an arbitrary project.
+let pluginRoot = null;
+for (const name of ['PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CURSOR_RULES_DIR', 'PI_PLUGIN_ROOT']) {
+  const candidate = (process.env[name] ?? '').trim();
+  if (!candidate) continue;
+  try { if (statSync(candidate).isDirectory()) { pluginRoot = candidate; break; } } catch { /* try next root */ }
+}
+if (!pluginRoot) {
+  try {
+    if (JSON.parse(readFileSync(join(cwd, 'package.json'), 'utf8')).name === 'session-orchestrator') pluginRoot = cwd;
+  } catch { /* no plugin-root evidence */ }
+}
+if (!pluginRoot) { console.log('plugin root unavailable'); process.exit(1); }
+let root;
+try {
+  const { resolveEventsLedgerRoot } = await import(pathToFileURL(join(pluginRoot, 'scripts/lib/platform.mjs')).href);
+  root = resolveEventsLedgerRoot(cwd);
+} catch { console.log('root resolver unavailable'); process.exit(1); }
+const p = join(root, '.orchestrator', 'runtime', 'templates-acknowledged.json');
+if (!existsSync(p)) { console.log('NOT FOUND: ' + p); process.exit(1); }
+console.log(JSON.stringify(JSON.parse(readFileSync(p, 'utf8')), null, 2));
 "
 ```
 

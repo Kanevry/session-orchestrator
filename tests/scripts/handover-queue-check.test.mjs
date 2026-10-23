@@ -9,6 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync, existsSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { homeEnv } from '../_helpers/home-env.mjs';
 import { findOpenPoints, refFor, unmarkedPoints } from '../../scripts/lib/handover-queue-marks.mjs';
 
 const SCRIPT = resolve(process.cwd(), 'scripts/handover-queue-check.mjs');
@@ -44,7 +45,7 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 function run(args, { fleet = true, stubExit = 0 } = {}) {
-  const env = { ...process.env, HOME: dir, STUB_LOG: join(dir, 'calls.log'), STUB_EXIT: String(stubExit) };
+  const env = { ...process.env, ...homeEnv(dir), STUB_LOG: join(dir, 'calls.log'), STUB_EXIT: String(stubExit) };
   delete env.NAVIGATOR_CONFIG_DIR;
   if (fleet) env.NAVIGATOR_CONFIG_DIR = join(dir, 'nav');
   const r = spawnSync(process.execPath, [SCRIPT, ...args], { env, encoding: 'utf8', timeout: 15_000 });

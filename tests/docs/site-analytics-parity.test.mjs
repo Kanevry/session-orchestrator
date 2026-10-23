@@ -34,6 +34,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { readFileSync, globSync } from 'node:fs';
+import { sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -41,7 +42,10 @@ const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 /** Production script path. Same-origin by construction — no scheme, no host. */
 const SCRIPT_SRC = '/_vercel/insights/script.js';
 
-const PAGES = globSync('site/**/*.html', { cwd: REPO_ROOT }).sort();
+const PAGES = globSync('site/**/*.html', { cwd: REPO_ROOT })
+  // globSync returns native separators; the page list is compared repo-relative with '/'.
+  .map((p) => p.split(sep).join('/'))
+  .sort();
 const read = (rel) => readFileSync(new URL(rel, new URL('file://' + REPO_ROOT + '/')), 'utf8');
 
 describe('site: Vercel Web Analytics wiring', () => {

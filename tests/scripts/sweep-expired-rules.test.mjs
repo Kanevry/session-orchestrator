@@ -102,11 +102,13 @@ Body prose.
     const before = protectedPaths.map((file) => readFileSync(file));
     // Inject only the real FS-read failure in the CLI child, not the planner
     // or its error handler. No chmod/root-dependent permission assumptions.
+    // The path is native (backslash on Windows); backslashes are doubled because
+    // this source lives in a template literal.
     const preload = 'data:text/javascript,' + encodeURIComponent(`
       import fs from 'node:fs/promises';
       import { syncBuiltinESMExports } from 'node:module';
       const readFile = fs.readFile;
-      fs.readFile = (file, ...args) => String(file).endsWith('/learnings.jsonl')
+      fs.readFile = (file, ...args) => /[\\\\/]learnings\\.jsonl$/.test(String(file))
         ? Promise.reject(Object.assign(new Error('read denied'), { code: 'EACCES' }))
         : readFile(file, ...args);
       syncBuiltinESMExports();

@@ -21,6 +21,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { homeEnv } from '../_helpers/home-env.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -668,8 +669,8 @@ describe('G7 — cwd is relative to the project dir, never absolute', { timeout:
   // Bug: username leaks into a webhook-bound event. With the project dir at `/`
   // or at/above the home dir, the RELATIVE form is `Users/<name>/…` (or the
   // home-relative layout) — no absolute path, so the `startsWith('/')` guard
-  // above stays green while the username still goes out. HOME is faked under
-  // the tmp dir (`os.homedir()` reads it), so no row touches the real home;
+  // above stays green while the username still goes out. HOME/USERPROFILE are faked
+  // under the tmp dir (`os.homedir()` reads them), so no row touches the real home;
   // the `/` row's event lands in the ledger sandbox instead of `/.orchestrator`.
   it.each([
     {
@@ -703,7 +704,7 @@ describe('G7 — cwd is relative to the project dir, never absolute', { timeout:
       cwd,
       env: {
         CLAUDE_PROJECT_DIR: projectDir,
-        HOME: home,
+        ...homeEnv(home),
         SO_EVENTS_LEDGER_SANDBOX: path.join(eventsRoot, '.orchestrator', 'metrics', 'events.jsonl'),
       },
       stdin: bashPayload('node scripts/memory-propose.mjs', { session_id: 'sess-1' }),

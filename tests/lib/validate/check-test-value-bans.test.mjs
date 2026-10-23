@@ -122,6 +122,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import vitestConfig from '../../../vitest.config.mjs';
 import { fixtureGit } from '../../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const SCRIPT = join(REPO_ROOT, 'scripts', 'lib', 'validate', 'check-test-value-bans.mjs');
@@ -1189,8 +1190,10 @@ describe('check-test-value-bans — CLI contract', () => {
       ).join('\n') + '\n';
     writeFileSync(join(root, rel), body);
     const res = spawnSync(
-      '/bin/sh',
-      ['-c', `printf '%s' "${rel}" | "${process.execPath}" "${SCRIPT}" "${root}" --stdin --json | cat`],
+      posixShell('/bin/sh'),
+      // Paths travel as positional args, not spliced into the script text: a
+      // Windows path in the command string is shell-parsed (SO#1613).
+      ['-c', 'printf \'%s\' "$1" | "$2" "$3" "$4" --stdin --json | cat', 'sh', rel, process.execPath, SCRIPT, root],
       { encoding: 'utf8', timeout: 60_000 },
     );
 

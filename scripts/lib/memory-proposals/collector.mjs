@@ -18,6 +18,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Path helpers
@@ -30,7 +31,9 @@ import path from 'node:path';
  * @returns {string}
  */
 function proposalsJsonlPath(repoRoot) {
-  return path.join(repoRoot, '.orchestrator', 'metrics', 'proposals.jsonl');
+  // #1722: same root as store.mjs — a linked worktree of a repo that ignores
+  // the queue reads the main checkout's copy.
+  return resolveLedgerPath('.orchestrator/metrics/proposals.jsonl', repoRoot);
 }
 
 /**
@@ -40,7 +43,7 @@ function proposalsJsonlPath(repoRoot) {
  * @returns {string}
  */
 function metricsDir(repoRoot) {
-  return path.join(repoRoot, '.orchestrator', 'metrics');
+  return path.dirname(proposalsJsonlPath(repoRoot));
 }
 
 // ---------------------------------------------------------------------------

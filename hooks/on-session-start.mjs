@@ -33,6 +33,7 @@ import { existsSync, writeSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { randomUUID } from 'node:crypto';
+import { hostname } from 'node:os';
 import path from 'node:path';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
@@ -60,8 +61,9 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 // SSOT for the "is this a re-entry into the same logical session?" question
 // (#1091). Defined in the lock-bootstrap leaf module, which this hook already
 // loads, so the preservation branch below and the lock force-refresh gate can
-// never drift apart.
-import { SAME_LOGICAL_SESSION_SOURCES } from './_lib/lock-bootstrap.mjs';
+// never drift apart. readClaudePid() is the process witness current-session.json
+// carries next to the raw id (#1746).
+import { SAME_LOGICAL_SESSION_SOURCES, readClaudePid } from './_lib/lock-bootstrap.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -384,8 +386,13 @@ async function readStdinJson(timeoutMs = 500) {
  * Codex/Cursor may not).
  *
  * Best-effort: any persistence failure is swallowed (hook must remain non-blocking).
+ *
+ * @param {object|null} input — the parsed SessionStart payload.
+ * @param {string} projectRoot
+ * @param {number|null} [claudePid=null] — readClaudePid(); recorded with the
+ *   host as the writer's process witness (#1746).
  */
-async function resolveSessionId(input, projectRoot) {
+async function resolveSessionId(input, projectRoot, claudePid = null) {
   const nativeSource = typeof input?.source === 'string' && input.source.length > 0
     ? input.source
     : null;
@@ -563,6 +570,11 @@ async function resolveSessionId(input, projectRoot) {
       pid: process.pid,
       source,
       timestamp: new Date().toISOString(),
+      // #1746 — `pid` above is this short-lived hook process, no witness of
+      // anything after it exits. The Claude Code process survives /clear, so
+      // the next run can tell its own predecessor from a peer that started
+      // later in this checkout. Absent without a readable CLAUDE_PID.
+      ...(typeof claudePid === 'number' ? { claude_pid: claudePid, host: hostname() } : {}),
       // Spread AFTER the base fields so the preserved high-water marks survive
       // (and never clobber the identity fields above).
       ...preserved,
@@ -580,12 +592,18 @@ async function resolveSessionId(input, projectRoot) {
     mode: normalizedMode,
     nativeSource,
     resumeLinkage,
-    // The raw session_id our OWN previous run of this hook recorded, or null.
-    // Surfaced (rather than kept local) because bootstrapLock() needs it as the
-    // third conjunct of the #1091 F2 force-refresh — see the call site in main().
+    // The raw session_id the LAST session start in this checkout recorded, or
+    // null. Every session start rewrites the file, so it is our own previous
+    // run only when no peer started here since (#1746). Surfaced (rather than
+    // kept local) because bootstrapLock() needs it as the third conjunct of
+    // the #1091 F2 force-refresh — see the call site in main().
     predecessorSessionId: typeof prev?.session_id === 'string' && prev.session_id.length > 0
       ? prev.session_id
       : null,
+    // #1746 — the process witness that writer recorded, unvalidated: the
+    // consumer compares it with isSameClaudeProcess(), which admits only an
+    // exact pid match on this host.
+    predecessorProcess: prev ? { claude_pid: prev.claude_pid, host: prev.host } : null,
   };
 }
 
@@ -911,8 +929,14 @@ async function main() {
   // clear|compact), plus the linkage decision resolveSessionId() derived from
   // it (see SAME_LOGICAL_SESSION_SOURCES). Both are surfaced on the event so
   // #1091 gets its measurement instead of an inference.
-  const { sessionId, semanticSessionId, mode, nativeSource, resumeLinkage, predecessorSessionId } =
-    await resolveSessionId(input, projectRoot);
+  // #1641: the Claude Code process survives /clear while the raw id and the
+  // semantic label are minted anew — its pid is the witness that a live lock,
+  // or the current-session.json entry (#1746), is our own predecessor's.
+  // Admitted only as this hook's direct parent: a Codex child of a Claude
+  // session inherits the variable.
+  const claudePid = readClaudePid();
+  const { sessionId, semanticSessionId, mode, nativeSource, resumeLinkage, predecessorSessionId, predecessorProcess } =
+    await resolveSessionId(input, projectRoot, claudePid);
   // getPlatform() ALREADY implements the SO_PLATFORM override as step 1 of its
   // precedence — and, unlike a bare `??`, it validates the value against the
   // four-platform allowlist and trims it. The former `process.env.SO_PLATFORM ??
@@ -931,7 +955,7 @@ async function main() {
   // best-effort, but this outer guard ensures the hook stays non-blocking
   // regardless of any future regression in the helper itself.
   try {
-    const { bootstrapLock, readClaudePid } = await import('./_lib/lock-bootstrap.mjs');
+    const { bootstrapLock } = await import('./_lib/lock-bootstrap.mjs');
     await bootstrapLock({
       repoRoot: projectRoot,
       sessionId,
@@ -939,17 +963,17 @@ async function main() {
       mode,
       ttlHours: 4,
       nativeSource,
-      // The raw session_id our OWN previous run of this hook recorded. It is the
+      // The raw session_id the last session start in this checkout recorded —
+      // our own previous run unless a peer started here since. It is the
       // third conjunct of the same-logical-session force-refresh (#1091 F2): a
       // semantic-label match alone is collidable on one host (#1066), so the
       // live lock must ALSO carry our predecessor's raw id before we take it
       // over. `prev` is read above, before the semantic id is minted.
       predecessorSessionId,
-      // #1641: the Claude Code process survives /clear while the raw id and the
-      // semantic label are minted anew — its pid is the witness that the live
-      // lock is our own predecessor's. Admitted only as this hook's direct
-      // parent: a Codex child of a Claude session inherits the variable.
-      claudePid: readClaudePid(),
+      // #1746: who wrote that raw id — the lead yield trusts it as "our own
+      // predecessor" only when this same Claude process did.
+      predecessorProcess,
+      claudePid,
       // #1635: a fleet lead holds this main checkout — no lock was taken; the
       // model and the operator are told to work in a worktree instead.
       onNotice: (context, banner) => {

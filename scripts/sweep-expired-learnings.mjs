@@ -139,6 +139,7 @@ import { atomicWriteText, envelopeToError } from './lib/io.mjs';
 import { validateLearning } from './lib/learnings/schema.mjs';
 import { validatePathInsideProject } from './lib/path-utils.mjs';
 import { emitEvolveCompleted } from './lib/learnings/evolve-telemetry.mjs';
+import { resolveLedgerPath, resolveLedgerRoot } from './lib/ledger-path.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/learnings.jsonl';
 const DEFAULT_ARCHIVE = '.orchestrator/metrics/learnings-archive.jsonl';
@@ -257,6 +258,7 @@ function parseArgs(argv) {
     generation: null,
     acceptEmbedded: false,
   };
+  let fileExplicit = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--prune') {
@@ -296,6 +298,7 @@ function parseArgs(argv) {
       args.snapshot = pathValue(a, argv[++i]);
     } else if (a === '--file') {
       args.file = pathValue(a, argv[++i]);
+      fileExplicit = true;
     } else if (a === '--archive') {
       args.archive = pathValue(a, argv[++i]);
       args.archiveExplicit = true;
@@ -343,6 +346,12 @@ function parseArgs(argv) {
     }
   }
 
+  // #1722: the DEFAULT store/archive route through the ledger resolver (main
+  // checkout when cwd is a linked worktree that gitignores them); outside one
+  // the relative defaults are kept verbatim. Explicit --file/--archive stay.
+  if (!fileExplicit) args.file = routedDefault(DEFAULT_FILE);
+  if (!args.archiveExplicit) args.archive = routedDefault(DEFAULT_ARCHIVE);
+
   // Mode/flag mismatches are usage errors, never silent no-ops: a `--grace-days`
   // that the prune path ignores would read as "the grace window applied" in a
   // transcript, and an `--entries` the sweep ignores would read as "my next
@@ -381,7 +390,7 @@ function parseArgs(argv) {
       // (macOS /var → /private/var) refused a store inside it. The file goes
       // through resolveLedger (realpath when it exists), because
       // canonicalizeRoot realpaths only the root.
-      if (!validatePathInsideProject(resolveLedger(args.file), args.repoRoot, { canonicalizeRoot: true }).ok) {
+      if (ledgerRootOf(args.file, args.repoRoot) === null) {
         usageError(`--file ${args.file} lies outside --repo-root ${args.repoRoot} — nothing written`);
       }
     }
@@ -609,6 +618,39 @@ function resolveLedger(p) {
   } catch {
     return path.resolve(p);
   }
+}
+
+/**
+ * The default ledger for this cwd (#1722): `rel` verbatim unless the resolver
+ * maps it elsewhere (linked worktree that gitignores it), then that absolute path.
+ *
+ * @param {string} rel
+ * @returns {string}
+ */
+function routedDefault(rel) {
+  const routed = resolveLedgerPath(rel, process.cwd());
+  return routed === path.resolve(rel) ? rel : routed;
+}
+
+/**
+ * Which root a store lies inside, canonically (#1500 F4): `repoRoot` itself, or
+ * its ledger root (the main checkout of a linked worktree, #1722) — but only for
+ * a file inside the DIRECTORY of the mapped default store, never anywhere in
+ * that other checkout (a worktree session must not rewrite a foreign tree).
+ * `null` when it lies outside both.
+ *
+ * @param {string} file
+ * @param {string} repoRoot
+ * @returns {string|null}
+ */
+function ledgerRootOf(file, repoRoot) {
+  const abs = resolveLedger(file);
+  if (validatePathInsideProject(abs, repoRoot, { canonicalizeRoot: true }).ok) return repoRoot;
+  const storeDir = path.dirname(resolveLedgerPath(DEFAULT_FILE, repoRoot));
+  if (validatePathInsideProject(abs, storeDir, { canonicalizeRoot: true }).ok) {
+    return resolveLedgerRoot(DEFAULT_FILE, repoRoot);
+  }
+  return null;
 }
 
 /**
@@ -862,7 +904,7 @@ async function runPrune(args) {
 async function emitMalformedDropped(args, result) {
   // Both sides canonical, as the parseArgs check judged them: a lexical
   // relative() across /var vs /private/var reads `../../private/...`.
-  const root = resolveLedger(args.repoRoot);
+  const root = resolveLedger(ledgerRootOf(args.file, args.repoRoot) ?? args.repoRoot);
   const rel = (p) => path.relative(root, resolveLedger(p));
   try {
     const { emitEvent, sessionAttribution } = await import('./lib/events.mjs');

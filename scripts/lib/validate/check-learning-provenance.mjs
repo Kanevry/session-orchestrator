@@ -134,6 +134,7 @@ import { readLearnings } from '../learnings/io.mjs';
 // the emitter's formula.
 import { learningKeyOf } from '../learnings/kebab.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 /** Directory holding the rule corpus, relative to the plugin root. */
 const RULES_REL = path.join('.claude', 'rules');
@@ -272,8 +273,8 @@ async function indexStore(absolutePath) {
 export async function inspectLearningProvenance(pluginRoot, opts = {}) {
   /** @type {Finding[]} */
   const findings = [];
-  const livePath = opts.livePath ?? path.join(pluginRoot, LIVE_STORE_REL);
-  const archivePath = opts.archivePath ?? path.join(pluginRoot, ARCHIVE_STORE_REL);
+  const livePath = opts.livePath ?? resolveLedgerPath(LIVE_STORE_REL, pluginRoot);
+  const archivePath = opts.archivePath ?? resolveLedgerPath(ARCHIVE_STORE_REL, pluginRoot);
 
   /** @type {Inspection} */
   const result = {

@@ -32,6 +32,7 @@ import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { explainEventsLedgerRoot, resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { appendJsonl } from './lib/common.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 import {
   MEMORY_CLEANUP_EVENT,
   deriveMemoryCleanupSignal,
@@ -316,6 +317,8 @@ function parseArgs(argv) {
   // default is therefore resolved after parsing and refused when unmapped.
   const args = {
     file: null,
+    // true when --file was not given and the default sessions ledger is used
+    fileDefaulted: false,
     entry: null,
     sessionUuid: null,
   };
@@ -350,7 +353,9 @@ function parseArgs(argv) {
       );
       process.exit(2);
     }
+    // ledger-root: ledger.root comes from explainEventsLedgerRoot (sessions rule)
     args.file = join(ledger.root, '.orchestrator', 'metrics', 'sessions.jsonl');
+    args.fileDefaulted = true;
   }
   return args;
 }
@@ -720,10 +725,22 @@ async function main() {
   if (ownUuid !== null && !hasOwn('total_tokens')) {
     let rollup = null;
     try {
-      rollup = rollupSessionTokens({
-        parentSessionId: ownUuid,
-        subagentsPath: join(dirname(args.file), 'subagents.jsonl'),
-      });
+      // A defaulted --file reads the subagents ledger where the hook writer
+      // (hooks/subagent-telemetry.mjs) puts it: resolved from the cwd first, then
+      // from the ledger root — the hook resolves from the LAUNCH dir, which is
+      // the main checkout when the session entered this worktree later and the
+      // repo versions the ledger. First copy with a record of this session wins,
+      // so nothing is counted twice. An explicit --file keeps its sibling.
+      const candidates = args.fileDefaulted
+        ? [...new Set([
+          resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', process.cwd()),
+          resolveLedgerPath('.orchestrator/metrics/subagents.jsonl', resolveEventsLedgerRoot(process.cwd())),
+        ])]
+        : [join(dirname(args.file), 'subagents.jsonl')];
+      for (const subagentsPath of candidates) {
+        rollup = rollupSessionTokens({ parentSessionId: ownUuid, subagentsPath });
+        if (rollup.matched_records > 0) break;
+      }
     } catch (err) {
       process.stderr.write(
         `emit-session: WARN token rollup failed (${err?.message ?? err}); omitting token fields\n`

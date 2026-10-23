@@ -309,13 +309,17 @@ them silently loses a learning or regenerates it:
    unparseable date. Two KNOWN LIMITS, both measured 2026-09-18 and both left
    unsolved on purpose:
 
-   - **Only the on-disk half.** `partitionMaterialized` marks a learning
-     materialized on `sidecarTerminal || onDisk`; this covers `onDisk` only. On
-     this repo 79 of 92 provenance keys are ALSO terminal in
+   - **Only the on-disk third.** `partitionMaterialized` marks a learning
+     materialized on `sidecarTerminal || ledgerTerminal || onDisk`; this covers
+     `onDisk` only. On this repo 79 of 92 provenance keys are ALSO terminal in
      `.orchestrator/runtime/reconcile-candidates.jsonl`, so only 13 keys
-     actually become re-proposable. The sidecar half stays untouched because it
-     carries operator DECLINES — expiring a rule must not re-ask a question the
-     operator already answered.
+     actually become re-proposable. The sidecar and the append-only verdict
+     ledger `.orchestrator/metrics/reconcile-verdicts.jsonl` (#1710) stay
+     untouched because they carry operator DECLINES — expiring a rule must not
+     re-ask a question the operator already answered. The ledger holds
+     DECISIONS only (`rejected`, `expired-swept`), never the branch-scoped
+     `written` / `already-on-disk`, so a rule's own `written` verdict does not
+     pin its learning there.
    - **A file the sweep cannot split re-proposes forever.** A file the sweep
      skips (`no-1to1-mapping`, `no-provenance-block`, `unreadable`,
      `no-counter-sentence`) that then
@@ -375,17 +379,21 @@ them silently loses a learning or regenerates it:
 **Dropping a learning requires a stamp BEFORE the delete.** Deleting a
 generated rule file whose insight is already carried verbatim by a hand-written
 always-on rule is legitimate — but `rm` alone does not stick. `engine.mjs`
-treats a learning as `alreadyMaterialized` if EITHER the idempotency sidecar
-holds a terminal verdict for its `learning_key` (`isProcessed`) OR a
-`.claude/rules/*.md` file still carries its marker. Delete the file without
-stamping and both conditions go false, so the next `/reconcile` proposes it
-again. Stamp it first, via the store's only sanctioned writer:
+treats a learning as `alreadyMaterialized` if the idempotency sidecar holds a
+terminal verdict for its `learning_key` (`isProcessed`), OR the append-only
+verdict ledger `.orchestrator/metrics/reconcile-verdicts.jsonl` does (#1710),
+OR a `.claude/rules/*.md` file still carries its marker. Delete the file
+without stamping and the marker is gone; the `written` sidecar record keeps it
+terminal only in the checkout that wrote the rule, so the next `/reconcile` in
+any other checkout (a fresh worktree) proposes it again. Stamp it first, via the store's only sanctioned writer —
+with `outcome: 'rejected'`: only a decision reaches the ledger, so an
+`already-on-disk` stamp holds in the stamping checkout alone:
 
 ```js
 import { markCandidateProcessed } from '../scripts/lib/reconcile/idempotency.mjs';
 markCandidateProcessed({
   learningKey: 'anti-pattern/<subject-slug>',
-  outcome: 'rejected',        // or 'already-on-disk' when it lives elsewhere
+  outcome: 'rejected',        // 'already-on-disk' (it lives elsewhere) stays checkout-local
   fallbackSlug: '<the .claude/rules slug>',
   repoRoot,
 });

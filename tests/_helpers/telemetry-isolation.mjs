@@ -23,7 +23,7 @@
  * `telemetryIsolationEnv()` returns an env block that is fail-closed on THREE
  * independent axes, so no single mistake re-opens the path:
  *
- *   1. `HOME` → a throwaway dir, so `os.homedir()` (and with it every
+ *   1. `HOME` and `USERPROFILE` → a throwaway dir, so `os.homedir()` (and with it every
  *      `~/.config/session-orchestrator/*` path) resolves away from the operator.
  *   2. `SO_TELEMETRY_DISABLED=1` + `DO_NOT_TRACK=1` → `resolveConsent()` returns
  *      `send: false` before any batch is built, whatever HOME contains.
@@ -40,6 +40,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { afterAll } from 'vitest';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { homeEnv } from './home-env.mjs';
 
 /**
  * One throwaway HOME per test PROCESS. Created lazily so importing this module
@@ -74,7 +75,9 @@ export function isolatedHome() {
  */
 export function telemetryIsolationEnv({ home } = {}) {
   return {
-    HOME: home ?? isolatedHome(),
+    // HOME and USERPROFILE: on Windows `os.homedir()` reads only the latter, so
+    // HOME alone left axis 1 open there (#1613, see ./home-env.mjs).
+    ...homeEnv(home ?? isolatedHome()),
     // A fake HOME is NOT authoritative on its own. `resolvePrivateConfigDir()`
     // reads SO_CONFIG_HOME > XDG_CONFIG_HOME > homedir(), so an inherited
     // XDG_CONFIG_HOME silently outranks the HOME set on the line above and the

@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { load as loadYaml } from 'js-yaml';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const ROOT = process.cwd();
 const doc = loadYaml(readFileSync(resolve(ROOT, '.gitlab-ci.yml'), 'utf8'));
@@ -105,7 +106,7 @@ function runJob(
   dir,
   { mrBase = '', before = '', sha, squash = '', title = '', branch = '', defaultBranch = '' },
 ) {
-  const res = spawnSync('sh', ['-c', scriptBlock], {
+  const res = spawnSync(posixShell('sh'), ['-c', scriptBlock], {
     cwd: dir,
     encoding: 'utf8',
     env: {

@@ -1,12 +1,25 @@
 import { it, expect, afterEach } from 'vitest';
 import { mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const dirs = [];
 afterEach(() => { while (dirs.length) removeTree(dirs.pop()); });
+
+// Git for Windows defaults core.symlinks=false, so the hook's `git clone` of the
+// fixture checks the symlinked router out as a text file holding its target path
+// (node then fails with "Invalid regular expression flags"). The hook sweeps every
+// GIT_* variable, so the setting travels as XDG global git config. Off Windows: no-op.
+function windowsSymlinkEnv(dir) {
+  if (process.platform !== 'win32') return {};
+  const xdg = join(dir, 'xdg');
+  mkdirSync(join(xdg, 'git'), { recursive: true });
+  writeFileSync(join(xdg, 'git', 'config'), '[core]\n\tsymlinks = true\n');
+  return { XDG_CONFIG_HOME: xdg };
+}
 
 function runHook(mode, linked = false, tagKind, gateHosts) {
   const dir = makeTmpDir('pre-push-remote-');
@@ -108,7 +121,7 @@ function runHook(mode, linked = false, tagKind, gateHosts) {
   // `sh -e`, exactly as husky 9 starts the hook (.husky/_/h). Under plain `sh`
   // a bare `cmd; rc=$?` survives a non-zero cmd, so the exit-10 local fallback
   // looked fine here while every real push aborted before reaching it (#1540).
-  let command = 'sh';
+  let command = posixShell('sh');
   let args = ['-e', join(root, '.husky/pre-push')];
   let input = `refs/heads/x ${sha} refs/heads/x ${'0'.repeat(40)}\n`;
   if (tagKind) {
@@ -139,8 +152,8 @@ function runHook(mode, linked = false, tagKind, gateHosts) {
   const res = spawnSync(command, args, {
     cwd: source, encoding: 'utf8', timeout: 30_000,
     input,
-    env: { ...process.env, SKIP_QUALITY_GATE: '', PATH: `${bin}:${process.env.PATH}`,
-      TRACE: trace, MODE: mode, CLAUDE_PROJECT_DIR: repo, ...overrideEnv },
+    env: { ...process.env, SKIP_QUALITY_GATE: '', PATH: `${bin}${delimiter}${process.env.PATH}`,
+      TRACE: trace, MODE: mode, CLAUDE_PROJECT_DIR: repo, ...windowsSymlinkEnv(dir), ...overrideEnv },
   });
   return { res, records: readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) };
 }

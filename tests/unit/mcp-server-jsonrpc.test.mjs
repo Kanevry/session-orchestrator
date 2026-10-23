@@ -12,9 +12,10 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 // Derive repoRoot portably from this file's location (tests/unit/ -> repo root).
 // No hardcoded home path — the owner-leakage CI gate blocks absolute home paths.
@@ -34,7 +35,7 @@ const serverScriptAbs = join(repoRoot, serverScript);
  */
 function runServer(requestObj, cwd = repoRoot) {
   const input = `${JSON.stringify(requestObj)}\n`;
-  const result = spawnSync('bash', [serverScriptAbs], {
+  const result = spawnSync(posixShell('bash'), [serverScriptAbs], {
     input,
     encoding: 'utf8',
     cwd,
@@ -131,7 +132,7 @@ describe('mcp-server.sh session_metrics — torn-write tolerance', () => {
       { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'session_metrics', arguments: {} } },
       { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
     ];
-    const result = spawnSync('bash', [serverScriptAbs], {
+    const result = spawnSync(posixShell('bash'), [serverScriptAbs], {
       input: requests.map((request) => JSON.stringify(request)).join('\n') + '\n',
       encoding: 'utf8',
       cwd: tmpRepo,
@@ -273,7 +274,7 @@ function runMcpJsonEntrypoint(cwd, extraEnv = {}) {
   Object.assign(env, extraEnv);
 
   const input = `${JSON.stringify({ jsonrpc: '2.0', id: 'gh64', method: 'initialize', params: {} })}\n`;
-  return spawnSync(entry.command, entry.args, {
+  return spawnSync(posixShell(entry.command), entry.args, {
     input,
     encoding: 'utf8',
     cwd,
@@ -404,12 +405,16 @@ describe('.mcp.json entrypoint — plugin-root resolution (GH#64)', () => {
     const result = runMcpJsonEntrypoint(outsideRepo, {
       HOME: sandboxHome,
       CODEX_HOME: '   ',
-      PATH: `${binDir}:/bin`,
+      PATH: `${binDir}${delimiter}/bin`,
     });
 
     // Precondition: every tier really did fail, so the diagnostic is the output.
     expect(result.stderr).toContain(DIAGNOSTIC_MARKER);
-    expect(result.stderr).toContain(join(sandboxHome, '.codex', 'plugins', 'cache'));
+    // Git Bash prints $HOME in its own form (/c/Users/…); compare in that form.
+    const scanned = join(sandboxHome, '.codex', 'plugins', 'cache');
+    expect(result.stderr).toContain(process.platform === 'win32'
+      ? spawnSync(posixShell('bash'), ['-c', 'cygpath -u "$1"', '_', scanned], { encoding: 'utf8' }).stdout.trim()
+      : scanned);
     // RED without the trim: the scanned base is the literal spaces.
     expect(result.stderr).not.toContain('   /plugins/cache');
   });

@@ -52,6 +52,7 @@ import { join, resolve } from 'node:path';
 import { digestSha256Short } from './crypto-digest-utils.mjs';
 import { isMainModule } from './is-main-module.mjs';
 import { isCoordinatorRecordId } from './scope-gate.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 
 /** Marker the agent must emit. Case-sensitive by design — a lowercase lookalike is not an echo. */
 export const SCOPE_ECHO_MARKER = 'SCOPE-DIGEST:';
@@ -420,7 +421,8 @@ export function digestScopeFiles(stateDir, wave, { readDir = readdirSync, readFi
  * @param {number} params.wave
  * @param {string} params.stateDir
  * @param {string} [params.session]    semantic (or raw) session id to filter on
- * @param {string} [params.eventsPath] defaults to the cwd-relative `.orchestrator/metrics/events.jsonl`;
+ * @param {string} [params.eventsPath] defaults to `.orchestrator/metrics/events.jsonl` under
+ *   `resolveEventsLedgerRoot(cwd)`;
  *   the CLI passes `eventsFilePath(<state-dir>/..)` (the repo's one ledger, #1514)
  * @param {typeof readFileSync} [params.readFile]
  * @param {typeof readdirSync} [params.readDir]
@@ -437,7 +439,8 @@ export function verifyWaveScope({
   readFile = readFileSync,
   readDir = readdirSync,
 }) {
-  const ledgerPath = eventsPath || join('.orchestrator', 'metrics', 'events.jsonl');
+  // #1514/#1722: the default maps a linked worktree to the main checkout's one ledger.
+  const ledgerPath = eventsPath || join(resolveEventsLedgerRoot(process.cwd()), '.orchestrator', 'metrics', 'events.jsonl');
   let records = [];
   let malformedLines = 0;
   try {

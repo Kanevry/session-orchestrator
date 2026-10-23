@@ -39,9 +39,10 @@
  */
 
 import { readFileSync, copyFileSync, existsSync } from 'node:fs';
-import { basename } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import { atomicWriteWithBackup, envelopeToError } from './lib/io.mjs';
 import { validateSession, normalizeSession, ValidationError } from './lib/session-schema.mjs';
+import { resolveEventsLedgerRoot } from './lib/platform.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 
 const DEFAULT_FILE = '.orchestrator/metrics/sessions.jsonl';
@@ -327,8 +328,21 @@ function processEntry(raw) {
 // CLI
 // ---------------------------------------------------------------------------
 
+/**
+ * Default target: sessions.jsonl of the repo's one ledger root (#1514/#1584,
+ * #1722) — the main checkout when cwd is a linked worktree. Outside one the
+ * relative DEFAULT_FILE is kept verbatim, so paths in output do not change.
+ *
+ * @returns {string}
+ */
+function defaultFile() {
+  const root = resolveEventsLedgerRoot(process.cwd());
+  // ledger-root: `root` is resolveEventsLedgerRoot() of the line above
+  return root === resolve(process.cwd()) ? DEFAULT_FILE : join(root, DEFAULT_FILE);
+}
+
 function parseArgs(argv) {
-  const args = { file: DEFAULT_FILE, apply: false };
+  const args = { file: defaultFile(), apply: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--file') {

@@ -26,7 +26,7 @@ import { createHash } from 'node:crypto';
 import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -41,8 +41,9 @@ import {
   voidVerdict,
 } from '@lib/learnings/judgment.mjs';
 
-const MODULE_PATH = new URL('../../../../scripts/lib/learnings/judgment.mjs', import.meta.url)
-  .pathname;
+const MODULE_PATH = fileURLToPath(
+  new URL('../../../../scripts/lib/learnings/judgment.mjs', import.meta.url),
+);
 
 // ---------------------------------------------------------------------------
 // Golden-record fixtures — the canonical false-positive pair

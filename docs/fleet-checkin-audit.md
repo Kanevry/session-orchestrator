@@ -133,16 +133,19 @@ snapshot bytes or input paths.
 | --- | --- |
 | 0 | Measured report, including reports with findings; help or version |
 | 1 | Invalid arguments, rejected paths, malformed JSON or UTF-8 |
-| 2 | Unavailable input, unsupported safe-open constants or system/output I/O |
+| 2 | Unavailable input or system/output I/O |
 | 3 | Incomplete or otherwise unmeasurable snapshot evidence |
 
 ## File boundary and API
 
 The CLI accepts only regular files strictly inside `--input-root`. It checks both
 paths before reading either file's contents, rejects lexical escapes, symlinks
-in the root, parents or final component, and nonregular inputs. Opening requires
-native `O_NOFOLLOW` and `O_NONBLOCK`; absent constants fail closed. It verifies
-the opened file's device/inode against the inspected file. Concurrent parent
+in the root, parents or final component, and nonregular inputs. Opening uses
+native `O_NOFOLLOW` and `O_NONBLOCK` where the platform has them. Where it lacks
+them (win32), the reader lstats the final path, opens it read-only and compares
+the handle's device/inode (bigint) with the lstat. A swap, a symlink or a
+nonregular file found at open time reports `changed-input-file` (exit 1). It
+verifies the opened file's device/inode against the inspected file. Concurrent parent
 directory renames are not atomically secured by this portable path-based reader:
 use stable trusted snapshot copies. A Linux result is not a universal Windows or
 macOS portability proof.

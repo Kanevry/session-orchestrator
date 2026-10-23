@@ -39,7 +39,6 @@ import {
 import { resolveBaselineRange } from '@lib/vcs-repo-spec.mjs';
 import { parseStateMd, serializeStateMd } from '@lib/state-md.mjs';
 import { STATE_LOCK_PATH } from '@lib/locks/state-md-lock.mjs';
-import { unwritablePath } from '../_helpers/unwritable-path.mjs';
 import { fixtureGit, makeTmpDir as makeFixtureTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
 
 /**
@@ -413,18 +412,25 @@ describe('writeBaseline()', () => {
 
   // ── #894 review finding F4 — honest error-reason mapping ──────────────
   it('an fs-error acquiring the lock (unwritable lock directory) → {written:false, reason:"lock-fs-error"}, NOT "lock-timeout"', async () => {
-    // unwritablePath() yields a path whose creation fails FAST with ENOTDIR
-    // for every uid (root and non-root alike) — see tests/_helpers/unwritable-path.mjs.
+    // A root below a regular file makes creation fail FAST with ENOTDIR for every uid (root and
+    // non-root alike) and on every platform; unwritablePath()'s /dev/null/<sub> is creatable on Windows.
     // acquireStateLock()'s mkdirSync(dir, {recursive:true}) for the
     // .orchestrator/state.lock directory fails immediately with this reason,
     // BEFORE writeBaseline()'s transformer ever runs — so this exercises the
     // acquire-failure branch of the F4 mapping, distinct from the
     // held-lock-poll-to-deadline branch above.
-    const root = unwritablePath('scope-baseline-fs-error');
+    const parent = makeFixtureTmpDir('scope-baseline-fs-error-');
+    const blocker = join(parent, 'blocker');
+    writeFileSync(blocker, '');
+    const root = join(blocker, 'repo');
 
-    const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
+    try {
+      const result = await writeBaseline({ repoRoot: root, intent: 'I1', ownerBoundary: 'O1', plannedFiles: makeNFileNames('pf', 3) });
 
-    expect(result).toEqual({ written: false, reason: 'lock-fs-error' });
+      expect(result).toEqual({ written: false, reason: 'lock-fs-error' });
+    } finally {
+      removeTree(parent);
+    }
   });
 
   // ── #903 — the back-compat plain-number call shape is REMOVED ──────────

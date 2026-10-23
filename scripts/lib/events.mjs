@@ -954,7 +954,12 @@ export function scanEventsBackwards(opts = {}) {
     let fd;
     try {
       fd = openSync(source.path, 'r');
-      let pos = fstatSync(fd).size;
+      const stats = fstatSync(fd);
+      // Windows opens a directory "as a file" with size 0; without this it
+      // would read as an EMPTY source instead of an unreadable one (POSIX
+      // throws EISDIR on the first read).
+      if (!stats.isFile()) throw new Error(`not a regular file: ${source.path}`);
+      let pos = stats.size;
       /** Partial line at the FRONT of everything read from THIS source so far. */
       let carry = Buffer.alloc(0);
       while (pos > 0) {

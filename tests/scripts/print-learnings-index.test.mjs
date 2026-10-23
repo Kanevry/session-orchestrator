@@ -36,6 +36,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', '..', 'scripts', 'print-learnings-index.mjs');
@@ -812,7 +813,7 @@ describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
 
   it('delivers the payload through an actual shell pipe (node ... | wc -c) byte-identically', () => {
     const completeLen = fileRedirectByteLength(bigRepo, BIG_ARGS);
-    const res = spawnSync('sh', ['-c', `node "${CLI}" ${BIG_ARGS.join(' ')} | wc -c`], {
+    const res = spawnSync(posixShell('sh'), ['-c', 'node "$@" | wc -c', 'sh', CLI, ...BIG_ARGS], {
       encoding: 'utf8',
       env: { ...process.env, CLAUDE_PROJECT_DIR: bigRepo },
     });
@@ -843,10 +844,14 @@ describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
 
     const stderrPath = join(bigRepo, 'epipe-head-stderr.log');
     const res = spawnSync(
-      'bash',
+      posixShell('bash'),
       [
         '-c',
-        `set -o pipefail; node "${CLI}" ${BIG_ARGS.join(' ')} 2>"${stderrPath}" | head -c 100 >/dev/null; echo "$?"`,
+        'err="$1"; shift; set -o pipefail; node "$@" 2>"$err" | head -c 100 >/dev/null; echo "$?"',
+        'bash',
+        stderrPath,
+        CLI,
+        ...BIG_ARGS,
       ],
       { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: bigRepo } },
     );
@@ -862,10 +867,14 @@ describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
     // The header is the very first line, so grep matches and closes its stdin
     // long before the ~375 KB payload finishes writing.
     const res = spawnSync(
-      'bash',
+      posixShell('bash'),
       [
         '-c',
-        `set -o pipefail; node "${CLI}" ${BIG_ARGS.join(' ')} 2>"${stderrPath}" | grep -q "Learnings Index"; echo "$?"`,
+        'err="$1"; shift; set -o pipefail; node "$@" 2>"$err" | grep -q "Learnings Index"; echo "$?"',
+        'bash',
+        stderrPath,
+        CLI,
+        ...BIG_ARGS,
       ],
       { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: bigRepo } },
     );

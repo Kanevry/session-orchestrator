@@ -905,7 +905,8 @@ describe('applyPendingDream / extractDiffBlock + parsePendingDream (internal)', 
 // apply, a naive write would clobber those interim edits (the "clobber"
 // incident class from the pending-dream reference note). #788 refuses with
 // { applied: false, reason: 'stale-index', driftMs } when
-// Math.floor(statSync(MEMORY.md).mtimeMs) > Date.parse(generated_at), leaving
+// Math.floor(statSync(MEMORY.md).mtimeMs) > Date.parse(generated_at) + the 5 ms
+// clock-skew tolerance (CLOCK_SKEW_TOLERANCE_MS), leaving
 // MEMORY.md untouched and PRESERVING the sidecar so --dry-run can re-run.
 //
 // ms-Floor semantics: generated_at (ISO) has whole-ms resolution; APFS mtime

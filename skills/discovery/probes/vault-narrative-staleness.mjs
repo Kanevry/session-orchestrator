@@ -26,8 +26,9 @@
  */
 
 import { existsSync, readFileSync, readdirSync, mkdirSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { expandTilde } from '../../../scripts/lib/common.mjs';
+import { resolveLedgerPath } from '../../../scripts/lib/ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -116,8 +117,8 @@ function computeSeverity(ageDays, threshold) {
   return 'low';
 }
 
-function makeMetricsPath(projectRoot) {
-  return join(projectRoot, '.orchestrator', 'metrics');
+function makeLedgerPath(projectRoot) {
+  return resolveLedgerPath('.orchestrator/metrics/vault-narrative-staleness.jsonl', projectRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +332,8 @@ export async function runProbe(projectRoot, config) {
 
     // ── JSONL append ──────────────────────────────────────────────────────────
     try {
-      const metricsDir = makeMetricsPath(projectRoot);
+      const ledgerPath = makeLedgerPath(projectRoot);
+      const metricsDir = dirname(ledgerPath);
       if (!existsSync(metricsDir)) mkdirSync(metricsDir, { recursive: true });
       const record = {
         timestamp: new Date().toISOString(),
@@ -354,7 +356,7 @@ export async function runProbe(projectRoot, config) {
         })),
       };
       appendFileSync(
-        join(metricsDir, 'vault-narrative-staleness.jsonl'),
+        ledgerPath,
         JSON.stringify(record) + '\n',
         'utf8',
       );

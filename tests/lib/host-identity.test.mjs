@@ -355,7 +355,8 @@ describe('host-identity', () => {
       expect(readHostAliases()).toEqual(['mac', 'ferdinands-macbook-pro']);
     });
 
-    it('writes the ledger 0o600 — it names the operator\'s machine', async () => {
+    // Native Windows has no POSIX mode bits (fs.stat reports 0o666 for every file).
+    it.skipIf(process.platform === 'win32')('writes the ledger 0o600 — it names the operator\'s machine (skipped on win32: no POSIX mode bits)', async () => {
       recordHostAlias('Mac.home');
       const { statSync } = await import('node:fs');
       const mode = statSync(process.env.SO_HOST_ALIASES_FILE).mode & 0o777;

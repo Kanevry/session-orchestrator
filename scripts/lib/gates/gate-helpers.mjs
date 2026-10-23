@@ -203,7 +203,11 @@ const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
  *   listed in `stubbed`): `timed_out` = outer OR any inner; `kill_signals` =
  *   outer followed by each command's, in execution order; `survivors` = outer
  *   count plus every inner pid count. Any explicit null makes the joined
- *   count null and retains the measurement error.
+ *   count null and retains the measurement error. A command whose group was
+ *   reaped after a normal exit adds `{command, pgid, signals, survivors}` to
+ *   `leftover_groups` (#1708); the key is absent when no command had one.
+ *   The joined `survivors` count stays the kill-ladder count and does NOT
+ *   include `leftover_groups[].survivors` (#1704 keeps the two apart).
  * - inner NOT measured (a variant whose envelope does not publish it, an
  *   unparseable envelope, or the outer ceiling killed the sub-script before it
  *   wrote one): the outer ladder alone when it fired — a kill is a kill — and
@@ -216,7 +220,8 @@ const KILL_FIELD_COMMANDS = ['typecheck', 'test', 'lint'];
  * @param {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}} args.outer
  *   `gateKillFields()` of the sub-script's `spawnInGroup` result.
  * @param {string} args.gateStdout  The sub-script's stdout envelope (`''` on an outer kill).
- * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[]}|{}}
+ * @returns {{timed_out: boolean, survivors: number|null, error?: string, kill_signals: string[],
+ *   leftover_groups?: Array<{command: string, pgid: number, signals: string[], survivors: number[]}>}|{}}
  */
 export function joinGateKillFields({ outer, gateStdout }) {
   let parsed = null;
@@ -242,8 +247,15 @@ export function joinGateKillFields({ outer, gateStdout }) {
   if (!innerKnown) return outer?.timed_out === true || outer?.survivors === null ? { ...outer } : {};
 
   const unmeasurable = [outer, ...inner].filter((c) => c?.survivors === null);
+  // #1708 point 1: a group reaped after a NORMAL exit (#1704) reached the
+  // envelope via commandKillFields but was dropped here, so the event could
+  // not show how often it happens before one turns a gate red (HR-105).
+  const leftoverGroups = names
+    .filter((name) => isObj(parsed[name].leftover_group))
+    .map((name) => ({ command: name, ...parsed[name].leftover_group }));
 
   return {
+    ...(leftoverGroups.length > 0 ? { leftover_groups: leftoverGroups } : {}),
     timed_out: outer?.timed_out === true || inner.some((c) => c.timed_out),
     survivors: unmeasurable.length > 0 ? null : (outer?.survivors ?? 0)
       + inner.reduce((n, c) => n + (Array.isArray(c.survivors) ? c.survivors.length : 0), 0),

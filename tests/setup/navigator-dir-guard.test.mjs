@@ -42,9 +42,17 @@ describe('navigator-dir-guard (#1462)', () => {
     expect(lstatSync(dir).isDirectory()).toBe(true);
   });
 
-  it('setupFiles delivers the redirect to this worker, outside the home directory', () => {
+  // The guarantee is "never the operator's real ~/.config", not "never under the
+  // home": on Windows the temp root itself lies under the home
+  // (%TEMP% = C:\Users\<name>\AppData\Local\Temp, #1613). Where the temp
+  // root is outside the home (macOS, Linux) the stricter check still applies.
+  it('setupFiles delivers the redirect to this worker, under the temp root and away from the real config', () => {
     expect(deliveredBySetupFiles, 'setupFiles must register tests/setup/navigator-dir-guard.mjs').toBeTruthy();
+    const delivered = realpathSync(deliveredBySetupFiles);
     const home = realpathSync(homedir()) + path.sep;
-    expect(realpathSync(deliveredBySetupFiles).startsWith(home)).toBe(false);
+    const tmpRoot = realpathSync(tmpdir()) + path.sep;
+    expect(delivered.startsWith(tmpRoot)).toBe(true);
+    expect(delivered.startsWith(path.join(home, '.config') + path.sep)).toBe(false);
+    if (!tmpRoot.startsWith(home)) expect(delivered.startsWith(home)).toBe(false);
   });
 });

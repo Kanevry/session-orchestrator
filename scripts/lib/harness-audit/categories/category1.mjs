@@ -13,6 +13,7 @@ import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
 import { resolveEventsLedgerRoot } from '../../platform.mjs';
+import { resolveLedgerPath } from '../../ledger-path.mjs';
 import { canonicalizeSessions } from '../../sessions-canonical.mjs';
 
 export function runCategory1(root) {
@@ -60,6 +61,7 @@ export function runCategory1(root) {
     // report "missing" for a repo that records every session.
     const p = join(resolveEventsLedgerRoot(root), '.orchestrator/metrics/sessions.jsonl');
     const text = safeRead(p);
+    // ledger-root: display relPath for the finding, the read above is resolved
     const relPath = '.orchestrator/metrics/sessions.jsonl';
     if (!text) {
       checks.push(fail('sessions-jsonl-growth', 3, relPath,
@@ -91,8 +93,9 @@ export function runCategory1(root) {
 
   // c1.3 learnings-jsonl-nonempty
   {
-    const p = join(root, '.orchestrator/metrics/learnings.jsonl');
+    const p = resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', root);
     const text = safeRead(p);
+    // ledger-root: display relPath for the finding, the read above is resolved
     const relPath = '.orchestrator/metrics/learnings.jsonl';
     if (!text) {
       checks.push(fail('learnings-jsonl-nonempty', 2, relPath,
@@ -119,9 +122,14 @@ export function runCategory1(root) {
       '.orchestrator',
       '.orchestrator/bootstrap.lock',
       '.orchestrator/policy',
+      // ledger-root: existence check only, resolved under resolveEventsLedgerRoot() below
       '.orchestrator/metrics',
     ];
-    const presentPaths = requiredPaths.filter((rp) => existsSync(join(root, rp)));
+    // #1722: a linked worktree of a repo that ignores its ledgers has no
+    // metrics dir of its own — they live in the main checkout.
+    const presentPaths = requiredPaths.filter((rp) =>
+      existsSync(rp === '.orchestrator/metrics' ? join(resolveEventsLedgerRoot(root), rp) : join(root, rp)),
+    );
     if (presentPaths.length === requiredPaths.length) {
       checks.push(pass('orchestrator-layout', 2, 2, '.orchestrator/',
         { presentPaths },

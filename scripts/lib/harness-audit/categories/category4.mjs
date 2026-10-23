@@ -14,6 +14,7 @@ import { join, relative, sep } from 'node:path';
 
 import { parseFrontmatter, safeRead, parseJsonl, pass, fail } from './helpers.mjs';
 import { resolveEventsLedgerRoot } from '../../platform.mjs';
+import { resolveLedgerPath } from '../../ledger-path.mjs';
 import { canonicalizeSessions, isMeasuredSession } from '../../sessions-canonical.mjs';
 import { findSessionConfigBlock } from '../../config/section-extractor.mjs';
 
@@ -88,6 +89,7 @@ export function runCategory4(root) {
   {
     const p = join(resolveEventsLedgerRoot(root), '.orchestrator/metrics/sessions.jsonl');
     const text = safeRead(p);
+    // ledger-root: display relPath for the finding, the read above is resolved
     const relPath = '.orchestrator/metrics/sessions.jsonl';
     if (!text) {
       checks.push(fail('sessions-jsonl-recent', 3, relPath,
@@ -154,8 +156,9 @@ export function runCategory4(root) {
 
   // c4.3 learnings-prunable
   {
-    const p = join(root, '.orchestrator/metrics/learnings.jsonl');
+    const p = resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', root);
     const text = safeRead(p);
+    // ledger-root: display relPath for the finding, the read above is resolved
     const relPath = '.orchestrator/metrics/learnings.jsonl';
     if (!text) {
       checks.push(fail('learnings-prunable', 2, relPath,

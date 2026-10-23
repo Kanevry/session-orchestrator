@@ -21,6 +21,7 @@ vi.mock('node:fs', async () => {
 });
 
 import { checkContextCoverage } from '@lib/context-coverage-banner.mjs';
+import { stubHome } from '../_helpers/home-env.mjs';
 
 /** Minimal explicit opt-in config — the probe is opt-in; omitting this gates closed. */
 const ENABLED_CONFIG = { 'context-coverage': { enabled: true } };
@@ -244,7 +245,7 @@ describe('checkContextCoverage — vault-dir resolution', () => {
     // The committed default `vault-integration.vault-dir` is literally
     // `~/Projects/vault` and is NOT pre-expanded anywhere upstream — this
     // pins that checkContextCoverage applies expandTilde() itself.
-    vi.stubEnv('HOME', tmpVault);
+    stubHome(tmpVault);
     const projectsDir = path.join(tmpVault, 'nested-vault', '01-projects');
     fs.mkdirSync(projectsDir, { recursive: true });
     makeProject(path.join(tmpVault, 'nested-vault'), 'alpha'); // gap

@@ -1227,7 +1227,7 @@ describe('#1244: CP11 fails CLOSED when it was expected but could not run', () =
     const loader = writeYamlBlockingLoader(configHome);
     const root = makeTmpRepo({ 'notes.md': 'Mentions zenithcorp explicitly.\n' });
 
-    const result = spawnSync(process.execPath, ['--import', loader, SCRIPT, root], {
+    const result = spawnSync(process.execPath, ['--import', pathToFileURL(loader).href, SCRIPT, root], {
       encoding: 'utf8',
       timeout: 20_000,
       // SO_CONFIDENTIAL_NAMES_FILE explicitly cleared: this exercises the
@@ -1326,7 +1326,9 @@ describe('#1244 Q4: healthy-host regression — owner.yaml valid, has paths:, no
         '  enabled: false',
         '  hash-salt: ""',
         'paths:',
-        `  vault-dir: "${vaultDir}"`,
+        // JSON string == YAML double-quoted scalar: a raw win32 path would read
+        // `\U…` as a YAML unicode escape and make owner.yaml invalid.
+        `  vault-dir: ${JSON.stringify(vaultDir)}`,
         '',
       ].join('\n'),
     );
@@ -1713,7 +1715,7 @@ it('loads invented host patterns and inspects packed operational contents', () =
   expect(result.stdout).toContain('CP2');
 });
 
-it.each(['missing', 'malformed', 'permissions', 'symlink', 'traversal', 'unreadable'])('fails closed for required owner policy / packed inventory: %s', (failure) => {
+function expectRequiredPolicyFailsClosed(failure) {
   const hostDir = realpathSync(makeTmpDir('host-policy-safety-'));
   const policyPath = join(hostDir, 'owner-patterns.json');
   writeFileSync(policyPath, JSON.stringify({version:1, privateDomains:['example.invalid']}), {mode: failure === 'permissions' ? 0o644 : 0o600});
@@ -1726,7 +1728,13 @@ it.each(['missing', 'malformed', 'permissions', 'symlink', 'traversal', 'unreada
   const result = spawnSync(process.execPath, [SCRIPT, root, '--require-owner-patterns', '--packed-files', inventory], {encoding:'utf8', timeout:20000, env:{...process.env, SO_OWNER_PATTERNS_FILE:policyPath, SO_CONFIG_HOME:hostDir}});
   expect(result.status).toBe(1);
   expect(result.stdout + result.stderr).not.toContain(policyPath);
-});
+}
+
+it.each(['missing', 'malformed', 'symlink', 'traversal', 'unreadable'])('fails closed for required owner policy / packed inventory: %s', expectRequiredPolicyFailsClosed);
+
+// Node on win32 reports 0o666 for every file, and the product deliberately skips
+// the 0600 check there (#1612) — a 0644 policy is indistinguishable from 0600.
+it.skipIf(process.platform === 'win32')('fails closed for required owner policy / packed inventory: permissions (POSIX-only: win32 has no file modes)', () => expectRequiredPolicyFailsClosed('permissions'));
 
 it('loads the owner policy on Windows, where every mode reads 0o666 (#1612)', () => {
   // Node on Windows reports 0o666 for every file and directory; the POSIX
@@ -1737,11 +1745,16 @@ it('loads the owner policy on Windows, where every mode reads 0o666 (#1612)', ()
   writeFileSync(policyPath, JSON.stringify({version:1, privateDomains:['example.invalid']}), {mode:0o666});
   chmodSync(policyPath, 0o666);
   chmodSync(hostDir, 0o777);
-  expect(inspectOwnerPatterns({filePath:policyPath, refresh:true}).status).toBe('unsafe');
   const real = Object.getOwnPropertyDescriptor(process, 'platform');
-  Object.defineProperty(process, 'platform', {...real, value:'win32'});
+  const statusAs = (value) => {
+    Object.defineProperty(process, 'platform', {...real, value});
+    return inspectOwnerPatterns({filePath:policyPath, refresh:true}).status;
+  };
   try {
-    expect(inspectOwnerPatterns({filePath:policyPath, refresh:true}).status).toBe('ok');
+    // On a win32 host the POSIX half runs as 'linux': Node reports the same
+    // 0o666 there, which is exactly the mode under test.
+    expect(statusAs(real.value === 'win32' ? 'linux' : real.value)).toBe('unsafe');
+    expect(statusAs('win32')).toBe('ok');
   } finally {
     Object.defineProperty(process, 'platform', real);
     inspectOwnerPatterns({refresh:true});

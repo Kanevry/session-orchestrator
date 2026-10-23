@@ -14,10 +14,11 @@ Run this ONCE at the start of wave execution (before the first wave — not per-
 
 ```js
 import { appendSkillInvocation } from '$PLUGIN_ROOT/scripts/lib/skill-invocations-schema.mjs';
-import path from 'node:path';
+import { resolveLedgerPath } from '$PLUGIN_ROOT/scripts/lib/ledger-path.mjs';
 try {
   await appendSkillInvocation(
-    path.join(process.cwd(), '.orchestrator/metrics/skill-invocations.jsonl'),
+    // In a linked worktree the main checkout's ledger when it is gitignored there (#1722).
+    resolveLedgerPath('.orchestrator/metrics/skill-invocations.jsonl', process.cwd()),
     { timestamp: new Date().toISOString(), event: 'selected', skill: 'session-orchestrator:wave-executor', session_id: '<session_id>', phase: 'wave-execution' },
   );
 } catch { /* telemetry is best-effort — swallow and continue to dispatch */ }

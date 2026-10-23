@@ -2,11 +2,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { load as loadYaml } from 'js-yaml';
 import vitestConfig from '../../vitest.config.mjs';
 import { installNodeCli, installScriptCli } from '../_helpers/executable-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const YAML_PATH = resolve(process.cwd(), '.gitlab-ci.yml');
 const doc = loadYaml(readFileSync(YAML_PATH, 'utf8'));
@@ -59,12 +60,16 @@ afterEach(() => {
  * @param {string} [cwd] isolated working directory
  */
 function runSteps(steps, env, pathPrefix, cwd) {
-  const PATH = pathPrefix ? `${pathPrefix}:${process.env.PATH}` : process.env.PATH;
-  return spawnSync('sh', ['-c', `set -e\n${steps.join('\n')}`], {
+  const PATH = pathPrefix ? `${pathPrefix}${delimiter}${process.env.PATH}` : process.env.PATH;
+  // Git Bash's sh.exe puts /mingw64/bin and /usr/bin in front of the inherited
+  // PATH, which would shadow the `git` and `timeout` shims; put them back first.
+  const shimFirst = pathPrefix && process.platform === 'win32'
+    ? 'PATH="$(cygpath -u "$SO_TEST_SHIM_DIR"):$PATH"\n' : '';
+  return spawnSync(posixShell('sh'), ['-c', `${shimFirst}set -e\n${steps.join('\n')}`], {
     cwd,
     encoding: 'utf8',
     timeout: 20_000,
-    env: { PATH, ...env },
+    env: { PATH, ...(shimFirst ? { SO_TEST_SHIM_DIR: pathPrefix } : {}), ...env },
   });
 }
 
@@ -392,7 +397,7 @@ function runGate({ markers = [], source, branch, defaultBranch = 'main', optiona
   if (branch !== undefined) {
     env.CI_COMMIT_BRANCH = branch;
   }
-  return spawnSync('sh', ['-c', gateScript[0]], { cwd: dir, encoding: 'utf8', timeout: 20_000, env });
+  return spawnSync(posixShell('sh'), ['-c', gateScript[0]], { cwd: dir, encoding: 'utf8', timeout: 20_000, env });
 }
 
 describe('pipeline-gate fan-in evaluates the markers (#940)', () => {

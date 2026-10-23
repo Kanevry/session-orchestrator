@@ -12,7 +12,8 @@
  * seam, but NEVER writes `.claude/rules/`.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +27,8 @@ import {
   runReconcileFromPhaseSkip,
   resolveEffectiveTargets,
 } from '../../../scripts/lib/reconcile/engine.mjs';
+import { markCandidateProcessed } from '../../../scripts/lib/reconcile/idempotency.mjs';
+import { computeReconcileNudge } from '../../../scripts/lib/reconcile-nudge-banner.mjs';
 import { writeApprovedRules } from '../../../scripts/lib/reconcile/writer.mjs';
 import { parseGlobsFrontmatter } from '../../../scripts/lib/rule-loader.mjs';
 import { normalizeDialects } from '../../../scripts/lib/learnings/schema.mjs';
@@ -940,6 +943,133 @@ describe('runReconcile — fresh clone (empty sidecar) still dedupes a consolida
       for (const rejection of result.rejected) {
         expect(rejection.reason).toContain('already materialized');
       }
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Issue #1710 — a verdict must survive a checkout WITHOUT the sidecar.
+//
+// TV-001 — the bug this catches: the sidecar is gitignored and resolved per
+// checkout, so a fresh git worktree (or another host) starts with no records.
+// An operator's explicit decline lived only there, and the next /reconcile in
+// that worktree proposed the declined rule again. The append-only verdict
+// ledger (`.orchestrator/metrics/reconcile-verdicts.jsonl`) must carry it.
+// ---------------------------------------------------------------------------
+
+describe('runReconcile — fresh worktree: the verdict ledger carries a decline the sidecar lost (#1710)', () => {
+  it('does not re-propose a learning whose key the ledger holds as rejected, while the sidecar is empty', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-ledger-'));
+    try {
+      mkdirSync(join(repoRoot, '.orchestrator', 'metrics'), { recursive: true });
+      writeFileSync(
+        join(repoRoot, '.orchestrator', 'metrics', 'reconcile-verdicts.jsonl'),
+        JSON.stringify({
+          kind: 'verdict',
+          learning_key: 'fragile-pattern/declined-case',
+          outcome: 'rejected',
+          processed_at: '2026-06-20T00:00:00.000Z',
+          recorded_at: '2026-06-20T00:00:00.000Z',
+        }) + '\n',
+        'utf8',
+      );
+
+      const result = await runReconcile(
+        { repoRoot, now: new Date('2026-06-25T00:00:00Z'), dryRun: true },
+        {
+          learnings: [
+            eligibleLearning({ subject: 'declined-case' }),
+            eligibleLearning({ subject: 'fresh-case', file_paths: ['scripts/lib/fresh/x.mjs'] }),
+          ],
+          loadCandidates: () => ({ records: [] }), // fresh worktree: no sidecar
+        },
+      );
+
+      expect(result.proposals.map((p) => p.learningKey)).toEqual(['fragile-pattern/fresh-case']);
+      expect(result.summary.alreadyMaterialized).toBe(1);
+      const rej = result.rejected.find((r) => r.learningKey === 'fragile-pattern/declined-case');
+      expect(rej.reason).toContain('verdict ledger');
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // TV-005 wiring: the unit test above writes the ledger into a plain temp dir,
+  // so the linked-worktree → main-checkout mapping (`resolveEventsLedgerRoot`)
+  // is never exercised. Here the decline is stamped through the real writer in
+  // the MAIN checkout and the real engine runs in a real linked WORKTREE.
+  it('a decline stamped in the main checkout holds in a real linked worktree, and the ledger lives under main only', async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), 'reconcile-engine-wt-')));
+    const main = join(base, 'main');
+    const wt = join(base, 'wt');
+    try {
+      mkdirSync(main, { recursive: true });
+      const git = (...args) => {
+        const r = spawnSync('git', args, { cwd: main, encoding: 'utf8' });
+        if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr}`);
+      };
+      git('init', '-q');
+      git('-c', 'user.email=t@example.org', '-c', 'user.name=t', '-c', 'commit.gpgsign=false', 'commit', '-q', '--allow-empty', '-m', 'init');
+      git('worktree', 'add', '-q', '--detach', wt);
+
+      const stamp = markCandidateProcessed({
+        learningKey: 'fragile-pattern/declined-case',
+        outcome: 'rejected',
+        fallbackSlug: 'declined-case',
+        repoRoot: main,
+      });
+      expect(stamp.written).toBe(true);
+
+      const result = await runReconcile(
+        { repoRoot: wt, now: new Date('2026-06-25T00:00:00Z'), dryRun: true },
+        {
+          learnings: [
+            eligibleLearning({ subject: 'declined-case' }),
+            eligibleLearning({ subject: 'fresh-case', file_paths: ['scripts/lib/fresh/x.mjs'] }),
+          ],
+        },
+      );
+
+      expect(result.proposals.map((p) => p.learningKey)).toEqual(['fragile-pattern/fresh-case']);
+      expect(existsSync(join(main, '.orchestrator', 'metrics', 'reconcile-verdicts.jsonl'))).toBe(true);
+      expect(existsSync(join(wt, '.orchestrator', 'metrics', 'reconcile-verdicts.jsonl'))).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  // TV-005 wiring: the nudge tests hand-write `{kind:'run', learnings}`, so
+  // nothing pinned that the engine's writer emits exactly that shape. A dropped
+  // `appendRun` or a renamed `learnings` field leaves a fresh worktree saying
+  // "N new learnings since the last reconcile run" for a corpus the run saw.
+  it('a non-dry run appends one run record the nudge reads back in a checkout without the sidecar', async () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'reconcile-engine-runrec-'));
+    try {
+      const metrics = join(repoRoot, '.orchestrator', 'metrics');
+      mkdirSync(metrics, { recursive: true });
+      const learnings = Array.from({ length: 20 }, (_, i) =>
+        eligibleLearning({ subject: `run-record-${i}`, file_paths: [`scripts/lib/run-record/f${i}.mjs`] }),
+      );
+      writeFileSync(join(metrics, 'learnings.jsonl'), learnings.map((l) => JSON.stringify(l)).join('\n') + '\n', 'utf8');
+
+      const result = await runReconcile({ repoRoot, now: new Date('2026-06-25T00:00:00Z') });
+      expect(result.summary.written).toBe(true);
+      expect(result.summary.totalLearnings).toBe(20);
+
+      const runLines = readFileSync(join(metrics, 'reconcile-verdicts.jsonl'), 'utf8')
+        .split('\n')
+        .filter(Boolean)
+        .map((l) => JSON.parse(l))
+        .filter((r) => r.kind === 'run');
+      expect(runLines).toEqual([{ kind: 'run', at: '2026-06-25T00:00:00.000Z', learnings: 20 }]);
+
+      // Fresh worktree: no sidecar, only the ledger's run record remains.
+      rmSync(join(repoRoot, '.orchestrator', 'runtime'), { recursive: true, force: true });
+      const nudge = await computeReconcileNudge({ repoRoot, now: new Date('2026-06-26T00:00:00Z') });
+      expect(nudge.lastRunAt).toBe('2026-06-25T00:00:00.000Z');
+      expect(nudge.reasons.some((r) => r.includes('new learnings since the last reconcile run'))).toBe(false);
     } finally {
       rmSync(repoRoot, { recursive: true, force: true });
     }

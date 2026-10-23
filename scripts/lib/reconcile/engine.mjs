@@ -125,6 +125,7 @@ import {
   makeCandidateId,
   mergeCandidates as realMergeCandidates,
 } from './idempotency.mjs';
+import { appendRun, loadVerdictLedger } from './verdict-ledger.mjs';
 
 /**
  * Re-exported from the LEAF module `./backlog.mjs` (which now owns the
@@ -354,6 +355,10 @@ export function resolveEffectiveTargets({ targets, baselineRoot } = {}) {
  * @param {(repoRoot?: string) => { keys: Set<string>, ids: Set<string> }} [opts.readMaterializedProvenance]
  *        override the `.claude/rules/` provenance scan used by the same dedupe step —
  *        defaults to {@link defaultReadMaterializedProvenance} (same repoRoot gate).
+ * @param {(repoRoot?: string) => { terminalKeys: { has(key: string): boolean } }} [opts.loadVerdictLedger]
+ *        override the append-only verdict-ledger read (#1710) used by the same dedupe step —
+ *        defaults to `loadVerdictLedger` (same repoRoot gate). After a successful non-dryRun
+ *        merge the engine appends one run record to that ledger (explicit repoRoot only).
  * @param {boolean} [opts.dryRun]         - when true, compute proposals but SKIP the merge entirely.
  * @returns {Promise<ReconcileResult>}
  */
@@ -381,6 +386,8 @@ async function runReconcileInner(
       typeof opts.readMaterializedProvenance === 'function'
         ? opts.readMaterializedProvenance
         : defaultReadMaterializedProvenance;
+    const readVerdictLedger =
+      typeof opts.loadVerdictLedger === 'function' ? opts.loadVerdictLedger : loadVerdictLedger;
     // Volume brake (#900 D) — always active; a missing/invalid override falls
     // back to the same default the Session Config parser uses.
     const maxProposalsPerRun =
@@ -453,18 +460,24 @@ async function runReconcileInner(
     // shape" test in `tests/lib/reconcile/engine.test.mjs`.
     const { records: existingCandidates } = loadCandidatesForDedupe(repoRoot) ?? { records: [] };
     const materialized = readMaterializedProvenance(repoRoot) ?? { keys: new Set(), ids: new Set() };
+    // #1710 — the append-only verdict ledger carries terminal verdicts into a
+    // fresh worktree / another host, where the checkout-local sidecar is empty.
+    const ledgerKeys = readVerdictLedger(repoRoot)?.terminalKeys;
 
     const { stillEligible, materializedItems } = partitionMaterialized(eligible, {
       existingCandidates,
       materialized,
+      ledgerKeys,
     });
     const alreadyMaterialized = materializedItems.length;
 
-    for (const { learning, learningKey, sidecarTerminal, onDisk } of materializedItems) {
+    for (const { learning, learningKey, sidecarTerminal, ledgerTerminal, onDisk } of materializedItems) {
       const type = learningType(learning);
       const reason = sidecarTerminal
         ? 'already processed — the idempotency sidecar already carries a terminal verdict for this learning-key'
-        : 'already materialized — a .claude/rules/ file already carries this learning-key/learning-id';
+        : ledgerTerminal
+          ? 'already processed — the reconcile verdict ledger already carries a terminal verdict for this learning-key'
+          : 'already materialized — a .claude/rules/ file already carries this learning-key/learning-id';
       rejected.push({ learningKey, type, reason, status: 'rejected' });
 
       // Freshly discovered on-disk materialization (not yet reflected in the
@@ -631,6 +644,17 @@ async function runReconcileInner(
         // that reports nothing leaves `skipped` absent rather than fabricating 0.
         if (mergeResult && Number.isFinite(mergeResult.skipped)) {
           skipped = Number(mergeResult.skipped);
+        }
+        // #1710 — record the run itself, so run recency survives a checkout
+        // without the sidecar, with the learnings count it saw (the nudge's
+        // "new since last run" baseline). Explicit repoRoot only (never cwd).
+        if (written && typeof repoRoot === 'string' && repoRoot.length > 0) {
+          const run = appendRun(repoRoot, createdAt, totalLearnings);
+          if (run.ok !== true) {
+            process.stderr.write(
+              `⚠ reconcile: run record not appended to the verdict ledger (${run.error ?? 'unknown error'})\n`,
+            );
+          }
         }
       } catch {
         // Merge failure is non-fatal; proposals still returned, written stays

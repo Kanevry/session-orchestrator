@@ -12,7 +12,7 @@ jedes Mal neu erfinden.
 
 - Repo: `https://github.com/Kanevry/session-orchestrator`
 - Landing: `https://session-orchestrator.com`
-- Discussions (Show-and-tell / Fragen): `https://github.com/Kanevry/session-orchestrator/discussions`
+- Issues (Fragen, Fehler, Show-and-tell): `https://github.com/Kanevry/session-orchestrator/issues` (Discussions sind seit 5.13.0 abgeschaltet, #1598)
 
 ## 1. Wann announcen
 

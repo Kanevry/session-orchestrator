@@ -13,9 +13,10 @@
 >
 > Minimal invocation:
 > ```bash
-> printf '%s' "$METRICS_ENTRY" | node "$PLUGIN_ROOT/scripts/emit-session.mjs" --file .orchestrator/metrics/sessions.jsonl
+> printf '%s' "$METRICS_ENTRY" | node "$PLUGIN_ROOT/scripts/emit-session.mjs"
 > ```
 > See step 2 below for the full invocation including exit-code handling.
+> Pass no `--file`: the default is the main checkout's `sessions.jsonl` (#1584). A relative `--file` is taken verbatim and, run from a linked worktree, writes the worktree's own copy, which is gitignored here and lost with the worktree (#1722).
 
 1. Ensure `.orchestrator/metrics/` directory exists: `mkdir -p .orchestrator/metrics`
 
@@ -39,7 +40,7 @@
 
 2. Append the prepared JSONL entry (from Phase 1.7; the writer itself adds the token fields — step 1a) via the validating writer `scripts/emit-session.mjs` (issue #249):
    ```bash
-   printf '%s' "$METRICS_ENTRY" | node "$PLUGIN_ROOT/scripts/emit-session.mjs" --file .orchestrator/metrics/sessions.jsonl
+   printf '%s' "$METRICS_ENTRY" | node "$PLUGIN_ROOT/scripts/emit-session.mjs"
    EMIT_EXIT=$?
    if [[ $EMIT_EXIT -eq 1 ]]; then
      echo "ERROR: session-end validation failed — entry rejected by scripts/emit-session.mjs. See stderr above. Session metrics NOT written." >&2

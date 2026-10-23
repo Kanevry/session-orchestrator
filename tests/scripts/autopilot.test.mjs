@@ -22,10 +22,16 @@ import {
   symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { KILL_SWITCHES } from '../../scripts/lib/autopilot.mjs';
 import { canonicalizeSessions } from '../../scripts/lib/sessions-canonical.mjs';
+
+// win32: autopilot spawns `claude -p …` by name. The committed stub
+// (tests/fixtures/claude) is a bash script, which Windows cannot start without
+// a shell, and `-p` as first argument rules out a node.exe fake (node --print).
+const NO_STUB_CLAUDE = process.platform === 'win32';
+const stubClaudeTitle = (title) => (NO_STUB_CLAUDE ? `${title} [skipped on win32: needs the sh-script claude stub on PATH]` : title);
 
 // ---------------------------------------------------------------------------
 // Repo paths
@@ -89,7 +95,7 @@ function runAutopilot(args, { tmp, env = {}, script = SCRIPT, nodeArgs = [] } = 
   const spawnEnv = {
     ...process.env,
     // Override PATH so stub claude is found first.
-    PATH: `${FIXTURES_DIR}:${process.env.PATH}`,
+    PATH: `${FIXTURES_DIR}${delimiter}${process.env.PATH}`,
     // Required by stub
     STUB_SESSIONS_JSONL: sessionsJsonl,
     // Disable any real resource probing side-effects in CI
@@ -202,7 +208,7 @@ describe('scripts/autopilot.mjs integration', () => {
   // Test 3 — happy path: 2 sessions complete
   // -------------------------------------------------------------------------
 
-  it('happy path: 2 sessions complete, both records carry same autopilot_run_id', () => {
+  it.skipIf(NO_STUB_CLAUDE)(stubClaudeTitle('happy path: 2 sessions complete, both records carry same autopilot_run_id'), () => {
     // Write STATE.md so modeSelector returns confidence=0.5 (deep, passthrough)
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
 
@@ -269,7 +275,7 @@ describe('scripts/autopilot.mjs integration', () => {
   // Test 4 — kill-switch: failed-wave from stub agent failure
   // -------------------------------------------------------------------------
 
-  it('kill-switch failed-wave: stub agent_summary.failed=1 fires post-session kill-switch', () => {
+  it.skipIf(NO_STUB_CLAUDE)(stubClaudeTitle('kill-switch failed-wave: stub agent_summary.failed=1 fires post-session kill-switch'), () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
 
     const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
@@ -311,12 +317,12 @@ describe('scripts/autopilot.mjs integration', () => {
   // Multiple canonical identities with the child's raw UUID must fail closed (#1457).
   // An own record that is only a backfill stub has UNKNOWN usage, not 0 tokens —
   // read as a healthy iteration it would reach max-sessions-reached instead (#1457 F2).
-  it.each([
+  it.skipIf(NO_STUB_CLAUDE).each([
     ['stub STUB_EXIT_CODE=1 causes sessionRunner to throw', { STUB_EXIT_CODE: '1' }, 'claude exit 1'],
     ['missing child raw_session_id fails closed', { STUB_RAW_ID_MODE: 'omit' }, 'no session record carries raw_session_id'],
     ['ambiguous child raw_session_id fails closed', { STUB_DUP_RAW: '1' }, 'ambiguous'],
     ['own record is a backfill stub (usage unknown, not 0)', {}, 'is a backfill stub', OWN_RECORD_TO_STUB],
-  ])('kill-switch failed-wave: %s', (_name, env, detail, stampSource) => {
+  ])(stubClaudeTitle('kill-switch failed-wave: %s'), (_name, env, detail, stampSource) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
     const result = runAutopilot(
       ['--headless', '--max-sessions=2', '--confidence-threshold=0.4'],
@@ -343,7 +349,7 @@ describe('scripts/autopilot.mjs integration', () => {
   // namespaced name does not resolve either.
   // -------------------------------------------------------------------------
 
-  it('spawns the NAMESPACED command with --plugin-dir pointing at the real plugin root', () => {
+  it.skipIf(NO_STUB_CLAUDE)(stubClaudeTitle('spawns the NAMESPACED command with --plugin-dir pointing at the real plugin root'), () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
 
     // The shared stub records its own argv (STUB_ARGV_LOG), one argument per
@@ -415,11 +421,11 @@ describe('scripts/autopilot.mjs integration', () => {
     expect(readFileSync(join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl'), 'utf8')).toBe('');
   });
 
-  it.each([
+  it.skipIf(NO_STUB_CLAUDE).each([
     ['/session-orchestrator:session housekeeping --verbose', 'housekeeping'],
     ['/session deep --verbose', 'deep'],
     ['/session-orchestrator:session malformed', 'feature'],
-  ])('stub records only the mode from %s', (prompt, expectedMode) => {
+  ])(stubClaudeTitle('stub records only the mode from %s'), (prompt, expectedMode) => {
     const sessionsJsonl = join(tmp, '.orchestrator', 'metrics', 'sessions.jsonl');
     const result = spawnSync(STUB_CLAUDE, ['-p', prompt, '--plugin-dir', REPO_ROOT], {
       cwd: tmp, env: { ...process.env, STUB_SESSIONS_JSONL: sessionsJsonl }, encoding: 'utf8', timeout: 5_000,
@@ -439,7 +445,7 @@ describe('scripts/autopilot.mjs integration', () => {
   // a live session.lock heartbeat.
   // -------------------------------------------------------------------------
 
-  it('does not fire stall-timeout when a PREVIOUS run left a day-old autopilot.jsonl', () => {
+  it.skipIf(NO_STUB_CLAUDE)(stubClaudeTitle('does not fire stall-timeout when a PREVIOUS run left a day-old autopilot.jsonl'), () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
 
     const prevRun = join(tmp, '.orchestrator', 'metrics', 'autopilot.jsonl');
@@ -484,10 +490,10 @@ describe('scripts/autopilot.mjs integration', () => {
   // #1457: a peer appended after the child must not supply its token usage —
   // two iterations, so the tail reader trips the budget on the peer's 900000
   // after the first one instead of reaching max-sessions with the own 2 × 5000.
-  it.each([
+  it.skipIf(NO_STUB_CLAUDE).each([
     ['fires token-budget-exceeded from the token totals on the session record', {}, 3, 100, 'token-budget-exceeded', 5000, 1],
     ['ignores peer tokens appended after the own session record', { STUB_PEER_APPEND: '1' }, 2, 100000, 'max-sessions-reached', 10000, 2],
-  ])('%s', (_name, env, maxSessions, maxTokens, killSwitch, tokensUsed, iterations) => {
+  ])(stubClaudeTitle('%s'), (_name, env, maxSessions, maxTokens, killSwitch, tokensUsed, iterations) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
     runAutopilot(
       ['--headless', `--max-sessions=${maxSessions}`, '--confidence-threshold=0.4', `--max-tokens=${maxTokens}`],
@@ -502,10 +508,10 @@ describe('scripts/autopilot.mjs integration', () => {
   // #1498: `tokens_unknown_sessions` reached autopilot.jsonl but no report read
   // it, so the run summary's token figure looked like the whole sum. Without
   // STUB_OWN_TOKENS the own record carries no token figure.
-  it.each([
+  it.skipIf(NO_STUB_CLAUDE).each([
     ['names the unknown-token iterations, so the total reads as a lower bound', {}, /tokens=0 tokens_unknown_sessions=1 \(the token total is a lower bound\)$/m],
     ['prints a known total without the lower-bound note', { STUB_OWN_TOKENS: '5000' }, /tokens=5000$/m],
-  ])('run summary %s', (_name, env, line) => {
+  ])(stubClaudeTitle('run summary %s'), (_name, env, line) => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
     const result = runAutopilot(
       ['--headless', '--max-sessions=1', '--confidence-threshold=0.4'],
@@ -516,7 +522,7 @@ describe('scripts/autopilot.mjs integration', () => {
   });
 
   // #1457: canonicalization must discard a later backfill stub sharing the child's raw UUID.
-  it('uses the authoritative own record when a later raw-ID stub canonicalizes away', () => {
+  it.skipIf(NO_STUB_CLAUDE)(stubClaudeTitle('uses the authoritative own record when a later raw-ID stub canonicalizes away'), () => {
     writeFileSync(join(tmp, '.claude', 'STATE.md'), STATE_MD_FIXTURE, 'utf8');
     const stamp = stampEnv(tmp, `
       import { readFileSync, appendFileSync } from 'node:fs';
@@ -583,7 +589,7 @@ describe('autopilot.mjs from a linked worktree (#1592)', () => {
    * Run from a linked worktree, readOwnSession found no record and a healthy
    * iteration ended as kill_switch=failed-wave.
    */
-  it('reads the child record from the main checkout ledger', () => {
+  it.skipIf(NO_STUB_CLAUDE)(stubClaudeTitle('reads the child record from the main checkout ledger'), () => {
     const base = mkdtempSync(join(tmpdir(), 'autopilot-1592-'));
     try {
       const { main, wt } = makeLinkedWorktree(spawnSync, base);

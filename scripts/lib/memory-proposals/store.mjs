@@ -24,6 +24,7 @@ import { serializeProposal } from './schema.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { tryAcquireFileLock, releaseFileLock } from '../file-lock.mjs';
 import { writeJsonAtomicSync } from '../io.mjs';
+import { resolveLedgerRoot } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -39,6 +40,19 @@ const DEFAULT_QUOTA_PER_WAVE = 5;
 const DEFAULT_CONFIDENCE_FLOOR = 0.5;
 const DEFAULT_LOCK_TIMEOUT_MS = 1000;
 const LOCK_POLL_MS = 50;
+
+/**
+ * Root of the whole proposals store (queue, overflow, lock, summaries). One
+ * root for all of them, decided by the queue ledger: the lock and the summary
+ * files are no `*.jsonl`, so asking `git check-ignore` per file could split
+ * the lock from the ledger it guards.
+ *
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+function storeRootFor(repoRoot) {
+  return resolveLedgerRoot(PROPOSALS_JSONL, repoRoot);
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -160,7 +174,7 @@ function ensureDir(filePath) {
  * @returns {string}
  */
 function lockPathFor(repoRoot) {
-  return safePath(repoRoot, PROPOSALS_LOCK);
+  return safePath(storeRootFor(repoRoot), PROPOSALS_LOCK);
 }
 
 /**
@@ -169,7 +183,7 @@ function lockPathFor(repoRoot) {
  * @returns {string}
  */
 function jsonlPathFor(repoRoot) {
-  return safePath(repoRoot, PROPOSALS_JSONL);
+  return safePath(storeRootFor(repoRoot), PROPOSALS_JSONL);
 }
 
 /**
@@ -178,11 +192,14 @@ function jsonlPathFor(repoRoot) {
  * @returns {string}
  */
 function overflowPathFor(repoRoot) {
-  return safePath(repoRoot, PROPOSALS_OVERFLOW_JSONL);
+  return safePath(storeRootFor(repoRoot), PROPOSALS_OVERFLOW_JSONL);
 }
 
 /** Flush a directory entry before depending on its persistence. */
 function syncOverflowDirectory(directory) {
+  // Windows rejects fsync on a directory handle (EPERM); NTFS metadata
+  // journaling already covers the directory entry there.
+  if (process.platform === 'win32') return;
   const fd = fs.openSync(directory, 'r');
   try {
     fs.fsyncSync(fd);
@@ -294,7 +311,7 @@ function appendOverflow(repoRoot, overflowPath, line) {
     fs.appendFileSync(overflowPath, lineBytes);
     return;
   }
-  const root = fs.realpathSync(repoRoot);
+  const root = fs.realpathSync(storeRootFor(repoRoot));
   const directory = path.dirname(overflowPath);
   const token = randomUUID();
   const archive = safePath(root, path.relative(root, `${overflowPath}.archive-${token}.jsonl`));
@@ -332,7 +349,7 @@ function summaryPathFor(repoRoot, waveId) {
   if (!/^[A-Za-z0-9_-]+$/.test(waveId)) {
     throw new TypeError(`store.mjs: waveId contains invalid characters: ${waveId}`);
   }
-  return safePath(repoRoot, `${PROPOSALS_SUMMARY_PREFIX}${waveId}.json`);
+  return safePath(storeRootFor(repoRoot), `${PROPOSALS_SUMMARY_PREFIX}${waveId}.json`);
 }
 
 /**

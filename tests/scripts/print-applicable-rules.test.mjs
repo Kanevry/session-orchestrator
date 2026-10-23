@@ -32,6 +32,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI = join(__dirname, '..', '..', 'scripts', 'print-applicable-rules.mjs');
@@ -708,7 +709,7 @@ describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
 
   it('delivers the Markdown payload through an actual shell pipe (node ... | wc -c) byte-identical to the file-redirect baseline', () => {
     const completeLen = fileRedirectByteLength(markdownRepo, []);
-    const res = spawnSync('sh', ['-c', `node "${CLI}" | wc -c`], {
+    const res = spawnSync(posixShell('sh'), ['-c', 'node "$1" | wc -c', 'sh', CLI], {
       encoding: 'utf8',
       env: { ...process.env, CLAUDE_PROJECT_DIR: markdownRepo },
     });
@@ -773,10 +774,13 @@ describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
 
       const stderrPath = join(epipeRepo, 'epipe-head-stderr.log');
       const res = spawnSync(
-        'bash',
+        posixShell('bash'),
         [
           '-c',
-          `set -o pipefail; node "${CLI}" 2>"${stderrPath}" | head -c 100 >/dev/null; echo "$?"`,
+          'set -o pipefail; node "$1" 2>"$2" | head -c 100 >/dev/null; echo "$?"',
+          'bash',
+          CLI,
+          stderrPath,
         ],
         { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: epipeRepo } },
       );
@@ -798,8 +802,8 @@ describe('pipe delivery exceeding the 64KiB pipe buffer', () => {
       // and closes its stdin almost immediately, long before the ~240KB
       // payload finishes writing.
       const res = spawnSync(
-        'bash',
-        ['-c', `set -o pipefail; node "${CLI}" 2>"${stderrPath}" | grep -q "# Rule 0"; echo "$?"`],
+        posixShell('bash'),
+        ['-c', 'set -o pipefail; node "$1" 2>"$2" | grep -q "# Rule 0"; echo "$?"', 'bash', CLI, stderrPath],
         { encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: epipeRepo } },
       );
 

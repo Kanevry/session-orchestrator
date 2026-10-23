@@ -27,7 +27,7 @@ import {
 import { tmpdir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   setStatus,
@@ -198,7 +198,7 @@ describe('agent-status — cross-PROCESS concurrent-writer race (AC)', () => {
           '-e',
           // process.argv after `-e <code>` is: [execPath, modulePath, agentId, repoRoot]
           "import(process.argv[1]).then((m) => m.setStatus(process.argv[2], 'cross-proc', { repoRoot: process.argv[3] })).then((r) => process.exit(r && r.ok ? 0 : 1)).catch(() => process.exit(2))",
-          AGENT_STATUS_MODULE,
+          pathToFileURL(AGENT_STATUS_MODULE).href,
           agentId,
           repoRoot,
         ],

@@ -658,16 +658,32 @@ describe('Außenwirkung', () => {
   // big runs alternate so both sizes see the same load (#1673: measured one after the other, a burst during
   // the big runs alone read 33.3); each size keeps its best run across rounds, and a round of five pairs
   // repeats only while the ratio is still >= 32 — quadratic code stays >= 32 in every round. The 1 ms floor
-  // keeps a sub-millisecond small run from inflating the ratio; the 5 s cap stays below the 10 s hook
-  // budget whatever the ratio says. NAMED CEILING (BV-004): 4 rounds; revisit if a linear case still reads
+  // keeps a sub-millisecond small run from inflating the ratio; the 5 s cap keeps the code's own cost below
+  // the 10 s hook budget whatever the ratio says (host load comes on top of it in wall time). NAMED CEILING
+  // (BV-004): 4 rounds; revisit if a linear case still reads
   // >= 32 after all 20 pairs — then the load is steady, not a burst, or the code is no longer linear.
+  // That revisit fired on 2026-10-22 (x=1 case 32.01 at m5 load5 29, #1673): under steady overcommit a ~4 ms
+  // small run still fits one time slice while a ~30 ms big run is preempted every time, so the wall clock
+  // grew with the load, not the input. Each run is therefore timed in CPU time of this thread
+  // (process.threadCpuUsage, Node >= 23.9; engines >= 24). Measured on m5 with 36 busy loops on 18 cores:
+  // `case ` read 26.3 in wall time and 8.0 in CPU time; unloaded both read 8.2-8.5. Quadratic code still
+  // does ~64x the work, so CPU time keeps catching it. Windows counts thread CPU time in clock ticks
+  // (GetThreadTimes, ~15.6 ms): every small run would read 0 and the ratio would be the big run in ms, so
+  // Windows keeps the wall clock.
+  const cpuClock = process.platform !== 'win32';
   const growth = (lineOf, n, run) => {
     const small = lineOf(n / 8);
     const large = lineOf(n);
     const time = (line) => {
-      const started = performance.now();
+      if (!cpuClock) {
+        const started = performance.now();
+        run(line);
+        return performance.now() - started;
+      }
+      const started = process.threadCpuUsage();
       run(line);
-      return performance.now() - started;
+      const used = process.threadCpuUsage(started);
+      return (used.user + used.system) / 1000;
     };
     let bestSmall = Infinity;
     let bestBig = Infinity;

@@ -11,7 +11,9 @@
 > // so a long-idle deep session's 4h-TTL lock does not lapse mid-close.
 > // BEFORE Phase 3.8 lock-release (which deletes the lock).
 > import { updateHeartbeat } from 'scripts/lib/session-lock.mjs';
-> updateHeartbeat({ sessionId, repoRoot: process.cwd() });
+> import { resolveOwnLockRootFor } from 'scripts/lib/own-lock-root.mjs';
+> // The checkout holding this session's lock, not the cwd's (#1730) — at the wrong root nothing is written.
+> updateHeartbeat({ sessionId, repoRoot: resolveOwnLockRootFor({ sessionId }).root });
 > ```
 >
 > Skip silently if `persistence: false` in Session Config (no session.lock exists in that mode).
@@ -233,7 +235,7 @@ const boardResult = await mirrorBoard({
 
 Evaluate the just-closed session deterministically and, when configured, with an advisory LLM judge. This phase is a thin hook — the full evaluation flow lives in `skills/eval/SKILL.md`; only the close-out integration is described here.
 
-1. **Deterministic run.** Invoke `node scripts/eval-session.mjs --json` — with no `--session`, the cascade (`resolveSession`, revised #822) walks records newest-to-oldest (source order) and evaluates the first one that is either `status:'completed'` or non-abandoned with evidence of completed work (typically the record Phase 3.7 just appended). Model capture: the coordinator passes `--model-id <id> --model-source self-report`; the `$ANTHROPIC_MODEL` env var wins automatically when set. Pass the configured pseudonym through with `--handle <eval.handle>` (omit when `null`). The CLI appends the eval record to `.orchestrator/metrics/eval.jsonl` (`appendEvalRecord` is never-throw).
+1. **Deterministic run.** Invoke `node scripts/eval-session.mjs --json` — with no `--session`, the cascade (`resolveSession`, revised #822) walks records newest-to-oldest (source order) and evaluates the first one that is either `status:'completed'` or non-abandoned with evidence of completed work (typically the record Phase 3.7 just appended). Model capture: the coordinator passes `--model-id <id> --model-source self-report`; the `$ANTHROPIC_MODEL` env var wins automatically when set. Pass the configured pseudonym through with `--handle <eval.handle>` (omit when `null`). The CLI appends the eval record to `.orchestrator/metrics/eval.jsonl` (`appendEvalRecord` is never-throw); run from a linked worktree, that is the main checkout's journal when the worktree ignores it (`resolveLedgerPath`, #1722), so the record survives the worktree.
 2. **Advisory judge (opt-in).** When `eval.judge` is not `off`, run the judge flow per `skills/eval/SKILL.md` § Phase 3: the coordinator dispatches the read-only `eval-judge` agent (DI'd dispatch, untrusted-data nonce fence), merges the advisory judge dimensions (`method: "judge"`, `advisory: true`, `calibration_status: "uncalibrated"`) into the record, and appends the merged record. When `eval.judge: off`, no agent is dispatched and no judge dimensions are produced.
 3. **HTML report (opt-in).** When `eval.report: html` (the default), call `writeEvalReport(record, …)` from `scripts/lib/eval/report.mjs` to emit the self-contained run report under `.orchestrator/eval/reports/<run-id>.html` (gitignored, regenerable from the record). When `eval.report: none`, skip the report.
 

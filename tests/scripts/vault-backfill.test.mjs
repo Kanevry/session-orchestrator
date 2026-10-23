@@ -25,7 +25,7 @@ import {
   chmodSync,
   readFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { tmpdir, homedir } from 'node:os';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -97,7 +97,7 @@ function run(args, { env = {}, cwd } = {}) {
     cwd: cwd ?? tmpBase,
     env: {
       HOME: homedir(),
-      PATH: '/usr/bin:/bin:/usr/local/bin',
+      PATH: ['/usr/bin', '/bin', '/usr/local/bin'].join(delimiter),
       SO_CONFIG_HOME: join(tmpBase, 'no-owner-config'),
       ...env,
     },
@@ -116,7 +116,7 @@ function runInteractive(args, { env = {}, cwd } = {}) {
       cwd: cwd ?? tmpBase,
       env: {
         HOME: homedir(),
-        PATH: '/usr/bin:/bin:/usr/local/bin',
+        PATH: ['/usr/bin', '/bin', '/usr/local/bin'].join(delimiter),
         SO_CONFIG_HOME: join(tmpBase, 'no-owner-config'),
         ...env,
       },
@@ -326,7 +326,7 @@ describe('Session Config reading (#1094)', () => {
       env: {
         PROJECTS_BASELINE_DIR: tmpBase,
         HOME: homedir(),
-        PATH: `${binDir}:/usr/bin:/bin`,
+        PATH: [binDir, '/usr/bin', '/bin'].join(delimiter),
         SO_VAULT_DIR: vaultDir,
       },
     });
@@ -422,7 +422,8 @@ describe('Session Config reading (#1094)', () => {
 
     const { status } = run(['--yes', manifestPath, '--apply', '--out-dir', outDir], {
       cwd: tmpBase,
-      env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: home, PATH: '/usr/bin:/bin' },
+      // os.homedir() reads USERPROFILE on Windows, HOME elsewhere.
+      env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: home, USERPROFILE: home, PATH: ['/usr/bin', '/bin'].join(delimiter) },
     });
 
     expect(status).toBe(0);
@@ -453,7 +454,7 @@ describe('headless --yes apply mode', () => {
 
     const { status, stdout } = run(
       ['--yes', manifestPath, '--apply', '--out-dir', outDir],
-      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: '/usr/bin:/bin' } },
+      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: ['/usr/bin', '/bin'].join(delimiter) } },
     );
 
     expect(status).toBe(0);
@@ -483,7 +484,7 @@ describe('headless --yes apply mode', () => {
 
     const { status, stdout } = run(
       ['--yes', manifestPath, '--apply', '--out-dir', outDir],
-      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: '/usr/bin:/bin' } },
+      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: ['/usr/bin', '/bin'].join(delimiter) } },
     );
 
     expect(status).toBe(0);
@@ -544,7 +545,7 @@ describe('interactive group apply mode', () => {
         env: {
           PROJECTS_BASELINE_DIR: tmpBase,
           HOME: homedir(),
-          PATH: `${binDir}:/usr/bin:/bin`,
+          PATH: [binDir, '/usr/bin', '/bin'].join(delimiter),
         },
       },
     );
@@ -583,7 +584,7 @@ describe('interactive group apply mode', () => {
         env: {
           PROJECTS_BASELINE_DIR: tmpBase,
           HOME: homedir(),
-          PATH: `${binDir}:/usr/bin:/bin`,
+          PATH: [binDir, '/usr/bin', '/bin'].join(delimiter),
           SO_VAULT_DIR: join(tmpBase, 'vault'),
         },
       },
@@ -612,7 +613,7 @@ describe('interactive group apply mode', () => {
         env: {
           PROJECTS_BASELINE_DIR: tmpBase,
           HOME: homedir(),
-          PATH: `${binDir}:/usr/bin:/bin`,
+          PATH: [binDir, '/usr/bin', '/bin'].join(delimiter),
         },
       },
     );
@@ -640,7 +641,7 @@ describe('headless --yes dry-run mode (no --apply)', () => {
 
     const { status, stdout } = run(
       ['--yes', manifestPath, '--out-dir', outDir],
-      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: '/usr/bin:/bin' } },
+      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: ['/usr/bin', '/bin'].join(delimiter) } },
     );
 
     expect(status).toBe(0);
@@ -678,7 +679,7 @@ describe('headless --yes all-skip mode', () => {
 
     const { status } = run(
       ['--yes', manifestPath, '--apply', '--out-dir', outDir],
-      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: '/usr/bin:/bin' } },
+      { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: ['/usr/bin', '/bin'].join(delimiter) } },
     );
 
     expect(status).toBe(4);
@@ -708,7 +709,7 @@ describe('write failure handling', () => {
 
       const { status, stdout } = run(
         ['--yes', manifestPath, '--apply', '--out-dir', outDir],
-        { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: '/usr/bin:/bin' } },
+        { env: { PROJECTS_BASELINE_DIR: tmpBase, HOME: homedir(), PATH: ['/usr/bin', '/bin'].join(delimiter) } },
       );
 
       // Restore before cleanup

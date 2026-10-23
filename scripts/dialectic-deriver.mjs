@@ -50,6 +50,7 @@ import { readCanonicalSessions, isMeasuredSession } from './lib/sessions-canonic
 import { recordDialecticRun } from './lib/learnings/evolve-telemetry.mjs';
 import { DEFAULT_BUDGET_TOKENS } from './lib/config/dialectic.mjs';
 import { withVisibleInboxText } from './lib/learnings/surface.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -442,7 +443,7 @@ async function readJsonlBestEffort(absPath) {
  * @returns {Promise<Array<object>>}
  */
 async function readTopLearnings(repoRoot, topN) {
-  const path = join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+  const path = resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot); // #1722
   const entries = await readJsonlBestEffort(path);
   entries.sort((a, b) => {
     const ca = typeof a?.confidence === 'number' ? a.confidence : 0;

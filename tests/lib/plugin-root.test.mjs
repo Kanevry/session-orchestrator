@@ -21,6 +21,7 @@ import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, utim
 import { removeTree } from '../_helpers/tmp-fixture.mjs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { assertErrorShape } from '../_helpers/assert-error-shape.mjs';
+import { homeEnv } from '../_helpers/home-env.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,7 +63,7 @@ function runIsolatedResolve(modulePath, cwd, home, extraEnv = {}) {
   `;
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd,
-    env: { PATH: process.env.PATH, HOME: home, CODEX_HOME: '', ...extraEnv },
+    env: { PATH: process.env.PATH, ...homeEnv(home), CODEX_HOME: '', ...extraEnv },
     encoding: 'utf8',
   });
   if (result.status !== 0) {
@@ -523,7 +524,7 @@ describe('resolvePluginRoot — all-fail-throws-named-error', () => {
           // the real HOME on a developer machine usually HAS a cached copy —
           // without this the test would resolve instead of throwing, and it
           // would pass or fail depending on the host rather than the code.
-          HOME: isolatedDir,
+          ...homeEnv(isolatedDir),
           CODEX_HOME: '',
           SO_PLATFORM: 'codex',
           PLUGIN_ROOT: `  ${missingNative}  `,

@@ -137,7 +137,9 @@ describe('cpuSnapshot()', () => {
     expect(snap.cpu_load_1m).toBe(1.6);
   });
 
-  it('computes cpu_load_pct from load1m / cores * 100 on non-Windows with non-zero load', () => {
+  // cpuSnapshot() branches on SO_IS_WINDOWS from platform.mjs, a load-time constant; the load-average
+  // branch these three prove does not run on a win32 host.
+  it.skipIf(process.platform === 'win32')('computes cpu_load_pct from load1m / cores * 100 on non-Windows with non-zero load (skipped on win32: SO_IS_WINDOWS is fixed at module load, no seam)', () => {
     // load1m=1.6, cores=2 → 1.6/2 * 100 = 80%
     spyLoadavg.mockReturnValue([1.6, 1.4, 1.2]);
     spyCpus.mockReturnValue([makeCpu(), makeCpu()]);
@@ -145,7 +147,7 @@ describe('cpuSnapshot()', () => {
     expect(snap.cpu_load_pct).toBe(80);
   });
 
-  it('caps cpu_load_pct at 100 when load exceeds core count', () => {
+  it.skipIf(process.platform === 'win32')('caps cpu_load_pct at 100 when load exceeds core count (skipped on win32: SO_IS_WINDOWS is fixed at module load, no seam)', () => {
     // load1m=3, cores=2 → 150% capped to 100
     spyLoadavg.mockReturnValue([3.0, 2.5, 2.0]);
     spyCpus.mockReturnValue([makeCpu(), makeCpu()]);
@@ -153,7 +155,7 @@ describe('cpuSnapshot()', () => {
     expect(snap.cpu_load_pct).toBe(100);
   });
 
-  it('single-core CPU: load1m=0.5 → cpu_load_pct=50', () => {
+  it.skipIf(process.platform === 'win32')('single-core CPU: load1m=0.5 → cpu_load_pct=50 (skipped on win32: SO_IS_WINDOWS is fixed at module load, no seam)', () => {
     spyLoadavg.mockReturnValue([0.5, 0.4, 0.3]);
     spyCpus.mockReturnValue([makeCpu()]);
     const snap = cpuSnapshot();
@@ -253,7 +255,8 @@ describe('ramAvailableGb()', () => {
 
 describe('runCommand()', () => {
   it('returns string output for a simple command that succeeds', async () => {
-    const result = await runCommand('echo', ['hello']);
+    // node, not `echo`: echo is a cmd.exe builtin with no executable on native Windows.
+    const result = await runCommand(process.execPath, ['-e', 'console.log("hello")']);
     expect(typeof result).toBe('string');
     expect(result.trim()).toBe('hello');
   }, 3000);

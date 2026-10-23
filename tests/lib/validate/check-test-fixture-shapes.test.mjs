@@ -23,7 +23,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import { fixtureGitSpawn, removeTree } from '../../_helpers/tmp-fixture.mjs';
@@ -80,7 +80,7 @@ function makeTmpRepo(setupFn) {
 /** Write a file under tests/ — caller passes the basename or relative path */
 function writeTestFile(root, relPath, content) {
   const full = join(root, 'tests', relPath);
-  const dir = full.substring(0, full.lastIndexOf('/'));
+  const dir = dirname(full);
   mkdirSync(dir, { recursive: true });
   writeFileSync(full, content);
 }

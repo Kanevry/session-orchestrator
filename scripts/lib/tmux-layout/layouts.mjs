@@ -25,6 +25,8 @@
 
 import path from 'node:path';
 import { resolveStateDir } from '../platform.mjs';
+import { resolveOwnLockRootFor } from '../own-lock-root.mjs';
+import { readProcessLocalSessionIds } from '../session-identity/own-session.mjs';
 import { shellQuote } from '../sh-quote.mjs';
 import { detectVcsCommand } from './vcs-detector.mjs';
 import { isSessionCollision } from './tmux-shell.mjs';
@@ -70,6 +72,11 @@ const STATUS_PANE_POLL_SECONDS = 2;
  *
  * Exported so a consumer test can run the render ONCE instead of the poll loop.
  *
+ * `repoRoot` (#1730): the agent-status writer (`hooks/subagent-telemetry.mjs`)
+ * writes beside the session's OWN lock, which is not always the checkout the
+ * second terminal sits in. A given root is written into the command as a
+ * literal; without one the pane reads its own `process.cwd()`, as before.
+ *
  * Shell-shape notes (both load-bearing):
  *   - the `-e` script is wrapped in SINGLE quotes, so the JS below uses only
  *     double-quoted strings: inside single quotes no `$`, backtick or interactive
@@ -77,15 +84,21 @@ const STATUS_PANE_POLL_SECONDS = 2;
  *   - the module path is resolved from THIS file's own URL (never a hardcoded home
  *     path), exactly as the sibling pane commands stay relative-to-cwd.
  *
+ * @param {{ repoRoot?: string|null }} [opts]
  * @returns {string} a single shell command; prints the pane body once and exits.
  */
-export function buildStatusPaneRenderCommand() {
+export function buildStatusPaneRenderCommand({ repoRoot = null } = {}) {
   // `%27` guard: a single quote in the repo path would otherwise end the shell
   // single-quoted `-e` argument.
   const moduleHref = new URL('../agent-status.mjs', import.meta.url).href.replace(/'/g, '%27');
+  // Same guard for the root literal: a quote in the path is written as its
+  // JSON unicode escape, which the double-quoted JS string reads as the quote.
+  const rootExpr = typeof repoRoot === 'string' && repoRoot !== ''
+    ? JSON.stringify(repoRoot).replace(/'/g, '\\u0027')
+    : 'process.cwd()';
   const js = [
     `import {readCurrentStatus} from ${JSON.stringify(moduleHref)};`,
-    'const v=readCurrentStatus({repoRoot:process.cwd()});',
+    `const v=readCurrentStatus({repoRoot:${rootExpr}});`,
     'const ids=Object.keys(v.entries).sort();',
     // An EMPTY channel (no ledger yet, no cache yet) is the normal fresh-repo
     // state, not a degradation — marking it would fire the warning on every
@@ -141,7 +154,11 @@ async function _renderDefaultLayoutInner({ sessionName, force, projectRoot, vcsC
   // file — so the pane can never present a stale `running` as live. The renderer
   // prints its own "no agent-status yet" line when the channel is empty, and is
   // exported (buildStatusPaneRenderCommand) so a test can run it once.
-  const pane5Cmd = `while true; do clear; ${buildStatusPaneRenderCommand()}; sleep ${STATUS_PANE_POLL_SECONDS}; done`;
+  // #1730: the root is the one holding this session's own lock, resolved once here; none found → the pane's cwd.
+  const own = withStatusPane
+    ? resolveOwnLockRootFor({ sessionId: readProcessLocalSessionIds()[0] ?? null, cwd: projectRoot })
+    : null;
+  const pane5Cmd = `while true; do clear; ${buildStatusPaneRenderCommand({ repoRoot: own && own.source !== 'none' ? own.root : null })}; sleep ${STATUS_PANE_POLL_SECONDS}; done`;
 
   // 4. Session-collision check
   const collision = isSessionCollision(sessionName);

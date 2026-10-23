@@ -14,9 +14,10 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, chmodSync, statSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const repoRoot = process.cwd();
-const lib = (rel) => JSON.stringify(path.join(repoRoot, 'scripts/lib', rel));
+const lib = (rel) => JSON.stringify(pathToFileURL(path.join(repoRoot, 'scripts/lib', rel)).href);
 
 let sandbox;
 beforeEach(() => { sandbox = mkdtempSync(path.join(tmpdir(), 'so-umask-')); });
@@ -44,11 +45,15 @@ const WRITERS = [
 ];
 
 describe('private config dir under umask 000 (#1629)', () => {
-  it.each(WRITERS)('%s creates the private dir without group/world write', (_name, body) => {
+  it.each(WRITERS)('%s creates the private dir without group/world write (mode check POSIX-only, skipped on win32)', (_name, body) => {
     const cfg = path.join(sandbox, 'cfg', 'session-orchestrator');
     runUmask0(body(cfg), { SO_CONFIG_HOME: cfg });
-    for (const dir of [path.dirname(cfg), cfg]) {
-      expect((statSync(dir).mode & 0o077).toString(8), dir).toBe('0');
+    // win32 has no mode bits (every dir reads 0o666); the end-to-end probe below
+    // still runs there.
+    if (process.platform !== 'win32') {
+      for (const dir of [path.dirname(cfg), cfg]) {
+        expect((statSync(dir).mode & 0o077).toString(8), dir).toBe('0');
+      }
     }
     // End-to-end consequence: an absent policy reads as missing, not unsafe.
     const probe = runUmask0(
@@ -58,7 +63,7 @@ describe('private config dir under umask 000 (#1629)', () => {
     expect(JSON.parse(probe.stdout)).toEqual(['missing', null]);
   });
 
-  it('names the unsafe config directory instead of reporting a CP1 leak', () => {
+  it.skipIf(process.platform === 'win32')('names the unsafe config directory instead of reporting a CP1 leak (POSIX-only: chmod 777 is a no-op on win32)', () => {
     const cfg = path.join(sandbox, 'cfg');
     mkdirSync(cfg);
     chmodSync(cfg, 0o777);
@@ -85,7 +90,7 @@ describe('private config dir under umask 000 (#1629)', () => {
     expect(res.stderr).not.toContain('chmod');
   });
 
-  it('vault-mirror redacts every repo but reports the unsafe dir, not a leak per repo', () => {
+  it.skipIf(process.platform === 'win32')('vault-mirror redacts every repo but reports the unsafe dir, not a leak per repo (POSIX-only: chmod 777 is a no-op on win32)', () => {
     const cfg = path.join(sandbox, 'cfg');
     mkdirSync(cfg);
     chmodSync(cfg, 0o777);

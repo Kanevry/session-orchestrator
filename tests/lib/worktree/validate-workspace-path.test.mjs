@@ -97,12 +97,17 @@ describe('validateWorkspacePath — purity contract (ADR-364 §5)', () => {
 
 describe('production call-site allowlist (#370)', () => {
   it('helper is invoked only from sanctioned files', async () => {
-    const { execSync } = await import('node:child_process');
-    const out = execSync(
-      "rg -l 'validateWorkspacePath\\(' scripts/ tests/ | sort",
-      { encoding: 'utf8', cwd: fileURLToPath(new URL('../../../', import.meta.url)) },
-    );
-    const files = out.trim().split('\n').filter(Boolean);
+    // A node walk instead of `rg … | sort` through a shell: neither rg nor sort is guaranteed on PATH
+    // (native Windows). Same population: every file under scripts/ and tests/ naming the call.
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join, relative } = await import('node:path');
+    const checkoutDir = fileURLToPath(new URL('../../../', import.meta.url));
+    const files = ['scripts', 'tests']
+      .flatMap((dir) => readdirSync(new URL(`../../../${dir}/`, import.meta.url), { recursive: true, withFileTypes: true })
+        .filter((e) => e.isFile() && !e.parentPath.split(/[\\/]/).includes('node_modules'))
+        .map((e) => relative(checkoutDir, join(e.parentPath, e.name)).replaceAll('\\', '/')))
+      .filter((rel) => readFileSync(join(checkoutDir, rel), 'latin1').includes('validateWorkspacePath('))
+      .sort();
     const allowed = [
       'scripts/gc-stale-worktrees.mjs',
       'scripts/lib/autopilot/worktree-pipeline.mjs',

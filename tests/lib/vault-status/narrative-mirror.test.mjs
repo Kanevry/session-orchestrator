@@ -421,7 +421,7 @@ describe('writeNarrative — idempotency guards', () => {
 describe('resolveNarrativePath', () => {
   it('builds <vaultDir>/01-projects/<repoSlug>/_session-narrative.md', () => {
     expect(resolveNarrativePath('/tmp/vault', 'my-repo')).toBe(
-      '/tmp/vault/01-projects/my-repo/_session-narrative.md',
+      path.join('/tmp/vault', '01-projects', 'my-repo', '_session-narrative.md'),
     );
   });
 });
@@ -500,7 +500,7 @@ describe('mirrorNarrative', () => {
     const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
 
     expect(result.action).toBe('written');
-    expect(result.path).toContain('/01-projects/mycoolrepo/_session-narrative.md');
+    expect(result.path).toContain(path.join('/01-projects', 'mycoolrepo', '_session-narrative.md'));
     expect(result.path).not.toContain('unknown');
 
     const written = fs.readFileSync(result.path, 'utf8');
@@ -534,7 +534,7 @@ describe('mirrorNarrative', () => {
     const { repoRoot } = scaffold({ repoDirName: 'NoState', withStateMd: false });
     const result = await mirrorNarrative({ repoRoot, hostPaths: HERMETIC_HOST_PATHS });
     expect(result.action).toBe('skipped-no-statemd');
-    expect(result.path).toContain('/01-projects/nostate/_session-narrative.md');
+    expect(result.path).toContain(path.join('/01-projects', 'nostate', '_session-narrative.md'));
   });
 
   describe('STATE.md routing', () => {
@@ -940,7 +940,7 @@ describe('mirrorNarrative', () => {
 
       expect(result.action).toBe('written');
       expect(result.path).toBe(resolveNarrativePath(vaultDir, 'foo-bar-app'));
-      expect(result.path).not.toContain('/foobarapp/');
+      expect(result.path).not.toContain(`${path.sep}foobarapp${path.sep}`);
     });
 
     it('the declared slug wins over a LEXICALLY different basename (dir "acme-web", slug "acme")', async () => {

@@ -33,7 +33,8 @@ import { spawn } from 'node:child_process';
 
 import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { appendSkillInvocation } from '../scripts/lib/skill-invocations-schema.mjs';
-import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { resolveEventsLedgerRoot } from '../scripts/lib/platform.mjs';
+import { resolveLedgerPath } from '../scripts/lib/ledger-path.mjs';
 import { shouldDailyFlush } from '../scripts/lib/telemetry/sync.mjs';
 import { resolveConsent, readTelemetryState } from '../scripts/lib/telemetry/consent.mjs';
 import { loadOwnerConfig } from '../scripts/lib/owner-yaml.mjs';
@@ -44,19 +45,25 @@ import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 // ---------------------------------------------------------------------------
 
 /**
- * Metrics directory / ledger path. FUNCTIONS, not module-level consts:
- * `getProjectDir()` walks the filesystem on first call, and this hook must not
- * pay that at import time (#1153 P5).
+ * Ledger paths. FUNCTIONS, not module-level consts: resolving the project dir
+ * walks the filesystem on first call, and this hook must not pay that at
+ * import time (#1153 P5).
+ *
+ * The two resolve independently (#1722): `skill-invocations.jsonl` goes
+ * through {@link resolveLedgerPath} (the main checkout's copy only when the
+ * launch dir is a linked worktree that gitignores it), while the metrics dir
+ * holding `sessions.jsonl` maps unconditionally via resolveEventsLedgerRoot
+ * (#1514/#1584).
  *
  * @returns {string}
  */
-function metricsDirPath() {
-  return path.join(getProjectDir(), '.orchestrator', 'metrics');
+function sessionsMetricsDirPath() {
+  return path.join(resolveEventsLedgerRoot(), '.orchestrator', 'metrics');
 }
 
 /** @returns {string} */
 function jsonlPath() {
-  return path.join(metricsDirPath(), 'skill-invocations.jsonl');
+  return resolveLedgerPath('.orchestrator/metrics/skill-invocations.jsonl');
 }
 
 /** Absolute path to the telemetry CLI (carries the hidden `_flush` subcommand). */
@@ -136,7 +143,7 @@ export function maybeSpawnDailyFlush({
   now = Date.now(),
   statePath,
   queuePath,
-  metricsDir = metricsDirPath(),
+  metricsDir = sessionsMetricsDirPath(),
 } = {}) {
   try {
     // 1. Cheapest gate: env kill-switches, no file I/O.

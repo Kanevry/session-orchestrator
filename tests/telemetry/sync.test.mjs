@@ -35,6 +35,7 @@ import { TELEMETRY_DIR } from '@lib/telemetry/paths.mjs';
 import { readTelemetryState } from '@lib/telemetry/consent.mjs';
 import { enqueue, queueStats, peekAll } from '@lib/telemetry/queue.mjs';
 import { maybeSpawnDailyFlush } from '../../hooks/skill-invocation-telemetry.mjs';
+import { makeLinkedWorktree } from '../_helpers/linked-worktree.mjs';
 
 // ---------------------------------------------------------------------------
 // Fixtures / helpers
@@ -532,6 +533,31 @@ describe('flush — endpoint override (default sender against a local server)', 
 // ---------------------------------------------------------------------------
 // buildBatch — session-window vs 24h-fallback selection
 // ---------------------------------------------------------------------------
+
+describe('buildBatch — metrics dir of a linked worktree (#1722)', () => {
+  // The SessionEnd flush hands buildBatch the LAUNCH dir's metrics dir. For a
+  // session started in a linked worktree of a repo that ignores its ledgers,
+  // both ledgers live in the main checkout; reading the worktree's own dir
+  // produced a ping with no session and no skills.
+  it('reads sessions and skill-invocations from the main checkout', () => {
+    const fx = makeLinkedWorktree('telemetry-wt-', { files: { '.gitignore': '.orchestrator/metrics/*.jsonl\n' } });
+    try {
+      writeFileSync(
+        join(fx.mainMetrics, 'sessions.jsonl'),
+        `${JSON.stringify({ session_id: 's-wt', session_type: 'deep', started_at: '2026-07-20T09:00:00.000Z', completed_at: '2026-07-20T13:30:00.000Z' })}\n`,
+      );
+      writeFileSync(
+        join(fx.mainMetrics, 'skill-invocations.jsonl'),
+        `${JSON.stringify({ timestamp: '2026-07-20T09:15:00.000Z', skill: 'session-orchestrator:discovery' })}\n`,
+      );
+      const { record } = buildBatch({ env: {}, metricsDir: fx.wtMetrics, statePath, now: NOW, persist: false });
+      expect(record.session_type).toBe('deep');
+      expect(record.skills).toContain('session-orchestrator:discovery');
+    } finally {
+      fx.cleanup();
+    }
+  });
+});
 
 describe('buildBatch — window selection', () => {
   it('scopes invocations to the last session record and honors its session_type', () => {

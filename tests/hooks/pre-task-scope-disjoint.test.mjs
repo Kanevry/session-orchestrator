@@ -24,6 +24,7 @@ import os from 'node:os';
 import { pathToFileURL } from 'node:url';
 
 import { expectDeny, expectAllow, expectWarn, isDeny } from '../_helpers/hook-decision.mjs';
+import { installNodeCli } from '../_helpers/executable-fixture.mjs';
 
 const REPO_ROOT = process.cwd();
 const HOOK = path.join(REPO_ROOT, 'hooks', 'pre-task-scope-disjoint.mjs');
@@ -1917,10 +1918,9 @@ describe('pre-task-scope-disjoint — session root and git budget (#1489)', () =
     const bin = path.join(dir, 'fake-bin');
     mkdirSync(bin);
     // `git <sub> …` becomes `node <sub> …`, and node runs the file `<cwd>/<sub>`.
-    // A SYMLINK to the running node binary: no freshly written executable, so no
-    // macOS first-launch check to flake on.
-    symlinkSync(process.execPath, path.join(bin, 'git'));
-    writeFileSync(path.join(dir, 'rev-parse'), 'setInterval(() => {}, 1000);\n');
+    // A link to the running node binary (installNodeCli; `git.exe` on win32): no
+    // freshly written executable, so no macOS first-launch check to flake on.
+    installNodeCli(bin, 'git', dir, { 'rev-parse': 'setInterval(() => {}, 1000);\n' });
     const payload = JSON.parse(dispatchPayload({ cwd: dir, id: 'Agent H', files: ['scripts/h.mjs'] }));
     payload.tool_input.isolation = 'worktree';
 
@@ -1956,8 +1956,7 @@ describe('pre-task-scope-disjoint — session root and git budget (#1489)', () =
     mkdirSync(bin);
     // The same hanging fake git as the test above: `git rev-parse …` runs the
     // never-ending `<cwd>/rev-parse` through a symlink to node.
-    symlinkSync(process.execPath, path.join(bin, 'git'));
-    writeFileSync(path.join(sub, 'rev-parse'), 'setInterval(() => {}, 1000);\n');
+    installNodeCli(bin, 'git', sub, { 'rev-parse': 'setInterval(() => {}, 1000);\n' });
 
     const res = runHook(dispatchPayload({ cwd: sub, id: 'Agent T', files: ['scripts/t.mjs'] }), {
       env: { CLAUDE_PROJECT_DIR: launch, PATH: `${bin}${path.delimiter}${process.env.PATH}` },

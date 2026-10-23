@@ -9,13 +9,15 @@ import { readLockDetailed, isLockLive } from '../session-lock.mjs';
 import { readTailWindow } from '../tail-window.mjs';
 import { parseSessionConfig } from '../config.mjs';
 import { resolveStateMdPath } from '../state-md.mjs';
+import { resolveOwnLockRootFor } from '../own-lock-root.mjs';
 import { collectSnapshot } from './collect.mjs';
+import { resolveEventsLedgerRoot } from '../platform.mjs';
 const exec = promisify(execFile);
 export const MAX_EVENT_BYTES = 512 * 1024;
 
 export function readEventTail(repoRoot) {
   try {
-    const tail = readTailWindow(path.join(repoRoot, '.orchestrator/metrics/events.jsonl'), MAX_EVENT_BYTES);
+    const tail = readTailWindow(path.join(resolveEventsLedgerRoot(repoRoot), '.orchestrator/metrics/events.jsonl'), MAX_EVENT_BYTES);
     return { text: tail.cut ? tail.text.slice(tail.text.indexOf('\n') + 1) : tail.text, degraded: tail.cut ? ['events:tail-only'] : [] };
   } catch (e) { return { text: '', degraded: [e.code === 'ENOENT' ? 'events:absent' : 'events:unreadable'] }; }
 }
@@ -66,11 +68,20 @@ async function config(repoRoot) {
   }
   return { enabled: null, mode: null };
 }
-export async function measure(repoRoot) {
+/**
+ * @param {string} repoRoot
+ * @param {{ sessionId?: string|null }} [opts]  `sessionId` = the mod's raw session id (#1730). The agent-status
+ *   writer (`hooks/subagent-telemetry.mjs`) writes beside the session's own lock, which is not always `repoRoot`:
+ *   a session working in a worktree by `cd` keeps its lock in the main checkout and the other way round. With an
+ *   id, agents and the lock that dates them are read there. Without one, everything is read at `repoRoot`.
+ */
+export async function measure(repoRoot, { sessionId = null } = {}) {
+  const ownRoot = sessionId ? resolveOwnLockRootFor({ sessionId, cwd: repoRoot }).root : null;
   return collectSnapshot(repoRoot, {
     now: Date.now, readText: file => fs.readFile(file, 'utf8'), lock: root => readLockDetailed({ repoRoot: root }),
-    isLockLive, agents: root => readCurrentStatus({ repoRoot: root }), discover, events: readEventTail, config,
+    isLockLive, agents: root => readCurrentStatus({ repoRoot: ownRoot ?? root }), discover, events: readEventTail, config,
+    ...(ownRoot ? { agentLock: () => readLockDetailed({ repoRoot: ownRoot }) } : {}),
     statePath: path.relative(repoRoot, resolveStateMdPath(repoRoot)),
-    sessionId: process.env.CLAUDE_SESSION_ID ?? process.env.SO_SESSION_ID ?? null,
+    sessionId: sessionId ?? process.env.CLAUDE_SESSION_ID ?? process.env.SO_SESSION_ID ?? null,
   });
 }

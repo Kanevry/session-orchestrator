@@ -25,18 +25,26 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { parseCodexHookWrapperCommand } from '../../scripts/lib/codex/plugin-contract.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SHIM = path.join(REPO_ROOT, 'hooks', 'run-node.sh');
 
 const COMMAND_CONFIGS = ['hooks/hooks.json', 'hooks/hooks-codex.json', 'hooks/hooks-pi.json'];
 
-const TRUSTED_CLAUDE_PI_WRAPPER =
-  /^sh "\$(CLAUDE|PI)_PLUGIN_ROOT\/hooks\/run-node\.sh" "\$\1_PLUGIN_ROOT\/hooks\/[\w-]+(?:\/[\w-]+)*\.mjs"$/;
+// #1717: Claude runs each hook as `/bin/sh -c "<command>"`, and dash (Linux/WSL
+// /bin/sh) forks a single `-c` command instead of exec'ing it, so without the
+// leading `exec` node's parent is that sh and readClaudePid() reads null. The
+// exec is required for Claude only; Pi keeps the plain form.
+const TRUSTED_CLAUDE_WRAPPER =
+  /^exec sh "\$CLAUDE_PLUGIN_ROOT\/hooks\/run-node\.sh" "\$CLAUDE_PLUGIN_ROOT\/hooks\/[\w-]+(?:\/[\w-]+)*\.mjs"$/;
+const TRUSTED_PI_WRAPPER =
+  /^sh "\$PI_PLUGIN_ROOT\/hooks\/run-node\.sh" "\$PI_PLUGIN_ROOT\/hooks\/[\w-]+(?:\/[\w-]+)*\.mjs"$/;
 
 function isTrustedWrapper(platform, command) {
   if (platform === 'Codex') return parseCodexHookWrapperCommand(command) !== null;
-  return TRUSTED_CLAUDE_PI_WRAPPER.test(command);
+  if (platform === 'Claude') return TRUSTED_CLAUDE_WRAPPER.test(command);
+  return TRUSTED_PI_WRAPPER.test(command);
 }
 
 const sandboxRoots = new Set();
@@ -75,7 +83,7 @@ function nodelessEnv(dirs, extra = {}) {
 }
 
 function runShim(env, args, input) {
-  return spawnSync('/bin/sh', [SHIM, ...args], { env, input, encoding: 'utf8', timeout: 10_000 });
+  return spawnSync(posixShell('/bin/sh'), [SHIM, ...args], { env, input, encoding: 'utf8', timeout: 10_000 });
 }
 
 /** Commands that reference a hooks/*.mjs handler but bypass the shim. */
@@ -208,8 +216,10 @@ describe('hook configs route through run-node.sh (wiring guard, GH#53)', () => {
             if (typeof h.command === 'string' && h.command.includes('run-node.sh')) {
               if (rel === 'hooks/hooks-codex.json') {
                 expect(parseCodexHookWrapperCommand(h.command)).not.toBeNull();
+              } else if (rel === 'hooks/hooks.json') {
+                expect(h.command).toMatch(TRUSTED_CLAUDE_WRAPPER);
               } else {
-                expect(h.command).toMatch(TRUSTED_CLAUDE_PI_WRAPPER);
+                expect(h.command).toMatch(TRUSTED_PI_WRAPPER);
               }
             }
           }
@@ -221,7 +231,7 @@ describe('hook configs route through run-node.sh (wiring guard, GH#53)', () => {
   it.each([
     [
       'Claude',
-      'sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs"',
+      'exec sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs"',
     ],
     ['Pi', 'sh "$PI_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/on-stop.mjs"'],
     [
@@ -256,7 +266,17 @@ describe('hook configs route through run-node.sh (wiring guard, GH#53)', () => {
     [
       'mismatched Claude and Pi root variables',
       'Claude',
-      'sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/on-stop.mjs"',
+      'exec sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/on-stop.mjs"',
+    ],
+    [
+      'a Claude wrapper without exec (#1717: dash forks, readClaudePid reads null)',
+      'Claude',
+      'sh "$CLAUDE_PLUGIN_ROOT/hooks/run-node.sh" "$CLAUDE_PLUGIN_ROOT/hooks/on-stop.mjs"',
+    ],
+    [
+      'a Pi wrapper with exec (#1717: the prefix is for Claude hooks only, Pi keeps the plain form)',
+      'Pi',
+      'exec sh "$PI_PLUGIN_ROOT/hooks/run-node.sh" "$PI_PLUGIN_ROOT/hooks/on-stop.mjs"',
     ],
     [
       'a wrapper with no concrete handler',

@@ -32,7 +32,8 @@
  */
 
 import { existsSync, readdirSync, statSync, mkdirSync, appendFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { resolveLedgerPath } from '../../../scripts/lib/ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -70,8 +71,8 @@ function listMarkdownFiles(dirPath) {
   return entries.filter((e) => e.isFile() && e.name.endsWith('.md')).map((e) => e.name);
 }
 
-function makeMetricsPath(projectRoot) {
-  return join(projectRoot, '.orchestrator', 'metrics');
+function makeLedgerPath(projectRoot) {
+  return resolveLedgerPath('.orchestrator/metrics/docs-staleness.jsonl', projectRoot);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +159,8 @@ export async function runProbe(projectRoot, config) {
 
     // ── JSONL append ──────────────────────────────────────────────────────
     try {
-      const metricsDir = makeMetricsPath(projectRoot);
+      const ledgerPath = makeLedgerPath(projectRoot);
+      const metricsDir = dirname(ledgerPath);
       if (!existsSync(metricsDir)) mkdirSync(metricsDir, { recursive: true });
       const record = {
         timestamp: new Date().toISOString(),
@@ -175,7 +177,7 @@ export async function runProbe(projectRoot, config) {
           threshold_days: f.evidence.threshold_days ?? threshold,
         })),
       };
-      appendFileSync(join(metricsDir, 'docs-staleness.jsonl'), JSON.stringify(record) + '\n', 'utf8');
+      appendFileSync(ledgerPath, JSON.stringify(record) + '\n', 'utf8');
     } catch {
       // JSONL write failure is non-fatal — probe result is still returned
     }

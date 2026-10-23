@@ -693,16 +693,18 @@ describe('atomicWriteWithBackup', () => {
     const file = join(tmpDir, 'survivor.md');
     atomicWriteWithBackup(file, 'original\n');
 
-    // /dev/null/<sub> yields a fast, uniform ENOTDIR for every uid (root
-    // included) — see .claude/rules/testing.md § root-as-uid-0 hazards.
-    const result = atomicWriteWithBackup('/dev/null/nope/target.md', 'x');
+    // A path below a regular file yields a fast, uniform error for every uid (root included — see
+    // .claude/rules/testing.md § root-as-uid-0 hazards) on every platform; /dev/null/<sub> is a
+    // creatable directory C:\dev\null on Windows.
+    const blocked = join(file, 'nope', 'target.md');
+    const result = atomicWriteWithBackup(blocked, 'x');
 
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('fs-error');
     expect(typeof result.error).toBe('string');
     // #1032: the errno survives, so a caller that must re-throw can keep it.
     expect(result.code).toBe('ENOTDIR');
-    expect(existsSync('/dev/null/nope/target.md')).toBe(false);
+    expect(existsSync(blocked)).toBe(false);
     // The unrelated existing file is untouched by the failed write.
     expect(readFileSync(file, 'utf8')).toBe('original\n');
   });
@@ -891,7 +893,11 @@ describe('atomicWriteText', () => {
   });
 
   it('envelopeToError re-raises with the original message and code', async () => {
-    const result = await atomicWriteText('/dev/null/nope/target.md', 'x');
+    // Below a regular file: ENOTDIR on POSIX for every uid; /dev/null/<sub> is creatable on Windows.
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-envelope-'));
+    const blocker = join(tmpDir, 'blocker');
+    writeFileSync(blocker, '');
+    const result = await atomicWriteText(join(blocker, 'nope', 'target.md'), 'x');
 
     const err = envelopeToError(result);
     expect(err.message).toBe(result.error);
@@ -960,8 +966,12 @@ describe('writeJsonAtomicSync', () => {
   });
 
   it('propagates the fs-error envelope shape session-lock.mjs returns verbatim', () => {
-    // ENOTDIR for every uid, root included (.claude/rules/testing.md § root-as-uid-0).
-    const result = writeJsonAtomicSync('/dev/null/nope/lock.json', { a: 1 });
+    // Below a regular file: an fs error for every uid, root included (.claude/rules/testing.md
+    // § root-as-uid-0), on every platform — /dev/null/<sub> is creatable on Windows.
+    tmpDir = mkdtempSync(join(tmpdir(), 'io-json-'));
+    const blocker = join(tmpDir, 'blocker');
+    writeFileSync(blocker, '');
+    const result = writeJsonAtomicSync(join(blocker, 'nope', 'lock.json'), { a: 1 });
 
     expect(result.ok).toBe(false);
     expect(result.reason).toBe('fs-error');

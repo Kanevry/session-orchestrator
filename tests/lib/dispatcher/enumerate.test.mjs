@@ -28,7 +28,7 @@ const FIXED_NOW = new Date('2026-06-18T20:00:00Z').getTime();
 
 // A POSIX-absolute scan root used for the DI-stub path. Never resolves against
 // the real fs because readdirSync/existsSync are stubbed.
-const ROOT = '/sandbox/projects';
+const ROOT = path.resolve('/sandbox/projects'); // absolute on win32 too, like the walk's output
 
 /** A fake Dirent for the withFileTypes:true readdir stub. */
 function dirent(name, isDir = true) {

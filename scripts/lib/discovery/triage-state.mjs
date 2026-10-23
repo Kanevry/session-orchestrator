@@ -19,6 +19,7 @@ import { appendFile, readFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { findProjectRoot } from '../common.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -56,7 +57,7 @@ export const DEFAULT_STATE_FILE = '.orchestrator/metrics/discovery-triage.jsonl'
 function resolveStatePath(stateFilePath) {
   const p = stateFilePath ?? DEFAULT_STATE_FILE;
   if (path.isAbsolute(p)) return p;
-  return path.join(findProjectRoot(), p);
+  return resolveLedgerPath(p, findProjectRoot());
 }
 
 /**

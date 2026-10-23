@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } 
 import * as fs from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join, resolve, sep } from 'node:path';
 import { randomUUID, createHash } from 'node:crypto';
 import YAML from 'js-yaml';
 
@@ -109,6 +109,9 @@ function captureStdout(fn) {
 // is always populated from the throwaway cwd. vitest isolates files in separate
 // forked processes (`pool: 'forks'`, vitest.config.mjs:67), so the cwd change
 // cannot leak into namespace.test.mjs or any other file.
+/** Absolute path under the `/vault` fixture root, spelled as the product builds it (`resolve(vaultDir)` + join). */
+const vaultPath = (...segs) => join(resolve('/vault'), ...segs);
+
 const ORIGINAL_CWD = process.cwd();
 const TMP_CWD = mkdtempSync(join(tmpdir(), 'vault-mirror-process-cwd-'));
 
@@ -205,7 +208,7 @@ describe('emitAction', () => {
     });
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
-    const filePath = '/vault/40-learnings/my-learning.md';
+    const filePath = vaultPath('40-learnings', 'my-learning.md');
     const { lines } = await captureStdout(() =>
       emitAction({ action: 'created', path: filePath, kind: 'learning', id: 'my-id', vaultDir }),
     );
@@ -223,7 +226,7 @@ describe('emitAction', () => {
     });
     const { emitAction } = await import('@lib/vault-mirror/process.mjs');
     const vaultDir = '/vault';
-    const filePath = '/vault/50-sessions/session.md';
+    const filePath = vaultPath('50-sessions', 'session.md');
     const { lines } = await captureStdout(() =>
       emitAction({ action: 'created', path: filePath, kind: 'session', id: 'sess-id', vaultDir }),
     );
@@ -239,7 +242,7 @@ describe('emitAction', () => {
   // dropped the first character of the relative path when the root is `/`.
   it.each([
     ['sibling dir sharing the root as a prefix stays unchanged', '/vault', '/vault2/x.md', '/vault2/x.md'],
-    ['filesystem-root vault keeps the first path character', '/', '/40-learnings/r/x.md', '40-learnings/r/x.md'],
+    ['filesystem-root vault keeps the first path character', '/', join(resolve('/'), '40-learnings', 'r', 'x.md'), '40-learnings/r/x.md'],
   ])('%s', async (_label, vaultDir, filePath, expected) => {
     vi.resetModules();
     vi.doMock('node:child_process', async () => {
@@ -262,6 +265,8 @@ describe('emitAction', () => {
 // stderr into its own output, so the home path reached session transcripts.
 describe('SKIP stderr lines carry the vault-relative path, never the vault root', () => {
   const VAULT = '/home/operator/vault';
+  // What the product actually asks the fs for: `resolve(vaultDir)` + join (gains a drive on win32).
+  const VAULT_ABS = resolve(VAULT);
   const HANDWRITTEN = '---\nid: x\ntitle: Manual\n---\n\nHand written.\n';
   const FOREIGN_GENERATOR = '---\nid: x\n_generator: some-other-tool@2\n---\n';
   // Same generator, different id → the learning branch takes the disambig path.
@@ -320,9 +325,9 @@ describe('SKIP stderr lines carry the vault-relative path, never the vault root'
   ])('%s', async (_label, kind, prefix, contentFor) => {
     const actualExists = fs.existsSync;
     const actualRead = fs.readFileSync;
-    vi.spyOn(fs, 'existsSync').mockImplementation((p) => (String(p).startsWith(VAULT) ? true : actualExists(p)));
+    vi.spyOn(fs, 'existsSync').mockImplementation((p) => (String(p).startsWith(VAULT_ABS) ? true : actualExists(p)));
     vi.spyOn(fs, 'readFileSync').mockImplementation((p, ...rest) =>
-      String(p).startsWith(VAULT) ? contentFor(String(p)) : actualRead(p, ...rest),
+      String(p).startsWith(VAULT_ABS) ? contentFor(String(p)) : actualRead(p, ...rest),
     );
     vi.spyOn(fs, 'writeFileSync').mockReturnValue(undefined);
     vi.spyOn(fs, 'mkdirSync').mockReturnValue(undefined);
@@ -350,6 +355,7 @@ describe('SKIP stderr lines carry the vault-relative path, never the vault root'
     expect(skipLines).toEqual([`${prefix}${lines[0].path}\n`]);
     expect(lines[0].path.startsWith(kind === 'learning' ? '40-learnings/' : '50-sessions/')).toBe(true);
     expect(stderr.join('')).not.toContain(VAULT);
+    expect(stderr.join('')).not.toContain(VAULT_ABS);
   });
 });
 
@@ -862,7 +868,7 @@ describe('processSession #732: source-repo uses resolveRepoNamespace(), never ra
 
     expect(writeFileSyncSpy).toHaveBeenCalledOnce();
     // Write path uses resolveRepoNamespace()'s return value.
-    expect(writtenPath).toContain('/50-sessions/leak-guarded-sentinel/');
+    expect(writtenPath).toContain(`${sep}50-sessions${sep}leak-guarded-sentinel${sep}`);
     // Frontmatter ALSO uses it — the #732 fix (previously it used raw deriveRepo()).
     expect(written).toContain('source-repo: leak-guarded-sentinel\n');
     // Never the raw origin identifier, and never the legacy `repo:` field name.
@@ -1250,7 +1256,7 @@ describe('processLearning slug-length cap (#635)', () => {
     expect(lines[0].action).toBe('created');
     expect(lines[0].id.length).toBeLessThanOrEqual(240);
     const writtenPath = writeFileSyncSpy.mock.calls[0][0];
-    const filename = writtenPath.split('/').pop();
+    const filename = basename(writtenPath);
     expect(filename.length).toBeLessThanOrEqual(255);
     expect(existsSyncSpy).toHaveBeenCalled();
   });
@@ -1642,8 +1648,8 @@ describe('processLearning #701.1 dual-probe date-advance fall-through', () => {
     // Write must target the NAMESPACED path (contains '/r/'), not the legacy flat path.
     expect(writeFileSyncSpy).toHaveBeenCalledOnce();
     const writtenPath = writeFileSyncSpy.mock.calls[0][0];
-    expect(writtenPath).toContain('/40-learnings/r/');
-    expect(writtenPath).not.toBe('/vault/40-learnings/explicit-contracts.md');
+    expect(writtenPath).toContain(`${sep}40-learnings${sep}r${sep}`);
+    expect(writtenPath).not.toBe(vaultPath('40-learnings', 'explicit-contracts.md'));
   });
 });
 
@@ -1851,7 +1857,7 @@ describe('processLearning/processSession #974: env-secret masking', () => {
 
     const writtenPath = writeFileSyncSpy.mock.calls[0][0];
     expect(writtenPath).not.toContain(needle);
-    expect(writtenPath).toBe('/vault/40-learnings/r/probe-redacted-case.md');
+    expect(writtenPath).toBe(vaultPath('40-learnings', 'r', 'probe-redacted-case.md'));
     expect(lines[0].id).toBe('probe-redacted-case');
   });
 
@@ -2268,7 +2274,7 @@ describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal'
       ...SESSION,
       notes: `curl -H "PRIVATE-TOKEN: ${needle}" failed. ${'n'.repeat(500)}`,
     };
-    const targetPath = '/vault/50-sessions/r/main-2026-08-14-session-1.md';
+    const targetPath = vaultPath('50-sessions', 'r', 'main-2026-08-14-session-1.md');
 
     // ── Run 1: no needle in env → narrative written RAW (masker has 0 needles) ──
     const { processSession: run1 } = await loadProcess();
@@ -2309,7 +2315,7 @@ describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal'
   it('an already-masked session note stays skipped-noop with the needle in env', async () => {
     const needle = `so-test-needle-${randomUUID()}`;
     const entry = { ...SESSION, notes: `token ${needle} leaked. ${'n'.repeat(500)}` };
-    const targetPath = '/vault/50-sessions/r/main-2026-08-14-session-1.md';
+    const targetPath = vaultPath('50-sessions', 'r', 'main-2026-08-14-session-1.md');
 
     vi.stubEnv('SO_TEST_MASK_TOKEN', needle);
     const { processSession: run1 } = await loadProcess();
@@ -2351,8 +2357,8 @@ describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal'
       source_session: 'session-2026-08-14',
       created_at: '2026-08-14T10:00:00Z',
     };
-    const targetPath = '/vault/40-learnings/r/legacy-flat-heal-1028.md';
-    const legacyFlatPath = '/vault/40-learnings/legacy-flat-heal-1028.md';
+    const targetPath = vaultPath('40-learnings', 'r', 'legacy-flat-heal-1028.md');
+    const legacyFlatPath = vaultPath('40-learnings', 'legacy-flat-heal-1028.md');
 
     // ── Run 1: no needle in env, flat layout → note written RAW to the flat path.
     const { processLearning: run1 } = await loadProcess();
@@ -2408,7 +2414,7 @@ describe('#1028 W4 residue: session-narrative heal + legacy-flat plaintext heal'
       source_session: 'session-2026-08-14',
       created_at: '2026-08-14T10:00:00Z',
     };
-    const legacyFlatPath = '/vault/40-learnings/legacy-flat-clean-1028.md';
+    const legacyFlatPath = vaultPath('40-learnings', 'legacy-flat-clean-1028.md');
 
     const { processLearning: run1 } = await loadProcess();
     existsSyncSpy.mockReturnValue(false);

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { checkLoopReadiness } from '@lib/loop-readiness-banner.mjs';
+import { stubHome } from '../_helpers/home-env.mjs';
 
 // Every case passes BOTH repoRoot AND homeDir pointing into a tmpdir so the
 // test never reads the real `~/.claude/` — real machine state would make the
@@ -324,7 +325,7 @@ describe('checkLoopReadiness — homeDir omitted falls back to os.homedir() (#76
   });
 
   it('resolves the user loop.md via os.homedir() when homeDir option is omitted', () => {
-    vi.stubEnv('HOME', tmpHome);
+    stubHome(tmpHome);
     writeLoopMd(tmpHome);
     // homeDir is deliberately OMITTED — must fall back to os.homedir(),
     // which now resolves to tmpHome via the HOME stub above.
@@ -333,7 +334,7 @@ describe('checkLoopReadiness — homeDir omitted falls back to os.homedir() (#76
   });
 
   it('warns when homeDir is omitted and the os.homedir()-resolved dir has no loop.md', () => {
-    vi.stubEnv('HOME', tmpHome);
+    stubHome(tmpHome);
     const result = checkLoopReadiness({ repoRoot: tmpRepo, env: {} });
     expect(result).not.toBe(null);
     expect(result.userLoopMd).toBe(false);

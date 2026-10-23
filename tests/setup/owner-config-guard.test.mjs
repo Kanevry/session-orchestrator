@@ -23,10 +23,17 @@ describe('owner-config-guard (#1567)', () => {
     expect(process.env.SO_CONFIG_HOME, 'setupFiles must register tests/setup/owner-config-guard.mjs').toBeTruthy();
     expect(process.env.SO_PROJECTS_ROOT).toBeUndefined();
 
+    // "Never the real ~/.config", not "never under the home": on Windows the
+    // temp root lies under the home (%TEMP% = C:\Users\<name>\AppData\Local\Temp,
+    // #1613). Where it does not (macOS, Linux) the stricter check still applies.
     const home = realpathSync(homedir()) + path.sep;
+    const tmpRoot = realpathSync(tmpdir()) + path.sep;
     const ownerYaml = resolveOwnerYamlPath();
+    const ownerDir = realpathSync(path.dirname(ownerYaml));
     expect(path.basename(path.dirname(ownerYaml)).startsWith('so-owner-config-guard-')).toBe(true);
-    expect(realpathSync(path.dirname(ownerYaml)).startsWith(home)).toBe(false);
+    expect(ownerDir.startsWith(tmpRoot)).toBe(true);
+    expect(ownerDir.startsWith(path.join(home, '.config') + path.sep)).toBe(false);
+    if (!tmpRoot.startsWith(home)) expect(ownerDir.startsWith(home)).toBe(false);
   });
 
   // #1628 — under umask 000 (WSL) the guard dir came out 0777, the policy check

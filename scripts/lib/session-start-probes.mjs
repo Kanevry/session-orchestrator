@@ -76,8 +76,15 @@ const CI_UNKNOWN_HINT_DEFAULT = 'run `glab ci status` on demand';
 /**
  * `ci-status` "no usable reading for HEAD" reasons after which the last PUSHED
  * commit is worth asking about: GitLab's `no-pipeline-for-head-sha`, GitHub's
- * `no-check-runs-for-head`, and GitLab's `pipeline-unmatched-ref` (all emitted
- * by `checkCiStatus`).
+ * `no-check-runs-for-head` and `head-sha-not-on-remote`, and GitLab's
+ * `pipeline-unmatched-ref` (all emitted by `checkCiStatus`).
+ *
+ * `head-sha-not-on-remote` (#1727) is GitHub's answer for a local HEAD the
+ * remote does not know — the normal state of a session with unpushed commits,
+ * now that the GitHub path asks for the LOCAL HEAD sha instead of the literal
+ * ref `HEAD`. Left out of this set, an unpushed GitHub HEAD rendered only the
+ * on-demand hint while the last pushed commit could be red: silence there
+ * reads as green, the #1332 collapse on the other host.
  *
  * `pipeline-unmatched-ref` (#857) is not a "no data" state — pipelines EXIST for
  * the sha, they just all sit on a foreign ref, so the reading stays `unknown`.
@@ -88,7 +95,22 @@ const CI_UNKNOWN_HINT_DEFAULT = 'run `glab ci status` on demand';
 const PUSHED_FOLLOW_UP_REASONS = new Set([
   'no-pipeline-for-head-sha',
   'no-check-runs-for-head',
+  'head-sha-not-on-remote',
   'pipeline-unmatched-ref',
+]);
+
+/**
+ * The {@link PUSHED_FOLLOW_UP_REASONS} whose HEAD reading was taken for the
+ * LOCAL HEAD sha and found no CI data for it — so when the pushed commit IS
+ * HEAD, re-querying it would ask the identical question (see
+ * {@link ciPushedFollowUp}). `pipeline-unmatched-ref` is deliberately absent:
+ * there pipelines DO exist for the sha, only on a foreign ref, and the
+ * re-query keeps the behaviour #857 gave it.
+ */
+const NO_DATA_FOR_LOCAL_HEAD_REASONS = new Set([
+  'no-pipeline-for-head-sha',
+  'no-check-runs-for-head',
+  'head-sha-not-on-remote',
 ]);
 
 /**
@@ -143,16 +165,23 @@ async function revParseShas(repoRoot, refs) {
  * `skipped: network-probe-opt-in` and this never runs). It runs INSIDE the
  * probe's budget race and gets only what is left of that budget; if it
  * overruns or throws, the runner keeps the HEAD reading it was given (see
- * `runSessionStartProbes`). REVISIT TRIGGER: if `follow_up: 'budget-exceeded'`
- * shows up regularly in `orchestrator.probes.completed`, cache the verdict per
- * pushed SHA instead of re-asking.
+ * `runSessionStartProbes`). REVISIT TRIGGER: `follow_up: 'budget-exceeded'`
+ * on the `ci-status` record of `orchestrator.probes.completed` showing up
+ * regularly. Since #1728 that value means EITHER `ci-status` follow-up
+ * overran — this pushed-SHA requery OR {@link ciRedHistoryFollowUp}'s
+ * last-green history read — and the record carries no field that tells the
+ * two apart. Before caching the verdict per pushed SHA instead of re-asking,
+ * check the record's `outcome`: the pushed-SHA path runs only on an
+ * `unknown` reading (`ran-warn`), the history path only on a red one
+ * (`ran-alert`).
  *
- * The CLI round trip is skipped when the pushed commit IS HEAD on GitLab: its
- * HEAD reading was taken for the local HEAD SHA, so the re-query would ask the
- * identical question. Not on GitHub: `checkCiStatus` asks the API for the
- * literal ref `HEAD`, which GitHub resolves to the REMOTE default branch, not
- * the local HEAD — there the pushed SHA is a different question even when it
- * equals local HEAD.
+ * The CLI round trip is skipped when the pushed commit IS HEAD on a
+ * {@link NO_DATA_FOR_LOCAL_HEAD_REASONS} reading, on GitLab and GitHub alike:
+ * both paths take the HEAD reading for the LOCAL HEAD SHA, so the re-query
+ * would ask the identical question. GitHub joined that skip with #1727 —
+ * before it, `checkCiStatus` asked the GitHub API for the literal ref `HEAD`,
+ * which GitHub resolves to the REMOTE default branch, so the pushed SHA was a
+ * different question there even when it equalled local HEAD.
  *
  * The resolved SHA is handed to the runner through `deliver` BEFORE the CLI
  * round trip, so a requery that overruns the budget or throws still leaves
@@ -172,7 +201,7 @@ async function ciPushedFollowUp(result, ctx, requery, deliver) {
   // `pushed.sha: null` records "no upstream" as DATA — the renderer never asks git.
   if (!shas) return { ...result, pushed: { sha: null } };
   const [head, sha] = shas;
-  if (reason === 'no-pipeline-for-head-sha' && sha === head) {
+  if (NO_DATA_FOR_LOCAL_HEAD_REASONS.has(reason) && sha === head) {
     return { ...result, pushed: { sha, sameAsHead: true } };
   }
   deliver({ ...result, pushed: { sha } });
@@ -187,6 +216,36 @@ async function ciPushedFollowUp(result, ctx, requery, deliver) {
 }
 
 /**
+ * `ci-status` follow-up (#1728): the GitHub red reading arrives WITHOUT its
+ * last-green history (`checkCiStatus({ deferHistory: true })`, reason
+ * `last-green-deferred`), so the red verdict is in the runner's hands before
+ * the ~0.5 s history query starts. It is delivered FIRST, re-marked
+ * `last-green-budget-exceeded` — the reading that stands if the query overruns
+ * the budget or throws, and that renders "history not read within the probe
+ * budget". Then the history query alone runs via the module's
+ * `readDeferredGithubHistory` — never a second full `checkCiStatus`, which
+ * would repeat `gh repo view` and the check-runs query.
+ *
+ * @param {*} result  A red reading with `details.reason: 'last-green-deferred'`
+ * @param {{repoRoot?: string}} ctx
+ * @param {(partial: *) => void} deliver
+ * @param {*} mod  The probe's imported module (`ci-status-banner.mjs`)
+ * @returns {Promise<*>}
+ */
+async function ciRedHistoryFollowUp(result, ctx, deliver, mod) {
+  const { deferredHistory: _pending, ...reading } = result;
+  const fallback = {
+    ...reading,
+    details: { ...reading.details, reason: 'last-green-budget-exceeded' },
+  };
+  deliver(fallback);
+  // No reader on the module: the query never ran, so no budget was exceeded —
+  // keep the reading's own `last-green-deferred` ("history not read").
+  if (typeof mod?.readDeferredGithubHistory !== 'function') return reading;
+  return mod.readDeferredGithubHistory(result, { repoRoot: ctx?.repoRoot });
+}
+
+/**
  * The `ci-status` follow-up (#1332, #1396): every git fact a `ci-status`
  * banner names is resolved HERE, inside the probe's budget race, and carried
  * on the result as data — the renderer stays a pure function of the result.
@@ -198,14 +257,20 @@ async function ciPushedFollowUp(result, ctx, requery, deliver) {
  *     {@link ciPushedFollowUp} (`pushed`)
  *   - a `green` reading beside a set-aside FAILED same-commit pipeline →
  *     `head: { sha }` for {@link droppedFailedLine} (#1390 P5)
+ *   - a GitHub `red` reading whose history was deferred →
+ *     {@link ciRedHistoryFollowUp} (`redCount` / `lastGreen`, #1728)
  *
  * @param {*} result
  * @param {{repoRoot?: string}} ctx
  * @param {(extra: object) => Promise<*>} requery
  * @param {(partial: *) => void} deliver
+ * @param {*} [mod]  The probe's imported module
  * @returns {Promise<*>}
  */
-async function ciStatusFollowUp(result, ctx, requery, deliver) {
+async function ciStatusFollowUp(result, ctx, requery, deliver, mod) {
+  if (result?.status === 'red' && result?.details?.reason === 'last-green-deferred') {
+    return ciRedHistoryFollowUp(result, ctx, deliver, mod);
+  }
   if (result?.status === 'unknown' && PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) {
     return ciPushedFollowUp(result, ctx, requery, deliver);
   }
@@ -274,6 +339,56 @@ function ciUnknownHint(result) {
   const verdict = pushedVerdictText(pushed?.verdict);
   if (verdict) return `last pushed: ${short} — ${verdict}`;
   return `last pushed: ${short} (pipeline not checked; run \`${commitRunsCommand(gh, sha)}\`)`;
+}
+
+/**
+ * The `(pipeline #<id>)` part of a red `ci-status` line. GitLab readings carry
+ * `details.currentPipelineId` (`?` when it is null, the pre-#856 text). GitHub
+ * readings have no pipeline id at all (#856) — there the part is omitted
+ * instead of printing a `(pipeline #?)` that names a pipeline that never
+ * existed.
+ *
+ * @param {*} r
+ * @returns {string}
+ */
+function redPipelineText(r) {
+  const details = r?.details;
+  if (!details || typeof details !== 'object' || !('currentPipelineId' in details)) return '';
+  return ` (pipeline #${details.currentPipelineId ?? '?'})`;
+}
+
+/**
+ * The `— last green: …` part of a red `ci-status` line.
+ *
+ *   - GitLab (`lastGreen.pipelineId` present): unchanged text, byte for byte.
+ *   - GitHub (#856, no pipeline ids): `— last green: commit <sha7> (<n>
+ *     commit(s) ago)` — interpolating the GitLab form there printed
+ *     `#undefined` into the banner the operator reads.
+ *   - `details.reason: 'last-green-query-failed'` with no `lastGreen`: says
+ *     so. Omitting it would read exactly like "no green commit in the window",
+ *     a different fact (three states, not two: found / none / not measured).
+ *   - `last-green-budget-exceeded` (#1728): the red verdict arrived, the
+ *     history query did not finish inside the probe budget — says so.
+ *     `last-green-deferred` (the follow-up never re-marked it): not read.
+ *
+ * @param {*} r
+ * @returns {string}
+ */
+function lastGreenText(r) {
+  const lg = r?.lastGreen;
+  if (lg && typeof lg === 'object') {
+    const sha7 = String(lg.sha ?? '').slice(0, 7);
+    if (lg.pipelineId !== undefined) {
+      return ` — last green: #${lg.pipelineId} (commit ${sha7}, ${r.redCount} pipelines ago)`;
+    }
+    const n = lg.ageCommits;
+    return ` — last green: commit ${sha7} (${n} commit${n === 1 ? '' : 's'} ago)`;
+  }
+  const reason = r?.details?.reason;
+  if (reason === 'last-green-query-failed') return ' — last green: unknown (history query failed)';
+  if (reason === 'last-green-budget-exceeded') return ' — last green: unknown (history not read within the probe budget)';
+  if (reason === 'last-green-deferred') return ' — last green: unknown (history not read)';
+  return '';
 }
 
 /** Additive GitHub diagnostics; absent counts leave existing banners unchanged. */
@@ -508,10 +623,12 @@ function startLoopBlockedMeter() {
  *   - `precondition` optional; returns a skip-reason string to skip the probe
  *   - `render`     optional; maps a result to a banner line. Default:
  *                  `result.message` when severity is warn/alert.
- *   - `followUp`   optional; `async (result, ctx, requery, deliver) => result'`
+ *   - `followUp`   optional; `async (result, ctx, requery, deliver, mod) => result'`
  *                  run INSIDE the budget race after the entry function, where
- *                  `requery(extra)` re-invokes it with `{...args, ...extra}`
- *                  and `deliver(partial)` replaces the fallback result. If it
+ *                  `requery(extra)` re-invokes it with `{...args, ...extra}`,
+ *                  `deliver(partial)` replaces the fallback result, and `mod`
+ *                  is the probe's imported module (for a narrower second call
+ *                  than a full requery, #1728). If it
  *                  throws or overruns the budget, the last delivered result
  *                  stands (recorded `followUp: 'threw'|'budget-exceeded'`).
  *   - `render` is a PURE function of the result (#1396): anything it names
@@ -571,10 +688,23 @@ export const PROBES = [
     spec: local('./ci-status-banner.mjs'),
     fn: 'checkCiStatus',
     network: true,
-    args: ({ repoRoot }) => ({ repoRoot }),
+    // #1728: `deferHistory` keeps the GitHub last-green history query out of
+    // the entry function, so a red verdict is delivered before the query can
+    // overrun PROBE_BUDGET_MS (measured 2026-10-22: red with history
+    // 1605–1717 ms, the query alone ~495 ms). The follow-up reads it inside
+    // what is left of the budget. Ceiling: other local-HEAD callers of
+    // `checkCiStatus` still pay the query inline on red (see `checkGithub`).
+    // Second ceiling (BV-004): the red verdict is still lost when
+    // `checkCiStatus` ITSELF (git lookups + `gh repo view` + check-runs,
+    // measured 915–941 ms on 2026-10-22) overruns the work-time budget —
+    // `delivered` is set only after the entry function returns. Revisit
+    // trigger: an `orchestrator.probes.completed` record with `ci-status`
+    // `outcome: 'timeout'`.
+    args: ({ repoRoot }) => ({ repoRoot, deferHistory: true }),
     // #1332: on `no-pipeline-for-head-sha` / `no-check-runs-for-head`, query
     // the last PUSHED commit's verdict via `checkCiStatus({ sha })` — see the
     // ceiling on the function. #1396: also resolves every SHA the renderer names.
+    // #1728: on a deferred GitHub red reading, reads the last-green history.
     followUp: ciStatusFollowUp,
     // Bespoke shape: `{status, ok, details, …}` with no `message` field. The
     // banner text is prescribed by SKILL.md § Phase 4.
@@ -602,12 +732,8 @@ export const PROBES = [
         return `${mark} ci-status: CI status for HEAD could not be determined (${reason})${checkRunCountsText(r)} — ${ciUnknownHint(r)}`;
       }
       if (r.status === 'red') {
-        const pid = r.details?.currentPipelineId ?? '?';
-        const green = r.lastGreen
-          ? ` — last green: #${r.lastGreen.pipelineId} (commit ${String(r.lastGreen.sha ?? '').slice(0, 7)}, ${r.redCount} pipelines ago)`
-          : '';
         const job = r.failingJobName ? ` Failing job: ${r.failingJobName}` : '';
-        return `🚨 CI RED on HEAD (pipeline #${pid})${green}.${job}${checkRunCountsText(r)}`;
+        return `🚨 CI RED on HEAD${redPipelineText(r)}${lastGreenText(r)}.${job}${checkRunCountsText(r)}`;
       }
       if (r.status === 'green') {
         const lines = [];
@@ -1134,6 +1260,7 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
               ctx,
               (extra) => fn({ ...probe.args(ctx), ...extra }),
               (partial) => { delivered = { __probeResult: partial }; },
+              mod,
             ),
           };
         } catch {

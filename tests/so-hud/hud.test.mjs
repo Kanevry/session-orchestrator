@@ -163,21 +163,21 @@ describe('CLI and private beacon files', () => {
     expect(await main(['--json', '--repo-root', path.join(d, 'elsewhere', 'scripts')], { output: v => { output += v; }, measure: p => collectSnapshot(p, readers()) })).toBe(0);
     expect(await fs.realpath(JSON.parse(output).repo.root)).toBe(await fs.realpath(path.join(d, 'repo')));
   });
-  it('registers the installation with 0700 directory and 0600 file in a fixture home', async () => {
+  it('registers the installation with 0700 directory and 0600 file in a fixture home (mode bits POSIX-only)', async () => {
     const home = await fixture();
     expect(await main(['--register-root'], { home })).toBe(0);
     const dir = path.join(home, '.config/session-orchestrator/hud');
-    expect((await fs.stat(dir)).mode & 0o777).toBe(0o700);
-    expect((await fs.stat(path.join(dir, 'so-root'))).mode & 0o777).toBe(0o600);
+    await expectMode(dir, 0o700);
+    await expectMode(path.join(dir, 'so-root'), 0o600);
     expect((await fs.readFile(path.join(dir, 'so-root'), 'utf8')).trim()).toBe(path.resolve('.'));
   });
-  it('atomically replaces only its own beacon at 0600 and deletes it at end', async () => {
+  it('atomically replaces only its own beacon at 0600 and deletes it at end (mode bits POSIX-only)', async () => {
     const home = await fixture();
     await beaconIO('write', 'own', beacon(), { home });
     await beaconIO('write', 'own', { ...beacon(), zustand: 'arbeitet' }, { home });
     const dir = path.join(home, '.config/session-orchestrator/hud/beacons');
     expect(await fs.readdir(dir)).toEqual(['own.json']);
-    expect((await fs.stat(path.join(dir, 'own.json'))).mode & 0o777).toBe(0o600);
+    await expectMode(path.join(dir, 'own.json'), 0o600);
     expect(JSON.parse(await fs.readFile(path.join(dir, 'own.json'), 'utf8')).zustand).toBe('arbeitet');
     await expect(beaconIO('write', '../peer', beacon(), { home })).rejects.toThrow();
     await beaconIO('remove', 'own', null, { home });
@@ -185,16 +185,19 @@ describe('CLI and private beacon files', () => {
   });
   const receipt = () => ({ zeit: stamp, session_id: 'own', vorgang: 'pane-aktion', aktion: 'aussenwirkung', argv_sha256: 'a'.repeat(64), exit: 0, profil: 'ausgewogen', ergebnis: 'ausgefuehrt', art: 'push' });
   const hudDir = home => path.join(home, '.config/session-orchestrator/hud');
-  it('appends one receipt line per action to a fresh 0600 file under a 0700 directory', async () => {
+  // Native Windows has no POSIX mode bits: fs.stat reports 0o666 (438) for every file, so only the mode
+  // assertion is POSIX-only; the content, symlink and hard-link refusals are asserted on every platform.
+  const expectMode = async (p, mode) => { if (process.platform !== 'win32') expect((await fs.stat(p)).mode & 0o777).toBe(mode); };
+  it('appends one receipt line per action to a fresh 0600 file under a 0700 directory (mode bits POSIX-only)', async () => {
     const home = await fixture();
     await beaconIO('aktion', 'own', receipt(), { home });
     await beaconIO('aktion', 'own', { ...receipt(), exit: null, ergebnis: 'abgelehnt' }, { home });
     const file = path.join(hudDir(home), 'aktionen.jsonl');
     expect((await fs.readFile(file, 'utf8')).trim().split('\n').map(l => JSON.parse(l).ergebnis)).toEqual(['ausgefuehrt', 'abgelehnt']);
-    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
-    expect((await fs.stat(hudDir(home))).mode & 0o777).toBe(0o700);
+    await expectMode(file, 0o600);
+    await expectMode(hudDir(home), 0o700);
   });
-  it('keeps the shared file of other writers intact and narrows its mode to 0600', async () => {
+  it('keeps the shared file of other writers intact and narrows its mode to 0600 (mode bits POSIX-only)', async () => {
     const home = await fixture();
     const file = path.join(hudDir(home), 'aktionen.jsonl');
     await fs.mkdir(hudDir(home), { recursive: true });
@@ -204,9 +207,9 @@ describe('CLI and private beacon files', () => {
     const text = await fs.readFile(file, 'utf8');
     expect(text.startsWith(foreign)).toBe(true);
     expect(text.trim().split('\n')).toHaveLength(2);
-    expect((await fs.stat(file)).mode & 0o777).toBe(0o600);
+    await expectMode(file, 0o600);
   });
-  it('refuses a symlink planted at the receipt path and leaves its target untouched', async () => {
+  it('refuses a symlink planted at the receipt path and leaves its target untouched (mode bits POSIX-only)', async () => {
     const home = await fixture();
     const elsewhere = path.join(home, 'elsewhere.txt');
     await fs.writeFile(elsewhere, 'original', { mode: 0o644 });
@@ -214,10 +217,10 @@ describe('CLI and private beacon files', () => {
     await fs.symlink(elsewhere, path.join(hudDir(home), 'aktionen.jsonl'));
     await expect(beaconIO('aktion', 'own', receipt(), { home })).rejects.toThrow();
     expect(await fs.readFile(elsewhere, 'utf8')).toBe('original');
-    expect((await fs.stat(elsewhere)).mode & 0o777).toBe(0o644);
+    await expectMode(elsewhere, 0o644);
   });
   // Catches: a hard link planted at the receipt path receiving the receipt and narrowing its target's mode to 0600.
-  it.each([[undefined], [0]])('refuses a hard link at the receipt path and leaves its target untouched (noFollow %s)', async noFollow => {
+  it.each([[undefined], [0]])('refuses a hard link at the receipt path and leaves its target untouched (noFollow %s) (mode bits POSIX-only)', async noFollow => {
     const home = await fixture();
     const victim = path.join(home, 'victim.txt');
     await fs.writeFile(victim, 'original');
@@ -226,7 +229,7 @@ describe('CLI and private beacon files', () => {
     await fs.link(victim, path.join(hudDir(home), 'aktionen.jsonl'));
     await expect(beaconIO('aktion', 'own', receipt(), { home, noFollow })).rejects.toThrow();
     expect(await fs.readFile(victim, 'utf8')).toBe('original');
-    expect((await fs.stat(victim)).mode & 0o777).toBe(0o644);
+    await expectMode(victim, 0o644);
   });
   // noFollow 0 simulates native Windows, where node:fs has no O_NOFOLLOW and the helper falls back to lstat.
   const homeWithLink = async linkAt => {
@@ -239,22 +242,22 @@ describe('CLI and private beacon files', () => {
     return { home, elsewhere };
   };
   // Catches: a symlink planted at hud/ redirecting the helper's chmod and its receipt/beacon writes into a foreign directory.
-  it.each([[undefined], [0]])('refuses a symlinked hud directory without chmod or write into its target (noFollow %s)', async noFollow => {
+  it.each([[undefined], [0]])('refuses a symlinked hud directory without chmod or write into its target (noFollow %s) (mode bits POSIX-only)', async noFollow => {
     const { home, elsewhere } = await homeWithLink(hudDir);
     await expect(beaconIO('aktion', 'own', receipt(), { home, noFollow })).rejects.toThrow();
     await expect(beaconIO('write', 'own', beacon(), { home, noFollow })).rejects.toThrow();
     expect(await fs.readdir(elsewhere)).toEqual([]);
-    expect((await fs.stat(elsewhere)).mode & 0o777).toBe(0o755);
+    await expectMode(elsewhere, 0o755);
   });
   // Catches: a symlink planted at hud/beacons/ receiving our beacon (write) or losing a same-named file (remove).
-  it.each([[undefined], [0]])('refuses a symlinked beacons directory for write and remove (noFollow %s)', async noFollow => {
+  it.each([[undefined], [0]])('refuses a symlinked beacons directory for write and remove (noFollow %s) (mode bits POSIX-only)', async noFollow => {
     const { home, elsewhere } = await homeWithLink(h => path.join(hudDir(h), 'beacons'));
     await fs.writeFile(path.join(elsewhere, 'own.json'), 'foreign');
     await expect(beaconIO('write', 'own', beacon(), { home, noFollow })).rejects.toThrow();
     await expect(beaconIO('remove', 'own', null, { home, noFollow })).rejects.toThrow();
     expect(await fs.readFile(path.join(elsewhere, 'own.json'), 'utf8')).toBe('foreign');
     expect(await fs.readdir(elsewhere)).toEqual(['own.json']);
-    expect((await fs.stat(elsewhere)).mode & 0o777).toBe(0o755);
+    await expectMode(elsewhere, 0o755);
   });
   // Catches: a hud directory planted by another user accepted as ours. The uid is injected: creating a directory
   // owned by another uid needs root, so the helper is told it runs as a different uid than the fixture's owner.

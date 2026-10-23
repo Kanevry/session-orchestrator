@@ -202,11 +202,13 @@ describe('vault-mirror entry-point invariant (#536)', () => {
     writeFileSync(join(vaultDir, '50-sessions'), 'blocking-file', 'utf8');
     const sourceFile = writeJsonl(tmp(), VALID_SESSION);
     const result = runMirror(['--vault-dir', vaultDir, '--source', sourceFile, '--kind', 'session'], {
-      env: { HOME: home },
+      // os.homedir() reads USERPROFILE on Windows, HOME elsewhere.
+      env: { HOME: home, USERPROFILE: home },
     });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain('filesystem error');
-    expect(result.stderr).toContain('~/vault/50-sessions');
+    // The fs error names an absolute filesystem path: native separators after the `~`.
+    expect(result.stderr).toContain(join('~', 'vault', '50-sessions'));
     expect(result.stderr).not.toContain(home);
   });
 

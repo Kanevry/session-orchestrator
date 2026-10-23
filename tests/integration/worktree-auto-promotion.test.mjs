@@ -631,6 +631,9 @@ describe('enterWorktree — real git repository (#1067)', () => {
       const git = (cwd, args) => fixtureGit(args, cwd, { stdio: ['ignore', 'pipe', 'pipe'] });
 
       git(repoRoot, ['init', '-q']);
+      // The porcelain assertions compare exact status lines; a host-wide core.autocrlf=true (Windows)
+      // would report the LF-written fixture files as modified.
+      git(repoRoot, ['config', 'core.autocrlf', 'false']);
       git(repoRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
       git(repoRoot, ['config', 'user.email', 'test@example.invalid']);
       git(repoRoot, ['config', 'user.name', 'Test']);
@@ -816,6 +819,9 @@ describe('enterWorktree → detectAutoPromotedWorktree round trip (real git, #10
       const git = (cwd, args) => fixtureGit(args, cwd, { stdio: ['ignore', 'pipe', 'pipe'] });
 
       git(repoRoot, ['init', '-q']);
+      // The porcelain assertions compare exact status lines; a host-wide core.autocrlf=true (Windows)
+      // would report the LF-written fixture files as modified.
+      git(repoRoot, ['config', 'core.autocrlf', 'false']);
       git(repoRoot, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
       git(repoRoot, ['config', 'user.email', 'test@example.invalid']);
       git(repoRoot, ['config', 'user.name', 'Test']);

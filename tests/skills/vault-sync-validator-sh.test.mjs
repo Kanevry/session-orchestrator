@@ -12,6 +12,7 @@ import { copyFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const VALIDATOR_SH = join(REPO_ROOT, 'skills', 'vault-sync', 'validator.sh');
@@ -22,7 +23,7 @@ afterEach(() => {
 });
 
 function run(script, vaultDir) {
-  return spawnSync('bash', [script, vaultDir, '--mode', 'warn'], { encoding: 'utf8' });
+  return spawnSync(posixShell('bash'), [script, vaultDir, '--mode', 'warn'], { encoding: 'utf8' });
 }
 
 describe('validator.sh dependency readiness', () => {
@@ -37,7 +38,10 @@ describe('validator.sh dependency readiness', () => {
   it('exits 2 with a valid setup-required envelope when deps are missing, even with quotes and a space in the path', () => {
     const root = mkdtempSync(join(tmpdir(), 'vs-sh-nodeps-'));
     dirs.push(root);
-    const skillDir = join(root, 'plug"in\'s dir', 'skills', 'vault-sync');
+    // `"` is illegal in a Windows file name (SO#1613); the single quote — the
+    // character that breaks single-quoted shell words — and the space stay.
+    const dirName = process.platform === 'win32' ? 'plug in\'s dir' : 'plug"in\'s dir';
+    const skillDir = join(root, dirName, 'skills', 'vault-sync');
     mkdirSync(skillDir, { recursive: true });
     for (const f of ['validator.sh', 'validator.mjs']) {
       copyFileSync(join(REPO_ROOT, 'skills', 'vault-sync', f), join(skillDir, f));
@@ -48,6 +52,6 @@ describe('validator.sh dependency readiness', () => {
     expect(envelope).toMatchObject({ status: 'infra-error', reason: 'setup-required' });
     expect(envelope.setup).toContain('npm ci');
     // The setup hint must survive shell parsing for any path the plugin lives in.
-    expect(spawnSync('bash', ['-n', '-c', envelope.setup]).status).toBe(0);
+    expect(spawnSync(posixShell('bash'), ['-n', '-c', envelope.setup]).status).toBe(0);
   });
 });

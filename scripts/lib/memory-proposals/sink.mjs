@@ -47,6 +47,7 @@ import path from 'node:path';
 import { appendLearning } from '../learnings/io.mjs';
 import { validatePathInsideProject } from '../path-utils.mjs';
 import { atomicWriteWithBackup } from '../io.mjs';
+import { resolveLedgerRoot } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Path constants (relative to repoRoot)
@@ -219,7 +220,7 @@ export async function writeApproved({ approved, repoRoot, sessionId, ...rest }) 
     return { written: 0, errors: [] };
   }
 
-  const learningsResult = validateSinkTarget(LEARNINGS_REL, repoRoot);
+  const learningsResult = validateSinkTarget(LEARNINGS_REL, resolveLedgerRoot(LEARNINGS_REL, repoRoot));
   if (!learningsResult.ok) {
     return { written: 0, errors: [`path-safety: ${learningsResult.reason} (${LEARNINGS_REL})`] };
   }
@@ -262,7 +263,8 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
     return { archived: 0, errors: [] };
   }
 
-  const rejectedResult = validateSinkTarget(REJECTED_LOG_REL, repoRoot);
+  // The rejected log sits beside the queue it records (#1722): same mapped root.
+  const rejectedResult = validateSinkTarget(REJECTED_LOG_REL, resolveLedgerRoot(PROPOSALS_REL, repoRoot));
   if (!rejectedResult.ok) {
     return { archived: 0, errors: [`path-safety: ${rejectedResult.reason} (${REJECTED_LOG_REL})`] };
   }
@@ -346,7 +348,7 @@ export async function archiveRejected({ rejected, repoRoot, reason }) {
  * @returns {Promise<{ cleared: boolean, summariesCleared: number, reason?: string }>}
  */
 export async function clearProposalsJsonl({ repoRoot }) {
-  const proposalsResult = validateSinkTarget(PROPOSALS_REL, repoRoot);
+  const proposalsResult = validateSinkTarget(PROPOSALS_REL, resolveLedgerRoot(PROPOSALS_REL, repoRoot));
   if (!proposalsResult.ok) {
     return { cleared: false, summariesCleared: 0, reason: `path-safety: ${proposalsResult.reason}` };
   }
@@ -360,7 +362,8 @@ export async function clearProposalsJsonl({ repoRoot }) {
     try {
       const preClearContent = readFileSync(proposalsPath, 'utf8');
       if (preClearContent.length > 0) {
-        const archiveResult = validateSinkTarget(PROPOSALS_ARCHIVE_REL, repoRoot);
+        // Archive and queue never sit in different checkouts (#1722).
+        const archiveResult = validateSinkTarget(PROPOSALS_ARCHIVE_REL, resolveLedgerRoot(PROPOSALS_REL, repoRoot));
         if (!archiveResult.ok) {
           return { cleared: false, summariesCleared: 0, reason: `path-safety: ${archiveResult.reason}` };
         }

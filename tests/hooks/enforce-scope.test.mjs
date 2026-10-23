@@ -891,13 +891,19 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
   // keeps ALLOWING exactly what it allows today and says so instead.
   // -------------------------------------------------------------------------
 
+  // The filesystem-root grant in its native spelling. On win32 a bare `/` never
+  // matches a drive-letter candidate (pathMatchesPattern compares strings), so
+  // the hook denies before Gate 5b and the WARN path is unreachable; the drive
+  // root (`C:\\`) is the grant that reaches it there. Elsewhere it is `/`.
+  const ROOT_GRANT = process.platform === 'win32' ? path.parse(os.tmpdir()).root : '/';
+
   it('WARNS (and still ALLOWS) when the matched grant is one the validator would refuse', async () => {
     // `/` is the reachable catastrophic grant, not a hypothetical one:
     // pathMatchesPattern's `dir/` prefix branch makes it match EVERY absolute
     // candidate, so a single hallucinated entry hands the wave the whole host —
     // and before this change that passed through Gate 5b in total silence.
     const vault = await mkVault();
-    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: ['/'] });
+    const dir = await mkProjectTracked({ enforcement: 'strict', allowedPaths: [ROOT_GRANT] });
     const result = await runHook({
       projectDir: dir,
       stdin: editPayload(path.join(vault, 'note.md')),
@@ -915,7 +921,7 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
     // no answer. One event per wave makes it a ledger query; one per WARN would
     // put a ledger append on every write of such a wave.
     const vault = await mkVault();
-    const dir = await mkProjectTracked({ wave: 3, enforcement: 'strict', allowedPaths: ['/'] });
+    const dir = await mkProjectTracked({ wave: 3, enforcement: 'strict', allowedPaths: [ROOT_GRANT] });
     const env = { CLAUDE_CODE_SESSION_ID: 'g5b-catch-event-session' };
     const refused = async () => (await readEvents(dir))
       .filter((e) => e.event === 'orchestrator.scope.refused_grant_allowed');
@@ -926,12 +932,12 @@ describe('absolute out-of-repo allowlist — #792', { timeout: 15000 }, () => {
     }
     const once = await refused();
     expect(once).toHaveLength(1);
-    expect(once[0]).toMatchObject({ wave: 3, grant: '/', code: 'filesystem-root' });
+    expect(once[0]).toMatchObject({ wave: 3, grant: ROOT_GRANT, code: 'filesystem-root' });
 
     // The NEXT wave of the same session reports again.
     await fs.writeFile(
       path.join(dir, '.claude/wave-scope.json'),
-      JSON.stringify({ wave: 4, enforcement: 'strict', allowedPaths: ['/'] }),
+      JSON.stringify({ wave: 4, enforcement: 'strict', allowedPaths: [ROOT_GRANT] }),
     );
     const next = await runHook({ projectDir: dir, stdin: editPayload(path.join(vault, 'c.md')), env });
     expectWarn(next, ['validate-wave-scope.mjs would REFUSE']);

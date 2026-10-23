@@ -112,7 +112,7 @@ describe('getConfinementRoot — empty / whitespace env-var (M4 / #601)', () => 
 
     // '' is falsy → trim check selects join(homedir(), 'Projects'); homedir() is
     // mocked to '/home/fixed', so the expected path is a hardcoded literal.
-    expect(getConfinementRoot()).toBe('/home/fixed/Projects');
+    expect(getConfinementRoot()).toBe(join('/home/fixed', 'Projects'));
   });
 
   it('treats whitespace-only CROSS_REPO_CONFINEMENT_ROOT="   " as blank and falls back to <homedir>/Projects', () => {
@@ -121,7 +121,7 @@ describe('getConfinementRoot — empty / whitespace env-var (M4 / #601)', () => 
 
     // '   '.trim() === '' (falsy) → selects join(homedir(), 'Projects').
     // #601 fix: previously the truthy spaces were returned verbatim; now they fall back.
-    expect(getConfinementRoot()).toBe('/home/fixed/Projects');
+    expect(getConfinementRoot()).toBe(join('/home/fixed', 'Projects'));
   });
 
   it('returns CROSS_REPO_CONFINEMENT_ROOT with surrounding spaces verbatim when it contains non-whitespace', () => {

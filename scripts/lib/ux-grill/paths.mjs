@@ -26,6 +26,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { digestSha256Short } from '../crypto-digest-utils.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { RUN_ID_PATTERN, assertRunId } from '../test-runner/artifact-paths.mjs';
 
 // Re-exported so existing `ux-grill/paths.mjs` importers keep working; the
@@ -106,6 +107,7 @@ function assertRepoRoot(repoRoot) {
  * @throws {TypeError} on an invalid repoRoot or runId (path-traversal guard)
  */
 export function runDirPath(repoRoot, runId) {
+  // ledger-root: per-run artifact dir of this working tree, kept local
   return path.resolve(assertRepoRoot(repoRoot), UX_GRILL_METRICS_DIR, assertRunId(runId));
 }
 
@@ -156,7 +158,9 @@ export function findingsPath(repoRoot, runId) {
  * @returns {string}
  */
 export function runRecordPath(repoRoot) {
-  return path.resolve(assertRepoRoot(repoRoot), UX_GRILL_LEDGER);
+  // #1722: an ignored ledger in a linked worktree maps to the main checkout;
+  // a target repo that commits it keeps its own copy.
+  return resolveLedgerPath(UX_GRILL_LEDGER, path.resolve(assertRepoRoot(repoRoot)));
 }
 
 /**

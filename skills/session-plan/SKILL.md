@@ -446,7 +446,9 @@ The wait between presenting this plan and the operator's answer is the LONGEST u
 // #1229 — the plan-approval wait is the longest unheartbeated stretch in the flow.
 // Best-effort: a failure must NOT block the handoff to wave-executor.
 import { updateHeartbeat } from 'scripts/lib/session-lock.mjs';
-updateHeartbeat({ sessionId, repoRoot: process.cwd() });
+import { resolveOwnLockRootFor } from 'scripts/lib/own-lock-root.mjs';
+// The checkout holding this session's lock, not the cwd's (#1730) — at the wrong root nothing is written.
+updateHeartbeat({ sessionId, repoRoot: resolveOwnLockRootFor({ sessionId }).root });
 ```
 
 - **Ownership-guarded — this cannot steal a peer's lock.** `updateHeartbeat` (`scripts/lib/session-lock.mjs`) reads the lock first and returns `false` WITHOUT writing when `session_id` differs from the one passed, when no lock exists, or when `sessionId` is empty. The write is reached only for a lock this session already owns.

@@ -35,6 +35,10 @@
  *          redirect class answers "what does this command WRITE"; nothing
  *          answered "what does it REMOVE", so `rm -f <ledger>` was allowed
  *          while `> <ledger>` was denied — 53,896 lines of telemetry lost.
+ *        rule.type === 'hooks-path-missing' (#1732): decided by the directory
+ *          of each `git commit`/`git push` (findHookedGitCalls) and the repo's
+ *          relative core.hooksPath (missingWorktreeHooks) — a linked worktree
+ *          without the generated hooks dir runs no hook at all, silently.
  *   G6 no match → exit 0
  *
  * Telemetry (Epic #803 process-safety dimension): best-effort
@@ -45,6 +49,7 @@
  * finalized; a telemetry failure never changes the guard's decision.
  */
 
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -477,6 +482,181 @@ function commandHasRecursiveForceRm(command) {
     if (recursive && force) return true;
   }
   return false;
+}
+
+/** #1732 — git subcommands that run the repo's own hooks: pre-commit/commit-msg and pre-push. */
+const HOOKED_GIT_SUBCOMMANDS = new Set(['commit', 'push']);
+/** git global options that take their value as the NEXT token (`git -c k=v push`). */
+const GIT_OPTIONS_WITH_VALUE = new Set(['-c', '--namespace', '--config-env', '--attr-source']);
+/** Options and env prefixes after which the guard cannot tell which repo or hooks git uses. */
+const GIT_UNKNOWABLE_OPTION = /^--(git-dir|work-tree)(=|$)/;
+const GIT_UNKNOWABLE_ENV = /^GIT_(DIR|WORK_TREE|COMMON_DIR|CONFIG\w*)=/;
+
+/**
+ * Resolve a literal path operand against `base`, or null when the shell would
+ * expand it into something the guard cannot read (`$X`, a substitution, `cd -`).
+ *
+ * @param {string|null} base
+ * @param {{ text: string } | undefined} tok
+ * @returns {string|null}
+ */
+function literalDir(base, tok) {
+  if (base === null || tok === undefined) return null;
+  const text = tok.text;
+  if (text === '-' || /[$`*?[]/.test(text)) return null;
+  if (text === '~' || text.startsWith('~/')) return path.join(os.homedir(), text.slice(1));
+  if (text.startsWith('~')) return null;
+  return path.resolve(base, text);
+}
+
+/**
+ * Every `git commit` / `git push` in the command with the directory it runs in
+ * (#1732). The directory starts at `cwd` and follows literal `cd <dir>` segments
+ * and `git -C <dir>`. A `cd` the guard cannot read (variable, `cd -`,
+ * `pushd`/`popd`) turns the directory unknown (`dir: null`) for everything after
+ * it. The tokenizer appends command-substitution bodies after a `substitution`
+ * marker and frames `( … )` with `subshell` markers, so only the tokens before
+ * the first substitution marker are the main shell's, and a `cd` after the
+ * first subshell marker turns the directory unknown (`(cd /wt && make) && git
+ * push` pushes from the start directory). A `)` inside a quoted commit message
+ * changes nothing. The caller never judges an unknown directory — unknown is
+ * "not judged", never a hit. An explicit skip (`--no-verify`, `commit -n` also
+ * inside a short-flag group, `HUSKY=0`) is not judged either: the skip this rule
+ * catches is the silent one.
+ *
+ * @param {string} command
+ * @param {string} cwd
+ * @returns {Array<{ subcommand: string, dir: string|null }>}
+ */
+function findHookedGitCalls(command, cwd) {
+  const calls = [];
+  const tokens = blocker.tokenizeCommand(command);
+  const substitutionAt = tokens.findIndex((t) => t.operator === 'substitution');
+  const mainShell = substitutionAt === -1 ? tokens : tokens.slice(0, substitutionAt);
+  const subshellAt = mainShell.findIndex((t) => t.operator === 'subshell');
+  const parts = subshellAt === -1
+    ? [{ tokens: mainShell, cdKnown: true }]
+    : [{ tokens: mainShell.slice(0, subshellAt), cdKnown: true }, { tokens: mainShell.slice(subshellAt), cdKnown: false }];
+  let dir = cwd;
+  for (const part of parts) {
+    for (const segment of blocker.splitChainSegments(part.tokens)) {
+      const { verb, index } = blocker.resolveSegmentVerb(segment);
+      if (verb === 'pushd' || verb === 'popd') { dir = null; continue; }
+      if (verb === 'cd') {
+        const operands = segment.slice(index + 1).filter((t) => t.quoted || !/^-[LPe@]+$/.test(t.text));
+        if (!part.cdKnown) dir = null;
+        else if (operands.length === 0) dir = os.homedir();
+        else dir = operands.length === 1 ? literalDir(dir, operands[0]) : null;
+        continue;
+      }
+      if (verb !== 'git' || segment[index].quoted) continue;
+      const call = hookedGitCall(segment, index, dir);
+      if (call !== null) calls.push(call);
+    }
+  }
+  return calls;
+}
+
+/** Short `git commit` options that take a value: in `-mn` the `n` is the message. */
+const COMMIT_SHORT_WITH_VALUE = 'mFCctSu';
+
+/**
+ * Whether a short-flag group of `git commit` carries `-n` (`-nm x` does, `-mn` does not).
+ *
+ * @param {string} group
+ * @returns {boolean}
+ */
+function commitGroupHasNoVerify(group) {
+  for (const ch of group.slice(1)) {
+    if (ch === 'n') return true;
+    if (COMMIT_SHORT_WITH_VALUE.includes(ch)) return false;
+  }
+  return false;
+}
+
+/**
+ * Read one `git` segment: its subcommand and the directory it runs in, or null
+ * when it is no hooked call or skips hooks explicitly.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {number} index - the `git` token
+ * @param {string|null} dir - the directory before git's own `-C`
+ * @returns {{ subcommand: string, dir: string|null } | null}
+ */
+function hookedGitCall(segment, index, dir) {
+  const env = segment.slice(0, index);
+  if (env.some((t) => t.text === 'HUSKY=0')) return null;
+  let gitDir = env.some((t) => GIT_UNKNOWABLE_ENV.test(t.text)) ? null : dir;
+  let i = index + 1;
+  for (; i < segment.length; i++) {
+    const t = segment[i];
+    if (t.quoted || !t.text.startsWith('-')) break;
+    if (t.text === '-C') { gitDir = literalDir(gitDir, segment[++i]); continue; }
+    if (GIT_UNKNOWABLE_OPTION.test(t.text)) {
+      gitDir = null;
+      if (!t.text.includes('=')) i++;
+      continue;
+    }
+    if (GIT_OPTIONS_WITH_VALUE.has(t.text)) {
+      const value = segment[++i]?.text ?? '';
+      if (t.text === '-c' && /^core\.hookspath=/i.test(value)) gitDir = null;
+    }
+  }
+  const sub = segment[i];
+  if (sub === undefined || sub.quoted || !HOOKED_GIT_SUBCOMMANDS.has(sub.text)) return null;
+  const flags = segment.slice(i + 1).filter((t) => !t.quoted).map((t) => t.text);
+  if (flags.includes('--no-verify')) return null;
+  if (sub.text === 'commit' && flags.some((f) => /^-[a-zA-Z]+$/.test(f) && commitGroupHasNoVerify(f))) return null;
+  return { subcommand: sub.text, dir: gitDir };
+}
+
+/**
+ * Run git read-only in `dir`; trimmed stdout, or null on any failure.
+ *
+ * @param {string} dir
+ * @param {string[]} args
+ * @returns {string|null}
+ */
+function gitRead(dir, args) {
+  try {
+    const out = execFileSync('git', ['-C', dir, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    }).trim();
+    return out.length > 0 ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The silent hookless case of #1732: a LINKED worktree whose relative
+ * `core.hooksPath` (husky: `.husky/_`) does not exist in it, while the main
+ * checkout has it. `.husky/_` is generated by `husky` (npm `prepare`), and
+ * `ignore-scripts=true` keeps `npm ci` from creating it in a fresh worktree, so
+ * every commit and push there runs no hook and says nothing (measured
+ * 2026-10-22: a push went out without its pre-push full gate).
+ *
+ * Narrow on purpose — each condition that does not hold is an allow: no
+ * hooksPath, an absolute or `~` one (a global setting), the directory exists, the
+ * main checkout has none either (the repo installs no hooks), or this IS the main
+ * checkout. Any git failure is an allow.
+ *
+ * @param {string} dir
+ * @returns {{ hooksPath: string, worktree: string } | null}
+ */
+function missingWorktreeHooks(dir) {
+  const hooksPath = gitRead(dir, ['config', '--get', 'core.hooksPath']);
+  if (hooksPath === null || path.isAbsolute(hooksPath) || hooksPath.startsWith('~')) return null;
+  const worktree = gitRead(dir, ['rev-parse', '--show-toplevel']);
+  if (worktree === null || fs.existsSync(path.join(worktree, hooksPath))) return null;
+  const commonDir = gitRead(dir, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
+  if (commonDir === null) return null;
+  const mainCheckout = path.dirname(commonDir);
+  if (path.resolve(mainCheckout) === path.resolve(worktree)) return null;
+  if (!fs.existsSync(path.join(mainCheckout, hooksPath))) return null;
+  return { hooksPath, worktree };
 }
 
 /** Probe operator per redirect mode — see findMatchedRedirectEntry. */
@@ -936,6 +1116,31 @@ async function main() {
       // The policy `rationale` is long by design (it carries the measurement
       // trail); blockCommand puts only its first line in the systemMessage.
       await blockCommand(`${hit.verb} ${hit.target}`, id, rationale, command, sessionId);
+      continue; // unreachable (blockCommand never returns) — kept for clarity
+    }
+
+    // #1732 — a `git commit`/`git push` that would run WITHOUT the repo's hooks,
+    // because a linked worktree lacks the generated hooks directory. Decided by
+    // the git call's directory and the repo's hooksPath, never by the generic
+    // pattern path below (its `pattern` is a label). An unknown directory is
+    // not judged.
+    if (rule.type === 'hooks-path-missing') {
+      const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+      let hit = null;
+      for (const call of findHookedGitCalls(command, cwd)) {
+        if (call.dir === null) continue;
+        const missing = missingWorktreeHooks(call.dir);
+        if (missing) { hit = { ...missing, subcommand: call.subcommand }; break; }
+      }
+      if (!hit) continue;
+      const label = `git ${hit.subcommand} in ${hit.worktree} — core.hooksPath ${hit.hooksPath} is missing there`;
+      if (severity !== 'block') {
+        const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
+        process.stderr.write(`⚠ ${msg}\n`);
+        notices.push(msg);
+        continue;
+      }
+      await blockCommand(label, id, rationale, command, sessionId);
       continue; // unreachable (blockCommand never returns) — kept for clarity
     }
 

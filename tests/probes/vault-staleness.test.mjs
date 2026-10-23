@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { runProbe } from '../../skills/discovery/probes/vault-staleness.mjs';
+import { stubHome } from '../_helpers/home-env.mjs';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -195,7 +196,7 @@ describe('vault-staleness probe', () => {
       const home = tmp();
       const { projectsDir } = makeVault(home);
       makeProject(projectsDir, 'fresh-project', { slug: 'fresh-project', tier: 'active', lastSync: hoursAgo(1) });
-      vi.stubEnv('HOME', home);
+      stubHome(home);
 
       const result = await runProbe(tmp(), { 'vault-integration': { 'vault-dir': '~/vault' } });
 

@@ -61,6 +61,7 @@ import { join, resolve } from 'node:path';
 // second copy here would let the two drift apart unnoticed.
 import { GIT_ENV_KEEP } from '../setup/scrub-git-env.mjs';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-push');
@@ -216,7 +217,7 @@ function runHook({ cwd, stdin, probeExit = 0, env = {}, hookPath = HOOK_PATH }) 
   Object.assign(childEnv, { PROBE_OUT: probeOut, PROBE_EXIT: String(probeExit) }, env);
 
   // `sh -e`, as husky 9 runs the hook (.husky/_/h) — plain `sh` hid #1540.
-  const res = spawnSync('sh', ['-e', hookPath], {
+  const res = spawnSync(posixShell('sh'), ['-e', hookPath], {
     cwd,
     input: stdin,
     encoding: 'utf8',

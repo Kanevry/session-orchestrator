@@ -15,6 +15,7 @@ import { resolveEventsLedgerRoot } from './lib/platform.mjs';
  * @returns {boolean|undefined}
  */
 function ledgerHasHistory(root) {
+  // ledger-root: root is resolveEventsLedgerRoot-mapped by the only caller, measureHistory
   const file = join(root, '.orchestrator', 'metrics', 'sessions.jsonl');
   try {
     if (!statSync(file).isFile()) return undefined;

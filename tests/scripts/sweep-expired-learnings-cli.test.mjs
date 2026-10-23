@@ -42,6 +42,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { fencedBlocksMentioning } from '../_helpers/markdown-fences.mjs';
+import { makeLinkedWorktree } from '../_helpers/linked-worktree.mjs';
 import { appendLearning, readLearningsSnapshot } from '../../scripts/lib/learnings/io.mjs';
 
 const SCRIPT = path.resolve(process.cwd(), 'scripts/sweep-expired-learnings.mjs');
@@ -1260,5 +1261,43 @@ describe('sweep-expired-learnings.mjs — --drop-malformed', () => {
     expect(events).toEqual([
       expect.objectContaining({ event: 'orchestrator.learnings.malformed_dropped', file: 'learnings.jsonl' }),
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// --drop-malformed --apply inside-root check in a linked worktree (#1722)
+// ---------------------------------------------------------------------------
+
+describe('sweep-expired-learnings.mjs — --drop-malformed --apply from a linked worktree (#1722)', () => {
+  // The bug: the second accepted root was the WHOLE main checkout, so a session
+  // in a worktree could rewrite any file of another session's tree. Only the
+  // directory of the mapped default store may be accepted besides --repo-root.
+  it('refuses a --file elsewhere in the main checkout, but accepts the mapped default store', () => {
+    const pair = makeLinkedWorktree('sweep-wt-', {
+      files: { '.gitignore': '.orchestrator/metrics/*.jsonl\n', 'CLAUDE.md': '# x\n' },
+    });
+    try {
+      const foreign = path.join(pair.main, 'CLAUDE.md');
+      const refused = runSweep([
+        '--drop-malformed', '--line', '1', '--generation', 'x',
+        '--apply', '--repo-root', pair.wt, '--file', foreign, '--json',
+      ]);
+      expect(refused.status).toBe(1);
+      expect(refused.stderr).toMatch(/lies outside --repo-root/);
+      expect(readFileSync(foreign, 'utf8')).toBe('# x\n');
+
+      const store = path.join(pair.mainMetrics, 'learnings.jsonl');
+      writeFileSync(store, `${JSON.stringify(liveLearning({ id: 'alive' }))}\nnot json\n`, 'utf8');
+      const plan = JSON.parse(runSweep(['--drop-malformed', '--line', '2', '--file', store, '--json']).stdout);
+      const applied = runSweep([
+        '--drop-malformed', '--line', '2', '--generation', plan.generation,
+        '--apply', '--repo-root', pair.wt, '--file', store, '--json',
+      ]);
+      expect(applied.stderr).not.toMatch(/lies outside --repo-root/);
+      expect(applied.status).toBe(0);
+      expect(readFileSync(store, 'utf8').split('\n').filter(Boolean)).toHaveLength(1);
+    } finally {
+      pair.cleanup();
+    }
   });
 });

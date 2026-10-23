@@ -389,18 +389,22 @@ describe('parseSessionConfig — persona-reviewers deprecation WARN emission (B.
 //
 // Bug: a host whose repos live outside ~/Projects could not point the
 // confinement root anywhere, so every host-wide sweep found nothing.
-// HOME is pinned so os.homedir() — and every expected value — is a literal.
+// HOME/USERPROFILE are pinned so os.homedir() is a literal; home-derived
+// expectations go through path.join like the product (#1613: win32 separators).
 // ---------------------------------------------------------------------------
 
+const FIXED_HOME = '/home/fixed';
+
 describe('getConfinementRoot — projects-root precedence (#1562)', () => {
-  const ENV_KEYS = ['HOME', 'CROSS_REPO_CONFINEMENT_ROOT', 'SO_PROJECTS_ROOT', 'SO_CONFIG_HOME'];
+  const ENV_KEYS = ['HOME', 'USERPROFILE', 'CROSS_REPO_CONFINEMENT_ROOT', 'SO_PROJECTS_ROOT', 'SO_CONFIG_HOME'];
   let saved;
   let stderrCapture;
   let cfgDir;
 
   beforeEach(() => {
     saved = Object.fromEntries(ENV_KEYS.map((k) => [k, process.env[k]]));
-    process.env.HOME = '/home/fixed';
+    process.env.HOME = FIXED_HOME;
+    process.env.USERPROFILE = FIXED_HOME;
     stderrCapture = [];
     vi.spyOn(process.stderr, 'write').mockImplementation((msg) => {
       stderrCapture.push(String(msg));
@@ -425,13 +429,13 @@ describe('getConfinementRoot — projects-root precedence (#1562)', () => {
       { CROSS_REPO_CONFINEMENT_ROOT: '/conf', SO_PROJECTS_ROOT: '/env-root' }, owner('/owner-root'), '/conf', null],
     ['SO_PROJECTS_ROOT beats owner.yaml', { SO_PROJECTS_ROOT: '/env-root' }, owner('/owner-root'), '/env-root', null],
     ['owner.yaml beats the default', {}, owner('/owner-root'), '/owner-root', null],
-    ['nothing set → ~/Projects', {}, {}, '/home/fixed/Projects', null],
-    ['~/x expands to the home directory', { SO_PROJECTS_ROOT: '~/Code' }, {}, '/home/fixed/Code', null],
-    ['bare ~ expands to the home directory', {}, owner('~'), '/home/fixed', null],
+    ['nothing set → ~/Projects', {}, {}, join(FIXED_HOME, 'Projects'), null],
+    ['~/x expands to the home directory', { SO_PROJECTS_ROOT: '~/Code' }, {}, join(FIXED_HOME, 'Code'), null],
+    ['bare ~ expands to the home directory', {}, owner('~'), FIXED_HOME, null],
     ['blank env falls through silently', { SO_PROJECTS_ROOT: '   ' }, owner('/owner-root'), '/owner-root', null],
     ['relative env is rejected, owner.yaml used', { SO_PROJECTS_ROOT: 'rel/dir' }, owner('/owner-root'), '/owner-root',
       'cross-repo: ignoring env SO_PROJECTS_ROOT="rel/dir" — not an absolute path after ~ expansion; falling back\n'],
-    ['relative owner.yaml is rejected, default used', {}, owner('Code'), '/home/fixed/Projects',
+    ['relative owner.yaml is rejected, default used', {}, owner('Code'), join(FIXED_HOME, 'Projects'),
       'cross-repo: ignoring owner.yaml paths.projects-root="Code" — not an absolute path after ~ expansion; falling back\n'],
   ])('%s', (_name, env, ownerConfig, expected, warn) => {
     expect(getConfinementRoot({ env, ownerConfig })).toBe(expected);

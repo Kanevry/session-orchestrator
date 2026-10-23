@@ -40,7 +40,11 @@ import {
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
-import { installScriptCli } from '../_helpers/executable-fixture.mjs';
+import { installScriptCli, NO_SCRIPT_CLI_REASON, SCRIPT_CLI_SUPPORTED } from '../_helpers/executable-fixture.mjs';
+
+// win32: the fake CLI here gets option-first argv (installScriptCli), which has
+// no Windows mechanism — see SCRIPT_CLI_SUPPORTED in executable-fixture.mjs.
+const scriptCliTitle = (title) => (SCRIPT_CLI_SUPPORTED ? title : `${title} [${NO_SCRIPT_CLI_REASON}]`);
 
 const SCRIPT = resolve(process.cwd(), 'scripts/vault-consolidate.mjs');
 
@@ -709,7 +713,7 @@ describe('vault-consolidate CLI', () => {
     expect(result.stderr).toContain('linkdir');
   });
 
-  it('F1: tar non-ENOENT failure (status 1) → uncompressed staging dir kept, "tar failed" WARN, not regressed by F1 res.error guard', () => {
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)(scriptCliTitle('F1: tar non-ENOENT failure (status 1) → uncompressed staging dir kept, "tar failed" WARN, not regressed by F1 res.error guard'), () => {
     // Companion to the ENOENT test: when `tar` IS found on PATH but EXITS with
     // a non-zero status (e.g. bad arg, corrupted destination, full disk), the
     // script must STILL fall back to leaving the uncompressed staging dir

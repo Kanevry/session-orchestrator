@@ -38,8 +38,8 @@
  */
 
 import { existsSync, statSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { getProjectDir } from './platform.mjs';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 // Ceiling (BV-004): one process per session that invoked session-start
 // (monitors/monitors.json `when: on-skill-invoke:session-start`), alive until
@@ -132,7 +132,7 @@ function fingerprint(absPath) {
 async function watchLoop(intervalS) {
   // #1517: the PROJECT root, never CLAUDE_PLUGIN_ROOT (the installed plugin
   // directory, whose metrics are not this repo's).
-  const absPath = join(getProjectDir(), STATE_FILE_REL);
+  const absPath = resolveLedgerPath(STATE_FILE_REL, getProjectDir());
 
   // Startup event — confirms the watcher is alive even when nothing has
   // happened yet. Without this, a "no events" stream is indistinguishable

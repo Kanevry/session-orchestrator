@@ -35,7 +35,7 @@ import {
   writeOwnerProof,
   loadOwnerProof,
 } from '@lib/session-lock.mjs';
-import { isRoot } from '../_helpers/perms.mjs';
+import { permsEnforced } from '../_helpers/perms.mjs';
 
 // A PID guaranteed to be dead on any machine (kernel would never assign this).
 const DEAD_PID = 999999;
@@ -586,7 +586,7 @@ describe('readLockDetailed() — four discriminated outcomes (#906-class fix)', 
   // Root-falle (Incident #685): chmod-based EACCES is bypassed by uid 0 — the
   // Hetzner CI runner runs as root and would silently pass this write, turning
   // the assertion below false-green. Skip there; enforced locally (non-root).
-  it.skipIf(isRoot)('returns status=unreadable when the lock file exists but cannot be read (EACCES)', () => {
+  it.skipIf(!permsEnforced())('returns status=unreadable when the lock file exists but cannot be read (EACCES) (skipped where chmod is not enforced: root, win32)', () => {
     const orchDir = join(repoRoot, '.orchestrator');
     mkdirSync(orchDir, { recursive: true });
     const lockFile = join(orchDir, 'session.lock');
@@ -624,7 +624,7 @@ describe('readLock() collapses every non-ok status to null (back-compat contract
     expect(readLock({ repoRoot })).toBeNull();
   });
 
-  it.skipIf(isRoot)('readLock() returns null when the file is unreadable (EACCES)', () => {
+  it.skipIf(!permsEnforced())('readLock() returns null when the file is unreadable (EACCES) (skipped where chmod is not enforced: root, win32)', () => {
     const orchDir = join(repoRoot, '.orchestrator');
     mkdirSync(orchDir, { recursive: true });
     const lockFile = join(orchDir, 'session.lock');

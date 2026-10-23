@@ -26,7 +26,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statS
 import { tmpdir } from 'node:os';
 import { join, dirname, relative } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   scanUntrackedTestDeps,
@@ -439,7 +439,7 @@ describe('symlink rejection recovery', () => {
       let calls = 0;
       cp.spawnSync = (...args) => { calls++; return realSpawn(...args); };
       syncBuiltinESMExports();
-      const { resolveUntrackedOracle } = await import(${JSON.stringify(CHECK)});
+      const { resolveUntrackedOracle } = await import(${JSON.stringify(pathToFileURL(CHECK).href)});
       const result = resolveUntrackedOracle(${JSON.stringify(root)}, ${JSON.stringify(candidates)});
       console.log(JSON.stringify({ calls, error: result.error, untracked: [...result.untracked] }));
     `], { encoding: 'utf8' });

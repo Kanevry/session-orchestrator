@@ -30,6 +30,7 @@ import path from 'node:path';
 import os from 'node:os';
 
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -164,7 +165,7 @@ async function runAck(projectDir, extraEnv = {}, ancestorSessionId = null) {
   if (!implementation) throw new Error('Canonical templates-ack implementation block missing');
   // Execute the published Bash snippet itself, including its quoted node code.
   // This catches shell escaping and plugin-root imports from a consumer checkout.
-  return runSubprocess({ projectDir, executable: 'bash', args: ['-c', implementation], extraEnv: {
+  return runSubprocess({ projectDir, executable: posixShell('bash'), args: ['-c', implementation], extraEnv: {
     ...extraEnv, PATH: bin + path.delimiter + process.env.PATH,
   } });
 }

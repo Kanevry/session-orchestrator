@@ -20,6 +20,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
 import {
   detectDanglingReferences,
   detectBridgeBalance,
@@ -39,16 +40,20 @@ import {
 
 const ROOT = '/plugin';
 
-function makeCtx({ files = {}, dirs = [] } = {}) {
+function makeCtx({ files: posixFiles = {}, dirs: posixDirs = [] } = {}) {
+  // Fixtures are written as POSIX literals; the detectors build their lookups
+  // with path.join, so key the fake fs the same way (identity on POSIX).
+  const files = Object.fromEntries(Object.entries(posixFiles).map(([k, v]) => [path.join(k), v]));
+  const dirs = posixDirs.map((d) => path.join(d));
   const fileSet = new Set(Object.keys(files));
   const dirSet = new Set(dirs);
   return {
     pluginRoot: ROOT,
     listMdFiles: (absDir) =>
-      Object.keys(files).filter((f) => f.startsWith(`${absDir}/`) && f.endsWith('.md')),
+      Object.keys(files).filter((f) => f.startsWith(`${absDir}${path.sep}`) && f.endsWith('.md')),
     listFiles: (absDir, exts) =>
       Object.keys(files).filter(
-        (f) => f.startsWith(`${absDir}/`) && exts.some((e) => f.endsWith(e)),
+        (f) => f.startsWith(`${absDir}${path.sep}`) && exts.some((e) => f.endsWith(e)),
       ),
     readText: (absPath) => {
       if (!fileSet.has(absPath)) throw new Error(`ENOENT: ${absPath}`);
@@ -90,7 +95,7 @@ describe('detectDanglingReferences — dangling-subagent-type', () => {
 
     expect(found).toHaveLength(1);
     expect(found[0].severity).toBe('fail');
-    expect(found[0].file).toBe('/plugin/skills/wave/SKILL.md');
+    expect(found[0].file).toBe(path.join('/plugin/skills/wave/SKILL.md'));
     expect(found[0].line).toBe(1);
     expect(found[0].message).toContain('agents/ghost-agent-xyz.md');
     expect(found[0].message).toContain('NOT FOUND');
@@ -126,7 +131,7 @@ describe('detectDanglingReferences — dangling-rule-reference', () => {
 
     expect(found).toHaveLength(1);
     expect(found[0].severity).toBe('fail');
-    expect(found[0].file).toBe('/plugin/.claude/rules/a.md');
+    expect(found[0].file).toBe(path.join('/plugin/.claude/rules/a.md'));
     expect(found[0].message).toContain('ghost-rule-xyz.md');
     expect(found[0].message).toContain('NOT FOUND in .claude/rules/');
   });
@@ -165,7 +170,7 @@ describe('detectDanglingReferences — dangling-bootstrap-bridge', () => {
 
     expect(found.length).toBeGreaterThanOrEqual(1);
     expect(found[0].severity).toBe('fail');
-    expect(found[0].file).toBe('/plugin/skills/bootstrap/SKILL.md');
+    expect(found[0].file).toBe(path.join('/plugin/skills/bootstrap/SKILL.md'));
     expect(found.some((f) => f.message.includes('fetch-baseline.sh'))).toBe(true);
   });
 

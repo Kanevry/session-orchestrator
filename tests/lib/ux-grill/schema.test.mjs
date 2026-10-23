@@ -23,6 +23,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
 
 import { makeFinding, makeRunRecord, CHECK_IDS, SKIP_REASONS } from '../../../scripts/lib/ux-grill/schema.mjs';
 import { runDirPath } from '../../../scripts/lib/ux-grill/paths.mjs';
@@ -76,7 +77,7 @@ describe('ux-grill schema/paths contract', () => {
     expect(() => runDirPath('/tmp/repo', '../x')).toThrow(TypeError);
     expect(() => runDirPath('/tmp/repo', 'a/b')).toThrow(TypeError);
     expect(runDirPath('/tmp/repo', '1757635200123-9f3a01')).toBe(
-      '/tmp/repo/.orchestrator/metrics/ux-grill/1757635200123-9f3a01',
+      path.join(path.resolve('/tmp/repo'), '.orchestrator', 'metrics', 'ux-grill', '1757635200123-9f3a01'),
     );
   });
 

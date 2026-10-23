@@ -42,6 +42,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../../_helpers/tmp-fixture.mjs';
 import { buildGithubExport, createGitRunner } from '../../../scripts/lib/github-export.mjs';
+import { posixShell } from '../../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..', '..');
 const SKILL_PATH = join(REPO_ROOT, 'skills', 'session-end', 'SKILL.md');
@@ -121,7 +122,14 @@ function runBlock(dir, { pluginRoot = REPO_ROOT, extraEnv = {} } = {}) {
   const env = { ...GIT_ENV, ...extraEnv };
   for (const k of ROOT_VARS) delete env[k];
   if (pluginRoot !== null) env.PLUGIN_ROOT = pluginRoot;
-  const res = spawnSync('bash', ['-c', extractMirrorBlock()], {
+  // The block travels as a file, not a `-c` argument: Git for Windows'
+  // bin\\bash.exe launcher truncates a long argv (this 9 KiB block arrived as
+  // 8 KiB, measured 2026-10-22, SO#1613).
+  const scriptDir = makeTmpDir('so-mirror-block-');
+  tmpDirs.push(scriptDir);
+  const script = join(scriptDir, 'mirror-block.sh');
+  writeFileSync(script, extractMirrorBlock());
+  const res = spawnSync(posixShell('bash'), [script], {
     cwd: dir,
     env,
     encoding: 'utf8',
@@ -186,7 +194,7 @@ describe('session-end Phase 4.4 GitHub mirror push — the four states are disti
   it('the block parses under BOTH bash 5 and macOS /bin/sh (bash 3.2)', () => {
     const block = extractMirrorBlock();
     for (const shell of ['bash', 'sh']) {
-      const res = spawnSync(shell, ['-n'], { input: block, encoding: 'utf8' });
+      const res = spawnSync(posixShell(shell), ['-n'], { input: block, encoding: 'utf8' });
       expect({ shell, status: res.status, stderr: res.stderr }).toEqual({
         shell,
         status: 0,

@@ -38,6 +38,12 @@ const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'vault-integration-watcher.mjs');
 const FIXTURES_DIR = join(REPO_ROOT, 'tests', 'fixtures');
 const STUB_GLAB = join(FIXTURES_DIR, 'glab');
+// win32: the watcher spawns --glab-bin itself, in its own cwd. STUB_GLAB is a
+// node shebang script, which Windows cannot start; a node.exe fake
+// (installNodeCli) needs its subcommand scripts in that cwd, which here is often
+// the repo root.
+const NO_STUB_GLAB = process.platform === 'win32';
+const stubGlabTitle = (title) => (NO_STUB_GLAB ? `${title} [skipped on win32: needs the shebang glab stub as --glab-bin]` : title);
 
 // ── Markers (copy of production constants, used in assertions) ─────────────────
 
@@ -221,7 +227,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 1: both closed → tick posted, no flip yet ─────────────────────────
 
-  it('both deps closed → tick posted with umstellungs-bereit, no flip-ready yet (streak=1)', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('both deps closed → tick posted with umstellungs-bereit, no flip-ready yet (streak=1)'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -249,7 +255,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 2: one dep still open → bleibt warn ──────────────────────────────
 
-  it('one dep still open → tick posted with bleibt warn, streak 0', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('one dep still open → tick posted with bleibt warn, streak 0'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'opened'); // still open
     writeIssueFixture(tmp, '305', 'opened');
@@ -274,7 +280,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 3: streak of 3 → flip-ready posted ───────────────────────────────
 
-  it('streak of 3 accumulated → flip-ready trigger posted', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('streak of 3 accumulated → flip-ready trigger posted'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -339,7 +345,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     return flip.body;
   }
 
-  it('projects root under $HOME → snippet uses "$HOME"/\'Projects\', never the home path', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('projects root under $HOME → snippet uses "$HOME"/\'Projects\', never the home path'), () => {
     const home = join(tmp, 'home');
     mkdirSync(join(home, 'Projects'), { recursive: true });
     const body = flipBodyWithHome(home, join(home, 'Projects'));
@@ -363,7 +369,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 4:idempotence — flip-ready already present → early exit ──────────
 
-  it('flip-ready marker already on issue → early exit, no new comment', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('flip-ready marker already on issue → early exit, no new comment'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -391,7 +397,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 5: stagnation marker already present → early exit ────────────────
 
-  it('stagnation marker already on issue → early exit', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('stagnation marker already on issue → early exit'), () => {
     writeIssueFixture(tmp, '305', 'opened');
 
     writeCommentsFixture(tmp, '305', [
@@ -413,7 +419,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 6: stagnation guard triggers after 60d ────────────────────────────
 
-  it('stagnation guard triggers when issue created >60 days ago and verdict is bleibt warn', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('stagnation guard triggers when issue created >60 days ago and verdict is bleibt warn'), () => {
     const oldDate = new Date(Date.now() - 65 * 24 * 60 * 60 * 1000).toISOString();
 
     writeIssueFixture(tmp, '303', 'opened');
@@ -440,7 +446,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 7: dry-run — no real glab note add calls ──────────────────────────
 
-  it('dry-run: outputs comment-dry-run action but no tick-posted live action', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('dry-run: outputs comment-dry-run action but no tick-posted live action'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -477,7 +483,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 9: streak=2, both closed → no flip-ready yet ─────────────────────
 
-  it('streak=2 (both closed) → tick posted but no flip-ready triggered', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('streak=2 (both closed) → tick posted but no flip-ready triggered'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -503,7 +509,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 10: comment body contains today's date and streak N/3 ────────────
 
-  it('comment body contains today YYYY-MM-DD and streak N/3 format', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('comment body contains today YYYY-MM-DD and streak N/3 format'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -528,7 +534,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 11: streak resets when a warn tick appears ───────────────────────
 
-  it('streak resets to 0 when latest tick is bleibt warn', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('streak resets to 0 when latest tick is bleibt warn'), () => {
     writeIssueFixture(tmp, '303', 'opened'); // still open → warn verdict
     writeIssueFixture(tmp, '304', 'opened');
     writeIssueFixture(tmp, '305', 'opened');
@@ -556,7 +562,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
 
   // ── Test 12: --verbose flag passes without error ───────────────────────────
 
-  it('--verbose flag passes without error and produces some stderr output', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('--verbose flag passes without error and produces some stderr output'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -616,7 +622,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
       .map((l) => JSON.parse(l));
   }
 
-  it('--repo <spec> override pins every glab call to -R <spec>', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('--repo <spec> override pins every glab call to -R <spec>'), () => {
     const spec = 'https://gitlab.example.com/override-group/override-project.git';
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
@@ -641,7 +647,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     }
   });
 
-  it('no --repo override + non-git cwd → no -R appended anywhere (graceful degradation, never "-R undefined")', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('no --repo override + non-git cwd → no -R appended anywhere (graceful degradation, never "-R undefined")'), () => {
     writeIssueFixture(tmp, '303', 'closed');
     writeIssueFixture(tmp, '304', 'closed');
     writeIssueFixture(tmp, '305', 'opened');
@@ -663,7 +669,7 @@ describe('scripts/vault-integration-watcher.mjs', () => {
     }
   });
 
-  it('production default (no --repo): a real `gitlab` git remote on cwd resolves the -R spec through the real resolveRepoSpec chain', () => {
+  it.skipIf(NO_STUB_GLAB)(stubGlabTitle('production default (no --repo): a real `gitlab` git remote on cwd resolves the -R spec through the real resolveRepoSpec chain'), () => {
     const spec = 'https://gitlab.example.com/example-group/example-project.git';
     // Real (uncontrolled-by-mock) git chain: init a throwaway repo in `tmp`
     // with a `gitlab` remote so resolveRepoSpec's real `git remote get-url`

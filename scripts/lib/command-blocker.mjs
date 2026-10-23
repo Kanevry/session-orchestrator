@@ -469,6 +469,10 @@ export function tokenizeCommand(command) {
   let text = '';
   let started = false;     // a token is in progress
   let sawQuote = false;    // any char of the current token came from inside quotes
+  // Leading UNQUOTED `{` characters of the current token (#1707 point 2). For a
+  // token that is otherwise quoted (`{"unlink"`) the `quoted` flag cannot say
+  // whether its first `{` was bare, so the count rides on the token.
+  let braceLead = 0;
   // Index of the last BARE `(` appended to a word (`f(`, `arr=(`). An escaped
   // `\(` or a quoted one never sets it, so `$(echo \()` still closes there.
   let bareParenAt = -1;
@@ -514,10 +518,16 @@ export function tokenizeCommand(command) {
         // `case-pattern` separator puts `esac` in command position.
         caseStates.pop();
       }
-      sink.push({ text, quoted: sawQuote });
+      const tok = { text, quoted: sawQuote };
+      // Only a QUOTED token carries the count: for an unquoted one every `{` of
+      // its text is bare, so the text already says it (and the token shape of
+      // every unquoted word stays as it was).
+      if (sawQuote && braceLead > 0) tok.braceLead = braceLead;
+      sink.push(tok);
       text = '';
       started = false;
       sawQuote = false;
+      braceLead = 0;
     }
   };
 
@@ -525,8 +535,8 @@ export function tokenizeCommand(command) {
   // word in progress (`x=` in `x=$(…)`, or the double-quoted run around
   // `"$(…)"`) is parked in the frame and resumed on close.
   const openSubstitution = (kind, start) => {
-    stack.push({ kind, start, text, started, sawQuote, state, sink, arithDepth, caseStates });
-    text = ''; started = false; sawQuote = false; state = 'normal'; arithDepth = 0; caseStates = [];
+    stack.push({ kind, start, text, started, sawQuote, braceLead, state, sink, arithDepth, caseStates });
+    text = ''; started = false; sawQuote = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = [];
     sink = [];
   };
 
@@ -544,7 +554,7 @@ export function tokenizeCommand(command) {
     // destructive guard's top-level catch turns into ALLOW (fail-open).
     hoisted.push({ text: ';', quoted: false, operator: 'substitution' });
     for (const t of sink) hoisted.push(t);
-    ({ text, started, sawQuote, state, sink, arithDepth, caseStates } = frame);
+    ({ text, started, sawQuote, braceLead, state, sink, arithDepth, caseStates } = frame);
     const raw = command.slice(frame.start, end);
     text += raw; started = true;
     if (/["']/.test(raw)) sawQuote = true;
@@ -894,6 +904,9 @@ export function tokenizeCommand(command) {
     }
 
     if (ch === '(') bareParenAt = i;
+    // A bare `{` extends the run of leading braces only while nothing else — not
+    // even an empty quote pair (`""{x` is a literal word) — came before it.
+    if (ch === '{' && text.length === braceLead && (braceLead > 0 || !started)) braceLead++;
     text += ch; started = true;
   }
 
@@ -926,7 +939,10 @@ export function tokenizeCommand(command) {
  *
  * Two classes, both dropped, for the same reason:
  *   - OPENERS (`{`, `(`, `!`, `if`, `elif`, `then`, `else`, `while`, `until`,
- *     `do`) are followed by a COMMAND. Dropping one moves verb resolution
+ *     `do`, `coproc`) are followed by a COMMAND. `coproc` runs it as a
+ *     coprocess in bash and zsh (#1707 point 3). NAMED CEILING (BV-004): bash's
+ *     named form `coproc NAME { …; }` still reads NAME as the verb; revisit if
+ *     that spelling shows up in a transcript census. Dropping one moves verb resolution
  *     towards the real command — the identical safety argument WRAPPER_UNWRAP
  *     makes for a transparent wrapper: a dropped token is a reserved word, never
  *     an interpreter, so this cannot turn a match into a miss.
@@ -948,7 +964,7 @@ export function tokenizeCommand(command) {
  * emits its parens as separators (see {@link tokenizeCommand}).
  */
 const COMMAND_POSITION_KEYWORDS = new Set([
-  '{', '(', '!', 'if', 'elif', 'then', 'else', 'while', 'until', 'do',
+  '{', '(', '!', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', 'coproc',
   '}', ')', 'fi', 'done', 'esac',
 ]);
 
@@ -971,7 +987,8 @@ function isFunctionHead(segment) {
 }
 
 /**
- * Does `tok` carry a brace-group opener glued to its command word (`{unlink`)?
+ * How many brace-group openers are glued to the front of `tok`'s command word
+ * (`{unlink` → 1, `{{unlink` → 2, `{"unlink"` → 1)? 0 when none.
  * zsh reads a leading `{` in command position as the reserved word even
  * without a following blank — measured with zsh 5.9: `{echo hi;}`,
  * `f() {echo hi;}; f` and `function f() {echo hi;}; f` all print `hi`, and
@@ -981,11 +998,78 @@ function isFunctionHead(segment) {
  * also ENDS in `}` (`{}`, `{fd}` of a named-fd redirection `{fd}>file`) is
  * left alone: it closes itself, so no command word sits behind its `{`.
  *
- * @param {{ text: string, quoted: boolean }} tok
+ * #1707 point 2: the decision rests on the RAW leading characters, not on the
+ * token's `quoted` flag — zsh runs `{"echo" L;}`, `{'echo' L;}` and
+ * `{{echo L;}}`, where the `{` is bare although the rest of the word is quoted,
+ * or is itself followed by another opener. The lexer records the bare run as
+ * `braceLead` on a quoted token (see {@link tokenizeCommand}); a token that is
+ * quoted from its first character (`"{unlink"`) carries none and stays a word.
+ *
+ * @param {{ text: string, quoted: boolean, braceLead?: number, redirect?: object, operator?: string }} tok
+ * @returns {number}
+ */
+function gluedBraceOpenerCount(tok) {
+  if (tok.redirect || tok.operator !== undefined) return 0;
+  let n = 0;
+  if (tok.quoted) n = tok.braceLead ?? 0;
+  else while (n < tok.text.length && tok.text[n] === '{') n++;
+  if (n === 0 || n >= tok.text.length || tok.text.endsWith('}')) return 0;
+  return n;
+}
+
+/**
+ * The extra reading of a word that ends in a `}` glued to it inside an open
+ * brace group (#1707 point 1): zsh 5.9 prints `-r X` for `{echo -r X}` — the
+ * glued `}` closes the group and is not part of the word — while bash keeps it
+ * as text. An option table cannot enumerate unknown forms, so both readings
+ * are judged and never one picked: the word itself stays, and the word with
+ * ONE trailing `}` stripped is the second reading.
+ *
+ * zsh closes exactly ONE group per glued `}` word, however many braces trail
+ * it (zsh 5.9, measured 2026-10-22): `{echo X}}` prints `X}`, `{{echo X}}` is a
+ * parse error, `{ echo X }}}` prints `X }}`, `{ { echo a}}; echo X}` prints
+ * `a}` then `X` (the outer group stays open until `X}`), and
+ * `{ { { echo a}}}; echo X}; echo Y}` prints `a}}`, `X`, `Y`. Counting several
+ * closes for one word left a later glued `}` with no reading:
+ * `{ { echo a}}; echo x >CLAUDE.md}` truncates `CLAUDE.md` in zsh. One reading
+ * per word also keeps the work linear on a `{`×N `X` `}`×N flood.
+ *
+ * A glued `}` word never lowers `openGroups` (security re-review of f99e1352):
+ * the reader cannot tell a real closer from a word zsh keeps as text —
+ * `${HOME}`, `{a,b}`, `"a}"`, `a\}` — and counting one of those as a close left
+ * the REAL closer behind it with no reading: `{ echo ${HOME}; echo x >CLAUDE.md}`
+ * truncates `CLAUDE.md` in zsh 5.9. Only a `}` keyword in command position
+ * closes a group (see {@link splitSegments}).
+ *
+ * NAMED CEILING (BV-004): this over-counts open groups, deliberately fail-closed
+ * — an extra open group only ADDS a reading, never drops one. What it
+ * over-blocks: once a glued group has really closed, a later `x}` word outside
+ * it still yields `x` too (`{ echo a}; rm x}` is judged as `x}` and `x`).
+ * Revisit if a false DENY on a real transcript command traces to this reading.
+ *
+ * @param {string} text
+ * @param {number} openGroups
+ * @returns {string[]} the one stripped reading, or [] when the word has no
+ *   glued `}`, no group is open, or the word is only `}`.
+ */
+function gluedCloseReadings(text, openGroups) {
+  if (openGroups === 0 || text.length < 2 || !text.endsWith('}')) return [];
+  return [text.slice(0, -1)];
+}
+
+/**
+ * Is `segment` exactly a prefix that puts the next word — a brace group or any
+ * other compound command — in command position? A function head (see
+ * {@link isFunctionHead}) or `time` / `time -p`, which bash and zsh both parse
+ * as a pipeline prefix (#1707 point 3: zsh runs `time {unlink P;}`).
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
  * @returns {boolean}
  */
-function hasGluedBraceOpener(tok) {
-  return !tok.quoted && tok.text.length > 1 && tok.text[0] === '{' && !tok.text.endsWith('}');
+function isCompoundPrefix(segment) {
+  if (isFunctionHead(segment)) return true;
+  if (segment.length === 0 || segment.length > 2 || segment.some((t) => t.quoted)) return false;
+  return segment[0].text === 'time' && (segment.length === 1 || segment[1].text === '-p');
 }
 
 /**
@@ -1002,6 +1086,16 @@ function hasGluedBraceOpener(tok) {
  * `for t in a b c; do glab issue create …; done` and `{ glab issue create …; }`
  * were allowed with NO accounting at all, while the plain form denied at 1/1.
  *
+ * zsh keyword bodies (#1707 point 3), each judged in command position:
+ * `repeat N cmd` / `repeat N { …; }` (the count word is dropped with the
+ * keyword), `{ …; } always { …; }` (an `always` right after a group's closing
+ * `}` starts a new statement), `time { …; }` (see {@link isCompoundPrefix}) and
+ * zsh's short function body `f() cmd`. Inside an open brace group a word with a
+ * glued `}` carries `closeReadings` (see {@link gluedCloseReadings}) for the
+ * delete and redirect target surfaces. Only a command-position `}` keyword
+ * lowers the open-group count; a glued `}` word never does, so the count may
+ * over-state open groups — a fail-closed ceiling named in gluedCloseReadings.
+ *
  * The newline separator is checked by its `operator` field as well as its text,
  * so the split survives a future change to that token's spelling. Because a
  * separator token is CONSUMED here, it can never reach a per-segment operand
@@ -1013,44 +1107,181 @@ function hasGluedBraceOpener(tok) {
  * parsing (#982/#983). The hook previously kept a drift-prone local mirror
  * of this splitter (regex-based operator set vs. this Set) — W4 B1.
  *
+ * An `always` after a GLUED or one-word close (`x}`, `{true}`) has two readings
+ * and both are judged (review of !233): zsh may read the word as closing the
+ * group, so `always` starts a new statement; bash knows no `always` and passes
+ * it and every word behind it to the command — `bash -c '{ rm -f x} always
+ * CLAUDE.md; }'` deletes CLAUDE.md. The bash reading keeps every statement; from
+ * the first soft cut on, each zsh statement is added unless the bash reading has
+ * the same words, in which case its glued-close readings are merged into that
+ * statement instead — `{true} always {echo a; rm CLAUDE.md}` keeps `CLAUDE.md`
+ * from zsh's open `always` group, and no statement is counted twice (the
+ * issue-budget guard counts per segment). A command-position `}` is no such
+ * case: `} always` is a bash syntax error, the cut is hard.
+ *
  * @param {Array<{ text: string, quoted: boolean }>} tokens
- * @returns {Array<Array<{ text: string, quoted: boolean }>>}
+ * @returns {Array<Array<{ text: string, quoted: boolean, closeReadings?: string[] }>>}
  */
 function splitSegments(tokens) {
+  const zsh = splitSegmentsReading(tokens, true);
+  if (!zsh.softCut) return zsh.segments;
+  const segments = splitSegmentsReading(tokens, false).segments;
+  const byWords = new Map(segments.map((segment, i) => [segmentKey(segment), i]));
+  for (const segment of zsh.segments) {
+    if (!segment.afterSoftCut) continue;
+    const key = segmentKey(segment);
+    const at = byWords.get(key);
+    if (at === undefined) {
+      byWords.set(key, segments.length);
+      segments.push(segment);
+      continue;
+    }
+    segments[at] = mergeCloseReadings(segments[at], segment);
+  }
+  return segments;
+}
+
+/**
+ * The bash statement with the zsh statement's glued-close readings added per
+ * word (both have the same words). New token objects: the tokens are shared
+ * between the two readings.
+ *
+ * @param {Array<object>} target
+ * @param {Array<object>} source
+ * @returns {Array<object>}
+ */
+function mergeCloseReadings(target, source) {
+  return target.map((tok, i) => {
+    const extra = source[i]?.closeReadings;
+    if (!extra) return tok;
+    const merged = [...new Set([...(tok.closeReadings ?? []), ...extra])];
+    return { ...tok, closeReadings: merged };
+  });
+}
+
+/** @param {Array<{ text: string, quoted: boolean }>} segment */
+function segmentKey(segment) {
+  return JSON.stringify(segment.map((t) => [t.text, t.quoted]));
+}
+
+/**
+ * One reading of {@link splitSegments}. `cutSoftAlways`: whether an `always`
+ * after a glued or one-word close starts a new statement (zsh) or stays a word
+ * (bash). Every statement written after the first such cut is marked
+ * `afterSoftCut`.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} tokens
+ * @param {boolean} cutSoftAlways
+ * @returns {{ segments: Array<Array<object>>, softCut: boolean }}
+ */
+function splitSegmentsReading(tokens, cutSoftAlways) {
+  let softCut = false;
+  // Marked when a statement is WRITTEN, not when `current` starts: keyword
+  // peeling (`always { rm …`) replaces `current` in between.
   const segments = [];
+  const pushSegment = (segment) => {
+    if (segment.length > 0 && softCut) segment.afterSoftCut = true;
+    segments.push(segment);
+  };
   let current = [];
   const operators = new Set([';', '&&', '||', '|', '&']);
-  for (const tok of tokens) {
+  // Open brace groups (#1707 point 1) — only a group opened in command
+  // position counts, so `echo {a,b}` never arms the glued-`}` readings.
+  let openGroups = 0;
+  // The previous token closed a brace group — zsh's `always` may follow it:
+  // 'hard' after a command-position `}`, 'soft' after a glued or one-word close.
+  let closedGroup = null;
+  // The next token is the count word of a command-position `repeat`.
+  let repeatCount = false;
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const afterClose = closedGroup;
+    closedGroup = null;
     if (!tok.quoted && (tok.operator === 'newline' || operators.has(tok.text))) {
-      segments.push(current);
+      pushSegment(current);
       current = [];
+      repeatCount = false;
+      continue;
+    }
+    if (repeatCount) { repeatCount = false; continue; }
+    // zsh `repeat N body` (#1707 point 3): the keyword and its count are no
+    // command; the body behind them runs N times. Only a count WORD counts: in
+    // bash `repeat` is an ordinary command name and `repeat >CLAUDE.md`
+    // truncates before the lookup fails, so a redirect or an operator behind it
+    // keeps `repeat` the segment head and the redirect collected. A quoted count
+    // is still one word — zsh 5.9 runs `repeat '2' cmd` and `repeat "$N" cmd`.
+    const count = tokens[i + 1];
+    if (current.length === 0 && !tok.quoted && tok.text === 'repeat' && count !== undefined &&
+        !count.redirect && count.operator === undefined &&
+        !operators.has(count.text)) {
+      repeatCount = true;
+      continue;
+    }
+    // zsh `{ try; } always { finally; }` (#1707 point 3): the `always` body runs
+    // like any group, so `always` ends the statement before it.
+    if (afterClose !== null && !tok.quoted && tok.text === 'always' &&
+        (afterClose === 'hard' || cutSoftAlways)) {
+      if (current.length > 0) pushSegment(current);
+      current = [];
+      if (afterClose === 'soft') softCut = true;
       continue;
     }
     // Reserved word in COMMAND POSITION (`current` still empty) → drop it, so
     // the NEXT token becomes the segment head and is itself judged in command
     // position (`do { rm …` peels both). A keyword anywhere else is an ordinary
     // argument and is kept verbatim (#1145).
-    if (current.length === 0 && !tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text)) {
-      continue;
-    }
+    //
     // A function head (`f()`, `function f`, `function f()`) before its compound
     // body (#1679 point 1): the head is no command, and the body runs on every
     // call, so drop the head and judge the body in command position like a bare
     // brace group. Before, `f() { unlink <ledger>; }; f` resolved to verb `f()`.
-    if (!tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text) && isFunctionHead(current)) {
+    // `time` / `time -p` before a compound command is dropped the same way.
+    if (!tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text) &&
+        (current.length === 0 || isCompoundPrefix(current))) {
       current = [];
+      if (tok.text === '{') openGroups++;
+      if (tok.text === '}') { openGroups = Math.max(0, openGroups - 1); closedGroup = 'hard'; }
       continue;
     }
-    // A `{` glued to the first word of a brace group (zsh, #1699 item 13):
-    // drop the opener, so the word behind it is the segment head.
-    if (hasGluedBraceOpener(tok) && (current.length === 0 || isFunctionHead(current))) {
-      current = [{ ...tok, text: tok.text.slice(1) }];
+    // A `{` glued to the first word of a brace group (zsh, #1699 item 13 —
+    // repeatedly and on the raw first character since #1707 point 2): drop the
+    // openers, so the word behind them is the segment head.
+    const glued = gluedBraceOpenerCount(tok);
+    if (glued > 0 && (current.length === 0 || isCompoundPrefix(current))) {
+      const { braceLead: _consumed, ...rest } = tok;
+      current = [{ ...rest, text: tok.text.slice(glued) }];
+      openGroups += glued;
       continue;
+    }
+    // zsh's short function body `f() cmd` (#1707 point 3): zsh 5.9 runs
+    // `f() unlink P; f`, so the head is dropped and `cmd` heads the segment.
+    if (current.length === 1 && !current[0].quoted && FUNCTION_HEAD_RE.test(current[0].text) &&
+        !tok.redirect) {
+      current = [];
+    }
+    // Outside a group `gluedCloseReadings` is []; inside one, a glued `}` word
+    // gets its stripped reading but does NOT lower `openGroups`: `${HOME}`,
+    // `{a,b}`, `"a}"` look the same and close nothing in zsh, so every later
+    // glued `}` keeps its reading (fail-closed, see gluedCloseReadings). It may
+    // still close a group, so an `always` may follow it.
+    const readings = !tok.redirect && tok.operator === undefined
+      ? gluedCloseReadings(tok.text, openGroups)
+      : [];
+    if (readings.length > 0) {
+      closedGroup = 'soft';
+      current.push({ ...tok, closeReadings: readings });
+      continue;
+    }
+    // A one-word group heading its statement (`{true} always {…}`) closes
+    // itself, so an `always` may follow it as well.
+    if (current.length === 0 && !tok.quoted && tok.text.length > 2 && tok.text[0] === '{' &&
+        tok.text.endsWith('}')) {
+      closedGroup = 'soft';
     }
     current.push(tok);
   }
-  segments.push(current);
-  return segments.filter((s) => s.length > 0);
+  pushSegment(current);
+  return { segments: segments.filter((s) => s.length > 0), softCut };
 }
 
 // Public alias — the single source of truth for chain-segment splitting shared
@@ -1711,8 +1942,12 @@ function collectRedirectTargets(segments, out, depth, budget) {
         // Variable indirection (`> "$X"`), command substitution (`> $(cmd)` /
         // backticks), or a missing operand: fail-visible, never guess (#983).
         out.push({ target: null, mode, fd, unresolved: true });
-      } else {
-        out.push({ target: operand.text, mode, fd });
+        continue;
+      }
+      // A glued group-closing `}` (`{echo x >CLAUDE.md}`) — both readings are
+      // judged (#1707 point 1, see gluedCloseReadings).
+      for (const text of [operand.text, ...(operand.closeReadings ?? [])]) {
+        out.push({ target: text, mode, fd });
       }
     }
 
@@ -2292,7 +2527,11 @@ function collectDeleteTargets(segments, out, depth, budget) {
       // this segment — same rule commandHasRecursiveForceRm applies. An
       // interpreter's quoted payload is reached through the recursion below
       // instead, where it is re-tokenized as the command it really is.
-      if (segment[reading.index].quoted) continue;
+      // A quoted SINGLE word is no such literal (#1707 point 2): `"unlink" P`
+      // and `{"unlink" P;}` run unlink, the quotes only vanish. Only a quoted
+      // token with whitespace in it — a payload, never one argv word that
+      // could still resolve to the verb — stays inert.
+      if (segment[reading.index].quoted && /\s/.test(segment[reading.index].text)) continue;
 
       let seenDashDash = false;
       for (let i = reading.index + 1; i < segment.length; i++) {
@@ -2315,19 +2554,23 @@ function collectDeleteTargets(segments, out, depth, budget) {
         // where a value-taking reading would have swallowed it silently.
         if (!seenDashDash && !tok.quoted && tok.text.startsWith('-') && tok.text !== '-') continue;
 
-        const key = `${reading.verb}\u0000${tok.text}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+        // A word with a glued group-closing `}` is judged in BOTH readings
+        // (#1707 point 1, see gluedCloseReadings): `{rm -r .orchestrator}`.
+        for (const text of tok.closeReadings ? [tok.text, ...tok.closeReadings] : [tok.text]) {
+          const key = `${reading.verb}\u0000${text}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
 
-        if (/[$`]/.test(tok.text)) {
-          // Variable indirection (`rm -f "$LEDGER"`) or command substitution:
-          // fail-visible, never guess (#983 rule, same direction).
-          out.push({
-            target: null, verb: reading.verb, unresolved: true, reason: 'variable/substitution',
-          });
-          continue;
+          if (/[$`]/.test(text)) {
+            // Variable indirection (`rm -f "$LEDGER"`) or command substitution:
+            // fail-visible, never guess (#983 rule, same direction).
+            out.push({
+              target: null, verb: reading.verb, unresolved: true, reason: 'variable/substitution',
+            });
+            continue;
+          }
+          out.push({ target: text, verb: reading.verb });
         }
-        out.push({ target: tok.text, verb: reading.verb });
       }
     }
 

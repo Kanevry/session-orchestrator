@@ -49,7 +49,7 @@ Read the repository and agree the scope. Assign independent work, combine the ch
 
 ## Platform limits and data
 
-Claude Code runs guard hooks directly. Cursor and Pi use bridges with documented event limits and execute tasks sequentially. Codex CLI offers selectable workflow skills and parallel agents; its destructive-command guard runs as a PreToolUse Bash hook whose deny Codex honours (codex-cli 0.160.1, 2026-10-20), while its file-scope rules are instructions only, because Codex edits through apply_patch, which the scope guards do not read. With an active compatible scope hook on Claude Code, Cursor or Pi, strict blocks supported out-of-scope edits, warn reports them without denial, and off disables scope checking. The separate destructive-command policy defines 12 blocking and 4 warning rules; an active compatible hook is required to apply them.
+Claude Code runs guard hooks directly. Cursor and Pi use bridges with documented event limits and execute tasks sequentially. Codex CLI offers selectable workflow skills and parallel agents; its destructive-command guard runs as a PreToolUse Bash hook whose deny Codex honours (codex-cli 0.160.1, 2026-10-20), while its file-scope rules are instructions only, because Codex edits through apply_patch, which the scope guards do not read. With an active compatible scope hook on Claude Code, Cursor or Pi, strict blocks supported out-of-scope edits, warn reports them without denial, and off disables scope checking. The separate destructive-command policy defines 13 blocking and 4 warning rules; an active compatible hook is required to apply them.
 
 macOS and Linux are covered by CI. Native Windows use is untested; shell hooks and the optional MCP server need WSL or Git Bash.
 

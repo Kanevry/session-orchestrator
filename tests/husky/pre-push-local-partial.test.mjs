@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, symlinkSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { join, resolve } from 'node:path';
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 // #1642: when no remote host could run the gate (router exit 10), an origin MR
 // branch takes the local PARTIAL gate instead of the full suite on this host.
@@ -15,6 +16,18 @@ afterEach(() => { while (dirs.length) removeTree(dirs.pop()); });
 
 const commit = (repo, msg) => fixtureGit(['-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
   'commit', '-qm', msg]);
+
+// Git for Windows defaults core.symlinks=false, so the hook's `git clone` of the
+// fixture checks the symlinked router out as a text file holding its target path
+// (node then fails with "Invalid regular expression flags"). The hook sweeps every
+// GIT_* variable, so the setting travels as XDG global git config. Off Windows: no-op.
+function windowsSymlinkEnv(dir) {
+  if (process.platform !== 'win32') return {};
+  const xdg = join(dir, 'xdg');
+  mkdirSync(join(xdg, 'git'), { recursive: true });
+  writeFileSync(join(xdg, 'git', 'config'), '[core]\n\tsymlinks = true\n');
+  return { XDG_CONFIG_HOME: xdg };
+}
 
 function runHook({ remote = 'origin', remoteRef = 'refs/heads/feature', base = true, testExit = 0, lintExit = 0,
   alsoMain = false, deleteFile = false } = {}) {
@@ -58,12 +71,13 @@ function runHook({ remote = 'origin', remoteRef = 'refs/heads/feature', base = t
   const trace = join(dir, 'trace');
   writeFileSync(trace, '');
   const url = remote === 'github' ? 'https://github.com/org/repo.git' : 'https://gitlab.example.org/org/repo.git';
-  const res = spawnSync('sh', ['-e', join(root, '.husky/pre-push'), remote, url], {
+  const res = spawnSync(posixShell('sh'), ['-e', join(root, '.husky/pre-push'), remote, url], {
     cwd: repo, encoding: 'utf8', timeout: 30_000,
     // alsoMain: git does not order the lines by the command line; a later line can name main.
     input: `refs/heads/feature ${sha} ${remoteRef} ${'0'.repeat(40)}\n` +
       (alsoMain ? `refs/heads/feature ${sha} refs/heads/main ${'0'.repeat(40)}\n` : ''),
-    env: { ...process.env, SKIP_QUALITY_GATE: '', SO_GATE_HOSTS: '', TRACE: trace, CLAUDE_PROJECT_DIR: repo },
+    env: { ...process.env, SKIP_QUALITY_GATE: '', SO_GATE_HOSTS: '', TRACE: trace, CLAUDE_PROJECT_DIR: repo,
+      ...windowsSymlinkEnv(dir) },
   });
   return { res, records: readFileSync(trace, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse) };
 }

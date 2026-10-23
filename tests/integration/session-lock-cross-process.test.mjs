@@ -28,6 +28,7 @@ import { mkdtempSync, rmSync, readFileSync, writeFileSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 // Per-spawn watchdog ceiling: above the real runtime (5s barrier + acquire),
 // below the per-test vitest timeout of 30000ms. If a child overruns this — e.g.
@@ -104,7 +105,7 @@ const SESSION_LOCK_PATH = join(PROJECT_ROOT, 'scripts', 'lib', 'session-lock.mjs
  */
 function buildWorkerScript({ repoRoot, barrierPath, sessionId }) {
   return `
-import { acquire } from '${SESSION_LOCK_PATH}';
+import { acquire } from ${JSON.stringify(pathToFileURL(SESSION_LOCK_PATH).href)};
 import { existsSync } from 'node:fs';
 
 const repoRoot = ${JSON.stringify(repoRoot)};

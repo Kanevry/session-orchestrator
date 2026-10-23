@@ -9,7 +9,8 @@ import path from 'node:path';
 
 import { replaceRegularFile } from '../process-group.mjs';
 import { readTailWindow } from '../tail-window.mjs';
-import { REAPER_DEFAULTS, underRepo } from './defaults.mjs';
+import { REAPER_DEFAULTS } from './defaults.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { NOT_A_REGULAR_FILE, appendNoFollow } from './no-follow-append.mjs';
 
 /** Relative path of the JSONL kill audit (B5). Gitignored via `.gitignore:55`
@@ -67,7 +68,8 @@ function isRateDecision(record) {
 /** Absolute path of the kill audit for a repo. One constant per path.
  *  @param {string} repoRoot @returns {string} */
 export function auditPath(repoRoot) {
-  return underRepo(repoRoot, REAPER_AUDIT_RELPATH);
+  // #1722: a linked worktree of a repo that ignores the audit maps to the main checkout.
+  return resolveLedgerPath(REAPER_AUDIT_RELPATH, repoRoot);
 }
 
 /**

@@ -37,7 +37,7 @@
  */
 
 import { randomBytes } from 'node:crypto';
-import { promises as fs, constants as fsConstants } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { emitEvent } from './lib/events.mjs';
@@ -51,6 +51,7 @@ import {
   validateCheckin,
 } from './lib/fleet-protocol.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { openNoFollow } from './lib/no-follow-open.mjs';
 
 const PREFIX = 'fleet-checkin:';
 
@@ -68,9 +69,14 @@ async function readStdin() {
  * planted symlink cannot redirect the chmod or the write.
  * @param {string} target
  * @param {object} record
- * @returns {Promise<boolean>} false when another repo already owns the target
+ * @param {object} [options]
+ * @param {typeof openNoFollow} [options.open] opener for the ownership read.
+ *   Injectable only so tests can reach the fail-closed `ERR_FILE_CHANGED`
+ *   branch, which `openNoFollow` never takes on POSIX; production passes nothing.
+ * @returns {Promise<boolean>} false when another repo already owns the target,
+ *   or the target changed during the ownership check
  */
-async function writeCheckinFile(target, record) {
+export async function writeCheckinFile(target, record, { open = openNoFollow } = {}) {
   const checkinDir = path.dirname(target);
   await fs.mkdir(navigatorDir(), { recursive: true, mode: 0o700 });
   await fs.mkdir(checkinDir, { recursive: true, mode: 0o700 });
@@ -87,33 +93,39 @@ async function writeCheckinFile(target, record) {
     await fs.chmod(tmp, 0o600);
     let existing;
     try {
-      // Fail-open on platforms without safe-open flags; never fall back to a
-      // potentially blocking read that follows symlinks.
-      if (typeof fsConstants.O_NOFOLLOW === 'number' && typeof fsConstants.O_NONBLOCK === 'number') {
-        const handle = await fs.open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-        try {
-          const stat = await handle.stat();
-          const limit = 64 * 1024;
-          // Check-ins are small: non-files and larger targets are unreadable for
-          // this guard and fail-open. Bound reads even if the file grows after stat.
-          if (stat.isFile() && stat.size <= limit) {
-            const buffer = Buffer.alloc(limit);
-            let length = 0;
-            while (length < limit) {
-              const { bytesRead } = await handle.read(buffer, length, limit - length, length);
-              if (bytesRead === 0) break;
-              length += bytesRead;
-            }
-            if ((await handle.stat()).size <= limit) {
-              existing = JSON.parse(buffer.subarray(0, length).toString('utf8'));
-            }
+      // Never follow a symlink at the target and never block on a FIFO; the
+      // helper also covers platforms without O_NOFOLLOW (win32, #1744).
+      const handle = await open(target);
+      try {
+        const stat = await handle.stat();
+        const limit = 64 * 1024;
+        // Check-ins are small: non-files and larger targets are unreadable for
+        // this guard and fail-open. Bound reads even if the file grows after stat.
+        if (stat.isFile() && stat.size <= limit) {
+          const buffer = Buffer.alloc(limit);
+          let length = 0;
+          while (length < limit) {
+            const { bytesRead } = await handle.read(buffer, length, limit - length, length);
+            if (bytesRead === 0) break;
+            length += bytesRead;
           }
-        } finally {
-          await handle.close();
+          if ((await handle.stat()).size <= limit) {
+            existing = JSON.parse(buffer.subarray(0, length).toString('utf8'));
+          }
         }
+      } finally {
+        await handle.close();
       }
-    } catch {
-      // Fail-open: an unreadable or invalid-JSON target gives the navigator no readable check-in to preserve.
+    } catch (err) {
+      // A target swapped during the check may hide a foreign check-in: fail closed.
+      if (err?.code === 'ERR_FILE_CHANGED') {
+        await fs.rm(tmp, { force: true });
+        process.stderr.write(`${PREFIX} check-in target ${path.basename(target)} changed during the safety check; refusing to overwrite\n`);
+        return false;
+      }
+      // Fail-open otherwise: a missing (first write), symlinked, non-regular,
+      // unreadable or invalid-JSON target gives the navigator no readable
+      // check-in to preserve. `rename` replaces a symlink itself, never follows it.
     }
     if (typeof existing?.repo === 'string' && existing.repo !== record.repo) {
       await fs.rm(tmp, { force: true });

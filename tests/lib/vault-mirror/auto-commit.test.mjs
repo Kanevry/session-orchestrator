@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as cp from 'node:child_process';
+import { join } from 'node:path';
 
 const GENERATOR_MARKER = 'session-orchestrator-vault-mirror@1';
 const VAULT = '/fake/vault';
@@ -318,7 +319,7 @@ describe('cross-repo commit isolation (#660)', () => {
   it('emits cross-repo-staged-changes and unstages when diff reveals foreign-namespace files', async () => {
     // existsSync: both per-repo subfolders exist
     existsSyncSpy.mockImplementation((p) => {
-      if (p.endsWith('40-learnings/repo-a') || p.endsWith('50-sessions/repo-a')) return true;
+      if (p.endsWith(join('40-learnings', 'repo-a')) || p.endsWith(join('50-sessions', 'repo-a'))) return true;
       return false;
     });
     // All files have the mirror marker — the NAMESPACE check fires, not the marker check
@@ -363,7 +364,7 @@ describe('cross-repo commit isolation (#660)', () => {
   it('scopes git add to per-repo subfolders when repo is provided', async () => {
     // Both per-repo subfolders exist
     existsSyncSpy.mockImplementation((p) => {
-      if (p.endsWith('40-learnings/repo-a') || p.endsWith('50-sessions/repo-a')) return true;
+      if (p.endsWith(join('40-learnings', 'repo-a')) || p.endsWith(join('50-sessions', 'repo-a'))) return true;
       return false;
     });
     readFileSyncSpy.mockReturnValue(`---\n_generator: ${GENERATOR_MARKER}\n---\n`);
@@ -393,7 +394,7 @@ describe('cross-repo commit isolation (#660)', () => {
   // Test 3: Same-repo passes — all staged files under repo-a namespace → proceeds to commit
   it('proceeds to commit when all staged files belong to the declared repo namespace', async () => {
     existsSyncSpy.mockImplementation((p) => {
-      if (p.endsWith('40-learnings/repo-a') || p.endsWith('50-sessions/repo-a')) return true;
+      if (p.endsWith(join('40-learnings', 'repo-a')) || p.endsWith(join('50-sessions', 'repo-a'))) return true;
       return false;
     });
     readFileSyncSpy.mockReturnValue(`---\n_generator: ${GENERATOR_MARKER}\n---\n`);

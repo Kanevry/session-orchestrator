@@ -17,7 +17,7 @@ import {
   chmodSync,
   statSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { maybeRotate } from '@lib/events-rotation.mjs';
@@ -127,9 +127,9 @@ describe('maybeRotate — rotation', () => {
 
     expect(r.rotated).toBe(true);
     expect(r.archivedAs).toBe(
-      join(tmpDir, ARCHIVE_DIR_NAME, r.archivedAs.split('/').pop()),
+      join(tmpDir, ARCHIVE_DIR_NAME, basename(r.archivedAs)),
     );
-    expect(ARCHIVE_NAME_RE.test(r.archivedAs.split('/').pop())).toBe(true);
+    expect(ARCHIVE_NAME_RE.test(basename(r.archivedAs))).toBe(true);
     expect(r.sizeBefore).toBe(1 * 1024 * 1024 + 10);
     expect(r.maxBackups).toBe(5);
 
@@ -156,7 +156,7 @@ describe('maybeRotate — rotation', () => {
     expect(r.rotated).toBe(true);
     expect(readFileSync(existing, 'utf8')).toBe('B1');
     expect(readdirSync(archiveDir).sort()).toEqual(
-      [existing, r.archivedAs].map((f) => f.split('/').pop()).sort(),
+      [existing, r.archivedAs].map((f) => basename(f)).sort(),
     );
   });
 

@@ -23,7 +23,7 @@ Settings: `strictness` is `locker` (relaxed), `ausgewogen` (balanced, the defaul
 
 ## What it does
 
-Session Orchestrator state comes only from `scripts/so-hud.mjs`, called as `--json --repo-root <cwd>` every 15 seconds with a 3-second timeout. STATE.md, locks, dispatch and events are never changed. The mod writes only its own beacon file, its install-path cache, the receipt lines in `aktionen.jsonl` (see below), and, when a profile is picked in the band, its own `strictness` row in `/config` and the store key `profile-chosen`. Without a Session Orchestrator root it asks `claude plugin list` at most once every 5 minutes.
+Session Orchestrator state comes only from `scripts/so-hud.mjs`, called as `--json --repo-root <cwd> --session-id <raw-uuid>` every 15 seconds with a 3-second timeout. With `--session-id` the collector counts the session's agents beside its own `session.lock`, which can sit in another checkout than the cwd (#1730). A collector older than #1730 rejects the flag with exit 2; the mod then calls it without the flag for the rest of the session. STATE.md, locks, dispatch and events are never changed. The mod writes only its own beacon file, its install-path cache, the receipt lines in `aktionen.jsonl` (see below), and, when a profile is picked in the band, its own `strictness` row in `/config` and the store key `profile-chosen`. Without a Session Orchestrator root it asks `claude plugin list` at most once every 5 minutes.
 
 The status line says `nicht eingerichtet` for a part that is not set up (no Session Orchestrator installation found, no `vault-integration` block) and `noch kein Lauf` for an enabled vault mirror that never ran; a repository where no session has written events yet is not shown as `teilweise gemessen`.
 

@@ -62,6 +62,7 @@ import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import YAML from 'yaml';
 import { resolveInstructionFile } from '../../scripts/lib/common.mjs';
+import { resolveLedgerPath } from '../../scripts/lib/ledger-path.mjs';
 import { findSessionConfigBlock } from '../../scripts/lib/config/section-extractor.mjs';
 import {
   computeSchemaHash,
@@ -810,7 +811,7 @@ if (filesSkippedNoFrontmatter > 0) {
 // ── mode=baseline ─────────────────────────────────────────────────────────
 // Serialize current errors + warnings as a snapshot, then exit 0.
 if (mode === 'baseline') {
-  const baselinePath = join(vaultDir, '.orchestrator', 'metrics', 'vault-sync-baseline.json');
+  const baselinePath = resolveLedgerPath('.orchestrator/metrics/vault-sync-baseline.json', vaultDir);
   writeBaseline(baselinePath, {
     errors,
     warnings,
@@ -827,7 +828,7 @@ if (mode === 'baseline') {
 // ── mode=diff ─────────────────────────────────────────────────────────────
 // Read a prior baseline, compute set-differences, emit JSON diff to stdout.
 if (mode === 'diff') {
-  const baselinePath = join(vaultDir, '.orchestrator', 'metrics', 'vault-sync-baseline.json');
+  const baselinePath = resolveLedgerPath('.orchestrator/metrics/vault-sync-baseline.json', vaultDir);
   const baseline = readBaseline(baselinePath);
 
   if (!baseline) {

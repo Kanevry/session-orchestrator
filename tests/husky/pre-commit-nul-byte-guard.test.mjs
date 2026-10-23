@@ -40,6 +40,7 @@ import { spawnSync } from 'node:child_process';
 
 import { dirname, join, resolve } from 'node:path';
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = resolve(import.meta.dirname, '..', '..');
 const HOOK_PATH = join(REPO_ROOT, '.husky', 'pre-commit');
@@ -89,7 +90,7 @@ function runGuardWithStaged(files, worktreeAfter = {}) {
     writeFileSync(join(dir, rel), content);
   }
   writeFileSync(join(dir, 'guard.sh'), extractGuardBlock());
-  return spawnSync('sh', ['guard.sh'], { cwd: dir, encoding: 'utf8', timeout: 20_000 });
+  return spawnSync(posixShell('sh'), ['guard.sh'], { cwd: dir, encoding: 'utf8', timeout: 20_000 });
 }
 
 const NUL = String.fromCharCode(0);

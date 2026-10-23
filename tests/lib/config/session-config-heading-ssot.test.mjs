@@ -16,8 +16,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -129,9 +129,7 @@ describe('#968 — findSessionConfigBlock captures the WHOLE body', () => {
     // The concrete escaped bug: harness-audit c4.4 scored 2/2 with
     // "vault-integration not enabled — skip" on a repo where it IS enabled,
     // because the truncated capture never reached the key.
-    const claudeMd = execFileSync('cat', [join(REPO_ROOT, 'CLAUDE.md')], {
-      encoding: 'utf8',
-    });
+    const claudeMd = readFileSync(join(REPO_ROOT, 'CLAUDE.md'), 'utf8');
     const body = findSessionConfigBlock(claudeMd).body;
     expect(/vault-integration:\s*\n\s+enabled:\s*true/im.test(body)).toBe(true);
     expect(/vault-integration:\s*\n\s+enabled:\s*true/im.test(TRUNCATING_RE.exec(claudeMd)[1])).toBe(false);

@@ -12,6 +12,12 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+// A node one-liner instead of `sleep 30`: `sleep` is not on PATH on native Windows; the gate runs it
+// through the platform shell either way; the double quotes hold for sh and cmd alike.
+// The inner ladder opens with SIGTERM to the group on POSIX and with taskkill on win32 (spawnInGroup).
+const FIRST_KILL_SIGNAL = process.platform === 'win32' ? 'taskkill' : 'SIGTERM';
+const SLEEP_30 = `"${process.execPath}" -e "setTimeout(()=>{},30000)"`;
+
 const SCRIPT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../scripts/lib/gates/gate-full.mjs',
@@ -298,7 +304,7 @@ describe('gate-full — inner per-command kill ladder', () => {
   it('publishes timed_out/kill_signals on the killed command, omits them for skipped ones', () => {
     const r = run({
       GATE_TIMEOUT_MS: '300',
-      TYPECHECK_CMD: 'sleep 30',
+      TYPECHECK_CMD: SLEEP_30,
       TEST_CMD: 'skip',
       LINT_CMD: 'skip',
     });
@@ -306,7 +312,7 @@ describe('gate-full — inner per-command kill ladder', () => {
     const json = JSON.parse(r.stdout);
     expect(json.typecheck.status).toBe('fail');
     expect(json.typecheck.timed_out).toBe(true);
-    expect(json.typecheck.kill_signals[0]).toBe('SIGTERM');
+    expect(json.typecheck.kill_signals[0]).toBe(FIRST_KILL_SIGNAL);
     expect(Array.isArray(json.typecheck.survivors)).toBe(true);
     // Skipped commands spawned nothing: absent, never `false`.
     expect(json.lint).not.toHaveProperty('timed_out');

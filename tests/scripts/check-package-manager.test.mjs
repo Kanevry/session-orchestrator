@@ -293,7 +293,10 @@ describe('check-package-manager.mjs', () => {
     it('returns the git root when cwd is inside a git working tree', () => {
       makeCleanNpmRepo(tmp);
       const result = resolveRepoRoot(tmp);
-      expect(result).toEqual({ repoRoot: realpathSync(tmp), gitRoot: realpathSync(tmp) });
+      // git prints the toplevel with '/' on every platform (`C:/…` on Windows);
+      // resolve() compares the directory, not its separator spelling.
+      expect({ repoRoot: resolve(result.repoRoot), gitRoot: resolve(result.gitRoot) })
+        .toEqual({ repoRoot: realpathSync(tmp), gitRoot: realpathSync(tmp) });
     });
 
     it('falls back to the script parent directory with a null gitRoot outside a git working tree', () => {
@@ -383,7 +386,7 @@ describe('check-package-manager.mjs', () => {
       writeFileSync(join(nested, 'package.json'), '{}');
 
       const result = runPackageManagerGuard({ cwd: nested });
-      expect(result).toEqual({
+      expect({ ...result, repoRoot: resolve(result.repoRoot) }).toEqual({
         ok: true,
         ci: result.ci,
         skipped: true,

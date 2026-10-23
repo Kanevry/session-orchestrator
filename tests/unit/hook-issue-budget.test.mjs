@@ -453,7 +453,8 @@ describe('cap enforcement', { timeout: 30000 }, () => {
       stdin: bashPayload('glab issue create --title "parked"'),
     });
     const reason = expectDeny(blocked).hookSpecificOutput.permissionDecisionReason;
-    expect(reason).toContain('.orchestrator/runtime/issue-budget/');
+    // The overflow store is an absolute filesystem path: native separators.
+    expect(reason).toContain(path.join('.orchestrator', 'runtime', 'issue-budget') + path.sep);
     expect(reason).toContain('Backlog-Sammel');
   });
 

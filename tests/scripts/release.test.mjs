@@ -61,7 +61,15 @@ import {
   evaluateCiPreflightRows,
 } from '../../scripts/release.mjs';
 import { fixtureGit, fixtureGitSpawn, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 import { DEGRADED_REASONS, checkCiStatus } from '../../scripts/lib/ci-status-banner.mjs';
+
+// win32: `npm` is npm.cmd, which node refuses to spawn without a shell
+// (CVE-2024-27980); run npm's own CLI entry, shipped beside node.exe, instead.
+const NPM_CLI_WIN = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+const spawnNpm = (args, opts) => (process.platform === 'win32'
+  ? spawnSync(process.execPath, [NPM_CLI_WIN, ...args], opts)
+  : spawnSync('npm', args, opts));
 
 // Fixture shapes are copied from the live repo files (golden-record rule in
 // .claude/rules/testing.md) — hand-inventing them would let the real files
@@ -831,7 +839,7 @@ describe('evaluateLeakageGate', () => {
     // emit ZERO notice lines with exit 0, so this test went red inside the
     // nested gate while passing under a bare `npm test`. Same env-isolation
     // class as the TYPECHECK_CMD/TEST_CMD boilerplate in the gate tests.
-    const pack = spawnSync('npm', ['pack', '--dry-run'], {
+    const pack = spawnNpm(['pack', '--dry-run'], {
       cwd: process.cwd(),
       encoding: 'utf8',
       maxBuffer: 32 * 1024 * 1024,
@@ -1163,7 +1171,7 @@ describe('ensureGithubRelease', () => {
       expect(printPublishOutcome(outcome, '3.21.0', { log: () => {}, error: (line) => stderr.push(line) })).toBe(1);
       const commands = stderr.map((line) => line.match(/^ {2}(?:Inspect|Recover) with: (.+)$/)?.[1]).filter(Boolean);
       const captured = commands.map((command) => {
-        const result = spawnSync('sh', ['-c', `gh() { "$SO_TEST_NODE" -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"; }\n${command}`], {
+        const result = spawnSync(posixShell('sh'), ['-c', `gh() { "$SO_TEST_NODE" -e 'process.stdout.write(JSON.stringify(process.argv.slice(1)))' "$@"; }\n${command}`], {
           cwd: root, encoding: 'utf8', env: { ...process.env, SO_TEST_NODE: process.execPath },
         });
         expect(result.status).toBe(0);
@@ -1732,7 +1740,10 @@ describe('required packed-content release gate (#1530)', () => {
     writeFileSync(policy, JSON.stringify({ version: 1, privateHosts: ['gitlab.example.invalid'], privateDomains: ['example.invalid'], publicEmails: ['office@example.invalid'], publicUrls: ['https://example.invalid'] }), { mode: 0o600 });
     return { repo, policy, env: { ...process.env, SO_OWNER_PATTERNS_FILE: policy, SO_CONFIG_HOME: host, SO_CONFIDENTIAL_NAMES_FILE: '' } };
   }
-  const actualRun = (cmd, args, opts) => spawnSync(cmd, args, { ...opts, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60000 });
+  const actualRun = (cmd, args, opts) => {
+    const o = { ...opts, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 60000 };
+    return cmd === 'npm' ? spawnNpm(args, o) : spawnSync(cmd, args, o);
+  };
 
   it('blocks private contents behind harmless filenames in a real npm archive before publisher', async () => {
     const f = fixture('export const endpoint = "gitlab.example.invalid";');

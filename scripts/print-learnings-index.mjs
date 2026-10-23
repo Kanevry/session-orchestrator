@@ -101,6 +101,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { findProjectRoot } from './lib/common.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 import { eventsFilePath } from './lib/events.mjs';
 import { resolveStateArtifactPath } from './lib/state-md.mjs';
 import {
@@ -264,7 +265,7 @@ const poolSize = parseCap(opts['pool-size'], CANDIDATE_POOL_SIZE, '--pool-size')
 const repoRoot = findProjectRoot(process.cwd());
 const learningsPath = opts.learnings
   ? opts.learnings
-  : join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+  : resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot); // #1722
 const eventsPath = eventsFilePath(repoRoot); // #1514 point 1: the repo's one ledger
 // #1019 — the natively-delivered rule corpus. Every `.claude/rules/*.md` reaches
 // a dispatched agent in FULL through Claude Code's own project-instruction

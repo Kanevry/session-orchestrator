@@ -409,9 +409,11 @@ const LEDGER_METRICS = Object.freeze(['sessions', 'learnings']);
  * @returns {string}
  */
 function ledgerFile(root, name) {
+  // ledger-root: this tree's own copy first, on purpose; the shared one is the fallback below
   const own = join(root, '.orchestrator', 'metrics', name);
   if (existsSync(own)) return own;
   const main = resolveEventsLedgerRoot(root);
+  // ledger-root: the shared copy in the main checkout, read on purpose beside the own one
   const shared = join(main, '.orchestrator', 'metrics', name);
   return main !== resolve(root) && existsSync(shared) ? shared : own;
 }

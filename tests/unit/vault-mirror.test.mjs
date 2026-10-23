@@ -7,6 +7,7 @@ import { join, resolve, sep } from 'node:path';
 const forwardSlashes = (p) => (p ?? '').replaceAll(sep, '/');
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { homeEnv } from '../_helpers/home-env.mjs';
 import {
   fixtureGitSpawn,
   makeTmpDir as makeFixtureTmpDir,
@@ -989,7 +990,7 @@ describe('vault-mirror CLI', () => {
     const sourceFile = writeJsonl(home, VALID_LEARNING);
     const result = runMirror(
       ['--vault-dir', '~/vault', '--source', sourceFile, '--kind', 'learning', '--vault-name', 'test-vault'],
-      { env: { HOME: home } },
+      { env: homeEnv(home) },
     );
 
     expect(result.status).toBe(0);

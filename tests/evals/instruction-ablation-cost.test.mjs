@@ -8,7 +8,9 @@ import { fileURLToPath } from 'node:url';
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
 const CASE_ID = 'sec-007-sql-parameterisation';
 
-it('preserves unknown ablation costs without losing real zero costs or reporting incomplete totals', () => {
+// run.mjs calls execFileSync('claude') without a shell; on win32 that resolves only
+// a real .exe/.com, so this extensionless node-shebang fake can never be launched.
+it.skipIf(process.platform === 'win32')('preserves unknown ablation costs without losing real zero costs or reporting incomplete totals (win32: shebang fake CLI not executable)', () => {
   const scratch = join(tmpdir(), 'so-da3');
   mkdirSync(scratch, { recursive: true });
   const root = mkdtempSync(join(scratch, 'ablation-cost-'));

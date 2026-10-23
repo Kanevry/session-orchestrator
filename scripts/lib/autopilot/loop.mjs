@@ -21,6 +21,7 @@ import {
 } from './telemetry.mjs';
 import { durableCommit } from './durable-telemetry.mjs';
 import { getStateDir } from '../platform.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 // Internal clamp — mirrors flags.mjs internal; not re-exported there.
 function clampNumber(value, { min, max, fallback }) {
@@ -91,7 +92,7 @@ export async function runLoop(opts = {}) {
   const nowMs = typeof opts.nowMs === 'function' ? opts.nowMs : () => Date.now();
   const jsonlPath = typeof opts.jsonlPath === 'string' && opts.jsonlPath.length > 0
     ? opts.jsonlPath
-    : DEFAULT_JSONL_PATH;
+    : resolveLedgerPath(DEFAULT_JSONL_PATH, process.cwd()); // #1722: linked worktree → main checkout when ignored
   const peerAbortThreshold = typeof opts.peerAbortThreshold === 'number'
     ? opts.peerAbortThreshold
     : DEFAULT_PEER_ABORT_THRESHOLD;
@@ -342,6 +343,7 @@ export async function runLoop(opts = {}) {
     sessionId: state.autopilot_run_id,
     files: [
       jsonlPath.replace(process.cwd() + '/', ''),
+      // ledger-root: durableCommit file list (disabled), not a sink
       '.orchestrator/metrics/sessions.jsonl',
       `${getStateDir()}/STATE.md`,
     ],

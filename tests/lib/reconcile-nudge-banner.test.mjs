@@ -301,6 +301,41 @@ describe('checkReconcileNudge — type-alias read-path (issue #900): raw dialect
   });
 });
 
+// #1710 — TV-001: the sidecar is checkout-local, so in a fresh worktree
+// `_lastRunAt` read null and rule (a) declared "no reconcile run on record" for
+// a repo whose run IS on record — in the append-only verdict ledger.
+describe('computeReconcileNudge — run recency from the verdict ledger (#1710)', () => {
+  it('dates the last run from the ledger when the sidecar is absent, so rule (a) does not fire', async () => {
+    writeLearnings(tmpRepo, NUDGE_MIN_LEARNINGS, { type: 'convention', confidence: 0.8 });
+    fs.writeFileSync(
+      path.join(tmpRepo, '.orchestrator', 'metrics', 'reconcile-verdicts.jsonl'),
+      JSON.stringify({ kind: 'run', at: '2026-10-20T08:00:00.000Z' }) + '\n',
+      'utf8',
+    );
+
+    const result = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(result.lastRunAt).toBe('2026-10-20T08:00:00.000Z');
+    expect(result.reasons.some((r) => r.includes('no reconcile run on record'))).toBe(false);
+  });
+
+  // TV-001: with no sidecar the delta baseline was 0, so a fresh worktree
+  // reported "20 new learnings since the last reconcile run" although the run
+  // on record had seen all 20.
+  it('takes the delta baseline from the ledger run record, so rule (b) does not fire in a fresh worktree', async () => {
+    writeLearnings(tmpRepo, NUDGE_MIN_LEARNINGS, { type: 'convention', confidence: 0.8 });
+    fs.writeFileSync(
+      path.join(tmpRepo, '.orchestrator', 'metrics', 'reconcile-verdicts.jsonl'),
+      JSON.stringify({ kind: 'run', at: '2026-10-20T08:00:00.000Z', learnings: 20 }) + '\n',
+      'utf8',
+    );
+
+    const result = await computeReconcileNudge({ repoRoot: tmpRepo });
+    expect(result.lastRunCandidateCount).toBe(20);
+    expect(result.delta).toBe(0);
+    expect(result.reasons.some((r) => r.includes('new learnings since the last reconcile run'))).toBe(false);
+  });
+});
+
 describe('checkReconcileNudge — nudge (b): delta since last determinable run', () => {
   const PRIOR_RUN_CANDIDATES = 10;
 

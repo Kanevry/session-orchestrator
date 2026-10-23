@@ -108,9 +108,9 @@ import { shouldRunHook } from './_lib/profile-gate.mjs';
 import { isMainModule } from '../scripts/lib/is-main-module.mjs';
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { appendSubagent } from '../scripts/lib/subagents-schema.mjs';
 import { getProjectDir } from '../scripts/lib/platform.mjs';
+import { resolveLedgerPath } from '../scripts/lib/ledger-path.mjs';
 import { resolveSubagentSidecar } from './_lib/subagent-paths.mjs';
 import { readTailWindow } from '../scripts/lib/tail-window.mjs';
 import { COST_BASIS } from '../scripts/lib/telemetry/pricing.mjs';
@@ -129,7 +129,9 @@ import { rawPayloadSessionId, resolveOwnLockRoot } from './_lib/hook-root.mjs';
  * @returns {string}
  */
 function jsonlPath() {
-  return path.join(getProjectDir(), '.orchestrator', 'metrics', 'subagents.jsonl');
+  // #1722: the main checkout's copy when the launch dir is a linked worktree
+  // that gitignores the ledger (emit-session.mjs reads it there).
+  return resolveLedgerPath('.orchestrator/metrics/subagents.jsonl');
 }
 
 /**

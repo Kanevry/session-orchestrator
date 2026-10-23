@@ -719,9 +719,12 @@ describe('gradeScopeEntry — hook / validator grading parity (#1398 cond. 4)', 
   // Skipped (never silently green) where `/tmp` is not a symlink — Linux CI has
   // no alias spelling to mint, and there the literal verdicts carry the load.
   const TMP_IS_ALIASED = fs.realpathSync('/tmp') !== '/tmp';
+  // The resolver reports canonical prefixes with `/` on every platform (it joins
+  // `realpathSync(…).split(path.sep)`), so the expectation is spelled the same way.
+  const realTmp = () => fs.realpathSync('/tmp').split(path.sep).join('/');
 
   it.skipIf(!TMP_IS_ALIASED)('canonicalizeGrantPrefix actually RESOLVES the alias — a no-op resolver dies here', () => {
-    const real = fs.realpathSync('/tmp');
+    const real = realTmp();
     // (a) the resolver does work: literal in, canonical out.
     expect(canonicalizeGrantPrefix('/tmp/q6b-probe/x')).toBe(`${real}/q6b-probe/x`);
     expect(canonicalizeGrantPrefix('/tmp/q6b-probe/x')).not.toBe('/tmp/q6b-probe/x');
@@ -736,7 +739,7 @@ describe('gradeScopeEntry — hook / validator grading parity (#1398 cond. 4)', 
     });
     // …and the finding names the spelling that would work, so it is actionable.
     expect(gradeScopeEntry('/tmp/q6b-probe/**', { resolve: canonicalizeGrantPrefix }).message)
-      .toContain(`${fs.realpathSync('/tmp')}/q6b-probe/**`);
+      .toContain(`${realTmp()}/q6b-probe/**`);
   });
 });
 

@@ -1290,16 +1290,26 @@ function releaseMarkerPath(repoRoot, sessionId) {
  * session id. Revisit if `.orchestrator/runtime/lock-released/` grows past a
  * few hundred entries.
  *
- * @param {{ repoRoot?: string, sessionId: string }} args
+ * `reason` (optional, #1747) records why the lock was given back; the
+ * SessionStart bootstrap writes `'lead-yield'` and honours such a marker only
+ * while a fleet lead's lease is active. Absent = an explicit release.
+ *
+ * @param {{ repoRoot?: string, sessionId: string, reason?: string }} args
  * @returns {{ ok: true, path: string } | { ok: false, reason: string, error?: string }}
  */
-export function writeReleaseMarker({ repoRoot, sessionId } = {}) {
+export function writeReleaseMarker({ repoRoot, sessionId, reason } = {}) {
   try {
     const file = releaseMarkerPath(repoRoot, sessionId);
     if (file === null) return { ok: false, reason: 'unsafe-session-id' };
     const w = writeJsonAtomicSync(
       file,
-      { schema_version: 1, session_id: sessionId, released_at: nowIso(), host: stableHostname() },
+      {
+        schema_version: 1,
+        session_id: sessionId,
+        released_at: nowIso(),
+        host: stableHostname(),
+        ...(typeof reason === 'string' ? { reason } : {}),
+      },
       { tmpPrefix: '.lock-released.tmp' },
     );
     if (!w.ok) return { ok: false, reason: 'fs-error', error: w.error };
@@ -1322,6 +1332,25 @@ export function hasReleaseMarker({ repoRoot, sessionId } = {}) {
     return file !== null && fs.lstatSync(file).isFile();
   } catch {
     return false;
+  }
+}
+
+/**
+ * The release marker body for `sessionId`, or null when it is absent, unsafe,
+ * not a regular file or not a JSON object (#1747). Never throws. Existence
+ * alone is {@link hasReleaseMarker}; this reader only adds the `reason`.
+ *
+ * @param {{ repoRoot?: string, sessionId: string }} args
+ * @returns {{ reason?: unknown } & Record<string, unknown> | null}
+ */
+export function readReleaseMarker({ repoRoot, sessionId } = {}) {
+  try {
+    const file = releaseMarkerPath(repoRoot, sessionId);
+    if (file === null || !fs.lstatSync(file).isFile()) return null;
+    const body = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return body !== null && typeof body === 'object' && !Array.isArray(body) ? body : null;
+  } catch {
+    return null;
   }
 }
 

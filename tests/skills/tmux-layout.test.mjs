@@ -376,6 +376,28 @@ describe('tmux-layout status pane renders provenance (#1342)', () => {
     expect(out).not.toContain('running');
   });
 
+  // BUG (#1730): the pane read its own cwd, while the writer puts agent status
+  // beside the session's own lock — a second terminal in another checkout
+  // showed "no agent-status yet". The root literal must also survive a single
+  // quote in the path, which would end the shell-quoted `-e` script.
+  it('reads the root written into the command, not its cwd, also with a quote in the path', () => {
+    const own = mkdtempSync(join(tmpdir(), "tmux-own'root-"));
+    try {
+      mkdirSync(join(own, '.orchestrator/runtime'), { recursive: true });
+      const rec = { agentId: 'worker-7', kind: 'status', text: 'running', ts: '2026-10-22T10:00:00.000Z' };
+      writeFileSync(join(own, '.orchestrator/runtime/agent-status-current.json'), JSON.stringify({ 'worker-7': rec }), 'utf8');
+      writeFileSync(join(own, '.orchestrator/runtime/agent-status.jsonl'), `${JSON.stringify(rec)}\n`, 'utf8');
+
+      const result = spawnSync('/bin/sh', ['-c', buildStatusPaneRenderCommand({ repoRoot: own })], {
+        cwd: repoRoot, encoding: 'utf-8', timeout: 30_000,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain('worker-7  running');
+    } finally {
+      rmSync(own, { recursive: true, force: true });
+    }
+  });
+
   // BUG: a cache with no ledger to check it against used to look exactly like
   // live state. It must carry a TEXT marker (⚠ + STALE), not colour alone.
   it('marks a cache with no ledger as ⚠ STALE / stale-cache', () => {

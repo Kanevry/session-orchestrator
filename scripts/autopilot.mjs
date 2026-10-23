@@ -54,6 +54,7 @@ import { detectPeers } from './lib/session-registry.mjs';
 import { normalizeSession } from './lib/session-schema.mjs';
 import { isBackfillStub, readCanonicalSessions } from './lib/sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './lib/platform.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // CLI-level flag extraction
@@ -153,7 +154,7 @@ const thresholds = loadResourceThresholds();
 // decay-floor-factor) actually take effect here (#670). Errors swallowed → [].
 
 const surfacedLearnings = await surfaceTopN(
-  resolve('.orchestrator/metrics/learnings.jsonl'),
+  resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', process.cwd()), // #1722
   15,
   { decay: decayOptsFromConfig(config && config['evolve.decay']) }
 );

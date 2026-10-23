@@ -33,6 +33,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 
 import { writeJsonAtomicSync } from './io.mjs';
+import { resolveEventsLedgerRoot } from './platform.mjs';
 import { resolveInstructionFile } from './common.mjs';
 import { _parseIssueBudget } from './config/issue-budget.mjs';
 import { parseStateMd } from './state-md/yaml-parser.mjs';
@@ -254,7 +255,27 @@ export function loadIssueBudgetConfig(repoRoot) {
  * @returns {string}
  */
 export function budgetStatePath(repoRoot, sessionId = null) {
-  return path.join(repoRoot, budgetStateRel(sessionId));
+  return path.join(budgetStateRoot(repoRoot), budgetStateRel(sessionId));
+}
+
+/**
+ * Root directory the runtime counter files live under (#1729). The PreToolUse
+ * hook charges at `CLAUDE_PROJECT_DIR` (usually the MAIN checkout) while
+ * session-end reconciles and reaps with the linked-worktree root; joining the
+ * raw root made the two sides open different files and report a false
+ * `no-ledger`. Mapping a linked worktree to its main checkout (the same
+ * resolver the event ledger uses) makes every reader and writer agree. Any
+ * other root (plain checkout, non-git dir, submodule) is returned resolved but
+ * otherwise unchanged. A non-string or blank root is passed through untouched
+ * so `path.join` keeps its previous behaviour instead of falling back to the
+ * ambient project dir.
+ *
+ * @param {string} repoRoot
+ * @returns {string}
+ */
+function budgetStateRoot(repoRoot) {
+  if (typeof repoRoot !== 'string' || repoRoot.trim() === '') return repoRoot;
+  return resolveEventsLedgerRoot(repoRoot);
 }
 
 /**
@@ -363,7 +384,9 @@ export function readBudgetState(repoRoot, sessionId) {
   // session has a file of its own.
   if (existsSync(ownFile)) return fresh;
 
-  return _readStateFile(path.join(repoRoot, BUDGET_STATE_REL), accountingSessionId) ?? fresh;
+  return (
+    _readStateFile(path.join(budgetStateRoot(repoRoot), BUDGET_STATE_REL), accountingSessionId) ?? fresh
+  );
 }
 
 /**
@@ -885,11 +908,14 @@ export function reapStaleBudgetFiles({
   const removed = [];
   const kept = [];
   try {
-    const dir = path.join(repoRoot, BUDGET_STATE_DIR_REL);
+    // Directory and own file from ONE mapped root (#1729): mapping only one of
+    // them would make the `file === ownFile` protection below never match.
+    const stateRoot = budgetStateRoot(repoRoot);
+    const dir = path.join(stateRoot, BUDGET_STATE_DIR_REL);
     const cutoff = now - maxAgeDays * 24 * 60 * 60 * 1000;
     const ownFile =
       typeof sessionId === 'string' && sessionId.length > 0
-        ? budgetStatePath(repoRoot, sessionId)
+        ? path.join(stateRoot, budgetStateRel(sessionId))
         : null;
 
     let names;

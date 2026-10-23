@@ -38,6 +38,7 @@ import { atomicWriteText, envelopeToError } from './io.mjs';
 
 import { canonicalizeSessions, isMeasuredSession } from './sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './platform.mjs';
+import { resolveLedgerPath } from './ledger-path.mjs';
 import { withVisibleInboxText } from './learnings/surface.mjs';
 import { inboxPathFor } from './learnings/store-role.mjs';
 
@@ -89,7 +90,7 @@ function sessionsJsonlPath(repoRoot) {
 }
 
 function learningsJsonlPath(repoRoot) {
-  return path.join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+  return resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot);
 }
 
 // ---------------------------------------------------------------------------

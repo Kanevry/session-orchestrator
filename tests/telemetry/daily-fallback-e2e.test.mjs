@@ -40,6 +40,7 @@ import path from 'node:path';
 
 import { grantConsent, readTelemetryState } from '../../scripts/lib/telemetry/consent.mjs';
 import { enqueue, queueStats } from '../../scripts/lib/telemetry/queue.mjs';
+import { homeEnv } from '../_helpers/home-env.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../../scripts/telemetry.mjs');
 const START = '2026-07-20T00:00:00.000Z';
@@ -124,7 +125,7 @@ function runFlushChild(extraEnv = {}) {
       cwd: tmpHome,
       env: {
         ...process.env,
-        HOME: tmpHome,
+        ...homeEnv(tmpHome),
         SO_TELEMETRY_ENDPOINT: `${base}/v1/records`,
         // Clear ambient kill-switches/opt-ins and CI so consent + the `ci`
         // field resolve deterministically from the fixtures this test sets up.

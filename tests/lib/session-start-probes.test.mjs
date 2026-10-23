@@ -850,6 +850,81 @@ describe('the built-in registry', () => {
     expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'budget-exceeded' });
   });
 
+  // BUG this catches (#1728): a red GitHub reading ran its last-green history
+  // query INSIDE `checkCiStatus`, so a slow query (measured 1605–1717 ms red
+  // vs a 2000 ms budget) left the probe without any delivered result — the
+  // 🚨 red line vanished behind "1 timed out". The fake mirrors both shapes:
+  // without `deferHistory` the entry function hangs in the history (the
+  // pre-#1728 path); with it, the red verdict returns and only the deferred
+  // history read hangs. Real registry args/followUp/render.
+  it('keeps the red line when the GitHub last-green history overruns the budget (#1728)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `const red = { status: 'red', ok: false, failingJobName: 'test', failingJobNames: ['test'] };
+      export async function probe(opts) {
+        if (opts.deferHistory !== true) await new Promise(() => {});
+        return { ...red, details: { cliUsed: 'gh', reason: 'last-green-deferred' }, deferredHistory: { nameWithOwner: 'o/r', headSha: 'a'.repeat(40) } };
+      }
+      export async function readDeferredGithubHistory() { await new Promise(() => {}); }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+    await import(fake.spec);
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' }, timeoutMs: 300 },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      '🚨 CI RED on HEAD — last green: unknown (history not read within the probe budget). Failing job: test',
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', followUp: 'budget-exceeded' });
+    expect(out.results[0].outcome).not.toBe('timeout');
+  });
+
+  // BUG this catches (#1728 review, 2026-10-22): the overrun test above never
+  // lets the history read return, so nothing pinned WHAT the follow-up hands
+  // it. Passing the delivered fallback (`deferredHistory` already stripped)
+  // makes the real reader a no-op: the banner said "history not read within
+  // the probe budget" with `ran-alert` and no `followUp` flag — and every test
+  // stayed green. The fake reads history only from a reading that still
+  // carries `deferredHistory`, exactly like `readDeferredGithubHistory`.
+  it('renders the last-green history when the deferred read returns inside the budget (#1728)', async () => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    const dir = await mkTmp();
+    const { emit } = captureEmit();
+    const fake = await fakeProbe(
+      dir,
+      'ci-status',
+      `export async function probe(opts) {
+        if (opts.deferHistory !== true) await new Promise(() => {});
+        return { status: 'red', ok: false, failingJobName: 'test', failingJobNames: ['test'], details: { cliUsed: 'gh', reason: 'last-green-deferred' }, deferredHistory: { nameWithOwner: 'o/r', headSha: 'a'.repeat(40) } };
+      }
+      export async function readDeferredGithubHistory(result) {
+        if (!result?.deferredHistory) return result;
+        const { deferredHistory: _d, ...rest } = result;
+        return { ...rest, details: { cliUsed: 'gh' }, redCount: 3, lastGreen: { sha: 'b'.repeat(40), ageCommits: 3 } };
+      }`,
+      { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
+    );
+    await import(fake.spec);
+
+    const out = await runSessionStartProbes(
+      { repoRoot: dir, env: { SO_PROBES_INCLUDE_NETWORK: '1' }, timeoutMs: 1500 },
+      { probes: [fake], emit },
+    );
+
+    expect(out.bannerLines).toEqual([
+      '🚨 CI RED on HEAD — last green: commit bbbbbbb (3 commits ago). Failing job: test',
+    ]);
+    expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-alert' });
+    expect(out.results[0].followUp).toBeUndefined();
+  });
+
   // BUG this catches (#1396): the renderer ran `git rev-parse` itself — for
   // the pushed SHA after a fallen-back follow-up, and for HEAD beside a
   // set-aside failed pipeline — AFTER the budget race, where
@@ -908,8 +983,14 @@ describe('the built-in registry', () => {
 
   // BUG this catches (#1332 review, LOW): when HEAD IS the pushed commit the
   // follow-up asked checkCiStatus the identical question a second time —
-  // double the CLI cost on the path most likely to time out.
-  it('never re-queries CI when the pushed commit is HEAD (#1332)', async () => {
+  // double the CLI cost on the path most likely to time out. The GitHub rows
+  // (#1727): the GitHub path now reads the LOCAL HEAD sha too, so the skip
+  // keyed on the GitLab reason alone re-asked GitHub the same question.
+  it.each([
+    { reason: 'no-pipeline-for-head-sha', cli: 'glab', onDemand: 'run `glab ci status` on demand' },
+    { reason: 'no-check-runs-for-head', cli: 'gh', onDemand: 'run `gh run list` on demand' },
+    { reason: 'head-sha-not-on-remote', cli: 'gh', onDemand: 'run `gh run list` on demand' },
+  ])('never re-queries CI when the pushed commit is HEAD, $reason (#1332, #1727)', async ({ reason, cli, onDemand }) => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     const dir = await mkTmp();
     const pushedSha = initRepoWithUpstream(dir, { ahead: false });
@@ -919,7 +1000,7 @@ describe('the built-in registry', () => {
       'ci-status',
       `export function probe(opts) {
         globalThis.__p5aCiCalls.push(opts);
-        return { status: 'unknown', ok: false, details: { reason: 'no-pipeline-for-head-sha', currentPipelineId: null, cliUsed: 'glab' } };
+        return { status: 'unknown', ok: false, details: { reason: ${JSON.stringify(reason)}, cliUsed: ${JSON.stringify(cli)} } };
       }`,
       { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
     );
@@ -931,9 +1012,9 @@ describe('the built-in registry', () => {
         { probes: [fake], emit },
       );
 
-      expect(globalThis.__p5aCiCalls).toEqual([{ repoRoot: dir }]);
+      expect(globalThis.__p5aCiCalls).toEqual([{ repoRoot: dir, deferHistory: true }]);
       expect(out.bannerLines).toEqual([
-        `⚠ ci-status: CI status for HEAD could not be determined (no-pipeline-for-head-sha) — last pushed: ${pushedSha.slice(0, 8)} = HEAD — run \`glab ci status\` on demand`,
+        `⚠ ci-status: CI status for HEAD could not be determined (${reason}) — last pushed: ${pushedSha.slice(0, 8)} = HEAD — ${onDemand}`,
       ]);
     } finally {
       delete globalThis.__p5aCiCalls;
@@ -944,23 +1025,26 @@ describe('the built-in registry', () => {
   // its no-data state as `no-check-runs-for-head`, so the follow-up keyed on
   // the GitLab reason alone never ran there and a red pushed commit stayed
   // invisible on every GitHub-hosted repo.
-  // `ahead: false` (HEAD === @{upstream}, the normal state right after a push)
-  // catches the same-SHA skip leaking onto GitHub: there `checkCiStatus` asks
-  // for the literal ref `HEAD`, which GitHub resolves to the REMOTE default
-  // branch, so the pushed SHA must be re-queried even when it equals local HEAD.
-  it.each([{ ahead: true }, { ahead: false }])('runs the pushed-SHA follow-up for the GitHub no-check-runs reason too, ahead=$ahead (#1332)', async ({ ahead }) => {
+  // `head-sha-not-on-remote` (#1727): since the GitHub path asks for the LOCAL
+  // HEAD sha, an unpushed HEAD comes back with this reason; without it in
+  // `PUSHED_FOLLOW_UP_REASONS` the line degraded to the on-demand hint and the
+  // red pushed commit stayed silent.
+  it.each([
+    { reason: 'no-check-runs-for-head' },
+    { reason: 'head-sha-not-on-remote' },
+  ])('runs the pushed-SHA follow-up for the GitHub $reason reason too (#1332, #1727)', async ({ reason }) => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     const dir = await mkTmp();
-    const pushedSha = initRepoWithUpstream(dir, { ahead });
+    const pushedSha = initRepoWithUpstream(dir, { ahead: true });
     const { emit } = captureEmit();
     const fake = await fakeProbe(
       dir,
       'ci-status',
       `export function probe(opts) {
         if (opts.sha === ${JSON.stringify(pushedSha)}) {
-          return { status: 'red', ok: false, failingJobName: 'test', details: { cliUsed: 'gh', reason: 'lastGreen-not-implemented-for-github' } };
+          return { status: 'red', ok: false, failingJobName: 'test', redCount: 1, details: { cliUsed: 'gh', checkRunCounts: { failure: 1 } } };
         }
-        return { status: 'unknown', ok: false, details: { cliUsed: 'gh', reason: 'no-check-runs-for-head' } };
+        return { status: 'unknown', ok: false, details: { cliUsed: 'gh', reason: ${JSON.stringify(reason)} } };
       }`,
       { network: true, args: registryProbe.args, followUp: registryProbe.followUp, render: registryProbe.render, severityOf: registryProbe.severityOf },
     );
@@ -971,7 +1055,7 @@ describe('the built-in registry', () => {
     );
 
     expect(out.bannerLines).toEqual([
-      `🚨 ci-status: CI status for HEAD could not be determined (no-check-runs-for-head) — last pushed: ${pushedSha.slice(0, 8)} — CI red`,
+      `🚨 ci-status: CI status for HEAD could not be determined (${reason}) — last pushed: ${pushedSha.slice(0, 8)} — CI red`,
     ]);
     // #1337: a red pushed commit is an alert, not a warning.
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-alert', severity: 'alert' });
@@ -1182,7 +1266,7 @@ describe('#856 — GitHub check-run counts reach the session-start banner', () =
     ['unknown', 'check-runs-queued', { queued: 1 }, 'queued: 1', 'ran-warn'],
     ['unknown', 'check-runs-cancelled', { cancelled: 1 }, 'cancelled: 1', 'ran-warn'],
     ['unknown', 'check-runs-mixed', { inProgress: 1, queued: 2, cancelled: 1 }, 'in progress: 1, queued: 2, cancelled: 1', 'ran-warn'],
-    ['red', 'lastGreen-not-implemented-for-github', { failure: 1, inProgress: 1 }, 'failed/action required: 1, in progress: 1', 'ran-alert'],
+    ['red', 'last-green-query-failed', { failure: 1, inProgress: 1 }, 'failed/action required: 1, in progress: 1', 'ran-alert'],
   ])('renders %s / %s with counts and unchanged severity', async (status, reason, counts, text, outcome) => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     const dir = await mkTmp();
@@ -1199,5 +1283,37 @@ describe('#856 — GitHub check-run counts reach the session-start banner', () =
       expect(out.bannerLines[0]).toContain(reason);
       expect(out.bannerLines[0]).toContain('run `gh run list` on demand');
     } else expect(out.bannerLines[0]).toContain('CI RED');
+  });
+
+  // BUGS these catch (#856): the red line interpolated GitLab-only fields, so
+  // a GitHub red reading printed `(pipeline #?)` and `— last green: #undefined
+  // (…, undefined pipelines ago)` into the banner the operator reads; and a
+  // failed lastGreen side query (`last-green-query-failed`) rendered exactly
+  // like "no green commit in the window". The GitLab row pins the pre-#856
+  // text byte for byte — no other test renders a GitLab `lastGreen`.
+  it.each([
+    {
+      label: 'GitLab red with a last green pipeline',
+      reading: { status: 'red', ok: false, failingJobName: 'test', redCount: 3, lastGreen: { sha: 'abcdef0123456789', pipelineId: 9300, ageCommits: 3, agePipelines: 3, ageDays: 1 }, details: { currentPipelineId: 9303, cliUsed: 'glab' } },
+      line: '🚨 CI RED on HEAD (pipeline #9303) — last green: #9300 (commit abcdef0, 3 pipelines ago). Failing job: test',
+    },
+    {
+      label: 'GitHub red one commit after green',
+      reading: { status: 'red', ok: false, failingJobName: 'test', failingJobNames: ['test'], redCount: 1, lastGreen: { sha: 'abcdef0123456789', ageCommits: 1, ageDays: 0 }, details: { cliUsed: 'gh' } },
+      line: '🚨 CI RED on HEAD — last green: commit abcdef0 (1 commit ago). Failing job: test',
+    },
+    {
+      label: 'GitHub red several commits after green',
+      reading: { status: 'red', ok: false, failingJobName: 'test', failingJobNames: ['test'], redCount: 4, lastGreen: { sha: 'abcdef0123456789', ageCommits: 4, ageDays: null }, details: { cliUsed: 'gh' } },
+      line: '🚨 CI RED on HEAD — last green: commit abcdef0 (4 commits ago). Failing job: test',
+    },
+    {
+      label: 'GitHub red whose history query failed',
+      reading: { status: 'red', ok: false, failingJobName: 'test', failingJobNames: ['test'], details: { cliUsed: 'gh', reason: 'last-green-query-failed' } },
+      line: '🚨 CI RED on HEAD — last green: unknown (history query failed). Failing job: test',
+    },
+  ])('renders the red line for $label (#856)', ({ reading, line }) => {
+    const registryProbe = PROBES.find((p) => p.id === 'ci-status');
+    expect(registryProbe.render(reading, {})).toBe(line);
   });
 });

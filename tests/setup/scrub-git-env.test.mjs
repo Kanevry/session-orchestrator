@@ -25,7 +25,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +47,33 @@ function mkTmp(prefix) {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   tmpDirs.push(dir);
   return dir;
+}
+
+/**
+ * Install a hook that runs `env`, which prints the environment it was started
+ * with, so a probe variable in the commit output proves the hook RAN.
+ *
+ * On macOS it is a SYMLINK to the system `env` binary: there the first exec of
+ * a newly written executable waits on a system-wide exec-policy check that
+ * queues across the host. Measured 2026-10-02: 223 ms alone, p50 2014 / max
+ * 3461 ms with 24 such launches in parallel, against 62 / 135 ms for the
+ * symlink; the test hit the 10 s timeout under the full pre-push suite at load
+ * ~45 the same day.
+ *
+ * Elsewhere it is a `#!/bin/sh` script (#1720): on the ubuntu-latest image of
+ * 2026-10-21 `/usr/bin/env` is the uutils multicall binary, which refuses a
+ * foreign argv[0] ("Requested utility `pre-commit` does not match executable
+ * name"), so the symlink failed the control step. Ceiling: a macOS `env` that
+ * turns multicall breaks the symlink the same way — then use the script there
+ * too and accept the exec-policy cost.
+ */
+function installEnvHook(hookPath) {
+  if (process.platform === 'darwin') {
+    symlinkSync('/usr/bin/env', hookPath);
+    return;
+  }
+  writeFileSync(hookPath, '#!/bin/sh\nexec env\n');
+  chmodSync(hookPath, 0o755);
 }
 
 /** A minimal env a spawned git actually needs, with nothing git-pointing in it. */
@@ -125,20 +152,13 @@ describe('scrubGitEnv — sweeps the GIT_ namespace, not a list of names', () =>
     // the fixture never chose. The A/B is the proof the assertion discriminates:
     // the SAME commit with the unscrubbed env fires the hook.
     //
-    // The foreign hook is a SYMLINK to the system `env` binary, never a script
-    // written here: `env` prints the environment it was started with, so the
-    // probe variable in the commit output proves the hook RAN. Why not a fresh
-    // `#!/bin/sh` file: on macOS the first exec of a newly written executable
-    // waits on a system-wide exec-policy check that queues across the host.
-    // Measured 2026-10-02: 223 ms alone, p50 2014 / max 3461 ms with 24 such
-    // launches in parallel, against 62 / 135 ms for this symlink. It was the one
-    // cost here that grows with host-wide contention, and this test hit the
-    // 10 s timeout under the full pre-push suite at load ~45 the same day.
+    // The foreign hook prints its environment (see installEnvHook for why it is
+    // a symlink on macOS and a script elsewhere, #1720).
     const root = mkTmp('so-scrub-git-env-');
     const hooks = join(root, 'foreignhooks');
     const repo = join(root, 'repo');
     mkdirSync(hooks, { recursive: true });
-    symlinkSync('/usr/bin/env', join(hooks, 'pre-commit'));
+    installEnvHook(join(hooks, 'pre-commit'));
 
     execFileSync('git', ['init', '-q', repo], { env: baseEnv() });
     for (const [k, v] of [['user.email', 't@e.com'], ['user.name', 'T'], ['commit.gpgsign', 'false']]) {

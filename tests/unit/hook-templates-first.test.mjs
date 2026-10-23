@@ -29,7 +29,7 @@
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -774,6 +774,46 @@ describe('malformed ack JSON variants', { timeout: 15000 }, () => {
     const result = await runHook({
       projectDir: dir,
       stdin: bashPayload('glab mr create --title foo', 'test-session-ok'),
+    });
+    expectAllow(result);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Linked worktree — ack file lives in the MAIN checkout (sweep of #1729)
+// ---------------------------------------------------------------------------
+
+describe('linked worktree acknowledgement root', { timeout: 15000 }, () => {
+  // Bug: `/templates-ack` and the hook resolved different roots, so a session
+  // in a linked worktree never saw an ack stored at the main checkout.
+  it('allows in a linked worktree when the ack is stored at the main checkout', async () => {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), 'tpl-first-wt-'));
+    tmpDirs.push(base);
+    const main = path.join(base, 'main');
+    const wt = path.join(base, 'wt');
+    const git = (cwd, ...args) =>
+      execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.org', '-c', 'commit.gpgsign=false', ...args], { cwd, stdio: 'pipe' });
+    await fs.mkdir(path.join(main, '.orchestrator', 'policy'), { recursive: true });
+    await fs.writeFile(
+      path.join(main, '.orchestrator', 'policy', 'templates-policy.json'),
+      JSON.stringify(FIXTURE_POLICY, null, 2),
+    );
+    // A tracked issue template, so the hook would otherwise DENY the create.
+    await fs.mkdir(path.join(main, '.gitlab', 'issue_templates'), { recursive: true });
+    await fs.writeFile(path.join(main, '.gitlab', 'issue_templates', 'Default.md'), '## Summary\n');
+    git(main, 'init', '-q');
+    git(main, 'add', '.');
+    git(main, 'commit', '-q', '-m', 'init');
+    git(main, 'worktree', 'add', '-q', wt);
+    const runtimeDir = path.join(main, '.orchestrator', 'runtime');
+    await fs.mkdir(runtimeDir, { recursive: true });
+    await fs.writeFile(
+      path.join(runtimeDir, 'templates-acknowledged.json'),
+      JSON.stringify({ 'test-session-wt': { acknowledgedAt: '2026-10-22T10:00:00Z' } }),
+    );
+    const result = await runHook({
+      projectDir: wt,
+      stdin: bashPayload('glab issue create --title foo', 'test-session-wt'),
     });
     expectAllow(result);
   });

@@ -44,6 +44,7 @@ import { loadOwnerConfig } from '../owner-yaml.mjs';
 import { readJsonlFile } from '../io.mjs';
 import { readEventsWithRotations } from '../events.mjs';
 import { resolveEventsLedgerRoot } from '../platform.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 import { readCanonicalSessions } from '../sessions-canonical.mjs';
 import { resolvePrivateConfigDir } from '../config/private-config-dir.mjs';
 import { readSessionProfile } from '../state-md.mjs';
@@ -505,6 +506,23 @@ export function deriveSessionFromEvents(metricsDir) {
 }
 
 /**
+ * `skill-invocations.jsonl` for the metrics dir `metricsDir` (#1722): a
+ * `<root>/.orchestrator/metrics` dir resolves through {@link resolveLedgerPath}
+ * for `<root>` — the main checkout's ledger when `<root>` is a linked worktree
+ * that ignores it, else the dir's own — and any other dir is read as given.
+ *
+ * @param {string} metricsDir
+ * @returns {string}
+ */
+function skillInvocationsPathFor(metricsDir) {
+  const parent = path.dirname(metricsDir);
+  if (path.basename(metricsDir) === 'metrics' && path.basename(parent) === '.orchestrator') {
+    return resolveLedgerPath('.orchestrator/metrics/skill-invocations.jsonl', path.dirname(parent));
+  }
+  return path.join(metricsDir, 'skill-invocations.jsonl');
+}
+
+/**
  * Build ONE whitelist-projected usage-ping record from the local JSONL streams.
  *
  * Reads `<metricsDir>/sessions.jsonl` (via `readCanonicalSessions`, #1186 — the
@@ -547,11 +565,19 @@ export function buildBatch({
   consentState,
 } = {}) {
   try {
+    // `dir` stays the caller's metrics dir: STATE.md and the events fallback
+    // below derive their own roots from it.
+    // ledger-root: the caller's dir as given; each ledger in it resolves below
     const dir = metricsDir || path.join(process.cwd(), '.orchestrator', 'metrics');
     const nowIso = now || new Date().toISOString();
 
-    const sessions = readCanonicalSessions({ filePath: path.join(dir, 'sessions.jsonl') });
-    const invocations = readJsonlFile(path.join(dir, 'skill-invocations.jsonl'), { skipInvalid: true });
+    // #1722: each ledger resolves on its own, an explicit metricsDir included
+    // (the SessionEnd flush hands over the LAUNCH dir's, which is a linked
+    // worktree for a session started there; deriveSessionFromEvents maps the
+    // events fallback the same way) — sessions via the one-ledger root
+    // (#1514/#1584), skill-invocations via skillInvocationsPathFor().
+    const sessions = readCanonicalSessions({ filePath: path.join(resolveEventsLedgerRoot(dir), 'sessions.jsonl') });
+    const invocations = readJsonlFile(skillInvocationsPathFor(dir), { skipInvalid: true });
 
     const sessionRecord = mostRecentSession(sessions);
 
@@ -865,7 +891,7 @@ export function shouldDailyFlush({ statePath, queuePath, metricsDir, now = Date.
     //     (271 records / 292 KB in this repo, 2026-08-23) that is sub-millisecond
     //     and it only runs once the 24h gate above has already passed. Revisit
     //     with a tail-read if any repo's sessions.jsonl passes ~10 MB.
-    const dir = metricsDir || path.join(process.cwd(), '.orchestrator', 'metrics');
+    const dir = metricsDir || path.join(resolveEventsLedgerRoot(process.cwd()), '.orchestrator', 'metrics');
     const sessions = readCanonicalSessions({ filePath: path.join(dir, 'sessions.jsonl') });
     const last = mostRecentSession(sessions);
     const completedMs = Date.parse(last?.completed_at);

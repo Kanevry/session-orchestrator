@@ -16,6 +16,7 @@ import path from 'node:path';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { unwritablePath } from '../_helpers/unwritable-path.mjs';
+import { homeEnv } from '../_helpers/home-env.mjs';
 
 const CLI = path.resolve(import.meta.dirname, '../../scripts/telemetry.mjs');
 const REPO_VERSION = JSON.parse(
@@ -43,7 +44,7 @@ function runCli(args, extraEnv = {}) {
     encoding: 'utf8',
     env: {
       ...process.env,
-      HOME: tmpHome,
+      ...homeEnv(tmpHome),
       // Clear ambient kill-switches / opt-ins so consent resolves from the file.
       DO_NOT_TRACK: '',
       SO_TELEMETRY: '',

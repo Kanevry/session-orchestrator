@@ -80,8 +80,11 @@ try {
   const { pathToFileURL } = await import('node:url');
   const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
     await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
-  const nodePath = await import('node:path');
-  await appendSkillInvocation(nodePath.join(process.cwd(), DEFAULT_SKILL_INVOCATIONS_PATH), {
+  const { resolveLedgerPath } =
+    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/ledger-path.mjs').href);
+  // In a linked worktree the main checkout's ledger when it is gitignored there,
+  // so the record survives the worktree (#1722).
+  await appendSkillInvocation(resolveLedgerPath(DEFAULT_SKILL_INVOCATIONS_PATH, process.cwd()), {
     timestamp: new Date().toISOString(),
     event: 'selected',
     skill: 'session-orchestrator:session-start',

@@ -7,8 +7,10 @@
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { createGitRunner } from '../../scripts/lib/github-export.mjs';
 import { validatePublicExportPolicy } from '../../scripts/lib/validate/check-owner-leakage.mjs';
@@ -20,6 +22,11 @@ import {
   runSnapshotProbe,
 } from '../../scripts/lib/snapshot-probe.mjs';
 import { fixtureGit, makeTmpDir, removeTree } from '../_helpers/tmp-fixture.mjs';
+
+// win32: runSnapshotProbe spawns `offload run …` by name in a snapshot dir it
+// creates itself; the fake is a node shebang script Windows cannot start, and a
+// node.exe fake would need its `run` script in that not-yet-existing cwd.
+const offloadTitle = (title) => (process.platform === 'win32' ? `${title} [skipped on win32: needs the shebang offload fake on PATH]` : title);
 
 const ID_ENV = {
   GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.invalid',
@@ -199,7 +206,7 @@ describe('runSnapshotProbe', () => {
     expect(readdirSync(tmpRoot)).toEqual([]);
   });
 
-  it('keeps the remote gate output off stdout, so --json prints exactly one JSON object', async () => {
+  it.skipIf(process.platform === 'win32')(offloadTitle('keeps the remote gate output off stdout, so --json prints exactly one JSON object'), async () => {
     // Bug: runRemoteGate wrote the offload run's stdout (gate output, SO_PRE_PUSH_RESULT=…)
     // to process.stdout ahead of the probe's own JSON.
     const { repo, tmpRoot, nodeModules, git } = makeFixture();
@@ -208,7 +215,7 @@ describe('runSnapshotProbe', () => {
     chmodSync(join(bin, 'offload'), 0o755);
     const offloadConfig = join(dirname(tmpRoot), 'offload-config');
     write(offloadConfig, { 'hosts/fakehost.env': '' });
-    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`);
+    vi.stubEnv('PATH', `${bin}${delimiter}${process.env.PATH}`);
     vi.stubEnv('OFFLOAD_CONFIG_DIR', offloadConfig);
     const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
@@ -230,6 +237,35 @@ describe('runSnapshotProbe', () => {
     expect(r.steps.map((s) => [s.name, s.status, s.exitCode])).toEqual([['remote-gate', 'fail', 1]]);
     expect(stdout).not.toContain('REMOTE-NOISE');
     expect(stderr).toContain('REMOTE-NOISE');
+  });
+  it.skipIf(process.platform === 'win32')('removes its snapshot dir when SIGTERM arrives mid-step, and still dies by the signal', () => {
+    // Bug: dropping (or putting under `keep`) the registerExitCleanup call in runSnapshotProbe
+    // leaves the ~2,400-file snapshot in TMPDIR after a signal (#1715/#1719); the finally
+    // block never runs on a signal, and process-group.test.mjs only proves the mechanism.
+    const { repo, tmpRoot, nodeModules } = makeFixture();
+    const probeUrl = pathToFileURL(join(process.cwd(), 'scripts/lib/snapshot-probe.mjs')).href;
+    const script = [
+      `const { runSnapshotProbe } = await import(${JSON.stringify(probeUrl)});`,
+      `const [repoRoot, tmpRoot, nodeModules] = process.argv.slice(1);`,
+      `const runner = async (cmd, args, { cwd }) => {`,
+      `  process.stderr.write('RUNNER_CWD=' + cwd + '\\n');`,
+      `  process.kill(process.pid, 'SIGTERM');`,
+      `  setInterval(() => {}, 1000);`,
+      `  return new Promise(() => {});`,
+      `};`,
+      `await runSnapshotProbe({ repoRoot, tmpRoot, nodeModules, steps: ['validate-plugin'], writeReceipt: false, runner });`,
+    ].join('\n');
+
+    const res = spawnSync(process.execPath, ['--input-type=module', '-e', script, repo, tmpRoot, nodeModules], {
+      timeout: 20000, killSignal: 'SIGKILL', encoding: 'utf8',
+    });
+
+    expect(res.error).toBeUndefined();
+    expect(res.signal).toBe('SIGTERM');
+    const runnerCwd = res.stderr.match(/RUNNER_CWD=(.+)/)[1];
+    expect(runnerCwd.startsWith(tmpRoot)).toBe(true);
+    expect(existsSync(runnerCwd)).toBe(false);
+    expect(readdirSync(tmpRoot).filter((n) => n.startsWith('so-snapshot-probe-'))).toEqual([]);
   });
 });
 

@@ -48,7 +48,8 @@ describe('renderEvalReport — golden-file byte-stability (FA5)', () => {
   it('renders byte-identical HTML against the checked-in golden file', () => {
     const record = loadRecordFixture('valid-session-eval.json');
     const html = renderEvalReport(record, { generatedAt: FIXED_GENERATED_AT });
-    const golden = readFileSync(path.join(GOLDEN_DIR, 'report-v1.html'), 'utf8');
+    // A core.autocrlf=true checkout (Windows) rewrites the golden file's LF to CRLF; the renderer emits LF.
+    const golden = readFileSync(path.join(GOLDEN_DIR, 'report-v1.html'), 'utf8').replace(/\r\n/g, '\n');
     expect(Buffer.from(html, 'utf8')).toEqual(Buffer.from(golden, 'utf8'));
   });
 });

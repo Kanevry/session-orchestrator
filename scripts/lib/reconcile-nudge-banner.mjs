@@ -35,8 +35,18 @@
  *     high-water mark across all runs to date), used for the "new learnings
  *     since last run" delta heuristic.
  * There is no separate `reconcile`-scoped event in `.orchestrator/metrics/events.jsonl`
- * — the idempotency sidecar IS the durable run record, so this module reads
- * that directly rather than re-deriving a signal from the generic event log.
+ * — the idempotency sidecar is the durable checkout-local run record, so this
+ * module reads that directly rather than re-deriving a signal from the generic
+ * event log. Since #1710 a second, checkout-independent run record exists: the
+ * append-only verdict ledger (`./reconcile/verdict-ledger.mjs`, main checkout
+ * via `resolveEventsLedgerRoot`). Its `run` lines carry `at` and the number of
+ * learnings that run loaded; the ledger's run recency comes from those `run`
+ * lines ONLY (a verdict line is not a run — a ledger holding only hand stamps or
+ * `sweep-expired-rules --apply` verdicts reports no run, so rule (a) says so
+ * honestly instead of rule (b) counting every learning as new). `lastRunAt` is
+ * the later of both sources and the delta baseline is the larger of the sidecar
+ * row count and that learnings count, so a fresh worktree without the sidecar
+ * still sees the run.
  *
  * Reuses the existing learnings-corpus helpers rather than re-implementing
  * filter logic:
@@ -72,12 +82,13 @@
  *  - Issue #723.
  */
 
-import { join } from 'node:path';
 
+import { resolveLedgerPath } from './ledger-path.mjs';
 import { readLearnings } from './learnings/io.mjs';
 import { surfaceTopN } from './learnings/surface.mjs';
 import { countReconcileBacklog } from './reconcile/backlog.mjs';
 import { loadCandidates } from './reconcile/idempotency.mjs';
+import { loadVerdictLedger } from './reconcile/verdict-ledger.mjs';
 import { readConfigFile } from './config/io.mjs';
 import { _parseReconcile } from './config/reconcile.mjs';
 
@@ -170,6 +181,17 @@ function _lastRunAt(candidates) {
 }
 
 /**
+ * @param {string|null} a - ISO timestamp or null
+ * @param {string|null} b - ISO timestamp or null
+ * @returns {string|null} the later of the two, or null when both are null
+ */
+function _laterIso(a, b) {
+  if (a === null) return b;
+  if (b === null) return a;
+  return Date.parse(b) > Date.parse(a) ? b : a;
+}
+
+/**
  * Pure computation — always returns the full shape (never null, never throws).
  * Touches disk only via the injected/default learnings + candidates readers,
  * all of which are themselves never-throwing.
@@ -215,7 +237,7 @@ export async function computeReconcileNudge(opts = {}) {
   };
 
   const repoRoot = typeof opts.repoRoot === 'string' && opts.repoRoot.length > 0 ? opts.repoRoot : process.cwd();
-  const learningsPath = join(repoRoot, LEARNINGS_PATH);
+  const learningsPath = resolveLedgerPath(LEARNINGS_PATH, repoRoot);
 
   /** @type {object[]} */
   let entries;
@@ -282,6 +304,9 @@ export async function computeReconcileNudge(opts = {}) {
   // sentence (HR-106). `repoRoot` stays required — the sidecar and the
   // `.claude/rules/` provenance scan are resolved from it.
   // Never throws (all-zero on failure).
+  // #1710 — the append-only verdict ledger (main checkout, outlives the
+  // checkout-local sidecar) is read ONCE and handed to the count as well.
+  const ledger = loadVerdictLedger(repoRoot);
   const {
     eligible: eligibleCount,
     alreadyMaterialized,
@@ -290,12 +315,21 @@ export async function computeReconcileNudge(opts = {}) {
     repoRoot,
     learnings: entries,
     ...(candidatesRead ? { existingCandidates: candidates } : {}),
+    ledgerKeys: ledger.terminalKeys,
     now: opts.now,
     minInsightChars,
   });
 
-  const lastRunAt = _lastRunAt(candidates);
-  const lastRunCandidateCount = Array.isArray(candidates) ? candidates.length : 0;
+  // The later of the sidecar's and the ledger's run evidence: a fresh worktree
+  // has no sidecar, yet the run on record in the ledger is still a run.
+  const lastRunAt = _laterIso(_lastRunAt(candidates), ledger.lastRunAt);
+  // The ledger's run record carries the learnings count that run saw, so a
+  // fresh worktree (no sidecar) does not report every learning as new. The max
+  // keeps the main checkout's delta unchanged — never larger than before.
+  const lastRunCandidateCount = Math.max(
+    Array.isArray(candidates) ? candidates.length : 0,
+    ledger.lastRunLearnings ?? 0,
+  );
   const delta = entries.length - lastRunCandidateCount;
   const quarantined = typeof skippedCandidates === 'number' ? skippedCandidates : 0;
 

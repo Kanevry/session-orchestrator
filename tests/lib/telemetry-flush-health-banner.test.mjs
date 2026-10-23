@@ -17,6 +17,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { permsEnforced } from '../_helpers/perms.mjs';
 
 import {
   checkTelemetryFlushHealth,
@@ -200,8 +201,8 @@ describe('checkTelemetryFlushHealth', () => {
   // one layer down): an EACCES/EIO on the ledger used to collapse onto the same
   // `null` as "the last flush was fine". A repo whose ledger the probe cannot
   // read displayed as a healthy channel — unfalsifiable by construction.
-  it.skipIf(process.getuid?.() === 0)(
-    'warns with reason ledger-unreadable when the ledger cannot be read',
+  it.skipIf(!permsEnforced())(
+    'warns with reason ledger-unreadable when the ledger cannot be read (skipped where chmod is not enforced: root, win32)',
     async () => {
       const dir = await mkRepo(flush('sandbox:probe-failed') + '\n');
       const file = path.join(dir, '.orchestrator', 'metrics', 'events.jsonl');

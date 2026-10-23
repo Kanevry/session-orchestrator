@@ -70,7 +70,7 @@ describe('.husky/pre-commit — owner-leakage stage (#494)', () => {
       expect(hookContent).toMatch(/--no-verify/);
     });
 
-    it('is exec-bit set (husky requirement)', () => {
+    it.skipIf(process.platform === 'win32')('is exec-bit set (husky requirement) (skipped on win32: the working tree has no exec bit)', () => {
       const stat = execFileSync('ls', ['-l', HOOK_PATH], { encoding: 'utf8' });
       // First char of perms is type; positions 1-3 = owner rwx
       expect(stat).toMatch(/^-r[w-]x/);

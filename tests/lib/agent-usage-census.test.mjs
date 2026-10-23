@@ -17,9 +17,10 @@ import { spawnSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, utimesSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { runCensus } from '@lib/agent-usage-census.mjs';
 
-const CLI = new URL('../../scripts/agent-usage-census.mjs', import.meta.url).pathname;
+const CLI = fileURLToPath(new URL('../../scripts/agent-usage-census.mjs', import.meta.url));
 const NOW = Date.parse('2026-10-14T12:00:00Z');
 const iso = (offsetSec) => new Date(NOW - 3_600_000 + offsetSec * 1000).toISOString();
 

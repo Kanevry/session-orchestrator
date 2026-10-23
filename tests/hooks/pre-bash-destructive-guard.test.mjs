@@ -1118,6 +1118,45 @@ describe('#983 redirect-truncate-protected — deny/allow by target', { timeout:
     expect(reason).toContain(`${dir}/CLAUDE.md`);
   });
 
+  it('denies a zsh group whose closing brace is glued to the protected operand (#1707)', async () => {
+    // zsh 5.9 creates `f1` for `{echo x >f1}`: the reader saw only `CLAUDE.md}`.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('{echo x >CLAUDE.md}') });
+    expectDeny(result, 'redirect-truncate-protected');
+  });
+
+  it('denies a glued close behind a word that closed only one zsh group (#1707)', async () => {
+    // zsh 5.9: `a}}` closes ONE group, so `CLAUDE.md}` closes the outer one and
+    // `CLAUDE.md` is truncated. 157ccde0 counted two closes for `a}}` → ALLOW.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('{ { echo a}}; echo x >CLAUDE.md}') });
+    expectDeny(result, 'redirect-truncate-protected');
+  });
+
+  it('denies a glued close behind a parameter expansion in a zsh group (#1707)', async () => {
+    // zsh 5.9: `${HOME}` closes no group, so `CLAUDE.md}` closes the group and
+    // `CLAUDE.md` is truncated. f99e1352 counted `${HOME}` as the close → ALLOW.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('{ echo ${HOME}; echo x >CLAUDE.md}') });
+    expectDeny(result, 'redirect-truncate-protected');
+  });
+
+  it('denies a glued-close ledger delete behind a quoted brace in a zsh group (#1707)', async () => {
+    // zsh 5.9 deletes `.orchestrator/metrics`: `"a}"` is text and closes nothing.
+    // f99e1352 counted it as the close and saw only `.orchestrator/metrics}` → ALLOW.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('{ echo "a}"; rm -r .orchestrator/metrics}') });
+    expectDeny(result, 'ledger-delete-protected');
+  });
+
+  it('denies a bash `repeat` command whose only operand is a truncating redirect (#1707)', async () => {
+    // In bash `repeat` is an ordinary command: the truncation runs before the
+    // lookup fails. 9a4d3eb7 swallowed `>AGENTS.md` as zsh's count word → ALLOW.
+    const dir = await mkProjectTracked();
+    const result = await runHook({ projectDir: dir, stdin: bashPayload('repeat >AGENTS.md') });
+    expectDeny(result, 'redirect-truncate-protected');
+  });
+
   it('denies a `~` spelling of a protected artefact', async () => {
     const dir = await mkProjectTracked();
     const result = await runHook({
@@ -1950,6 +1989,15 @@ describe('#1401 — delete/rename of a ledger file under .orchestrator/metrics/'
     // spot, and a `{` glued to the body's first word is still the opener.
     ['a zsh anonymous function', 'function { unlink .orchestrator/metrics/events.jsonl; }'],
     ['a zsh brace opener glued to the verb', 'function f() {unlink .orchestrator/metrics/events.jsonl;}; f'],
+    // #1707 — zsh 5.9 runs each of these; the reader saw no ledger operand.
+    ['a zsh closing brace glued to the operand', '{rm -r .orchestrator}'],
+    ['a zsh glued opener before a quoted verb', '{"unlink" .orchestrator/metrics/events.jsonl;}'],
+    ['a doubled zsh glued opener', '{{unlink .orchestrator/metrics/events.jsonl;}}'],
+    ['a zsh `repeat` body', 'repeat 1 { unlink .orchestrator/metrics/events.jsonl; }'],
+    ['a zsh `repeat` with a quoted count', 'repeat "2" unlink .orchestrator/metrics/events.jsonl'],
+    ['a zsh `always` body', '{ true; } always { unlink .orchestrator/metrics/events.jsonl; }'],
+    ['a `time` group body', 'time {unlink .orchestrator/metrics/events.jsonl;}'],
+    ['a zsh short function body', 'f() unlink .orchestrator/metrics/events.jsonl; f'],
     ['literal -c payload', 'bash -c "rm -f .orchestrator/metrics/events.jsonl"'],
     ['literal eval payload', 'eval "rm -f .orchestrator/metrics/events.jsonl"'],
   ])('blocks through %s', async (_label, command) => {
@@ -1991,6 +2039,10 @@ describe('#1401 — delete/rename of a ledger file under .orchestrator/metrics/'
     ['reading the ledger', 'cat .orchestrator/metrics/events.jsonl'],
     ['copying the ledger', 'cp .orchestrator/metrics/events.jsonl /tmp/backup.jsonl'],
     ['naming the path without a destructive verb', 'echo .orchestrator/metrics/events.jsonl'],
+    // #1707 controls: a word quoted from its first `{` is no group opener, and
+    // a glued group that writes a scratch file stays allowed.
+    ['a quoted literal that starts with a brace', '"{unlink" .orchestrator/metrics/events.jsonl'],
+    ['a glued group redirecting to a scratch file', '{echo x >/tmp/so-1707.txt}'],
   ])('still allows %s', async (_label, command) => {
     // False alarms are expensive here — this hook gates EVERY Bash call of every
     // session on the host. These are the shapes the repo's own CI, husky hooks

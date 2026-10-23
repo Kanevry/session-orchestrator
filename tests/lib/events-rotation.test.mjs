@@ -27,7 +27,7 @@ import {
   statSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { maybeRotate } from '@lib/events-rotation.mjs';
 import { ARCHIVE_DIR_NAME, ARCHIVE_NAME_RE, ROTATION_EVENT } from '@lib/events-schema.mjs';
 
@@ -267,7 +267,7 @@ describe('maybeRotate', () => {
 
       expect(result.firstTs).toBeNull();
       expect(result.lastTs).toBeNull();
-      expect(ARCHIVE_NAME_RE.test(result.archivedAs.split('/').pop())).toBe(true);
+      expect(ARCHIVE_NAME_RE.test(basename(result.archivedAs))).toBe(true);
       expect(result.archivedAs).toMatch(/events-unknown_\d{8}T\d{6}Z\.jsonl$/);
     });
   });

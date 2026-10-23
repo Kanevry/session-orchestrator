@@ -25,6 +25,7 @@ import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -516,7 +517,7 @@ async function instrumentCompilerDiscovery(dir) {
 it('without node_modules skips even when npx exists, and never spawns npx (#1612)', async () => {
   const dir = await mkProjectTracked({ claudeMdConfig: 'typecheck-command: none' });
   const { preload, marker } = await instrumentCompilerDiscovery(dir);
-  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', preload] });
+  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', pathToFileURL(preload).href] });
   expect(result.code).toBe(0);
   expect(result.stderr).toContain('"status":"skip"');
   await expect(fs.access(marker)).rejects.toThrow();
@@ -532,7 +533,7 @@ it('R1-07 runs the local Node compiler from a literal percent and space path', a
   await fs.mkdir(bin, { recursive: true });
   const compiler = path.join(bin, 'tsc');
   await fs.writeFile(compiler, "if (process.argv[2] !== '--noEmit') process.exit(1);\n");
-  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', preload] });
+  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', pathToFileURL(preload).href] });
   expect(result.code, result.stderr).toBe(0);
   expect(result.stderr).toContain('"status":"pass"');
   expect(JSON.parse((await fs.readFile(marker, 'utf8')).trim())).toBe(process.execPath);
@@ -563,7 +564,7 @@ it.each([null, 0])('R1-04 post-edit Windows timeout avoids CIM for child exitCod
     };
     syncBuiltinESMExports();
   `);
-  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', preload] });
+  const result = await runHook({ projectDir: dir, stdin: editPayload(path.join(dir, 'app.ts')), nodeArgs: ['--import', pathToFileURL(preload).href] });
   expect(result.code, result.stderr).toBe(0);
   expect(result.stderr).toContain('"status":"timeout"');
   const calls = await fs.readFile(marker, 'utf8').catch(error => {

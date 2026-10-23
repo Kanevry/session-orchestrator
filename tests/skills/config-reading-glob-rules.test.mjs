@@ -36,7 +36,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { loadApplicableRules } from '@lib/rule-loader.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
@@ -53,7 +53,7 @@ describe('narrow scope — scripts/lib/foo.mjs', () => {
       scopePaths: ['scripts/lib/foo.mjs'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).toContain('cli-design.md');
   });
 
@@ -63,7 +63,7 @@ describe('narrow scope — scripts/lib/foo.mjs', () => {
       scopePaths: ['scripts/lib/foo.mjs'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).not.toContain('testing.md');
   });
 
@@ -73,7 +73,7 @@ describe('narrow scope — scripts/lib/foo.mjs', () => {
       scopePaths: ['scripts/lib/foo.mjs'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     // security.md, development.md, parallel-sessions.md are always-on
     expect(names).toContain('security.md');
     expect(names).toContain('development.md');
@@ -104,7 +104,7 @@ describe('empty scopePaths', () => {
       scopePaths: [],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).not.toContain('cli-design.md');
     expect(names).not.toContain('testing.md');
   });
@@ -116,7 +116,7 @@ describe('empty scopePaths', () => {
     });
 
     // At least the known always-on rules must be present
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).toContain('ask-via-tool.md');
     expect(names).toContain('development.md');
     expect(names).toContain('security.md');
@@ -139,7 +139,7 @@ describe('scope path matching multiple rules', () => {
       scopePaths: ['tests/lib/foo.test.mjs'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).toContain('testing.md');
   });
 
@@ -149,7 +149,7 @@ describe('scope path matching multiple rules', () => {
       scopePaths: ['Sources/App/WalkAITalkieTests/EngineTests.swift'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).toContain('testing.md');
   });
 
@@ -163,7 +163,7 @@ describe('scope path matching multiple rules', () => {
       scopePaths: ['scripts/foo.test.mjs'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).toContain('cli-design.md');
     expect(names).toContain('testing.md');
   });
@@ -174,7 +174,7 @@ describe('scope path matching multiple rules', () => {
       scopePaths: ['scripts/lib/rule-loader.mjs'],
     });
 
-    const names = results.map((r) => r.path.split('/').pop());
+    const names = results.map((r) => basename(r.path));
     expect(names).toContain('cli-design.md');
     expect(names).toContain('development.md'); // always-on
   });

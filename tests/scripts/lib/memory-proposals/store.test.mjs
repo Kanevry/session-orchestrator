@@ -23,7 +23,7 @@ import fs, { writeFileSync, symlinkSync } from 'node:fs';
 import { tmpdir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { rmSync } from 'node:fs';
 
@@ -425,8 +425,8 @@ describe('appendProposal — parallel race', () => {
   async function raceWorkers(repoRoot, workers, quotaPerWave) {
     // The worker reads its index from process.argv[2] to produce a unique subject.
     const workerScript = `
-import { appendProposal } from ${JSON.stringify(join(PROJECT_ROOT, 'scripts/lib/memory-proposals/store.mjs'))};
-import { createProposalRecord } from ${JSON.stringify(join(PROJECT_ROOT, 'scripts/lib/memory-proposals/schema.mjs'))};
+import { appendProposal } from ${JSON.stringify(pathToFileURL(join(PROJECT_ROOT, 'scripts/lib/memory-proposals/store.mjs')).href)};
+import { createProposalRecord } from ${JSON.stringify(pathToFileURL(join(PROJECT_ROOT, 'scripts/lib/memory-proposals/schema.mjs')).href)};
 
 const record = createProposalRecord({
   type: 'workflow-pattern',
@@ -1161,7 +1161,11 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
   }
   const fsRename = fs.renameSync;
 
-  it.each(['archive-write', 'archive-sync', 'directory-before', 'temp-write', 'temp-sync', 'rename'])('G4: %s failure preserves exact active bytes and releases the lock', async (stage) => {
+  // win32 has no directory fsync to fail: store.mjs skips it there (#1744).
+  const rotationStages = ['archive-write', 'archive-sync', 'directory-before', 'temp-write', 'temp-sync', 'rename']
+    .filter((stage) => process.platform !== 'win32' || stage !== 'directory-before');
+
+  it.each(rotationStages)('G4: %s failure preserves exact active bytes and releases the lock', async (stage) => {
     const root = tmpRepo();
     writeFileSync(activeOf(root), '{"partial":');
     injectRotationFailure(stage);
@@ -1178,7 +1182,7 @@ describe('appendProposal — lossless overflow rotation (#1545)', () => {
     expect(existsSync(join(root, '.orchestrator/metrics/proposals-write.lock'))).toBe(false);
   });
 
-  it('G5: directory flush failure after rename retains every byte in archive and active', async () => {
+  it.skipIf(process.platform === 'win32')('G5: directory flush failure after rename retains every byte in archive and active', async () => {
     const root = tmpRepo();
     const record = makeRecord();
     writeFileSync(activeOf(root), '{"partial":');

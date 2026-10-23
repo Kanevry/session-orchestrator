@@ -17,6 +17,7 @@
  */
 
 import path from 'node:path';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 const ROLLUP_REL = '.orchestrator/metrics/test-runs.jsonl';
 const TEST_RUNS_REL = '.orchestrator/metrics/test-runs';
@@ -62,6 +63,7 @@ export function makeRunId() {
  * @throws {TypeError} on an invalid runId (see {@link assertRunId})
  */
 export function runDirPath(runId) {
+  // ledger-root: per-run artifact dir of this working tree, kept local
   return path.join(TEST_RUNS_REL, assertRunId(runId));
 }
 
@@ -112,8 +114,14 @@ export function consoleLogPath(runId) {
 
 /**
  * Path to the shared JSONL rollup file (across all runs).
+ *
+ * Without `repoRoot` it is the repo-relative constant. With `repoRoot` it is
+ * the absolute ledger path, routed to the main checkout when `repoRoot` is a
+ * linked worktree of a repo that ignores the rollup (#1722).
+ *
+ * @param {string} [repoRoot]
  * @returns {string}
  */
-export function jsonlRollupPath() {
-  return ROLLUP_REL;
+export function jsonlRollupPath(repoRoot) {
+  return typeof repoRoot === 'string' && repoRoot !== '' ? resolveLedgerPath(ROLLUP_REL, repoRoot) : ROLLUP_REL;
 }

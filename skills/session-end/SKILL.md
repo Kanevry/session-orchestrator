@@ -51,8 +51,11 @@ try {
   const { pathToFileURL } = await import('node:url');
   const { appendSkillInvocation, DEFAULT_SKILL_INVOCATIONS_PATH } =
     await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/skill-invocations-schema.mjs').href);
-  const nodePath = await import('node:path');
-  await appendSkillInvocation(nodePath.join(process.cwd(), DEFAULT_SKILL_INVOCATIONS_PATH), {
+  const { resolveLedgerPath } =
+    await import(pathToFileURL('${PLUGIN_ROOT}/scripts/lib/ledger-path.mjs').href);
+  // In a linked worktree the main checkout's ledger when it is gitignored there,
+  // so the record survives the worktree (#1722).
+  await appendSkillInvocation(resolveLedgerPath(DEFAULT_SKILL_INVOCATIONS_PATH, process.cwd()), {
     timestamp: new Date().toISOString(),
     event: 'selected',
     skill: 'session-orchestrator:session-end',
@@ -159,6 +162,8 @@ node scripts/release-session-lock.mjs --session-id "<raw session_id>" --json
 ```
 
 `--session-id` is the PHYSICAL raw value established by session-start Phase 1.2 and stored in `.orchestrator/session.lock` `session_id` — never STATE.md `session:` and never `semantic_session_id`, both of which are attribution labels.
+
+No `--repo-root`: the command looks for the checkout whose lock carries that id itself (#1730) — the registry's `session_root`, the cwd's checkout, its main checkout, a registered linked worktree — and names it in the JSON (`repo_root`, `root_source`). Before, it read only the cwd, answered `absent` with exit 0 when the lock sat in the other checkout, and the lock stayed.
 
 The command releases the lock only when that raw id owns it, emits the terminal `orchestrator.session.lock.released` breadcrumb, and then RE-READS the lock path: **exit 0 means the lock is provably gone.** It replaces the hand-executed `release()` this phase used to prescribe, which deleted the lock silently — the SessionEnd hook then found `status: 'absent'` and emitted nothing either, so a lock lifecycle ended with no terminal event at all (#1395: 5 `lock.acquired` against 0 `lock.released` in this repo). `outcome: "absent"` is a normal exit-0 result (idempotent re-run; nothing was released, so no event is written). A verified release also leaves `.orchestrator/runtime/lock-released/<raw session_id>.json` (`release_marker: true` in the JSON), so a later `compact` or `resume` of the same raw session does not re-create the lock (#1651); `startup` and `clear` take a lock as before, and the session's next `acquire()` removes the marker.
 

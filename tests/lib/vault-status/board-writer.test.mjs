@@ -17,7 +17,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync, utimesSync, existsSync, realpathSync, symlinkSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import os, { tmpdir, homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 
 import {
   GENERATOR_MARKER,
@@ -271,7 +271,7 @@ function makeFsStub(seed = {}) {
 
 describe('resolveBoardPath', () => {
   it('appends 01-projects/_active-sessions.md to the vault dir', () => {
-    expect(resolveBoardPath('/srv/vault')).toBe('/srv/vault/01-projects/_active-sessions.md');
+    expect(resolveBoardPath('/srv/vault')).toBe(join('/srv/vault', '01-projects', '_active-sessions.md'));
   });
 });
 
@@ -371,7 +371,7 @@ describe('writeBoard', () => {
     // leave renameSync at length 0 and fail here.
     expect(calls.writeFileSync).toHaveLength(1);
     expect(calls.writeFileSync[0].path).not.toBe(outputPath);
-    expect(calls.writeFileSync[0].path.startsWith('/vault/01-projects/.active-sessions.')).toBe(true);
+    expect(calls.writeFileSync[0].path.startsWith(join(dirname(outputPath), '.active-sessions.'))).toBe(true);
     expect(calls.writeFileSync[0].content).toBe(content);
     expect(calls.renameSync).toEqual([{ from: calls.writeFileSync[0].path, to: outputPath }]);
     // …and the tmp file does not survive the write.
@@ -1115,7 +1115,8 @@ describe('mirrorBoard — path-derived identity (#871)', () => {
     const target = makeRepo('CaseDir', buildLockBody({ sessionId: 'alias-sess', now: FIXED_NOW }));
     // A symlink guarantees different lexical/canonical keys even on Linux,
     // where /tmp itself usually is not an alias of /private/tmp.
-    const aliasDir = mkdtempSync('/tmp/board-writer-alias-');
+    // resolve(): the product keys the absolute path; on win32 `/tmp/…` gains a drive.
+    const aliasDir = resolve(mkdtempSync('/tmp/board-writer-alias-'));
     extraCleanupDirs.push(aliasDir);
     const repoRoot = join(aliasDir, 'CaseDir');
     symlinkSync(realpathSync.native(target), repoRoot, process.platform === 'win32' ? 'junction' : 'dir');

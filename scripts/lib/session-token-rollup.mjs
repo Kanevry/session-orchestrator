@@ -122,6 +122,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { costUsd } from './telemetry/pricing.mjs';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Default subagents.jsonl path (relative to cwd, mirroring the rest of the
@@ -262,7 +263,7 @@ function recordCostUsd(record) {
  */
 export function rollupSessionTokens({
   parentSessionId,
-  subagentsPath = DEFAULT_SUBAGENTS_PATH,
+  subagentsPath = resolveLedgerPath(DEFAULT_SUBAGENTS_PATH, process.cwd()),
 }) {
   /** @type {TokenRollupResult} */
   const ZERO = {

@@ -9,7 +9,7 @@
 
 A free, MIT-licensed workflow plugin for Claude Code, Codex CLI, Cursor IDE and Pi. It runs on your machine and writes plain text into your repository. No account, no server.
 
-**[Install](#install)** · **[Website](https://session-orchestrator.com)** ([Deutsch](https://session-orchestrator.com/de)) · **[User guide](docs/USER-GUIDE.md)** · [Changelog](CHANGELOG.md)
+**[Install](#install)** · **[Website](https://session-orchestrator.com)** ([Deutsch](https://session-orchestrator.com/de)) · **[User guide](docs/USER-GUIDE.md)** · **[Add-on for parallel sessions](#add-on-lead-session-orchestrator)** · [Changelog](CHANGELOG.md)
 
 [![Tests](https://github.com/Kanevry/session-orchestrator/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/Kanevry/session-orchestrator/actions/workflows/test.yml)
 [![Version](https://img.shields.io/badge/version-5.13.0-blue.svg)](CHANGELOG.md)
@@ -51,7 +51,7 @@ flowchart LR
     A -- yes --> W1["wave 1"] --> Q1["tests + typecheck"] --> W2["wave 2 ..."]
     W2 --> F["full gate<br/>test, typecheck, lint"]
     F --> C["/close<br/>verify, commit, file the rest as issues"]
-    C -. next session resumes from STATE.md .-> S
+    C -.->|"next session resumes from STATE.md"| S
 ```
 
 The session type sets the number of waves: housekeeping 1, feature 3, deep 5, the ultradeep profile 7.
@@ -131,6 +131,33 @@ Every skill, command, agent and hook: [docs/components.md](docs/components.md).
 
 All four share the same skills, commands and scripts; only the hooks differ, because each harness fires different events. Codex edits files through `apply_patch`, which the scope guard does not read ([why](docs/codex-setup.md#which-pretooluse-guards-run-on-codex--the-reason-corrected)). Event-coverage limits: [Cursor](docs/cursor-setup.md), [Pi](docs/pi-setup.md).
 
+## Add-on: lead-session-orchestrator
+
+Running three or four sessions side by side? Then a job shows up that no single session can do: deciding which one goes next, and answering the questions they all ask you at the same time. That is what [lead-session-orchestrator](https://www.npmjs.com/package/lead-session-orchestrator) is for. One lead session sits above your sessions, prepares the decisions and puts them into one queue for you.
+
+```mermaid
+flowchart LR
+    Y(["you"]) -- "answer one queue" --> L["lead session<br/>lead-session-orchestrator"]
+    L -- "constraints" --> A["session A<br/>session-orchestrator"]
+    L -- "constraints" --> B["session B<br/>session-orchestrator"]
+    A -- "check-in" --> L
+    B -- "check-in" --> L
+```
+
+The split: session-orchestrator makes one session good (plan, waves, gates, handover), lead-session-orchestrator keeps several of them in line. What you get on top:
+
+- **One inbox instead of a row of terminals.** Open questions from every session land in one queue; in Claude Code the Inbox mod shows it in a side pane.
+- **Written rules for what needs no asking.** A signed authority file per repository lists what is free, what needs your yes and what never happens. Anything not on the list asks you.
+- **Checks before a run and before a merge.** Busy repository, low disk or memory, a pipeline that is not green on this exact commit: the lead refuses. It also refuses when it cannot measure.
+- **A trail you can check.** Decisions and merges go into an append-only, hash-chained log.
+
+```sh
+npm i -g lead-session-orchestrator
+navigator --help
+```
+
+Each works on its own. Together they talk only through files, and a session never waits for the lead. Worth knowing before you try it: version 0.x, GitLab only for now, tested on macOS. Setup and the Inbox mod: [npm page](https://www.npmjs.com/package/lead-session-orchestrator) · [session-orchestrator.com/lead](https://session-orchestrator.com/lead).
+
 ## Recent highlights (v5.13.0)
 
 Highlights of the v5.13.0 line:
@@ -147,8 +174,6 @@ Everything else: [CHANGELOG.md](CHANGELOG.md).
 - [User guide](docs/USER-GUIDE.md): a walkthrough of one session, config, troubleshooting, FAQ
 - [Install, upgrade, uninstall](docs/install.md) · [Components and design choices](docs/components.md) · [Telemetry](docs/telemetry.md) (off unless you turn it on)
 - [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [All docs](docs/README.md)
-
-Running several sessions across repositories? The sibling project [lead-session-orchestrator](https://session-orchestrator.com/lead) coordinates them: who runs next, one queue for your decisions, one stop for everything.
 
 ## Support
 

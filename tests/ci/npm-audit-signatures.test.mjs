@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { load as loadYaml } from 'js-yaml';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const YAML_PATH = resolve(process.cwd(), '.gitlab-ci.yml');
 const doc = loadYaml(readFileSync(YAML_PATH, 'utf8'));
@@ -58,7 +59,7 @@ function classify(envelope) {
   const dir = mkdtempSync(join(tmpdir(), 'so-sig-audit-'));
   tmpDirs.push(dir);
   writeFileSync(join(dir, 'sig-audit.json'), envelope);
-  const res = spawnSync('sh', ['-c', classifier], { cwd: dir, encoding: 'utf8' });
+  const res = spawnSync(posixShell('sh'), ['-c', classifier], { cwd: dir, encoding: 'utf8' });
   return { status: res.status, stdout: res.stdout ?? '' };
 }
 

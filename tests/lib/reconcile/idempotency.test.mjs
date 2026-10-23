@@ -13,8 +13,8 @@
  * `learning_key`.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -27,6 +27,7 @@ import {
   mergeCandidates,
   markCandidateProcessed,
 } from '../../../scripts/lib/reconcile/idempotency.mjs';
+import { VERDICT_LEDGER_PATH } from '../../../scripts/lib/reconcile/verdict-ledger.mjs';
 
 let tmpDir;
 let storePath;
@@ -259,6 +260,106 @@ describe('mergeCandidates', () => {
     expect(records).toHaveLength(1);
     expect(records[0].id).toBe('rc-done');
     expect(records[0].processed_at).toBe('2026-06-21T12:00:00.000Z');
+  });
+});
+
+// #1710 — TV-001: the sidecar is gitignored and checkout-local, so before the
+// ledger a verdict (an operator decline above all) existed nowhere a fresh
+// worktree could read. These pin that mergeCandidates mirrors every terminal
+// DECISION into the append-only ledger exactly once — including verdicts that
+// were already in the sidecar before the ledger existed — and never writes a
+// ledger without an explicit repoRoot.
+describe('mergeCandidates — verdict ledger mirror (#1710)', () => {
+  const ledgerLines = (root) => {
+    const p = join(root, VERDICT_LEDGER_PATH);
+    return existsSync(p)
+      ? readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+      : [];
+  };
+
+  // F1 — only DECISIONS are mirrored. `written`, `already-on-disk` and a record
+  // without `outcome` (pre-#1042, read as `written`) describe one branch's tree;
+  // the tracked rule file's provenance marker is their cross-tree witness.
+  // Mirroring them from a worktree whose branch is later abandoned would make
+  // the learning permanently non-re-proposable in main.
+  it('backfills an older decision and a new one once each, skips branch-scoped outcomes; a repeat merge appends nothing', () => {
+    const repoRoot = tmpDir;
+    // Terminal records already in the sidecar from before the ledger existed.
+    writeFileSync(
+      storePath,
+      [
+        candidate({ learning_key: 'anti-pattern/old', processed_at: '2026-09-01T00:00:00.000Z', outcome: 'rejected' }),
+        candidate({ learning_key: 'anti-pattern/on-disk', processed_at: '2026-09-02T00:00:00.000Z', outcome: 'already-on-disk' }),
+        candidate({ learning_key: 'anti-pattern/legacy', processed_at: '2026-09-03T00:00:00.000Z' }),
+      ]
+        .map((c) => JSON.stringify(c))
+        .join('\n') + '\n',
+      'utf8',
+    );
+    const stamped = [
+      candidate({ learning_key: 'anti-pattern/new', processed_at: '2026-10-01T00:00:00.000Z', outcome: 'expired-swept' }),
+      candidate({ learning_key: 'anti-pattern/written', processed_at: '2026-10-02T00:00:00.000Z', outcome: 'written' }),
+    ];
+
+    const first = mergeCandidates({ candidates: stamped, repoRoot, storePath });
+    expect(first.written).toBe(true);
+    expect(first.ledger).toEqual({ ok: true, appended: 2 });
+    expect(ledgerLines(repoRoot).map((r) => [r.kind, r.learning_key, r.outcome, r.processed_at])).toEqual([
+      ['verdict', 'anti-pattern/new', 'expired-swept', '2026-10-01T00:00:00.000Z'],
+      ['verdict', 'anti-pattern/old', 'rejected', '2026-09-01T00:00:00.000Z'],
+    ]);
+
+    const second = mergeCandidates({ candidates: [], repoRoot, storePath });
+    expect(second.ledger).toEqual({ ok: true, appended: 0 });
+    expect(ledgerLines(repoRoot)).toHaveLength(2);
+  });
+
+  // Real call shape of the rule-drop recipe and the expiry sweep's delete: the
+  // learning's sidecar record is already `written`, so mergeCandidates keeps it
+  // and its branch-scoped outcome is never mirrored. The decision must reach the
+  // ledger anyway, or the dropped rule returns in a fresh worktree.
+  it('mirrors a decision stamped over a kept `written` record exactly once', () => {
+    const repoRoot = tmpDir;
+    const key = 'anti-pattern/dropped-rule';
+    writeFileSync(
+      storePath,
+      JSON.stringify(candidate({ learning_key: key, processed_at: '2026-09-01T00:00:00.000Z', outcome: 'written' })) + '\n',
+      'utf8',
+    );
+
+    const res = markCandidateProcessed({
+      learningKey: key,
+      outcome: 'expired-swept',
+      processedAt: '2026-10-22T00:00:00.000Z',
+      repoRoot,
+      storePath,
+    });
+    markCandidateProcessed({ learningKey: key, outcome: 'expired-swept', repoRoot, storePath });
+
+    expect(res.alreadyProcessed).toBe(true);
+    expect(ledgerLines(repoRoot).map((r) => [r.kind, r.learning_key, r.outcome, r.processed_at])).toEqual([
+      ['verdict', key, 'expired-swept', '2026-10-22T00:00:00.000Z'],
+    ]);
+  });
+
+  it('writes no ledger at all when no repoRoot is passed (no cwd fallback)', () => {
+    // A cwd fallback would land in this redirected cwd, never in the real repo.
+    const fakeCwd = mkdtempSync(join(tmpdir(), 'reconcile-idempotency-cwd-'));
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(fakeCwd);
+    try {
+      const result = mergeCandidates({
+        candidates: [candidate({ processed_at: '2026-10-01T00:00:00.000Z', outcome: 'rejected' })],
+        storePath,
+      });
+
+      expect(result.written).toBe(true);
+      expect(result.ledger).toBeUndefined();
+      expect(existsSync(join(tmpDir, VERDICT_LEDGER_PATH))).toBe(false);
+      expect(existsSync(join(fakeCwd, VERDICT_LEDGER_PATH))).toBe(false);
+    } finally {
+      cwd.mockRestore();
+      rmSync(fakeCwd, { recursive: true, force: true });
+    }
   });
 });
 

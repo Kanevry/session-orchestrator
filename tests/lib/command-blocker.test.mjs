@@ -1194,3 +1194,154 @@ describe('tokenizeCommand nesting (#1667): verbs inside subshells and substituti
     ]);
   });
 });
+
+// #1707 points 1–3: zsh 5.9 runs every form below, and each one hid its delete
+// operand from the reader (measured `[]` or a `}`-suffixed target at e377f94c).
+describe('zsh brace groups and keyword bodies (#1707)', () => {
+  it.each([
+    // Point 1: a `}` glued to the last word closes the group in zsh and is
+    // text in bash — both readings are reported.
+    ['a glued closing brace', '{rm -r .orchestrator}', [
+      { target: '.orchestrator}', verb: 'rm' }, { target: '.orchestrator', verb: 'rm' },
+    ]],
+    // Point 2: the opener is bare although the verb behind it is quoted, or
+    // is itself followed by another opener.
+    ['a double-quoted verb behind a glued opener', '{"unlink" CLAUDE.md;}', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a single-quoted verb behind a glued opener', "{'unlink' CLAUDE.md;}", [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a doubled glued opener', '{{unlink CLAUDE.md;}}', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    // Point 3: zsh keyword bodies in command position.
+    ['a `repeat` group body', 'repeat 1 { unlink CLAUDE.md; }', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a short `repeat` body', 'repeat 2 unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    // A quoted count is still one count word: zsh 5.9 prints `q1` twice for
+    // `repeat '2' echo q1` and for `N=2; repeat "$N" echo q2` (`[]` at 157ccde0).
+    ['a double-quoted `repeat` count', 'repeat "2" unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a quoted parameter `repeat` count', 'repeat "$N" unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a single-quoted count before a glued group', "repeat '2' {unlink CLAUDE.md}", [
+      { target: 'CLAUDE.md}', verb: 'unlink' }, { target: 'CLAUDE.md', verb: 'unlink' },
+    ]],
+    // One glued `}` closes exactly ONE group in zsh 5.9: `{ { echo a}}; echo X}`
+    // prints `a}` then `X`, so the outer group is still open at `CLAUDE.md}`.
+    ['a glued close after a word that closed only one group', '{ { echo a}}; unlink CLAUDE.md}', [
+      { target: 'CLAUDE.md}', verb: 'unlink' }, { target: 'CLAUDE.md', verb: 'unlink' },
+    ]],
+    // A word zsh keeps as text (`${HOME}`, `"a}"`) closes no group, so the real
+    // glued closer behind it still needs its reading: zsh 5.9 deletes the
+    // ledger dir for both (`[".orchestrator/metrics}"]` only at f99e1352).
+    ['a glued close behind a parameter expansion', '{ echo ${HOME}; rm -r .orchestrator/metrics}', [
+      { target: '.orchestrator/metrics}', verb: 'rm' }, { target: '.orchestrator/metrics', verb: 'rm' },
+    ]],
+    ['a glued close behind a quoted brace', '{ echo "a}"; rm -r .orchestrator/metrics}', [
+      { target: '.orchestrator/metrics}', verb: 'rm' }, { target: '.orchestrator/metrics', verb: 'rm' },
+    ]],
+    ['an `always` body', '{ true; } always { unlink CLAUDE.md; }', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['an `always` body behind a one-word group', '{true} always {unlink CLAUDE.md;}', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    // Review of !233 (HOCH): bash knows no `always` and hands it and every word behind it to the command —
+    // `bash -c '{ echo x} always target; }'` prints `x} always target` (bash 5.3). The zsh-only cut after a
+    // glued `}` dropped them (`["x}","x"]` at 7f1d589f), so a CLAUDE.md delete passed that main refuses.
+    ['the bash reading of `always` behind a glued close', '{ rm -f x} always CLAUDE.md; }', [
+      { target: 'x}', verb: 'rm' }, { target: 'x', verb: 'rm' }, { target: 'always', verb: 'rm' }, { target: 'CLAUDE.md', verb: 'rm' },
+    ]],
+    ['the bash reading of `always` inside `bash -c`', "bash -c '{ rm -f x} always CLAUDE.md; }'", [
+      { target: 'x}', verb: 'rm' }, { target: 'x', verb: 'rm' }, { target: 'always', verb: 'rm' }, { target: 'CLAUDE.md', verb: 'rm' },
+    ]],
+    ['the zsh `always` body behind a glued close', '{ echo x} always { unlink CLAUDE.md; }', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    // Re-review of df45c07e (MITTEL): only the first body statement came from the zsh reading, so the second
+    // statement of zsh's open `always` group lost its glued-close reading (`["CLAUDE.md}"]` at df45c07e).
+    ['a later statement of a glued `always` group', '{true} always {echo a; rm CLAUDE.md}', [
+      { target: 'CLAUDE.md}', verb: 'rm' }, { target: 'CLAUDE.md', verb: 'rm' },
+    ]],
+    ['a `time` group body', 'time {unlink CLAUDE.md;}', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a short function body', 'f() unlink CLAUDE.md; f', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a `coproc` command', 'coproc unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    // The quoted single-word verb on its own, without any brace (`[]` at e377f94c).
+    ['a double-quoted verb without braces', '"unlink" CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+  ])('extractDeleteTargets sees %s', (_name, command, expected) => {
+    expect(extractDeleteTargets(command)).toEqual(expected);
+  });
+
+  it.each([
+    // A spaced group needs no second reading, and a glued `}` OUTSIDE any group
+    // stays one word: `rm x}` deletes `x}` in every shell.
+    ['a spaced group', '{ rm -r .orchestrator; }', [{ target: '.orchestrator', verb: 'rm' }]],
+    ['a glued brace outside any group', 'rm x}', [{ target: 'x}', verb: 'rm' }]],
+    // Quoted from its first character, `"{unlink"` is a word, not an opener.
+    ['a quoted literal that starts with a brace', '"{unlink" CLAUDE.md', []],
+  ])('extractDeleteTargets stays exact for %s', (_name, command, expected) => {
+    expect(extractDeleteTargets(command)).toEqual(expected);
+  });
+
+  it.each([
+    ['a glued closing brace on a redirect operand', '{echo x >CLAUDE.md}', [
+      { target: 'CLAUDE.md}', mode: 'truncate', fd: null }, { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]],
+    // Re-review of df45c07e: the same lost reading on the redirect surface, once per target (no duplicates).
+    ['a redirect in a later statement of a glued `always` group', '{true} always {echo a; echo b >CLAUDE.md}', [
+      { target: 'CLAUDE.md}', mode: 'truncate', fd: null }, { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]],
+    // zsh 5.9 truncates `CLAUDE.md` here: `a}}` closes one group, not two
+    // (`[{ target: 'CLAUDE.md}' }]` only at 157ccde0).
+    ['a glued close after a word that closed only one group', '{ { echo a}}; echo x >CLAUDE.md}', [
+      { target: 'CLAUDE.md}', mode: 'truncate', fd: null }, { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]],
+    // zsh 5.9 truncates `CLAUDE.md` for both: `${HOME}` and `"a}"` close no
+    // group (`[{ target: 'CLAUDE.md}' }]` only at f99e1352).
+    ['a glued close behind a parameter expansion', '{ echo ${HOME}; echo x >CLAUDE.md}', [
+      { target: 'CLAUDE.md}', mode: 'truncate', fd: null }, { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]],
+    ['a glued close behind a quoted brace', '{ echo "a}"; echo x >CLAUDE.md}', [
+      { target: 'CLAUDE.md}', mode: 'truncate', fd: null }, { target: 'CLAUDE.md', mode: 'truncate', fd: null },
+    ]],
+    ['bash brace expansion', 'echo {a,b} > out.txt', [{ target: 'out.txt', mode: 'truncate', fd: null }]],
+    ['a named-fd redirection', 'exec {fd}>CLAUDE.md', [{ target: 'CLAUDE.md', mode: 'truncate', fd: null }]],
+    // A `repeat` whose next token is a redirect, not a count word: in bash
+    // `repeat` is an ordinary command and the truncation runs before the lookup
+    // fails, so the redirect must not be swallowed as the count (`[]` at 9a4d3eb7).
+    ['`repeat` before a glued redirect', 'repeat >CLAUDE.md', [{ target: 'CLAUDE.md', mode: 'truncate', fd: null }]],
+    ['`repeat` before an fd redirect', 'repeat 2>CLAUDE.md', [{ target: 'CLAUDE.md', mode: 'truncate', fd: 2 }]],
+    ['`repeat` before a spaced redirect', 'repeat > CLAUDE.md x', [{ target: 'CLAUDE.md', mode: 'truncate', fd: null }]],
+    ['`repeat` before a redirect to AGENTS.md', 'repeat >AGENTS.md', [{ target: 'AGENTS.md', mode: 'truncate', fd: null }]],
+    ['`repeat` before a redirect to a ledger', 'repeat >.orchestrator/metrics/sessions.jsonl', [
+      { target: '.orchestrator/metrics/sessions.jsonl', mode: 'truncate', fd: null },
+    ]],
+  ])('extractRedirectTargets reads %s', (_name, command, expected) => {
+    expect(extractRedirectTargets(command)).toEqual(expected);
+  });
+
+  // #1707 review finding 2: one reading per glued `}` made `{`×N `X` `}`×N cost
+  // N readings of length up to N, each globbed against every denylist rule —
+  // 40002 entries and ~1.7 s per matcher at depth 40000 on 9a4d3eb7, past the
+  // hook's 5 s timeout end to end (a timed-out hook ALLOWS). Bounded now: ~10
+  // readings per word, both matchers back to the e377f94c level (~5 ms).
+  it('keeps the glued-brace readings linear on a deep group flood (#1707)', () => {
+    const depth = 40_000;
+    const redirect = `${'{'.repeat(depth)}: >a${'}'.repeat(depth)}; : >CLAUDE.md`;
+    const del = `${'{'.repeat(depth)}rm a${'}'.repeat(depth)}; rm CLAUDE.md`;
+    const rule = { 'target-denylist': ['CLAUDE.md', '.claude/rules/**'], modes: ['truncate'] };
+    const started = Date.now();
+    const redirectEntries = extractRedirectTargets(redirect);
+    const matched = redirectRuleMatches(rule, redirect);
+    const deleteEntries = extractDeleteTargets(del);
+    const elapsed = Date.now() - started;
+    expect(matched).toBe(true);
+    expect(redirectEntries.length).toBeLessThanOrEqual(16);
+    expect(deleteEntries.length).toBeLessThanOrEqual(16);
+    expect(deleteEntries.at(-1)).toEqual({ target: 'CLAUDE.md', verb: 'rm' });
+    expect(elapsed).toBeLessThan(500);
+  });
+});
+
+describe('splitChainSegments — both readings of `always` behind a glued close (review of !233)', () => {
+  const texts = (cmd) => splitChainSegments(tokenizeCommand(cmd)).map((s) => s.map((t) => t.text).join(' '));
+
+  // Catches a union that adds the zsh head statement next to the bash one: the issue-budget guard counts
+  // `glab issue create` per segment, so the same call would be charged twice.
+  it('keeps the statement once and adds only the `always` body', () => {
+    expect(texts('{ glab issue create x} always foo; }')).toEqual(['glab issue create x} always foo', 'foo']);
+  });
+
+  // Catches a two-reading split after a command-position `}`: there `} always` is a bash syntax error, so the
+  // zsh cut is the only reading and nothing is added.
+  it('cuts hard after a spaced `}`', () => {
+    expect(texts('{ rm x; } always { rm y; }')).toEqual(['rm x', 'rm y']);
+  });
+});

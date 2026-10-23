@@ -308,13 +308,13 @@ describe('resolveCanonicalSuffixes', () => {
 
 describe('findRepoRoot', () => {
   it('returns the directory containing .git when found at the given cwd', () => {
-    const existsSync = (p) => p === '/repo/.git';
+    const existsSync = (p) => p === join('/repo', '.git');
     const realpathSync = (p) => p;
     expect(findRepoRoot('/repo', { existsSync, realpathSync })).toBe('/repo');
   });
 
   it('walks up to find .git in a parent directory', () => {
-    const existsSync = (p) => p === '/repo/.git';
+    const existsSync = (p) => p === join('/repo', '.git');
     const realpathSync = (p) => p;
     expect(findRepoRoot('/repo/src/lib', { existsSync, realpathSync })).toBe('/repo');
   });
@@ -332,14 +332,14 @@ describe('findRepoRoot', () => {
       return '/real' + p; // maps /sym → /real/sym
     };
     // existsSync must match the REALPATH form
-    const existsSync = (p) => p === '/real/sym/.git';
+    const existsSync = (p) => p === join('/real/sym', '.git');
     findRepoRoot('/sym', { existsSync, realpathSync });
     expect(realpathCalled).toBe(true);
   });
 
   it('falls back to original cwd when realpathSync throws', () => {
     const realpathSync = () => { throw new Error('ENOENT'); };
-    const existsSync = (p) => p === '/repo/.git';
+    const existsSync = (p) => p === join('/repo', '.git');
     expect(findRepoRoot('/repo', { existsSync, realpathSync })).toBe('/repo');
   });
 });
@@ -407,7 +407,7 @@ describe('resolveNamedVault — walkup path', () => {
       vaultName: null,
       ownerConfig,
       cwd: '/repo',
-      existsSync: (p) => p === '/repo/.git',
+      existsSync: (p) => p === join('/repo', '.git'),
       realpathSync: (p) => p,
       gitRemote: () => 'git@github.com:bernhard-group/my-repo.git',
       env: {},
@@ -524,7 +524,7 @@ const NAMESPACED_VAULTS = [
 ];
 
 /** Repo-root IO for a repo at `/repo`. */
-const REPO_IO = { existsSync: (p) => p === '/repo/.git', realpathSync: (p) => p };
+const REPO_IO = { existsSync: (p) => p === join('/repo', '.git'), realpathSync: (p) => p };
 
 describe('resolveNamedVault — default remote resolution (#1039)', () => {
   it('resolves the walk-up match in a repo whose remotes are gitlab+github with NO origin', () => {

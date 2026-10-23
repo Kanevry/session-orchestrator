@@ -12,6 +12,12 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
+// A node one-liner instead of `sleep 30`: `sleep` is not on PATH on native Windows; the gate runs it
+// through the platform shell either way; the double quotes hold for sh and cmd alike.
+// The inner ladder opens with SIGTERM to the group on POSIX and with taskkill on win32 (spawnInGroup).
+const FIRST_KILL_SIGNAL = process.platform === 'win32' ? 'taskkill' : 'SIGTERM';
+const SLEEP_30 = `"${process.execPath}" -e "setTimeout(()=>{},30000)"`;
+
 const SCRIPT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   '../../../scripts/lib/gates/gate-baseline.mjs',
@@ -125,11 +131,11 @@ describe('gate-baseline — failing typecheck', () => {
     // GATE_TIMEOUT_MS=300 kills `sleep 30` inside runCheck. Without the object
     // shape the envelope carries only the bare status string and
     // `joinGateKillFields` never sees `timed_out`.
-    const r = run({ TYPECHECK_CMD: 'sleep 30', TEST_CMD: 'skip', GATE_TIMEOUT_MS: '300' });
+    const r = run({ TYPECHECK_CMD: SLEEP_30, TEST_CMD: 'skip', GATE_TIMEOUT_MS: '300' });
     expect(r.status).toBe(0);
     const json = JSON.parse(r.stdout);
     expect(json.typecheck.timed_out).toBe(true);
-    expect(json.typecheck.kill_signals[0]).toBe('SIGTERM');
+    expect(json.typecheck.kill_signals[0]).toBe(FIRST_KILL_SIGNAL);
   });
 });
 

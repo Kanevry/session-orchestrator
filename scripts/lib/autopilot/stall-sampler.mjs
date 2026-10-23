@@ -36,6 +36,7 @@
  */
 
 import { readFileSync, statSync } from 'node:fs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -114,7 +115,7 @@ function readHeartbeatMs(sessionLockPath) {
  * }}
  */
 export function sampleProgress(opts = {}) {
-  const autopilotJsonlPath = opts.autopilotJsonlPath ?? DEFAULT_AUTOPILOT_JSONL;
+  const autopilotJsonlPath = opts.autopilotJsonlPath ?? resolveLedgerPath(DEFAULT_AUTOPILOT_JSONL, process.cwd());
   // stallTimeoutSeconds is currently informational — the caller decides if
   // stallSeconds exceeds threshold. We read it (with default) so the signature
   // stays stable when (future) clamp logic moves here. Underscore prefix marks

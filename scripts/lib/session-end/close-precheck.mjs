@@ -16,12 +16,20 @@
  * it records the pid of the short-lived hook process, and in a shared checkout
  * it may name a peer.
  *
- * Ceiling (BV-004): a STATE.md without `session-id` (written before #1368) or
- * a process that cannot name its own id (Cursor, Pi, Codex without a thread
- * id) keeps the pre-#1661 status-only behaviour. Revisit when every writer
- * stamps `session-id` and every harness exposes a native id.
+ * Unproven ownership (#1718): a STATE.md without `session-id` (written before
+ * #1368, in practice a foreign old file) or a process that cannot name its own
+ * id never runs session-end on status alone. A would-be session-end verdict
+ * becomes `ownership-unproven` with a `confirmToken` bound to the STATE.md path
+ * and its raw bytes; only that token (`--confirm-own`) turns it back, and only while the
+ * file is unchanged. Field incident 2026-10-21: a legacy STATE.md of an older,
+ * already closed plan read `complete-missing-record`.
+ *
+ * Ceiling (BV-004): on platforms without a native id (Cursor, Pi, Codex
+ * without a thread id) that is one operator confirmation per `/close`.
+ * Revisit when those platforms expose a native session id.
  */
 
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
@@ -31,6 +39,19 @@ import { readLock } from '../session-lock.mjs';
 import { readProcessLocalSessionIds } from '../session-identity/own-session.mjs';
 import { readJsonlFile } from '../io.mjs';
 import { resolveEventsLedgerRoot, resolveStateDir } from '../platform.mjs';
+
+/**
+ * Confirmation token for an `ownership-unproven` STATE.md (#1718): bound to the
+ * STATE.md path and its raw bytes, so a byte-identical file in another checkout
+ * yields a different token.
+ *
+ * @param {string} statePath  path of the STATE.md (resolved to absolute)
+ * @param {Buffer|string} raw  the raw STATE.md bytes
+ * @returns {string}  16 lowercase hex characters
+ */
+export function computeConfirmToken(statePath, raw) {
+  return createHash('sha256').update(path.resolve(statePath)).update('\0').update(raw).digest('hex').slice(0, 16);
+}
 
 /** Verdicts that hand off to session-end; every other verdict stops `/close`. */
 export const RUNS_SESSION_END = new Set(['run-session-end', 'complete-missing-record']);
@@ -42,14 +63,19 @@ export const RUNS_SESSION_END = new Set(['run-session-end', 'complete-missing-re
  * @param {string} opts.repoRoot  project root (the working tree `/close` runs in)
  * @param {string} [opts.stateDir]  `.claude` | `.codex` | `.cursor` | `.pi`; default from the platform
  * @param {object} [opts.env=process.env]  injectable for tests
+ * @param {string} [opts.confirmToken]  token from an earlier `ownership-unproven`
+ *   result; bound to the STATE.md path and its raw bytes, confirms a legacy/unprovable
+ *   STATE.md while that file is unchanged (#1718)
  * @returns {{
- *   verdict: 'no-state'|'foreign'|'run-session-end'|'complete-missing-record'|'already-finalized'|'unexpected-status'|'inconclusive',
- *   ownership: 'own'|'foreign'|'legacy'|'unprovable'|null,
+ *   verdict: 'no-state'|'foreign'|'run-session-end'|'complete-missing-record'|'already-finalized'|'unexpected-status'|'inconclusive'|'ownership-unproven',
+ *   ownership: 'own'|'foreign'|'legacy'|'unprovable'|'confirmed'|null,
  *   status: string|null, stateSessionId: string|null, ownSessionIds: string[],
- *   statePath: string, reason?: string
- * }}
+ *   statePath: string, reason?: string,
+ *   wouldRun?: 'run-session-end'|'complete-missing-record', confirmToken?: string,
+ *   session?: string|null, startedAt?: string|null
+ * }}  the last four only with `ownership-unproven`
  */
-export function classifyCloseState({ repoRoot, stateDir, env = process.env } = {}) {
+export function classifyCloseState({ repoRoot, stateDir, env = process.env, confirmToken } = {}) {
   const dir = stateDir ?? resolveStateDir();
   const statePath = path.join(repoRoot, dir, 'STATE.md');
   const ownSessionIds = readProcessLocalSessionIds({ env });
@@ -57,7 +83,8 @@ export function classifyCloseState({ repoRoot, stateDir, env = process.env } = {
 
   if (!existsSync(statePath)) return { ...base, verdict: 'no-state' };
 
-  const parsed = parseStateMd(readFileSync(statePath, 'utf8'));
+  const raw = readFileSync(statePath);
+  const parsed = parseStateMd(raw.toString('utf8'));
   if (!parsed) return { ...base, verdict: 'inconclusive', reason: 'STATE.md has no readable frontmatter' };
   const fm = parsed.frontmatter;
   const status = typeof fm.status === 'string' ? fm.status : null;
@@ -74,7 +101,22 @@ export function classifyCloseState({ repoRoot, stateDir, env = process.env } = {
   // peer (or to this tab before a /clear, which this process cannot prove).
   if (ownership === 'foreign') return { ...known, verdict: 'foreign' };
 
-  if (status === 'active' || status === 'paused') return { ...known, verdict: 'run-session-end' };
+  // #1718: legacy/unprovable never reaches session-end without a token bound
+  // to this path and the bytes read here; every non-session-end verdict passes unchanged.
+  const gate = (wouldRun) => {
+    if (ownership === 'own') return { ...known, verdict: wouldRun };
+    const token = computeConfirmToken(statePath, raw);
+    if (confirmToken === token) return { ...known, ownership: 'confirmed', verdict: wouldRun };
+    const unproven = {
+      ...known, verdict: 'ownership-unproven', wouldRun, confirmToken: token,
+      session: typeof fm.session === 'string' ? fm.session : null,
+      startedAt: typeof fm.started_at === 'string' ? fm.started_at : null,
+    };
+    if (confirmToken === undefined) return unproven;
+    return { ...unproven, reason: 'confirm token does not match STATE.md (changed since the pre-check, or the token belongs to another file)' };
+  };
+
+  if (status === 'active' || status === 'paused') return gate('run-session-end');
   if (status !== 'completed') return { ...known, verdict: 'unexpected-status' };
 
   // #429: completed alone does not prove the Phase 3.7 writer ran.
@@ -92,9 +134,9 @@ export function classifyCloseState({ repoRoot, stateDir, env = process.env } = {
   // label + started_at join decides.
   let lockId = null;
   if (!stateSessionId) {
-    let raw;
-    try { raw = readLock({ repoRoot })?.session_id ?? null; } catch { raw = null; }
-    const trimmed = typeof raw === 'string' ? raw.trim() : '';
+    let lockRaw;
+    try { lockRaw = readLock({ repoRoot })?.session_id ?? null; } catch { lockRaw = null; }
+    const trimmed = typeof lockRaw === 'string' ? lockRaw.trim() : '';
     if (trimmed && ownSessionIds.includes(trimmed)) lockId = trimmed;
   }
   const record = findRecordedSession(records, {
@@ -105,5 +147,5 @@ export function classifyCloseState({ repoRoot, stateDir, env = process.env } = {
   // An abandoned backfill stub is no completion; a legacy record without
   // `status` (written before the field existed) is authoritative.
   const finalized = record && (record.status === undefined || record.status === 'completed');
-  return { ...known, verdict: finalized ? 'already-finalized' : 'complete-missing-record' };
+  return finalized ? { ...known, verdict: 'already-finalized' } : gate('complete-missing-record');
 }

@@ -28,7 +28,7 @@ describe('SCHEMAS_DIR', () => {
   });
 
   it('points to the agents/schemas directory', () => {
-    expect(SCHEMAS_DIR).toMatch(/agents\/schemas\b/);
+    expect(SCHEMAS_DIR).toMatch(/agents[\\/]schemas$/);
   });
 });
 

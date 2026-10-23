@@ -5,6 +5,7 @@
 // security guards (branch-name allowlist + cwd confinement).
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { resolve } from 'node:path';
 import { durableCommit, withDurableCommit } from '../../../scripts/lib/autopilot/durable-telemetry.mjs';
 
 describe('durableCommit — input validation', () => {
@@ -78,7 +79,7 @@ describe('durableCommit — security guards (#483 W4-Q5)', () => {
     });
     expect(result).toEqual({
       ok: false,
-      error: 'cwd outside project root rejected: /tmp/attacker-repo',
+      error: `cwd outside project root rejected: ${resolve('/tmp/attacker-repo')}`,
     });
   });
 

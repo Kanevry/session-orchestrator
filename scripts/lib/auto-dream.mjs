@@ -29,6 +29,16 @@ import { atomicWriteText, envelopeToError } from './io.mjs';
 import { readCanonicalSessions, isMeasuredSession } from './sessions-canonical.mjs';
 import { resolveEventsLedgerRoot } from './platform.mjs';
 
+/**
+ * Tolerated skew (ms) between the system clock (`generated_at`) and filesystem
+ * timestamps (MEMORY.md mtime) in the #788 drift check. Windows was measured
+ * stamping mtimes up to 1 ms AFTER the clock reading that preceded the write.
+ * Ceiling (BV-004): a real MEMORY.md write within this window after the sidecar
+ * is indistinguishable from skew and is not refused. Revisit if a measured skew
+ * above the tolerance appears or a writer needs sub-5-ms freshness.
+ */
+const CLOCK_SKEW_TOLERANCE_MS = 5;
+
 // ---------------------------------------------------------------------------
 // Signal reader — MEMORY.md size + sessions-since-last-cleanup
 // ---------------------------------------------------------------------------
@@ -435,12 +445,13 @@ export async function applyPendingDream({ repoRoot, memoryDir, maxAgeDays = 14 }
       // (nanosecond) precision on APFS/ext4. Comparing them raw makes a
       // MEMORY.md written in the SAME millisecond as the sidecar (mtimeMs
       // fractionally > the floored generatedMs) look like drift. Floor mtimeMs
-      // to the resolution `generated_at` actually has, then apply strict `>`
-      // (mirrors `ageDays > maxAgeDays`): same-millisecond = clock-resolution
-      // noise, not a drift signal; a later write (≥1ms) is a real signal.
+      // to the resolution `generated_at` actually has. The system clock and
+      // the filesystem clock can also disagree by a millisecond (Windows), so
+      // drift is signalled only beyond CLOCK_SKEW_TOLERANCE_MS: up to the
+      // tolerance = clock noise, tolerance + 1 ms or later = a real write.
       if (existsSync(memoryPath)) {
         const memoryMtimeMs = statSync(memoryPath).mtimeMs;
-        if (Math.floor(memoryMtimeMs) > generatedMs) {
+        if (Math.floor(memoryMtimeMs) > generatedMs + CLOCK_SKEW_TOLERANCE_MS) {
           return { applied: false, reason: 'stale-index', driftMs: Math.round(memoryMtimeMs - generatedMs) };
         }
       }

@@ -51,6 +51,7 @@ import { join, relative, resolve } from 'node:path';
 
 import { computeEvidenceDigest } from './lib/reconcile/renderer.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
 /** ISO-8601 instant — mirrors the renderer's `EVIDENCE_RECORDED_AT_RE`. */
 const EVIDENCE_RECORDED_AT_RE = /^\d{4}-\d{2}-\d{2}T[0-9:.]+(?:Z|[+-]\d{2}:\d{2})$/;
@@ -198,7 +199,7 @@ const kebab = (s) =>
  */
 function loadCreatedAtByKey(repoRoot) {
   const map = new Map();
-  const p = join(repoRoot, '.orchestrator', 'metrics', 'learnings.jsonl');
+  const p = resolveLedgerPath('.orchestrator/metrics/learnings.jsonl', repoRoot); // #1722
   if (!existsSync(p)) return map;
   for (const line of readFileSync(p, 'utf8').split('\n')) {
     const trimmed = line.trim();

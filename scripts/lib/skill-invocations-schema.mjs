@@ -22,6 +22,7 @@
 import { readFile, appendFile, mkdir } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -35,6 +36,18 @@ export const VALID_EVENTS = Object.freeze(['selected']);
 
 /** Default JSONL path for skill invocation records. */
 export const DEFAULT_SKILL_INVOCATIONS_PATH = '.orchestrator/metrics/skill-invocations.jsonl';
+
+/**
+ * Absolute path of the skill-invocations ledger for a writer or reader rooted
+ * at `root` (#1722): the main checkout's copy when `root` is a linked worktree
+ * of a repo that ignores the ledger, otherwise `<root>/` + the default path.
+ *
+ * @param {string} [root]  repo root; default `getProjectDir()`
+ * @returns {string}
+ */
+export function defaultSkillInvocationsPath(root) {
+  return resolveLedgerPath(DEFAULT_SKILL_INVOCATIONS_PATH, root);
+}
 
 // ---------------------------------------------------------------------------
 // ValidationError

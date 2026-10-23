@@ -121,7 +121,10 @@ export async function collectSnapshot(repoRoot, readers) {
   const onlyTruncated = agentStatus.source === 'live-map' && Array.isArray(reasons) && reasons.length === 1 && reasons[0] === 'tail-truncated';
   if (agentStatus.degraded && !onlyTruncated) degraded.push('agents:degraded');
   // Reported in agents.stale_reason, not in `degraded`: a fresh session without subagents is not a partial measurement.
-  const staleReason = agentsStaleReason(agentStatus, ownStatus, lock, sid);
+  // The map is dated against the lock beside it (`readers.agentLock`, #1730), not against `repoRoot`'s lock, which
+  // may belong to another session when the agents were read at the session's own lock root.
+  const agentLock = readers.agentLock ? ((await readers.agentLock()).lock ?? null) : lock;
+  const staleReason = agentsStaleReason(agentStatus, ownStatus, agentLock, sid);
   const events = parseEvents(eventsRead.text ?? '');
   const gates = events.filter(e => (e.event ?? e.event_type).startsWith('orchestrator.quality_gate.'));
   const lastGate = gates.reduce((last, event) => {

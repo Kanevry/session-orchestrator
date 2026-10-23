@@ -23,7 +23,7 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import path from 'node:path';
+import { resolveLedgerPath } from './ledger-path.mjs';
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
@@ -95,12 +95,9 @@ export function checkVaultStaleness({ repoRoot, now = Date.now() } = {}) {
   try {
     if (!repoRoot || typeof repoRoot !== 'string') return null;
 
-    const jsonlPath = path.join(
-      repoRoot,
-      '.orchestrator',
-      'metrics',
-      'vault-staleness.jsonl',
-    );
+    // #1722: the ledger the probe writes (skills/discovery/probes/vault-staleness.mjs)
+    // — the main checkout's when repoRoot is a linked worktree that ignores it.
+    const jsonlPath = resolveLedgerPath('.orchestrator/metrics/vault-staleness.jsonl', repoRoot);
 
     if (!existsSync(jsonlPath)) return null;
 

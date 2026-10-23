@@ -143,7 +143,11 @@ describe('checkClaudeMdBudgetLint — violations present', () => {
     expect(isAbsolute(resolved)).toBe(true);
     // Shape pin last (see the ordering note above).
     expect(scriptPath).toBe(EXPECTED_SCRIPT_TOKEN);
-    expect(result.message).toContain(`--repo-root "${dir}"`);
+    // The banner home-collapses --repo-root exactly like the script path. On
+    // win32 the temp dir lives under the home directory (%LOCALAPPDATA%\Temp),
+    // so the expected token is collapsed the same way; elsewhere it is `dir`.
+    const dirToken = dir.startsWith(homedir() + sep) ? '$HOME' + dir.slice(homedir().length) : dir;
+    expect(result.message).toContain(`--repo-root "${dirToken}"`);
   });
 
   // Bug caught: the banner printed `__filename` and `repoRoot` verbatim while

@@ -17,6 +17,7 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { posixShell } from '../_helpers/posix-shell.mjs';
 
 const REPO_ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const SCRIPT = join(REPO_ROOT, 'scripts', 'check-doc-consistency.sh');
@@ -59,7 +60,7 @@ function makeClaude(narrativeLine) {
 }
 
 function runScript(cwd) {
-  return spawnSync('sh', [SCRIPT], { cwd, encoding: 'utf8' });
+  return spawnSync(posixShell('sh'), [SCRIPT], { cwd, encoding: 'utf8' });
 }
 
 describe('check-doc-consistency.sh — alias-phrasing rule', () => {

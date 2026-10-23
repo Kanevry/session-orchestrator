@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /** Read-only CLI for explicitly supplied, stable snapshot copies (#1462). */
-import { constants, promises as fs } from 'node:fs';
+import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { TextDecoder } from 'node:util';
 import { auditCheckins } from './lib/fleet-checkin-audit.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
+import { openNoFollow } from './lib/no-follow-open.mjs';
 
 const HELP = `Usage: fleet-checkin-audit --input-root DIR --registry FILE --checkins FILE --repo KEY [--repo KEY] --at UTC [--json]
 All five input flags are required. --repo may repeat with distinct explicit keys.
@@ -80,10 +81,13 @@ async function readSnapshot({ target, stat }) {
   // The parent check above and this open are not atomic: a same-user process can swap a parent
   // directory in between. Fine while the operator names the snapshot files and the result grants
   // nothing; revisit (#1549) once paths come from a foreign owner or the result gates a decision.
-  if (typeof constants.O_NOFOLLOW !== 'number' || typeof constants.O_NONBLOCK !== 'number') {
-    throw failure('unsupported-safe-open', 2);
+  let handle;
+  try { handle = await openNoFollow(target); }
+  catch (error) {
+    // inspect() already proved a regular non-symlink file: any of these means it changed since.
+    if (['ERR_FILE_CHANGED', 'ELOOP', 'ERR_NOT_REGULAR_FILE'].includes(error?.code)) throw failure('changed-input-file', 1);
+    throw error;
   }
-  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let bytes;
   try {
     const actual = await handle.stat();

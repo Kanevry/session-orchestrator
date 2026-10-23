@@ -8,7 +8,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, basename } from 'node:path';
+import { join, basename, isAbsolute } from 'node:path';
 
 // zx side-effect mock — constants.mjs sets $.verbose/$.quiet at import time.
 vi.mock('@lib/zx.mjs', () => ({
@@ -39,7 +39,7 @@ describe('metaPathFor', () => {
     const result = metaPathFor('my-suffix');
     expect(result.endsWith('my-suffix.json')).toBe(true);
     // Must be absolute.
-    expect(result.startsWith('/')).toBe(true);
+    expect(isAbsolute(result)).toBe(true);
   });
 
   it('constructs path under WORKTREE_META_DIR relative to process.cwd()', async () => {

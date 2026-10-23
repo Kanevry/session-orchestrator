@@ -38,7 +38,7 @@
  */
 
 import { readStdin, emitAllow, emitDeny } from '../scripts/lib/io.mjs';
-import { resolveProjectDir, resolvePluginRoot } from '../scripts/lib/platform.mjs';
+import { resolveProjectDir, resolvePluginRoot, resolveEventsLedgerRoot } from '../scripts/lib/platform.mjs';
 import { readJson } from '../scripts/lib/common.mjs';
 import { readProcessLocalSessionIds } from '../scripts/lib/session-identity/own-session.mjs';
 import { hasReadInSession } from './_lib/transcript-history.mjs';
@@ -328,9 +328,12 @@ async function main() {
     typeof policy.acknowledgement_file === 'string' && policy.acknowledgement_file.length > 0
       ? policy.acknowledgement_file
       : DEFAULT_ACK_PATH;
+  // A relative ack file is runtime state, not a tracked file: resolve it under
+  // the MAIN checkout for a linked worktree, the same root `/templates-ack`
+  // writes to — otherwise the two sides split across roots (sweep of #1729).
   const ackFile = path.isAbsolute(ackRel)
     ? ackRel
-    : path.join(projectDir || process.cwd(), ackRel);
+    : path.join(resolveEventsLedgerRoot(projectDir || process.cwd()), ackRel);
 
   // G6 — acknowledgement-file check.
   const sessionId = resolveSessionId(input);

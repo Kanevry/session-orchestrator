@@ -292,6 +292,8 @@ import path from 'node:path';
 
 import { sizingSubject } from '../learnings/sizing-subject.mjs';
 import { isMainModule } from '../is-main-module.mjs';
+import { resolveLedgerPath } from '../ledger-path.mjs';
+import { resolveEventsLedgerRoot } from '../platform.mjs';
 
 /** Documented config surface — every `yaml` fence in this file is a declaration. */
 const TEMPLATE_REL = 'docs/session-config-template.md';
@@ -1248,7 +1250,7 @@ export function collectHandKeyedLearningSubjects(pluginRoot) {
   let judged = 0;
   let unattributed = 0;
 
-  const learnings = readJsonl(path.join(pluginRoot, LEARNINGS_REL));
+  const learnings = readJsonl(resolveLedgerPath(LEARNINGS_REL, pluginRoot));
   if (learnings.length === 0) return { findings, scanned: { judged, unattributed } };
 
   // A session record can be addressed by either identity form (see
@@ -1257,7 +1259,7 @@ export function collectHandKeyedLearningSubjects(pluginRoot) {
   // a resolvable record is never mis-counted as unattributed.
   /** @type {Map<string, Record<string, unknown>>} */
   const sessionsById = new Map();
-  for (const record of readJsonl(path.join(pluginRoot, SESSIONS_REL))) {
+  for (const record of readJsonl(path.join(resolveEventsLedgerRoot(pluginRoot), SESSIONS_REL))) {
     for (const field of ['session_id', 'semantic_session_id']) {
       const id = record[field];
       if (typeof id === 'string' && id !== '' && !sessionsById.has(id)) sessionsById.set(id, record);
