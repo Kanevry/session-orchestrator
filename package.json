@@ -87,7 +87,7 @@
     "remark-parse": "^11.0.0",
     "unified": "^11.0.0",
     "yaml": "^2.9.0",
-    "zod": "^3.25.76",
+    "zod": "^4.6.7",
     "zx": "^8.1.0"
   },
   "devDependencies": {

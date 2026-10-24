@@ -11,8 +11,10 @@
  * so no real owner.yaml on disk is touched.
  */
 
+import { readFileSync } from 'node:fs';
+import { inspect } from 'node:util';
 import { describe, it, expect } from 'vitest';
-import { resolveHostPath, loadHostPaths } from '@lib/config/host-paths.mjs';
+import { resolveHostPath, loadHostPaths, HOST_ENV_KEYS } from '@lib/config/host-paths.mjs';
 
 describe('resolveHostPath — precedence', () => {
   it('env-var wins over owner and committed', () => {
@@ -255,5 +257,69 @@ describe('loadHostPaths', () => {
     };
     const result = loadHostPaths({ env: fakeEnv, ownerLoader });
     expect(result.env).toEqual({ SO_BASELINE_PATH: '/y' });
+  });
+
+  // SO#1784 (SEC-008): the context must not carry the whole process env.
+  const mixedEnv = {
+    SO_VAULT_DIR: '/placeholder/vault-dir',
+    VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
+    FAKE_FOREIGN_SECRET: 'placeholder-foreign-value-7c1',
+    HOME: '/placeholder/home',
+  };
+
+  it('keeps only HOST_ENV_KEYS in ctx.env and drops every foreign variable', () => {
+    const ctx = loadHostPaths({ env: mixedEnv, ownerLoader: () => ({ config: {}, source: 'file' }) });
+    expect(ctx.env).toEqual({
+      SO_VAULT_DIR: '/placeholder/vault-dir',
+      VAULT_MIRROR_SKIP_CANONICAL_CHECK: '1',
+    });
+  });
+
+  it('serializes and inspects to a redacted view without any value', () => {
+    const ownerLoader = () => ({
+      config: {
+        paths: { 'vault-dir': '/placeholder/owner-vault' },
+        'hardware-sharing': { enabled: true, 'hash-salt': 'placeholder-owner-salt-3f9' },
+      },
+      source: 'file',
+    });
+    const ctx = loadHostPaths({ env: mixedEnv, ownerLoader });
+    expect(JSON.parse(JSON.stringify(ctx))).toEqual({
+      ownerConfig: { sections: ['paths', 'hardware-sharing'] },
+      env: { keys: ['SO_VAULT_DIR', 'VAULT_MIRROR_SKIP_CANONICAL_CHECK'] },
+      source: 'file',
+    });
+    const inspected = inspect(ctx, { depth: null });
+    expect(inspected).not.toContain('placeholder-foreign-value-7c1');
+    expect(inspected).not.toContain('placeholder-owner-salt-3f9');
+    expect(inspected).not.toContain('/placeholder/owner-vault');
+  });
+
+  // Drift guard: these modules are the readers that receive ctx.env from
+  // loadHostPaths() callers (resolveHostPath/resolveVaultIntegrationHost,
+  // resolveVaultDir, resolveNamedBaseline, the canonical-vault checks, the
+  // instruction-ablation eval). Every literal env key they read must be in
+  // HOST_ENV_KEYS, or the allowlist silently turns that switch off. Computed reads
+  // (env[ENV_KEYS[key]], env?.[envKey]) are covered by Object.values(ENV_KEYS).
+  // Not seen: destructuring (`const { SO_X } = env`). Revisit when another module
+  // starts reading the context env.
+  it('HOST_ENV_KEYS covers every literal env key read by the context-env readers', () => {
+    const files = [
+      '../../../scripts/lib/config/host-paths.mjs',
+      '../../../scripts/lib/config.mjs',
+      '../../../scripts/lib/named-baseline-resolver.mjs',
+      '../../../scripts/lib/named-vault-resolver.mjs',
+      '../../../evals/instruction-ablation/run.mjs',
+    ];
+    const patterns = [
+      /(?<!process\.)\benv\??\.([A-Z][A-Z0-9_]*)/g,
+      /(?<!process\.)\benv\??\.?\[\s*['"]([A-Z][A-Z0-9_]*)['"]\s*\]/g,
+    ];
+    const found = files.flatMap((rel) => {
+      const src = readFileSync(new URL(rel, import.meta.url), 'utf8');
+      return patterns.flatMap((re) => [...src.matchAll(re)].map((m) => m[1]));
+    });
+    expect(found.length).toBeGreaterThanOrEqual(4);
+    expect(found.filter((k) => !HOST_ENV_KEYS.includes(k))).toEqual([]);
   });
 });

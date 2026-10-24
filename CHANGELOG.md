@@ -19,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/lead` gives a new user the whole first run** (#1776, measured against the published `lead-session-orchestrator` 0.3.0): five steps (CLI, Inbox, the lead skill with `/lead`, automatic check-ins, optional signed rules). Corrected: with no trusted signer every push, merge and other action in the authority file asks (the Limits card read as if free actions were the default), and step 5 names `authority.dir` in `~/.config/navigator/estate.yaml`; the lead sets the order and starts headless runs itself after its checks but never opens an interactive session on its own (not "decides which session runs next"); authority files live in a folder of yours, not in each repository; Codex sessions check in but the Inbox lists Claude Code sessions; `operatingSystem` is macOS; the Inbox picture explains SO, T12 and "phase unknown" and that Repos and the account line need the fleet option. The main navigation of the home page (EN/DE), `/commands` and `/guide` links `/lead`.
 - **Security-Delta at `/close`, stage 1** (#1769): session-end Phase 2.4 runs `scripts/security-delta.mjs` over this session's range `base..head` with five checks: lockfile delta against OSV (npm, pnpm, uv, pinned requirements; private scopes and known foreign registries stay off OSV, but `-r` includes, `PIP_INDEX_URL` and `pip.conf` are not read yet, #1772), Node security floors, floating image tags, a gitleaks scan that keeps only file and rule id (no secret values) and the age-gate setting when a lockfile changed. Budget 3000 ms (network 2000 ms); an overrun reads as `degraded`, never holds the close. New key `security-delta.mode`, default `off`: `warn` reports, `strict` blocks the close (exit 3) only on an introduced malicious package or a fixable critical vulnerability.
 
+### Changed
+
+- **zod is a major version newer: 3.25.76 → 4.6.7** (#1782), at the root and in `skills/vault-sync`. The two import sites behave the same, but zod's own default messages and codes differ (`Required` → `Invalid input: …`, `invalid_enum_value` → `invalid_value`). A vault-sync baseline saved under zod 3 therefore reports such errors as both new and fixed; take a fresh baseline after updating.
+
 ### Fixed
 
 - **`/close` without its own plan still records the session** (#1762): a close that stops at a foreign, missing or unexpected STATE.md, or a declined `ownership-unproven`, used to leave `sessions.jsonl` untouched. `close-precheck --record-without-plan` now writes one record `closed-without-plan` for the closing session itself (native id only), deduplicated with the abandoned backfill; a later completed plan of the same session supersedes it.
@@ -34,6 +38,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A registry that exists but cannot be listed stamps nothing: the summary carries `registry_unreadable: true`, and the next start tries again. An entry file that cannot be parsed still vouches for its session (named by the file) while its mtime is within the lock TTL, and so does an entry whose heartbeat cannot be parsed or lies more than 5 min in the future after the clock stepped back.
   - Limits: `sweepZombies()` drops a registry entry after 60 min without a heartbeat, so a lockless session that ends no turn for that long reads as dead again. A semantic label shared with a live session in another repo only delays a dead session's stub to a later start.
   - Unchanged on purpose: the #1635 yield still applies in every fleet repo, not only in the lead's own checkout (decision in #1748).
+- **marketing/remotion uses zod 4.6.7** through an `overrides: { zod: "$zod" }` entry (GHSA-mrhx-c7xc-m3w5); the pinned Remotion 4.0.523 (and 4.0.538, the newest release) still pins 4.5.4 internally. `marketing/` stays out of the GitHub export.
+
+### Security
+
+- **`loadHostPaths().env` carries only `HOST_ENV_KEYS`** (#1784): the context returned the whole `process.env`, and one caller printed it during a `/close`. It is now a snapshot of the eight host keys taken at load time, and the context serialises redacted (`toJSON`, `inspect.custom`). `resolveBaselineLocation()` passes `{ env, ownerConfig }` explicitly across the child-process boundary. Three gate tests fail on the old shape.
+- **zod 4.6.7 at the root closes GHSA-mrhx-c7xc-m3w5** (#1782, high, memory exhaustion in zod < 4.6.6), so the production audit passes again; vite 8.3.5 clears three Dependabot alerts.
 
 ## [5.13.0] - 2026-10-23
 

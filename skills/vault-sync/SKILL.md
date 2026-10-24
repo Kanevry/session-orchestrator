@@ -30,7 +30,7 @@ Phase 1 ships a self-contained validator that reads every `.md` file under `VAUL
 
 - `validator.mjs` — Node.js ESM validator. Uses `zod` + `yaml` npm packages. Reads `VAULT_DIR` (env or default cwd), walks the tree, skipping `node_modules/`, `.git/`, `.obsidian/`. `90-archive/` is walked but never *checked* (#833): archived notes stay in the link-target register — so an inbound `[[wiki-link]]` to an archived note resolves instead of dangling — while their frontmatter is skipped and counted in `archived_skipped_count`. For each `.md`: parses frontmatter, validates against the inline Zod schema, extracts `[[wiki-links]]`, verifies each target resolves. Emits JSON report on stdout.
 - `validator.sh` — Thin POSIX wrapper. Resolves `VAULT_DIR` from arg 1 or env, checks that `zod` and `yaml` resolve from the skill directory, execs the Node validator. It never installs anything: unresolvable deps exit 2 with `"reason":"setup-required"` and the one setup command, `npm ci` in the plugin root (#1070). Session-end and other callers use this entry point.
-- `package.json` — Declares `zod` (`^3.24.0`, matching projects-baseline) and `yaml` (`^2.5.0`) as deps. No lockfile is committed (`skills/vault-sync/package-lock.json` is gitignored at the repo root); `node_modules/` is gitignored.
+- `package.json` — Declares `zod` (`^4.6.7`, the projects-baseline major) and `yaml` (`^2.5.0`) as deps. No lockfile is committed (`skills/vault-sync/package-lock.json` is gitignored at the repo root); `node_modules/` is gitignored.
 - `tests/fixtures/` — Seven fixture vaults matching each test scenario.
 
 ### Schema source
@@ -39,11 +39,11 @@ The inline Zod schema is vendored from the canonical source at `projects-baselin
 
 ### Dependencies
 
-`skills/vault-sync/package.json` pins `yaml ^2.5.0` / `zod ^3.24.0` — intentionally NOT the root's `yaml ^2.9.0` / `zod ^3.25.76`. This is not drift to fix:
+`skills/vault-sync/package.json` pins `yaml ^2.5.0` / `zod ^4.6.7` — the `yaml` range intentionally NOT the root's `yaml ^2.9.0`. This is not drift to fix:
 
 - Nothing installs this sub-package. Neither CI host runs a nested install any more — both run only the root `npm ci`, and `.husky/pre-push` links only the root `node_modules/` into its tracked-tree clone. The nested install was dropped on 2026-10-05: it pulled unlocked `zod`/`yaml` versions (this folder's lockfile is gitignored) that the root `npm audit` never saw, and the vault-sync test files ran 125 passed / 0 failed without it.
-- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps. Node resolves `zod`/`yaml` from this folder via the root's own `dependencies` (`yaml ^2.9.0`, `zod ^3.25.76`) — measured 2026-10-05 via `import.meta.resolve('zod')` from this folder → `<root>/node_modules/zod`. That is the runtime path in CI, in every worktree and for every end user, so the root dependencies must stay. A stale local `skills/vault-sync/node_modules/` from an older manual install would still win resolution; delete it if versions disagree.
-- The `zod ^3.24.0` pin deliberately tracks the projects-baseline version, not this repo's own (`scripts/release.mjs:622`).
+- The root `package.json` declares no `workspaces`, so `npm ci` at the root never touches this folder's deps. Node resolves `zod`/`yaml` from this folder via the root's own `dependencies` (`yaml ^2.9.0`, `zod ^4.6.7`) — measured 2026-10-05 via `import.meta.resolve('zod')` from this folder → `<root>/node_modules/zod`, re-measured 2026-10-23 after the zod 4.6.7 bump (#1782) with the same result. That is the runtime path in CI, in every worktree and for every end user, so the root dependencies must stay. A stale local `skills/vault-sync/node_modules/` from an older manual install would still win resolution; delete it if versions disagree.
+- The `zod` pin tracks the projects-baseline major (`zod ^4.0.0` in `packages/zod-schemas`), not this repo's own version (`scripts/release.mjs`, `evaluateDriftSweep` comment). Its floor is `4.6.7` because every 4.x below 4.6.6 carries GHSA-mrhx-c7xc-m3w5 (#1782); the same floor sits in the root `package.json`, so both ranges resolve to one installed copy.
 
 The root's dependency versions are NOT the SSOT for this folder — do not "fix" this pin to match the root.
 
@@ -320,6 +320,8 @@ The validator supports three operating modes via `--mode=<value>`. Default is `h
 ### Schema-hash mismatch
 
 When the vendored zod schema in `validator.mjs` changes, the schema-hash in the baseline file won't match. The validator emits `WARN: baseline outdated (hash=<old>, current=<new>) — please re-snapshot via --mode=baseline` to stderr and falls back to full enforcement. Re-run `--mode=baseline` once to refresh.
+
+A zod **major** bump does NOT change the schema-hash: the hash covers only the text between the sentinels, while `errors[].message` is zod's own default text wherever the schema sets no custom message, and the diff matches errors on file, path and message. After the 3 → 4 bump (#1782) a baseline saved under zod 3 that holds such an error (`Required`, `Invalid enum value…`, `String must contain at least…`) reports it as both new and resolved, without the WARN above. Re-run `--mode=baseline` once after a zod major bump. Ceiling: the hash does not fold in the zod major; revisit if a non-empty baseline ever reports such a pair (both measured baselines held 0 errors on 2026-10-23).
 
 > **Inter-wave integration:** the wave-executor Quality-Lite checkpoint prefers `--mode=diff` once a baseline exists, surfacing only regressions introduced by that wave. See `skills/wave-executor/SKILL.md` § Vault-Sync Diff Reporting (#327).
 

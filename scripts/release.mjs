@@ -652,7 +652,7 @@ function isHistoryRow(file, line, content, prevTag) {
  * clean sweep.
  *
  * ONE CLASS OF MATCH IS NOT OURS TO BUMP: a dependency RANGE that happens to equal our own
- * previous version. `skills/vault-sync` pins `zod` at `^3.24.0` (the projects-baseline pin), so
+ * previous version. `skills/vault-sync` pinned `zod` at `^3.24.0` then (the projects-baseline pin), so
  * the 4.0.0 sweep collected two files whose literal belongs to zod and must NOT move when we
  * release. The carve-out is deliberately a PREDICATE and not two allowlist rows: a per-path row
  * fixes this instance and leaves the class open for the next dependency that lands on our version

@@ -47,6 +47,27 @@ const ENV_KEYS = /** @type {const} */ ({
 });
 
 /**
+ * The only environment keys a loadHostPaths() context carries (SO#1784, SEC-008).
+ * Every reader of `ctx.env` reads one of these literal keys:
+ *   - Object.values(ENV_KEYS) — resolveHostPath() (this file); SO_VAULT_DIR also
+ *     resolveVaultDir() in scripts/lib/config.mjs, SO_BASELINE_PATH / SO_VAULT_DIR
+ *     resolveNamedBaseline() in scripts/lib/named-baseline-resolver.mjs
+ *   - SO_VAULT_INTEGRATION — resolveVaultIntegrationHost() (this file)
+ *   - VAULT_MIRROR_CANONICAL_SUFFIX — resolveCanonicalSuffixes() / _resolveEnvSuffix()
+ *     and the board/narrative canonical check in scripts/lib/named-vault-resolver.mjs
+ *   - VAULT_MIRROR_SKIP_CANONICAL_CHECK — checkCanonicalVault() in
+ *     scripts/lib/named-vault-resolver.mjs
+ * A reader that needs a new key must add it here, or it silently reads `undefined`.
+ * @type {readonly string[]}
+ */
+export const HOST_ENV_KEYS = Object.freeze([
+  ...Object.values(ENV_KEYS),
+  'SO_VAULT_INTEGRATION',
+  'VAULT_MIRROR_CANONICAL_SUFFIX',
+  'VAULT_MIRROR_SKIP_CANONICAL_CHECK',
+]);
+
+/**
  * Load the host-local resolution context once (owner.yaml + env), so a caller can
  * resolve many keys without re-reading disk per key.
  *
@@ -59,13 +80,34 @@ const ENV_KEYS = /** @type {const} */ ({
  * (`source`, `reason`, `droppedSections`). Discarding those forced callers that
  * need them — CP11 in check-owner-leakage.mjs is the live one — to load owner.yaml
  * a SECOND time just to see the health of the load this function already did. They
- * are passed through verbatim; `ownerConfig` and `env` keep their exact prior
- * meaning, so callers reading only those two (scripts/lib/config.mjs,
- * scripts/lib/vault-mirror/namespace.mjs) are unaffected. On a throwing loader all
- * three health fields stay `undefined`, exactly like `ownerConfig`.
+ * are passed through verbatim. On a throwing loader all three health fields stay
+ * `undefined`, exactly like `ownerConfig`.
+ *
+ * SEC-008 (SO#1784): one `JSON.stringify(loadHostPaths())` once printed seven
+ * secrets, because `env` WAS the live `process.env` and `ownerConfig` is the full
+ * owner.yaml. Two gates now apply:
+ *   - `env` is a load-time SNAPSHOT of only the HOST_ENV_KEYS present in the input
+ *     env (a new plain object, never `process.env` itself). No caller mutates
+ *     `process.env` after loading, so the snapshot preserves behaviour.
+ *   - the context has non-enumerable `toJSON` and `util.inspect.custom` members
+ *     that render only owner.yaml section names and env key names. Being
+ *     non-enumerable, they leave `toEqual`, `Object.keys` and spread unaffected;
+ *     `ownerConfig` stays complete for its readers. `droppedSections` passes
+ *     through: its messages carry no secret, but some quote a rejected enum value
+ *     (`got: "…"` in owner-yaml.mjs).
+ * Because `toJSON` redacts, a context must never cross a process boundary by
+ * plain `JSON.stringify` — project `env` / `ownerConfig` explicitly, as
+ * baseline-archetypes.mjs resolveBaselineLocation() does.
+ * CEILING (BV-004): owner.yaml (incl. `hardware-sharing.hash-salt`) stays reachable
+ * through `ctx.ownerConfig` itself (`console.log(ctx.ownerConfig)`), through a copy
+ * that drops the non-enumerable members (`{ ...ctx }`, `Object.assign`,
+ * `structuredClone`, `Object.entries`) and through `inspect(ctx, { customInspect:
+ * false })`; every one of them still shows only the allowlisted `env`. Revisit when
+ * a new reader of the context env needs a key outside HOST_ENV_KEYS — the drift
+ * test in tests/lib/config/host-paths.test.mjs covers only the known reader modules.
  *
  * @param {{ env?: Record<string, string|undefined>, ownerLoader?: () => { config: object, source?: string, reason?: string, droppedSections?: Array<{section: string, errors: string[]}> } }} [opts]
- * @returns {{ ownerConfig: object|undefined, env: Record<string, string|undefined>, source: string|undefined, reason: string|undefined, droppedSections: Array<{section: string, errors: string[]}>|undefined }}
+ * @returns {{ ownerConfig: object|undefined, env: Record<string, string>, source: string|undefined, reason: string|undefined, droppedSections: Array<{section: string, errors: string[]}>|undefined }}
  */
 export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig } = {}) {
   let ownerConfig;
@@ -81,7 +123,29 @@ export function loadHostPaths({ env = process.env, ownerLoader = loadOwnerConfig
   } catch {
     ownerConfig = undefined;
   }
-  return { ownerConfig, env, source, reason, droppedSections };
+  /** @type {Record<string, string>} */
+  const hostEnv = {};
+  for (const k of HOST_ENV_KEYS) {
+    const v = env?.[k];
+    if (v !== undefined) hostEnv[k] = v;
+  }
+  const ctx = { ownerConfig, env: hostEnv, source, reason, droppedSections };
+  const redacted = () => ({
+    ownerConfig:
+      ownerConfig !== null && typeof ownerConfig === 'object'
+        ? { sections: Object.keys(ownerConfig) }
+        : ownerConfig,
+    env: { keys: Object.keys(hostEnv) },
+    source,
+    reason,
+    droppedSections,
+  });
+  // Symbol.for(), not node:util: no new import edge (CP11 vendored copy, hook import set).
+  Object.defineProperties(ctx, {
+    toJSON: { value: redacted, enumerable: false },
+    [Symbol.for('nodejs.util.inspect.custom')]: { value: redacted, enumerable: false },
+  });
+  return ctx;
 }
 
 /**

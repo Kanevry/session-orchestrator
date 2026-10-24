@@ -106,12 +106,16 @@ export async function resolveBaselineLocation({ repoRoot = process.cwd(), hostPa
   let content = '';
   try { content = await readConfigFile(repoRoot); } catch { /* A new repo has no instruction file yet. */ }
   const kv = _parseKV(_extractConfigSection(content));
+  // Project the transported fields explicitly: a loadHostPaths() context serializes
+  // to its redacted view (toJSON, SO#1784), which would reach the child as section
+  // and key names instead of values and silently resolve no baseline.
+  const transport = hostPaths && { env: hostPaths.env, ownerConfig: hostPaths.ownerConfig };
   const resolved = spawnSync(process.execPath, ['--input-type=module', '-e', `
 import { readFileSync } from 'node:fs';
 const { resolveConfiguredBaselinePath } = await import(process.argv[1]);
 process.stdout.write(JSON.stringify(resolveConfiguredBaselinePath(JSON.parse(readFileSync(0, 'utf8')))));
 `, import.meta.url], {
-    input: JSON.stringify({ repoRoot, committed: _coerceString(kv, 'plan-baseline-path'), hostPaths }),
+    input: JSON.stringify({ repoRoot, committed: _coerceString(kv, 'plan-baseline-path'), hostPaths: transport }),
     encoding: 'utf8', shell: false, timeout: 5000, maxBuffer: MAX_BYTES, killSignal: 'SIGKILL',
     stdio: ['pipe', 'pipe', 'pipe'],
   });

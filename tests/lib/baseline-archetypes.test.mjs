@@ -257,6 +257,21 @@ describe('configured baseline bootstrap contract', () => {
     expect(result).toMatchObject({ status: 'private', selected: { id: 'sample-specific' } });
   });
 
+  // SO#1784: a real loadHostPaths() context serializes to its redacted view, so the
+  // child-process transport must project env/ownerConfig instead of stringifying it.
+  it('resolves through a real loadHostPaths() context across the child-process boundary', async () => {
+    const { loadBaselineArchetypes } = await import('../../scripts/lib/baseline-archetypes.mjs');
+    const { loadHostPaths } = await import('../../scripts/lib/config/host-paths.mjs');
+    const repoRoot = temp(); const baseline = fixture();
+    put(repoRoot, 'AGENTS.md', `## Session Config\n- plan-baseline-path: ${temp()}\n`);
+    const hostPaths = loadHostPaths({
+      env: { SO_BASELINE_PATH: baseline, FAKE_FOREIGN_SECRET: 'placeholder-foreign-value-2b8' },
+      ownerLoader: () => ({ config: {}, source: 'file' }),
+    });
+    const result = await loadBaselineArchetypes({ repoRoot, archetype: 'sample-specific', hostPaths });
+    expect(result).toMatchObject({ status: 'private', selected: { id: 'sample-specific' } });
+  });
+
   it('bounds a stalled local producer and sanitizes its failure', async () => {
     const { loadBaselineArchetypes } = await import('../../scripts/lib/baseline-archetypes.mjs');
     const baseline = fixture(); put(baseline, 'scripts/archetype-manifest.mjs', 'setInterval(() => {}, 1000);');
