@@ -129,10 +129,10 @@ describe('release --publish under mirror: curated', () => {
     expect(git(origin, ['rev-parse', 'main'])).toBe(head);
   });
 
-  it('with no snapshot published yet: pushes a verified fresh snapshot, never HEAD', () => {
+  it('with no snapshot published yet: pushes a verified fresh snapshot, never HEAD', async () => {
     const { dir, github, head, seeded } = fixture();
 
-    const res = tagAndPush(dir, '1.0.0', { expectedHead: head, snapshotCheck: () => ({ ok: true }) });
+    const res = await tagAndPush(dir, '1.0.0', { expectedHead: head, snapshotCheck: () => ({ ok: true }) });
 
     const published = git(github, ['rev-parse', 'main']);
     expect(res.githubSnapshot).toBe(published);
@@ -171,11 +171,11 @@ describe('HEAD drift between preflight and the publish tail', () => {
 
 describe('mirror: none', () => {
   // BUG CAUGHT (pre-existing): release ignored `mirror: none` and pushed to github.
-  it('skips GitHub entirely in the publish tail and in the preflight rows', () => {
+  it('skips GitHub entirely in the publish tail and in the preflight rows', async () => {
     const { dir, github, head, seeded } = fixture({ mirrorLine: 'mirror: none' });
 
     expect(evaluateGithubMirrorPreflight(dir, head)).toMatchObject({ skip: true, mode: { ok: true }, parity: { ok: true } });
-    expect(tagAndPush(dir, '1.0.0', { expectedHead: head })).toEqual({ tag: 'v1.0.0', pushed: ['origin'], githubSkipped: true });
+    expect(await tagAndPush(dir, '1.0.0', { expectedHead: head })).toEqual({ tag: 'v1.0.0', pushed: ['origin'], githubSkipped: true });
     expect(git(github, ['rev-parse', 'main'])).toBe(seeded);
     expect(git(github, ['tag', '-l'])).toBe('');
   });
@@ -245,17 +245,17 @@ describe('snapshot-probe preflight row (#1712)', () => {
 });
 
 describe('keyless Session Config in a repo that adopted the export policy', () => {
-  it('fails preflight and pushes nothing to github', () => {
+  it('fails preflight and pushes nothing to github', async () => {
     const { dir, github, head, seeded } = fixture({ mirrorLine: null });
 
     expect(evaluateGithubMirrorPreflight(dir, head).mode).toMatchObject({ ok: false });
-    expect(() => tagAndPush(dir, '1.0.0', { expectedHead: head })).toThrow(/plain push to github refused/);
+    await expect(tagAndPush(dir, '1.0.0', { expectedHead: head })).rejects.toThrow(/plain push to github refused/);
     expect(git(github, ['rev-parse', 'main'])).toBe(seeded);
     expect(hasObject(github, head)).toBe(false);
     expect(fixtureGitSpawn(['-C', github, 'rev-parse', '--verify', '-q', 'refs/tags/v1.0.0'], undefined, { env: GIT_ENV }).status).not.toBe(0);
   });
 
-  it('plain repo without a policy anywhere keeps the plain push (unchanged)', () => {
+  it('plain repo without a policy anywhere keeps the plain push (unchanged)', async () => {
     const { dir, github, head } = fixture({ mirrorLine: null });
     git(dir, ['rm', '-q', '-r', '.orchestrator', 'docs']);
     git(dir, ['commit', '-q', '-m', 'drop policy']);
@@ -263,7 +263,7 @@ describe('keyless Session Config in a repo that adopted the export policy', () =
     const newHead = git(dir, ['rev-parse', 'HEAD']);
     expect(newHead).not.toBe(head);
 
-    expect(tagAndPush(dir, '1.0.0', { expectedHead: newHead })).toEqual({ tag: 'v1.0.0', pushed: ['origin', 'github'] });
+    expect(await tagAndPush(dir, '1.0.0', { expectedHead: newHead })).toEqual({ tag: 'v1.0.0', pushed: ['origin', 'github'] });
     expect(git(github, ['rev-parse', 'main'])).toBe(newHead);
   });
 });

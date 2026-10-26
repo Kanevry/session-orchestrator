@@ -38,9 +38,18 @@
  *      Proven red on the unmodified hook (quoted in the #C10 report): a push
  *      to `ssh://user@host/path` — not a configured remote — ran the gate and
  *      could block on it.
- *  10. (#1623) a commit lands on the pushed ref WHILE the gate runs → the hook
- *      exits 0 for a ref whose tip the gate never saw (incident: f98eeed5 gated,
- *      remote ended at da651658).
+ *  10. (#1623, #1778) a commit lands on the pushed ref WHILE the gate runs → the
+ *      hook warned and exited 0, and over smart HTTP(S) git sent the NEW, ungated
+ *      tip (incident #1778: 042464b8 gated, 980777b3 reached GitLab). The hook
+ *      must block (exit 1) on any moved ref.
+ *  11. (#1778) a revision-EXPRESSION or bare-name source (`HEAD~0`, `feat/x`)
+ *      was skipped by the re-check, so a moved ref passed; an unresolvable
+ *      source passed too. Over HTTP(S) the expression is resolved again after
+ *      the hook. A literal full sha must still pass (release pushes use them).
+ *  12. (#1787) a push whose content refs name DIFFERENT commits gated only the
+ *      first, warned, and printed "quality gate passed" for the rest. It must
+ *      block before the gate. Refs that peel to ONE commit (branch + lightweight
+ *      or annotated tag) must still pass, gated once.
  *   9. (#C10) a PUBLISH push — a configured remote NAME, or a URL-form push
  *      whose URL matches a configured remote (`git push https://github.com/...`)
  *      — is misread as scratch and skips the gate it needs.
@@ -87,8 +96,10 @@ const GATE_PROBE_SRC = [
   "import { writeFileSync } from 'node:fs';",
   "import { execFileSync } from 'node:child_process';",
   // #1623: simulate a commit made in the pushed worktree while the gate runs.
+  // MOVE_DELETE instead deletes that ref during the gate (#1778 fail-closed row).
   "if (process.env.MOVE_REPO) execFileSync('git', ['-C', process.env.MOVE_REPO, '-c', 'core.hooksPath=/dev/null',",
-  "  'commit', '-q', '--allow-empty', '-m', 'made during the gate']);",
+  "  ...(process.env.MOVE_DELETE ? ['update-ref', '-d', process.env.MOVE_DELETE]",
+  "    : ['commit', '-q', '--allow-empty', '-m', 'made during the gate'])]);",
   // The sentinel records ARGV, not just the fact of the run: the hook hands the
   // gate the real repo root as `--ledger-root <root>` (it runs inside a
   // throwaway clone whose own .orchestrator/ dies with the EXIT trap), and
@@ -115,7 +126,16 @@ const GATE_PROBE_SRC = [
  * argv-less path is UNCHANGED — the bug class this locks in is a divergence
  * between the two.
  */
-function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args, remotes = {}, moveDuringGate = false } = {}) {
+function runPrePush({
+  stdin,
+  gateExit = 0,
+  env = {},
+  withGateScript = true,
+  args,
+  remotes = {},
+  moveDuringGate = false,
+  setup,
+} = {}) {
   if (args) {
     const dir = makeTmpDir('so-pre-push-remote-');
     tmpDirs.push(dir);
@@ -148,6 +168,9 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
     fixtureGit(['-C', dir, 'add', '-A']);
     fixtureGit(['-C', dir, 'commit', '-q', '-m', 'fixture']);
     const sha = fixtureGit(['-C', dir, 'rev-parse', 'HEAD'], undefined, { encoding: 'utf8' }).trim();
+    // `setup(dir, sha)` builds extra refs after the fixture commit; its return
+    // value reaches a function-form `stdin` as the second argument (#1787).
+    const extra = setup ? setup(dir, sha) : undefined;
 
     const childEnv = { ...process.env };
     delete childEnv.SKIP_QUALITY_GATE;
@@ -155,7 +178,8 @@ function runPrePush({ stdin, gateExit = 0, env = {}, withGateScript = true, args
     if (moveDuringGate) childEnv.MOVE_REPO = dir;
     const res = spawnSync(posixShell('sh'), ['-e', HOOK_PATH, ...args], {
       cwd: dir,
-      input: stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
+      // A function receives the fixture's commit sha (only known after the commit).
+      input: typeof stdin === 'function' ? stdin(sha, extra) : (stdin ?? `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n`),
       encoding: 'utf8',
       timeout: 60_000,
       env: childEnv,
@@ -326,11 +350,11 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
     expect(resolve(gateArgv[idx + 1])).toBe(realpathSync(dir));
   });
 
-  it('warns, but lets the gated sha through, when the pushed ref moves while the gate runs (#1623)', { timeout: 60_000 }, () => {
-    // bug_caught: #10 — without the post-gate re-check the operator is never told
-    // that refs/heads/feat/x moved on to a commit that is neither pushed nor
-    // gated. git sends the sha it resolved before the hook (measured local + SSH,
-    // 2026-10-14), so the push itself stays allowed.
+  it('blocks the push when the pushed ref moves while the gate runs (#1623, #1778)', { timeout: 60_000 }, () => {
+    // bug_caught: #10 — a warn-and-pass on a moved ref lets an ungated commit
+    // leave: over smart HTTP(S) git re-resolves the ref name after the hook and
+    // sends the NEW tip (measured 2026-10-24, git 2.56.0; incident #1778). The
+    // hook must exit 1 and must not print "quality gate passed".
     const { res, gateRan, dir, sha } = runPrePush({
       args: ['origin', ORIGIN_URL],
       remotes: { origin: ORIGIN_URL },
@@ -340,9 +364,96 @@ describe('.husky/pre-push — full quality gate (#932)', () => {
 
     expect(gateRan).toBe(true);
     expect(now).not.toBe(sha);
-    expect(res.status).toBe(0);
+    expect(res.status).toBe(1);
     expect(res.stderr).toContain(`gated ${sha}, now ${now}`);
-    expect(res.stderr).toContain('neither pushed nor gated');
+    expect(res.stderr).toContain('Push blocked');
+    expect(res.stderr).not.toContain('quality gate passed');
+  });
+
+  it.each([
+    { src: () => 'HEAD~0', env: {}, status: 1, marker: 'HEAD~0 moved during the gate' },
+    { src: () => 'feat/x', env: {}, status: 1, marker: 'feat/x moved during the gate' },
+    {
+      src: () => 'refs/heads/feat/x',
+      env: { MOVE_DELETE: 'refs/heads/feat/x' },
+      status: 1,
+      marker: 'refs/heads/feat/x no longer resolves after the gate',
+    },
+    { src: (sha) => sha, env: {}, status: 0, marker: 'quality gate passed' },
+  ])('re-checks every non-literal-sha source after the gate (#1778): $marker', { timeout: 60_000 }, ({ src, env, status, marker }) => {
+    // bug_caught: #11 — the wave-1 re-check only looked at refs/* and HEAD, so
+    // `git push origin HEAD~1:refs/heads/feat` with a commit landing during the
+    // gate printed "passed" while HTTP(S) re-resolved HEAD~1 to an ungated tip.
+    // The literal-sha row guards the other direction: a raw-sha source (as
+    // scripts/release.mjs pushes) cannot move and must not be blocked.
+    const { res, gateRan } = runPrePush({
+      args: ['origin', ORIGIN_URL],
+      remotes: { origin: ORIGIN_URL },
+      moveDuringGate: true,
+      env,
+      stdin: (sha) => `${src(sha)} ${sha} refs/heads/feat/x ${ZERO_SHA}\n`,
+    });
+
+    expect(gateRan).toBe(true);
+    expect(res.stderr).toContain(marker);
+    expect(res.status).toBe(status);
+  });
+
+  const git = (dir, argv) => fixtureGit(['-C', dir, ...argv], undefined, { encoding: 'utf8' }).trim();
+
+  it('blocks a push whose refs point at more than one commit, before the gate (#1787)', { timeout: 60_000 }, () => {
+    // bug_caught: #12 — the hook gated only the first content line's commit and
+    // printed "quality gate passed" for a push that also sent a second, ungated
+    // commit. `other` has the SAME tree but a different commit, so a tree-level
+    // comparison would wrongly let it through.
+    const { res, gateRan } = runPrePush({
+      args: ['origin', ORIGIN_URL],
+      remotes: { origin: ORIGIN_URL },
+      setup: (dir, sha) => {
+        const other = git(dir, ['commit-tree', `${sha}^{tree}`, '-p', sha, '-m', 'same tree, other commit']);
+        git(dir, ['update-ref', 'refs/heads/other', other]);
+        return other;
+      },
+      stdin: (sha, other) =>
+        `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n` +
+        `refs/heads/other ${other} refs/heads/other ${ZERO_SHA}\n`,
+    });
+
+    expect(gateRan).toBe(false);
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('point at more than one commit');
+    expect(res.stderr).toContain('refs/heads/feat/x -> ');
+    expect(res.stderr).toContain('refs/heads/other -> ');
+    expect(res.stderr).not.toContain('quality gate passed');
+    // The local gate runs AFTER materialisation, so `gateRan` alone stays green if
+    // the block moves below the clone: the block must also precede materialisation.
+    expect(res.stderr).not.toContain('materialised the tracked tree');
+    expect(res.stderr).not.toContain('running the full quality gate');
+  });
+
+  it.each([
+    { kind: 'lightweight', tagArgs: ['tag', 'v1'] },
+    { kind: 'annotated', tagArgs: ['tag', '-a', '-m', 'v1', 'v1'] },
+  ])('gates a branch and its $kind tag on the same commit once (#1787)', { timeout: 60_000 }, ({ tagArgs }) => {
+    // bug_caught: #12, the over-block direction — blocking by ref COUNT would
+    // stop every release-style "branch + tag" push; comparing the raw local_sha
+    // would stop the annotated row, whose stdin carries the TAG OBJECT sha.
+    const { res, gateRan } = runPrePush({
+      args: ['origin', ORIGIN_URL],
+      remotes: { origin: ORIGIN_URL },
+      setup: (dir) => {
+        fixtureGit(['-C', dir, '-c', 'tag.gpgsign=false', ...tagArgs]);
+        return git(dir, ['rev-parse', 'refs/tags/v1']);
+      },
+      stdin: (sha, tagObj) =>
+        `refs/heads/feat/x ${sha} refs/heads/feat/x ${ZERO_SHA}\n` +
+        `refs/tags/v1 ${tagObj} refs/tags/v1 ${ZERO_SHA}\n`,
+    });
+
+    expect(gateRan).toBe(true);
+    expect(res.status).toBe(0);
+    expect(res.stderr).toContain('2 refs point at one commit — gated once.');
+    expect(res.stderr).toContain('quality gate passed');
   });
 
   it.each([

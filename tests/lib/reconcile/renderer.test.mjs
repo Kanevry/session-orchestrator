@@ -286,6 +286,38 @@ describe('renderRule — untrusted-input containment (#1015)', () => {
     expect(beforeEnvelope).toContain('learning-key: fragile-pattern/zx-imports');
   });
 
+  it('keeps the envelope after Claude Code strips block-level HTML comments (#1779)', () => {
+    // Bug: Claude Code drops every line that is entirely an HTML comment before
+    // injecting a rule. The `<!-- untrusted-content:… -->` sentinels vanished
+    // that way, so the model received the agent-authored prose unwrapped while
+    // the split-on-constant test above still passed.
+    const learning = fragileLearning({
+      insight: 'Top-level zx imports cause fork-pool fragility',
+      evidence: ['pipeline #5835 hang'],
+    });
+    const metadata = toActivationMetadata(learning, { now: Date.parse('2026-06-21') });
+    const { content } = renderRule(learning, metadata);
+
+    const injected = content
+      .split('\n')
+      .filter((l) => !/^\s*<!--.*-->\s*$/.test(l))
+      .join('\n');
+    const lines = injected.split('\n');
+    const begin = lines.indexOf(UNTRUSTED_BEGIN);
+    const end = lines.indexOf(UNTRUSTED_END);
+    const insightAt = lines.indexOf('Top-level zx imports cause fork-pool fragility');
+    expect(begin).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(begin);
+    expect(insightAt).toBeGreaterThan(begin);
+    expect(insightAt).toBeLessThan(end);
+    // Each sentinel is its own blockquote paragraph: a blank line on both sides,
+    // so Markdown lazy continuation cannot fold prose into the quote.
+    for (const at of [begin, end]) {
+      expect(lines[at - 1]).toBe('');
+      expect(lines[at + 1]).toBe('');
+    }
+  });
+
   it('rejects a description carrying a Unicode Tag-block payload', () => {
     // Bug: `description` is the ONE agent-authored value emitted OUTSIDE the
     // untrusted envelope, and its only guard tested `\p{Cc}` — the CONTROL

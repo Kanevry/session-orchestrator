@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 280" role="img" aria-labelledby="lc-title lc-desc">
+  <title id="lc-title">Session Orchestrator lifecycle</title>
+  <desc id="lc-desc">/bootstrap once per repo, then /session reads the repository and proposes a scope. If you do not agree, back to /session. If you agree, /go runs waves of agents with tests and typecheck after each, then the full gate runs test, typecheck and lint, then /close verifies, commits and files the rest as issues. The next session resumes from there.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#4a4f55"/>
+    </marker>
+  </defs>
+  <style>
+    .box { fill: #f5f3ee; stroke: #4a4f55; stroke-width: 1.25; }
+    .key { fill: #d5f478; stroke: #101113; stroke-width: 1.25; }
+    .cmd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 16px; font-weight: 600; fill: #101113; }
+    .kcmd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 16px; font-weight: 600; fill: #101113; }
+    .ksub { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 13px; fill: #22252a; }
+    .head { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 15px; font-weight: 600; fill: #101113; }
+    .sub { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 13px; fill: #34383c; }
+    .lbl { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; font-size: 13px; fill: #34383c; font-style: italic; }
+    .line { fill: none; stroke: #4a4f55; stroke-width: 1.5; }
+    .dash { fill: none; stroke: #4a4f55; stroke-width: 1.5; stroke-dasharray: 6 5; }
+  </style>
+
+  <!-- row 1: /bootstrap -> /session -> you agree? -->
+  <rect class="box" x="10" y="56" width="200" height="64" rx="10"/>
+  <text class="cmd" x="110" y="83" text-anchor="middle">/bootstrap</text>
+  <text class="sub" x="110" y="104" text-anchor="middle">once per repo</text>
+
+  <rect class="key" x="260" y="56" width="200" height="64" rx="10"/>
+  <text class="kcmd" x="360" y="83" text-anchor="middle">/session</text>
+  <text class="ksub" x="360" y="104" text-anchor="middle">reads repo, proposes scope</text>
+
+  <polygon class="box" points="510,88 610,50 710,88 610,126"/>
+  <text class="head" x="610" y="93" text-anchor="middle">you agree?</text>
+
+  <path class="line" d="M210 88 H256" marker-end="url(#arrow)"/>
+  <path class="line" d="M460 88 H506" marker-end="url(#arrow)"/>
+
+  <!-- no: back to /session -->
+  <path class="line" d="M610 50 V26 H360 V52" marker-end="url(#arrow)"/>
+  <text class="lbl" x="485" y="19" text-anchor="middle">no</text>
+
+  <!-- yes: down to the waves -->
+  <path class="line" d="M610 126 V182" marker-end="url(#arrow)"/>
+  <text class="lbl" x="622" y="159">yes</text>
+
+  <!-- row 2, right to left: /go -> full gate -> /close -->
+  <rect class="key" x="510" y="186" width="200" height="80" rx="10"/>
+  <text class="kcmd" x="610" y="212" text-anchor="middle">/go</text>
+  <text class="ksub" x="610" y="233" text-anchor="middle">waves of agents,</text>
+  <text class="ksub" x="610" y="251" text-anchor="middle">tests + typecheck after each</text>
+
+  <rect class="box" x="260" y="186" width="200" height="80" rx="10"/>
+  <text class="head" x="360" y="212" text-anchor="middle">full gate</text>
+  <text class="sub" x="360" y="233" text-anchor="middle">test, typecheck, lint</text>
+
+  <rect class="key" x="10" y="186" width="200" height="80" rx="10"/>
+  <text class="kcmd" x="110" y="212" text-anchor="middle">/close</text>
+  <text class="ksub" x="110" y="233" text-anchor="middle">verify, commit,</text>
+  <text class="ksub" x="110" y="251" text-anchor="middle">file the rest as issues</text>
+
+  <path class="line" d="M510 226 H464" marker-end="url(#arrow)"/>
+  <path class="line" d="M260 226 H214" marker-end="url(#arrow)"/>
+
+  <!-- next session resumes -->
+  <path class="dash" d="M110 186 V156 H330 V124" marker-end="url(#arrow)"/>
+  <text class="lbl" x="220" y="149" text-anchor="middle">next session resumes</text>
+</svg>

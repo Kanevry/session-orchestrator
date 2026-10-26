@@ -8,6 +8,7 @@
  * this file is a direct-path smoke net.
  */
 
+import { performance } from 'node:perf_hooks';
 import { describe, it, expect } from 'vitest';
 import {
   tokenizeCommand,
@@ -1253,6 +1254,19 @@ describe('zsh brace groups and keyword bodies (#1707)', () => {
     ['a `time` group body', 'time {unlink CLAUDE.md;}', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
     ['a short function body', 'f() unlink CLAUDE.md; f', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
     ['a `coproc` command', 'coproc unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    // #1731 point 2: sibling forms of the bodies above (each `[]` at 13907308). A `}` with no
+    // separator before it stays a second, bash-reading target — the existing fail-closed reading.
+    ['a `repeat` behind `time`', 'time repeat 1 unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a `repeat` as a short function body', 'f() repeat 1 unlink CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a zsh `while [[ … ]] { … }` body', 'while [[ -n x ]] { rm -f CLAUDE.md }', [
+      { target: 'CLAUDE.md', verb: 'rm' }, { target: '}', verb: 'rm' },
+    ]],
+    ['a zsh `if [[ … ]] { … }` body', 'if [[ -n x ]] { unlink CLAUDE.md }', [
+      { target: 'CLAUDE.md', verb: 'unlink' }, { target: '}', verb: 'unlink' },
+    ]],
+    ['a zsh `if (( … )) { … }` body', 'if (( 1 )) { unlink CLAUDE.md;}', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a named bash `coproc` group', 'coproc NAME { unlink CLAUDE.md; }', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
+    ['a `time -p --` group body', 'time -p -- { unlink CLAUDE.md; }', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
     // The quoted single-word verb on its own, without any brace (`[]` at e377f94c).
     ['a double-quoted verb without braces', '"unlink" CLAUDE.md', [{ target: 'CLAUDE.md', verb: 'unlink' }]],
   ])('extractDeleteTargets sees %s', (_name, command, expected) => {
@@ -1312,21 +1326,22 @@ describe('zsh brace groups and keyword bodies (#1707)', () => {
   // 40002 entries and ~1.7 s per matcher at depth 40000 on 9a4d3eb7, past the
   // hook's 5 s timeout end to end (a timed-out hook ALLOWS). Bounded now: ~10
   // readings per word, both matchers back to the e377f94c level (~5 ms).
+  // The entry counters are the guard: 9a4d3eb7 yields 40002 entries, HEAD 3
+  // (A/B in one process, 2026-10-24). No wall-clock bound — it measured host
+  // load in the instrumented coverage job (949 ms > 500 ms, #1780), not
+  // complexity; tokenizeCommand's remaining quadratic time is #1731.
   it('keeps the glued-brace readings linear on a deep group flood (#1707)', () => {
     const depth = 40_000;
     const redirect = `${'{'.repeat(depth)}: >a${'}'.repeat(depth)}; : >CLAUDE.md`;
     const del = `${'{'.repeat(depth)}rm a${'}'.repeat(depth)}; rm CLAUDE.md`;
     const rule = { 'target-denylist': ['CLAUDE.md', '.claude/rules/**'], modes: ['truncate'] };
-    const started = Date.now();
     const redirectEntries = extractRedirectTargets(redirect);
     const matched = redirectRuleMatches(rule, redirect);
     const deleteEntries = extractDeleteTargets(del);
-    const elapsed = Date.now() - started;
     expect(matched).toBe(true);
     expect(redirectEntries.length).toBeLessThanOrEqual(16);
     expect(deleteEntries.length).toBeLessThanOrEqual(16);
     expect(deleteEntries.at(-1)).toEqual({ target: 'CLAUDE.md', verb: 'rm' });
-    expect(elapsed).toBeLessThan(500);
   });
 });
 
@@ -1344,4 +1359,49 @@ describe('splitChainSegments — both readings of `always` behind a glued close 
   it('cuts hard after a spaced `}`', () => {
     expect(texts('{ rm x; } always { rm y; }')).toEqual(['rm x', 'rm y']);
   });
+});
+
+describe('tokenizeCommand — zsh clobber forms, quote parts, linear time (#1795, #1731)', () => {
+  // THE bug (#1795): zsh's noclobber-override spellings lexed as a redirect
+  // followed by `&` / `|` / `!` tokens, so the redirect denylist saw no target
+  // (`unresolved`) or the bogus target `!` — `echo x >! CLAUDE.md` truncates
+  // CLAUDE.md in zsh, the agent shell. Red on 0839cbbe for every row.
+  it.each([
+    ['>!', 'truncate', null], ['2>!', 'truncate', 2], ['>>|', 'append', null], ['>>!', 'append', null],
+    ['>&|', 'truncate', null], ['>&!', 'truncate', null], ['&>|', 'truncate', null], ['&>!', 'truncate', null],
+    ['&>>|', 'append', null], ['>>&!', 'append', null],
+  ])('`%s` names its operand as the write target', (op, mode, fd) => {
+    expect(extractRedirectTargets(`echo x ${op} CLAUDE.md`)).toEqual([{ target: 'CLAUDE.md', mode, fd }]);
+  });
+
+  // A consumer must tell an expanding `"$PWD"/x` from a literal `'$PWD/x'`, and
+  // a bare leading `~` from a quoted one — `quoted: true` alone conflates them.
+  it('exposes per-part quote context without changing the token shape', () => {
+    const parts = (c) => tokenizeCommand(c)[0].parts;
+    expect(parts('"$PWD"/x')).toEqual([{ text: '$PWD', quote: 'double' }, { text: '/x', quote: 'none' }]);
+    expect(parts("'$PWD/x'")).toEqual([{ text: '$PWD/x', quote: 'single' }]);
+    expect(parts('~/x')).toEqual([{ text: '~/x', quote: 'none' }]);
+    expect(parts('"~"/x')).toEqual([{ text: '~', quote: 'double' }, { text: '/x', quote: 'none' }]);
+    expect(JSON.stringify(tokenizeCommand('"~"/x'))).toBe('[{"text":"~/x","quoted":true}]');
+  });
+
+  // THE bug (#1731 point 1): every `f()` head walked back over all earlier
+  // openers, so a `f() { ` flood was quadratic and outran the 5 s hook timeout
+  // (a timed-out hook does not block). Load-robust: the flood is compared with
+  // a same-length input of the same token count, measured interleaved (min of
+  // 3), so host load scales both sides. HEAD 0839cbbe: ratio in the hundreds.
+  it('tokenizes a function-head flood in time comparable to a plain input', () => {
+    const n = 4000;
+    const flood = 'f() { '.repeat(n) + 'rm -r .orchestrator';
+    const plain = 'a() b '.repeat(n) + 'rm -r .orchestrator';
+    const best = { flood: Infinity, plain: Infinity };
+    for (let r = 0; r < 3; r++) {
+      for (const [k, c] of [['plain', plain], ['flood', flood]]) {
+        const t0 = performance.now();
+        tokenizeCommand(c);
+        best[k] = Math.min(best[k], performance.now() - t0);
+      }
+    }
+    expect(best.flood / Math.max(best.plain, 0.5)).toBeLessThan(10);
+  }, 60_000);
 });

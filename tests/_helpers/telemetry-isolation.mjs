@@ -30,6 +30,13 @@
  *   3. `SO_TELEMETRY_ENDPOINT` → the discard port (9), never listened on, so
  *      even a bug that defeats 1 and 2 cannot reach the real server.
  *
+ * Same contract, second production client: `SO_SECURITY_PULSE_REFRESH=off`
+ * stops session-start probe 21 from detaching the security-pulse refresher
+ * (nodejs.org, cisa.gov, OSV). A fake HOME means an absent pulse cache, so
+ * without it every spawned SessionStart hook started a real network child —
+ * measured 2026-10-25: 31 distinct refresher pids during one run of
+ * tests/hooks/on-session-start.test.mjs.
+ *
  * Spread it FIRST in a spawn env so a test that deliberately exercises the send
  * path (a local collector, a seeded fake HOME) can override any of it:
  *
@@ -94,5 +101,7 @@ export function telemetryIsolationEnv({ home } = {}) {
     // Port 9 is the discard service and is not listened on; any send that got
     // this far fails fast instead of leaving the machine.
     SO_TELEMETRY_ENDPOINT: 'http://127.0.0.1:9/',
+    // See the header: no detached security-pulse refresher from a test hook.
+    SO_SECURITY_PULSE_REFRESH: 'off',
   };
 }

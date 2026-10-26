@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -95,6 +95,50 @@ describe('recordCloseWithoutPlan (#1762)', () => {
     const backfill = await backfillAbandonedSession({ repoRoot: dir, sessionId: OWN, ownSessionIsEnding: true, now: NOW.getTime() });
     expect(['skipped-already-recorded', 'skipped-marker-exists']).toContain(backfill.action);
     expect(ledgerLines()).toHaveLength(1);
+  });
+
+  it('an own active plan misplaced under .orchestrator/STATE.md is not "no plan": no record (#1790)', async () => {
+    writeOwnEvents();
+    writeFileSync(join(dir, '.orchestrator', 'STATE.md'), [
+      '---', 'schema-version: 1', `session: ${LABEL}`, `session-id: ${OWN}`,
+      `started_at: ${STARTED}`, 'status: active', '---', '', '# STATE', '',
+    ].join('\n'));
+    const precheck = classifyCloseState({ repoRoot: dir, stateDir: '.claude', env });
+    expect(precheck.verdict).toBe('no-state');
+    expect(await record(precheck)).toMatchObject({
+      written: false, reason: 'misplaced-plan', path: join(dir, '.orchestrator', 'STATE.md'),
+    });
+    expect(ledgerLines()).toHaveLength(0);
+  });
+
+  // MED-2 (#1790): a stale legacy .orchestrator/STATE.md (no session-id) must not
+  // suppress the record of every later session; only an mtime at/after this
+  // session's start (events: STARTED = 01:02:03Z) is evidence it is ours.
+  const WRITTEN = { written: true, verified: true, raw_session_id: OWN };
+  const REFUSED = { written: false, reason: 'misplaced-plan' };
+  it.each([
+    { ownership: 'own', mtime: '2026-10-23T00:00:00.000Z', expected: REFUSED, pathKey: 'path', lines: 0 },
+    { ownership: 'legacy', mtime: '2026-10-23T00:00:00.000Z', expected: WRITTEN, pathKey: 'misplaced_path', lines: 1 },
+    { ownership: 'legacy', mtime: '2026-10-23T02:00:00.000Z', expected: REFUSED, pathKey: 'path', lines: 0 },
+    { ownership: 'foreign', mtime: '2026-10-23T02:00:00.000Z', expected: WRITTEN, pathKey: 'misplaced_path', lines: 1 },
+  ])('misplaced plan ownership=$ownership, mtime=$mtime → $lines record(s)', async ({ ownership, mtime, expected, pathKey, lines }) => {
+    writeOwnEvents();
+    const misplacedPath = join(dir, '.orchestrator', 'STATE.md');
+    writeFileSync(misplacedPath, '---\nstatus: active\n---\n');
+    utimesSync(misplacedPath, new Date(mtime), new Date(mtime));
+    const out = await record({ verdict: 'no-state', misplacedState: { path: misplacedPath, ownership } });
+    expect(out).toMatchObject({ ...expected, [pathKey]: misplacedPath });
+    expect(ledgerLines()).toHaveLength(lines);
+  });
+
+  it('without a native id the misplaced-plan branch is never reached: `unprovable` ends at no-native-id', async () => {
+    const noIdEnv = { SO_PLATFORM: 'claude' };
+    mkdirSync(join(dir, '.orchestrator'), { recursive: true });
+    writeFileSync(join(dir, '.orchestrator', 'STATE.md'), '---\nschema-version: 1\nsession-id: x\nstatus: active\n---\n');
+    const precheck = classifyCloseState({ repoRoot: dir, stateDir: '.claude', env: noIdEnv });
+    expect(precheck.misplacedState).toMatchObject({ ownership: 'unprovable' });
+    const out = await recordCloseWithoutPlan({ repoRoot: dir, precheck, env: noIdEnv, now: () => NOW });
+    expect(out).toEqual({ written: false, reason: 'no-native-id' });
   });
 
   it('the /close record writes nothing after an abandoned stub for the same raw id', async () => {

@@ -848,6 +848,55 @@ describe('emit-session.mjs CLI — #1436 token rollup, raw_session_id, start-ref
     expect('raw_session_id' in readWritten()).toBe(false);
   });
 
+  // Bug (#1773): 12 of 44 ledger records since 2026-10-15 lost raw_session_id
+  // and the token rollup because the cwd marker was a peer's (a later
+  // SessionStart overwrote it) or absent (work tree ≠ SessionStart root),
+  // although the process's own id had carried the record's label all along.
+  it('adopts the process-local id when the events ledger shows it carrying the label, never for a foreign label (#1773)', () => {
+    writeJsonlIn('subagents.jsonl', [stop('a1', 1, 2)]);
+    writeJsonlIn('events.jsonl', [{
+      timestamp: '2026-10-24T19:19:05.000Z', event: 'orchestrator.session.lock.acquired',
+      session_id: U, semantic_session_id: validEntry().session_id, mode: 'session', schema_version: 1,
+    }]);
+    const cwd = join(tmp, 'peer-overwritten');
+    mkdirSync(join(cwd, '.orchestrator'), { recursive: true });
+    writeFileSync(join(cwd, '.orchestrator', 'current-session.json'), JSON.stringify({
+      session_id: '99999999-2222-4333-8444-555555555555', semantic_session_id: 'main-2026-10-24-session-48',
+    }));
+    const env = { ...NO_NATIVE_ID, SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: U };
+
+    const own = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry())], null, { cwd, env });
+    expect(own.status).toBe(0);
+    expect(own.stderr).not.toContain('omitting raw_session_id');
+    const w = readWritten();
+    expect(w.raw_session_id).toBe(U);
+    expect(w.total_tokens).toBe(3);
+
+    rmSync(targetFile);
+    const replay = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry({ session_id: 'main-2026-10-01-session-9' }))], null, { cwd, env });
+    expect(replay.status).toBe(0);
+    expect('raw_session_id' in readWritten()).toBe(false);
+  });
+
+  // Bug (#1773 review): git allows `"` in a branch name, so the semantic label
+  // can carry one; JSONL holds it escaped and a raw-label prefilter skipped the
+  // session's own event — no raw_session_id, no token rollup.
+  it('finds its own label in the events ledger when the label needs JSON escaping (#1773)', () => {
+    const label = 'feat/say-"hi"-2026-10-25-session-1';
+    writeJsonlIn('subagents.jsonl', [stop('a1', 1, 2)]);
+    writeJsonlIn('events.jsonl', [{
+      timestamp: '2026-10-25T01:00:00.000Z', event: 'orchestrator.session.lock.acquired',
+      session_id: U, semantic_session_id: label, mode: 'session', schema_version: 1,
+    }]);
+    const cwd = join(tmp, 'no-marker');
+    mkdirSync(cwd, { recursive: true });
+    const env = { ...NO_NATIVE_ID, SO_PLATFORM: 'claude', CLAUDE_CODE_SESSION_ID: U };
+
+    const res = runCli(['--file', targetFile, '--entry', JSON.stringify(validEntry({ session_id: label }))], null, { cwd, env });
+    expect(res.status).toBe(0);
+    expect(readWritten().raw_session_id).toBe(U);
+  });
+
   // Bugs caught, one per row: a scan that ignores the UUID takes a parallel
   // session's start sha; a tail-first (last-match-wins) scan takes the sha a
   // resume re-emitted under the same raw id instead of the session's real start;

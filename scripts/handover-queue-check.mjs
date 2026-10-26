@@ -21,7 +21,10 @@
  *                    (required with --fleet-dir and with --apply)
  *   --apply          file each unmarked point via `owner-queue add --json`
  *                    and write `queue:#<id>` into the file; points under an
- *                    owner/decision heading are reported, never filed. Only
+ *                    owner/decision heading are reported, never filed; so
+ *                    are info lines (`**MR:** !44, Kopf abc1234`,
+ *                    `Pipeline <id> grün`: a label followed by refs and
+ *                    values only), which belong under "Vollzogen" (#1794). Only
  *                    for an own file (the --fleet-dir name pattern for
  *                    --name); a foreign file is refused untouched (#1647).
  *                    Check mode without --apply reads any file.
@@ -30,7 +33,7 @@
  *                    else as a binary; default `navigator` from PATH
  *
  * Exit: 0 every open point marked (or no fleet integration: nothing to do) ·
- *       3 unmarked points remain (listed on stdout) · 2 usage error ·
+ *       3 unmarked points or info lines remain (listed on stdout) · 2 usage error ·
  *       4 --apply on a file that is not the session's own — foreign name, a
  *         symlink, or older than --since (nothing filed or written).
  */
@@ -167,7 +170,12 @@ function main() {
     return EXIT_USAGE;
   }
 
-  let open = unmarkedPoints(findOpenPoints(content));
+  const all = unmarkedPoints(findOpenPoints(content));
+  // Info lines are a hint to move them under "Vollzogen", never a queue item
+  // (#1794). They stay in the report and keep exit 3: hidden, the line would
+  // vanish from the writer's view while the Lead still counts it as open.
+  const info = all.filter((p) => p.info).map((p) => ({ line: p.line + 1, section: p.section, text: p.text }));
+  let open = all.filter((p) => !p.info);
   const filed = [];
   const failed = [];
   if (opts.apply && open.length > 0) {
@@ -202,8 +210,11 @@ function main() {
   for (const f of filed) lines.push(`  angelegt: Zeile ${f.line} → queue:#${f.id}`);
   for (const u of unmarked) lines.push(`  offen: Zeile ${u.line} [${u.section}] ${u.text}`);
   for (const f of failed) lines.push(`  Anlegen gescheitert: Zeile ${f.line} (${f.error})`);
-  say({ fleet: true, file, unmarked: unmarked.length, filed, failed, points: unmarked }, lines.join('\n'));
-  return unmarked.length > 0 ? EXIT_UNMARKED : EXIT_OK;
+  for (const i of info) {
+    lines.push(`  Hinweis: Zeile ${i.line} [${i.section}] Infozeile unter Offen-Überschrift, nach Vollzogen verschieben: ${i.text}`);
+  }
+  say({ fleet: true, file, unmarked: unmarked.length, filed, failed, points: unmarked, info }, lines.join('\n'));
+  return unmarked.length > 0 || info.length > 0 ? EXIT_UNMARKED : EXIT_OK;
 }
 
 process.exitCode = main();

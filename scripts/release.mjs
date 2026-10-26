@@ -48,12 +48,22 @@
 //                         proof, verify the exact version is served as latest
 //                         with the checked integrity, then that a consumer
 //                         download hashes to it. Never publishes, tags or pushes.
+//   --resume-tail         Finish an interrupted publish tail with one command
+//                         (#1791): --reconcile first (nothing is tagged unless
+//                         the registry serves the proof's integrity), then from
+//                         the proof's commit create/push the tag where it is
+//                         missing (an existing tag must point at that commit),
+//                         then GitHub release and live site. Idempotent; never
+//                         publishes to npm.
+//                         Every push/fetch/ls-remote of a tail runs in its own
+//                         process group with a deadline (TAIL_CHILD_TIMEOUT_MS).
 //
 // USAGE:
 //   node scripts/release.mjs --check [--json] [--skip-ci]
 //   node scripts/release.mjs --set-version 3.19.0
 //   node scripts/release.mjs --publish [--json]
 //   node scripts/release.mjs --reconcile [--target X.Y.Z] [--json]
+//   node scripts/release.mjs --resume-tail --target X.Y.Z [--json]
 //
 // EXIT CODES:
 //   0  success
@@ -100,7 +110,7 @@ import {
 } from 'node:fs';
 import { join, relative as relativePath, sep, basename, isAbsolute } from 'node:path';
 import { tmpdir } from 'node:os';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { packedFilename } from './lib/plugin-package-stage.mjs';
 import { parseArgs } from 'node:util';
@@ -109,6 +119,7 @@ import { fileURLToPath } from 'node:url';
 import { resolveRepoSpec } from './lib/vcs-repo-spec.mjs';
 import { enumerateRepoFiles } from './lib/validate/enumerate-repo-files.mjs';
 import { writeJsonAtomicSync } from './lib/io.mjs';
+import { redactedEnv } from './lib/redacted-env.mjs';
 import {
   buildGithubExport,
   createGitRunner,
@@ -1348,8 +1359,22 @@ export function validateFlags(values) {
       message: '--reconcile cannot be combined with --publish, --check, --set-version or --skip-ci: it only verifies an already accepted upload.',
     };
   }
-  if (values.target !== undefined && !values.reconcile) {
-    return { ok: false, code: 2, message: '--target is only valid with --reconcile.' };
+  // --resume-tail finishes the tail of an already accepted upload (#1791). It
+  // writes tags and pushes, so it must never sit beside a mode that publishes or
+  // rewrites the tree, and it needs an explicit version: the package.json of a
+  // moved checkout may already name the next release.
+  if (values['resume-tail'] && (values.publish || values.check || values['set-version'] || values['skip-ci'] || values.reconcile)) {
+    return {
+      ok: false,
+      code: 2,
+      message: '--resume-tail cannot be combined with --publish, --check, --set-version, --skip-ci or --reconcile: it only finishes the tail of an already accepted upload.',
+    };
+  }
+  if (values['resume-tail'] && values.target === undefined) {
+    return { ok: false, code: 2, message: '--resume-tail requires --target X.Y.Z (the version npm already accepted).' };
+  }
+  if (values.target !== undefined && !values.reconcile && !values['resume-tail']) {
+    return { ok: false, code: 2, message: '--target is only valid with --reconcile or --resume-tail.' };
   }
   if (values.target !== undefined && !/^\d+\.\d+\.\d+$/.test(values.target)) {
     return { ok: false, code: 2, message: `invalid --target: ${values.target} (expected X.Y.Z)` };
@@ -1363,8 +1388,77 @@ export function validateFlags(values) {
 // feeds them.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Publish-tail shield (#1753). Once npm has issued the target-confirmed
+// receipt, dying half-way leaves a release that npm serves but that has no
+// origin tag and no GitHub release (5.13.0: `timeout 580` sent SIGTERM after
+// the receipt). From that point on, SIGTERM/SIGINT/SIGHUP are only recorded,
+// and every child `run()` starts gets its own process group, because GNU
+// `timeout` signals the whole group: a handler alone keeps node alive while
+// the `git push` child still dies (measured 2026-10-24, Node 24.22.1).
+// Ctrl-C is deferred as well; a half release is worse than waiting, and there
+// is no "press twice" escape because `timeout` delivers each signal twice at
+// once. Force-abort stays possible with SIGKILL.
+// ---------------------------------------------------------------------------
+
+const TAIL_SIGNALS = ['SIGTERM', 'SIGINT', 'SIGHUP'];
+const releaseTailShield = { armed: false, deferred: [] };
+
+function recordTailSignal(signal) {
+  releaseTailShield.deferred.push({ signal, at: new Date().toISOString() });
+}
+
+/**
+ * Defer SIGTERM/SIGINT/SIGHUP for the rest of this process and announce it once
+ * on stderr. Idempotent: a second call is a no-op and returns false. Never
+ * exits and never re-raises; the recorded signals are reported by
+ * {@link printPublishOutcome}.
+ *
+ * @param {{target: string, log?: (s: string) => void}} opts
+ * @returns {boolean} true when this call armed the shield
+ */
+export function armReleaseTailShield({ target, log = (s) => process.stderr.write(s) }) {
+  if (releaseTailShield.armed) return false;
+  releaseTailShield.armed = true;
+  for (const signal of TAIL_SIGNALS) process.on(signal, recordTailSignal);
+  // After SIGHUP the tty may be gone and writes fail with EIO; without a
+  // listener that 'error' would crash the tail. Unmeasured: no SIGHUP-on-a-dead-
+  // tty run has been observed yet.
+  const ignore = () => {};
+  process.stdout.on('error', ignore);
+  process.stderr.on('error', ignore);
+  log(`publish tail running for ${PACKAGE_NAME}@${target} (npm accepted it): SIGTERM/SIGINT/SIGHUP are deferred until tag, push, GitHub release and live check end; force-abort only with kill -KILL ${process.pid}; if it dies anyway, finish it with: node scripts/release.mjs --resume-tail --target ${target}; registry state: node scripts/release.mjs --reconcile --target ${target}\n`);
+  return true;
+}
+
+/**
+ * The signals the armed shield has deferred so far, oldest first.
+ *
+ * @returns {Array<{signal: string, at: string}>}
+ */
+export function deferredTailSignals() {
+  return releaseTailShield.deferred.map((entry) => ({ ...entry }));
+}
+
+/**
+ * Let libuv deliver signals that arrived while a synchronous child ran: the JS
+ * handler only fires on a later event-loop turn, so without this turn a
+ * deferred SIGTERM would be recorded after the outcome was already printed.
+ */
+async function settleDeferredTailSignals() {
+  if (releaseTailShield.armed) await new Promise((r) => setImmediate(r));
+}
+
 function run(cmd, args, opts = {}) {
-  const res = spawnSync(cmd, args, { ...SPAWN_OPTS, ...opts });
+  // While the tail shield is armed, the child leads its own process group so a
+  // group-wide signal (GNU `timeout`) cannot kill a push half-way. setsid also
+  // drops the controlling tty: a git credential prompt fails instead of hanging
+  // (remotes are HTTPS with a keychain helper). Ceiling: spawns inside
+  // `lib/github-export.mjs` / `lib/vcs-repo-spec.mjs` are not covered; a signal
+  // in those seconds surfaces as a `tag-and-push` reconciliation result, never
+  // silence. Revisit if that is ever observed.
+  const detached = releaseTailShield.armed && process.platform !== 'win32';
+  const res = spawnSync(cmd, args, { ...SPAWN_OPTS, ...(detached ? { detached: true } : {}), ...opts });
   if (res.error) throw new Error(`${cmd} ${args.join(' ')}: ${res.error.message}`);
   return res;
 }
@@ -1374,6 +1468,144 @@ function mustRun(cmd, args, opts = {}) {
   if (res.status !== 0) {
     throw new Error(`${cmd} ${args.join(' ')} exited ${res.status}: ${(res.stderr || res.stdout || '').slice(0, 500)}`);
   }
+  return res;
+}
+
+/**
+ * Deadline for one network-bound tail child (push, fetch, ls-remote), #1791.
+ * A push runs this repo's pre-push gate (~2.5 min per remote, measured), so
+ * 900 s leaves headroom for a loaded host. Ceiling (BV-004): a gate that
+ * legitimately needs longer ends as a `timed out` reconciliation item and is
+ * finished by `--resume-tail`; raise the constant if that is ever observed.
+ */
+export const TAIL_CHILD_TIMEOUT_MS = 900_000;
+
+/**
+ * Run one network-bound tail child in its own process group with a deadline
+ * (#1791, Security-Review W4: a hung `git push` of the armed tail could only be
+ * ended with `kill -KILL` on node, and its child kept running as an orphan).
+ * The child PID — which is also its process-group id on POSIX — is printed on
+ * stderr when it starts; on the deadline the WHOLE group gets SIGTERM, then
+ * SIGKILL after `graceMs`, so the pre-push gate under the push dies too.
+ *
+ * Deliberately NOT `spawnInGroup` (lib/process-group.mjs): its exit handler
+ * kills every live group on SIGTERM/SIGINT/SIGHUP even when another listener is
+ * present, which would undo the tail shield (#1753) — GNU `timeout` would again
+ * kill the push half-way. The ladder here never outlives its promise: every
+ * timer is cleared on settling, and no signal is sent after settling.
+ *
+ * Once the deadline fired, the ladder runs until the GROUP is gone, not just
+ * its leader (SO#1791 F2): a leader that exits on SIGTERM closes its pipes
+ * while a member that ignores SIGTERM keeps running. After the leader's
+ * `close` the group is probed (`kill(-pgid, 0)`) every 50 ms; SIGKILL still
+ * goes out at `graceMs` while the probe answers, and the promise settles when
+ * the probe reports the group gone or at the hard deadline (`graceMs` + 5 s),
+ * then with `survivors: ['process group <pgid>']`. POSIX does not reuse a
+ * process-group id while any member exists, so signalling a group the probe
+ * just saw alive is safe; after the first ESRCH nothing is sent again.
+ * Before the deadline nothing is probed or signalled.
+ * Ceilings (BV-004): on Windows only the direct child is signalled (no group,
+ * no probe, `survivors` stays empty); a grandchild that leaves the group
+ * (setsid) is neither reached nor counted; between a probe that saw the group
+ * alive and the next signal the group can empty and its id be reused — a
+ * window of one event-loop turn, not closed here. A zombie member whose parent
+ * never reaps it counts as alive. Revisit if a survivor line ever names a
+ * group that `ps -ax -o pgid` shows empty.
+ *
+ * @param {string} cmd
+ * @param {string[]} args
+ * @param {{cwd?: string, timeoutMs?: number, graceMs?: number, log?: (s: string) => void, spawnImpl?: typeof spawn,
+ *   killImpl?: (pid: number, sig: string|number) => unknown}} [opts] `killImpl` defaults to `process.kill` (tests inject a fake).
+ * @returns {Promise<{status: number|null, output: string, timedOut: boolean, pgid: number|null, killSignals: string[], survivors?: string[]}>}
+ *   `survivors` is set only after a deadline: empty when the group was gone before settling.
+ */
+export function runTailChild(cmd, args, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? TAIL_CHILD_TIMEOUT_MS;
+  const graceMs = opts.graceMs ?? 10_000;
+  const log = opts.log ?? ((s) => process.stderr.write(s));
+  const group = process.platform !== 'win32';
+  const label = `${cmd} ${args.join(' ')}`;
+  const killImpl = opts.killImpl ?? ((pid, sig) => process.kill(pid, sig));
+  return new Promise((resolve) => {
+    const killSignals = [];
+    const timers = [];
+    let output = '';
+    let timedOut = false;
+    let settled = false;
+    let groupGone = false;
+    let child;
+    // True while the process group has a member. ESRCH latches `groupGone` for
+    // good; EPERM means a member exists that we may not signal.
+    const groupAlive = () => {
+      if (!group || !child?.pid || groupGone) return false;
+      try { killImpl(-child.pid, 0); return true; } catch (err) {
+        if (err?.code === 'EPERM') return true;
+        groupGone = true;
+        return false;
+      }
+    };
+    const settle = (status) => {
+      if (settled) return;
+      settled = true;
+      for (const t of timers) clearTimeout(t);
+      const result = { status: timedOut ? null : status, output, timedOut, pgid: group ? child?.pid ?? null : null, killSignals };
+      if (timedOut) result.survivors = groupAlive() ? [`process group ${child.pid}`] : [];
+      resolve(result);
+    };
+    try {
+      child = (opts.spawnImpl ?? spawn)(cmd, args, {
+        cwd: opts.cwd,
+        stdio: ['ignore', 'pipe', 'pipe'],
+        ...(group ? { detached: true } : { windowsHide: true }),
+      });
+    } catch (err) {
+      output = err?.message ?? String(err);
+      settle(null);
+      return;
+    }
+    if (child.pid) log(`  tail child pid ${child.pid}${group ? ` (process group ${child.pid})` : ''}: ${label} — deadline ${Math.round(timeoutMs / 1000)} s\n`);
+    // Bounded capture: only the tail of the output is ever reported.
+    const collect = (d) => { output = (output + d).slice(-64 * 1024); };
+    child.stdout?.on('data', collect);
+    child.stderr?.on('data', collect);
+    const signal = (sig) => {
+      if (settled || !child.pid || groupGone) return;
+      killSignals.push(sig);
+      try { if (group) killImpl(-child.pid, sig); else child.kill(sig); } catch (err) {
+        if (group && err?.code === 'ESRCH') groupGone = true;
+      }
+    };
+    // After the deadline: settle only once no member of the group is left.
+    const awaitGroupGone = () => {
+      if (settled) return;
+      if (!groupAlive()) { settle(null); return; }
+      timers.push(setTimeout(awaitGroupGone, 50));
+    };
+    timers.push(setTimeout(() => {
+      timedOut = true;
+      log(`  tail child pid ${child.pid} passed its ${Math.round(timeoutMs / 1000)} s deadline: ${label}; sending SIGTERM to its process group\n`);
+      signal('SIGTERM');
+      timers.push(setTimeout(() => signal('SIGKILL'), graceMs));
+      timers.push(setTimeout(() => settle(null), graceMs + 5_000));
+    }, timeoutMs));
+    child.on('error', (err) => { output += `\n${err?.message ?? err}`; settle(null); });
+    child.on('close', (code) => {
+      if (timedOut && group) awaitGroupGone();
+      else settle(code);
+    });
+  });
+}
+
+/** {@link runTailChild}, throwing on a deadline or a non-zero exit. */
+async function mustRunTail(cmd, args, opts = {}) {
+  const res = await runTailChild(cmd, args, opts);
+  const label = `${cmd} ${args.join(' ')}`;
+  if (res.timedOut) {
+    const seconds = Math.round((opts.timeoutMs ?? TAIL_CHILD_TIMEOUT_MS) / 1000);
+    const survivors = res.survivors?.length ? `; still alive after SIGKILL: ${res.survivors.join(', ')}` : '';
+    throw new Error(`${label} timed out after ${seconds} s; process group ${res.pgid ?? 'unknown'} was sent ${res.killSignals.join(', ') || 'no signal'}${survivors}`);
+  }
+  if (res.status !== 0) throw new Error(`${label} exited ${res.status}: ${res.output.trim().slice(-500)}`);
   return res;
 }
 
@@ -2075,35 +2307,55 @@ export function printReconcileResult(result, { json = false, log = console.log, 
  * leakage gate's `npm pack --json` was already pinned against (see preflight
  * step 7). The pin makes the receipt independent of the caller's environment.
  *
- * Exported because `publish()` itself deliberately is not (it is the
- * irreversible act) — the invocation it builds is pure, so the pin is testable
- * without a publishable seam.
+ * A named pure function because the invocation `publish()` (the irreversible
+ * act) builds is then testable for the pin without running npm.
+ *
+ * `opts.env` carries the full env, so it serializes to key names only (SEC-008,
+ * SO#1785). It must stay an ordinary enumerable property of `opts` with
+ * enumerable values: `run()` spreads `opts`, and the child must still see the
+ * pin. Ceiling of that redaction: scripts/lib/redacted-env.mjs.
  *
  * @param {string} repoRoot
  * @param {string} userconfigPath — the 0600 temp npmrc carrying the token
+ * @param {{tarballPath: string, digest: string}} artifact — the checked archive
+ * @param {NodeJS.ProcessEnv} [env] — base env; tests pass a synthetic one
  * @returns {{cmd: string, args: string[], opts: {cwd: string, env: object}}}
  */
-export function publishInvocation(repoRoot, userconfigPath, artifact) {
+export function publishInvocation(repoRoot, userconfigPath, artifact, env = process.env) {
   if (!artifact?.tarballPath || !artifact.digest || archiveDigest(artifact.tarballPath) !== artifact.digest) throw new Error('refusing publish without unchanged checked archive');
   return {
     cmd: 'npm',
     args: ['publish', artifact.tarballPath, '--ignore-scripts', '--access', 'public', '--userconfig', userconfigPath],
-    opts: { cwd: repoRoot, env: { ...process.env, npm_config_loglevel: 'notice' } },
+    opts: { cwd: repoRoot, env: redactedEnv({ ...env, npm_config_loglevel: 'notice' }) },
   };
 }
 
-// Deliberately NOT exported: this is the irreversible act, and every production
-// path to it runs through main() -> preflight() (leakage gate, CI gate, dirty-tree
-// gate). Exporting it made the whole gate chain bypassable by any importer, and no
-// consumer needs it -- the tests drive runPublishRelease with an injected publisher.
-function publish(repoRoot, target, deps = {}) {
+/**
+ * The irreversible act: `npm publish` of the checked archive, then
+ * {@link settlePublishReceipt} with the tail shield armed on the receipt.
+ *
+ * Exported ONLY for the shield wiring test (#1753,
+ * tests/scripts/release-tail-shield.test.mjs T3): a hand-built publish step in
+ * the test could not catch a dropped `onReceiptConfirmed`. Every production
+ * path still runs through main() -> preflight() (leakage, CI and dirty-tree
+ * gates); an importer calling this directly bypasses them, so no consumer may.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{artifact: {tarballPath: string, digest: string, integrity: string}, runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} [deps]
+ */
+export function publish(repoRoot, target, deps = {}) {
   const token = loadNpmToken(repoRoot);
   const runImpl = deps.runImpl ?? run;
   const res = withTempUserconfig(token, (tmpRc) => {
     const call = publishInvocation(repoRoot, tmpRc, deps.artifact);
     return runImpl(call.cmd, call.args, call.opts);
   });
-  return settlePublishReceipt(repoRoot, target, res, { ...deps, runImpl });
+  return settlePublishReceipt(repoRoot, target, res, {
+    ...deps,
+    runImpl,
+    onReceiptConfirmed: () => armReleaseTailShield({ target }),
+  });
 }
 
 /**
@@ -2116,13 +2368,18 @@ function publish(repoRoot, target, deps = {}) {
  * @param {string} repoRoot
  * @param {string} target
  * @param {{status: number|null, stdout?: string, stderr?: string}} res — the `npm publish` result
- * @param {{artifact: {digest: string, integrity: string}, runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number}} deps
+ * @param {{artifact: {digest: string, integrity: string}, runImpl?: Function, waitImpl?: Function, attempts?: number, delaySeconds?: number, onReceiptConfirmed?: () => void}} deps
+ *   `onReceiptConfirmed` runs right after the receipt check passes, before the proof write and the
+ *   registry wait (`publish()` arms the tail shield there, #1753).
  * @returns {{receipt: {confirmed: boolean, target: string, detail: string}, propagation: ReturnType<typeof waitForRegistryPropagation>, proof: ReturnType<typeof writeReleaseProof>}}
  */
 export function settlePublishReceipt(repoRoot, target, res, deps = {}) {
   const runImpl = deps.runImpl ?? run;
   const receipt = evaluatePublishReceipt(res, target);
   if (!receipt.confirmed) throw new Error(receipt.detail);
+  // The irreversible boundary: from here on the tail must run to its end
+  // (#1753). Before it, a normal abort stays possible.
+  deps.onReceiptConfirmed?.();
 
   // Persist the proof BEFORE the registry wait: if this process dies while
   // waiting, `--reconcile` can still resume from it (#1537). Never throws.
@@ -2159,15 +2416,16 @@ export function settlePublishReceipt(repoRoot, target, res, deps = {}) {
  * @param {{ snapshotCheck?: Function }} [deps]
  * @returns {string}
  */
-function publishCuratedSnapshot(repoRoot, source, deps = {}) {
+async function publishCuratedSnapshot(repoRoot, source, deps = {}) {
+  const tail = { cwd: repoRoot, timeoutMs: deps.tailTimeoutMs, log: deps.log };
   // The export requires refs/remotes/github/main == the remote's main.
-  mustRun('git', ['fetch', '--quiet', '--no-tags', 'github', '+refs/heads/main:refs/remotes/github/main'], { cwd: repoRoot });
+  await mustRunTail('git', ['fetch', '--quiet', '--no-tags', 'github', '+refs/heads/main:refs/remotes/github/main'], tail);
   const git = createGitRunner(repoRoot);
   const built = buildGithubExport({ git, source, ...(deps.snapshotCheck ? { snapshotCheck: deps.snapshotCheck } : {}) });
   if (built.status === 'created') {
     const verdict = verifyExportCommit({ git, sha: built.sha, source });
     if (!verdict.ok) throw new Error(`curated snapshot ${built.sha} failed verification — ${verdict.reason}`);
-    mustRun('git', ['push', 'github', `${built.sha}:refs/heads/main`], { cwd: repoRoot });
+    await mustRunTail('git', ['push', 'github', `${built.sha}:refs/heads/main`], tail);
     return built.sha;
   }
   if (built.status === 'unchanged') {
@@ -2223,13 +2481,20 @@ export function releaseAnchorProblem(repoRoot, expectedHead) {
  *
  * @param {string} repoRoot
  * @param {string} target
- * @param {{ expectedHead?: string, snapshotCheck?: Function }} [deps] — `expectedHead`: the
- *   preflight HEAD (required); `snapshotCheck`: test seam (the default leakage scan needs a
- *   host owner policy)
- * @returns {{ tag: string, pushed: string[], githubSnapshot?: string, githubSkipped?: boolean }}
+ * Every push and fetch runs through {@link runTailChild}: own process group,
+ * PID on stderr, deadline `deps.tailTimeoutMs ?? TAIL_CHILD_TIMEOUT_MS` (#1791).
+ * Ceiling: the `ls-remote` inside {@link releaseAnchorProblem} stays a plain
+ * synchronous child without a deadline; it moves no ref, and the anchor check is
+ * synchronous by contract. Revisit if a hung ls-remote is ever observed there.
+ *
+ * @param {{ expectedHead?: string, snapshotCheck?: Function, tailTimeoutMs?: number, log?: (s: string) => void }} [deps] —
+ *   `expectedHead`: the preflight HEAD (required); `snapshotCheck`: test seam (the default
+ *   leakage scan needs a host owner policy); `tailTimeoutMs`: per-child deadline
+ * @returns {Promise<{ tag: string, pushed: string[], githubSnapshot?: string, githubSkipped?: boolean }>}
  */
-export function tagAndPush(repoRoot, target, deps = {}) {
+export async function tagAndPush(repoRoot, target, deps = {}) {
   const tag = `v${target}`;
+  const tail = { cwd: repoRoot, timeoutMs: deps.tailTimeoutMs, log: deps.log };
   const progress = { tag, localTagCreated: false, pushed: [], remotes: [] };
   try {
     const setting = readMirrorSetting(repoRoot);
@@ -2254,10 +2519,10 @@ export function tagAndPush(repoRoot, target, deps = {}) {
       if (remote === 'github' && curated) {
         const released = mustRun('git', ['rev-parse', `${tag}^{commit}`], { cwd: repoRoot }).stdout.trim();
         if (released !== deps.expectedHead) throw new Error(`${tag} points at ${released}, not the preflight HEAD — refusing to publish it to github`);
-        const snapshot = publishCuratedSnapshot(repoRoot, released, deps);
+        const snapshot = await publishCuratedSnapshot(repoRoot, released, deps);
         remoteProgress.mainPushed = true;
         progress.githubSnapshot = snapshot;
-        mustRun('git', ['push', 'github', `${snapshot}:refs/tags/${tag}`], { cwd: repoRoot });
+        await mustRunTail('git', ['push', 'github', `${snapshot}:refs/tags/${tag}`], tail);
         remoteProgress.tagPushed = true;
         progress.pushed.push(remote);
         continue;
@@ -2266,9 +2531,9 @@ export function tagAndPush(repoRoot, target, deps = {}) {
         const verdict = plainPushGuard({ git: createGitRunner(repoRoot), explicitGithub: setting.mirror === 'github' });
         if (!verdict.ok) throw new Error(`plain push to github refused — ${verdict.reason}`);
       }
-      mustRun('git', ['push', remote, 'main'], { cwd: repoRoot });
+      await mustRunTail('git', ['push', remote, 'main'], tail);
       remoteProgress.mainPushed = true;
-      mustRun('git', ['push', remote, tag], { cwd: repoRoot });
+      await mustRunTail('git', ['push', remote, tag], tail);
       remoteProgress.tagPushed = true;
       progress.pushed.push(remote);
     }
@@ -2294,6 +2559,7 @@ export function tagAndPush(repoRoot, target, deps = {}) {
  * @param {string} target
  * @param {{publishImpl?: Function, tagAndPushImpl?: Function, ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function, expectedHead?: string}} [deps]
  *   `expectedHead` — the HEAD the preflight checked; the tail refuses to tag any other commit.
+ *   `tailTimeoutMs` — per push/fetch deadline handed to tagAndPush (default TAIL_CHILD_TIMEOUT_MS).
  * @returns {Promise<{status: 'complete'|'post-publish-reconciliation', receipt: object, tag: string|null, pushed: string[], tagProgress?: object, release: object, live: object, propagation: object, reconciliation: Array<{phase: string, kind?: string, detail: string}>}>}
  */
 export async function runPublishRelease(repoRoot, target, deps = {}) {
@@ -2318,7 +2584,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
   const propagation = publication.propagation;
   let tagAndPushResult;
   try {
-    tagAndPushResult = tagAndPushImpl(repoRoot, target, { expectedHead: deps.expectedHead });
+    tagAndPushResult = await tagAndPushImpl(repoRoot, target, { expectedHead: deps.expectedHead, tailTimeoutMs: deps.tailTimeoutMs });
   } catch (err) {
     const rawProgress = err?.releaseProgress;
     const remotes = Array.isArray(rawProgress?.remotes)
@@ -2337,6 +2603,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
     };
     const pushed = remotes.filter((remote) => remote.mainPushed && remote.tagPushed).map((remote) => remote.remote);
     const prerequisite = 'skipped because tag-and-push did not complete';
+    await settleDeferredTailSignals();
     return {
       status: 'post-publish-reconciliation',
       receipt: publication.receipt,
@@ -2370,6 +2637,7 @@ export async function runPublishRelease(repoRoot, target, deps = {}) {
   }
   if (!release.ok) reconciliation.push({ phase: 'github-release', detail: release.detail });
   if (!live.ok) reconciliation.push({ phase: 'live-site', detail: live.detail });
+  await settleDeferredTailSignals();
 
   return {
     status: reconciliation.length === 0 ? 'complete' : 'post-publish-reconciliation',
@@ -2437,8 +2705,10 @@ export function printPublishOutcome(outcome, target, io = {}) {
   const log = io.log ?? console.log;
   const error = io.error ?? console.error;
   const tagAndPushFailed = outcome.reconciliation.some((item) => item.phase === 'tag-and-push');
+  const deferred = io.deferredSignals ?? deferredTailSignals();
 
   log(`  + ${PACKAGE_NAME}@${target} — target-confirmed npm receipt.`);
+  for (const { signal, at } of deferred) error(`  deferred ${signal} at ${at}; the tail ran to its end`);
   if (outcome.proof) {
     if (outcome.proof.ok) log(`  ${outcome.proof.detail}.`);
     else error(`\nWARN: ${outcome.proof.detail} — \`--reconcile\` cannot verify this release without it.`);
@@ -2502,6 +2772,7 @@ export function printPublishOutcome(outcome, target, io = {}) {
       error(`  - ${item.phase}${item.kind ? ` (${item.kind})` : ''}: ${item.detail}`);
     }
     error('  Do NOT rerun `--publish`; reconcile the listed post-publish state directly.');
+    error(`  One command finishes the tail and skips what is already done: node scripts/release.mjs --resume-tail --target ${target}`);
     if (!outcome.propagation.ok) error(`  Registry state: \`node scripts/release.mjs --reconcile --target ${target}\` (read-only, resumable).`);
     return 1;
   }
@@ -2662,6 +2933,289 @@ export async function verifyLiveSite(expected, opts = {}) {
   return { ok: false, detail: `${last} (gave up after ${attempts} attempts)` };
 }
 
+// ---------------------------------------------------------------------------
+// --resume-tail (#1791). The shield (#1753) defers SIGTERM, but SIGKILL,
+// `timeout -k` or a host crash still stop the tail wherever it is. This path
+// finishes it from the publish proof alone and is idempotent: a step that is
+// already done is read back and skipped, so a second run changes nothing. It
+// never reaches publish(), `npm publish` or a pack of the repo.
+//
+// What it deliberately does NOT redo: pushing `main`. The preflight required
+// HEAD == origin main (and github main == HEAD, or its curated snapshot) before
+// the upload, so only the tag refs can be missing. It refuses to create or push
+// a new curated snapshot: github main may have moved on since, and rebuilding
+// an export of an older commit over it would regress the public mirror.
+// ---------------------------------------------------------------------------
+
+const FULL_SHA_RE = /^[0-9a-f]{40}$/;
+
+/** Commit a remote's `refs/tags/<tag>` points at (peeled), or null when the tag is absent. */
+function remoteTagCommit(lsRemoteOutput, tag) {
+  let direct = null;
+  let peeled = null;
+  for (const line of lsRemoteOutput.split('\n')) {
+    const [sha, ref] = line.trim().split(/\s+/);
+    if (ref === `refs/tags/${tag}^{}`) peeled = sha;
+    else if (ref === `refs/tags/${tag}`) direct = sha;
+  }
+  return peeled ?? direct;
+}
+
+/**
+ * Finish an interrupted publish tail for `target` (#1791): first the read-only
+ * registry reconcile (nothing is tagged or pushed unless the registry serves
+ * the proof's integrity), then tag the commit the publish proof recorded, push
+ * the tag where it is missing, then the GitHub release and the live-site
+ * check. An existing tag — local or remote — is accepted only when it points
+ * at the recorded commit (curated github: at a snapshot whose Source-Commit is
+ * that commit); a tag at any other commit is a refusal, never silently accepted.
+ *
+ * @param {string} repoRoot
+ * @param {string} target
+ * @param {{runImpl?: Function, tailRunImpl?: typeof runTailChild, tailTimeoutMs?: number, log?: (s: string) => void,
+ *   ensureGithubReleaseImpl?: Function, verifyLiveSiteImpl?: Function, reconcileReleaseImpl?: Function, readImpl?: Function}} [deps]
+ *   `runImpl` runs local git (sync); `tailRunImpl` runs every network child (push, fetch, ls-remote).
+ * @returns {Promise<{target: string, status: 'complete'|'incomplete'|'refused', commit: string|null, steps: Array<{phase: string, state: 'done'|'present'|'skipped'|'failed'|'refused'|'ok', detail: string}>}>}
+ */
+export async function resumeReleaseTail(repoRoot, target, deps = {}) {
+  const runImpl = deps.runImpl ?? run;
+  const tailRun = deps.tailRunImpl ?? runTailChild;
+  const tailOpts = { cwd: repoRoot, timeoutMs: deps.tailTimeoutMs, log: deps.log };
+  const ensureGithubReleaseImpl = deps.ensureGithubReleaseImpl ?? ensureGithubRelease;
+  const verifyLiveSiteImpl = deps.verifyLiveSiteImpl ?? verifyLiveSite;
+  const reconcileReleaseImpl = deps.reconcileReleaseImpl ?? reconcileRelease;
+  const tag = `v${target}`;
+  const steps = [];
+  const git = (args) => runImpl('git', args, { cwd: repoRoot });
+  const refuse = (phase, detail, commit = null) => {
+    steps.push({ phase, state: 'refused', detail });
+    return { target, status: 'refused', commit, steps };
+  };
+  const network = async (args) => {
+    const res = await tailRun('git', args, tailOpts);
+    if (res.timedOut) {
+      const survivors = res.survivors?.length ? `; still alive after SIGKILL: ${res.survivors.join(', ')}` : '';
+      return { ok: false, detail: `git ${args.join(' ')} timed out after ${Math.round((deps.tailTimeoutMs ?? TAIL_CHILD_TIMEOUT_MS) / 1000)} s; process group ${res.pgid ?? 'unknown'} was sent ${res.killSignals.join(', ') || 'no signal'}${survivors}` };
+    }
+    if (res.status !== 0) return { ok: false, detail: `git ${args.join(' ')} exited ${res.status}: ${res.output.trim().slice(-300)}` };
+    return { ok: true, output: res.output };
+  };
+
+  // 1. The proof is the only source of the release commit.
+  const read = readReleaseProof(repoRoot, target, { readImpl: deps.readImpl });
+  if (!read.ok) return refuse('proof', `${read.detail} — without it there is no recorded commit to finish the tail for`);
+  const commit = read.proof.commit;
+  if (typeof commit !== 'string' || !FULL_SHA_RE.test(commit)) {
+    return refuse('proof', `${relativePath(repoRoot, read.path)} records no commit (HEAD was unreadable at the receipt) — finish the tail by hand (skills/release/SKILL.md § Tail interrupted)`);
+  }
+  steps.push({ phase: 'proof', state: 'ok', detail: `${tag} belongs to ${commit}` });
+  if (git(['rev-parse', '--verify', '--quiet', `${commit}^{commit}`]).status !== 0) {
+    return refuse('commit', `recorded commit ${commit} is not in this clone — fetch origin first`, commit);
+  }
+
+  const setting = readMirrorSetting(repoRoot);
+  if (!setting.ok) return refuse('mirror', `GitHub mirror mode unknown — ${setting.reason}; nothing tagged or pushed`, commit);
+
+  // 2. Registry FIRST: the read-only --reconcile path, never a publish. A proof
+  // whose integrity the registry does not serve must not get a tag (SO#1791
+  // F4) — verify before anything is created or pushed.
+  const registry = reconcileReleaseImpl(repoRoot, target);
+  const registryDetail = `${registry.state}: ${registry.detail}`;
+  if (!registry.ok) {
+    if (registry.state === 'pending') {
+      steps.push({ phase: 'registry', state: 'failed', detail: `${registryDetail} — nothing tagged or pushed; run --resume-tail again once the registry serves it` });
+      return { target, status: 'incomplete', commit, steps };
+    }
+    return refuse('registry', `${registryDetail} — the registry does not serve what the proof records; nothing tagged or pushed`, commit);
+  }
+  steps.push({ phase: 'registry', state: 'ok', detail: registryDetail });
+
+  // 3. The commit must already be on origin main: a stale or hand-edited proof
+  // must not get a public tag on a commit that never reached origin.
+  const originMain = await network(['ls-remote', 'origin', 'refs/heads/main']);
+  if (!originMain.ok) {
+    steps.push({ phase: 'origin-main', state: 'failed', detail: originMain.detail });
+    return { target, status: 'incomplete', commit, steps };
+  }
+  const mainSha = (originMain.output.trim().split(/\s+/)[0] || '');
+  if (!FULL_SHA_RE.test(mainSha) || git(['merge-base', '--is-ancestor', commit, mainSha]).status !== 0) {
+    return refuse('origin-main', `recorded commit ${commit.slice(0, 12)} is not contained in origin main (${mainSha.slice(0, 12) || 'unreadable'}; fetch origin if it is just missing locally) — refusing to tag it`, commit);
+  }
+
+  // 4. Local tag: present at the commit, absent (create it), or foreign (refuse).
+  const local = git(['rev-parse', '--verify', '--quiet', `refs/tags/${tag}^{commit}`]);
+  const localSha = local.status === 0 ? local.stdout.trim() : null;
+  if (localSha && localSha !== commit) {
+    return refuse('local-tag', `local ${tag} points at ${localSha}, not the recorded commit ${commit} — inspect it; never move a release tag silently`, commit);
+  }
+  if (localSha) {
+    steps.push({ phase: 'local-tag', state: 'present', detail: `${tag} already at ${commit.slice(0, 12)}` });
+  } else {
+    const msgDir = mkdtempSync(join(tmpdir(), 'release-tagmsg-'));
+    try {
+      const msgFile = join(msgDir, 'msg');
+      writeFileSync(msgFile, `${tag}\n\n${changelogExcerpt(repoRoot, target)}\n`);
+      const created = git(['tag', '-a', tag, commit, '-F', msgFile]);
+      if (created.status !== 0) {
+        steps.push({ phase: 'local-tag', state: 'failed', detail: `git tag -a ${tag} exited ${created.status}: ${(created.stderr || '').trim().slice(0, 300)}` });
+        return { target, status: 'incomplete', commit, steps };
+      }
+    } finally {
+      rmSync(msgDir, { recursive: true, force: true });
+    }
+    steps.push({ phase: 'local-tag', state: 'done', detail: `created annotated ${tag} on ${commit.slice(0, 12)}` });
+  }
+
+  // 5. Remote tags, one push per remote and ref (the pre-push gate blocks a
+  // push that carries refs on more than one commit, #1787).
+  let tagsComplete = true;
+  const ensureRemoteTag = async (remote, expected, pushSource) => {
+    const phase = `${remote}-tag`;
+    const listed = await network(['ls-remote', remote, `refs/tags/${tag}`, `refs/tags/${tag}^{}`]);
+    if (!listed.ok) {
+      steps.push({ phase, state: 'failed', detail: listed.detail });
+      tagsComplete = false;
+      return 'failed';
+    }
+    const remoteSha = remoteTagCommit(listed.output, tag);
+    if (remoteSha && remoteSha !== expected) {
+      steps.push({ phase, state: 'refused', detail: `${remote} ${tag} points at ${remoteSha}, expected ${expected} — inspect it; never move a release tag silently` });
+      return 'refused';
+    }
+    if (remoteSha) {
+      steps.push({ phase, state: 'present', detail: `${remote} already has ${tag} at ${expected.slice(0, 12)}` });
+      return 'present';
+    }
+    const pushed = await network(['push', remote, `${pushSource}:refs/tags/${tag}`]);
+    if (!pushed.ok) {
+      steps.push({ phase, state: 'failed', detail: pushed.detail });
+      tagsComplete = false;
+      return 'failed';
+    }
+    steps.push({ phase, state: 'done', detail: `pushed ${tag} to ${remote}` });
+    return 'done';
+  };
+
+  // Curated mirror: an existing github tag is resolved to its snapshot commit,
+  // whose Source-Commit trailer must be the release commit. 'absent' when
+  // github has no such tag.
+  const curatedGithubTag = async () => {
+    const listed = await network(['ls-remote', 'github', `refs/tags/${tag}`, `refs/tags/${tag}^{}`]);
+    if (!listed.ok) return { state: 'failed', detail: listed.detail };
+    const existing = remoteTagCommit(listed.output, tag);
+    if (!existing) return { state: 'absent' };
+    const trackRef = `refs/remotes/github/tags/${tag}`;
+    const fetched = await network(['fetch', '--quiet', '--no-tags', 'github', `+refs/tags/${tag}:${trackRef}`]);
+    if (!fetched.ok) return { state: 'failed', detail: `github ${tag} at ${existing.slice(0, 12)} could not be fetched to check its Source-Commit — ${fetched.detail}` };
+    const resolved = git(['rev-parse', '--verify', '--quiet', `${trackRef}^{commit}`]);
+    // The ref only carried the fetch; leave no refs/remotes/github/tags/* behind.
+    git(['update-ref', '-d', trackRef]);
+    const snapshot = resolved.status === 0 ? resolved.stdout.trim() : '';
+    const body = snapshot === existing ? git(['cat-file', 'commit', snapshot]) : { status: 1, stdout: '' };
+    const source = body.status === 0 ? parseSourceCommitTrailer(body.stdout) : null;
+    if (source !== commit) {
+      return { state: 'refused', detail: `github ${tag} points at ${existing.slice(0, 12)}, whose Source-Commit: ${source ?? 'none'} is not the release commit ${commit} — inspect it; never move a release tag silently` };
+    }
+    return { state: 'present', detail: `github already has ${tag} at ${existing.slice(0, 12)}, the snapshot of ${commit.slice(0, 12)}` };
+  };
+
+  if ((await ensureRemoteTag('origin', commit, `refs/tags/${tag}`)) === 'refused') return { target, status: 'refused', commit, steps };
+
+  const githubSkipped = setting.mirror === 'none';
+  if (githubSkipped) {
+    steps.push({ phase: 'github-tag', state: 'skipped', detail: "'mirror: none'" });
+  } else {
+    const pushProblem = pushUrlProblem(createGitRunner(repoRoot), 'github');
+    if (pushProblem) return refuse('github-tag', pushProblem, commit);
+    if (setting.mirror === 'curated') {
+      // The github tag goes on the public snapshot whose Source-Commit trailer
+      // names the release commit; that snapshot is github main (preflight).
+      const fetched = await network(['fetch', '--quiet', '--no-tags', 'github', '+refs/heads/main:refs/remotes/github/main']);
+      if (!fetched.ok) {
+        steps.push({ phase: 'github-tag', state: 'failed', detail: fetched.detail });
+        tagsComplete = false;
+      } else {
+        const snapshot = git(['rev-parse', '--verify', '--quiet', 'refs/remotes/github/main^{commit}']);
+        const snapshotSha = snapshot.status === 0 ? snapshot.stdout.trim() : '';
+        const body = snapshotSha ? git(['cat-file', 'commit', snapshotSha]) : { status: 1, stdout: '' };
+        const source = body.status === 0 ? parseSourceCommitTrailer(body.stdout) : null;
+        if (source !== commit) {
+          // github main moved on. A github tag that already exists counts only
+          // when ITS snapshot names the release commit (SO#1791 F3).
+          const existing = await curatedGithubTag();
+          if (existing.state === 'failed') {
+            steps.push({ phase: 'github-tag', state: 'failed', detail: existing.detail });
+            tagsComplete = false;
+          } else if (existing.state === 'present') {
+            steps.push({ phase: 'github-tag', state: 'present', detail: existing.detail });
+          } else if (existing.state === 'refused') {
+            return refuse('github-tag', existing.detail, commit);
+          } else {
+            return refuse('github-tag', `github main ${snapshotSha.slice(0, 12) || 'unreadable'} is not the snapshot of ${commit.slice(0, 12)} (Source-Commit: ${source ?? 'none'}) — push the snapshot tag by hand (skills/release/SKILL.md § Tail interrupted)`, commit);
+          }
+        } else if ((await ensureRemoteTag('github', snapshotSha, snapshotSha)) === 'refused') {
+          return { target, status: 'refused', commit, steps };
+        }
+      }
+    } else {
+      // A plain tag push carries the release commit's whole history to the
+      // mirror. The checkout's Session Config can predate `mirror: curated`
+      // while the proof came from a curated publish, so the export policy
+      // decides — the same guard as preflight and tagAndPush (SO#1791).
+      const verdict = plainPushGuard({ git: createGitRunner(repoRoot), explicitGithub: setting.mirror === 'github' });
+      if (!verdict.ok) return refuse('github-tag', `plain push to github refused — ${verdict.reason}`, commit);
+      if ((await ensureRemoteTag('github', commit, `refs/tags/${tag}`)) === 'refused') {
+        return { target, status: 'refused', commit, steps };
+      }
+    }
+  }
+
+  // 6. GitHub release and live site need the tags (mirrors runPublishRelease).
+  if (!tagsComplete) {
+    steps.push({ phase: 'github-release', state: 'skipped', detail: 'skipped because a tag push did not complete' });
+    steps.push({ phase: 'live-site', state: 'skipped', detail: 'skipped because a tag push did not complete' });
+  } else {
+    if (githubSkipped) {
+      steps.push({ phase: 'github-release', state: 'skipped', detail: "'mirror: none'" });
+    } else {
+      const release = ensureGithubReleaseImpl(repoRoot, target);
+      steps.push({ phase: 'github-release', state: release.ok ? (release.created ? 'done' : 'present') : 'failed', detail: release.detail });
+    }
+    const live = await verifyLiveSiteImpl(target);
+    steps.push({ phase: 'live-site', state: live.ok ? 'ok' : 'failed', detail: live.detail });
+  }
+
+  const done = steps.every((s) => s.state !== 'failed' && s.state !== 'refused');
+  return { target, status: done ? 'complete' : 'incomplete', commit, steps };
+}
+
+/**
+ * Print a {@link resumeReleaseTail} outcome; exit 0 only when complete.
+ *
+ * @returns {number}
+ */
+export function printResumeTailOutcome(outcome, { json = false, log = console.log, error = console.error } = {}) {
+  if (json) {
+    log(JSON.stringify(outcome, null, 2));
+    return outcome.status === 'complete' ? 0 : 1;
+  }
+  for (const step of outcome.steps) {
+    const line = `  ${step.state.padEnd(7)} ${step.phase}: ${step.detail}`;
+    if (step.state === 'failed' || step.state === 'refused') error(line);
+    else log(line);
+  }
+  if (outcome.status === 'complete') {
+    log(`\nTail complete for ${PACKAGE_NAME}@${outcome.target}: tagged, pushed, released, live and installable. A second run changes nothing.`);
+    return 0;
+  }
+  if (outcome.status === 'refused') {
+    error(`\nRESUME REFUSED for ${PACKAGE_NAME}@${outcome.target}: nothing past the refused step was changed. Resolve it by hand; never rerun --publish.`);
+    return 1;
+  }
+  error(`\nRECONCILIATION: the tail of ${PACKAGE_NAME}@${outcome.target} is not finished yet. Run \`node scripts/release.mjs --resume-tail --target ${outcome.target}\` again — it skips what is already done. Never rerun --publish.`);
+  return 1;
+}
+
 function printChecks(checks, asJson, version) {
   const ok = checks.every((c) => c.ok);
   if (asJson) {
@@ -2683,6 +3237,7 @@ async function main() {
       publish: { type: 'boolean', default: false },
       'skip-ci': { type: 'boolean', default: false },
       reconcile: { type: 'boolean', default: false },
+      'resume-tail': { type: 'boolean', default: false },
       target: { type: 'string' },
       json: { type: 'boolean', default: false },
       help: { type: 'boolean', default: false },
@@ -2691,14 +3246,18 @@ async function main() {
   });
 
   if (values.help) {
-    console.log('Usage: node scripts/release.mjs [--set-version X.Y.Z | --check | --publish | --reconcile [--target X.Y.Z]] [--skip-ci] [--json]');
+    console.log('Usage: node scripts/release.mjs [--set-version X.Y.Z | --check | --publish | --reconcile [--target X.Y.Z] | --resume-tail --target X.Y.Z] [--skip-ci] [--json]');
     console.log('Release als ein Dispatch: surface sync, preflight checks, token publish, tag AFTER publish.');
     console.log('  Receipt boundary: before the confirmed npm receipt, failure aborts; after it, never rerun --publish.');
     console.log('  Tag/push failure after receipt skips GitHub-release and site phases and returns reconciliation guidance.');
     console.log('  --skip-ci  allowed with --check only; REFUSED with --publish (it verifies nothing).');
     console.log('  --reconcile  read-only resume after an accepted upload: proof -> available -> installable. Never publishes, tags or pushes.');
     console.log('               --target defaults to package.json version; needs .orchestrator/runtime/release-<target>.json from --publish.');
-    console.log('Exit codes: 0 success (--reconcile: installable or superseded), 1 preflight/check failure, post-publish reconciliation or --reconcile pending/failed/proof missing, 2 pre-receipt system/usage error.');
+    console.log('  --resume-tail  finish an interrupted publish tail with one command: --reconcile first (no tag unless the registry serves the');
+    console.log('               proof\'s integrity), tag the commit recorded in the proof (an existing tag must point at it), push the tag where');
+    console.log('               missing, GitHub release, live site. Idempotent; never publishes.');
+    console.log(`               Every tail push/fetch runs in its own process group with a ${TAIL_CHILD_TIMEOUT_MS / 1000} s deadline; its PID is printed on stderr.`);
+    console.log('Exit codes: 0 success (--reconcile: installable or superseded; --resume-tail: tail complete), 1 preflight/check failure, post-publish reconciliation, --reconcile pending/failed/proof missing or --resume-tail incomplete/refused, 2 pre-receipt system/usage error.');
     return 0;
   }
 
@@ -2723,6 +3282,12 @@ async function main() {
       return 2;
     }
     return printReconcileResult(reconcileRelease(repoRoot, target), { json: values.json });
+  }
+
+  if (values['resume-tail']) {
+    // Like --reconcile: no preflight, no pack, no publisher. validateFlags
+    // already required --target.
+    return printResumeTailOutcome(await resumeReleaseTail(repoRoot, values.target), { json: values.json });
   }
 
   if (values['set-version']) {
@@ -2777,7 +3342,7 @@ async function main() {
     return checked.value;
   }
 
-  console.error('Nothing to do — pass --check, --publish, --reconcile, or --set-version X.Y.Z (see --help).');
+  console.error('Nothing to do — pass --check, --publish, --reconcile, --resume-tail, or --set-version X.Y.Z (see --help).');
   return 2;
 }
 

@@ -364,12 +364,18 @@ describe('site: hero motion-toggle wiring', () => {
     expect(datasetProps(), 'video.dataset.* reads in site/assets/ui.js').toHaveLength(1);
   });
 
-  it.each([EN, DE])('%s carries the hero-video attribute ui.js reads, non-empty', (file) => {
+  it.each([EN, DE])('%s carries the hero-video attribute ui.js reads, naming shipped files', (file) => {
     const attr = kebab(datasetProps()[0]);
     const value = read(file).match(
       new RegExp(`<figure class="hero-art">[\\s\\S]*?<video\\b[^>]*\\s${attr}="([^"]*)"`),
     )?.[1];
     expect(value, `${file} hero-art <video ${attr}> (name read from ui.js)`).toBeTruthy();
+    // ui.js builds `/video/<base>.webm` and `.mp4` at click time, so the
+    // asset-existence check above never sees them: a renamed base with no
+    // files only shows up as "Animation could not be loaded" in a browser.
+    for (const ext of ['webm', 'mp4']) {
+      expect(existsSync(join(SITE, 'video', `${value}.${ext}`)), `site/video/${value}.${ext}`).toBe(true);
+    }
   });
 });
 

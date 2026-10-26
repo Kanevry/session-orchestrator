@@ -150,6 +150,11 @@ const DOCUMENTED_ASYMMETRIES = {
         // `apply_patch`, a name this hook never matches. Wired, it would run and allow
         // everything: a silent no-op, not enforcement. Gap registered, not faked.
         'pre-edit-sessions-ledger-guard.mjs',
+        // pre-tool-state-md-path-guard (#1790): EDIT side only. Same `apply_patch`
+        // gap as the ledger guard above — wired on the edit matcher, it would allow
+        // everything. The Bash side IS wired in hooks-codex.json, with its
+        // enforcing row in tests/hooks/codex-bash-guards-wiring.test.mjs.
+        'pre-tool-state-md-path-guard.mjs',
         // pre-bash-templates-first (#1691): runs on the Codex payload but can
         // only DENY. Both allow routes are unreachable there: the template-Read
         // evidence needs `transcript_path` (hooks/pre-bash-templates-first.mjs:

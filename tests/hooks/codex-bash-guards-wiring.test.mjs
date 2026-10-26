@@ -102,6 +102,10 @@ const PRE_CASES = {
   'pre-bash-sessions-ledger-guard.mjs': {
     deny: { command: 'echo {} >> .orchestrator/metrics/sessions.jsonl', reason: 'Direct write to the sessions ledger blocked' },
   },
+  // #1790: on Codex the suggested target is the Codex state dir.
+  'pre-tool-state-md-path-guard.mjs': {
+    deny: { command: 'cat > .orchestrator/STATE.md <<EOF\nstatus: active\nEOF', reason: '.codex/STATE.md' },
+  },
   'pre-bash-issue-budget.mjs': {
     files: { 'CLAUDE.md': BUDGET_CONFIG, 'AGENTS.md': BUDGET_CONFIG },
     before: 'glab issue create --title first --description one',

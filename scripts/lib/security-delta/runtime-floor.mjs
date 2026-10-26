@@ -11,7 +11,7 @@ import { basename } from 'node:path';
 
 import { httpRequest } from '../http-request.mjs';
 import { BUDGET, makeCheckResult, makeFinding } from './contract.mjs';
-import { isDockerfile, isFixturePath, isSafeRef, listTree, parseImageRefs, showFile } from './floating-tags.mjs';
+import { isDockerfile, isFixturePath, isGitExecError, isSafeRef, listTree, parseImageRefs, showFile } from './floating-tags.mjs';
 
 export const NODE_INDEX_URL = 'https://nodejs.org/dist/index.json';
 
@@ -91,7 +91,8 @@ async function collectDeclarations(repoRoot, ref) {
   const read = async (file) => {
     try {
       return await showFile(repoRoot, ref, file);
-    } catch {
+    } catch (err) {
+      if (!isGitExecError(err)) throw err; // a defect, not a read failure: outer catch → internal-error
       unreadable += 1;
       return null;
     }
@@ -224,7 +225,8 @@ export async function runRuntimeFloorCheck({ repoRoot, base, head, deadlineAt, r
       let introduced = true;
       try {
         introduced = await isIntroduced(repoRoot, base, d);
-      } catch {
+      } catch (err) {
+        if (!isGitExecError(err)) throw err;
         unreadable += 1;
       }
       findings.push(

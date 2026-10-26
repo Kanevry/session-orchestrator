@@ -98,11 +98,15 @@ export const HOST_ENV_KEYS = Object.freeze([
  * Because `toJSON` redacts, a context must never cross a process boundary by
  * plain `JSON.stringify` — project `env` / `ownerConfig` explicitly, as
  * baseline-archetypes.mjs resolveBaselineLocation() does.
- * CEILING (BV-004): owner.yaml (incl. `hardware-sharing.hash-salt`) stays reachable
- * through `ctx.ownerConfig` itself (`console.log(ctx.ownerConfig)`), through a copy
- * that drops the non-enumerable members (`{ ...ctx }`, `Object.assign`,
+ * CEILING (BV-004): the rest of owner.yaml stays reachable through
+ * `ctx.ownerConfig` itself (`console.log(ctx.ownerConfig)`), through a copy that
+ * drops the non-enumerable members (`{ ...ctx }`, `Object.assign`,
  * `structuredClone`, `Object.entries`) and through `inspect(ctx, { customInspect:
- * false })`; every one of them still shows only the allowlisted `env`. Revisit when
+ * false })`; every one of them still shows only the allowlisted `env`.
+ * `hardware-sharing.hash-salt` is in none of those views: loadOwnerConfig() keeps
+ * it as a non-enumerable accessor (SO#1785), so only direct property access, a
+ * property descriptor or `inspect` with both `showHidden` and `getters` reveal
+ * it. Revisit when
  * a new reader of the context env needs a key outside HOST_ENV_KEYS — the drift
  * test in tests/lib/config/host-paths.test.mjs covers only the known reader modules.
  *

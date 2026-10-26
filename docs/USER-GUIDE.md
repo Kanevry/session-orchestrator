@@ -106,6 +106,18 @@ If you skip this step, the plugin uses sensible defaults: `feature` type (a fixe
 
 The orchestrator researches your project state autonomously, presents findings with recommendations, and asks you to pick a direction. Once you agree on a plan, run `/go` to execute it across multiple parallel agents in structured waves. When done, run `/close` to verify, commit, and clean up.
 
+### What you get
+
+| What | How |
+|---|---|
+| Errors stop at the next check | Each wave runs your tests and typecheck; lint and the full suite run before the commit. `/debug` looks for the root cause before a fix. |
+| Agents keep to their files | Overlapping file lists are rejected before dispatch. A guard has 14 blocking and 4 warning rules for destructive commands (hard reset, `rm -rf`, force-push, `DROP TABLE`, …), see [`.orchestrator/policy/blocked-commands.json`](../.orchestrator/policy/blocked-commands.json). |
+| Pick up where you stopped | A crash or a second session in the same folder does not cost you the work: `STATE.md` and a heartbeat lock keep the thread. |
+| Audit and test on demand | `/test` drives web and macOS flows, `/ux-grill` audits a running web app, `/repo-audit` and `/harness-audit` score a repository, `/test-audit` removes tests that catch nothing. |
+| Longer runs | `/autopilot` chains sessions and stops on any of 10 kill-switches; `/dispatcher` and `/portfolio` work across repositories. |
+
+Every skill, command, agent and hook: [components.md](components.md). What changed lately: [CHANGELOG.md](../CHANGELOG.md).
+
 ---
 
 ## 2. Bootstrap Gate
@@ -1003,6 +1015,10 @@ The current rubric version is `2026-06`. It is embedded in every audit record as
 ## 14. Session Persistence
 
 Session Orchestrator persists session state so you can resume after crashes, pauses, or context window exhaustion.
+
+### What it writes into your repository
+
+All of it plain text, all of it local: `.orchestrator/bootstrap.lock` (written by `/bootstrap`), `.orchestrator/session.lock` and `current-session.json` (which session owns this working copy), `.orchestrator/metrics/*.jsonl` (append-only session and learning records, shared by all four tools), `.orchestrator/steering/` (stable context loaded each session) and `STATE.md` (wave progress, in the tool's own folder: `.claude/`, `.codex/`, `.cursor/` or `.pi/`).
 
 ### STATE.md
 

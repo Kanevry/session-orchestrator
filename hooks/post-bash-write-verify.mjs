@@ -31,6 +31,7 @@
  *
  *   G1  profile gate (`SO_HOOK_PROFILE` / `SO_DISABLED_HOOKS`)
  *   G2  tool_name === 'Bash'
+ *   S   SEC-008 value detector over tool_response (#1786) — runs before G3..G6
  *   G3  wave-scope.json exists (disappearance after a recorded scope → notice)
  *   G4  gates['bash-write-verify'] !== false   (absent ⇒ ENABLED)
  *   G5  enforcement !== 'off'
@@ -156,6 +157,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, realpathSync, statSync } from 'node:fs';
 
 import { readStdin, writeStdoutLineSync } from '../scripts/lib/io.mjs';
+import { detectSecretOutput } from '../scripts/lib/secret-output-detector.mjs';
 import { pathMatchesPattern } from '../scripts/lib/hardening.mjs';
 // #1057 — `sessionAgeMs` and its private `clockAgeMs` helper MOVED to the lib so
 // hooks/enforce-scope.mjs can read the same session clock without a hook->hook
@@ -960,8 +962,9 @@ function writeSnapshot(file, data) {
  *
  * @param {string[]} messages
  * @param {boolean} warn
+ * @param {string|null} [systemMessage] — top-level PostToolUse `systemMessage` (#1786)
  */
-function emitMessages(messages, warn) {
+function emitMessages(messages, warn, systemMessage = null) {
   const glyph = warn ? '⚠' : 'ℹ';
   try {
     for (const m of messages) process.stderr.write(`${glyph} ${m}\n`);
@@ -969,6 +972,9 @@ function emitMessages(messages, warn) {
     /* stderr may be closed */
   }
   writeStdoutLineSync(JSON.stringify({
+    // #1786 — the operator-visible SEC-008 line sits BESIDE the model context
+    // in the same single object; a second JSON object would be dropped.
+    ...(systemMessage ? { systemMessage } : {}),
     hookSpecificOutput: {
       hookEventName: 'PostToolUse',
       additionalContext: messages.join('\n'),
@@ -976,19 +982,21 @@ function emitMessages(messages, warn) {
   }));
 }
 
-async function main() {
-  const input = await readStdin();
-  if (!input) return;
-
-  // G2 — only Bash calls carry the bypass risk this hook watches.
-  if (input.tool_name !== 'Bash') return;
-
+/**
+ * The write-verify decision flow G3..G6 for one Bash call. Every visible
+ * notice goes through `emit` instead of straight to stdout, so `main` can merge
+ * it with the SEC-008 notice into the ONE PostToolUse JSON object (#1786).
+ *
+ * @param {Record<string, any>} input
+ * @param {(messages: string[], warn: boolean) => void} emit
+ */
+async function verifyBashWrites(input, emit) {
   // Coordinator control state and isolated-agent write targets may live in
   // different working copies; the shared guard context resolves both.
   const ownIds = new Set(readProcessLocalSessionIds({ hookInput: input }));
   const context = resolveScopeContext({ cwd: input.cwd, ownIds, classify: classifyManifestSession });
   if (context.error) {
-    emitMessages([`bash-write-verify: scope coordinator unresolved (${context.error})`], true);
+    emit([`bash-write-verify: scope coordinator unresolved (${context.error})`], true);
     return;
   }
   const repoRootRaw = context.writeRoot;
@@ -1029,7 +1037,7 @@ async function main() {
         ...carriedRecord,
         scopeState: { hash: 'absent', enforcement: 'strict', gateOn: true },
       });
-      emitMessages([
+      emit([
         'bash-write-verify: control file wave-scope.json was REMOVED since the last Bash call — '
         + 'the bash-write guard is inert until a new wave scope is written. '
         + 'Expected at session teardown; scope-control changes are never exempt from reporting (#938).',
@@ -1127,7 +1135,7 @@ async function main() {
         && prevScopeState.hash !== 'absent'
         && prevScopeState.hash !== currentScopeState.hash) {
         writeSnapshot(snapFile, { ...carriedRecord, scopeState: currentScopeState });
-        emitMessages([
+        emit([
           `bash-write-verify: control file ${relScopePath} changed its SESSION BINDING `
           + `since the last Bash call (now names ${manifestIds.join(', ') || 'an unnamed session'}) — `
           + 'this session\'s scope gates are standing down. '
@@ -1194,7 +1202,7 @@ async function main() {
     // `echo garbage > wave-scope.json` + `rm -f <sidecar>` in one call left
     // prevScopeState null and produced total silence before #945.
     if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
-    if (messages.length > 0) emitMessages(messages, true);
+    if (messages.length > 0) emit(messages, true);
     return;
   }
 
@@ -1230,7 +1238,7 @@ async function main() {
     // never returns here). Kept as the structural guarantee rather than a
     // comment: if a future edit reintroduces any live-value path, the tamper
     // notice still escapes ahead of the gate instead of silently going with it.
-    if (missingSnapshotNotice) emitMessages([missingSnapshotNotice], false);
+    if (missingSnapshotNotice) emit([missingSnapshotNotice], false);
     return;
   }
 
@@ -1250,7 +1258,7 @@ async function main() {
     const messages = [];
     if (controlNotice) messages.push(controlNotice.text);
     if (missingSnapshotNotice) messages.push(missingSnapshotNotice);
-    if (messages.length > 0) emitMessages(messages, Boolean(controlNotice?.weakened));
+    if (messages.length > 0) emit(messages, Boolean(controlNotice?.weakened));
     return;
   }
 
@@ -1333,7 +1341,72 @@ async function main() {
   }
   if (messages.length === 0) return; // silence is the common case (0.91 % fire rate)
 
-  emitMessages(messages, warn);
+  emit(messages, warn);
+}
+
+/**
+ * SEC-008 value detector (#1786): scan this call's output for qualifying env
+ * values of the HOOK's own `process.env`, emit one event on a hit and return
+ * the visible notice. Never a value in any output; never throws.
+ *
+ * NAMED CEILING (BV-004): no secrets file is read — a value a command loads
+ * itself (`set -a; . ./.env.local`) is not in this env and is invisible here.
+ *
+ * @param {Record<string, any>} input
+ * @returns {Promise<string|null>}
+ */
+async function detectSecretEmission(input) {
+  let found;
+  try {
+    found = detectSecretOutput({ toolResponse: input.tool_response, env: process.env });
+  } catch {
+    try { process.stderr.write('⚠ bash-write-verify: SEC-008 detector failed (skipped)\n'); } catch { /* closed */ }
+    return null;
+  }
+  if (found.hits === 0) return null;
+  const MAX_NAMED_KEYS = 10;
+  const named = found.envKeys.slice(0, MAX_NAMED_KEYS).join(', ')
+    + (found.envKeys.length > MAX_NAMED_KEYS ? ` (+${found.envKeys.length - MAX_NAMED_KEYS} more)` : '');
+  // Awaited so the append cannot be lost to the process exiting.
+  try {
+    const { emitEvent } = await import('../scripts/lib/events.mjs');
+    await emitEvent('orchestrator.security.secret_emitted', {
+      detector: 'value',
+      env_keys: found.envKeys,
+      matches: found.hits,
+      tool_name: input.tool_name,
+      truncated: found.truncated,
+    });
+  } catch { /* observability is best-effort — the notice below still stands */ }
+  return `SEC-008 incident: this Bash output contained the value of env ${named} `
+    + `(${found.hits} match${found.hits === 1 ? '' : 'es'}${found.truncated ? ', output only partly scanned' : ''}). `
+    + 'The value is now in the transcript: rotate it and file an owner-queue item. '
+    + 'Do not repeat the value; print key names, presence or length only.';
+}
+
+async function main() {
+  const input = await readStdin();
+  if (!input) return;
+
+  // G2 — only Bash calls carry the bypass risk this hook watches.
+  if (input.tool_name !== 'Bash') return;
+
+  // SEC-008 runs BEFORE every G3..G6 early exit: a leak is a leak with or
+  // without a wave scope.
+  const secretNotice = await detectSecretEmission(input);
+
+  /** @type {string[]} */
+  const messages = [];
+  let warn = false;
+  try {
+    await verifyBashWrites(input, (m, w) => { messages.push(...m); warn = warn || w; });
+  } finally {
+    if (secretNotice) {
+      messages.unshift(secretNotice);
+      warn = true;
+    }
+    if (messages.length > 0) emitMessages(messages, warn, secretNotice);
+  }
 }
 
 // Self-execution guard — run only when invoked directly as a hook, never when

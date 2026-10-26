@@ -17,7 +17,7 @@ import { promisify } from 'node:util';
 
 import { parse as parseYaml } from 'yaml';
 
-import { gitEnv, PATH_ABSENT } from './floating-tags.mjs';
+import { gitEnv, isGitExecError, PATH_ABSENT } from './floating-tags.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,11 +47,10 @@ function isUsableVersion(v) {
 }
 
 /**
- * package-lock.json v2/v3 → { packages: [{ name, version, resolved }], invalid: string[] }.
+ * Parsed package-lock.json v2/v3 → { packages: [{ name, version, resolved }], invalid: string[] }.
  * `invalid` names entries without a usable version (counted unchecked, never queried).
  */
-function parsePackageLock(text) {
-  const doc = JSON.parse(text);
+function parsePackageLock(doc) {
   const packages = [];
   const invalid = [];
   for (const [key, entry] of Object.entries(doc?.packages ?? {})) {
@@ -92,9 +91,8 @@ function parsePnpmKey(rawKey) {
 // `git@<host>:` is the scp form only; `git@0.1.5` is the public npm package `git`.
 const PNPM_NON_REGISTRY_KEY = /^\/?(?:file:|link:|git\+|git:|git@[^:/@]+:|github:|github\.com\/|gitlab\.com\/|bitbucket\.org\/|https?:)/;
 
-/** pnpm-lock.yaml → { packages: [{ name, version, resolved }], invalid: string[] }. */
-function parsePnpmLock(text) {
-  const doc = parseYaml(text);
+/** Parsed pnpm-lock.yaml → { packages: [{ name, version, resolved }], invalid: string[] }. */
+function parsePnpmLock(doc) {
   const packages = [];
   const invalid = [];
   for (const [key, entry] of Object.entries(doc?.packages ?? {})) {
@@ -241,13 +239,34 @@ function parseRequirements(text) {
   return { packages, unpinnedLines };
 }
 
+/**
+ * A lockfile whose text the JSON/YAML parser rejected (#1788). Only this and a
+ * git-exec error count a file `unparsed`; any other throw (a TypeError in our
+ * own traversal) is a defect and surfaces as `internal-error`.
+ */
+class LockfileParseError extends Error {
+  constructor(cause) {
+    super('lockfile text does not parse', { cause });
+    this.name = 'LockfileParseError';
+  }
+}
+
+/** Run a third-party parser; whatever it throws (SyntaxError, YAMLParseError, alias-limit ReferenceError) is a parse failure. */
+function parseWith(parser, text) {
+  try {
+    return parser(text);
+  } catch (err) {
+    throw new LockfileParseError(err);
+  }
+}
+
 function parseLockfile(kind, text) {
   if (text === null) return { packages: [], invalid: [], unpinnedLines: [] };
   switch (kind) {
     case 'package-lock':
-      return { ...parsePackageLock(text), unpinnedLines: [] };
+      return { ...parsePackageLock(parseWith(JSON.parse, text)), unpinnedLines: [] };
     case 'pnpm':
-      return { ...parsePnpmLock(text), unpinnedLines: [] };
+      return { ...parsePnpmLock(parseWith(parseYaml, text)), unpinnedLines: [] };
     case 'uv':
       return { ...parseUvLock(text), unpinnedLines: [] };
     default:
@@ -255,7 +274,13 @@ function parseLockfile(kind, text) {
   }
 }
 
-function defaultRunGit(repoRoot) {
+/**
+ * The git runner the lockfile reader uses by default, bound to `repoRoot`;
+ * resolves stdout, rejects with the execFile error (`isGitExecError`).
+ * @param {string} repoRoot
+ * @returns {(args: string[]) => Promise<string>}
+ */
+export function defaultRunGit(repoRoot) {
   return async (args) => {
     const { stdout } = await execFileAsync('git', ['-C', repoRoot, ...args], {
       encoding: 'utf8',
@@ -317,7 +342,7 @@ async function deltaForFile(git, base, head, file) {
  *   non-`==` requirement lines in head; `unparsed` = lockfiles that could not
  *   be read or parsed plus new entries without a usable version (each costs
  *   only itself — the other files and entries are still measured);
- *   `files` = changed lockfiles.
+ *   `files` = changed lockfiles. Any other error (a defect) rejects.
  */
 export async function readLockfileDelta({ repoRoot, base, head, runGit } = {}) {
   const git = runGit ?? defaultRunGit(repoRoot);
@@ -328,7 +353,10 @@ export async function readLockfileDelta({ repoRoot, base, head, runGit } = {}) {
     files.map(async (file) => {
       try {
         return await deltaForFile(git, base, head, file);
-      } catch {
+      } catch (err) {
+        // Unreadable (git failed) or unparseable text costs only this file; any
+        // other throw is a defect and must surface as `internal-error` (#1788).
+        if (!(err instanceof LockfileParseError) && !isGitExecError(err)) throw err;
         return { packages: [], unpinned: 0, invalid: 1 };
       }
     }),

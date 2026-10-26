@@ -454,6 +454,9 @@ export function renderRule(learning, metadata) {
   const body = [
     '',
     UNTRUSTED_BEGIN,
+    // Blank line after the visible sentinel (#1779): it stays its own
+    // blockquote paragraph, never merged with the content below.
+    '',
     `# Auto-generated rule: ${humanTitle}`,
     '',
     insight,

@@ -11,11 +11,15 @@
  *
  * Prints one JSON object: `verdict`, `runsSessionEnd`, `ownership`, `status`,
  * `stateSessionId`, `ownSessionIds`, `statePath`, optional `reason`; with
- * `ownership-unproven` also `wouldRun`, `confirmToken`, `session`, `startedAt`.
+ * `ownership-unproven` also `wouldRun`, `confirmToken`, `session`, `startedAt`;
+ * with `no-state` / `foreign` and an open plan under `.orchestrator/STATE.md`
+ * also `misplacedState` (`path`, `status`, `session`, `stateSessionId`,
+ * `ownership`, #1790).
  * `--record-without-plan` (#1762): when the verdict does not hand off to
  * session-end, write this session's `status: closed-without-plan` record to
  * `sessions.jsonl` (`lib/session-end/close-without-plan.mjs`) and add its result
- * as `record` (`written`, `verified`, `reason`, `session_id`, `raw_session_id`).
+ * as `record` (`written`, `verified`, `reason`, `session_id`, `raw_session_id`, `path`,
+ * and `misplaced_path` when a misplaced plan was found but does not suppress it).
  * Without the flag the output is unchanged.
  * Exit 0 for every verdict (a stop is an answer, not an error; Claude Code
  * marks every non-zero exit as a tool failure) · 2 usage error.

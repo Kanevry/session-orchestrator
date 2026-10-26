@@ -28,7 +28,7 @@ All keys are optional. Unknown keys are **ignored without error** — adding a n
 | `mode` | `string` (`housekeeping` \| `feature` \| `deep`) | no | Session-mode gate. Rule loads only in the named session mode. Absent = passes every mode. | `mode: deep` |
 | `host-class` | `string` | no | Host-class gate. Matched against `host_class` in `.orchestrator/host.json`. Rule loads only on matching hosts. Absent = passes every host. | `host-class: macos-arm64-m4pro` |
 | `alwaysApply` | `boolean` | no | Author intent flag (distinct from the loader's internal `alwaysOn` "no globs" computation). Used by FA4 validation, not by gating. | `alwaysApply: false` |
-| `expires-at` | `string` (ISO 8601 date) | no | Expiry gate, **inclusive**: the rule still loads on this date and is EXCLUDED (with a stderr WARN) from the following UTC midnight. A malformed value never excludes (fail-open). | `expires-at: 2026-12-31` |
+| `expires-at` | `string` (ISO 8601 date) | no | Expiry gate, **inclusive**: the rule still loads on this date and is EXCLUDED (with a stderr WARN) from the following UTC midnight. A malformed value never excludes (fail-open). Read by `rule-loader.mjs` and the expiry sweep only — Claude Code's native loader ignores it, so an expired rule keeps loading natively until the sweep rewrites it (#1779). | `expires-at: 2026-12-31` |
 | `learning-key` | `string` | no | Links the rule to a `learnings.jsonl` entry (type/subject key). Required on auto-generated rules. | `learning-key: testing/shard-dont-widen` |
 | `auto-generated` | `boolean` | no | Marks a rule produced by the FA2 reconciliation engine (not hand-authored). Triggers the never-always-on invariant (see below). | `auto-generated: true` |
 | `confidence` | `number` (0..1) | no | Confidence of the source learning that generated the rule. Mirrors the `learnings.jsonl` confidence field. | `confidence: 0.85` |
@@ -46,7 +46,7 @@ After a rule's frontmatter parses successfully, the loader applies deterministic
 - **Glob axis (#336)** — `globs:` absent → always-on (passes). `globs:` present and non-empty → must intersect `scopePaths`. `globs: []` → matches nothing, never loaded.
 - **Mode-gating** — when the `mode` runtime param is non-null and the rule declares a `mode` that differs, the rule is EXCLUDED. A **null `mode` param disables mode filtering entirely**. A rule **without a `mode` key always passes** the mode gate.
 - **Host-class-gating** — identical logic against the `hostClass` runtime param vs the rule's `host-class` value. Null param = no filtering; absent rule key = passes.
-- **Expiry** — a rule whose parseable `expires-at` has passed is EXCLUDED, with a mandatory stderr WARN. A bare `YYYY-MM-DD` is inclusive: the rule loads through that whole UTC day and drops out at the next UTC midnight (#1521); a full timestamp is taken as written. Loader, the maintenance probe's `generated-rules-expiring` signal and the rule-expiry sweep share one predicate (`ruleExpiryInstantMs` in `scripts/lib/rule-loader.mjs`), so none of them calls a rule expired while another still treats it as live. A rule without `expires-at`, or with a malformed `expires-at`, is **not** excluded.
+- **Expiry** — a rule whose parseable `expires-at` has passed is EXCLUDED, with a mandatory stderr WARN. A bare `YYYY-MM-DD` is inclusive: the rule loads through that whole UTC day and drops out at the next UTC midnight (#1521); a full timestamp is taken as written. Loader, the maintenance probe's `generated-rules-expiring` signal and the rule-expiry sweep share one predicate (`ruleExpiryInstantMs` in `scripts/lib/rule-loader.mjs`), so none of them calls a rule expired while another still treats it as live. A rule without `expires-at`, or with a malformed `expires-at`, is **not** excluded. This gate exists in `rule-loader.mjs` only: Claude Code's native loader reads nothing but `paths` (code.claude.com/docs/en/memory, read 2026-10-24), so on Claude Code expiry takes effect only when the sweep below removes the content (#1779).
 - **Tier-gating (#692)** — gated on the `context` runtime param (not a host/mode param). `context: 'wave'` excludes `tier: coordinator-only` rules; `context: 'coordinator'` excludes `tier: wave-only` rules; `context: null` (the default) disables tier filtering entirely. A rule without a `tier` key passes the tier gate in every context. See [Tier gating](#tier-gating-issue-692) below.
 
 **The activation logic in one sentence:** *a null/absent gate parameter performs no filtering on that axis, and a rule that lacks a given gate key passes that gate unconditionally — so a rule with no frontmatter clears every gate and is always-on, byte-for-byte.*
@@ -403,12 +403,51 @@ This writes `.orchestrator/runtime/reconcile-candidates.jsonl` (creating it if
 absent). Verify with a dry run: `alreadyMaterialized` must equal
 absorbed + dropped, not absorbed alone.
 
+#### The untrusted-content envelope (#1015, #1779)
+
+The prose a generated rule carries is agent-authored learning text, so the
+renderer wraps it in an envelope that says so. The envelope is two VISIBLE
+blockquote lines, `> **untrusted-content:start** — …` and
+`> **untrusted-content:end** — …`, each with a blank line on both sides.
+Until #1779 they were block-level HTML comments, and Claude Code strips those
+before it injects a rule (code.claude.com/docs/en/memory, read 2026-10-24):
+the model received the prose with no envelope at all. Readers recognise both
+forms through `isUntrustedStartLine` / `isUntrustedEndLine` in
+`scripts/lib/reconcile/sanitize.mjs`; `sanitizeProse` blanks the envelope
+token inside learning text — also when it is spelled with a look-alike dash or
+colon, spaces or Markdown emphasis — so a learning cannot write a line that
+reads as a sentinel. Full-width or homoglyph LETTERS still pass that
+neutraliser (a named limit), but not validation:
+`scripts/lib/validate/check-rules.mjs` (f) fails a generated rule whose
+envelope is still an HTML comment, any line whose NORMALISED form carries the
+token without being byte-equal to a visible sentinel (`carriesEnvelopeToken`:
+NFKD, then combining marks and default-ignorable code points stripped, then
+NFKC, lower-case and a small Cyrillic/Greek homoglyph fold, separators and
+emphasis, #1792 — letters outside that fold, such as the small capital
+U+1D07 `ᴇ`, are not folded, a named limit), and an
+envelope that is not exactly one start line before exactly one end line. The
+sentinels carry no per-file token, so a forged line byte-equal to the real one
+is caught only by that count — a named ceiling.
+
+Copies outside this repo still carrying the HTML-comment envelope are migrated
+by `node scripts/migrate-rule-envelope.mjs --root <repo> [--root <repo> …]`
+(dry-run by default, `--apply` to write, `--json`). It rewrites only the two
+lines that are exactly a legacy sentinel, keeps every other byte and line
+ending, skips (with a reason) a file whose envelope is malformed or mixed,
+never follows a symlink, and writes atomically. It never walks a directory to
+find repos: the caller passes each root and owns the fleet boundary check for
+it. Run it from a maintenance runner, not inside an unrelated feature MR.
+
 #### The expiry sweep (`scripts/sweep-expired-rules.mjs`, #1377)
 
 `rule-loader.mjs` stops INJECTING a generated rule once its `expires-at` has
 passed; nothing removed one from disk, so an expired consolidated file stayed
 tracked, kept costing bytes against `generated-byte-ceiling`, and kept reading
-as live corpus to every human and every grep. The sweep
+as live corpus to every human and every grep. On Claude Code it also kept
+LOADING: the native loader never reads `expires-at` (#1779). The sweep is the
+only mechanism that retires expired content there, so the housekeeping
+maintenance loop runs it with `--horizon-days 7`, which also removes content
+that would expire before the next sweep. The sweep
 (`scripts/lib/reconcile/rule-expiry-sweep.mjs`, CLI
 `node scripts/sweep-expired-rules.mjs`, `--dry-run` default) closes that gap
 under four contracts, all of them consequences of the four merge rules above:

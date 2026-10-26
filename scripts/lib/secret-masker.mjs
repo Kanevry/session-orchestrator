@@ -159,15 +159,74 @@ const NEVER_MASK_KEYS = new Set([
  *     its call sites feed it (learnings-index, conf 0.9). A shared regex here
  *     would create exactly that illusion of a single decision point.
  *
- * Two deliberate widenings over the mirrored shape:
- *  - a bare name (`TOKEN`, `PASSWORD`, `SECRET`, `API_KEY`-less `KEY`) qualifies;
- *    the diagnostics form requires at least one character before the suffix.
+ * Deliberate widenings over the mirrored shape:
+ *  - a bare name (`TOKEN`, `PASSWORD`, `SECRET`, `API_KEY`-less `KEY`, `DSN`)
+ *    qualifies; the diagnostics form requires at least one character before the
+ *    suffix.
  *  - the key is upper-cased before testing, so lowercase env keys
  *    (`github_token`) qualify too. `npm_config_*` keys are unaffected — none of
  *    them end in a secret-bearing suffix.
+ *  - `_DSN` is a secret-bearing suffix (#1799 point 1): a database DSN carries
+ *    its password inline, and before this widening a DSN leak stayed silent in
+ *    the SEC-008 detector and unmasked in the vault. The bare `DSN` follows the
+ *    same rule as every other suffix: each suffix has its bare form.
+ *  - a key ending `_URL` / `_URI` qualifies ONLY when its VALUE carries a
+ *    password in the userinfo or in a query parameter (`CREDENTIAL_URL_RE`,
+ *    `QUERY_PASSWORD_URL_RE` below). This is the one
+ *    value-dependent branch of filter 2: the key name alone cannot tell
+ *    `DATABASE_URL=postgres://u:p@h/db` from `API_BASE_URL=https://h/v1`, and
+ *    masking the second shreds every log line that names the endpoint.
+ *
+ * Measurement behind both (2026-10-25, one developer host, the process env of a
+ * dispatched wave agent, names and counts only): 2 keys on the measured host
+ * newly qualify via `_DSN`; 0 keys end in `_URL`/`_URI` at all, with or without
+ * credentials. The URL
+ * branch therefore adds no needle on that host today; it closes the
+ * `DATABASE_URL` form other hosts and CI images carry, and the strict value
+ * test is what keeps a credential-free URL out (over-masking stays the risk the
+ * header names).
  */
 const SECRET_KEY_RE =
-  /^(?:[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET|_PASSWORD|_CREDENTIAL[A-Z_]*)|TOKEN|KEY|SECRET|PASSWORD)$/;
+  /^(?:[A-Z][A-Z0-9_]*(?:_TOKEN|_KEY|_SECRET|_PASSWORD|_DSN|_CREDENTIAL[A-Z_]*)|TOKEN|KEY|SECRET|PASSWORD|DSN)$/;
+
+/** Key names whose value may be a URL; they qualify only via `CREDENTIAL_URL_RE` / `QUERY_PASSWORD_URL_RE`. */
+const URL_KEY_RE = /^[A-Z][A-Z0-9_]*_UR[LI]$/;
+
+/**
+ * The scheme part of a credential URL: an optional `jdbc:` prefix (JDBC URLs
+ * wrap the real scheme, `jdbc:mysql://…`), then one RFC 3986 scheme and `://`.
+ * Kept to the one known wrapper rather than any `word:` chain: the strict form
+ * is linear by construction and admits no `a:b:c://` shape nobody emits.
+ */
+const URL_SCHEME_SRC = String.raw`^(?:jdbc:)?[A-Za-z][A-Za-z0-9+.-]*:\/\/`;
+
+/**
+ * A URL whose userinfo carries a NON-EMPTY password: `scheme://user:password@`.
+ * No whitespace, `/` or `@` inside user or password, and no `:` inside the user,
+ * so `https://host/a@b` (an `@` in the path) and `ssh://git@host` (`user@` only)
+ * never match. The user may be empty (`redis://:password@host`), because the
+ * password, not the user, is the credential.
+ *
+ * NAMED CEILING (BV-004): the needle stays the WHOLE value. A leak that prints
+ * only the password part of the URL (or the URL with the password elided or
+ * re-encoded) is not caught. Neither is a password holding an UNENCODED `/`
+ * (`postgres://u:ab/cd1234@h`): admitting `/` in the password makes every
+ * `host:port/path@x` URL read as userinfo, the over-masking this filter exists
+ * to prevent. Revisit trigger: a SEC-008 incident in either form.
+ */
+const CREDENTIAL_URL_RE = new RegExp(String.raw`${URL_SCHEME_SRC}[^\s/@:]*:[^\s/@]+@`);
+
+/**
+ * A URL whose QUERY carries a non-empty password parameter (`password=`,
+ * `pwd=`, `pass=`, any case): `https://h/db?user=u&password=…`. The parameter
+ * must open the query or follow an `&`, so `?nopass=x` does not match, and its
+ * value must be non-empty. Linear: the path run stops at the first `?`, and the
+ * one backtracking run tries a constant-length keyword at each `&`.
+ */
+const QUERY_PASSWORD_URL_RE = new RegExp(
+  String.raw`${URL_SCHEME_SRC}[^\s?#]*\?(?:[^\s#]*&)?(?:password|pwd|pass)=[^\s&#]`,
+  'i',
+);
 
 /**
  * Filter 3 — minimum value length.
@@ -200,9 +259,38 @@ const MIN_MASKABLE_LENGTH = 8;
 function qualifiesAsNeedle(key, value) {
   if (typeof key !== 'string' || typeof value !== 'string') return false;
   if (NEVER_MASK_KEYS.has(key)) return false; // 1 — allowlist
-  if (!SECRET_KEY_RE.test(key.toUpperCase())) return false; // 2 — key-name heuristic
+  const upper = key.toUpperCase();
+  const named =
+    SECRET_KEY_RE.test(upper) ||
+    (URL_KEY_RE.test(upper) &&
+      (CREDENTIAL_URL_RE.test(value) || QUERY_PASSWORD_URL_RE.test(value)));
+  if (!named) return false; // 2 — key-name heuristic (URL keys: value must carry a password)
   if (value.length < MIN_MASKABLE_LENGTH) return false; // 3 — degenerate-value guard
   return true;
+}
+
+/**
+ * The qualifying `[key, value]` entries of an env-like object — the SAME
+ * allowlist → key-name → length selection `createSecretValueMasker` builds its
+ * needles from, exposed for consumers that must attribute a hit to its KEY
+ * (`scripts/lib/secret-output-detector.mjs`, #1786) without a second copy of
+ * the filters. Additive export: the masker's own return contract is unchanged.
+ *
+ * The returned array CARRIES VALUES. Callers may compare against them; they
+ * must never print, log, persist or return them.
+ *
+ * @param {Record<string, unknown>} env — a non-object yields `[]`.
+ * @returns {Array<[string, string]>}
+ */
+export function secretNeedleEntries(env) {
+  /** @type {Array<[string, string]>} */
+  const entries = [];
+  if (env && typeof env === 'object') {
+    for (const [key, value] of Object.entries(env)) {
+      if (qualifiesAsNeedle(key, value)) entries.push([key, /** @type {string} */ (value)]);
+    }
+  }
+  return entries;
 }
 
 /**
@@ -234,12 +322,7 @@ function qualifiesAsNeedle(key, value) {
  */
 export function createSecretValueMasker(env) {
   /** @type {Set<string>} deduped — two keys sharing a value need one pattern. */
-  const values = new Set();
-  if (env && typeof env === 'object') {
-    for (const [key, value] of Object.entries(env)) {
-      if (qualifiesAsNeedle(key, value)) values.add(/** @type {string} */ (value));
-    }
-  }
+  const values = new Set(secretNeedleEntries(env).map(([, value]) => value));
 
   const patterns = [...values].map((v) => new RegExp(RegExp.escape(v)));
 

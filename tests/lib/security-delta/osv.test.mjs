@@ -1,8 +1,8 @@
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { deriveVerdict } from '../../../scripts/lib/security-delta/contract.mjs';
 import { runLockfileCheck } from '../../../scripts/lib/security-delta/osv.mjs';
@@ -11,10 +11,27 @@ const ROOT = process.cwd();
 const lockFixture = (name) => readFileSync(path.join(ROOT, 'tests/fixtures/security-delta/lockfiles', name), 'utf8');
 const osvFixture = (name) => JSON.parse(readFileSync(path.join(ROOT, 'tests/fixtures/security-delta/osv', name), 'utf8'));
 
-/** Fake git: `files` maps path → { base, head } content (null = absent at that ref). */
+/**
+ * Fake git: `files` maps path → { base, head } content (null = absent at that ref).
+ * `ls-tree -z <ref>:<dir>` lists the files of `dir` at `ref` (a `{ mode }` value
+ * lists with that mode); `cat-file blob <ref>:<path>` returns the content.
+ */
 function fakeGit(files) {
+  const blobs = new Map(); // fake oid → content, filled by ls-tree
   return async (args) => {
     if (args[0] === 'diff') return `${Object.keys(files).join('\0')}\0`;
+    if (args[0] === 'ls-tree') {
+      const [ref, dir] = args[2].split(/:(.*)/s);
+      return Object.entries(files)
+        .filter(([file, at]) => at[ref] !== null && at[ref] !== undefined && path.posix.dirname(file) === (dir || '.'))
+        .map(([file, at]) => {
+          const oid = (blobs.size + 1).toString(16).padStart(8, '0');
+          blobs.set(oid, at[ref]);
+          return `${at[ref].mode ?? '100644'} blob ${oid}\t${path.posix.basename(file)}\0`;
+        })
+        .join('');
+    }
+    if (args[0] === 'cat-file') return blobs.get(args[2]);
     const [ref, file] = args[1].split(/:(.*)/s);
     const text = files[file]?.[ref];
     if (text === null || text === undefined) throw new Error(`fatal: path '${file}' does not exist in '${ref}'`);
@@ -38,7 +55,19 @@ function fakeRequest({ batch, details = {}, failBatch = null }) {
   return { request, calls };
 }
 
-const repoRoot = tmpdir(); // no .npmrc there: no private scopes
+const repoRoot = tmpdir(); // never read: the policy comes from (fake) git at head
+
+// Host npm config is part of the policy: isolate it (an empty fake HOME, no npm_config_* vars).
+let fakeHome = null;
+beforeEach(() => {
+  fakeHome = mkdtempSync(path.join(tmpdir(), 'secdelta-home-'));
+  vi.stubEnv('HOME', fakeHome);
+  for (const key of Object.keys(process.env)) if (/^npm_config_/i.test(key)) vi.stubEnv(key, undefined);
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+  rmSync(fakeHome, { recursive: true, force: true });
+});
 const uvRange = (baseLock, headLock) => fakeGit({ 'uv.lock': { base: lockFixture(baseLock), head: lockFixture(headLock) } });
 
 describe('runLockfileCheck — litellm acceptance case from #1769', () => {
@@ -98,6 +127,26 @@ describe('runLockfileCheck — degraded measurement never reads as clean', () =>
     const capped = await runLockfileCheck({ repoRoot, base: 'base', head: 'head', request, runGit, maxDetails: 0 });
     expect(capped).toMatchObject({ status: 'degraded', reason: 'detail-cap', checked: 1, unchecked: 1 });
     expect(capped.findings[0]).toMatchObject({ class: 'vuln', severity: 'unknown', fixedIn: null });
+  });
+
+  it('a fetched GHSA record adds its CVE aliases (only CVE strings) to ids; a record without aliases adds nothing (#1769 stage 2)', async () => {
+    // Bug caught: the CVE aliases of the detail record were dropped, so a KEV join on CVE ids missed every GHSA.
+    const lock = (v) => JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/lodash': { version: v } } });
+    const runGit = fakeGit({ 'package-lock.json': { base: lock('4.17.10'), head: lock('4.17.15') } });
+    const batch = { results: [{ vulns: [{ id: 'GHSA-p6mc-m468-83gw' }] }] };
+    const record = { ...osvFixture('vuln-ghsa.json'), aliases: ['CVE-2026-1111', 'GHSA-other', 42] };
+    const { request } = fakeRequest({ batch, details: { 'GHSA-p6mc-m468-83gw': record } });
+    const withAliases = await runLockfileCheck({ repoRoot, base: 'base', head: 'head', request, runGit });
+    expect(withAliases.findings[0].ids).toEqual(['GHSA-p6mc-m468-83gw', 'CVE-2026-1111']);
+
+    const { aliases: _drop, ...bare } = record;
+    const plain = await runLockfileCheck({
+      repoRoot, base: 'base', head: 'head', runGit,
+      request: fakeRequest({ batch, details: { 'GHSA-p6mc-m468-83gw': bare } }).request,
+    });
+    expect(plain.findings[0].ids).toEqual(['GHSA-p6mc-m468-83gw']);
+    expect(withAliases.findings[0].fingerprint).toBe(plain.findings[0].fingerprint);
+    expect(withAliases.status).toBe('ok');
   });
 
   it('a blank-version decoy and a broken sibling lockfile cost only themselves: the MAL package still blocks under strict', async () => {
@@ -164,12 +213,46 @@ describe('runLockfileCheck — degraded measurement never reads as clean', () =>
     const runGit = async (args) => {
       if (args[0] === 'diff') return 'package-lock.json\0';
       if (args[1].startsWith('base:')) throw new Error("fatal: path 'package-lock.json' does not exist in 'base'");
-      throw new Error('stdout maxBuffer length exceeded');
+      // A real execFile error carries `cmd` (isGitExecError).
+      throw Object.assign(new Error('stdout maxBuffer length exceeded'), { cmd: 'git show head:package-lock.json' });
     };
     const { request, calls } = fakeRequest({ batch: { results: [] } });
     const result = await runLockfileCheck({ repoRoot, base: 'base', head: 'head', request, runGit });
     expect(result).toMatchObject({ status: 'degraded', reason: 'unparsed', checked: 0, unchecked: 1 });
     expect(calls).toHaveLength(0);
+  });
+
+  it('a TypeError while reading a lockfile is internal-error, not unparsed (#1788)', async () => {
+    // Bug caught: a bare catch counted every throw — our own defects included — as an unparseable file.
+    const runGit = async (args) => {
+      if (args[0] === 'diff') return 'requirements.txt\0';
+      if (args[1].startsWith('base:')) throw new Error("fatal: path 'requirements.txt' does not exist in 'base'");
+      return undefined; // a defect: the parser's text.split throws a TypeError
+    };
+    const { request, calls } = fakeRequest({ batch: { results: [] } });
+    const result = await runLockfileCheck({ repoRoot, base: 'base', head: 'head', request, runGit });
+    expect(result).toMatchObject({ status: 'degraded', reason: 'internal-error', unchecked: 1 });
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['a symlink at head (mode 120000)', { '.npmrc': { head: { mode: '120000' } } }, {}],
+    ['a blob git cannot read', { '.npmrc': { head: 'registry=https://registry.npmjs.org/\n' } }, { failCatFile: true }],
+    ['a user ~/.npmrc that is a directory (EISDIR)', {}, { userNpmrcDir: true }],
+  ])('an .npmrc that exists but cannot be read — %s — keeps a registry-less npm package away from OSV and degrades the run (#1775)', async (_name, extra, { failCatFile, userNpmrcDir }) => {
+    // Bug caught: every read error counted as "no .npmrc", so the private scope stayed unknown
+    // and the private package name went out in the OSV query with status ok.
+    if (userNpmrcDir) mkdirSync(path.join(process.env.HOME, '.npmrc'));
+    const lock = JSON.stringify({ lockfileVersion: 3, packages: { '': {}, 'node_modules/@placeholder-private/pkg': { version: '1.0.0' } } });
+    const git = fakeGit({ 'package-lock.json': { base: null, head: lock }, ...extra });
+    const runGit = async (args) => {
+      if (failCatFile && args[0] === 'cat-file') throw Object.assign(new Error('fatal: bad object'), { cmd: 'git cat-file' });
+      return git(args);
+    };
+    const { request, calls } = fakeRequest({ batch: { results: [{}] } });
+    const result = await runLockfileCheck({ repoRoot, base: 'base', head: 'head', request, runGit });
+    expect(calls).toEqual([]);
+    expect(result).toMatchObject({ status: 'degraded', reason: 'npmrc-unreadable', checked: 0, unchecked: 1 });
   });
 
   it('no base ref → skipped/no-range; no changed lockfile → skipped/no-lockfile-change', async () => {

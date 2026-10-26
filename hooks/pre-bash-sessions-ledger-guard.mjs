@@ -1333,13 +1333,18 @@ function scanCommand(command) {
         continue;
       }
 
-      // Redirection: `>` `>>` `>|` `N>` `&>` `&>>`. The optional leading fd digits
+      // Redirection: `>` `>>` `>|` `N>` `&>` `&>>`, plus zsh's noclobber
+      // overrides (#1795) `>!` `>>|` `>>!` `&>|` `&>!` and `>&|` `>&!` `>>&|`
+      // `>>&!` — the `|`/`!` suffix is syntax, the target is the NEXT word (it
+      // used to land on `!`, or on nothing). The optional leading fd digits
       // are ordinary characters we already copied; only the operator matters.
       if (ch === '>' || (ch === '&' && command[i + 1] === '>')) {
         let j = ch === '&' ? i + 2 : i + 1;
         if (command[j] === '>') j++;
-        if (command[j] === '|') j++;
-        if (command[j] === '&') {
+        if (command[j] === '|' || command[j] === '!') j++;
+        if (command[j] === '&' && (command[j + 1] === '|' || command[j + 1] === '!')) {
+          j += 2;
+        } else if (command[j] === '&') {
           const dup = readWord(command, j + 1);
           if (FD_DUP_RE.test(dup.value)) { out += ' '; i = Math.max(dup.end, j + 1); continue; }
           j += 1;

@@ -1,6 +1,6 @@
 {
-  "generated_at": "2026-10-23T10:05:29.051Z",
-  "head": "ee6ea6ec8b5438ee43cb7789fb6b7101b55dc8c9",
+  "generated_at": "2026-10-25T00:49:10.260Z",
+  "head": "245e01abaa01c302c0bec6a760c73dee3b8c508d",
   "entries": [
     {
       "file": "hooks/_lib/atomic-json.mjs",
@@ -84,6 +84,7 @@
         "pre-bash-templates-first.mjs",
         "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
       ]
@@ -274,6 +275,12 @@
       ]
     },
     {
+      "file": "hooks/pre-tool-state-md-path-guard.mjs",
+      "reachable_from": [
+        "pre-tool-state-md-path-guard.mjs"
+      ]
+    },
+    {
       "file": "hooks/skill-invocation-telemetry.mjs",
       "reachable_from": [
         "skill-invocation-telemetry.mjs"
@@ -345,7 +352,8 @@
         "pre-bash-memory-propose-audit.mjs",
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs"
       ]
     },
     {
@@ -1234,6 +1242,7 @@
         "pre-bash-templates-first.mjs",
         "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
       ]
@@ -1265,6 +1274,7 @@
         "pre-bash-templates-first.mjs",
         "pre-edit-sessions-ledger-guard.mjs",
         "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
       ]
@@ -1500,6 +1510,7 @@
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
       ]
@@ -1531,6 +1542,7 @@
         "pre-bash-staging-fence.mjs",
         "pre-bash-templates-first.mjs",
         "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs",
         "skill-invocation-telemetry.mjs",
         "subagent-telemetry.mjs"
       ]
@@ -1553,6 +1565,12 @@
       "file": "scripts/lib/process-group.mjs",
       "reachable_from": [
         "post-edit-validate.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/redact-spans.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs"
       ]
     },
     {
@@ -1593,7 +1611,20 @@
         "post-edit-validate.mjs",
         "post-tool-batch-wave-signal.mjs",
         "pre-bash-memory-propose-audit.mjs",
-        "pre-task-scope-disjoint.mjs"
+        "pre-task-scope-disjoint.mjs",
+        "pre-tool-state-md-path-guard.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/secret-masker.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs"
+      ]
+    },
+    {
+      "file": "scripts/lib/secret-output-detector.mjs",
+      "reachable_from": [
+        "post-bash-write-verify.mjs"
       ]
     },
     {

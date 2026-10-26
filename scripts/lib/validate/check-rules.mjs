@@ -23,6 +23,21 @@
 //           identical `hasEmptyGlobs` fix below.
 //       (b) learning-key must be present (traceability back to the emitter source).
 //       (c) expires-at must be present (auto-generated rules must have a TTL).
+//       (f) VISIBLE untrusted-content envelope (#1779): every line carrying an
+//           `untrusted-content:start|end` token must be a VISIBLE sentinel
+//           (`UNTRUSTED_BEGIN`/`UNTRUSTED_END`, a blockquote line). Claude
+//           Code strips block-level HTML comments before it injects a rule,
+//           so the legacy `<!-- untrusted-content:… -->` form never reached
+//           the model and the agent-authored prose arrived unframed. Learning
+//           text cannot carry the token (sanitize.mjs blanks it), so any such
+//           line is a sentinel — a legacy or malformed one FAILs. A generated
+//           rule WITHOUT an envelope is not flagged (no new requirement).
+//           #1792/#1796: token detection is look-alike aware (full-width, any
+//           non-ASCII letter in a token letter's place, emphasis/space
+//           separators — `carriesEnvelopeToken` in sanitize.mjs), a sentinel
+//           must be byte-equal to the constant,
+//           and an envelope must have exactly one start before exactly one end.
+//           Legacy copies elsewhere: scripts/migrate-rule-envelope.mjs.
 //     Plus, ahead of the auto/handwritten split and binding on EVERY rule file
 //     regardless of cohort:
 //       (d) the frontmatter must PARSE (#1015). An unparseable file used to be
@@ -122,6 +137,13 @@
 
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import {
+  carriesEnvelopeToken,
+  isUntrustedEndLine,
+  isUntrustedStartLine,
+  UNTRUSTED_BEGIN,
+  UNTRUSTED_END,
+} from '../reconcile/sanitize.mjs';
 import { parseGlobsFrontmatter } from '../rule-loader.mjs';
 
 const [, , pluginRoot] = process.argv;
@@ -244,6 +266,78 @@ function checkHarnessParity(contents) {
 // ============================================================================
 // Check: .claude/rules/ rule invariants
 // ============================================================================
+/**
+ * (f) #1779 / #1792: FAIL every envelope-token line of an auto-generated rule
+ * that is not an EXACT visible sentinel, then FAIL a malformed envelope.
+ *
+ * Token detection is look-alike aware (`carriesEnvelopeToken`: NFKC, every
+ * non-ASCII letter accepted in a token letter's place — Cyrillic, Greek, small
+ * capitals and whatever block comes next, #1796 — emphasis/space/separator
+ * tolerant), because
+ * the visible envelope is read by the model — `untrusted-content:ｅｎｄ` forges
+ * the boundary as well as the ASCII spelling does. Only a line byte-equal to
+ * `UNTRUSTED_BEGIN`/`UNTRUSTED_END` counts as a sentinel; a near-copy (an
+ * edited or truncated sentinel) is a forgery candidate and FAILs.
+ *
+ * Invariant (checked only when every token line is an exact sentinel, so one
+ * defect yields one message): exactly one start and one end line, start before
+ * end. Ceiling (BV-004): the sentinels carry no per-file token, so a forged
+ * line byte-equal to the real one is indistinguishable from it — the count
+ * invariant is what catches it. Revisit (per-file `deriveFenceToken` in the
+ * sentinel) if a forged exact sentinel is ever measured in a rendered rule.
+ *
+ * @param {string} rel       repo-relative rule path, for the message
+ * @param {string} contents  full file text
+ * @returns {boolean} true when the envelope is absent or well-formed
+ */
+function checkEnvelopeLines(rel, contents) {
+  let ok = true;
+  const starts = [];
+  const ends = [];
+  const lines = contents.split(/\r?\n/);
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!carriesEnvelopeToken(line)) continue;
+    if (line === UNTRUSTED_BEGIN) {
+      starts.push(i + 1);
+      continue;
+    }
+    if (line === UNTRUSTED_END) {
+      ends.push(i + 1);
+      continue;
+    }
+    ok = false;
+    // The shared predicates accept BOTH forms; the legacy one starts `<!--`.
+    const legacy = (isUntrustedStartLine(line) || isUntrustedEndLine(line)) && line.startsWith('<!--');
+    if (legacy) {
+      fail(
+        `${rel}:${i + 1} — legacy HTML-comment untrusted-content envelope line. Claude Code strips block-level ` +
+          'HTML comments before injecting a rule, so this sentinel never reaches the model and the agent-authored ' +
+          'prose arrives unframed (#1779). Replace it with the visible UNTRUSTED_BEGIN/UNTRUSTED_END line from ' +
+          'scripts/lib/reconcile/sanitize.mjs.',
+      );
+    } else {
+      fail(
+        `${rel}:${i + 1} — line carries an untrusted-content token (look-alike letters, separators and emphasis ` +
+          'normalised) but is not an exact visible envelope sentinel (UNTRUSTED_BEGIN/UNTRUSTED_END from ' +
+          'scripts/lib/reconcile/sanitize.mjs, #1779/#1792). A model reads it as an envelope boundary.',
+      );
+    }
+  }
+  if (!ok || (starts.length === 0 && ends.length === 0)) return ok;
+
+  if (starts.length !== 1 || ends.length !== 1 || starts[0] > ends[0]) {
+    const at = starts.length > 1 ? starts[1] : ends.length > 1 ? ends[1] : (ends[0] ?? starts[0]);
+    fail(
+      `${rel}:${at} — malformed untrusted-content envelope: expected exactly one start line before exactly one ` +
+        `end line, found start at [${starts.join(', ')}] and end at [${ends.join(', ')}] (#1792). A second or ` +
+        'reordered sentinel lets agent-authored text sit outside the framing.',
+    );
+    return false;
+  }
+  return true;
+}
+
 console.log('--- Check: .claude/rules/ auto-generated rule invariants ---');
 
 // If the rules directory doesn't exist, there's nothing to validate — all pass.
@@ -346,7 +440,7 @@ for (const name of mdFiles.sort()) {
   }
 
   if (meta['auto-generated'] === true) {
-    autoGeneratedEntries.push({ rel, globs, meta, parityOk: parity.ok });
+    autoGeneratedEntries.push({ rel, globs, meta, contents, parityOk: parity.ok });
   } else {
     handwrittenEntries.push({ rel, globs, meta, contents, parityOk: parity.ok });
   }
@@ -355,7 +449,7 @@ for (const name of mdFiles.sort()) {
 // ---------------------------------------------------------------------------
 // Auto-generated branch (FA4 #697) — UNCHANGED behaviour, hard-fail.
 // ---------------------------------------------------------------------------
-for (const { rel, globs, meta, parityOk } of autoGeneratedEntries) {
+for (const { rel, globs, meta, contents, parityOk } of autoGeneratedEntries) {
   // (a) never-always-on: must have at least one activation axis.
   // globs is one of: null (no frontmatter / no globs key), [] (key present
   // but EMPTY — the #892 QA-Defect special case, see module doc), or a
@@ -397,6 +491,9 @@ for (const { rel, globs, meta, parityOk } of autoGeneratedEntries) {
     fail(`${rel} — auto-generated rule is missing required frontmatter key: expires-at`);
   }
 
+  // (f) visible untrusted-content envelope (#1779) — see the module doc.
+  const envelopeOk = checkEnvelopeLines(rel, contents);
+
   // Emit a PASS line only when the rule satisfies ALL three invariants: a
   // genuine activation axis (a NON-EMPTY globs array, or host-class — NEVER
   // an empty globs array, which is dead-not-passing regardless of host-class)
@@ -406,7 +503,7 @@ for (const { rel, globs, meta, parityOk } of autoGeneratedEntries) {
   // its FAIL already emitted above, and a file must never both PASS and FAIL.
   const lkOk = Object.prototype.hasOwnProperty.call(meta, 'learning-key');
   const eaOk = Object.prototype.hasOwnProperty.call(meta, 'expires-at');
-  if (!hasEmptyGlobs && (hasGlobs || hasHostClass) && lkOk && eaOk && parityOk) {
+  if (!hasEmptyGlobs && (hasGlobs || hasHostClass) && lkOk && eaOk && parityOk && envelopeOk) {
     pass(`${rel} — auto-generated rule satisfies all invariants`);
   }
 }

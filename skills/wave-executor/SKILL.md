@@ -257,7 +257,7 @@ Ordinary housekeeping is **ONE coordinator-direct wave**: `node scripts/session-
 |---|---|---|---|
 | 1 | `claude-md-drift-check` | unconditional | checker JSON (`errors`/`warnings` counts) |
 | 2 | expired-learnings sweep | unconditional | `orchestrator.learnings.sweep_applied` |
-| 3 | expired-generated-**rules** sweep — `node scripts/sweep-expired-rules.mjs` (`--dry-run` first, then `--apply`) | AUQ-gated (it rewrites and can DELETE tracked `.claude/rules/*.md` files) | `orchestrator.rules.expiry_sweep_applied` |
+| 3 | expired-generated-**rules** sweep — `node scripts/sweep-expired-rules.mjs --horizon-days 7` (`--dry-run` first, then `--apply`; the horizon covers the gap to the next sweep, since Claude Code ignores `expires-at`, #1779) | AUQ-gated (it rewrites and can DELETE tracked `.claude/rules/*.md` files) | `orchestrator.rules.expiry_sweep_applied` |
 | 4 | `/evolve analyze` | AUQ-gated (the operator approves the proposed learnings) | `orchestrator.evolve.completed` |
 | 5 | `/reconcile` | AUQ-gated (rule proposals are never applied unasked) | `orchestrator.reconcile.completed` with `dry_run: false` |
 | 6 | `/evolve dialectic` | AUQ-gated (the derived thesis is presented, not committed) | `orchestrator.dialectic.completed` |

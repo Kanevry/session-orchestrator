@@ -372,7 +372,7 @@ async function main() {
   // it is safe to run before the command-guard gate/enforcement early-returns.
   // Skipped under enforcement:off (nothing is enforced there). See #800.
   if (enforcement !== 'off' && scope?.gates?.['bash-write-guard'] === true) {
-    runBashWriteGuard(command, scope, projectRoot);
+    runBashWriteGuard(command, scope, projectRoot, input.cwd);
   }
 
   // G4 — gate disabled → allow
@@ -419,10 +419,13 @@ async function main() {
  * @param {string} command — raw Bash command string
  * @param {object} scope — parsed wave-scope.json
  * @param {string} projectRoot — absolute project root
+ * @param {unknown} cwd — hook input `cwd` (the shell's working directory); resolves
+ *   a `"$PWD/…"` target (#1793). Absent → the parser keeps it relative, never drops it.
+ *   Unprovable expansions (after a `cd`, quote/escape ambiguity) stay unresolved.
  */
-function runBashWriteGuard(command, scope, projectRoot) {
+function runBashWriteGuard(command, scope, projectRoot, cwd) {
   const allowedPaths = Array.isArray(scope.allowedPaths) ? scope.allowedPaths : [];
-  const targets = extractBashWriteTargets(command);
+  const targets = extractBashWriteTargets(command, { cwd: typeof cwd === 'string' ? cwd : undefined });
   for (const target of targets) {
     if (!targetInWaveScope(target, allowedPaths, projectRoot)) {
       process.stderr.write(`bash-write-guard: ${target} outside wave scope (warn-only, #800)\n`);

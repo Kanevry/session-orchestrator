@@ -39,7 +39,7 @@ A worktree is clean iff ALL three conditions hold:
 
 ### Clean path: auto-remove + WARN (PRD §3 P3 Gherkin row 2)
 
-When detection returns a worktree object AND `isWorktreeClean()` returns `true`, auto-remove via `git worktree remove` (NO `--force`) and log a WARN line. The main checkout's git dir (`repoMainRoot`) is derived via the first entry of `git worktree list --porcelain`.
+When detection returns a worktree object AND `isWorktreeClean()` returns `true`, auto-remove via `git worktree remove` (NO `--force`) and log a WARN line. That call passes through the destructive guard (`worktree-remove-unsafe`, #1789): it is refused when the worktree still holds an ignored STATE.md, fleet manifest or top-level `.orchestrator/*.lock` — then report the named files and leave the worktree in place. The main checkout's git dir (`repoMainRoot`) is derived via the first entry of `git worktree list --porcelain`.
 
 > **Authoritative impl:** import `detectAutoPromotedWorktree` + `isWorktreeClean` from `scripts/lib/session-end/worktree-cleanup.mjs`. All git invocation MUST go through the injection-safe arg-array form (`execFileSync('git', ['-C', dir, …])`, #577 HARDEN-001) — never the legacy `execSync(\`git -C ${var} …\`)` template-literal shell form.
 
@@ -88,7 +88,7 @@ AskUserQuestion({
     multiSelect: false,
     options: [
       { label: "Behalten (Recommended)", description: "Keeps the worktree exactly as it is — nothing is deleted, and you can still remove it by hand later.", preview: `Stays on disk:\n${dirtyDetail}` },
-      { label: "Löschen", description: "I confirm the changes are handled or expendable. Run 'git worktree remove --force' on the worktree.", preview: `Deleted with the worktree:\n${dirtyDetail}` },
+      { label: "Löschen", description: "I confirm the changes are handled or expendable. I will run 'git worktree remove --force' myself in my own terminal; you print the exact command.", preview: `Deleted with the worktree:\n${dirtyDetail}` },
       { label: "Manuell", description: "Exit /close. I will inspect the worktree before re-running /close.", preview: `You would inspect this first:\n${dirtyDetail}` },
     ],
   }],
@@ -100,7 +100,7 @@ AskUserQuestion({
 ```
 Worktree cleanup options (the changes at stake are the `git status --short --branch` lines printed above):
 1. **Behalten (Recommended)** — Keeps the worktree exactly as it is; nothing is deleted, and you can still remove it by hand later.
-2. **Löschen** — I confirm the changes are handled or expendable. Run 'git worktree remove --force'.
+2. **Löschen** — I confirm the changes are handled or expendable. I run 'git worktree remove --force' myself in my own terminal; print the exact command.
 3. **Manuell** — Exit /close. I will inspect the worktree before re-running /close.
 Reply with the number of your choice.
 ```
@@ -108,7 +108,7 @@ Reply with the number of your choice.
 **On user choice:**
 
 - **Behalten** → log `session-end Phase 4a: auto-promoted worktree retained (dirty); operator chose Behalten`. Continue to Phase 5.
-- **Löschen** → `execFileSync('git', ['-C', repoMainRoot, 'worktree', 'remove', '--force', promoted.wtPath])` (arg-array, no shell — #577 HARDEN-001). Log WARN: `session-end Phase 4a: auto-promoted worktree force-removed by user choice`. Continue to Phase 5.
+- **Löschen** → do NOT remove it yourself: a forced removal is the operator's (#1789 — the destructive guard denies every agent `git worktree remove --force`). Print the exact command for the operator's own terminal, `git -C <repoMainRoot> worktree remove --force <promoted.wtPath>` with both paths filled in. Log WARN: `session-end Phase 4a: auto-promoted worktree handed to the operator for force removal`. Continue to Phase 5.
 - **Manuell** → exit `/close` cleanly. Print: `session-end aborted at Phase 4a by user choice. Re-run /close after handling the worktree manually.`
 
 ### Cross-references

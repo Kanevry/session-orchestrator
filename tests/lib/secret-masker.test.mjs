@@ -57,6 +57,25 @@ describe('createSecretValueMasker — positive path', () => {
     expect(needleCount).toBe(1);
     expect(mask(`Authorization: Bearer ${needle}`)).toBe('Authorization: Bearer [REDACTED]');
   });
+
+  // #1799 point 1. The password is generated at runtime so no credential-URL
+  // literal sits in the file for gitleaks to read.
+  it.each([
+    ['a database DSN under a `_DSN` key', 'APP_RO_DSN', (p) => `postgres://ro:${p}@db.example.org/x`],
+    ['a URL with `user:password@` under a `_URL` key', 'DATABASE_URL', (p) => `postgres://ro:${p}@db.example.org/x`],
+    ['a URL with an empty user and a password under a `_URI` key', 'cache_uri', (p) => `redis://:${p}@cache.example.org:6379`],
+    ['a `jdbc:`-wrapped URL with `user:password@`', 'REPORTS_DB_URL', (p) => `jdbc:mysql://ro:${p}@db.example.org/x`],
+    ['a URL with a `password=` query parameter', 'WAREHOUSE_URL', (p) => `https://db.example.org/x?user=ro&password=${p}`],
+    ['a URL whose query opens with an upper-case `PWD=`', 'LEGACY_URI', (p) => `https://db.example.org/x?PWD=${p}&user=ro`],
+  ])('masks %s as one whole-value needle', (_label, key, build) => {
+    // Bug caught: the DSN leak class of #1799 — a DSN or credential URL key is
+    // no needle, so its password reaches the vault unmasked and the SEC-008
+    // detector stays silent.
+    const value = build(`fake-pass-${randomUUID()}`);
+    const { mask, needleCount } = createSecretValueMasker({ [key]: value });
+    expect(needleCount).toBe(1);
+    expect(mask(`connect ${value} ok`)).toBe('connect [REDACTED] ok');
+  });
 });
 
 describe('createSecretValueMasker — over-masking guards (the measured failure mode)', () => {
@@ -127,6 +146,26 @@ describe('createSecretValueMasker — over-masking guards (the measured failure 
     });
     expect(needleCount).toBe(0);
     expect(mask(`resolved ${long} from config`)).toBe(`resolved ${long} from config`);
+  });
+
+  it('does NOT mask a `_URL` / `_URI` value without a password in the userinfo', () => {
+    // Bug caught: qualifying every `_URL` key by name. Endpoint URLs appear in
+    // ordinary log lines; masking them shreds the log for zero security gain.
+    // Covers no userinfo, `user@` only, an empty password, and an `@` in the
+    // path behind a `host:port` (which a loose `x:y@` match reads as userinfo),
+    // a query with a user but no password, and an empty `password=`.
+    const env = {
+      API_BASE_URL: 'https://api.example.org/v1/items',
+      GIT_REMOTE_URL: 'ssh://git@git.example.org/group/repo.git',
+      DOCS_URI: 'https://docs.example.org:8443/users/a@b/page',
+      MIRROR_URL: 'ftp://anon:@files.example.org/pub',
+      SEARCH_URL: 'https://search.example.org/q?user=ro&lang=de',
+      EMPTY_PASS_URL: 'https://db.example.org/x?user=ro&password=&lang=de',
+    };
+    const { mask, needleCount } = createSecretValueMasker(env);
+    expect(needleCount).toBe(0);
+    const line = `GET ${env.API_BASE_URL} via ${env.GIT_REMOTE_URL} see ${env.DOCS_URI} ${env.MIRROR_URL} ${env.SEARCH_URL} ${env.EMPTY_PASS_URL}`;
+    expect(mask(line)).toBe(line);
   });
 
   it('does NOT build a needle from a value shorter than the length floor', () => {

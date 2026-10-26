@@ -1151,7 +1151,7 @@ Files under a test-fixture directory (`fixtures`, `__fixtures__`, `testdata`, `t
 
 **Output:** one JSON line `{ schema, mode, range, status, verdict, checks[], totals, ms }`; `status ∈ clean|findings|degraded|skipped`, `verdict ∈ pass|warn|block`. Exit `0` = pass/warn/degraded/skipped, `3` = strict block, `1` = usage error.
 
-**Event:** `orchestrator.security.delta` carries counts only — no package names, paths or secret material.
+**Event:** `orchestrator.security.delta` carries counts only — no package names, paths or secret material. When `security-delta.mode` is not `off`, the session-start probe `security-pulse` (probe 21, `skills/session-start/references/phase-4-ssot-environment-check.md`) reports a last close that wrote no such event inside its own time span. Its background refresher can be switched off per host or process with `SO_SECURITY_PULSE_REFRESH=off` (the probe then only reads the cache).
 
 **Strict block routing:** an AskUserQuestion (fix and retry / warn + carryover / override with Deviation entry and `orchestrator.finding.overridden` / abort). Headless, embedded and Lead-led runs cannot ask: they report the block and stop the close.
 

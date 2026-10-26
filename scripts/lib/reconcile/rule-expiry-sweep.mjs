@@ -151,6 +151,7 @@ import { archivePathFor } from '../learnings/store-role.mjs';
 import { listMachineGeneratedRules } from '../instruction-budget-guard.mjs';
 import { parseGlobsFrontmatter, ruleExpiryInstantMs } from '../rule-loader.mjs';
 import { markCandidateProcessed } from './idempotency.mjs';
+import { isUntrustedEndLine } from './sanitize.mjs';
 
 /** Repo-relative learnings store — the only source of a per-entry date. */
 export const DEFAULT_LEARNINGS_PATH = '.orchestrator/metrics/learnings.jsonl';
@@ -201,7 +202,6 @@ const COUNTER_FORMS = Object.freeze([
 
 const HEADING_PREFIX = '### ';
 const PROVENANCE_HEADING = '## Provenance';
-const UNTRUSTED_END = '<!-- untrusted-content:end -->';
 
 /**
  * Match one line against every recognised counter-sentence form.
@@ -318,7 +318,7 @@ export function parseConsolidatedRule(content) {
         continue;
       }
     }
-    if (untrustedEndLine === -1 && lines[i].startsWith(UNTRUSTED_END)) untrustedEndLine = i;
+    if (untrustedEndLine === -1 && isUntrustedEndLine(lines[i])) untrustedEndLine = i;
     if (provenanceLine === -1 && lines[i] === PROVENANCE_HEADING) provenanceLine = i;
   }
 
@@ -602,11 +602,13 @@ function keepOrRaisePlan(base, parsed, advisory, raiseTo) {
  * @param {number} [opts.graceDays=0]      days past expiry before an entry is
  *   swept. Default 0: unlike the learnings sweep, nothing re-stamps a rule
  *   file's `expires-at`, so there is no re-stamp window to protect.
+ * @param {number} [opts.horizonDays=0]    sweep entries that expire within
+ *   this many days of `now` (cutoff = now - grace + horizon). Default 0.
  * @param {string} [opts.learningsPath]    override the learnings store
  * @returns {Promise<{plans: Array<object>, skipped: Array<{file: string, reason: string}>, malformedLines: number, archiveMalformedLines: number, ok: boolean}>}
  */
 export async function planRuleExpirySweep(opts = {}) {
-  const { repoRoot, now, graceDays = 0, learningsPath } = opts;
+  const { repoRoot, now, graceDays = 0, horizonDays = 0, learningsPath } = opts;
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
     throw new TypeError('planRuleExpirySweep: repoRoot is required');
   }
@@ -614,8 +616,15 @@ export async function planRuleExpirySweep(opts = {}) {
     throw new TypeError(`planRuleExpirySweep: graceDays must be a non-negative number, got ${graceDays}`);
   }
 
+  if (!Number.isInteger(horizonDays) || horizonDays < 0) {
+    throw new TypeError(`planRuleExpirySweep: horizonDays must be a non-negative integer, got ${horizonDays}`);
+  }
+
   const nowMs = toEpochMs(now);
-  const cutoffMs = nowMs - graceDays * MS_PER_DAY;
+  // Claude Code ignores `expires-at`, so a housekeeping sweep must also remove
+  // what would expire before the next sweep — the horizon moves the cutoff
+  // FORWARD by that many days (#1779).
+  const cutoffMs = nowMs - graceDays * MS_PER_DAY + horizonDays * MS_PER_DAY;
   const listed = listMachineGeneratedRules({ repoRoot });
   // Ohne generierte Regeln gibt es nichts zu pruefen: der Bestand wird dann
   // nicht gelesen, damit ein Repo ohne learnings.jsonl nicht mit ENOENT endet

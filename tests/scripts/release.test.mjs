@@ -25,6 +25,7 @@ import { mkdirSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
+import { inspect } from 'node:util';
 import {
   SURFACES,
   MIN_PACKED_ENTRIES,
@@ -1554,19 +1555,6 @@ describe('publishInvocation', () => {
     writeFileSync(tarballPath, 'checked bytes');
     artifact = { tarballPath, digest: createHash('sha256').update('checked bytes').digest('hex') };
   });
-  // BUG this catches (TV-001): the `npm publish` spawn inherited
-  // `npm_config_loglevel`. Under a silent ancestor (`npm run --silent`, which
-  // the husky pre-push gate uses) npm publishes and prints NOTHING, so the
-  // `+ pkg@version` line `evaluatePublishReceipt` requires never appears, the
-  // receipt reads unconfirmed, `publish()` throws and `main()` exits 2 =
-  // "pre-receipt, safe to rerun" — while the registry already holds the
-  // version. No existing test looks at the publish spawn's environment at all;
-  // the pinned-env test above covers `npm pack`, a different call site.
-  it('pins npm_config_loglevel=notice so the receipt line is always printed', () => {
-    const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact);
-    expect(call.opts.env.npm_config_loglevel).toBe('notice');
-  });
-
   it('publishes the package publicly through the temp userconfig, from the repo root', () => {
     const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact);
     expect(call.cmd).toBe('npm');
@@ -1583,6 +1571,34 @@ describe('publishInvocation', () => {
   it('keeps the rest of the environment — the pin is an override, not a replacement', () => {
     const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact);
     expect(call.opts.env.PATH).toBe(process.env.PATH);
+  });
+
+  // SEC-008 (SO#1785): opts.env is a full env copy, so the call object must not
+  // print values. Bug caught: publishInvocation returning a plain serializable
+  // env again. Synthetic env only: a failing assertion cannot print a real value.
+  it('serializes the call with env key names only', () => {
+    const P = 'placeholder-not-a-secret-1785';
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact, { SO1785_TEST_PLACEHOLDER: P });
+    for (const text of [JSON.stringify(call), inspect(call, { depth: Infinity })]) {
+      expect(text.includes(P)).toBe(false);
+      expect(text.includes('SO1785_TEST_PLACEHOLDER')).toBe(true);
+    }
+  });
+
+  // Wiring, with run()'s real spread shape. Bugs caught (TV-001): the
+  // `npm publish` spawn inheriting `npm_config_loglevel` — under a silent
+  // ancestor (`npm run --silent`, used by the husky pre-push gate) npm publishes
+  // and prints NOTHING, so the `+ pkg@version` line `evaluatePublishReceipt`
+  // requires never appears, `publish()` throws and `main()` exits 2 =
+  // "pre-receipt, safe to rerun" while the registry already holds the version;
+  // and a redaction that also hides the values from the child (non-enumerable
+  // env or values), which drops the pin the same way.
+  it('still hands the child the notice pin and every value through run()-style spread options', () => {
+    const P = 'placeholder-not-a-secret-1785';
+    const call = publishInvocation('/repo', '/tmp/rc/npmrc', artifact, { npm_config_loglevel: 'silent', SO1785_TEST_PLACEHOLDER: P });
+    const script = 'process.stdout.write([process.env.npm_config_loglevel, process.env.SO1785_TEST_PLACEHOLDER].join(" "))';
+    const res = spawnSync(process.execPath, ['-e', script], { ...call.opts, cwd: root, encoding: 'utf8' });
+    expect(res.stdout).toBe(`notice ${P}`);
   });
 });
 

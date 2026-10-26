@@ -194,7 +194,13 @@ und hat keine andere Arbeit:
 1a. **Jeder offene Punkt trägt eine Vorgangsmarke (#1639).** Jeder Listenpunkt unter einer
    Überschrift, die mit „Offen“, „Nachkontrolle“, „Folge“ oder „Danach“ beginnt (ohne „erledigt“ im
    Titel), endet mit `queue:#<id>`. Hat der Punkt schon ein GitLab-Issue und braucht keinen
-   Zeitpunkt, endet er stattdessen mit `issue:#<iid>`. Erledigte Punkte stehen als `[x]` da. Fehlt die
+   Zeitpunkt, endet er stattdessen mit `issue:#<iid>`. Erledigte Punkte stehen als `[x]` da.
+   Belege und Infozeilen (MR, Kopf-SHA, Pipeline, Gate-Ergebnis, Messungen) stehen unter „Vollzogen“
+   oder als Fließtext, nie als Listenpunkt unter Offen, Nachkontrolle, Folge oder Danach (#1794).
+   Ein Nachkontrolle-Block mit einem einzigen Vorgang trägt sein `queue:#<id>` in der Überschrift
+   (`## Nachkontrolle (queue:#<id>)`); die Marke deckt dann die Listenpunkte direkt unter dieser
+   Überschrift bis zur nächsten Überschrift gleich welcher Ebene, eine Unterüberschrift braucht
+   ihre eigene Marke. Fehlt die
    Marke, legt die Session den Vorgang vor dem Schreiben an
    (`navigator owner-queue add --repo <repo> … --title '<name>: <punkt>'`, `<repo>` wie oben):
    Prüfung nach Merge oder Zug `--kind nachsorge --waits-on lead --ref <repo>!<iid>`; Folgearbeit,
@@ -213,7 +219,11 @@ und hat keine andere Arbeit:
    für jeden Punkt ohne Marke den Vorgang an (Nachkontrolle als `nachsorge`, sonst `lead-todo`, Ref
    aus dem ersten `!N`/`#N` im Punkt, nur wenn die CLI ihn annimmt) und schreibt `queue:#<id>` in die
    Datei. Punkte unter einer Überschrift mit „Owner“ oder „Entscheid“ legt es nie an, es meldet sie:
-   Owner-Fragen brauchen einen Entscheid mit Optionen und Klasse. `--apply` verlangt `--name`
+   Owner-Fragen brauchen einen Entscheid mit Optionen und Klasse. Eine eindeutige Infozeile
+   (`**MR:**`, `**Kopf:**`, `**Pipeline:**`, `**Belege:**`, `**Gate:**` am Anfang, oder nur
+   `Pipeline <id> grün`) legt es ebenfalls nie an, es meldet sie als Hinweis „Infozeile unter
+   Offen-Überschrift, nach Vollzogen verschieben“ mit Exit 3; alles andere zählt als offener Punkt.
+   `--apply` verlangt `--name`
    (sonst Exit 2) und schreibt nur in die eigene Datei (`uebergabe-<name>.md`,
    `uebergabe-<name>-*.md`, `<name>-zug-*.md`); eine fremde Datei, einen Symlink oder eine Datei
    älter als `--since` (Vorgänger gleichen Namens) lehnt es unverändert ab (Exit 4), nie in einer

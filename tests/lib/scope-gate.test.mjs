@@ -285,6 +285,82 @@ describe('extractBashWriteTargets — wrapper-aware verb resolution (#996.2)', (
 });
 
 // ---------------------------------------------------------------------------
+// extractBashWriteTargets — `&>` / `&>>`, `$PWD`, `~` targets (#1793)
+//
+// BUG CAUGHT: measured 2026-10-24 (security review W4) every row below returned
+// [] — an out-of-scope write invisible to the bash-write-guard and to the
+// `.orchestrator/STATE.md` guard. `tokenizeCommand` emits `&>`/`&>>` as ONE token
+// the write-redirect regex did not match; `$PWD/…` and `~/…` met the blanket
+// `$`/`~` skip rule. The no-cwd row pins the fail direction: a `$PWD/` write is
+// never dropped for want of a cwd, it degrades to the relative path it means.
+// ---------------------------------------------------------------------------
+
+describe('extractBashWriteTargets — &>, $PWD and ~ targets (#1793)', () => {
+  const opts = { cwd: '/work/repo', home: '/home/u' };
+  it.each([
+    ['both-streams redirect &>', 'echo x &> src/a.ts', ['src/a.ts']],
+    ['both-streams append &>>', 'echo x &>> src/a.ts', ['src/a.ts']],
+    ['quoted "$PWD/…" resolves against cwd', 'echo x > "$PWD/src/a.ts"', ['/work/repo/src/a.ts']],
+    ['~/… resolves against home', 'echo x >> ~/a.ts', ['/home/u/a.ts']],
+    ['bare $PWD (a directory) stays skipped', 'echo x > $PWD', []],
+    // #1795: per-part quote context decides — an unrelated `'` or backslash elsewhere in
+    // the command no longer withholds the expansion (both [] at 02fb630e, token-level ceiling).
+    ['part-quoted "$PWD"/…', 'echo x > "$PWD"/a', ['/work/repo/a']],
+    ['"$PWD"/… beside an unrelated single quote', "echo 'hi' > \"$PWD\"/a", ['/work/repo/a']],
+    ['~/… beside an unrelated backslash', 'echo a\\ b > ~/a', ['/home/u/a']],
+  ])('%s', (_n, command, expected) => {
+    expect(extractBashWriteTargets(command, opts)).toEqual(expected);
+  });
+
+  it('without a cwd, "${PWD}/…" degrades to the relative target instead of vanishing', () => {
+    expect(extractBashWriteTargets('echo x > "${PWD}/src/a.ts"')).toEqual(['src/a.ts']);
+  });
+
+  // BUG CAUGHT (#1793 review F6, Codex 2026-10-24): `tokenizeCommand` lexes the
+  // filename form `>& WORD` as `>` `&` `WORD`; the `&` split the statement and
+  // the operand became a new command — `echo x >& out.txt` returned [] although
+  // bash writes stdout+stderr to the file, and `>& .orchestrator/STATE.md`
+  // slipped past the STATE.md path guard.
+  it.each([
+    ['>& WORD', 'echo x >& out.txt', ['out.txt']],
+    ['>&WORD attached', 'echo x >&out.txt', ['out.txt']],
+    ['N>& WORD', 'echo x 2>& out.txt', ['out.txt']],
+    // zsh `>>&` appends stdout+stderr; it lexed as `>>` `&` `WORD` and returned [].
+    ['>>& WORD (append)', 'echo x >>& out.txt', ['out.txt']],
+    ['>&2 (dup)', 'echo x >&2', []],
+    ['2>&1 (dup)', 'echo x 2>&1', []],
+    ['>&- (close)', 'echo x >&-', []],
+    // #1795: a zsh clobber form behind a dup keeps its operand.
+    ['2>&1 then >&| WORD', 'echo x 2>&1 >&| out.txt', ['out.txt']],
+  ])('>& filename form: %s', (_n, command, expected) => {
+    expect(extractBashWriteTargets(command, opts)).toEqual(expected);
+  });
+
+  // BUG CAUGHT (#1793 review F7, Codex 2026-10-24): the expansion named a WRONG
+  // concrete target — an allowed path that concealed the real destination.
+  // `cd / && echo x > "$PWD/f"` writes `//f`, `'$PWD/f'` is a literal `$PWD`
+  // directory, `"~/x"` a literal `~` directory in the cwd. Each must stay
+  // unresolved (skipped), never resolve to `<cwd>/f` or `<home>/x`.
+  it.each([
+    ['cd before "$PWD/…"', 'cd / && echo x > "$PWD/f"'],
+    ["single-quoted '$PWD/…'", "echo x > '$PWD/f'"],
+    ['double-quoted "~/…"', 'echo x > "~/x"'],
+    ["single-quoted '$PWD'/…", "echo x > '$PWD'/a"],
+    ['escaped "\\$PWD"/…', 'echo x > "\\$PWD"/a'],
+    ['double-quoted "~"/…', 'echo x > "~"/a'],
+    ['escaped \\~/…', 'echo x > \\~/a'],
+    // C3 (Codex 2026-10-25): a quote boundary inside the reference names another
+    // variable or a literal — each resolved to `<cwd>/f` at ec840fe1.
+    ['"$PW"D/… (variable PW)', 'echo x > "$PW"D/f'],
+    ['"$"PWD/… (literal $)', 'echo x > "$"PWD/f'],
+    ['$"PWD"/… (locale string)', 'echo x > $"PWD"/f'],
+    ['$PWDX/… (variable PWDX)', 'echo x > $PWDX/f'],
+  ])('unprovable expansion stays unresolved: %s', (_n, command) => {
+    expect(extractBashWriteTargets(command, opts)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // expandTestSiblings (#970 Task 2)
 //
 // BUG CAUGHT (cross-repo, established): an allowedPaths entry listing a

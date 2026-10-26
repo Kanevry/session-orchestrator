@@ -98,6 +98,14 @@ describe('pre-bash-sessions-ledger-guard', () => {
       ['cwd-relative after cd', 'cd .orchestrator/metrics && echo x >> sessions.jsonl'],
       ['cp over the ledger', `cp /tmp/backup.jsonl ${LEDGER}`],
       ['a tmp-repo ledger', `echo x > /tmp/repo/${LEDGER}`],
+      // #1795: zsh noclobber overrides — the target landed on `!` or on nothing.
+      ['zsh >!', `echo x >! ${LEDGER}`],
+      ['zsh >>!', `echo x >>! ${LEDGER}`],
+      ['zsh >>|', `echo x >>| ${LEDGER}`],
+      ['zsh >&|', `echo x >&| ${LEDGER}`],
+      ['zsh >&!', `echo x >&! ${LEDGER}`],
+      ['zsh &>|', `echo x &>| ${LEDGER}`],
+      ['zsh &>!', `echo x &>! ${LEDGER}`],
 
       // ---- MED-1: an apostrophe outside a quoted run used to desync the
       // per-character quote mask for the REST of the command, so the real

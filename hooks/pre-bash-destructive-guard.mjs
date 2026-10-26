@@ -35,6 +35,9 @@
  *          redirect class answers "what does this command WRITE"; nothing
  *          answered "what does it REMOVE", so `rm -f <ledger>` was allowed
  *          while `> <ledger>` was denied — 53,896 lines of telemetry lost.
+ *        rule.type === 'worktree-remove-unsafe' (#1789): decided per
+ *          `git worktree remove` by its force flag and the ignored files
+ *          under its target (findWorktreeRemoves, judgeWorktreeRemoval).
  *        rule.type === 'hooks-path-missing' (#1732): decided by the directory
  *          of each `git commit`/`git push` (findHookedGitCalls) and the repo's
  *          relative core.hooksPath (missingWorktreeHooks) — a linked worktree
@@ -484,8 +487,27 @@ function commandHasRecursiveForceRm(command) {
   return false;
 }
 
-/** #1732 — git subcommands that run the repo's own hooks: pre-commit/commit-msg and pre-push. */
-const HOOKED_GIT_SUBCOMMANDS = new Set(['commit', 'push']);
+/**
+ * #1732/#1736 — git subcommands that run the repo's own hooks (githooks(5), git 2.56):
+ * commit → pre-commit, prepare-commit-msg, commit-msg; push → pre-push;
+ * merge → pre-merge-commit, commit-msg (both skipped by `--no-verify`), post-merge;
+ * rebase → pre-rebase (skipped by `--no-verify`), post-rewrite;
+ * am → applypatch-msg, pre-applypatch (skipped by `-n`/`--no-verify`), post-applypatch.
+ */
+const HOOKED_GIT_SUBCOMMANDS = new Set(['commit', 'push', 'merge', 'rebase', 'am']);
+/**
+ * Per-subcommand flags under which git runs no hook at all: they end, inspect or
+ * edit an operation in progress instead of committing (`commit --dry-run` only
+ * reports what a commit would do).
+ */
+const HOOKLESS_GIT_FLAGS = {
+  commit: ['--dry-run'],
+  merge: ['--abort', '--quit'],
+  rebase: ['--abort', '--quit', '--edit-todo', '--show-current-patch'],
+  am: ['--abort', '--quit', '--show-current-patch'],
+};
+/** Short options that take an attached value, per subcommand whose `-n` means `--no-verify`. */
+const NO_VERIFY_SHORT_WITH_VALUE = { commit: 'mFCctSu', am: 'CpS' };
 /** git global options that take their value as the NEXT token (`git -c k=v push`). */
 const GIT_OPTIONS_WITH_VALUE = new Set(['-c', '--namespace', '--config-env', '--attr-source']);
 /** Options and env prefixes after which the guard cannot tell which repo or hooks git uses. */
@@ -510,8 +532,8 @@ function literalDir(base, tok) {
 }
 
 /**
- * Every `git commit` / `git push` in the command with the directory it runs in
- * (#1732). The directory starts at `cwd` and follows literal `cd <dir>` segments
+ * Every `git` segment of the command's main shell with the directory it runs in
+ * (before git's own `-C`), shared by #1732 and #1789. The directory starts at `cwd` and follows literal `cd <dir>` segments
  * and `git -C <dir>`. A `cd` the guard cannot read (variable, `cd -`,
  * `pushd`/`popd`) turns the directory unknown (`dir: null`) for everything after
  * it. The tokenizer appends command-substitution bodies after a `substitution`
@@ -519,17 +541,85 @@ function literalDir(base, tok) {
  * the first substitution marker are the main shell's, and a `cd` after the
  * first subshell marker turns the directory unknown (`(cd /wt && make) && git
  * push` pushes from the start directory). A `)` inside a quoted commit message
- * changes nothing. The caller never judges an unknown directory — unknown is
- * "not judged", never a hit. An explicit skip (`--no-verify`, `commit -n` also
- * inside a short-flag group, `HUSKY=0`) is not judged either: the skip this rule
- * catches is the silent one.
+ * changes nothing. A quoted `git` is no call. An `env -C <dir>` /
+ * `env --chdir=<dir>` prefix moves only its own git call (#1736).
+ * NAMED CEILING (BV-004, #1736 points 4 and 6): a `cd` in a pipeline stage or a
+ * backgrounded (`&`) segment is still read as moving the main shell, and a
+ * harness-side working directory (Codex `workdir`) that never reaches the
+ * payload `cwd` is unseen. Revisit when either shape appears in a real incident.
  *
  * @param {string} command
  * @param {string} cwd
- * @returns {Array<{ subcommand: string, dir: string|null }>}
+ * @returns {Array<{ segment: Array<object>, index: number, dir: string|null }>}
  */
-function findHookedGitCalls(command, cwd) {
+function findGitSegments(command, cwd) {
+  return walkGitSegments(command, cwd).calls;
+}
+
+/**
+ * The words of `segment` from `from` on with every redirect span removed —
+ * what the program receives as argv after the shell has applied the redirects.
+ *
+ * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} segment
+ * @param {number} from
+ * @returns {Array<{ text: string, quoted: boolean }>}
+ */
+function argvWords(segment, from) {
+  const words = [];
+  for (let i = from; i < segment.length; i++) {
+    if (segment[i].redirect) { i = blocker.redirectSpanEnd(segment, i); continue; }
+    words.push(segment[i]);
+  }
+  return words;
+}
+
+/** Shell options that take the NEXT word as their value (`-o pipefail`, `+O extglob`). */
+const SHELL_OPTIONS_WITH_VALUE = new Set(['-o', '+o', '-O', '+O']);
+
+/**
+ * The command string of a `bash|sh|zsh|dash|ksh` call, or null when it runs
+ * no `-c` string (Codex review C2). With `c` anywhere in an option group
+ * (`-c`, `-ce`, `-ec`, `-xc`), the FIRST operand after ALL options is the
+ * command string — options may follow `-c` (`bash -c -e '…'`); `-o`/`+o`/
+ * `-O`/`+O` consume the next word; `--` and a lone `-` end the options.
+ *
+ * @param {Array<{ text: string }>} words - argv after the shell verb
+ * @returns {string|null}
+ */
+function shellCommandString(words) {
+  let hasC = false;
+  for (let i = 0; i < words.length; i++) {
+    const text = words[i].text;
+    if (text === '--' || text === '-') return hasC ? (words[i + 1]?.text ?? null) : null;
+    if (SHELL_OPTIONS_WITH_VALUE.has(text)) { i++; continue; }
+    if (text.startsWith('--')) continue; // long options (`--norc`, `--login`) take no value
+    if (/^[-+][A-Za-z]+$/.test(text)) {
+      if (text.startsWith('-') && text.includes('c')) hasC = true;
+      continue;
+    }
+    return hasC ? text : null;
+  }
+  return null;
+}
+
+/** Shells whose `-c <payload>` runs a nested command line (#1789 M1). */
+const DASH_C_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
+
+/**
+ * The walker behind {@link findGitSegments}. Besides the main shell's git
+ * segments it yields those inside command-substitution bodies with the
+ * directory UNKNOWN (`dir: null`), and collects the payload text of every
+ * `bash|sh|zsh|dash|ksh -c <payload>` and `eval <args>` segment so a caller can
+ * judge it recursively. A quoted word is judged by its text: the shell removes
+ * the quotes before git sees it (#1789 H1).
+ *
+ * @param {string} command
+ * @param {string|null} cwd
+ * @returns {{ calls: Array<{ segment: Array<object>, index: number, dir: string|null }>, payloads: string[] }}
+ */
+function walkGitSegments(command, cwd) {
   const calls = [];
+  const payloads = [];
   const tokens = blocker.tokenizeCommand(command);
   const substitutionAt = tokens.findIndex((t) => t.operator === 'substitution');
   const mainShell = substitutionAt === -1 ? tokens : tokens.slice(0, substitutionAt);
@@ -537,8 +627,10 @@ function findHookedGitCalls(command, cwd) {
   const parts = subshellAt === -1
     ? [{ tokens: mainShell, cdKnown: true }]
     : [{ tokens: mainShell.slice(0, subshellAt), cdKnown: true }, { tokens: mainShell.slice(subshellAt), cdKnown: false }];
+  if (substitutionAt !== -1) parts.push({ tokens: tokens.slice(substitutionAt), cdKnown: false, substitution: true });
   let dir = cwd;
   for (const part of parts) {
+    if (part.substitution) dir = null;
     for (const segment of blocker.splitChainSegments(part.tokens)) {
       const { verb, index } = blocker.resolveSegmentVerb(segment);
       if (verb === 'pushd' || verb === 'popd') { dir = null; continue; }
@@ -549,29 +641,117 @@ function findHookedGitCalls(command, cwd) {
         else dir = operands.length === 1 ? literalDir(dir, operands[0]) : null;
         continue;
       }
-      if (verb !== 'git' || segment[index].quoted) continue;
-      const call = hookedGitCall(segment, index, dir);
-      if (call !== null) calls.push(call);
+      if (DASH_C_SHELLS.has(verb)) {
+        const payload = shellCommandString(argvWords(segment, index + 1));
+        if (payload !== null) payloads.push(payload);
+        continue;
+      }
+      if (verb === 'eval') {
+        payloads.push(segment.slice(index + 1).map((t) => t.text).join(' '));
+        continue;
+      }
+      if (verb !== 'git') continue;
+      // Redirects are gone before git builds argv (`git >/dev/null push`):
+      // every consumer reads the redirect-free words (Codex review C1).
+      calls.push({
+        segment: [...segment.slice(0, index + 1), ...argvWords(segment, index + 1)],
+        index,
+        dir: envChdir(segment.slice(0, index), dir),
+      });
     }
   }
-  return calls;
+  return { calls, payloads };
 }
 
-/** Short `git commit` options that take a value: in `-mn` the `n` is the message. */
-const COMMIT_SHORT_WITH_VALUE = 'mFCctSu';
+/**
+ * Every hook-running `git commit` / `push` / `merge` / `rebase` / `am` in the
+ * command with the directory it runs in (#1732, #1736). The caller never judges
+ * an unknown directory — unknown is "not judged", never a hit. An explicit skip
+ * (`--no-verify`, `commit -n`/`am -n` also inside a short-flag group, `HUSKY=0`)
+ * is not judged either: the skip this rule catches is the silent one. Nor are
+ * forms that run no hook (`commit --dry-run`, `merge|rebase|am --abort|--quit`,
+ * `rebase|am --show-current-patch`, `rebase --edit-todo`).
+ *
+ * @param {string} command
+ * @param {string} cwd
+ * @returns {Array<{ subcommand: string, dir: string|null }>}
+ */
+function findHookedGitCalls(command, cwd) {
+  return findGitSegments(command, cwd)
+    .map(({ segment, index, dir }) => hookedGitCall(segment, index, dir))
+    .filter((call) => call !== null);
+}
 
 /**
- * Whether a short-flag group of `git commit` carries `-n` (`-nm x` does, `-mn` does not).
+ * Whether a short-flag group carries `-n` = `--no-verify` (`commit`, `am`; for
+ * `merge`/`rebase` `-n` is `--no-stat`). A value-taking option ends the group:
+ * in `commit -mn` the `n` is the message, in `-nm x` it is the flag.
  *
  * @param {string} group
+ * @param {string} withValue - the subcommand's short options that take a value
  * @returns {boolean}
  */
-function commitGroupHasNoVerify(group) {
+function groupHasNoVerify(group, withValue) {
   for (const ch of group.slice(1)) {
     if (ch === 'n') return true;
-    if (COMMIT_SHORT_WITH_VALUE.includes(ch)) return false;
+    if (withValue.includes(ch)) return false;
   }
   return false;
+}
+
+/**
+ * The directory an `env -C <dir>` / `env --chdir[=]<dir>` prefix moves the
+ * command to, or `dir` unchanged when the prefix has none; null when the
+ * operand is unreadable.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} prefix - the tokens before the verb
+ * @param {string|null} dir
+ * @returns {string|null}
+ */
+function envChdir(prefix, dir) {
+  const envAt = prefix.findIndex((t) => t.text === 'env');
+  if (envAt === -1) return dir;
+  let out = dir;
+  for (let i = envAt + 1; i < prefix.length; i++) {
+    const t = prefix[i];
+    if (t.text === '-C' || t.text === '--chdir') out = literalDir(out, prefix[++i]);
+    else if (t.text.startsWith('--chdir=')) out = literalDir(out, { text: t.text.slice('--chdir='.length) });
+    else if (/^-C./.test(t.text)) out = literalDir(out, { text: t.text.slice(2) });
+  }
+  return out;
+}
+
+/**
+ * Read git's global options of one `git` segment: the directory git runs in
+ * after `-C` (null when an env prefix or `--git-dir`/`--work-tree` makes it
+ * unknowable), the index of the subcommand token, and whether `-c
+ * core.hooksPath=…` overrides the hooks directory.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @param {number} index - the `git` token
+ * @param {string|null} dir - the directory before git's own `-C`
+ * @returns {{ dir: string|null, subAt: number, hooksPathOverridden: boolean }}
+ */
+function gitGlobals(segment, index, dir) {
+  let gitDir = segment.slice(0, index).some((t) => GIT_UNKNOWABLE_ENV.test(t.text)) ? null : dir;
+  let hooksPathOverridden = false;
+  let i = index + 1;
+  for (; i < segment.length; i++) {
+    const t = segment[i];
+    if (!t.text.startsWith('-')) break;
+    if (t.text === '-C') { gitDir = literalDir(gitDir, segment[++i]); continue; }
+    if (GIT_UNKNOWABLE_OPTION.test(t.text)) {
+      gitDir = null;
+      if (!t.text.includes('=')) i++;
+      continue;
+    }
+    if (/^--config-env=core\.hookspath=/i.test(t.text)) { hooksPathOverridden = true; continue; }
+    if (GIT_OPTIONS_WITH_VALUE.has(t.text)) {
+      const value = segment[++i]?.text ?? '';
+      if ((t.text === '-c' || t.text === '--config-env') && /^core\.hookspath=/i.test(value)) hooksPathOverridden = true;
+    }
+  }
+  return { dir: gitDir, subAt: i, hooksPathOverridden };
 }
 
 /**
@@ -584,29 +764,20 @@ function commitGroupHasNoVerify(group) {
  * @returns {{ subcommand: string, dir: string|null } | null}
  */
 function hookedGitCall(segment, index, dir) {
-  const env = segment.slice(0, index);
-  if (env.some((t) => t.text === 'HUSKY=0')) return null;
-  let gitDir = env.some((t) => GIT_UNKNOWABLE_ENV.test(t.text)) ? null : dir;
-  let i = index + 1;
-  for (; i < segment.length; i++) {
-    const t = segment[i];
-    if (t.quoted || !t.text.startsWith('-')) break;
-    if (t.text === '-C') { gitDir = literalDir(gitDir, segment[++i]); continue; }
-    if (GIT_UNKNOWABLE_OPTION.test(t.text)) {
-      gitDir = null;
-      if (!t.text.includes('=')) i++;
-      continue;
-    }
-    if (GIT_OPTIONS_WITH_VALUE.has(t.text)) {
-      const value = segment[++i]?.text ?? '';
-      if (t.text === '-c' && /^core\.hookspath=/i.test(value)) gitDir = null;
-    }
-  }
+  if (segment.slice(0, index).some((t) => t.text === 'HUSKY=0')) return null;
+  const globals = gitGlobals(segment, index, dir);
+  const gitDir = globals.hooksPathOverridden ? null : globals.dir;
+  const i = globals.subAt;
   const sub = segment[i];
-  if (sub === undefined || sub.quoted || !HOOKED_GIT_SUBCOMMANDS.has(sub.text)) return null;
+  if (sub === undefined || !HOOKED_GIT_SUBCOMMANDS.has(sub.text)) return null;
+  // Flags stay quote-aware: a quoted word after the subcommand may be a VALUE
+  // (`commit -m "--no-verify"` is a message, not a skip).
   const flags = segment.slice(i + 1).filter((t) => !t.quoted).map((t) => t.text);
   if (flags.includes('--no-verify')) return null;
-  if (sub.text === 'commit' && flags.some((f) => /^-[a-zA-Z]+$/.test(f) && commitGroupHasNoVerify(f))) return null;
+  const hookless = HOOKLESS_GIT_FLAGS[sub.text] ?? [];
+  if (flags.some((f) => hookless.includes(f.split('=')[0]))) return null;
+  const withValue = NO_VERIFY_SHORT_WITH_VALUE[sub.text];
+  if (withValue !== undefined && flags.some((f) => /^-[a-zA-Z]+$/.test(f) && groupHasNoVerify(f, withValue))) return null;
   return { subcommand: sub.text, dir: gitDir };
 }
 
@@ -628,6 +799,199 @@ function gitRead(dir, args) {
   } catch {
     return null;
   }
+}
+
+/** Nesting depth of `bash -c` / `eval` payloads the worktree-remove rule follows (#1789 M1). */
+const MAX_PAYLOAD_DEPTH = 3;
+
+/**
+ * Whether one `git worktree remove` argument forces: `--force` or any
+ * abbreviation git's option parser accepts (`--forc`, `--fo`, `--f` — #1789
+ * H2), or a short-flag group carrying `f` (`-f`, `-ff`). `--` alone ends the
+ * options, `--no-force` does not force.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+function isForceArg(text) {
+  if (text.length >= 3 && '--force'.startsWith(text)) return true;
+  return /^-[a-zA-Z]+$/.test(text) && text.includes('f');
+}
+
+/**
+ * Every `git worktree remove` in the command (#1789): whether it forces, the
+ * directory it runs in (null when unknowable: an unreadable `cd`, an env prefix
+ * or `--git-dir` that hides the repo, a substitution body, a `bash -c`/`eval`
+ * payload), and its operand token. Every word is read by its TEXT, quoted or
+ * not — the shell strips the quotes before git sees them, and `worktree remove`
+ * takes no value option that a quoted word could be (H1). Payloads of
+ * `bash|sh|zsh|dash|ksh -c` and `eval` are re-tokenized up to
+ * MAX_PAYLOAD_DEPTH; a payload past the cap that mentions `worktree` yields an
+ * unmeasurable call (fail-closed). `prune`, `list`, `add`, `move` are not
+ * judged.
+ *
+ * @param {string} command
+ * @param {string|null} cwd
+ * @param {number} [depth]
+ * @returns {Array<{ force: boolean, dir: string|null, operand: { text: string } | undefined }>}
+ */
+function findWorktreeRemoves(command, cwd, depth = 0) {
+  const calls = [];
+  const { calls: gitCalls, payloads } = walkGitSegments(command, cwd);
+  for (const { segment, index, dir } of gitCalls) {
+    const { dir: gitDir, subAt } = gitGlobals(segment, index, dir);
+    if (segment[subAt]?.text !== 'worktree' || segment[subAt + 1]?.text !== 'remove') continue;
+    let force = false;
+    let operand;
+    let seenDashDash = false;
+    for (let i = subAt + 2; i < segment.length; i++) {
+      const t = segment[i];
+      if (t.redirect) { i = blocker.redirectSpanEnd(segment, i); continue; }
+      if (!seenDashDash && t.text === '--') { seenDashDash = true; continue; }
+      if (!seenDashDash && t.text.startsWith('-') && t.text !== '-') {
+        if (isForceArg(t.text)) force = true;
+        continue;
+      }
+      if (operand === undefined) operand = t;
+    }
+    calls.push({ force, dir: gitDir, operand });
+  }
+  for (const payload of payloads) {
+    if (depth >= MAX_PAYLOAD_DEPTH) {
+      if (/worktree/.test(payload)) calls.push({ force: false, dir: null, operand: { text: '<nested payload>' } });
+      continue;
+    }
+    // A payload's directory is not tracked: unknown, so it is never "missing".
+    calls.push(...findWorktreeRemoves(payload, null, depth + 1));
+  }
+  return calls;
+}
+
+/** #1789 — ignored roots whose loss the fleet cannot re-derive (mirrors worktree-abbau-pruefung.sh). */
+const WORKTREE_VALUABLE_ROOTS = ['.orchestrator/runtime/fleet/', '.claude/', '.codex/', '.cursor/', '.pi/', '.orchestrator/'];
+
+/**
+ * Whether one IGNORED status path (relative to the worktree root) is worth
+ * keeping: the fleet's train manifests, a harness STATE.md, a top-level
+ * `.orchestrator/*.lock`, or an ignored directory that can contain one of them.
+ *
+ * @param {string} p
+ * @returns {boolean}
+ */
+function isValuableIgnored(p) {
+  if (p === '.orchestrator/runtime/fleet' || p.startsWith('.orchestrator/runtime/fleet/')) return true;
+  if (/^\.(claude|codex|cursor|pi|orchestrator)\/STATE\.md$/.test(p)) return true;
+  if (/^\.orchestrator\/[^/]+\.lock$/.test(p)) return true;
+  return p.endsWith('/') && WORKTREE_VALUABLE_ROOTS.some((root) => root.startsWith(p));
+}
+
+/**
+ * Judge the ignored entries of one worktree about to be removed without force
+ * (#1789). Plain removal still deletes every gitignored file, so "clean" per
+ * `git status` protects nothing. One read-only status call lists the ignored
+ * entries; any failure, a timeout, or a path that is no worktree root is "not
+ * measurable" — fail-closed. A listed worktree whose directory is gone is
+ * allowed (nothing on disk to lose).
+ *
+ * @param {string} target - absolute path of a listed worktree
+ * @returns {null | { unmeasurable: true } | { valuable: string[] }} null = allow
+ */
+function judgeWorktreeRemoval(target) {
+  if (!fs.existsSync(target)) return null;
+  try {
+    const opts = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 3000 };
+    const top = execFileSync('git', ['-C', target, 'rev-parse', '--show-toplevel'], opts).trim();
+    if (fs.realpathSync(top) !== fs.realpathSync(target)) return { unmeasurable: true };
+    const out = execFileSync('git', ['-C', target, 'status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=traditional'], opts);
+    const fields = out.split('\0');
+    const valuable = [];
+    for (let i = 0; i < fields.length; i++) {
+      const entry = fields[i];
+      if (entry.length < 4) continue;
+      if (/[RC]/.test(entry.slice(0, 2))) i++; // rename/copy: the next field is the origin
+      if (entry.startsWith('!! ') && isValuableIgnored(entry.slice(3))) valuable.push(entry.slice(3));
+    }
+    return valuable.length > 0 ? { valuable } : null;
+  } catch {
+    return { unmeasurable: true };
+  }
+}
+
+/** git's fspathcmp folds case where the filesystem does (core.ignorecase defaults true there). */
+const FOLD_PATH_CASE = process.platform === 'darwin' || process.platform === 'win32';
+const pathKey = (p) => (FOLD_PATH_CASE ? p.toLowerCase() : p);
+const realOrSelf = (p) => { try { return fs.realpathSync(p); } catch { return path.resolve(p); } };
+
+/**
+ * Resolve a `git worktree remove` operand to the worktree git would remove,
+ * mirroring git's `find_worktree()` (worktree.c, git 2.56): FIRST a unique
+ * worktree whose path ENDS in the operand at a directory boundary
+ * (`find_worktree_by_suffix` — so a bare name like `wt-a` matches
+ * `/x/wt-a` from anywhere, #1789 H3), THEN the operand resolved against the
+ * call's directory compared by real path (`find_worktree_by_path`).
+ *
+ * @param {string} dir - the call's directory (known)
+ * @param {string} suffix - the operand as git receives it (after shell expansion)
+ * @param {string} resolved - the operand resolved against `dir`
+ * @returns {{ path: string } | { none: true } | { unmeasurable: true }}
+ */
+function findWorktreeLikeGit(dir, suffix, resolved) {
+  let out;
+  try {
+    out = execFileSync('git', ['-C', dir, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 3000,
+    });
+  } catch {
+    return { unmeasurable: true };
+  }
+  const paths = out.split('\n').filter((l) => l.startsWith('worktree ')).map((l) => l.slice('worktree '.length));
+  if (suffix.length > 0) {
+    const bySuffix = paths.filter((p) => {
+      const start = p.length - suffix.length;
+      return (start === 0 || (start > 0 && p[start - 1] === '/')) && pathKey(p.slice(start)) === pathKey(suffix);
+    });
+    if (bySuffix.length === 1) return { path: bySuffix[0] };
+  }
+  const want = pathKey(realOrSelf(resolved));
+  const byPath = paths.find((p) => pathKey(realOrSelf(p)) === want);
+  return byPath === undefined ? { none: true } : { path: byPath };
+}
+
+/**
+ * The deny label of the first `git worktree remove` in the command the guard
+ * must refuse, or null when every one may run.
+ *
+ * @param {string} command
+ * @param {string} cwd
+ * @returns {string|null}
+ */
+function unsafeWorktreeRemoval(command, cwd) {
+  for (const call of findWorktreeRemoves(command, cwd)) {
+    const resolved = literalDir(call.dir, call.operand);
+    const shown = resolved ?? (call.operand?.text || '<no target>');
+    if (call.force) {
+      return `git worktree remove --force ${shown} — force removal is the operator's: back up what you need from the worktree, then the operator runs it in their own terminal`;
+    }
+    if (resolved === null) return `git worktree remove ${shown} — target not measurable (unreadable directory or operand)`;
+    // `~` is expanded by the shell; git receives the expanded path.
+    const suffix = call.operand.text.startsWith('~') ? resolved : call.operand.text;
+    const found = findWorktreeLikeGit(call.dir, suffix, resolved);
+    if ('unmeasurable' in found) return `git worktree remove ${shown} — target not measurable (git worktree list failed)`;
+    if ('none' in found) {
+      // No worktree matches: git refuses by itself. An existing directory that is
+      // no listed worktree stays fail-closed, as before.
+      if (fs.existsSync(resolved)) return `git worktree remove ${shown} — target not measurable (no worktree root)`;
+      continue;
+    }
+    const verdict = judgeWorktreeRemoval(found.path);
+    if (verdict === null) continue;
+    if ('unmeasurable' in verdict) return `git worktree remove ${found.path} — target not measurable (no worktree root, or git status failed)`;
+    const more = verdict.valuable.length > 3 ? ` (+${verdict.valuable.length - 3} more)` : '';
+    return `git worktree remove ${found.path} — would delete ignored ${verdict.valuable.slice(0, 3).join(', ')}${more}`;
+  }
+  return null;
 }
 
 /**
@@ -1127,13 +1491,36 @@ async function main() {
     if (rule.type === 'hooks-path-missing') {
       const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
       let hit = null;
+      // #1736 — up to three git reads per directory; `git commit && git push`
+      // in one worktree measures it once.
+      const measured = new Map();
       for (const call of findHookedGitCalls(command, cwd)) {
         if (call.dir === null) continue;
-        const missing = missingWorktreeHooks(call.dir);
+        if (!measured.has(call.dir)) measured.set(call.dir, missingWorktreeHooks(call.dir));
+        const missing = measured.get(call.dir);
         if (missing) { hit = { ...missing, subcommand: call.subcommand }; break; }
       }
       if (!hit) continue;
       const label = `git ${hit.subcommand} in ${hit.worktree} — core.hooksPath ${hit.hooksPath} is missing there`;
+      if (severity !== 'block') {
+        const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
+        process.stderr.write(`⚠ ${msg}\n`);
+        notices.push(msg);
+        continue;
+      }
+      await blockCommand(label, id, rationale, command, sessionId);
+      continue; // unreachable (blockCommand never returns) — kept for clarity
+    }
+
+    // #1789 — a `git worktree remove` that would take gitignored state
+    // (STATE.md, handover, fleet train manifests) with it, or any forced one.
+    // Decided per call by its target, never by the generic pattern path below
+    // (its `pattern` is a label). Unlike #1732, an unreadable target is a hit:
+    // a removal the guard cannot judge is the dangerous direction.
+    if (rule.type === 'worktree-remove-unsafe') {
+      const cwd = typeof input.cwd === 'string' && input.cwd.length > 0 ? input.cwd : process.cwd();
+      const label = unsafeWorktreeRemoval(command, cwd);
+      if (label === null) continue;
       if (severity !== 'block') {
         const msg = `pre-bash-destructive-guard: ${label} (rule: ${id}) — ${rationale}`;
         process.stderr.write(`⚠ ${msg}\n`);

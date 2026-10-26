@@ -132,6 +132,75 @@ Body prose.
   });
 });
 
+describe('--horizon-days (#1779)', () => {
+  // Bug: Claude Code ignores `expires-at`, so an entry that expires between two
+  // housekeeping sweeps keeps loading natively until the NEXT sweep. The
+  // horizon sweeps what would expire before then; the clock is injected.
+  let root;
+  const rulesDir = () => join(root, '.claude/rules');
+
+  function writeSingleEntryRule(name, id, expiresAt) {
+    writeFileSync(join(rulesDir(), name), `---
+auto-generated: true
+learning-key: anti-pattern/${id}
+expires-at: ${expiresAt}
+---
+# Fixture ${id}
+
+Body prose.
+
+## Provenance
+- learning-key: \`anti-pattern/${id}\`
+- learning-id: \`${id}\`
+`);
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'sweep-horizon-'));
+    mkdirSync(rulesDir(), { recursive: true });
+    mkdirSync(join(root, '.orchestrator/metrics'), { recursive: true });
+    writeSingleEntryRule('soon.md', 'id-soon', '2026-06-04');
+    writeSingleEntryRule('later.md', 'id-later', '2026-06-11');
+    const record = (id, expiresAt) => JSON.stringify({
+      id, type: 'anti-pattern', subject: id, insight: `insight for ${id}`, confidence: 0.8,
+      file_paths: ['scripts/lib/x.mjs'], created_at: '2026-01-01T00:00:00.000Z', expires_at: expiresAt,
+    });
+    writeFileSync(join(root, '.orchestrator/metrics/learnings.jsonl'),
+      `${record('id-soon', '2026-06-04T00:00:00.000Z')}\n${record('id-later', '2026-06-11T00:00:00.000Z')}\n`);
+  });
+
+  afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+  function run(args) {
+    return spawnSync(process.execPath, [
+      cli, '--repo-root', root, '--now', '2026-06-01T00:00:00.000Z', '--json', ...args,
+    ], { cwd: root, env: { ...process.env, HOME: root, SO_VAULT_DIR: root }, encoding: 'utf8', timeout: 10000 });
+  }
+
+  const actions = (stdout) =>
+    Object.fromEntries(JSON.parse(stdout).plans.map((p) => [p.file, p.action]));
+
+  it('without a horizon both entries are still live', () => {
+    const result = run(['--dry-run']);
+    expect(result.status).toBe(0);
+    expect(actions(result.stdout)).toEqual({ 'later.md': 'keep', 'soon.md': 'keep' });
+  });
+
+  it('--horizon-days 7 sweeps the entry expiring in 3 days and keeps the one in 10', () => {
+    const result = run(['--dry-run', '--horizon-days', '7']);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).horizon_days).toBe(7);
+    expect(actions(result.stdout)).toEqual({ 'later.md': 'keep', 'soon.md': 'delete' });
+  });
+
+  it.each(['-1', '1.5', 'abc', ''])('rejects --horizon-days %j with exit 1', (value) => {
+    const result = run(['--dry-run', '--horizon-days', value]);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('--horizon-days requires a non-negative integer');
+    expect(result.stdout).toBe('');
+  });
+});
+
 /** Minimal plan shape — only the fields `summarize()` reads. */
 function planStub(plans) {
   return {

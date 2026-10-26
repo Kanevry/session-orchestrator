@@ -326,6 +326,17 @@ function readHeredocBody(command, from, delim, stripTabs) {
  *     `2>/dev/null` lexes as fd-2 redirect + `/dev/null` operand instead of
  *     one glued token). The `redirect` field appears ONLY on redirect tokens —
  *     ordinary tokens keep the exact `{ text, quoted }` shape.
+ *   - zsh clobber forms (#1795) lex as ONE redirect token in canonical text:
+ *     `>!`/`N>!` → `>|`/`N>|` (truncate), `>>|`/`>>!`/`N>>|` → `>>`/`N>>`
+ *     (append), `>&|`/`>&!`/`&>|`/`&>!` → `&>` and `>>&|`/`>>&!`/`&>>|`/`&>>!`
+ *     → `&>>` — the exact token `&>`/`&>>` already produce, so every consumer
+ *     that handles those handles these unchanged. A fd prefix before an
+ *     `&`-form is dropped (the form writes both streams anyway). `!` is read as
+ *     the suffix in EITHER shell: in bash `>!f` writes a file `!f`, in zsh `f`;
+ *     a guard that reports `f` still sees the write in the same directory,
+ *     while not reading the suffix lost the target outright (fail-closed for
+ *     write detection). Fd duplication `>&2`, `2>&1`, `>&-` and the filename
+ *     form `>& WORD` are unchanged.
  *
  * ## Comments, here-docs and redirects (#965)
  *
@@ -368,10 +379,9 @@ function readHeredocBody(command, from, delim, stripTabs) {
  *     tokens so a consumer can tell a redirect target apart from an argument.
  *     NOTE for consumers: the redirect TARGET is still emitted as an ordinary
  *     token — dropping it here would have silently changed rm-allowlist verdicts
- *     from a module that cannot see the allowlist. `&>` deliberately lexes as the
- *     existing `&` operator followed by `>`, preserving today's segment split (and
- *     with it `rm -rf /tmp/x &> log` staying ALLOWED); the `;`/`|`/`&` branch runs
- *     first and is never shadowed.
+ *     from a module that cannot see the allowlist. `&>` / `&>>` lex as ONE redirect
+ *     token (#983, see the redirect branch — it runs BEFORE the `;`/`|`/`&` branch),
+ *     so `rm -rf /tmp/x &> CLAUDE.md` stays one segment and its target is seen.
  *
  * ## Subshells and command substitutions (#1667)
  *
@@ -399,8 +409,32 @@ function readHeredocBody(command, from, delim, stripTabs) {
  *     opener degrades to a plain separator (verb visible); a double-quoted one
  *     stays literal text there.
  *
+ * ## Per-part quote provenance (`parts`, #1795)
+ *
+ * Every WORD token (the ones built from source characters) carries
+ * `parts: Array<{ text, quote }>` — its text split into maximal runs of one
+ * quote context, with `parts.map((p) => p.text).join('') === text`. `quote`:
+ *   - `none`    unquoted: expands `$`, `~` (leading), globs, backticks
+ *   - `double`  inside `"…"`: expands `$` and backticks, not `~` or globs
+ *   - `single`  inside `'…'`: literal
+ *   - `ansi-c`  inside `$'…'`: literal (escapes already decoded)
+ *   - `escape`  one backslash-escaped character (outside quotes, or inside
+ *               `"…"` / `$'…'`): literal — kept apart so `\$PWD` and `"\$x"`
+ *               do not read as expanding.
+ * So `"$PWD"/x` → `[{ '$PWD', double }, { '/x', none }]`, `'$PWD/x'` →
+ * `[{ '$PWD/x', single }]`, `~/x` → `[{ '~/x', none }]`, `"~"/x` →
+ * `[{ '~', double }, { '/x', none }]`. The raw text of a `$( … )` / backtick
+ * substitution spliced into its outer word is one part with the outer context
+ * (`none`, or `double` inside `"…"`). An empty quote pair adds no part.
+ * ABSENT on non-word tokens: operators/separators, redirect tokens, here-doc
+ * bodies. Purely additive: `parts` is a NON-ENUMERABLE own property, so
+ * `JSON.stringify`, deep equality and `Object.keys` see exactly the pre-#1795
+ * token (the documented `{ text, quoted }` shape of an ordinary word). Read it
+ * from the token object itself — a spread copy (`{ ...tok }`) or
+ * `structuredClone` drops it.
+ *
  * @param {string} command
- * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string } }>}
+ * @returns {Array<{ text: string, quoted: boolean, redirect?: { fd: number|null, mode: string }, braceLead?: number, operator?: string, parts?: Array<{ text: string, quote: 'none'|'double'|'single'|'ansi-c'|'escape' }> }>}
  */
 /** Unquoted chain-operator texts — a word after one of them is in command position. */
 const CHAIN_OPERATOR_TEXTS = new Set([';', '&&', '||', '|', '&']);
@@ -416,6 +450,17 @@ const COMMAND_POSITION_OPENERS = new Set([
   '{', '!', 'if', 'elif', 'then', 'else', 'while', 'until', 'do', 'time', 'coproc',
 ]);
 
+/**
+ * A zsh noclobber-override suffix after a write redirect (#1795): `>|`, `>!`,
+ * `>>|`, `>>!`, `>&|`, `>&!`, `&>|`, `&>!` (and the `>>&` / `&>>` append
+ * forms). In bash only `>|` exists and `>!` would write a file named `!…`;
+ * reading `!` as the suffix keeps the write visible in either shell.
+ *
+ * @param {string|undefined} c
+ * @returns {boolean}
+ */
+const isClobberSuffix = (c) => c === '|' || c === '!';
+
 /** A function-definition head `name()` — its body is a compound command. */
 const FUNCTION_HEAD_RE = /^[^\s()$`'"]+\(\)$/;
 
@@ -430,25 +475,49 @@ const FUNCTION_HEAD_RE = /^[^\s()$`'"]+\(\)$/;
  * {@link tokenizeCommand}), so the first word of a case ARM is in command
  * position through the operator branch.
  *
+ * Linear time (#1731 point 1): the answer for a prefix of length `end` depends
+ * only on `sink[end-1]`, `sink[end-2]` and the answer for a SHORTER prefix (the
+ * old backwards walk "continues" exactly onto prefix `end-1` or `end-2`). `memo`
+ * holds `memo[k]` = the answer for prefix length `k`; a sink is append-only, so
+ * every stored entry stays valid and each prefix is evaluated once per sink.
+ * Before the memo, every `f()` of a `f() { f() { …` flood walked back over all
+ * earlier openers: 10k heads took 11.4 s in the real hook (timeout 5 s, and a
+ * timed-out hook does not block).
+ *
  * @param {Array<{ text: string, quoted: boolean, operator?: string }>} sink
- * @param {number} [end=sink.length]
+ * @param {boolean[]} [memo=[]] — per-sink memo, owned by the caller
  * @returns {boolean}
  */
-function nextWordInCommandPosition(sink, end = sink.length) {
-  for (let i = end - 1; i >= 0; i--) {
-    const tok = sink[i];
-    if (tok.quoted) return false;
-    if (tok.operator !== undefined || CHAIN_OPERATOR_TEXTS.has(tok.text)) return true;
-    const prev = sink[i - 1];
-    const prevIs = (word) => prev !== undefined && !prev.quoted && prev.text === word;
-    // `time -p cmd`: the POSIX-format flag is part of the `time` prefix.
-    if (tok.text === '-p' && prevIs('time')) continue;
-    // `function name { … }` / `function name() …`: skip the keyword+name pair.
-    if (prevIs('function')) { i--; continue; }
-    if (FUNCTION_HEAD_RE.test(tok.text)) continue;
-    if (!COMMAND_POSITION_OPENERS.has(tok.text)) return false;
+function nextWordInCommandPosition(sink, memo = []) {
+  for (let end = memo.length; end <= sink.length; end++) {
+    memo.push(commandPositionStep(sink, end, memo));
   }
-  return true;
+  return memo[sink.length];
+}
+
+/**
+ * One step of {@link nextWordInCommandPosition}: the answer for prefix length
+ * `end`, given `memo[k]` for every `k < end`.
+ *
+ * @param {Array<{ text: string, quoted: boolean, operator?: string }>} sink
+ * @param {number} end
+ * @param {boolean[]} memo
+ * @returns {boolean}
+ */
+function commandPositionStep(sink, end, memo) {
+  if (end === 0) return true;
+  const tok = sink[end - 1];
+  if (tok.quoted) return false;
+  if (tok.operator !== undefined || CHAIN_OPERATOR_TEXTS.has(tok.text)) return true;
+  const prev = sink[end - 2];
+  const prevIs = (word) => prev !== undefined && !prev.quoted && prev.text === word;
+  // `time -p cmd`: the POSIX-format flag is part of the `time` prefix.
+  if (tok.text === '-p' && prevIs('time')) return memo[end - 1];
+  // `function name { … }` / `function name() …`: skip the keyword+name pair.
+  if (prevIs('function')) return memo[end - 2];
+  if (FUNCTION_HEAD_RE.test(tok.text)) return memo[end - 1];
+  if (!COMMAND_POSITION_OPENERS.has(tok.text)) return false;
+  return memo[end - 1];
 }
 
 /**
@@ -467,6 +536,23 @@ export function tokenizeCommand(command) {
   command = normalizeShellWhitespaceExpansions(command);
 
   let text = '';
+  // Per-part quote provenance of `text` (see the @returns note): consecutive
+  // characters with the same quote context share one part, so
+  // `parts.map((p) => p.text).join('') === text` for every word token.
+  let parts = [];
+  const addText = (s, quote) => {
+    text += s;
+    const last = parts[parts.length - 1];
+    if (last !== undefined && last.quote === quote) last.text += s;
+    else parts.push({ text: s, quote });
+  };
+  // #1731 point 1: one command-position memo per sink (see nextWordInCommandPosition).
+  const positionMemos = new WeakMap();
+  const inCommandPosition = () => {
+    let memo = positionMemos.get(sink);
+    if (memo === undefined) { memo = []; positionMemos.set(sink, memo); }
+    return nextWordInCommandPosition(sink, memo);
+  };
   let started = false;     // a token is in progress
   let sawQuote = false;    // any char of the current token came from inside quotes
   // Leading UNQUOTED `{` characters of the current token (#1707 point 2). For a
@@ -511,9 +597,9 @@ export function tokenizeCommand(command) {
       else if (top === 'pattern') {
         // `case w in esac` / `;; esac` — `esac` where a pattern may start.
         if (!sawQuote && text === 'esac') caseStates.pop();
-      } else if (!sawQuote && text === 'case' && nextWordInCommandPosition(sink)) {
+      } else if (!sawQuote && text === 'case' && inCommandPosition()) {
         caseStates.push('subject');
-      } else if (top === 'body' && !sawQuote && text === 'esac' && nextWordInCommandPosition(sink)) {
+      } else if (top === 'body' && !sawQuote && text === 'esac' && inCommandPosition()) {
         // `a) esac` (last clause without `;;`) is covered too: the pattern's
         // `case-pattern` separator puts `esac` in command position.
         caseStates.pop();
@@ -523,8 +609,12 @@ export function tokenizeCommand(command) {
       // its text is bare, so the text already says it (and the token shape of
       // every unquoted word stays as it was).
       if (sawQuote && braceLead > 0) tok.braceLead = braceLead;
+      // Non-enumerable on purpose: JSON, deep equality and `Object.keys` see the
+      // exact pre-#1795 token shape; only a reader asking for `tok.parts` gets it.
+      Object.defineProperty(tok, 'parts', { value: parts, enumerable: false });
       sink.push(tok);
       text = '';
+      parts = [];
       started = false;
       sawQuote = false;
       braceLead = 0;
@@ -535,8 +625,8 @@ export function tokenizeCommand(command) {
   // word in progress (`x=` in `x=$(…)`, or the double-quoted run around
   // `"$(…)"`) is parked in the frame and resumed on close.
   const openSubstitution = (kind, start) => {
-    stack.push({ kind, start, text, started, sawQuote, braceLead, state, sink, arithDepth, caseStates });
-    text = ''; started = false; sawQuote = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = [];
+    stack.push({ kind, start, text, parts, started, sawQuote, braceLead, state, sink, arithDepth, caseStates });
+    text = ''; parts = []; started = false; sawQuote = false; braceLead = 0; state = 'normal'; arithDepth = 0; caseStates = [];
     sink = [];
   };
 
@@ -554,9 +644,9 @@ export function tokenizeCommand(command) {
     // destructive guard's top-level catch turns into ALLOW (fail-open).
     hoisted.push({ text: ';', quoted: false, operator: 'substitution' });
     for (const t of sink) hoisted.push(t);
-    ({ text, started, sawQuote, braceLead, state, sink, arithDepth, caseStates } = frame);
+    ({ text, parts, started, sawQuote, braceLead, state, sink, arithDepth, caseStates } = frame);
     const raw = command.slice(frame.start, end);
-    text += raw; started = true;
+    addText(raw, state === 'double' ? 'double' : 'none'); started = true;
     if (/["']/.test(raw)) sawQuote = true;
   };
 
@@ -572,6 +662,7 @@ export function tokenizeCommand(command) {
     if (started && !sawQuote && /^\d+$/.test(text)) {
       const digits = text;
       text = '';
+      parts = [];
       started = false;
       return digits;
     }
@@ -584,7 +675,7 @@ export function tokenizeCommand(command) {
 
     if (state === 'single') {
       if (ch === "'") { state = 'normal'; continue; }
-      text += ch; started = true; sawQuote = true;
+      addText(ch, 'single'); started = true; sawQuote = true;
       continue;
     }
 
@@ -595,7 +686,7 @@ export function tokenizeCommand(command) {
         // In double / ANSI-C quotes, backslash escapes the next char; keep it
         // simple and take that char literally (this is what makes `$'a\'b'`
         // one token instead of an unbalanced quote — #965).
-        text += next; started = true; sawQuote = true; i++;
+        addText(next, 'escape'); started = true; sawQuote = true; i++;
         continue;
       }
       // Double quotes do NOT stop command substitution (#1667): `"$(rm x)"` runs
@@ -612,7 +703,7 @@ export function tokenizeCommand(command) {
           continue;
         }
       }
-      text += ch; started = true; sawQuote = true;
+      addText(ch, state === 'double' ? 'double' : 'ansi-c'); started = true; sawQuote = true;
       continue;
     }
 
@@ -667,15 +758,15 @@ export function tokenizeCommand(command) {
     // the here-doc branch below stands down while depth > 0, because there `<<`
     // is the left-shift operator, not a redirect.
     if (ch === '$' && command[i + 1] === '(' && command[i + 2] === '(') {
-      arithDepth++; text += '$(('; started = true; i += 2;
+      arithDepth++; addText('$((', 'none'); started = true; i += 2;
       continue;
     }
     if (ch === '(' && command[i + 1] === '(' && !started) {
-      arithDepth++; text += '(('; started = true; i++;
+      arithDepth++; addText('((', 'none'); started = true; i++;
       continue;
     }
     if (arithDepth > 0 && ch === ')' && command[i + 1] === ')') {
-      arithDepth--; text += '))'; started = true; i++;
+      arithDepth--; addText('))', 'none'); started = true; i++;
       continue;
     }
 
@@ -693,7 +784,7 @@ export function tokenizeCommand(command) {
       // `--force` flag any rule looks for. Eliding converges the token stream
       // on bash's argv, which is the only defensible reference.
       if (command[i + 1] === '\n') { i++; continue; }
-      text += command[i + 1]; started = true; i++;
+      addText(command[i + 1], 'escape'); started = true; i++;
       continue;
     }
 
@@ -741,7 +832,7 @@ export function tokenizeCommand(command) {
         // first word is a segment head (#1671 follow-up F1) and a `case`
         // there opens (F2).
         if (caseTop() === 'pattern') {
-          text += ch; started = true;
+          addText(ch, 'none'); started = true;
           flush();
           sink.push({ text: ';', quoted: false, operator: 'case-pattern' });
           setCaseTop('body');
@@ -753,12 +844,12 @@ export function tokenizeCommand(command) {
         // escaped `\(` would otherwise keep a `"$(echo \()"` open and swallow
         // every following command (refute review of 8f323ad8, HIGH).
         if (started && bareParenAt === i - 1 && text.endsWith('(')) {
-          text += ch;
+          addText(ch, 'none');
           // #1679: an adjacent compound body must start a fresh token too:
           // `f(){unlink X;}` / `f()(unlink X)`. Only a bare, unquoted head in
           // command position qualifies; argument text must stay an argument.
           const bodyOpener = command[i + 1];
-          if (!sawQuote && FUNCTION_HEAD_RE.test(text) && nextWordInCommandPosition(sink) &&
+          if (!sawQuote && FUNCTION_HEAD_RE.test(text) && inCommandPosition() &&
               (bodyOpener === '{' || bodyOpener === '(')) {
             flush();
             if (bodyOpener === '{') {
@@ -800,7 +891,7 @@ export function tokenizeCommand(command) {
     // Inside `$(( … ))` / `(( … ))` every `<` / `>` is a shift or comparison
     // operator, never a redirect (gate 1, #970) — append verbatim so the
     // redirect branches below never tear an arithmetic expression apart.
-    if (arithDepth > 0 && (ch === '<' || ch === '>')) { text += ch; started = true; continue; }
+    if (arithDepth > 0 && (ch === '<' || ch === '>')) { addText(ch, 'none'); started = true; continue; }
 
     // Redirect operators (#983) — longest-match-first, and BEFORE the
     // chain-operator branch below so `&>` / `&>>` win over the `&` operator.
@@ -813,6 +904,9 @@ export function tokenizeCommand(command) {
         sink.push({ text: '&>', quoted: false, redirect: { fd: null, mode: 'truncate' } });
         i += 1;
       }
+      // zsh clobber suffix (#1795): `&>|` / `&>!` / `&>>|` / `&>>!` are the
+      // SAME redirect with noclobber overridden — the suffix is syntax.
+      if (isClobberSuffix(command[i + 1])) i += 1;
       continue;
     }
     if (ch === '<') {
@@ -862,14 +956,28 @@ export function tokenizeCommand(command) {
       if (started && !sawQuote && /^[0-9]+$/.test(text)) {
         fd = Number.parseInt(text, 10);
         text = '';
+        parts = [];
         started = false;
       } else {
         flush();
       }
       const fdText = fd === null ? '' : String(fd);
-      if (command[i + 1] === '>') {
+      // zsh clobber forms (#1795) arrive in CANONICAL spelling, because every
+      // text-keyed consumer (scope-gate's WRITE_REDIRECT_OP_RE) already knows it:
+      // `>&|` / `>&!` (stdout+stderr) → `&>`, `>>&|` / `>>&!` → `&>>`, `>>|` /
+      // `>>!` → `>>`, `>!` → `>|` — fd prefix kept where bash/zsh keep one. A
+      // bare `>&` / `>>&` before a WORD is untouched: scope-gate folds that
+      // filename form itself (foldFdDupFilenameRedirects).
+      if (command[i + 1] === '>' && command[i + 2] === '&' && isClobberSuffix(command[i + 3])) {
+        sink.push({ text: '&>>', quoted: false, redirect: { fd: null, mode: 'append' } });
+        i += 3;
+      } else if (command[i + 1] === '&' && isClobberSuffix(command[i + 2])) {
+        sink.push({ text: '&>', quoted: false, redirect: { fd: null, mode: 'truncate' } });
+        i += 2;
+      } else if (command[i + 1] === '>') {
         sink.push({ text: `${fdText}>>`, quoted: false, redirect: { fd, mode: 'append' } });
         i += 1;
+        if (isClobberSuffix(command[i + 1])) i += 1;
       } else if (command[i + 1] === '&' && /[0-9]/.test(command[i + 2] ?? '')) {
         // N>&M / >&M — fd duplication; the target fd is inline, no operand word.
         let j = i + 2;
@@ -877,7 +985,7 @@ export function tokenizeCommand(command) {
         while (j < command.length && /[0-9]/.test(command[j])) { dupTarget += command[j]; j++; }
         sink.push({ text: `${fdText}>&${dupTarget}`, quoted: false, redirect: { fd, mode: 'dup' } });
         i = j - 1;
-      } else if (command[i + 1] === '|') {
+      } else if (isClobberSuffix(command[i + 1])) {
         sink.push({ text: `${fdText}>|`, quoted: false, redirect: { fd, mode: 'truncate' } });
         i += 1;
       } else {
@@ -907,7 +1015,7 @@ export function tokenizeCommand(command) {
     // A bare `{` extends the run of leading braces only while nothing else — not
     // even an empty quote pair (`""{x` is a literal word) — came before it.
     if (ch === '{' && text.length === braceLead && (braceLead > 0 || !started)) braceLead++;
-    text += ch; started = true;
+    addText(ch, 'none'); started = true;
   }
 
   // Unterminated quote → flush whatever accumulated (mark quoted so the guard treats
@@ -940,9 +1048,9 @@ export function tokenizeCommand(command) {
  * Two classes, both dropped, for the same reason:
  *   - OPENERS (`{`, `(`, `!`, `if`, `elif`, `then`, `else`, `while`, `until`,
  *     `do`, `coproc`) are followed by a COMMAND. `coproc` runs it as a
- *     coprocess in bash and zsh (#1707 point 3). NAMED CEILING (BV-004): bash's
- *     named form `coproc NAME { …; }` still reads NAME as the verb; revisit if
- *     that spelling shows up in a transcript census. Dropping one moves verb resolution
+ *     coprocess in bash and zsh (#1707 point 3). bash's named form
+ *     `coproc NAME { …; }` drops NAME too (#1731 point 2, see
+ *     splitSegmentsReading). Dropping one moves verb resolution
  *     towards the real command — the identical safety argument WRAPPER_UNWRAP
  *     makes for a transparent wrapper: a dropped token is a reserved word, never
  *     an interpreter, so this cannot turn a match into a miss.
@@ -1060,17 +1168,28 @@ function gluedCloseReadings(text, openGroups) {
 /**
  * Is `segment` exactly a prefix that puts the next word — a brace group or any
  * other compound command — in command position? A function head (see
- * {@link isFunctionHead}) or `time` / `time -p`, which bash and zsh both parse
- * as a pipeline prefix (#1707 point 3: zsh runs `time {unlink P;}`).
+ * {@link isFunctionHead}) or `time` / `time -p` / `time --` / `time -p --`,
+ * which bash and zsh both parse as a pipeline prefix (#1707 point 3: zsh runs
+ * `time {unlink P;}`; #1731 point 2: bash runs `time -p -- { unlink P; }`).
  *
  * @param {Array<{ text: string, quoted: boolean }>} segment
  * @returns {boolean}
  */
 function isCompoundPrefix(segment) {
   if (isFunctionHead(segment)) return true;
-  if (segment.length === 0 || segment.length > 2 || segment.some((t) => t.quoted)) return false;
-  return segment[0].text === 'time' && (segment.length === 1 || segment[1].text === '-p');
+  if (segment.length === 0 || segment.length > 3 || segment.some((t) => t.quoted)) return false;
+  if (segment[0].text !== 'time') return false;
+  const flags = segment.slice(1).map((t) => t.text).join(' ');
+  return flags === '' || flags === '-p' || flags === '--' || flags === '-p --';
 }
+
+/**
+ * Keywords whose test list zsh may close with a `[[ … ]]` / `(( … ))` and
+ * follow directly with a `{ … }` body — the short forms `if [[ x ]] { … }`,
+ * `while (( n )) { … }` (zsh manual, "Alternate Forms For Complex Commands":
+ * the test must be delimited by `[[ ]]` or `(( ))`, else its end is not seen).
+ */
+const ZSH_SHORT_BODY_HEADS = new Set(['if', 'elif', 'while', 'until']);
 
 /**
  * Split a tokenized command into chained segments on shell control operators
@@ -1193,17 +1312,55 @@ function splitSegmentsReading(tokens, cutSoftAlways) {
   let closedGroup = null;
   // The next token is the count word of a command-position `repeat`.
   let repeatCount = false;
+  // The statement opened with `if`/`elif`/`while`/`until`: a `{` right behind
+  // a closing `]]` / `))` starts zsh's short body (#1731 point 2).
+  let shortBodyHead = false;
+  // The previous token was a command-position `coproc`: bash's named form
+  // `coproc NAME { …; }` follows when the word after it is followed by `{`.
+  let afterCoproc = false;
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
     const afterClose = closedGroup;
     closedGroup = null;
+    const coprocJustDropped = afterCoproc;
+    afterCoproc = false;
     if (!tok.quoted && (tok.operator === 'newline' || operators.has(tok.text))) {
       pushSegment(current);
       current = [];
       repeatCount = false;
+      shortBodyHead = false;
       continue;
     }
     if (repeatCount) { repeatCount = false; continue; }
+    // bash `coproc NAME { …; }` (#1731 point 2): NAME is the coprocess's
+    // variable name, never a command — before, it resolved as the verb.
+    const nextTok = tokens[i + 1];
+    if (coprocJustDropped && current.length === 0 && !tok.quoted && !tok.redirect &&
+        tok.operator === undefined && nextTok !== undefined && !nextTok.quoted && nextTok.text === '{') {
+      continue;
+    }
+    // zsh short body `if [[ x ]] { …; }` / `while (( n )) { …; }`: the test
+    // list ends at its `]]` / `))`, and the `{` behind it opens the body — a
+    // statement of its own, judged in command position.
+    const lastText = current.length > 0 && !current[current.length - 1].quoted
+      ? current[current.length - 1].text
+      : '';
+    if (shortBodyHead && (lastText === ']]' || lastText === '))') && !tok.quoted) {
+      const gluedBody = gluedBraceOpenerCount(tok);
+      if (tok.text === '{' || gluedBody > 0) {
+        pushSegment(current);
+        shortBodyHead = false;
+        if (tok.text === '{') {
+          current = [];
+          openGroups++;
+        } else {
+          const { braceLead: _consumed, ...rest } = tok;
+          current = [{ ...rest, text: tok.text.slice(gluedBody) }];
+          openGroups += gluedBody;
+        }
+        continue;
+      }
+    }
     // zsh `repeat N body` (#1707 point 3): the keyword and its count are no
     // command; the body behind them runs N times. Only a count WORD counts: in
     // bash `repeat` is an ordinary command name and `repeat >CLAUDE.md`
@@ -1211,9 +1368,12 @@ function splitSegmentsReading(tokens, cutSoftAlways) {
     // keeps `repeat` the segment head and the redirect collected. A quoted count
     // is still one word — zsh 5.9 runs `repeat '2' cmd` and `repeat "$N" cmd`.
     const count = tokens[i + 1];
-    if (current.length === 0 && !tok.quoted && tok.text === 'repeat' && count !== undefined &&
-        !count.redirect && count.operator === undefined &&
+    // Also behind a compound prefix (#1731 point 2): `time repeat 1 cmd`,
+    // `f() repeat 1 cmd`.
+    if ((current.length === 0 || isCompoundPrefix(current)) && !tok.quoted && tok.text === 'repeat' &&
+        count !== undefined && !count.redirect && count.operator === undefined &&
         !operators.has(count.text)) {
+      current = [];
       repeatCount = true;
       continue;
     }
@@ -1239,6 +1399,8 @@ function splitSegmentsReading(tokens, cutSoftAlways) {
     if (!tok.quoted && COMMAND_POSITION_KEYWORDS.has(tok.text) &&
         (current.length === 0 || isCompoundPrefix(current))) {
       current = [];
+      if (ZSH_SHORT_BODY_HEADS.has(tok.text)) shortBodyHead = true;
+      if (tok.text === 'coproc') afterCoproc = true;
       if (tok.text === '{') openGroups++;
       if (tok.text === '}') { openGroups = Math.max(0, openGroups - 1); closedGroup = 'hard'; }
       continue;

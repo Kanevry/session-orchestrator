@@ -614,10 +614,12 @@ suite + lint) and blocks the push on any non-zero exit.
   `git push --no-verify`, which disables every hook silently and leaves no
   record of what was skipped.
 
-The hook materialises the first content-bearing ref's exact pushed SHA in an
-isolated tracked checkout, so uncommitted, untracked and gitignored source files
-cannot make the pushed tree pass. A multi-ref push warns that only the first
-content-bearing ref is gated. Failure to materialise that commit blocks the push.
+The hook materialises the pushed commit in an isolated tracked checkout, so
+uncommitted, untracked and gitignored source files cannot make the pushed tree
+pass. One push is gated as exactly one commit (#1787): refs that peel to the
+same commit (a branch and its tag, lightweight or annotated) are gated once; a
+push whose refs point at more than one commit is blocked, and each commit has
+to be pushed on its own. Failure to materialise the commit blocks the push.
 
 ### Remote routing (#1532)
 

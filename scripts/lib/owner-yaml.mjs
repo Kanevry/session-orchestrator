@@ -756,8 +756,59 @@ export function validateOwnerConfig(obj) {
  *   droppedSections?: Array<{ section: string, errors: string[] }>,
  *   sectionWarnings?: Array<{ section: string, errors: string[] }>,
  * }}
+ *
+ * SEC-008 (SO#1785): `hardware-sharing.hash-salt` is a per-host secret. The
+ * returned config carries it as a NON-enumerable accessor, so JSON.stringify,
+ * util.inspect (default and `%o`/showHidden), object spread, Object.keys/entries
+ * and structuredClone of the result no longer print or copy it, while
+ * `cfg['hardware-sharing']['hash-salt']` and validateOwnerConfig(cfg) still
+ * read it. A YAML parse error names line and column only — never js-yaml's
+ * reason or source snippet, both of which can quote owner.yaml text.
+ * CEILING (BV-004): direct property access, `inspect(x, { showHidden: true,
+ * getters: true })` and calling the `get` of Object.getOwnPropertyDescriptor(s)
+ * still reveal the salt by design (readers need it). {@link hideHashSalt} must
+ * stay the single exit point — revisit if a return path is added that bypasses
+ * this wrapper.
  */
 export function loadOwnerConfig(opts = {}) {
+  const result = loadOwnerConfigUnredacted(opts);
+  hideHashSalt(result.config);
+  return result;
+}
+
+/**
+ * Make `hardware-sharing.hash-salt` a non-enumerable accessor in place
+ * (SEC-008, SO#1785). An accessor, not a data property: util.inspect with
+ * `showHidden` (what `%o` uses) prints hidden DATA values, but shows a hidden
+ * accessor as `[Getter/Setter]` unless `getters: true` is passed. Only ever
+ * called on objects loadOwnerConfig built for this call (a fresh parse or a
+ * fresh getDefaults()), so no shared object is mutated.
+ *
+ * @param {object} config
+ */
+function hideHashSalt(config) {
+  const hw = isPlainObject(config) ? config['hardware-sharing'] : undefined;
+  if (!isPlainObject(hw) || !Object.prototype.hasOwnProperty.call(hw, 'hash-salt')) return;
+  let salt = hw['hash-salt'];
+  Object.defineProperty(hw, 'hash-salt', {
+    get() {
+      return salt;
+    },
+    set(v) {
+      salt = v;
+    },
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+/**
+ * Body of {@link loadOwnerConfig} before the salt is hidden. Internal: every
+ * caller goes through the exported wrapper.
+ *
+ * @param {{ path?: string }} opts
+ */
+function loadOwnerConfigUnredacted(opts) {
   const filePath = opts.path ?? resolveOwnerYamlPath();
 
   if (!existsSync(filePath)) {
@@ -797,7 +848,7 @@ export function loadOwnerConfig(opts = {}) {
       config: getDefaults(),
       source: 'defaults',
       reason: 'unparseable',
-      errors: [`YAML parse error: ${err.message}`],
+      errors: [describeYamlError(err)],
     };
   }
 
@@ -891,6 +942,42 @@ export function loadOwnerConfig(opts = {}) {
   return result;
 }
 
+/**
+ * Describe a js-yaml load failure by position only (SEC-008, SO#1785):
+ * YAMLException.message appends a code-frame snippet of the source lines, and
+ * `reason` itself interpolates source text at many js-yaml sites (e.g.
+ * `unidentified alias "<name>"`, `unknown tag !<<tag>>`, some unquoted), so a
+ * salt starting with `*` or `!` would be echoed. Neither is used; only the
+ * 0-based `mark.line`/`mark.column`, reported 1-based.
+ *
+ * @param {unknown} err
+ * @returns {string}
+ */
+function describeYamlError(err) {
+  const mark = err?.mark;
+  if (Number.isInteger(mark?.line) && Number.isInteger(mark?.column)) {
+    return `YAML parse error at line ${mark.line + 1}, column ${mark.column + 1}`;
+  }
+  return 'YAML parse error';
+}
+
+/**
+ * Return `config` unchanged, or — when its `hardware-sharing.hash-salt` is an
+ * own non-enumerable property (the accessor from {@link hideHashSalt}) — a
+ * shallow copy whose salt VALUE is an enumerable data property again, so
+ * yaml.dump writes it.
+ *
+ * @param {object} config
+ * @returns {object}
+ */
+function withEnumerableHashSalt(config) {
+  const hw = config['hardware-sharing'];
+  if (!isPlainObject(hw)) return config;
+  const desc = Object.getOwnPropertyDescriptor(hw, 'hash-salt');
+  if (!desc || desc.enumerable) return config;
+  return { ...config, 'hardware-sharing': { ...hw, 'hash-salt': hw['hash-salt'] } };
+}
+
 // ---------------------------------------------------------------------------
 // Writer
 // ---------------------------------------------------------------------------
@@ -905,6 +992,12 @@ export function loadOwnerConfig(opts = {}) {
  * When `js-yaml` cannot be resolved (no `node_modules`), returns
  * `{ written: false, reason: 'yaml-parser-missing', errors: [...] }` — the file
  * is left untouched rather than half-written (GH#62/#63).
+ *
+ * A config returned by loadOwnerConfig carries `hardware-sharing.hash-salt` as
+ * a non-enumerable property (SEC-008, SO#1785). yaml.dump only sees enumerable
+ * keys, so such a config is dumped from a shallow copy with the salt made
+ * enumerable again — otherwise a load→write round trip would silently drop the
+ * salt. The caller's object is not mutated.
  *
  * @param {object} config
  * @param {{ path?: string }} [opts]
@@ -945,7 +1038,7 @@ export function writeOwnerConfig(config, opts = {}) {
 
   let yamlStr;
   try {
-    yamlStr = yaml.dump(config, { lineWidth: 120, noRefs: true });
+    yamlStr = yaml.dump(withEnumerableHashSalt(config), { lineWidth: 120, noRefs: true });
   } catch (err) {
     return { written: false, errors: [`failed to serialise config to YAML: ${err.message}`] };
   }

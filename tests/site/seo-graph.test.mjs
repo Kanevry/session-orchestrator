@@ -37,6 +37,11 @@ const PAGES = [
     route: 'https://session-orchestrator.com/datenschutz',
     type: 'WebPage',
   },
+  {
+    file: 'site/commands/index.html',
+    route: 'https://session-orchestrator.com/commands',
+    type: 'WebPage',
+  },
 ];
 const read = (file) => readFileSync(join(SITE_DIR, file.slice('site/'.length)), 'utf8');
 const blocks = (html) =>
@@ -142,6 +147,73 @@ describe('site JSON-LD: 3. page identity', () => {
     for (const node of nodes.filter((entry) => hasType(entry, 'FAQPage'))) {
       expect(String(node['@id']).split('#')[0], `${file}: FAQPage.@id page`).toBe(route);
     }
+  });
+});
+
+// `sameAs` entries that name the node itself, in any spelling of the same
+// page: scheme, `www.`, trailing slash, `#fragment` (its own `@id` included).
+// A bare trailing-slash strip accepted `http://`, a dropped `www.` and an `@id`
+// compared without its fragment as "different", so the self-reference passed.
+const identity = (value) =>
+  String(value)
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, '')
+    .replace(/#.*$/, '')
+    .replace(/\/+$/, '');
+const selfReferences = (node) =>
+  Array.isArray(node.sameAs)
+    ? node.sameAs.filter((entry) =>
+        [node.url, node['@id']]
+          .filter((own) => typeof own === 'string')
+          .some((own) => identity(entry) === identity(own)),
+      )
+    : [];
+
+describe('site JSON-LD: sameAs', () => {
+  // `sameAs` names the same entity ELSEWHERE; a node listing its own `url`
+  // there broke the portfolio entity contract (#1771): the Person node
+  // carried its hub URL in both fields.
+  it.each(PAGES)('$file never repeats a node URL or @id in its own sameAs', ({ file }) => {
+    const repeats = objects(document(file)).flatMap((node) =>
+      selfReferences(node).map((entry) => `${node['@id']}: ${entry}`),
+    );
+    expect(repeats, `${file}: sameAs entries naming the node itself`).toEqual([]);
+  });
+
+  // The detector itself: each literal variant of the Person hub must be caught.
+  it.each([
+    'https://www.example.org',
+    'https://www.example.org/',
+    'http://www.example.org',
+    'https://example.org',
+    'https://www.example.org/#person',
+  ])('flags %s as a self-reference of the Person node', (entry) => {
+    const node = {
+      '@id': 'https://www.example.org/#person',
+      url: 'https://www.example.org',
+      sameAs: [entry],
+    };
+    expect(selfReferences(node)).toEqual([entry]);
+  });
+
+  it('does not flag a distinct external profile', () => {
+    const node = {
+      '@id': 'https://www.example.org/#person',
+      url: 'https://www.example.org',
+      sameAs: ['https://github.com/Kanevry'],
+    };
+    expect(selfReferences(node)).toEqual([]);
+  });
+
+  // The exact Person contract of the two pages that carry one (#1771).
+  it.each(['site/index.html', 'site/de/index.html'])('%s Person has its exact hub identity', (file) => {
+    const people = nodesOfType(file, 'Person');
+    expect(people).toHaveLength(1);
+    // Canonical forms: https scheme, `www.` host, bare hub url, `/#person` fragment.
+    expect(people[0].url).toMatch(/^https:\/\/www\.[a-z0-9-]+(\.[a-z0-9-]+)+$/);
+    expect(people[0]['@id']).toBe(`${people[0].url}/#person`);
+    expect(people[0].sameAs).toEqual(['https://github.com/Kanevry']);
   });
 });
 

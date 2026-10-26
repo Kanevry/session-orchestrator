@@ -1316,3 +1316,100 @@ describe('post-bash-write-verify — session root after entering a worktree (#14
     expect(res.stderr).toContain('out-of-scope.mjs');
   });
 });
+
+// ---------------------------------------------------------------------------
+// SEC-008 value detector (#1786) — real hook process, real stdin shape
+// ---------------------------------------------------------------------------
+
+describe('post-bash-write-verify SEC-008 secret-output detector (#1786)', () => {
+  // Fake key/value: secret-NAMED key, long non-token-shaped value.
+  const KEY = 'FIXTURE_SERVICE_TOKEN';
+  const VALUE = 'fixture-value-not-a-real-credential-4217';
+  let tmp;
+
+  const run = (toolResponse) => spawnSync(process.execPath, [HOOK], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'some-cmd' }, tool_response: toolResponse }),
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_PROJECT_DIR: tmp, SO_HOOK_PROFILE: 'full', SO_DISABLED_HOOKS: '', [KEY]: VALUE },
+    timeout: 20_000,
+  });
+  const secretEvents = () => {
+    const f = join(tmp, '.orchestrator', 'metrics', 'events.jsonl');
+    if (!existsSync(f)) return { raw: '', events: [] };
+    const raw = readFileSync(f, 'utf8');
+    const events = raw.trim().split('\n').filter(Boolean)
+      .map((l) => JSON.parse(l)).filter((e) => e.event === 'orchestrator.security.secret_emitted');
+    return { raw, events };
+  };
+
+  beforeEach(() => {
+    tmp = makeTmpDir('pbwv-sec008-');
+    fixtureGit(['init', '-q'], tmp);
+  });
+  afterEach(() => {
+    const snap = snapshotPathFor(realpathSync(tmp));
+    if (existsSync(snap)) rmSync(snap, { force: true });
+    removeTree(tmp);
+  });
+
+  it('reports a leaked env value with ONE event and ONE systemMessage, never the value — with no wave scope at all', () => {
+    // Bug caught: a secret printed by a Bash call went unnoticed until the
+    // transcript was re-read (2026-10-23); and a detector placed after the G3
+    // early exit would stay silent in every session without a wave scope.
+    const res = run({ stdout: `a ${VALUE} b\n${VALUE}\n`, stderr: '', interrupted: false, isImage: false });
+    expect(res.status).toBe(0);
+    expect(res.stdout.trim().split('\n')).toHaveLength(1); // one JSON object, not two
+    const out = JSON.parse(res.stdout.trim());
+    expect(out.systemMessage).toContain('SEC-008');
+    expect(out.systemMessage).toContain(KEY);
+    expect(out.hookSpecificOutput.additionalContext).toContain('rotate');
+    const { raw, events } = secretEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0].env_keys).toEqual([KEY]);
+    expect(events[0].matches).toBe(2);
+    expect(events[0].detector).toBe('value');
+    expect(events[0].truncated).toBe(false);
+    for (const surface of [res.stdout, res.stderr, raw]) expect(surface).not.toContain(VALUE);
+  });
+
+  it('merges a write-verify notice and the SEC-008 notice into ONE stdout object', () => {
+    // Bug caught (review of b4f93ac5): with both notices due, a second JSON
+    // line is dropped by the harness — either the out-of-scope warning or the
+    // incident would vanish. Before #1786 each notice wrote its own object.
+    writeFileSync(join(tmp, 'keep.mjs'), '// seed\n');
+    fixtureGit(['config', 'user.email', 't@e.st'], tmp);
+    fixtureGit(['config', 'user.name', 'T'], tmp);
+    fixtureGit(['add', '-A'], tmp);
+    fixtureGit(['-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'seed'], tmp);
+    mkdirSync(join(tmp, '.claude'), { recursive: true });
+    writeFileSync(join(tmp, '.claude', 'wave-scope.json'), JSON.stringify({ enforcement: 'warn', allowedPaths: ['hooks/**'] }));
+    expect(run({ stdout: 'clean', stderr: '' }).stdout).toBe(''); // silent baseline
+    writeFileSync(join(tmp, 'out-of-scope.mjs'), 'pwned\n');
+
+    const res = run({ stdout: `leak ${VALUE}`, stderr: '' });
+    expect(res.status).toBe(0);
+    expect(res.stdout.trim().split('\n')).toHaveLength(1);
+    const out = JSON.parse(res.stdout.trim());
+    expect(out.systemMessage).toContain('SEC-008');
+    expect(out.hookSpecificOutput.additionalContext).toContain('out-of-scope.mjs');
+    expect(out.hookSpecificOutput.additionalContext).toContain('SEC-008');
+    expect(res.stdout).not.toContain(VALUE);
+  });
+
+  it('scans a STRING-shaped tool_response (Codex) too', () => {
+    // Bug caught: an object-only reader (`tool_response.stdout`) is blind on Codex.
+    const res = run(`out ${VALUE}`);
+    expect(JSON.parse(res.stdout.trim()).systemMessage).toContain(KEY);
+    expect(secretEvents().events).toHaveLength(1);
+  });
+
+  it('stays silent and event-free when the output carries no qualifying value', () => {
+    // Bug caught: a detector that fires on every call (or prints an empty
+    // envelope) is the HR-101 broken instrument and changes existing behaviour.
+    const res = run({ stdout: 'fixture-value-not-a-real-credential\n', stderr: '' });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toBe('');
+    expect(secretEvents().events).toHaveLength(0);
+  });
+});

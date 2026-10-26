@@ -113,7 +113,6 @@
       "name": "Bernhard Götzendorfer",
       "url": "https://www.gotzendorfer.at",
       "sameAs": [
-        "https://www.gotzendorfer.at",
         "https://github.com/Kanevry"
       ]
     },
@@ -178,7 +177,7 @@
           "name": "Kann es mein Projekt kaputt machen?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "Fehler sind weiterhin möglich. Auf Claude Code und Codex wendet ein aktiver Hook für zerstörerische Befehle 13 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt den Guard für Schreibbereiche nicht technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
+            "text": "Fehler sind weiterhin möglich. Auf Claude Code und Codex wendet ein aktiver Hook für zerstörerische Befehle 14 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt den Guard für Schreibbereiche nicht technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code."
           }
         },
         {
@@ -225,7 +224,7 @@
       </div>
       <figure class="hero-art">
         <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="Ein Mensch am Leitstand überblickt kleine Agenten beim Planen, beim parallelen Bauen, beim Prüfen und bei der Übergabe.">
-        <video hidden muted loop playsinline preload="none" aria-hidden="true" data-video-base="agent-production-loop"></video>
+        <video hidden muted loop playsinline preload="none" aria-hidden="true" data-video-base="agent-production-motion"></video>
         <button class="motion-toggle" type="button" aria-pressed="false" hidden>Werkstatt bewegen</button>
         <figcaption>Agents bei der Arbeit an deiner Aufgabe · mit KI erstellt</figcaption>
       </figure>
@@ -502,7 +501,7 @@ expires-at: 2027-01-12</code></pre></li>
             <td data-label="Quelle"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wenden Claude Code und Codex 13 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken.</td>
+            <td data-label="Behauptung">Mit aktivem Hook für zerstörerische Befehle wenden Claude Code und Codex 14 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken.</td>
             <td data-label="Quelle"><code>.orchestrator/policy/blocked-commands.json</code>, 17 Regeln</td>
           </tr>
           <tr>
@@ -584,7 +583,7 @@ expires-at: 2027-01-12</code></pre></li>
         </details>
         <details class="faq-item">
           <summary>Kann es mein Projekt kaputt machen?</summary>
-          <p>Fehler sind weiterhin möglich. Auf Claude Code und Codex wendet ein aktiver Hook für zerstörerische Befehle 13 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt den Guard für Schreibbereiche nicht technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
+          <p>Fehler sind weiterhin möglich. Auf Claude Code und Codex wendet ein aktiver Hook für zerstörerische Befehle 14 blockierende und 4 warnende Regeln an. Cursor und Pi nutzen Brücken mit dokumentierten Grenzen. Codex setzt den Guard für Schreibbereiche nicht technisch durch. Bei unterstützten Änderungen mit aktivem Scope-Hook blockiert strict Verstöße, warn meldet sie und off deaktiviert die Prüfung. Prüfe Änderungen und halte Sicherungen vor; die Prüfungen garantieren keinen korrekten Code.</p>
         </details>
         <details class="faq-item">
           <summary>Wer pflegt das?</summary>

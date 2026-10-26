@@ -18,7 +18,7 @@
  *
  * Usage:
  *   node scripts/sweep-expired-rules.mjs [--dry-run|--apply] [--json]
- *     [--grace-days N] [--now ISO] [--repo-root PATH] [--learnings PATH]
+ *     [--grace-days N] [--horizon-days N] [--now ISO] [--repo-root PATH] [--learnings PATH]
  *
  * Exit codes (the same contract as the learnings sweep CLI, deliberately —
  * two sibling commands with inverted codes is a trap for the operator who
@@ -39,10 +39,13 @@ import {
 } from './lib/reconcile/rule-expiry-sweep.mjs';
 
 const DEFAULT_GRACE_DAYS = 0;
+// Claude Code ignores `expires-at`, so housekeeping must remove what would
+// expire before the next sweep (#1779). Default 0 keeps the old behaviour.
+const DEFAULT_HORIZON_DAYS = 0;
 
 function printHelp() {
   process.stdout.write(
-    `Usage: node scripts/sweep-expired-rules.mjs [--dry-run|--apply] [--json] [--grace-days N] [--now ISO] [--repo-root PATH] [--learnings PATH]
+    `Usage: node scripts/sweep-expired-rules.mjs [--dry-run|--apply] [--json] [--grace-days N] [--horizon-days N] [--now ISO] [--repo-root PATH] [--learnings PATH]
 
 Removes EXPIRED entries from the consolidated machine-generated rule files in
 .claude/rules/. An expired entry's prose block is deleted; its "## Provenance"
@@ -56,6 +59,8 @@ Options:
   --apply           Perform the rewrites/deletes and emit the ledger event
   --json            Emit a single machine-parseable JSON summary line
   --grace-days N    Days past expiry before an entry is swept (default: ${DEFAULT_GRACE_DAYS})
+  --horizon-days N  Also sweep entries expiring within N days of now, i.e.
+                    before the next sweep (integer, default: ${DEFAULT_HORIZON_DAYS})
   --now ISO         Injected clock (testing / what-if planning)
   --repo-root PATH  Repo root (default: process.cwd())
   --learnings PATH  Learnings store, repo-relative (default: the metrics store)
@@ -76,6 +81,7 @@ export function parseArgs(argv) {
     dryRun: true,
     json: false,
     graceDays: DEFAULT_GRACE_DAYS,
+    horizonDays: DEFAULT_HORIZON_DAYS,
     now: null,
     repoRoot: process.cwd(),
     learnings: null,
@@ -92,6 +98,13 @@ export function parseArgs(argv) {
         usageError(`--grace-days requires a non-negative number, got: ${raw}`);
       }
       args.graceDays = v;
+    } else if (a === '--horizon-days') {
+      const raw = argv[++i];
+      const v = Number(raw);
+      if (typeof raw !== 'string' || raw.trim() === '' || !Number.isInteger(v) || v < 0) {
+        usageError(`--horizon-days requires a non-negative integer, got: ${raw}`);
+      }
+      args.horizonDays = v;
     } else if (a === '--now') {
       const raw = argv[++i];
       if (typeof raw !== 'string' || !Number.isFinite(Date.parse(raw))) {
@@ -133,6 +146,7 @@ export function summarize(plan, args, applied) {
   return {
     dry_run: args.dryRun,
     grace_days: args.graceDays,
+    horizon_days: args.horizonDays,
     files_scanned: plan.plans.length,
     rewrites: counts.rewrite,
     header_raises: headerRaises,
@@ -158,6 +172,7 @@ async function main(argv) {
       repoRoot: args.repoRoot,
       now: args.now ?? undefined,
       graceDays: args.graceDays,
+      horizonDays: args.horizonDays,
       learningsPath: args.learnings ?? undefined,
     });
   } catch (err) {

@@ -19,7 +19,7 @@
 import { basename, dirname, posix } from 'node:path';
 
 import { makeCheckResult, makeFinding } from './contract.mjs';
-import { changedFiles, isSafeRef, showFile } from './floating-tags.mjs';
+import { changedFiles, isGitExecError, isSafeRef, pathExistsAt, showFile } from './floating-tags.mjs';
 
 /**
  * Lockfile kind for a path, or null when the path is not a lockfile.
@@ -146,7 +146,8 @@ export async function runAgeGateCheck({ repoRoot, base, head } = {}) {
       let gate;
       try {
         gate = await gateFor(repoRoot, head, file, kind);
-      } catch {
+      } catch (err) {
+        if (!isGitExecError(err)) throw err; // a defect, not a read failure: outer catch → internal-error
         unreadable += 1;
         continue;
       }
@@ -161,9 +162,11 @@ export async function runAgeGateCheck({ repoRoot, base, head } = {}) {
         // An unreadable base leaves that open: report it as introduced.
         let introduced = true;
         try {
-          const lockfileNew = (await showFile(repoRoot, base, file)) === null;
+          // Existence only: reading the content would fail on a lockfile above git's buffer (#1775).
+          const lockfileNew = !(await pathExistsAt(repoRoot, base, file));
           introduced = lockfileNew || (await gateFor(repoRoot, base, file, kind)) === 'gated';
-        } catch {
+        } catch (err) {
+          if (!isGitExecError(err)) throw err;
           unreadable += 1;
         }
         findings.push(makeFinding({ class: 'age-gate-missing', severity: 'low', ecosystem: null, package: null, file, introduced }));

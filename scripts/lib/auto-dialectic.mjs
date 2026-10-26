@@ -41,6 +41,7 @@ import { resolveEventsLedgerRoot } from './platform.mjs';
 import { resolveLedgerPath } from './ledger-path.mjs';
 import { withVisibleInboxText } from './learnings/surface.mjs';
 import { inboxPathFor } from './learnings/store-role.mjs';
+import { readPeerCards } from './peer-cards/reader.mjs';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -130,6 +131,39 @@ export async function readDialecticLastRun({ repoRoot } = {}) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Newest `updated` among the schema-valid peer cards, or `null` (#1777).
+ *
+ * The cards are tracked and travel between hosts by git, while
+ * `dialectic-last-run` is gitignored: on a host that did not run the dialectic,
+ * the card date is the only record that a run happened. Only cards passing
+ * `validatePeerCardFrontmatter` count, so `updated` is an ISO timestamp ending
+ * in Z. Never throws: a missing, unreadable or invalid card yields `null` and
+ * the caller falls back to the file alone — no date is ever invented.
+ *
+ * Ceiling (BV-004): an `updated` in the future is taken as is, the same as a
+ * future date in `dialectic-last-run`; it only postpones an advisory nudge.
+ * Revisit if a hand-edited card date is ever seen suppressing a due dialectic.
+ *
+ * @param {string} repoRoot
+ * @returns {Promise<string|null>}
+ */
+async function readNewestPeerCardUpdate(repoRoot) {
+  let cards;
+  try {
+    cards = await readPeerCards(repoRoot);
+  } catch {
+    return null;
+  }
+  let newestMs = -Infinity;
+  for (const card of [cards.user, cards.agent]) {
+    if (card?.validation?.ok !== true) continue;
+    const ms = Date.parse(card.frontmatter.updated);
+    if (!Number.isNaN(ms) && ms > newestMs) newestMs = ms;
+  }
+  return newestMs === -Infinity ? null : new Date(newestMs).toISOString();
+}
+
+/**
  * Count sessions.jsonl + learnings.jsonl entries newer than the last-run
  * timestamp. When no last-run timestamp exists, returns the total entry count
  * for each stream (mirrors auto-dream's "no prior cleanup" branch).
@@ -143,12 +177,23 @@ export async function readDialecticLastRun({ repoRoot } = {}) {
  *   - learnings.jsonl: `created_at` (string ISO) — falls back to `updated_at`
  *     when `created_at` is absent.
  *
+ * `lastRunAt` is the timestamp the counts are measured from: the later of
+ * `.orchestrator/dialectic-last-run` and the newest valid peer-card `updated`
+ * (#1777). `lastRunSource` names which one decided (`'file' | 'peer-cards' | null`).
+ *
  * @param {object} args
  * @param {string} args.repoRoot Absolute path to the repo root.
- * @returns {Promise<{lastRunAt:string|null, sessionsSinceLast:number, learningsSinceLast:number}>}
+ * @returns {Promise<{lastRunAt:string|null, lastRunSource:'file'|'peer-cards'|null, sessionsSinceLast:number, learningsSinceLast:number}>}
  */
 export async function readDialecticSignals({ repoRoot } = {}) {
-  const lastRunAt = await readDialecticLastRun({ repoRoot });
+  const fileLastRun = await readDialecticLastRun({ repoRoot });
+  const cardLastRun = repoRoot ? await readNewestPeerCardUpdate(repoRoot) : null;
+  let lastRunAt = fileLastRun;
+  let lastRunSource = fileLastRun === null ? null : 'file';
+  if (cardLastRun !== null && (fileLastRun === null || Date.parse(cardLastRun) > Date.parse(fileLastRun))) {
+    lastRunAt = cardLastRun;
+    lastRunSource = 'peer-cards';
+  }
 
   let sessionsSinceLast = 0;
   let learningsSinceLast = 0;
@@ -211,7 +256,7 @@ export async function readDialecticSignals({ repoRoot } = {}) {
     }
   }
 
-  return { lastRunAt, sessionsSinceLast, learningsSinceLast };
+  return { lastRunAt, lastRunSource, sessionsSinceLast, learningsSinceLast };
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +296,7 @@ export async function shouldDispatchAutoDialectic({
     return {
       trigger: false,
       reason: 'kill-switch (dialectic.cadence=0)',
-      signals: signals ?? { lastRunAt: null, sessionsSinceLast: 0, learningsSinceLast: 0 },
+      signals: signals ?? { lastRunAt: null, lastRunSource: null, sessionsSinceLast: 0, learningsSinceLast: 0 },
     };
   }
 

@@ -30,6 +30,14 @@ function writeState({ status, sessionId }) {
   writeFileSync(join(dir, '.claude', 'STATE.md'), lines.join('\n'));
 }
 
+function writeMisplaced({ status, sessionId }) {
+  mkdirSync(join(dir, '.orchestrator'), { recursive: true });
+  const lines = ['---', 'schema-version: 1', 'session: main-2026-10-24-session-2'];
+  if (sessionId) lines.push(`session-id: ${sessionId}`);
+  lines.push('started_at: 2026-10-24T08:00:00.000Z', `status: ${status}`, '---', '', '# STATE', '');
+  writeFileSync(join(dir, '.orchestrator', 'STATE.md'), lines.join('\n'));
+}
+
 function writeLedger(text) {
   mkdirSync(join(dir, '.orchestrator', 'metrics'), { recursive: true });
   writeFileSync(join(dir, '.orchestrator', 'metrics', 'sessions.jsonl'), text);
@@ -205,6 +213,46 @@ describe('close-precheck --record-without-plan (#1762)', () => {
     const { out } = run(OWN, ['--record-without-plan']);
     expect(out).toMatchObject({ verdict: 'run-session-end' });
     expect(out.record).toBeUndefined();
+  });
+});
+
+describe('close-precheck — plan misplaced under .orchestrator/STATE.md (#1790)', () => {
+  it('no <state-dir>/STATE.md + own active .orchestrator/STATE.md: no-state names the misplaced own plan', () => {
+    writeMisplaced({ status: 'active', sessionId: OWN });
+    const { out } = run();
+    expect(out).toMatchObject({
+      verdict: 'no-state', runsSessionEnd: false,
+      misplacedState: {
+        path: join(dir, '.orchestrator', 'STATE.md'), status: 'active',
+        session: 'main-2026-10-24-session-2', stateSessionId: OWN, ownership: 'own',
+      },
+    });
+    expect(out.reason).toContain('.orchestrator/STATE.md');
+  });
+
+  it('a foreign completed <state-dir>/STATE.md does not hide the own active plan under .orchestrator/', () => {
+    writeState({ status: 'completed', sessionId: OTHER });
+    writeMisplaced({ status: 'active', sessionId: OWN });
+    expect(run().out).toMatchObject({ verdict: 'foreign', stateSessionId: OTHER, misplacedState: { ownership: 'own' } });
+  });
+
+  it('a misplaced plan without session-id is named as legacy, not as own', () => {
+    writeMisplaced({ status: 'paused' });
+    expect(run().out).toMatchObject({ verdict: 'no-state', misplacedState: { ownership: 'legacy', stateSessionId: null } });
+  });
+
+  it('a completed .orchestrator/STATE.md leftover is not named', () => {
+    writeMisplaced({ status: 'completed', sessionId: OWN });
+    const { out } = run();
+    expect(out.verdict).toBe('no-state');
+    expect(out.misplacedState).toBeUndefined();
+  });
+
+  it('--record-without-plan writes no closed-without-plan record for an own misplaced plan', () => {
+    writeMisplaced({ status: 'active', sessionId: OWN });
+    const { out } = run(OWN, ['--record-without-plan']);
+    expect(out.record).toMatchObject({ written: false, reason: 'misplaced-plan', path: join(dir, '.orchestrator', 'STATE.md') });
+    expect(existsSync(join(dir, '.orchestrator', 'metrics', 'sessions.jsonl'))).toBe(false);
   });
 });
 

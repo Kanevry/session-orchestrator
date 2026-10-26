@@ -846,8 +846,9 @@ describe('the built-in registry', () => {
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn', followUp: 'budget-exceeded' });
     expect(calls[0].payload.timed_out).toBe(0);
     // The ledger field the runner's BV-004 revisit trigger reads — the outcome
-    // alone (`ran-warn`) cannot tell a fallen-back follow-up from a clean one.
-    expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'budget-exceeded' });
+    // alone (`ran-warn`) cannot tell a fallen-back follow-up from a clean one,
+    // and `follow_up_stage` tells this overrun from the red-history one (#1735).
+    expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'budget-exceeded', follow_up_stage: 'pushed-sha' });
   });
 
   // BUG this catches (#1728): a red GitHub reading ran its last-green history
@@ -860,7 +861,7 @@ describe('the built-in registry', () => {
   it('keeps the red line when the GitHub last-green history overruns the budget (#1728)', async () => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     const dir = await mkTmp();
-    const { emit } = captureEmit();
+    const { calls, emit } = captureEmit();
     const fake = await fakeProbe(
       dir,
       'ci-status',
@@ -884,6 +885,8 @@ describe('the built-in registry', () => {
     ]);
     expect(out.results[0]).toMatchObject({ id: 'ci-status', followUp: 'budget-exceeded' });
     expect(out.results[0].outcome).not.toBe('timeout');
+    // #1735: the same `budget-exceeded` as the pushed-SHA overrun, told apart.
+    expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'budget-exceeded', follow_up_stage: 'red-history' });
   });
 
   // BUG this catches (#1728 review, 2026-10-22): the overrun test above never
@@ -979,6 +982,54 @@ describe('the built-in registry', () => {
     expect(out.results[0]).toMatchObject({ id: 'ci-status', outcome: 'ran-warn', severity: 'warn', followUp: 'threw' });
     expect(calls[0].payload.errored).toBe(0);
     expect(calls[0].payload.probes[0]).toMatchObject({ id: 'ci-status', follow_up: 'threw' });
+  });
+
+  // BUG this catches (#1800, #1735): `follow_up_stage` is a FAILURE locator. A
+  // refactor that records the stage whenever a follow-up names one makes a
+  // clean run (`ci-status` green + dropped failures names `head-sha` on every
+  // such run) read like an overflow in the ledger. Inline follow-up: the
+  // runner's mapping is under test, not the registry's branch selection.
+  it('records no follow_up_stage when a follow-up that named its stage succeeds (#1800)', async () => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const fake = await fakeProbe(dir, 'stage-ok', warns('first reading'), {
+      followUp: async (result, _ctx, _requery, _deliver, _mod, stage) => {
+        stage('head-sha');
+        return { ...result, message: 'enriched reading' };
+      },
+    });
+
+    const out = await runSessionStartProbes({ repoRoot: dir, env: {} }, { probes: [fake], emit });
+
+    expect(out.results[0].outcome).toBe('ran-warn');
+    expect(out.results[0].followUp).toBeUndefined();
+    expect(out.results[0].followUpStage).toBeUndefined();
+    expect(Object.keys(calls[0].payload.probes[0])).not.toContain('follow_up_stage');
+    expect(Object.keys(calls[0].payload.probes[0])).not.toContain('follow_up');
+  });
+
+  // BUG this catches (#1800): the `head-sha` stage (the green-with-dropped-
+  // failures branch of the real `ci-status` follow-up) was never pinned for
+  // either failure mode, so a rename or a dropped `stage('head-sha')` call left
+  // that overrun indistinguishable from the other two in the ledger. The
+  // inline follow-up stops in that stage; the real branch cannot be made to hang.
+  it.each([
+    { failure: 'threw', body: async () => { throw new Error('rev-parse exploded'); }, timeoutMs: undefined },
+    { failure: 'budget-exceeded', body: () => new Promise(() => {}), timeoutMs: 300 },
+  ])('records follow_up_stage head-sha when the follow-up stopped there: $failure (#1800)', async ({ failure, body, timeoutMs }) => {
+    const dir = await mkTmp();
+    const { calls, emit } = captureEmit();
+    const fake = await fakeProbe(dir, 'stage-head', warns('first reading'), {
+      followUp: async (_result, _ctx, _requery, _deliver, _mod, stage) => {
+        stage('head-sha');
+        return body();
+      },
+    });
+
+    const out = await runSessionStartProbes({ repoRoot: dir, env: {}, timeoutMs }, { probes: [fake], emit });
+
+    expect(out.results[0]).toMatchObject({ outcome: 'ran-warn', followUp: failure, followUpStage: 'head-sha' });
+    expect(calls[0].payload.probes[0]).toMatchObject({ follow_up: failure, follow_up_stage: 'head-sha' });
   });
 
   // BUG this catches (#1332 review, LOW): when HEAD IS the pushed commit the
@@ -1315,5 +1366,18 @@ describe('#856 — GitHub check-run counts reach the session-start banner', () =
   ])('renders the red line for $label (#856)', ({ reading, line }) => {
     const registryProbe = PROBES.find((p) => p.id === 'ci-status');
     expect(registryProbe.render(reading, {})).toBe(line);
+  });
+});
+
+describe('security-pulse telemetry', () => {
+  // A degraded (incomplete) measurement must not read as not-measured in the ledger.
+  it.each([
+    { state: 'not-measured', value: 0 },
+    { state: 'stale', value: 1 },
+    { state: 'fresh', value: 2 },
+    { state: 'degraded', value: 3 },
+  ])('maps state $state to cache_state $value', ({ state, value }) => {
+    const entry = PROBES.find((p) => p.id === 'security-pulse');
+    expect(entry.telemetry({ state }).cache_state).toBe(value);
   });
 });

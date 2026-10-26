@@ -11,6 +11,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { format, inspect } from 'node:util';
 
 import {
   resolveOwnerYamlPath,
@@ -535,6 +536,72 @@ describe('writeOwnerConfig', () => {
 });
 
 // ---------------------------------------------------------------------------
+// SEC-008 (SO#1785): hash-salt stays out of every serialization
+// ---------------------------------------------------------------------------
+
+describe('loadOwnerConfig — hash-salt is not serialized (SEC-008, #1785)', () => {
+  // Invented placeholder — never a real salt. Assertions are booleans so a
+  // failure cannot print file contents. Kept short on purpose: js-yaml clips
+  // each snippet line ~36 chars around the error column, so a long value is
+  // never quoted whole and the parse-error test would pass vacuously.
+  const SALT = 'PH-SALT-1785';
+
+  function writeSaltedOwnerYaml(dir) {
+    const filePath = join(dir, 'owner.yaml');
+    const cfg = validConfig({
+      owner: { name: 'Placeholder Owner', language: 'en' },
+      'hardware-sharing': { enabled: true, 'hash-salt': SALT },
+    });
+    expect(writeOwnerConfig(cfg, { path: filePath }).written).toBe(true);
+    return filePath;
+  }
+
+  it('hides the salt from JSON, inspect, spread and structuredClone but keeps it readable', () => {
+    const result = loadOwnerConfig({ path: writeSaltedOwnerYaml(makeTmpDir()) });
+    expect(result.source).toBe('file');
+    expect(JSON.stringify(result).includes(SALT)).toBe(false);
+    expect(inspect(result, { depth: Infinity }).includes(SALT)).toBe(false);
+    // %o runs inspect with showHidden: true, which prints hidden DATA values.
+    expect(format('%o', result).includes(SALT)).toBe(false);
+    expect(format('%o', result.config).includes(SALT)).toBe(false);
+    expect(JSON.stringify({ ...result.config['hardware-sharing'] }).includes(SALT)).toBe(false);
+    expect(JSON.stringify(globalThis.structuredClone(result.config)).includes(SALT)).toBe(false);
+    expect(result.config['hardware-sharing']['hash-salt'] === SALT).toBe(true);
+    expect(validateOwnerConfig(result.config).valid).toBe(true);
+  });
+
+  it('keeps the salt through a load → writeOwnerConfig → load round trip', () => {
+    const dir = makeTmpDir();
+    const first = loadOwnerConfig({ path: writeSaltedOwnerYaml(dir) });
+    const secondPath = join(dir, 'owner-roundtrip.yaml');
+    expect(writeOwnerConfig(first.config, { path: secondPath }).written).toBe(true);
+    const second = loadOwnerConfig({ path: secondPath });
+    expect(second.source).toBe('file');
+    expect(second.config['hardware-sharing']['hash-salt'] === SALT).toBe(true);
+  });
+
+  // The snippet case quotes the salt via the code frame; the alias and tag cases
+  // via js-yaml's `reason`, which interpolates source text (unidentified alias
+  // "<name>", unknown tag !<<tag>>).
+  it.each([
+    ['code-frame snippet', `  hash-salt: "${SALT}"\n  bad: [unclosed\n`, SALT],
+    ['alias reason', '  hash-salt: *PHSALT1785\n', 'PHSALT1785'],
+    ['unknown-tag reason', '  hash-salt: !PHSALT1785 x\n', 'PHSALT1785'],
+  ])('does not quote owner.yaml text in a YAML parse error (%s)', (_label, saltLines, needle) => {
+    const filePath = join(makeTmpDir(), 'owner.yaml');
+    writeFileSync(
+      filePath,
+      `owner:\n  name: "Placeholder Owner"\nhardware-sharing:\n  enabled: true\n${saltLines}`,
+      'utf8',
+    );
+    const result = loadOwnerConfig({ path: filePath });
+    expect(result.reason).toBe('unparseable');
+    expect(JSON.stringify(result).includes(needle)).toBe(false);
+    expect(/^YAML parse error at line \d+, column \d+$/.test(result.errors[0])).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // vaults: section (#700) — named-vault list validation
 // ---------------------------------------------------------------------------
 
@@ -877,7 +944,10 @@ describe('#820 per-section tolerance', () => {
     const result = loadOwnerConfig({ path: filePath });
 
     expect(result.source).toBe('defaults');
-    expect(result.config).toEqual(getDefaults());
+    // hash-salt is non-enumerable on a loaded config (SEC-008, #1785), so
+    // toEqual would not see it: compare with the salt copied back in.
+    const hw = result.config['hardware-sharing'];
+    expect({ ...result.config, 'hardware-sharing': { ...hw, 'hash-salt': hw['hash-salt'] } }).toEqual(getDefaults());
     expect(result.errors.length).toBeGreaterThan(0);
     expect(result.errors.some((e) => e.includes('tone.style'))).toBe(true);
   });

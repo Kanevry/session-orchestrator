@@ -12,8 +12,8 @@
 import path from 'node:path';
 
 import { BUDGET, makeCheckResult, makeFinding, normalizeOsvSeverity, severityRank } from './contract.mjs';
-import { readLockfileDelta } from './lockfiles.mjs';
-import { filterPublicPackages, readNpmrcPolicy } from './npmrc.mjs';
+import { defaultRunGit, readLockfileDelta } from './lockfiles.mjs';
+import { filterPublicPackages, readHostNpmrcPolicy, readNpmrcPolicy } from './npmrc.mjs';
 import { httpRequest } from '../http-request.mjs';
 
 const OSV_BASE = 'https://api.osv.dev/v1';
@@ -78,6 +78,19 @@ function fixedFromRecord(record, pkg) {
     }
   }
   return best;
+}
+
+const CVE_RE = /^CVE-\d{4}-\d{4,}$/;
+
+/**
+ * CVE ids a fetched advisory record names: its own id if it is a CVE, then its
+ * `aliases` that are CVEs. A missing or malformed `aliases` contributes nothing.
+ * @returns {string[]}
+ */
+function cveAliasesFromRecord(record) {
+  const own = typeof record?.id === 'string' && CVE_RE.test(record.id) ? [record.id] : [];
+  const aliases = Array.isArray(record?.aliases) ? record.aliases : [];
+  return [...own, ...aliases.filter((a) => typeof a === 'string' && CVE_RE.test(a))];
 }
 
 function isTimeout(err) {
@@ -145,6 +158,8 @@ async function fetchDetails(request, ids, { deadlineAt, maxDetails }) {
  * @param {typeof httpRequest} [opts.request]  injectable HTTP transport (tests)
  * @param {(args: string[]) => Promise<string>} [opts.runGit]  injectable git runner (tests)
  * @param {number} [opts.maxDetails] cap on advisory detail requests (default 25)
+ * @param {NodeJS.ProcessEnv} [opts.env]  environment for the host npm policy (tests)
+ * @param {string} [opts.homeDir]  home directory for `~/.npmrc` (tests)
  * @returns {Promise<ReturnType<typeof makeCheckResult>>} CheckResult with id `lockfile`
  */
 export async function runLockfileCheck({
@@ -153,8 +168,10 @@ export async function runLockfileCheck({
   head,
   deadlineAt,
   request = httpRequest,
-  runGit,
+  runGit = defaultRunGit(repoRoot),
   maxDetails = DEFAULT_MAX_DETAILS,
+  env,
+  homeDir,
 } = {}) {
   const started = Date.now();
   const deadline = Number.isFinite(deadlineAt) ? deadlineAt : started + BUDGET.networkMs;
@@ -174,16 +191,27 @@ export async function runLockfileCheck({
     const preUnchecked = delta.unparsed + delta.unpinned;
     const preReason = delta.unparsed > 0 ? 'unparsed' : delta.unpinned > 0 ? 'unpinned' : null;
 
-    // Each lockfile is governed by the root `.npmrc` plus the one next to it.
+    // Each lockfile is governed by the root `.npmrc` plus the one next to it,
+    // both as committed at `head` (#1788), and by the host's npm config.
+    const host = readHostNpmrcPolicy({ env, homeDir });
     const byDir = new Map();
     for (const p of delta.packages) {
       const dir = path.posix.dirname(p.file);
       if (!byDir.has(dir)) byDir.set(dir, []);
       byDir.get(dir).push(p);
     }
-    const publicPackages = [...byDir].flatMap(([dir, pkgs]) =>
-      filterPublicPackages(pkgs, readNpmrcPolicy({ repoRoot, dir })).public,
-    );
+    // An unreadable `.npmrc` fails closed in readNpmrcPolicy; the run must then
+    // say it is incomplete (#1775). It only governs npm packages, so a uv/pip-only
+    // directory does not degrade on it.
+    const npmrcUnreadable = new Set();
+    const publicPackages = [];
+    for (const [dir, pkgs] of byDir) {
+      const policy = await readNpmrcPolicy({ head, runGit, dir, host });
+      if (pkgs.some((p) => p.ecosystem === 'npm')) for (const f of policy.unreadable) npmrcUnreadable.add(f);
+      publicPackages.push(...filterPublicPackages(pkgs, policy).public);
+    }
+    const npmrcGap = npmrcUnreadable.size;
+    const gapReason = preReason ?? (npmrcGap > 0 ? 'npmrc-unreadable' : null);
     // One query per (ecosystem, name, version); the first file that introduced it is reported.
     const byKey = new Map();
     for (const p of publicPackages) {
@@ -191,14 +219,15 @@ export async function runLockfileCheck({
       if (!byKey.has(key)) byKey.set(key, p);
     }
     const packages = [...byKey.values()];
-    pending = packages.length + preUnchecked;
+    // `pending` feeds the timeout/network/internal-error returns: it carries the npmrc gap too.
+    pending = packages.length + preUnchecked + npmrcGap;
     if (packages.length === 0) {
       return makeCheckResult({
         id: 'lockfile',
-        status: preUnchecked > 0 ? 'degraded' : 'ok',
-        reason: preReason,
+        status: preUnchecked + npmrcGap > 0 ? 'degraded' : 'ok',
+        reason: gapReason,
         checked: 0,
-        unchecked: preUnchecked,
+        unchecked: preUnchecked + npmrcGap,
         ms: ms(),
       });
     }
@@ -222,7 +251,7 @@ export async function runLockfileCheck({
         });
       }
     }
-    pending = preUnchecked;
+    pending = preUnchecked + npmrcGap;
 
     const hits = [];
     for (let i = 0; i < packages.length; i += 1) {
@@ -259,6 +288,9 @@ export async function runLockfileCheck({
           continue;
         }
         const graded = []; // { severity, fixed } per advisory with a record
+        // Primary ids first, then the CVE aliases of the records actually fetched,
+        // so a KEV join on CVE ids sees a GHSA's CVE (#1769 stage 2).
+        const withAliases = new Set(ids);
         let gap = false;
         for (const id of ids) {
           const record = records.get(id);
@@ -266,6 +298,7 @@ export async function runLockfileCheck({
             gap = true;
             continue;
           }
+          for (const cve of cveAliasesFromRecord(record)) withAliases.add(cve);
           graded.push({ severity: normalizeOsvSeverity(record?.database_specific?.severity), fixed: fixedFromRecord(record, pkg) });
         }
         let severity = 'unknown';
@@ -285,7 +318,7 @@ export async function runLockfileCheck({
             package: pkg.name,
             version: pkg.version,
             fixedIn,
-            ids,
+            ids: [...withAliases],
             file: pkg.file,
             introduced: true,
           }),
@@ -296,9 +329,9 @@ export async function runLockfileCheck({
       }
     }
 
-    const unchecked = detailGaps + broken + preUnchecked;
+    const unchecked = detailGaps + broken + preUnchecked + npmrcGap;
     const detailReason = detailGaps > 0 ? DETAIL_REASONS.find((r) => [...missing.values()].includes(r)) : null;
-    const reason = detailReason ?? (broken > 0 ? 'internal-error' : preReason);
+    const reason = detailReason ?? (broken > 0 ? 'internal-error' : gapReason);
     return makeCheckResult({
       id: 'lockfile',
       status: unchecked > 0 ? 'degraded' : 'ok',

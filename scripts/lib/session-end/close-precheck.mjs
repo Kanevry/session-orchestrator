@@ -24,6 +24,13 @@
  * file is unchanged. Field incident 2026-10-21: a legacy STATE.md of an older,
  * already closed plan read `complete-missing-record`.
  *
+ * Misplaced plan (#1790): Lead-guided sessions wrote their active plan to
+ * `<repo>/.orchestrator/STATE.md` instead of `<state-dir>/STATE.md`, so the
+ * pre-check read `no-state` / `foreign` and the real plan stayed `active`.
+ * On those two verdicts ONLY, an active/paused `.orchestrator/STATE.md` is
+ * named as `misplacedState` (with its ownership) — never adopted, moved or
+ * deleted (PSA-003); the verdict is unchanged.
+ *
  * Ceiling (BV-004): on platforms without a native id (Cursor, Pi, Codex
  * without a thread id) that is one operator confirmation per `/close`.
  * Revisit when those platforms expose a native session id.
@@ -53,6 +60,62 @@ export function computeConfirmToken(statePath, raw) {
   return createHash('sha256').update(path.resolve(statePath)).update('\0').update(raw).digest('hex').slice(0, 16);
 }
 
+/**
+ * Ownership of a STATE.md, decided on the native id only (#1661/#1718).
+ *
+ * @param {string|null} stateSessionId  trimmed `session-id`, null when absent
+ * @param {string[]} ownSessionIds  this process's native ids
+ * @returns {'own'|'foreign'|'legacy'|'unprovable'}
+ */
+function ownershipOf(stateSessionId, ownSessionIds) {
+  if (!stateSessionId) return 'legacy';
+  if (ownSessionIds.length === 0) return 'unprovable';
+  return ownSessionIds.includes(stateSessionId) ? 'own' : 'foreign';
+}
+
+/** `session-id` of parsed frontmatter, trimmed, or null. */
+function readSessionId(fm) {
+  const rawId = typeof fm['session-id'] === 'string' ? fm['session-id'].trim() : '';
+  return rawId || null;
+}
+
+/** The only misplacement the host census found (10/10, #1790). */
+const MISPLACED_STATE_DIR = '.orchestrator';
+
+/**
+ * An open plan under `<repoRoot>/.orchestrator/STATE.md` (#1790), or null when
+ * that file is absent, unreadable, without frontmatter, or not active/paused.
+ *
+ * @param {string} repoRoot
+ * @param {string} dir  the resolved state dir (no lookup when it IS `.orchestrator`)
+ * @param {string[]} ownSessionIds
+ * @returns {{ path: string, status: string, session: string|null, stateSessionId: string|null,
+ *   ownership: 'own'|'foreign'|'legacy'|'unprovable' }|null}
+ */
+function findMisplacedState(repoRoot, dir, ownSessionIds) {
+  if (path.normalize(dir) === MISPLACED_STATE_DIR) return null;
+  const misplacedPath = path.join(repoRoot, MISPLACED_STATE_DIR, 'STATE.md');
+  let parsed;
+  try {
+    if (!existsSync(misplacedPath)) return null;
+    parsed = parseStateMd(readFileSync(misplacedPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!parsed) return null;
+  const fm = parsed.frontmatter;
+  const status = typeof fm.status === 'string' ? fm.status : null;
+  if (status !== 'active' && status !== 'paused') return null;
+  const stateSessionId = readSessionId(fm);
+  return {
+    path: misplacedPath,
+    status,
+    session: typeof fm.session === 'string' ? fm.session : null,
+    stateSessionId,
+    ownership: ownershipOf(stateSessionId, ownSessionIds),
+  };
+}
+
 /** Verdicts that hand off to session-end; every other verdict stops `/close`. */
 export const RUNS_SESSION_END = new Set(['run-session-end', 'complete-missing-record']);
 
@@ -72,34 +135,47 @@ export const RUNS_SESSION_END = new Set(['run-session-end', 'complete-missing-re
  *   status: string|null, stateSessionId: string|null, ownSessionIds: string[],
  *   statePath: string, reason?: string,
  *   wouldRun?: 'run-session-end'|'complete-missing-record', confirmToken?: string,
- *   session?: string|null, startedAt?: string|null
- * }}  the last four only with `ownership-unproven`
+ *   session?: string|null, startedAt?: string|null,
+ *   misplacedState?: { path: string, status: string, session: string|null, stateSessionId: string|null,
+ *     ownership: 'own'|'foreign'|'legacy'|'unprovable' }
+ * }}  `wouldRun`..`startedAt` only with `ownership-unproven`; `misplacedState`
+ *   (plus a `reason`) only with `no-state` / `foreign` and an open
+ *   `.orchestrator/STATE.md` (#1790)
  */
 export function classifyCloseState({ repoRoot, stateDir, env = process.env, confirmToken } = {}) {
   const dir = stateDir ?? resolveStateDir();
   const statePath = path.join(repoRoot, dir, 'STATE.md');
   const ownSessionIds = readProcessLocalSessionIds({ env });
   const base = { ownership: null, status: null, stateSessionId: null, ownSessionIds, statePath };
+  // #1790: name an open plan written to the wrong directory; verdict unchanged.
+  const withMisplaced = (result) => {
+    const misplacedState = findMisplacedState(repoRoot, dir, ownSessionIds);
+    if (!misplacedState) return result;
+    const misplacedReason = `open plan found under ${MISPLACED_STATE_DIR}/STATE.md, not ${dir}/STATE.md (#1790)`;
+    // Additive: a wrapped verdict's own reason is kept in front, never replaced.
+    return {
+      ...result,
+      misplacedState,
+      reason: result.reason ? `${result.reason}; ${misplacedReason}` : misplacedReason,
+    };
+  };
 
-  if (!existsSync(statePath)) return { ...base, verdict: 'no-state' };
+  if (!existsSync(statePath)) return withMisplaced({ ...base, verdict: 'no-state' });
 
   const raw = readFileSync(statePath);
   const parsed = parseStateMd(raw.toString('utf8'));
   if (!parsed) return { ...base, verdict: 'inconclusive', reason: 'STATE.md has no readable frontmatter' };
   const fm = parsed.frontmatter;
   const status = typeof fm.status === 'string' ? fm.status : null;
-  const rawId = typeof fm['session-id'] === 'string' ? fm['session-id'].trim() : '';
-  const stateSessionId = rawId || null;
+  const stateSessionId = readSessionId(fm);
 
-  const ownership = !stateSessionId ? 'legacy'
-    : ownSessionIds.length === 0 ? 'unprovable'
-      : ownSessionIds.includes(stateSessionId) ? 'own' : 'foreign';
+  const ownership = ownershipOf(stateSessionId, ownSessionIds);
   const known = { ...base, ownership, status, stateSessionId };
 
   // A foreign STATE.md is never this session's to close, whatever its status:
   // completed belongs to an earlier tab incarnation or a peer, active/paused to a
   // peer (or to this tab before a /clear, which this process cannot prove).
-  if (ownership === 'foreign') return { ...known, verdict: 'foreign' };
+  if (ownership === 'foreign') return withMisplaced({ ...known, verdict: 'foreign' });
 
   // #1718: legacy/unprovable never reaches session-end without a token bound
   // to this path and the bytes read here; every non-session-end verdict passes unchanged.

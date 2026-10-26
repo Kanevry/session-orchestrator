@@ -2,10 +2,11 @@ import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { inspect } from 'node:util';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { parseImageRefs, runFloatingTagCheck } from '../../../scripts/lib/security-delta/floating-tags.mjs';
+import { gitEnv, parseImageRefs, runFloatingTagCheck } from '../../../scripts/lib/security-delta/floating-tags.mjs';
 import { dropBlob, TRANSLATED_GIT_SUPPORTED, withTranslatedGit } from '../../_helpers/git-faults.mjs';
 
 const fixture = (name) => readFileSync(join(process.cwd(), 'tests/fixtures/security-delta/runtime', name), 'utf8');
@@ -37,6 +38,22 @@ function makeRepo(baseFiles, headFiles) {
   const head = commit(headFiles, 'head');
   return { repoRoot: repo, base, head };
 }
+
+describe('gitEnv', () => {
+  // Bug caught (SEC-008, SO#1785): gitEnv returning a plain full env again, so one
+  // JSON.stringify/console.log of it prints every host secret. Synthetic env only:
+  // even a failing assertion here cannot print a real value.
+  it('serializes to key names only while the values and the C locale still reach git', () => {
+    const P = 'placeholder-not-a-secret-1785';
+    const env = gitEnv({ SO1785_TEST_PLACEHOLDER: P });
+    for (const text of [JSON.stringify(env), inspect(env, { depth: Infinity })]) {
+      expect(text.includes(P)).toBe(false);
+      expect(text.includes('SO1785_TEST_PLACEHOLDER')).toBe(true);
+    }
+    expect(env.SO1785_TEST_PLACEHOLDER === P).toBe(true);
+    expect([env.LC_ALL, env.LANG, env.LANGUAGE]).toEqual(['C', 'C', '']);
+  });
+});
 
 describe('parseImageRefs', () => {
   it('skips scratch and earlier stage names, strips --platform, keeps digests and flags interpolation', () => {
@@ -85,6 +102,17 @@ describe('runFloatingTagCheck', () => {
   it('skips with no-relevant-change when no image-bearing file changed', async () => {
     const r = await runFloatingTagCheck(makeRepo({ Dockerfile: 'FROM node:latest\n' }, { 'src.txt': 'y\n' }));
     expect(r).toMatchObject({ status: 'skipped', reason: 'no-relevant-change' });
+  });
+
+  it('finds a floating tag in a Dockerfile under a non-ASCII directory (#1775)', async () => {
+    // Bug caught: `git diff --name-only` without -z quotes the path ("dock\303\251r/Dockerfile"),
+    // isDockerfile misses it and the check reads skipped/no-relevant-change.
+    const range = makeRepo({}, { 'dockér/Dockerfile': 'FROM node:latest\n' });
+    git('config', 'core.quotePath', 'true');
+    const r = await runFloatingTagCheck(range);
+    expect(r.status).toBe('ok');
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0]).toMatchObject({ file: 'dockér/Dockerfile', package: 'node', version: 'latest' });
   });
 
   it('counts a file git cannot read as unchecked and keeps the findings of the readable one (#1774)', async () => {

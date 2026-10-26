@@ -53,11 +53,13 @@
 #      this repo. `env -u TMPDIR` locally is the partial substitute; the real
 #      answer stays "read the CI job".
 #      Revisit trigger: a second platform-only red after this hook shipped.
-#   3. ONE REF. A multi-ref push materialises only the FIRST content-bearing
-#      local_sha; the rest are announced as ungated on stderr. Gating N refs
-#      would cost N x ~60 s, which buys back the reflex bypass this hook spends
-#      its whole design budget avoiding.
-#      Revisit trigger: a real multi-ref push shipping a break in ref 2+.
+#   3. ONE COMMIT. A push may carry several content refs only when they all
+#      peel to ONE commit (a branch and its tag); that commit is gated once. A
+#      push whose refs name more than one commit is BLOCKED (#1787), not gated
+#      N times: N x ~60 s would buy back the reflex bypass this hook spends its
+#      whole design budget avoiding. Cost: `git push --all` / `--tags` across
+#      several commits must be split into one push per commit.
+#      Revisit trigger: a real workflow that cannot split its push.
 #   4. COST -> BYPASS PRESSURE. Materialisation adds ~1 s to a gate that already
 #      warns about ~2 min of silence. That is small in seconds and not small in
 #      temperament: every second added here raises the pull toward
@@ -256,6 +258,11 @@ has_content=0
 content_refs=0
 target_sha=''
 target_ref=''
+# The first content line's peeled commit, whether any later one differs, and the
+# `<ref> -> <commit>` lines the block message lists (#1787).
+first_commit=''
+commits_differ=0
+ref_lines=''
 # 1 while EVERY content line goes to a branch other than main/master: only then may
 # the local partial route apply (#1642). git does not order the lines by the command
 # line, so a later `main` or tag line must veto it, not just the first line.
@@ -268,22 +275,49 @@ while read -r local_ref local_sha remote_ref _remote_sha; do
   [ "$local_sha" = "$zero" ] && continue
   has_content=1
   content_refs=$(( content_refs + 1 ))
-  pushed_refs="$pushed_refs$local_ref $local_sha
+  # Only a source that resolves NOW is recorded: one that already does not
+  # resolve at hook start names nothing git could re-resolve to a newer commit
+  # (real pushes always resolve it — git just did, to get local_sha).
+  if git rev-parse --verify --quiet --end-of-options "$local_ref" >/dev/null 2>&1; then
+    pushed_refs="$pushed_refs$local_ref $local_sha
 "
+  fi
   case "$remote_ref" in
     (refs/heads/main|refs/heads/master) so_partial_refs=0 ;;
     (refs/heads/?*) : ;;
     (*) so_partial_refs=0 ;;
   esac
+  # Compare COMMITS (#1787): the gate checks out one commit, and its partial and
+  # remote variants depend on that commit's history, not only its tree. Peel
+  # local_sha, never local_ref — a source like `HEAD~1` arrives verbatim. An
+  # annotated tag arrives as its TAG OBJECT sha, so peeling is what lets a branch
+  # and its tag on the same commit go together. `||`: a failing assignment ends
+  # the hook under `sh -e` (#1540); the raw fallback fails closed, because a
+  # tag-object sha never equals a commit sha.
+  peeled=$(git rev-parse --verify --quiet "${local_sha}^{commit}" 2>/dev/null) || peeled=$local_sha
+  ref_lines="$ref_lines    $local_ref -> $peeled
+"
   if [ -z "$target_sha" ]; then
     target_sha=$local_sha
     target_ref=$local_ref
+    first_commit=$peeled
+  elif [ "$peeled" != "$first_commit" ]; then
+    commits_differ=1
   fi
 done
 
 if [ "$has_content" -eq 0 ]; then
   echo "pre-push: delete-only push — quality gate skipped." >&2
   exit 0
+fi
+
+# One gate run proves exactly one commit (#1787). Before this block, a push of
+# two commits gated the first, said so in a warning, and printed "passed" for both.
+if [ "$commits_differ" -eq 1 ]; then
+  echo "✗ pre-push: this push sends $content_refs refs that point at more than one commit; the quality gate checks exactly one commit per push. Push blocked." >&2
+  printf '%s' "$ref_lines" >&2
+  echo "  Push each commit on its own: git push <remote> <ref>. A branch and its tag on the SAME commit may go together." >&2
+  exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -396,7 +430,7 @@ else
   tree_label="tracked tree @ $short_sha"
   echo "pre-push: materialised the tracked tree in ${mat_elapsed}s ($short_sha)." >&2
   if [ "$content_refs" -gt 1 ]; then
-    echo "⚠ pre-push: $content_refs content-bearing refs pushed — only $target_ref is gated." >&2
+    echo "pre-push: $content_refs refs point at one commit — gated once." >&2
   fi
 fi
 
@@ -550,37 +584,65 @@ if [ "$status" -ne 0 ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Moved-ref re-check (#1623) — the gate verified the SHAs git handed us on stdin.
+# Moved-ref re-check (#1623, #1778) — the gate verified the SHAs git handed us on
+# stdin. A moved ref BLOCKS the push.
 # ---------------------------------------------------------------------------
 # A gate run takes minutes; a commit made in the same worktree meanwhile moves
-# the pushed ref. Measured 2026-10-14 (git 2.56.0, local bare remote, a hook that
-# sleeps while a second commit lands): git sends the sha it resolved BEFORE the
-# hook, the remote received the gated sha and never the new commit. Re-measured
-# 2026-10-14 over SSH (remote bare repo on another host, two probes): same
-# result, the newer commit object never reached the remote. So a moved ref does
-# NOT mean an ungated sha goes out — it means a newer commit stays behind. The
-# check therefore WARNS and lets the gated push through; blocking only forced a
-# second full gate run for a push whose sha the gate had already verified.
+# the pushed ref. Which sha then leaves depends on the transport:
+# - Native transports (local path, file://, ssh) send the sha resolved BEFORE
+#   the hook: measured 2026-10-14 (git 2.56.0, local bare remote; SSH to an
+#   existing branch on another host) and 2026-10-24 (git 2.56.0, file://, new
+#   and existing branch) — the remote got the gated sha.
+# - Smart HTTP(S) does NOT: transport-helper hands git-remote-http the source
+#   ref NAME (`push refs/heads/x:refs/heads/x`, seen via
+#   GIT_TRANSPORT_HELPER_DEBUG), and the helper resolves it again AFTER this
+#   hook. Measured 2026-10-24 (git 2.56.0, git http-backend on 127.0.0.1, a hook
+#   that commits once more): new AND existing branch, the remote got the NEW
+#   tip. Incident #1778: 042464b8 gated, 980777b3 reached GitLab over HTTPS.
+# Detecting the transport from $2 is brittle (insteadOf, pushurl), and a hook
+# cannot force the gated sha, so ANY moved ref blocks — transport-independent.
 # Compared WITHOUT peeling: an annotated tag's local_sha is the tag object, and
-# `rev-parse <ref>` returns that same object. Refs that no longer resolve (or a
-# raw-sha source) are skipped: there is nothing newer to have slipped through.
+# `rev-parse <ref>` returns that same object.
+# Only a literal FULL object id (40 hex, 64 for SHA-256) is skipped — it cannot
+# move. Everything else is re-checked: refs/*, HEAD, bare branch names, and
+# revision EXPRESSIONS (`HEAD~1`, `main@{0}`, `main^{commit}`, abbreviated
+# shas). Measured 2026-10-24 by two reviewers (git 2.56.0): git hands such an
+# expression verbatim to the hook (`HEAD~1 <sha> refs/heads/x …`) and to the
+# remote helper (`push HEAD~1:refs/heads/x`), so HTTP(S) resolves it again after
+# the hook. `rev-parse --verify` of each of them returns exactly the sha
+# pre-push received (abbrev → full sha, `^{commit}` → the peeled commit), so an
+# unmoved push is not blocked. A source that resolved at hook start (only those
+# are recorded in pushed_refs) and no longer resolves after the gate BLOCKS
+# (fail closed): there is no telling which commit git would send.
+# `--end-of-options` keeps a source starting with `-` from being read as an
+# option (accepted by git 2.56.0, measured 2026-10-24).
 moved_refs=0
 while read -r chk_ref chk_sha; do
   [ -n "$chk_ref" ] || continue
   case "$chk_ref" in
-    (refs/*|HEAD) : ;;
-    (*) continue ;;
+    (*[!0-9a-f]*) : ;;
+    (*)
+      if [ "${#chk_ref}" -eq 40 ] || [ "${#chk_ref}" -eq 64 ]; then
+        continue
+      fi
+      ;;
   esac
-  chk_now=$(git rev-parse --verify --quiet "$chk_ref" 2>/dev/null) || continue
+  if ! chk_now=$(git rev-parse --verify --quiet --end-of-options "$chk_ref" 2>/dev/null); then
+    echo "✗ pre-push: $chk_ref no longer resolves after the gate; cannot tell which commit would be sent." >&2
+    moved_refs=1
+    continue
+  fi
   if [ "$chk_now" != "$chk_sha" ]; then
-    echo "⚠ pre-push: $chk_ref moved during the gate: gated $chk_sha, now $chk_now." >&2
+    echo "✗ pre-push: $chk_ref moved during the gate: gated $chk_sha, now $chk_now." >&2
     moved_refs=1
   fi
 done <<EOF
 $pushed_refs
 EOF
 if [ "$moved_refs" -ne 0 ]; then
-  echo "  Pushing the gated commit only — the newer commit is neither pushed nor gated. Push again to gate and send it." >&2
+  echo "  Push blocked: git may send the ref's CURRENT commit instead of the gated one (measured over HTTP(S), #1778), so the newer commit would leave ungated." >&2
+  echo "  The gate passed for the gated commit. Push again to gate and send the current tip." >&2
+  exit 1
 fi
 unset moved_refs chk_ref chk_sha chk_now
 

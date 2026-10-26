@@ -96,5 +96,15 @@ export function guardOwnerConfig(
 
 export const appliedOwnerConfigGuard = guardOwnerConfig(process.env);
 
+/**
+ * The pinned config dir above starts EMPTY, so the security-pulse cache under it
+ * is always absent and every real session-start probe run (in-process, or a
+ * hook child spreading `process.env`) would detach the network refresher
+ * (`scripts/lib/security-pulse/spawn.mjs`). Switched off for the worker and its
+ * children; tests of the spawn path pass their own `env` (a stub outranks this).
+ */
+export const SECURITY_PULSE_REFRESH_ENV = 'SO_SECURITY_PULSE_REFRESH';
+process.env[SECURITY_PULSE_REFRESH_ENV] = 'off';
+
 // No exit-time cleanup: a forks-pool worker never reaches a normal exit (see
 // vault-guard). The OS reaps the temp root.

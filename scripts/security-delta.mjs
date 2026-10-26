@@ -10,6 +10,7 @@
  * Mode resolution: `--mode`, else Session Config `security-delta.mode`, else `off`.
  */
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
@@ -19,11 +20,45 @@ import { isMainModule } from './lib/is-main-module.mjs';
 import { EXIT_BLOCK, MODES } from './lib/security-delta/contract.mjs';
 import { runSecurityDelta } from './lib/security-delta/runner.mjs';
 import { emitDeltaEvent } from './lib/security-delta/telemetry.mjs';
+import { safePackageName, safePackageVersion } from './lib/security-pulse-banner.mjs';
 
 const PREFIX = 'security-delta:';
 const EXIT_USAGE = 1;
 const EXIT_CRASH = 2;
 const execFileAsync = promisify(execFile);
+// eslint-disable-next-line no-control-regex -- remove untrusted C0/C1 controls from each text line
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/g;
+
+// These are output grammars, not replacements for the runner's raw identities.
+// A display value that cannot be represented safely becomes a neutral marker.
+const IMAGE_NAME_RE = /^(?:[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*(?::[0-9]+)?\/)*[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*$/i;
+// Space and @()[] occur in real repo paths (route groups, dynamic segments,
+// scoped packages). U+0020 is the only space admitted: no tab, no line break.
+const FILE_RE = /^[\p{L}\p{N}\p{M}._/+@()[\] -]{1,1024}$/u;
+// Invisible characters the classes above would admit: variation selectors
+// (\p{M}) and Hangul fillers (\p{L}).
+const INVISIBLE_RE = /[\uFE00-\uFE0F\u{E0100}-\u{E01EF}\u115F\u1160\u3164\uFFA0]/u;
+const REASON_RE = /^[a-z][a-z0-9-]{0,63}$/;
+const ADVISORY_ID_RE = /^[a-z0-9][a-z0-9.-]{0,127}$/i;
+const RULE_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
+const RANGE_RE = /^[0-9a-z._/@{}~^:+-]{1,1024}$/i;
+
+function outputPackage(finding) {
+  if (finding.package === null) return null;
+  if (finding.ecosystem === 'image') {
+    return typeof finding.package === 'string' && finding.package.length <= 255 && IMAGE_NAME_RE.test(finding.package) ? finding.package : 'unbenannt';
+  }
+  return safePackageName(finding.package) ?? 'unbenannt';
+}
+
+function outputFile(file) {
+  if (file === null) return null;
+  if (typeof file !== 'string' || !FILE_RE.test(file) || INVISIBLE_RE.test(file)) return '?';
+  // Empty segments also reject absolute paths, duplicate separators and a
+  // trailing slash. Keep the original relative spelling; never normalize away
+  // traversal before deciding whether the display value is safe.
+  return file.split('/').every((part) => part !== '' && part !== '.' && part !== '..') ? file : '?';
+}
 
 const HELP = [
   'Usage: security-delta.mjs --range <base>..<head> [options]',
@@ -156,8 +191,8 @@ function modeFromConfig(repoRoot, explicit) {
 }
 
 /**
- * Short human summary. Findings never carry a secret value (the gitleaks check
- * reports file + rule only), so printing them is safe.
+ * Short human summary. Strip controls before joining the intended report lines:
+ * file names and check reasons can also contain untrusted line breaks or ANSI.
  * @param {Awaited<ReturnType<typeof runSecurityDelta>>} result
  * @returns {string}
  */
@@ -175,7 +210,7 @@ function formatHuman(result) {
       lines.push(`    - ${f.class} ${f.severity} ${subject}${where}${f.introduced ? ' (introduced)' : ''}`);
     }
   }
-  return `${lines.join('\n')}\n`;
+  return `${lines.map((line) => line.replace(CONTROL_RE, '')).join('\n')}\n`;
 }
 
 /**
@@ -235,9 +270,29 @@ export async function main(argv = process.argv.slice(2)) {
 
   if (!values['no-event'] && mode !== 'off') await emitDeltaEvent(result, { repoRoot });
 
+  // All free text crosses a trust boundary at stdout. Keep the runner's raw
+  // identities, verdict and telemetry untouched; hash only output fingerprints.
+  const output = {
+    ...result,
+    range: RANGE_RE.test(result.range) ? result.range : '?',
+    checks: result.checks.map((check) => ({
+      ...check,
+      reason: check.reason === null || check.reason === undefined ? check.reason : REASON_RE.test(check.reason) ? check.reason : '?',
+      findings: check.findings.map((finding) => ({
+        ...finding,
+        package: outputPackage(finding),
+        version: finding.version === null ? null : safePackageVersion(finding.version) ?? '?',
+        fixedIn: finding.fixedIn === null ? null : safePackageVersion(finding.fixedIn) ?? '?',
+        file: outputFile(finding.file),
+        ids: finding.ids.map((id) => (finding.class === 'secret' ? RULE_ID_RE : ADVISORY_ID_RE).test(id) ? id : '?'),
+        fingerprint: `secdelta:${finding.class}:${createHash('sha256').update(finding.fingerprint).digest('hex').slice(0, 12)}`,
+      })),
+    })),
+  };
+
   // One write, then return: the caller sets exitCode and lets the process end
   // naturally, so a large line is never cut at the pipe buffer.
-  process.stdout.write(values.json ? `${JSON.stringify(result)}\n` : formatHuman(result));
+  process.stdout.write(values.json ? `${JSON.stringify(output)}\n` : formatHuman(output));
   return result.verdict === 'block' ? EXIT_BLOCK : 0;
 }
 

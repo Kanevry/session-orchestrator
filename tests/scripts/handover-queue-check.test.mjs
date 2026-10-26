@@ -201,6 +201,47 @@ describe('handover-queue-check (#1639)', () => {
     expect(readFileSync(file, 'utf8')).toBe(HANDOVER);
   });
 
+  // #1794: info lines under Nachkontrolle were filed as queue items.
+  // #1794 review: a label made any line info, so `**MR:** !44 — still need to
+  // rebase` was reported as a hint and its action never reached the queue.
+  it('an info line is a hint, never filed; a labelled line with an action is still filed (fail-closed)', () => {
+    const file = join(dir, 'uebergabe-x.md');
+    writeFileSync(
+      file,
+      '## Nachkontrolle\n- **MR:** !44, Kopf abc1234\n- Pipeline 31234 grün\n- Pipeline 31234 grün, danach Tag prüfen\n- **MR:** !44 — still need to rebase\n',
+    );
+
+    const r = run([...applyArgs(file), '--json']);
+    const out = JSON.parse(r.stdout.trim());
+
+    expect(r.calls).toHaveLength(2);
+    expect(out.filed).toEqual([
+      { line: 4, id: 42 },
+      { line: 5, id: 42 },
+    ]);
+    expect(out.info.map((i) => i.line)).toEqual([2, 3]);
+    expect(r.code).toBe(3);
+    expect(readFileSync(file, 'utf8')).toBe(
+      '## Nachkontrolle\n- **MR:** !44, Kopf abc1234\n- Pipeline 31234 grün\n- Pipeline 31234 grün, danach Tag prüfen queue:#42\n- **MR:** !44 — still need to rebase queue:#42\n',
+    );
+  });
+
+  // #1794: a queue mark in the heading did not cover its block — every point got its own item.
+  // #1794 review: the mark also covered child headings, so `## Offen queue:#1`
+  // silently marked unrelated actions under its `###` subsections.
+  it('a queue mark in the heading covers only the points directly under it, not a child heading', () => {
+    const file = join(dir, 'uebergabe-x.md');
+    const md = '## Nachkontrolle (queue:#123)\n- Pipeline prüfen\n### Tag\n- Tag prüfen\n## Offen\n- neu\n';
+    writeFileSync(file, md);
+
+    const r = run(applyArgs(file));
+
+    expect(r.calls).toHaveLength(2);
+    expect(readFileSync(file, 'utf8')).toBe(
+      md.replace('- Tag prüfen', '- Tag prüfen queue:#42').replace('- neu', '- neu queue:#42'),
+    );
+  });
+
   it('keeps CRLF line endings when it marks a point', () => {
     const file = join(dir, 'uebergabe-x.md');
     writeFileSync(file, '## Offen\r\n- a\r\n- b queue:#1\r\n');

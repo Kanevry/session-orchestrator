@@ -12,6 +12,7 @@
  */
 
 import { existsSync, readFileSync, realpathSync, lstatSync, openSync, fstatSync, readSync, closeSync, constants } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { resolveSessionRoot, isolatedAgentCheckout, registeredWorktreeRoots } from './platform.mjs';
 
@@ -670,10 +671,35 @@ export function assertTestSiblingCoverage(fileScope, allowedPaths, opts = {}) {
  * Deliberately NOT matched (documented skip rules — each is a false-positive trap):
  *   - targets beginning with `$` or `~`, or containing ANY `$` (variable /
  *     expansion — the concrete path is unknowable at parse time; e.g. `> $LOG`,
- *     `>> ${TMPDIR}/x`)
+ *     `>> ${TMPDIR}/x`) — EXCEPT the two prefixes whose value IS knowable
+ *     (#1793), resolved by {@link expandKnownPathPrefix} before the skip rule:
+ *       · a leading `$PWD/` / `${PWD}/` (quoted or not) is the shell's working
+ *         directory. With `options.cwd` it resolves to `<cwd>/<rest>` (absolute).
+ *         WITHOUT a cwd it is returned as the relative `<rest>` — exactly the
+ *         meaning `$PWD/x` has (`./x` of the writing shell), and exactly how a
+ *         plain relative target is already treated. Fail direction: the write is
+ *         NEVER dropped for want of a cwd, so the scope gate stays closed.
+ *       · a leading `~/` (UNQUOTED token only) resolves against `options.home`
+ *         (default `os.homedir()`).
+ *     Both expansions fail toward "unknown" (skipped, the pre-#1793 behaviour)
+ *     whenever the shell's value is not provable (#1793 review F7) — never toward
+ *     a concrete path the shell would not write:
+ *       · `$PWD/` is not expanded from the first segment on that may move the cwd
+ *         or rebind PWD (`cd`, `pushd`, `popd`, `chdir`, `builtin cd`, `PWD=…`,
+ *         `export PWD`, a `source` / `.` / `eval` verb) — `cd / && echo x >
+ *         "$PWD/f"` writes `//f`, not `<cwd>/f`;
+ *       · `~/` is not expanded after `HOME=…` / `export HOME`;
+ *       · per-part quote context (#1795 `parts`) decides: `$PWD/` expands only
+ *         from an unquoted or double-quoted reference (`'$PWD/f'`, `\$PWD/f` are
+ *         literal), `~/` only as an unquoted leading part (`"~/x"` is a literal
+ *         `~` directory). Ceiling (BV-004) for a word without `parts`: the old
+ *         token-level rule — see {@link expandKnownPathPrefix}.
+ *     A bare `$PWD`, `~`, `~user/…` or any other variable stays skipped.
  *   - `/dev/…`, `/tmp/…`, `/private/tmp/…` (device + temp sinks — never wave scope)
  *   - process substitution `>(…)` (an operator, not a file; the `(` breaks it)
- *   - fd duplication `>&`, `2>&1` (dup, not a file target)
+ *   - fd duplication `>&2`, `2>&1`, `>&-` (dup / close, not a file target). The
+ *     FILENAME form `>& out.txt` / `>&out.txt` / `N>& out.txt` IS a write target
+ *     (#1793 review F6) — see {@link foldFdDupFilenameRedirects}.
  *   - input redirects `<`, `<<` (reads, not writes)
  *   - quoted targets containing a space (best-effort — a spaced path is far more
  *     likely a quoting artefact than a real wave-scoped file)
@@ -739,14 +765,36 @@ export function assertTestSiblingCoverage(fileScope, allowedPaths, opts = {}) {
  * input returns `[]`.
  *
  * @param {string} command — the raw Bash command string
+ * @param {{ cwd?: string, home?: string }} [options] — `cwd`: the directory the
+ *   command runs in (hook input `cwd`), used to resolve a leading `$PWD`; absent →
+ *   the `$PWD/` prefix is stripped to a relative target (never dropped). `home`:
+ *   the directory a leading `~/` resolves against (default `os.homedir()`).
  * @returns {string[]} de-duplicated list of likely write targets (may be empty)
  */
-export function extractBashWriteTargets(command) {
+export function extractBashWriteTargets(command, options = {}) {
   if (typeof command !== 'string' || command.length === 0) return [];
+  const { cwd, home } = options ?? {};
 
   const out = [];
   const seen = new Set();
-  const add = (value) => {
+  // Expansion context (#1793 review F7). `pwdKnown` / `homeKnown` turn false
+  // from the first segment that may move the working directory / rebind HOME,
+  // and stay false for every later segment — see {@link segmentRebindsPwd}.
+  // A target word carries the lexer's per-part quote context (`parts`, #1795)
+  // and expandKnownPathPrefix decides from it. `noBackslash` / `noSingleQuote`
+  // are the FALLBACK for a word without `parts` (a copied or sliced token): the
+  // token-level `quoted` flag cannot tell `'$PWD/f'` from `"$PWD/f"`, and an
+  // unquoted backslash does not mark the token.
+  const expansion = {
+    cwd,
+    home,
+    pwdKnown: true,
+    homeKnown: true,
+    noBackslash: !command.includes('\\'),
+    noSingleQuote: !command.includes("'"),
+  };
+  const add = (raw, quoted = false, parts = undefined) => {
+    const value = expandKnownPathPrefix(raw, quoted, expansion, parts);
     if (shouldSkipWriteTarget(value)) return;
     const v = value.replace(/^\.\//, '');
     if (!v || seen.has(v)) return;
@@ -758,7 +806,12 @@ export function extractBashWriteTargets(command) {
   // interpreting, then resolve each segment's REAL verb through the shared
   // wrapper table. `out`/`seen`/`add` stay outside the loop so de-duplication
   // and first-seen ordering hold across segments (`echo a > x; echo b >> x`).
-  for (const segment of splitChainSegments(tokenizeCommand(command))) {
+  for (const segment of splitChainSegments(foldFdDupFilenameRedirects(tokenizeCommand(command)))) {
+    // F7: a segment that may move the cwd (or rebind HOME) disables the
+    // expansion for itself AND every later segment — never re-enabled, so a
+    // `$PWD/` target can never resolve against a directory the shell has left.
+    if (expansion.pwdKnown && segmentRebindsPwd(segment)) expansion.pwdKnown = false;
+    if (expansion.homeKnown && segmentRebindsHome(segment)) expansion.homeKnown = false;
     // #996.2 namespace fix: resolve the verb in the SAME (paren-peeled,
     // redirect-target-excluded) namespace the interpretation loop's `wordsSeen`
     // counter walks below — see {@link verbResolutionSegment}. Passing the RAW
@@ -778,7 +831,8 @@ export function extractBashWriteTargets(command) {
     // keeps `nice -n 10` / `sudo -u root` operands OUT). Harvest them exactly as
     // collectRedirectTargets does — the write is otherwise invisible to this pass.
     for (const wa of wrapperArgs) {
-      if (wa.writesFile === true && typeof wa.value === 'string') add(wa.value);
+      // wrapperArgs carry no quote flag — treated as quoted (fail: never `~`).
+      if (wa.writesFile === true && typeof wa.value === 'string') add(wa.value, true);
     }
 
     // `mode` tracks a command-head that owns following args (tee/sed/dd). It is
@@ -829,7 +883,7 @@ export function extractBashWriteTargets(command) {
       }
       // word token
       if (pendingRedirect) {
-        add(tk.value);
+        add(tk.value, tk.quoted, tk.parts);
         pendingRedirect = false;
         continue;
       }
@@ -840,12 +894,12 @@ export function extractBashWriteTargets(command) {
       // subsequent argument words, interpreted per active command-head mode
       if (heredocOpen) continue; // DATA, not a file argument
       if (mode === 'tee') {
-        if (!isShellFlag(tk.value)) add(tk.value);
+        if (!isShellFlag(tk.value)) add(tk.value, tk.quoted, tk.parts);
       } else if (mode === 'sed') {
         if (/^-i/.test(tk.value)) sedInPlace = true;
         sedArgs.push(tk);
       } else if (mode === 'dd') {
-        if (tk.value.startsWith('of=')) add(tk.value.slice(3));
+        if (tk.value.startsWith('of=')) add(tk.value.slice(3), tk.quoted);
       }
     }
 
@@ -855,13 +909,167 @@ export function extractBashWriteTargets(command) {
     if (mode === 'sed' && sedInPlace) {
       for (let i = sedArgs.length - 1; i >= 0; i--) {
         if (!isShellFlag(sedArgs[i].value)) {
-          add(sedArgs[i].value);
+          add(sedArgs[i].value, sedArgs[i].quoted, sedArgs[i].parts);
           break;
         }
       }
     }
   }
 
+  return out;
+}
+
+/** Leading `$PWD/` or `${PWD}/` — the one variable whose value the caller knows. */
+const PWD_PREFIX_RE = /^\$(?:PWD|\{PWD\})\/(.*)$/s;
+
+/**
+ * Resolve the two target prefixes whose value is knowable at parse time (#1793):
+ * `$PWD/` / `${PWD}/` and `~/`. Every other value is returned unchanged and meets
+ * the `$`/`~` skip rule. See the skip list on {@link extractBashWriteTargets} for
+ * the fail direction when `cwd` is absent (relative, never dropped).
+ *
+ * Fail direction (#1793 review F7): when the expansion is not PROVABLY what the
+ * shell does, the value is returned unexpanded so the `$`/`~` skip rule reports
+ * "unknown" — never a concrete path the shell would not write.
+ *   - `$PWD/` expands only while no earlier/same segment moved the cwd or rebound
+ *     PWD (`ctx.pwdKnown`), and only where the shell expands it: the whole
+ *     `$PWD` / `${PWD}` reference lies in ONE unquoted or double-quoted part
+ *     (#1795 `parts`) — `"$PWD"/f` and `$PWD/f` expand; `'$PWD'/f`, `$'$PWD'/f`,
+ *     `\$PWD/f`, `"\$PWD"/f` stay literal, and a quote boundary inside the
+ *     reference (`"$PW"D/f`, `"$"PWD/f`, `$"PWD"/f`) stays unresolved.
+ *   - `~/` expands only when the word's FIRST part is unquoted and starts with
+ *     `~/` (bash/zsh expand a tilde prefix only unquoted at the word start, up
+ *     to the first unquoted `/`) and while HOME was not rebound. `"~"/x`,
+ *     `\~/x` and `~"/x"` stay literal.
+ *   - Ceiling (BV-004), for a word WITHOUT `parts` (a token copied by a spread
+ *     or sliced, e.g. a `dd of=` operand): the token-level rule applies — ANY
+ *     backslash in the command disables both expansions, a quoted `$PWD/` token
+ *     expands only when the command holds no `'`, and a quoted `~` never
+ *     expands. Revisit if such a caller needs the precise reading.
+ *
+ * @param {string} value — unquoted target text
+ * @param {boolean} quoted — the lexer saw a quote or escape in this token
+ * @param {{ cwd?: string, home?: string, pwdKnown: boolean, homeKnown: boolean,
+ *   noBackslash: boolean, noSingleQuote: boolean }} ctx
+ * @param {Array<{ text: string, quote: string }>} [parts] — per-part quote
+ *   context of `value` from tokenizeCommand; ignored unless it spells `value`
+ * @returns {string}
+ */
+function expandKnownPathPrefix(value, quoted, ctx, parts) {
+  if (typeof value !== 'string') return value;
+  const exact = Array.isArray(parts) && parts.map((p) => p.text).join('') === value;
+  const pwd = PWD_PREFIX_RE.exec(value);
+  if (pwd) {
+    const rest = pwd[1];
+    const refLength = value.length - rest.length - 1; // `$PWD` / `${PWD}` before the `/`
+    // The WHOLE reference must sit in the word's FIRST part (C3, Codex review
+    // 2026-10-25): per-character categories alone accepted `"$PW"D/f` (variable
+    // `PW`, then `D/f`), `"$"PWD/f` (a literal `$`) and `$"PWD"/f` (a locale
+    // string) as `$PWD/f`. A quote boundary inside `$PWD` / `${PWD}` ends the
+    // reference there, so it is not provably PWD. The name's end is the `/`
+    // PWD_PREFIX_RE requires, so `$PWDX/f` never gets here.
+    const expands = exact
+      ? (parts[0].quote === 'none' || parts[0].quote === 'double') && parts[0].text.length >= refLength
+      : ctx.noBackslash && (!quoted || ctx.noSingleQuote);
+    if (!ctx.pwdKnown || !expands) return value;
+    if (rest.length === 0 || rest.includes('$')) return value; // dir only / nested expansion → skip
+    return typeof ctx.cwd === 'string' && ctx.cwd.length > 0 ? path.join(ctx.cwd, rest) : rest;
+  }
+  const tildeExpands = exact
+    ? parts[0].quote === 'none' && parts[0].text.startsWith('~/')
+    : !quoted && ctx.noBackslash;
+  if (tildeExpands && ctx.homeKnown && value.startsWith('~/') && value.length > 2) {
+    const base = typeof ctx.home === 'string' && ctx.home.length > 0 ? ctx.home : os.homedir();
+    return path.join(base, value.slice(2));
+  }
+  return value;
+}
+
+/**
+ * Words that move the shell's working directory, matched ANYWHERE in a segment
+ * (`builtin cd`, `if cd`, `command cd`, zsh `chdir`).
+ */
+const PWD_MOVING_WORDS = new Set(['cd', 'pushd', 'popd', 'chdir']);
+/**
+ * Verbs that run arbitrary shell text in THIS shell and so may move the cwd
+ * opaquely. Matched only as the resolved verb — a bare `.` argument
+ * (`find . …`) must not count.
+ */
+const OPAQUE_SHELL_VERBS = new Set(['source', '.', 'eval']);
+
+/**
+ * Does this chain segment possibly change the working directory or rebind
+ * `PWD` (F7)? Over-matching is the safe direction — it only withholds the
+ * `$PWD/` expansion (the pre-#1793 "unknown"); `echo cd > "$PWD/f"` therefore
+ * stays unexpanded, by design.
+ *
+ * Ceiling (BV-004): a shell FUNCTION or alias whose body runs `cd`, zsh
+ * AUTO_CD (a bare directory name as a command) and a script sourced through a
+ * wrapper are not recognised. Revisit if a guard needs to trust `$PWD/` after
+ * such a call.
+ *
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {boolean}
+ */
+function segmentRebindsPwd(segment) {
+  if (OPAQUE_SHELL_VERBS.has(resolveSegmentVerb(verbResolutionSegment(segment)).verb)) return true;
+  return segment.some((tok) =>
+    PWD_MOVING_WORDS.has(tok.text.replace(/^.*\//, '').replace(/^\(+/, '')) || /^PWD(?:\+?=|$)/.test(tok.text));
+}
+
+/**
+ * Does this segment rebind `HOME` (`HOME=/x`, `export HOME`, `read HOME`)? A
+ * rebound HOME makes a later `~/` resolve elsewhere, so `~/` stays unexpanded.
+ * @param {Array<{ text: string, quoted: boolean }>} segment
+ * @returns {boolean}
+ */
+function segmentRebindsHome(segment) {
+  return segment.some((tok) => /^HOME(?:\+?=|$)/.test(tok.text));
+}
+
+/**
+ * Fold the `>&WORD` / `N>&WORD` forms back together (#1793 review F6).
+ *
+ * `tokenizeCommand` lexes `>&2` / `2>&1` as ONE dup token, but when the operand
+ * is not a digit run — `>& out.txt`, `>&out.txt`, `>&-`, `2>& out.txt` — it emits
+ * three: a truncate redirect (`>` / `2>`), a chain-operator `&` and the operand
+ * (measured 2026-10-24). The `&` then split the statement in
+ * `splitChainSegments`, so the operand became a new command and the write was
+ * invisible. In bash `>&WORD` with a non-numeric WORD writes stdout+stderr to the
+ * FILE WORD (= `&> WORD`).
+ *
+ * zsh's append form `>>& WORD` lexes as `>>` `&` `WORD` and folds the same way.
+ * An unquoted `&` straight after a `\d*>` / `\d*>>` redirect can never be a
+ * background operator (bash: syntax error), so the fold is safe:
+ *   - operand `^\d+$` or `-` → one dup token (`>&2`, `>&-`), still not a target;
+ *   - any other operand → the redirect followed by the operand, i.e. a target.
+ * `N>&file` with N ≠ 1 is an "ambiguous redirect" in bash 3.2/5 (no write) — it
+ * is still reported, the fail-closed over-report (zsh accepts more forms).
+ *
+ * @param {Array<{ text: string, quoted: boolean, redirect?: object }>} tokens
+ * @returns {Array<{ text: string, quoted: boolean, redirect?: object }>}
+ */
+function foldFdDupFilenameRedirects(tokens) {
+  const out = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const tok = tokens[i];
+    const amp = tokens[i + 1];
+    const operand = tokens[i + 2];
+    if (
+      !tok.quoted && /^\d*>>?$/.test(tok.text) &&
+      amp !== undefined && !amp.quoted && amp.text === '&' &&
+      operand !== undefined
+    ) {
+      if (/^\d+$/.test(operand.text) || operand.text === '-') {
+        out.push({ text: `${tok.text}&${operand.text}`, quoted: false, redirect: { fd: tok.redirect?.fd ?? null, mode: 'dup' } });
+      } else {
+        out.push(tok, operand);
+      }
+      i += 2;
+      continue;
+    }
+    out.push(tok);
+  }
   return out;
 }
 
@@ -897,8 +1105,14 @@ function shouldSkipWriteTarget(value) {
 
 /** Unquoted `tokenizeCommand` operator texts that break the current command. */
 const SHELL_SEPARATOR_OPS = new Set([';', '|', '||', '&', '&&']);
-/** Write redirects: `>`, `>>`, `>|`, and fd-prefixed forms (`2>`, `2>>`). */
-const WRITE_REDIRECT_OP_RE = /^\d*(?:>>|>\|?)$/;
+/**
+ * Write redirects: `>`, `>>`, `>|`, fd-prefixed forms (`2>`, `2>>`) and the
+ * both-streams forms `&>` / `&>>` (#1793 — `tokenizeCommand` emits those as ONE
+ * token; without the `&` alternative they matched nothing and the target was lost).
+ * Fd duplication (`>&2`, `2>&1`) arrives as one token too and still does not match;
+ * the split filename form `>` `&` `WORD` is folded first by {@link foldFdDupFilenameRedirects}.
+ */
+const WRITE_REDIRECT_OP_RE = /^(?:\d*|&)(?:>>|>\|?)$/;
 /** Here-doc operators `<<` / `<<-` — a DATA body token follows at the next newline. */
 const HEREDOC_OP_RE = /^\d*<<-?$/;
 /** Other input redirects `<` / `<<<` (here-string) — never a write target, no body. */
@@ -922,14 +1136,17 @@ const INPUT_REDIRECT_OP_RE = /^\d*(?:<<<|<)$/;
  * @returns {Array<{type: string, value?: string}>}
  */
 function peelSubshellParens(tok) {
-  if (tok.quoted) return [{ type: 'word', value: tok.text }];
+  // `parts` (#1795, non-enumerable on the lexer token) rides along only while
+  // the word text is the token text unchanged; a peeled word gets none, and
+  // expandKnownPathPrefix then falls back to its token-level rule.
+  if (tok.quoted) return [{ type: 'word', value: tok.text, quoted: true, parts: tok.parts }];
   let text = tok.text;
   const out = [];
   while (text.startsWith('(')) { out.push({ type: 'sep' }); text = text.slice(1); }
   const trailing = [];
   while (text.endsWith(')')) { trailing.push({ type: 'sep' }); text = text.slice(0, -1); }
   if (text.length > 0 || (out.length === 0 && trailing.length === 0)) {
-    out.push({ type: 'word', value: text });
+    out.push({ type: 'word', value: text, quoted: false, parts: text === tok.text ? tok.parts : undefined });
   }
   return out.concat(trailing);
 }
@@ -939,11 +1156,11 @@ function peelSubshellParens(tok) {
  * stream {@link extractBashWriteTargets} interprets. Operator classification is
  * applied ONLY to unquoted tokens, so `echo '>' x` keeps its `>` as literal text.
  *
- * `&>` is not a distinct token here: `tokenizeCommand` deliberately lexes it as
- * `&` followed by `>` (#965 Risk C). That still works — the redirect branch of the
- * interpretation loop is checked before the command-head branch, so `cmd &> log`
- * yields `log`. `2>&1` likewise yields nothing: the `&` separator resets the
- * pending redirect before `1` is read.
+ * `&>` / `&>>` arrive as ONE token from `tokenizeCommand` and are classified by
+ * {@link WRITE_REDIRECT_OP_RE} (#1793 — an older note here claimed they were lexed
+ * as `&` + `>`; measured 2026-10-24 they are not, and the target was lost).
+ * `2>&1` / `>&2` likewise arrive as one dup token and yield nothing (`>&-` and
+ * `>& 2` after {@link foldFdDupFilenameRedirects}).
  *
  * Token shapes: { type: 'redirect' } | { type: 'in' } | { type: 'sep' }
  *             | { type: 'word', value: string }

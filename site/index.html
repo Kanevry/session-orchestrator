@@ -107,7 +107,6 @@
       "name": "Bernhard Götzendorfer",
       "url": "https://www.gotzendorfer.at",
       "sameAs": [
-        "https://www.gotzendorfer.at",
         "https://github.com/Kanevry"
       ]
     },
@@ -172,7 +171,7 @@
           "name": "Can it break my project?",
           "acceptedAnswer": {
             "@type": "Answer",
-            "text": "It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 13 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
+            "text": "It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 14 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code."
           }
         },
         {
@@ -219,7 +218,7 @@
       </div>
       <figure class="hero-art">
         <img src="/img/agent-production-800.webp" srcset="/img/agent-production-480.webp 480w, /img/agent-production-800.webp 800w, /img/agent-production-1536.webp 1536w" sizes="(min-width: 1360px) 622px, (min-width: 1101px) calc(50vw - 58px), (min-width: 960px) calc(50vw - 54px), (min-width: 601px) calc(100vw - 56px), calc(100vw - 40px)" width="1536" height="1024" fetchpriority="high" decoding="async" alt="A human at the control desk oversees small agents planning, building in parallel, inspecting and handing over work.">
-        <video hidden muted loop playsinline preload="none" aria-hidden="true" data-video-base="agent-production-loop"></video>
+        <video hidden muted loop playsinline preload="none" aria-hidden="true" data-video-base="agent-production-motion"></video>
         <button class="motion-toggle" type="button" aria-pressed="false" hidden>Animate workshop</button>
         <figcaption>Agents at work on your task · made with AI</figcaption>
       </figure>
@@ -496,7 +495,7 @@ expires-at: 2027-01-12</code></pre></li>
             <td data-label="Source"><code>hooks/enforce-scope.mjs</code></td>
           </tr>
           <tr>
-            <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 13 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
+            <td data-label="Claim">With the destructive-command hook active, Claude Code and Codex apply 14 blocking rules and 4 warning rules. Cursor and Pi use bridges.</td>
             <td data-label="Source"><code>.orchestrator/policy/blocked-commands.json</code>, 17 rules</td>
           </tr>
           <tr>
@@ -578,7 +577,7 @@ expires-at: 2027-01-12</code></pre></li>
         </details>
         <details class="faq-item">
           <summary>Can it break my project?</summary>
-          <p>It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 13 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
+          <p>It can still make mistakes. On Claude Code and Codex, an active destructive-command hook applies 14 blocking rules and 4 warning rules. Cursor and Pi use bridges with documented limits. Codex does not enforce the file-scope guard. For supported edits with an active scope hook, strict blocks violations, warn reports them, and off disables the check. Review changes and keep backups; the checks do not guarantee correct code.</p>
         </details>
         <details class="faq-item">
           <summary>Who maintains it?</summary>

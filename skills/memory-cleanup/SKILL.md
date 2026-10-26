@@ -227,7 +227,7 @@ if (stale.length === 0) {
   const annotated = stale.map((wt) => ({ ...wt, activePeer: livePaths.has(wt.wtPath) }));
 
   // Add to the existing housekeeping prune AUQ. Each stale worktree becomes one option line:
-  // Format: `[ ] Stale auto-promoted worktree: <basename> (age <N>d) — remove via 'git worktree remove --force'`
+  // Format: `[ ] Stale auto-promoted worktree: <basename> (age <N>d) — the operator removes it via 'git worktree remove --force' in their own terminal`
   // If `activePeer` is true, prefix the option with "⚠ ACTIVE PEER SESSION" and make Behalten the default.
   //
   // If memory-cleanup currently presents per-item AUQs (one question per prune candidate),
@@ -266,8 +266,8 @@ AskUserQuestion({
       {
         label: "Entfernen",
         description: wt.activePeer
-          ? `⚠ ACTIVE PEER SESSION detected. Only choose this if you have confirmed no live session needs it, then run 'git worktree remove --force ${wt.wtPath}'.`
-          : `Run 'git worktree remove --force ${wt.wtPath}'.`,
+          ? `⚠ ACTIVE PEER SESSION detected. Only choose this if you have confirmed no live session needs it, then run 'git worktree remove --force ${wt.wtPath}' in your own terminal (the agent may not: #1789).`
+          : `Run 'git worktree remove --force ${wt.wtPath}' in your own terminal (the agent may not: #1789).`,
       },
     ],
   }],
@@ -276,7 +276,7 @@ AskUserQuestion({
 
 ### PSA-003 compliance
 
-Per `.claude/rules/parallel-sessions.md` PSA-003: every `git worktree remove` is destructive — operator must explicitly authorize. The AUQ above satisfies this. Never auto-remove without user confirmation, even for stale worktrees. The `--force` flag is acceptable here only because the AUQ already secured explicit per-worktree consent; never apply `--force` to worktrees the operator did not select.
+Per `.claude/rules/parallel-sessions.md` PSA-003: every `git worktree remove` is destructive — operator must explicitly authorize. The AUQ above satisfies this. Never auto-remove without user confirmation, even for stale worktrees. The `--force` removal is the OPERATOR's, run in their own terminal after the AUQ consent: the destructive guard (`worktree-remove-unsafe`, #1789) denies every forced `git worktree remove` from an agent. After "Entfernen", print the exact command for each selected worktree; never offer it for worktrees the operator did not select.
 
 ### Cross-references
 

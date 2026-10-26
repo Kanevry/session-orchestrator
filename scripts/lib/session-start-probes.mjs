@@ -3,11 +3,12 @@
  *
  * ## Why this module exists
  *
- * `skills/session-start/SKILL.md` § Phase 4 names 20 measurement probes, each
+ * `skills/session-start/SKILL.md` § Phase 4 names 21 measurement probes, each
  * with a module path and an entry function (re-measured 2026-10-02 — see the
  * registry Census below; the family stood at 18 when this module was written
- * on 2026-08-23, at 19 on 2026-09-11, and gained `events-retention` with
- * #1401 — update this count with every registration).
+ * on 2026-08-23, at 19 on 2026-09-11, gained `events-retention` with
+ * #1401 and `security-pulse` with #1769 stage 2 (2026-10-25) — update this
+ * count with every registration).
  * Measured 2026-08-23 at `4f6404e`, NONE of them had a mechanical caller:
  *
  * ```
@@ -169,11 +170,10 @@ async function revParseShas(repoRoot, refs) {
  * on the `ci-status` record of `orchestrator.probes.completed` showing up
  * regularly. Since #1728 that value means EITHER `ci-status` follow-up
  * overran — this pushed-SHA requery OR {@link ciRedHistoryFollowUp}'s
- * last-green history read — and the record carries no field that tells the
- * two apart. Before caching the verdict per pushed SHA instead of re-asking,
- * check the record's `outcome`: the pushed-SHA path runs only on an
- * `unknown` reading (`ran-warn`), the history path only on a red one
- * (`ran-alert`).
+ * last-green history read; since #1735 the record's `follow_up_stage` names
+ * which one (`pushed-sha` here, `red-history` there). Count only
+ * `follow_up_stage: 'pushed-sha'` before caching the verdict per pushed SHA
+ * instead of re-asking.
  *
  * The CLI round trip is skipped when the pushed commit IS HEAD on a
  * {@link NO_DATA_FOR_LOCAL_HEAD_REASONS} reading, on GitLab and GitHub alike:
@@ -265,16 +265,21 @@ async function ciRedHistoryFollowUp(result, ctx, deliver, mod) {
  * @param {(extra: object) => Promise<*>} requery
  * @param {(partial: *) => void} deliver
  * @param {*} [mod]  The probe's imported module
+ * @param {(name: string) => void} [stage]  Names the branch for the ledger
+ *   (`follow_up_stage`, #1735): `red-history`, `pushed-sha` or `head-sha`
  * @returns {Promise<*>}
  */
-async function ciStatusFollowUp(result, ctx, requery, deliver, mod) {
+async function ciStatusFollowUp(result, ctx, requery, deliver, mod, stage = () => {}) {
   if (result?.status === 'red' && result?.details?.reason === 'last-green-deferred') {
+    stage('red-history');
     return ciRedHistoryFollowUp(result, ctx, deliver, mod);
   }
   if (result?.status === 'unknown' && PUSHED_FOLLOW_UP_REASONS.has(result?.details?.reason)) {
+    stage('pushed-sha');
     return ciPushedFollowUp(result, ctx, requery, deliver);
   }
   if (result?.status === 'green' && droppedFailedCount(result) > 0) {
+    stage('head-sha');
     const sha = (await revParseShas(ctx?.repoRoot, ['HEAD']))?.[0] ?? null;
     return { ...result, head: { sha } };
   }
@@ -596,12 +601,15 @@ function startLoopBlockedMeter() {
  * `SKILL.md` itself, so the original 2026-08-23 citation of SKILL.md lines
  * 693-835 no longer resolves; re-run the census against the reference file):
  *   grep -oE "fn: 'check[A-Za-z]+'" scripts/lib/session-start-probes.mjs \
- *     | sed "s/fn: '//;s/'//" > fns.txt                                  # -> 20
+ *     | sed "s/fn: '//;s/'//" > fns.txt                                  # -> 21
  *   grep -oFf fns.txt \
  *     skills/session-start/references/phase-4-ssot-environment-check.md \
- *     | sort -u | wc -l                                                    # -> 20
+ *     | sort -u | wc -l                                                    # -> 21
  * i.e. every registered entry function is named in the reference file
- * (2026-10-02, after `events-retention` / #1401; 19 on 2026-09-11). The older
+ * (re-measured 2026-10-25 on the working tree over base `2afb2c60`: 21 + 21
+ * after `security-pulse` / #1769 and its reference-file prose naming
+ * `checkSecurityPulse`; 20 + 20 on 2026-10-02 after `events-retention` / #1401;
+ * 19 on 2026-09-11). The older
  * census `grep -oE 'via \`(await )?check[A-Za-z]+'` returned 0 at `86e636a9`
  * — the prose no longer says "via" — so it is retired, not re-counted.
  * (Prior census, 2026-08-23 at `4f6404e`: 16 + 2 = 18 — one probe was
@@ -623,14 +631,16 @@ function startLoopBlockedMeter() {
  *   - `precondition` optional; returns a skip-reason string to skip the probe
  *   - `render`     optional; maps a result to a banner line. Default:
  *                  `result.message` when severity is warn/alert.
- *   - `followUp`   optional; `async (result, ctx, requery, deliver, mod) => result'`
+ *   - `followUp`   optional; `async (result, ctx, requery, deliver, mod, stage) => result'`
  *                  run INSIDE the budget race after the entry function, where
  *                  `requery(extra)` re-invokes it with `{...args, ...extra}`,
- *                  `deliver(partial)` replaces the fallback result, and `mod`
+ *                  `deliver(partial)` replaces the fallback result, `mod`
  *                  is the probe's imported module (for a narrower second call
- *                  than a full requery, #1728). If it
+ *                  than a full requery, #1728), and `stage(name)` names the
+ *                  branch that is running (#1735). If it
  *                  throws or overruns the budget, the last delivered result
- *                  stands (recorded `followUp: 'threw'|'budget-exceeded'`).
+ *                  stands (recorded `followUp: 'threw'|'budget-exceeded'`, plus
+ *                  `followUpStage` when the follow-up named one).
  *   - `render` is a PURE function of the result (#1396): anything it names
  *     that the entry function does not return is resolved in `followUp`,
  *     inside the budget — never in the renderer.
@@ -922,6 +932,30 @@ export const PROBES = [
           archives: r.archives,
           max_backups: r.maxBackups,
           required_days: r.requiredDays ?? null,
+        }
+      : undefined),
+  },
+  {
+    // #1769 stage 2: reads ONLY the host-local cache (no HTTP, at most one
+    // bounded `git rev-parse HEAD`); a missing or stale cache is `state:
+    // 'not-measured'|'stale'` at severity ok and starts the detached, throttled
+    // refresher. Banner only for a finding (HR-101).
+    id: 'security-pulse',
+    spec: local('./security-pulse-banner.mjs'),
+    fn: 'checkSecurityPulse',
+    network: false,
+    args: ({ repoRoot, config, env }) => ({ repoRoot, config, env }),
+    telemetry: (r) => (typeof r?.state === 'string'
+      ? {
+          // 0 not-measured, 1 stale, 2 fresh, 3 degraded (measured, but incomplete).
+          cache_state: r.state === 'fresh' ? 2 : r.state === 'stale' ? 1 : r.state === 'degraded' ? 3 : 0,
+          node_below_floor: r.nodeBelowFloor ?? null,
+          repo_malicious: r.repoMalicious ?? null,
+          repo_critical: r.repoCritical ?? null,
+          kev_hits: r.kevHits ?? null,
+          close_without_delta: r.closeWithoutDelta ?? null,
+          cache_age_h: r.cacheAgeH ?? null,
+          refresh_spawned: r.refresh === 'spawned' ? 1 : 0,
         }
       : undefined),
   },
@@ -1235,6 +1269,11 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       let delivered = null;
       /** @type {'threw'|'budget-exceeded'|undefined} */
       let followUpFailure;
+      // Which branch of the follow-up was running (#1735): a probe with more
+      // than one follow-up path names it via the `stage` callback, so a
+      // `budget-exceeded` record says WHICH step overran.
+      /** @type {string|undefined} */
+      let followUpStage;
 
       // The whole invocation — import included — is inside the race, because a
       // pre-#369-style absent module and a hung probe are both "did not
@@ -1261,6 +1300,7 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
               (extra) => fn({ ...probe.args(ctx), ...extra }),
               (partial) => { delivered = { __probeResult: partial }; },
               mod,
+              (name) => { followUpStage = typeof name === 'string' ? name : undefined; },
             ),
           };
         } catch {
@@ -1331,6 +1371,7 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
         severity,
         workMs,
         ...(followUpFailure ? { followUp: followUpFailure } : {}),
+        ...(followUpFailure && followUpStage ? { followUpStage } : {}),
         ...(measure ? { measure } : {}),
         ...(line ? { line } : {}),
       });
@@ -1395,6 +1436,9 @@ export async function runSessionStartProbes(opts = {}, deps = {}) {
       // A follow-up that fell back to the delivered result is otherwise
       // invisible (the outcome is `ran-*`); this is its revisit trigger's input.
       ...(typeof r.followUp === 'string' ? { follow_up: r.followUp } : {}),
+      // The follow-up branch that fell back (#1735), e.g. `pushed-sha` or
+      // `red-history` for `ci-status`; absent when the probe named none.
+      ...(typeof r.followUpStage === 'string' ? { follow_up_stage: r.followUpStage } : {}),
       // What the probe MEASURED, warn or not (#1489, HR-105): without it a
       // probe that never warns reads the same whether it is rare or dead.
       ...(r.measure ? { measure: r.measure } : {}),

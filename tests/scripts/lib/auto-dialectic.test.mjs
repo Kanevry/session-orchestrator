@@ -185,7 +185,7 @@ describe('readDialecticSignals', () => {
   it('returns zero counts and null lastRunAt when .orchestrator/ is absent', async () => {
     const repoRoot = tmp(); // no .orchestrator dir seeded
     const result = await readDialecticSignals({ repoRoot });
-    expect(result).toEqual({ lastRunAt: null, sessionsSinceLast: 0, learningsSinceLast: 0 });
+    expect(result).toEqual({ lastRunAt: null, lastRunSource: null, sessionsSinceLast: 0, learningsSinceLast: 0 });
   });
 
   it('counts all sessions when no lastRunAt exists (3 sessions → sessionsSinceLast: 3)', async () => {
@@ -323,6 +323,37 @@ describe('readDialecticSignals', () => {
 // carries phantom `status: 'abandoned'` stubs (session-close backfill records
 // for sessions that ended without a real close). A burst of abandoned stubs
 // must not fire /evolve --dialectic off zero real work.
+
+describe('shouldDispatchAutoDialectic — #1777: replica host with git-shared peer cards', () => {
+  it('stale host-local dialectic-last-run + fresh tracked card updated → not due, measured from the card', async () => {
+    const between = Array.from({ length: 6 }, (_, i) => ({
+      session_type: 'deep', started_at: `2026-10-0${i + 1}T08:00:00Z`,
+    }));
+    const { repoRoot } = makeFakeRepo({
+      lastRunAt: '2026-09-24T10:00:00Z',
+      sessions: [...between, { session_type: 'deep', started_at: '2026-10-24T08:00:00Z' }],
+    });
+    const peersDir = join(repoRoot, '.orchestrator', 'peers');
+    mkdirSync(peersDir, { recursive: true });
+    writeFileSync(join(peersDir, 'AGENT.md'), [
+      '---',
+      'id: agent-card',
+      'type: peer-card',
+      'target: agent',
+      'created: "2026-09-01T00:00:00Z"',
+      'updated: "2026-10-23T05:21:47.504Z"',
+      'source_sessions: []',
+      '---',
+      'body',
+      '',
+    ].join('\n'));
+    const result = await shouldDispatchAutoDialectic({ repoRoot, cadence: 5 });
+    expect(result.trigger).toBe(false);
+    expect(result.reason).toBe('under-threshold (sessions=1/5)');
+    expect(result.signals.lastRunAt).toBe('2026-10-23T05:21:47.504Z');
+    expect(result.signals.lastRunSource).toBe('peer-cards');
+  });
+});
 
 describe('readDialecticSignals — #834: abandoned phantom stubs excluded from cadence count', () => {
   it('5 synthetic phantoms (including completed) + 2 measured sessions since last run: sessionsSinceLast counts only the 2 real sessions', async () => {

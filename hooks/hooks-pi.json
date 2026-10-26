@@ -43,6 +43,11 @@
             "type": "command",
             "command": "sh \"$PI_PLUGIN_ROOT/hooks/run-node.sh\" \"$PI_PLUGIN_ROOT/hooks/pre-edit-sessions-ledger-guard.mjs\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh \"$PI_PLUGIN_ROOT/hooks/run-node.sh\" \"$PI_PLUGIN_ROOT/hooks/pre-tool-state-md-path-guard.mjs\"",
+            "timeout": 5
           }
         ]
       },
@@ -62,6 +67,11 @@
           {
             "type": "command",
             "command": "sh \"$PI_PLUGIN_ROOT/hooks/run-node.sh\" \"$PI_PLUGIN_ROOT/hooks/pre-bash-memory-propose-audit.mjs\"",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "sh \"$PI_PLUGIN_ROOT/hooks/run-node.sh\" \"$PI_PLUGIN_ROOT/hooks/pre-tool-state-md-path-guard.mjs\"",
             "timeout": 5
           },
           {

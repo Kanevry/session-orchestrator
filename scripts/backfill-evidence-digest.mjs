@@ -50,6 +50,7 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 import { computeEvidenceDigest } from './lib/reconcile/renderer.mjs';
+import { isUntrustedEndLine } from './lib/reconcile/sanitize.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { resolveLedgerPath } from './lib/ledger-path.mjs';
 
@@ -115,7 +116,8 @@ function provenanceToken(bodyLines, key) {
  * Extract the `## Evidence` block verbatim — the bytes the renderer wrote.
  *
  * Bounded by the next `## ` heading or the next HTML comment
- * (`<!-- untrusted-content:end -->` / the provenance marker), whichever comes
+ * (legacy `<!-- untrusted-content:end -->` / the provenance marker) or the
+ * visible `> **untrusted-content:end**` sentinel (#1779), whichever comes
  * first, with trailing blank lines trimmed. Both shapes occur on disk: only 10
  * of the 23 generated rules carry the untrusted envelope; the older ones run
  * straight from `## Evidence` into the next heading.
@@ -129,7 +131,7 @@ export function extractEvidenceBlock(bodyLines) {
   const out = [];
   for (let i = start + 1; i < bodyLines.length; i++) {
     const line = bodyLines[i];
-    if (line.startsWith('## ') || line.startsWith('<!-- ')) break;
+    if (line.startsWith('## ') || line.startsWith('<!-- ') || isUntrustedEndLine(line)) break;
     out.push(line);
   }
   while (out.length > 0 && out[out.length - 1].trim() === '') out.pop();

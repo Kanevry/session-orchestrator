@@ -11,6 +11,7 @@ import { execFile } from 'node:child_process';
 import { basename } from 'node:path';
 import { promisify } from 'node:util';
 
+import { redactedEnv } from '../redacted-env.mjs';
 import { makeCheckResult, makeFinding } from './contract.mjs';
 
 const execFileAsync = promisify(execFile);
@@ -30,10 +31,13 @@ export const PATH_ABSENT = /fatal: path '.*' (?:does not exist in|exists on disk
 /**
  * Environment for a git call whose error text is matched: untranslated
  * messages, because `PATH_ABSENT` matches git's English wording only.
+ * The result carries the full env, so it serializes to key names only
+ * (SEC-008, SO#1785); ceiling of that redaction: scripts/lib/redacted-env.mjs.
+ * @param {NodeJS.ProcessEnv} [env] — base env; tests pass a synthetic one
  * @returns {NodeJS.ProcessEnv}
  */
-export function gitEnv() {
-  return { ...process.env, LC_ALL: 'C', LANG: 'C', LANGUAGE: '' };
+export function gitEnv(env = process.env) {
+  return redactedEnv({ ...env, LC_ALL: 'C', LANG: 'C', LANGUAGE: '' });
 }
 
 /**
@@ -47,18 +51,57 @@ export function isSafeRef(ref) {
 }
 
 /**
+ * Whether an error came from running git (the execFile wrapper), not from our own code.
+ * Node sets `cmd` on every execFile error: a non-zero exit (numeric `code`), a
+ * signal, `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` and a spawn failure (`ENOENT`).
+ * Only such an error may count as "unreadable"; anything else (a TypeError, a
+ * ContractError) is a defect and must surface as `internal-error`.
+ * @param {unknown} err
+ * @returns {boolean}
+ */
+export function isGitExecError(err) {
+  return err instanceof Error && typeof (/** @type {{cmd?: unknown}} */ (err).cmd) === 'string';
+}
+
+/**
  * Files changed in `base..head` that still exist in head (added, copied, modified, renamed).
+ * `-z`: without it `core.quotePath` prints a non-ASCII path as `"dock\303\251r/…"`,
+ * which no path predicate matches (#1775).
  * @param {string} repoRoot
  * @param {string} base
  * @param {string} head
  * @returns {Promise<string[]>} repo-relative paths
  */
 export async function changedFiles(repoRoot, base, head) {
-  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '--diff-filter=ACMR', base, head, '--'], {
+  const { stdout } = await execFileAsync('git', ['diff', '--name-only', '-z', '--diff-filter=ACMR', base, head, '--'], {
     cwd: repoRoot,
     maxBuffer: GIT_MAX_BUFFER,
   });
-  return stdout.split('\n').filter(Boolean);
+  return stdout.split('\0').filter(Boolean);
+}
+
+/**
+ * Whether `path` exists in the tree of `ref`, without reading its content (#1775:
+ * a lockfile above the 16 MB buffer must not read as unreadable just to test existence).
+ * `git ls-tree` exits 0 with the entry when present and 0 with no output when
+ * absent; a missing commit or tree object exits non-zero and throws. Measured
+ * 2026-10-24: `git cat-file -e <ref>:<path>` is NOT usable here — for a missing
+ * root tree and for an unknown full SHA it prints the same "path … does not exist /
+ * not in" wording as a genuinely absent path.
+ * @param {string} repoRoot
+ * @param {string} ref
+ * @param {string} path  repo-relative
+ * @returns {Promise<boolean>}
+ */
+export async function pathExistsAt(repoRoot, ref, path) {
+  // --literal-pathspecs: a path from `diff --name-only` may start with `:`, which
+  // ls-tree would otherwise read as pathspec magic and report as absent (#1775).
+  const { stdout } = await execFileAsync('git', ['--literal-pathspecs', 'ls-tree', '-z', '--name-only', ref, '--', path], {
+    cwd: repoRoot,
+    maxBuffer: GIT_MAX_BUFFER,
+    env: gitEnv(),
+  });
+  return stdout.split('\0').includes(path);
 }
 
 /**
@@ -85,17 +128,17 @@ export async function showFile(repoRoot, ref, path) {
 }
 
 /**
- * All file paths in the tree of `ref`.
+ * All file paths in the tree of `ref`. `-z` keeps non-ASCII paths unquoted (#1775).
  * @param {string} repoRoot
  * @param {string} ref
  * @returns {Promise<string[]>}
  */
 export async function listTree(repoRoot, ref) {
-  const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', ref], {
+  const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', '-z', ref], {
     cwd: repoRoot,
     maxBuffer: GIT_MAX_BUFFER,
   });
-  return stdout.split('\n').filter(Boolean);
+  return stdout.split('\0').filter(Boolean);
 }
 
 /**
@@ -268,7 +311,8 @@ export async function runFloatingTagCheck({ repoRoot, base, head } = {}) {
       let headText;
       try {
         headText = await showFile(repoRoot, head, file);
-      } catch {
+      } catch (err) {
+        if (!isGitExecError(err)) throw err;
         unreadable += 1;
         continue;
       }
@@ -277,7 +321,8 @@ export async function runFloatingTagCheck({ repoRoot, base, head } = {}) {
       let baseKeys = null;
       try {
         baseKeys = new Set(parseImageRefs((await showFile(repoRoot, base, file)) ?? '', file).map(refKey));
-      } catch {
+      } catch (err) {
+        if (!isGitExecError(err)) throw err;
         unreadable += 1;
       }
       for (const ref of headRefs) {

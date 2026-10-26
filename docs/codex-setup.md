@@ -227,6 +227,8 @@ $session-orchestrator:evolve analyze    # manage learnings (analyze, review or l
 
 These are skill invocations in the Codex prompt, not shell commands. Invoking `go` reads the full canonical `skills/go/SKILL.md`, including its Express Path and prechecks; invoking `close` reads `skills/close/SKILL.md`, including its state and ledger checks before the session-end workflow. Codex's native `/goal` is a separate feature. Typing `/go` or `/close` alone is not a portable invocation contract; select the skill or use its explicit namespaced form.
 
+**First session on Codex.** The README's three steps map to `$session-orchestrator:bootstrap`, `$session-orchestrator:session feature`, `$session-orchestrator:go` and `$session-orchestrator:close`. In headless Claude Code (`claude -p`), use `/session-orchestrator:session` and `/session-orchestrator:plan`; the bare names are reserved there ([details](install.md#headless-claude-code-claude--p-two-commands-need-the-namespaced-form)).
+
 ### Start, modes, and free-text instructions
 
 The public start entry is named **`session`**. There is no separate `start`, `housekeeping`, or `deep` skill: the latter two are arguments to `session`. `session-start` is the internal workflow and bypasses the public entry's argument resolution when invoked directly. Use `session` for the normal start → go → close flow. Claude Code exposes `/session-orchestrator:session housekeeping`; Codex exposes the skill invocation shown above. [Official skill invocation guidance](https://learn.chatgpt.com/docs/build-skills)

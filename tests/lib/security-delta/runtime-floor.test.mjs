@@ -45,6 +45,17 @@ describe('runRuntimeFloorCheck', () => {
     expect(r.findings[0]).toMatchObject({ class: 'runtime-floor', severity: 'high', ecosystem: 'node', package: 'node', version: '22.23.3', fixedIn: '22.23.4', file: '.nvmrc', introduced: true });
   });
 
+  it('finds a node image in a non-ASCII-named Dockerfile via the tree listing (#1775)', async () => {
+    // Bug caught: `git ls-tree` without -z quotes the name ("\303\244pp.dockerfile"), isDockerfile
+    // misses it and the check reads skipped/no-node-declaration.
+    const range = makeRepo({}, { 'äpp.dockerfile': 'FROM node:22.23.3\n' });
+    git('config', 'core.quotePath', 'true');
+    const r = await runRuntimeFloorCheck({ ...range, request: okRequest });
+    expect(r.status).toBe('ok');
+    expect(r.findings).toHaveLength(1);
+    expect(r.findings[0]).toMatchObject({ file: 'äpp.dockerfile', version: '22.23.3' });
+  });
+
   it('does not read an engines.node range as a pin (>=22.0.0 sits below the v22 floor but admits it)', async () => {
     // Bug caught: the range's lower bound compared to the floor — a warning on every close of a repo with an engines range.
     const pkg = JSON.stringify({ name: 'x', engines: { node: '>=22.0.0' } });

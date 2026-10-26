@@ -7,8 +7,10 @@ uninstall.
 
 - [Requirements](#requirements)
 - [Install](#install)
+- [Platform support](#platform-support)
 - [Upgrade](#upgrade)
 - [Uninstall](#uninstall)
+- [Add-on: lead-session-orchestrator](#add-on-lead-session-orchestrator)
 
 ## Requirements
 
@@ -127,7 +129,7 @@ and npm must be installed together or npm must be on an absolute PATH.
 | **Claude Code** | `/plugin marketplace add Kanevry/session-orchestrator` then `/plugin install session-orchestrator@kanevry` (run both inside Claude Code). |
 | **Codex CLI** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/codex-install.mjs` |
 | **Cursor IDE** | `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/cursor-install.mjs /path/to/your/project` |
-| **Pi** | `pi install npm:session-orchestrator` ; dev fallback: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/pi-install.mjs /path/to/your/project --settings-only` |
+| **Pi** | `npm install -g --ignore-scripts @earendil-works/pi-coding-agent`, then `pi install npm:session-orchestrator` ; dev fallback: `git clone https://github.com/Kanevry/session-orchestrator.git ~/Projects/session-orchestrator && cd ~/Projects/session-orchestrator && npm install && node scripts/pi-install.mjs /path/to/your/project --settings-only` |
 
 ### Headless Claude Code (`claude -p`): two commands need the namespaced form
 
@@ -172,6 +174,31 @@ plugin.
 Setup guides: [Codex](codex-setup.md) · [Cursor IDE](cursor-setup.md) ·
 [Pi](pi-setup.md). Per-IDE notes on which instruction file each harness reads:
 [instruction-file-resolution](../skills/_shared/instruction-file-resolution.md).
+
+### Optional: so-hud (Claude Code)
+
+On Claude Code, `/plugin install so-hud@kanevry` adds a status line and gates
+that refuse secret-printing commands and ask before pushes to `main`, merges,
+releases, publishes and deploys ([so-hud](../mods/so-hud/README.md)).
+
+## Platform support
+
+| | Claude Code | Codex CLI | Cursor IDE | Pi |
+|---|---|---|---|---|
+| Commands | Native slash commands | Skills (`$session-orchestrator:<name>`) | Native slash commands | Prompt templates |
+| Parallel agents | Yes | Yes | One after another | One after another |
+| Destructive-command guard | Hook | Hook | Bridge for supported commands | Bridge for supported commands |
+| File-scope guard | Hook (blocks in `strict`) | Instructions only | Bridge (blocks in `strict`) | Bridge (blocks in `strict`) |
+| Quality gates | Full | Full | Full | Full |
+| Lead Inbox pane (add-on) | Yes (mod) | Sessions are led; the pane runs in Claude Code | Not documented | Not documented |
+
+All four share the same skills, commands and scripts; only the hooks differ,
+because each coding tool fires different events. Codex edits files through
+`apply_patch`, which the scope guard does not read
+([why](codex-setup.md#which-pretooluse-guards-run-on-codex--the-reason-corrected)).
+On Codex the agents use `gpt-6.1-sol`; change the `model` line in
+`.codex-plugin/agents/*.toml` if you have no access to it. Event-coverage
+limits: [Cursor](cursor-setup.md), [Pi](pi-setup.md).
 
 ## Upgrade
 
@@ -240,7 +267,7 @@ None of it is removed by uninstalling, and all of it is plain text you can
 delete by hand:
 
 - `.orchestrator/`: `bootstrap.lock`, `metrics/` (your session and learning JSONL records), `policy/`, `steering/`, `runtime/`, `peers/`, `session.lock`
-- `STATE.md` under your harness's state directory (`.claude/STATE.md` on Claude Code; see [Platform support](../README.md#platform-support)) <!-- path-check: example -->
+- `STATE.md` under your harness's state directory (`.claude/STATE.md` on Claude Code; see [Platform support](#platform-support)) <!-- path-check: example -->
 - The `## Session Config` block you added to your instruction file
 - `.claude/rules/*.md` if you vendored the rule library via `/bootstrap --sync-rules`
 
@@ -251,3 +278,37 @@ to the npm registry to compare your installed version against the latest
 release. Successful results are cached for 24 hours per repo; failed checks can
 retry at the next session start. Set `SO_DISABLE_UPDATE_CHECK=1` (or
 `DO_NOT_TRACK=1`) to turn it off.
+
+## Add-on: lead-session-orchestrator
+
+Running three or four sessions side by side? Then a job shows up that no single
+session can do: deciding which one goes next, and answering the questions they
+all ask you at the same time. That is what
+[lead-session-orchestrator](https://www.npmjs.com/package/lead-session-orchestrator)
+is for. One lead session sits above your sessions, prepares the decisions and
+puts them into one queue for you. Session-orchestrator makes one session good
+(plan, waves, gates, handover); lead-session-orchestrator keeps several of them
+in line.
+
+What you get on top:
+
+- **One inbox instead of a row of terminals.** Open questions from every session land in one queue; in Claude Code the Inbox mod shows it in a side pane.
+- **Written rules for what needs no asking.** A signed authority file per repository lists what is free, what needs your yes and what never happens. Anything not on the list asks you.
+- **Checks before a run and before a merge.** Busy repository, low disk or memory, a pipeline that is not green on this exact commit: the lead refuses. It also refuses when it cannot measure.
+- **A trail you can check.** Decisions and merges go into an append-only, hash-chained log.
+
+Install with `npm i -g lead-session-orchestrator`, then run `navigator --help`.
+Each works on its own. Together they talk only through files, and a session
+never waits for the lead. Worth knowing before you try it: version 0.x, GitLab
+only for now, tested on macOS. Setup:
+[npm page](https://www.npmjs.com/package/lead-session-orchestrator) ·
+[session-orchestrator.com/lead](https://session-orchestrator.com/lead).
+
+The Inbox pane is a Claude Code mod in the same npm package (early access, not
+sandboxed, Claude Code 2.1.296 or newer). Add it once from a shell, then type
+`/inbox` in a new Claude Code session:
+
+```sh
+claude plugin marketplace add "$(npm root -g)/lead-session-orchestrator"
+claude plugin install owner-inbox@navigator-mods
+```

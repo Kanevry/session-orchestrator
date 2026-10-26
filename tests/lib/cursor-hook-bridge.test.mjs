@@ -132,6 +132,29 @@ describe('runCursorHookEvent', () => {
     expect(result.block).toBe(true);
     expect(result.reason).toBeTruthy();
   });
+
+  it('forwards a non-blocking hook hint on postToolUse as additional_context', async () => {
+    // Bug caught (#1799 point 2): a NON-blocking post-hoc result mapped to `{}`,
+    // so every write-verify / SEC-008 hint a hook printed never reached Cursor.
+    // Real call shape: a hook process prints the Claude Code PostToolUse object
+    // (as hooks/post-bash-write-verify.mjs does) and exits 0; a second hook
+    // repeats one line, which must appear once.
+    const hookPath = path.join(tmp, 'hint-hook.mjs');
+    writeFileSync(hookPath, `process.stdout.write(JSON.stringify({
+  systemMessage: 'SEC-008: secret value in output (APP_RO_DSN)',
+  hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'write-verify: 1 file outside scope' },
+}) + '\\n');\n`);
+    const command = `node "${hookPath}"`;
+    const manifest = { hooks: { postToolUse: [{ matcher: '*', hooks: [{ type: 'command', command }, { type: 'command', command }] }] } };
+
+    const result = await runCursorHookEvent('postToolUse', { tool_name: 'Shell' }, { cwd: tmp }, { pluginRoot: REPO_ROOT, manifest });
+
+    expect(result.block).toBe(false);
+    expect(toCursorHookOutput('postToolUse', result)).toEqual({
+      additional_context: 'SEC-008: secret value in output (APP_RO_DSN)\nwrite-verify: 1 file outside scope',
+    });
+    expect(toCursorHookOutput('postToolUse', { ...result, results: [] })).toEqual({});
+  });
 });
 
 describe('CURSOR_TO_CANONICAL_EVENT', () => {

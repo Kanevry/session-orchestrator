@@ -10,10 +10,11 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { expectDeny, expectAllow } from '../_helpers/hook-decision.mjs';
+import { installScriptCli, SCRIPT_CLI_SUPPORTED } from '../_helpers/executable-fixture.mjs';
 
 const HOOK = path.resolve(import.meta.dirname, '../../hooks/pre-bash-destructive-guard.mjs');
 const LIVE_POLICY = path.resolve(import.meta.dirname, '../../.orchestrator/policy/blocked-commands.json');
@@ -46,11 +47,16 @@ function buildRepo({ hooksPath = '.husky/_', mainHasHooks = true } = {}) {
   return { root, main, wt };
 }
 
-function runGuard({ main, cwd, command }) {
+function runGuard({ main, cwd, command, pathPrefix }) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [HOOK], {
       cwd: main,
-      env: { ...process.env, CLAUDE_PROJECT_DIR: main, CLAUDE_PLUGIN_ROOT: main },
+      env: {
+        ...process.env,
+        CLAUDE_PROJECT_DIR: main,
+        CLAUDE_PLUGIN_ROOT: main,
+        ...(pathPrefix ? { PATH: `${pathPrefix}${path.delimiter}${process.env.PATH}` } : {}),
+      },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -78,6 +84,20 @@ describe('hooks-path-missing: a linked worktree without its hooks directory', ()
     // first version read any `)` as a subshell and never judged a `cd`-led commit.
     ['cd into the worktree, conventional commit', 'main', 'cd {wt} && git commit -m "fix(hooks): x"'],
     ['cd into the worktree, heredoc commit message', 'main', "cd {wt} && git commit -m \"$(cat <<'EOF'\nfix(hooks): x\nEOF\n)\""],
+    // #1736: merge (pre-merge-commit, commit-msg), rebase (pre-rebase, post-rewrite) and am
+    // (applypatch-msg, pre-applypatch) skip their hooks just as silently; train merges use --no-edit.
+    ['a train merge', 'wt', 'git merge --no-edit main'],
+    ['a merge with -n, which is --no-stat there, not --no-verify', 'wt', 'git merge -n main'],
+    ['a rebase', 'wt', 'git rebase main'],
+    ['an am', 'wt', 'git am 0001-x.patch'],
+    // REFUTE review 2026-10-25 L2: quotes are gone before git runs; a quoted message is still a value.
+    ['a quoted git and subcommand', 'wt', '"git" "push" origin feature'],
+    // Codex review 2026-10-25 C1: a redirect between git and its subcommand is gone before git runs.
+    ['a redirect between git and its subcommand', 'wt', 'git 2>/dev/null push origin feature'],
+    ['a commit whose message is "--no-verify"', 'wt', 'git commit -m "--no-verify"'],
+    // #1736: `env -C <dir>` moves the git call like `cd` does.
+    ['env -C the worktree', 'main', 'env -C {wt} git commit -m "x"'],
+    ['env --chdir= the worktree', 'main', 'env --chdir={wt} git push origin feature'],
   ])('denies %s', async (_name, cwdKey, template) => {
     const command = template.replaceAll('{wt}', repo.wt);
     const result = await runGuard({ main: repo.main, cwd: repo[cwdKey], command });
@@ -102,6 +122,20 @@ describe('hooks-path-missing: a linked worktree without its hooks directory', ()
     ['a cd to a variable', 'main', 'cd "$WT" && git push origin feature'],
     ['an unrelated git call in the worktree', 'wt', 'git status'],
     ['an overridden hooksPath', 'wt', 'git -c core.hooksPath=/elsewhere push origin feature'],
+    // #1736: a hooksPath taken from an env var is as unknowable as an inline one.
+    ['a hooksPath from --config-env=', 'wt', 'git --config-env=core.hooksPath=HP commit -m "x"'],
+    ['a hooksPath from --config-env <value>', 'wt', 'git --config-env core.hooksPath=HP push origin feature'],
+    // #1736: forms that run no hook at all, and the explicit skips of the new subcommands.
+    ['commit --dry-run', 'wt', 'git commit --dry-run -m "x"'],
+    ['merge --abort', 'wt', 'git merge --abort'],
+    ['merge --quit', 'wt', 'git merge --quit'],
+    ['rebase --abort', 'wt', 'git rebase --abort'],
+    ['rebase --quit', 'wt', 'git rebase --quit'],
+    ['am --abort', 'wt', 'git am --abort'],
+    ['am --quit', 'wt', 'git am --quit'],
+    ['am --show-current-patch=diff', 'wt', 'git am --show-current-patch=diff'],
+    ['an explicit merge --no-verify', 'wt', 'git merge --no-verify --no-edit main'],
+    ['an explicit am -n', 'wt', 'git am -n 0001-x.patch'],
   ])('allows %s', async (_name, cwdKey, template) => {
     const command = template.replaceAll('{wt}', repo.wt);
     const result = await runGuard({ main: repo.main, cwd: repo[cwdKey], command });
@@ -134,6 +168,39 @@ describe('hooks-path-missing: repos where the hooks directory is not the worktre
       mkdirSync(path.join(repo.wt, '.husky', '_'), { recursive: true });
       const result = await runGuard({ main: repo.main, cwd: repo.wt, command: 'git push origin feature' });
       expectAllow(result);
+    } finally {
+      rmSync(repo.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('hooks-path-missing: cost per hook run', () => {
+  // Catches the per-call re-measurement of #1736: `git commit && git push` in one directory spawned
+  // the up-to-three git reads twice. A PATH shim counts the guard's git processes without timing.
+  it.skipIf(!SCRIPT_CLI_SUPPORTED)('measures one directory once for two hooked calls', async () => {
+    const repo = buildRepo();
+    try {
+      const realGit = process.env.PATH.split(path.delimiter).map((d) => path.join(d, 'git')).find((p) => existsSync(p));
+      const binDir = path.join(repo.root, 'bin');
+      const log = path.join(repo.root, 'git-calls.log');
+      mkdirSync(binDir);
+      installScriptCli(binDir, 'git', [
+        "import { appendFileSync } from 'node:fs';",
+        "import { spawnSync } from 'node:child_process';",
+        `appendFileSync(${JSON.stringify(log)}, process.argv.slice(2).join(' ') + '\\n');`,
+        `const r = spawnSync(${JSON.stringify(realGit)}, process.argv.slice(2), { stdio: 'inherit' });`,
+        'process.exit(r.status ?? 1);',
+      ].join('\n'));
+      const result = await runGuard({
+        main: repo.main,
+        cwd: repo.main,
+        command: 'git commit -m "x" && git push origin main',
+        pathPrefix: binDir,
+      });
+      expectAllow(result);
+      // hooksPath + show-toplevel (the main checkout has its hooks directory, so the read stops there) —
+      // once for the directory, not once per call (4 before #1736).
+      expect(readFileSync(log, 'utf8').trim().split('\n')).toHaveLength(2); // integrity-anchor: missingWorktreeHooks reads twice before it finds the hooks directory
     } finally {
       rmSync(repo.root, { recursive: true, force: true });
     }

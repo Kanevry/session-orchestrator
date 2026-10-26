@@ -367,10 +367,68 @@ export async function runCursorHookEvent(cursorEventName, event = {}, ctx = {}, 
 }
 
 /**
+ * NAMED CEILING (BV-004): the forwarded hint text is cut at this many
+ * characters. Sized at twice `MAX_CONTEXT_CHARS` (1500) of
+ * `hooks/post-bash-write-verify.mjs`, the largest single hint producer, so two
+ * full hints pass whole. Revisit trigger: a hook whose hint is load-bearing past
+ * the cut, or a Cursor-side limit measured lower than this.
+ */
+const MAX_CURSOR_HINT_CHARS = 3_000;
+
+/** The two post-hoc events whose output carries `additional_context`. */
+const POST_HOC_CONTEXT_EVENTS = Object.freeze(['afterFileEdit', 'postToolUse']);
+
+/**
+ * Collect the hint text of every hook result: the top-level `systemMessage`
+ * and `hookSpecificOutput.additionalContext` of each JSON line on its stdout
+ * (the Claude Code PostToolUse shape, e.g. `emitMessages` in
+ * `hooks/post-bash-write-verify.mjs`). De-duplicated in first-seen order,
+ * joined with a newline, bounded by `MAX_CURSOR_HINT_CHARS`.
+ *
+ * @param {Array<{ stdout?: unknown }>|undefined} results
+ * @returns {string}
+ */
+function collectCursorHints(results) {
+  /** @type {string[]} */
+  const hints = [];
+  const add = (value) => {
+    if (typeof value !== 'string') return;
+    const text = value.trim();
+    if (text && !hints.includes(text)) hints.push(text);
+  };
+  for (const result of Array.isArray(results) ? results : []) {
+    const stdout = typeof result?.stdout === 'string' ? result.stdout : '';
+    for (const line of stdout.split('\n')) {
+      if (!line.trim().startsWith('{')) continue;
+      let parsed;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      const out = objectOrEmpty(parsed);
+      add(out.systemMessage);
+      add(objectOrEmpty(out.hookSpecificOutput).additionalContext);
+    }
+  }
+  const joined = hints.join('\n');
+  return joined.length > MAX_CURSOR_HINT_CHARS ? `${joined.slice(0, MAX_CURSOR_HINT_CHARS - 1)}…` : joined;
+}
+
+/**
  * Map a bridge result onto Cursor's hook stdout contract.
  *
+ * Non-blocking `afterFileEdit` / `postToolUse` results forward their hooks'
+ * hints as `additional_context` (#1799 point 2) — before, they returned `{}`
+ * and every write-verify and SEC-008 hint was dropped on Cursor. The field name
+ * is the one this bridge already emits on the post-hoc BLOCK branch below; the
+ * repo holds NO measurement that Cursor reads `additional_context` on a
+ * non-blocking post-hoc event (no doc, test or probe beyond this file — grep
+ * `additional_context` in docs/, scripts/, tests/, 2026-10-25). Revisit when a
+ * live Cursor probe confirms or refutes it.
+ *
  * @param {string} cursorEventName
- * @param {{ block: boolean, reason: string|null }} result
+ * @param {{ block: boolean, reason: string|null, results?: Array<{ stdout?: unknown }> }} result
  * @returns {Record<string, unknown>}
  */
 export function toCursorHookOutput(cursorEventName, result) {
@@ -383,13 +441,17 @@ export function toCursorHookOutput(cursorEventName, result) {
       agent_message: reason,
     };
   }
-  if (result.block && (cursorEventName === 'afterFileEdit' || cursorEventName === 'postToolUse')) {
+  if (result.block && POST_HOC_CONTEXT_EVENTS.includes(cursorEventName)) {
     return {
       additional_context: result.reason || 'Session Orchestrator post-hoc warning',
     };
   }
   if (blocking) {
     return { permission: 'allow' };
+  }
+  if (POST_HOC_CONTEXT_EVENTS.includes(cursorEventName)) {
+    const hints = collectCursorHints(result.results);
+    if (hints) return { additional_context: hints };
   }
   return {};
 }

@@ -81,6 +81,7 @@ import {
 } from './lib/learnings/store-role.mjs';
 import { isMainModule } from './lib/is-main-module.mjs';
 import { resolveLedgerPath } from './lib/ledger-path.mjs';
+import { isUntrustedEndLine } from './lib/reconcile/sanitize.mjs';
 
 const DEFAULT_RULES_DIR = '.claude/rules';
 const DEFAULT_STORE = '.orchestrator/metrics/learnings.jsonl';
@@ -112,7 +113,8 @@ const dehyphen = (s) => String(s).replace(/-/g, '');
 
 /**
  * Extract the section of a markdown body between `startRe` and the next
- * `## `-heading (or an HTML comment / end of input).
+ * `## `-heading (or an HTML comment, the visible untrusted-content end
+ * sentinel (#1779), or end of input).
  *
  * @param {string} body
  * @param {RegExp} startRe — must match the heading line
@@ -121,9 +123,12 @@ const dehyphen = (s) => String(s).replace(/-/g, '');
 function sectionAfter(body, startRe) {
   const m = body.match(startRe);
   if (!m) return null;
-  const rest = body.slice(m.index + m[0].length);
-  const stop = rest.search(/\n(?:## |<!-- )/);
-  return (stop === -1 ? rest : rest.slice(0, stop)).trim();
+  const lines = body.slice(m.index + m[0].length).split('\n');
+  // lines[0] is the remainder of the heading line itself, never a stop.
+  const stop = lines.findIndex(
+    (line, i) => i > 0 && (line.startsWith('## ') || line.startsWith('<!-- ') || isUntrustedEndLine(line)),
+  );
+  return (stop === -1 ? lines : lines.slice(0, stop)).join('\n').trim();
 }
 
 /**

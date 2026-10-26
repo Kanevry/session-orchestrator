@@ -118,8 +118,11 @@ const INTEGER_ROLLUP_KEYS = new Set([
  * witness OUTRANKS the shared marker: a marker UUID the process does not carry
  * was written by a peer and is refused even when the labels agree (two sessions
  * can mint the same semantic label, #1066). Ranked, never unioned
- * (.claude/rules/identity-and-locks.md). A foreign marker is WARNed and yields
- * null; an absent marker yields null silently.
+ * (.claude/rules/identity-and-locks.md). When the marker proves nothing
+ * (absent, or foreign), the process-local id is adopted alone if the events
+ * ledger shows it carrying this record's label (#1773, processIdCarryingLabel).
+ * Otherwise a foreign marker is WARNed and yields null; an absent marker yields
+ * null silently.
  *
  * CEILING: a resumed session that received a NEW raw id keeps its semantic id,
  * so only the latest raw id resolves and subagents dispatched under the earlier
@@ -127,43 +130,93 @@ const INTEGER_ROLLUP_KEYS = new Set([
  *
  * Never throws.
  *
- * @param {{ override: string|null, recordSessionId: unknown }} opts
+ * @param {{ override: string|null, recordSessionId: unknown, eventsFile?: string }} opts
+ *   `eventsFile` — the events ledger beside the target sessions.jsonl, read by
+ *   {@link processIdCarryingLabel} when the marker proves nothing
  * @returns {string|null}
  */
-function resolveOwnSessionUuid({ override, recordSessionId }) {
+function resolveOwnSessionUuid({ override, recordSessionId, eventsFile }) {
   const trimmed = (v) => (typeof v === 'string' ? v.trim() : '');
   const explicit = trimmed(override);
   if (explicit) return explicit;
+  const processIds = readProcessLocalSessionIds();
   const markerPath = join(process.cwd(), '.orchestrator', 'current-session.json');
-  let marker;
+  let refusal = null;
   try {
-    if (!existsSync(markerPath)) return null;
-    marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    if (existsSync(markerPath)) {
+      const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
+      const uuid = trimmed(marker?.session_id);
+      if (uuid) {
+        const semantic = trimmed(marker?.semantic_session_id);
+        const namesRecord = (semantic !== '' && semantic === recordSessionId) || uuid === recordSessionId;
+        const processAgrees = processIds.length === 0 || processIds.includes(uuid);
+        if (namesRecord && processAgrees) return uuid;
+        // The record's session_id is the semantic label (STATE.md `session`); name
+        // both sides of whichever comparison failed, so the operator sees which drifted.
+        refusal = namesRecord
+          ? `current-session.json session label ${recordSessionId} matches, but this process runs as ` +
+            `${processIds.join('/')}, not the marker's uuid ${uuid}`
+          : `current-session.json session label mismatch: marker semantic_session_id=${semantic || '<absent>'} ` +
+            `vs record session_id=${recordSessionId ?? '<unknown>'}`;
+      }
+    }
   } catch (err) {
-    process.stderr.write(
-      `emit-session: WARN could not read ${markerPath} (${err?.message ?? err}); ` +
-        `omitting raw_session_id and the token rollup\n`
-    );
+    refusal = `could not read ${markerPath} (${err?.message ?? err})`;
+  }
+  // #1773: the cwd marker is the wrong witness whenever the session's work tree
+  // is not the checkout its SessionStart wrote (a linked worktree has no marker,
+  // or another session's), or a peer's later SessionStart overwrote it. The
+  // process-local id is proof on its own once the events ledger shows that id
+  // carrying THIS record's label: hooks stamp `semantic_session_id` only from a
+  // lock whose raw id equals the process-local one (events.mjs #1123). A label
+  // this process never carried (a replay of a foreign record) stays unproven.
+  const proven = processIdCarryingLabel(eventsFile, processIds, recordSessionId);
+  if (proven) return proven;
+  if (refusal) {
+    process.stderr.write(`emit-session: WARN ${refusal}; omitting raw_session_id and the token rollup\n`);
+  }
+  return null;
+}
+
+/**
+ * The process-local id under which `eventsFile` holds an event labelled
+ * `label` (`semantic_session_id`), or null. Exactly one process id may match:
+ * two would leave the record's owner ambiguous.
+ *
+ * CEILING: a session whose every labelled event rotated out of events.jsonl
+ * (`events-rotation.max-size-mb`) is not found — turn.stopped events keep the
+ * label fresh for a live session, so revisit only if such a miss is measured.
+ *
+ * Never throws.
+ *
+ * @param {string|undefined} eventsFile
+ * @param {string[]} processIds
+ * @param {unknown} label
+ * @returns {string|null}
+ */
+function processIdCarryingLabel(eventsFile, processIds, label) {
+  if (!eventsFile || processIds.length === 0 || typeof label !== 'string' || label === '') return null;
+  let raw;
+  try {
+    raw = readFileSync(eventsFile, 'utf8');
+  } catch {
     return null;
   }
-  const uuid = trimmed(marker?.session_id);
-  if (!uuid) return null;
-  const semantic = trimmed(marker?.semantic_session_id);
-  const namesRecord = (semantic !== '' && semantic === recordSessionId) || uuid === recordSessionId;
-  const processIds = readProcessLocalSessionIds();
-  const processAgrees = processIds.length === 0 || processIds.includes(uuid);
-  if (namesRecord && processAgrees) return uuid;
-  // The record's session_id is the semantic label (STATE.md `session`); name
-  // both sides of whichever comparison failed, so the operator sees which drifted.
-  const why = namesRecord
-    ? `session label ${recordSessionId} matches, but this process runs as ` +
-      `${processIds.join('/')}, not the marker's uuid ${uuid}`
-    : `session label mismatch: marker semantic_session_id=${semantic || '<absent>'} ` +
-      `vs record session_id=${recordSessionId ?? '<unknown>'}`;
-  process.stderr.write(
-    `emit-session: WARN current-session.json ${why}; omitting raw_session_id and the token rollup\n`
-  );
-  return null;
+  // The prefilter matches the label as it is SERIALIZED: a git branch may carry
+  // a `"`, which JSONL holds escaped, so the raw label would skip its own event.
+  const serializedLabel = JSON.stringify(label).slice(1, -1);
+  const found = new Set();
+  for (const line of raw.split('\n')) {
+    if (!line.includes(serializedLabel)) continue;
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (ev?.semantic_session_id === label && processIds.includes(ev.session_id)) found.add(ev.session_id);
+  }
+  return found.size === 1 ? [...found][0] : null;
 }
 
 /**
@@ -424,6 +477,7 @@ async function main() {
   const ownUuid = resolveOwnSessionUuid({
     override: args.sessionUuid,
     recordSessionId: repaired.session_id,
+    eventsFile: siblingEventsFile(args.file),
   });
 
   // #1054: origin belongs to the session, not the later mirror writer.

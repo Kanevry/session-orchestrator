@@ -96,21 +96,40 @@ async function readOwnRegistryStart(rawId) {
 }
 
 /**
+ * True when the file at `filePath` was last modified at or after `sinceIso`
+ * (#1790 legacy evidence); false when it is unreadable.
+ *
+ * @param {string} filePath
+ * @param {string} sinceIso
+ * @returns {boolean}
+ */
+function misplacedWrittenSince(filePath, sinceIso) {
+  try {
+    return fs.statSync(filePath).mtimeMs >= Date.parse(sinceIso);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Write the `closed-without-plan` record for the session running `/close`.
  *
  * @param {object} opts
  * @param {string} opts.repoRoot  working tree `/close` runs in (a linked
  *   worktree maps to its main checkout's ledger)
- * @param {{ verdict: string, reason?: string }} opts.precheck  result of
+ * @param {{ verdict: string, reason?: string,
+ *   misplacedState?: { path: string, ownership: string } }} opts.precheck  result of
  *   `classifyCloseState`
  * @param {object} [opts.env=process.env]  injectable for tests
  * @param {() => Date} [opts.now]  injectable clock
  * @returns {Promise<{ written: boolean, verified?: boolean, reason?: string,
- *   session_id?: string, raw_session_id?: string }>}
+ *   session_id?: string, raw_session_id?: string, path?: string, misplaced_path?: string }>}
  *   `written: false` always carries a `reason`: `no-native-id`,
- *   `hand-off-verdict`, `ledger-unreadable`, `ledger-root-unresolved`,
+ *   `hand-off-verdict`, `misplaced-plan` (with `path`; own, or legacy written since this
+ *   session started), `ledger-unreadable`, `ledger-root-unresolved`,
  *   `already-recorded`, `marker-exists`, `marker-failed`, `invalid-record`,
- *   `append-failed`.
+ *   `append-failed`. `written: true` carries `misplaced_path` when a non-own plan
+ *   sat under `.orchestrator/STATE.md`.
  */
 export async function recordCloseWithoutPlan({ repoRoot, precheck, env = process.env, now = () => new Date() } = {}) {
   const rawId = readProcessLocalSessionIds({ env })[0] ?? null;
@@ -119,6 +138,21 @@ export async function recordCloseWithoutPlan({ repoRoot, precheck, env = process
 
   const verdict = precheck?.verdict;
   if (RUNS_SESSION_END.has(verdict)) return refuse('hand-off-verdict');
+  // #1790: an own plan misplaced under .orchestrator/ is not "no plan". A legacy
+  // one (no session-id) proves no owner, so only an mtime at or after this
+  // session's start counts as evidence; otherwise any stale file would suppress
+  // every later session's record. (`unprovable` cannot reach here: it needs an
+  // empty native-id list, which already returned `no-native-id`.)
+  const misplaced = precheck?.misplacedState;
+  let own = null;
+  if (misplaced?.ownership === 'own') return { ...refuse('misplaced-plan'), path: misplaced.path };
+  if (misplaced?.ownership === 'legacy') {
+    own = readOwnEvents(repoRoot, rawId);
+    const startedAtEvidence = own.startedAt ?? await readOwnRegistryStart(rawId);
+    if (startedAtEvidence !== null && misplacedWrittenSince(misplaced.path, startedAtEvidence)) {
+      return { ...refuse('misplaced-plan'), path: misplaced.path };
+    }
+  }
   if (verdict === 'inconclusive' && /^sessions\.jsonl unreadable/.test(precheck?.reason ?? '')) {
     return refuse('ledger-unreadable');
   }
@@ -141,7 +175,7 @@ export async function recordCloseWithoutPlan({ repoRoot, precheck, env = process
   const markerPath = path.join(markerDir, markerName(rawId));
   if (fs.existsSync(markerPath)) return refuse('marker-exists');
 
-  const own = readOwnEvents(repoRoot, rawId);
+  own ??= readOwnEvents(repoRoot, rawId);
   const startedAt = own.startedAt ?? await readOwnRegistryStart(rawId);
   const nowIso = now().toISOString();
   // Same naming as the abandoned backfill: the own semantic label when it is
@@ -200,5 +234,8 @@ export async function recordCloseWithoutPlan({ repoRoot, precheck, env = process
   } catch {
     /* re-read failed → stays unverified */
   }
-  return { written: true, verified, session_id: sessionId, raw_session_id: rawId };
+  const result = { written: true, verified, session_id: sessionId, raw_session_id: rawId };
+  // Result only, not the ledger record: a new record key would be a schema change.
+  if (misplaced?.path) result.misplaced_path = misplaced.path;
+  return result;
 }
